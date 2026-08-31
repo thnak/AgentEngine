@@ -121,7 +121,7 @@ int main() {
     // ---- B1: no manager() -> a clean, named error, not a garbage graph ---------------------------
     {
         MagenticWorkflowBuilder<TaskMsg, ReportMsg> b("no-manager");
-        b.participant(TypedExecutor<TaskMsg, ReportMsg>{.id = "p1"});
+        b.participant(TypedExecutor<TaskMsg, ReportMsg>{.id = "p1", .capability_ceiling = {}});
         result<MagenticGraph> built = b.build();
         check(!built.has_value(), "B1: build() fails when manager() was never called");
         if (!built) {
@@ -133,9 +133,9 @@ int main() {
     MagenticGraph shape;
     {
         MagenticWorkflowBuilder<TaskMsg, ReportMsg> b("shape-test");
-        b.manager(TypedExecutor<ReportMsg, TaskMsg>{.id = "mgr"});
-        b.participant(TypedExecutor<TaskMsg, ReportMsg>{.id = "p1"});
-        b.participant(TypedExecutor<TaskMsg, ReportMsg>{.id = "p2"});
+        b.manager(TypedExecutor<ReportMsg, TaskMsg>{.id = "mgr", .capability_ceiling = {}});
+        b.participant(TypedExecutor<TaskMsg, ReportMsg>{.id = "p1", .capability_ceiling = {}});
+        b.participant(TypedExecutor<TaskMsg, ReportMsg>{.id = "p2", .capability_ceiling = {}});
         b.max_rounds(20);
         result<MagenticGraph> built = b.build();
         check(built.has_value(), "B2: a well-formed manager+participants builder builds");
@@ -167,8 +167,8 @@ int main() {
     // ---- B3: require_plan_signoff() is wired exactly like a participant --------------------------
     {
         MagenticWorkflowBuilder<TaskMsg, ReportMsg> b("signoff-test");
-        b.manager(TypedExecutor<ReportMsg, TaskMsg>{.id = "mgr"});
-        b.participant(TypedExecutor<TaskMsg, ReportMsg>{.id = "p1"});
+        b.manager(TypedExecutor<ReportMsg, TaskMsg>{.id = "mgr", .capability_ceiling = {}});
+        b.participant(TypedExecutor<TaskMsg, ReportMsg>{.id = "p1", .capability_ceiling = {}});
         b.require_plan_signoff("plan_review");
         b.max_rounds(20);
         result<MagenticGraph> built = b.build();
@@ -194,8 +194,8 @@ int main() {
     // ---- B4: a done_selector() colliding with a participant id is a real, caught error -----------
     {
         MagenticWorkflowBuilder<TaskMsg, ReportMsg> b("collision-test");
-        b.manager(TypedExecutor<ReportMsg, TaskMsg>{.id = "mgr"});
-        b.participant(TypedExecutor<TaskMsg, ReportMsg>{.id = "done"});  // collides with the default sink id
+        b.manager(TypedExecutor<ReportMsg, TaskMsg>{.id = "mgr", .capability_ceiling = {}});
+        b.participant(TypedExecutor<TaskMsg, ReportMsg>{.id = "done", .capability_ceiling = {}});  // collides with the default sink id
         result<MagenticGraph> built = b.build();
         check(!built.has_value(), "B4: a participant id colliding with the done sink id fails to build");
         if (!built) {
@@ -239,8 +239,8 @@ int main() {
     // ---- B6: max_stalls()/max_resets() forwarding composes with the builder's own graph -----------
     {
         MagenticWorkflowBuilder<TaskMsg, ReportMsg> b("stall-compose-test");
-        b.manager(TypedExecutor<ReportMsg, TaskMsg>{.id = "mgr"});
-        b.participant(TypedExecutor<TaskMsg, ReportMsg>{.id = "p1"});
+        b.manager(TypedExecutor<ReportMsg, TaskMsg>{.id = "mgr", .capability_ceiling = {}});
+        b.participant(TypedExecutor<TaskMsg, ReportMsg>{.id = "p1", .capability_ceiling = {}});
         b.max_rounds(50);
         b.max_stalls(2);
         result<MagenticGraph> built = b.build();

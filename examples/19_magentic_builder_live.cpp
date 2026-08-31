@@ -196,9 +196,9 @@ int main() {
     ctx.capabilities = agentengine::borrow_capabilities(held);
 
     MagenticWorkflowBuilder<TaskMsg, ReportMsg> builder("planner-live-magentic");
-    builder.manager(TypedExecutor<ReportMsg, TaskMsg>{.id = "moderator"});
-    builder.participant(TypedExecutor<TaskMsg, ReportMsg>{.id = "researcher"});
-    builder.participant(TypedExecutor<TaskMsg, ReportMsg>{.id = "writer"});
+    builder.manager(TypedExecutor<ReportMsg, TaskMsg>{.id = "moderator", .capability_ceiling = {}});
+    builder.participant(TypedExecutor<TaskMsg, ReportMsg>{.id = "researcher", .capability_ceiling = {}});
+    builder.participant(TypedExecutor<TaskMsg, ReportMsg>{.id = "writer", .capability_ceiling = {}});
     builder.max_rounds(10);  // a safety valve, same as 17 -- the task needs 6 rounds if the moderator judges well
     builder.max_stalls(3);   // ADR-149 item 2 -- 3 consecutive unparseable live replies is a real stall
 

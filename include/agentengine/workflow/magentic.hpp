@@ -126,26 +126,27 @@ public:
         // Identity sink: declared `<TaskMsg, TaskMsg>` since it only ever receives the manager's
         // TaskMsg-typed "done" edge and has no outgoing edges of its own (its own Out type is
         // otherwise unconstrained -- reusing TaskMsg needs no third type parameter for one unused slot).
-        wf.add(TypedExecutor<TaskMsg, TaskMsg>{.id = done_id});
+        wf.add(TypedExecutor<TaskMsg, TaskMsg>{.id = done_id, .capability_ceiling = {}});
 
         for (std::string const& pid : participant_ids_) {
-            wf.connect(TypedExecutor<ReportMsg, TaskMsg>{.id = manager_id_},
-                       TypedExecutor<TaskMsg, ReportMsg>{.id = pid}, edge_kind::switch_case, pid);
-            wf.connect(TypedExecutor<TaskMsg, ReportMsg>{.id = pid},
-                       TypedExecutor<ReportMsg, TaskMsg>{.id = manager_id_}, edge_kind::direct);
+            wf.connect(TypedExecutor<ReportMsg, TaskMsg>{.id = manager_id_, .capability_ceiling = {}},
+                       TypedExecutor<TaskMsg, ReportMsg>{.id = pid, .capability_ceiling = {}}, edge_kind::switch_case, pid);
+            wf.connect(TypedExecutor<TaskMsg, ReportMsg>{.id = pid, .capability_ceiling = {}},
+                       TypedExecutor<ReportMsg, TaskMsg>{.id = manager_id_, .capability_ceiling = {}}, edge_kind::direct);
         }
 
-        wf.connect(TypedExecutor<ReportMsg, TaskMsg>{.id = manager_id_},
-                   TypedExecutor<TaskMsg, TaskMsg>{.id = done_id}, edge_kind::switch_case, done_case);
+        wf.connect(TypedExecutor<ReportMsg, TaskMsg>{.id = manager_id_, .capability_ceiling = {}},
+                   TypedExecutor<TaskMsg, TaskMsg>{.id = done_id, .capability_ceiling = {}}, edge_kind::switch_case, done_case);
 
         if (plan_review_port_id_.has_value()) {
             wf.add(TypedExecutor<TaskMsg, ReportMsg>{.id = *plan_review_port_id_,
-                                                       .kind = executor_kind::request_port});
-            wf.connect(TypedExecutor<ReportMsg, TaskMsg>{.id = manager_id_},
-                       TypedExecutor<TaskMsg, ReportMsg>{.id = *plan_review_port_id_},
+                                                       .kind = executor_kind::request_port,
+                                                       .capability_ceiling = {}});
+            wf.connect(TypedExecutor<ReportMsg, TaskMsg>{.id = manager_id_, .capability_ceiling = {}},
+                       TypedExecutor<TaskMsg, ReportMsg>{.id = *plan_review_port_id_, .capability_ceiling = {}},
                        edge_kind::switch_case, *plan_review_port_id_);
-            wf.connect(TypedExecutor<TaskMsg, ReportMsg>{.id = *plan_review_port_id_},
-                       TypedExecutor<ReportMsg, TaskMsg>{.id = manager_id_}, edge_kind::direct);
+            wf.connect(TypedExecutor<TaskMsg, ReportMsg>{.id = *plan_review_port_id_, .capability_ceiling = {}},
+                       TypedExecutor<ReportMsg, TaskMsg>{.id = manager_id_, .capability_ceiling = {}}, edge_kind::direct);
         }
 
         wf.start_at(manager_id_);

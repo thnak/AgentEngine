@@ -57,7 +57,8 @@ void check_error(result<T> const& r, failure_class expected_klass, char const* e
 [[nodiscard]] Workflow one_agent_node(std::vector<Capability> ceiling = {}) {
     Workflow wf;
     wf.id = "gate";
-    Executor agent{"a", executor_kind::agent, "Q", "A"};
+    Executor agent{.id = "a", .kind = executor_kind::agent, .input_type = "Q", .output_type = "A",
+                   .capability_ceiling = {}};
     agent.capability_ceiling = std::move(ceiling);
     wf.executors.push_back(agent);
     wf.start = "a";
@@ -95,8 +96,8 @@ int main() {
 
     // ---- G3: contexts-aware overload -- a satisfied ceiling is accepted ---------------------------
     {
-        Workflow wf = one_agent_node({cap::FsRead{"work", ""}});
-        CapabilitySet const held = CapabilitySet::grant_root({cap::FsRead{"work", ""}});
+        Workflow wf = one_agent_node({cap::FsRead{.mount_id = "work", .path_prefix = "", .size_cap_bytes = std::nullopt}});
+        CapabilitySet const held = CapabilitySet::grant_root({cap::FsRead{.mount_id = "work", .path_prefix = "", .size_cap_bytes = std::nullopt}});
         std::vector<EffectContext> contexts(1);
         contexts[0].capabilities = borrow_capabilities(held);
         check(check_workflow_executable(wf, contexts).has_value(),
@@ -105,7 +106,7 @@ int main() {
 
     // ---- G4: contexts-aware overload -- a declared ceiling with NO granted CapabilitySet fails ----
     {
-        Workflow wf = one_agent_node({cap::FsRead{"work", ""}});
+        Workflow wf = one_agent_node({cap::FsRead{.mount_id = "work", .path_prefix = "", .size_cap_bytes = std::nullopt}});
         std::vector<EffectContext> contexts(1);  // default: contexts[0].capabilities == nullptr
         check_error(check_workflow_executable(wf, contexts), failure_class::policy,
                     "workflow.agent_capability_ceiling_unmet",
@@ -114,8 +115,8 @@ int main() {
 
     // ---- G5: contexts-aware overload -- a declared ceiling NOT subsumed by the grant fails --------
     {
-        Workflow wf = one_agent_node({cap::FsRead{"work", ""}});
-        CapabilitySet const held = CapabilitySet::grant_root({cap::FsRead{"other-mount", ""}});
+        Workflow wf = one_agent_node({cap::FsRead{.mount_id = "work", .path_prefix = "", .size_cap_bytes = std::nullopt}});
+        CapabilitySet const held = CapabilitySet::grant_root({cap::FsRead{.mount_id = "other-mount", .path_prefix = "", .size_cap_bytes = std::nullopt}});
         std::vector<EffectContext> contexts(1);
         contexts[0].capabilities = borrow_capabilities(held);
         check_error(check_workflow_executable(wf, contexts), failure_class::policy,
@@ -139,7 +140,7 @@ int main() {
     {
         TypedExecutor<Q, A> te{.id = "a",
                                 .kind = executor_kind::agent,
-                                .capability_ceiling = {cap::FsRead{"work", ""}}};
+                                .capability_ceiling = {cap::FsRead{.mount_id = "work", .path_prefix = "", .size_cap_bytes = std::nullopt}}};
         Executor described = te.describe();
         check(described.capability_ceiling.size() == 1,
               "G7: TypedExecutor::capability_ceiling forwards through describe()");

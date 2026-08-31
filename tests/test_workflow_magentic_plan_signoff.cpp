@@ -139,8 +139,8 @@ int main() {
     // ---- P4: end to end through a real request_port suspend/resume cycle --------------------------
     {
         MagenticWorkflowBuilder<TaskMsg, ReportMsg> b("plan-signoff-e2e");
-        b.manager(TypedExecutor<ReportMsg, TaskMsg>{.id = "mgr"});
-        b.participant(TypedExecutor<TaskMsg, ReportMsg>{.id = "p1"});
+        b.manager(TypedExecutor<ReportMsg, TaskMsg>{.id = "mgr", .capability_ceiling = {}});
+        b.participant(TypedExecutor<TaskMsg, ReportMsg>{.id = "p1", .capability_ceiling = {}});
         b.require_plan_signoff("plan_review");
         b.max_rounds(20);
         result<MagenticGraph> built = b.build();
