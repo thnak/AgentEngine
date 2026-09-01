@@ -53,6 +53,35 @@ int main() {
               "(no disk, no mutation)");
     }
 
+    // ---- R1b: the result<>-carrying constructor preserves a construction-time failure through to
+    // load_skills(), the whole reason that overload exists (builtin_skills.hpp/extract_pdf_text.hpp's
+    // eager-parse-can-fail callers depend on this) -----------------------------------------------------
+    {
+        result<std::vector<SkillSourceResult>> failed = std::unexpected(
+            error{failure_class::contract, "fixture parse failure", "test.fixture_parse_failed"});
+
+        InlineSkillSource source("failing-origin", failed);
+        check(source.origin_id() == "failing-origin",
+              "R1b: origin_id() round-trips even when construction carried a failure");
+
+        auto loaded = source.load_skills();
+        check(!loaded.has_value(), "R1b: load_skills() surfaces the construction-time failure, not an "
+                                    "empty or partial skill list");
+        if (!loaded) {
+            check(loaded.error().code == "test.fixture_parse_failed",
+                  "R1b: the exact error carried at construction round-trips through load_skills()");
+        }
+
+        auto loaded_again = source.load_skills();
+        check(!loaded_again.has_value() && loaded_again.error().code == "test.fixture_parse_failed",
+              "R1b: the failure is stable across repeated load_skills() calls, same as the success path");
+
+        auto descriptor = make_skill_source_descriptor(std::move(source));
+        auto erased_loaded = descriptor.load_skills();
+        check(!erased_loaded.has_value() && erased_loaded.error().code == "test.fixture_parse_failed",
+              "R1b: the failure survives make_skill_source_descriptor's type erasure too");
+    }
+
     // ---- R2: make_skill_source_descriptor type-erases correctly ------------------------------------
     {
         std::vector<SkillSourceResult> empty;

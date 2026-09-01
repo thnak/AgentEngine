@@ -544,10 +544,7 @@ more call would fetch it -- that call does not exist.
         return result<std::vector<SkillSourceResult>>(std::move(skills));
     }();
 
-    SkillSourceDescriptor d;
-    d.origin_id = "extract-pdf-text";
-    d.load_skills = [resolved]() { return resolved; };
-    return d;
+    return make_skill_source_descriptor(InlineSkillSource("extract-pdf-text", std::move(resolved)));
 }
 
 }  // namespace agentengine::tools

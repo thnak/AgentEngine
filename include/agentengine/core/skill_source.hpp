@@ -76,10 +76,23 @@ template <class SourceT>
 // own pattern), no disk I/O at all. `load_skills()` returns a copy of what was constructed with,
 // every call -- cheap and side-effect-free, matching `SkillsProvider`'s own "resolve-once" caller-
 // side expectation without needing this class to track state itself.
+//
+// A CALLER that itself does eager, construction-time parsing (builtin_skills.hpp's
+// `builtin_skills_detail::parse_builtin()` and its analog in `tools/extract_pdf_text.hpp` are the
+// two real ones) may fail before it ever has a `vector<SkillSourceResult>` to hand over. The second
+// constructor below exists for exactly that: it accepts the parse step's own `result<...>` verbatim,
+// so that caller keeps whatever error `parse_builtin()` produced and this class still surfaces it
+// from `load_skills()`, matching `SkillsProvider::resolve_and_mount`'s existing "fail the whole
+// resolve, don't swallow one source's error" contract -- unchanged from before this class existed on
+// that path. Parsing itself stays out of this class either way: it stores and replays whatever
+// `result` it is given, it does not know how to produce one.
 // ae-naming-lint: allow InlineSkillSource — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class InlineSkillSource {
 public:
     InlineSkillSource(std::string origin_id, std::vector<SkillSourceResult> skills)
+        : origin_id_(std::move(origin_id)), skills_(std::move(skills)) {}
+
+    InlineSkillSource(std::string origin_id, result<std::vector<SkillSourceResult>> skills)
         : origin_id_(std::move(origin_id)), skills_(std::move(skills)) {}
 
     [[nodiscard]] std::string_view origin_id() const noexcept { return origin_id_; }
@@ -87,7 +100,7 @@ public:
 
 private:
     std::string origin_id_;
-    std::vector<SkillSourceResult> skills_;
+    result<std::vector<SkillSourceResult>> skills_;
 };
 static_assert(SkillSource<InlineSkillSource>);
 

@@ -283,10 +283,7 @@ namespace builtin_skills_detail {
         return result<std::vector<SkillSourceResult>>(std::move(skills));
     }();
 
-    SkillSourceDescriptor d;
-    d.origin_id = "builtin";
-    d.load_skills = [resolved]() { return resolved; };
-    return d;
+    return make_skill_source_descriptor(InlineSkillSource("builtin", std::move(resolved)));
 }
 
 }  // namespace agentengine
