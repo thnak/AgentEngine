@@ -320,21 +320,21 @@ result<SandboxHandle> LinuxNativeJailBackend::create(SandboxSpec const& spec, Ef
     auto cgroup_created = instance->cgroup.create(delegated_cgroup_root_, id, spec.limits);
     if (!cgroup_created.has_value()) return std::unexpected(cgroup_created.error());
 
-    instances_.emplace(id, std::move(instance));
+    insert_instance_locked(id, std::move(instance));
     return SandboxHandle{id};
 }
 
 result<ExecOutcome> LinuxNativeJailBackend::exec(SandboxHandle& handle, ExecRequest const& request,
                                                   EffectContext&) {
-    auto it = instances_.find(handle.opaque_id);
-    if (it == instances_.end()) {
+    Instance* inst_ptr = find_instance_locked(handle.opaque_id);
+    if (inst_ptr == nullptr) {
         return std::unexpected(ae::error{
             failure_class::contract,
             "exec() called on an unknown or already-destroyed SandboxHandle",
             "linux_native_jail.unknown_handle",
         });
     }
-    Instance& inst = *it->second;
+    Instance& inst = *inst_ptr;
 
     int sync_fds[2];
     if (::pipe2(sync_fds, O_CLOEXEC) != 0) {
@@ -530,7 +530,23 @@ void LinuxNativeJailBackend::destroy(SandboxHandle& handle) {
     // this SandboxHandle was holding. The delegated root itself is deployment-scoped, not
     // session-scoped, and is never removed here (mirrors the Windows side not deleting its shared
     // AppContainer profile on a per-session destroy()).
-    instances_.erase(handle.opaque_id);
+    erase_instance_locked(handle.opaque_id);
+}
+
+LinuxNativeJailBackend::Instance* LinuxNativeJailBackend::find_instance_locked(std::string const& id) {
+    std::lock_guard<std::mutex> guard(instances_mutex_);
+    auto it = instances_.find(id);
+    return it == instances_.end() ? nullptr : it->second.get();
+}
+
+void LinuxNativeJailBackend::insert_instance_locked(std::string id, std::unique_ptr<Instance> instance) {
+    std::lock_guard<std::mutex> guard(instances_mutex_);
+    instances_.emplace(std::move(id), std::move(instance));
+}
+
+void LinuxNativeJailBackend::erase_instance_locked(std::string const& id) {
+    std::lock_guard<std::mutex> guard(instances_mutex_);
+    instances_.erase(id);
 }
 
 }  // namespace agentengine::native_jail

@@ -2574,6 +2574,18 @@ if(WIN32)
   # kills under test.
   set_tests_properties(test_native_jail_backend_windows PROPERTIES TIMEOUT 90)
 
+  # ---- instances_ concurrency fix regression (Revision 4 round-3 finding-11 side-finding, office-
+  # document-extraction-design-draft.md) -----------------------------------------------------------
+  add_executable(test_native_jail_backend_concurrency_windows test_native_jail_backend_concurrency_windows.cpp)
+  target_link_libraries(test_native_jail_backend_concurrency_windows PRIVATE
+    agentengine::core agentengine::native_jail_backend agentengine_warnings)
+  target_compile_definitions(test_native_jail_backend_concurrency_windows PRIVATE
+    AE_HOSTILE_CHILD_EXE="$<TARGET_FILE:job_object_hostile_child>")
+  add_dependencies(test_native_jail_backend_concurrency_windows job_object_hostile_child)
+  add_test(NAME test_native_jail_backend_concurrency_windows COMMAND test_native_jail_backend_concurrency_windows)
+  # 8 threads x 40 iterations of real child-process create/exec/destroy cycles -- generous but finite.
+  set_tests_properties(test_native_jail_backend_concurrency_windows PROPERTIES TIMEOUT 120)
+
   # ---- 008 §7 abuse-case corpus + §9 G2 positive controls (M2 Phase C task C3) -------------------
   add_executable(test_native_jail_abuse_corpus_windows test_native_jail_abuse_corpus_windows.cpp)
   target_link_libraries(test_native_jail_abuse_corpus_windows PRIVATE

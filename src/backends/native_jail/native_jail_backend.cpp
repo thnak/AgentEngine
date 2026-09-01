@@ -221,21 +221,21 @@ result<SandboxHandle> NativeJailBackend::create(SandboxSpec const& spec, EffectC
 
     static std::atomic<std::uint64_t> counter{0};
     std::string id = "native_jail-" + std::to_string(counter.fetch_add(1, std::memory_order_relaxed));
-    instances_.emplace(id, std::move(instance));
+    insert_instance_locked(id, std::move(instance));
     return SandboxHandle{id};
 }
 
 result<ExecOutcome> NativeJailBackend::exec(SandboxHandle& handle, ExecRequest const& request,
                                              EffectContext&) {
-    auto it = instances_.find(handle.opaque_id);
-    if (it == instances_.end()) {
+    Instance* inst_ptr = find_instance_locked(handle.opaque_id);
+    if (inst_ptr == nullptr) {
         return std::unexpected(ae::error{
             failure_class::contract,
             "exec() called on an unknown or already-destroyed SandboxHandle",
             "native_jail.unknown_handle",
         });
     }
-    Instance& inst = *it->second;
+    Instance& inst = *inst_ptr;
 
     auto profile = shared_profile();
     if (!profile.has_value()) return std::unexpected(profile.error());
@@ -406,9 +406,9 @@ void NativeJailBackend::destroy(SandboxHandle& handle) {
     // the watchdog thread, best-effort `shutdown` handshake, bounded wait) -- the ordinary per_exec
     // path below (erase -> JobObjectLimits dtor -> KILL_ON_JOB_CLOSE) is still the unconditional
     // backstop either way, so a worker that never responds is still guaranteed torn down.
-    auto it = instances_.find(handle.opaque_id);
-    if (it != instances_.end() && it->second->worker.has_value()) {
-        Instance& inst = *it->second;
+    Instance* inst_ptr = find_instance_locked(handle.opaque_id);
+    if (inst_ptr != nullptr && inst_ptr->worker.has_value()) {
+        Instance& inst = *inst_ptr;
         PythonWorkerState& ws = *inst.worker;
         stop_watchdog(inst);
         if (ws.alive.load() && ws.downstream_write != nullptr) {
@@ -429,7 +429,23 @@ void NativeJailBackend::destroy(SandboxHandle& handle) {
     // whatever this SandboxHandle was holding. The shared AppContainer profile/SID is NOT
     // destroyed here -- it is deployment-scoped, not session-scoped (ADR-004 §3), so a session
     // ending must not tear it down out from under any sibling session.
-    instances_.erase(handle.opaque_id);
+    erase_instance_locked(handle.opaque_id);
+}
+
+NativeJailBackend::Instance* NativeJailBackend::find_instance_locked(std::string const& id) {
+    std::lock_guard<std::mutex> guard(instances_mutex_);
+    auto it = instances_.find(id);
+    return it == instances_.end() ? nullptr : it->second.get();
+}
+
+void NativeJailBackend::insert_instance_locked(std::string id, std::unique_ptr<Instance> instance) {
+    std::lock_guard<std::mutex> guard(instances_mutex_);
+    instances_.emplace(std::move(id), std::move(instance));
+}
+
+void NativeJailBackend::erase_instance_locked(std::string const& id) {
+    std::lock_guard<std::mutex> guard(instances_mutex_);
+    instances_.erase(id);
 }
 
 result<void> NativeJailBackend::grant_ro_path_once(std::wstring const& path) {
@@ -793,7 +809,7 @@ result<SandboxHandle> NativeJailBackend::create_python_worker(SandboxSpec const&
 
     static std::atomic<std::uint64_t> counter{0};
     std::string id = "native_jail_worker-" + std::to_string(counter.fetch_add(1, std::memory_order_relaxed));
-    instances_.emplace(id, std::move(instance));
+    insert_instance_locked(id, std::move(instance));
     return SandboxHandle{id};
 }
 
@@ -917,14 +933,14 @@ void NativeJailBackend::dispatch_worker_query(Instance& inst, json::Value const&
 
 result<ExecOutcome> NativeJailBackend::exec_session(SandboxHandle const& handle, ExecRequest request,
                                                        ExecState& state, EffectContext& ctx) {
-    auto it = instances_.find(handle.opaque_id);
-    if (it == instances_.end() || !it->second->worker.has_value()) {
+    Instance* inst_ptr = find_instance_locked(handle.opaque_id);
+    if (inst_ptr == nullptr || !inst_ptr->worker.has_value()) {
         return std::unexpected(ae::error{failure_class::contract,
                                           "exec_session() called on an unknown SandboxHandle or one "
                                           "created via create() rather than create_python_worker()",
                                           "native_jail.unknown_worker_handle"});
     }
-    Instance& inst = *it->second;
+    Instance& inst = *inst_ptr;
     PythonWorkerState& ws = *inst.worker;
 
     if (!ws.alive.load()) {
@@ -1044,14 +1060,14 @@ result<ExecOutcome> NativeJailBackend::exec_session(SandboxHandle const& handle,
 }
 
 result<void> NativeJailBackend::refresh_python_tools(SandboxHandle const& handle, ToolBridgeConfig config) {
-    auto it = instances_.find(handle.opaque_id);
-    if (it == instances_.end() || !it->second->worker.has_value()) {
+    Instance* inst_ptr = find_instance_locked(handle.opaque_id);
+    if (inst_ptr == nullptr || !inst_ptr->worker.has_value()) {
         return std::unexpected(ae::error{failure_class::contract,
                                           "refresh_python_tools() called on an unknown or non-worker "
                                           "SandboxHandle",
                                           "native_jail.unknown_worker_handle"});
     }
-    Instance& inst = *it->second;
+    Instance& inst = *inst_ptr;
     PythonWorkerState& ws = *inst.worker;
     if (!ws.alive.load()) {
         return std::unexpected(ae::error{failure_class::resource,

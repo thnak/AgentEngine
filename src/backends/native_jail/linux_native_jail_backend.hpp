@@ -65,6 +65,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -113,7 +114,19 @@ private:
 
     std::string delegated_cgroup_root_;
     std::string jail_root_base_;
+
+    // Same fix, same rationale as `NativeJailBackend::instances_mutex_` (native_jail_backend.hpp) --
+    // `extract_pdf_text.hpp`'s `invoke_worker()` reaches this class through an identical process-wide
+    // `static LinuxNativeJailBackend backend`, so two concurrently-running sessions (unconditional,
+    // no opt-in tag needed) or two same-session concurrent tool calls under ADR-160's scheduler race
+    // on this map's own structure exactly as the Windows side did. Guards only `emplace`/`find`/
+    // `erase`, never `exec()`'s own blocked wait.
+    std::mutex instances_mutex_;
     std::unordered_map<std::string, std::unique_ptr<Instance>> instances_;
+
+    [[nodiscard]] Instance* find_instance_locked(std::string const& id);
+    void insert_instance_locked(std::string id, std::unique_ptr<Instance> instance);
+    void erase_instance_locked(std::string const& id);
 };
 
 static_assert(SandboxBackend<LinuxNativeJailBackend>,

@@ -308,7 +308,38 @@ private:
                                                     // (create_python_worker()); nullopt for every
                                                     // ordinary per_exec Instance create() makes.
     };
+
+    // `instances_` and every caller of `create()`/`exec()`/`destroy()`/`create_python_worker()`/
+    // `exec_session()`/`refresh_python_tools()` against it were unsynchronized until this fix --
+    // a real, confirmed data race, not a theoretical one: `extract_pdf_text.hpp`'s `invoke_worker()`
+    // and `tools/cli_chat.cpp`'s `shared_python_runner()` both reach one process-wide `static
+    // NativeJailBackend` singleton, so any two concurrent callers -- two concurrently-running
+    // sessions in one host process being the unconditional case (needs no opt-in tag at all), and
+    // now also same-session concurrent tool calls once a tool declares `Parallelizable`/
+    // `ExclusivityGroup<Name>` under ADR-160's real, proven (if not yet Judged) parallel-batch
+    // scheduler -- raced on this map's own internal structure (`emplace`'s possible rehash
+    // concurrent with another thread's `find`/`erase`). `instances_mutex_` guards ONLY the
+    // container's own structural operations (`emplace`/`find`/`erase`), never the long blocking
+    // body of `exec()`/`exec_session()` (which can run for the caller's full `wall_ms`) -- an
+    // `Instance*` obtained under the lock stays valid after the lock is released for as long as its
+    // OWN key is not erased (node-based storage: insertion/rehash never relocates an existing
+    // node's value, and only the call that created a given handle ever erases it), so holding this
+    // mutex across `exec()`'s own blocked wait would serialize unrelated concurrent calls for no
+    // correctness reason -- exactly the throughput ADR-160's scheduler exists to provide.
+    std::mutex instances_mutex_;
     std::unordered_map<std::string, std::unique_ptr<Instance>> instances_;
+
+    // Looks up `id` under `instances_mutex_` and returns a raw, non-owning pointer valid until that
+    // SAME key is erased (never invalidated by a concurrent insert/erase of any OTHER key) --
+    // `nullptr` if no such instance exists. Every read site (`exec()`, `destroy()`, `exec_session()`,
+    // `refresh_python_tools()`) uses this instead of calling `instances_.find()` directly.
+    [[nodiscard]] Instance* find_instance_locked(std::string const& id);
+    // Inserts under `instances_mutex_` -- both `create()` and `create_python_worker()` use this
+    // instead of calling `instances_.emplace()` directly.
+    void insert_instance_locked(std::string id, std::unique_ptr<Instance> instance);
+    // Erases under `instances_mutex_` -- `destroy()` uses this instead of calling
+    // `instances_.erase()` directly.
+    void erase_instance_locked(std::string const& id);
 
     void session_watchdog_loop(Instance& inst);
     // Hard-kill only (TerminateJobObject) -- safe to call from ANY thread, including from WITHIN the
