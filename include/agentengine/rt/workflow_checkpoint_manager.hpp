@@ -36,8 +36,8 @@
 
 namespace agentengine::rt {
 
-// ae-naming-lint: allow WorkflowCheckpointManager — ADR-149's convenience-API family, mirrors WorkflowSupervisor's naming
 template <SessionStore StoreT>
+// ae-naming-lint: allow WorkflowCheckpointManager — ADR-149's convenience-API family, mirrors WorkflowSupervisor's naming
 class WorkflowCheckpointManager {
 public:
     // `on_save_error`, if set, is called synchronously (from inside the checkpoint hook, itself

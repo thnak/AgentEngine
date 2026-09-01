@@ -1033,9 +1033,12 @@ public:
             // by a fresh run_workflow()) -- reading it HERE, at final resolution, correctly captures
             // everything the nested run ever cost, including rounds that ran before it first
             // suspended. See OpenPort::usage's own comment.
+            // Threaded directly into the aggregate-init list (not a post-construction assignment) --
+            // an implicit trailing default here would reintroduce the exact -Werror=missing-field-
+            // initializers hazard the origin/main CI fix (ExecuteReply's own sites, immediately below
+            // this class) closed for this struct's sibling.
             OpenPort resolved_port{pending.interaction, pending.executor_index, reply_payload, {},
-                                    /*resolved=*/true};
-            resolved_port.usage = inner->usage();
+                                    /*resolved=*/true, inner->usage()};
             ports_.push_back(std::move(resolved_port));
             push_structural_event(
                 agentengine::workflow::workflow_event_kind::request_port_resolved,
@@ -1166,7 +1169,7 @@ public:
         ports_.reserve(rec.ports.size());
         for (auto const& p : rec.ports) {
             ports_.push_back(OpenPort{p.interaction, static_cast<std::size_t>(p.executor_index),
-                                      p.response, p.routes, p.resolved});
+                                      p.response, p.routes, p.resolved, agentengine::Usage{}});
         }
         stall_streak_ = rec.stall_streak;
         resets_used_  = rec.resets_used;
@@ -1274,25 +1277,29 @@ private:
             };
         }
         if (!body) {
-            *out = ExecuteReply{agentengine::Message{}, {}, false, agentengine::failure_class::contract};
+            *out = ExecuteReply{agentengine::Message{}, {}, false, agentengine::failure_class::contract,
+                                 false, std::nullopt, agentengine::Usage{}};
             co_return;
         }
         agentengine::result<ExecutorOutcome> outcome = body(payload, ctx);
         if (!outcome) {
-            *out = ExecuteReply{agentengine::Message{}, {}, false, outcome.error().klass};
+            *out = ExecuteReply{agentengine::Message{}, {}, false, outcome.error().klass, false, std::nullopt,
+                                 agentengine::Usage{}};
             co_return;
         }
-        ExecuteReply reply{std::move(outcome->payload), std::move(outcome->routes), true,
-                           agentengine::failure_class::fatal, outcome->stalled};
         // GitHub issue #35 follow-up (ADR-163) -- the one real link this class's own positional
-        // ExecuteReply{...} construction above was silently dropping: ExecutorOutcome::usage never
-        // survived into the ExecuteReply the per-round fold loop later accumulates from, so
+        // ExecuteReply{...} construction was silently dropping: ExecutorOutcome::usage never survived
+        // into the ExecuteReply the per-round fold loop later accumulates from, so
         // WorkflowSupervisor::usage() stayed zero even for a real agent-kind dispatch with real,
-        // scripted cost. Set post-construction (not threaded into the positional list above) since
-        // `usage` is ExecuteReply's own trailing field, appended after
-        // `pending_sub_workflow_inner_interaction_id` -- see that field's own comment.
-        reply.usage = outcome->usage;
-        *out = std::move(reply);
+        // scripted cost. Threaded here as the trailing positional arg (not a post-construction
+        // assignment) -- every field explicit, matching the missing-field-initializer discipline the
+        // origin/main CI fix (immediately above this class) established for
+        // `pending_sub_workflow_inner_interaction_id`; an implicit trailing default here would
+        // reintroduce that exact -Werror=missing-field-initializers failure on gcc/clang for this
+        // construction's own now-8-field aggregate.
+        *out = ExecuteReply{std::move(outcome->payload), std::move(outcome->routes), true,
+                             agentengine::failure_class::fatal, outcome->stalled, std::nullopt,
+                             outcome->usage};
         co_return;
     }
 
@@ -1377,7 +1384,8 @@ private:
         std::shared_ptr<agentengine::workflow::multiplex_sink<agentengine::workflow::WorkflowEvent>> sink,
         std::vector<std::string> path_prefix) {
         if (!inner) {
-            *out = ExecuteReply{agentengine::Message{}, {}, false, agentengine::failure_class::contract};
+            *out = ExecuteReply{agentengine::Message{}, {}, false, agentengine::failure_class::contract,
+                                 false, std::nullopt, agentengine::Usage{}};
             co_return;
         }
         WorkflowResult r;
@@ -1386,15 +1394,14 @@ private:
             r = drive(inner->run_workflow(RunWorkflow{payload}));
         }
         if (r.status == workflow_status::completed) {
-            ExecuteReply reply{r.output, {}, true, agentengine::failure_class::fatal};
             // GitHub issue #35 follow-up (ADR-163): a sub_workflow that completes SYNCHRONOUSLY within
             // one round (never suspends) -- its own inner->usage() is read here and bubbled straight
             // into the outer run's total via the ordinary replies[] fold, the same path an agent-kind
             // node's own usage already takes. The SUSPENDED branch below intentionally does NOT do this
             // -- see OpenPort::usage's own comment for why that case is captured retroactively instead,
             // at final resolution.
-            reply.usage = inner->usage();
-            *out = std::move(reply);
+            *out = ExecuteReply{r.output, {}, true, agentengine::failure_class::fatal, false, std::nullopt,
+                                 inner->usage()};
             co_return;
         }
         if (r.status == workflow_status::suspended) {
@@ -1404,7 +1411,8 @@ private:
             *out = std::move(reply);
             co_return;
         }
-        *out = ExecuteReply{agentengine::Message{}, {}, false, agentengine::failure_class::fatal};
+        *out = ExecuteReply{agentengine::Message{}, {}, false, agentengine::failure_class::fatal, false,
+                             std::nullopt, agentengine::Usage{}};
         co_return;
     }
 
@@ -1420,7 +1428,8 @@ private:
                     agentengine::workflow::workflow_event_kind::request_port_resolved,
                     agentengine::workflow::workflow_event_payload::PortRef{
                         graph_.executors[p.executor_index].id, p.interaction.interaction_id});
-                ExecuteReply const reply{p.response, p.routes, true, agentengine::failure_class::fatal};
+                ExecuteReply const reply{p.response, p.routes, true, agentengine::failure_class::fatal,
+                                          false, std::nullopt, p.usage};
                 accumulate_usage(p.usage);  // GitHub issue #35 follow-up -- see OpenPort::usage's comment
                 record_partial(state_.partial, p.executor_index, rounds_ - 1, p.response);
                 if (is_output_selected(p.executor_index)) state_.selected_output = p.response;
@@ -1541,7 +1550,8 @@ private:
             for (std::size_t i = 0; i < exec_deliveries.size(); ++i) {
                 if (quarantined[i]) {
                     replies[i] = ExecuteReply{agentengine::Message{}, {}, false,
-                                               agentengine::failure_class::contract};
+                                               agentengine::failure_class::contract, false, std::nullopt,
+                                               agentengine::Usage{}};
                 } else {
                     todo.push_back(i);
                 }
@@ -1588,7 +1598,8 @@ private:
                         // A throwing executor body -- see file banner for why this is classified
                         // transient rather than needing a restart-budget mechanism of its own.
                         replies[i] = ExecuteReply{agentengine::Message{}, {}, false,
-                                                   agentengine::failure_class::transient};
+                                                   agentengine::failure_class::transient, false, std::nullopt,
+                                                   agentengine::Usage{}};
                     } else {
                         replies[i] = std::move(*slots[k]);
                     }
@@ -1637,7 +1648,8 @@ private:
                 for (std::size_t i = 0; i < sub_workflow_deliveries.size(); ++i) {
                     if (sub_workflow_quarantined[i]) {
                         sub_workflow_replies[i] = ExecuteReply{agentengine::Message{}, {}, false,
-                                                                agentengine::failure_class::contract};
+                                                                agentengine::failure_class::contract, false,
+                                                                std::nullopt, agentengine::Usage{}};
                     } else {
                         sub_todo.push_back(i);
                     }
@@ -1676,7 +1688,9 @@ private:
                         JobOutcome         outcome = sub_in_flight[k].get();
                         if (outcome.faulted) {
                             sub_workflow_replies[i] = ExecuteReply{agentengine::Message{}, {}, false,
-                                                                    agentengine::failure_class::transient};
+                                                                    agentengine::failure_class::transient,
+                                                                    false, std::nullopt,
+                                                                    agentengine::Usage{}};
                         } else {
                             sub_workflow_replies[i] = std::move(*sub_slots[k]);
                         }
@@ -1846,7 +1860,8 @@ private:
                     agentengine::workflow::workflow_event_kind::request_port_opened,
                     agentengine::workflow::workflow_event_payload::PortRef{
                         graph_.executors[d.executor_index].id, interaction.interaction_id});
-                ports_.push_back(OpenPort{interaction, d.executor_index, d.payload, {}, false});
+                ports_.push_back(OpenPort{interaction, d.executor_index, d.payload, {}, false,
+                                           agentengine::Usage{}});
             }
             state_.pending = std::move(next);
 

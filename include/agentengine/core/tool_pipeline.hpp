@@ -35,6 +35,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -122,11 +123,17 @@ struct ToolDescriptor {
     bool args_schema_value_cached = false;
 
     // decisions/ADR-158-tool-concurrency-exclusivity-policy.md §4: `nullopt` unless the tool
-    // declared `ExclusivityGroup<Name>` (`core/tool.hpp`). Read by no pipeline logic yet -- like
-    // `Parallelizable` itself, this is reserved ahead of 006 §8 G4's still-deferred parallel-batch
-    // scheduler, not consulted by any dispatch path today. Appended last, this struct's own
+    // declared `ExclusivityGroup<Name>` (`core/tool.hpp`). Appended last, this struct's own
     // established convention.
     std::optional<std::string> exclusivity_group;
+
+    // decisions/ADR-160-parallel-tool-batch-scheduler.md §5: `true` only when the tool declared bare
+    // `Parallelizable` (`Tool<Derived,...>::kHasParallelizable`) -- distinct from `exclusivity_group`
+    // above (mutually exclusive by `Tool<>`'s own static_assert, ADR-158). Read by
+    // `AgentSession::partition_batch()` (rt/agent_session.hpp) to decide batch eligibility and
+    // per-call concurrency class. `exclusivity_group`/`parallelizable` together are the only two
+    // ways a `ToolDescriptor` opts into anything other than the default fully-sequential class.
+    bool parallelizable = false;
 };
 
 template <class ToolT>
@@ -139,6 +146,7 @@ template <class ToolT>
     d.backgroundable = ToolT::declared_backgroundable();
     d.effect_class = ToolT::declared_effect_class();
     d.exclusivity_group = ToolT::declared_exclusivity_group();
+    d.parallelizable = ToolT::kHasParallelizable;
     d.args_schema_json = ToolT::args_schema();
     d.reply_schema_json = ToolT::reply_schema();
     if (auto parsed = json::parse(d.args_schema_json)) {
@@ -175,6 +183,7 @@ template <class ToolT, class InvokeFn>
     d.backgroundable = ToolT::declared_backgroundable();
     d.effect_class = ToolT::declared_effect_class();
     d.exclusivity_group = ToolT::declared_exclusivity_group();
+    d.parallelizable = ToolT::kHasParallelizable;
     d.args_schema_json = ToolT::args_schema();
     d.reply_schema_json = ToolT::reply_schema();
     if (auto parsed = json::parse(d.args_schema_json)) {
@@ -558,6 +567,156 @@ inline void enforce_hook_rewritten_tool_call_provenance(ToolCallRequest& req,
     }
 }
 
+// decisions/ADR-160-parallel-tool-batch-scheduler.md §5: steps 1 (resolve), 4/7 (authorize+bind),
+// 5 (approve) extracted out of `invoke_tool()` below into their own callable, byte-for-byte the
+// same logic -- so the parallel-batch admission path (`AgentSession`, rt/agent_session.hpp) can
+// share EXACTLY this admission logic rather than carry a second, independently-drifting copy of a
+// security-critical policy decision. `invoke_tool()` is refactored below to call this; its own
+// signature, observable behavior, and audit fields are unchanged.
+struct AdmittedCall {
+    ToolDescriptor const* tool = nullptr;
+    std::vector<BoundCapability> bound;
+};
+
+[[nodiscard]] inline result<AdmittedCall> admit_call(ToolTable const& table, CapabilitySet const& held,
+                                                       ToolCallRequest const& request,
+                                                       Principal const& caller,
+                                                       ApprovalDecider const& approve,
+                                                       PolicyDecider const& policy) {
+    // -- step 1: resolve -------------------------------------------------------------------------
+    ToolDescriptor const* tool = table.find(request.tool_name);
+    if (!tool) {
+        return std::unexpected(
+            error{failure_class::contract, "unknown tool: " + request.tool_name, "tool.unknown_name"});
+    }
+
+    // -- step 2: validate (+ step 3: taint, recorded not deeply propagated) ----------------------
+    // Deferred to `tool->invoke`'s call into schema::from_json<Args> below -- a single point of
+    // truth for "does this JSON match the declared shape", never a second, hand-rolled check here
+    // that could drift from what actually gets parsed.
+
+    // -- step 4/7: authorize + bind --------------------------------------------------------------
+    // ADR-009's CapabilitySet::bind() performs both atomically (contains-check, then mint a fresh
+    // per-invocation ticket) -- there is no observable difference from doing them as two separate
+    // steps within one synchronous call (no concurrent caller could interleave between them here).
+    std::vector<BoundCapability> bound;
+    bound.reserve(tool->capability_ceiling.size());
+    for (Capability const& requirement : tool->capability_ceiling) {
+        auto handle = held.bind(requirement);
+        if (!handle) {
+            // No leaked capability: the error names neither what's missing nor what IS held.
+            error e{failure_class::policy, "required capability not held", "tool.capability_not_held"};
+            return std::unexpected(e);
+        }
+        bound.push_back(std::move(*handle));
+    }
+
+    // -- step 5: approve ---------------------------------------------------------------------------
+    // ADR-023 §6 point 4 / 007 §4 amendment: a `text_derived` call NEVER consults `tool->approval`
+    // at all -- that setting was authored by the tool's declarer for VENDOR-STRUCTURED calls (a
+    // real, trusted wire-format field). A call reconstructed from raw model text is a different,
+    // weaker trust class by construction (007 §4: model-supplied text is never itself an
+    // authorization decision), so it gets its OWN gate (`is_auto_declassifiable_text_derived_call`)
+    // that can only ever be MORE restrictive than the tool's own setting, including overriding a
+    // tool's own `approval_mode::never_require` for anything with a real capability ceiling -- the
+    // exact override the confused-deputy scenario (ADR-023 §4b Finding 1) forced. A
+    // `vendor_structured` call (every caller before this amendment, and every caller that never sets
+    // `provenance`) takes the ORIGINAL branch, byte-for-byte unchanged.
+    // ADR-070 (decisions/ADR-070-host-configurable-responsibility-boundary.md): `policy` only ever
+    // narrows this decision further -- an auto_approve/auto_deny verdict short-circuits
+    // `policy_driven`'s existing fail-closed degrade; an unset `policy` reproduces
+    // `tool_call_requires_approval()`'s own boolean exactly (see `resolve_approval_outcome`'s own
+    // comment), so this is a strict extension of, not a change to, the pre-ADR-070 behavior.
+    approval_outcome const outcome = resolve_approval_outcome(*tool, request.provenance, caller,
+                                                                request.arguments_tainted, policy);
+    if (outcome == approval_outcome::deny) {
+        for (auto const& b : bound) b.revoke();  // never bind authority we then refuse to use
+        error e{failure_class::policy, "denied by policy", "tool.policy_denied"};
+        return std::unexpected(e);
+    }
+    if (outcome == approval_outcome::needs_decider) {
+        std::string canonical_args = json::dump(request.arguments);
+        bool approved = approve && approve(caller, request.tool_name, canonical_args);
+        if (!approved) {
+            for (auto const& b : bound) b.revoke();  // never bind authority we then refuse to use
+            error e{failure_class::policy, "approval required and not granted", "tool.approval_denied"};
+            return std::unexpected(e);
+        }
+    }
+
+    // -- step 6: admit -- deferred (Quark 022 not in M2 scope; documented no-op, see file top) ----
+
+    return AdmittedCall{tool, std::move(bound)};
+}
+
+// decisions/ADR-160-parallel-tool-batch-scheduler.md §5: steps 8 (invoke), 9 (normalize), 10
+// (account) extracted from invoke_tool() below, alongside admit_call() above -- returns the raw
+// outcome without touching any audit bookkeeping, DELIBERATELY: `invoke_tool()`'s own audit
+// measures duration from before admission even starts, while the parallel-batch fan-out path
+// (AgentSession::dispatch_tool_calls()) measures a job's own audit from its own admission-to-
+// completion span -- sharing a `finish()`-style closure between the two would silently change one
+// of their two, deliberately different, "duration" semantics. `failure` is a real copy (an
+// `error`, not a pointer into a temporary) so it safely outlives this call.
+struct RunOutcome {
+    ToolResult result;
+    std::optional<error> failure;
+    std::size_t bytes = 0;
+};
+
+[[nodiscard]] inline RunOutcome run_admitted_call(ToolDescriptor const& tool, ToolCallRequest const& request,
+                                                    EffectContext& ctx, std::vector<BoundCapability>& bound) {
+    using namespace tool_pipeline_detail;
+    // -- step 8: invoke (deadline checked at the call boundary, not preemptible mid-call) ---------
+    if (ctx.deadline.time_since_epoch().count() != 0 &&
+        std::chrono::steady_clock::now() > ctx.deadline) {
+        for (auto const& b : bound) b.revoke();
+        error e{failure_class::resource, "deadline already exceeded", "tool.deadline_exceeded"};
+        return RunOutcome{make_error_result(request.call_id, e), e, 0};
+    }
+
+    ctx.bound_capabilities = &bound;
+    result<json::Value> invoke_result = tool.invoke(request.arguments, ctx);
+    ctx.bound_capabilities = nullptr;
+
+    // -- step 10: account (revoke unconditionally, success or failure) ----------------------------
+    for (auto const& b : bound) b.revoke();
+
+    // -- step 9: normalize --------------------------------------------------------------------------
+    if (!invoke_result) {
+        error const& e = invoke_result.error();
+        return RunOutcome{make_error_result(request.call_id, e), e, 0};
+    }
+
+    auto normalized = normalize_success(request.call_id, *invoke_result, ctx);
+    if (!normalized) {
+        error const& e = normalized.error();
+        return RunOutcome{make_error_result(request.call_id, e), e, 0};
+    }
+    return RunOutcome{std::move(normalized->first), std::nullopt, normalized->second};
+}
+
+// ADR-160 §5: a small, shared audit-record builder for the parallel-batch fan-out path only --
+// `invoke_tool()`'s own inline `finish()` closure and `background_task()`'s own closure each keep
+// their pre-existing, independent audit construction, untouched (ADR-160 §4 non-goals: this ADR
+// does not touch `background_task()`).
+[[nodiscard]] inline ToolInvocationAudit make_call_audit(ToolCallRequest const& request,
+                                                           EffectContext const& ctx,
+                                                           std::chrono::steady_clock::time_point started,
+                                                           RunOutcome const& outcome) {
+    ToolInvocationAudit audit;
+    audit.call_id = request.call_id;
+    audit.tool_name = request.tool_name;
+    audit.ok = !outcome.failure.has_value();
+    audit.error_code = outcome.failure ? outcome.failure->code : std::string{};
+    audit.result_bytes = outcome.bytes;
+    audit.duration = std::chrono::steady_clock::now() - started;
+    audit.idempotency_key = derive_idempotency_key(ctx, request.call_index, request.arguments);
+    audit.principal_id           = ctx.principal.id;
+    audit.principal_tenant_id    = ctx.principal.tenant_id;
+    audit.principal_on_behalf_of = ctx.principal.on_behalf_of;
+    return audit;
+}
+
 // The ten-step pipeline (006 §3), against a single native tool call. `held` is the run's actual
 // granted set (never mutated here); `ctx` is filled in with this call's per-invocation
 // `bound_capabilities` (step 7) for the duration of `invoke`, and cleared again before returning
@@ -600,96 +759,97 @@ inline void enforce_hook_rewritten_tool_call_provenance(ToolCallRequest& req,
         return result;
     };
 
-    // -- step 1: resolve -------------------------------------------------------------------------
-    ToolDescriptor const* tool = table.find(request.tool_name);
-    if (!tool) {
-        error e{failure_class::contract, "unknown tool: " + request.tool_name, "tool.unknown_name"};
+    // -- steps 1, 4/7, 5 (resolve, authorize+bind, approve): `admit_call()` above, ADR-160 §5 -------
+    auto admission = admit_call(table, held, request, ctx.principal, approve, policy);
+    if (!admission) {
+        error const& e = admission.error();
         return finish(make_error_result(request.call_id, e), &e);
     }
-
-    // -- step 2: validate (+ step 3: taint, recorded not deeply propagated) ----------------------
-    // Deferred to `tool->invoke`'s call into schema::from_json<Args> below -- a single point of
-    // truth for "does this JSON match the declared shape", never a second, hand-rolled check here
-    // that could drift from what actually gets parsed.
-
-    // -- step 4/7: authorize + bind --------------------------------------------------------------
-    // ADR-009's CapabilitySet::bind() performs both atomically (contains-check, then mint a fresh
-    // per-invocation ticket) -- there is no observable difference from doing them as two separate
-    // steps within one synchronous call (no concurrent caller could interleave between them here).
-    std::vector<BoundCapability> bound;
-    bound.reserve(tool->capability_ceiling.size());
-    for (Capability const& requirement : tool->capability_ceiling) {
-        auto handle = held.bind(requirement);
-        if (!handle) {
-            // No leaked capability: the error names neither what's missing nor what IS held.
-            error e{failure_class::policy, "required capability not held", "tool.capability_not_held"};
-            return finish(make_error_result(request.call_id, e), &e);
-        }
-        bound.push_back(std::move(*handle));
-    }
-
-    // -- step 5: approve ---------------------------------------------------------------------------
-    // ADR-023 §6 point 4 / 007 §4 amendment: a `text_derived` call NEVER consults `tool->approval`
-    // at all -- that setting was authored by the tool's declarer for VENDOR-STRUCTURED calls (a
-    // real, trusted wire-format field). A call reconstructed from raw model text is a different,
-    // weaker trust class by construction (007 §4: model-supplied text is never itself an
-    // authorization decision), so it gets its OWN gate (`is_auto_declassifiable_text_derived_call`)
-    // that can only ever be MORE restrictive than the tool's own setting, including overriding a
-    // tool's own `approval_mode::never_require` for anything with a real capability ceiling -- the
-    // exact override the confused-deputy scenario (ADR-023 §4b Finding 1) forced. A
-    // `vendor_structured` call (every caller before this amendment, and every caller that never sets
-    // `provenance`) takes the ORIGINAL branch, byte-for-byte unchanged.
-    // ADR-070 (decisions/ADR-070-host-configurable-responsibility-boundary.md): `policy` only ever
-    // narrows this decision further -- an auto_approve/auto_deny verdict short-circuits
-    // `policy_driven`'s existing fail-closed degrade; an unset `policy` reproduces
-    // `tool_call_requires_approval()`'s own boolean exactly (see `resolve_approval_outcome`'s own
-    // comment), so this is a strict extension of, not a change to, the pre-ADR-070 behavior.
-    approval_outcome const outcome = resolve_approval_outcome(*tool, request.provenance, ctx.principal,
-                                                                request.arguments_tainted, policy);
-    if (outcome == approval_outcome::deny) {
-        for (auto const& b : bound) b.revoke();  // never bind authority we then refuse to use
-        error e{failure_class::policy, "denied by policy", "tool.policy_denied"};
-        return finish(make_error_result(request.call_id, e), &e);
-    }
-    if (outcome == approval_outcome::needs_decider) {
-        std::string canonical_args = json::dump(request.arguments);
-        bool approved = approve && approve(ctx.principal, request.tool_name, canonical_args);
-        if (!approved) {
-            for (auto const& b : bound) b.revoke();  // never bind authority we then refuse to use
-            error e{failure_class::policy, "approval required and not granted", "tool.approval_denied"};
-            return finish(make_error_result(request.call_id, e), &e);
-        }
-    }
+    ToolDescriptor const* tool = admission->tool;
+    std::vector<BoundCapability> bound = std::move(admission->bound);
 
     // -- step 6: admit -- deferred (Quark 022 not in M2 scope; documented no-op, see file top) ----
 
-    // -- step 8: invoke (deadline checked at the call boundary, not preemptible mid-call) ---------
-    if (ctx.deadline.time_since_epoch().count() != 0 &&
-        std::chrono::steady_clock::now() > ctx.deadline) {
-        for (auto const& b : bound) b.revoke();
-        error e{failure_class::resource, "deadline already exceeded", "tool.deadline_exceeded"};
-        return finish(make_error_result(request.call_id, e), &e);
+    // -- steps 8, 9, 10 (invoke, normalize, account): `run_admitted_call()` above, ADR-160 §5 -------
+    RunOutcome outcome = run_admitted_call(*tool, request, ctx, bound);
+    return finish(std::move(outcome.result), outcome.failure ? &*outcome.failure : nullptr, outcome.bytes);
+}
+
+// decisions/ADR-160-parallel-tool-batch-scheduler.md §5 "Batch partitioning". A pure function: given
+// the batch of requests actually being dispatched (the caller has already filtered out anything a
+// hook denied) and the table used to resolve each one, decides whether the batch is fan-out-eligible
+// at all and, if so, partitions it into concurrency classes -- no I/O, no admission, no invocation;
+// safe to call and test in complete isolation from `AgentSession`.
+//
+// ELIGIBILITY (006 §5's existing all-or-nothing gate, unchanged by this ADR -- ADR-160 §6 names
+// loosening this to a per-class partition as a real, still-open RFC-amendment question, not decided
+// here): the batch is eligible only when EVERY request resolves to a descriptor that declares bare
+// `Parallelizable` or `ExclusivityGroup<Name>`. An unresolved tool name counts as NOT eligible --
+// resolution itself is deferred to admission (`admit_call()`'s own step 1), so an unknown-tool call
+// simply falls back to running through the ordinary sequential path and fails there exactly as it
+// does today; this function never invents a second "unknown tool" error path.
+//
+// `captures_session_state` (ADR-160 §5 MUST-FIX 1) is evaluated INDEPENDENTLY of the eligibility
+// gate above: a tool that declares it forces its own call into a sequential singleton class
+// unconditionally, even inside an otherwise-fully-eligible batch, and even if it ALSO declares
+// `Parallelizable`/`ExclusivityGroup<Name>` -- but it still counts as "declares one of the two tags"
+// for the gate itself, since 006 §5's literal text is about the declared TAG, not about what this
+// scheduler is willing to actually run concurrently.
+//
+// `ExclusivityGroup<Name>` members sharing one `Name` land in exactly ONE class together (ADR-160
+// §5 MUST-FIX 5: the whole group, not each member, is the unit of fan-out) -- never one class per
+// member.
+enum class concurrency_class_kind : std::uint8_t { sequential, parallel, exclusivity_group };
+// ae-naming-lint: allow concurrency_class_kind — ADR-160, same enum-tag idiom as approval_outcome/policy_decision
+
+struct ConcurrencyClass {
+    concurrency_class_kind kind = concurrency_class_kind::sequential;
+    std::vector<std::size_t> call_indices;  // indices into the batch passed to partition_batch(), in
+                                             // emitted order; a `parallel`/`sequential` class always
+                                             // holds exactly one, an `exclusivity_group` class one or
+                                             // more sharing `group_name`.
+    std::string group_name;                 // only meaningful when kind == exclusivity_group
+};
+
+[[nodiscard]] inline std::vector<ConcurrencyClass> partition_batch(
+        std::vector<ToolCallRequest> const& reqs, ToolTable const& table) {
+    std::vector<ConcurrencyClass> classes;
+    if (reqs.empty()) return classes;
+
+    bool batch_eligible = true;
+    for (auto const& req : reqs) {
+        ToolDescriptor const* tool = table.find(req.tool_name);
+        if (!tool || !(tool->parallelizable || tool->exclusivity_group.has_value())) {
+            batch_eligible = false;
+            break;
+        }
     }
 
-    ctx.bound_capabilities = &bound;
-    result<json::Value> invoke_result = tool->invoke(request.arguments, ctx);
-    ctx.bound_capabilities = nullptr;
-
-    // -- step 10: account (revoke unconditionally, success or failure) ----------------------------
-    for (auto const& b : bound) b.revoke();
-
-    // -- step 9: normalize --------------------------------------------------------------------------
-    if (!invoke_result) {
-        error const& e = invoke_result.error();
-        return finish(make_error_result(request.call_id, e), &e);
+    if (!batch_eligible) {
+        for (std::size_t i = 0; i < reqs.size(); ++i) {
+            classes.push_back(ConcurrencyClass{concurrency_class_kind::sequential, {i}, {}});
+        }
+        return classes;
     }
 
-    auto normalized = normalize_success(request.call_id, *invoke_result, ctx);
-    if (!normalized) {
-        error const& e = normalized.error();
-        return finish(make_error_result(request.call_id, e), &e);
+    std::unordered_map<std::string, std::size_t> group_class_index;  // group name -> index into `classes`
+    for (std::size_t i = 0; i < reqs.size(); ++i) {
+        ToolDescriptor const* tool = table.find(reqs[i].tool_name);  // non-null: proved above
+        if (tool->captures_session_state) {
+            classes.push_back(ConcurrencyClass{concurrency_class_kind::sequential, {i}, {}});
+        } else if (tool->exclusivity_group.has_value()) {
+            std::string const& name = *tool->exclusivity_group;
+            auto [it, inserted] = group_class_index.try_emplace(name, classes.size());
+            if (inserted) {
+                classes.push_back(ConcurrencyClass{concurrency_class_kind::exclusivity_group, {i}, name});
+            } else {
+                classes[it->second].call_indices.push_back(i);
+            }
+        } else {
+            classes.push_back(ConcurrencyClass{concurrency_class_kind::parallel, {i}, {}});
+        }
     }
-    return finish(std::move(normalized->first), nullptr, normalized->second);
+    return classes;
 }
 
 // Milestone 7 Phase B (006 §6b): "Still runs the full 10-step tool pipeline (§3); only step 8

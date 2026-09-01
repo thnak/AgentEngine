@@ -61,6 +61,14 @@ export const apiPages: Record<Lang, ApiPage[]> = {
       status: "real",
     },
     {
+      id: "builtin-tools",
+      label: "First-Party Tools & Skills",
+      href: `${SITE_BASE}/api/builtin-tools.html`,
+      eyebrow: "009 §7/§8f — the generic tool catalog",
+      description: "What's actually shipped: the five real tools and six real skills this engine ships itself, field by field, plus a worked example mounting both together.",
+      status: "real",
+    },
+    {
       id: "trust-sandbox",
       label: "Capabilities & Sandbox",
       href: `${SITE_BASE}/api/trust-sandbox.html`,
@@ -164,6 +172,14 @@ export const apiPages: Record<Lang, ApiPage[]> = {
       href: `${SITE_BASE}/api/skill.html`,
       eyebrow: "009 §8 — Plugin and Extension System",
       description: "Frontmatter của SKILL.md, cơ chế tải theo kiểu tiết lộ dần (progressive disclosure), và lý do đây là một filesystem mount, không phải một lệnh gọi tool.",
+      status: "real",
+    },
+    {
+      id: "builtin-tools",
+      label: "Tool & Skill chính chủ",
+      href: `${SITE_BASE}/api/builtin-tools.html`,
+      eyebrow: "009 §7/§8f — danh mục tool chung",
+      description: "Những gì thực sự đã phát hành: năm tool thật và sáu skill thật mà chính engine này phát hành, theo từng trường một, cộng một ví dụ minh họa mount cả hai cùng lúc.",
       status: "real",
     },
     {
@@ -1639,7 +1655,7 @@ export const skillSourceEntries: Record<Lang, ApiEntry[]> = {
       tag: "InlineSkillSource",
       title: "InlineSkillSource — a caller-supplied bundle, no disk I/O at all",
       body:
-        "Constructed with an origin_id and a std::vector<SkillSourceResult> the caller already built (typically via parse_skill_md against a string literal — builtin_skills.hpp's own pattern). load_skills() returns a copy of exactly what it was given, every call — cheap, side-effect-free, no state to invalidate. This is how the five §8f generic skills ship: compiled into the binary via make_builtin_skills_source(), never as loose files a deployment could omit or move.",
+        "Constructed with an origin_id and either a std::vector<SkillSourceResult> the caller already built (typically via parse_skill_md against a string literal — builtin_skills.hpp's own pattern), or a result<std::vector<SkillSourceResult>> directly, for a caller whose own construction-time parsing can itself fail and needs that failure to survive unchanged into load_skills(). Either way, load_skills() returns a copy of exactly what it was given, every call — cheap, side-effect-free, no state to invalidate. This is how the five §8f generic skills ship: compiled into the binary via make_builtin_skills_source(), which literally constructs one of these, never as loose files a deployment could omit or move.",
       cite: "include/agentengine/core/skill_source.hpp:75",
       href: gh("include/agentengine/core/skill_source.hpp"),
     },
@@ -1661,7 +1677,7 @@ export const skillSourceEntries: Record<Lang, ApiEntry[]> = {
       tag: "InlineSkillSource",
       title: "InlineSkillSource — một bundle do caller cung cấp, hoàn toàn không có I/O đĩa",
       body:
-        "Được khởi tạo với một origin_id và một std::vector<SkillSourceResult> mà caller đã tự xây dựng sẵn (thường là qua parse_skill_md áp lên một string literal — đúng như cách builtin_skills.hpp làm). load_skills() trả về một bản sao chính xác những gì nó được trao, ở mỗi lần gọi — rẻ, không có side-effect, không có trạng thái nào để bị làm mất hiệu lực. Đây chính là cách năm skill chung ở §8f được phát hành: được biên dịch thẳng vào binary thông qua make_builtin_skills_source(), không bao giờ là các file rời rạc mà một deployment có thể vô tình bỏ sót hay di chuyển.",
+        "Được khởi tạo với một origin_id và, hoặc là một std::vector<SkillSourceResult> mà caller đã tự xây dựng sẵn (thường là qua parse_skill_md áp lên một string literal — đúng như cách builtin_skills.hpp làm), hoặc thẳng một result<std::vector<SkillSourceResult>> — dành cho caller mà việc phân tích lúc khởi tạo của chính nó có thể thất bại, và cần thất bại đó sống sót nguyên vẹn tới load_skills(). Dù theo cách nào, load_skills() cũng trả về một bản sao chính xác những gì nó được trao, ở mỗi lần gọi — rẻ, không có side-effect, không có trạng thái nào để bị làm mất hiệu lực. Đây chính là cách năm skill chung ở §8f được phát hành: được biên dịch thẳng vào binary thông qua make_builtin_skills_source(), hàm này thực sự khởi tạo một đối tượng như vậy, không bao giờ là các file rời rạc mà một deployment có thể vô tình bỏ sót hay di chuyển.",
       cite: "include/agentengine/core/skill_source.hpp:75",
       href: gh("include/agentengine/core/skill_source.hpp"),
     },
@@ -1716,16 +1732,23 @@ public:
     InlineSkillSource(std::string origin_id, std::vector<SkillSourceResult> skills)
         : origin_id_(std::move(origin_id)), skills_(std::move(skills)) {}
 
+    // For a caller whose own construction-time parsing can itself fail (builtin_skills.hpp's
+    // five generic skills, extract_pdf_text.hpp's extracting-document-text skill) -- the failure
+    // is stored as-is and comes back out of load_skills() unchanged, every call.
+    InlineSkillSource(std::string origin_id, result<std::vector<SkillSourceResult>> skills)
+        : origin_id_(std::move(origin_id)), skills_(std::move(skills)) {}
+
     [[nodiscard]] std::string_view origin_id() const noexcept { return origin_id_; }
     [[nodiscard]] result<std::vector<SkillSourceResult>> load_skills() const { return skills_; }
 
 private:
     std::string origin_id_;
-    std::vector<SkillSourceResult> skills_;
+    result<std::vector<SkillSourceResult>> skills_;
 };
 static_assert(SkillSource<InlineSkillSource>);
-// That's the entire implementation -- no disk I/O, no caching logic, no invalidation to get wrong.
-// load_skills() hands back a COPY of exactly what the constructor was given, every single call.`;
+// That's the entire implementation -- no disk I/O, no parsing logic, no invalidation to get wrong.
+// Either constructor just stores what it's given; load_skills() hands back a COPY of exactly
+// that, every single call.`;
 
 export const inlineSkillSourceExampleSnippet = `// Build one skill entirely in memory, from a string literal -- no SKILL.md file on disk anywhere.
 // Same pattern builtin_skills.hpp uses to ship this engine's own five generic skills.
@@ -3233,3 +3256,171 @@ struct SandboxExec {
 // ArtifactProduced/ModelDelta/RunCanceled have no real producer inside AgentSession today" -- the
 // turn loop makes one synchronous chat_client_->chat() call and never reaches the tool pipeline
 // (let alone a sandbox exec) at all yet.`;
+
+// ---- First-party tools & skills catalog (builtin-tools.html) ---------------------------------
+// Distinct from tool.html (the abstract Tool<> conformance mechanism, 006) and skill.html (the
+// abstract SKILL.md/SkillSource mechanism, 009 §8): this page documents the CONCRETE, shipped
+// catalog -- 009 §7's generic tool catalog and 009 §8f's generic skills -- with real field-by-
+// field detail and one worked example, not the mechanism those tools/skills happen to use.
+
+export const builtinToolEntries: Record<Lang, ApiEntry[]> = {
+  en: [
+    {
+      id: "tool-read-content",
+      status: "real",
+      tag: "read_content",
+      title: "ReadContent — the first shipped catalog candidate",
+      body:
+        "Args: url?: string, path?: string -- exactly one must be set, invoke() rejects both and neither with read_content.ambiguous_source. Reply: preview: string, truncated: bool, total_bytes: uint64, media_type: string, blob?: BlobRef. Capabilities<> is declared EMPTY on the tool type itself -- a per-call url/path target can't be fixed statically (006 §1), so invoke() checks a real, dynamic capability instead: ctx.capabilities->find_net_out(...) for a url source (via the real sandbox::HostEgressProxy egress mediation, ADR-011), or ->find_fs_read(...) for a path source (this session's own sandbox_fs mount). Content above the run's ctx.tool_result_byte_threshold is truncated into preview and promoted to blob (006 §7) rather than inlined whole.",
+      cite: "include/agentengine/tools/read_content.hpp:208",
+      href: gh("include/agentengine/tools/read_content.hpp"),
+    },
+    {
+      id: "tool-extract-pdf-text",
+      status: "real",
+      tag: "extract_pdf_text",
+      title: "ExtractPdfText — PDFium-backed, sandboxed per call",
+      body:
+        "Args: url?: string, path?: string (same xor contract as read_content). Reply: preview: string, truncated: bool, total_bytes: uint64, total_page_count: uint32, pages_processed: uint32, truncated_pages: bool, blob?: BlobRef. total_page_count is the document's real page count (cheap to read); pages_processed is how many pages actually got extracted before a resource cap stopped the run -- truncated_pages is true when they differ. Runs PDFium (BSD-3-Clause, ADR-106's substitution for GPL poppler / AGPL mupdf) inside a one-shot NativeJailBackend/LinuxNativeJailBackend worker process (agentengine_pdf_worker, src/backends/native_jail/pdf_worker_main.cpp) per call -- never in-process. Only exists in a build configured with -DAGENTENGINE_WITH_PDF=ON; see Status below.",
+      cite: "include/agentengine/tools/extract_pdf_text.hpp:386",
+      href: gh("include/agentengine/tools/extract_pdf_text.hpp"),
+    },
+    {
+      id: "tool-extract-pdf-toc",
+      status: "real",
+      tag: "extract_pdf_toc",
+      title: "ExtractPdfToc — the bookmark/outline structure",
+      body:
+        "Args: url?: string, path?: string. Reply: entries: TocEntry[] (each: depth: uint32 0-based nesting, page_index?: uint32, title: string), entries_processed: uint32, truncated: bool. Cheaper than extracting every page's text just to locate one section -- page_index composes directly with extract_pdf_text once the right page is known. Same PDFium worker, same AGENTENGINE_WITH_PDF gate as extract_pdf_text.",
+      cite: "include/agentengine/tools/extract_pdf_toc.hpp:135",
+      href: gh("include/agentengine/tools/extract_pdf_toc.hpp"),
+    },
+    {
+      id: "tool-extract-pdf-images",
+      status: "real",
+      tag: "extract_pdf_images",
+      title: "ExtractPdfImages — embedded-image METADATA only, never the pixels",
+      body:
+        "Args: url?: string, path?: string. Reply: images: ImageEntry[] (each: page_index, width, height, bits_per_pixel, all uint32), images_processed: uint32, truncated: bool. A deliberate, disclosed scope limit, not a bug: there is currently no first-party tool that returns an embedded image's actual bytes -- the sandboxed worker's stdout channel is small and self-limited, and real image bytes (up to several MB) would either truncate garbage through it or block waiting on a reader that only drains after the process exits.",
+      cite: "include/agentengine/tools/extract_pdf_images.hpp:150",
+      href: gh("include/agentengine/tools/extract_pdf_images.hpp"),
+    },
+    {
+      id: "tool-extract-pdf-metadata",
+      status: "real",
+      tag: "extract_pdf_metadata",
+      title: "ExtractPdfMetadata — the document information dictionary, cheaply",
+      body:
+        "Args: url?: string, path?: string. Reply: title/author/subject/keywords/creator/producer/creation_date/mod_date, each std::optional<string> (unset, not an empty string, when the PDF doesn't set it), plus total_page_count: uint32. No text or outline extraction at all -- the cheapest of the four PDF tools to call, useful for deciding whether a document is even the right one before spending a call on its content.",
+      cite: "include/agentengine/tools/extract_pdf_metadata.hpp:147",
+      href: gh("include/agentengine/tools/extract_pdf_metadata.hpp"),
+    },
+  ],
+  vi: [
+    {
+      id: "tool-read-content",
+      status: "real",
+      tag: "read_content",
+      title: "ReadContent — ứng viên đầu tiên của danh mục được phát hành",
+      body:
+        "Args: url?: string, path?: string -- phải đặt đúng một trong hai, invoke() từ chối cả hai lẫn không cái nào với read_content.ambiguous_source. Reply: preview: string, truncated: bool, total_bytes: uint64, media_type: string, blob?: BlobRef. Capabilities<> được khai báo RỖNG ngay trên chính kiểu tool -- một target url/path theo từng lệnh gọi không thể cố định tĩnh được (006 §1), nên invoke() kiểm tra một capability động, có thật thay vào đó: ctx.capabilities->find_net_out(...) cho nguồn url (qua cơ chế trung gian egress thật sandbox::HostEgressProxy, ADR-011), hoặc ->find_fs_read(...) cho nguồn path (mount sandbox_fs riêng của session này). Nội dung vượt quá ctx.tool_result_byte_threshold của lượt chạy bị cắt vào preview và được nâng cấp thành blob (006 §7) thay vì nhúng nguyên vẹn.",
+      cite: "include/agentengine/tools/read_content.hpp:208",
+      href: gh("include/agentengine/tools/read_content.hpp"),
+    },
+    {
+      id: "tool-extract-pdf-text",
+      status: "real",
+      tag: "extract_pdf_text",
+      title: "ExtractPdfText — chạy trên PDFium, sandbox hóa theo từng lệnh gọi",
+      body:
+        "Args: url?: string, path?: string (cùng ràng buộc xor như read_content). Reply: preview: string, truncated: bool, total_bytes: uint64, total_page_count: uint32, pages_processed: uint32, truncated_pages: bool, blob?: BlobRef. total_page_count là số trang thật của tài liệu (đọc được với chi phí rẻ); pages_processed là số trang thực sự đã trích xuất trước khi một giới hạn tài nguyên dừng lượt chạy -- truncated_pages đúng khi hai giá trị này khác nhau. Chạy PDFium (BSD-3-Clause, thay thế theo ADR-106 cho poppler GPL / mupdf AGPL) bên trong một worker process dùng-một-lần NativeJailBackend/LinuxNativeJailBackend (agentengine_pdf_worker, src/backends/native_jail/pdf_worker_main.cpp) theo từng lệnh gọi -- không bao giờ chạy trong tiến trình chính. Chỉ tồn tại trong một bản build được cấu hình với -DAGENTENGINE_WITH_PDF=ON; xem phần Trạng thái bên dưới.",
+      cite: "include/agentengine/tools/extract_pdf_text.hpp:386",
+      href: gh("include/agentengine/tools/extract_pdf_text.hpp"),
+    },
+    {
+      id: "tool-extract-pdf-toc",
+      status: "real",
+      tag: "extract_pdf_toc",
+      title: "ExtractPdfToc — cấu trúc bookmark/outline",
+      body:
+        "Args: url?: string, path?: string. Reply: entries: TocEntry[] (mỗi phần tử: depth: uint32 độ sâu lồng nhau tính từ 0, page_index?: uint32, title: string), entries_processed: uint32, truncated: bool. Rẻ hơn việc trích xuất text của mọi trang chỉ để tìm một mục -- page_index kết hợp trực tiếp được với extract_pdf_text một khi đã biết đúng trang. Dùng chung worker PDFium, cùng điều kiện gate AGENTENGINE_WITH_PDF như extract_pdf_text.",
+      cite: "include/agentengine/tools/extract_pdf_toc.hpp:135",
+      href: gh("include/agentengine/tools/extract_pdf_toc.hpp"),
+    },
+    {
+      id: "tool-extract-pdf-images",
+      status: "real",
+      tag: "extract_pdf_images",
+      title: "ExtractPdfImages — chỉ METADATA của ảnh, không bao giờ có pixel",
+      body:
+        "Args: url?: string, path?: string. Reply: images: ImageEntry[] (mỗi phần tử: page_index, width, height, bits_per_pixel, đều là uint32), images_processed: uint32, truncated: bool. Một giới hạn phạm vi cố ý, được công bố rõ, không phải lỗi: hiện không có tool chính chủ nào trả về byte ảnh thật của một ảnh nhúng -- kênh stdout của worker sandbox hóa nhỏ và tự giới hạn, còn byte ảnh thật (có thể tới vài MB) sẽ hoặc bị cắt thành rác khi đi qua kênh đó, hoặc làm worker bị chặn chờ một reader chỉ rút dữ liệu sau khi tiến trình đã thoát.",
+      cite: "include/agentengine/tools/extract_pdf_images.hpp:150",
+      href: gh("include/agentengine/tools/extract_pdf_images.hpp"),
+    },
+    {
+      id: "tool-extract-pdf-metadata",
+      status: "real",
+      tag: "extract_pdf_metadata",
+      title: "ExtractPdfMetadata — từ điển thông tin tài liệu, với chi phí rẻ",
+      body:
+        "Args: url?: string, path?: string. Reply: title/author/subject/keywords/creator/producer/creation_date/mod_date, mỗi trường là std::optional<string> (không đặt, chứ không phải chuỗi rỗng, khi PDF không đặt nó), cộng thêm total_page_count: uint32. Hoàn toàn không trích xuất text hay outline -- rẻ nhất trong bốn tool PDF, hữu ích để quyết định một tài liệu có đúng là cái cần tìm hay không trước khi tốn một lệnh gọi vào nội dung của nó.",
+      cite: "include/agentengine/tools/extract_pdf_metadata.hpp:147",
+      href: gh("include/agentengine/tools/extract_pdf_metadata.hpp"),
+    },
+  ],
+};
+
+export interface CatalogSkill {
+  name: string;
+  teaches: string;
+  gate: string;
+}
+
+export const firstPartySkillsCatalog: Record<Lang, CatalogSkill[]> = {
+  en: [
+    { name: "using-the-code-interpreter", teaches: "Idioms for execute_code (010 §1); when one call suffices vs. when CodeAct's multi-step form pays for itself.", gate: "always" },
+    { name: "using-codeact", teaches: "Worked agent.* examples (026 §5) — filtering large results in-process instead of round-tripping every row through the model.", gate: "always" },
+    { name: "reading-large-content", teaches: "When to use the preview-then-page pattern instead of asking for a whole file (006 §7's token-budget rule).", gate: "always" },
+    { name: "producing-structured-output", teaches: "Shaping a final response against a declared schema (003 §5) reliably.", gate: "always" },
+    { name: "shell-pipelines", teaches: "ShellRunner's grammar (010 §2) — composing pipes/redirects within its documented subset.", gate: "always" },
+    { name: "extracting-document-text", teaches: "When and how to use extract_pdf_text/toc/images/metadata instead of reading a PDF's raw bytes and parsing them yourself — decoded text/outline/metadata, never a file to parse in the code interpreter.", gate: "AGENTENGINE_WITH_PDF build only" },
+  ],
+  vi: [
+    { name: "using-the-code-interpreter", teaches: "Các idiom cho execute_code (010 §1); khi nào một lệnh gọi là đủ so với khi nào dạng nhiều bước của CodeAct thực sự đáng giá.", gate: "luôn có" },
+    { name: "using-codeact", teaches: "Các ví dụ thực hành agent.* (026 §5) — lọc kết quả lớn ngay trong tiến trình thay vì phải chuyển từng dòng qua lại với model.", gate: "luôn có" },
+    { name: "reading-large-content", teaches: "Khi nào nên dùng mẫu xem-trước-rồi-phân-trang (preview-then-page) thay vì yêu cầu cả một file (theo quy tắc ngân sách token của 006 §7).", gate: "luôn có" },
+    { name: "producing-structured-output", teaches: "Định hình một câu trả lời cuối cùng theo một schema đã khai báo (003 §5) một cách đáng tin cậy.", gate: "luôn có" },
+    { name: "shell-pipelines", teaches: "Cú pháp của ShellRunner (010 §2) — kết hợp pipe/redirect trong phạm vi tập con đã được tài liệu hóa.", gate: "luôn có" },
+    { name: "extracting-document-text", teaches: "Khi nào và cách dùng extract_pdf_text/toc/images/metadata thay vì tự đọc byte thô của một PDF rồi tự phân tích — text/outline/metadata đã giải mã sẵn, không bao giờ là một file để tự parse trong code interpreter.", gate: "chỉ trong bản build AGENTENGINE_WITH_PDF" },
+  ],
+};
+
+export const firstPartyCatalogExampleSnippet = `// The tools this agent may call -- read_content plus the whole PDF-extraction set.
+// Capabilities<> is empty on every one of these BY DESIGN (006 §1 can't fix a per-call url/path
+// target statically) -- each tool checks its own dynamic NetOut/FsRead grant inside invoke()
+// instead; see the read_content entry above.
+struct DocAgent : Agent<DocAgent, ChatClientId<"anthropic:claude-opus-4">,
+                         Tools<ReadContent, ExtractPdfText, ExtractPdfToc,
+                               ExtractPdfImages, ExtractPdfMetadata>> {
+    static constexpr std::string_view name = "doc-agent";
+    static constexpr std::string_view instructions =
+        "Read documents and extract PDF content on request.";
+};
+auto meta = register_agent<DocAgent>();   // 002's real 8-check compiler -- see the Agent page
+
+// The skill sources this session mounts: §8f's five generic skills, plus the PDF-tool catalog's
+// own extracting-document-text skill -- both InlineSkillSource-backed
+// (make_builtin_skills_source() / make_extracting_document_text_skill_source(), commit b23eaba).
+// The PDF tools/skill above only exist at all in a target built with -DAGENTENGINE_WITH_PDF=ON --
+// a CMake-level inclusion choice (extract_pdf_text.hpp/its .cpp worker aren't part of a build that
+// leaves the option off), not a runtime #ifdef inside one translation unit. This snippet assumes
+// such a build.
+std::vector<SkillSourceDescriptor> sources = {
+    make_builtin_skills_source(),
+    make_extracting_document_text_skill_source(),
+};
+SkillsProvider skills(std::move(sources));
+
+// Wiring \`skills\` into the ONE provider slot AgentSession<ChatClientT, StateT, ProvidersT>
+// exposes is exactly ComposedContextProvider<HistoryProvider<...>, SkillsProvider> -- see the
+// AgentSession & ChatClient page for the full construction and turn-loop walkthrough.`;

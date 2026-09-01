@@ -2055,6 +2055,19 @@ add_executable(test_tool_exclusivity_group test_tool_exclusivity_group.cpp)
 target_link_libraries(test_tool_exclusivity_group PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_tool_exclusivity_group COMMAND test_tool_exclusivity_group)
 
+# ---- ADR-160: 006 §8 G4's parallel-batch scheduler -- partition_batch() in isolation, no I/O, no --
+# AgentSession. Header-only (core/tool_pipeline.hpp).
+add_executable(test_tool_batch_partition test_tool_batch_partition.cpp)
+target_link_libraries(test_tool_batch_partition PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_tool_batch_partition COMMAND test_tool_batch_partition)
+
+# ---- ADR-160: real, executed proof that AgentSession::dispatch_tool_calls() genuinely runs an -----
+# eligible batch concurrently end to end (rendezvous, ExclusivityGroup mutual exclusion, and append-
+# order determinism under deliberately out-of-order physical completion). Header-only.
+add_executable(test_tool_batch_parallel_dispatch test_tool_batch_parallel_dispatch.cpp)
+target_link_libraries(test_tool_batch_parallel_dispatch PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_tool_batch_parallel_dispatch COMMAND test_tool_batch_parallel_dispatch)
+
 # ---- Tool-result-to-BlobRef promotion (006 §7 / 028 §2), first-party-tools Track A --------------
 # Header-only (core/tool_pipeline.hpp's normalize_success, shared by invoke_tool/background_task),
 # core-tier -- links only agentengine::core.

@@ -18,6 +18,7 @@ export default defineConfig({
         apiTool: fileURLToPath(new URL('./api/tool.html', import.meta.url)),
         apiCodeact: fileURLToPath(new URL('./api/codeact.html', import.meta.url)),
         apiSkill: fileURLToPath(new URL('./api/skill.html', import.meta.url)),
+        apiBuiltinTools: fileURLToPath(new URL('./api/builtin-tools.html', import.meta.url)),
         apiTrustSandbox: fileURLToPath(new URL('./api/trust-sandbox.html', import.meta.url)),
         apiWorktree: fileURLToPath(new URL('./api/worktree.html', import.meta.url)),
         apiRuntime: fileURLToPath(new URL('./api/runtime.html', import.meta.url)),
