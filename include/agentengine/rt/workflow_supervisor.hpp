@@ -198,6 +198,15 @@ struct ExecutorOutcome {
     // already wired -- does not). Default `false`; appended as a trailing field so every existing
     // `ExecutorOutcome{message}`/`{message, routes}` call site is unaffected.
     bool stalled = false;
+    // GitHub issue #35 follow-up (closing ADR-162's own named residual: WorkflowChatClient could
+    // never report honest token Usage because nothing in this engine tracked it). Real, honest, never
+    // fabricated -- an ordinary `function`-kind body leaves this at its default zero `Usage{}`
+    // (structurally correct: it made no metered model call through any tracked path). Populated ONLY
+    // by `agent_session_as_executor_body()` (rt/agent_workflow_executor.hpp), from the wrapped
+    // AgentSession's own real `run_usage()` -- see that file's own updated comment. Appended trailing,
+    // same field-ordering discipline `stalled` above already established, so every existing
+    // `ExecutorOutcome{message}`/`{message, routes}` call site keeps compiling unchanged.
+    agentengine::Usage usage{};
 
     ExecutorOutcome() = default;
     ExecutorOutcome(agentengine::Message m) : payload(std::move(m)) {}  // NOLINT(google-explicit-constructor)
@@ -252,6 +261,15 @@ struct ExecuteReply {
     // distinction is what keeps this safe) telling execute()'s five per-index loops to skip this
     // entry entirely rather than treat it as a real reply.
     std::optional<std::string> pending_sub_workflow_inner_interaction_id;
+    // GitHub issue #35 follow-up -- threaded from `ExecutorOutcome::usage` the same way `stalled`
+    // already is. NOT populated for a suspended sub_workflow delivery (matches
+    // `pending_sub_workflow_inner_interaction_id`'s own "every other field above is unused/default"
+    // disclosure immediately above) -- a real, named residual: usage incurred by a nested sub_workflow
+    // BEFORE it suspends is not yet bubbled into the outer run's total until that nested run eventually
+    // resolves (via `resume_workflow()`'s own `pending_sub_workflows_` branch) and its own OpenPort
+    // response completes normally, at which point it is captured retroactively as part of that flow --
+    // see `WorkflowSupervisor::usage()`'s own comment for the full disclosure.
+    agentengine::Usage usage{};
 };
 
 [[nodiscard]] inline agentengine::Message failure_marker(std::string const& executor_id,
@@ -819,6 +837,53 @@ public:
         return out;
     }
 
+    // GitHub issue #35 (docs/planning/workflow-as-chatclient-adapter-design-draft.md §5): `open_
+    // interactions()`'s own bare `Interaction` (interaction_id/run_id/reason/timestamps only) carries
+    // no ask PAYLOAD -- a `WorkflowChatClient`-shaped caller needs to know WHAT is being asked, not just
+    // that something is. Narrowed to `OpenPort` only (NOT a uniform superset of open_interactions()):
+    // an `OpenPort`'s own ask genuinely lives in `p.response` pre-resolution (see `port_deliveries`'s
+    // own fold below, `ports_.push_back(OpenPort{interaction, d.executor_index, d.payload, ...})` --
+    // `d.payload` IS the ask, stored in the SAME field slot the real answer later overwrites), but a
+    // `PendingSubWorkflow` entry (ADR-157's nested sub-workflow mechanism) carries no ask `Message` at
+    // all -- the real ask lives inside the wrapped nested `WorkflowSupervisor`, reachable only by a
+    // provably-terminating recursive walk this accessor does not attempt (real, unbuilt follow-on work).
+    // A `PendingSubWorkflow` entry therefore gets an honestly-EMPTY `Message{}` placeholder here, never
+    // a fabricated one -- narrower than a first pass of this design claimed, corrected before
+    // implementation. `open_interactions()` itself is unchanged; every existing caller keeps compiling.
+    struct InteractionAsk {  // ae-naming-lint: allow InteractionAsk — GitHub issue #35 names this concept normatively; 027 has not been updated to list it
+        agentengine::Interaction interaction;
+        agentengine::Message     ask;
+    };
+    [[nodiscard]] std::vector<InteractionAsk> open_interaction_asks() const {
+        std::vector<InteractionAsk> out;
+        for (auto const& p : ports_) {
+            if (!p.resolved) out.push_back(InteractionAsk{p.interaction, p.response});
+        }
+        for (auto const& [id, pending] : pending_sub_workflows_) {
+            (void)id;
+            out.push_back(InteractionAsk{pending.interaction, agentengine::Message{}});
+        }
+        return out;
+    }
+
+    // GitHub issue #35 follow-up (closing WorkflowChatClient/ADR-162's own named blocker: nothing in
+    // this engine tracked real token usage, so that adapter could never report anything honest). Real,
+    // cumulative, LIVE (a caller can read it mid-run, the same "read directly off the supervisor
+    // instance" shape `open_interactions()` already establishes) -- summed from every `agent`-kind
+    // executor's own real `AgentSession::run_usage()` (via `agent_session_as_executor_body()`), plus
+    // any nested `sub_workflow`'s own recursively-summed total once it resolves (`OpenPort::usage`'s
+    // own comment has the full nested-suspend disclosure). Reset only by a fresh `run_workflow()` call,
+    // NOT by `resume_workflow()`/`continue_workflow()` -- the same "accumulates across a suspend/resume
+    // lifecycle" contract `rounds_` itself already has.
+    //
+    // NAMED, DISCLOSED RESIDUAL, not fixed here: an ordinary `function`-kind executor's `ExecutorBody`
+    // is arbitrary C++, free to hold and call a real `ChatClient` directly without ever reporting
+    // through this tracked path -- this accessor answers "how much did every TRACKED (agent-kind, or a
+    // resolved nested sub_workflow) dispatch cost," not "prove this run made zero untracked calls." A
+    // caller relying on this for a hard budget ceiling should know it bounds the common, supported
+    // path, not every conceivable graph shape.
+    [[nodiscard]] agentengine::Usage usage() const noexcept { return total_usage_; }
+
     // 014 §5's checkpoint-at-superstep-boundary hook -- see file banner's "Checkpoint hook" paragraph.
     // Reproduced verbatim from the original: a caller-injected callback (I2), never an ambient Store,
     // fired with the round just completed and a full `to_record()` snapshot taken at exactly that
@@ -883,6 +948,7 @@ public:
         ports_.clear();
         pending_sub_workflows_.clear();  // ADR-157 -- a fresh run carries no stale nested interactions
         rounds_ = 0;
+        total_usage_ = agentengine::Usage{};  // GitHub issue #35 follow-up -- see usage()'s own comment
         state_.pending.push_back(Delivery{index_of(graph_.start), request.input});
 
         push_structural_event(workflow_event_kind::workflow_run_started);
@@ -962,8 +1028,15 @@ public:
             agentengine::Message const reply_payload = inner_result.status == workflow_status::completed
                 ? inner_result.output
                 : failure_marker(graph_.executors[pending.executor_index].id, agentengine::failure_class::fatal);
-            ports_.push_back(OpenPort{pending.interaction, pending.executor_index, reply_payload, {},
-                                       /*resolved=*/true});
+            // GitHub issue #35 follow-up: `inner->usage()` is the nested supervisor's own CUMULATIVE
+            // total across its whole suspend/resume lifecycle (never reset by resume_workflow(), only
+            // by a fresh run_workflow()) -- reading it HERE, at final resolution, correctly captures
+            // everything the nested run ever cost, including rounds that ran before it first
+            // suspended. See OpenPort::usage's own comment.
+            OpenPort resolved_port{pending.interaction, pending.executor_index, reply_payload, {},
+                                    /*resolved=*/true};
+            resolved_port.usage = inner->usage();
+            ports_.push_back(std::move(resolved_port));
             push_structural_event(
                 agentengine::workflow::workflow_event_kind::request_port_resolved,
                 agentengine::workflow::workflow_event_payload::PortRef{
@@ -1128,6 +1201,15 @@ private:
         agentengine::Message     response;
         std::vector<std::string> routes;
         bool                     resolved = false;
+        // GitHub issue #35 follow-up: real usage a nested sub_workflow's own inner run incurred, set
+        // ONLY when this OpenPort is the RESOLVED result of a nested `pending_sub_workflows_`
+        // completion (resume_workflow()'s own branch) -- an ordinary request_port's own ask/answer
+        // never involves a metered model call, so it stays at its honest default zero `Usage{}`. This
+        // is what closes the residual `ExecuteReply::usage`'s own comment names: a nested sub_workflow
+        // that suspends mid-run has its usage bubbled into the OUTER run's total RETROACTIVELY, at the
+        // point this OpenPort is folded (the same port-prologue loop `execute()` already runs), not
+        // lost.
+        agentengine::Usage       usage{};
     };
 
     // ADR-157 (issues #33/#38) -- see docs/planning/sub-workflow-nested-request-port-design-draft.md
@@ -1200,8 +1282,17 @@ private:
             *out = ExecuteReply{agentengine::Message{}, {}, false, outcome.error().klass};
             co_return;
         }
-        *out = ExecuteReply{std::move(outcome->payload), std::move(outcome->routes), true,
-                             agentengine::failure_class::fatal, outcome->stalled};
+        ExecuteReply reply{std::move(outcome->payload), std::move(outcome->routes), true,
+                           agentengine::failure_class::fatal, outcome->stalled};
+        // GitHub issue #35 follow-up (ADR-163) -- the one real link this class's own positional
+        // ExecuteReply{...} construction above was silently dropping: ExecutorOutcome::usage never
+        // survived into the ExecuteReply the per-round fold loop later accumulates from, so
+        // WorkflowSupervisor::usage() stayed zero even for a real agent-kind dispatch with real,
+        // scripted cost. Set post-construction (not threaded into the positional list above) since
+        // `usage` is ExecuteReply's own trailing field, appended after
+        // `pending_sub_workflow_inner_interaction_id` -- see that field's own comment.
+        reply.usage = outcome->usage;
+        *out = std::move(reply);
         co_return;
     }
 
@@ -1295,7 +1386,15 @@ private:
             r = drive(inner->run_workflow(RunWorkflow{payload}));
         }
         if (r.status == workflow_status::completed) {
-            *out = ExecuteReply{r.output, {}, true, agentengine::failure_class::fatal};
+            ExecuteReply reply{r.output, {}, true, agentengine::failure_class::fatal};
+            // GitHub issue #35 follow-up (ADR-163): a sub_workflow that completes SYNCHRONOUSLY within
+            // one round (never suspends) -- its own inner->usage() is read here and bubbled straight
+            // into the outer run's total via the ordinary replies[] fold, the same path an agent-kind
+            // node's own usage already takes. The SUSPENDED branch below intentionally does NOT do this
+            // -- see OpenPort::usage's own comment for why that case is captured retroactively instead,
+            // at final resolution.
+            reply.usage = inner->usage();
+            *out = std::move(reply);
             co_return;
         }
         if (r.status == workflow_status::suspended) {
@@ -1322,6 +1421,7 @@ private:
                     agentengine::workflow::workflow_event_payload::PortRef{
                         graph_.executors[p.executor_index].id, p.interaction.interaction_id});
                 ExecuteReply const reply{p.response, p.routes, true, agentengine::failure_class::fatal};
+                accumulate_usage(p.usage);  // GitHub issue #35 follow-up -- see OpenPort::usage's comment
                 record_partial(state_.partial, p.executor_index, rounds_ - 1, p.response);
                 if (is_output_selected(p.executor_index)) state_.selected_output = p.response;
                 route_result const rr = route_from(p.executor_index, reply, next);
@@ -1625,6 +1725,7 @@ private:
                     agentengine::workflow::workflow_event_payload::ExecutorResult{
                         graph_.executors[idx].id, replies[i].ok});
                 if (!replies[i].ok) continue;
+                accumulate_usage(replies[i].usage);  // GitHub issue #35 follow-up
                 record_partial(state_.partial, idx, rounds_ - 1, replies[i].payload);
                 if (is_output_selected(idx)) {
                     state_.selected_output = replies[i].payload;
@@ -2000,6 +2101,18 @@ private:
         partial.push_back(ExecutorOutput{id, round, payload});
     }
 
+    // GitHub issue #35 follow-up -- the one place `total_usage_` is ever mutated. `agentengine::Usage`
+    // (core/content.hpp) is a plain aggregate with no `operator+=` of its own, so this is
+    // field-by-field, over every real field that struct declares.
+    void accumulate_usage(agentengine::Usage const& delta) noexcept {
+        total_usage_.input_tokens += delta.input_tokens;
+        total_usage_.output_tokens += delta.output_tokens;
+        total_usage_.cached_input_tokens += delta.cached_input_tokens;
+        total_usage_.reasoning_tokens += delta.reasoning_tokens;
+        total_usage_.cost_estimate += delta.cost_estimate;
+        total_usage_.cache_write_tokens += delta.cache_write_tokens;
+    }
+
     using EdgeFailurePolicy = agentengine::workflow::EdgeFailurePolicy;
 
     [[nodiscard]] EdgeFailurePolicy policy_for(std::size_t executor_index) const {
@@ -2087,6 +2200,9 @@ private:
     std::uint32_t  rounds_      = 0;
     std::uint64_t  run_counter_ = 0;
     std::string    run_id_;
+    // GitHub issue #35 follow-up -- see usage()'s own comment for the full contract. Same
+    // reset-only-by-run_workflow() lifetime as rounds_ immediately above.
+    agentengine::Usage total_usage_;
     // ADR-149 (issue #28 item 2). `designated_stall_reporter_` is host configuration set fresh at
     // `initialize()` -- like `bodies_`/`contexts_`, deliberately NOT part of `RunStateRecord`
     // (a resumed run's caller re-supplies it, same "caller supplies fresh at initialize()"

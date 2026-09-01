@@ -215,3 +215,13 @@ target_link_libraries(agentengine_example_27_sub_workflow_nested_request_port PR
   agentengine::core agentengine_warnings)
 add_test(NAME example_27_sub_workflow_nested_request_port
   COMMAND agentengine_example_27_sub_workflow_nested_request_port)
+
+# 28: GitHub issue #35 -- WorkflowChatClient (rt/workflow_as_chat_client.hpp), a whole Workflow
+# containing a request_port node, driven through two chat_stream() calls (open, then answer) exactly
+# like a real ChatClient caller would. Fully offline, no special build flags.
+add_executable(agentengine_example_28_workflow_as_chat_client
+  28_workflow_as_chat_client.cpp)
+target_link_libraries(agentengine_example_28_workflow_as_chat_client PRIVATE
+  agentengine::core agentengine_warnings)
+add_test(NAME example_28_workflow_as_chat_client
+  COMMAND agentengine_example_28_workflow_as_chat_client)

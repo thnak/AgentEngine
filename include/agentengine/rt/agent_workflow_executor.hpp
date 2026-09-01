@@ -118,7 +118,18 @@ template <class ChatClientT, class StateT, class HistoryProviderT>
             session.set_run_event_tap({});
 
             if (!driven) return std::unexpected(driven.error());
-            return ExecutorOutcome{driven->message};
+            // GitHub issue #35 follow-up (ADR-163): `session.run_usage()` -- NOT `driven->usage` --
+            // is the real per-call total. `AgentResponse::usage` (`driven->usage`) only ever reflects
+            // the FINAL round's own model call (`agent_session.hpp:2357`'s own construction site,
+            // `AgentResponse{response->message, response->usage, ...}` inside the "no more tool
+            // calls" branch) -- for a multi-round tool-calling turn that under-counts every earlier
+            // round's real cost. `run_usage()` is reset to zero at the top of EVERY `start_run()`
+            // call (`agent_session.hpp`'s own `run_counter_ += 1; run_tokens_consumed_ = 0;` site,
+            // mirrored for `run_usage_`), so reading it HERE, right after this one call, is already
+            // exactly this call's own total with no delta needed.
+            ExecutorOutcome outcome{driven->message};
+            outcome.usage = session.run_usage();
+            return outcome;
         });
 }
 

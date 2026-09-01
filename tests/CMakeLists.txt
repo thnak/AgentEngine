@@ -1714,6 +1714,13 @@ add_executable(test_rt_workflow_as_executor test_rt_workflow_as_executor.cpp)
 target_link_libraries(test_rt_workflow_as_executor PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_workflow_as_executor COMMAND test_rt_workflow_as_executor)
 
+# ---- GitHub issue #35: WorkflowChatClient (rt/workflow_as_chat_client.hpp), a Workflow-as-ChatClient
+# adapter -- the OTHER direction from workflow_as_executor_body() above. Design draft, ten independent
+# red-team rounds: docs/planning/workflow-as-chatclient-adapter-design-draft.md.
+add_executable(test_rt_workflow_as_chat_client test_rt_workflow_as_chat_client.cpp)
+target_link_libraries(test_rt_workflow_as_chat_client PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_workflow_as_chat_client COMMAND test_rt_workflow_as_chat_client)
+
 # ---- ADR-153 (issue #29): WorkflowSupervisor's fine-grained, genuinely-live per-executor event
 # stream. Design draft: docs/planning/workflow-event-stream-design-draft.md.
 add_executable(test_rt_workflow_event_stream test_rt_workflow_event_stream.cpp)

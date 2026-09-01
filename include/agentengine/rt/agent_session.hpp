@@ -818,6 +818,9 @@ public:
     [[nodiscard]] std::string const& last_run_id() const noexcept { return last_run_id_; }
     [[nodiscard]] std::uint64_t last_turn_index() const noexcept { return effect_context_.turn_index; }
     [[nodiscard]] std::uint64_t run_tokens_consumed() const noexcept { return run_tokens_consumed_; }
+    // ADR-163: the full-`Usage` sibling of the accessor above -- see `run_usage_`'s own comment for
+    // why this is a separate, parallel field rather than a re-derivation of `run_tokens_consumed_`.
+    [[nodiscard]] agentengine::Usage run_usage() const noexcept { return run_usage_; }
 
     [[nodiscard]] std::vector<Interaction> const& open_interactions() const noexcept {
         return open_interactions_;
@@ -948,6 +951,7 @@ public:
 
         run_counter_ += 1;
         run_tokens_consumed_ = 0;
+        run_usage_ = agentengine::Usage{};
         // ADR-061 §20.3: principal/capabilities are already set by apply_dispatch_authority() above
         // -- setting them again here from session-level state would silently overwrite a correctly-
         // resolved per-request authority, reproducing the exact bug this mechanism exists to close.
@@ -1329,6 +1333,7 @@ public:
         open_interactions_.clear();
         interaction_counter_ = 0;
         run_tokens_consumed_ = 0;
+        run_usage_ = agentengine::Usage{};
         admission_denied_count_ = 0;
         // Same "no run identity of its own" rationale open_interactions_ above already documents --
         // a fresh fork inherits none of the source's (or *this*'s own prior) outstanding background
@@ -1380,6 +1385,7 @@ public:
         pending_hook_decisions_.clear();
         token_budget_ = std::nullopt;
         run_tokens_consumed_ = 0;
+        run_usage_ = agentengine::Usage{};
         admission_denied_count_ = 0;
         max_turns_ = std::nullopt;
         history_provider_ = HistoryProviderT{};
@@ -2309,6 +2315,14 @@ private:
             }
 
             run_tokens_consumed_ += response->usage.input_tokens + response->usage.output_tokens;
+            // ADR-163: accumulated alongside run_tokens_consumed_ above, unconditionally, at the same
+            // point -- see run_usage_'s own comment for why this is a full-fidelity parallel field.
+            run_usage_.input_tokens += response->usage.input_tokens;
+            run_usage_.output_tokens += response->usage.output_tokens;
+            run_usage_.cached_input_tokens += response->usage.cached_input_tokens;
+            run_usage_.reasoning_tokens += response->usage.reasoning_tokens;
+            run_usage_.cost_estimate += response->usage.cost_estimate;
+            run_usage_.cache_write_tokens += response->usage.cache_write_tokens;
             if (token_budget_.has_value() && run_tokens_consumed_ > *token_budget_) {
                 emit_run_event(run_event_kind::run_failed,
                                 run_event_payload::RunFailed{"run.token_budget_exceeded",
@@ -2717,6 +2731,16 @@ private:
     bool                                                  require_authority_ = false;
     std::optional<std::uint64_t>                        token_budget_;
     std::uint64_t                                        run_tokens_consumed_ = 0;
+    // GitHub issue #35 follow-up (ADR-163): the full-fidelity sibling of `run_tokens_consumed_` above
+    // -- that field deliberately collapses `Usage::input_tokens + output_tokens` into one number for
+    // cheap budget comparison (`token_budget_`'s own check), which is exactly right for THAT job but
+    // throws away the split (and `cached_input_tokens`/`reasoning_tokens`/`cost_estimate`/
+    // `cache_write_tokens`) a caller wanting to REPORT real usage onward (rather than merely enforce a
+    // ceiling) needs. Reset at the SAME 3 sites `run_tokens_consumed_` already is (this run's own
+    // start, `fork_from()`, `clear_in_process_state()`), accumulated at the SAME site
+    // (`run_model_call()`'s own round loop) -- never a second, independent tracking path that could
+    // drift from what `run_tokens_consumed_` itself already counts.
+    agentengine::Usage                                    run_usage_{};
     std::optional<std::uint64_t>                         max_turns_;
     ApprovalDecider                                      approval_decider_{};
     // decisions/ADR-070-host-configurable-responsibility-boundary.md. Unset by default -- see
