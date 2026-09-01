@@ -157,6 +157,14 @@ export const apiPages: Record<Lang, ApiPage[]> = {
       status: "real",
     },
     {
+      id: "hitl",
+      label: "Human-in-the-loop",
+      href: `${SITE_BASE}/api/hitl.html`,
+      eyebrow: "One Interaction record, six real surfaces",
+      description: "Every real suspend/resume mechanism in this engine — tool approval, ToolCallHook, agent.ask, request_port, WorkflowChatClient, Magentic plan sign-off — as one map, not six unrelated pages.",
+      status: "real",
+    },
+    {
       id: "protocols",
       label: "Protocol surfaces",
       href: `${SITE_BASE}/api/protocols.html`,
@@ -292,6 +300,14 @@ export const apiPages: Record<Lang, ApiPage[]> = {
       href: `${SITE_BASE}/api/workflow.html`,
       eyebrow: "014 — Workflow and Orchestration",
       description: "Executor, edge (cạnh), và một superstep engine thật — tám mẫu điều phối (orchestration pattern) chỉ là các cấu hình của một đồ thị duy nhất, không phải tám phân hệ riêng biệt.",
+      status: "real",
+    },
+    {
+      id: "hitl",
+      label: "Human-in-the-loop",
+      href: `${SITE_BASE}/api/hitl.html`,
+      eyebrow: "Một bản ghi Interaction, sáu bề mặt thật",
+      description: "Mọi cơ chế suspend/resume thật trong engine này — phê duyệt tool, ToolCallHook, agent.ask, request_port, WorkflowChatClient, Magentic plan sign-off — gộp thành một bản đồ, không phải sáu trang rời rạc.",
       status: "real",
     },
     {

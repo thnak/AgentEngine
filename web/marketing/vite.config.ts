@@ -37,6 +37,7 @@ export default defineConfig({
         apiWorkflowGroupChat: fileURLToPath(new URL('./api/workflow-group-chat.html', import.meta.url)),
         apiWorkflowPlanner: fileURLToPath(new URL('./api/workflow-planner.html', import.meta.url)),
         apiWorkflowReflection: fileURLToPath(new URL('./api/workflow-reflection.html', import.meta.url)),
+        apiHitl: fileURLToPath(new URL('./api/hitl.html', import.meta.url)),
         apiPlugins: fileURLToPath(new URL('./api/plugins.html', import.meta.url)),
         apiProtocols: fileURLToPath(new URL('./api/protocols.html', import.meta.url)),
       },
