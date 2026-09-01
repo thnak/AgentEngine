@@ -243,6 +243,7 @@
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/core/tool_call_hook.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
+#include "agentengine/rt/bounded_call_fanout.hpp"
 #include "agentengine/core/turn_middleware.hpp"
 #include "agentengine/rt/agent_session_trust.hpp"
 #include "agentengine/rt/async_mutex.hpp"
@@ -1197,31 +1198,24 @@ public:
         // resolve_interaction()) before this is ever reached.
         CapabilitySet const& held      = effect_context_.capabilities ? *effect_context_.capabilities : empty_caps;
 
-        std::vector<ToolResult> results;
-        results.reserve(pending_calls.size());
+        std::vector<ToolCallRequest> reqs;
+        reqs.reserve(pending_calls.size());
         for (std::size_t i = 0; i < pending_calls.size(); ++i) {
-            ToolCallRequest const req = tool_call_request_of(pending_calls[i], i);
-            emit_run_event(run_event_kind::tool_call_started,
-                            run_event_payload::ToolCallStarted{pending_calls[i].call_id,
-                                                                pending_calls[i].tool_name});
-            ToolInvocationAudit audit;
-            // ADR-060: bound fresh for THIS call only, reset immediately after regardless of outcome
-            // -- the same per-call bracketing discipline `codeact_preseeded_answers` uses one function
-            // down, applied independently here since that field's own bracket doesn't cover this site.
-            effect_context_.report_progress = [this, call_id = req.call_id](ContentItem item) {
-                detail::force_tainted(item);
-                emit_run_event(run_event_kind::tool_call_delta,
-                                run_event_payload::ToolCallDelta{call_id, std::move(item)});
-            };
-            ToolResult result =
-                invoke_tool(tool_table, held, req, effect_context_, one_shot_approve, &audit);
-            effect_context_.report_progress = [](ContentItem) {};
-            emit_run_event(run_event_kind::tool_call_finished,
-                            run_event_payload::ToolCallFinished{audit.call_id, result});
+            reqs.push_back(tool_call_request_of(pending_calls[i], i));
+        }
+        // ADR-160 §5: tool_call_started/delta/finished all fire from inside dispatch_tool_calls();
+        // approval_resolved is THIS call site's own extra, per-call event, emitted afterward in
+        // `reqs`' own order -- dispatch_tool_calls() always returns in that order regardless of
+        // which concurrency class (or completion order) actually produced each result.
+        std::vector<DispatchedCall> dispatched =
+            dispatch_tool_calls(reqs, tool_table, held, one_shot_approve, PolicyDecider{});
+        std::vector<ToolResult> results;
+        results.reserve(dispatched.size());
+        for (std::size_t i = 0; i < dispatched.size(); ++i) {
             emit_run_event(run_event_kind::approval_resolved,
-                            run_event_payload::ApprovalResolved{pending_calls[i].call_id, true,
+                            run_event_payload::ApprovalResolved{reqs[i].call_id, true,
                                                                   request.interaction_id});
-            results.push_back(std::move(result));
+            results.push_back(std::move(dispatched[i].result));
         }
         history_.push_back(tool_results_message(std::move(results)));
         (void)co_await history_provider_.on_turn_end(
@@ -1659,6 +1653,12 @@ private:
         // callable no-op, so `static_cast<bool>` on it is not a meaningful "is a tap attached"
         // check -- the boolean guard belongs here, at the call site, not on the field itself).
         if (!run_event_producer_.valid() && !run_event_tap_attached_) return;
+        // ADR-160 §5 MUST-FIX 2: the whole body below -- seq increment, tap call, producer push --
+        // is now one critical section (see run_event_mutex_'s own comment). This restores
+        // "effectively single producer" for run_event_producer_ regardless of which thread a
+        // concurrently-dispatched parallel-batch call's own report_progress/agent_turn_sink fires
+        // from, and eliminates the run_event_seq_by_run_ map race in the same stroke.
+        std::lock_guard<std::mutex> lock(run_event_mutex_);
         RunEvent ev;
         ev.run_id  = run_id;
         ev.seq     = ++run_event_seq_by_run_[run_id];
@@ -1666,6 +1666,181 @@ private:
         ev.payload = std::move(payload);
         run_event_tap_(ev);
         if (run_event_producer_.valid()) (void)run_event_producer_.push(std::move(ev));
+    }
+
+    // decisions/ADR-160-parallel-tool-batch-scheduler.md §5. Dispatches one already-filtered batch
+    // of requests (the caller has already skipped/resolved anything a hook denied) through the
+    // corrected design: admission (steps 1,4/7,5 -- admit_call(), tool_pipeline.hpp) sequentially,
+    // in emitted order, exactly as invoke_tool() does inline -- then fans any batch
+    // partition_batch() finds uniformly Parallelizable/ExclusivityGroup<Name>-eligible out to real,
+    // bounded worker threads (rt::run_jobs_bounded, bounded_call_fanout.hpp) for step 8 (invoke)
+    // alone, joining before returning. When the batch is NOT eligible -- every real batch today, no
+    // shipped tool declares either tag yet -- this degrades to EXACTLY today's sequential loop, call
+    // for call, byte for byte: each call still goes straight through invoke_tool() against the
+    // session's own shared effect_context_, on the calling thread, in order.
+    //
+    // tool_call_started fires for every call up front, in emitted order, before any admission
+    // begins. tool_call_delta/tool_call_finished fire per call as its own result becomes available
+    // -- from whichever thread produced it, safe under run_event_mutex_ (§5 MUST-FIX 2) -- so for a
+    // fanned-out class, its finished-event ORDER relative to a sibling class is a genuine, unordered
+    // race (§5 SHOULD-FIX 9: monotonic per 013 §1, but not required to be deterministic; only the
+    // RETURNED vector's order -- always `reqs`' own emitted order, regardless of completion order --
+    // is I5-load-bearing). Returns one ToolResult and one ToolInvocationAudit per request, in
+    // `reqs`' own order.
+    //
+    // NAMED RESIDUAL: `run_rounds()`'s own codeact_ask early-stop rule (ADR-057 §9: a multi-call
+    // round where one call ask-pends fails closed WITHOUT running any call after it) is enforced by
+    // that call site AFTER this function returns, over the now-complete result vector. For a batch
+    // this function ran through the ELIGIBLE (fan-out) path, a call positioned after an ask-pending
+    // one may already have executed its own side effects before the sentinel is detected -- unlike
+    // the non-eligible path, where the original per-iteration loop still stops immediately. This can
+    // only arise if a codeact-ask-capable tool were ALSO declared Parallelizable/
+    // ExclusivityGroup<Name>: today's `execute_code` is `captures_session_state` (MUST-FIX 1 forces
+    // it into its own sequential singleton class regardless of what it also declares), so this
+    // residual is not reachable by any shipped tool -- named here rather than silently assumed
+    // impossible.
+    struct DispatchedCall {
+        ToolResult result;
+        ToolInvocationAudit audit;
+    };
+
+    // ADR-160 §6: the concurrency bound's ultimate SOURCE (a capability, a run-level config knob, or
+    // a fixed constant) is still an open question -- this is a placeholder default, not a
+    // host-configurable knob yet.
+    static constexpr std::size_t kParallelBatchWorkerCap = 4;
+
+    std::vector<DispatchedCall> dispatch_tool_calls(std::vector<ToolCallRequest> const& reqs,
+                                                      ToolTable const& tool_table, CapabilitySet const& held,
+                                                      ApprovalDecider const& approve,
+                                                      PolicyDecider const& policy) {
+        std::vector<DispatchedCall> out(reqs.size());
+        if (reqs.empty()) return out;
+
+        for (auto const& req : reqs) {
+            emit_run_event(run_event_kind::tool_call_started,
+                            run_event_payload::ToolCallStarted{req.call_id, req.tool_name});
+        }
+
+        std::vector<ConcurrencyClass> classes = partition_batch(reqs, tool_table);
+
+        // A per-call EffectContext: a full struct copy of the run's LIVE effect_context_ at the
+        // moment this call is admitted, with ONLY report_progress rebound to this call's own
+        // call_id -- agent_turn_sink/moderator_delta_sink/sandbox_fs/blob_sink/capabilities/run_id/
+        // ... are all carried through UNCHANGED by the copy itself (ADR-160 §5 MUST-FIX 3: this
+        // deliberately does NOT reset the other two reverse-channel fields the way Backgroundable's
+        // own copy does, since a parallel-batch call's deltas through them are still meant to reach
+        // a live stream, unlike Backgroundable's deliberate suppression).
+        auto make_call_ctx = [this](std::string const& call_id) {
+            EffectContext ctx = effect_context_;
+            ctx.report_progress = [this, run_id = ctx.run_id, call_id](ContentItem item) {
+                detail::force_tainted(item);
+                emit_run_event_for(run_id, run_event_kind::tool_call_delta,
+                                     run_event_payload::ToolCallDelta{call_id, std::move(item)});
+            };
+            return ctx;
+        };
+
+        // One job per parallel/exclusivity_group CLASS (never per call, MUST-FIX 5) -- owns its
+        // members' own bound-capability vectors and EffectContext copies (MUST-FIX 6), runs them as
+        // an ordinary sequential loop internally, and writes each member's own DispatchedCall
+        // directly into `out[call_indices[k]]`. `out` is sized once, above, and never reallocated,
+        // so this indexed write is safe from any thread.
+        struct ParallelJob {
+            std::vector<std::size_t> call_indices;
+            std::vector<ToolDescriptor const*> tools;
+            std::vector<ToolCallRequest const*> requests;  // pointers into `reqs` -- outlives every
+                                                              // job: this function does not return
+                                                              // until the fan-out below has joined.
+            std::vector<EffectContext> ctxs;
+            std::vector<std::vector<BoundCapability>> bounds;
+            std::vector<DispatchedCall*> slots;             // pointers into `out` -- see above.
+        };
+        std::vector<ParallelJob> jobs;
+
+        for (auto const& cls : classes) {
+            if (cls.kind == concurrency_class_kind::sequential) {
+                // Exactly today's existing inline loop body (resolve_interaction()'s approved
+                // branch / finish_hook_processed_round() / run_rounds()' own loop, before this ADR)
+                // -- the live, shared effect_context_, mutated in place, one call at a time.
+                for (std::size_t i : cls.call_indices) {
+                    ToolCallRequest const& req = reqs[i];
+                    effect_context_.report_progress = [this, call_id = req.call_id](ContentItem item) {
+                        detail::force_tainted(item);
+                        emit_run_event(run_event_kind::tool_call_delta,
+                                        run_event_payload::ToolCallDelta{call_id, std::move(item)});
+                    };
+                    ToolInvocationAudit audit;
+                    ToolResult result =
+                        invoke_tool(tool_table, held, req, effect_context_, approve, &audit, policy);
+                    effect_context_.report_progress = [](ContentItem) {};
+                    emit_run_event(run_event_kind::tool_call_finished,
+                                    run_event_payload::ToolCallFinished{audit.call_id, result});
+                    out[i] = DispatchedCall{std::move(result), std::move(audit)};
+                }
+                continue;
+            }
+
+            // parallel or exclusivity_group: admit every member sequentially, still on this thread,
+            // in emitted order (ADR-070's per-call-only contract; I1's single-executor sequencing
+            // for every decision that can suspend the run or consult host policy) -- BEFORE any
+            // fan-out begins.
+            ParallelJob job;
+            for (std::size_t i : cls.call_indices) {
+                ToolCallRequest const& req = reqs[i];
+                EffectContext ctx = make_call_ctx(req.call_id);
+                auto admission = admit_call(tool_table, held, req, ctx.principal, approve, policy);
+                if (!admission) {
+                    error const& e = admission.error();
+                    ToolResult result = tool_pipeline_detail::make_error_result(req.call_id, e);
+                    ToolInvocationAudit audit;
+                    audit.call_id = req.call_id;
+                    audit.tool_name = req.tool_name;
+                    audit.ok = false;
+                    audit.error_code = e.code;
+                    audit.idempotency_key = derive_idempotency_key(ctx, req.call_index, req.arguments);
+                    audit.principal_id = ctx.principal.id;
+                    audit.principal_tenant_id = ctx.principal.tenant_id;
+                    audit.principal_on_behalf_of = ctx.principal.on_behalf_of;
+                    emit_run_event_for(ctx.run_id, run_event_kind::tool_call_finished,
+                                         run_event_payload::ToolCallFinished{audit.call_id, result});
+                    out[i] = DispatchedCall{std::move(result), std::move(audit)};
+                    continue;  // never enters the job -- nothing to fan out for an already-denied call
+                }
+                job.call_indices.push_back(i);
+                job.tools.push_back(admission->tool);
+                job.requests.push_back(&req);
+                job.ctxs.push_back(std::move(ctx));
+                job.bounds.push_back(std::move(admission->bound));
+                job.slots.push_back(&out[i]);
+            }
+            if (!job.call_indices.empty()) jobs.push_back(std::move(job));
+        }
+
+        // -- Fan-out: every admission above already happened sequentially, in emitted order, on
+        // this thread. Only step 8 (invoke) + 9 (normalize) + 10 (account) run concurrently below,
+        // one real worker thread per concurrency class -- an exclusivity_group class's own members
+        // still run as an ordinary sequential loop WITHIN that one job/thread (MUST-FIX 5); no group
+        // member ever separately occupies a second worker slot.
+        std::vector<std::function<void()>> runnables;
+        runnables.reserve(jobs.size());
+        for (auto& job : jobs) {
+            runnables.push_back([this, job = std::move(job)]() mutable {
+                for (std::size_t k = 0; k < job.call_indices.size(); ++k) {
+                    auto const started = std::chrono::steady_clock::now();
+                    ToolCallRequest const& req = *job.requests[k];
+                    RunOutcome outcome = run_admitted_call(*job.tools[k], req, job.ctxs[k], job.bounds[k]);
+                    ToolInvocationAudit audit = make_call_audit(req, job.ctxs[k], started, outcome);
+                    emit_run_event_for(job.ctxs[k].run_id, run_event_kind::tool_call_finished,
+                                         run_event_payload::ToolCallFinished{audit.call_id, outcome.result});
+                    *job.slots[k] = DispatchedCall{std::move(outcome.result), std::move(audit)};
+                }
+            });
+        }
+        if (!runnables.empty()) {
+            agentengine::rt::run_jobs_bounded(runnables, kParallelBatchWorkerCap);
+        }
+
+        return out;
     }
 
     // `force_tainted()`, `filter_cross_provider_reasoning()`, and `drain_streaming_response()` now
@@ -1973,29 +2148,27 @@ private:
         CapabilitySet const empty_caps = CapabilitySet::grant_root({});
         CapabilitySet const& held = effect_context_.capabilities ? *effect_context_.capabilities : empty_caps;
         std::size_t const response_msg_index = history_.size() - 1;
-        std::vector<ToolResult> results;
-        results.reserve(round.calls.size());
-        for (HookProcessedCall& hc : round.calls) {
+        // ADR-160 §5: hook-denied calls are filtered out BEFORE reaching dispatch_tool_calls() --
+        // "no tool_call_started/finished for a call that never actually ran" precedent, unchanged.
+        // `results` is sized once, up front, so a denied call's slot and a dispatched call's slot
+        // are both filled by index, regardless of dispatch order.
+        std::vector<ToolResult> results(round.calls.size());
+        std::vector<ToolCallRequest> reqs;
+        std::vector<std::size_t> req_positions;  // reqs[j] belongs at results[req_positions[j]]
+        reqs.reserve(round.calls.size());
+        req_positions.reserve(round.calls.size());
+        for (std::size_t i = 0; i < round.calls.size(); ++i) {
+            HookProcessedCall& hc = round.calls[i];
             if (hc.outcome == hook_call_outcome::denied) {
-                results.push_back(std::move(*hc.denial_result));
+                results[i] = std::move(*hc.denial_result);
                 continue;
             }
-            emit_run_event(run_event_kind::tool_call_started,
-                            run_event_payload::ToolCallStarted{hc.request.call_id, hc.request.tool_name});
-            ToolInvocationAudit audit;
-            // ADR-060: same per-call bracketing discipline every other invoke_tool() call site in
-            // this file already uses.
-            effect_context_.report_progress = [this, call_id = hc.request.call_id](ContentItem item) {
-                detail::force_tainted(item);
-                emit_run_event(run_event_kind::tool_call_delta,
-                                run_event_payload::ToolCallDelta{call_id, std::move(item)});
-            };
-            ToolResult result =
-                invoke_tool(tool_table, held, hc.request, effect_context_, approve, &audit, policy);
-            effect_context_.report_progress = [](ContentItem) {};
-            emit_run_event(run_event_kind::tool_call_finished,
-                            run_event_payload::ToolCallFinished{audit.call_id, result});
-            results.push_back(std::move(result));
+            reqs.push_back(hc.request);
+            req_positions.push_back(i);
+        }
+        std::vector<DispatchedCall> dispatched = dispatch_tool_calls(reqs, tool_table, held, approve, policy);
+        for (std::size_t j = 0; j < dispatched.size(); ++j) {
+            results[req_positions[j]] = std::move(dispatched[j].result);
         }
         history_.push_back(tool_results_message(std::move(results)));
         (void)co_await history_provider_.on_turn_end(
@@ -2509,39 +2682,40 @@ private:
                                                  kSuspendedForApproval});
             }
 
-            std::vector<ToolResult> results;
-            results.reserve(calls.size());
+            // ADR-160 §5: hook-denied calls are filtered out BEFORE reaching dispatch_tool_calls()
+            // -- "no tool_call_started/finished for a call that never actually ran" precedent,
+            // unchanged. `results` is sized once, up front, so a denied call's slot and a
+            // dispatched call's slot are both filled by index, regardless of dispatch order.
+            //
+            // ADR-070: the ONLY invoke_tool() call site (via dispatch_tool_calls() below) that
+            // consults `policy_decider_` -- the other three (resolve_interaction()'s approved
+            // branch, start_background_task(), resolve_codeact_ask()) keep their default-`{}`
+            // trailing parameter deliberately, since a call reaching any of them has already been
+            // resolved by a real human and must never be re-litigated by policy (see
+            // set_policy_decider()'s own comment).
+            std::vector<ToolResult> results(calls.size());
+            std::vector<ToolCallRequest> reqs;
+            std::vector<std::size_t> req_positions;  // reqs[j] belongs at results[req_positions[j]]
+            reqs.reserve(calls.size());
+            req_positions.reserve(calls.size());
             for (std::size_t i = 0; i < calls.size(); ++i) {
-                // A hook-denied call never reaches invoke_tool() at all -- matches the "no
-                // tool_call_started/finished for a call that never actually ran" precedent
-                // resolve_interaction()'s own operator-denial branch already establishes.
                 if (hook_touched_round && processed[i].outcome == hook_call_outcome::denied) {
-                    results.push_back(std::move(*processed[i].denial_result));
+                    results[i] = std::move(*processed[i].denial_result);
                     continue;
                 }
-                ToolCallRequest const req =
-                    hook_touched_round ? processed[i].request : tool_call_request_of(calls[i], i);
-                emit_run_event(run_event_kind::tool_call_started,
-                                run_event_payload::ToolCallStarted{calls[i].call_id, calls[i].tool_name});
-                ToolInvocationAudit audit;
-                // ADR-060: bound fresh for THIS call only, reset immediately after regardless of
-                // outcome -- rebinding every loop iteration is what makes two sequential calls in the
-                // same round each get their own correctly-tagged call_id, never a leaked prior binding.
-                effect_context_.report_progress = [this, call_id = req.call_id](ContentItem item) {
-                    detail::force_tainted(item);
-                    emit_run_event(run_event_kind::tool_call_delta,
-                                    run_event_payload::ToolCallDelta{call_id, std::move(item)});
-                };
-                // ADR-070: the ONLY invoke_tool() call site that consults `policy_decider_` -- the
-                // other three (resolve_interaction()'s approved branch, start_background_task(),
-                // resolve_codeact_ask()) keep their default-`{}` trailing parameter deliberately,
-                // since a call reaching any of them has already been resolved by a real human and
-                // must never be re-litigated by policy (see set_policy_decider()'s own comment).
-                ToolResult result = invoke_tool(tool_table, held, req, effect_context_, approval_decider_,
-                                                 &audit, policy_decider_);
-                effect_context_.report_progress = [](ContentItem) {};
-                emit_run_event(run_event_kind::tool_call_finished,
-                                run_event_payload::ToolCallFinished{audit.call_id, result});
+                reqs.push_back(hook_touched_round ? processed[i].request
+                                                    : tool_call_request_of(calls[i], i));
+                req_positions.push_back(i);
+            }
+
+            std::vector<DispatchedCall> dispatched =
+                dispatch_tool_calls(reqs, tool_table, held, approval_decider_, policy_decider_);
+
+            for (std::size_t j = 0; j < dispatched.size(); ++j) {
+                std::size_t const i = req_positions[j];
+                ToolCallRequest const& req = reqs[j];
+                ToolResult& result = dispatched[j].result;
+                ToolInvocationAudit const& audit = dispatched[j].audit;
 
                 // ADR-057 §9: a script inside `execute_code` called `agent.ask()` with no answer yet
                 // available (Design B: abort-and-replay) -- `real_execute_code()`'s own host
@@ -2549,6 +2723,16 @@ private:
                 // checked here; this is a real, deliberate producer/consumer contract between a
                 // host's `execute_code` tool and this generic session loop, the same shape
                 // `kSuspendedForApproval`'s own sentinel already establishes one layer up.
+                //
+                // ADR-160 §5 NAMED RESIDUAL: dispatch_tool_calls() above already ran EVERY call in
+                // this batch (sequentially if the batch wasn't fan-out-eligible -- today, always --
+                // or with some classes fanned out otherwise) before this check runs. The ORIGINAL
+                // per-iteration loop stopped immediately on an ask-pending call, never running
+                // anything after it; this refactor can only differ from that when calls.size() > 1
+                // AND the batch was fan-out-eligible (today, unreachable: `execute_code` is
+                // `captures_session_state`, forced sequential by MUST-FIX 1 regardless of what else
+                // it declares) -- the final OUTCOME (a hard error below) is identical either way; only
+                // whether a later call's side effects already ran before that error surfaces differs.
                 if (!audit.ok && audit.error_code == "codeact.ask_pending") {
                     if (calls.size() != 1) {
                         // ADR-057 §9: "a multi-call round where one call ask-pends fails closed... a
@@ -2611,7 +2795,7 @@ private:
                                                      kSuspendedForCodeActAsk});
                 }
 
-                results.push_back(std::move(result));
+                results[i] = std::move(result);
             }
 
             history_.push_back(tool_results_message(std::move(results)));
@@ -2745,6 +2929,18 @@ private:
     std::uint64_t                                         admission_denied_count_ = 0;
     stream_producer<RunEvent>                             run_event_producer_;
     std::unordered_map<std::string, std::uint64_t>        run_event_seq_by_run_;
+    // decisions/ADR-160-parallel-tool-batch-scheduler.md §5 MUST-FIX 2: `emit_run_event_for()`
+    // mutates `run_event_seq_by_run_` (a plain `std::unordered_map`) and calls `run_event_producer_.
+    // push()` (`rt::channel_producer<T,E>`, which documents "Multiple PRODUCERS... unsupported",
+    // rt/channel.hpp) -- both unsafe under concurrent callers. A parallel-batch call's own
+    // `report_progress`/`agent_turn_sink` may now call `emit_run_event_for()` from a worker thread
+    // while a sibling call's does the same from a different one; this plain `std::mutex` (never
+    // needs to suspend a coroutine, only exclude a few memory writes) is the single point every
+    // caller -- worker thread or the session's own coroutine -- now funnels through. NAMED RESIDUAL
+    // (not enforced by the type system): a tap/producer callback that itself reentrantly calls
+    // `emit_run_event_for()` on the SAME thread would deadlock against this non-recursive mutex; no
+    // such call exists in this tree today.
+    std::mutex                                             run_event_mutex_;
     // ADR-152 (issue #29) -- see set_run_event_tap()'s own comment above. Default no-op;
     // run_event_tap_attached_ tracks whether the LAST set_run_event_tap() call passed a real
     // (non-empty) function, independent of what run_event_tap_ itself currently holds (which is
