@@ -5,6 +5,7 @@ import {
   composedProviderExampleSnippet,
   contentReplayBounds,
   contentReplayGatewaySnippet,
+  gh,
   middlewareExampleSnippet,
   minimalGatewaySnippet,
   provenanceFields,
@@ -14,6 +15,7 @@ import {
   runtimeToolRoundStep,
   runtimeTurnLoopSteps,
   statefulToolExampleSnippet,
+  toolCallHookExampleSnippet,
   toolOptimizerManagementTools,
   toolOptimizerProviderExampleSnippet,
   turnMiddlewareExampleSnippet,
@@ -283,6 +285,30 @@ const copy = {
         ordinary tool-error denial into history.
       </>
     ),
+    hookEyebrow: "OQ-21 — tool_call_hook.hpp",
+    hookHeading: "A different question, the same suspend/resume shape: should an EXTERNAL PROCESS decide?",
+    hookBody: (
+      <>
+        <code>set_tool_call_hook()</code> runs once per call, immediately BEFORE the
+        approval pre-check above — a hook can deny a call, rewrite its arguments, or set{" "}
+        <code>needs_external_dispatch</code> to hand the decision to an outside process
+        (a policy engine, a queue an operator drains) without ever blocking inline. Deciding
+        this way suspends the round through the exact same machinery approval uses, but under
+        a genuinely distinct tag — <code>interaction_reason::hook_decision</code>, never{" "}
+        <code>::approval</code> — so an external process's dispatch ANSWER can never stand in
+        for a human's APPROVAL decision. Resolving one re-checks approval need against the
+        real deciders for every remaining call, rather than reusing a one-shot bypass.
+      </>
+    ),
+    hookNote: (
+      <>
+        <strong>Unset by default.</strong> Every existing session is completely unaffected
+        until a host explicitly opts in — the same "narrows or decides among already-possessed
+        authority only, never mints it" seam this codebase's other delegated-decision points
+        use.
+      </>
+    ),
+
     s5Eyebrow: "middleware.hpp — ADR-033/ADR-036",
     s5Heading: "Middleware: a real before/after chain around the model call",
     s5Body: (
@@ -761,6 +787,31 @@ const copy = {
         lỗi tool bình thường vào history.
       </>
     ),
+    hookEyebrow: "OQ-21 — tool_call_hook.hpp",
+    hookHeading: "Một câu hỏi khác, cùng một hình dạng suspend/resume: nên để một TIẾN TRÌNH BÊN NGOÀI quyết định?",
+    hookBody: (
+      <>
+        <code>set_tool_call_hook()</code> chạy đúng một lần cho mỗi lệnh gọi, NGAY TRƯỚC bước
+        kiểm tra approval ở trên — một hook có thể từ chối một lệnh gọi, viết lại tham số của
+        nó, hoặc đặt <code>needs_external_dispatch</code> để giao quyết định cho một tiến trình
+        bên ngoài (một policy engine, một hàng đợi mà operator xử lý dần) mà không bao giờ chặn
+        đồng bộ. Quyết định theo cách này treo lại vòng đó qua đúng cơ chế mà approval dùng,
+        nhưng dưới một thẻ thực sự khác biệt — <code>interaction_reason::hook_decision</code>,
+        không bao giờ là <code>::approval</code> — để câu trả lời dispatch của một tiến trình
+        bên ngoài không bao giờ có thể thay thế cho một quyết định APPROVAL của con người. Giải
+        quyết nó kiểm tra lại nhu cầu approval trước các decider thật cho mọi lệnh gọi còn lại,
+        thay vì tái sử dụng một lối tắt one-shot.
+      </>
+    ),
+    hookNote: (
+      <>
+        <strong>Mặc định không bật.</strong> Mọi session hiện có hoàn toàn không bị ảnh hưởng
+        cho tới khi một host chủ động opt-in — cùng loại "chỉ thu hẹp hoặc quyết định trong số
+        thẩm quyền đã có sẵn, không bao giờ tạo ra thẩm quyền mới" mà các điểm delegated-decision
+        khác trong codebase này dùng.
+      </>
+    ),
+
     s5Eyebrow: "middleware.hpp — ADR-033/ADR-036",
     s5Heading: "Middleware: một chuỗi before/after thật bao quanh lệnh gọi model",
     s5Body: (
@@ -1307,6 +1358,39 @@ export function ApiRuntimeReference() {
 
           <RevealItem>
             <CiteLink id="suspend-for-approval" />
+          </RevealItem>
+        </RevealGroup>
+
+        {/* ---- 4b. ToolCallHook: external-process decision, before approval ----------------------- */}
+        <RevealGroup>
+          <RevealItem>
+            <div className="section-head anchor-target" id="tool-call-hook" style={{ marginTop: 56, marginBottom: 22 }}>
+              <span className="eyebrow">{t.hookEyebrow}</span>
+              <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.hookHeading}</h3>
+              <p>{t.hookBody}</p>
+            </div>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="tests/test_rt_agent_session_tool_call_hook.cpp">
+              {highlightCpp(toolCallHookExampleSnippet)}
+            </CodePanel>
+          </RevealItem>
+
+          <RevealItem>
+            <p className="gs-note" style={{ marginTop: 20 }}>{t.hookNote}</p>
+          </RevealItem>
+
+          <RevealItem>
+            <a
+              className="api-cite"
+              href={gh("include/agentengine/core/tool_call_hook.hpp")}
+              target="_blank"
+              rel="noreferrer"
+              style={{ borderTop: "none", paddingTop: 0, marginTop: 18, display: "block" }}
+            >
+              include/agentengine/core/tool_call_hook.hpp
+            </a>
           </RevealItem>
         </RevealGroup>
 

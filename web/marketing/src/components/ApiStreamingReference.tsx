@@ -188,6 +188,21 @@ const copy = {
         directly.
       </>
     ),
+    s4WorkflowNote: (
+      <>
+        <strong>When the backend behind <code>chat_stream()</code> is a whole Workflow, not a
+        model.</strong> <code>WorkflowChatClient</code> (GitHub issue #35, ADR-162/163) satisfies
+        this same <code>ChatClient</code> concept by wrapping a <code>WorkflowSupervisor</code> —
+        but it honestly reports <code>capabilities().streaming == false</code>: it never emits
+        token-level deltas from inside the graph, only the wrapped workflow's terminal result (or,
+        on a suspended <code>request_port</code>, a <code>Custom</code>-typed human-in-the-loop
+        ask). See{" "}
+        <a href={`${SITE_BASE}/api/workflow.html#workflow-hitl-chat-client`}>
+          Workflow &amp; Orchestration — HITL over chat_client
+        </a>{" "}
+        for the real wire shape and why it's <code>Custom</code>, never <code>ToolCall</code>.
+      </>
+    ),
 
     s5Eyebrow: "protocol/openai · protocol/anthropic — if you're curious",
     s5Heading: "Two SSE wire framings, briefly",
@@ -359,6 +374,23 @@ const copy = {
         <code>model_delta</code> lên một <code>stream&lt;std::string&gt;</code> thuần túy, rồi đóng
         nó lại khi <code>run_finished</code> — có văn bản streaming mà không cần chạm trực tiếp vào{" "}
         <code>AgentSession</code>.
+      </>
+    ),
+    s4WorkflowNote: (
+      <>
+        <strong>Khi backend đứng sau <code>chat_stream()</code> là cả một Workflow, không phải
+        một model.</strong> <code>WorkflowChatClient</code> (GitHub issue #35, ADR-162/163) thỏa
+        mãn cùng khái niệm <code>ChatClient</code> này bằng cách bọc một{" "}
+        <code>WorkflowSupervisor</code> — nhưng nó báo cáo trung thực{" "}
+        <code>capabilities().streaming == false</code>: nó không bao giờ phát ra delta cấp token
+        từ bên trong đồ thị, chỉ có kết quả CUỐI CÙNG của workflow được bọc (hoặc, khi một{" "}
+        <code>request_port</code> bị đình chỉ, một câu hỏi human-in-the-loop kiểu{" "}
+        <code>Custom</code>). Xem{" "}
+        <a href={`${SITE_BASE}/api/workflow.html#workflow-hitl-chat-client`}>
+          Workflow &amp; Orchestration — HITL qua chat_client
+        </a>{" "}
+        để biết hình dạng wire thật và vì sao đó là <code>Custom</code>, không bao giờ là{" "}
+        <code>ToolCall</code>.
       </>
     ),
 
@@ -572,6 +604,10 @@ export function ApiStreamingReference() {
             <p className="gs-note" style={{ marginTop: 12, borderLeftColor: "var(--accent-teal)" }}>
               {t.s4BundleNote}
             </p>
+          </RevealItem>
+
+          <RevealItem>
+            <p className="gs-note" style={{ marginTop: 12 }}>{t.s4WorkflowNote}</p>
           </RevealItem>
         </RevealGroup>
 

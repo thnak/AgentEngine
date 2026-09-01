@@ -1,7 +1,9 @@
 import {
   gh,
   genericSkills,
+  inlineSkillSourceEagerParseSnippet,
   inlineSkillSourceExampleSnippet,
+  inlineSkillSourceFailureConstructorSnippet,
   inlineSkillSourceShapeSnippet,
   minimalSkillSnippet,
   skillCollisionSnippet,
@@ -112,6 +114,25 @@ const copy = {
         involved at any point:
       </>
     ),
+    s2FailureIntro: (
+      <>
+        The second constructor's whole point, isolated: hand it a failure instead of a real
+        skill list, and get that <em>exact</em> failure back out — not a generic "load failed",
+        not an empty list to silently work around. Whatever error a caller's own eager parsing
+        produced is what a later <code>load_skills()</code> call sees, unchanged, every time —
+        and it still holds after <code>make_skill_source_descriptor</code> erases the concrete
+        type:
+      </>
+    ),
+    s2EagerParseIntro: (
+      <>
+        And the real caller this exists for — the PDF-tool catalog's own{" "}
+        <code>extracting-document-text</code> skill source, verbatim. Parsing happens once,
+        inside the immediately-invoked lambda, before <code>InlineSkillSource</code> is ever
+        constructed; the class itself never parses anything, it only ever replays whichever{" "}
+        <code>result</code> it was handed:
+      </>
+    ),
     s2Note: (
       <>
         <strong>Why this exists, not just how:</strong> the five built-in skills this engine
@@ -123,7 +144,10 @@ const copy = {
         <code>extracting-document-text</code> skill (<code>tools/extract_pdf_text.hpp</code>)
         — rather than hand-assembling the type-erased <code>SkillSourceDescriptor</code>{" "}
         itself: every compiled-in skill source this engine ships goes through the one class
-        built for exactly this.
+        built for exactly this. Composing several <code>InlineSkillSource</code>-backed
+        descriptors side by side — two independent origins in one <code>SkillsProvider</code>,
+        and the on-demand mount lifecycle that unlocks their tools — is covered with its own
+        real snippets further down, in <a href="#skill-loading">how a skill loads</a>.
       </>
     ),
     s3Eyebrow: "How a skill loads — §8b",
@@ -420,6 +444,25 @@ const copy = {
         filesystem nào tham gia ở bất kỳ điểm nào:
       </>
     ),
+    s2FailureIntro: (
+      <>
+        Trọng tâm của constructor thứ hai, tách riêng ra: trao cho nó một thất bại thay vì một
+        danh sách skill thật, và nhận lại đúng thất bại đó — không phải một "load thất bại"
+        chung chung, không phải một danh sách rỗng để rồi âm thầm xử lý vòng qua. Bất kể lỗi gì
+        mà việc phân tích cú pháp lúc khởi tạo của caller tạo ra, đó chính là những gì một lời
+        gọi <code>load_skills()</code> sau đó nhìn thấy, không đổi, mỗi lần — và điều đó vẫn
+        đúng ngay cả sau khi <code>make_skill_source_descriptor</code> xóa bỏ kiểu cụ thể:
+      </>
+    ),
+    s2EagerParseIntro: (
+      <>
+        Và đây là caller thật sự mà nó tồn tại để phục vụ — nguồn skill{" "}
+        <code>extracting-document-text</code> của chính danh mục PDF-tool, nguyên văn. Việc
+        phân tích cú pháp diễn ra đúng một lần, bên trong lambda được gọi ngay lập tức, trước
+        khi <code>InlineSkillSource</code> từng được khởi tạo; bản thân lớp này không bao giờ
+        phân tích bất cứ thứ gì, nó chỉ phát lại đúng <code>result</code> mà nó được trao:
+      </>
+    ),
     s2Note: (
       <>
         <strong>Vì sao nó tồn tại, không chỉ là cách nó hoạt động:</strong> năm skill tích
@@ -432,7 +475,11 @@ const copy = {
         <code>extracting-document-text</code> của chính danh mục PDF-tool (
         <code>tools/extract_pdf_text.hpp</code>) — thay vì tự tay lắp{" "}
         <code>SkillSourceDescriptor</code> type-erased: mọi nguồn skill biên dịch sẵn mà
-        engine này phát hành đều đi qua đúng một lớp được xây dựng cho chính việc đó.
+        engine này phát hành đều đi qua đúng một lớp được xây dựng cho chính việc đó. Việc kết
+        hợp nhiều descriptor dựa trên <code>InlineSkillSource</code> cạnh nhau — hai origin độc
+        lập trong cùng một <code>SkillsProvider</code>, và vòng đời mount theo yêu cầu mở khóa
+        tool của chúng — được trình bày với các đoạn mã thật riêng ở phần xa hơn bên dưới, tại{" "}
+        <a href="#skill-loading">cách một skill được nạp</a>.
       </>
     ),
     s3Eyebrow: "Một skill được nạp như thế nào — §8b",
@@ -775,6 +822,26 @@ export function ApiSkillReference() {
           <RevealItem>
             <CodePanel filename="test_skill_source_inline.cpp">
               {highlightCpp(inlineSkillSourceExampleSnippet)}
+            </CodePanel>
+          </RevealItem>
+
+          <RevealItem>
+            <p style={{ marginTop: 28, color: "var(--text-dim)", lineHeight: 1.65 }}>{t.s2FailureIntro}</p>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="test_skill_source_inline.cpp">
+              {highlightCpp(inlineSkillSourceFailureConstructorSnippet)}
+            </CodePanel>
+          </RevealItem>
+
+          <RevealItem>
+            <p style={{ marginTop: 28, color: "var(--text-dim)", lineHeight: 1.65 }}>{t.s2EagerParseIntro}</p>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="tools/extract_pdf_text.hpp">
+              {highlightCpp(inlineSkillSourceEagerParseSnippet)}
             </CodePanel>
           </RevealItem>
 

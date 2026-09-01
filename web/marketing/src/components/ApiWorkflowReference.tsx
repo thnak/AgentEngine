@@ -1,5 +1,6 @@
 import {
   gh,
+  workflowChatClientHitlSnippet,
   workflowEdgeKinds,
   workflowEntries,
   workflowGraphSnippet,
@@ -173,6 +174,47 @@ const copy = {
         at once in different branches produce multiple concurrent <code>Interaction</code> records
         on the same run — <code>WorkflowResult::open_interactions</code> and{" "}
         <code>unopened_ports</code> report all of them, not just one.
+      </>
+    ),
+
+    hitlChatClientEyebrow: "GitHub issue #35 (ADR-162/163) — the same suspension, a different API shape",
+    hitlChatClientHeading: (
+      <>
+        The named gap: how <code>request_port</code> looks from <em>outside</em> — through a plain{" "}
+        <code>ChatClient</code>
+      </>
+    ),
+    hitlChatClientBody: (
+      <>
+        Everything above is <code>WorkflowSupervisor</code>'s own API. <code>WorkflowChatClient</code>{" "}
+        (<code>rt/workflow_as_chat_client.hpp</code>) wraps a whole, already-initialized workflow so
+        it satisfies this codebase's <code>ChatClient</code> concept instead — a direct caller, or an
+        outer <code>AgentSession</code>'s bound backend, sees the SAME suspension not as an{" "}
+        <code>Interaction</code> record but as a <code>ChatResponseUpdate</code> arriving from{" "}
+        <code>chat_stream()</code>. Deliberately encoded as a <code>Custom</code>-typed content item,
+        never a <code>ToolCall</code>: an early design tried the latter (mirroring MAF's own{" "}
+        <code>function_call</code> envelope), and traced end to end against{" "}
+        <code>AgentSession</code>'s real turn loop it DETERMINISTICALLY AND SILENTLY corrupts the
+        paused interaction — <code>tool_calls_of()</code> extracts every <code>ToolCall</code> with no
+        name filtering, an unrecognized tool name still reaches <code>invoke_tool()</code>, and a
+        fabricated <code>ToolResult</code> answers the human-in-the-loop question with the absence of
+        anyone actually being asked. <code>Custom</code> items are invisible to{" "}
+        <code>tool_calls_of()</code>, closing this structurally.
+      </>
+    ),
+    hitlChatClientStreamNote: (
+      <>
+        <strong>Why this belongs on the Streaming page too, and doesn't fully live up to its name
+        there:</strong> <code>WorkflowChatClient::capabilities()</code> reports{" "}
+        <code>streaming = false</code> — honestly. It still conforms via <code>chat_stream()</code>{" "}
+        alone (every <code>ChatClient</code> must), but it never streams token-level deltas from
+        inside the wrapped graph: the whole read-then-act cycle runs to completion or suspension on a
+        detached worker thread first, and only the TERMINAL result's content items — or, on
+        suspension, the <code>request_port</code> ask items below — get pushed. See{" "}
+        <a href="./streaming.html#session-streaming">Streaming</a> for the contrast against a real
+        per-token <code>chat_stream()</code> conformer, and <a href="./events.html">Events</a> for the
+        coarser, node-level alternative (<code>enable_event_stream()</code>) when what you actually
+        want is visibility into the workflow's OWN execution, not just its final answer.
       </>
     ),
 
@@ -413,6 +455,50 @@ const copy = {
         <code>Interaction</code> đồng thời trên cùng một run —{" "}
         <code>WorkflowResult::open_interactions</code> và <code>unopened_ports</code> báo cáo
         tất cả, không chỉ một.
+      </>
+    ),
+
+    hitlChatClientEyebrow: "GitHub issue #35 (ADR-162/163) — cùng một sự đình chỉ, một hình dạng API khác",
+    hitlChatClientHeading: (
+      <>
+        Khoảng trống được nêu tên: <code>request_port</code> trông ra sao từ BÊN NGOÀI — qua
+        một <code>ChatClient</code> thuần túy
+      </>
+    ),
+    hitlChatClientBody: (
+      <>
+        Mọi thứ ở trên là API của chính <code>WorkflowSupervisor</code>. <code>WorkflowChatClient</code>{" "}
+        (<code>rt/workflow_as_chat_client.hpp</code>) bọc cả một workflow đã khởi tạo để nó thỏa
+        mãn khái niệm <code>ChatClient</code> của codebase này thay vào đó — một caller trực
+        tiếp, hoặc backend được gắn của một <code>AgentSession</code> bên ngoài, thấy CÙNG một
+        sự đình chỉ đó không phải như một bản ghi <code>Interaction</code> mà như một{" "}
+        <code>ChatResponseUpdate</code> đến từ <code>chat_stream()</code>. Cố ý mã hóa dưới
+        dạng một content item kiểu <code>Custom</code>, không bao giờ là <code>ToolCall</code>:
+        một thiết kế ban đầu đã thử cách sau (phỏng theo envelope <code>function_call</code>
+        của chính MAF), và khi truy vết đến cùng trước vòng lặp lượt thật của{" "}
+        <code>AgentSession</code>, nó làm hỏng sự đình chỉ đang treo MỘT CÁCH TẤT ĐỊNH VÀ ÂM
+        THẦM — <code>tool_calls_of()</code> trích ra mọi <code>ToolCall</code> mà không lọc
+        tên, một tên tool không nhận diện được vẫn đến được <code>invoke_tool()</code>, và một{" "}
+        <code>ToolResult</code> giả tạo trả lời câu hỏi human-in-the-loop bằng sự vắng mặt của
+        bất kỳ ai thực sự được hỏi. Các item <code>Custom</code> vô hình với{" "}
+        <code>tool_calls_of()</code>, đóng lỗ hổng này về mặt cấu trúc.
+      </>
+    ),
+    hitlChatClientStreamNote: (
+      <>
+        <strong>Vì sao điều này cũng thuộc về trang Streaming, và vì sao ở đó nó không hoàn
+        toàn đúng như tên gọi:</strong> <code>WorkflowChatClient::capabilities()</code> báo cáo{" "}
+        <code>streaming = false</code> — một cách trung thực. Nó vẫn tuân theo{" "}
+        <code>chat_stream()</code> đơn thuần (mọi <code>ChatClient</code> đều phải có), nhưng
+        nó không bao giờ stream các delta cấp token từ bên trong đồ thị được bọc: toàn bộ chu
+        trình đọc-rồi-hành-động chạy đến khi hoàn tất hoặc đình chỉ trên một worker thread tách
+        rời trước đã, và chỉ các content item của kết quả CUỐI CÙNG — hoặc, khi đình chỉ, các
+        ask item <code>request_port</code> bên dưới — mới được đẩy đi. Xem{" "}
+        <a href="./streaming.html#session-streaming">Streaming</a> để thấy sự tương phản với
+        một conformer <code>chat_stream()</code> thật theo từng token, và{" "}
+        <a href="./events.html">Events</a> cho lựa chọn thô hơn, ở cấp node (
+        <code>enable_event_stream()</code>) khi điều bạn thực sự cần là khả năng quan sát vào
+        chính quá trình thực thi của workflow, không chỉ câu trả lời cuối cùng của nó.
       </>
     ),
 
@@ -723,6 +809,39 @@ export function ApiWorkflowReference() {
               style={{ borderTop: "none", paddingTop: 0, marginTop: 18, display: "block" }}
             >
               tests/test_rt_workflow_supervisor_request_port.cpp
+            </a>
+          </RevealItem>
+        </RevealGroup>
+
+        {/* ---- HITL over chat_client: WorkflowChatClient's Custom-typed wire shape --------------- */}
+        <RevealGroup>
+          <RevealItem>
+            <div className="section-head anchor-target" style={{ marginTop: 48, marginBottom: 22 }} id="workflow-hitl-chat-client">
+              <span className="eyebrow">{t.hitlChatClientEyebrow}</span>
+              <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.hitlChatClientHeading}</h3>
+              <p>{t.hitlChatClientBody}</p>
+            </div>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="rt/workflow_as_chat_client.hpp">
+              {highlightCpp(workflowChatClientHitlSnippet)}
+            </CodePanel>
+          </RevealItem>
+
+          <RevealItem>
+            <p className="gs-note" style={{ marginTop: 20 }}>{t.hitlChatClientStreamNote}</p>
+          </RevealItem>
+
+          <RevealItem>
+            <a
+              className="api-cite"
+              href={gh("include/agentengine/rt/workflow_as_chat_client.hpp")}
+              target="_blank"
+              rel="noreferrer"
+              style={{ borderTop: "none", paddingTop: 0, marginTop: 18, display: "block" }}
+            >
+              examples/28_workflow_as_chat_client.cpp
             </a>
           </RevealItem>
         </RevealGroup>

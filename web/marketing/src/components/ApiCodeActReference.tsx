@@ -1,4 +1,5 @@
 import {
+  agentAskHitlSnippet,
   agentFilesDataGeneratedSnippet,
   agentFilesDataUsageSnippet,
   agentLibraryRegistrySnippet,
@@ -182,22 +183,39 @@ const copy = {
         it, exactly as designed.
       </>
     ),
+    s5Eyebrow: "agent.ask — the HITL exception",
+    s5Heading: "One module, real end to end: a script that stops and asks a human",
+    s5Body: (
+      <>
+        <code>agent.ask(prompt) -&gt; str</code> is not a fixed-response stub. Calling it from
+        inside <code>execute_code</code> genuinely suspends that WHOLE call —{" "}
+        <code>AgentSession</code> opens a real{" "}
+        <code>Interaction&#123;reason == interaction_reason::codeact_ask&#125;</code>, the same
+        kind of record a tool-approval gate suspends with, and a host answers it through the
+        SAME <code>resolve_interaction()</code> every approval flow already calls (ADR-057
+        Design B: abort-and-replay — the mechanism the real, single-worker runtime substrate
+        can actually support; see the <a href="./durability.html#du-interactions">Durability
+        page</a> for the full replay-cost disclosure).
+      </>
+    ),
     statusNote: (
       <>
-        <strong>Status: three of nine modules are real and live; six don't exist in
+        <strong>Status: four of nine modules are real and live; five don't exist in
         code.</strong> <code>agent.tools</code> is real, proven against a real embedded
         interpreter (<code>test_mediated_python_runner_agent_tools.cpp</code>), and wired
         live in <code>tools/cli_chat.cpp</code> — reconfigured before every{" "}
         <code>execute_code</code> call from the union of the agent's own tools and
         mount-unlocked skill tools (<code>test_codeact_tool_union.cpp</code>).{" "}
         <code>agent.files</code>/<code>agent.data</code> are real and were already wired live
-        in the CLI. The third union source, MCP-discovered tools, is real and tested against a
-        real <code>McpServer</code>/<code>McpClient</code> pair but has no live server in this
-        codebase to connect it to yet — see the Protocol surfaces page.{" "}
+        in the CLI. <code>agent.ask</code> is real too — see the worked example above; it is
+        a genuine exception to the pattern below, not a fourth instance of it. The third union
+        source for <code>agent.tools</code>, MCP-discovered tools, is real and tested against
+        a real <code>McpServer</code>/<code>McpClient</code> pair but has no live server in
+        this codebase to connect it to yet — see the Protocol surfaces page.{" "}
         <code>agent.memory</code>, <code>agent.notes</code>, <code>agent.output</code>,{" "}
-        <code>agent.progress</code>, <code>agent.ask</code>, and <code>agent.spawn</code>{" "}
-        exist only as a name/one-liner/gating-capability triple in{" "}
-        <code>agent_library_manifest.hpp</code> — no codegen file, no bootstrap, no bridge.
+        <code>agent.progress</code>, and <code>agent.spawn</code> exist only as a
+        name/one-liner/gating-capability triple in <code>agent_library_manifest.hpp</code> —
+        no codegen file, no bootstrap, no bridge.
       </>
     ),
   },
@@ -361,20 +379,37 @@ const copy = {
         một agent thực sự mount skill nêu tên nó, đúng như thiết kế.
       </>
     ),
+    s5Eyebrow: "agent.ask — trường hợp ngoại lệ HITL",
+    s5Heading: "Một module, có thật từ đầu đến cuối: một script dừng lại và hỏi con người",
+    s5Body: (
+      <>
+        <code>agent.ask(prompt) -&gt; str</code> không phải một stub trả lời cố định. Gọi nó
+        từ bên trong <code>execute_code</code> thực sự treo lại TOÀN BỘ lệnh gọi đó —{" "}
+        <code>AgentSession</code> mở một{" "}
+        <code>Interaction&#123;reason == interaction_reason::codeact_ask&#125;</code> có thật,
+        cùng loại bản ghi mà một cổng phê duyệt tool treo lại, và một host trả lời nó qua ĐÚNG{" "}
+        <code>resolve_interaction()</code> mà mọi luồng phê duyệt khác đã gọi (ADR-057 Design
+        B: abort-and-replay — cơ chế mà nền tảng runtime single-worker thật sự có thể hỗ trợ;
+        xem <a href="./durability.html#du-interactions">trang Durability</a> để biết đầy đủ cái
+        giá của việc phát lại).
+      </>
+    ),
     statusNote: (
       <>
-        <strong>Trạng thái: ba trong chín module là thật và hoạt động; sáu module không tồn
+        <strong>Trạng thái: bốn trong chín module là thật và hoạt động; năm module không tồn
         tại trong mã.</strong> <code>agent.tools</code> là thật, đã chứng minh trên một trình
         thông dịch nhúng thật (<code>test_mediated_python_runner_agent_tools.cpp</code>), và
         được đấu nối trực tiếp trong <code>tools/cli_chat.cpp</code> — được cấu hình lại
         trước mỗi lệnh gọi <code>execute_code</code> từ hợp của tool của chính agent và tool
         được skill mở khóa (<code>test_codeact_tool_union.cpp</code>).{" "}
         <code>agent.files</code>/<code>agent.data</code> là thật và đã được đấu nối trực
-        tiếp trong CLI từ trước. Nguồn hợp thứ ba, tool khám phá qua MCP, là thật và đã kiểm
-        thử trên một cặp <code>McpServer</code>/<code>McpClient</code> thật nhưng chưa có
-        server sống nào trong codebase này để kết nối tới — xem trang Bề mặt giao thức.{" "}
-        <code>agent.memory</code>, <code>agent.notes</code>, <code>agent.output</code>,{" "}
-        <code>agent.progress</code>, <code>agent.ask</code>, và <code>agent.spawn</code>{" "}
+        tiếp trong CLI từ trước. <code>agent.ask</code> cũng là thật — xem ví dụ minh họa ở
+        trên; đây là một ngoại lệ thật sự so với khuôn mẫu bên dưới, không phải một trường hợp
+        thứ tư của nó. Nguồn hợp thứ ba cho <code>agent.tools</code>, tool khám phá qua MCP,
+        là thật và đã kiểm thử trên một cặp <code>McpServer</code>/<code>McpClient</code> thật
+        nhưng chưa có server sống nào trong codebase này để kết nối tới — xem trang Bề mặt
+        giao thức. <code>agent.memory</code>, <code>agent.notes</code>, <code>agent.output</code>,{" "}
+        <code>agent.progress</code>, và <code>agent.spawn</code>{" "}
         chỉ tồn tại như một bộ ba tên/mô tả-một-dòng/capability-kiểm-soát trong{" "}
         <code>agent_library_manifest.hpp</code> — không có file codegen, không bootstrap,
         không bridge.
@@ -560,6 +595,21 @@ export function ApiCodeActReference() {
                 src/backends/native_jail/mediated_python_runner.hpp
               </a>
             </div>
+          </RevealItem>
+        </RevealGroup>
+
+        <RevealGroup>
+          <RevealItem>
+            <div className="section-head anchor-target" style={{ marginTop: 48, marginBottom: 22 }} id="codeact-agent-ask">
+              <span className="eyebrow">{t.s5Eyebrow}</span>
+              <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s5Heading}</h3>
+              <p>{t.s5Body}</p>
+            </div>
+          </RevealItem>
+          <RevealItem>
+            <CodePanel filename="agent_ask_codegen.hpp + agent_session.hpp">
+              {highlightCpp(agentAskHitlSnippet)}
+            </CodePanel>
           </RevealItem>
         </RevealGroup>
 

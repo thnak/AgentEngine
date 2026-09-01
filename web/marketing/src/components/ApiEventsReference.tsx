@@ -193,7 +193,12 @@ const copy = {
         mis-resolve it) — a concrete case of an internal suspension surfacing through a
         chat-shaped API rather than this page's own event stream. It sits between this page and{" "}
         <a href="./streaming.html">Streaming</a>: same underlying suspension machinery, projected
-        onto a different consumer-facing shape.
+        onto a different consumer-facing shape. The real wire shape, and why <code>Custom</code>{" "}
+        beats a naive <code>ToolCall</code> encoding here, now has its own worked section on{" "}
+        <a href="./workflow.html#workflow-hitl-chat-client">
+          Workflow &amp; Orchestration — HITL over chat_client
+        </a>
+        .
       </>
     ),
 
@@ -417,7 +422,13 @@ const copy = {
         giải quyết sai nó) — một trường hợp cụ thể của việc một sự đình chỉ nội bộ nổi lên qua một
         hình dạng API kiểu chat, chứ không phải qua luồng sự kiện của chính trang này. Nó nằm giữa
         trang này và <a href="./streaming.html">Streaming</a>: cùng cơ chế đình chỉ bên dưới, được
-        chiếu lên một hình dạng hướng-tới-bên-tiêu-thụ khác.
+        chiếu lên một hình dạng hướng-tới-bên-tiêu-thụ khác. Hình dạng wire thật, và vì sao{" "}
+        <code>Custom</code> tốt hơn một mã hóa <code>ToolCall</code> ngây thơ ở đây, giờ có hẳn
+        một mục riêng trên{" "}
+        <a href="./workflow.html#workflow-hitl-chat-client">
+          Workflow &amp; Điều phối — HITL qua chat_client
+        </a>
+        .
       </>
     ),
 

@@ -1419,6 +1419,29 @@ auto r2 = drive(session.resolve_interaction(ResolveInteraction{id, /*approved=*/
 // r2 converges: send_message's invoke() ran for real, through the ordinary capability-checked
 // pipeline -- and it's still the SAME run_id as r1, never a new run (I4).`;
 
+// OQ-21 -- a DIFFERENT question from the human-approval flow above, answered through the same
+// suspend/resume machinery: "should an EXTERNAL PROCESS decide (or rewrite) this call", not "did a
+// human approve running it". A hook that sets needs_external_dispatch never blocks inline; it
+// suspends the round exactly the way suspend_for_approval does, but tagged interaction_reason::
+// hook_decision, a DISTINCT reason from ::approval, so the two questions can never be conflated.
+export const toolCallHookExampleSnippet = `// tests/test_rt_agent_session_tool_call_hook.cpp -- H4a/H4b (trimmed)
+session.set_tool_call_hook([](ToolCallHookContext& hctx) -> task<result<std::monostate>> {
+    if (hctx.tool_name == "plain_tool") hctx.needs_external_dispatch = true;   // never blocks inline
+    co_return result<std::monostate>{};
+});
+
+auto r1 = drive(session.start_run(StartRun{user_message("go")}));
+// r1 has NO value -- kSuspendedForHookDecision. plain_tool's real invoke() was NEVER reached.
+// session.open_interactions().front().reason == interaction_reason::hook_decision -- NOT ::approval:
+// an external dispatch answer and a human's approval decision are kept structurally distinct.
+
+std::string const id = session.open_interactions().front().interaction_id;
+auto r2 = drive(session.resolve_interaction(ResolveInteraction{
+    id, /*approved=*/false, std::nullopt, std::nullopt, std::nullopt,
+    std::vector<HookDispatchAnswer>{HookDispatchAnswer{"c1", /*approved=*/true, std::nullopt, std::nullopt}}}));
+// r2 converges: plain_tool's real invoke() runs, but ONLY after resolve_hook_decision() re-checks
+// approval need against the REAL deciders -- an external "allow" is never reused as a human "approve".`;
+
 export const minimalGatewaySnippet = `// The common case: one backend, retry + circuit breaker, no failover, no middleware.
 // Every default is left as-is -- RetryPolicy{} and BreakerConfig{} are already tuned (:33-44).
 using Gateway = ModelCallGateway<AnthropicChatClient<InMemorySecretStore>>;
@@ -2049,6 +2072,43 @@ source.load_skills();   // == supplied, every time -- deterministic, no state to
 // Hand it to SkillsProvider the same way DiskSkillSource would be handed:
 SkillSourceDescriptor descriptor = make_skill_source_descriptor(std::move(source));`;
 
+// The failure-carrying constructor, in isolation -- tests/test_skill_source_inline.cpp:56-83 (R1b),
+// trimmed. No real parsing happens here at all; the point is that a failure handed to the
+// constructor comes back UNCHANGED from load_skills(), every call, and survives type erasure too.
+export const inlineSkillSourceFailureConstructorSnippet = `result<std::vector<SkillSourceResult>> failed = std::unexpected(
+    error{failure_class::contract, "fixture parse failure", "test.fixture_parse_failed"});
+
+InlineSkillSource source("failing-origin", failed);
+source.origin_id();                       // == "failing-origin" -- round-trips even on the failure path
+source.load_skills().has_value();         // == false
+source.load_skills().error().code;        // == "test.fixture_parse_failed" -- the EXACT error, unchanged
+
+// Calling load_skills() again returns the identical failure -- no retry, no re-parse attempt:
+source.load_skills().error().code;        // == "test.fixture_parse_failed", still
+
+// And it survives make_skill_source_descriptor's type erasure too:
+auto descriptor = make_skill_source_descriptor(std::move(source));
+descriptor.load_skills().error().code;    // == "test.fixture_parse_failed"`;
+
+// A real caller of that second constructor -- tools/extract_pdf_text.hpp:537-548, verbatim. This is
+// the exact shape builtin_skills.hpp's make_builtin_skills_source() also uses (there, the immediately-
+// invoked lambda loops over five entries instead of one) -- eagerly parse at construction time, store
+// whatever result<> that produced, and let InlineSkillSource replay it on every load_skills() call.
+export const inlineSkillSourceEagerParseSnippet = `[[nodiscard]] inline SkillSourceDescriptor make_extracting_document_text_skill_source() {
+    result<std::vector<SkillSourceResult>> resolved = [] {
+        auto parsed = builtin_skills_detail::parse_builtin("extracting-document-text",
+                                                             kExtractingDocumentTextSkillMd);
+        if (!parsed) return result<std::vector<SkillSourceResult>>(std::unexpected(parsed.error()));
+        std::vector<SkillSourceResult> skills;
+        skills.push_back(std::move(*parsed));
+        return result<std::vector<SkillSourceResult>>(std::move(skills));
+    }();
+
+    // The lambda above already ran to completion by this line -- resolved is either a real
+    // one-skill vector or a real error, decided once, here, not deferred into load_skills() itself.
+    return make_skill_source_descriptor(InlineSkillSource("extract-pdf-text", std::move(resolved)));
+}`;
+
 export const skillsProviderApiSnippet = `// A real ContextProvider conformer -- occupies AgentSession's single
 // HistoryProviderT slot directly, or composed via HistoryAndSkillsProvider.
 template <WorktreeObjectStore ObjectStoreT = InMemoryWorktreeObjectStore>
@@ -2398,6 +2458,34 @@ ExecRequest req3{"python",
     "from agent import files\\n"
     "print('NAMES:', sorted(e['name'] for e in files.list('/input')))"};
 // out->stdout_text contains "NAMES: ['data.ndjson', 'greeting.txt', 'table.csv']"`;
+
+// agent.ask -- the ONE module in the §5 registry that is a genuine exception to the "name only, no
+// bridge" status the note above states for the other five: real codegen
+// (src/backends/native_jail/agent_ask_codegen.hpp), a real C-implemented bridge
+// (_ae_internal.ask_or_raise, mediated_python_runner.cpp), and a real host-side suspend/resume
+// mechanism (AgentSession::resolve_interaction()'s codeact_ask branch, ADR-057 Design B:
+// abort-and-replay) -- proven end to end by tests/test_agent_session_suspend_codeact_ask.cpp's B1-B7.
+export const agentAskHitlSnippet = `// 1) src/backends/native_jail/agent_ask_codegen.hpp -- the ACTUAL generated Python source,
+// not a stub -- reuses whichever "agent" module object agent.tools/agent.files/agent.data
+// already created this session:
+def ask(prompt):
+    return _ae_internal.ask_or_raise(prompt)   // real C -- mediated_python_runner.cpp
+
+// 2) A script calling agent.ask() suspends the WHOLE execute_code call it's inside --
+// tests/test_agent_session_suspend_codeact_ask.cpp B1:
+auto result = drive(session.start_run(StartRun{user_message("...")}));
+// result carries the named sentinel kSuspendedForCodeActAsk; session.open_interactions() now holds
+// exactly one Interaction{reason == interaction_reason::codeact_ask}; history_ is untouched -- still
+// ending on the assistant's original tool-call message, nothing folded in yet.
+
+// 3) A host answers it through the SAME resolve_interaction() every approval flow already uses --
+// the interaction's reason tag alone routes it to the abort-and-replay branch, not a separate API:
+auto resumed = drive(session.resolve_interaction(
+    ResolveInteraction{interaction_id, /*approved=*/false, std::nullopt, std::string("42")}));
+// Replays the STORED script (source/language captured at the ORIGINAL call, PendingCodeActAsk) from
+// its own start -- side effects that already ran before agent.ask() are NOT undone (see the
+// Durability page's B7 cost note: a file write before the ask runs TWICE in total) -- with the new
+// answer now available to the SAME ask_or_raise() call, which returns normally this time.`;
 
 // 014-Workflow-and-Orchestration.md §1/§2/§3 -- Milestone 6, complete. A Workflow is DATA (nothing
 // here is an actor, a scheduler, or an execution decision); a WorkflowSupervisor runs it
@@ -2936,6 +3024,30 @@ export const workflowPlannerLiveSnippet = `// examples/17_planner_live.cpp:104-1
         return ExecutorOutcome{text_message(transcript), {decision}};
     };
 }`;
+
+// GitHub issue #35 (ADR-162/163) -- rt/workflow_as_chat_client.hpp, trimmed. The SAME request_port
+// suspension the ladder above describes, projected through a ChatClient-shaped API instead of
+// WorkflowSupervisor's own resume_workflow() -- for the case where a whole Workflow is wrapped so it
+// can sit anywhere an ordinary model backend is expected (a direct caller, or an outer AgentSession's
+// bound backend). Deliberately Custom, never ToolCall -- see the note below the snippet for why.
+export const workflowChatClientHitlSnippet = `// 1) A wrapped workflow suspends on a request_port exactly like it always does --
+// WorkflowSupervisor::open_interaction_asks() is unchanged, chat_stream() just READS it:
+std::vector<WorkflowSupervisor::InteractionAsk> const asks = inner->open_interaction_asks();
+
+// 2) Each open ask becomes ONE ChatResponseUpdate, encoded as a Custom item -- never a ToolCall:
+ContentItem build_ask_item(WorkflowSupervisor::InteractionAsk const& a) {
+    // payload_json == {"interaction_id": a.interaction.interaction_id, "ask": message_to_json(a.ask)}
+    return ContentItem{.origin = content_origin::assistant,
+                        .value = Custom{"agentengine.workflow_request_port", payload_json}};
+}
+// A caller drains chat_stream() and sees this Custom item; is_final marks the last ask in the batch.
+
+// 3) The caller answers by sending a Custom item back on its NEXT chat_stream() call:
+// ContentItem{Custom{"agentengine.workflow_request_port_response",
+//                     {"interaction_id": "...", "response": message_to_json(answer)}}}
+// find_resume_signals() scans request.messages for these, matched against CURRENT open_interactions()
+// -- a stale answer to an already-resolved interaction is silently skipped, never a special case.
+// Each match drives one real resume_workflow({interaction_id, response, {}}) before the reply streams.`;
 
 export const workflowEntries: Record<Lang, ApiEntry[]> = {
   en: [

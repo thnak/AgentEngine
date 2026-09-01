@@ -418,6 +418,30 @@ public:
     // ... max_stalls()/max_resets()/max_rounds()/deadline_ms()/token_budget()/description()/
     // version() all forward to the same, already-existing inner_ WorkflowBuilder.`;
 
+// issue #28 item 3 -- typed plan-signoff HITL. .require_plan_signoff(port_id) wires a request_port
+// with the SAME TypedExecutor<TaskMsg, ReportMsg> shape as a participant (magentic.hpp:20-26) -- it
+// is structurally one, from the graph's own point of view, just never dispatched to a real body.
+export const magenticPlanSignoffSnippet = `// include/agentengine/workflow/magentic.hpp:110-113,177-210 (trimmed)
+builder.require_plan_signoff("plan_review");   // default port_id when the argument is omitted
+MagenticGraph graph = builder.build().value();
+// graph.plan_review_port_id == "plan_review" -- the manager's own switch_case routes here to ask.
+
+// The manager sends a real, typed request -- not a free-text message the reviewer must parse:
+struct MagenticPlanSignoffRequest { std::string plan; };
+Message ask = make_plan_signoff_request(MagenticPlanSignoffRequest{"Step 1: research. Step 2: write."});
+// ExecutorOutcome{ask, {"plan_review"}} -- routes the SAME way any other switch_case edge does.
+
+// The workflow suspends on this port exactly like any other request_port (see the Workflow &
+// Orchestration page's HITL walkthrough) -- a real Interaction opens, checkpointed, no resources held.
+
+// A human reviews it, then the host resumes with a typed response, not a raw string:
+struct MagenticPlanSignoffResponse { bool approved = false; std::string feedback; };
+Message reply = make_plan_signoff_response(MagenticPlanSignoffResponse{/*approved=*/false,
+                                                                         "Skip step 1, facts are already gathered."});
+resume_workflow(ResumeWorkflow{interaction_id, reply, {}});
+// approved == false routes back to the manager with feedback attached -- a real revise-and-resubmit
+// loop, not a fixed accept/reject gate.`;
+
 export const magenticWorkedExampleSnippet = `// examples/19_magentic_builder_live.cpp:198-212
 MagenticWorkflowBuilder<TaskMsg, ReportMsg> builder("planner-live-magentic");
 builder.manager(TypedExecutor<ReportMsg, TaskMsg>{.id = "moderator", .capability_ceiling = {}});

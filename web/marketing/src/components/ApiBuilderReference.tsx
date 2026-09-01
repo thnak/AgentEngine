@@ -6,6 +6,7 @@ import {
   builderGapRows,
   magenticBuilderMethodRows,
   magenticBuilderShapeSnippet,
+  magenticPlanSignoffSnippet,
   magenticWorkedExampleSnippet,
   quickstartAliasesSnippet,
   quickstartWorkedExampleSnippet,
@@ -183,6 +184,25 @@ const copy = {
       </>
     ),
     s5MethodCols: ["Method", "What it does"],
+    s5PlanSignoffIntro: (
+      <>
+        <code>.require_plan_signoff(port_id)</code> worked end to end, not just wired: the manager
+        sends a <em>typed</em> request (<code>MagenticPlanSignoffRequest{"{plan}"}</code>), never a
+        free-text message a reviewer has to parse, and a host resumes with a typed{" "}
+        <code>MagenticPlanSignoffResponse{"{approved, feedback}"}</code> through the exact same{" "}
+        <code>resume_workflow()</code> path <a href="./workflow.html#workflow-hitl">every other
+        request_port</a> already uses — no new engine mechanism, proven end to end by{" "}
+        <code>test_workflow_magentic_plan_signoff.cpp</code>'s P4.
+      </>
+    ),
+    s5PlanSignoffNote: (
+      <>
+        <strong>A revise loop, not a fixed gate.</strong> <code>approved == false</code> is not a
+        dead end — the response lands as the manager's very next input (proven by P4), with{" "}
+        <code>feedback</code> attached, so an ordinary manager body can route straight back into
+        another planning round instead of failing the whole run.
+      </>
+    ),
 
     s6Eyebrow: "examples/19_magentic_builder_live.cpp — live, against a real model",
     s6Heading: "Worked example: three executors, ten lines",
@@ -351,6 +371,27 @@ const copy = {
       </>
     ),
     s5MethodCols: ["Phương thức", "Làm gì"],
+    s5PlanSignoffIntro: (
+      <>
+        <code>.require_plan_signoff(port_id)</code> hoạt động từ đầu đến cuối, không chỉ được nối
+        dây: manager gửi một yêu cầu CÓ KIỂU (<code>MagenticPlanSignoffRequest{"{plan}"}</code>),
+        không bao giờ là một message văn bản tự do mà người xem xét phải tự phân tích, và một host
+        khôi phục bằng một <code>MagenticPlanSignoffResponse{"{approved, feedback}"}</code> có kiểu
+        qua ĐÚNG con đường <code>resume_workflow()</code> mà{" "}
+        <a href="./workflow.html#workflow-hitl">mọi request_port khác</a> đã dùng — không có cơ chế
+        engine mới nào, đã được chứng minh từ đầu đến cuối bởi P4 của{" "}
+        <code>test_workflow_magentic_plan_signoff.cpp</code>.
+      </>
+    ),
+    s5PlanSignoffNote: (
+      <>
+        <strong>Một vòng lặp sửa lại, không phải một cổng cố định.</strong>{" "}
+        <code>approved == false</code> không phải là ngõ cụt — phản hồi đến ngay như đầu vào KẾ
+        TIẾP của manager (đã chứng minh bởi P4), kèm theo <code>feedback</code>, để một manager
+        body bình thường có thể định tuyến thẳng vào một vòng lập kế hoạch khác thay vì làm hỏng
+        toàn bộ run.
+      </>
+    ),
 
     s6Eyebrow: "examples/19_magentic_builder_live.cpp — chạy thật, với một model thật",
     s6Heading: "Ví dụ minh họa: ba executor, mười dòng",
@@ -546,6 +587,22 @@ export function ApiBuilderReference() {
                 r.does,
               ])}
             />
+          </RevealItem>
+
+          <RevealItem>
+            <p style={{ marginTop: 24, color: "var(--text-dim)", lineHeight: 1.65 }}>{t.s5PlanSignoffIntro}</p>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="workflow/magentic.hpp">{highlightCpp(magenticPlanSignoffSnippet)}</CodePanel>
+          </RevealItem>
+
+          <RevealItem>
+            <p className="gs-note" style={{ marginTop: 20 }}>{t.s5PlanSignoffNote}</p>
+          </RevealItem>
+
+          <RevealItem>
+            <Cite path="tests/test_workflow_magentic_plan_signoff.cpp" />
           </RevealItem>
         </RevealGroup>
 
