@@ -6,6 +6,7 @@ import {
   workflowMinimalSnippet,
   workflowPatterns,
 } from "../data/apiContent";
+import { SITE_BASE } from "../data/content";
 import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
@@ -87,6 +88,14 @@ const copy = {
         <code>on_failure</code> defaults to <code>fail</code>. A two-node chain only has to name
         the executors' typed ports, wire one edge, and set a bound — <code>validate_workflow</code>{" "}
         rejects a missing id, start, or bound, but nothing else here needs an explicit value.
+      </>
+    ),
+    graphShapeBuilderNote: (
+      <>
+        Every pattern on this page is still hand-authored <code>Workflow</code> data above — the
+        fluent alternative that actually constructs these same graphs, <code>WorkflowBuilder</code>{" "}
+        and <code>MagenticWorkflowBuilder</code>, has its own page: see{" "}
+        <a href={`${SITE_BASE}/api/builder.html`}>Builders</a>.
       </>
     ),
 
@@ -207,7 +216,9 @@ const copy = {
         are total functions over any <code>Workflow</code> — never fail, never throw — and a live
         view emits one event per superstep boundary (<code>round</code>, per-executor state,
         in-flight message count) so a running workflow can be watched, not just replayed after the
-        fact.
+        fact. That live stream is <code>WorkflowSupervisor::enable_event_stream()</code> — the
+        same per-node/per-superstep observability documented in full on{" "}
+        <a href={`${SITE_BASE}/api/events.html`}>Events</a>.
       </>
     ),
 
@@ -314,6 +325,14 @@ const copy = {
         Một chuỗi hai node chỉ cần nêu tên các cổng có kiểu của executor, nối một edge, và đặt một
         bound — <code>validate_workflow</code> từ chối khi thiếu id, start, hoặc bound, nhưng
         không có gì khác ở đây cần một giá trị tường minh.
+      </>
+    ),
+    graphShapeBuilderNote: (
+      <>
+        Mọi mẫu trên trang này vẫn là dữ liệu <code>Workflow</code> được viết tay như ở trên — bề
+        mặt fluent thực sự dựng ra đúng những đồ thị này, <code>WorkflowBuilder</code> và{" "}
+        <code>MagenticWorkflowBuilder</code>, có trang riêng của nó: xem{" "}
+        <a href={`${SITE_BASE}/api/builder.html`}>Builders</a>.
       </>
     ),
 
@@ -439,7 +458,10 @@ const copy = {
         là các hàm toàn phần (total function) trên bất kỳ <code>Workflow</code> nào — không bao
         giờ thất bại, không bao giờ throw — và một live view phát ra một sự kiện cho mỗi ranh
         giới superstep (<code>round</code>, trạng thái từng executor, số message đang bay) để
-        một workflow đang chạy có thể được quan sát trực tiếp, không chỉ replay lại sau đó.
+        một workflow đang chạy có thể được quan sát trực tiếp, không chỉ replay lại sau đó. Luồng
+        trực tiếp đó chính là <code>WorkflowSupervisor::enable_event_stream()</code> — cùng khả
+        năng quan sát theo từng node/từng superstep được tài liệu hóa đầy đủ tại{" "}
+        <a href={`${SITE_BASE}/api/events.html`}>Events</a>.
       </>
     ),
 
@@ -571,6 +593,9 @@ export function ApiWorkflowReference() {
             </RevealItem>
             <RevealItem>
               <CodePanel filename="workflow/graph.hpp">{highlightCpp(workflowGraphSnippet)}</CodePanel>
+            </RevealItem>
+            <RevealItem>
+              <p className="gs-note" style={{ marginTop: 20 }}>{t.graphShapeBuilderNote}</p>
             </RevealItem>
           </RevealGroup>
         </RevealGroup>

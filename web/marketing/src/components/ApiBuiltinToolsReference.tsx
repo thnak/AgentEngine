@@ -1,8 +1,11 @@
 import {
+  builtinSkillRegistrationSnippet,
   builtinToolEntries,
   firstPartyCatalogExampleSnippet,
   firstPartySkillsCatalog,
   gh,
+  readContentAmbiguousSourceTestSnippet,
+  readContentDeclarationSnippet,
 } from "../data/apiContent";
 import { SITE_BASE } from "../data/content";
 import { useLang } from "../i18n/LanguageContext";
@@ -61,6 +64,21 @@ const copy = {
         here.
       </>
     ),
+    declarationIntro: (
+      <>
+        <code>read_content</code>'s own declaration, not a paraphrase — the empty{" "}
+        <code>Capabilities&lt;&gt;</code> ceiling from 006 §1 and the dynamic{" "}
+        <code>ctx.capabilities-&gt;find_fs_read(...)</code> check the paragraph above describes,
+        in the actual class:
+      </>
+    ),
+    ambiguousTestIntro: (
+      <>
+        The declaration states the contract; this test proves it, with the tool's own real error
+        codes — neither branch below ever reaches a capability check at all, because the xor
+        contract on <code>Args</code> is enforced first:
+      </>
+    ),
     s2Eyebrow: "core/builtin_skills.hpp + tools/extract_pdf_text.hpp — six real skills",
     s2Heading: "The skills, and what each one is gated behind",
     s2Body: (
@@ -73,6 +91,14 @@ const copy = {
         <code>InlineSkillSource</code>'s two constructors, <code>SkillsProvider</code> mounting,{" "}
         <code>allowed-tools</code> enforcement) lives on the{" "}
         <a href={`${SITE_BASE}/api/skill.html`}>Skill page</a> — this table is just the roster.
+      </>
+    ),
+    registrationIntro: (
+      <>
+        One of the five frontmatter blocks, and the eager-parse constructor that ships all five as
+        a single <code>InlineSkillSource</code> — the same pattern documented in full on the{" "}
+        <a href={`${SITE_BASE}/api/skill.html`}>Skill page</a>, applied here to this engine's own
+        first-party content rather than an example:
       </>
     ),
     skillsTableColumns: ["Skill", "Teaches", "Ships in"],
@@ -144,6 +170,21 @@ const copy = {
         liệu hóa riêng ở đây.
       </>
     ),
+    declarationIntro: (
+      <>
+        Chính khai báo của <code>read_content</code>, không phải một cách diễn giải lại — trần
+        capability tĩnh <code>Capabilities&lt;&gt;</code> RỖNG của 006 §1 và kiểm tra động{" "}
+        <code>ctx.capabilities-&gt;find_fs_read(...)</code> mà đoạn văn trên mô tả, ngay trong
+        chính lớp thật:
+      </>
+    ),
+    ambiguousTestIntro: (
+      <>
+        Khai báo nêu ra hợp đồng; test này chứng minh nó, bằng chính mã lỗi thật của tool — cả hai
+        nhánh bên dưới đều không bao giờ chạm tới một kiểm tra capability nào, vì hợp đồng xor
+        trên <code>Args</code> được thực thi trước tiên:
+      </>
+    ),
     s2Eyebrow: "core/builtin_skills.hpp + tools/extract_pdf_text.hpp — sáu skill thật",
     s2Heading: "Các skill, và mỗi cái bị gate đằng sau điều gì",
     s2Body: (
@@ -157,6 +198,15 @@ const copy = {
         <code>InlineSkillSource</code>, việc mount của <code>SkillsProvider</code>, thực thi{" "}
         <code>allowed-tools</code>) nằm ở{" "}
         <a href={`${SITE_BASE}/api/skill.html`}>trang Skill</a> — bảng này chỉ là danh sách.
+      </>
+    ),
+    registrationIntro: (
+      <>
+        Một trong năm khối frontmatter, và constructor phân tích ngay lập tức (eager-parse) phát
+        hành cả năm skill như một <code>InlineSkillSource</code> duy nhất — cùng mẫu đã được tài
+        liệu hóa đầy đủ ở{" "}
+        <a href={`${SITE_BASE}/api/skill.html`}>trang Skill</a>, áp dụng ở đây cho chính nội dung
+        chính chủ của engine này thay vì một ví dụ:
       </>
     ),
     skillsTableColumns: ["Skill", "Dạy điều gì", "Có trong"],
@@ -239,6 +289,26 @@ export function ApiBuiltinToolsReference() {
           <RevealItem>
             <p className="gs-note" style={{ marginTop: 20 }}>{t.predecessorNote}</p>
           </RevealItem>
+
+          <RevealItem>
+            <p style={{ marginTop: 20, color: "var(--text-dim)", lineHeight: 1.65 }}>{t.declarationIntro}</p>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="include/agentengine/tools/read_content.hpp">
+              {highlightCpp(readContentDeclarationSnippet)}
+            </CodePanel>
+          </RevealItem>
+
+          <RevealItem>
+            <p style={{ marginTop: 20, color: "var(--text-dim)", lineHeight: 1.65 }}>{t.ambiguousTestIntro}</p>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="tests/test_read_content.cpp">
+              {highlightCpp(readContentAmbiguousSourceTestSnippet)}
+            </CodePanel>
+          </RevealItem>
         </RevealGroup>
 
         <RevealGroup>
@@ -260,6 +330,16 @@ export function ApiBuiltinToolsReference() {
                 s.gate,
               ])}
             />
+          </RevealItem>
+
+          <RevealItem>
+            <p style={{ marginTop: 20, color: "var(--text-dim)", lineHeight: 1.65 }}>{t.registrationIntro}</p>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="include/agentengine/core/builtin_skills.hpp">
+              {highlightCpp(builtinSkillRegistrationSnippet)}
+            </CodePanel>
           </RevealItem>
         </RevealGroup>
 

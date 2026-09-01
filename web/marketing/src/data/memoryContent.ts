@@ -694,3 +694,50 @@ MemoryProvider<MockSummarizerClient, InMemoryWorktreeObjectStore, rt::InMemoryAp
 
 // No ambient authority (I2): a provider built without a cap::FsRead for its own mount has no
 // memory at all -- the same way an agent with no NetOut has no network.`;
+
+export const memoryOnContextExampleSnippet = `// examples/08_memory.cpp:107-141 (trimmed) -- seeding a memory item BEFORE any run happens, then
+// the real on_context() call a later turn triggers -- the same call AgentSession itself makes
+MemoryItem preference{};
+preference.kind    = memory_kind::episodic;
+preference.content = "the user asked to enable dark mode";
+preference.tags    = {"ui", "preference"};
+preference.salience = 0.5f;
+preference.origin  = MemoryOrigin{memory_source::user_stated, "run-0", "turn-0", principal};
+write_memory_item(object_store, ref_store, mount, write_cap, preference);
+
+Provider provider{object_store, ref_store, mount, read_cap, write_cap, MockSummarizerClient{},
+                   /*max_injected=*/2};
+
+std::vector<Message> history{user_message("can you turn dark mode back on", "m-1")};
+EffectContext ctx{};
+ctx.principal = principal;
+SessionContext session_ctx{"s-memory", principal, history};
+
+auto injected = test_support::run_task_sync<result<ContextContribution>>(
+    provider.on_context(session_ctx, ctx));
+// injected->messages.front() is TAINTED external content matching "dark mode" by keyword overlap;
+// injected->tools has exactly one entry -- recall(query), for on-demand lookup beyond what's injected`;
+
+export const memoryRoundTripExampleSnippet = `// examples/08_memory.cpp:144-169 (trimmed) -- on_turn_end() writes a NEW item through the
+// declared summarizer, then list_memory_items() reads the SAME worktree straight back
+Message turn_arr[2] = {user_message("remember I like concise answers", "m-2"),
+                        [] {
+                            Message m = user_message("noted", "m-3");
+                            m.role = role::assistant;
+                            return m;
+                        }()};
+EffectContext turn_ctx{};
+turn_ctx.principal  = principal;
+turn_ctx.run_id     = "s-memory:run:1";
+turn_ctx.turn_index = 0;
+test_support::run_task_sync<std::monostate>(
+    provider.on_turn_end(TurnView{std::span<Message const>(turn_arr, 2)}, turn_ctx));
+
+// The round trip closes here -- no separate index, just the same worktree read back:
+auto items = list_memory_items(object_store, ref_store, mount, read_cap);
+for (auto const& item : *items) {
+    if (item.content == "the user prefers dark mode") {
+        // item.origin.source == memory_source::model_inferred -- never user_stated (I3)
+        // item.origin.run_id == "s-memory:run:1" -- attributed to the real run, not anonymous
+    }
+}`;

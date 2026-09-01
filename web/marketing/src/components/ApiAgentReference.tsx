@@ -1,4 +1,11 @@
-import { authoringEntries, minimalAgentSnippet, registerAgentSteps } from "../data/apiContent";
+import {
+  authoringEntries,
+  helloAgentRunSnippet,
+  minimalAgentSnippet,
+  multiTurnSnippet,
+  registerAgentSteps,
+} from "../data/apiContent";
+import { SITE_BASE } from "../data/content";
 import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
@@ -39,6 +46,16 @@ const copy = {
         dispatch. An agent's whole policy set — which chat client, which tools, which
         capabilities, how many turns — is a list of template parameters, compiled and validated
         exactly once by <code>register_agent&lt;A&gt;()</code>.
+      </>
+    ),
+    builderNote: (
+      <>
+        Building an application that USES agents, rather than authoring a new agent TYPE? The rest
+        of this page is a compile-time authoring surface — declare a policy set,{" "}
+        <code>register_agent&lt;A&gt;()</code> validates it. If you just need a running session in
+        app code, <code>QuickstartSessionBuilder</code> (see the{" "}
+        <a href={`${SITE_BASE}/api/builder.html`}>Builder API page</a>) reaches a running{" "}
+        <code>AgentSession</code> in a few chained calls instead of the full CRTP declaration below.
       </>
     ),
     section1Eyebrow: "core/agent.hpp",
@@ -100,6 +117,31 @@ const copy = {
         look enforced.
       </>
     ),
+    section3Eyebrow: "examples/01_hello_agent.cpp, examples/03_multi_turn.cpp",
+    section3Heading: "Running a turn, for real",
+    section3Body: (
+      <>
+        Both examples build <code>agentengine::rt::AgentSession&lt;ChatClientT&gt;</code>{" "}
+        directly from a <code>ChatClient</code> type — not from a registered{" "}
+        <code>Agent&lt;Derived, Policies...&gt;</code>. <code>register_agent&lt;A&gt;()</code>{" "}
+        (above) validates a policy set into <code>AgentMetadata</code>, but nothing in this
+        repo's examples yet constructs a running <code>AgentSession</code> FROM that validated
+        metadata — both surfaces are real, they just aren't wired to each other yet. The fake{" "}
+        <code>JokerChatClient</code> below always answers the same pirate joke, so both examples
+        build and run completely offline, no API key, no network.
+      </>
+    ),
+    section3aEyebrow: "The smallest possible turn",
+    section3bEyebrow: "The SAME session, across two turns",
+    section3bBody: (
+      <>
+        There is no separate "session" object threaded through calls — the{" "}
+        <code>rt::AgentSession</code> itself IS the conversation. Every{" "}
+        <code>start_run()</code> against the same session appends to its own durable{" "}
+        <code>history_</code> (005 §3), and that accumulated history is what the next turn's{" "}
+        <code>ChatClient</code> sees.
+      </>
+    ),
   },
   vi: {
     eyebrow: "Bề mặt viết mã CRTP trong C++ — 002",
@@ -111,6 +153,17 @@ const copy = {
         không có virtual dispatch. Toàn bộ tập policy của một agent — dùng chat client nào, tool
         nào, capability nào, bao nhiêu lượt — là một danh sách tham số template, được biên dịch
         và xác thực đúng một lần bởi <code>register_agent&lt;A&gt;()</code>.
+      </>
+    ),
+    builderNote: (
+      <>
+        Đang xây một ứng dụng SỬ DỤNG agent, thay vì viết ra một KIỂU agent mới? Phần còn lại của
+        trang này là một bề mặt viết mã tại thời điểm biên dịch — khai báo một tập policy,{" "}
+        <code>register_agent&lt;A&gt;()</code> xác thực nó. Nếu bạn chỉ cần một session đang chạy
+        trong code ứng dụng, <code>QuickstartSessionBuilder</code> (xem{" "}
+        <a href={`${SITE_BASE}/api/builder.html`}>trang Builder API</a>) đưa bạn tới một{" "}
+        <code>AgentSession</code> đang chạy chỉ bằng vài lệnh gọi nối chuỗi, thay vì toàn bộ khai
+        báo CRTP bên dưới.
       </>
     ),
     section1Eyebrow: "core/agent.hpp",
@@ -173,6 +226,31 @@ const copy = {
         thắn thay vì để trông như đã được thực thi.
       </>
     ),
+    section3Eyebrow: "examples/01_hello_agent.cpp, examples/03_multi_turn.cpp",
+    section3Heading: "Chạy một lượt, thật sự",
+    section3Body: (
+      <>
+        Cả hai ví dụ đều dựng <code>agentengine::rt::AgentSession&lt;ChatClientT&gt;</code> trực
+        tiếp từ một kiểu <code>ChatClient</code> — không phải từ một{" "}
+        <code>Agent&lt;Derived, Policies...&gt;</code> đã đăng ký. <code>register_agent&lt;A&gt;()</code>{" "}
+        (ở trên) xác thực một tập policy thành <code>AgentMetadata</code>, nhưng chưa có ví dụ
+        nào trong repo này thực sự dựng một <code>AgentSession</code> đang chạy TỪ metadata đã
+        xác thực đó — cả hai bề mặt đều có thật, chỉ là chưa được đấu nối với nhau. Client giả{" "}
+        <code>JokerChatClient</code> bên dưới luôn trả lời cùng một câu đùa về cướp biển, nên cả
+        hai ví dụ đều build và chạy hoàn toàn offline, không cần API key, không cần mạng.
+      </>
+    ),
+    section3aEyebrow: "Lượt chạy nhỏ nhất có thể",
+    section3bEyebrow: "CÙNG một session, qua hai lượt",
+    section3bBody: (
+      <>
+        Không có một đối tượng "session" riêng nào được truyền qua các lệnh gọi — chính{" "}
+        <code>rt::AgentSession</code> LÀ cuộc hội thoại. Mỗi lần <code>start_run()</code> trên
+        cùng một session sẽ nối thêm vào <code>history_</code> bền vững của chính nó (005 §3), và
+        toàn bộ lịch sử tích lũy đó chính là những gì <code>ChatClient</code> ở lượt kế tiếp nhìn
+        thấy.
+      </>
+    ),
   },
 } as const;
 
@@ -193,6 +271,7 @@ export function ApiAgentReference() {
             {tu.statusRealTested}
           </span>
           <p style={{ marginTop: 16 }}>{t.intro}</p>
+          <p className="gs-note" style={{ marginTop: 16 }}>{t.builderNote}</p>
         </div>
 
         {/* ---- 1. A compile-time tag ------------------------------------------------------------ */}
@@ -271,6 +350,26 @@ export function ApiAgentReference() {
 
           <RevealItem>
             <CiteLink id="register-agent" />
+          </RevealItem>
+        </RevealGroup>
+
+        {/* ---- 3. Running a turn, for real ------------------------------------------------------- */}
+        <RevealGroup>
+          <RevealItem>
+            <div className="section-head anchor-target" id="running-a-turn" style={{ marginTop: 56, marginBottom: 22 }}>
+              <span className="eyebrow">{t.section3Eyebrow}</span>
+              <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.section3Heading}</h3>
+              <p>{t.section3Body}</p>
+            </div>
+          </RevealItem>
+          <RevealItem>
+            <span className="eyebrow" style={{ display: "block", marginBottom: 10 }}>{t.section3aEyebrow}</span>
+            <CodePanel filename="examples/01_hello_agent.cpp">{highlightCpp(helloAgentRunSnippet)}</CodePanel>
+          </RevealItem>
+          <RevealItem>
+            <span className="eyebrow" style={{ display: "block", margin: "28px 0 10px" }}>{t.section3bEyebrow}</span>
+            <p style={{ color: "var(--text-dim)", lineHeight: 1.65, marginBottom: 16 }}>{t.section3bBody}</p>
+            <CodePanel filename="examples/03_multi_turn.cpp">{highlightCpp(multiTurnSnippet)}</CodePanel>
           </RevealItem>
         </RevealGroup>
       </div>

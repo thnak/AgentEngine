@@ -6,6 +6,8 @@ import {
   worktreeMergeSnippet,
   worktreeMountSnippet,
   worktreeObjectModelSnippet,
+  worktreeObjectStoreDedupSnippet,
+  worktreeSharedMountSnippet,
   worktreeSharingModes,
   worktreeSubWorktreeSnippet,
   worktreeTurnCommitSnippet,
@@ -73,6 +75,15 @@ const copy = {
         provenance.
       </>
     ),
+    s1DedupNote: (
+      <>
+        <strong><code>put_blob</code>/<code>put_tree</code> take no digest parameter at all</strong>{" "}
+        — the store computes it from the bytes (or from a Tree's canonical serialization) every
+        time, so nothing upstream can ever claim content hashes to a digest it doesn't actually
+        produce. Dedup is checked the same honest way: the same content put twice yields the same
+        digest AND <code>blob_count()</code> stays at 1, not assumed from digest equality alone.
+      </>
+    ),
     s2Eyebrow: "worktree.hpp §3 — sub-worktrees",
     s2Heading: "Every agent gets its own branch of the same disk",
     s2Body: (
@@ -85,6 +96,16 @@ const copy = {
         other's work. That default lives one layer up, in whatever scheduler calls{" "}
         <code>create_sub_worktree</code> — this header always takes <code>mode</code> as an
         explicit argument and infers nothing.
+      </>
+    ),
+    s2SharedNote: (
+      <>
+        <strong>Two sandboxes, one worktree — proven, not asserted.</strong> Minting two{" "}
+        <code>shared</code> executors gives them DISTINCT mount ids but the SAME backing ref: a
+        write through one mount is visible through the other's immediately, because both resolve
+        through the identical <code>Ref</code>. The mount is the sandbox-facing view; the ref is
+        the durable thing underneath it — exactly the "independent of whichever sandbox happens
+        to be attached" property this page opens with.
       </>
     ),
     s3Eyebrow: "worktree.hpp §4 — concurrency and merge",
@@ -216,6 +237,16 @@ const copy = {
         một loại object với cùng nguồn gốc.
       </>
     ),
+    s1DedupNote: (
+      <>
+        <strong><code>put_blob</code>/<code>put_tree</code> không nhận tham số digest nào cả</strong>{" "}
+        — store tự tính nó từ các byte (hoặc từ chuỗi hóa chuẩn tắc của một Tree) mỗi lần, nên
+        không có gì ở tầng trên có thể khai báo nội dung băm ra một digest mà nó thực sự không tạo
+        ra. Dedup được kiểm tra theo đúng cách trung thực đó: cùng nội dung put hai lần cho ra
+        cùng digest VÀ <code>blob_count()</code> vẫn giữ ở 1, không giả định chỉ từ việc digest
+        bằng nhau.
+      </>
+    ),
     s2Eyebrow: "worktree.hpp §3 — sub-worktree",
     s2Heading: "Mỗi agent nhận một nhánh riêng của cùng một ổ đĩa",
     s2Body: (
@@ -228,6 +259,15 @@ const copy = {
         hỏng công việc của nhau. Mặc định đó nằm ở một tầng cao hơn, ở bất kỳ scheduler nào gọi{" "}
         <code>create_sub_worktree</code> — header này luôn nhận <code>mode</code> như một tham số
         tường minh và không suy luận gì cả.
+      </>
+    ),
+    s2SharedNote: (
+      <>
+        <strong>Hai sandbox, một worktree — được chứng minh, không chỉ khẳng định.</strong> Tạo
+        mới hai executor <code>shared</code> cho chúng mount id KHÁC NHAU nhưng CÙNG một ref nền
+        — một lần ghi qua mount này được thấy ngay qua mount kia, vì cả hai đều phân giải tới đúng
+        một <code>Ref</code>. Mount là view hướng-sandbox; ref là thứ bền vững nằm bên dưới nó —
+        đúng thuộc tính "độc lập với bất kỳ sandbox nào đang được gắn" mà trang này mở đầu.
       </>
     ),
     s3Eyebrow: "worktree.hpp §4 — tương tranh và merge",
@@ -387,6 +427,14 @@ export function ApiWorktreeReference() {
                 ))}
             </div>
           </RevealItem>
+          <RevealItem>
+            <CodePanel filename="tests/test_worktree_object_store.cpp">
+              {highlightCpp(worktreeObjectStoreDedupSnippet)}
+            </CodePanel>
+          </RevealItem>
+          <RevealItem>
+            <p className="gs-note" style={{ marginTop: 20 }}>{t.s1DedupNote}</p>
+          </RevealItem>
         </RevealGroup>
 
         <RevealGroup>
@@ -399,6 +447,14 @@ export function ApiWorktreeReference() {
           </RevealItem>
           <RevealItem>
             <CodePanel filename="worktree.hpp">{highlightCpp(worktreeSubWorktreeSnippet)}</CodePanel>
+          </RevealItem>
+          <RevealItem>
+            <CodePanel filename="tests/test_workflow_worktree_scoping.cpp">
+              {highlightCpp(worktreeSharedMountSnippet)}
+            </CodePanel>
+          </RevealItem>
+          <RevealItem>
+            <p className="gs-note" style={{ marginTop: 20 }}>{t.s2SharedNote}</p>
           </RevealItem>
         </RevealGroup>
 

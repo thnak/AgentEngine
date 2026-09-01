@@ -5,10 +5,12 @@ import {
   memoryGapRows,
   memoryInjectionSnippet,
   memoryItemSnippet,
+  memoryOnContextExampleSnippet,
   memoryProofRows,
   memoryProviderDefaultSnippet,
   memoryProviderWiringSnippet,
   memoryRankSnippet,
+  memoryRoundTripExampleSnippet,
   memorySourceRows,
   memoryStorageSnippet,
 } from "../data/memoryContent";
@@ -146,6 +148,16 @@ const copy = {
         aspiration.
       </>
     ),
+    s3ExampleLabel: "examples/08_memory.cpp — what a caller actually writes",
+    s3ExampleBody: (
+      <>
+        The header excerpts above are <code>memory_provider.hpp</code>'s own internals. Here is
+        the calling code: <code>examples/08_memory.cpp</code> seeds one <code>MemoryItem</code>{" "}
+        before any run happens, then calls <code>on_context()</code> directly against a{" "}
+        <code>SessionContext</code> it builds itself — the exact same call{" "}
+        <code>AgentSession</code> makes on a caller's behalf every turn.
+      </>
+    ),
     s3Note: (
       <>
         <strong>The forgery surface this had to close on its own (ADR-046).</strong> Retrieved
@@ -182,6 +194,17 @@ const copy = {
         <code>max_injected</code> is left at its default of 3. A custom store backend, a dedicated
         summarizer, or a non-default injection count are all real options — just not ones the
         common case needs.
+      </>
+    ),
+    s4RoundtripLabel: "examples/08_memory.cpp — the round trip closes",
+    s4RoundtripBody: (
+      <>
+        The same example closes the loop: <code>on_turn_end()</code> extracts and writes a new
+        item through the declared summarizer, and <code>list_memory_items()</code> then reads the
+        SAME worktree straight back — no separate index to fall out of sync. The read-back
+        confirms <code>origin.source</code> is stamped <code>model_inferred</code>, never{" "}
+        <code>user_stated</code> (I3), and <code>origin.run_id</code> carries the real run that
+        produced it, not an anonymous background write.
       </>
     ),
     s4Note: (
@@ -349,6 +372,16 @@ const copy = {
         từng byte thành một tuyên bố kiểm chứng được, chứ không phải một nguyện vọng.
       </>
     ),
+    s3ExampleLabel: "examples/08_memory.cpp — mã caller thực sự viết",
+    s3ExampleBody: (
+      <>
+        Các đoạn trích header ở trên là nội bộ của chính <code>memory_provider.hpp</code>. Đây là
+        mã phía caller: <code>examples/08_memory.cpp</code> gieo một <code>MemoryItem</code>{" "}
+        trước khi bất kỳ run nào chạy, rồi gọi thẳng <code>on_context()</code> với một{" "}
+        <code>SessionContext</code> tự nó dựng lên — đúng cùng lệnh gọi mà{" "}
+        <code>AgentSession</code> thực hiện thay cho caller ở mỗi lượt.
+      </>
+    ),
     s3Note: (
       <>
         <strong>Bề mặt giả mạo mà chính cơ chế này phải tự đóng lại (ADR-046).</strong> Nội dung
@@ -385,6 +418,17 @@ const copy = {
         một model trích xuất riêng, và <code>max_injected</code> được giữ ở giá trị mặc định là 3.
         Một store backend tùy chỉnh, một summarizer riêng, hay một số lượng tiêm khác mặc định đều
         là những lựa chọn có thật — chỉ là không phải thứ trường hợp phổ biến cần tới.
+      </>
+    ),
+    s4RoundtripLabel: "examples/08_memory.cpp — vòng lặp khép lại",
+    s4RoundtripBody: (
+      <>
+        Cùng ví dụ đó khép kín vòng lặp: <code>on_turn_end()</code> trích xuất và ghi một mục mới
+        thông qua summarizer đã khai báo, rồi <code>list_memory_items()</code> đọc lại đúng cùng
+        worktree đó — không có chỉ mục riêng nào để lệch pha. Việc đọc lại xác nhận{" "}
+        <code>origin.source</code> được đóng dấu <code>model_inferred</code>, không bao giờ là{" "}
+        <code>user_stated</code> (I3), và <code>origin.run_id</code> mang đúng run thật đã tạo ra
+        nó, không phải một lần ghi nền vô danh.
       </>
     ),
     s4Note: (
@@ -588,6 +632,19 @@ export function ApiMemoryReference() {
           </RevealItem>
 
           <RevealItem>
+            <div className="gs-recommend">
+              <span className="gs-recommend-label">{t.s3ExampleLabel}</span>
+              <p>{t.s3ExampleBody}</p>
+            </div>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="examples/08_memory.cpp">
+              {highlightCpp(memoryOnContextExampleSnippet)}
+            </CodePanel>
+          </RevealItem>
+
+          <RevealItem>
             <p className="gs-note" style={{ marginTop: 20, borderLeftColor: "var(--accent-pink)" }}>
               {t.s3Note}
             </p>
@@ -635,6 +692,19 @@ export function ApiMemoryReference() {
           <RevealItem>
             <CodePanel filename="examples/08_memory.cpp">
               {highlightCpp(memoryProviderWiringSnippet)}
+            </CodePanel>
+          </RevealItem>
+
+          <RevealItem>
+            <div className="gs-recommend">
+              <span className="gs-recommend-label">{t.s4RoundtripLabel}</span>
+              <p>{t.s4RoundtripBody}</p>
+            </div>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="examples/08_memory.cpp">
+              {highlightCpp(memoryRoundTripExampleSnippet)}
             </CodePanel>
           </RevealItem>
 

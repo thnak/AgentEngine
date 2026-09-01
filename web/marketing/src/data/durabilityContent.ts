@@ -21,6 +21,7 @@ import type { Lang } from "../i18n/LanguageContext";
 export const durabilitySections: Record<Lang, { id: string; label: string }[]> = {
   en: [
     { id: "du-checkpoint", label: "What a checkpoint carries" },
+    { id: "du-workflow-checkpoint", label: "Workflow-level checkpoint/resume" },
     { id: "du-delete", label: "Delete, tombstone, receipt" },
     { id: "du-suspension", label: "Suspension & wake conditions" },
     { id: "du-effects", label: "Idempotency key & effect journal" },
@@ -33,6 +34,7 @@ export const durabilitySections: Record<Lang, { id: string; label: string }[]> =
   ],
   vi: [
     { id: "du-checkpoint", label: "Checkpoint mang theo những gì" },
+    { id: "du-workflow-checkpoint", label: "Checkpoint/resume ở cấp workflow" },
     { id: "du-delete", label: "Xóa, bia mộ, biên nhận" },
     { id: "du-suspension", label: "Treo & điều kiện đánh thức" },
     { id: "du-effects", label: "Khóa idempotency & nhật ký hiệu ứng" },
@@ -57,6 +59,16 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
         "rt::AgentSessionRecord carries seven fields and nothing else: session_id, principal_id, principal_tenant_id, a deleted flag, run_counter, turn_index, and the run's open Interactions. It is encoded as JSON through the session's own hand-written codec (never a reflection macro) and handed to a host-supplied rt::SessionStore as opaque bytes. History, typed session state, metadata, standing effects and pending CodeAct asks are all deliberately outside it — each for a named reason, not by omission. save_agent_session_snapshot() reads that record under the SAME rt::AsyncMutex every public entry point holds, so a checkpoint can never observe a half-mutated session; CheckpointCadence<N>::due() decides whether a given turn boundary writes at all, with the turn counter owned by the caller because AgentSession has no ambient store access (I2).",
       cite: "include/agentengine/rt/agent_session.hpp:389",
       href: gh("include/agentengine/rt/agent_session.hpp"),
+    },
+    {
+      id: "du-workflow-checkpoint",
+      status: "real",
+      tag: "rt::WorkflowCheckpointManager<StoreT> — ADR-149, issue #28",
+      title: "The workflow-level counterpart: attach() to auto-checkpoint, resume_or_start() to pick a run back up",
+      body:
+        "AgentSessionRecord above is session-scoped bookkeeping; a Workflow run has its own, separate durability story that rides the SAME SessionStore concept rather than inventing a second one. WorkflowCheckpointManager<StoreT> is a thin wrapper over already-real save_workflow_checkpoint()/load_workflow_checkpoint(): attach(sup) installs a checkpoint hook that persists automatically after every round, so a caller never hand-writes a set_checkpoint_hook() closure, and resume_or_start(store, run_id, sup, graph, bodies) is \"resume if a checkpoint exists for run_id, else start fresh\" as one call, returning which one happened. examples/20_workflow_checkpoint_resume.cpp proves the whole story by actually discarding the original WorkflowSupervisor and FileSessionStore handle, not just re-reading the same objects: a workflow suspended at a request_port gate resumes, from nothing but a freshly reopened on-disk store and the run's own id, into a BRAND-NEW supervisor holding the SAME open interaction the original run left waiting. tests/test_rt_workflow_checkpoint_manager.cpp adds the fail-closed guard this simple function-only example doesn't exercise: an agent-kind or sub_workflow-kind executor is refused rather than silently checkpointed incompletely.",
+      cite: "include/agentengine/rt/workflow_checkpoint_manager.hpp",
+      href: gh("include/agentengine/rt/workflow_checkpoint_manager.hpp"),
     },
     {
       id: "du-delete",
@@ -159,6 +171,16 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
         "rt::AgentSessionRecord mang đúng bảy trường và không gì khác: session_id, principal_id, principal_tenant_id, cờ deleted, run_counter, turn_index, và các Interaction đang mở của run. Nó được mã hóa JSON bằng codec viết tay của chính session (không hề dùng macro phản chiếu) rồi trao cho một rt::SessionStore do host cung cấp dưới dạng byte mờ. Lịch sử hội thoại, state có kiểu, metadata, hiệu ứng thường trực và các câu hỏi CodeAct đang chờ đều cố ý nằm ngoài — mỗi thứ đều có lý do được nêu tên, không phải bị bỏ quên. save_agent_session_snapshot() đọc bản ghi đó dưới CÙNG một rt::AsyncMutex mà mọi điểm vào công khai đều giữ, nên một checkpoint không bao giờ nhìn thấy session đang bị sửa dở; CheckpointCadence<N>::due() quyết định một mốc lượt có ghi hay không, còn bộ đếm lượt thuộc về caller vì AgentSession không có quyền truy cập store ngầm (I2).",
       cite: "include/agentengine/rt/agent_session.hpp:389",
       href: gh("include/agentengine/rt/agent_session.hpp"),
+    },
+    {
+      id: "du-workflow-checkpoint",
+      status: "real",
+      tag: "rt::WorkflowCheckpointManager<StoreT> — ADR-149, issue #28",
+      title: "Bản đối ứng ở cấp workflow: attach() để tự checkpoint, resume_or_start() để tiếp tục một run",
+      body:
+        "AgentSessionRecord ở trên là sổ sách theo phạm vi session; một run Workflow có câu chuyện bền vững riêng của nó, đi trên CÙNG một khái niệm SessionStore thay vì bịa ra một cái thứ hai. WorkflowCheckpointManager<StoreT> là một lớp bọc mỏng quanh save_workflow_checkpoint()/load_workflow_checkpoint() vốn đã có thật: attach(sup) cài một hook checkpoint tự động lưu sau mỗi round, nên caller không bao giờ phải tự viết một closure set_checkpoint_hook(), còn resume_or_start(store, run_id, sup, graph, bodies) là \"tiếp tục nếu tồn tại checkpoint cho run_id, nếu không thì bắt đầu mới\" gói trong một lệnh gọi, trả về cái nào đã xảy ra. examples/20_workflow_checkpoint_resume.cpp chứng minh toàn bộ câu chuyện bằng cách thực sự vứt bỏ WorkflowSupervisor gốc và handle FileSessionStore gốc, chứ không chỉ đọc lại cùng đối tượng: một workflow treo tại một cổng request_port tiếp tục, từ không gì khác ngoài một store trên đĩa vừa mở lại và chính id của run, vào một supervisor HOÀN TOÀN MỚI đang giữ đúng cùng interaction đang mở mà run gốc để lại. tests/test_rt_workflow_checkpoint_manager.cpp thêm vào điểm bảo vệ từ-chối-đóng mà ví dụ đơn giản chỉ-toàn-hàm này không thực hiện: một executor kiểu agent hay sub_workflow bị từ chối thay vì bị checkpoint thiếu sót một cách âm thầm.",
+      cite: "include/agentengine/rt/workflow_checkpoint_manager.hpp",
+      href: gh("include/agentengine/rt/workflow_checkpoint_manager.hpp"),
     },
     {
       id: "du-delete",
@@ -764,3 +786,87 @@ auto armed = session.schedule_wakeup(std::chrono::minutes{30}, "follow-up", now)
 for (auto const& due : session.due_standing_effects(clock_now())) { /* host resumes */ }
 
 // NOT durable: StandingEffect is in-memory only and is not an AgentSessionRecord field.`;
+
+export const checkpointRoundTripSnippet = `// examples/12_session_checkpoint.cpp:101-143 (trimmed) -- snapshot, throw the instance away,
+// reconstruct identity on a BRAND-NEW instance from the loaded record
+using Session = AgentSession<CannedChatClient>;
+InMemorySessionStore store;
+
+Session session;
+session.initialize("s-checkpoint", Principal{"p-demo", "tenant-9"});
+session.emplace_chat_client();
+drive(session.start_run(StartRun{user_message("hi")}));
+
+save_agent_session_snapshot(session, store);
+
+// ---- simulate a restart: the old instance's identity is gone ------------------------------------
+auto loaded = load_agent_session_snapshot(store, "s-checkpoint");
+
+Session fresh_session;                 // a FRESH instance -- \`session\` above is never reused
+fresh_session.emplace_chat_client();
+// fresh_session.session_id() is empty here -- it has no identity of its own yet
+
+fresh_session.restore_from_record(*loaded);
+// fresh_session.session_id() == "s-checkpoint"                       -- bit-identical
+// fresh_session.principal() == {"p-demo", "tenant-9"}                -- bit-identical too
+
+// The named, real gap: conversation history is NOT part of this record.
+// fresh_session.history().empty() -- even though the original had 2 messages before checkpointing`;
+
+export const workflowCheckpointResumeSnippet = `// examples/20_workflow_checkpoint_resume.cpp:130-167 (trimmed) -- ADR-149, issue #28: a workflow
+// suspends, the process is treated as gone, and a BRAND-NEW WorkflowSupervisor resumes it. The
+// mechanism is a thin wrapper over the SAME save/load_workflow_checkpoint() the SessionStore
+// concept above already provides -- not a second persistence mechanism.
+{
+    FileSessionStore store(root);
+    WorkflowSupervisor sup;
+    sup.initialize(wf, bodies);
+    WorkflowCheckpointManager<FileSessionStore> mgr(store);
+    mgr.attach(sup);   // installs a checkpoint hook that auto-persists after every round
+
+    WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("draft the quarterly report")}));
+    // r.status == workflow_status::suspended -- waiting at the review gate
+    run_id         = sup.run_id();
+    interaction_id = r.open_interactions.at(0).interaction_id;
+}  // sup and store both go out of scope here -- nothing survives in memory past this point
+
+{
+    FileSessionStore reopened(root);   // a FRESH handle onto the same on-disk directory
+    WorkflowSupervisor sup;             // a FRESH supervisor -- the original above is gone
+    result<bool> resumed = WorkflowCheckpointManager<FileSessionStore>::resume_or_start(
+        reopened, run_id, sup, wf, bodies);
+    // *resumed == true -- the on-disk checkpoint was found; nothing started fresh
+
+    WorkflowResult r = drive(
+        sup.resume_workflow(ResumeWorkflow{interaction_id, text_message("approved by reviewer"), {}}));
+    // r.status == workflow_status::completed, and the resolved interaction is the SAME one --
+    // never a re-derived id -- the run picks up exactly where the original process left it
+}`;
+
+export const poisonRunPolicySnippet = `// tests/test_rt_agent_session_identity_and_admission.cpp:108-116,437-462 (trimmed) -- a faithful,
+// dependency-free copy of agentengine::PoisonRunPolicy<N> (core/agent_session.hpp) -- see the
+// test file's own banner for why it's copied rather than included
+template <std::uint32_t MaxAttempts>
+    requires(MaxAttempts >= 1)
+struct PoisonRunPolicy {
+    [[nodiscard]] static constexpr bool is_quarantined(std::uint32_t consecutive_failures) noexcept {
+        return consecutive_failures >= MaxAttempts;
+    }
+};
+
+using Policy = PoisonRunPolicy<3>;
+
+AgentSession<AlwaysFailingChatClient> session;   // every single chat() call fails -- the worst case
+session.initialize("s-poison", Principal{"p-remy", ""});
+session.emplace_chat_client();
+
+std::uint32_t consecutive_failures = 0;
+for (int attempt = 1; attempt <= 10; ++attempt) {
+    auto outcome = drive(session.start_run(StartRun{user_message("t" + std::to_string(attempt))}));
+    consecutive_failures = outcome.has_value() ? 0 : consecutive_failures + 1;
+    if (Policy::is_quarantined(consecutive_failures)) break;   // quarantines at EXACTLY attempt 3
+}
+
+// session.history().size() == 3        -- one entry per failed attempt, fully intact and inspectable
+// session.session_id() == "s-poison"   -- quarantine never calls delete/clear on the session itself,
+//                                          it is a HOST-side bookkeeping decision, not an engine one`;

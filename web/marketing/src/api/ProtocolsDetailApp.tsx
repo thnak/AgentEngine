@@ -5,12 +5,14 @@ const sections = {
   en: [
     { id: "protocol-layering", label: "Where L4 sits" },
     { id: "protocol-transport-gap", label: "The shared transport gap" },
+    { id: "protocol-wire-projection", label: "AG-UI/A2A wire projection" },
     { id: "declarative-compiler", label: "Declarative compiler" },
     { id: "protocol-status-table", label: "Status, by surface" },
   ],
   vi: [
     { id: "protocol-layering", label: "L4 nằm ở đâu" },
     { id: "protocol-transport-gap", label: "Khoảng trống transport dùng chung" },
+    { id: "protocol-wire-projection", label: "Phép chiếu wire AG-UI/A2A" },
     { id: "declarative-compiler", label: "Trình biên dịch khai báo" },
     { id: "protocol-status-table", label: "Trạng thái, theo từng bề mặt" },
   ],

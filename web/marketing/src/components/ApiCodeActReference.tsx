@@ -1,4 +1,7 @@
 import {
+  agentFilesDataGeneratedSnippet,
+  agentFilesDataUsageSnippet,
+  agentLibraryRegistrySnippet,
   agentModuleRegistry,
   codeActBridgeConfigSnippet,
   codeActEntries,
@@ -70,11 +73,43 @@ const copy = {
       </>
     ),
     moduleTableColumns: ["Module", "Purpose", "Status", "Gated by"],
+    registrySnippetIntro: (
+      <>
+        The table above IS this struct, rendered — but the table alone can't show what makes three
+        of nine "real": a <code>ModuleDescriptor</code> entry existing here is necessary but not
+        sufficient. <code>agent.tools</code>/<code>files</code>/<code>data</code> also have a real{" "}
+        <code>*_codegen.hpp</code> generator and a live bootstrap call; the other six have only the
+        row below and nothing else in the codebase.
+      </>
+    ),
     s2Eyebrow: "The two real bridges",
     s2Heading: (
       <>
         <code>agent.tools</code> and <code>agent.files</code>/<code>agent.data</code> — real
         code, proven against a real embedded interpreter
+      </>
+    ),
+    s2bEyebrow: "src/backends/native_jail/agent_files_data_codegen.hpp",
+    s2bHeading: "The other real bridge, same generated-source shape",
+    s2bBody: (
+      <>
+        Unlike <code>agent.tools</code>, this header isn't a generator over caller-supplied
+        schema — 026 §5's function set is fixed, so it's a pair of static Python source strings.
+        Every <code>_ae_internal.open()</code>/<code>_ae_internal.listdir()</code> call inside them
+        still goes through the SAME per-call <code>cap::FsRead</code>/<code>cap::FsWrite</code>{" "}
+        check the raw primitives already enforce — <code>agent.files</code>/<code>agent.data</code>{" "}
+        widen nothing, they're convenience only. The two generators (<code>read_json_lines</code>,{" "}
+        <code>read_csv_rows</code>) never materialize a whole file, which is what makes 026 §5's
+        "without loading them wholly into memory" claim literal.
+      </>
+    ),
+    s2bUsageEyebrow: "tests/test_mediated_python_runner_agent_files_data.cpp",
+    s2bUsageBody: (
+      <>
+        Proven against a real embedded interpreter and a real scratch mount directory, not just
+        described: <code>agent.files.input</code> reads real bytes back,{" "}
+        <code>agent.files.artifact</code> writes a real file that lands on the host disk, and{" "}
+        <code>agent.files.list</code> reports real directory entries.
       </>
     ),
     s3Eyebrow: "What a bridged tool looks like from inside CodeAct",
@@ -214,11 +249,45 @@ const copy = {
       </>
     ),
     moduleTableColumns: ["Module", "Mục đích", "Trạng thái", "Kiểm soát bởi"],
+    registrySnippetIntro: (
+      <>
+        Bảng ở trên CHÍNH LÀ struct này, được hiển thị ra — nhưng riêng bảng thì không cho thấy
+        điều gì làm cho ba trong chín module là "thật": việc một mục <code>ModuleDescriptor</code>{" "}
+        tồn tại ở đây là điều kiện cần, không phải đủ. <code>agent.tools</code>/<code>files</code>/
+        <code>data</code> còn có một generator <code>*_codegen.hpp</code> thật và một lệnh gọi
+        bootstrap sống thật; sáu module còn lại chỉ có đúng hàng này, không có gì khác trong
+        codebase.
+      </>
+    ),
     s2Eyebrow: "Hai bridge có thật",
     s2Heading: (
       <>
         <code>agent.tools</code> và <code>agent.files</code>/<code>agent.data</code> — mã có
         thật, đã chứng minh trên một trình thông dịch nhúng thật
+      </>
+    ),
+    s2bEyebrow: "src/backends/native_jail/agent_files_data_codegen.hpp",
+    s2bHeading: "Bridge có thật thứ hai, cùng hình dạng mã nguồn được sinh ra",
+    s2bBody: (
+      <>
+        Khác với <code>agent.tools</code>, header này không phải một generator dựa trên schema do
+        caller cung cấp — tập hàm của 026 §5 là cố định, nên đây là một cặp chuỗi mã nguồn Python
+        tĩnh. Mỗi lệnh gọi <code>_ae_internal.open()</code>/<code>_ae_internal.listdir()</code> bên
+        trong chúng vẫn đi qua CHÍNH kiểm tra <code>cap::FsRead</code>/<code>cap::FsWrite</code>{" "}
+        theo từng lệnh gọi mà các primitive thô đã thực thi —{" "}
+        <code>agent.files</code>/<code>agent.data</code> không mở rộng bất cứ điều gì, chỉ là
+        tiện ích. Hai generator (<code>read_json_lines</code>, <code>read_csv_rows</code>) không
+        bao giờ nạp toàn bộ một file vào bộ nhớ, khiến tuyên bố "không nạp toàn bộ vào bộ nhớ" của
+        026 §5 là nghĩa đen.
+      </>
+    ),
+    s2bUsageEyebrow: "tests/test_mediated_python_runner_agent_files_data.cpp",
+    s2bUsageBody: (
+      <>
+        Đã chứng minh trên một trình thông dịch nhúng thật và một thư mục mount scratch thật,
+        không chỉ được mô tả: <code>agent.files.input</code> đọc lại đúng byte thật,{" "}
+        <code>agent.files.artifact</code> ghi một file thật xuống đĩa host, và{" "}
+        <code>agent.files.list</code> báo cáo đúng các entry thư mục thật.
       </>
     ),
     s3Eyebrow: "Một tool qua bridge trông ra sao từ bên trong CodeAct",
@@ -377,6 +446,14 @@ export function ApiCodeActReference() {
               ])}
             />
           </RevealItem>
+          <RevealItem>
+            <p className="gs-note" style={{ marginTop: 24 }}>{t.registrySnippetIntro}</p>
+          </RevealItem>
+          <RevealItem>
+            <CodePanel filename="trust/agent_library_manifest.hpp">
+              {highlightCpp(agentLibraryRegistrySnippet)}
+            </CodePanel>
+          </RevealItem>
         </RevealGroup>
 
         <RevealGroup>
@@ -402,6 +479,29 @@ export function ApiCodeActReference() {
                 </article>
               ))}
             </div>
+          </RevealItem>
+          <RevealItem>
+            <div className="section-head anchor-target" style={{ marginTop: 40, marginBottom: 16 }} id="codeact-files-data-generated">
+              <span className="eyebrow">{t.s2bEyebrow}</span>
+              <h3 style={{ fontSize: "1.2rem", margin: "10px 0" }}>{t.s2bHeading}</h3>
+              <p>{t.s2bBody}</p>
+            </div>
+          </RevealItem>
+          <RevealItem>
+            <CodePanel filename="agent.files / agent.data (generated)">
+              {highlightCpp(agentFilesDataGeneratedSnippet)}
+            </CodePanel>
+          </RevealItem>
+          <RevealItem>
+            <p className="gs-note" style={{ marginTop: 24, marginBottom: 0 }}>
+              <span className="eyebrow" style={{ display: "block", marginBottom: 8 }}>{t.s2bUsageEyebrow}</span>
+              {t.s2bUsageBody}
+            </p>
+          </RevealItem>
+          <RevealItem>
+            <CodePanel filename="test_mediated_python_runner_agent_files_data.cpp">
+              {highlightCpp(agentFilesDataUsageSnippet)}
+            </CodePanel>
           </RevealItem>
         </RevealGroup>
 

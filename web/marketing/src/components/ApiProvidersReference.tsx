@@ -225,6 +225,14 @@ const copy = {
     s7Eyebrow: "ADR-019 — decoded and pushed as the bytes arrive",
     s7SubOpenAI: "OpenAI-compatible: data: lines only",
     s7SubAnthropic: "Anthropic: named events",
+    s7Note: (
+      <>
+        This is what's actually on the wire, per backend. For the primitive every backend decodes
+        onto (<code>chat_stream()</code>, <code>agentengine::stream&lt;T&gt;</code>) and for
+        streaming a whole <code>AgentSession</code> turn loop, see the{" "}
+        <a href={`${SITE_BASE}/api/streaming.html`}>Streaming</a> page.
+      </>
+    ),
 
     s8Eyebrow: "004 §5-§6 / I5 — the recorded seam",
     s8Note: (
@@ -405,6 +413,14 @@ const copy = {
     s7Eyebrow: "ADR-019 — giải mã và đẩy đi ngay khi byte tới nơi",
     s7SubOpenAI: "Tương thích OpenAI: chỉ các dòng data:",
     s7SubAnthropic: "Anthropic: sự kiện có tên",
+    s7Note: (
+      <>
+        Đây là những gì thực sự nằm trên dây, theo từng backend. Để xem nguyên hàm mà mọi backend
+        đều giải mã về (<code>chat_stream()</code>, <code>agentengine::stream&lt;T&gt;</code>) và
+        cách streaming toàn bộ vòng lặp turn của một <code>AgentSession</code>, xem trang{" "}
+        <a href={`${SITE_BASE}/api/streaming.html`}>Streaming</a>.
+      </>
+    ),
 
     s8Eyebrow: "004 §5-§6 / I5 — ranh giới được ghi lại",
     s8Note: (
@@ -690,6 +706,9 @@ export function ApiProvidersReference() {
                 </CodePanel>
               </div>
             </div>
+          </RevealItem>
+          <RevealItem>
+            <p className="gs-note">{t.s7Note}</p>
           </RevealItem>
           <RevealItem>
             <CiteLink id="streaming" />

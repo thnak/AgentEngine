@@ -1,4 +1,5 @@
 import {
+  agentSessionEventStreamSnippet,
   approvalExampleSnippet,
   chatClientSwapSnippet,
   composedProviderExampleSnippet,
@@ -483,6 +484,42 @@ const copy = {
         Nothing else about the agent — tools, approval, context providers — changes either way.
       </>
     ),
+
+    s7Eyebrow: "examples/29_agent_session_events.cpp — ADR-034 · 013 §1",
+    s7Heading: (
+      <>
+        Watching a run live: <code>set_stream_model_calls()</code> +{" "}
+        <code>enable_event_stream()</code>
+      </>
+    ),
+    s7Body: (
+      <>
+        Every <code>start_run()</code> call above resolves to one returned{" "}
+        <code>AgentResponse</code> — nothing about the turn loop's own progress is visible while
+        it runs. <code>session.set_stream_model_calls(true)</code> opts the SAME session into the
+        streaming turn loop instead of dispatching to the plain <code>chat()</code> method;{" "}
+        <code>session.enable_event_stream()</code>, subscribed BEFORE <code>start_run()</code>{" "}
+        (there is nothing to attach events to otherwise), hands back a real{" "}
+        <code>stream&lt;RunEvent&gt;</code> reporting the whole lifecycle —{" "}
+        <code>run_started</code>/<code>turn_started</code>/<code>model_call_started</code>/
+        <code>model_delta</code>/<code>model_call_finished</code>/<code>turn_finished</code>/
+        <code>run_finished</code>, plus one <code>run_event_kind::warning</code> right after{" "}
+        <code>run_started</code> since opting into streaming is itself an operator-visible
+        choice. This same <code>AgentSession</code> method — watching a run's whole lifecycle
+        live, not just its model-text deltas — is documented in full, with every event kind and
+        the AG-UI/A2A wire projection built on top of it, on the{" "}
+        <a href={`${SITE_BASE}/api/events.html`}>Events API page</a>.
+      </>
+    ),
+    s7Note: (
+      <>
+        <strong>The event stream outlives any one call.</strong> It stays open for the session's
+        whole lifetime — draining it is "take whatever is already buffered," never "wait for it
+        to close" the way a single <code>chat_stream()</code> call is. Mirrors{" "}
+        <code>tests/test_rt_agent_session_streaming_and_events.cpp</code>'s S1 (streamed deltas →{" "}
+        <code>model_delta</code> events) and A2 (the full non-streaming success-path sequence).
+      </>
+    ),
   },
   vi: {
     eyebrow: "Lõi Agent — L2",
@@ -931,6 +968,43 @@ const copy = {
         warning một lần duy nhất ngay lần đầu một run thực sự đi qua nó — xem{" "}
         <code>GatewaySession</code> trong đoạn mã trên. Không có gì khác của agent — tool,
         approval, context provider — thay đổi ở cả hai cách.
+      </>
+    ),
+
+    s7Eyebrow: "examples/29_agent_session_events.cpp — ADR-034 · 013 §1",
+    s7Heading: (
+      <>
+        Theo dõi một run trực tiếp: <code>set_stream_model_calls()</code> +{" "}
+        <code>enable_event_stream()</code>
+      </>
+    ),
+    s7Body: (
+      <>
+        Mọi lệnh gọi <code>start_run()</code> ở trên đều hội tụ về đúng một{" "}
+        <code>AgentResponse</code> được trả về — không gì về tiến trình của chính vòng lặp lượt
+        chạy hiển thị được trong lúc nó đang chạy. <code>session.set_stream_model_calls(true)</code>{" "}
+        đưa CHÍNH session đó vào vòng lặp lượt chạy dạng streaming thay vì gọi qua phương thức{" "}
+        <code>chat()</code> thuần; <code>session.enable_event_stream()</code>, được đăng ký TRƯỚC{" "}
+        <code>start_run()</code> (nếu không sẽ chẳng có gì để gắn sự kiện vào), trả về một{" "}
+        <code>stream&lt;RunEvent&gt;</code> thật báo cáo toàn bộ vòng đời —{" "}
+        <code>run_started</code>/<code>turn_started</code>/<code>model_call_started</code>/
+        <code>model_delta</code>/<code>model_call_finished</code>/<code>turn_finished</code>/
+        <code>run_finished</code>, cộng thêm một <code>run_event_kind::warning</code> ngay sau{" "}
+        <code>run_started</code> vì việc bật streaming tự nó là một lựa chọn mà người vận hành
+        cần thấy được. Đúng phương thức <code>AgentSession</code> này — theo dõi toàn bộ vòng đời
+        của một run trực tiếp, không chỉ các delta văn bản của model — được tài liệu hóa đầy đủ,
+        cùng mọi loại sự kiện và phép chiếu wire AG-UI/A2A dựng trên nó, tại{" "}
+        <a href={`${SITE_BASE}/api/events.html`}>trang Events API</a>.
+      </>
+    ),
+    s7Note: (
+      <>
+        <strong>Luồng sự kiện sống lâu hơn bất kỳ một lệnh gọi nào.</strong> Nó vẫn mở trong suốt
+        vòng đời của session — rút cạn nó nghĩa là "lấy bất cứ thứ gì đã có sẵn trong buffer",
+        không bao giờ là "chờ nó đóng lại" như một lệnh <code>chat_stream()</code> đơn lẻ. Phản
+        ánh đúng S1 (các delta streaming → sự kiện <code>model_delta</code>) và A2 (toàn bộ chuỗi
+        thành công không streaming) của{" "}
+        <code>tests/test_rt_agent_session_streaming_and_events.cpp</code>.
       </>
     ),
   },
@@ -1429,6 +1503,31 @@ export function ApiRuntimeReference() {
 
           <RevealItem>
             <CiteLink id="chat-clients" />
+          </RevealItem>
+        </RevealGroup>
+
+        {/* ---- 7. Watching a run live (event stream) --------------------------------------------- */}
+        <RevealGroup>
+          <RevealItem>
+            <div className="section-head anchor-target" id="event-stream" style={{ marginTop: 56, marginBottom: 22 }}>
+              <span className="eyebrow">{t.s7Eyebrow}</span>
+              <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s7Heading}</h3>
+              <p>{t.s7Body}</p>
+            </div>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="examples/29_agent_session_events.cpp">
+              {highlightCpp(agentSessionEventStreamSnippet)}
+            </CodePanel>
+          </RevealItem>
+
+          <RevealItem>
+            <p className="gs-note" style={{ marginTop: 20 }}>{t.s7Note}</p>
+          </RevealItem>
+
+          <RevealItem>
+            <CiteLink id="event-stream" />
           </RevealItem>
         </RevealGroup>
       </div>

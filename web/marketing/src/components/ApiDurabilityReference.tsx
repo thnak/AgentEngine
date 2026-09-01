@@ -10,6 +10,7 @@ import { SITE_BASE } from "../data/content";
 import { gh } from "../data/apiContent";
 import {
   checkpointFields,
+  checkpointRoundTripSnippet,
   checkpointSnippet,
   deleteSnippet,
   durabilityEntries,
@@ -18,10 +19,12 @@ import {
   idempotencySnippet,
   journalSnippet,
   minimalCheckpointSnippet,
+  poisonRunPolicySnippet,
   proofRows,
   standingEffectSnippet,
   wakeRows,
   workedFlowStages,
+  workflowCheckpointResumeSnippet,
 } from "../data/durabilityContent";
 import { useLang } from "../i18n/LanguageContext";
 import type { Lang } from "../i18n/LanguageContext";
@@ -152,6 +155,19 @@ const copy = {
         that survives a restart later is a type swap, not a rewrite.
       </>
     ),
+    s1RoundtripLabel: "examples/12_session_checkpoint.cpp — the round trip, not just the record",
+    s1RoundtripBody: (
+      <>
+        Everything above is the record's own shape. Here is the round trip a host actually
+        performs: build a session, run a turn, <code>save_agent_session_snapshot()</code> it —
+        then genuinely throw that instance away and <code>load_agent_session_snapshot()</code>{" "}
+        into a BRAND-NEW one via <code>restore_from_record()</code>, the same discipline{" "}
+        <code>tests/test_rt_agent_session_snapshot.cpp</code> uses rather than just re-reading the
+        same object. <code>session_id</code> and <code>principal</code> come back
+        bit-identical; <code>history()</code> comes back empty, on purpose — the named gap above,
+        made concrete.
+      </>
+    ),
     s1Note: (
       <>
         <strong>Two stores, two different durability stories.</strong>{" "}
@@ -160,6 +176,38 @@ const copy = {
         <code>FileAppendLogStore</code> (which the effect journal uses) is structurally safer:
         every prior record survives regardless, only an unfinished trailing record can be lost,
         and <code>read_from()</code> stops cleanly before a torn tail instead of failing.
+      </>
+    ),
+
+    swEyebrow: "rt/workflow_checkpoint_manager.hpp — ADR-149, issue #28",
+    swHeading: (
+      <>
+        The workflow-level counterpart: <code>attach()</code> and{" "}
+        <code>resume_or_start()</code>
+      </>
+    ),
+    swBody: (
+      <>
+        Everything above is session-scoped. A <code>Workflow</code> run has its own, separate
+        durability story that rides the SAME <code>SessionStore</code> concept rather than
+        inventing a second one: <code>WorkflowCheckpointManager&lt;StoreT&gt;</code> wraps
+        already-real <code>save_workflow_checkpoint()</code>/<code>load_workflow_checkpoint()</code>
+        , so <code>attach(sup)</code> installs a checkpoint hook that persists after every round
+        with no hand-written closure, and <code>resume_or_start(store, run_id, sup, graph, bodies)</code>{" "}
+        is "resume if a checkpoint exists for this run, else start fresh" as one call.
+      </>
+    ),
+    swNote: (
+      <>
+        <strong>Proven by actually discarding the original objects, not re-reading them.</strong>{" "}
+        <code>examples/20_workflow_checkpoint_resume.cpp</code> suspends a workflow at a{" "}
+        <code>request_port</code> gate, drops the original <code>WorkflowSupervisor</code> and{" "}
+        <code>FileSessionStore</code> handle out of scope entirely, then resumes — from nothing
+        but a freshly reopened on-disk store and the run's own id — into a brand-new supervisor
+        holding the SAME open interaction the original run left waiting.{" "}
+        <code>tests/test_rt_workflow_checkpoint_manager.cpp</code> adds the fail-closed guard this
+        simple example doesn't exercise: an <code>agent</code>-kind or{" "}
+        <code>sub_workflow</code>-kind executor is refused rather than checkpointed incompletely.
       </>
     ),
 
@@ -254,7 +302,10 @@ const copy = {
         checkpoint trivially — and it is the only non-scalar field the record carries. The
         approval flow's mechanics are on the{" "}
         <a href={`${SITE_BASE}/api/runtime.html`}>AgentSession page</a>; what follows is only
-        what happens to it across a restart.
+        what happens to it across a restart. Step 01 below opening an <code>Interaction</code>{" "}
+        is also the same moment an <code>approval_requested</code> event fires on the run's own
+        event stream — see the{" "}
+        <a href={`${SITE_BASE}/api/events.html`}>Events API page</a> for the full catalog.
       </>
     ),
     step1Title: "The round suspends and an Interaction opens",
@@ -311,6 +362,15 @@ const copy = {
     card2Body: "Quark's FenceToken prevented two activations of one session. ADR-037 removed it and nothing replaced it: there is no fence, epoch or lease anywhere in this tree, no cross-process locking in either store, and five node-loss/fencing test files were retired as an accepted permanent gap. What survives is an in-process FIFO AsyncMutex — enough to make a snapshot safe against a concurrent turn, and nothing more.",
     card3Title: "Deploys — the version pin is unbuilt",
     card3Body: "019 §4 wants a version-skew policy defaulting to pin, so a resumed run doesn't silently change behaviour under new instructions. AgentMetadata::agent_version is real (ADR-044), but nothing consults it when a run resumes, so there is no pin-or-migrate decision being made at all.",
+    s8PoisonLabel: "tests/test_rt_agent_session_identity_and_admission.cpp — POISON-1…4, the real policy",
+    s8PoisonBody: (
+      <>
+        The card above describes the behaviour; here is the actual quarantine loop, against a real{" "}
+        <code>AgentSession</code> and an always-failing <code>ChatClient</code> — the worst case
+        the bound exists to catch. Ten attempts are offered; the policy stops it at exactly three,
+        and every failed attempt's turn stays in <code>history()</code>, fully inspectable.
+      </>
+    ),
 
     s9Eyebrow: "tests/ — deterministic, offline",
     s9Heading: "The proofs, and exactly how far each one reaches",
@@ -385,6 +445,19 @@ const copy = {
         sót qua khởi động lại về sau chỉ là đổi kiểu, không phải viết lại.
       </>
     ),
+    s1RoundtripLabel: "examples/12_session_checkpoint.cpp — vòng lặp thật, không chỉ bản ghi",
+    s1RoundtripBody: (
+      <>
+        Mọi thứ ở trên là hình dạng của chính bản ghi. Đây là vòng lặp mà một host thực sự thực
+        hiện: dựng một session, chạy một lượt, <code>save_agent_session_snapshot()</code> nó — rồi
+        thực sự vứt bỏ thể hiện đó và <code>load_agent_session_snapshot()</code> vào một thể hiện
+        HOÀN TOÀN MỚI qua <code>restore_from_record()</code>, đúng kỷ luật mà{" "}
+        <code>tests/test_rt_agent_session_snapshot.cpp</code> dùng thay vì chỉ đọc lại cùng một
+        đối tượng. <code>session_id</code> và <code>principal</code> quay về giống hệt tới từng
+        bit; <code>history()</code> quay về rỗng, có chủ đích — khoảng trống đã nêu tên ở trên,
+        giờ thành cụ thể.
+      </>
+    ),
     s1Note: (
       <>
         <strong>Hai store, hai câu chuyện bền vững khác nhau.</strong>{" "}
@@ -393,6 +466,38 @@ const copy = {
         <code>FileAppendLogStore</code> (thứ mà nhật ký hiệu ứng dùng) an toàn hơn về cấu trúc:
         mọi bản ghi trước đó vẫn nguyên vẹn dù thế nào, chỉ bản ghi cuối chưa xong mới có thể
         mất, và <code>read_from()</code> dừng gọn trước phần đuôi đứt dở thay vì báo lỗi.
+      </>
+    ),
+
+    swEyebrow: "rt/workflow_checkpoint_manager.hpp — ADR-149, issue #28",
+    swHeading: (
+      <>
+        Bản đối ứng ở cấp workflow: <code>attach()</code> và <code>resume_or_start()</code>
+      </>
+    ),
+    swBody: (
+      <>
+        Mọi thứ ở trên đều thuộc phạm vi session. Một run <code>Workflow</code> có câu chuyện bền
+        vững riêng của nó, đi trên CÙNG một khái niệm <code>SessionStore</code> thay vì bịa ra một
+        cái thứ hai: <code>WorkflowCheckpointManager&lt;StoreT&gt;</code> bọc quanh{" "}
+        <code>save_workflow_checkpoint()</code>/<code>load_workflow_checkpoint()</code> vốn đã có
+        thật, nên <code>attach(sup)</code> cài một hook checkpoint tự lưu sau mỗi round mà không
+        cần một closure viết tay, còn{" "}
+        <code>resume_or_start(store, run_id, sup, graph, bodies)</code> là "tiếp tục nếu tồn tại
+        checkpoint cho run này, nếu không thì bắt đầu mới" gói trong một lệnh gọi.
+      </>
+    ),
+    swNote: (
+      <>
+        <strong>Được chứng minh bằng cách thực sự vứt bỏ đối tượng gốc, không đọc lại chúng.</strong>{" "}
+        <code>examples/20_workflow_checkpoint_resume.cpp</code> treo một workflow tại một cổng{" "}
+        <code>request_port</code>, để <code>WorkflowSupervisor</code> gốc và handle{" "}
+        <code>FileSessionStore</code> gốc ra khỏi phạm vi hoàn toàn, rồi tiếp tục — từ không gì
+        khác ngoài một store trên đĩa vừa mở lại và chính id của run — vào một supervisor hoàn
+        toàn mới đang giữ đúng cùng interaction đang mở mà run gốc để lại.{" "}
+        <code>tests/test_rt_workflow_checkpoint_manager.cpp</code> thêm vào điểm bảo vệ
+        từ-chối-đóng mà ví dụ đơn giản này không thực hiện: một executor kiểu <code>agent</code>{" "}
+        hay <code>sub_workflow</code> bị từ chối thay vì bị checkpoint thiếu sót.
       </>
     ),
 
@@ -486,7 +591,10 @@ const copy = {
         <code>codeact_ask</code>. Nó toàn số và chuỗi nên đi qua checkpoint rất dễ — và là trường
         không vô hướng duy nhất mà bản ghi mang theo. Cơ chế của luồng phê duyệt nằm ở{" "}
         <a href={`${SITE_BASE}/api/runtime.html`}>trang AgentSession</a>; phần dưới đây chỉ nói
-        điều gì xảy ra với nó qua một lần khởi động lại.
+        điều gì xảy ra với nó qua một lần khởi động lại. Bước 01 bên dưới, lúc một{" "}
+        <code>Interaction</code> mở ra, cũng chính là khoảnh khắc một sự kiện{" "}
+        <code>approval_requested</code> kích hoạt trên luồng sự kiện riêng của run — xem{" "}
+        <a href={`${SITE_BASE}/api/events.html`}>trang Events API</a> để biết toàn bộ danh mục.
       </>
     ),
     step1Title: "Vòng chạy treo lại và một Interaction mở ra",
@@ -544,6 +652,16 @@ const copy = {
     card2Body: "FenceToken của Quark từng ngăn hai lần kích hoạt của cùng một session. ADR-037 bỏ nó và không gì thay thế: trong cây mã này không có fence, epoch hay lease nào, không store nào khóa liên tiến trình, và năm tệp kiểm thử về mất node/fencing đã bị rút như một khoảng trống vĩnh viễn được chấp nhận. Thứ còn lại là một AsyncMutex FIFO trong tiến trình — đủ để một snapshot an toàn trước một lượt đang chạy, và chỉ vậy thôi.",
     card3Title: "Triển khai — việc ghim phiên bản chưa xây",
     card3Body: "019 §4 muốn một chính sách lệch phiên bản mặc định là ghim, để một run tiếp tục không âm thầm đổi hành vi dưới bộ chỉ dẫn mới. AgentMetadata::agent_version là thật (ADR-044), nhưng không gì tra tới nó khi một run tiếp tục, nên thực tế chẳng có quyết định ghim-hay-chuyển nào được đưa ra cả.",
+    s8PoisonLabel: "tests/test_rt_agent_session_identity_and_admission.cpp — POISON-1…4, chính sách thật",
+    s8PoisonBody: (
+      <>
+        Thẻ ở trên mô tả hành vi; đây là vòng lặp cách ly thật, chạy trên một{" "}
+        <code>AgentSession</code> thật và một <code>ChatClient</code> luôn hỏng — trường hợp xấu
+        nhất mà ngưỡng này tồn tại để bắt lấy. Mười lần thử được cho phép; chính sách dừng nó lại
+        đúng ở lần thứ ba, và lượt của mỗi lần thử hỏng vẫn nằm trong <code>history()</code>, xem
+        được đầy đủ.
+      </>
+    ),
 
     s9Eyebrow: "tests/ — tất định, ngoại tuyến",
     s9Heading: "Các bằng chứng, và mỗi cái vươn xa tới đâu",
@@ -652,11 +770,51 @@ export function ApiDurabilityReference() {
             </RevealItem>
 
             <RevealItem>
+              <div className="gs-recommend">
+                <span className="gs-recommend-label">{t.s1RoundtripLabel}</span>
+                <p>{t.s1RoundtripBody}</p>
+              </div>
+            </RevealItem>
+
+            <RevealItem>
+              <CodePanel filename="examples/12_session_checkpoint.cpp">
+                {highlightCpp(checkpointRoundTripSnippet)}
+              </CodePanel>
+            </RevealItem>
+
+            <RevealItem>
               <p className="gs-note" style={{ marginTop: 20 }}>{t.s1Note}</p>
             </RevealItem>
 
             <RevealItem>
               <CiteLink id="du-checkpoint" />
+            </RevealItem>
+          </RevealGroup>
+        </section>
+
+        {/* ---- 1b. Workflow-level checkpoint/resume (ADR-149, issue #28) ----------------------- */}
+        <section className="anchor-target" id="du-workflow-checkpoint">
+          <RevealGroup>
+            <RevealItem>
+              <div className="section-head" style={{ marginTop: 56, marginBottom: 22, maxWidth: 780 }}>
+                <span className="eyebrow">{t.swEyebrow}</span>
+                <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.swHeading}</h3>
+                <p>{t.swBody}</p>
+              </div>
+            </RevealItem>
+
+            <RevealItem>
+              <CodePanel filename="examples/20_workflow_checkpoint_resume.cpp">
+                {highlightCpp(workflowCheckpointResumeSnippet)}
+              </CodePanel>
+            </RevealItem>
+
+            <RevealItem>
+              <p className="gs-note" style={{ marginTop: 20 }}>{t.swNote}</p>
+            </RevealItem>
+
+            <RevealItem>
+              <CiteLink id="du-workflow-checkpoint" />
             </RevealItem>
           </RevealGroup>
         </section>
@@ -946,6 +1104,19 @@ export function ApiDurabilityReference() {
                   <p>{t.card3Body}</p>
                 </div>
               </div>
+            </RevealItem>
+
+            <RevealItem>
+              <div className="gs-recommend">
+                <span className="gs-recommend-label">{t.s8PoisonLabel}</span>
+                <p>{t.s8PoisonBody}</p>
+              </div>
+            </RevealItem>
+
+            <RevealItem>
+              <CodePanel filename="tests/test_rt_agent_session_identity_and_admission.cpp">
+                {highlightCpp(poisonRunPolicySnippet)}
+              </CodePanel>
             </RevealItem>
 
             <RevealItem>

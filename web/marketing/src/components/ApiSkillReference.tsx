@@ -6,9 +6,11 @@ import {
   minimalSkillSnippet,
   skillCollisionSnippet,
   skillFrontmatterFields,
+  skillOnDemandMountSnippet,
   skillSourceConceptSnippet,
   skillSourceEntries,
   skillToolScopingSnippet,
+  skillTwoSourcesMountSnippet,
   skillsProviderApiSnippet,
 } from "../data/apiContent";
 import { SITE_BASE } from "../data/content";
@@ -194,6 +196,12 @@ const copy = {
         call closed, leaving zero skills mounted, not the ones that happened to process first.
       </>
     ),
+    s4TwoSourcesIntro: (
+      <>
+        For contrast — the success case, real and tested: two DIFFERENTLY-named skills from two
+        DIFFERENT sources mount together with no conflict at all.
+      </>
+    ),
     s5Eyebrow: "core/skill_tool_scoping.hpp — §8c enforcement",
     s5Heading: (
       <>
@@ -227,6 +235,14 @@ const copy = {
         capability that was already unconditionally provisioned. A deliberately plain mutable
         set, not a token: <code>mount()</code> is idempotent, so an agent unsure of a skill's
         state can call it again for free.
+      </>
+    ),
+    s6ExampleIntro: (
+      <>
+        The real pipeline, not a description of it: <code>examples/11_skill_mount.cpp</code> calls
+        the SAME <code>word_count</code> tool call twice against the SAME{" "}
+        <code>invoke_tool()</code> pipeline — rejected while <code>word-counter</code> is
+        unmounted, accepted once it's mounted, nothing else in the call changes:
       </>
     ),
     s7Eyebrow: "core/composed_context_provider.hpp — wiring into AgentSession",
@@ -493,6 +509,12 @@ const copy = {
         xử lý trước.
       </>
     ),
+    s4TwoSourcesIntro: (
+      <>
+        Để đối chiếu — trường hợp thành công, có thật và đã kiểm thử: hai skill có TÊN KHÁC
+        NHAU từ hai nguồn KHÁC NHAU mount cùng nhau mà không hề có xung đột nào.
+      </>
+    ),
     s5Eyebrow: "core/skill_tool_scoping.hpp — thực thi §8c",
     s5Heading: (
       <>
@@ -529,6 +551,14 @@ const copy = {
         đổi được (mutable) cố ý đơn giản, không phải một token: <code>mount()</code> là
         idempotent, nên một agent không chắc về trạng thái của một skill có thể gọi lại nó
         miễn phí.
+      </>
+    ),
+    s6ExampleIntro: (
+      <>
+        Pipeline thật, không chỉ là mô tả về nó: <code>examples/11_skill_mount.cpp</code> gọi
+        CÙNG một lệnh gọi tool <code>word_count</code> hai lần vào CÙNG một pipeline{" "}
+        <code>invoke_tool()</code> — bị từ chối khi <code>word-counter</code> chưa được mount,
+        được chấp nhận một khi đã mount, không có gì khác trong lệnh gọi thay đổi:
       </>
     ),
     s7Eyebrow: "core/composed_context_provider.hpp — đấu nối vào AgentSession",
@@ -839,6 +869,16 @@ export function ApiSkillReference() {
               {highlightCpp(skillCollisionSnippet)}
             </CodePanel>
           </RevealItem>
+
+          <RevealItem>
+            <p style={{ marginTop: 20, color: "var(--text-dim)", lineHeight: 1.65 }}>{t.s4TwoSourcesIntro}</p>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="test_skill_provider_mount.cpp">
+              {highlightCpp(skillTwoSourcesMountSnippet)}
+            </CodePanel>
+          </RevealItem>
         </RevealGroup>
 
         <RevealGroup>
@@ -862,6 +902,16 @@ export function ApiSkillReference() {
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s6Heading}</h3>
               <p>{t.s6Body}</p>
             </div>
+          </RevealItem>
+
+          <RevealItem>
+            <p style={{ marginTop: 8, color: "var(--text-dim)", lineHeight: 1.65 }}>{t.s6ExampleIntro}</p>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="examples/11_skill_mount.cpp">
+              {highlightCpp(skillOnDemandMountSnippet)}
+            </CodePanel>
           </RevealItem>
         </RevealGroup>
 

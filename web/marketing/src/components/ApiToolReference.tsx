@@ -1,7 +1,10 @@
 import {
+  capabilityGatedToolDeclSnippet,
+  describedFieldSchemaSnippet,
   gh,
   jsonSchemaTypeMapping,
   minimalToolSnippet,
+  multiToolRegistrationSnippet,
   toolDescriptorSnippet,
   toolSchemaOutput,
   toolSchemaSnippet,
@@ -91,6 +94,50 @@ const copy = {
         what the model receives.
       </>
     ),
+    multiToolEyebrow: "tests/test_rt_agent_session_live_multitool_e2e.cpp",
+    multiToolHeading: "Four real tools, one ToolTable, one real model",
+    multiToolBody: (
+      <>
+        <code>from_tools&lt;Ts...&gt;</code> takes as many <code>Tool&lt;...&gt;</code> types as you
+        give it — no arity limit in the API. This live-e2e fixture (runs when{" "}
+        <code>AGENTENGINE_OPENROUTER_API_KEY</code> is set, skips otherwise) registers four tools
+        into one table and makes two of them (<code>get_time</code>, <code>stock_price</code>)
+        deliberate distractors — the model must NEVER call them for this prompt, proving real tool
+        SELECTION discipline, not just declaration.
+      </>
+    ),
+    describedEyebrow: 'tests/test_json_schema_described.cpp — Described<T, "...">',
+    describedHeading: (
+      <>
+        A second channel to carry <code>"description"</code>: <code>Described&lt;T, "..."&gt;</code>
+      </>
+    ),
+    describedBody: (
+      <>
+        The note above is accurate about <code>AE_JSON_SCHEMA(Type, field1, field2, ...)</code>{" "}
+        itself: the macro only sees bare field names. But <code>Described&lt;T, "..."&gt;</code>{" "}
+        (<code>core/json_schema.hpp</code>) is a SEPARATE second channel — the description lives on
+        the field's own TYPE, not on the macro — so it survives exactly the limitation above. Real,
+        tested beyond the schema-string layer too: the description survives both Anthropic's and
+        OpenAI's <code>translate_tool</code> byte-for-byte, from a real <code>ToolDescriptor</code>.
+      </>
+    ),
+    capabilityGatedEyebrow: "examples/06_capabilities_and_denial.cpp — 007 §9, I2",
+    capabilityGatedHeading: (
+      <>
+        Declaring a capability ceiling: <code>Capabilities&lt;cap::decl::FsWrite&lt;"work"&gt;&gt;</code>
+      </>
+    ),
+    capabilityGatedBody: (
+      <>
+        This is a declared ceiling — what the tool MIGHT need — not a grant. Nothing about this
+        declaration lets the tool run: what actually authorizes a call is the{" "}
+        <code>CapabilitySet</code> <code>session.set_capabilities()</code> installed, checked fresh
+        on every call (I2). The Capability &amp; Sandbox page walks the two-session proof in full:
+        an empty <code>CapabilitySet</code> denies the call before <code>invoke()</code> runs;
+        granting <code>FsWrite{'{"work"}'}</code> lets the SAME call through the SAME pipeline.
+      </>
+    ),
   },
   vi: {
     eyebrow: "006 — Tool and Function Plane",
@@ -168,6 +215,51 @@ const copy = {
         <code>{'{type:"function", function:{name, description, parameters}}'}</code> cho{" "}
         <code>/v1/chat/completions</code> — đúng JSON mà các kiểu trường của tool bạn tạo ra
         chính là những gì model nhận được.
+      </>
+    ),
+    multiToolEyebrow: "tests/test_rt_agent_session_live_multitool_e2e.cpp",
+    multiToolHeading: "Bốn tool thật, một ToolTable, một model thật",
+    multiToolBody: (
+      <>
+        <code>from_tools&lt;Ts...&gt;</code> nhận bao nhiêu kiểu <code>Tool&lt;...&gt;</code> cũng
+        được — không có giới hạn nào ở API. Fixture live-e2e này (chạy khi có{" "}
+        <code>AGENTENGINE_OPENROUTER_API_KEY</code>, bỏ qua nếu không) đăng ký bốn tool vào một
+        bảng và đặt hai trong số đó (<code>get_time</code>, <code>stock_price</code>) làm những
+        "phần gây nhiễu" có chủ đích — model KHÔNG BAO GIỜ được gọi chúng cho prompt này, chứng
+        minh kỷ luật CHỌN tool thật sự, không chỉ đơn thuần là khai báo.
+      </>
+    ),
+    describedEyebrow: 'tests/test_json_schema_described.cpp — Described<T, "...">',
+    describedHeading: (
+      <>
+        Một kênh khác để mang <code>"description"</code>: <code>Described&lt;T, "..."&gt;</code>
+      </>
+    ),
+    describedBody: (
+      <>
+        Ghi chú ở trên nói đúng về <code>AE_JSON_SCHEMA(Type, field1, field2, ...)</code>: macro
+        chỉ thấy tên trường trần trụi. Nhưng <code>Described&lt;T, "..."&gt;</code>{" "}
+        (<code>core/json_schema.hpp</code>) là một kênh THỨ HAI, tách biệt — mô tả nằm ngay trên
+        KIỂU của trường, không phải trên macro — nên nó sống sót qua chính hạn chế đó. Kiểm thử
+        thật, không chỉ ở lớp chuỗi schema: mô tả còn sống sót qua <code>translate_tool</code> của
+        cả Anthropic lẫn OpenAI, byte-for-byte, từ một <code>ToolDescriptor</code> thật.
+      </>
+    ),
+    capabilityGatedEyebrow: "examples/06_capabilities_and_denial.cpp — 007 §9, I2",
+    capabilityGatedHeading: (
+      <>
+        Khai báo một trần capability: <code>Capabilities&lt;cap::decl::FsWrite&lt;"work"&gt;&gt;</code>
+      </>
+    ),
+    capabilityGatedBody: (
+      <>
+        Đây là một trần đã khai báo — thứ tool CÓ THỂ cần — không phải một cấp phát. Không có gì
+        trong khai báo này khiến tool chạy được: điều thực sự cấp quyền cho một lệnh gọi là{" "}
+        <code>CapabilitySet</code> mà <code>session.set_capabilities()</code> đã cài đặt, được
+        kiểm tra lại mới mỗi lệnh gọi (I2). Trang Capability &amp; Sandbox đi qua chi tiết chứng
+        minh hai-session: một <code>CapabilitySet</code> rỗng từ chối lệnh gọi trước khi{" "}
+        <code>invoke()</code> chạy; cấp <code>FsWrite{'{"work"}'}</code> cho phép CHÍNH lệnh gọi
+        đó chạy qua CHÍNH pipeline đó.
       </>
     ),
   },
@@ -264,6 +356,19 @@ export function ApiToolReference() {
 
         <RevealGroup>
           <RevealItem>
+            <div className="section-head anchor-target" style={{ marginTop: 48, marginBottom: 22 }} id="tool-described-field">
+              <span className="eyebrow">{t.describedEyebrow}</span>
+              <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.describedHeading}</h3>
+              <p>{t.describedBody}</p>
+            </div>
+          </RevealItem>
+          <RevealItem>
+            <CodePanel filename="test_json_schema_described.cpp">{highlightCpp(describedFieldSchemaSnippet)}</CodePanel>
+          </RevealItem>
+        </RevealGroup>
+
+        <RevealGroup>
+          <RevealItem>
             <div className="section-head anchor-target" style={{ marginTop: 48, marginBottom: 22 }} id="tool-schema-types">
               <span className="eyebrow">{t.typesEyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.typesHeading}</h3>
@@ -314,6 +419,36 @@ export function ApiToolReference() {
           </RevealItem>
           <RevealItem>
             <CodePanel filename="tool_pipeline.hpp">{highlightCpp(toolDescriptorSnippet)}</CodePanel>
+          </RevealItem>
+        </RevealGroup>
+
+        <RevealGroup>
+          <RevealItem>
+            <div className="section-head anchor-target" style={{ marginTop: 48, marginBottom: 22 }} id="tool-multi-registration">
+              <span className="eyebrow">{t.multiToolEyebrow}</span>
+              <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.multiToolHeading}</h3>
+              <p>{t.multiToolBody}</p>
+            </div>
+          </RevealItem>
+          <RevealItem>
+            <CodePanel filename="test_rt_agent_session_live_multitool_e2e.cpp">
+              {highlightCpp(multiToolRegistrationSnippet)}
+            </CodePanel>
+          </RevealItem>
+        </RevealGroup>
+
+        <RevealGroup>
+          <RevealItem>
+            <div className="section-head anchor-target" style={{ marginTop: 48, marginBottom: 22 }} id="tool-capability-gated">
+              <span className="eyebrow">{t.capabilityGatedEyebrow}</span>
+              <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.capabilityGatedHeading}</h3>
+              <p>{t.capabilityGatedBody}</p>
+            </div>
+          </RevealItem>
+          <RevealItem>
+            <CodePanel filename="examples/06_capabilities_and_denial.cpp">
+              {highlightCpp(capabilityGatedToolDeclSnippet)}
+            </CodePanel>
           </RevealItem>
         </RevealGroup>
       </div>

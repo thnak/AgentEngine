@@ -37,6 +37,14 @@ export const apiPages: Record<Lang, ApiPage[]> = {
       status: "real",
     },
     {
+      id: "builder",
+      label: "Builder API",
+      href: `${SITE_BASE}/api/builder.html`,
+      eyebrow: "Quickstart & native authoring",
+      description: "QuickstartSessionBuilder for a session in a few chained calls, WorkflowBuilder/MagenticWorkflowBuilder for a graph — the ergonomic surface for app code, not the engine's own internals.",
+      status: "real",
+    },
+    {
       id: "tool",
       label: "Tool",
       href: `${SITE_BASE}/api/tool.html`,
@@ -101,6 +109,22 @@ export const apiPages: Record<Lang, ApiPage[]> = {
       status: "real",
     },
     {
+      id: "streaming",
+      label: "Streaming",
+      href: `${SITE_BASE}/api/streaming.html`,
+      eyebrow: "013 — UI and Streaming Surfaces",
+      description: "chat_stream() as the required ChatClient method, agentengine::stream<T>, and AgentSession::set_stream_model_calls() — token-by-token, not chat() as an afterthought.",
+      status: "real",
+    },
+    {
+      id: "events",
+      label: "Events",
+      href: `${SITE_BASE}/api/events.html`,
+      eyebrow: "013 §1 — the real run-event stream",
+      description: "RunEvent/WorkflowEvent, enable_event_stream() on a session or a workflow, and the same one internal stream every AG-UI/A2A wire projection is built from.",
+      status: "real",
+    },
+    {
       id: "memory",
       label: "Memory",
       href: `${SITE_BASE}/api/memory.html`,
@@ -148,6 +172,14 @@ export const apiPages: Record<Lang, ApiPage[]> = {
       href: `${SITE_BASE}/api/agent.html`,
       eyebrow: "002 — Agent Model and Authoring",
       description: "Lớp cơ sở CRTP mà mọi agent đều kế thừa, cùng trình biên dịch xác thực toàn bộ tập policy của nó.",
+      status: "real",
+    },
+    {
+      id: "builder",
+      label: "Builder API",
+      href: `${SITE_BASE}/api/builder.html`,
+      eyebrow: "Quickstart & native authoring",
+      description: "QuickstartSessionBuilder dựng một session chỉ bằng vài lệnh gọi nối chuỗi, WorkflowBuilder/MagenticWorkflowBuilder dựng một đồ thị — bề mặt tiện dụng cho code ứng dụng, không phải nội bộ của engine.",
       status: "real",
     },
     {
@@ -212,6 +244,22 @@ export const apiPages: Record<Lang, ApiPage[]> = {
       href: `${SITE_BASE}/api/providers.html`,
       eyebrow: "004 — Model Provider Plane",
       description: "Mọi ChatClient conformer và wrapper đã có, năng lực mà mỗi cái khai báo, và cách một credential đi tới dây mà không bao giờ bị giữ lại.",
+      status: "real",
+    },
+    {
+      id: "streaming",
+      label: "Streaming",
+      href: `${SITE_BASE}/api/streaming.html`,
+      eyebrow: "013 — UI and Streaming Surfaces",
+      description: "chat_stream() là phương thức bắt buộc của ChatClient, agentengine::stream<T>, và AgentSession::set_stream_model_calls() — từng token một, không phải chat() như một thứ phụ thêm.",
+      status: "real",
+    },
+    {
+      id: "events",
+      label: "Sự kiện",
+      href: `${SITE_BASE}/api/events.html`,
+      eyebrow: "013 §1 — luồng run-event thật",
+      description: "RunEvent/WorkflowEvent, enable_event_stream() trên một session hoặc một workflow, và cùng MỘT luồng nội bộ mà mọi phép chiếu (projection) sang AG-UI/A2A đều được dựng từ đó.",
       status: "real",
     },
     {
@@ -355,6 +403,39 @@ struct MyAgent : Agent<MyAgent, ChatClientId<"anthropic:claude-opus-4">, Tools<S
     static constexpr std::string_view instructions = "Answer questions using the search tool.";
 };
 auto meta = register_agent<MyAgent>();   // same 8 checks below -- most already pass on these defaults`;
+
+// examples/01_hello_agent.cpp:105-125 (trimmed) -- the actually-runnable minimal turn. Note this
+// builds agentengine::rt::AgentSession<ChatClientT> DIRECTLY from a ChatClient type, not from a
+// registered Agent<Derived, Policies...> -- register_agent<A>() (above) validates a policy set,
+// but no example in this repo yet constructs a running AgentSession FROM that validated
+// AgentMetadata. Both surfaces are real; they are just not wired to each other yet.
+export const helloAgentRunSnippet = `// examples/01_hello_agent.cpp:105-125 (trimmed) -- run: ./agentengine_example_01_hello_agent
+using HelloAgent = agentengine::rt::AgentSession<JokerChatClient>;
+HelloAgent session;
+session.initialize("s-hello", Principal{"p-demo", ""});
+session.emplace_chat_client();
+
+auto r = drive(session.start_run(StartRun{user_message("Tell me a joke about a pirate.")}));
+// r->message is the assistant's real reply -- JokerChatClient is a small deterministic fake so
+// this builds and runs completely offline, no API key, no network.`;
+
+export const multiTurnSnippet = `// examples/03_multi_turn.cpp:109-135 (trimmed) -- run: ./agentengine_example_03_multi_turn
+using JokeAgent = agentengine::rt::AgentSession<JokerChatClient>;
+JokeAgent session;
+session.initialize("s-multi-turn", Principal{"p-demo", ""});
+session.emplace_chat_client();
+
+// Turn 1, on the session.
+auto r1 = drive(session.start_run(StartRun{user_message("Tell me a joke about a pirate.")}));
+
+// Turn 2, on the SAME session -- no new AgentSession, no session object passed explicitly; the
+// history from turn 1 is already part of this session's own state (005 §3).
+auto r2 = drive(session.start_run(
+    StartRun{user_message("Now tell the same joke in the voice of a pirate's parrot.")}));
+
+// history_ now holds 4 messages: [user:1, assistant:1, user:2, assistant:2] -- both turns are
+// durably recorded on the session, not just the two replies above.
+assert(session.history().size() == 4);`;
 
 export interface FieldSpec {
   name: string;
@@ -571,6 +652,89 @@ struct ToolDescriptor {
 };
 // include/agentengine/core/tool_pipeline.hpp:52-66`;
 
+// tests/test_rt_agent_session_live_multitool_e2e.cpp:166-255 (trimmed) -- four real tools registered
+// into ONE ToolTable and driven through a real AgentSession against a real remote model (live-e2e,
+// gated on AGENTENGINE_OPENROUTER_API_KEY -- not offline-deterministic like 01/02/03, but a REAL
+// multi-tool table, not a two-tool toy). get_time/stock_price are deliberate DISTRACTORS the model
+// must never call for this prompt -- proving tool SELECTION discipline, not just declaration.
+export const multiToolRegistrationSnippet = `// tests/test_rt_agent_session_live_multitool_e2e.cpp:166-255 (trimmed)
+struct GetWeatherTool : Tool<GetWeatherTool, Capabilities<>, EffectClass<effect_class::pure>> {
+    static constexpr std::string_view name = "get_weather";
+    using Args = GetWeatherArgs;
+    using Reply = GetWeatherReply;
+    static result<Reply> invoke(Args, EffectContext&) { return Reply{13.7, "overcast"}; }
+};
+struct ConvertTempTool : Tool<ConvertTempTool, Capabilities<>, EffectClass<effect_class::pure>> {
+    static constexpr std::string_view name = "convert_temperature";
+    using Args = ConvertTempArgs;
+    using Reply = ConvertTempReply;
+    static result<Reply> invoke(Args a, EffectContext&) {
+        if (a.to_unit == "kelvin") return Reply{a.celsius + 273.15, "kelvin"};
+        return Reply{a.celsius * 9.0 / 5.0 + 32.0, "fahrenheit"};
+    }
+};
+struct GetTimeTool : Tool<GetTimeTool, Capabilities<>, EffectClass<effect_class::pure>> {
+    static constexpr std::string_view name = "get_time";           // a DISTRACTOR for this prompt
+    using Args = GetTimeArgs;
+    using Reply = GetTimeReply;
+    static result<Reply> invoke(Args, EffectContext&) { return Reply{"14:32"}; }
+};
+struct StockPriceTool : Tool<StockPriceTool, Capabilities<>, EffectClass<effect_class::pure>> {
+    static constexpr std::string_view name = "stock_price";        // a DISTRACTOR for this prompt
+    using Args = StockPriceArgs;
+    using Reply = StockPriceReply;
+    static result<Reply> invoke(Args, EffectContext&) { return Reply{198.42, "USD"}; }
+};
+
+[[nodiscard]] ToolTable all_tools_table() {
+    return ToolTable::from_tools<GetWeatherTool, ConvertTempTool, GetTimeTool, StockPriceTool>();
+}
+// The real assertion this test makes: convert_temperature's argument must equal the EXACT celsius
+// value get_weather actually returned, and get_time/stock_price must NEVER be called for this
+// prompt -- a real sequential-dependency + distractor-discipline proof, not a toy round trip.`;
+
+// tests/test_json_schema_described.cpp:36-41 -- Described<T, "..."> is a SEPARATE channel from
+// AE_JSON_SCHEMA's own bare field-name list (the note above): the description lives on the FIELD'S
+// OWN TYPE, not as a macro argument, so it survives exactly where a plain field can't carry one.
+// Described<std::optional<T>, "..."> composes correctly too -- still detected as NOT required.
+export const describedFieldSchemaSnippet = `// tests/test_json_schema_described.cpp:36-41
+struct SearchArgs {
+    Described<std::string, "The search query text"> query;
+    int max_results = 5;                                             // no description -- plain field
+    Described<std::optional<std::string>, "Optional locale filter, e.g. 'en-US'"> locale;
+};
+AE_JSON_SCHEMA(SearchArgs, query, max_results, locale)
+// json_schema_of<SearchArgs>()'s "query" property now carries a real "description" key with the
+// exact text above; "max_results" (undescribed) carries none; "locale" is STILL excluded from
+// "required" (Described<std::optional<T>> unwraps the same way std::optional<T> alone does) --
+// described-ness and optional-ness compose, neither overrides the other's detection.`;
+
+// examples/06_capabilities_and_denial.cpp:48-72 (trimmed) -- a tool that names a REAL capability
+// ceiling. Capabilities<cap::decl::FsWrite<"work">> is a declaration, not a grant: nothing about
+// this struct lets write_note actually run -- see the Capability & Sandbox page's own denial walk-
+// through for the two-session proof (empty grant denies the call before invoke() runs; granting
+// FsWrite{"work"} lets the SAME call through the SAME pipeline).
+export const capabilityGatedToolDeclSnippet = `// examples/06_capabilities_and_denial.cpp:48-72 (trimmed)
+struct WriteArgs { std::string text; };
+AE_JSON_SCHEMA(WriteArgs, text)
+struct WriteReply { bool written = false; };
+AE_JSON_SCHEMA(WriteReply, written)
+
+// Declares its ceiling -- FsWrite scoped to the "work" mount -- but that is a declaration, not a
+// grant. never_require (the default, undeclared here) is the honest approval mode for it: the
+// capability check IS the gate for this tool, not a human approval step.
+struct WriteNoteTool
+    : Tool<WriteNoteTool, Capabilities<cap::decl::FsWrite<"work">>, EffectClass<effect_class::pure>> {
+    static constexpr std::string_view name = "write_note";
+    static constexpr std::string_view description = "Writes a note into the work mount.";
+    using Args = WriteArgs;
+    using Reply = WriteReply;
+    static result<Reply> invoke(Args, EffectContext&) {
+        write_tool_invoked() = true;
+        return Reply{true};
+    }
+};`;
+
 export const trustEntries: Record<Lang, ApiEntry[]> = {
   en: [
     {
@@ -680,6 +844,23 @@ CapabilitySet const held2 = CapabilitySet::grant_root(
 session2.set_capabilities(&held2);
 auto r2 = drive(session2.start_run(StartRun{user_message("Write a note for me.")}));
 // r2 converges AND write_note's invoke() ran for real.`;
+
+export const capabilityDenialErrorSnippet = `// tests/test_tool_pipeline.cpp:208-221 -- what a denial actually LOOKS LIKE to the caller, not
+// just "an ordinary tool error" in the abstract
+CapabilitySet held;  // empty: no Entropy grant
+ToolCallRequest req{"call-4", "echo", *json::parse(R"({"message":"should not run"})"), false};
+agentengine::ToolInvocationAudit audit;
+auto result = invoke_tool(table, held, req, ctx, nullptr, &audit);
+
+// result.is_error == true -- fed back to the model as an ordinary tool error, never a run failure
+// audit.error_code == "tool.capability_not_held" -- the SAME stable code every capability denial
+// carries (tool_pipeline.hpp step 4/7's held.bind(requirement) failing), whichever capability
+// kind was actually missing.
+auto const* err = std::get_if<agentengine::Error>(&result.content[0].value);
+// err->message == "required capability not held" -- deliberately names NEITHER what's missing
+// NOR what IS held (tool_pipeline.hpp's own comment: "No leaked capability"). Proven directly by
+// asserting the message does NOT contain "Entropy" (the capability actually checked here) -- a
+// caller cannot probe which capabilities a session holds by triggering denials and reading text.`;
 
 export const attenuationExampleSnippet = `// trust/capability.hpp -- CapabilitySet::attenuate(): a STRICTLY NARROWER derived set, or nothing
 CapabilitySet const root = CapabilitySet::grant_root({
@@ -889,6 +1070,16 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
       cite: "include/agentengine/protocol/anthropic/chat_client.hpp:981",
       href: gh("include/agentengine/protocol/anthropic/chat_client.hpp"),
     },
+    {
+      id: "event-stream",
+      status: "real",
+      tag: "AgentSession::set_stream_model_calls() · enable_event_stream()",
+      title: "Watching a run live — the session's own event stream, not just its final answer",
+      body:
+        "set_stream_model_calls(true) (ADR-034) is the one flag that routes run_model_call() through the streaming chat_stream() path instead of the plain chat() method — without it, model_delta never fires. enable_event_stream() (Milestone 7 Phase A, 013 §1), subscribed BEFORE start_run() (there is nothing to attach events to otherwise), hands back a real stream<RunEvent> reporting the whole turn lifecycle as one ordered, per-run sequence (RunEvent::seq, 1-based, reset on every new run): run_started, turn_started, model_call_started, model_delta (one per pushed text delta), model_call_finished, turn_finished, run_finished — plus exactly one run_event_kind::warning right after run_started, since opting a run into streaming is itself an operator-visible choice worth surfacing on the event stream. The stream stays open for the session's WHOLE lifetime, not just one call: draining it is \"take whatever is already buffered,\" never \"wait for it to close\" the way a single chat_stream() call is. Mirrors tests/test_rt_agent_session_streaming_and_events.cpp's S1 (streamed deltas -> model_delta events) and A2 (the full non-streaming success-path sequence). This is the exact mechanism an AG-UI/A2A/SSE bridge projects onto its own wire format — the full RunEvent/WorkflowEvent catalog and every event kind live on the Events API page.",
+      cite: "examples/29_agent_session_events.cpp:117",
+      href: gh("examples/29_agent_session_events.cpp"),
+    },
   ],
   vi: [
     {
@@ -990,6 +1181,16 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
         "AnthropicChatClient gửi POST tới /v1/messages với streaming thật (chat_stream()) và hỗ trợ prompt-cache TTL. OpenAIChatClient gửi POST tới /v1/chat/completions, streaming qua một worker tách rời. ReplayChatClient phát lại một run đã ghi một cách tất định, ngoại tuyến — đây là ranh giới của I5. Cả ba đều tuân theo cùng một interface ChatClient mà tool và agent được viết dựa vào, và bất kỳ cái nào trong số đó cũng có thể đứng phía sau một tổ hợp ModelCallGateway/MiddlewareModelCallGateway mà không cần thay đổi gì, để có retry, failover, và middleware.",
       cite: "include/agentengine/protocol/anthropic/chat_client.hpp:981",
       href: gh("include/agentengine/protocol/anthropic/chat_client.hpp"),
+    },
+    {
+      id: "event-stream",
+      status: "real",
+      tag: "AgentSession::set_stream_model_calls() · enable_event_stream()",
+      title: "Theo dõi một run trực tiếp — luồng sự kiện riêng của session, không chỉ câu trả lời cuối cùng",
+      body:
+        "set_stream_model_calls(true) (ADR-034) là cờ duy nhất định tuyến run_model_call() qua đường chat_stream() streaming thay vì phương thức chat() thuần — thiếu nó, model_delta không bao giờ kích hoạt. enable_event_stream() (Milestone 7 Phase A, 013 §1), được đăng ký TRƯỚC start_run() (nếu không sẽ chẳng có gì để gắn sự kiện vào), trả về một stream<RunEvent> thật báo cáo toàn bộ vòng đời của lượt chạy dưới dạng một dãy có thứ tự, theo từng run (RunEvent::seq, đánh số từ 1, reset ở mỗi run mới): run_started, turn_started, model_call_started, model_delta (một lần cho mỗi delta văn bản được đẩy vào), model_call_finished, turn_finished, run_finished — cộng thêm đúng một run_event_kind::warning ngay sau run_started, vì việc bật streaming cho một run tự nó là một lựa chọn mà người vận hành cần thấy được trên luồng sự kiện. Luồng sự kiện vẫn mở trong SUỐT vòng đời của session, không chỉ một lệnh gọi: rút cạn nó nghĩa là \"lấy bất cứ thứ gì đã có sẵn trong buffer\", không bao giờ là \"chờ nó đóng lại\" như một lệnh chat_stream() đơn lẻ. Phản ánh đúng S1 (các delta streaming -> sự kiện model_delta) và A2 (toàn bộ chuỗi thành công không streaming) của tests/test_rt_agent_session_streaming_and_events.cpp. Đây chính là cơ chế mà một cầu nối AG-UI/A2A/SSE chiếu lên định dạng wire riêng của nó — toàn bộ danh mục RunEvent/WorkflowEvent và mọi loại sự kiện nằm trên trang Events API.",
+      cite: "examples/29_agent_session_events.cpp:117",
+      href: gh("examples/29_agent_session_events.cpp"),
     },
   ],
 };
@@ -1359,6 +1560,39 @@ using GatewaySession = agentengine::rt::AgentSession<Guarded>;   // Guarded = Mi
 // instead of a live chat_stream() drain. The trade is named, not silent: no model_delta fires for a
 // gateway-routed round, and the FIRST such round emits one run_event_kind::warning saying so (:615-619).`;
 
+// ---- Watching a run live: set_stream_model_calls() + enable_event_stream() (ADR-034, 013 §1) ------
+// examples/29_agent_session_events.cpp -- the same construction shape as every other example on this
+// page (AgentSession<ChatClientT>, initialize(), a real ChatClient conformer), now wired for its own
+// live event stream instead of just a returned AgentResponse. Full event catalog: api/events.html.
+
+export const agentSessionEventStreamSnippet = `// examples/29_agent_session_events.cpp:117-149 (trimmed) -- construction, event-stream
+// subscription, and drain, against a real AgentSession<ChatClientT>
+AgentSession<ScriptedChatClient> session;
+session.initialize("s-events-demo", Principal{"p-demo", ""});
+CapabilitySet const held = CapabilitySet::grant_root({});
+session.set_capabilities(&held);
+
+// The one flag that engages the streaming turn loop (ADR-034) -- without it, run_model_call()
+// dispatches to the plain chat() method instead, and model_delta never fires.
+session.set_stream_model_calls(true);
+
+// Subscribed BEFORE start_run(): enable_event_stream() must be live when the run happens, or
+// there is nothing to attach events to.
+stream<RunEvent> events = session.enable_event_stream(std::pmr::get_default_resource());
+
+auto result = drive(session.start_run(StartRun{user_message("hi")}));
+
+// The event stream stays open for the session's whole lifetime -- draining it is just "take
+// whatever is already buffered," not "wait for it to close" the way a chat_stream() call is.
+while (auto ev = events.next()) {
+    if (ev->kind == run_event_kind::model_delta) {
+        auto const& d = std::get<run_event_payload::ModelDelta>(ev->payload);
+        if (auto const* t = std::get_if<run_event_payload::ModelTextDelta>(&d.value)) {
+            joined_deltas += t->text;   // "Hello, world!" -- matches result->message exactly
+        }
+    }
+}`;
+
 export const statefulToolExampleSnippet = `// core/tool_pipeline.hpp -- make_tool_descriptor_with_invoke<ToolT>()
 class CounterHistoryProvider {
 public:
@@ -1555,6 +1789,50 @@ export const pluginEntries: Record<Lang, ApiEntry[]> = {
     },
   ],
 };
+
+// The four host-lifecycle calls above, as a REAL host actually issues them -- against a genuinely
+// compiled Rust fixture component (tests/fixtures/wasm_ae_tool_fixture), not a mock.
+export const pluginHostLoadingCallSnippet = `// tests/test_wasm_backend.cpp:146-199 (trimmed) -- the real host call sequence.
+WasmBackend backend;
+SandboxSpec spec;
+spec.capabilities = CapabilitySet::grant_root({cap::Clock{}, cap::Entropy{}, cap::FsRead{},
+                                                 cap::FsWrite{}, cap::NetOut{}, cap::Secret{}});
+spec.limits.memory_bytes = 64ull * 1024 * 1024;
+
+EffectContext ctx = make_ctx();
+auto handle = backend.create(spec, ctx);          // step 1 -- allocates the handle, compiles nothing yet
+
+PluginManifest manifest;
+manifest.id      = "test.echo-now-spin";
+manifest.version = "0.1.0";
+manifest.world   = plugin_world::tool;
+manifest.requested_capabilities = kAllRequiredCapabilities;  // {Clock, FsRead, FsWrite, NetOut, Secret}
+manifest.memory_bytes_limit     = spec.limits.memory_bytes;
+
+auto loaded = backend.load_component(*handle, manifest, bytes, ctx);
+// step 2 -- fails closed HERE if the component's ACTUAL imports exceed manifest ∩ granted capabilities
+
+auto tools = backend.list_tools(*handle, ctx);    // step 3 -- guest.list-tools(), all 7 real exports
+// tools->size() == 7: echo, now, spin, read-file, write-file, fetch, get-secret
+
+auto echo_result = backend.invoke_tool(*handle, ToolInvokeRequest{"echo", "hello from the host"}, ctx);
+// step 4 -- binds ONLY this manifest's granted capabilities, calls guest.invoke, revokes before return
+// echo_result->content[0] is Text{"hello from the host"} -- real computation inside the guest, not a stub`;
+
+// Explicit, not a design footnote: the SAME probe helper this test file uses to prove the gated
+// callbacks work also proves which ones DON'T yet -- fs-read passes its capability-kind check and
+// still traps, because the host-side implementation behind it isn't built.
+export const pluginStubTrapSnippet = `// tests/test_wasm_backend.cpp:333-338 -- fs-read is declared and gated correctly in the WIT
+// world, but still traps as not-implemented behind the real capability-kind check.
+probe_gated_callback(bytes, "fs-read/right-kind", "read-file",
+                      {cap::FsRead{}, cap::FsWrite{}, cap::NetOut{}, cap::Secret{}, cap::Clock{}},
+                      "not implemented in M2's minimal host");
+// probe_gated_callback (this file's own helper) loads the fixture, grants FsRead FIRST in \`order\`,
+// invokes "read-file", and asserts the failure message contains exactly that substring -- the kind
+// check passes (right capability, right position in the manifest's requested_capabilities), and
+// ONLY THEN does it hit the trap: the gate is real, the implementation behind it is not, yet.
+// Contrast: the "http-request/right-kind" probe a few lines later in the same file asserts a REAL
+// structured result instead (ADR-011) -- same probe helper, genuinely different outcome per callback.`;
 
 export const minimalSkillSnippet = `---
 name: quick-note-format
@@ -1822,6 +2100,57 @@ export const skillToolScopingSnippet = `// Filters universe's descriptors down t
     std::vector<std::string> const& always_on = {});
 // include/agentengine/core/skill_tool_scoping.hpp:47-57`;
 
+// For contrast with the collision-rejection snippet above -- the success case, real and tested:
+// tests/test_skill_provider_mount.cpp:64-80 (R1), trimmed.
+export const skillTwoSourcesMountSnippet = `// tests/test_skill_provider_mount.cpp:64-80 (R1) -- two DIFFERENTLY-named
+// skills from two DIFFERENT sources mount together with no conflict at all.
+std::vector<SkillSourceDescriptor> sources;
+sources.push_back(make_skill_source_descriptor(InlineSkillSource(
+    "origin-a", {make_skill("pdf-tools", "Extract text from PDF files.", "Use execute_code.\\n")})));
+sources.push_back(make_skill_source_descriptor(InlineSkillSource(
+    "origin-b", {make_skill("csv-tools", "Parse CSV files.", "Also use execute_code.\\n")})));
+
+SkillsProvider<> provider(std::move(sources));
+EffectContext   ctx;
+ctx.principal = principal;
+SessionContext  session_ctx{"s-skills-1", principal, history};
+
+auto contribution = run_task_sync<result<ContextContribution>>(provider.on_context(session_ctx, ctx));
+// contribution.has_value() == true -- BOTH "pdf-tools" and "csv-tools" mount, one system-message
+// advertisement names both. Distinct names across distinct origins never collide; only a NAME
+// collision (same "name" field claimed by two sources) triggers the reject-closed path above.`;
+
+// The real pipeline, not a description of it: examples/11_skill_mount.cpp, trimmed. Calls the SAME
+// word_count tool call twice against the SAME invoke_tool() pipeline -- rejected while word-counter
+// is unmounted, accepted once it's mounted, nothing else in the call changes.
+export const skillOnDemandMountSnippet = `// examples/11_skill_mount.cpp:82-134 (trimmed) -- the SAME call, genuinely
+// rejected before mount and genuinely accepted after, through the SAME invoke_tool() pipeline.
+std::vector<SkillSourceDescriptor> sources;
+sources.push_back(make_skill_source_descriptor(InlineSkillSource("origin-a", {word_count_skill()})));
+SkillsProvider<> skills(std::move(sources));
+skills.ensure_loaded();
+
+MountedSkillsState  mount_state;
+ToolTable const     universe = ToolTable::from_tools<WordCountTool>();
+CapabilitySet const held     = CapabilitySet::grant_root({});
+EffectContext        ctx;
+ctx.capabilities = agentengine::borrow_capabilities(held);
+
+// ---- Before mounting: word_count is NAMED by the skill, but the skill isn't mounted -----------
+auto       allowed = skills.allowed_tool_names_for(mount_state.all());        // == {} -- nothing yet
+ToolTable  scoped   = scope_tools_to_mounted_skills(universe, allowed);
+ToolResult result   = invoke_tool(scoped, held, count_call(), ctx, {}, &audit);
+// result.is_error == true, audit.error_code == "tool.unknown_name" -- rejected as UNKNOWN, not a
+// permission denial: word_count isn't in the table at all while the skill stays unmounted.
+
+// ---- Mount the skill -- exactly what a real mount_skill tool call does ------------------------
+mount_state.mount("word-counter");
+
+// ---- After mounting: the SAME call now succeeds through the SAME pipeline ----------------------
+allowed = skills.allowed_tool_names_for(mount_state.all());                   // == {"word_count"}
+scoped  = scope_tools_to_mounted_skills(universe, allowed);
+result  = invoke_tool(scoped, held, count_call(), ctx, {}, &audit);           // succeeds now`;
+
 // 026-Agent-Facing-Runtime-Surface.md §4/§5 -- CodeAct is not a separate tool, it's execute_code
 // with the agent Python library present in the sandbox. agent_library_manifest.hpp is the ONE
 // shared registry both the real dir(agent)/help(agent) story and the model-facing prompt summary
@@ -1984,6 +2313,91 @@ auto const skill_tools = scope_tools_to_mounted_skills(
     shared_codeact_skills().allowed_tool_names_for(mounted));
 auto bridged = union_codeact_tools(ToolTable::from_tools<>(), skill_tools);
 runner.refresh_agent_tools(ToolBridgeConfig{*bridged, {}, /*approved=*/true});`;
+
+// include/agentengine/trust/agent_library_manifest.hpp:38-59 -- the ONE registry both the pull side
+// (dir(agent)/help(agent), granted_modules()) and the push side (the model-facing prompt summary,
+// push_side_summary()) read from. Note this table alone does NOT distinguish "real, live-wired" from
+// "registry-only stub" -- that line is drawn by whether a *_codegen.hpp file and a bootstrap actually
+// exist for a name (agent.tools/files/data do; agent.memory/notes/output/progress/ask/spawn don't).
+export const agentLibraryRegistrySnippet = `// include/agentengine/trust/agent_library_manifest.hpp:38-59
+struct ModuleDescriptor {
+    std::string_view name;
+    std::string_view one_line;                  // <= ~10 words -- 026 §7's token budget, extended
+    std::vector<capability_kind> gating_kinds;   // empty == always present
+};
+
+// Mirrors 026 §5's table exactly, in the same order -- a diff against that table is a diff
+// against this function.
+inline std::vector<ModuleDescriptor> const& agent_library_registry() {
+    static std::vector<ModuleDescriptor> const registry = {
+        {"tools",    "Call your granted tools as ordinary functions.",        {capability_kind::tool_call}},
+        {"files",    "Read/write files in your workspace.",                  {capability_kind::fs_read, capability_kind::fs_write}},
+        {"data",     "Work with tabular/JSON inputs without loading them wholly.", {capability_kind::fs_read}},
+        {"memory",   "Read your ranked view of prior memory.",               {capability_kind::fs_read}},
+        {"notes",    "Write durable notes that persist across turns.",       {capability_kind::fs_write}},
+        {"output",   "Emit your final structured output.",                   {}},
+        {"progress", "Report progress on long-running work.",                {}},
+        {"ask",      "Ask the caller a question and wait for a reply.",      {capability_kind::elicit}},
+        {"spawn",    "Run a sub-agent and get its result.",                  {capability_kind::agent_call}},
+    };
+    return registry;
+}
+// A module whose gating_kinds isn't covered by the caller's own CapabilitySet is simply absent from
+// granted_modules()'s output -- never listed as present, never explained as denied (I2).`;
+
+// src/backends/native_jail/agent_files_data_codegen.hpp:88-137 (trimmed) -- REAL generated Python,
+// same shape as agent.tools' own generated function above: a static source-text builder, not a
+// hand-authored .py file, so the exact text stays diffable/testable
+// (tests/test_agent_files_data_codegen.cpp) without an embedded interpreter.
+export const agentFilesDataGeneratedSnippet = `// src/backends/native_jail/agent_files_data_codegen.hpp:88-137 (trimmed)
+def _files_input(name):
+    """Reads the whole file at /input/<name> and returns its bytes."""
+    with _ae_internal.open('/input/' + name, 'rb') as _f:
+        return _f.read()
+_files_module.input = _files_input
+
+def _files_artifact(name, data):
+    """Writes \`data\` (str or bytes) to /out/<name>."""
+    if isinstance(data, str):
+        data = data.encode('utf-8')
+    with _ae_internal.open('/out/' + name, 'wb') as _f:
+        _f.write(data)
+_files_module.artifact = _files_artifact
+
+def _data_read_json_lines(path):
+    """Yields one parsed JSON value per non-empty line (NDJSON), streamed -- never
+    loads the whole file into memory."""
+    with _ae_internal.open(path, 'r') as _f:
+        for _line in _f:
+            _stripped = _line.strip()
+            if _stripped:
+                yield _json.loads(_stripped)
+_data_module.read_json_lines = _data_read_json_lines
+// Every _ae_internal.open() call above still goes through the SAME per-call cap::FsRead/cap::FsWrite
+// check open() already enforces -- agent.files/agent.data widen nothing, they're convenience only.`;
+
+// tests/test_mediated_python_runner_agent_files_data.cpp:126-166 (trimmed) -- the generated source
+// above actually RUNNING under a real embedded interpreter, against a real scratch mount directory.
+export const agentFilesDataUsageSnippet = `// tests/test_mediated_python_runner_agent_files_data.cpp:126-166 (trimmed)
+// G2-I1: agent.files.input reads /input/<name> as real bytes.
+ExecRequest req1{"python",
+    "from agent import files\\n"
+    "b = files.input('greeting.txt')\\n"
+    "print('GOT:', b)"};
+// out->stdout_text contains "GOT: b'hello from /input'"
+
+// G2-I2: agent.files.artifact writes /out/<name> -- real bytes land on disk.
+ExecRequest req2{"python",
+    "from agent import files\\n"
+    "files.artifact('result.txt', 'ok from artifact')\\n"
+    "print('WROTE')"};
+// out_dir / "result.txt" now really contains "ok from artifact" on the host filesystem.
+
+// G2-I3: agent.files.list sees real entries, with the right name/is_dir/size shape.
+ExecRequest req3{"python",
+    "from agent import files\\n"
+    "print('NAMES:', sorted(e['name'] for e in files.list('/input')))"};
+// out->stdout_text contains "NAMES: ['data.ndjson', 'greeting.txt', 'table.csv']"`;
 
 // 014-Workflow-and-Orchestration.md §1/§2/§3 -- Milestone 6, complete. A Workflow is DATA (nothing
 // here is an actor, a scheduler, or an execution decision); a WorkflowSupervisor runs it
@@ -2266,6 +2680,263 @@ wf.output_selection.push_back("moderator");
 // not a safety valve around a moderator that decides completion itself (that's Planner, below).
 wf.bound.max_rounds = 12;`;
 
+// ---- Second, deeper snippet per pattern page -- each still trimmed from a REAL runnable example,
+// chosen either to show the part the first snippet elides (a body function, the mesh's own
+// bidirectional edges) or to show result-handling / what the run actually produces. Group chat's
+// FIRST snippet above is a generalized illustration (its own comment says so); this second one is
+// the real offline example. Map-reduce and Handoff had no inline code before this pass at all.
+
+export const workflowSequentialBodiesSnippet = `// examples/04_first_workflow.cpp:60-76 -- the two executor bodies wired into the chain above:
+// plain functions over a Message, no agent, no model call.
+[[nodiscard]] agentengine::result<Message> uppercase(Message const& in, EffectContext&) {
+    std::string text = text_of(in);
+    std::transform(text.begin(), text.end(), text.begin(),
+                    [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    return text_message(std::move(text));
+}
+
+[[nodiscard]] agentengine::result<Message> reverse_text(Message const& in, EffectContext&) {
+    std::string text = text_of(in);
+    std::reverse(text.begin(), text.end());
+    return text_message(std::move(text));
+}
+// rt::ExecutorBody is exactly std::function<result<ExecutorOutcome>(Message const&,
+// EffectContext&)>, and a Message converts implicitly into an ExecutorOutcome for the common
+// "just pass a message downstream" case -- these bodies need no changes to plug into the graph,
+// only the wiring around them does.`;
+
+export const workflowConcurrentMergeSnippet = `// examples/09_concurrent_workflow.cpp:62-91 -- how a fan_in delivery is actually read: one
+// ContentItem per contributing branch, in graph-declared order -- and the worker/aggregate bodies
+// wired into the graph above.
+[[nodiscard]] std::string all_text_of(Message const& m) {
+    std::string out;
+    for (auto const& item : m.content) {
+        if (auto const* t = std::get_if<Text>(&item.value)) {
+            if (!out.empty()) out += " + ";
+            out += t->text;
+        }
+    }
+    return out;
+}
+
+[[nodiscard]] ExecutorBody worker(std::string name) {
+    return [name](Message const& in, EffectContext&) -> agentengine::result<Message> {
+        std::string text = text_of(in);
+        std::transform(text.begin(), text.end(), text.begin(),
+                        [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        return text_message(name + ":" + text);
+    };
+}
+
+[[nodiscard]] agentengine::result<Message> source(Message const& in, EffectContext&) {
+    return text_message(text_of(in));
+}
+
+[[nodiscard]] agentengine::result<Message> aggregate(Message const& in, EffectContext&) {
+    return text_message(all_text_of(in));
+}`;
+
+export const workflowRouterRunSnippet = `// examples/10_conditional_routing.cpp:136-160 -- run the SAME graph against two different inputs,
+// proving the classifier's output steers the route rather than one branch being hardcoded.
+for (std::string const& input : {std::string("my invoice is wrong"), std::string("the app crashed")}) {
+    auto billing_invocations = std::make_shared<std::atomic<std::uint32_t>>(0);
+    auto tech_invocations    = std::make_shared<std::atomic<std::uint32_t>>(0);
+
+    std::vector<ExecutorBody> bodies = {
+        triage([](std::string const& text) {
+            return text.find("invoice") != std::string::npos ? "billing" : "tech";
+        }),
+        counted(handler("billing"), billing_invocations),
+        counted(handler("tech"), tech_invocations),
+    };
+    WorkflowSupervisor sup;
+    sup.initialize(wf, bodies);
+
+    WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message(input)}));
+    bool const expect_billing = input.find("invoice") != std::string::npos;
+    std::printf("%s\\n", all_text_of(r.output).c_str());
+    check(billing_invocations->load(std::memory_order_relaxed) == (expect_billing ? 1u : 0u) &&
+              tech_invocations->load(std::memory_order_relaxed) == (expect_billing ? 0u : 1u),
+          "exactly ONE branch ran -- the unselected branch's invoke() was never called");
+}`;
+
+export const workflowReflectionBoundSnippet = `// examples/13_reflection_loop.cpp:90-116 -- the SAME cyclic shape as CY-1 above, but this
+// writer/critic pair never converges on its own -- it runs until bound.max_rounds and stops there.
+Workflow wf;
+wf.id        = "reflection";
+wf.executors = {node_desc("writer"), node_desc("critic")};
+wf.edges.push_back(Edge{"writer", "critic", edge_kind::direct, {}});
+wf.edges.push_back(Edge{"critic", "writer", edge_kind::direct, {}});
+wf.start = "writer";
+wf.output_selection.push_back("critic");
+wf.bound.max_rounds = 6;   // validate_workflow REQUIRES a bound -- an unbounded cycle does not run
+
+std::vector<ExecutorBody> bodies = {appender("write"), appender("critique")};
+WorkflowSupervisor         supervisor;
+supervisor.initialize(wf, bodies);
+
+WorkflowResult r = drive(supervisor.run_workflow(RunWorkflow{text_message("draft")}));
+check(r.status == workflow_status::bound_max_rounds,
+      "the bound stopped the loop -- an honest status distinct from workflow_status::"
+      "completed, telling the caller WHY it ended rather than leaving them to guess");
+check(r.rounds == 6, "exactly max_rounds rounds ran, no more");
+// output == "draft>write>critique>write>critique>write>critique" -- 3 full cycles before the
+// bound stopped it: no crash, no hang`;
+
+export const workflowGroupChatOfflineSnippet = `// examples/15_group_chat_and_planner.cpp:121-152 -- Group Chat, for real: the moderator cycles
+// forever; the CALLER's bound is what stops it, not anything inside the graph. (The live
+// counterpart with a real model as moderator is examples/16_group_chat_live.cpp.)
+auto p1_calls = std::make_shared<int>(0);
+auto p2_calls = std::make_shared<int>(0);
+
+Workflow wf;
+wf.id        = "group-chat";
+wf.executors = {node_desc("moderator"), node_desc("p1"), node_desc("p2")};
+wf.edges.push_back(Edge{"moderator", "p1", edge_kind::switch_case, "p1"});
+wf.edges.push_back(Edge{"moderator", "p2", edge_kind::switch_case, "p2"});
+wf.edges.push_back(Edge{"p1", "moderator", edge_kind::direct, {}});
+wf.edges.push_back(Edge{"p2", "moderator", edge_kind::direct, {}});
+wf.start = "moderator";
+wf.output_selection.push_back("p1");
+wf.output_selection.push_back("p2");
+wf.bound.max_rounds = 6;
+
+std::vector<ExecutorBody> bodies = {
+    moderator([](std::size_t turns) { return turns % 2 == 0 ? "p1" : "p2"; }),
+    counted(appender("p1"), p1_calls),
+    counted(appender("p2"), p2_calls),
+};
+WorkflowSupervisor supervisor;
+supervisor.initialize(wf, bodies);
+
+WorkflowResult r = drive(supervisor.run_workflow(RunWorkflow{text_message("discuss")}));
+check(r.status == workflow_status::bound_max_rounds,
+      "the CALLER's round bound is the termination contract -- nothing inside the graph ever "
+      "decided to stop");
+check(*p1_calls > 0 && *p2_calls > 0, "the moderator cycled among BOTH participants, not just one");`;
+
+export const workflowHandoffMeshSnippet = `// examples/23_handoff_mesh.cpp:64-125 -- a genuinely MESH-shaped handoff: billing and tech can
+// EACH hand off to the other, plus an escalate request_port -- not just one fixed triage routing
+// outward once, the way 10_conditional_routing.cpp does.
+[[nodiscard]] ExecutorBody triage() {
+    return [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
+        std::string const text  = text_of(in);
+        std::string const label = text.find("invoice") != std::string::npos ? "billing" : "tech";
+        return ExecutorOutcome{text_message(text), {label}};
+    };
+}
+
+// billing: resolves directly, UNLESS the ticket is really a technical issue in disguise -- then it
+// hands off to tech with a rewritten message (a real specialist rewriting for its peer, not just
+// forwarding the same text verbatim).
+[[nodiscard]] ExecutorBody billing() {
+    return [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
+        std::string const text = text_of(in);
+        if (text.find("crash") != std::string::npos) {
+            return ExecutorOutcome{text_message("[billing->tech handoff] please look into this outage"),
+                                    {"tech"}};
+        }
+        return ExecutorOutcome{text_message("[resolved by billing] " + text), {"done"}};
+    };
+}
+
+// tech: resolves directly, hands off to billing when the ticket is really a billing matter (the
+// REVERSE direction from billing above -- proving this is a real mesh, not two one-way routers
+// glued together), or escalates to a human via the escalate request_port.
+[[nodiscard]] ExecutorBody tech() {
+    return [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
+        std::string const text = text_of(in);
+        if (text.find("invoice") != std::string::npos || text.find("charge") != std::string::npos) {
+            return ExecutorOutcome{text_message("[tech->billing handoff] please check this charge"),
+                                    {"billing"}};
+        }
+        if (text.find("escalate") != std::string::npos || text.find("human") != std::string::npos) {
+            return ExecutorOutcome{text_message(text), {"escalate"}};
+        }
+        return ExecutorOutcome{text_message("[resolved by tech] " + text), {"done"}};
+    };
+}
+
+[[nodiscard]] Workflow make_graph() {
+    Workflow wf;
+    wf.id        = "handoff-mesh";
+    wf.executors = {node_desc("triage"), node_desc("billing"), node_desc("tech"),
+                     node_desc("escalate", executor_kind::request_port), node_desc("done")};
+    wf.edges.push_back(Edge{"triage", "billing", edge_kind::switch_case, "billing"});
+    wf.edges.push_back(Edge{"triage", "tech", edge_kind::switch_case, "tech"});
+    wf.edges.push_back(Edge{"billing", "tech", edge_kind::switch_case, "tech"});
+    wf.edges.push_back(Edge{"billing", "done", edge_kind::switch_case, "done"});
+    wf.edges.push_back(Edge{"tech", "billing", edge_kind::switch_case, "billing"});
+    wf.edges.push_back(Edge{"tech", "escalate", edge_kind::switch_case, "escalate"});
+    wf.edges.push_back(Edge{"tech", "done", edge_kind::switch_case, "done"});
+    wf.edges.push_back(Edge{"escalate", "done", edge_kind::direct, {}});
+    wf.start = "triage";
+    wf.output_selection.push_back("done");
+    wf.bound.max_rounds = 10;
+    return wf;
+}`;
+
+export const workflowMapReduceRealSnippet = `// examples/09_concurrent_workflow.cpp:126-149 -- the SAME fan_out/fan_in graph Concurrent uses on
+// this same page, relabeled: "workers" split a collection, the aggregator is the reducer. There is
+// no separate map-reduce mechanism to build -- this IS the shape, not an analogous one.
+Workflow wf;
+wf.id        = "fan-out-fan-in";
+wf.executors = {node_desc("src"), node_desc("upper"), node_desc("lower"), node_desc("title"),
+                 node_desc("agg")};
+for (char const* w : {"upper", "lower", "title"}) {
+    wf.edges.push_back(Edge{"src", w, edge_kind::fan_out, {}});
+    wf.edges.push_back(Edge{w, "agg", edge_kind::fan_in, {}});
+}
+wf.start = "src";
+wf.output_selection.push_back("agg");
+wf.bound.max_rounds = 8;
+
+auto agg_invocations = std::make_shared<std::atomic<std::uint32_t>>(0);
+// bodies parallel to wf.executors by index: src, upper, lower, title, agg (the reducer)
+std::vector<ExecutorBody> bodies = {
+    source,
+    worker("upper"),
+    worker("lower"),
+    worker("title"),
+    counted(aggregate, agg_invocations),   // the reducer -- runs EXACTLY ONCE, not once per item
+};`;
+
+export const workflowPlannerLiveSnippet = `// examples/17_planner_live.cpp:104-137 -- Planner (Magentic) against a REAL model: the moderator
+// asks the model which specialist should go next, or whether the goal is met, parsed into
+// ExecutorOutcome::routes exactly like 10_conditional_routing.cpp's offline classifier -- with a
+// deterministic fallback ledger (never the primary decision) if a reply doesn't parse.
+[[nodiscard]] ExecutorBody planner_moderator(RealClient& client, EffectContext& ctx) {
+    return [&client, &ctx](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
+        std::string const transcript = text_of(in);
+
+        auto resp = live_call(
+            client, ctx,
+            "You are coordinating two specialists on a task: a Researcher (gathers facts) and a "
+            "Writer (composes a short summary from facts already gathered). Read the transcript and "
+            "reply with EXACTLY ONE WORD, nothing else: RESEARCHER if facts still need gathering, "
+            "WRITER if facts exist but no summary has been written yet, or DONE if a summary already "
+            "exists and the task is complete.",
+            "Transcript so far:\\n" + transcript);
+
+        std::string decision;
+        bool        live_decided = false;
+        if (resp.has_value()) {
+            std::string const raw = upper(text_of(resp->message));
+            if (raw.find("DONE") != std::string::npos) { decision = "done"; live_decided = true; }
+            else if (raw.find("RESEARCHER") != std::string::npos) { decision = "researcher"; live_decided = true; }
+            else if (raw.find("WRITER") != std::string::npos) { decision = "writer"; live_decided = true; }
+        }
+        if (!live_decided) {
+            // Deterministic fallback ledger -- never the primary decision, only a safety net.
+            bool const has_facts   = transcript.find("Researcher:") != std::string::npos;
+            bool const has_summary = transcript.find("Writer:") != std::string::npos;
+            decision = !has_facts ? "researcher" : (!has_summary ? "writer" : "done");
+        }
+        std::printf("[moderator] %s%s\\n", decision.c_str(), live_decided ? "" : " (fallback ledger)");
+        return ExecutorOutcome{text_message(transcript), {decision}};
+    };
+}`;
+
 export const workflowEntries: Record<Lang, ApiEntry[]> = {
   en: [
     {
@@ -2388,6 +3059,54 @@ export const declarativeCompilerSnippet = `// include/agentengine/core/agent_yam
 // Honestly empty today: tools / capability_ceiling -- no name-keyed tool/capability registry
 // exists yet to resolve spec.tools against, which is exactly why byte-identical AgentMetadata
 // against the C++ equivalent isn't reached for every field yet.`;
+
+export const aguiSseFrameSnippet = `// tests/test_agui_sse.cpp:34-46 -- E3-1: the exact SSE framing shape, proven against a real
+// projected AG-UI event, not a hand-built JSON literal. (check() message strings trimmed below
+// to keep this excerpt free of nested escaped quotes; the assertion logic itself is unchanged.)
+agui::AgUiEvent event = agui::RunStarted{"thread-1", "run-1", std::nullopt};
+std::string frame = agui::to_sse_frame(event);
+check(frame.rfind("data: ", 0) == 0, "the frame begins with the data: prefix");
+check(frame.size() >= 2 && frame.substr(frame.size() - 2) == "\\n\\n",
+      "the frame ends with the SSE blank-line terminator, two newlines");
+// The bytes between "data: " and the trailing "\\n\\n" must be exactly one valid JSON value.
+std::string const json_text = frame.substr(6, frame.size() - 6 - 2);
+auto parsed = json::parse(json_text);
+check(parsed.has_value(), "the framed payload is valid, parseable JSON");
+if (parsed.has_value()) {
+    check(parsed->find("type")->as_string() == "RUN_STARTED",
+          "the framed JSON is the real projected event, not a placeholder");
+}`;
+
+export const aguiProjectorMessageSnippet = `// tests/test_rt_agui_projection.cpp:188-206 -- E2-3: the ONE piece of state RunEventProjector
+// holds (projection.hpp's file-top comment) -- a minted messageId bracketing one model turn's text.
+agui::RunEventProjector projector("thread-3");
+
+// model_call_started mints a messageId internally and returns TextMessageStart{message_id, ...}.
+(void)projector.project(
+    ae::RunEvent{"run-x", 1, ae::run_event_kind::model_call_started, ae::run_event_payload::Empty{}});
+
+// model_delta reuses that SAME messageId -- the projector, not the RunEvent, tracks it.
+auto out = projector.project(
+    ae::RunEvent{"run-x", 2, ae::run_event_kind::model_delta,
+                 ae::run_event_payload::ModelDelta{
+                     ae::run_event_payload::ModelTextDelta{"partial text"}}});
+// out == { TextMessageContent{message_id, "partial text"} }
+
+// model_call_finished closes the SAME messageId with TextMessageEnd, then erases the bracket.
+(void)projector.project(
+    ae::RunEvent{"run-x", 3, ae::run_event_kind::model_call_finished, ae::run_event_payload::Empty{}});`;
+
+export const a2aStreamProjectorInterruptSnippet = `// tests/test_a2a_streaming.cpp:70-78 -- the SAME internal input_required RunEvent that forces
+// AG-UI to END the run (RunFinishedInterrupt, no native pause event) instead pauses the A2A task
+// in a REAL, non-terminal task_state -- A2A's task model has a native slot AG-UI's doesn't.
+a2a::A2aStreamProjector projector("task-1", "ctx-1");
+auto out = projector.project(
+    ae::RunEvent{"run-1", 5, ae::run_event_kind::input_required,
+                 ae::run_event_payload::InteractionRef{"i-1"}});
+// out == { TaskStatusUpdateEvent{"task-1", "ctx-1", {.state = task_state::input_required}} }
+
+check(!a2a::is_terminal(a2a::task_state::input_required),
+      "input_required's task_state is confirmed NON-terminal -- the task genuinely continues");`;
 
 export const protocolEntries: Record<Lang, ProtocolEntry[]> = {
   en: [
@@ -2531,6 +3250,22 @@ concept WorktreeObjectStore = requires(S& s, std::span<std::byte const> bytes,
 // comparison proven directly (blob_count()/tree_count() watched not to grow on a duplicate put).
 // A durable pal::file_io-backed adapter is a named, tracked follow-up, not built yet.`;
 
+export const worktreeObjectStoreDedupSnippet = `// tests/test_worktree_object_store.cpp:50-74 (A-C1, A-C2) -- a real put_blob/put_tree call
+// sequence. Neither call takes a caller-supplied digest: the store computes it FROM the bytes.
+InMemoryWorktreeObjectStore store;
+auto bytes  = bytes_of("hello worktree");
+auto digest = store.put_blob(bytes);          // no Digest parameter exists to pass one in at all
+// digest.has_value() && is_valid_hex_digest(*digest) -- always a real SHA-256 of \`bytes\` itself
+
+auto fetched = store.get_blob(*digest);
+// *fetched == bytes -- round-trips exactly
+
+// A-C2 (dedup): putting the SAME content twice yields the SAME digest, and the store does not
+// grow -- checked directly against blob_count(), never merely inferred from digest equality.
+auto d1 = store.put_blob(bytes_of("duplicate me"));
+auto d2 = store.put_blob(bytes_of("duplicate me"));
+// *d1 == *d2 && store.blob_count() == 1`;
+
 export const worktreeSubWorktreeSnippet = `// include/agentengine/core/worktree.hpp -- SubWorktree + create_sub_worktree (trimmed)
 struct SubWorktree {
     std::string  name;
@@ -2553,6 +3288,25 @@ result<SubWorktree> create_sub_worktree(S& store, Ref const& parent,
         case sharing_mode::readonly: return SubWorktree{child_name, {}, mode, parent.tree_digest, {}};
     }
 }`;
+
+export const worktreeSharedMountSnippet = `// tests/test_workflow_worktree_scoping.cpp:151-174 (M3) -- two SHARED executors, two mounts,
+// ONE backing ref: two different sandboxes attached to the same worktree, proven end to end
+Workflow wf;
+wf.id = "g";
+wf.executors = {make_executor("writer", sharing_mode::shared),
+                make_executor("reader", sharing_mode::shared)};
+
+auto grants = mint_executor_worktrees(ref_store, *parent, wf);
+auto const& gw = (*grants)[0];
+auto const& gr = (*grants)[1];
+// gw.mount->mount_id != gr.mount->mount_id -- distinct, sandbox-facing mount ids
+// gw.mount->ref_name == gr.mount->ref_name -- but the SAME backing ref: that IS what "shared" means
+
+mount_write(obj_store, ref_store, *gw.mount, *gw.write, "note.txt", bytes_of("hello"));
+auto seen_by_reader = mount_read(obj_store, ref_store, *gr.mount, *gr.read, "note.txt");
+// seen_by_reader.has_value() && *seen_by_reader == "hello" -- reader's mount sees writer's write
+// immediately, through a DIFFERENT mount, because the worktree (the ref) is the durable, shared
+// thing -- a mount is only ever a sandbox-facing view onto it, never the disk itself.`;
 
 export const worktreeMergeSnippet = `// include/agentengine/core/worktree.hpp -- three-way merge on branch join, 025 §4 (trimmed)
 struct MergeConflict {
@@ -3424,3 +4178,120 @@ SkillsProvider skills(std::move(sources));
 // Wiring \`skills\` into the ONE provider slot AgentSession<ChatClientT, StateT, ProvidersT>
 // exposes is exactly ComposedContextProvider<HistoryProvider<...>, SkillsProvider> -- see the
 // AgentSession & ChatClient page for the full construction and turn-loop walkthrough.`;
+
+// A real Tool<> conformer's actual declaration -- static members, and the dynamic capability check
+// that stands in for a static Capabilities<> ceiling this tool's per-call url/path target can't
+// express (006 §1). Trimmed from the real class; comments mark what's elided.
+export const readContentDeclarationSnippet = `// include/agentengine/tools/read_content.hpp:208-267 (trimmed) -- Capabilities<> is
+// declared EMPTY on the type itself; invoke() checks a real, dynamic capability instead.
+struct ReadContent : Tool<ReadContent, Capabilities<>, Approval<approval_mode::never_require>,
+                           EffectClass<effect_class::pure>> {
+    static constexpr std::string_view name = "read_content";
+    static constexpr std::string_view description =
+        "Read content from a URL under one of this run's granted network-egress hosts, or from a "
+        "path in this session's own sandbox mount under one of this run's granted read capabilities. "
+        "Set exactly one of 'url' or 'path'. ...";
+
+    using Args = ReadContentArgs;
+    using Reply = ReadContentReply;
+
+    [[nodiscard]] static result<Reply> invoke(Args args, EffectContext& ctx) {
+        bool const has_url = args.url.has_value();
+        bool const has_path = args.path.has_value();
+        if (has_url == has_path) {
+            return std::unexpected(error{failure_class::contract,
+                                          "read_content requires exactly one of 'url' or 'path'",
+                                          "read_content.ambiguous_source"});
+        }
+        if (has_path) return invoke_from_sandbox(args, ctx);
+        return invoke_via(args, ctx, sandbox::HostEgressProxy{});
+    }
+
+    // The \`path\` source -- the dynamic capability check IS the enforcement, not a static ceiling.
+    [[nodiscard]] static result<Reply> invoke_from_sandbox(Args const& args, EffectContext& ctx) {
+        if (!ctx.sandbox_fs) {
+            return std::unexpected(error{failure_class::resource,
+                                          "this session has no sandbox mount yet", "read_content.no_sandbox"});
+        }
+        if (!ctx.capabilities) {
+            return std::unexpected(error{failure_class::policy, "no capability set bound to this call",
+                                          "tool.capability_not_held"});
+        }
+        std::string const mount{read_content_detail::kWorkMount};
+        auto granted = ctx.capabilities->find_fs_read(mount, *args.path);   // <-- the real check
+        if (!granted) {
+            return std::unexpected(error{failure_class::policy,
+                                          "no granted FsRead capability covers '" + *args.path +
+                                              "' on the '" + mount + "' mount",
+                                          "tool.capability_not_held"});
+        }
+        auto bytes = ctx.sandbox_fs->read_file(*args.path);
+        if (!bytes) return std::unexpected(bytes.error());
+        std::string body(reinterpret_cast<char const*>(bytes->data()), bytes->size());
+        return read_content_detail::build_reply(std::move(body), "application/octet-stream", ctx);
+    }
+    // invoke_via() (the \`url\` source) mirrors this exactly, checking ctx.capabilities->find_net_out(...)
+    // against the parsed host:port:scheme instead -- elided here, same shape.
+};`;
+
+// The declaration above stated the contract; this test proves it, end to end, with the tool's own
+// real error codes -- no capability check even reached when the args themselves are malformed.
+export const readContentAmbiguousSourceTestSnippet = `// tests/test_read_content.cpp:289-311 (trimmed) -- both branches of the xor contract, real codes.
+void test_ambiguous_source_neither_set() {
+    ReadContent::Args args;  // both url and path left unset
+    auto reply = ReadContent::invoke(args, ctx);
+    check(!reply.has_value(), "neither url nor path set -> rejected");
+    // reply.error().code == "read_content.ambiguous_source"
+}
+
+void test_ambiguous_source_both_set() {
+    ReadContent::Args args;
+    args.url  = "http://example.com/data";
+    args.path = "foo.txt";
+    auto reply = ReadContent::invoke(args, ctx);
+    check(!reply.has_value(), "both url and path set -> rejected");
+    // reply.error().code == "read_content.ambiguous_source" -- the SAME code either way, and neither
+    // branch ever reaches a capability check: the xor contract is enforced before ctx.capabilities
+    // is ever consulted.
+}`;
+
+// A real built-in skill's registration -- one frontmatter block (of five) compiled straight into
+// the binary as a string literal, plus the eager-parse constructor that ships all five as one source.
+export const builtinSkillRegistrationSnippet = `// include/agentengine/core/builtin_skills.hpp:28-34,263-287 (trimmed)
+inline constexpr std::string_view kUsingTheCodeInterpreterSkillMd = R"SKILL(---
+name: using-the-code-interpreter
+description: Idioms for the execute_code tool -- when one call suffices, when CodeAct's
+  multi-step form pays for itself, and how session state persists across calls. Use this
+  before writing Python to accomplish a task in this environment.
+allowed-tools: execute_code
+metadata:
+  version: "1"
+---
+# Using the code interpreter
+...body continues, real prose against 010 §1, elided here...
+)SKILL";
+
+// Parsed EAGERLY, once, at construction -- a bug in the raw string above is caught the first time
+// this function runs, in whichever test exercises it, never silently swallowed into a partial list.
+[[nodiscard]] inline SkillSourceDescriptor make_builtin_skills_source() {
+    result<std::vector<SkillSourceResult>> resolved = [] {
+        std::vector<SkillSourceResult> skills;
+        struct Entry { std::string_view name; std::string_view text; };
+        Entry const entries[] = {
+            {"using-the-code-interpreter", kUsingTheCodeInterpreterSkillMd},
+            {"using-codeact", kUsingCodeactSkillMd},
+            {"reading-large-content", kReadingLargeContentSkillMd},
+            {"producing-structured-output", kProducingStructuredOutputSkillMd},
+            {"shell-pipelines", kShellPipelinesSkillMd},
+        };
+        for (auto const& entry : entries) {
+            auto parsed = builtin_skills_detail::parse_builtin(entry.name, entry.text);
+            if (!parsed) return result<std::vector<SkillSourceResult>>(std::unexpected(parsed.error()));
+            skills.push_back(std::move(*parsed));
+        }
+        return result<std::vector<SkillSourceResult>>(std::move(skills));
+    }();
+    // InlineSkillSource, not hand-assembled: the same class the Skill page documents in full,
+    // constructed with a result<...> directly so a parse failure survives unchanged into load_skills().
+    return make_skill_source_descriptor(InlineSkillSource("builtin", std::move(resolved)));
+}`;

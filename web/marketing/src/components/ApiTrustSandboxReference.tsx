@@ -1,5 +1,6 @@
 import {
   attenuationExampleSnippet,
+  capabilityDenialErrorSnippet,
   capabilityDenialExampleSnippet,
   capabilityEnforcementSteps,
   customBackendConceptSnippet,
@@ -135,6 +136,17 @@ const copy = {
         to <code>set_capabilities()</code>. Denial is an ordinary tool error fed back to the
         model, not a run-level failure: the run still converges, it just never invoked{" "}
         <code>write_note</code>'s real body.
+      </>
+    ),
+    denialErrorNote: (
+      <>
+        <strong>What that tool error actually contains, not just "an error":</strong>{" "}
+        <code>audit.error_code</code> is the stable <code>tool.capability_not_held</code>, every
+        time, regardless of which capability kind was missing — and the <code>Error</code>{" "}
+        content's <code>message</code> is deliberately silent about which one was checked or
+        held. Proven directly by asserting the message does NOT contain the capability's own
+        name, not merely by reading a comment that promises it — a caller cannot fingerprint a
+        session's granted capabilities by triggering denials and inspecting the wording.
       </>
     ),
     s2Eyebrow: "tool_pipeline.hpp — invoke_tool()",
@@ -542,6 +554,17 @@ const copy = {
         <code>set_capabilities()</code>. Từ chối là một lỗi tool bình thường được đưa trở lại
         cho model, không phải một thất bại ở cấp run: run vẫn hội tụ, chỉ là nó không bao giờ
         gọi thực thi phần thân thật của <code>write_note</code>.
+      </>
+    ),
+    denialErrorNote: (
+      <>
+        <strong>Lỗi tool đó thực sự chứa gì, không chỉ là "một lỗi":</strong>{" "}
+        <code>audit.error_code</code> luôn là mã ổn định <code>tool.capability_not_held</code>,
+        bất kể loại capability nào bị thiếu — và <code>message</code> của nội dung <code>Error</code>{" "}
+        cố tình im lặng về việc capability nào đã được kiểm tra hay đang được nắm giữ. Được chứng
+        minh trực tiếp bằng cách khẳng định message KHÔNG chứa tên riêng của capability đó, không
+        chỉ bằng cách đọc một comment hứa hẹn điều đó — một caller không thể dò ra tập capability
+        mà một session được cấp bằng cách kích hoạt các lần từ chối rồi soi câu chữ.
       </>
     ),
     s2Eyebrow: "tool_pipeline.hpp — invoke_tool()",
@@ -968,6 +991,16 @@ export function ApiTrustSandboxReference() {
 
           <RevealItem>
             <p className="gs-note" style={{ marginTop: 20 }}>{t.outcomeNote}</p>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="tests/test_tool_pipeline.cpp">
+              {highlightCpp(capabilityDenialErrorSnippet)}
+            </CodePanel>
+          </RevealItem>
+
+          <RevealItem>
+            <p className="gs-note" style={{ marginTop: 20 }}>{t.denialErrorNote}</p>
           </RevealItem>
 
           <RevealItem>

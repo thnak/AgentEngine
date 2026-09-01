@@ -1,7 +1,9 @@
 import {
   pluginEntries,
+  pluginHostLoadingCallSnippet,
   pluginHostSteps,
   pluginManifestSnippet,
+  pluginStubTrapSnippet,
   pluginWitWorldSnippet,
 } from "../data/apiContent";
 import { useLang } from "../i18n/LanguageContext";
@@ -78,6 +80,12 @@ const copy = {
         every native tool call too. No pooled instance, no capability that outlives its call.
       </>
     ),
+    s2CallIntro: (
+      <>
+        The four calls above, as a real host actually issues them — against a genuinely compiled
+        Rust fixture component, not a mock:
+      </>
+    ),
     s3Eyebrow: "Status — proven against a real compiled component",
     s3Heading: "What's real today, versus still a not-implemented trap",
     realLabel: "Real",
@@ -95,6 +103,12 @@ const copy = {
         <code>fs-read</code>, <code>fs-write</code>, and <code>resolve-secret</code> still
         trap as not-implemented inside the current minimal host — declared in the WIT world
         and gated correctly, but the host-side implementation behind them isn't built yet.
+      </>
+    ),
+    stubProofIntro: (
+      <>
+        Not a design footnote — the exact assertion. The same probe helper this test file uses to
+        prove the working gated callbacks also proves which ones don't work yet:
       </>
     ),
   },
@@ -144,6 +158,12 @@ const copy = {
         pool, không có capability nào sống lâu hơn lệnh gọi của nó.
       </>
     ),
+    s2CallIntro: (
+      <>
+        Bốn lệnh gọi ở trên, đúng như cách một host thật thực sự phát ra — trên một component
+        Rust fixture biên dịch thật, không phải một mock:
+      </>
+    ),
     s3Eyebrow: "Trạng thái — đã chứng minh trên một component biên dịch thật",
     s3Heading: "Cái gì thật ngay hôm nay, so với cái vẫn còn là bẫy not-implemented",
     realLabel: "Đã có thật",
@@ -163,6 +183,13 @@ const copy = {
         trap là not-implemented bên trong host tối giản hiện tại — được khai báo đúng trong
         WIT world và được kiểm soát đúng cách, nhưng phần triển khai phía host đứng sau chúng
         vẫn chưa được xây dựng.
+      </>
+    ),
+    stubProofIntro: (
+      <>
+        Không phải một chú thích thiết kế — mà là chính khẳng định đó. Cùng một helper probe mà
+        file test này dùng để chứng minh các gated callback hoạt động cũng chứng minh những cái
+        nào chưa hoạt động:
       </>
     ),
   },
@@ -240,6 +267,16 @@ export function ApiPluginsReference() {
           <RevealItem>
             <div className="flow-loop-note" style={{ marginTop: 14 }}>{t.s2Note}</div>
           </RevealItem>
+
+          <RevealItem>
+            <p style={{ marginTop: 20, color: "var(--text-dim)", lineHeight: 1.65 }}>{t.s2CallIntro}</p>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="tests/test_wasm_backend.cpp">
+              {highlightCpp(pluginHostLoadingCallSnippet)}
+            </CodePanel>
+          </RevealItem>
         </RevealGroup>
 
         {/* ---- 3. Status ---------------------------------------------------------------------------- */}
@@ -262,6 +299,16 @@ export function ApiPluginsReference() {
                 <p style={{ color: "var(--text-dim)", fontSize: "0.9rem", lineHeight: 1.6 }}>{t.stubbed}</p>
               </div>
             </div>
+          </RevealItem>
+
+          <RevealItem>
+            <p style={{ marginTop: 20, color: "var(--text-dim)", lineHeight: 1.65 }}>{t.stubProofIntro}</p>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="tests/test_wasm_backend.cpp">
+              {highlightCpp(pluginStubTrapSnippet)}
+            </CodePanel>
           </RevealItem>
         </RevealGroup>
       </div>

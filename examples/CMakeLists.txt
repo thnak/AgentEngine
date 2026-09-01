@@ -225,3 +225,28 @@ target_link_libraries(agentengine_example_28_workflow_as_chat_client PRIVATE
   agentengine::core agentengine_warnings)
 add_test(NAME example_28_workflow_as_chat_client
   COMMAND agentengine_example_28_workflow_as_chat_client)
+
+# 29: AgentSession::enable_event_stream() (Milestone 7 Phase A, 013 §1) plus the ADR-034 streaming
+# turn loop, combined into one narrative program -- the session-level counterpart to 07_streaming.cpp's
+# bare ChatClient layer. Fully offline, no special build flags.
+add_executable(agentengine_example_29_agent_session_events
+  29_agent_session_events.cpp)
+target_link_libraries(agentengine_example_29_agent_session_events PRIVATE
+  agentengine::core agentengine_warnings)
+add_test(NAME example_29_agent_session_events
+  COMMAND agentengine_example_29_agent_session_events)
+
+# 30: QuickstartSessionBuilder (core/session_builder.hpp) -- the ergonomic app-developer surface,
+# against a REAL model (OpenRouter). Needs AGENTENGINE_WITH_HTTPS; SKIPS (exit 0) rather than failing
+# when AGENTENGINE_OPENROUTER_API_KEY isn't set, same as 16/19/26.
+if(AGENTENGINE_WITH_HTTPS)
+  add_executable(agentengine_example_30_session_builder_quickstart_live
+    30_session_builder_quickstart_live.cpp)
+  target_link_libraries(agentengine_example_30_session_builder_quickstart_live PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME example_30_session_builder_quickstart_live
+    COMMAND agentengine_example_30_session_builder_quickstart_live)
+  set_tests_properties(example_30_session_builder_quickstart_live PROPERTIES
+    LABELS "live-network" TIMEOUT 300)
+endif()

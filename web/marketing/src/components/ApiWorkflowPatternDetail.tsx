@@ -2,11 +2,19 @@ import type { ReactNode } from "react";
 import { SITE_BASE } from "../data/content";
 import {
   gh,
+  workflowConcurrentMergeSnippet,
   workflowConcurrentSnippet,
+  workflowGroupChatOfflineSnippet,
   workflowGroupChatSnippet,
+  workflowHandoffMeshSnippet,
+  workflowMapReduceRealSnippet,
   workflowPatterns,
+  workflowPlannerLiveSnippet,
+  workflowReflectionBoundSnippet,
   workflowReflectionSnippet,
+  workflowRouterRunSnippet,
   workflowRouterSnippet,
+  workflowSequentialBodiesSnippet,
   workflowSequentialSnippet,
 } from "../data/apiContent";
 import { useLang } from "../i18n/LanguageContext";
@@ -115,6 +123,11 @@ interface PatternPane {
   code: ReactNode;
   sourceCite?: string;
   sourceHref?: string;
+  /** A second, deeper real-code excerpt -- renders below `code`/`crossRef` either way. */
+  code2?: ReactNode;
+  code2Note?: ReactNode;
+  sourceCite2?: string;
+  sourceHref2?: string;
 }
 
 function buildPanes(lang: "en" | "vi"): Record<PatternId, PatternPane> {
@@ -183,6 +196,12 @@ function buildPanes(lang: "en" | "vi"): Record<PatternId, PatternPane> {
       code: <CodePanel filename="examples/04_first_workflow.cpp">{highlightCpp(workflowSequentialSnippet)}</CodePanel>,
       sourceCite: "examples/04_first_workflow.cpp",
       sourceHref: gh("examples/04_first_workflow.cpp"),
+      code2Note: en
+        ? "The graph above only names Uppercase and Reverse -- here are the two bodies it actually runs."
+        : "Đồ thị ở trên chỉ nêu tên Uppercase và Reverse — đây là hai body thật mà nó thực thi.",
+      code2: <CodePanel filename="examples/04_first_workflow.cpp">{highlightCpp(workflowSequentialBodiesSnippet)}</CodePanel>,
+      sourceCite2: "examples/04_first_workflow.cpp:60-76",
+      sourceHref2: gh("examples/04_first_workflow.cpp"),
     },
 
     concurrent: {
@@ -222,6 +241,12 @@ function buildPanes(lang: "en" | "vi"): Record<PatternId, PatternPane> {
       code: <CodePanel filename="examples/09_concurrent_workflow.cpp">{highlightCpp(workflowConcurrentSnippet)}</CodePanel>,
       sourceCite: "examples/09_concurrent_workflow.cpp",
       sourceHref: gh("examples/09_concurrent_workflow.cpp"),
+      code2Note: en
+        ? "The wiring above names worker/aggregate; here's what those bodies actually do -- including how fan_in's merged delivery gets read."
+        : "Phần đấu nối ở trên chỉ nêu tên worker/aggregate; đây là những gì các body đó thực sự làm — kể cả cách đọc một delivery đã gộp của fan_in.",
+      code2: <CodePanel filename="examples/09_concurrent_workflow.cpp">{highlightCpp(workflowConcurrentMergeSnippet)}</CodePanel>,
+      sourceCite2: "examples/09_concurrent_workflow.cpp:62-91",
+      sourceHref2: gh("examples/09_concurrent_workflow.cpp"),
     },
 
     "map-reduce": {
@@ -247,6 +272,12 @@ function buildPanes(lang: "en" | "vi"): Record<PatternId, PatternPane> {
         </div>
       ),
       code: null,
+      code2Note: en
+        ? "There is no separate map-reduce example -- this pattern IS 09_concurrent_workflow.cpp's graph and bodies, run under a reduce framing rather than a second implementation."
+        : "Không có ví dụ map-reduce riêng — mẫu này CHÍNH LÀ đồ thị và các body của 09_concurrent_workflow.cpp, chỉ diễn giải theo khung reduce thay vì một cài đặt thứ hai.",
+      code2: <CodePanel filename="examples/09_concurrent_workflow.cpp">{highlightCpp(workflowMapReduceRealSnippet)}</CodePanel>,
+      sourceCite2: "examples/09_concurrent_workflow.cpp:126-149",
+      sourceHref2: gh("examples/09_concurrent_workflow.cpp"),
     },
 
     handoff: {
@@ -274,6 +305,12 @@ function buildPanes(lang: "en" | "vi"): Record<PatternId, PatternPane> {
           ],
       diagram: branchDiagram,
       code: null,
+      code2Note: en
+        ? "10_conditional_routing.cpp's triage only ever routes outward once. examples/23_handoff_mesh.cpp is the genuinely mesh-shaped case: billing and tech can EACH hand off to the other, plus an escalate request_port."
+        : "triage của 10_conditional_routing.cpp chỉ định tuyến ra ngoài đúng một lần. examples/23_handoff_mesh.cpp mới là trường hợp mesh thật sự: billing và tech có thể chuyển giao CHO NHAU, cộng thêm một request_port escalate.",
+      code2: <CodePanel filename="examples/23_handoff_mesh.cpp">{highlightCpp(workflowHandoffMeshSnippet)}</CodePanel>,
+      sourceCite2: "examples/23_handoff_mesh.cpp:64-125",
+      sourceHref2: gh("examples/23_handoff_mesh.cpp"),
     },
 
     router: {
@@ -302,6 +339,12 @@ function buildPanes(lang: "en" | "vi"): Record<PatternId, PatternPane> {
       code: <CodePanel filename="examples/10_conditional_routing.cpp">{highlightCpp(workflowRouterSnippet)}</CodePanel>,
       sourceCite: "examples/10_conditional_routing.cpp",
       sourceHref: gh("examples/10_conditional_routing.cpp"),
+      code2Note: en
+        ? "What running it actually looks like: the SAME graph driven twice, with the invocation counters that prove exactly one branch fired each time."
+        : "Khi chạy thật sự trông như thế nào: CÙNG một đồ thị được chạy hai lần, kèm các bộ đếm lệnh gọi chứng minh đúng một nhánh được kích hoạt mỗi lần.",
+      code2: <CodePanel filename="examples/10_conditional_routing.cpp">{highlightCpp(workflowRouterRunSnippet)}</CodePanel>,
+      sourceCite2: "examples/10_conditional_routing.cpp:136-160",
+      sourceHref2: gh("examples/10_conditional_routing.cpp"),
     },
 
     "group-chat": {
@@ -331,6 +374,12 @@ function buildPanes(lang: "en" | "vi"): Record<PatternId, PatternPane> {
         </>
       ),
       code: <CodePanel filename="workflow/graph.hpp">{highlightCpp(workflowGroupChatSnippet)}</CodePanel>,
+      code2Note: en
+        ? "The generalized shape above, run for real: examples/15_group_chat_and_planner.cpp's offline Group Chat half. (Its live counterpart, with a real model as moderator, is examples/16_group_chat_live.cpp.)"
+        : "Hình dạng tổng quát ở trên, chạy thật: nửa Group Chat offline của examples/15_group_chat_and_planner.cpp. (Phiên bản trực tiếp với model thật làm moderator là examples/16_group_chat_live.cpp.)",
+      code2: <CodePanel filename="examples/15_group_chat_and_planner.cpp">{highlightCpp(workflowGroupChatOfflineSnippet)}</CodePanel>,
+      sourceCite2: "examples/15_group_chat_and_planner.cpp:121-152",
+      sourceHref2: gh("examples/15_group_chat_and_planner.cpp"),
     },
 
     planner: {
@@ -357,6 +406,12 @@ function buildPanes(lang: "en" | "vi"): Record<PatternId, PatternPane> {
         </div>
       ),
       code: null,
+      code2Note: en
+        ? "examples/15_group_chat_and_planner.cpp's offline Planner half uses a hardcoded turn counter as its \"ledger\". examples/17_planner_live.cpp is the live counterpart -- a real model decides, parsed the same way 10_conditional_routing.cpp's classifier is, with a deterministic fallback ledger as a safety net."
+        : "Nửa Planner offline của examples/15_group_chat_and_planner.cpp dùng một bộ đếm lượt cố định làm \"ledger\". examples/17_planner_live.cpp là phiên bản trực tiếp — một model thật ra quyết định, được phân tích giống hệt cách bộ phân loại của 10_conditional_routing.cpp làm, kèm một ledger dự phòng tất định làm lưới an toàn.",
+      code2: <CodePanel filename="examples/17_planner_live.cpp">{highlightCpp(workflowPlannerLiveSnippet)}</CodePanel>,
+      sourceCite2: "examples/17_planner_live.cpp:104-137",
+      sourceHref2: gh("examples/17_planner_live.cpp"),
     },
 
     reflection: {
@@ -397,6 +452,12 @@ function buildPanes(lang: "en" | "vi"): Record<PatternId, PatternPane> {
       ),
       sourceCite: "tests/test_rt_workflow_supervisor_patterns.cpp (CY-1)",
       sourceHref: gh("tests/test_rt_workflow_supervisor_patterns.cpp"),
+      code2Note: en
+        ? "CY-1 above converges. examples/13_reflection_loop.cpp is the other honest outcome the SAME shape has to handle: a writer/critic pair that never converges, stopped cleanly at bound.max_rounds."
+        : "CY-1 ở trên hội tụ. examples/13_reflection_loop.cpp là kết quả trung thực còn lại mà CÙNG một hình dạng phải xử lý: một cặp writer/critic không bao giờ hội tụ, bị dừng sạch sẽ tại bound.max_rounds.",
+      code2: <CodePanel filename="examples/13_reflection_loop.cpp">{highlightCpp(workflowReflectionBoundSnippet)}</CodePanel>,
+      sourceCite2: "examples/13_reflection_loop.cpp:90-116",
+      sourceHref2: gh("examples/13_reflection_loop.cpp"),
     },
   };
 }
@@ -476,6 +537,23 @@ export function ApiWorkflowPatternDetail({ pattern }: { pattern: PatternId }) {
                   ) : null}
                 </>
               )}
+              {pane.code2 ? (
+                <div style={{ marginTop: 24 }}>
+                  {pane.code2Note ? <p className="gs-note" style={{ marginBottom: 14 }}>{pane.code2Note}</p> : null}
+                  {pane.code2}
+                  {pane.sourceHref2 ? (
+                    <a
+                      className="api-cite"
+                      href={pane.sourceHref2}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ borderTop: "none", paddingTop: 0, marginTop: 10, display: "block" }}
+                    >
+                      {pane.sourceCite2}
+                    </a>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           </RevealItem>
         </RevealGroup>

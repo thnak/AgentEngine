@@ -1,8 +1,12 @@
 import {
+  a2aStreamProjectorInterruptSnippet,
+  aguiProjectorMessageSnippet,
+  aguiSseFrameSnippet,
   declarativeCompilerSnippet,
   mcpDispatchSnippet,
   protocolEntries,
 } from "../data/apiContent";
+import { SITE_BASE } from "../data/content";
 import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
@@ -52,6 +56,54 @@ const copy = {
         real and tested against real values — what's missing in every case is the same thing:
         a listener that reads bytes off a socket and calls the translator, per the status
         table below.
+      </>
+    ),
+    s2bEyebrow: "protocol/agui/sse.hpp · protocol/agui/projection.hpp · protocol/a2a/streaming.hpp",
+    s2bHeading: (
+      <>
+        One internal <code>RunEvent</code>, projected twice — AG-UI ends the run, A2A pauses the task
+      </>
+    ),
+    s2bBody: (
+      <>
+        The SSE framing itself is proven, not just described: <code>to_sse_frame()</code> is
+        exactly <code>"data: " + json::dump(...) + "\n\n"</code>, and{" "}
+        <code>tests/test_agui_sse.cpp:34-46</code> checks the <code>data: </code> prefix, the{" "}
+        <code>\n\n</code> terminator, and that the bytes between them parse as the real projected
+        event — never a hand-built JSON literal.
+      </>
+    ),
+    s2bCaption1: "The framing, proven end to end",
+    s2bCaption2: (
+      <>
+        Every other <code>RunEvent</code> kind maps context-free (projection.hpp's own file-top
+        comment); the ONE exception is the <code>messageId</code> <code>RunEventProjector</code>{" "}
+        mints on <code>model_call_started</code> and erases on <code>model_call_finished</code>,
+        bracketing <code>TEXT_MESSAGE_START</code>/<code>CONTENT</code>/<code>END</code> around one
+        model turn's streamed text — proven end to end by{" "}
+        <code>tests/test_rt_agui_projection.cpp:188-206</code>.
+      </>
+    ),
+    s2bCaption3: (
+      <>
+        <code>input_required</code> forces AG-UI to END the run with{" "}
+        <code>RunFinishedInterrupt</code> — it has no pause event (013 §2.2). A2A's{" "}
+        <code>task_state</code> enum does: <code>A2aStreamProjector</code> projects the identical{" "}
+        <code>input_required</code> <code>RunEvent</code> onto{" "}
+        <code>TASK_STATE_INPUT_REQUIRED</code>, a real, non-terminal state{" "}
+        <code>tests/test_a2a_streaming.cpp:70-78</code> confirms with{" "}
+        <code>is_terminal()</code> — the task genuinely continues.
+      </>
+    ),
+    s2bNote: (
+      <>
+        <strong>Same source, two shapes.</strong> <code>RunEventProjector</code> and{" "}
+        <code>A2aStreamProjector</code> both consume the exact same internal{" "}
+        <code>RunEvent</code>/<code>WorkflowEvent</code> stream — this page's job stops at the
+        wire-format projection above it. The event model itself (every <code>RunEvent</code> kind,{" "}
+        <code>enable_event_stream()</code> on a session or a workflow, what the superstep engine
+        actually emits) is documented in full on the{" "}
+        <a href={`${SITE_BASE}/api/events.html`}>Events page</a>.
       </>
     ),
     s3Eyebrow: "015 — Declarative Agent Format",
@@ -114,6 +166,55 @@ const copy = {
         thật và đã kiểm thử trên các giá trị thật — điều còn thiếu trong mọi trường hợp đều
         giống nhau: một listener đọc byte từ socket và gọi trình dịch, theo đúng bảng trạng
         thái bên dưới.
+      </>
+    ),
+    s2bEyebrow: "protocol/agui/sse.hpp · protocol/agui/projection.hpp · protocol/a2a/streaming.hpp",
+    s2bHeading: (
+      <>
+        Một <code>RunEvent</code> nội bộ duy nhất, được chiếu (project) hai lần — AG-UI kết thúc
+        run, A2A tạm dừng task
+      </>
+    ),
+    s2bBody: (
+      <>
+        Bản thân việc đóng khung SSE đã được chứng minh, không chỉ mô tả suông:{" "}
+        <code>to_sse_frame()</code> chính xác là <code>"data: " + json::dump(...) + "\n\n"</code>,
+        và <code>tests/test_agui_sse.cpp:34-46</code> kiểm tra tiền tố <code>data: </code>, dấu
+        kết thúc <code>\n\n</code>, và rằng các byte nằm giữa chúng phân tích được thành đúng sự
+        kiện đã được chiếu thật — không bao giờ là một literal JSON viết tay.
+      </>
+    ),
+    s2bCaption1: "Việc đóng khung, được chứng minh đầu-cuối",
+    s2bCaption2: (
+      <>
+        Mọi loại <code>RunEvent</code> khác đều ánh xạ không phụ thuộc ngữ cảnh (đúng như comment
+        đầu file của projection.hpp); ngoại lệ DUY NHẤT là <code>messageId</code> mà{" "}
+        <code>RunEventProjector</code> tạo ra khi <code>model_call_started</code> và xóa đi khi{" "}
+        <code>model_call_finished</code>, đóng khung <code>TEXT_MESSAGE_START</code>/
+        <code>CONTENT</code>/<code>END</code> quanh phần văn bản được stream của một lượt model —
+        được chứng minh đầu-cuối bởi <code>tests/test_rt_agui_projection.cpp:188-206</code>.
+      </>
+    ),
+    s2bCaption3: (
+      <>
+        <code>input_required</code> buộc AG-UI phải KẾT THÚC run bằng{" "}
+        <code>RunFinishedInterrupt</code> — nó không có sự kiện tạm dừng (013 §2.2). Enum{" "}
+        <code>task_state</code> của A2A thì có: <code>A2aStreamProjector</code> chiếu đúng cùng một{" "}
+        <code>RunEvent</code> <code>input_required</code> đó thành{" "}
+        <code>TASK_STATE_INPUT_REQUIRED</code>, một trạng thái thật, KHÔNG kết thúc, được{" "}
+        <code>tests/test_a2a_streaming.cpp:70-78</code> xác nhận bằng <code>is_terminal()</code> —
+        task thực sự vẫn tiếp tục.
+      </>
+    ),
+    s2bNote: (
+      <>
+        <strong>Cùng một nguồn, hai hình dạng.</strong> <code>RunEventProjector</code> và{" "}
+        <code>A2aStreamProjector</code> đều tiêu thụ đúng cùng một luồng{" "}
+        <code>RunEvent</code>/<code>WorkflowEvent</code> nội bộ — công việc của trang này dừng lại
+        ở phép chiếu sang định dạng wire phía trên. Bản thân mô hình sự kiện (mọi loại{" "}
+        <code>RunEvent</code>, <code>enable_event_stream()</code> trên một session hay một
+        workflow, những gì superstep engine thực sự phát ra) được tài liệu hóa đầy đủ trên{" "}
+        <a href={`${SITE_BASE}/api/events.html`}>trang Events</a>.
       </>
     ),
     s3Eyebrow: "015 — Declarative Agent Format",
@@ -193,6 +294,40 @@ export function ApiProtocolStatus() {
 
           <RevealItem>
             <p className="gs-note" style={{ marginTop: 20 }}>{t.s2Note}</p>
+          </RevealItem>
+        </RevealGroup>
+
+        {/* ---- AG-UI/A2A wire projection, in detail ------------------------------------------ */}
+        <RevealGroup>
+          <RevealItem>
+            <div className="section-head anchor-target" id="protocol-wire-projection" style={{ marginTop: 56, marginBottom: 22 }}>
+              <span className="eyebrow">{t.s2bEyebrow}</span>
+              <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s2bHeading}</h3>
+              <p>{t.s2bBody}</p>
+            </div>
+          </RevealItem>
+
+          <RevealItem>
+            <p className="gs-note" style={{ marginBottom: 12 }}>{t.s2bCaption1}</p>
+            <CodePanel filename="test_agui_sse.cpp">{highlightCpp(aguiSseFrameSnippet)}</CodePanel>
+          </RevealItem>
+
+          <RevealItem>
+            <p className="gs-note" style={{ marginTop: 24, marginBottom: 12 }}>{t.s2bCaption2}</p>
+            <CodePanel filename="test_rt_agui_projection.cpp">
+              {highlightCpp(aguiProjectorMessageSnippet)}
+            </CodePanel>
+          </RevealItem>
+
+          <RevealItem>
+            <p className="gs-note" style={{ marginTop: 24, marginBottom: 12 }}>{t.s2bCaption3}</p>
+            <CodePanel filename="test_a2a_streaming.cpp">
+              {highlightCpp(a2aStreamProjectorInterruptSnippet)}
+            </CodePanel>
+          </RevealItem>
+
+          <RevealItem>
+            <p className="gs-note" style={{ marginTop: 20 }}>{t.s2bNote}</p>
           </RevealItem>
         </RevealGroup>
 
