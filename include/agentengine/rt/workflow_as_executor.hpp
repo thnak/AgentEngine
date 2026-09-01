@@ -112,6 +112,12 @@ template <class T>
         case workflow_status::bound_max_stalls: return "bound_max_stalls";
         case workflow_status::bound_max_resets: return "bound_max_resets";
         case workflow_status::invalid:          return "invalid";
+        // docs/planning/workflow-mid-run-cancellation-design-draft.md (issue #37, red-teamed): this
+        // is a SECOND exhaustive switch(workflow_status) besides workflow_supervisor.hpp's own
+        // finish() -- missed in that design draft's own first-pass file list, caught by an
+        // independent red-team pass before implementation (this project builds under -Werror on
+        // gcc/clang; an unhandled enumerator here would have broken that build).
+        case workflow_status::cancelled:        return "cancelled";
     }
     return "unknown";
 }

@@ -160,6 +160,7 @@
 #include <memory>
 #include <memory_resource>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -296,6 +297,12 @@ enum class workflow_status {
     bound_max_stalls,
     bound_max_resets,
     invalid,
+    // docs/planning/workflow-mid-run-cancellation-design-draft.md (GitHub issue #37, red-teamed):
+    // a caller called cancel() (or held a stop_token this run's own cancel_source_ shares) and the
+    // round loop observed it at the same round-boundary point every other bound is already checked.
+    // An honest, expected, non-error termination -- the same shape bound_max_rounds/bound_max_stalls
+    // already are, never a fault.
+    cancelled,
 };
 
 // ADR-152 (issue #29): the plain-string form of `workflow_status` used ONLY for
@@ -314,6 +321,7 @@ enum class workflow_status {
         case workflow_status::bound_max_stalls:  return "bound_max_stalls";
         case workflow_status::bound_max_resets:  return "bound_max_resets";
         case workflow_status::invalid:           return "invalid";
+        case workflow_status::cancelled:         return "cancelled";
     }
     return "invalid";
 }
@@ -754,6 +762,23 @@ public:
         inner->nesting_depth_ = nesting_depth_ + 1;
         sub_workflows_[idx] = std::move(inner);
         valid_ = valid_base_ && sub_workflow_kind_nodes_are_bound();
+    }
+
+    // docs/planning/workflow-mid-run-cancellation-design-draft.md (GitHub issue #37, red-teamed):
+    // callable from ANY thread while run_workflow()/resume_workflow()/continue_workflow() is in
+    // flight on another -- std::stop_source::request_stop() is specified thread-safe with no
+    // external synchronization needed (the same guarantee std::jthread's own built-in stop
+    // mechanism relies on, already used by this codebase's own ThreadPool). Idempotent (a second
+    // call is a harmless no-op, matching request_stop()'s own contract) and requires no lock: it
+    // never touches state_/ports_/rounds_ or anything else run_mutex_ (I1) protects -- a pure
+    // out-of-band signal the round loop polls on its own schedule, exactly like
+    // core/stream.hpp's ADR-017 stop_source/stop_token precedent this mechanism reuses.
+    void cancel() noexcept { cancel_source_.request_stop(); }
+
+    // A caller can hold this independently (or hand it to unrelated code that wants to observe the
+    // same cancellation) -- mirrors stream_producer<T>::stop_token()'s own exposed-handle shape.
+    [[nodiscard]] std::stop_token cancellation_token() const noexcept {
+        return cancel_source_.get_token();
     }
 
     [[nodiscard]] std::string const& designated_stall_reporter() const noexcept {
@@ -1327,6 +1352,19 @@ private:
                     break;
                 }
             }
+            // docs/planning/workflow-mid-run-cancellation-design-draft.md (issue #37): checked at
+            // the EXACT SAME point every other termination bound already is -- never a special
+            // early gate before the port-resolution prologue above (max_rounds/deadline_ms don't
+            // gate that block either, so cancellation doesn't, for consistency). NOT a stronger
+            // guarantee than any existing bound already offers: a round already in flight (a wide
+            // fan-out, or a sub_workflow dispatch running an entire nested multi-round sub-run
+            // synchronously) still runs to completion before this is rechecked -- see cancel_source_
+            // 's own comment and the design draft §4 for why that is an inherited, not new,
+            // characteristic.
+            if (cancel_source_.stop_requested()) {
+                status = workflow_status::cancelled;
+                break;
+            }
 
             std::vector<Delivery> exec_deliveries;
             std::vector<Delivery> port_deliveries;
@@ -1430,8 +1468,14 @@ private:
                     push_structural_event(
                         agentengine::workflow::workflow_event_kind::executor_dispatched,
                         agentengine::workflow::workflow_event_payload::ExecutorRef{graph_.executors[idx].id});
+                    // issue #37: EffectContext already IS the per-call vehicle for exactly this kind
+                    // of opt-in signal (mirrors capabilities/bound_capabilities) -- a copy with
+                    // cancellation wired on, rather than one more explicit parameter on
+                    // run_executor_job() alongside sink/executor_id/round/attempt/path_prefix.
+                    agentengine::EffectContext ctx = contexts_[idx];
+                    ctx.cancellation                = cancel_source_.get_token();
                     in_flight.push_back(pool_.submit(run_executor_job(
-                        bodies_[idx], exec_deliveries[i].payload, contexts_[idx], slot, event_sink,
+                        bodies_[idx], exec_deliveries[i].payload, std::move(ctx), slot, event_sink,
                         graph_.executors[idx].id, this_round, attempt, event_path_prefix_)));
                 }
 
@@ -2141,6 +2185,18 @@ private:
     // workers are always spawned AND joined strictly inside that one call's own synchronous
     // extent -- never outside the window ScopedForwardedEventSink's own lifetime covers.
     std::vector<std::string> event_path_prefix_;
+    // docs/planning/workflow-mid-run-cancellation-design-draft.md (GitHub issue #37, red-teamed):
+    // ADR-017's own stop_source/stop_token precedent (core/stream.hpp), reused here rather than a
+    // bespoke CancellationToken type. Always present (default-constructed, never requested) --
+    // cancel()/cancellation_token() need no null check, matching multiplex_sink_'s own "always
+    // valid" shape. Never touches state_/ports_/rounds_ or anything else run_mutex_ (I1) protects;
+    // request_stop()/stop_requested() are specified thread-safe with no external synchronization,
+    // so this is genuinely callable from a different thread than whichever one is driving execute()
+    // right now, unlike every other member near it. Not part of RunStateRecord -- like
+    // nesting_depth_/event_path_prefix_, a restored instance's cancel_source_ is always
+    // unrequested; a caller wanting a restored run to stay cancelled must call cancel() again after
+    // restore.
+    std::stop_source cancel_source_;
     // Scratch state for push_fan_in_aggregated_events() -- see route_from()'s own comment. Cleared
     // by execute() before each routing loop that calls route_from(), drained (and re-cleared) by
     // push_fan_in_aggregated_events() right after. Never holds state across a co_await suspension

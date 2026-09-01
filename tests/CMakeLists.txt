@@ -1726,6 +1726,12 @@ add_executable(test_rt_workflow_sub_workflow test_rt_workflow_sub_workflow.cpp)
 target_link_libraries(test_rt_workflow_sub_workflow PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_workflow_sub_workflow COMMAND test_rt_workflow_sub_workflow)
 
+# ---- GitHub issue #37: mid-run cancellation for WorkflowSupervisor. Design draft:
+# docs/planning/workflow-mid-run-cancellation-design-draft.md.
+add_executable(test_rt_workflow_cancellation test_rt_workflow_cancellation.cpp)
+target_link_libraries(test_rt_workflow_cancellation PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_workflow_cancellation COMMAND test_rt_workflow_cancellation)
+
 # ---- Milestone 5 Phase G1 -- ChatCallRecording JSON codec (core/chat_recording.hpp), the shared
 # foundation RecordingChatClient<Inner> and ReplayChatClient both depend on.
 add_executable(test_chat_recording_codec test_chat_recording_codec.cpp)

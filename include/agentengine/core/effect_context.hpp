@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -142,6 +143,28 @@ struct EffectContext {
     // enforcement that any body actually does this (I3: a body that stays non-streaming is simply
     // coarser-grained observability for that node, never a violation).
     std::function<void(std::string const&)> moderator_delta_sink = [](std::string const&) {};
+
+    // docs/planning/workflow-mid-run-cancellation-design-draft.md (GitHub issue #37, red-teamed):
+    // `WorkflowSupervisor`'s own cooperative mid-call cancellation signal (`rt/workflow_supervisor.
+    // hpp`'s `cancel()`/`cancel_source_`), populated per-dispatch from the run's own current
+    // `stop_token` — default-constructed here (`stop_possible() == false`, `stop_requested() ==
+    // false`, always), the same "optional-but-always-safe-to-call" shape `report_progress`/
+    // `agent_turn_sink` above already establish, just via a cheap value type instead of a
+    // `std::function` — no wiring means a body that checks this simply never sees a stop request.
+    // COOPERATIVE ONLY, matching every other bound this engine enforces (`max_rounds`/
+    // `deadline_ms`): a body that never reads this runs to its own natural completion for that one
+    // call, same as today. Distinct from `deadline` above — that field is a per-call TIMEOUT hint
+    // already consumed by the model-call-gateway layer (`core/model_call_gateway.hpp`) for a
+    // different purpose; this field means "the WHOLE RUN was told to stop," reaches no further into
+    // the call stack than a body's own direct read of it, and is not itself derived from model
+    // output (I3) or gated behind any capability (I2) — a pure host-driven external signal, exactly
+    // like `cancel()`'s own caller-facing contract. Not an I5 concern: unlike `deadline` (excluded
+    // from `SelectFn`'s own visible `EffectContext` specifically because a live read of it is not
+    // reproducible across a replay boundary, `core/routing_model_call_gateway.hpp`), no
+    // `ExecutorBody`/`WorkflowSupervisor` code path in this codebase makes any I5 replay-determinism
+    // claim today — this is the same category of live, unrecorded read, disclosed here rather than
+    // silently assumed harmless, so a future I5-related change to this layer knows to revisit it.
+    std::stop_token cancellation;
 
     // 006 §7 / 028 §2: an oversized tool result is promoted to a `BlobRef` rather than inlined into
     // the model's context. Both fields below default OFF (`nullopt` / an empty `std::function`) --
