@@ -1192,16 +1192,17 @@ private:
             };
         }
         if (!body) {
-            *out = ExecuteReply{agentengine::Message{}, {}, false, agentengine::failure_class::contract};
+            *out = ExecuteReply{agentengine::Message{}, {}, false, agentengine::failure_class::contract,
+                                 false, std::nullopt};
             co_return;
         }
         agentengine::result<ExecutorOutcome> outcome = body(payload, ctx);
         if (!outcome) {
-            *out = ExecuteReply{agentengine::Message{}, {}, false, outcome.error().klass};
+            *out = ExecuteReply{agentengine::Message{}, {}, false, outcome.error().klass, false, std::nullopt};
             co_return;
         }
         *out = ExecuteReply{std::move(outcome->payload), std::move(outcome->routes), true,
-                             agentengine::failure_class::fatal, outcome->stalled};
+                             agentengine::failure_class::fatal, outcome->stalled, std::nullopt};
         co_return;
     }
 
@@ -1286,7 +1287,8 @@ private:
         std::shared_ptr<agentengine::workflow::multiplex_sink<agentengine::workflow::WorkflowEvent>> sink,
         std::vector<std::string> path_prefix) {
         if (!inner) {
-            *out = ExecuteReply{agentengine::Message{}, {}, false, agentengine::failure_class::contract};
+            *out = ExecuteReply{agentengine::Message{}, {}, false, agentengine::failure_class::contract,
+                                 false, std::nullopt};
             co_return;
         }
         WorkflowResult r;
@@ -1295,7 +1297,7 @@ private:
             r = drive(inner->run_workflow(RunWorkflow{payload}));
         }
         if (r.status == workflow_status::completed) {
-            *out = ExecuteReply{r.output, {}, true, agentengine::failure_class::fatal};
+            *out = ExecuteReply{r.output, {}, true, agentengine::failure_class::fatal, false, std::nullopt};
             co_return;
         }
         if (r.status == workflow_status::suspended) {
@@ -1305,7 +1307,8 @@ private:
             *out = std::move(reply);
             co_return;
         }
-        *out = ExecuteReply{agentengine::Message{}, {}, false, agentengine::failure_class::fatal};
+        *out = ExecuteReply{agentengine::Message{}, {}, false, agentengine::failure_class::fatal, false,
+                             std::nullopt};
         co_return;
     }
 
@@ -1321,7 +1324,8 @@ private:
                     agentengine::workflow::workflow_event_kind::request_port_resolved,
                     agentengine::workflow::workflow_event_payload::PortRef{
                         graph_.executors[p.executor_index].id, p.interaction.interaction_id});
-                ExecuteReply const reply{p.response, p.routes, true, agentengine::failure_class::fatal};
+                ExecuteReply const reply{p.response, p.routes, true, agentengine::failure_class::fatal,
+                                          false, std::nullopt};
                 record_partial(state_.partial, p.executor_index, rounds_ - 1, p.response);
                 if (is_output_selected(p.executor_index)) state_.selected_output = p.response;
                 route_result const rr = route_from(p.executor_index, reply, next);
@@ -1441,7 +1445,7 @@ private:
             for (std::size_t i = 0; i < exec_deliveries.size(); ++i) {
                 if (quarantined[i]) {
                     replies[i] = ExecuteReply{agentengine::Message{}, {}, false,
-                                               agentengine::failure_class::contract};
+                                               agentengine::failure_class::contract, false, std::nullopt};
                 } else {
                     todo.push_back(i);
                 }
@@ -1488,7 +1492,7 @@ private:
                         // A throwing executor body -- see file banner for why this is classified
                         // transient rather than needing a restart-budget mechanism of its own.
                         replies[i] = ExecuteReply{agentengine::Message{}, {}, false,
-                                                   agentengine::failure_class::transient};
+                                                   agentengine::failure_class::transient, false, std::nullopt};
                     } else {
                         replies[i] = std::move(*slots[k]);
                     }
@@ -1537,7 +1541,8 @@ private:
                 for (std::size_t i = 0; i < sub_workflow_deliveries.size(); ++i) {
                     if (sub_workflow_quarantined[i]) {
                         sub_workflow_replies[i] = ExecuteReply{agentengine::Message{}, {}, false,
-                                                                agentengine::failure_class::contract};
+                                                                agentengine::failure_class::contract, false,
+                                                                std::nullopt};
                     } else {
                         sub_todo.push_back(i);
                     }
@@ -1576,7 +1581,8 @@ private:
                         JobOutcome         outcome = sub_in_flight[k].get();
                         if (outcome.faulted) {
                             sub_workflow_replies[i] = ExecuteReply{agentengine::Message{}, {}, false,
-                                                                    agentengine::failure_class::transient};
+                                                                    agentengine::failure_class::transient,
+                                                                    false, std::nullopt};
                         } else {
                             sub_workflow_replies[i] = std::move(*sub_slots[k]);
                         }

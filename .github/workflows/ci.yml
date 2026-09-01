@@ -57,7 +57,12 @@ jobs:
         shell: pwsh
         run: |
           $flags = ""
-          if ("${{ matrix.build_type }}" -eq "ASan") { $flags = "/fsanitize=address" }
+          # /Zi (debug info) is required alongside /fsanitize=address -- without it MSVC raises
+          # C5072 ("ASAN enabled without debug information emission"), which agentengine_warnings'
+          # /WX (cmake/AgentEngineWarnings.cmake) promotes to a hard build failure across every TU.
+          # /FS serializes PDB writes across this job's -j 4 parallel cl.exe invocations, which all
+          # share one .pdb under the MSBuild/vcxproj generator this job uses.
+          if ("${{ matrix.build_type }}" -eq "ASan") { $flags = "/fsanitize=address /Zi /FS" }
           cmake -S . -B build -DCMAKE_CXX_FLAGS="$flags"
 
       - name: Build
