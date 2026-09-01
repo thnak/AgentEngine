@@ -88,14 +88,19 @@ const copy = {
       </>
     ),
     s2Eyebrow: "InlineSkillSource, in full",
-    s2Heading: "The whole class is nine lines — here's every one of them",
+    s2Heading: "The whole class is eleven lines — here's every one of them",
     s2Body: (
       <>
         <code>InlineSkillSource</code> is deliberately the simplest possible{" "}
-        <code>SkillSource</code> conformer: a constructor that stores what it's given, and
-        two accessors that hand it back. No parsing, no I/O, no cache to go stale — the
+        <code>SkillSource</code> conformer: two constructors that store what they're given,
+        and two accessors that hand it back. No parsing, no I/O, no cache to go stale — the
         caller does the work (usually via <code>parse_skill_md</code> against a string
-        literal) before this type ever sees it.
+        literal) before this type ever sees it. The second constructor takes a{" "}
+        <code>result&lt;std::vector&lt;SkillSourceResult&gt;&gt;</code> directly, so a caller
+        whose own construction-time parsing can itself fail — <code>builtin_skills.hpp</code>
+        's five generic skills and the PDF-tool catalog's{" "}
+        <code>extracting-document-text</code> skill both do this — can hand this class a
+        failure and get that exact failure back, unchanged, from <code>load_skills()</code>.
       </>
     ),
     s2ExampleIntro: (
@@ -111,10 +116,12 @@ const copy = {
         ships (<code>using-the-code-interpreter</code>, <code>using-codeact</code>, …) are
         compiled into the binary as raw string literals — <code>builtin_skills.hpp</code>{" "}
         parses each one the same way, at construction time, so a deployment can never omit or
-        move a loose <code>SKILL.md</code> file that a core skill depends on. It stops just
-        short of literally constructing an <code>InlineSkillSource</code> instance (it builds
-        the type-erased <code>SkillSourceDescriptor</code> directly, since the whole list is
-        already resolved once, eagerly) — same idea, one layer lower.
+        move a loose <code>SKILL.md</code> file that a core skill depends on. It now literally
+        constructs an <code>InlineSkillSource</code> — same as the PDF-tool catalog's own{" "}
+        <code>extracting-document-text</code> skill (<code>tools/extract_pdf_text.hpp</code>)
+        — rather than hand-assembling the type-erased <code>SkillSourceDescriptor</code>{" "}
+        itself: every compiled-in skill source this engine ships goes through the one class
+        built for exactly this.
       </>
     ),
     s3Eyebrow: "How a skill loads — §8b",
@@ -293,7 +300,15 @@ const copy = {
         First-party <code>SKILL.md</code> bundles, no special loader
       </>
     ),
-    s9Body: "These earn their place precisely because a model hasn't seen a million examples of them, unlike ordinary Python. Shipped in this repo, mounted by default, subject to the same per-session grant model as any other skill.",
+    s9Body: (
+      <>
+        These earn their place precisely because a model hasn't seen a million examples of them,
+        unlike ordinary Python. Shipped in this repo, mounted by default, subject to the same
+        per-session grant model as any other skill. Field-by-field detail, the tools they pair
+        with, and a worked example live on the{" "}
+        <a href={`${SITE_BASE}/api/builtin-tools.html`}>First-Party Tools &amp; Skills page</a>.
+      </>
+    ),
     skillsTableColumns: ["Skill", "Teaches"],
     statusNote: (
       <>
@@ -367,14 +382,19 @@ const copy = {
       </>
     ),
     s2Eyebrow: "InlineSkillSource, đầy đủ",
-    s2Heading: "Toàn bộ lớp chỉ có chín dòng — đây là từng dòng một",
+    s2Heading: "Toàn bộ lớp chỉ có mười một dòng — đây là từng dòng một",
     s2Body: (
       <>
         <code>InlineSkillSource</code> cố ý là kiểu tuân theo <code>SkillSource</code> đơn
-        giản nhất có thể: một constructor lưu lại những gì nó được trao, và hai accessor trả
-        chúng lại. Không phân tích, không I/O, không có cache nào để hết hạn — caller làm hết
-        công việc (thường là qua <code>parse_skill_md</code> áp lên một string literal)
-        trước khi kiểu này từng nhìn thấy nó.
+        giản nhất có thể: hai constructor lưu lại những gì chúng được trao, và hai accessor
+        trả chúng lại. Không phân tích, không I/O, không có cache nào để hết hạn — caller làm
+        hết công việc (thường là qua <code>parse_skill_md</code> áp lên một string literal)
+        trước khi kiểu này từng nhìn thấy nó. Constructor thứ hai nhận thẳng một{" "}
+        <code>result&lt;std::vector&lt;SkillSourceResult&gt;&gt;</code>, để một caller mà
+        việc phân tích lúc khởi tạo của chính nó có thể thất bại — năm skill tích hợp sẵn của{" "}
+        <code>builtin_skills.hpp</code> và skill <code>extracting-document-text</code> của
+        danh mục PDF-tool đều thuộc trường hợp này — vẫn có thể trao cho lớp này một thất bại
+        và nhận lại đúng thất bại đó, không đổi, từ <code>load_skills()</code>.
       </>
     ),
     s2ExampleIntro: (
@@ -391,10 +411,12 @@ const copy = {
         <code>using-codeact</code>, …) được biên dịch thẳng vào binary dưới dạng string
         literal thô — <code>builtin_skills.hpp</code> phân tích mỗi cái theo đúng cách đó, tại
         thời điểm khởi tạo, để một deployment không bao giờ có thể vô tình bỏ sót hay di
-        chuyển một file <code>SKILL.md</code> rời rạc mà một skill lõi phụ thuộc vào. Nó dừng
-        lại ngay trước khi thực sự khởi tạo một thực thể <code>InlineSkillSource</code> (nó
-        xây thẳng <code>SkillSourceDescriptor</code> type-erased, vì toàn bộ danh sách đã
-        được phân giải một lần, ngay lập tức) — cùng ý tưởng, chỉ thấp hơn một tầng.
+        chuyển một file <code>SKILL.md</code> rời rạc mà một skill lõi phụ thuộc vào. Giờ đây
+        nó thực sự khởi tạo một <code>InlineSkillSource</code> — giống như skill{" "}
+        <code>extracting-document-text</code> của chính danh mục PDF-tool (
+        <code>tools/extract_pdf_text.hpp</code>) — thay vì tự tay lắp{" "}
+        <code>SkillSourceDescriptor</code> type-erased: mọi nguồn skill biên dịch sẵn mà
+        engine này phát hành đều đi qua đúng một lớp được xây dựng cho chính việc đó.
       </>
     ),
     s3Eyebrow: "Một skill được nạp như thế nào — §8b",
@@ -583,7 +605,15 @@ const copy = {
         Các bundle <code>SKILL.md</code> chính chủ, không loader đặc biệt
       </>
     ),
-    s9Body: "Chúng xứng đáng có vị trí này chính xác vì một model chưa từng thấy hàng triệu ví dụ về chúng, khác với Python thông thường. Được phát hành trong repo này, mount theo mặc định, chịu cùng mô hình cấp phát theo từng session như bất kỳ skill nào khác.",
+    s9Body: (
+      <>
+        Chúng xứng đáng có vị trí này chính xác vì một model chưa từng thấy hàng triệu ví dụ về
+        chúng, khác với Python thông thường. Được phát hành trong repo này, mount theo mặc định,
+        chịu cùng mô hình cấp phát theo từng session như bất kỳ skill nào khác. Chi tiết theo
+        từng trường, các tool đi kèm, và một ví dụ minh họa nằm ở{" "}
+        <a href={`${SITE_BASE}/api/builtin-tools.html`}>trang Tool &amp; Skill chính chủ</a>.
+      </>
+    ),
     skillsTableColumns: ["Skill", "Dạy điều gì"],
     statusNote: (
       <>
