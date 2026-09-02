@@ -278,26 +278,30 @@ export const maturityLadder: Record<Lang, MaturityStage[]> = {
   ],
 };
 
-export const heroCodeSnippet = `struct Researcher : Agent<Researcher,
-        ChatClientId<"anthropic:claude-opus-5">,
-        Tools<WebSearch, CodeInterpreter, Handoff<Writer>>,
-        Capabilities<NetOut<"api.search.example">>,
-        SandboxProfile<Strict>,
-        MaxTurns<12>> {
+export const heroCodeSnippet = `namespace ae = agentengine;  // CONVENTIONS.md's sanctioned alias
+
+struct Researcher : ae::Agent<Researcher,
+        ae::ChatClientId<"anthropic:claude-opus-5">,
+        ae::Tools<WebSearchTool>,
+        ae::Capabilities<ae::cap::decl::NetOut<"api.search.example">>,
+        ae::MaxTurns<12>> {
     static constexpr std::string_view name = "researcher";
     static constexpr std::string_view instructions =
-        "Research the question. Cite sources. Hand off when ready.";
+        "Research the question. Cite sources.";
 };
 
-auto session = engine.create_session("user-42");
-auto stream  = session.run_stream<Researcher>(
-    "Compare WASI 0.2 and 0.3.");`;
+// register_agent<A>() compiles + validates the whole policy set --
+// tool-name collisions, capability-ceiling coverage, ChatClientId
+// presence -- into a read-only AgentMetadata table (002 §6).
+auto meta = ae::register_agent<Researcher>();
+assert(meta.has_value());`;
 
 // ---------------------------------------------------------------------------
-// Getting Started — grounded in the actual repo, not the pitch above. Sourced
-// from CONVENTIONS.md, the real CMakeLists.txt / .github/workflows/ci.yml, and
-// tests/test_agent_registry.cpp + tests/test_m1_walking_skeleton.cpp — not the
-// aspirational `engine.create_session()` snippet used in the hero section.
+// Getting Started — grounded in the actual repo, same as the hero snippet
+// above (real since GitHub issue #46 replaced that snippet's own former
+// fictional `engine.create_session()` tail). Sourced from CONVENTIONS.md,
+// the real CMakeLists.txt / .github/workflows/ci.yml, and
+// tests/test_agent_registry.cpp + tests/test_m1_walking_skeleton.cpp.
 // ---------------------------------------------------------------------------
 
 export interface BuildStep {
