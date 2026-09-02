@@ -92,8 +92,21 @@ struct ModelToolCallArgumentDelta {
     bool        is_final = false;    // true on the fragment that completes the call
 };
 
+// Issue #49: the model's incrementally-produced reasoning/chain-of-thought text, distinct from
+// ModelTextDelta above (the final answer) -- the two are never conflated, so a live consumer (a CLI,
+// a UI, an AG-UI/A2A wire projection) can show "the model is reasoning now" separately from "the
+// model is answering now" while it's happening, mirroring the collapsed "thinking" panel vs. visible
+// answer convention a reasoning-model UI already makes elsewhere. Carries only the raw text fragment
+// -- whether it originated from Anthropic's `thinking`/`redacted_thinking` content blocks or an
+// OpenAI-compatible backend's own `reasoning`/`reasoning_content` streaming extension field is a
+// producer-side concern (protocol/anthropic/chat_client.hpp, protocol/openai/chat_client.hpp), not
+// this vocabulary's.
+struct ModelReasoningDelta {
+    std::string text;
+};
+
 struct ModelDelta {
-    std::variant<ModelTextDelta, ModelToolCallArgumentDelta> value;
+    std::variant<ModelTextDelta, ModelToolCallArgumentDelta, ModelReasoningDelta> value;
 };
 
 struct ToolCallStarted {

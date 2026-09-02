@@ -490,10 +490,33 @@ namespace detail {
 // D1: the non-streaming response. Field names confirmed against the SDK's `ChatCompletion`/
 // `ChatTokenUsage` serializers -- `choices[0].message.content`/`.tool_calls[]`, `usage.prompt_tokens`/
 // `.completion_tokens`/`.prompt_tokens_details.cached_tokens`/`.completion_tokens_details.
-// reasoning_tokens`. No `reasoning`/`reasoning_content` field exists on a Chat Completions response
-// message (confirmed: the SDK's response-message deserializer has no such branch) -- reasoning is
-// Anthropic's "first-class" surface (Phase E, 004 §3), not this backend's.
-[[nodiscard]] inline result<ChatResponse> parse_chat_completion_response(json::Value const& body) {
+// reasoning_tokens`. No `reasoning`/`reasoning_content` field exists on a VANILLA Chat Completions
+// response message (confirmed: the SDK's response-message deserializer has no such branch) -- but
+// OpenRouter's own (non-vanilla-OpenAI) Chat Completions-shaped surface DOES send one, confirmed live
+// (issue #49: `message.reasoning`, a plain string, observed directly against
+// `deepseek/deepseek-v3.2-exp` with `reasoning: {enabled: true}` in the request) -- see
+// `reasoning_field_of` below, shared with the streaming delta parser.
+//
+// `producer_chat_client_id` (gap-audit finding 20 / 003 §8 Q2): defaults empty, matching
+// `AnthropicChatClient`'s own `parse_message_response` convention, so a pre-existing positional
+// `parse_chat_completion_response(body)` call site (every test in this file included) still compiles
+// and behaves identically -- a call without it simply never stamps a producer id onto any `Reasoning`
+// it emits.
+[[nodiscard]] inline std::string_view reasoning_field_of(json::Value const& v) {
+    if (auto const* r = v.find("reasoning"); r && r->is_string() && !r->as_string().empty()) {
+        return r->as_string();
+    }
+    // Some OpenAI-compatible gateways (e.g. a self-hosted DeepSeek-native proxy) use this name instead
+    // -- never observed together with `reasoning` on the same message/delta, so checking both, in this
+    // order, never silently prefers a stale value over a fresher one.
+    if (auto const* rc = v.find("reasoning_content"); rc && rc->is_string() && !rc->as_string().empty()) {
+        return rc->as_string();
+    }
+    return {};
+}
+
+[[nodiscard]] inline result<ChatResponse> parse_chat_completion_response(
+    json::Value const& body, std::string const& producer_chat_client_id = {}) {
     if (auto const* err = body.find("error")) {
         std::string msg = "unknown error";
         if (auto const* m = err->find("message"); m && m->is_string()) msg = m->as_string();
@@ -518,6 +541,19 @@ namespace detail {
     // fabricated, when the backend doesn't report one.
     if (auto const* model = body.find("model"); model && model->is_string()) {
         resp.model = model->as_string();
+    }
+
+    // Issue #49: ahead of the answer's own `content` -- OpenRouter's reasoning trace always precedes
+    // the final answer server-side (confirmed live), the same ordering `AnthropicChatClient`'s own
+    // `thinking`-block-before-`text`-block convention already has.
+    if (std::string_view const reasoning = reasoning_field_of(*message); !reasoning.empty()) {
+        ContentItem item;
+        Reasoning r;
+        r.text = std::string(reasoning);
+        r.producer_chat_client_id = producer_chat_client_id;
+        item.value = std::move(r);
+        item.origin = content_origin::assistant;
+        resp.message.content.push_back(std::move(item));
     }
 
     if (auto const* content = message->find("content");
@@ -632,7 +668,13 @@ namespace detail {
 // drift apart.
 class StreamingUpdateAccumulator {  // ae-naming-lint: allow StreamingUpdateAccumulator — new ADR-019 vocabulary; 027 has not been updated to list it
 public:
-    explicit StreamingUpdateAccumulator(bool chunked) : chunked_(chunked) {}
+    // `producer_chat_client_id` (gap-audit finding 20, issue #49): defaults empty, matching
+    // `AnthropicChatClient::StreamingUpdateAccumulator`'s own identical convention, so every
+    // pre-existing positional `StreamingUpdateAccumulator(chunked)` call site (every test in this file
+    // included) compiles and behaves identically -- an accumulator constructed without it simply never
+    // stamps a producer id onto any `Reasoning` it emits, same as before this field existed.
+    explicit StreamingUpdateAccumulator(bool chunked, std::string producer_chat_client_id = {})
+        : chunked_(chunked), producer_chat_client_id_(std::move(producer_chat_client_id)) {}
 
     // Feeds raw (still chunk-framed, if the response was chunked) bytes. Returns updates ready now.
     [[nodiscard]] result<std::vector<ChatResponseUpdate>> feed(std::string_view bytes) {
@@ -704,7 +746,13 @@ private:
     };
 
     // Emits the previously-held item (never final -- something came after it) and holds this one.
+    // Gap-audit finding 20 / 003 §8 Q2: the single choke point every `ContentItem` this accumulator
+    // produces passes through -- stamping `producer_chat_client_id` here once, rather than at each
+    // construction site, mirrors `AnthropicChatClient::StreamingUpdateAccumulator::release()` exactly.
     void release(std::vector<ChatResponseUpdate>* out, ContentItem item) {
+        if (auto* r = std::get_if<Reasoning>(&item.value)) {
+            r->producer_chat_client_id = producer_chat_client_id_;
+        }
         if (held_) {
             ChatResponseUpdate update;
             update.delta = std::move(*held_);
@@ -741,6 +789,24 @@ private:
             json::Value const& choice0 = choices->as_array().front();
             json::Value const* delta = choice0.find("delta");
             if (!delta) continue;
+
+            // Issue #49: OpenRouter's own (non-vanilla-OpenAI) streaming extension -- a `reasoning`/
+            // `reasoning_content` field arrives on its OWN delta events, ahead of and separate from
+            // `content` deltas (confirmed live: 190 `delta.reasoning` chunks vs. 133 `delta.content`
+            // chunks for one `deepseek/deepseek-v3.2-exp` turn) -- so this is a genuinely independent
+            // per-chunk fragment, not a splice of the `content` branch below. Streamed immediately, one
+            // `Reasoning` item per chunk, exactly like the `Text` branch immediately below it -- unlike
+            // `AnthropicChatClient`'s own `thinking_delta` handling, which accumulates a whole block
+            // before emitting one item at `content_block_stop`, this vendor gives no equivalent
+            // block-boundary signal to accumulate against.
+            if (std::string_view const reasoning = reasoning_field_of(*delta); !reasoning.empty()) {
+                ContentItem item;
+                Reasoning r;
+                r.text = std::string(reasoning);
+                item.value = std::move(r);
+                item.origin = content_origin::assistant;
+                out.push_back(std::move(item));
+            }
 
             if (auto const* content = delta->find("content");
                 content && content->is_string() && !content->as_string().empty()) {
@@ -785,6 +851,7 @@ private:
 
     bool chunked_;
     bool done_seen_ = false;
+    std::string producer_chat_client_id_;
     sandbox::ChunkedBodyDecoder chunked_decoder_;
     sandbox::SseEventFramer framer_;
     std::vector<PendingToolCall> pending_by_index_;
@@ -797,8 +864,8 @@ private:
 // keeping them as two independent implementations of the same wire contract would be exactly the
 // drift this project's own conventions warn about. Same inputs, same outputs, one decoder.
 [[nodiscard]] inline result<std::vector<ChatResponseUpdate>> parse_streaming_response_into_updates(
-    std::string_view raw_body, bool is_chunked) {
-    StreamingUpdateAccumulator acc(is_chunked);
+    std::string_view raw_body, bool is_chunked, std::string const& producer_chat_client_id = {}) {
+    StreamingUpdateAccumulator acc(is_chunked, producer_chat_client_id);
     auto fed = acc.feed(raw_body);
     if (!fed) return std::unexpected(fed.error());
     std::vector<ChatResponseUpdate> updates = std::move(*fed);
@@ -856,7 +923,11 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
         if (!acc) {
             bool const looks_like_sse = fragment.starts_with("data:") || fragment.starts_with("event:") ||
                                          fragment.starts_with(":");
-            acc.emplace(!looks_like_sse);
+            // Gap-audit finding 20 / 003 §8 Q2, issue #49: "openai:" + model, the same
+            // producer_chat_client_id() shape stamped on the non-streaming path -- computed inline
+            // from `model` (already owned by this worker) rather than threading a new parameter
+            // through, matching AnthropicChatClient::run_stream_worker's own identical convention.
+            acc.emplace(!looks_like_sse, "openai:" + model);
         }
         auto updates = acc->feed(fragment);
         if (!updates) {
@@ -977,13 +1048,14 @@ public:
 
     [[nodiscard]] ChatClientCapabilities capabilities() const { return capabilities_; }
 
-    // Gap-audit finding 20 / 003 §8 Q2: this backend never PRODUCES a genuine `Reasoning` content
-    // item (confirmed: Chat Completions has no reasoning-trace field on a response message, this
-    // file's own comment on `parse_response`/usage-only `reasoning_tokens`) -- but it still needs to
-    // report its OWN identity here as a CONSUMER, so `AgentSession`'s cross-provider exclusion
-    // correctly recognizes and excludes an Anthropic-origin `Reasoning` item once a session switches
-    // to this backend. See `AnthropicChatClient::producer_chat_client_id()` for the full rationale
-    // this mirrors.
+    // Gap-audit finding 20 / 003 §8 Q2: identifies THIS bound instance, "vendor:model", the same
+    // runtime string `parse_chat_completion_response`/`run_stream_worker` below stamp onto any real
+    // `Reasoning` item this backend produces (issue #49: a vanilla Chat Completions response never
+    // has one, but OpenRouter's own extension `reasoning`/`reasoning_content` field does) -- so
+    // `AgentSession`'s cross-provider exclusion correctly recognizes and excludes an Anthropic-origin
+    // (or a different OpenAI-compatible model's) `Reasoning` item once a session switches to this
+    // backend. See `AnthropicChatClient::producer_chat_client_id()` for the full rationale this
+    // mirrors.
     [[nodiscard]] std::string producer_chat_client_id() const { return "openai:" + model_; }
 
     [[nodiscard]] task<result<ChatResponse>> chat(ChatRequest const& request, EffectContext& ctx) const {
@@ -1007,7 +1079,7 @@ public:
         }
         auto parsed = json::parse(resp->body);
         if (!parsed) co_return std::unexpected(parsed.error());
-        auto response = detail::parse_chat_completion_response(*parsed);
+        auto response = detail::parse_chat_completion_response(*parsed, producer_chat_client_id());
         if (!response) co_return std::unexpected(response.error());
         if (scan_response_format_leaks_) {
             response->message =

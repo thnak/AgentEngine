@@ -102,6 +102,16 @@ inline void filter_cross_provider_reasoning(agentengine::ContextContribution& co
                     emit(agentengine::run_event_kind::model_delta,
                          agentengine::run_event_payload::ModelDelta{
                              agentengine::run_event_payload::ModelTextDelta{t->text}});
+                } else if (auto const* r = std::get_if<agentengine::Reasoning>(&upd->delta.value);
+                           r != nullptr && !r->text.empty()) {
+                    // Issue #49: the gap this whole function used to have -- a `Reasoning`-kind delta
+                    // failed every branch here (including the `Text` one above) and fired NO event at
+                    // all, even though it was still appended to `accumulated.content` two lines below.
+                    // Mirrors the `Text` branch exactly, through the new `ModelReasoningDelta` payload
+                    // (run_event.hpp) rather than being silently dropped.
+                    emit(agentengine::run_event_kind::model_delta,
+                         agentengine::run_event_payload::ModelDelta{
+                             agentengine::run_event_payload::ModelReasoningDelta{r->text}});
                 } else if (upd->tool_call_argument_chunk.has_value()) {
                     auto const& chunk = *upd->tool_call_argument_chunk;
                     emit(agentengine::run_event_kind::model_delta,

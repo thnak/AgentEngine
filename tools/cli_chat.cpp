@@ -1022,6 +1022,12 @@ template <class Inner>
         agentengine::rt::JobOutcome outcome;
         {
             bool mid_line = false;
+            // Issue #49: before `ModelReasoningDelta` existed, a `Reasoning`-kind delta failed the
+            // `ModelTextDelta` check above and fired no event at all -- there was no way for THIS
+            // renderer, or any other live consumer, to tell a model's reasoning/chain-of-thought from
+            // its final answer while it streamed. `reasoning_open` tracks whether the "[thinking] "
+            // prefix below is currently active, so the two never run together on one line.
+            bool reasoning_open = false;
             std::jthread drain([&](std::stop_token stop) {
                 auto drain_once = [&] {
                     while (std::optional<RunEvent> ev = event_stream.next()) {
@@ -1029,7 +1035,18 @@ template <class Inner>
                             auto const& d = std::get<run_event_payload::ModelDelta>(ev->payload);
                             if (auto const* text =
                                     std::get_if<run_event_payload::ModelTextDelta>(&d.value)) {
+                                if (reasoning_open) { std::cout << "\n"; reasoning_open = false; }
                                 std::cout << text->text;
+                                std::cout.flush();
+                                mid_line = true;
+                            } else if (auto const* reasoning =
+                                           std::get_if<run_event_payload::ModelReasoningDelta>(&d.value)) {
+                                if (!reasoning_open) {
+                                    if (mid_line) std::cout << "\n";
+                                    std::cout << "[thinking] ";
+                                    reasoning_open = true;
+                                }
+                                std::cout << reasoning->text;
                                 std::cout.flush();
                                 mid_line = true;
                             }
@@ -1038,6 +1055,7 @@ template <class Inner>
                             // display-tier gap this piece closes for consumers that DO project it).
                         } else {
                             if (mid_line) { std::cout << "\n"; mid_line = false; }
+                            reasoning_open = false;
                             std::cout << describe_event(*ev) << "\n";
                         }
                     }

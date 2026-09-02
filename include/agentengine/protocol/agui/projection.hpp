@@ -10,8 +10,11 @@
 // (013 §1's vocabulary is silent on wire-projection bookkeeping, by design -- that is exactly this
 // file's job to own). `RunEventProjector` tracks, per run_id, whether a text message is currently
 // open, minting a synthesized `messageId` on `model_call_started` and closing it on
-// `model_call_finished` -- the ONLY state this projector holds; every other internal event kind maps
-// context-free.
+// `model_call_finished`. Issue #49 adds a second, independent piece of state -- per run_id, whether a
+// REASONING_START/REASONING_MESSAGE_START bracket is currently open -- opened lazily on the first
+// `ModelReasoningDelta` and closed before whatever comes next (a `Text`/`ModelToolCallArgumentDelta`
+// delta, or `model_call_finished`), never left dangling past its own model call. Every other internal
+// event kind still maps context-free.
 //
 // §2.2's own hard rule, implemented directly: a run entering `InputRequired`/`AuthRequired`/an
 // approval gate does NOT pause in AG-UI's own vocabulary (it has no pause event) -- it ENDS the
@@ -59,14 +62,17 @@ public:
                 return {RunStarted{thread_id_, ev.run_id, std::nullopt}};
             case run_event_kind::run_finished:
                 open_message_id_.erase(ev.run_id);
+                open_reasoning_message_id_.erase(ev.run_id);
                 return {RunFinishedSuccess{thread_id_, ev.run_id}};
             case run_event_kind::run_failed: {
                 open_message_id_.erase(ev.run_id);
+                open_reasoning_message_id_.erase(ev.run_id);
                 auto const& p = std::get<run_event_payload::RunFailed>(ev.payload);
                 return {RunError{p.message, p.error_code}};
             }
             case run_event_kind::run_canceled:
                 open_message_id_.erase(ev.run_id);
+                open_reasoning_message_id_.erase(ev.run_id);
                 // §2.1: "RUN_ERROR is the SOLE error event; no other error shape exists" -- a
                 // cancellation is not a success, so it is described, not silently folded into one.
                 return {RunError{"run canceled", "run.canceled"}};
@@ -88,19 +94,53 @@ public:
             case run_event_kind::model_delta: {
                 auto const& p = std::get<run_event_payload::ModelDelta>(ev.payload);
                 if (auto const* text = std::get_if<run_event_payload::ModelTextDelta>(&p.value)) {
+                    // Issue #49: a reasoning trace that already opened its own REASONING_*
+                    // bracket for this run must close BEFORE the answer's own TEXT_MESSAGE_CONTENT --
+                    // §2.1's "the projection is total for what we emit" rule, and the same "close
+                    // whatever's open before starting something else" discipline the file banner's own
+                    // `model_call_started`/`model_call_finished` pairing already follows.
+                    std::vector<AgUiEvent> out;
+                    close_open_reasoning(ev.run_id, out);
                     std::string const& message_id = ensure_open_message(ev.run_id);
-                    return {TextMessageContent{message_id, text->text}};
+                    out.push_back(TextMessageContent{message_id, text->text});
+                    return out;
+                }
+                if (auto const* reasoning = std::get_if<run_event_payload::ModelReasoningDelta>(&p.value)) {
+                    // Issue #49: before `ModelReasoningDelta` existed, this branch was unreachable --
+                    // a `Reasoning`-kind delta never survived far enough to reach a live `model_delta`
+                    // RunEvent at all (rt/agent_session_trust.hpp's own gap). Brackets each run's
+                    // reasoning as one REASONING_START/REASONING_MESSAGE_START/.../REASONING_END span,
+                    // mirroring the TEXT_MESSAGE triad's own message-id bookkeeping exactly (013 §2.1:
+                    // "Reasoning* -> ModelDelta (reasoning)").
+                    std::vector<AgUiEvent> out;
+                    std::string const& message_id = ensure_open_reasoning(ev.run_id, out);
+                    out.push_back(ReasoningMessageContent{message_id, reasoning->text});
+                    return out;
                 }
                 // ModelToolCallArgumentDelta -- AG-UI already has a native shape for exactly this
                 // (TOOL_CALL_ARGS), unlike tool_call_delta's own progress-report case below (no
                 // documented *_CHUNK wire shape existed for that one).
+                std::vector<AgUiEvent> out;
+                close_open_reasoning(ev.run_id, out);
                 auto const& arg = std::get<run_event_payload::ModelToolCallArgumentDelta>(p.value);
-                return {ToolCallArgs{arg.call_id, arg.arguments_fragment}};
+                out.push_back(ToolCallArgs{arg.call_id, arg.arguments_fragment});
+                return out;
             }
             case run_event_kind::model_call_finished: {
+                // A turn that reasoned right up to its own end (no trailing Text delta) would
+                // otherwise leave its REASONING_* bracket dangling past TEXT_MESSAGE_END -- close it
+                // first, same discipline as the `ModelTextDelta`/`ModelToolCallArgumentDelta`
+                // branches above.
+                std::vector<AgUiEvent> out;
+                close_open_reasoning(ev.run_id, out);
+                // A COPY, not a reference: `erase()` on the very next line would otherwise leave
+                // `message_id` dangling into a just-freed map node before `push_back` below reads it
+                // (the original code's own `std::string const message_id = ...` was a copy for exactly
+                // this reason -- lost when this branch was restructured to build `out` incrementally).
                 std::string const message_id = ensure_open_message(ev.run_id);
                 open_message_id_.erase(ev.run_id);
-                return {TextMessageEnd{message_id}};
+                out.push_back(TextMessageEnd{message_id});
+                return out;
             }
 
             case run_event_kind::tool_call_started: {
@@ -255,8 +295,37 @@ private:
         return it->second;
     }
 
+    // Issue #49: opens the run's REASONING_START/REASONING_MESSAGE_START bracket (appended to `out`)
+    // the first time a reasoning delta arrives for it; a subsequent delta for the same still-open span
+    // just returns the existing id, appending nothing.
+    [[nodiscard]] std::string const& ensure_open_reasoning(std::string const& run_id,
+                                                             std::vector<AgUiEvent>& out) {
+        auto it = open_reasoning_message_id_.find(run_id);
+        if (it == open_reasoning_message_id_.end()) {
+            std::string const message_id = mint_message_id(run_id);
+            out.push_back(ReasoningStart{});
+            out.push_back(ReasoningMessageStart{message_id});
+            it = open_reasoning_message_id_.emplace(run_id, message_id).first;
+        }
+        return it->second;
+    }
+
+    // Closes a still-open reasoning bracket (REASONING_MESSAGE_END/REASONING_END, appended to `out`)
+    // -- a no-op when none is open, so every call site can call this unconditionally before opening or
+    // closing whatever comes next.
+    void close_open_reasoning(std::string const& run_id, std::vector<AgUiEvent>& out) {
+        auto it = open_reasoning_message_id_.find(run_id);
+        if (it == open_reasoning_message_id_.end()) return;
+        out.push_back(ReasoningMessageEnd{it->second});
+        out.push_back(ReasoningEnd{});
+        open_reasoning_message_id_.erase(it);
+    }
+
     std::string                                  thread_id_;
     std::unordered_map<std::string, std::string> open_message_id_;  // run_id -> currently-open messageId
+    // run_id -> currently-open reasoning messageId (issue #49) -- absent means no REASONING_* bracket
+    // is currently open for that run, exactly parallel to `open_message_id_`'s own absence convention.
+    std::unordered_map<std::string, std::string> open_reasoning_message_id_;
     // interaction_id -> the agent.ask() prompt awaiting the paired `input_required` that carries it
     // out on `Interrupt.message`. Erased on consumption; an entry only ever outlives its run if the
     // caller feeds a `codeact_ask_requested` with no matching `input_required`, which AgentSession

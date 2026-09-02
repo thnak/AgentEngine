@@ -419,6 +419,87 @@ int main() {
         }
     }
 
+    // --- E2-20/21/22: issue #49's ModelReasoningDelta -> REASONING_* bracket -------------------------
+    // Hand-fed, mirroring E2-3/E2-4's own style -- no real producer of a Reasoning-kind model_delta
+    // exists in this test's ScriptedChatClient, so this exercises the projector directly.
+    {
+        agui::RunEventProjector reasoning_projector("thread-reasoning");
+
+        // E2-20: a reasoning delta opens REASONING_START/REASONING_MESSAGE_START, THEN content.
+        (void)reasoning_projector.project(ae::RunEvent{
+            "run-reason", 1, ae::run_event_kind::model_call_started, ae::run_event_payload::Empty{}});
+        auto r1 = reasoning_projector.project(
+            ae::RunEvent{"run-reason", 2, ae::run_event_kind::model_delta,
+                         ae::run_event_payload::ModelDelta{
+                             ae::run_event_payload::ModelReasoningDelta{"thinking..."}}});
+        AE_CHECK(r1.size() == 3, "E2-20: the FIRST reasoning delta of a run opens the bracket -- "
+                                  "ReasoningStart, ReasoningMessageStart, ReasoningMessageContent");
+        if (r1.size() == 3) {
+            AE_CHECK(std::holds_alternative<agui::ReasoningStart>(r1[0]), "E2-20[0]: ReasoningStart");
+            AE_CHECK(std::holds_alternative<agui::ReasoningMessageStart>(r1[1]),
+                     "E2-20[1]: ReasoningMessageStart");
+            AE_CHECK(std::holds_alternative<agui::ReasoningMessageContent>(r1[2]),
+                     "E2-20[2]: ReasoningMessageContent");
+            AE_CHECK(std::get<agui::ReasoningMessageContent>(r1[2]).delta == "thinking...",
+                     "E2-20: the reasoning delta text survives");
+        }
+
+        // A second reasoning delta on the SAME still-open span appends ONLY content -- the bracket is
+        // not re-opened.
+        auto r2 = reasoning_projector.project(
+            ae::RunEvent{"run-reason", 3, ae::run_event_kind::model_delta,
+                         ae::run_event_payload::ModelDelta{
+                             ae::run_event_payload::ModelReasoningDelta{" more"}}});
+        AE_CHECK(r2.size() == 1 && std::holds_alternative<agui::ReasoningMessageContent>(r2[0]),
+                 "E2-20: a second reasoning delta on the same span appends ONLY ReasoningMessageContent "
+                 "-- no second ReasoningStart/ReasoningMessageStart");
+
+        // E2-21: the answer's own Text delta closes the reasoning bracket FIRST, then its own content.
+        auto t1 = reasoning_projector.project(
+            ae::RunEvent{"run-reason", 4, ae::run_event_kind::model_delta,
+                         ae::run_event_payload::ModelDelta{ae::run_event_payload::ModelTextDelta{"42"}}});
+        AE_CHECK(t1.size() == 3, "E2-21: the first Text delta after reasoning closes the REASONING_* "
+                                  "bracket (ReasoningMessageEnd, ReasoningEnd) before its own content");
+        if (t1.size() == 3) {
+            AE_CHECK(std::holds_alternative<agui::ReasoningMessageEnd>(t1[0]), "E2-21[0]: ReasoningMessageEnd");
+            AE_CHECK(std::holds_alternative<agui::ReasoningEnd>(t1[1]), "E2-21[1]: ReasoningEnd");
+            AE_CHECK(std::holds_alternative<agui::TextMessageContent>(t1[2]) &&
+                         std::get<agui::TextMessageContent>(t1[2]).delta == "42",
+                     "E2-21[2]: TextMessageContent carries the real answer text");
+            AE_CHECK(std::get<agui::ReasoningMessageStart>(r1[1]).message_id ==
+                         std::get<agui::ReasoningMessageEnd>(t1[0]).message_id,
+                     "E2-21: START and END bracket the SAME reasoning messageId");
+        }
+        // ... and a SUBSEQUENT Text delta on the already-closed span emits ONLY its own content --
+        // the bracket is not spuriously re-closed a second time.
+        auto t2 = reasoning_projector.project(
+            ae::RunEvent{"run-reason", 5, ae::run_event_kind::model_delta,
+                         ae::run_event_payload::ModelDelta{ae::run_event_payload::ModelTextDelta{"!"}}});
+        AE_CHECK(t2.size() == 1 && std::holds_alternative<agui::TextMessageContent>(t2[0]),
+                 "E2-21: a later Text delta emits ONLY TextMessageContent -- no repeated close");
+        (void)reasoning_projector.project(ae::RunEvent{
+            "run-reason", 6, ae::run_event_kind::model_call_finished, ae::run_event_payload::Empty{}});
+
+        // E2-22: a turn that reasons right up to model_call_finished with NO trailing Text delta must
+        // not leave its REASONING_* bracket dangling past TEXT_MESSAGE_END.
+        (void)reasoning_projector.project(ae::RunEvent{
+            "run-reason2", 1, ae::run_event_kind::model_call_started, ae::run_event_payload::Empty{}});
+        (void)reasoning_projector.project(
+            ae::RunEvent{"run-reason2", 2, ae::run_event_kind::model_delta,
+                         ae::run_event_payload::ModelDelta{
+                             ae::run_event_payload::ModelReasoningDelta{"only reasoning"}}});
+        auto fin = reasoning_projector.project(ae::RunEvent{
+            "run-reason2", 3, ae::run_event_kind::model_call_finished, ae::run_event_payload::Empty{}});
+        AE_CHECK(fin.size() == 3, "E2-22: model_call_finished with a still-open reasoning bracket closes "
+                                   "it (ReasoningMessageEnd, ReasoningEnd) before its own TextMessageEnd");
+        if (fin.size() == 3) {
+            AE_CHECK(std::holds_alternative<agui::ReasoningMessageEnd>(fin[0]) &&
+                         std::holds_alternative<agui::ReasoningEnd>(fin[1]) &&
+                         std::holds_alternative<agui::TextMessageEnd>(fin[2]),
+                     "E2-22: exact order -- ReasoningMessageEnd, ReasoningEnd, TextMessageEnd");
+        }
+    }
+
     if (g_failures == 0) {
         std::cout << "test_rt_agui_projection: ALL PASS\n";
         return 0;

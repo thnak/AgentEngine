@@ -948,6 +948,17 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_openai_chat_client_openrouter_live_e2e COMMAND test_openai_chat_client_openrouter_live_e2e)
   set_tests_properties(test_openai_chat_client_openrouter_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
 
+  # ---- Issue #49's own follow-up comment: drives OpenAIChatClient::chat_stream() directly against a
+  # real OpenRouter reasoning model and through rt::detail::drain_streaming_response() itself, proving
+  # both halves of the fix (the new ModelReasoningDelta forwarding, and OpenAIChatClient's own new
+  # reasoning/reasoning_content parsing) end to end -- see this file's own top comment.
+  add_executable(test_reasoning_model_delta_live_e2e test_reasoning_model_delta_live_e2e.cpp)
+  target_link_libraries(test_reasoning_model_delta_live_e2e PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_reasoning_model_delta_live_e2e COMMAND test_reasoning_model_delta_live_e2e)
+  set_tests_properties(test_reasoning_model_delta_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
+
   add_executable(test_llamacpp_live_e2e test_llamacpp_live_e2e.cpp)
   target_link_libraries(test_llamacpp_live_e2e PRIVATE
     agentengine::core agentengine::provider_http_client agentengine_warnings
