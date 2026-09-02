@@ -250,3 +250,25 @@ if(AGENTENGINE_WITH_HTTPS)
   set_tests_properties(example_30_session_builder_quickstart_live PROPERTIES
     LABELS "live-network" TIMEOUT 300)
 endif()
+
+# 31: WorkflowChatClient again, this time driven by a real bounded session loop across TWO
+# request_port nodes -- example 28's own two-hardcoded-calls shape generalized into the "keep
+# answering asks until a plain final answer arrives" pattern a real caller (an interactive REPL, or
+# an outer AgentSession's bound backend) actually needs. Fully offline, no special build flags.
+add_executable(agentengine_example_31_workflow_chat_client_session_loop
+  31_workflow_chat_client_session_loop.cpp)
+target_link_libraries(agentengine_example_31_workflow_chat_client_session_loop PRIVATE
+  agentengine::core agentengine_warnings)
+add_test(NAME example_31_workflow_chat_client_session_loop
+  COMMAND agentengine_example_31_workflow_chat_client_session_loop)
+
+# 32: a raw ChatClient::chat_stream() conformer driven directly by a real, bounded session loop --
+# the layer underneath both 07_streaming.cpp (one call, fake client, no loop) and tools/cli_chat.cpp
+# (a real while(true) loop, but AgentSession's own RunEvent/model_delta streaming, never a direct
+# chat_stream() call). Fully offline, no special build flags.
+add_executable(agentengine_example_32_chat_stream_session_loop
+  32_chat_stream_session_loop.cpp)
+target_link_libraries(agentengine_example_32_chat_stream_session_loop PRIVATE
+  agentengine::core agentengine_warnings)
+add_test(NAME example_32_chat_stream_session_loop
+  COMMAND agentengine_example_32_chat_stream_session_loop)
