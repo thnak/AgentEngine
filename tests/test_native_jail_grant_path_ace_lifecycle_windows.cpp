@@ -18,6 +18,14 @@
 // safe no-op (not a failure) against a child that was never created, exactly as the design's "fixed,
 // four-path enumeration" fallback (finding 33) requires to be callable unconditionally.
 //
+// Claim 3 (added in "Prove pass 3", closing Prove pass 2's disclosed residual, finding 34): revoke_path()
+// still succeeds -- on both the directory and a child -- while a REAL, live handle is held open on that
+// exact child without FILE_SHARE_DELETE, the precise contention that makes remove_all() itself fail with
+// ERROR_SHARING_VIOLATION. This is the scenario the design's cleanup-failure fallback (finding 31) exists
+// for; finding 34 argued WRITE_DAC/READ_CONTROL isn't routed through NTFS's sharing-violation check the
+// way DELETE/data opens are, but never ran it. This claim reproduces the remove_all() failure for real
+// (a sanity check inside the test itself, not assumed) before proving revoke_path() succeeds anyway.
+//
 // Technique: the same dacl_entry_count()/GetNamedSecurityInfoW positive-control discipline
 // test_native_jail_grant_ro_path_once_windows.cpp and test_native_jail_teardown_cycles_windows.cpp
 // already established and validated as sensitive (a differing-value repeat grant genuinely accumulates
@@ -265,6 +273,85 @@ int main() {
                  "clearing the whole DACL");
 
         std::filesystem::remove_all(dir, ec);
+    }
+
+    // ==== Claim 3 (Prove pass 2's disclosed residual, finding 34): revoke_path() succeeds under real
+    // open-handle contention that causes remove_all() itself to fail -- the exact scenario finding 31's
+    // safety-net fallback exists to handle, argued from documented WRITE_DAC/READ_CONTROL semantics in
+    // finding 34 but never executed until this pass. ====
+    {
+        std::filesystem::path const dir =
+            std::filesystem::temp_directory_path() / "ae_prove_pass3_claim3";
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+        std::filesystem::create_directories(dir, ec);
+        AE_CHECK(!ec, "Claim 3 setup: scratch directory exists");
+
+        std::wstring const dir_w = dir.wstring();
+        auto granted = profile.grant_path(dir_w, /*read_write=*/true);
+        AE_CHECK(granted.has_value(), "Claim 3 setup: grant_path() succeeds on the scratch directory");
+
+        std::filesystem::path const held = dir / "held_open.txt";
+        write_small_file(held, "prove pass 3 claim 3 held-open child");
+        std::wstring const held_w = held.wstring();
+        AE_CHECK(has_sid_ace(held_w, sid),
+                 "Claim 3 setup: the held-open child independently carries its own materialized ACE");
+
+        // Open WITHOUT FILE_SHARE_DELETE -- any later delete attempt on this exact path, by us or by
+        // remove_all()'s own implementation, gets ERROR_SHARING_VIOLATION for as long as this handle
+        // stays open. Real contention, not simulated.
+        HANDLE const held_handle =
+            CreateFileW(held_w.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                        FILE_ATTRIBUTE_NORMAL, nullptr);
+        AE_CHECK(held_handle != INVALID_HANDLE_VALUE,
+                 "Claim 3 setup: obtained a real handle to the child file, opened without FILE_SHARE_DELETE");
+
+        // Sanity check: confirm remove_all() genuinely fails while the handle is held, rather than
+        // assuming it. If this doesn't reproduce a real failure, the rest of this claim proves nothing.
+        std::error_code remove_ec;
+        auto const removed = std::filesystem::remove_all(dir, remove_ec);
+        AE_CHECK(remove_ec || removed == static_cast<std::uintmax_t>(-1),
+                 "Claim 3 (sanity check): remove_all() on the directory genuinely FAILS while the child "
+                 "is held open without FILE_SHARE_DELETE -- the real, reproduced failure mode "
+                 "revoke_path() exists to have a fallback for, not an assumed one");
+        AE_CHECK(std::filesystem::exists(dir, ec) && std::filesystem::exists(held, ec),
+                 "Claim 3: the directory and held-open file both still exist -- remove_all() genuinely "
+                 "did not complete");
+
+        // While the handle is STILL open -- the exact live-contention window finding 34 argued about --
+        // call revoke_path() on the directory and the held-open child, per the design's fixed-enumeration
+        // fallback (finding 33).
+        auto revoke_dir = profile.revoke_path(dir_w);
+        auto revoke_held = profile.revoke_path(held_w);
+        if (!revoke_dir.has_value())
+            std::cerr << "revoke_path(dir) error: " << test_support::describe(revoke_dir.error()) << "\n";
+        if (!revoke_held.has_value())
+            std::cerr << "revoke_path(held) error: " << test_support::describe(revoke_held.error()) << "\n";
+
+        AE_CHECK(revoke_dir.has_value(),
+                 "Claim 3 (the central claim): revoke_path(dir) succeeds even though the directory is "
+                 "not empty and a child inside it is held open with a delete-blocking share mode");
+        AE_CHECK(revoke_held.has_value(),
+                 "Claim 3 (the central claim): revoke_path(held-open child) succeeds DESPITE the handle "
+                 "still being open on that exact file -- WRITE_DAC/READ_CONTROL genuinely is not routed "
+                 "through NTFS's sharing-violation check the way DELETE/data opens are");
+
+        AE_CHECK(!has_sid_ace(dir_w, sid),
+                 "Claim 3: the directory's ACE is gone despite the failed remove_all() and the still-open "
+                 "handle");
+        AE_CHECK(!has_sid_ace(held_w, sid),
+                 "Claim 3: the held-open child's own independently-materialized ACE is gone too, while "
+                 "the handle is STILL open -- revoke_path() succeeded exactly where remove_all() failed, "
+                 "the real evidence finding 34's reasoning was argued but never run for");
+
+        CloseHandle(held_handle);
+
+        // Now that the handle is closed, cleanup can finally succeed -- confirms the earlier failure was
+        // genuinely caused by the held handle, not some other problem with this directory.
+        std::error_code cleanup_ec;
+        std::filesystem::remove_all(dir, cleanup_ec);
+        AE_CHECK(!cleanup_ec, "Claim 3: after closing the handle, remove_all() succeeds -- confirming the "
+                              "earlier failure really was caused by the open handle, not something else");
     }
 
     if (g_failures == 0) {

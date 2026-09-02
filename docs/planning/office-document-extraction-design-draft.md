@@ -1,6 +1,7 @@
 # Design draft — office document (DOCX/XLSX/PPTX) structural extraction
 
-**Status: Revision 10 — after red-team round 9.** Revision 2 resolved red-team round 1's five findings,
+**Status: Revision 10 — after red-team round 9, Prove pass 3 complete (revoke_path() proven under real
+open-handle contention — see "## Prove pass 3" at the end of this file).** Revision 2 resolved red-team round 1's five findings,
 following Track A (`read_content`, `include/agentengine/tools/read_content.hpp`), Track B (the four
 `extract_pdf_*` tools, PDFium-backed, `docs/planning/pdf-text-extraction-design-draft.md` Revision 7
 after six real red-team rounds), and the OCR draft (`docs/planning/ocr-text-extraction-design-draft.md`
@@ -4566,3 +4567,49 @@ convention marks as a stopping point.
   concurrency defect — two calls still never target the same directory (finding 9, unchanged), so the
   race-freedom argument round 8 already verified for both `grant_path()` and `revoke_path()` stands
   unaffected by finding 33.
+
+## Prove pass 3 — `revoke_path()` proven under real open-handle contention (closing Prove pass 2's last disclosed residual, finding 34)
+
+Prove pass 2 built and executed real, ACE-enumeration-based positive-control tests for Claim 1 (deleting a
+`grant_path()`-granted directory destroys its ACE as a structural NTFS side effect — the premise behind
+Revision 8's pool-elimination collapse) and Claim 2 (`revoke_path()` on a directory plus its known children
+strips each of their independently-materialized inherited ACEs — closing round 9's finding 33). It named one
+honest residual it left unproven: whether `revoke_path()` actually succeeds in the specific open-handle/
+sharing-violation scenario that would cause `remove_all()` to fail in the first place — the exact condition
+finding 31's cleanup-failure fallback exists to handle. Finding 34's reasoning (that `WRITE_DAC`/
+`READ_CONTROL` access, which `SetNamedSecurityInfoW`'s ACL modification needs, is not arbitrated by NTFS's
+sharing-violation check the way `DELETE`/data-stream opens are) was real, documented Win32 semantics — but
+argued, never executed.
+
+**This pass built and ran that test.** A third claim was added to `tests/test_native_jail_grant_path_ace_lifecycle_windows.cpp`:
+
+- **Claim 3**: grant a directory, create a child file inside it, then open a REAL `HANDLE` on that exact
+  child via `CreateFileW` with `dwShareMode = FILE_SHARE_READ` — deliberately excluding `FILE_SHARE_DELETE`.
+  **Sanity check, run inside the test itself before anything else is asserted**: with that handle still
+  open, `std::filesystem::remove_all()` on the directory is called and verified to genuinely FAIL
+  (`ec` set, the directory and the held-open child both still exist afterward) — reproducing the real
+  failure mode finding 31's fallback exists for, not assuming it. Only then, while the handle is STILL
+  open, `revoke_path()` is called on both the directory and the held-open child (per finding 33's
+  fixed-enumeration fallback), and both calls succeed; a fresh `GetNamedSecurityInfoW` query on each
+  confirms the profile's SID's ACE is genuinely gone from both, despite the handle never having been
+  closed. The handle is then closed and a final `remove_all()` is confirmed to succeed — proving the
+  earlier failure really was caused by the held handle, not something else going on with the directory.
+
+**Result: the claim holds.** `revoke_path()` succeeded in exactly the live-contention window it needed to
+work in, real evidence rather than an argument from documented semantics. Build: full rebuild via CMake/
+Ninja, 0 errors. Test run: all 37 checks pass (`test_native_jail_grant_path_ace_lifecycle_windows: all
+checks passed`, exit 0), including the sanity check confirming `remove_all()` genuinely failed first. Full
+`native_jail|extract_pdf|pdf_text` suite: 9/9 tests pass, no regressions (`test_native_jail_grant_path_ace_lifecycle_windows`
+now included in that count).
+
+**What this closes**: finding 34 (round 9) is resolved — real evidence, not just documented-semantics
+reasoning, now backs the claim. Combined with Prove pass 2's Claims 1 and 2, all three load-bearing safety
+claims behind Revision 8's pool-elimination collapse and Revision 9/10's `revoke_path()` safety-net fix are
+now proven by real, executed, adversarially-informed tests rather than argued from code-reading alone —
+closing out the "prove" phase of design → red-team → prove → judge for this specific mechanism. This does
+not mean the whole draft is implementation-ready in every other respect (§8's own remaining "still genuinely
+open" bullets — resource-cap sizing, the correlated-retry-under-batching cost, finding 37's small textual
+fix, etc. — are unaffected by this pass and remain open); it means the one class of claim this entire ten-
+revision, nine-round, three-prove-pass arc kept returning to — "does this OS-level authority mechanism
+actually behave the way the design says it does" — now has real, run evidence behind it, not just
+increasingly careful reading of Win32 documentation.
