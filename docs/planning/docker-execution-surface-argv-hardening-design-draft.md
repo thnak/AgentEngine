@@ -1,6 +1,6 @@
 **UPDATE: promoted.** This design was implemented, empirically verified against a live Docker Desktop
 daemon, and independently red-teamed (a second, fresh round, against the real code and daemon — not
-just this document) in the same session. See `decisions/ADR-164-docker-execution-surface-argv-hardening.md`
+just this document) in the same session. See `decisions/ADR-165-docker-execution-surface-argv-hardening.md`
 for the executed evidence, the independent red-team's real findings (two: one pre-existing OS-ceiling
 disclosure, one real-but-unreachable consistency gap, fixed), and the final Proposed status.
 

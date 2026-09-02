@@ -1,4 +1,4 @@
-# ADR-164 — Does porting `DockerCliBackend` onto a real argv vector (never a host shell string) close issue #50 without regressing anything the old shell-quoting denylist protected?
+# ADR-165 — Does porting `DockerCliBackend` onto a real argv vector (never a host shell string) close issue #50 without regressing anything the old shell-quoting denylist protected?
 
 - **Status:** Proposed — implemented, verified by real test execution against a live Docker Desktop
   daemon, independently red-teamed (see §5: no CWE-88 bypass, no regression against the old denylist's

@@ -265,7 +265,7 @@ constexpr std::size_t kOutputSafetyCapBytes = 1u << 20;  // 1 MiB, merged stdout
     return out;
 }
 
-// code-review finding (post-ADR-164): `widen()` above documents its input as UTF-8, but
+// code-review finding (post-ADR-165): `widen()` above documents its input as UTF-8, but
 // `std::filesystem::path::string()` on Windows narrows via the process's ACTIVE CODE PAGE (`GetACP()`),
 // never UTF-8 -- the OLD `run_capture()`/`CreateProcessA` path was internally ANSI-consistent (an ACP
 // string handed to an ANSI API), so this mismatch was never live; the new `run_argv()`/`CreateProcessW`
@@ -362,7 +362,7 @@ constexpr std::size_t kOutputSafetyCapBytes = 1u << 20;  // 1 MiB, merged stdout
 // guarantee: `CREATE_SUSPENDED` + `AssignProcessToJobObject()` before `ResumeThread()` still guarantees
 // there is no window where the spawned process could do anything before it is job-bound.
 //
-// DISCLOSED, PRE-EXISTING, NOT a regression (ADR-164 red-team round, real bisection): Windows'
+// DISCLOSED, PRE-EXISTING, NOT a regression (ADR-165 red-team round, real bisection): Windows'
 // `CreateProcessW` rejects an `lpCommandLine` longer than roughly 32K characters outright, and this
 // function surfaces that failure identically to any other spawn failure -- `exit_code == -1`, empty
 // output, no distinguishing error. The OLD `"cmd.exe /c " + command` path hit the same OS ceiling at an
@@ -1022,7 +1022,7 @@ public:
         auto const last_newline = trimmed.find_last_of('\n');
         std::string id = (last_newline == std::string::npos) ? trimmed : trimmed.substr(last_newline + 1);
         while (!id.empty() && id.back() == '\r') id.pop_back();
-        // ADR-164 red-team Finding B: `id` is used as a bare/prefix argv element at every downstream
+        // ADR-165 red-team Finding B: `id` is used as a bare/prefix argv element at every downstream
         // call site (exec()/destroy()/copy_to_container()/copy_from_container()) WITHOUT going through
         // docker_cli_reject_leading_dash() the way image/host_path/container_path already do -- not
         // currently reachable (`docker run -d`'s own documented output contract guarantees a hex
@@ -1040,7 +1040,7 @@ public:
                                                                   std::string const& container_path) {
         // `path_to_utf8()`, not `host_path.string()` -- on Windows, `std::filesystem::path::string()`
         // narrows via the process's ACTIVE CODE PAGE, not UTF-8; `run_argv()`'s own `widen()` explicitly
-        // expects UTF-8 (code-review finding, post-ADR-164). Validating and embedding the SAME
+        // expects UTF-8 (code-review finding, post-ADR-165). Validating and embedding the SAME
         // UTF-8-correct bytes keeps what was checked and what actually reaches `docker` identical.
         std::string const host_path_utf8 = docker_cli_detail::path_to_utf8(host_path);
         if (auto safe = docker_cli_reject_argv_value(host_path_utf8, "host_path"); !safe.has_value())
