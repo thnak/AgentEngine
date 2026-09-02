@@ -4,6 +4,7 @@ import {
   capabilityDenialExampleSnippet,
   capabilityEnforcementSteps,
   customBackendConceptSnippet,
+  executionSurfaceRunSnippet,
   gh,
   minimalCapabilitiesSnippet,
   nativeJailProcessLaunchSnippet,
@@ -358,6 +359,48 @@ const copy = {
       </>
     ),
     s6NoteCite: <>007 §6 (T0) · 007 §9 (G1–G3) · 007 §7 (third-party plugin trust)</>,
+
+    s6bEyebrow: "sandbox_runtime.hpp — a second, independent sandboxing axis",
+    s6bHeading: (
+      <>
+        <code>run_command</code>: a checkpoint per call, never a session-long shell
+      </>
+    ),
+    s6bBody: (
+      <>
+        <code>SandboxProfile&lt;P&gt;</code> above answers "which backend isolates a{" "}
+        <code>Tool&lt;&gt;</code>'s own <code>invoke()</code>." A separate concept,{" "}
+        <code>ExecutionSurface</code>, answers a different question:{" "}
+        <code>tools/cli_chat.cpp</code>'s real <code>run_command</code> grant checkpoints every
+        call through <code>SandboxRuntime::run()</code> — read the current Ledger checkpoint,
+        materialize it to real disk, push it into a freshly-created surface instance, exec, pull
+        the result back, commit a new checkpoint. <code>DockerExecutionSurface</code> (
+        <code>include/agentengine/sandbox/docker_execution_surface.hpp</code>) is the real
+        conformer <code>cli_chat.cpp</code> actually uses: a genuinely fresh Docker container per
+        call, never one held open for the session.
+      </>
+    ),
+    s6bNote: (
+      <>
+        File state survives across calls — proven live, not asserted: writing a file in one{" "}
+        <code>run_command</code> call and reading it back in a separate, later call round-trips
+        correctly through the checkpoint above. Shell <em>process</em> state does not — no{" "}
+        <code>export</code>, no <code>cd</code>-then-later-command — because every call gets a
+        genuinely fresh container and a fresh <code>sh</code> process, by design. A session-
+        persistent alternative exists (<code>RunShellTool</code>/<code>SessionShellSandbox</code>,
+        native_jail-backed) but is wired into no runnable entry point today.
+      </>
+    ),
+    s6bNoteCite: <>issue #47 — the persistent-shell-state gap this checkpoint model doesn't close</>,
+    s6bRollbackNote: (
+      <>
+        Real rollback exists at the host level:{" "}
+        <code>SandboxRuntime::reset_to_turn(target_turn_index)</code> moves the Ledger branch's
+        HEAD back to an earlier checkpoint and re-materializes that older tree onto disk — genuine
+        undo, not just a pointer move. Not exposed as a tool a model can call in{" "}
+        <code>cli_chat.cpp</code> today; it's a host-callable C++ API only.
+      </>
+    ),
     s7Eyebrow: "008 §4a — RemoteExecToken",
     s7Heading: (
       <>
@@ -812,6 +855,50 @@ const copy = {
       </>
     ),
     s6NoteCite: <>007 §6 (tầng tin cậy T0) · 007 §9 (các cổng G1–G3) · 007 §7 (độ tin cậy plugin bên thứ ba)</>,
+
+    s6bEyebrow: "sandbox_runtime.hpp — một trục sandbox thứ hai, độc lập",
+    s6bHeading: (
+      <>
+        <code>run_command</code>: một checkpoint mỗi lệnh gọi, không bao giờ là một shell sống
+        theo session
+      </>
+    ),
+    s6bBody: (
+      <>
+        <code>SandboxProfile&lt;P&gt;</code> ở trên trả lời câu "backend nào cách ly{" "}
+        <code>invoke()</code> của một <code>Tool&lt;&gt;</code>." Một concept riêng biệt,{" "}
+        <code>ExecutionSurface</code>, trả lời một câu hỏi khác: quyền <code>run_command</code>{" "}
+        thật của <code>tools/cli_chat.cpp</code> checkpoint mỗi lệnh gọi qua{" "}
+        <code>SandboxRuntime::run()</code> — đọc checkpoint hiện tại của Ledger, materialize ra
+        đĩa thật, đẩy vào một instance surface vừa tạo mới, exec, hút kết quả về, commit một
+        checkpoint mới. <code>DockerExecutionSurface</code> (
+        <code>include/agentengine/sandbox/docker_execution_surface.hpp</code>) là conformer thật
+        mà <code>cli_chat.cpp</code> thực sự dùng: một container Docker hoàn toàn mới cho mỗi lệnh
+        gọi, không bao giờ giữ một container sống suốt session.
+      </>
+    ),
+    s6bNote: (
+      <>
+        File sống sót qua các lệnh gọi — đã chứng minh trực tiếp, không suy đoán: ghi một file ở
+        một lệnh <code>run_command</code>, đọc lại ở một lệnh gọi khác, riêng biệt, sau đó, đi
+        đúng qua checkpoint ở trên. Trạng thái <em>tiến trình</em> shell thì không — không{" "}
+        <code>export</code>, không <code>cd</code> rồi gọi lệnh sau đó — vì mỗi lệnh gọi nhận một
+        container hoàn toàn mới và một tiến trình <code>sh</code> mới, có chủ đích. Một lựa chọn
+        thay thế sống theo session đã tồn tại (<code>RunShellTool</code>/
+        <code>SessionShellSandbox</code>, dựa trên native_jail) nhưng chưa được nối vào bất kỳ
+        điểm vào chạy được nào hiện nay.
+      </>
+    ),
+    s6bNoteCite: <>issue #47 — khoảng trống về trạng thái shell bền vững mà mô hình checkpoint này không đóng lại</>,
+    s6bRollbackNote: (
+      <>
+        Rollback thật tồn tại ở tầng host:{" "}
+        <code>SandboxRuntime::reset_to_turn(target_turn_index)</code> di chuyển HEAD của branch
+        Ledger về một checkpoint trước đó và materialize lại đúng tree cũ đó ra đĩa — undo thật
+        sự, không chỉ di chuyển con trỏ. Chưa được expose thành tool mà model gọi được trong{" "}
+        <code>cli_chat.cpp</code> hiện nay — chỉ là một API C++ host-callable.
+      </>
+    ),
     s7Eyebrow: "008 §4a — RemoteExecToken",
     s7Heading: (
       <>
@@ -1289,6 +1376,38 @@ export function ApiTrustSandboxReference() {
           <RevealItem>
             <p className="gs-note" style={{ marginTop: 20 }}>{t.s6Note}</p>
             <ApiDiagnosticNote>{t.s6NoteCite}</ApiDiagnosticNote>
+          </RevealItem>
+        </RevealGroup>
+
+        {/* ---- 6b. ExecutionSurface / MandatorySandboxProvider (run_command) ------------------------ */}
+        <RevealGroup>
+          <RevealItem>
+            <div className="section-head anchor-target" id="execution-surface" style={{ marginTop: 56, marginBottom: 22 }}>
+              <span className="eyebrow">{t.s6bEyebrow}</span>
+              <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s6bHeading}</h3>
+              <p>{t.s6bBody}</p>
+              <ApiDiagnosticNote>{t.s6bNote}</ApiDiagnosticNote>
+              <ApiDiagnosticNote status="stub">{t.s6bNoteCite}</ApiDiagnosticNote>
+            </div>
+          </RevealItem>
+
+          <RevealItem>
+            <CodePanel filename="sandbox_runtime.hpp">{highlightCpp(executionSurfaceRunSnippet)}</CodePanel>
+          </RevealItem>
+
+          <RevealItem>
+            <ApiDiagnosticNote status="design">{t.s6bRollbackNote}</ApiDiagnosticNote>
+          </RevealItem>
+
+          <RevealItem>
+            <div style={{ marginTop: 14, display: "flex", gap: 16, flexWrap: "wrap" }}>
+              <RawCite href={gh("include/agentengine/sandbox/sandbox_runtime.hpp")} label="include/agentengine/sandbox/sandbox_runtime.hpp" />
+              <RawCite href={gh("include/agentengine/sandbox/docker_execution_surface.hpp")} label="include/agentengine/sandbox/docker_execution_surface.hpp" />
+              <RawCite
+                href={gh("src/backends/native_jail/session_shell_wiring.hpp")}
+                label="src/backends/native_jail/session_shell_wiring.hpp (RunShellTool)"
+              />
+            </div>
           </RevealItem>
         </RevealGroup>
 

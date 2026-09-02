@@ -3847,6 +3847,36 @@ static_assert(SandboxBackend<agentengine::wasm::WasmBackend>);              // w
 // the engine's point of view there is no difference." It runs UNSANDBOXED, host-trust-tier (007 §6
 // T0) -- the engine does not attempt to contain the thing that creates and manages containment.`;
 
+// ------------------------------------------------------------------------------------------------
+// ExecutionSurface / MandatorySandboxProvider -- a SECOND, independent sandboxing axis from
+// SandboxProfile<P> above. SandboxProfile<P> resolves WHICH backend isolates a Tool<>'s own
+// invoke(). ExecutionSurface is what run_command (tools/cli_chat.cpp's own real grant) checkpoints
+// through instead: sandbox_runtime.hpp's real run() body, trimmed to its own numbered steps.
+// ------------------------------------------------------------------------------------------------
+
+export const executionSurfaceRunSnippet = `// include/agentengine/sandbox/sandbox_runtime.hpp -- SandboxRuntime::run(), trimmed to its own
+// numbered steps. Called fresh on EVERY run_command invocation -- not once per session.
+template <ExecutionSurface Surface>
+result<SandboxRunOutcome> run(Surface& surface, std::string command, IdentityHandle author, ...) {
+    // 1. Read the branch's CURRENT head tree digest -- wherever the last commit left off.
+    auto head_digest = ledger_->head_tree_digest(branch_.name(), author);
+    // 2. Materialize that tree onto real disk at staging_root -- the real rollback/checkout
+    //    mechanism, reused here to give the surface something real to seed from.
+    auto materialized = co_await io_fs_.materialize(*ledger_, *head_digest, author);
+    // 3. Push the materialized directory into the surface's own isolated view.
+    //    DockerExecutionSurface::reset() destroys the PRIOR container (if any) and creates a
+    //    fresh one here -- every call gets a genuinely new container, never a session-long one.
+    auto reset_r = surface.reset(io_fs_.host_root());
+    // 4. Run the real command INSIDE the surface -- never in this process.
+    auto exec_r = surface.run(command);
+    // 5. Pull whatever the surface produced back onto real disk at staging_root.
+    auto drain_r = surface.drain_to(io_fs_.host_root());
+    // 6-7. Scan the real bytes into a tree, commit through the real Ledger as a new checkpoint --
+    //      this is what makes file state survive to the NEXT call, even though the container
+    //      itself does not: the next call's step 1 reads exactly what step 7 just committed.
+    ...
+}`;
+
 // 008 §4a: RemoteExecToken, applied to trust/capability_token.hpp -- the SAME mint_root/attenuate/
 // verify triple ADR-005 Design A proved out (executed, red-teamed, ASan-clean) for capabilities
 // crossing a process boundary generally. The generic primitive below is real code; RemoteExecToken
