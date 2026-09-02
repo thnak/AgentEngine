@@ -208,3 +208,71 @@ export const hitlExampleRows: Record<Lang, HitlExampleRow[]> = {
     { what: "tests/test_rt_agent_session_tool_call_hook.cpp", mechanism: "Điều phối bên ngoài của ToolCallHook", status: "Thật, chỉ có test — chưa có ví dụ độc lập" },
   ],
 };
+
+// ------------------------------------------------------------------------------------------------
+// request_port, raw -- no builder, no chat_client wrapper, just WorkflowSupervisor's own suspend/
+// resume calls. examples/23_handoff_mesh.cpp's own case C: tech escalates to a human via the
+// `escalate` request_port node, the run genuinely suspends, and resuming with the human's own
+// answer is what the completed run reflects -- not anything the tech stage said.
+// ------------------------------------------------------------------------------------------------
+
+export const requestPortRawSnippet = `// examples/23_handoff_mesh.cpp:183-199 (trimmed) -- case C: tech escalates to a human
+WorkflowSupervisor sup;
+sup.initialize(wf, make_bodies());   // wf names an "escalate" node as executor_kind::request_port
+
+WorkflowResult r1 = drive(sup.run_workflow(RunWorkflow{text_message("please escalate this outage to a human")}));
+// r1.status == workflow_status::suspended -- the run stopped AT the escalate port
+// r1.open_interactions.size() == 1 -- one real Interaction, holding no resources while it waits
+
+WorkflowResult r2 = drive(sup.resume_workflow(ResumeWorkflow{
+    r1.open_interactions[0].interaction_id,
+    text_message("human: restarted the service, fixed"),
+    {}}));
+// r2.status == workflow_status::completed
+// text_of(r2.output) == "human: restarted the service, fixed" -- the completed run reflects the
+// HUMAN's own answer, not anything the tech stage guessed before escalating.`;
+
+// ------------------------------------------------------------------------------------------------
+// AG-UI's own three interrupt reasons, one projector call each -- proves AG-UI's "no native pause
+// event" claim isn't a single fixed message: input_required/auth_required/approval_requested each
+// map to a DIFFERENT RunFinishedInterrupt.interrupts[0].reason.
+// ------------------------------------------------------------------------------------------------
+
+export const aguiInterruptMultiCaseSnippet = `// tests/test_rt_agui_projection.cpp:278-309 (trimmed) -- E2-11/12/13, three DIFFERENT
+// RunEvent kinds, all projected onto the SAME wire shape (RunFinishedInterrupt) with different reasons
+agui::RunEventProjector projector;
+
+auto in_req = projector.project(RunEvent{"run-u", 1, run_event_kind::input_required,
+                                           run_event_payload::InteractionRef{"interaction-1"}});
+// in_req[0] is a RunFinishedInterrupt; interrupts[0] == {id: "interaction-1", reason: "input_required"}
+// interruptId IS the interaction_id VERBATIM (013 §2.2) -- no re-derived id at the wire boundary.
+
+auto auth_req = projector.project(RunEvent{"run-t", 1, run_event_kind::auth_required,
+                                             run_event_payload::InteractionRef{"interaction-2"}});
+// auth_req[0].interrupts[0].reason == "ae:auth_required" -- AG-UI's own reason enum has no native
+// auth member, so this uses the "ae:" extension namespace rather than inventing a native-looking one.
+
+auto appr = projector.project(RunEvent{"run-s", 1, run_event_kind::approval_requested,
+                                         run_event_payload::ApprovalRequested{"call-9"}});
+// appr[0].interrupts[0].reason == "confirmation" -- AG-UI DOES have a native reason for this one;
+// tool_call_id == "call-9" too, so a UI can correlate the interrupt back to the pending call.`;
+
+// ------------------------------------------------------------------------------------------------
+// Skill & Sandbox: the actual real declarations proving the honest "not gated" claim above --
+// verbatim, not paraphrased.
+// ------------------------------------------------------------------------------------------------
+
+export const skillSandboxNoGateSnippet = `// tools/cli_chat.cpp:978-980 -- verbatim comment, not paraphrased
+// \`ExecuteCodeTool\`/\`MountSkillTool\` declare no \`Approval<M>\` policy (\`approval_mode::
+// never_require\`, tool.hpp's own fail-open default), so \`invoke_tool\`'s step 5 never consults a
+// decider for either -- no \`set_approval_decider()\` call is needed for this demo to keep working.
+
+// include/agentengine/tools/read_sandbox_file.hpp:50 -- the one sandbox-touching tool that mentions
+// the trait AT ALL, and it explicitly OPTS OUT:
+struct ReadSandboxFile : Tool<ReadSandboxFile, Capabilities<>, Approval<approval_mode::never_require>,
+                                EffectClass<effect_class::pure>> { /* ... */ };
+
+// Nothing stops a HOST from declaring Approval<always_require> on a sandboxed tool -- the ordinary,
+// generic Tool<> trait works identically whether the effect runs in a jail or not. But no example or
+// test in this codebase actually does it: this is a real, disclosed gap, not a claim that it's
+// impossible.`;

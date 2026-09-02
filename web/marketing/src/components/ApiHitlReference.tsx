@@ -1,9 +1,21 @@
-import { gh } from "../data/apiContent";
-import { SITE_BASE } from "../data/content";
 import {
+  agentAskHitlSnippet,
+  approvalExampleSnippet,
+  gh,
+  toolCallHookExampleSnippet,
+  workflowChatClientHitlSnippet,
+  a2aStreamProjectorInterruptSnippet,
+} from "../data/apiContent";
+import { magenticPlanSignoffSnippet } from "../data/builderContent";
+import { SITE_BASE } from "../data/content";
+import { workflowCheckpointResumeSnippet } from "../data/durabilityContent";
+import {
+  aguiInterruptMultiCaseSnippet,
   hitlExampleRows,
   hitlMatrixRows,
   interactionRecordSnippet,
+  requestPortRawSnippet,
+  skillSandboxNoGateSnippet,
 } from "../data/hitlContent";
 import { useLang } from "../i18n/LanguageContext";
 import { highlightCpp } from "../lib/highlightCpp";
@@ -495,6 +507,9 @@ export function ApiHitlReference() {
             </div>
           </RevealItem>
           <RevealItem>
+            <CodePanel filename="examples/05_human_approval.cpp">{highlightCpp(approvalExampleSnippet)}</CodePanel>
+          </RevealItem>
+          <RevealItem>
             <a className="api-cite" href={`${SITE_BASE}/api/runtime.html#suspend-for-approval`} style={{ borderTop: "none", paddingTop: 0, display: "block" }}>
               AgentSession &amp; ChatClient — Pausing a whole run for a real human →
             </a>
@@ -509,6 +524,9 @@ export function ApiHitlReference() {
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.hookHeading}</h3>
               <p>{t.hookBody}</p>
             </div>
+          </RevealItem>
+          <RevealItem>
+            <CodePanel filename="tests/test_rt_agent_session_tool_call_hook.cpp">{highlightCpp(toolCallHookExampleSnippet)}</CodePanel>
           </RevealItem>
           <RevealItem>
             <a className="api-cite" href={`${SITE_BASE}/api/runtime.html#tool-call-hook`} style={{ borderTop: "none", paddingTop: 0, display: "block" }}>
@@ -527,6 +545,9 @@ export function ApiHitlReference() {
             </div>
           </RevealItem>
           <RevealItem>
+            <CodePanel filename="agent_ask_codegen.hpp + agent_session.hpp">{highlightCpp(agentAskHitlSnippet)}</CodePanel>
+          </RevealItem>
+          <RevealItem>
             <a className="api-cite" href={`${SITE_BASE}/api/codeact.html#codeact-agent-ask`} style={{ borderTop: "none", paddingTop: 0, display: "block" }}>
               CodeAct — agent.ask →
             </a>
@@ -543,6 +564,9 @@ export function ApiHitlReference() {
             </div>
           </RevealItem>
           <RevealItem>
+            <CodePanel filename="examples/23_handoff_mesh.cpp">{highlightCpp(requestPortRawSnippet)}</CodePanel>
+          </RevealItem>
+          <RevealItem>
             <a className="api-cite" href={`${SITE_BASE}/api/workflow.html#workflow-hitl`} style={{ borderTop: "none", paddingTop: 0, display: "block" }}>
               Workflow &amp; Orchestration — request_port →
             </a>
@@ -557,6 +581,9 @@ export function ApiHitlReference() {
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.chatClientHeading}</h3>
               <p>{t.chatClientBody}</p>
             </div>
+          </RevealItem>
+          <RevealItem>
+            <CodePanel filename="rt/workflow_as_chat_client.hpp">{highlightCpp(workflowChatClientHitlSnippet)}</CodePanel>
           </RevealItem>
           <RevealItem>
             <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
@@ -580,6 +607,9 @@ export function ApiHitlReference() {
             </div>
           </RevealItem>
           <RevealItem>
+            <CodePanel filename="workflow/magentic.hpp">{highlightCpp(magenticPlanSignoffSnippet)}</CodePanel>
+          </RevealItem>
+          <RevealItem>
             <a className="api-cite" href={`${SITE_BASE}/api/builder.html#magentic-workflow-builder`} style={{ borderTop: "none", paddingTop: 0, display: "block" }}>
               Builder API — MagenticWorkflowBuilder →
             </a>
@@ -596,6 +626,9 @@ export function ApiHitlReference() {
             </div>
           </RevealItem>
           <RevealItem>
+            <CodePanel filename="examples/20_workflow_checkpoint_resume.cpp">{highlightCpp(workflowCheckpointResumeSnippet)}</CodePanel>
+          </RevealItem>
+          <RevealItem>
             <a className="api-cite" href={`${SITE_BASE}/api/durability.html#du-interactions`} style={{ borderTop: "none", paddingTop: 0, display: "block" }}>
               Durability — Interactions across a restart →
             </a>
@@ -610,6 +643,18 @@ export function ApiHitlReference() {
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.protocolsHeading}</h3>
               <p>{t.protocolsBody}</p>
             </div>
+          </RevealItem>
+          <RevealItem>
+            <p style={{ fontWeight: 600, marginBottom: 8 }}>AG-UI — three reasons, one wire shape</p>
+          </RevealItem>
+          <RevealItem>
+            <CodePanel filename="tests/test_rt_agui_projection.cpp">{highlightCpp(aguiInterruptMultiCaseSnippet)}</CodePanel>
+          </RevealItem>
+          <RevealItem>
+            <p style={{ fontWeight: 600, margin: "20px 0 8px" }}>A2A — a real, non-terminal state instead</p>
+          </RevealItem>
+          <RevealItem>
+            <CodePanel filename="tests/test_a2a_streaming.cpp">{highlightCpp(a2aStreamProjectorInterruptSnippet)}</CodePanel>
           </RevealItem>
           <RevealItem>
             <a className="api-cite" href={`${SITE_BASE}/api/protocols.html#protocol-wire-projection`} style={{ borderTop: "none", paddingTop: 0, display: "block" }}>
@@ -629,6 +674,9 @@ export function ApiHitlReference() {
           </RevealItem>
           <RevealItem>
             <p style={{ color: "var(--text-dim)", lineHeight: 1.65 }}>{t.skillSandboxBody2}</p>
+          </RevealItem>
+          <RevealItem>
+            <CodePanel filename="cli_chat.cpp + read_sandbox_file.hpp">{highlightCpp(skillSandboxNoGateSnippet)}</CodePanel>
           </RevealItem>
           <RevealItem>
             <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 8 }}>
