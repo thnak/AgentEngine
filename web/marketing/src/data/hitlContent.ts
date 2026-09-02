@@ -30,10 +30,11 @@ export const hitlSections: Record<Lang, HitlSection[]> = {
     { id: "hitl-codeact-ask", label: "agent.ask(): abort-and-replay" },
     { id: "hitl-workflow", label: "request_port (Workflow)" },
     { id: "hitl-chat-client", label: "WorkflowChatClient: HITL over chat_client" },
+    { id: "hitl-chat-client-session-loop", label: "Driven as a session loop" },
     { id: "hitl-magentic", label: "Magentic plan sign-off" },
     { id: "hitl-durability", label: "Surviving a restart" },
     { id: "hitl-protocols", label: "On the wire: AG-UI & A2A" },
-    { id: "hitl-skill-sandbox", label: "Skill & Sandbox: what's NOT gated" },
+    { id: "hitl-skill-sandbox", label: "Skill & Sandbox: what's not gated" },
     { id: "hitl-examples", label: "Real examples, by mechanism" },
     { id: "hitl-choosing", label: "Which one do I actually want?" },
   ],
@@ -45,10 +46,11 @@ export const hitlSections: Record<Lang, HitlSection[]> = {
     { id: "hitl-codeact-ask", label: "agent.ask(): abort-and-replay" },
     { id: "hitl-workflow", label: "request_port (Workflow)" },
     { id: "hitl-chat-client", label: "WorkflowChatClient: HITL qua chat_client" },
+    { id: "hitl-chat-client-session-loop", label: "Chạy như một vòng lặp phiên" },
     { id: "hitl-magentic", label: "Magentic plan sign-off" },
     { id: "hitl-durability", label: "Sống sót qua một lần khởi động lại" },
     { id: "hitl-protocols", label: "Trên wire: AG-UI & A2A" },
-    { id: "hitl-skill-sandbox", label: "Skill & Sandbox: những gì KHÔNG bị kiểm soát" },
+    { id: "hitl-skill-sandbox", label: "Skill & Sandbox: những gì không bị kiểm soát" },
     { id: "hitl-examples", label: "Ví dụ thật, theo từng cơ chế" },
     { id: "hitl-choosing", label: "Tôi thực sự cần cái nào?" },
   ],
@@ -194,6 +196,7 @@ export const hitlExampleRows: Record<Lang, HitlExampleRow[]> = {
     { what: "examples/27_sub_workflow_nested_request_port.cpp", mechanism: "A request_port suspension inside a NESTED sub-workflow, proxied to the outer caller (issues #33/#38)", status: "Real, runnable" },
     { what: "examples/22_magentic_plan_signoff_checkpoint.cpp", mechanism: "Plan sign-off suspended across a SIMULATED process restart (issue #28)", status: "Real, runnable" },
     { what: "examples/28_workflow_as_chat_client.cpp", mechanism: "WorkflowChatClient's Custom-typed request_port bridge (issue #35)", status: "Real, runnable" },
+    { what: "examples/31_workflow_chat_client_session_loop.cpp", mechanism: "The same bridge driven as a real session loop across two request_port nodes", status: "Real, runnable" },
     { what: "tests/test_agent_session_suspend_codeact_ask.cpp", mechanism: "agent.ask() abort-and-replay", status: "Real, test-only — no standalone example yet" },
     { what: "tests/test_rt_agent_session_tool_call_hook.cpp", mechanism: "ToolCallHook external dispatch", status: "Real, test-only — no standalone example yet" },
   ],
@@ -204,10 +207,46 @@ export const hitlExampleRows: Record<Lang, HitlExampleRow[]> = {
     { what: "examples/27_sub_workflow_nested_request_port.cpp", mechanism: "Một sự đình chỉ request_port bên trong một sub-workflow LỒNG NHAU, được proxy ra caller bên ngoài (issue #33/#38)", status: "Thật, chạy được" },
     { what: "examples/22_magentic_plan_signoff_checkpoint.cpp", mechanism: "Plan sign-off bị đình chỉ qua một lần khởi động lại MÔ PHỎNG (issue #28)", status: "Thật, chạy được" },
     { what: "examples/28_workflow_as_chat_client.cpp", mechanism: "Cầu nối request_port kiểu Custom của WorkflowChatClient (issue #35)", status: "Thật, chạy được" },
+    { what: "examples/31_workflow_chat_client_session_loop.cpp", mechanism: "Cùng cầu nối đó, chạy như một vòng lặp phiên thật qua hai node request_port", status: "Thật, chạy được" },
     { what: "tests/test_agent_session_suspend_codeact_ask.cpp", mechanism: "agent.ask() abort-and-replay", status: "Thật, chỉ có test — chưa có ví dụ độc lập" },
     { what: "tests/test_rt_agent_session_tool_call_hook.cpp", mechanism: "Điều phối bên ngoài của ToolCallHook", status: "Thật, chỉ có test — chưa có ví dụ độc lập" },
   ],
 };
+
+// ------------------------------------------------------------------------------------------------
+// WorkflowChatClient driven by a real session loop -- examples/31_workflow_chat_client_session_loop.
+// cpp's own driver, across a two-request_port workflow (example 28's own graph only has ONE, so its
+// caller never has to distinguish "answer again" from "done" -- this one does, generically).
+// ------------------------------------------------------------------------------------------------
+
+export const workflowChatClientSessionLoopSnippet = `// examples/31_workflow_chat_client_session_loop.cpp:168-213 (trimmed) -- bounded, not a literal
+// unbounded while(true) (see the Builder API page's "bounded, single-resume() loop" note)
+constexpr int kMaxRounds = 5;
+for (int round = 0; round < kMaxRounds && !completed; ++round) {
+    ChatRequest req;
+    req.messages = history;                       // the whole growing history, like a real session
+    auto updates = drain(client.chat_stream(req, ctx), label);
+
+    ContentItem const& delta = updates[0].delta;
+    std::string interaction_id;
+    if (is_ask_signal(delta, &interaction_id)) {
+        // Echo the ask into history, then answer with the next canned response.
+        Message ask_echo{};
+        ask_echo.role = role::assistant;
+        ask_echo.content.push_back(delta);
+        history.push_back(ask_echo);
+
+        std::string const answer_text = canned_answers.front();
+        canned_answers.pop_front();
+        // ... build a Custom "agentengine.workflow_request_port_response" item carrying
+        // {interaction_id, response: message_to_json(text_message(answer_text))} ...
+        history.push_back(answer);                 // and loop again -- this is what makes it a loop
+    } else {
+        // A plain, non-ask update is the run's own final answer -- the loop's real exit condition.
+        final_answer = text_of(delta);
+        completed = true;
+    }
+}`;
 
 // ------------------------------------------------------------------------------------------------
 // request_port, raw -- no builder, no chat_client wrapper, just WorkflowSupervisor's own suspend/

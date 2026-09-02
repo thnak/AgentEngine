@@ -30,6 +30,7 @@ import {
 import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
+import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
 import { ApiTable } from "./ApiTable";
 import { CodePanel } from "./CodePanel";
 import { RevealGroup, RevealItem } from "./Reveal";
@@ -105,14 +106,14 @@ const copy = {
     s1RecoLabel: "Recommended default",
     s1RecoBody: (
       <>
-        Before reaching for <code>Capabilities&lt;...&gt;</code> at all: most tools touch no
-        privileged effect and declare NOTHING here, matching 007 §3's empty-by-default rule —{" "}
+        Most tools touch no privileged effect at all, and declare nothing here.{" "}
         <code>declared_capabilities()</code> already returns an empty ceiling unless overridden.
         Add exactly the <code>cap::decl::*</code> tag matching the one effect a tool actually
-        reaches (a single <code>FsWrite&lt;"work"&gt;</code>, say) — never a broader set "in
-        case it's needed later":
+        reaches — a single <code>FsWrite&lt;"work"&gt;</code>, say — never a broader set for
+        "in case it's needed later":
       </>
     ),
+    s1RecoNote: <>007 §3 — the empty-by-default capability declaration rule</>,
     declaresLabel: "What the tool declares",
     declares: (
       <>
@@ -124,47 +125,48 @@ const copy = {
     grantedLabel: "What the session was granted",
     granted: (
       <>
-        <code>CapabilitySet::grant_root(...)</code> — called by the HOST, never reachable
-        from anything derived from model output (I3). This is the only thing step 4/7 of
-        the pipeline actually checks against.
+        <code>CapabilitySet::grant_root(...)</code> is called by the host, never reachable
+        from anything derived from model output. This is the only thing step 4/7 of the
+        pipeline actually checks against.
       </>
     ),
+    grantedNote: <>I3 — model output is data, never authority</>,
     outcomeNote: (
       <>
-        <strong>The same tool, the same call, two different outcomes</strong> — the ONLY
-        variable across the two sessions above is what <code>CapabilitySet</code> was handed
-        to <code>set_capabilities()</code>. Denial is an ordinary tool error fed back to the
-        model, not a run-level failure: the run still converges, it just never invoked{" "}
+        <strong>The same tool call produces two different outcomes.</strong> The only variable
+        across the two sessions above is what <code>CapabilitySet</code> was handed to{" "}
+        <code>set_capabilities()</code>. Denial is an ordinary tool error fed back to the model,
+        not a run-level failure — the run still converges; it just never invokes{" "}
         <code>write_note</code>'s real body.
       </>
     ),
     denialErrorNote: (
       <>
-        <strong>What that tool error actually contains, not just "an error":</strong>{" "}
-        <code>audit.error_code</code> is the stable <code>tool.capability_not_held</code>, every
-        time, regardless of which capability kind was missing — and the <code>Error</code>{" "}
-        content's <code>message</code> is deliberately silent about which one was checked or
-        held. Proven directly by asserting the message does NOT contain the capability's own
-        name, not merely by reading a comment that promises it — a caller cannot fingerprint a
-        session's granted capabilities by triggering denials and inspecting the wording.
+        <strong>What that tool error actually contains:</strong> <code>audit.error_code</code>{" "}
+        is always the stable <code>tool.capability_not_held</code> code, regardless of which
+        capability kind was missing. The <code>Error</code> content's <code>message</code> stays
+        deliberately silent about which capability was checked or held — proven by asserting
+        the message does not contain the capability's own name, not merely by reading a comment
+        that promises it. A caller cannot fingerprint a session's granted capabilities by
+        triggering denials and inspecting the wording.
       </>
     ),
     s2Eyebrow: "tool_pipeline.hpp — invoke_tool()",
     s2Heading: "Every tool call, real or model-requested, crosses the same ten steps",
     s2Body: (
       <>
-        006 §3's own numbering — <code>invoke_tool()</code> is the ONE function every native
-        tool call goes through, whether it came from the model or a workflow node. Two of
-        these ten are the actual enforcement gates; the rest are resolution, bookkeeping, or
-        a documented no-op.
+        <code>invoke_tool()</code> is the one function every native tool call goes through,
+        whether it came from the model or a workflow node. Two of these ten steps are the
+        actual enforcement gates; the rest are resolution, bookkeeping, or a documented no-op.
       </>
     ),
+    s2Note: <>006 §3 — the ten-step invoke_tool() pipeline</>,
     handleNote: (
       <>
-        A bound capability handle from step 4/7 is valid for exactly ONE call — revoked
-        unconditionally at step 10, success or failure, before the result is even normalized.
-        A handle from call N is unusable in call N+1 by construction, not convention (this is
-        what a real regression proves, not just what a comment claims).
+        A bound capability handle from step 4/7 is valid for exactly one call. Step 10 revokes
+        it unconditionally — success or failure — before the result is even normalized, so a
+        handle from call N cannot be reused at call N+1. A regression test proves that, not
+        just a comment.
       </>
     ),
     s3Eyebrow: "CapabilitySet::attenuate()",
@@ -173,19 +175,19 @@ const copy = {
       <>
         A parent <code>CapabilitySet</code> can hand out a strictly narrower child — a
         delegate agent, a spawned sub-worktree, a plugin — but only ever narrower. Asking for
-        anything the parent doesn't already cover fails the WHOLE derivation closed, not
+        anything the parent doesn't already cover fails the whole derivation closed, not
         partially.
       </>
     ),
     s3Note: (
       <>
         <strong>No convenience "give me everything" shortcut exists.</strong>{" "}
-        <code>CapabilitySet()</code> default-constructs empty; <code>grant_root()</code> is
-        the ONE explicitly-named, greppable entry point host policy calls. That's not a
-        comment promising a property — it's the actual thing 007 §9's own falsifiable test
-        gate checks.
+        <code>CapabilitySet()</code> default-constructs empty. <code>grant_root()</code> is the
+        one explicitly-named, greppable entry point host policy calls — not a comment promising
+        a property, but the thing a falsifiable test gate actually checks.
       </>
     ),
+    s3NoteCite: <>007 §9 — the capability-narrowing test gate</>,
     s3bEyebrow: "ADR-068 — trust/secret_quarantine.hpp",
     s3bHeading: <>Quarantining a secret that shows up where nobody declared one</>,
     s3bBody: (
@@ -194,15 +196,17 @@ const copy = {
         capability-gated, zeroizing, declare-then-resolve path. A secret that shows up
         incidentally — a pasted API key, a tool result echoing a leaked credential — was never
         declared anywhere, so nothing catches it. <code>QuarantineSecretStore</code> adds a
-        second, mint-at-runtime path satisfying the same <code>SecretStore</code> concept:
-        content-addressed by a MAC of the detected bytes (reusing <code>hmac_sha256</code>, the
-        one audited digest primitive already in this codebase — ADR-021), so the same value
-        quarantined by two independent callers collapses onto one <code>SecretRef</code>{" "}
-        without either caller coordinating. Follows HashiCorp Vault's tokenization shape — an
-        opaque <code>quarantine:&lt;hex&gt;</code> reference, nothing recoverable without a{" "}
-        <code>resolve()</code> round trip — not a reversible-ciphertext-in-place shape.
+        second, mint-at-runtime path that satisfies the same <code>SecretStore</code> concept.
+        It content-addresses each secret by a MAC of the detected bytes, reusing{" "}
+        <code>hmac_sha256</code>, the one audited digest primitive already in this codebase.
+        The same value quarantined by two independent callers collapses onto one{" "}
+        <code>SecretRef</code>, with no coordination between them. The shape follows HashiCorp
+        Vault's tokenization model: an opaque <code>quarantine:&lt;hex&gt;</code> reference,
+        nothing recoverable without a <code>resolve()</code> round trip — not a
+        reversible-ciphertext-in-place design.
       </>
     ),
+    s3bHmacNote: <>ADR-021 — hmac_sha256 as the audited digest primitive</>,
     s3bOwnershipIntro: "AgentEngine ships no detection of its own — ADR-068 §2 owns the seam and a narrow structural guarantee on the audit event; detection and audit durability are the host's:",
     s3bOwnershipColumns: ["Concern", "Owner", "Notes"],
     s3bTriggerIntro: "The one thing quarantine() itself decides is bookkeeping, not trust: HOW a piece of text got here changes what a host is later allowed to do with the resulting ref — the ref-minting call never grants anything by itself, either way.",
@@ -227,19 +231,19 @@ const copy = {
     ),
     s3bNote: (
       <>
-        <strong>The fatal finding this mechanism had to close on its own.</strong> The design
-        originally drafted <code>quarantine()</code> as minting a ref AND granting{" "}
+        <strong>A fatal finding this mechanism had to close on its own.</strong> The design
+        originally drafted <code>quarantine()</code> to mint a ref and grant{" "}
         <code>cap::Secret</code> in the same step. That doesn't compile against the real{" "}
-        <code>CapabilitySet</code> — empty by construction, no method to add one capability
-        incrementally, only <code>grant_root()</code>, which replaces the whole set and is
-        never reachable from anything derived from model output (I3). A sharper problem sat
-        underneath even a fixed API: <code>QuarantineSecretTool::invoke</code>'s argument is
-        model-supplied, so an auto-grant on that path would let a manipulated model mint itself
-        a resolvable secret reference for text that was never actually the user's own value —
-        model output becoming authority, exactly what I3 forbids. Fixed by splitting the
-        concern: quarantining never mutates a capability set; grant-eligibility is a host-only
-        query, reachable from no <code>Tool::invoke()</code> body, on a boundary (
-        <code>grant_root()</code>) that was already I3-safe.
+        <code>CapabilitySet</code>: it's empty by construction, has no method to add one
+        capability incrementally, and only <code>grant_root()</code> — which replaces the whole
+        set — is reachable from host code, never from anything derived from model output. A
+        sharper problem sat underneath even a fixed API: <code>QuarantineSecretTool::invoke</code>
+        's argument is model-supplied, so an auto-grant on that path would let a manipulated
+        model mint itself a resolvable secret reference for text that was never actually the
+        user's own value. That's model output becoming authority, exactly what I3 forbids. The
+        fix splits the concern: quarantining never mutates a capability set, and
+        grant-eligibility is a host-only query, reachable from no <code>Tool::invoke()</code>{" "}
+        body, on a boundary that was already safe under I3.
       </>
     ),
     s3bResidualNote: (
@@ -254,12 +258,12 @@ const copy = {
     s4Eyebrow: "sandbox/sandbox.hpp",
     s4Heading: (
       <>
-        <code>SandboxProfile&lt;Strict&gt;</code> — the strongest backend for THIS platform
+        <code>SandboxProfile&lt;Strict&gt;</code> — the strongest backend for this platform
       </>
     ),
     s4Body: (
       <>
-        A capability grant says WHAT an effect may reach; a sandbox profile is about HOW
+        A capability grant controls what an effect may reach. A sandbox profile controls how
         isolated the process running it is. <code>P</code> in{" "}
         <code>SandboxProfile&lt;P&gt;</code> is either a concrete backend or the{" "}
         <code>Strict</code> selector, resolved at build/startup time by ranking every backend
@@ -273,12 +277,12 @@ const copy = {
     s5Body: (
       <>
         <code>native-jail</code> is OS-ACL-gated: a grant becomes a token attribute and a
-        filesystem ACL, set up once at process launch, checked by the kernel on every access.{" "}
-        <code>wasm</code> is host-function-gated: a grant becomes whether the linker defines a
-        host callback for a WIT interface AT ALL — an ungranted capability isn't denied at
-        call time, it never exists as something the component could call in the first place.
-        Both are real, tested backends; the row below is read directly off their own source,
-        not the RFC's summary of it.
+        filesystem ACL, set up once at process launch and checked by the kernel on every
+        access. <code>wasm</code> is host-function-gated: a grant becomes whether the linker
+        defines a host callback for a WIT interface at all. An ungranted capability isn't
+        denied at call time — it never exists as something the component could call in the
+        first place. The row below is read directly off each backend's own source, not the
+        RFC's summary of it.
       </>
     ),
     s5TableColumns: ["Axis", "native_jail", "wasm"],
@@ -286,18 +290,19 @@ const copy = {
       <>
         <strong>
           The headline finding this table's third row is built on: AppContainer's ACL model is
-          NOT a sufficient filesystem boundary by itself.
+          not a sufficient filesystem boundary by itself.
         </strong>{" "}
         A curated set of host files — <code>win.ini</code>,{" "}
         <code>drivers\etc\hosts</code> — carry{" "}
         <code>ALL APPLICATION PACKAGES</code>/<code>ALL RESTRICTED APPLICATION PACKAGES</code>{" "}
         read ACEs by Windows' own default, inherited, independent of whatever this backend
-        grants or withholds (ADR-004 §6 finding 1). That is exactly why 008 §1b makes
-        interpreter-level <code>open()</code> mediation the PRIMARY filesystem control and
-        treats the kernel jail's ACL denial as backstop only — this finding is the concrete
-        case that framing exists to answer, not a hypothetical risk.
+        grants or withholds. That is exactly why 008 §1b makes interpreter-level{" "}
+        <code>open()</code> mediation the primary filesystem control and treats the kernel
+        jail's ACL denial as backstop only. This finding is the concrete case that framing
+        exists to answer, not a hypothetical risk.
       </>
     ),
+    s5FindingNote: <>ADR-004 §6, finding 1</>,
     s5CompareBeforeLabel: "native_jail — one-time process launch",
     s5CompareAfterLabel: "wasm — per-load import gate",
     s5LadderIntro: (
@@ -328,15 +333,16 @@ const copy = {
           The trade a deployer makes by supplying one: host-trust-tier code, not sandboxed
           code.
         </strong>{" "}
-        A custom backend runs unsandboxed, the same trust tier as first-party native tools
-        (007 §6 T0) — the engine does not attempt to contain the thing that creates and
-        manages containment. It must still clear the same §9 promotion-gate bar the built-in
-        profiles do (G1 outcome parity, G2 containment with a positive control, G3 no ambient
-        authority, ...) — the engine cannot run that gate automatically on code it did not
-        write, so this is the standard a custom backend is held to, not a check enforced for
-        it, the identical posture 007 §7 already takes toward third-party plugin trust.
+        A custom backend runs unsandboxed, at the same trust tier as first-party native tools —
+        the engine does not attempt to contain the thing that creates and manages containment.
+        It must still clear the same promotion-gate bar the built-in profiles do: outcome
+        parity, containment backed by a positive control, no ambient authority. The engine
+        cannot run that gate automatically on code it did not write, so this is the standard a
+        custom backend is held to, not a check enforced for it — the same posture the engine
+        already takes toward third-party plugin trust.
       </>
     ),
+    s6NoteCite: <>007 §6 (T0) · 007 §9 (G1–G3) · 007 §7 (third-party plugin trust)</>,
     s7Eyebrow: "008 §4a — RemoteExecToken",
     s7Heading: (
       <>
@@ -347,16 +353,17 @@ const copy = {
     s7Body: (
       <>
         The <code>remote</code> profile's mounts and network policy are materialized through
-        its own control plane, out of band — but when the remote instance calls BACK to the
-        host (secret resolution, a <code>ToolCall</code> dispatch, anything "egress is always
-        host-mediated" routes through the host), the host needs to know which live{" "}
+        its own control plane, out of band. When the remote instance calls back to the host —
+        for secret resolution, a <code>ToolCall</code> dispatch, or anything the "egress is
+        always host-mediated" rule routes through the host — the host needs to know which live{" "}
         <code>Exec</code> that callback belongs to, without syscall-mediating a process it
         doesn't own. <code>RemoteExecToken</code> is a self-verifying, macaroon-style bearer
-        token — not an opaque lookup key into a host-side registry — built on the exact{" "}
-        <code>mint_root</code>/<code>attenuate</code>/<code>verify</code> primitive ADR-005
-        proved out for capabilities crossing a process boundary generally.
+        token, not an opaque lookup key into a host-side registry. It's built on the same{" "}
+        <code>mint_root</code>/<code>attenuate</code>/<code>verify</code> primitive proved out
+        for capabilities crossing a process boundary generally.
       </>
     ),
+    s7Note: <>ADR-005 — the mint_root/attenuate/verify capability-token primitive</>,
     s7StatusNote: (
       <>
         <strong>
@@ -365,9 +372,9 @@ const copy = {
         </strong>{" "}
         <code>mint_root</code>/<code>attenuate</code>/<code>verify</code> in{" "}
         <code>trust/capability_token.hpp</code> are real, executed, red-teamed, ASan-clean
-        code (ADR-005). <code>remote</code> itself is scaffolding only — no live backend in
-        this codebase calls <code>mint_root()</code> today. §4a's decision is which mechanism
-        the <code>remote</code> profile will use once it exists, grounded in a primitive that
+        code. <code>remote</code> itself is scaffolding only — no live backend in this codebase
+        calls <code>mint_root()</code> today. §4a's decision is which mechanism the{" "}
+        <code>remote</code> profile will use once it exists, grounded in a primitive that
         already works, not a claim that the callback path is wired end to end.
       </>
     ),
@@ -382,41 +389,44 @@ const copy = {
       <>
         <code>Determinism</code> is two bools on <code>SandboxSpec</code>, not a claim the
         other profiles quietly inherit. Turning both on for <code>wasm</code>, combined with
-        content-addressed inputs (003 §3), makes one exec a pure function of{" "}
-        <code>(component, inputs, capabilities)</code> — cacheable by digest, replayable
+        content-addressed inputs, makes one exec a pure function of{" "}
+        <code>(component, inputs, capabilities)</code> — cacheable by digest and replayable
         offline. <code>native-jail</code> and <code>remote</code> record instead: replay
-        there serves the recorded output, it does not re-derive it.
+        there serves the recorded output; it does not re-derive it.
       </>
     ),
+    s8Note: <>003 §3 — content-addressed inputs</>,
     s9Eyebrow: "008 §6 — Lifetime, pooling, and state",
     s9Heading: "The boundary that matters is between sessions, not between execs within one",
     s9Body: (
       <>
-        <code>sandbox_lifetime</code> is a real, plain three-way enum — no hidden fourth
-        state. Cross-session reuse is prohibited in every profile; a pooled instance is
-        always reset to a snapshot taken <em>before</em> any untrusted input, never merely
-        "cleaned". None of this touches files: the worktree (025) is durable engine state
-        mounted into the sandbox, so destroying a sandbox on any profile loses no files.
+        <code>sandbox_lifetime</code> is a plain three-way enum — no hidden fourth state.
+        Cross-session reuse is prohibited in every profile; a pooled instance is always reset
+        to a snapshot taken <em>before</em> any untrusted input, never merely "cleaned". None
+        of this touches files: the worktree is durable engine state mounted into the sandbox,
+        so destroying a sandbox on any profile loses no files.
       </>
     ),
+    s9BodyNote: <>025 — the worktree as durable, sandbox-mounted engine state</>,
     s9aEyebrow: "008 §6a — surviving passivation",
     s9aHeading: "Files always survive it. In-memory interpreter state depends on the profile.",
     s9aTableColumns: ["", "wasm (plugins, 009)", "native-jail (interpreter and shell, 010)"],
     s9Note: (
       <>
-        <strong>Named gap, not a silently-working feature.</strong> Quark previously
-        passivated idle sessions (ADR-028/034); ADR-037 removed Quark, and no host-managed
+        <strong>A named gap, not a silently-working feature.</strong> Quark previously
+        passivated idle sessions; ADR-037 removed Quark, and no host-managed
         session-passivation mechanism currently exists in <code>agentengine::rt::</code>. The
-        table above states the TARGET behavior for whenever passivation exists again — the{" "}
-        <code>wasm</code> snapshot property itself is real (a component's heap is its linear
+        table above states the target behavior for whenever passivation exists again. The{" "}
+        <code>wasm</code> snapshot property itself is real: a component's heap is its linear
         memory at a quiescent point, so a snapshot is a memory dump plus store/table/global
-        state), but there is no portable equivalent for native processes: CRIU is Linux-only
-        and, by its own docs, frequently fails on live network connections. This is an
-        accepted, permanent limitation for the interpreter and shell, not a gap to close by
-        picking a different backend for them — §1 already rules out a WASM Python runtime for
-        its own reasons.
+        state. There is no portable equivalent for native processes — CRIU is Linux-only and,
+        by its own docs, frequently fails on live network connections. This is an accepted,
+        permanent limitation for the interpreter and shell, not a gap to close by picking a
+        different backend for them; §1 already rules out a WASM Python runtime for its own
+        reasons.
       </>
     ),
+    s9NoteCite: <>ADR-028/034 — Quark's prior session passivation</>,
     s10Eyebrow: "008 §7 — Failure and abuse",
     s10Heading: (
       <>
@@ -426,13 +436,15 @@ const copy = {
     ),
     s10Body: (
       <>
-        Every row below has a test in the hostile suite (resource-capped, per CLAUDE.md
-        Machine Safety, so proving a fork bomb is contained can't take the dev box with it).
-        Two rows are marked as a tracked gap rather than contained — this page says so
-        because §9 G2's own promotion gate requires a positive control that "demonstrably
-        fails", and a claim this page can't back with one doesn't belong here as "contained".
+        Every row below has a test in the hostile suite. The suite is resource-capped, per
+        CLAUDE.md's Machine Safety rule, so proving a fork bomb is contained can't take the
+        dev box down with it. Two rows are marked as a tracked gap rather than contained: this
+        page says so because the promotion gate requires a positive control that
+        "demonstrably fails", and a claim this page can't back with one doesn't belong here as
+        "contained".
       </>
     ),
+    s10Note: <>008 §9 G2 — the positive-control requirement for containment claims</>,
     s10TableColumns: ["Case", "Containment / status", ""],
     containedLabel: "Contained",
     namedGapLabel: "Named gap",
@@ -464,9 +476,9 @@ const copy = {
         wants enforced. Memory and process-count limits are the opposite story: precise and
         fast (14–22ms) and exact (2 of 5 spawn attempts succeeded under a cap of 3), confirmed
         by their own positive controls. This is a per-backend reliability difference, not a
-        contract violation — 008 §9 G1 requires identical outcome CLASSIFICATION across
-        backends (a CPU-bound guest is always killed and always reported as
-        resource-exceeded), never identical enforcement latency or mechanism.
+        contract violation. 008 §9 G1 requires identical outcome classification across
+        backends — a CPU-bound guest is always killed and always reported as
+        resource-exceeded — never identical enforcement latency or mechanism.
       </>
     ),
     s11Eyebrow: "008 §8 — Observability",
@@ -483,13 +495,13 @@ const copy = {
       <>
         <strong>The shape exists; the producer doesn't yet.</strong>{" "}
         <code>sandbox_exec_started</code>/<code>sandbox_exec_finished</code> are real members
-        of the one shared <code>run_event_kind</code> enum every protocol surface (AG-UI
-        included) is meant to project from — but <code>run_event.hpp</code>'s own top comment
+        of the one shared <code>run_event_kind</code> enum that every protocol surface,
+        AG-UI included, is meant to project from. <code>run_event.hpp</code>'s own top comment
         names the gap plainly: <code>AgentSession</code>'s real turn loop fires
         Run/Turn/ModelCall/StateChanged events today, and makes exactly one synchronous,
-        non-streaming model call that never reaches the tool pipeline — let alone a sandbox
-        exec — at all yet. This page draws that line rather than implying a live stream of
-        §8's nine fields exists today.
+        non-streaming model call that never reaches the tool pipeline, let alone a sandbox
+        exec. This page draws that line rather than implying a live stream of §8's nine fields
+        exists today.
       </>
     ),
   },
@@ -523,14 +535,14 @@ const copy = {
     s1RecoLabel: "Mặc định khuyến nghị",
     s1RecoBody: (
       <>
-        Trước khi dùng tới <code>Capabilities&lt;...&gt;</code>: hầu hết tool không chạm tới
-        effect đặc quyền nào cả và KHÔNG khai báo gì ở đây, đúng theo quy tắc mặc định-rỗng của
-        007 §3 — <code>declared_capabilities()</code> đã trả về một ceiling rỗng trừ khi được
-        ghi đè. Chỉ thêm đúng thẻ <code>cap::decl::*</code> khớp với effect duy nhất mà tool
-        thực sự chạm tới (ví dụ một <code>FsWrite&lt;"work"&gt;</code> duy nhất) — không bao
-        giờ khai báo rộng hơn "phòng khi sau này cần":
+        Hầu hết tool không chạm tới effect đặc quyền nào cả, và không khai báo gì ở đây.{" "}
+        <code>declared_capabilities()</code> đã trả về một ceiling rỗng trừ khi được ghi đè.
+        Chỉ thêm đúng thẻ <code>cap::decl::*</code> khớp với effect duy nhất mà tool thực sự
+        chạm tới — ví dụ một <code>FsWrite&lt;"work"&gt;</code> duy nhất — không bao giờ khai
+        báo rộng hơn "phòng khi sau này cần":
       </>
     ),
+    s1RecoNote: <>007 §3 — quy tắc mặc định-rỗng cho khai báo capability</>,
     declaresLabel: "Những gì tool khai báo",
     declares: (
       <>
@@ -542,48 +554,49 @@ const copy = {
     grantedLabel: "Những gì session được cấp",
     granted: (
       <>
-        <code>CapabilitySet::grant_root(...)</code> — được HOST gọi, không bao giờ chạm tới
-        được từ bất cứ thứ gì bắt nguồn từ đầu ra của model (I3). Đây là thứ DUY NHẤT mà bước
-        4/7 của pipeline thực sự kiểm tra dựa vào.
+        <code>CapabilitySet::grant_root(...)</code> do host gọi, không bao giờ chạm tới được
+        từ bất cứ thứ gì bắt nguồn từ đầu ra của model. Đây là thứ duy nhất mà bước 4/7 của
+        pipeline thực sự kiểm tra dựa vào.
       </>
     ),
+    grantedNote: <>I3 — đầu ra của model là dữ liệu, không bao giờ là authority</>,
     outcomeNote: (
       <>
-        <strong>Cùng một tool, cùng một lệnh gọi, hai kết quả khác nhau</strong> — biến số
-        DUY NHẤT giữa hai session ở trên là <code>CapabilitySet</code> nào được trao cho{" "}
+        <strong>Cùng một lệnh gọi tool, hai kết quả khác nhau.</strong> Biến số duy nhất giữa
+        hai session ở trên là <code>CapabilitySet</code> nào được trao cho{" "}
         <code>set_capabilities()</code>. Từ chối là một lỗi tool bình thường được đưa trở lại
-        cho model, không phải một thất bại ở cấp run: run vẫn hội tụ, chỉ là nó không bao giờ
+        cho model, không phải một thất bại ở cấp run — run vẫn hội tụ, chỉ là nó không bao giờ
         gọi thực thi phần thân thật của <code>write_note</code>.
       </>
     ),
     denialErrorNote: (
       <>
-        <strong>Lỗi tool đó thực sự chứa gì, không chỉ là "một lỗi":</strong>{" "}
-        <code>audit.error_code</code> luôn là mã ổn định <code>tool.capability_not_held</code>,
-        bất kể loại capability nào bị thiếu — và <code>message</code> của nội dung <code>Error</code>{" "}
-        cố tình im lặng về việc capability nào đã được kiểm tra hay đang được nắm giữ. Được chứng
-        minh trực tiếp bằng cách khẳng định message KHÔNG chứa tên riêng của capability đó, không
-        chỉ bằng cách đọc một comment hứa hẹn điều đó — một caller không thể dò ra tập capability
-        mà một session được cấp bằng cách kích hoạt các lần từ chối rồi soi câu chữ.
+        <strong>Lỗi tool đó thực sự chứa gì:</strong> <code>audit.error_code</code> luôn là mã
+        ổn định <code>tool.capability_not_held</code>, bất kể loại capability nào bị thiếu.{" "}
+        <code>message</code> của nội dung <code>Error</code> cố tình im lặng về việc capability
+        nào đã được kiểm tra hay đang được nắm giữ — được chứng minh bằng cách khẳng định
+        message không chứa tên riêng của capability đó, không chỉ bằng cách đọc một comment
+        hứa hẹn điều đó. Một caller không thể dò ra tập capability mà một session được cấp
+        bằng cách kích hoạt các lần từ chối rồi soi câu chữ.
       </>
     ),
     s2Eyebrow: "tool_pipeline.hpp — invoke_tool()",
     s2Heading: "Mọi lệnh gọi tool, dù thật hay do model yêu cầu, đều đi qua đúng mười bước",
     s2Body: (
       <>
-        Đúng theo cách đánh số của 006 §3 — <code>invoke_tool()</code> là hàm DUY NHẤT mà mọi
-        lệnh gọi tool gốc (native) đi qua, bất kể nó đến từ model hay từ một node workflow.
-        Hai trong số mười bước này là các cổng thực thi thật; phần còn lại là phân giải, sổ
-        sách (bookkeeping), hoặc một no-op đã được ghi nhận.
+        <code>invoke_tool()</code> là hàm duy nhất mà mọi lệnh gọi tool gốc (native) đi qua,
+        bất kể nó đến từ model hay từ một node workflow. Hai trong số mười bước này là các
+        cổng thực thi thật; phần còn lại là phân giải, sổ sách (bookkeeping), hoặc một no-op
+        đã được ghi nhận.
       </>
     ),
+    s2Note: <>006 §3 — pipeline invoke_tool() mười bước</>,
     handleNote: (
       <>
-        Một capability handle đã ràng buộc từ bước 4/7 chỉ có hiệu lực cho đúng MỘT lệnh gọi
-        — bị thu hồi vô điều kiện ở bước 10, dù thành công hay thất bại, trước cả khi kết quả
-        được chuẩn hóa. Một handle từ lệnh gọi N không thể dùng được ở lệnh gọi N+1, do chính
-        cấu trúc quyết định chứ không phải quy ước (đây là điều một hồi quy thật chứng minh,
-        không chỉ là điều một comment tuyên bố).
+        Một capability handle đã ràng buộc từ bước 4/7 chỉ có hiệu lực cho đúng một lệnh gọi.
+        Bước 10 thu hồi nó vô điều kiện — dù thành công hay thất bại — trước cả khi kết quả
+        được chuẩn hóa, nên một handle từ lệnh gọi N không thể tái sử dụng ở lệnh gọi N+1. Một
+        test hồi quy chứng minh điều đó, không chỉ một comment.
       </>
     ),
     s3Eyebrow: "CapabilitySet::attenuate()",
@@ -592,19 +605,20 @@ const copy = {
       <>
         Một <code>CapabilitySet</code> cha có thể trao ra một tập con hẹp hơn một cách
         nghiêm ngặt — cho một agent ủy quyền, một sub-worktree được sinh ra, một plugin —
-        nhưng luôn chỉ hẹp hơn. Yêu cầu bất cứ điều gì mà cha chưa bao phủ sẽ khiến TOÀN BỘ
+        nhưng luôn chỉ hẹp hơn. Yêu cầu bất cứ điều gì mà cha chưa bao phủ sẽ khiến toàn bộ
         phép suy ra thất bại đóng, không phải một phần.
       </>
     ),
     s3Note: (
       <>
         <strong>Không tồn tại lối tắt tiện lợi kiểu "cho tôi mọi thứ".</strong>{" "}
-        <code>CapabilitySet()</code> khởi tạo mặc định là rỗng; <code>grant_root()</code> là
-        điểm vào DUY NHẤT được nêu tên tường minh, có thể grep được mà chính sách của host
-        gọi tới. Đó không phải một comment hứa hẹn một tính chất — đó là điều mà chính cổng
-        kiểm định có thể-bác-bỏ (falsifiable) của 007 §9 kiểm tra thật.
+        <code>CapabilitySet()</code> khởi tạo mặc định là rỗng. <code>grant_root()</code> là
+        điểm vào duy nhất được nêu tên tường minh, có thể grep được, mà chính sách của host
+        gọi tới — không phải một comment hứa hẹn một tính chất, mà là điều một cổng kiểm định
+        có thể-bác-bỏ (falsifiable) thực sự kiểm tra.
       </>
     ),
+    s3NoteCite: <>007 §9 — cổng kiểm định thu hẹp capability</>,
     s3bEyebrow: "ADR-068 — trust/secret_quarantine.hpp",
     s3bHeading: <>Cách ly (quarantine) một secret xuất hiện ở nơi không ai khai báo nó</>,
     s3bBody: (
@@ -614,15 +628,17 @@ const copy = {
         hiện một cách tình cờ — một API key bị dán nhầm vào, một kết quả tool lặp lại một
         credential bị lộ — thì chưa từng được khai báo ở đâu cả, nên không có gì bắt được nó.{" "}
         <code>QuarantineSecretStore</code> thêm một đường đi thứ hai, tạo secret ngay tại
-        runtime, thỏa cùng khái niệm <code>SecretStore</code>: định địa chỉ theo nội dung bằng
-        một MAC trên các byte phát hiện được (tái sử dụng <code>hmac_sha256</code>, primitive
-        digest duy nhất đã được kiểm toán trong codebase này — ADR-021), nên cùng một giá trị
-        được hai caller độc lập quarantine sẽ gộp về đúng một <code>SecretRef</code> mà không
-        cần hai bên phối hợp với nhau. Theo đúng hình dạng tokenization của HashiCorp Vault —
-        một tham chiếu <code>quarantine:&lt;hex&gt;</code> mờ đục, không có gì khôi phục được
-        nếu không quay lại qua <code>resolve()</code> — không phải kiểu ciphertext-có-thể-đảo-ngược-tại-chỗ.
+        runtime, thỏa cùng khái niệm <code>SecretStore</code>. Nó định địa chỉ mỗi secret theo
+        nội dung bằng một MAC trên các byte phát hiện được, tái sử dụng{" "}
+        <code>hmac_sha256</code>, primitive digest duy nhất đã được kiểm toán trong codebase
+        này. Cùng một giá trị được hai caller độc lập quarantine sẽ gộp về đúng một{" "}
+        <code>SecretRef</code>, mà không cần hai bên phối hợp với nhau. Hình dạng này theo
+        đúng kiểu tokenization của HashiCorp Vault: một tham chiếu{" "}
+        <code>quarantine:&lt;hex&gt;</code> mờ đục, không có gì khôi phục được nếu không quay
+        lại qua <code>resolve()</code> — không phải kiểu ciphertext-có-thể-đảo-ngược-tại-chỗ.
       </>
     ),
+    s3bHmacNote: <>ADR-021 — hmac_sha256 là primitive digest đã được kiểm toán</>,
     s3bOwnershipIntro: "AgentEngine không đóng gói bất kỳ cơ chế phát hiện nào của riêng mình — ADR-068 §2 sở hữu ranh giới (seam) và một đảm bảo cấu trúc hẹp trên kiểu audit event; phát hiện và độ bền của audit là việc của host:",
     s3bOwnershipColumns: ["Mối quan tâm", "Ai sở hữu", "Ghi chú"],
     s3bTriggerIntro: "Điều duy nhất mà chính quarantine() quyết định là bookkeeping, không phải trust: đoạn text này đến bằng cách nào sẽ quyết định host được phép làm gì với ref kết quả về sau — bản thân lệnh gọi tạo ref không bao giờ cấp phát bất cứ điều gì, dù theo cách nào.",
@@ -632,7 +648,7 @@ const copy = {
         Chính engine đã xác minh nguồn gốc của nội dung này — một <code>Message</code> có{" "}
         <code>content_origin</code> thực sự là <code>user</code> — trước khi{" "}
         <code>scan_and_quarantine()</code> từng chạy. <code>grant_eligible_ref_names()</code>{" "}
-        nêu tên ref kết quả, để một host CÓ THỂ gộp nó vào một lần cấp phát thật ở lần gọi{" "}
+        nêu tên ref kết quả, để một host có thể gộp nó vào một lần cấp phát thật ở lần gọi{" "}
         <code>CapabilitySet::grant_root()</code> kế tiếp của chính mình.
       </>
     ),
@@ -648,20 +664,20 @@ const copy = {
     ),
     s3bNote: (
       <>
-        <strong>Phát hiện chí mạng mà cơ chế này phải tự đóng lại.</strong> Thiết kế ban đầu
-        phác thảo <code>quarantine()</code> như vừa tạo ref vừa cấp <code>cap::Secret</code>{" "}
-        trong cùng một bước. Điều đó không biên dịch được với <code>CapabilitySet</code> thật —
-        rỗng theo cấu trúc, không có phương thức nào để thêm từng capability một, chỉ có{" "}
-        <code>grant_root()</code>, thay thế toàn bộ tập hợp và không bao giờ chạm tới được từ
-        bất cứ thứ gì bắt nguồn từ đầu ra của model (I3). Một vấn đề sắc hơn nằm ngay dưới cả
-        một API đã sửa: argument của <code>QuarantineSecretTool::invoke</code> là do model
-        cung cấp, nên nếu đường đó tự động cấp phát, một model bị thao túng có thể tự tạo cho
-        mình một tham chiếu secret resolve được cho một đoạn text chưa từng thực sự là giá trị
-        của người dùng — đầu ra của model trở thành authority, đúng điều I3 cấm. Được sửa bằng
-        cách tách mối quan tâm ra: quarantine không bao giờ thay đổi một capability set; tính
-        đủ điều kiện cấp phát là một truy vấn chỉ dành cho host, không có đường nào từ thân hàm{" "}
-        <code>Tool::invoke()</code> chạm tới được, trên một ranh giới (
-        <code>grant_root()</code>) vốn đã an toàn theo I3 từ trước.
+        <strong>Một phát hiện chí mạng mà cơ chế này phải tự đóng lại.</strong> Thiết kế ban
+        đầu phác thảo <code>quarantine()</code> vừa tạo ref vừa cấp <code>cap::Secret</code>{" "}
+        trong cùng một bước. Điều đó không biên dịch được với <code>CapabilitySet</code> thật:
+        nó rỗng theo cấu trúc, không có phương thức nào để thêm từng capability một, và chỉ{" "}
+        <code>grant_root()</code> — thay thế toàn bộ tập hợp — mới chạm tới được từ mã của
+        host, không bao giờ từ bất cứ thứ gì bắt nguồn từ đầu ra của model. Một vấn đề sắc hơn
+        nằm ngay dưới cả một API đã sửa: argument của <code>QuarantineSecretTool::invoke</code>{" "}
+        là do model cung cấp, nên nếu đường đó tự động cấp phát, một model bị thao túng có thể
+        tự tạo cho mình một tham chiếu secret resolve được cho một đoạn text chưa từng thực sự
+        là giá trị của người dùng. Đó là đầu ra của model trở thành authority, đúng điều I3
+        cấm. Cách sửa tách mối quan tâm ra: quarantine không bao giờ thay đổi một capability
+        set, và tính đủ điều kiện cấp phát là một truy vấn chỉ dành cho host, không có đường
+        nào từ thân hàm <code>Tool::invoke()</code> chạm tới được, trên một ranh giới vốn đã
+        an toàn theo I3 từ trước.
       </>
     ),
     s3bResidualNote: (
@@ -677,13 +693,13 @@ const copy = {
     s4Eyebrow: "sandbox/sandbox.hpp",
     s4Heading: (
       <>
-        <code>SandboxProfile&lt;Strict&gt;</code> — backend mạnh nhất cho NỀN TẢNG NÀY
+        <code>SandboxProfile&lt;Strict&gt;</code> — backend mạnh nhất cho nền tảng này
       </>
     ),
     s4Body: (
       <>
-        Một sự cấp phát capability nói CÁI GÌ một effect có thể chạm tới; một sandbox profile
-        nói về việc tiến trình chạy nó bị cách ly ĐẾN MỨC NÀO. <code>P</code> trong{" "}
+        Một sự cấp phát capability kiểm soát effect nào có thể chạm tới. Một sandbox profile
+        kiểm soát mức độ cách ly của tiến trình chạy nó. <code>P</code> trong{" "}
         <code>SandboxProfile&lt;P&gt;</code> hoặc là một backend cụ thể, hoặc là bộ chọn{" "}
         <code>Strict</code>, được phân giải tại thời điểm build/khởi động bằng cách xếp hạng
         mọi backend thực sự hỗ trợ nền tảng hiện tại.
@@ -697,12 +713,12 @@ const copy = {
       <>
         <code>native-jail</code> được kiểm soát bởi ACL của OS: một sự cấp phát trở thành một
         thuộc tính token và một ACL filesystem, được thiết lập một lần khi khởi chạy tiến
-        trình, được kernel kiểm tra ở mỗi lần truy cập. <code>wasm</code> được kiểm soát bởi
-        host function: một sự cấp phát trở thành việc linker CÓ định nghĩa một host callback
-        cho một interface WIT hay KHÔNG — một capability chưa được cấp không bị từ chối tại
-        thời điểm gọi, nó hoàn toàn không tồn tại như một thứ mà component có thể gọi ngay từ
-        đầu. Cả hai đều là backend thật, đã kiểm thử; bảng bên dưới được đọc trực tiếp từ mã
-        nguồn của chính chúng, không phải từ bản tóm tắt của RFC.
+        trình và được kernel kiểm tra ở mỗi lần truy cập. <code>wasm</code> được kiểm soát bởi
+        host function: một sự cấp phát trở thành việc linker có định nghĩa một host callback
+        cho một interface WIT hay không. Một capability chưa được cấp không bị từ chối tại
+        thời điểm gọi — nó hoàn toàn không tồn tại như một thứ mà component có thể gọi ngay từ
+        đầu. Bảng bên dưới được đọc trực tiếp từ mã nguồn của chính từng backend, không phải
+        từ bản tóm tắt của RFC.
       </>
     ),
     s5TableColumns: ["Khía cạnh", "native_jail", "wasm"],
@@ -710,19 +726,19 @@ const copy = {
       <>
         <strong>
           Phát hiện chính mà dòng thứ ba của bảng này dựa vào: mô hình ACL của AppContainer
-          KHÔNG PHẢI là một ranh giới filesystem đủ mạnh nếu đứng một mình.
+          không phải là một ranh giới filesystem đủ mạnh nếu đứng một mình.
         </strong>{" "}
         Một tập hợp file host được chọn lọc — <code>win.ini</code>,{" "}
         <code>drivers\etc\hosts</code> — mang các ACE cho phép đọc dành cho{" "}
         <code>ALL APPLICATION PACKAGES</code>/<code>ALL RESTRICTED APPLICATION PACKAGES</code>{" "}
         theo mặc định của chính Windows, được kế thừa, độc lập với bất cứ điều gì backend này
-        cấp hay giữ lại (ADR-004 §6, phát hiện 1). Đó chính xác là lý do vì sao 008 §1b biến
-        việc trung gian hóa <code>open()</code> ở cấp trình thông dịch thành cơ chế kiểm soát
-        filesystem CHÍNH và coi việc từ chối bằng ACL của kernel jail chỉ là lớp dự phòng —
-        phát hiện này là trường hợp cụ thể mà cách đóng khung đó tồn tại để trả lời, không
-        phải một rủi ro giả định.
+        cấp hay giữ lại. Đó chính xác là lý do vì sao 008 §1b biến việc trung gian hóa{" "}
+        <code>open()</code> ở cấp trình thông dịch thành cơ chế kiểm soát filesystem chính và
+        coi việc từ chối bằng ACL của kernel jail chỉ là lớp dự phòng. Phát hiện này là trường
+        hợp cụ thể mà cách đóng khung đó tồn tại để trả lời, không phải một rủi ro giả định.
       </>
     ),
+    s5FindingNote: <>ADR-004 §6, phát hiện 1</>,
     s5CompareBeforeLabel: "native_jail — khởi chạy tiến trình một lần",
     s5CompareAfterLabel: "wasm — cổng import theo từng lần load",
     s5LadderIntro: (
@@ -755,16 +771,17 @@ const copy = {
           Cái giá mà người triển khai phải trả khi tự cung cấp một backend: mã ở tầng tin
           cậy của host, không phải mã bị sandbox.
         </strong>{" "}
-        Một backend tùy chỉnh chạy KHÔNG bị sandbox, cùng tầng tin cậy với các tool gốc
-        (native) do chính bên thứ nhất viết (007 §6, T0) — engine không cố gắng cách ly chính
-        cái thứ tạo ra và quản lý sự cách ly. Nó vẫn phải vượt qua đúng ngưỡng cổng thăng hạng
-        §9 mà các profile tích hợp sẵn phải vượt qua (G1 tương đương về kết quả, G2 cách ly
-        có positive control, G3 không có quyền hạn mặc nhiên, ...) — engine không thể tự động
-        chạy cổng kiểm định đó trên mã nó không viết ra, nên đây là chuẩn mực mà một backend
-        tùy chỉnh bị đánh giá theo, không phải một kiểm tra được thực thi giúp nó — đúng lập
-        trường mà 007 §7 đã áp dụng cho độ tin cậy của plugin bên thứ ba.
+        Một backend tùy chỉnh chạy không bị sandbox, cùng tầng tin cậy với các tool gốc
+        (native) do chính bên thứ nhất viết — engine không cố gắng cách ly chính cái thứ tạo
+        ra và quản lý sự cách ly. Nó vẫn phải vượt qua đúng ngưỡng cổng thăng hạng mà các
+        profile tích hợp sẵn phải vượt qua: tương đương về kết quả, cách ly có positive
+        control, không có quyền hạn mặc nhiên. Engine không thể tự động chạy cổng kiểm định đó
+        trên mã nó không viết ra, nên đây là chuẩn mực mà một backend tùy chỉnh bị đánh giá
+        theo, không phải một kiểm tra được thực thi giúp nó — đúng lập trường mà engine đã áp
+        dụng cho độ tin cậy của plugin bên thứ ba.
       </>
     ),
+    s6NoteCite: <>007 §6 (tầng tin cậy T0) · 007 §9 (các cổng G1–G3) · 007 §7 (độ tin cậy plugin bên thứ ba)</>,
     s7Eyebrow: "008 §4a — RemoteExecToken",
     s7Heading: (
       <>
@@ -775,17 +792,18 @@ const copy = {
     s7Body: (
       <>
         Các mount và chính sách mạng của profile <code>remote</code> được hiện thực hóa thông
-        qua control plane riêng của nó, ngoài băng thông — nhưng khi instance remote gọi
-        NGƯỢC LẠI host (phân giải Secret, dispatch một <code>ToolCall</code>, bất kỳ effect
-        nào mà nguyên tắc "egress luôn được host trung gian hóa" định tuyến qua host), host
-        cần biết callback đó thuộc về <code>Exec</code> đang sống nào, mà không phải trung
-        gian hóa syscall của một tiến trình nó không sở hữu. <code>RemoteExecToken</code> là
-        một bearer token tự-xác-minh, kiểu macaroon — không phải một khóa tra cứu mờ vào một
-        registry phía host — được xây trên đúng bộ ba nguyên thủy{" "}
-        <code>mint_root</code>/<code>attenuate</code>/<code>verify</code> mà ADR-005 đã chứng
-        minh cho các capability băng qua ranh giới tiến trình nói chung.
+        qua control plane riêng của nó, ngoài băng thông. Khi instance remote gọi ngược lại
+        host — để phân giải Secret, dispatch một <code>ToolCall</code>, hoặc bất kỳ effect nào
+        mà nguyên tắc "egress luôn được host trung gian hóa" định tuyến qua host — host cần
+        biết callback đó thuộc về <code>Exec</code> đang sống nào, mà không phải trung gian
+        hóa syscall của một tiến trình nó không sở hữu. <code>RemoteExecToken</code> là một
+        bearer token tự-xác-minh, kiểu macaroon, không phải một khóa tra cứu mờ vào một
+        registry phía host. Nó được xây trên đúng bộ ba nguyên thủy{" "}
+        <code>mint_root</code>/<code>attenuate</code>/<code>verify</code> đã được chứng minh
+        cho các capability băng qua ranh giới tiến trình nói chung.
       </>
     ),
+    s7Note: <>ADR-005 — nguyên thủy capability-token mint_root/attenuate/verify</>,
     s7StatusNote: (
       <>
         <strong>
@@ -794,10 +812,10 @@ const copy = {
         </strong>{" "}
         <code>mint_root</code>/<code>attenuate</code>/<code>verify</code> trong{" "}
         <code>trust/capability_token.hpp</code> là mã thật, đã được thực thi, đã bị red-team,
-        sạch ASan (ADR-005). Bản thân <code>remote</code> hiện chỉ là khung sườn (scaffolding)
-        — không có backend sống nào trong codebase này gọi <code>mint_root()</code> ngày hôm
-        nay. Quyết định của §4a là cơ chế nào profile <code>remote</code> sẽ dùng một khi nó
-        tồn tại, dựa trên một nguyên thủy đã hoạt động thật, chứ không phải một tuyên bố rằng
+        sạch ASan. Bản thân <code>remote</code> hiện chỉ là khung sườn (scaffolding) — không
+        có backend sống nào trong codebase này gọi <code>mint_root()</code> ngày hôm nay.
+        Quyết định của §4a là cơ chế nào profile <code>remote</code> sẽ dùng một khi nó tồn
+        tại, dựa trên một nguyên thủy đã hoạt động thật, chứ không phải một tuyên bố rằng
         đường callback đã được đấu nối đầu-cuối.
       </>
     ),
@@ -812,44 +830,46 @@ const copy = {
       <>
         <code>Determinism</code> là hai bool trên <code>SandboxSpec</code>, không phải một
         tuyên bố mà các profile khác âm thầm kế thừa. Bật cả hai cho <code>wasm</code>, kết
-        hợp với input được định địa chỉ theo nội dung (003 §3), khiến một exec trở thành một
-        hàm thuần túy của <code>(component, inputs, capabilities)</code> — cache được theo
-        digest, phát lại được ở chế độ offline. <code>native-jail</code> và{" "}
-        <code>remote</code> thì ghi lại thay vì vậy: phát lại ở đó phục vụ lại output đã ghi,
-        chứ không suy dẫn lại nó.
+        hợp với input được định địa chỉ theo nội dung, khiến một exec trở thành một hàm thuần
+        túy của <code>(component, inputs, capabilities)</code> — cache được theo digest và
+        phát lại được ở chế độ offline. <code>native-jail</code> và <code>remote</code> thì
+        ghi lại thay vì vậy: phát lại ở đó phục vụ lại output đã ghi, chứ không suy dẫn lại nó.
       </>
     ),
+    s8Note: <>003 §3 — input được định địa chỉ theo nội dung</>,
     s9Eyebrow: "008 §6 — Vòng đời, pooling, và trạng thái",
     s9Heading: "Ranh giới quan trọng nằm giữa các session, không phải giữa các exec trong cùng một session",
     s9Body: (
       <>
-        <code>sandbox_lifetime</code> là một enum ba nhánh thật, đơn giản — không có trạng
-        thái thứ tư ẩn nào. Việc tái sử dụng xuyên session bị cấm ở MỌI profile; một instance
-        trong pool luôn được reset về một snapshot chụp <em>trước</em> bất kỳ input không tin
-        cậy nào, không bao giờ chỉ đơn thuần là "dọn dẹp". Không điều nào trong số này chạm
-        vào file: worktree (025) là trạng thái engine bền vững được mount vào sandbox, nên
-        việc hủy một sandbox ở bất kỳ profile nào cũng không làm mất file nào.
+        <code>sandbox_lifetime</code> là một enum ba nhánh đơn giản — không có trạng thái thứ
+        tư ẩn nào. Việc tái sử dụng xuyên session bị cấm ở mọi profile; một instance trong pool
+        luôn được reset về một snapshot chụp <em>trước</em> bất kỳ input không tin cậy nào,
+        không bao giờ chỉ đơn thuần là "dọn dẹp". Không điều nào trong số này chạm vào file:
+        worktree là trạng thái engine bền vững được mount vào sandbox, nên việc hủy một sandbox
+        ở bất kỳ profile nào cũng không làm mất file nào.
       </>
     ),
+    s9BodyNote: <>025 — worktree như trạng thái engine bền vững, được mount vào sandbox</>,
     s9aEyebrow: "008 §6a — sống sót qua passivation",
     s9aHeading: "File luôn sống sót qua nó. Trạng thái trình thông dịch trong bộ nhớ thì tùy profile.",
     s9aTableColumns: ["", "wasm (plugin, 009)", "native-jail (trình thông dịch và shell, 010)"],
     s9Note: (
       <>
         <strong>Một khoảng trống được nêu tên, không phải một tính năng âm thầm hoạt động.</strong>{" "}
-        Trước đây Quark từng passivate các session nhàn rỗi (ADR-028/034); ADR-037 loại bỏ
-        Quark, và hiện không có cơ chế passivation session nào do host quản lý tồn tại trong{" "}
-        <code>agentengine::rt::</code>. Bảng ở trên nêu hành vi MỤC TIÊU cho bất cứ khi nào
-        passivation tồn tại trở lại — bản thân tính chất snapshot của <code>wasm</code> là
-        thật (heap của một component chính là bộ nhớ tuyến tính của nó tại một điểm tĩnh lặng,
-        nên một snapshot là một bản dump bộ nhớ cộng với trạng thái store/table/global), nhưng
-        không có tương đương khả chuyển nào cho tiến trình gốc (native): CRIU chỉ chạy trên
-        Linux và, theo chính tài liệu của nó, thường xuyên thất bại trên các kết nối mạng đang
-        sống. Đây là một giới hạn được chấp nhận, vĩnh viễn cho trình thông dịch và shell,
-        không phải một khoảng trống cần đóng lại bằng cách chọn một backend khác cho chúng —
-        §1 đã loại trừ một runtime Python-trên-WASM vì lý do riêng của nó rồi.
+        Trước đây Quark từng passivate các session nhàn rỗi; ADR-037 loại bỏ Quark, và hiện
+        không có cơ chế passivation session nào do host quản lý tồn tại trong{" "}
+        <code>agentengine::rt::</code>. Bảng ở trên nêu hành vi mục tiêu cho bất cứ khi nào
+        passivation tồn tại trở lại. Bản thân tính chất snapshot của <code>wasm</code> là
+        thật: heap của một component chính là bộ nhớ tuyến tính của nó tại một điểm tĩnh lặng,
+        nên một snapshot là một bản dump bộ nhớ cộng với trạng thái store/table/global. Không
+        có tương đương khả chuyển nào cho tiến trình gốc (native) — CRIU chỉ chạy trên Linux
+        và, theo chính tài liệu của nó, thường xuyên thất bại trên các kết nối mạng đang sống.
+        Đây là một giới hạn được chấp nhận, vĩnh viễn cho trình thông dịch và shell, không phải
+        một khoảng trống cần đóng lại bằng cách chọn một backend khác cho chúng; §1 đã loại
+        trừ một runtime Python-trên-WASM vì lý do riêng của nó rồi.
       </>
     ),
+    s9NoteCite: <>ADR-028/034 — cơ chế passivation session trước đây của Quark</>,
     s10Eyebrow: "008 §7 — Thất bại và lạm dụng",
     s10Heading: (
       <>
@@ -859,14 +879,15 @@ const copy = {
     ),
     s10Body: (
       <>
-        Mỗi dòng bên dưới đều có một test trong bộ hostile suite (bị giới hạn tài nguyên,
-        theo mục Machine Safety của CLAUDE.md, để việc chứng minh một fork bomb bị chặn không
-        thể kéo theo cả máy dev). Hai dòng được đánh dấu là một khoảng trống đang theo dõi
-        thay vì đã bị chặn — trang này nói rõ điều đó vì chính cổng thăng hạng của §9 G2 yêu
-        cầu một positive control "chứng minh được là thất bại", và một tuyên bố mà trang này
-        không có bằng chứng đó thì không thuộc về đây với nhãn "đã bị chặn".
+        Mỗi dòng bên dưới đều có một test trong bộ hostile suite. Bộ suite này bị giới hạn tài
+        nguyên, theo quy tắc Machine Safety của CLAUDE.md, để việc chứng minh một fork bomb bị
+        chặn không thể kéo theo cả máy dev. Hai dòng được đánh dấu là một khoảng trống đang
+        theo dõi thay vì đã bị chặn: trang này nói rõ điều đó vì cổng thăng hạng yêu cầu một
+        positive control "chứng minh được là thất bại", và một tuyên bố mà trang này không có
+        bằng chứng đó thì không thuộc về đây với nhãn "đã bị chặn".
       </>
     ),
+    s10Note: <>008 §9 G2 — yêu cầu positive control cho tuyên bố containment</>,
     s10TableColumns: ["Trường hợp", "Cách ly / trạng thái", ""],
     containedLabel: "Đã bị chặn",
     namedGapLabel: "Khoảng trống đã nêu tên",
@@ -899,9 +920,9 @@ const copy = {
         Giới hạn bộ nhớ và số lượng tiến trình lại là câu chuyện ngược lại: chính xác và nhanh
         (14–22ms) và đúng chính xác (2 trong 5 lần thử spawn thành công dưới cap 3), được xác
         nhận bởi chính positive control của chúng. Đây là một khác biệt về độ tin cậy theo
-        từng backend, không phải một vi phạm hợp đồng — 008 §9 G1 yêu cầu PHÂN LOẠI kết quả
-        giống hệt nhau giữa các backend (một guest bị giới hạn bởi CPU luôn bị kill và luôn
-        được báo cáo là resource-exceeded), không bao giờ yêu cầu độ trễ hay cơ chế thực thi
+        từng backend, không phải một vi phạm hợp đồng. 008 §9 G1 yêu cầu phân loại kết quả
+        giống hệt nhau giữa các backend — một guest bị giới hạn bởi CPU luôn bị kill và luôn
+        được báo cáo là resource-exceeded — không bao giờ yêu cầu độ trễ hay cơ chế thực thi
         giống hệt nhau.
       </>
     ),
@@ -919,12 +940,12 @@ const copy = {
       <>
         <strong>Hình dạng đã tồn tại; bộ sinh ra nó thì chưa.</strong>{" "}
         <code>sandbox_exec_started</code>/<code>sandbox_exec_finished</code> là các thành
-        viên thật của enum <code>run_event_kind</code> dùng chung DUY NHẤT mà mọi bề mặt giao
-        thức (bao gồm cả AG-UI) đều dự kiến chiếu (project) từ đó — nhưng chính comment đầu
-        file của <code>run_event.hpp</code> nêu rõ khoảng trống: vòng lặp lượt thật của{" "}
+        viên thật của enum <code>run_event_kind</code> dùng chung duy nhất mà mọi bề mặt giao
+        thức, kể cả AG-UI, đều dự kiến chiếu (project) từ đó. Chính comment đầu file của{" "}
+        <code>run_event.hpp</code> nêu rõ khoảng trống: vòng lặp lượt thật của{" "}
         <code>AgentSession</code> ngày hôm nay phát ra các sự kiện
-        Run/Turn/ModelCall/StateChanged, và thực hiện đúng MỘT lệnh gọi model đồng bộ, không
-        streaming, chưa bao giờ chạm tới tool pipeline — chứ đừng nói tới một sandbox exec.
+        Run/Turn/ModelCall/StateChanged, và thực hiện đúng một lệnh gọi model đồng bộ, không
+        streaming, chưa bao giờ chạm tới tool pipeline, chứ đừng nói tới một sandbox exec.
         Trang này vạch rõ ranh giới đó thay vì ngụ ý rằng một luồng trực tiếp của chín trường
         trong §8 đã tồn tại ngày hôm nay.
       </>
@@ -963,6 +984,7 @@ export function ApiTrustSandboxReference() {
             <div className="gs-recommend">
               <span className="gs-recommend-label">{t.s1RecoLabel}</span>
               <p>{t.s1RecoBody}</p>
+              <ApiDiagnosticNote>{t.s1RecoNote}</ApiDiagnosticNote>
             </div>
           </RevealItem>
 
@@ -979,6 +1001,7 @@ export function ApiTrustSandboxReference() {
               <div className="compare-col is-after">
                 <div className="compare-col-label">{t.grantedLabel}</div>
                 <p style={{ color: "var(--text-dim)", fontSize: "0.9rem", lineHeight: 1.6 }}>{t.granted}</p>
+                <ApiDiagnosticNote>{t.grantedNote}</ApiDiagnosticNote>
               </div>
             </div>
           </RevealItem>
@@ -1015,6 +1038,7 @@ export function ApiTrustSandboxReference() {
               <span className="eyebrow">{t.s2Eyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s2Heading}</h3>
               <p>{t.s2Body}</p>
+              <ApiDiagnosticNote>{t.s2Note}</ApiDiagnosticNote>
             </div>
           </RevealItem>
 
@@ -1056,6 +1080,7 @@ export function ApiTrustSandboxReference() {
 
           <RevealItem>
             <p className="gs-note" style={{ marginTop: 20, borderLeftColor: "var(--accent-pink)" }}>{t.s3Note}</p>
+            <ApiDiagnosticNote>{t.s3NoteCite}</ApiDiagnosticNote>
           </RevealItem>
         </RevealGroup>
 
@@ -1066,6 +1091,7 @@ export function ApiTrustSandboxReference() {
               <span className="eyebrow">{t.s3bEyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s3bHeading}</h3>
               <p>{t.s3bBody}</p>
+              <ApiDiagnosticNote>{t.s3bHmacNote}</ApiDiagnosticNote>
             </div>
           </RevealItem>
 
@@ -1175,6 +1201,7 @@ export function ApiTrustSandboxReference() {
 
           <RevealItem>
             <p className="gs-note" style={{ marginTop: 20, borderLeftColor: "var(--accent-pink)" }}>{t.s5Finding}</p>
+            <ApiDiagnosticNote>{t.s5FindingNote}</ApiDiagnosticNote>
           </RevealItem>
 
           <RevealItem>
@@ -1224,6 +1251,7 @@ export function ApiTrustSandboxReference() {
 
           <RevealItem>
             <p className="gs-note" style={{ marginTop: 20 }}>{t.s6Note}</p>
+            <ApiDiagnosticNote>{t.s6NoteCite}</ApiDiagnosticNote>
           </RevealItem>
         </RevealGroup>
 
@@ -1234,6 +1262,7 @@ export function ApiTrustSandboxReference() {
               <span className="eyebrow">{t.s7Eyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s7Heading}</h3>
               <p>{t.s7Body}</p>
+              <ApiDiagnosticNote>{t.s7Note}</ApiDiagnosticNote>
             </div>
           </RevealItem>
 
@@ -1269,6 +1298,7 @@ export function ApiTrustSandboxReference() {
               <span className="eyebrow">{t.s8Eyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s8Heading}</h3>
               <p>{t.s8Body}</p>
+              <ApiDiagnosticNote>{t.s8Note}</ApiDiagnosticNote>
             </div>
           </RevealItem>
 
@@ -1307,6 +1337,7 @@ export function ApiTrustSandboxReference() {
               <span className="eyebrow">{t.s9Eyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s9Heading}</h3>
               <p>{t.s9Body}</p>
+              <ApiDiagnosticNote>{t.s9BodyNote}</ApiDiagnosticNote>
             </div>
           </RevealItem>
 
@@ -1342,6 +1373,7 @@ export function ApiTrustSandboxReference() {
 
           <RevealItem>
             <p className="gs-note" style={{ marginTop: 20, borderLeftColor: "var(--accent-pink)" }}>{t.s9Note}</p>
+            <ApiDiagnosticNote>{t.s9NoteCite}</ApiDiagnosticNote>
           </RevealItem>
 
           <RevealItem>
@@ -1363,6 +1395,7 @@ export function ApiTrustSandboxReference() {
               <span className="eyebrow">{t.s10Eyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s10Heading}</h3>
               <p>{t.s10Body}</p>
+              <ApiDiagnosticNote>{t.s10Note}</ApiDiagnosticNote>
             </div>
           </RevealItem>
 

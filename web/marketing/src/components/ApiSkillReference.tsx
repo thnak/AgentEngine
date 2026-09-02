@@ -19,6 +19,7 @@ import { SITE_BASE } from "../data/content";
 import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
+import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
 import { ApiTable } from "./ApiTable";
 import { CodePanel } from "./CodePanel";
 import { RevealGroup, RevealItem } from "./Reveal";
@@ -81,15 +82,17 @@ const copy = {
     ),
     s1Body: (
       <>
-        Type-erased at runtime, not a compile-time template pack — a session declares
-        "load skills from these N sources" as ordinary runtime configuration (disk paths,
-        inline bundles), the same shape 006 §6's <code>ToolTable</code> already accepts for
-        tools. Both real sources below satisfy the same <code>SkillSource</code> concept and
-        get wrapped identically by <code>make_skill_source_descriptor</code> into the type-
-        erased <code>SkillSourceDescriptor</code> a <code>SkillsProvider</code> actually holds
-        a list of — a third source (a remote registry, say) would need nothing more than the
-        same two methods.
+        Type-erased at runtime, not a compile-time template pack. A session declares which
+        sources to load skills from as ordinary runtime configuration — disk paths, inline
+        bundles — the same shape <code>ToolTable</code> already accepts for tools. Both real
+        sources below satisfy the same <code>SkillSource</code> concept and get wrapped
+        identically by <code>make_skill_source_descriptor</code> into the type-erased{" "}
+        <code>SkillSourceDescriptor</code> that a <code>SkillsProvider</code> holds a list of.
+        A third source, a remote registry say, would need only those same two methods.
       </>
+    ),
+    s1Note: (
+      <>006 §6 — <code>ToolTable</code> accepts this identical runtime-configuration shape for tools.</>
     ),
     s2Eyebrow: "InlineSkillSource, in full",
     s2Heading: "The whole class is eleven lines — here's every one of them",
@@ -98,13 +101,13 @@ const copy = {
         <code>InlineSkillSource</code> is deliberately the simplest possible{" "}
         <code>SkillSource</code> conformer: two constructors that store what they're given,
         and two accessors that hand it back. No parsing, no I/O, no cache to go stale — the
-        caller does the work (usually via <code>parse_skill_md</code> against a string
-        literal) before this type ever sees it. The second constructor takes a{" "}
+        caller does the work, usually via <code>parse_skill_md</code> against a string
+        literal, before this type ever sees it. The second constructor takes a{" "}
         <code>result&lt;std::vector&lt;SkillSourceResult&gt;&gt;</code> directly, so a caller
-        whose own construction-time parsing can itself fail — <code>builtin_skills.hpp</code>
-        's five generic skills and the PDF-tool catalog's{" "}
-        <code>extracting-document-text</code> skill both do this — can hand this class a
-        failure and get that exact failure back, unchanged, from <code>load_skills()</code>.
+        whose own construction-time parsing can itself fail can hand this class a failure and
+        get that exact failure back, unchanged, from <code>load_skills()</code>.{" "}
+        <code>builtin_skills.hpp</code>'s five generic skills and the PDF-tool catalog's{" "}
+        <code>extracting-document-text</code> skill both take this path.
       </>
     ),
     s2ExampleIntro: (
@@ -136,18 +139,18 @@ const copy = {
     s2Note: (
       <>
         <strong>Why this exists, not just how:</strong> the five built-in skills this engine
-        ships (<code>using-the-code-interpreter</code>, <code>using-codeact</code>, …) are
-        compiled into the binary as raw string literals — <code>builtin_skills.hpp</code>{" "}
-        parses each one the same way, at construction time, so a deployment can never omit or
-        move a loose <code>SKILL.md</code> file that a core skill depends on. It now literally
-        constructs an <code>InlineSkillSource</code> — same as the PDF-tool catalog's own{" "}
-        <code>extracting-document-text</code> skill (<code>tools/extract_pdf_text.hpp</code>)
-        — rather than hand-assembling the type-erased <code>SkillSourceDescriptor</code>{" "}
-        itself: every compiled-in skill source this engine ships goes through the one class
-        built for exactly this. Composing several <code>InlineSkillSource</code>-backed
-        descriptors side by side — two independent origins in one <code>SkillsProvider</code>,
-        and the on-demand mount lifecycle that unlocks their tools — is covered with its own
-        real snippets further down, in <a href="#skill-loading">how a skill loads</a>.
+        ships — <code>using-the-code-interpreter</code>, <code>using-codeact</code>, and
+        others — are compiled into the binary as raw string literals.{" "}
+        <code>builtin_skills.hpp</code> parses each one the same way, at construction time, so
+        a deployment can never omit or move a loose <code>SKILL.md</code> file that a core
+        skill depends on. It constructs an <code>InlineSkillSource</code>, the same path the
+        PDF-tool catalog's own <code>extracting-document-text</code> skill takes, rather than
+        hand-assembling the type-erased <code>SkillSourceDescriptor</code> itself: every
+        compiled-in skill source this engine ships goes through the one class built for
+        exactly this. Composing several <code>InlineSkillSource</code>-backed descriptors side
+        by side — two independent origins in one <code>SkillsProvider</code>, plus the
+        on-demand mount lifecycle that unlocks their tools — is covered further down, with its
+        own snippets, in <a href="#skill-loading">how a skill loads</a>.
       </>
     ),
     s3Eyebrow: "How a skill loads — §8b",
@@ -196,19 +199,19 @@ const copy = {
         Resolves every declared source, mounts each resolved skill read-only through{" "}
         <code>worktree.hpp</code>'s real Tree/Ref/Mount machinery, and contributes one{" "}
         <code>role::system</code> advertisement message naming every mounted skill. A
-        mounted skill's <code>Mount.mount_id</code> is the BARE name (e.g.{" "}
-        <code>"using-codeact"</code>), not the literal <code>"/skills/&lt;name&gt;"</code>{" "}
-        string — <code>mount_id</code> is purely the capability-matching key{" "}
-        <code>cap::FsRead</code>/<code>cap::FsWrite</code> compare against, which is what
-        gives an operator genuine per-skill granularity (grant read access to one skill's
-        files without exposing every other mounted skill). The logical{" "}
+        mounted skill's <code>Mount.mount_id</code> is the bare name, such as{" "}
+        <code>"using-codeact"</code>, not the literal <code>"/skills/&lt;name&gt;"</code>{" "}
+        string. <code>mount_id</code> is purely the capability-matching key that{" "}
+        <code>cap::FsRead</code> and <code>cap::FsWrite</code> compare against, which gives an
+        operator genuine per-skill granularity: read access can be granted to one skill's
+        files without exposing every other mounted skill. The logical{" "}
         <code>/skills/&lt;name&gt;</code> path is unaffected by this choice; it only ever
-        reaches the model via the advertisement message.
+        reaches the model through the advertisement message.
       </>
     ),
     flowInlineSub: "bundled SKILL.md text",
     flowDiskSub: "a real host directory",
-    flowResolveArrow: "resolve_and_mount() — collision anywhere fails the WHOLE call closed",
+    flowResolveArrow: "resolve_and_mount() — any collision fails the whole call closed",
     flowWorktreeSub: "each resolved skill mounted read-only at /skills/<name>",
     flowOnContext: "on_context()",
     flowAdMessageSub: "names every mounted skill — ~100 tokens, regardless of catalog size",
@@ -216,14 +219,15 @@ const copy = {
       <>
         <strong>Anti-shadowing is a refusal, never a last-source-wins.</strong> Built entirely
         into local vectors and assigned to <code>mounted()</code>'s backing state only on total
-        success — a collision anywhere in the loop fails the WHOLE <code>on_context()</code>{" "}
-        call closed, leaving zero skills mounted, not the ones that happened to process first.
+        success, a collision anywhere in the loop fails the whole <code>on_context()</code>{" "}
+        call closed — leaving zero skills mounted, not just the ones that happened to process
+        first.
       </>
     ),
     s4TwoSourcesIntro: (
       <>
-        For contrast — the success case, real and tested: two DIFFERENTLY-named skills from two
-        DIFFERENT sources mount together with no conflict at all.
+        For contrast, the success case: two differently named skills from two different
+        sources mount together with no conflict at all.
       </>
     ),
     s5Eyebrow: "core/skill_tool_scoping.hpp — §8c enforcement",
@@ -236,37 +240,49 @@ const copy = {
       <>
         <code>scope_tools_to_mounted_skills()</code> filters a <code>ToolTable</code> down to
         the names a caller allows, typically <code>SkillsProvider::allowed_tool_names()</code>{" "}
-        unioned with an always-on base set. That's real enforcement only when a caller applies
-        it on BOTH sides of the boundary — what's declared to the model (
-        <code>ContextContribution.tools</code>, computed each turn's <code>on_context</code>)
-        AND what <code>invoke_tool()</code> actually authorizes at call time. Filtering only
-        the declared side and leaving a broader table at the invocation site is cosmetic: a
-        tool "hidden" from the model's list is still callable if the invocation-time table
-        still contains it — I3 (model output is data, never itself an authorization decision)
-        only holds if the invoke-time check is the real one.
+        unioned with an always-on base set. Real enforcement requires applying that filter on
+        both sides of the boundary: what's declared to the model, and what{" "}
+        <code>invoke_tool()</code> actually authorizes at call time. Filtering only the
+        declared side and leaving a broader table at the invocation site is cosmetic — a tool
+        "hidden" from the model's list is still callable if the invocation-time table still
+        contains it. The invoke-time check has to be the real one.
+      </>
+    ),
+    s5Note: (
+      <>
+        <code>ContextContribution.tools</code>, computed each turn's <code>on_context</code>,
+        is the declared side; <code>invoke_tool()</code> is the invocation side. I3 — model
+        output is data, never itself an authorization decision.
       </>
     ),
     s6Eyebrow: "Phase 3 addendum — ADR-024",
     s6Heading: '"Resolved" and "mounted" are independent concerns',
     s6Body: (
       <>
-        Every configured skill is <strong>resolved</strong> unconditionally at session
-        start — its files are materialized and its <code>cap::FsRead</code> is already
-        granted regardless of what happens next. <code>MountedSkillsState</code> tracks a
-        narrower, agent-triggered subset: which resolved skills are currently{" "}
-        <strong>mounted</strong>, meaning declared to the model and re-injected into context.
-        Mounting a skill grants no new authority (I3) — it only activates visibility into
-        capability that was already unconditionally provisioned. A deliberately plain mutable
-        set, not a token: <code>mount()</code> is idempotent, so an agent unsure of a skill's
-        state can call it again for free.
+        Every configured skill is <strong>resolved</strong> unconditionally at session start:
+        its files are materialized and its <code>cap::FsRead</code> is already granted,
+        regardless of what happens next. <code>MountedSkillsState</code> tracks a narrower,
+        agent-triggered subset — which resolved skills are currently <strong>mounted</strong>,
+        meaning declared to the model and re-injected into context. Mounting a skill grants no
+        new authority; it only activates visibility into capability that was already
+        unconditionally provisioned. It's a deliberately plain mutable set, not a token:{" "}
+        <code>mount()</code> is idempotent, so an agent unsure of a skill's state can call it
+        again for free.
+      </>
+    ),
+    s6Note: (
+      <>
+        I3 — model output is data, never itself an authorization decision. Resolution grants{" "}
+        <code>cap::FsRead</code> once at session start; mounting only toggles what's declared
+        to the model.
       </>
     ),
     s6ExampleIntro: (
       <>
         The real pipeline, not a description of it: <code>examples/11_skill_mount.cpp</code> calls
-        the SAME <code>word_count</code> tool call twice against the SAME{" "}
-        <code>invoke_tool()</code> pipeline — rejected while <code>word-counter</code> is
-        unmounted, accepted once it's mounted, nothing else in the call changes:
+        the same <code>word_count</code> tool call twice against the same{" "}
+        <code>invoke_tool()</code> pipeline. It's rejected while <code>word-counter</code> is
+        unmounted, accepted once it's mounted — nothing else in the call changes:
       </>
     ),
     s7Eyebrow: "core/composed_context_provider.hpp — wiring into AgentSession",
@@ -288,24 +304,25 @@ const copy = {
       </>
     ),
     wrongLabel: "Wrong — history pushed first",
-    wrong: "Wire order: [...whole conversation..., skills advertisement]. The system-message advertisement lands AFTER every prior turn — the opposite of ordinary system-prompt placement, confirmed against a live wire dump degrading model adherence to it.",
+    wrong: "Wire order: [...whole conversation..., skills advertisement]. The system-message advertisement lands after every prior turn, the opposite of ordinary system-prompt placement. A live wire dump confirmed this ordering degrades the model's adherence to the advertisement.",
     rightLabel: "Right — skills pushed first",
     right: (
       <>
-        Wire order: [skills advertisement, ...whole conversation...]. Contributor order IS
-        wire order (<code>assemble_context</code>'s own rule) — declaring skills before
-        history in the constructor is now the whole fix.
+        Wire order: [skills advertisement, ...whole conversation...]. Contributor order is
+        wire order, <code>assemble_context</code>'s own rule, so declaring skills before
+        history in the constructor is the whole fix.
       </>
     ),
     s7Note: (
       <>
         <strong>Order matters, and the first version had it backwards.</strong> Contributors
         concatenate in declared order. Pushing history first put the skills' system-message
-        advertisement AFTER the entire conversation on every real request — confirmed against a
-        live wire dump, not a hypothetical — the opposite of ordinary system-prompt placement
-        and exactly the kind of thing that degrades a model's adherence to it. Skills now push
-        first. <code>test_agent_session_skills_real_backend.cpp</code> asserts message ORDER,
-        not just presence, so this can't silently regress.
+        advertisement after the entire conversation on every real request, the opposite of
+        ordinary system-prompt placement and exactly the kind of thing that degrades a model's
+        adherence to it. A live wire dump confirmed the effect; it wasn't a hypothetical.
+        Skills now push first, and{" "}
+        <code>test_agent_session_skills_real_backend.cpp</code> asserts message order, not
+        just presence, so this can't silently regress.
       </>
     ),
     s7Trailing: (
@@ -324,14 +341,20 @@ const copy = {
     s8Heading: "Instructions need no plugin; code does",
     s8Body: (
       <>
-        A skill that is pure instructions and references is mounted directly — no
-        component, no loader — and that path is real today: <code>skill_tool_scoping.hpp</code>{" "}
+        A skill that is pure instructions and references is mounted directly, no component
+        and no loader, and that path is real today: <code>skill_tool_scoping.hpp</code>{" "}
         enforces <code>allowed-tools</code> as a genuine run-frozen restriction on top of{" "}
-        <code>Capabilities&lt;...&gt;</code> (007 §3), not just advisory text, when a caller
-        passes it through consistently to <code>invoke_tool()</code>. A skill that ships{" "}
-        <strong>code</strong> is meant to package as an <code>ae:skill</code> plugin (§3) and
+        <code>Capabilities&lt;...&gt;</code>, not just advisory text, when a caller passes it
+        through consistently to <code>invoke_tool()</code>. A skill that ships{" "}
+        <strong>code</strong> is meant to package as an <code>ae:skill</code> plugin and
         inherit the whole trust pipeline — signed, capability-declaring, operator-approved,
-        digest-pinned, revocable — but that packaging path doesn't exist yet; see Status below.
+        digest-pinned, revocable. That packaging path doesn't exist yet; see Status below.
+      </>
+    ),
+    s8Note: (
+      <>
+        007 §3 — <code>Capabilities&lt;...&gt;</code>. 009 §3 — the <code>ae:skill</code>{" "}
+        plugin world.
       </>
     ),
     s9Eyebrow: "§8f — the five skills the engine ships itself",
@@ -361,9 +384,9 @@ const copy = {
         enforces <code>allowed-tools</code> for real. Nine tests cover parsing, disk/inline
         sourcing, mounting, on-demand mount, and two <code>AgentSession</code> skills
         end-to-end suites. What's still design-only: the <code>ae:skill</code> WASM Component
-        Model world for skills that ship code — <code>wit/README.md</code> still lists it{" "}
-        <em>"not yet authored"</em>, versus <code>ae:tool</code>, which is real (see the
-        Plugins page). A skill that bundles executable code beyond what the shell/Python tools
+        Model world for skills that ship code. <code>wit/README.md</code> still lists it{" "}
+        <em>"not yet authored"</em> — <code>ae:tool</code>, by contrast, is real; see the
+        Plugins page. A skill that bundles executable code beyond what the shell/Python tools
         already run has no packaging, signing, or loader path yet.
       </>
     ),
@@ -410,16 +433,18 @@ const copy = {
     ),
     s1Body: (
       <>
-        Type-erased lúc chạy, không phải một gói template lúc biên dịch — một session khai
-        báo "nạp skill từ N nguồn này" như một cấu hình lúc chạy bình thường (đường dẫn đĩa,
-        bundle nội tuyến), đúng hình dạng mà <code>ToolTable</code> của 006 §6 vốn đã chấp
-        nhận cho tool. Cả hai nguồn thật bên dưới đều thỏa mãn cùng một concept{" "}
-        <code>SkillSource</code> và được bọc giống hệt nhau bởi{" "}
-        <code>make_skill_source_descriptor</code> thành <code>SkillSourceDescriptor</code>{" "}
-        type-erased mà một <code>SkillsProvider</code> thực sự giữ một danh sách — một nguồn
-        thứ ba (một registry từ xa, chẳng hạn) sẽ không cần gì hơn ngoài đúng hai phương thức
-        đó.
+        Type-erased lúc chạy, không phải một gói template lúc biên dịch. Một session khai
+        báo sẽ nạp skill từ những nguồn nào như một cấu hình lúc chạy bình thường — đường dẫn
+        đĩa, bundle nội tuyến — đúng hình dạng mà <code>ToolTable</code> vốn đã chấp nhận cho
+        tool. Cả hai nguồn thật bên dưới đều thỏa mãn cùng một concept <code>SkillSource</code>{" "}
+        và được bọc giống hệt nhau bởi <code>make_skill_source_descriptor</code> thành{" "}
+        <code>SkillSourceDescriptor</code> type-erased mà một <code>SkillsProvider</code> giữ
+        một danh sách. Một nguồn thứ ba, chẳng hạn một registry từ xa, sẽ chỉ cần đúng hai
+        phương thức đó.
       </>
+    ),
+    s1Note: (
+      <>006 §6 — <code>ToolTable</code> chấp nhận đúng hình dạng cấu hình lúc chạy này cho tool.</>
     ),
     s2Eyebrow: "InlineSkillSource, đầy đủ",
     s2Heading: "Toàn bộ lớp chỉ có mười một dòng — đây là từng dòng một",
@@ -428,13 +453,13 @@ const copy = {
         <code>InlineSkillSource</code> cố ý là kiểu tuân theo <code>SkillSource</code> đơn
         giản nhất có thể: hai constructor lưu lại những gì chúng được trao, và hai accessor
         trả chúng lại. Không phân tích, không I/O, không có cache nào để hết hạn — caller làm
-        hết công việc (thường là qua <code>parse_skill_md</code> áp lên một string literal)
+        hết công việc, thường là qua <code>parse_skill_md</code> áp lên một string literal,
         trước khi kiểu này từng nhìn thấy nó. Constructor thứ hai nhận thẳng một{" "}
         <code>result&lt;std::vector&lt;SkillSourceResult&gt;&gt;</code>, để một caller mà
-        việc phân tích lúc khởi tạo của chính nó có thể thất bại — năm skill tích hợp sẵn của{" "}
-        <code>builtin_skills.hpp</code> và skill <code>extracting-document-text</code> của
-        danh mục PDF-tool đều thuộc trường hợp này — vẫn có thể trao cho lớp này một thất bại
-        và nhận lại đúng thất bại đó, không đổi, từ <code>load_skills()</code>.
+        việc phân tích lúc khởi tạo của chính nó có thể thất bại vẫn có thể trao cho lớp này
+        một thất bại và nhận lại đúng thất bại đó, không đổi, từ <code>load_skills()</code>.
+        Năm skill tích hợp sẵn của <code>builtin_skills.hpp</code> và skill{" "}
+        <code>extracting-document-text</code> của danh mục PDF-tool đều đi theo đường này.
       </>
     ),
     s2ExampleIntro: (
@@ -466,19 +491,18 @@ const copy = {
     s2Note: (
       <>
         <strong>Vì sao nó tồn tại, không chỉ là cách nó hoạt động:</strong> năm skill tích
-        hợp sẵn mà engine này phát hành (<code>using-the-code-interpreter</code>,{" "}
-        <code>using-codeact</code>, …) được biên dịch thẳng vào binary dưới dạng string
-        literal thô — <code>builtin_skills.hpp</code> phân tích mỗi cái theo đúng cách đó, tại
-        thời điểm khởi tạo, để một deployment không bao giờ có thể vô tình bỏ sót hay di
-        chuyển một file <code>SKILL.md</code> rời rạc mà một skill lõi phụ thuộc vào. Giờ đây
-        nó thực sự khởi tạo một <code>InlineSkillSource</code> — giống như skill{" "}
-        <code>extracting-document-text</code> của chính danh mục PDF-tool (
-        <code>tools/extract_pdf_text.hpp</code>) — thay vì tự tay lắp{" "}
-        <code>SkillSourceDescriptor</code> type-erased: mọi nguồn skill biên dịch sẵn mà
+        hợp sẵn mà engine này phát hành — <code>using-the-code-interpreter</code>,{" "}
+        <code>using-codeact</code>, và các skill khác — được biên dịch thẳng vào binary dưới
+        dạng string literal thô. <code>builtin_skills.hpp</code> phân tích mỗi cái theo đúng
+        cách đó, tại thời điểm khởi tạo, để một deployment không bao giờ có thể vô tình bỏ sót
+        hay di chuyển một file <code>SKILL.md</code> rời rạc mà một skill lõi phụ thuộc vào.
+        Nó khởi tạo một <code>InlineSkillSource</code>, đúng đường mà skill{" "}
+        <code>extracting-document-text</code> của chính danh mục PDF-tool đi, thay vì tự tay
+        lắp <code>SkillSourceDescriptor</code> type-erased: mọi nguồn skill biên dịch sẵn mà
         engine này phát hành đều đi qua đúng một lớp được xây dựng cho chính việc đó. Việc kết
         hợp nhiều descriptor dựa trên <code>InlineSkillSource</code> cạnh nhau — hai origin độc
-        lập trong cùng một <code>SkillsProvider</code>, và vòng đời mount theo yêu cầu mở khóa
-        tool của chúng — được trình bày với các đoạn mã thật riêng ở phần xa hơn bên dưới, tại{" "}
+        lập trong cùng một <code>SkillsProvider</code>, cộng với vòng đời mount theo yêu cầu mở
+        khóa tool của chúng — được trình bày ở phần xa hơn bên dưới, với các đoạn mã riêng, tại{" "}
         <a href="#skill-loading">cách một skill được nạp</a>.
       </>
     ),
@@ -530,19 +554,19 @@ const copy = {
         Phân giải mọi nguồn đã khai báo, mount mỗi skill đã phân giải ở chế độ chỉ-đọc thông
         qua cơ chế Tree/Ref/Mount thật của <code>worktree.hpp</code>, và đóng góp một thông
         điệp quảng cáo <code>role::system</code> nêu tên mọi skill đã mount.{" "}
-        <code>Mount.mount_id</code> của một skill đã mount là tên TRẦN (ví dụ{" "}
-        <code>"using-codeact"</code>), không phải chuỗi <code>"/skills/&lt;name&gt;"</code>{" "}
-        theo nghĩa đen — <code>mount_id</code> thuần túy là khóa để so khớp capability mà{" "}
-        <code>cap::FsRead</code>/<code>cap::FsWrite</code> đối chiếu vào, đó chính là điều
-        cho phép một operator có được độ chi tiết thật theo từng skill (cấp quyền đọc cho
-        file của một skill mà không phơi bày mọi skill khác đã mount). Đường dẫn logic{" "}
+        <code>Mount.mount_id</code> của một skill đã mount là tên trần, ví dụ{" "}
+        <code>"using-codeact"</code>, không phải chuỗi <code>"/skills/&lt;name&gt;"</code>{" "}
+        theo nghĩa đen. <code>mount_id</code> thuần túy là khóa để so khớp capability mà{" "}
+        <code>cap::FsRead</code> và <code>cap::FsWrite</code> đối chiếu vào, đó chính là điều
+        cho phép một operator có được độ chi tiết thật theo từng skill: quyền đọc có thể được
+        cấp cho file của một skill mà không phơi bày mọi skill khác đã mount. Đường dẫn logic{" "}
         <code>/skills/&lt;name&gt;</code> không bị ảnh hưởng bởi lựa chọn này; nó chỉ chạm
         tới model thông qua thông điệp quảng cáo.
       </>
     ),
     flowInlineSub: "văn bản SKILL.md đóng gói sẵn",
     flowDiskSub: "một thư mục host thật",
-    flowResolveArrow: "resolve_and_mount() — xung đột ở bất cứ đâu cũng làm TOÀN BỘ lệnh gọi thất bại đóng",
+    flowResolveArrow: "resolve_and_mount() — bất kỳ xung đột nào cũng làm toàn bộ lệnh gọi thất bại đóng",
     flowWorktreeSub: "mỗi skill đã phân giải được mount chỉ-đọc tại /skills/<name>",
     flowOnContext: "on_context()",
     flowAdMessageSub: "nêu tên mọi skill đã mount — ~100 token, bất kể kích thước danh mục",
@@ -550,16 +574,16 @@ const copy = {
       <>
         <strong>Chống che khuất (anti-shadowing) là một sự từ chối, không bao giờ là
         nguồn-cuối-cùng-thắng.</strong> Được xây hoàn toàn vào các vector cục bộ và chỉ được
-        gán vào trạng thái nền của <code>mounted()</code> khi toàn bộ thành công — một xung
-        đột ở bất cứ đâu trong vòng lặp làm TOÀN BỘ lệnh gọi <code>on_context()</code> thất
-        bại đóng, để lại không skill nào được mount, chứ không phải những skill tình cờ được
-        xử lý trước.
+        gán vào trạng thái nền của <code>mounted()</code> khi toàn bộ thành công, một xung đột
+        ở bất cứ đâu trong vòng lặp làm toàn bộ lệnh gọi <code>on_context()</code> thất bại
+        đóng — để lại không skill nào được mount, chứ không chỉ những skill tình cờ được xử lý
+        trước.
       </>
     ),
     s4TwoSourcesIntro: (
       <>
-        Để đối chiếu — trường hợp thành công, có thật và đã kiểm thử: hai skill có TÊN KHÁC
-        NHAU từ hai nguồn KHÁC NHAU mount cùng nhau mà không hề có xung đột nào.
+        Để đối chiếu, trường hợp thành công: hai skill có tên khác nhau từ hai nguồn khác
+        nhau mount cùng nhau mà không hề có xung đột nào.
       </>
     ),
     s5Eyebrow: "core/skill_tool_scoping.hpp — thực thi §8c",
@@ -573,15 +597,19 @@ const copy = {
       <>
         <code>scope_tools_to_mounted_skills()</code> lọc một <code>ToolTable</code> xuống
         còn các tên mà caller cho phép, thường là <code>SkillsProvider::allowed_tool_names()</code>{" "}
-        hợp với một tập nền luôn-bật. Đó chỉ là thực thi thật khi caller áp dụng nó trên CẢ
-        HAI phía của ranh giới — những gì được khai báo cho model (
-        <code>ContextContribution.tools</code>, được tính mỗi lượt trong <code>on_context</code>)
-        VÀ những gì <code>invoke_tool()</code> thực sự ủy quyền tại thời điểm gọi. Chỉ lọc
-        phía khai báo và để lại một bảng rộng hơn tại điểm gọi thực thi chỉ mang tính hình
-        thức: một tool bị "ẩn" khỏi danh sách của model vẫn gọi được nếu bảng tại thời điểm
-        gọi vẫn còn chứa nó — I3 (đầu ra của model là dữ liệu, không bao giờ tự nó là một
-        quyết định ủy quyền) chỉ đứng vững nếu kiểm tra tại thời điểm gọi mới là kiểm tra
-        thật.
+        hợp với một tập nền luôn-bật. Thực thi thật đòi hỏi áp dụng bộ lọc đó trên cả hai phía
+        của ranh giới: những gì được khai báo cho model, và những gì{" "}
+        <code>invoke_tool()</code> thực sự ủy quyền tại thời điểm gọi. Chỉ lọc phía khai báo
+        và để lại một bảng rộng hơn tại điểm gọi thực thi chỉ mang tính hình thức — một tool
+        bị "ẩn" khỏi danh sách của model vẫn gọi được nếu bảng tại thời điểm gọi vẫn còn chứa
+        nó. Kiểm tra tại thời điểm gọi phải là kiểm tra thật.
+      </>
+    ),
+    s5Note: (
+      <>
+        <code>ContextContribution.tools</code>, được tính mỗi lượt trong{" "}
+        <code>on_context</code>, là phía khai báo; <code>invoke_tool()</code> là phía thực
+        thi. I3 — đầu ra của model là dữ liệu, không bao giờ tự nó là một quyết định ủy quyền.
       </>
     ),
     s6Eyebrow: "Phụ lục Phase 3 — ADR-024",
@@ -589,23 +617,30 @@ const copy = {
     s6Body: (
       <>
         Mọi skill đã cấu hình đều được <strong>phân giải</strong> vô điều kiện khi session
-        bắt đầu — file của nó được vật chất hóa (materialize) và <code>cap::FsRead</code> của
-        nó đã được cấp bất kể điều gì xảy ra sau đó. <code>MountedSkillsState</code> theo
-        dõi một tập con hẹp hơn, do agent kích hoạt: skill đã phân giải nào hiện đang{" "}
+        bắt đầu: file của nó được vật chất hóa (materialize) và <code>cap::FsRead</code> của
+        nó đã được cấp, bất kể điều gì xảy ra sau đó. <code>MountedSkillsState</code> theo
+        dõi một tập con hẹp hơn, do agent kích hoạt — skill đã phân giải nào hiện đang{" "}
         <strong>được mount</strong>, nghĩa là được khai báo cho model và bơm lại vào context.
-        Mount một skill không cấp thêm quyền hạn nào mới (I3) — nó chỉ kích hoạt khả năng
-        nhìn thấy capability vốn đã được cấp phát vô điều kiện từ trước. Một tập hợp thay
-        đổi được (mutable) cố ý đơn giản, không phải một token: <code>mount()</code> là
+        Mount một skill không cấp thêm quyền hạn nào mới; nó chỉ kích hoạt khả năng nhìn thấy
+        capability vốn đã được cấp phát vô điều kiện từ trước. Đây là một tập hợp thay đổi
+        được (mutable) cố ý đơn giản, không phải một token: <code>mount()</code> là
         idempotent, nên một agent không chắc về trạng thái của một skill có thể gọi lại nó
         miễn phí.
+      </>
+    ),
+    s6Note: (
+      <>
+        I3 — đầu ra của model là dữ liệu, không bao giờ tự nó là một quyết định ủy quyền. Việc
+        phân giải cấp <code>cap::FsRead</code> đúng một lần khi session bắt đầu; mount chỉ
+        chuyển đổi những gì được khai báo cho model.
       </>
     ),
     s6ExampleIntro: (
       <>
         Pipeline thật, không chỉ là mô tả về nó: <code>examples/11_skill_mount.cpp</code> gọi
-        CÙNG một lệnh gọi tool <code>word_count</code> hai lần vào CÙNG một pipeline{" "}
-        <code>invoke_tool()</code> — bị từ chối khi <code>word-counter</code> chưa được mount,
-        được chấp nhận một khi đã mount, không có gì khác trong lệnh gọi thay đổi:
+        cùng một lệnh gọi tool <code>word_count</code> hai lần vào cùng một pipeline{" "}
+        <code>invoke_tool()</code>. Nó bị từ chối khi <code>word-counter</code> chưa được
+        mount, được chấp nhận một khi đã mount — không có gì khác trong lệnh gọi thay đổi:
       </>
     ),
     s7Eyebrow: "core/composed_context_provider.hpp — đấu nối vào AgentSession",
@@ -627,25 +662,25 @@ const copy = {
       </>
     ),
     wrongLabel: "Sai — đẩy history trước",
-    wrong: "Thứ tự trên dây: [...toàn bộ cuộc hội thoại..., quảng cáo skill]. Thông điệp quảng cáo hệ thống nằm SAU mọi lượt trước đó — ngược lại với vị trí đặt system-prompt thông thường, đã được xác nhận trên một bản dump dây thật cho thấy làm giảm mức tuân thủ của model đối với nó.",
+    wrong: "Thứ tự trên dây: [...toàn bộ cuộc hội thoại..., quảng cáo skill]. Thông điệp quảng cáo hệ thống nằm sau mọi lượt trước đó, ngược lại với vị trí đặt system-prompt thông thường. Một bản dump dây thật xác nhận thứ tự này làm giảm mức tuân thủ của model đối với thông điệp quảng cáo.",
     rightLabel: "Đúng — đẩy skill trước",
     right: (
       <>
         Thứ tự trên dây: [quảng cáo skill, ...toàn bộ cuộc hội thoại...]. Thứ tự contributor
-        CHÍNH LÀ thứ tự trên dây (quy tắc riêng của <code>assemble_context</code>) — khai báo
-        skill trước history trong constructor giờ là toàn bộ cách khắc phục.
+        chính là thứ tự trên dây, quy tắc riêng của <code>assemble_context</code>, nên khai
+        báo skill trước history trong constructor là toàn bộ cách khắc phục.
       </>
     ),
     s7Note: (
       <>
         <strong>Thứ tự quan trọng, và phiên bản đầu tiên đã làm ngược.</strong> Các
         contributor được nối theo thứ tự khai báo. Việc đẩy history trước đặt thông điệp
-        quảng cáo hệ thống của skill SAU toàn bộ cuộc hội thoại trên mọi request thật — đã
-        được xác nhận trên một bản dump dây thật, không phải giả định — ngược lại với vị trí
-        đặt system-prompt thông thường và đúng loại điều làm giảm mức tuân thủ của model.
-        Skill giờ được đẩy trước. <code>test_agent_session_skills_real_backend.cpp</code>{" "}
-        khẳng định THỨ TỰ thông điệp, không chỉ sự hiện diện, nên điều này không thể âm thầm
-        thoái lui.
+        quảng cáo hệ thống của skill sau toàn bộ cuộc hội thoại trên mọi request thật, ngược
+        lại với vị trí đặt system-prompt thông thường và đúng loại điều làm giảm mức tuân thủ
+        của model. Một bản dump dây thật xác nhận hiệu ứng này; đó không phải giả định. Skill
+        giờ được đẩy trước, và <code>test_agent_session_skills_real_backend.cpp</code> khẳng
+        định thứ tự thông điệp, không chỉ sự hiện diện, nên điều này không thể âm thầm thoái
+        lui.
       </>
     ),
     s7Trailing: (
@@ -665,15 +700,21 @@ const copy = {
     s8Heading: "Chỉ dẫn thì không cần plugin; mã thì cần",
     s8Body: (
       <>
-        Một skill thuần chỉ dẫn và tài liệu tham khảo được mount trực tiếp — không component,
-        không loader — và đường đó có thật ngay hôm nay: <code>skill_tool_scoping.hpp</code>{" "}
+        Một skill thuần chỉ dẫn và tài liệu tham khảo được mount trực tiếp, không component,
+        không loader, và đường đó có thật ngay hôm nay: <code>skill_tool_scoping.hpp</code>{" "}
         thực thi <code>allowed-tools</code> như một hạn chế bị đóng băng theo run thật, xây
-        trên nền <code>Capabilities&lt;...&gt;</code> (007 §3), không chỉ là văn bản khuyến
-        nghị, khi một caller truyền nó đi một cách nhất quán tới <code>invoke_tool()</code>.
-        Một skill mang theo <strong>mã</strong> được dự định đóng gói thành một plugin{" "}
-        <code>ae:skill</code> (§3) và kế thừa toàn bộ pipeline tin cậy — đã ký, khai báo
-        capability, được operator phê duyệt, ghim theo digest, có thể thu hồi — nhưng đường
-        đóng gói đó chưa tồn tại; xem phần Trạng thái bên dưới.
+        trên nền <code>Capabilities&lt;...&gt;</code>, không chỉ là văn bản khuyến nghị, khi
+        một caller truyền nó đi một cách nhất quán tới <code>invoke_tool()</code>. Một skill
+        mang theo <strong>mã</strong> được dự định đóng gói thành một plugin{" "}
+        <code>ae:skill</code> và kế thừa toàn bộ pipeline tin cậy — đã ký, khai báo
+        capability, được operator phê duyệt, ghim theo digest, có thể thu hồi. Đường đóng gói
+        đó chưa tồn tại; xem phần Trạng thái bên dưới.
+      </>
+    ),
+    s8Note: (
+      <>
+        007 §3 — <code>Capabilities&lt;...&gt;</code>. 009 §3 — world plugin{" "}
+        <code>ae:skill</code>.
       </>
     ),
     s9Eyebrow: "§8f — năm skill mà chính engine phát hành",
@@ -704,11 +745,11 @@ const copy = {
         <code>allowed-tools</code> một cách thật. Chín test bao phủ việc phân tích, lấy
         nguồn đĩa/nội tuyến, mounting, mount theo yêu cầu, và hai bộ test đầu-cuối skill của{" "}
         <code>AgentSession</code>. Phần vẫn còn ở dạng thiết kế: world{" "}
-        <code>ae:skill</code> của WASM Component Model dành cho skill mang theo mã —{" "}
-        <code>wit/README.md</code> vẫn liệt kê nó là <em>"chưa được viết"</em>, khác với{" "}
-        <code>ae:tool</code>, vốn đã có thật (xem trang Plugin). Một skill đóng gói mã thực
-        thi vượt ra ngoài những gì các tool shell/Python đã chạy hiện chưa có đường đóng gói,
-        ký, hay loader nào.
+        <code>ae:skill</code> của WASM Component Model dành cho skill mang theo mã.{" "}
+        <code>wit/README.md</code> vẫn liệt kê nó là <em>"chưa được viết"</em> — trong khi{" "}
+        <code>ae:tool</code> đã có thật; xem trang Plugin. Một skill đóng gói mã thực thi vượt
+        ra ngoài những gì các tool shell/Python đã chạy hiện chưa có đường đóng gói, ký, hay
+        loader nào.
       </>
     ),
   },
@@ -776,6 +817,7 @@ export function ApiSkillReference() {
               <span className="eyebrow">{t.s1Eyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s1Heading}</h3>
               <p>{t.s1Body}</p>
+              <ApiDiagnosticNote>{t.s1Note}</ApiDiagnosticNote>
             </div>
           </RevealItem>
 
@@ -954,6 +996,7 @@ export function ApiSkillReference() {
               <span className="eyebrow">{t.s5Eyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s5Heading}</h3>
               <p>{t.s5Body}</p>
+              <ApiDiagnosticNote>{t.s5Note}</ApiDiagnosticNote>
             </div>
           </RevealItem>
 
@@ -968,6 +1011,7 @@ export function ApiSkillReference() {
               <span className="eyebrow">{t.s6Eyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s6Heading}</h3>
               <p>{t.s6Body}</p>
+              <ApiDiagnosticNote>{t.s6Note}</ApiDiagnosticNote>
             </div>
           </RevealItem>
 
@@ -1019,6 +1063,7 @@ export function ApiSkillReference() {
               <span className="eyebrow">{t.s8Eyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s8Heading}</h3>
               <p>{t.s8Body}</p>
+              <ApiDiagnosticNote>{t.s8Note}</ApiDiagnosticNote>
             </div>
           </RevealItem>
         </RevealGroup>

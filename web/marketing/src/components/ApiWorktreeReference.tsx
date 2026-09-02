@@ -15,6 +15,7 @@ import {
 import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
+import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
 import { ApiTable } from "./ApiTable";
 import { CodePanel } from "./CodePanel";
 import { RevealGroup, RevealItem } from "./Reveal";
@@ -37,23 +38,22 @@ const copy = {
     intro: (
       <>
         A sandbox is a <strong>boundary</strong>, not a <strong>disk</strong>. If files lived
-        inside it, persistence across turns, survival of a crash, portability across profiles,
-        and sharing between agents would all become properties of whichever isolation technology
-        happened to be selected — backwards. A <strong>worktree</strong> is a
-        content-addressed object store plus a mutable tree the engine owns; a sandbox only ever{" "}
-        <em>mounts</em> a view into it. File semantics are then identical under{" "}
-        <code>wasm</code>, <code>native-jail</code>, and <code>remote</code> (008), and a
-        destroyed sandbox loses nothing. Every piece below is real and tested; the honest gaps —
-        node migration, redaction, model-assisted conflict drafting — are named in their own
-        Status section, not blurred into the rest.
+        inside it, persistence across turns, crash survival, portability across profiles, and
+        sharing between agents would all depend on whichever isolation technology happened to be
+        selected. A <strong>worktree</strong> fixes that: a content-addressed object store plus a
+        mutable tree the engine owns, with a sandbox only ever <em>mounting</em> a view into it.
+        File semantics stay identical across <code>wasm</code>, <code>native-jail</code>, and{" "}
+        <code>remote</code>, and a destroyed sandbox loses nothing. Every piece below is real and
+        tested; the gaps that remain — node migration, redaction, model-assisted conflict drafting
+        — are named in their own Status section, not blurred into the rest.
       </>
     ),
+    introNote: <>sandbox profiles compared in 008</>,
     treeNote: (
       <>
-        <strong>As-built note:</strong> this is the target shape. Today,{" "}
-        <code>/skills/&lt;name&gt;</code> materializes from <code>SkillsProvider</code>'s own
-        private, per-instance store (ADR-024) — a separate content-addressed universe
-        materialized side-by-side with the session's own tree, not yet one shared tree. Everything
+        This is the target shape. Today, <code>/skills/&lt;name&gt;</code> materializes from{" "}
+        <code>SkillsProvider</code>'s own private, per-instance store (ADR-024) — a separate
+        content-addressed universe next to the session's tree, not yet merged into it. Everything
         else in the diagram is the session's real worktree.
       </>
     ),
@@ -66,46 +66,44 @@ const copy = {
     ),
     s1Body: (
       <>
-        Snapshotting a worktree is recording one digest — cheap enough to do at every turn
-        boundary. Diffing two states is a tree comparison, so "what did this agent change?" is
-        answerable. Deduplication is free: the same file written by two agents is stored once,
-        proven directly by watching the store's own object counts not grow on a duplicate write,
-        not merely inferred from digest equality. Identity is the digest, so artifacts (010 §4),
-        blobs in messages (003 §3), and worktree files are the same objects with the same
-        provenance.
+        Snapshotting a worktree records one digest, cheap enough to do at every turn boundary.
+        Diffing two states is a tree comparison, so "what did this agent change?" has a direct
+        answer. Deduplication is free — the same file written by two agents is stored once.
+        Identity is the digest, so artifacts, blobs in messages, and worktree files are the same
+        kind of object with the same provenance.
       </>
     ),
+    s1IdentityNote: <>artifacts — 010 §4. Blobs in messages — 003 §3.</>,
     s1DedupNote: (
       <>
-        <strong><code>put_blob</code>/<code>put_tree</code> take no digest parameter at all</strong>{" "}
-        — the store computes it from the bytes (or from a Tree's canonical serialization) every
-        time, so nothing upstream can ever claim content hashes to a digest it doesn't actually
-        produce. Dedup is checked the same honest way: the same content put twice yields the same
-        digest AND <code>blob_count()</code> stays at 1, not assumed from digest equality alone.
+        <code>put_blob</code>/<code>put_tree</code> take no digest parameter — the store computes
+        it from the bytes, or from a Tree's canonical serialization, every time, so nothing
+        upstream can claim a content hash the store didn't actually produce. The same content put
+        twice yields the same digest, and <code>blob_count()</code> stays at 1 rather than
+        growing — checked directly, not assumed from digest equality alone.
       </>
     ),
     s2Eyebrow: "worktree.hpp §3 — sub-worktrees",
     s2Heading: "Every agent gets its own branch of the same disk",
     s2Body: (
       <>
-        A session may run several agents (001 §4); each sub-worktree is created with a declared
-        sharing mode. The default is chosen by <strong>concurrency, not taste</strong>: agents
-        running sequentially default to <code>shared</code> — the natural reading of "they work
-        on the same disk" — while concurrent agents default to <code>branch</code>, because
-        concurrent blind writes to one tree is precisely how multi-agent systems destroy each
-        other's work. That default lives one layer up, in whatever scheduler calls{" "}
-        <code>create_sub_worktree</code> — this header always takes <code>mode</code> as an
-        explicit argument and infers nothing.
+        A session may run several agents; each sub-worktree is created with a declared sharing
+        mode. The default is chosen by <strong>concurrency, not taste</strong>: agents running
+        sequentially default to <code>shared</code>, the natural reading of "they work on the
+        same disk," while concurrent agents default to <code>branch</code>, because concurrent
+        blind writes to one tree is how multi-agent systems destroy each other's work. That
+        default lives one layer up, in whatever scheduler calls <code>create_sub_worktree</code> —
+        this header always takes <code>mode</code> as an explicit argument and infers nothing.
       </>
     ),
+    s2SessionNote: <>multi-agent sessions — 001 §4</>,
     s2SharedNote: (
       <>
-        <strong>Two sandboxes, one worktree — proven, not asserted.</strong> Minting two{" "}
-        <code>shared</code> executors gives them DISTINCT mount ids but the SAME backing ref: a
-        write through one mount is visible through the other's immediately, because both resolve
-        through the identical <code>Ref</code>. The mount is the sandbox-facing view; the ref is
-        the durable thing underneath it — exactly the "independent of whichever sandbox happens
-        to be attached" property this page opens with.
+        Minting two <code>shared</code> executors gives them distinct mount ids but the same
+        backing ref. A write through one mount is visible through the other's immediately,
+        because both resolve through the identical <code>Ref</code>. The mount is the
+        sandbox-facing view; the ref is the durable thing underneath it — proven directly, not
+        just asserted.
       </>
     ),
     s3Eyebrow: "worktree.hpp §4 — concurrency and merge",
@@ -113,43 +111,43 @@ const copy = {
     s3Body: (
       <>
         A <code>branch</code> sub-worktree merges back on join: three-way, against the common
-        ancestor, per name at each tree level — disjoint changes merge automatically, identical
-        content merges trivially, and a genuine fork is a <code>MergeConflict</code>, both
-        versions retained, never resolved by guessing or by last-writer-wins. A model may draft a
-        proposed merge from the two versions, but that draft is <code>Tainted</code> data like any
-        other model output (I3) — it is presented for the same argument-hash-bound approval every
+        ancestor, per name at each tree level. Disjoint changes merge automatically, identical
+        content merges trivially, and a genuine fork becomes a <code>MergeConflict</code> with
+        both versions retained — never resolved by guessing or by last-writer-wins. A model may
+        draft a proposed merge from the two versions, but that draft is <code>Tainted</code> data
+        like any other model output: it goes through the same argument-hash-bound approval every
         other irreversible effect requires, never auto-applied because "the model resolved it."
       </>
     ),
+    s3TaintedNote: <>model output as Tainted data — I3</>,
     s3ResidualNote: (
       <>
-        <strong>One writer per tree, best-effort today — named, not silently closed.</strong>{" "}
-        Writes serialize through the caller's own coordination; <code>merge_branch_into_parent</code>{" "}
-        re-reads the parent immediately before committing and fails closed if it moved since, which
-        narrows the race but does not eliminate it — full elimination needs a compare-and-set
-        primitive on the store that does not exist yet. The concurrency proof below runs at a
-        reduced, machine-safe scale for exactly this reason: real OS threads racing the reference
-        store's plain hash map would themselves be undefined behavior, unrelated to what the test is
-        trying to prove.
+        Writes serialize through the caller's own coordination. <code>merge_branch_into_parent</code>{" "}
+        re-reads the parent immediately before committing and fails closed if it moved, which
+        narrows the race without eliminating it — full elimination needs a compare-and-set
+        primitive the store doesn't have yet. The concurrency proof below runs at a reduced,
+        machine-safe scale for that reason: real OS threads racing the reference store's plain
+        hash map would themselves be undefined behavior, unrelated to what the test is trying to
+        prove.
       </>
     ),
     s4Eyebrow: "worktree.hpp §5 — mounts and capabilities",
     s4Heading: "Two layers of defense, not one",
     s4Body: (
       <>
-        A worktree subtree becomes visible to a sandbox only through a capability —{" "}
-        <code>cap::FsRead</code>/<code>cap::FsWrite</code>, mount-id and path-prefix checked
+        A worktree subtree becomes visible to a sandbox only through a capability:{" "}
+        <code>cap::FsRead</code>/<code>cap::FsWrite</code>, with mount-id and path-prefix checked
         before any store access at all, reusing the exact same subsumption primitive{" "}
-        <code>CapabilitySet::contains</code> already uses elsewhere, not a second path-matching
-        routine invented here. That's layer one, over the content-addressed tree. Layer two sits
-        below it, at the real filesystem: on Windows, every guest-relative path is turned into an
-        already-verified-safe <code>HANDLE</code> before the OS ever opens it, rejecting a full
-        corpus of escape techniques — <code>..</code>, absolute redirects, symlinks/junctions
-        crossing the mount boundary, alternate data streams, <code>\\?\</code> prefixes, unicode
-        tricks, and TOCTOU re-resolution — each proven with a positive control alongside the
-        negative one. Linux isn't built yet (021 §2's platform sequencing).
+        <code>CapabilitySet::contains</code> already uses elsewhere. That's layer one, over the
+        content-addressed tree. Layer two sits below it, at the real filesystem: on Windows, every
+        guest-relative path is turned into an already-verified-safe <code>HANDLE</code> before the
+        OS ever opens it, rejecting a full corpus of escape techniques — <code>..</code>, absolute
+        redirects, symlinks/junctions crossing the mount boundary, alternate data streams,{" "}
+        <code>\\?\</code> prefixes, unicode tricks, and TOCTOU re-resolution — each proven with a
+        positive control alongside the negative one. Linux isn't built yet.
       </>
     ),
+    s4LinuxNote: <>platform sequencing — 021 §2</>,
     s5Eyebrow: "worktree.hpp §6 — persistence and lifecycle",
     s5Heading: "Rewind is assignment, never a history edit",
     s5Body: (
@@ -181,9 +179,9 @@ const copy = {
       <>
         A workflow's <code>FunctionExecutor</code> gets its own <code>ExecutorWorktreeGrant</code>{" "}
         — which sharing mode, which mount, which capabilities — minted or resumed explicitly,
-        never assumed. The minting/resumption logic itself is real and tested; what isn't real yet
-        is the wiring from a running <code>WorkflowSupervisor</code> into that grant, since no
-        production host builds a <code>FunctionExecutor</code> fleet today.
+        never assumed. The minting and resumption logic is proven directly. The gap is wiring a
+        running <code>WorkflowSupervisor</code> into that grant: no production host builds a{" "}
+        <code>FunctionExecutor</code> fleet yet.
       </>
     ),
     statusEyebrow: "025 §9 — promotion gates, graded honestly",
@@ -200,23 +198,23 @@ const copy = {
       <>
         Một sandbox là một <strong>ranh giới</strong>, không phải một <strong>ổ đĩa</strong>.
         Nếu file sống bên trong nó, tính bền vững qua các lượt, khả năng sống sót qua crash, tính
-        di động giữa các profile, và khả năng chia sẻ giữa các agent đều sẽ trở thành thuộc tính
-        của bất kỳ công nghệ cách ly nào được chọn — ngược đời. Một <strong>worktree</strong> là
-        một object store theo nội dung cộng một cây mutable mà engine sở hữu; một sandbox chỉ bao
-        giờ <em>mount</em> một view vào đó. Ngữ nghĩa file khi đó giống hệt dưới <code>wasm</code>,{" "}
-        <code>native-jail</code>, và <code>remote</code> (008), và một sandbox bị hủy không mất gì
-        cả. Mọi phần bên dưới đều có thật và đã kiểm thử; các khoảng trống trung thực — node
-        migration, xóa dữ liệu (redaction), soạn thảo xung đột có sự hỗ trợ của model — được nêu
-        riêng trong phần Trạng thái, không bị trộn lẫn vào phần còn lại.
+        di động giữa các profile, và khả năng chia sẻ giữa các agent đều sẽ phụ thuộc vào bất kỳ
+        công nghệ cách ly nào được chọn. Một <strong>worktree</strong> giải quyết điều đó: một
+        object store theo nội dung cộng một cây mutable mà engine sở hữu, còn sandbox chỉ bao
+        giờ <em>mount</em> một view vào đó. Ngữ nghĩa file giữ nguyên giống hệt trên{" "}
+        <code>wasm</code>, <code>native-jail</code>, và <code>remote</code>, và một sandbox bị
+        hủy không mất gì cả. Mọi phần bên dưới đều có thật và đã kiểm thử; các khoảng trống còn
+        lại — node migration, xóa dữ liệu (redaction), soạn thảo xung đột có sự hỗ trợ của model —
+        được nêu riêng trong phần Trạng thái, không bị trộn lẫn vào phần còn lại.
       </>
     ),
+    introNote: <>các profile sandbox được so sánh ở 008</>,
     treeNote: (
       <>
-        <strong>Ghi chú as-built:</strong> đây là hình dạng mục tiêu. Hôm nay,{" "}
-        <code>/skills/&lt;name&gt;</code> được vật chất hóa từ store riêng, theo từng instance của{" "}
-        <code>SkillsProvider</code> (ADR-024) — một vũ trụ theo nội dung riêng biệt, vật chất hóa
-        song song với cây riêng của session, chưa phải một cây chung. Phần còn lại trong sơ đồ là
-        worktree thật của session.
+        Đây là hình dạng mục tiêu. Hôm nay, <code>/skills/&lt;name&gt;</code> được vật chất hóa từ
+        store riêng, theo từng instance của <code>SkillsProvider</code> (ADR-024) — một vũ trụ
+        theo nội dung riêng biệt, nằm cạnh cây của session, chưa được gộp vào đó. Phần còn lại
+        trong sơ đồ là worktree thật của session.
       </>
     ),
     modeTableColumns: ["Chế độ", "Ngữ nghĩa", "Dùng cho"],
@@ -228,31 +226,29 @@ const copy = {
     ),
     s1Body: (
       <>
-        Chụp nhanh (snapshot) một worktree là ghi lại một digest — đủ rẻ để làm ở mỗi ranh giới
-        turn. Diff hai trạng thái là một phép so sánh cây, nên "agent này đã thay đổi gì?" có thể
-        trả lời được. Loại bỏ trùng lặp (dedup) là miễn phí: cùng một file được hai agent ghi chỉ
-        được lưu một lần, được chứng minh trực tiếp bằng cách theo dõi số lượng object của store
-        không tăng khi ghi trùng, không chỉ suy ra từ việc digest bằng nhau. Định danh chính là
-        digest, nên artifact (010 §4), blob trong message (003 §3), và file worktree đều là cùng
-        một loại object với cùng nguồn gốc.
+        Chụp nhanh (snapshot) một worktree ghi lại một digest, đủ rẻ để làm ở mỗi ranh giới turn.
+        Diff hai trạng thái là một phép so sánh cây, nên "agent này đã thay đổi gì?" có câu trả
+        lời trực tiếp. Loại bỏ trùng lặp (dedup) là miễn phí — cùng một file được hai agent ghi
+        chỉ được lưu một lần. Định danh chính là digest, nên artifact, blob trong message, và
+        file worktree đều là cùng một loại object với cùng nguồn gốc.
       </>
     ),
+    s1IdentityNote: <>artifact — 010 §4. Blob trong message — 003 §3.</>,
     s1DedupNote: (
       <>
-        <strong><code>put_blob</code>/<code>put_tree</code> không nhận tham số digest nào cả</strong>{" "}
-        — store tự tính nó từ các byte (hoặc từ chuỗi hóa chuẩn tắc của một Tree) mỗi lần, nên
-        không có gì ở tầng trên có thể khai báo nội dung băm ra một digest mà nó thực sự không tạo
-        ra. Dedup được kiểm tra theo đúng cách trung thực đó: cùng nội dung put hai lần cho ra
-        cùng digest VÀ <code>blob_count()</code> vẫn giữ ở 1, không giả định chỉ từ việc digest
-        bằng nhau.
+        <code>put_blob</code>/<code>put_tree</code> không nhận tham số digest nào — store tự tính
+        nó từ các byte, hoặc từ chuỗi hóa chuẩn tắc của một Tree, mỗi lần, nên không có gì ở tầng
+        trên có thể khai báo một content hash mà store thực sự không tạo ra. Cùng nội dung put hai
+        lần cho ra cùng digest, và <code>blob_count()</code> vẫn giữ ở 1 thay vì tăng lên — được
+        kiểm tra trực tiếp, không chỉ giả định từ việc digest bằng nhau.
       </>
     ),
     s2Eyebrow: "worktree.hpp §3 — sub-worktree",
     s2Heading: "Mỗi agent nhận một nhánh riêng của cùng một ổ đĩa",
     s2Body: (
       <>
-        Một session có thể chạy nhiều agent (001 §4); mỗi sub-worktree được tạo với một chế độ
-        chia sẻ khai báo rõ. Mặc định được chọn theo <strong>tính đồng thời, không phải theo sở
+        Một session có thể chạy nhiều agent; mỗi sub-worktree được tạo với một chế độ chia sẻ
+        khai báo rõ. Mặc định được chọn theo <strong>tính đồng thời, không phải theo sở
         thích</strong>: các agent chạy tuần tự mặc định là <code>shared</code> — cách đọc tự nhiên
         của "chúng làm việc trên cùng một ổ đĩa" — còn các agent chạy đồng thời mặc định là{" "}
         <code>branch</code>, vì ghi mù đồng thời lên một cây chính là cách các hệ multi-agent phá
@@ -261,13 +257,13 @@ const copy = {
         tường minh và không suy luận gì cả.
       </>
     ),
+    s2SessionNote: <>session nhiều agent — 001 §4</>,
     s2SharedNote: (
       <>
-        <strong>Hai sandbox, một worktree — được chứng minh, không chỉ khẳng định.</strong> Tạo
-        mới hai executor <code>shared</code> cho chúng mount id KHÁC NHAU nhưng CÙNG một ref nền
-        — một lần ghi qua mount này được thấy ngay qua mount kia, vì cả hai đều phân giải tới đúng
-        một <code>Ref</code>. Mount là view hướng-sandbox; ref là thứ bền vững nằm bên dưới nó —
-        đúng thuộc tính "độc lập với bất kỳ sandbox nào đang được gắn" mà trang này mở đầu.
+        Tạo mới hai executor <code>shared</code> cho chúng mount id khác nhau nhưng cùng một ref
+        nền — một lần ghi qua mount này được thấy ngay qua mount kia, vì cả hai đều phân giải tới
+        đúng một <code>Ref</code>. Mount là view hướng-sandbox; ref là thứ bền vững nằm bên dưới
+        nó — được chứng minh trực tiếp, không chỉ khẳng định suông.
       </>
     ),
     s3Eyebrow: "worktree.hpp §4 — tương tranh và merge",
@@ -275,44 +271,44 @@ const copy = {
     s3Body: (
       <>
         Một sub-worktree <code>branch</code> merge ngược lại khi join: ba-chiều, so với ancestor
-        chung, theo từng tên ở mỗi tầng cây — thay đổi rời rạc tự động merge, nội dung giống hệt
-        merge tầm thường, và một fork thật sự là một <code>MergeConflict</code>, cả hai phiên bản
-        được giữ lại, không bao giờ được giải quyết bằng cách đoán hay theo kiểu người-ghi-cuối-
-        thắng. Một model có thể soạn một đề xuất merge từ hai phiên bản, nhưng bản soạn đó là dữ
-        liệu <code>Tainted</code> giống như bất kỳ đầu ra nào khác của model (I3) — nó được trình
-        bày để chờ đúng loại phê duyệt gắn với argument-hash mà mọi effect không thể đảo ngược
-        khác đòi hỏi, không bao giờ tự áp dụng chỉ vì "model đã giải quyết nó."
+        chung, theo từng tên ở mỗi tầng cây. Thay đổi rời rạc tự động merge, nội dung giống hệt
+        merge tầm thường, và một fork thật sự trở thành một <code>MergeConflict</code> với cả hai
+        phiên bản được giữ lại — không bao giờ được giải quyết bằng cách đoán hay theo kiểu
+        người-ghi-cuối-thắng. Một model có thể soạn một đề xuất merge từ hai phiên bản, nhưng bản
+        soạn đó là dữ liệu <code>Tainted</code> giống như bất kỳ đầu ra nào khác của model: nó đi
+        qua đúng loại phê duyệt gắn với argument-hash mà mọi effect không thể đảo ngược khác đòi
+        hỏi, không bao giờ tự áp dụng chỉ vì "model đã giải quyết nó."
       </>
     ),
+    s3TaintedNote: <>đầu ra model như dữ liệu Tainted — I3</>,
     s3ResidualNote: (
       <>
-        <strong>Một writer cho mỗi cây, best-effort hôm nay — được nêu tên, không âm thầm coi là
-        đã đóng.</strong> Ghi được serialize thông qua sự phối hợp riêng của caller;{" "}
+        Ghi được serialize thông qua sự phối hợp riêng của caller.{" "}
         <code>merge_branch_into_parent</code> đọc lại parent ngay trước khi commit và fail closed
-        nếu nó đã di chuyển — điều này thu hẹp race nhưng không loại bỏ nó: loại bỏ hoàn toàn cần
-        một nguyên thủy compare-and-set trên store mà hiện chưa tồn tại. Vì đúng lý do này, phép
-        chứng minh tương tranh bên dưới chạy ở quy mô giảm, an toàn cho máy: luồng OS thật đua nhau
-        trên hash map thuần của store tham chiếu tự nó đã là hành vi không xác định, không liên
-        quan tới điều test đang cố chứng minh.
+        nếu nó đã di chuyển — điều này thu hẹp race mà không loại bỏ nó: loại bỏ hoàn toàn cần một
+        nguyên thủy compare-and-set mà store hiện chưa có. Vì đúng lý do đó, phép chứng minh tương
+        tranh bên dưới chạy ở quy mô giảm, an toàn cho máy: luồng OS thật đua nhau trên hash map
+        thuần của store tham chiếu tự nó đã là hành vi không xác định, không liên quan tới điều
+        test đang cố chứng minh.
       </>
     ),
     s4Eyebrow: "worktree.hpp §5 — mount và capability",
     s4Heading: "Hai lớp phòng thủ, không phải một",
     s4Body: (
       <>
-        Một subtree của worktree chỉ hiển thị với một sandbox thông qua một capability —{" "}
-        <code>cap::FsRead</code>/<code>cap::FsWrite</code>, mount-id và path-prefix được kiểm tra
-        trước khi có bất kỳ truy cập store nào, tái sử dụng đúng nguyên thủy subsumption mà{" "}
-        <code>CapabilitySet::contains</code> đã dùng ở nơi khác, không phải một routine khớp
-        đường dẫn thứ hai được phát minh riêng ở đây. Đó là lớp một, trên cây theo nội dung. Lớp
-        hai nằm bên dưới nó, ở filesystem thật: trên Windows, mọi đường dẫn tương đối từ guest
-        được biến thành một <code>HANDLE</code> đã được xác minh an toàn trước khi OS mở nó, từ
-        chối một corpus đầy đủ các kỹ thuật thoát ly — <code>..</code>, chuyển hướng tuyệt đối,
+        Một subtree của worktree chỉ hiển thị với một sandbox thông qua một capability:{" "}
+        <code>cap::FsRead</code>/<code>cap::FsWrite</code>, với mount-id và path-prefix được kiểm
+        tra trước khi có bất kỳ truy cập store nào, tái sử dụng đúng nguyên thủy subsumption mà{" "}
+        <code>CapabilitySet::contains</code> đã dùng ở nơi khác. Đó là lớp một, trên cây theo nội
+        dung. Lớp hai nằm bên dưới nó, ở filesystem thật: trên Windows, mọi đường dẫn tương đối từ
+        guest được biến thành một <code>HANDLE</code> đã được xác minh an toàn trước khi OS mở nó,
+        từ chối một corpus đầy đủ các kỹ thuật thoát ly — <code>..</code>, chuyển hướng tuyệt đối,
         symlink/junction vượt ranh giới mount, alternate data stream, tiền tố <code>\\?\</code>,
         các thủ thuật unicode, và TOCTOU re-resolution — mỗi cái được chứng minh cùng một positive
-        control bên cạnh negative control. Linux chưa được xây (thứ tự ưu tiên nền tảng của 021 §2).
+        control bên cạnh negative control. Linux chưa được xây.
       </>
     ),
+    s4LinuxNote: <>thứ tự ưu tiên nền tảng — 021 §2</>,
     s5Eyebrow: "worktree.hpp §6 — bền vững và vòng đời",
     s5Heading: "Rewind là gán (assignment), không bao giờ là sửa lịch sử",
     s5Body: (
@@ -344,10 +340,9 @@ const copy = {
       <>
         Một <code>FunctionExecutor</code> của workflow nhận <code>ExecutorWorktreeGrant</code>{" "}
         riêng của nó — chế độ chia sẻ nào, mount nào, capability nào — được tạo mới hoặc khôi phục
-        một cách tường minh, không bao giờ mặc định. Bản thân logic tạo mới/khôi phục có thật và
-        đã kiểm thử; điều chưa có thật là việc đấu nối từ một <code>WorkflowSupervisor</code> đang
-        chạy vào cấp phát đó, vì chưa có host production nào xây một fleet{" "}
-        <code>FunctionExecutor</code> hôm nay.
+        một cách tường minh, không bao giờ mặc định. Logic tạo mới và khôi phục được chứng minh
+        trực tiếp. Khoảng trống là việc đấu nối một <code>WorkflowSupervisor</code> đang chạy vào
+        cấp phát đó: chưa có host production nào xây một fleet <code>FunctionExecutor</code>.
       </>
     ),
     statusEyebrow: "025 §9 — các gate promotion, chấm điểm trung thực",
@@ -370,6 +365,7 @@ export function ApiWorktreeReference() {
             {t.headingPrefix} <span className="grad-text">{t.headingHighlight}</span>
           </h2>
           <p style={{ marginTop: 16 }}>{t.intro}</p>
+          <ApiDiagnosticNote>{t.introNote}</ApiDiagnosticNote>
         </div>
 
         <RevealGroup className="spec-layout">
@@ -378,7 +374,7 @@ export function ApiWorktreeReference() {
               <CodePanel filename="session:s-42/">{worktreeDirectoryTree}</CodePanel>
             </RevealItem>
             <RevealItem>
-              <p className="gs-note" style={{ marginTop: 20 }}>{t.treeNote}</p>
+              <ApiDiagnosticNote status="stub">{t.treeNote}</ApiDiagnosticNote>
             </RevealItem>
           </RevealGroup>
 
@@ -403,6 +399,7 @@ export function ApiWorktreeReference() {
               <span className="eyebrow">{t.s1Eyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s1Heading}</h3>
               <p>{t.s1Body}</p>
+              <ApiDiagnosticNote>{t.s1IdentityNote}</ApiDiagnosticNote>
             </div>
           </RevealItem>
           <RevealItem>
@@ -433,7 +430,7 @@ export function ApiWorktreeReference() {
             </CodePanel>
           </RevealItem>
           <RevealItem>
-            <p className="gs-note" style={{ marginTop: 20 }}>{t.s1DedupNote}</p>
+            <ApiDiagnosticNote>{t.s1DedupNote}</ApiDiagnosticNote>
           </RevealItem>
         </RevealGroup>
 
@@ -443,6 +440,7 @@ export function ApiWorktreeReference() {
               <span className="eyebrow">{t.s2Eyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s2Heading}</h3>
               <p>{t.s2Body}</p>
+              <ApiDiagnosticNote>{t.s2SessionNote}</ApiDiagnosticNote>
             </div>
           </RevealItem>
           <RevealItem>
@@ -454,7 +452,7 @@ export function ApiWorktreeReference() {
             </CodePanel>
           </RevealItem>
           <RevealItem>
-            <p className="gs-note" style={{ marginTop: 20 }}>{t.s2SharedNote}</p>
+            <ApiDiagnosticNote>{t.s2SharedNote}</ApiDiagnosticNote>
           </RevealItem>
         </RevealGroup>
 
@@ -464,13 +462,14 @@ export function ApiWorktreeReference() {
               <span className="eyebrow">{t.s3Eyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s3Heading}</h3>
               <p>{t.s3Body}</p>
+              <ApiDiagnosticNote>{t.s3TaintedNote}</ApiDiagnosticNote>
             </div>
           </RevealItem>
           <RevealItem>
             <CodePanel filename="worktree.hpp">{highlightCpp(worktreeMergeSnippet)}</CodePanel>
           </RevealItem>
           <RevealItem>
-            <p className="gs-note" style={{ marginTop: 20, borderLeftColor: "var(--accent-pink)" }}>{t.s3ResidualNote}</p>
+            <ApiDiagnosticNote status="stub">{t.s3ResidualNote}</ApiDiagnosticNote>
           </RevealItem>
         </RevealGroup>
 
@@ -480,6 +479,7 @@ export function ApiWorktreeReference() {
               <span className="eyebrow">{t.s4Eyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s4Heading}</h3>
               <p>{t.s4Body}</p>
+              <ApiDiagnosticNote status="stub">{t.s4LinuxNote}</ApiDiagnosticNote>
             </div>
           </RevealItem>
           <RevealItem>

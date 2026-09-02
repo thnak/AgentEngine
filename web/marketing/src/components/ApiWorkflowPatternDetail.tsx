@@ -19,6 +19,7 @@ import {
 } from "../data/apiContent";
 import { useLang } from "../i18n/LanguageContext";
 import { highlightCpp } from "../lib/highlightCpp";
+import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
 import { CodePanel } from "./CodePanel";
 import { RevealGroup, RevealItem } from "./Reveal";
 
@@ -118,7 +119,9 @@ interface PatternPane {
   mafNote?: ReactNode;
   crossRef?: ReactNode;
   proves?: ReactNode[];
+  provesNote?: ReactNode;
   whyShape?: ReactNode;
+  whyShapeNote?: ReactNode;
   diagram: ReactNode;
   code: ReactNode;
   sourceCite?: string;
@@ -148,8 +151,8 @@ function buildPanes(lang: "en" | "vi"): Record<PatternId, PatternPane> {
   const reflBranchNo = "revise";
   const reflBranchYes = "approve";
   const reflLoopNote = en
-    ? '↻ "revise" loops back to writer; "approve" proceeds to done. A critic that never approves stops CLEANLY at bound.max_rounds — not a crash, not a hang.'
-    : '↻ "revise" quay lại writer; "approve" đi tiếp tới done. Một critic không bao giờ approve sẽ dừng SẠCH SẼ tại bound.max_rounds — không crash, không treo.';
+    ? '↻ "revise" loops back to writer; "approve" proceeds to done. A critic that never approves stops cleanly at bound.max_rounds — not a crash, not a hang.'
+    : '↻ "revise" quay lại writer; "approve" đi tiếp tới done. Một critic không bao giờ approve sẽ dừng sạch sẽ tại bound.max_rounds — không crash, không treo.';
 
   const branchDiagram = (
     <div className="flow glass">
@@ -177,15 +180,18 @@ function buildPanes(lang: "en" | "vi"): Record<PatternId, PatternPane> {
       ),
       proves: en
         ? [
-            <>The chain terminates by <strong>running dry</strong> (014 §2) — there's no explicit terminal marker, just nothing left to deliver.</>,
+            <>The chain terminates by <strong>running dry</strong>: there's no explicit terminal marker, just nothing left to deliver.</>,
             <>Exactly <strong>one round per edge</strong>: 2 executors, 2 rounds.</>,
             <>Input is threaded through both nodes <strong>in graph order</strong>: "Hello, World!" → <code>Uppercase</code> → "HELLO, WORLD!" → <code>Reverse</code> → "!DLROW ,OLLEH".</>,
           ]
         : [
-            <>Chuỗi kết thúc bằng cách <strong>chạy cạn (running dry)</strong> (014 §2) — không có điểm kết thúc tường minh nào, chỉ đơn giản là không còn gì để giao tiếp theo.</>,
+            <>Chuỗi kết thúc bằng cách <strong>chạy cạn (running dry)</strong>: không có điểm kết thúc tường minh nào, chỉ đơn giản là không còn gì để giao tiếp theo.</>,
             <>Đúng <strong>một vòng cho mỗi edge</strong>: 2 executor, 2 vòng.</>,
             <>Đầu vào được xâu chuỗi qua cả hai node <strong>theo đúng thứ tự đồ thị</strong>: "Hello, World!" → <code>Uppercase</code> → "HELLO, WORLD!" → <code>Reverse</code> → "!DLROW ,OLLEH".</>,
           ],
+      provesNote: en
+        ? <>014 §2 — running dry as termination, not an explicit terminal marker.</>
+        : <>014 §2 — chạy cạn (running dry) là cách kết thúc, không phải một điểm kết thúc tường minh.</>,
       diagram: (
         <div className="flow glass">
           <div className="flow-node is-purple"><div className="flow-node-title">Uppercase</div></div>
@@ -214,15 +220,15 @@ function buildPanes(lang: "en" | "vi"): Record<PatternId, PatternPane> {
       ),
       proves: en
         ? [
-            <>The fan-out round runs <strong>ONCE</strong>, not once per worker — 3 rounds total (src, workers, agg), not 5.</>,
-            <>The aggregator ran <strong>EXACTLY ONCE</strong> despite 3 inbound <code>fan_in</code> edges landing on it in the same round — one delivery, not three separate calls.</>,
-            <>The aggregator saw all three branches <strong>in graph-declared order</strong>, not completion order — proven by running the SAME graph 3 times with deliberately reversed completion timing (w1 slowest, w3 fastest) and getting the identical merged output every time.</>,
+            <>The fan-out round runs <strong>once</strong>, not once per worker: 3 rounds total (src, workers, agg), not 5.</>,
+            <>The aggregator ran <strong>exactly once</strong> despite 3 inbound <code>fan_in</code> edges landing on it in the same round — one delivery, not three separate calls.</>,
+            <>The aggregator saw all three branches <strong>in graph-declared order</strong>, not completion order. The same graph ran 3 times with deliberately reversed completion timing — w1 slowest, w3 fastest — and produced the identical merged output every time.</>,
             <>Composes with retry: a <code>fan_in</code> branch that transiently fails and is retried still lands in exactly one delivery, not a second one.</>,
           ]
         : [
-            <>Vòng fan-out chạy <strong>ĐÚNG MỘT LẦN</strong>, không phải một lần cho mỗi worker — tổng cộng 3 vòng (src, các worker, agg), không phải 5.</>,
-            <>Bộ tổng hợp chạy <strong>ĐÚNG MỘT LẦN</strong> dù có 3 cạnh <code>fan_in</code> cùng đổ vào nó trong cùng một vòng — một lần giao, không phải ba lệnh gọi riêng biệt.</>,
-            <>Bộ tổng hợp nhìn thấy cả ba nhánh <strong>theo đúng thứ tự khai báo trong đồ thị</strong>, không phải theo thứ tự hoàn tất — được chứng minh bằng cách chạy CÙNG một đồ thị 3 lần với thời gian hoàn tất bị đảo ngược có chủ đích (w1 chậm nhất, w3 nhanh nhất) và vẫn nhận được đúng một kết quả gộp giống hệt mỗi lần.</>,
+            <>Vòng fan-out chạy <strong>đúng một lần</strong>, không phải một lần cho mỗi worker: tổng cộng 3 vòng (src, các worker, agg), không phải 5.</>,
+            <>Bộ tổng hợp chạy <strong>đúng một lần</strong> dù có 3 cạnh <code>fan_in</code> cùng đổ vào nó trong cùng một vòng — một lần giao, không phải ba lệnh gọi riêng biệt.</>,
+            <>Bộ tổng hợp nhìn thấy cả ba nhánh <strong>theo đúng thứ tự khai báo trong đồ thị</strong>, không phải theo thứ tự hoàn tất. Cùng một đồ thị được chạy 3 lần với thời gian hoàn tất bị đảo ngược có chủ đích — w1 chậm nhất, w3 nhanh nhất — và vẫn cho ra đúng một kết quả gộp giống hệt mỗi lần.</>,
             <>Kết hợp được với retry: một nhánh <code>fan_in</code> thất bại tạm thời rồi được thử lại vẫn chỉ đi tới đúng một lần giao, không phải một lần thứ hai.</>,
           ],
       diagram: (
@@ -273,8 +279,8 @@ function buildPanes(lang: "en" | "vi"): Record<PatternId, PatternPane> {
       ),
       code: null,
       code2Note: en
-        ? "There is no separate map-reduce example -- this pattern IS 09_concurrent_workflow.cpp's graph and bodies, run under a reduce framing rather than a second implementation."
-        : "Không có ví dụ map-reduce riêng — mẫu này CHÍNH LÀ đồ thị và các body của 09_concurrent_workflow.cpp, chỉ diễn giải theo khung reduce thay vì một cài đặt thứ hai.",
+        ? "There is no separate map-reduce example. This pattern is 09_concurrent_workflow.cpp's graph and bodies, run under a reduce framing rather than a second implementation."
+        : "Không có ví dụ map-reduce riêng. Mẫu này chính là đồ thị và các body của 09_concurrent_workflow.cpp, chỉ diễn giải theo khung reduce thay vì một cài đặt thứ hai.",
       code2: <CodePanel filename="examples/09_concurrent_workflow.cpp">{highlightCpp(workflowMapReduceRealSnippet)}</CodePanel>,
       sourceCite2: "examples/09_concurrent_workflow.cpp:126-149",
       sourceHref2: gh("examples/09_concurrent_workflow.cpp"),
@@ -296,18 +302,21 @@ function buildPanes(lang: "en" | "vi"): Record<PatternId, PatternPane> {
         ? [
             <>Control transferred to <strong>exactly the selected branch</strong>.</>,
             <>The selected branch ran exactly once; the other declared case's target never ran — switch_case is exactly one, not a fan-out whose extra results get discarded afterwards.</>,
-            <>A route naming <strong>zero</strong> or <strong>more than one</strong> declared label fails the run with <code>routing_failed</code>, not <code>executor_failed</code> — a routing/authoring problem, never silently ignored (an I3 boundary: a route target is engine-checked structure, never free-form model output to trust).</>,
+            <>A route naming <strong>zero</strong> or <strong>more than one</strong> declared label fails the run with <code>routing_failed</code>, not <code>executor_failed</code> — a routing/authoring problem, never silently ignored.</>,
           ]
         : [
             <>Quyền điều khiển chuyển tới <strong>đúng nhánh được chọn</strong>.</>,
             <>Nhánh được chọn chạy đúng một lần; đích của nhánh còn lại không bao giờ chạy — switch_case là đúng một, không phải một fan-out mà kết quả thừa bị loại bỏ sau đó.</>,
-            <>Một route nêu tên <strong>không</strong> hoặc <strong>nhiều hơn một</strong> nhãn đã khai báo sẽ làm run thất bại với <code>routing_failed</code>, không phải <code>executor_failed</code> — một vấn đề định tuyến/authoring, không bao giờ bị âm thầm bỏ qua (một ranh giới của I3: đích của route là cấu trúc được engine kiểm tra, không bao giờ là đầu ra tự do của model để tin tưởng).</>,
+            <>Một route nêu tên <strong>không</strong> hoặc <strong>nhiều hơn một</strong> nhãn đã khai báo sẽ làm run thất bại với <code>routing_failed</code>, không phải <code>executor_failed</code> — một vấn đề định tuyến/authoring, không bao giờ bị âm thầm bỏ qua.</>,
           ],
+      provesNote: en
+        ? <>I3 boundary — a route target is engine-checked structure, never free-form model output the engine trusts.</>
+        : <>Ranh giới I3 — đích của một route là cấu trúc được engine kiểm tra, không phải đầu ra tự do của model mà engine tin tưởng.</>,
       diagram: branchDiagram,
       code: null,
       code2Note: en
-        ? "10_conditional_routing.cpp's triage only ever routes outward once. examples/23_handoff_mesh.cpp is the genuinely mesh-shaped case: billing and tech can EACH hand off to the other, plus an escalate request_port."
-        : "triage của 10_conditional_routing.cpp chỉ định tuyến ra ngoài đúng một lần. examples/23_handoff_mesh.cpp mới là trường hợp mesh thật sự: billing và tech có thể chuyển giao CHO NHAU, cộng thêm một request_port escalate.",
+        ? "10_conditional_routing.cpp's triage only ever routes outward once. examples/23_handoff_mesh.cpp is the genuinely mesh-shaped case: billing and tech can each hand off to the other, plus an escalate request_port."
+        : "triage của 10_conditional_routing.cpp chỉ định tuyến ra ngoài đúng một lần. examples/23_handoff_mesh.cpp mới là trường hợp mesh thật sự: billing và tech có thể chuyển giao cho nhau, cộng thêm một request_port escalate.",
       code2: <CodePanel filename="examples/23_handoff_mesh.cpp">{highlightCpp(workflowHandoffMeshSnippet)}</CodePanel>,
       sourceCite2: "examples/23_handoff_mesh.cpp:64-125",
       sourceHref2: gh("examples/23_handoff_mesh.cpp"),
@@ -326,13 +335,13 @@ function buildPanes(lang: "en" | "vi"): Record<PatternId, PatternPane> {
       ),
       proves: en
         ? [
-            <>Run against <strong>two different inputs</strong> through the SAME graph — proving the classifier's output steers the route, not that one branch is hardcoded.</>,
-            <>Exactly <strong>ONE</strong> branch ran — the unselected branch's <code>invoke()</code> was never called.</>,
+            <>Two different inputs ran through the <strong>same graph</strong>, proving the classifier's output steers the route rather than one branch being hardcoded.</>,
+            <>Exactly <strong>one</strong> branch ran — the unselected branch's <code>invoke()</code> was never called.</>,
             <>Shares Handoff's <code>routing_failed</code> boundary: zero or multiple matching labels both fail the run rather than silently picking one.</>,
           ]
         : [
-            <>Chạy với <strong>hai đầu vào khác nhau</strong> trên CÙNG một đồ thị — chứng minh đầu ra của bộ phân loại điều khiển route, không phải một nhánh bị hardcode.</>,
-            <>Đúng <strong>MỘT</strong> nhánh chạy — <code>invoke()</code> của nhánh không được chọn không bao giờ được gọi.</>,
+            <>Hai đầu vào khác nhau chạy qua <strong>cùng một đồ thị</strong>, chứng minh đầu ra của bộ phân loại điều khiển route, không phải một nhánh bị hardcode.</>,
+            <>Đúng <strong>một</strong> nhánh chạy — <code>invoke()</code> của nhánh không được chọn không bao giờ được gọi.</>,
             <>Dùng chung ranh giới <code>routing_failed</code> với Handoff: không hoặc nhiều nhãn khớp đều làm run thất bại thay vì âm thầm chọn một.</>,
           ],
       diagram: branchDiagram,
@@ -340,8 +349,8 @@ function buildPanes(lang: "en" | "vi"): Record<PatternId, PatternPane> {
       sourceCite: "examples/10_conditional_routing.cpp",
       sourceHref: gh("examples/10_conditional_routing.cpp"),
       code2Note: en
-        ? "What running it actually looks like: the SAME graph driven twice, with the invocation counters that prove exactly one branch fired each time."
-        : "Khi chạy thật sự trông như thế nào: CÙNG một đồ thị được chạy hai lần, kèm các bộ đếm lệnh gọi chứng minh đúng một nhánh được kích hoạt mỗi lần.",
+        ? "What running it actually looks like: the same graph driven twice, with the invocation counters that prove exactly one branch fired each time."
+        : "Khi chạy thật sự trông như thế nào: cùng một đồ thị được chạy hai lần, kèm các bộ đếm lệnh gọi chứng minh đúng một nhánh được kích hoạt mỗi lần.",
       code2: <CodePanel filename="examples/10_conditional_routing.cpp">{highlightCpp(workflowRouterRunSnippet)}</CodePanel>,
       sourceCite2: "examples/10_conditional_routing.cpp:136-160",
       sourceHref2: gh("examples/10_conditional_routing.cpp"),
@@ -351,11 +360,14 @@ function buildPanes(lang: "en" | "vi"): Record<PatternId, PatternPane> {
       tagBadge: "Group chat / debate · switch_case cycle",
       whyShape: en
         ? (
-            <>014 §3's own guidance: pick Group chat/debate when <strong>the caller wants to author the routing and stopping condition explicitly</strong> — a fixed-round panel debate is the canonical case. This is the same cyclic <code>switch_case</code> primitive proven in Reflection/critic, generalized to more than one participant — not a separately proven test, just the same mechanism composed differently.</>
+            <>Reach for Group chat/debate when <strong>the caller wants to author the routing and stopping condition explicitly</strong> — a fixed-round panel debate is the canonical case. It's the same cyclic <code>switch_case</code> primitive Reflection/critic proves, generalized to more than one participant: the same mechanism, composed differently, not a separately proven test.</>
           )
         : (
-            <>Hướng dẫn của chính 014 §3: chọn Group chat/debate khi <strong>caller muốn tự quyết định rõ ràng cách định tuyến và điều kiện dừng</strong> — một cuộc tranh luận hội đồng với số vòng cố định là trường hợp điển hình. Đây là cùng một nguyên hàm <code>switch_case</code> theo chu trình đã được chứng minh trong Reflection/critic, được tổng quát hóa cho nhiều hơn một thành viên — không phải một test được chứng minh riêng, chỉ là cùng cơ chế được kết hợp khác đi.</>
+            <>Chọn Group chat/debate khi <strong>caller muốn tự quyết định rõ ràng cách định tuyến và điều kiện dừng</strong> — một cuộc tranh luận hội đồng với số vòng cố định là trường hợp điển hình. Đây là cùng một nguyên hàm <code>switch_case</code> theo chu trình mà Reflection/critic đã chứng minh, được tổng quát hóa cho nhiều hơn một thành viên: cùng cơ chế, chỉ kết hợp khác đi, không phải một test được chứng minh riêng.</>
           ),
+      whyShapeNote: en
+        ? <>014 §3 — when-to-use guidance for Group chat/debate.</>
+        : <>014 §3 — hướng dẫn chọn Group chat/debate.</>,
       diagram: (
         <>
           <div className="flow glass">
@@ -386,10 +398,10 @@ function buildPanes(lang: "en" | "vi"): Record<PatternId, PatternPane> {
       tagBadge: "Planner (Magentic) · switch_case cycle",
       whyShape: en
         ? (
-            <>Same cyclic shape as Group chat/debate — the difference is entirely in the moderator's own body: it maintains a task/progress ledger, picks the next participant, decides completion, and self-triggers a replan on stall detection itself. The round/stall/reset bounds are a safety valve here, not the termination contract — "hand over a goal and it finishes" is Planner's defining case, not Group chat's.</>
+            <>Planner has the same cyclic shape as Group chat/debate. The difference lives entirely in the moderator's own body: it maintains a task/progress ledger, picks the next participant, decides completion, and self-triggers a replan on stall detection. The round/stall/reset bounds work as a safety valve, not the termination contract — "hand over a goal and it finishes" is Planner's defining case, not Group chat's.</>
           )
         : (
-            <>Cùng hình dạng cyclic như Group chat/debate — khác biệt nằm hoàn toàn ở logic bên trong moderator: nó tự duy trì một task/progress ledger, tự chọn thành viên tiếp theo, tự quyết định khi nào hoàn tất, và tự kích hoạt replan khi phát hiện đình trệ. Các giới hạn vòng/stall/reset ở đây là một van an toàn, không phải điều kiện dừng chính — "giao một mục tiêu và nó tự hoàn tất" chính là trường hợp đặc trưng của Planner, không phải của Group chat.</>
+            <>Planner có cùng hình dạng cyclic như Group chat/debate. Khác biệt nằm hoàn toàn ở logic bên trong moderator: nó tự duy trì một task/progress ledger, tự chọn thành viên tiếp theo, tự quyết định khi nào hoàn tất, và tự kích hoạt replan khi phát hiện đình trệ. Các giới hạn vòng/stall/reset đóng vai trò một van an toàn, không phải điều kiện dừng chính — "giao một mục tiêu và nó tự hoàn tất" chính là trường hợp đặc trưng của Planner, không phải của Group chat.</>
           ),
       diagram: (
         <div className="flow glass">
@@ -419,11 +431,11 @@ function buildPanes(lang: "en" | "vi"): Record<PatternId, PatternPane> {
       proves: en
         ? [
             <>The critic's cycle <strong>converges</strong> (runs dry at "done") once it approves within budget, rather than being stopped by the bound — 3 critic calls: revise, revise, approve.</>,
-            <>The SAME cyclic shape is stopped <strong>CLEANLY</strong> by <code>bound.max_rounds</code> when it never converges — 6 rounds, no crash, no hang, <code>workflow_status::bound_max_rounds</code>, not a thrown exception.</>,
+            <>The same cyclic shape stops <strong>cleanly</strong> via <code>bound.max_rounds</code> when it never converges — 6 rounds, no crash, no hang, <code>workflow_status::bound_max_rounds</code>, not a thrown exception.</>,
           ]
         : [
             <>Chu trình của critic <strong>hội tụ</strong> (chạy cạn tại "done") một khi nó approve trong ngân sách cho phép, thay vì bị chặn lại bởi bound — 3 lần gọi critic: revise, revise, approve.</>,
-            <>Cùng hình dạng cyclic đó dừng lại <strong>SẠCH SẼ</strong> bởi <code>bound.max_rounds</code> khi nó không bao giờ hội tụ — 6 vòng, không crash, không treo, <code>workflow_status::bound_max_rounds</code>, không phải một exception bị ném ra.</>,
+            <>Cùng hình dạng cyclic đó dừng lại <strong>sạch sẽ</strong> bởi <code>bound.max_rounds</code> khi nó không bao giờ hội tụ — 6 vòng, không crash, không treo, <code>workflow_status::bound_max_rounds</code>, không phải một exception bị ném ra.</>,
           ],
       diagram: (
         <>
@@ -453,8 +465,8 @@ function buildPanes(lang: "en" | "vi"): Record<PatternId, PatternPane> {
       sourceCite: "tests/test_rt_workflow_supervisor_patterns.cpp (CY-1)",
       sourceHref: gh("tests/test_rt_workflow_supervisor_patterns.cpp"),
       code2Note: en
-        ? "CY-1 above converges. examples/13_reflection_loop.cpp is the other honest outcome the SAME shape has to handle: a writer/critic pair that never converges, stopped cleanly at bound.max_rounds."
-        : "CY-1 ở trên hội tụ. examples/13_reflection_loop.cpp là kết quả trung thực còn lại mà CÙNG một hình dạng phải xử lý: một cặp writer/critic không bao giờ hội tụ, bị dừng sạch sẽ tại bound.max_rounds.",
+        ? "CY-1 above converges. examples/13_reflection_loop.cpp is the other honest outcome the same shape has to handle: a writer/critic pair that never converges, stopped cleanly at bound.max_rounds."
+        : "CY-1 ở trên hội tụ. examples/13_reflection_loop.cpp là kết quả trung thực còn lại mà cùng một hình dạng phải xử lý: một cặp writer/critic không bao giờ hội tụ, bị dừng sạch sẽ tại bound.max_rounds.",
       code2: <CodePanel filename="examples/13_reflection_loop.cpp">{highlightCpp(workflowReflectionBoundSnippet)}</CodePanel>,
       sourceCite2: "examples/13_reflection_loop.cpp:90-116",
       sourceHref2: gh("examples/13_reflection_loop.cpp"),
@@ -566,15 +578,21 @@ export function ApiWorkflowPatternDetail({ pattern }: { pattern: PatternId }) {
           </RevealItem>
           <RevealItem>
             {pane.proves ? (
-              <ul className="proof-list">
-                {pane.proves.map((p, i) => (
-                  <li className="proof-item" key={i}>
-                    <span>{p}</span>
-                  </li>
-                ))}
-              </ul>
+              <>
+                <ul className="proof-list">
+                  {pane.proves.map((p, i) => (
+                    <li className="proof-item" key={i}>
+                      <span>{p}</span>
+                    </li>
+                  ))}
+                </ul>
+                {pane.provesNote ? <ApiDiagnosticNote>{pane.provesNote}</ApiDiagnosticNote> : null}
+              </>
             ) : (
-              <p style={{ color: "var(--text-dim)", lineHeight: 1.65, fontSize: "0.95rem" }}>{pane.whyShape}</p>
+              <>
+                <p style={{ color: "var(--text-dim)", lineHeight: 1.65, fontSize: "0.95rem" }}>{pane.whyShape}</p>
+                {pane.whyShapeNote ? <ApiDiagnosticNote>{pane.whyShapeNote}</ApiDiagnosticNote> : null}
+              </>
             )}
           </RevealItem>
         </RevealGroup>

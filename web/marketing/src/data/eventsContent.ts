@@ -314,7 +314,7 @@ export const eventsGapRows: Record<Lang, EventsGapRow[]> = {
     {
       what: "ADR-152 itself (workflow event streaming)",
       where:
-        "decisions/README.md's own row: \"Proposed -- implemented, red-teamed twice ... 35/35 new test checks passing, pending full regression ctest and project-owner sign-off.\" Real, tested code; not yet a Judged ADR.",
+        "decisions/README.md's own row: \"Proposed -- implemented, red-teamed twice ... 35/35 new test checks passing, pending full regression ctest and project-owner sign-off.\" The code works and is tested; the ADR itself isn't Judged yet.",
     },
     {
       what: "Durable replay of either stream",
@@ -340,7 +340,7 @@ export const eventsGapRows: Record<Lang, EventsGapRow[]> = {
     {
       what: "Bản thân ADR-152 (workflow event streaming)",
       where:
-        "Dòng của chính decisions/README.md: \"Proposed -- đã triển khai, đã red-team hai lần ... 35/35 kiểm tra mới đều pass, đang chờ ctest hồi quy đầy đủ và sự phê duyệt của chủ dự án.\" Mã thật, đã kiểm thử; chưa phải một ADR ở trạng thái Judged.",
+        "Dòng của chính decisions/README.md: \"Proposed -- đã triển khai, đã red-team hai lần ... 35/35 kiểm tra mới đều pass, đang chờ ctest hồi quy đầy đủ và sự phê duyệt của chủ dự án.\" Bản thân mã đã chạy được và đã kiểm thử; ADR thì chưa ở trạng thái Judged.",
     },
     {
       what: "Phát lại bền vững (durable replay) cho cả hai luồng",

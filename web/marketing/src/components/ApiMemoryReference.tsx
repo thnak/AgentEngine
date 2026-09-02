@@ -17,6 +17,7 @@ import {
 import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
+import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
 import { ApiTable } from "./ApiTable";
 import { CodePanel } from "./CodePanel";
 import { MemReadPathDiagram } from "./MemReadPathDiagram";
@@ -102,14 +103,15 @@ const copy = {
     sourceCols: ["memory_source", "Rendered label (ADR-046)", "What it means", "Who writes it today"],
     s1Note: (
       <>
-        <strong>The rule that shapes everything below (029 §6).</strong> No{" "}
-        <code>MemoryItem</code>, regardless of its <code>memory_source</code>, may satisfy a
-        policy predicate that requires a user assertion. That is I3 applied to storage: memory is
-        model-derived content the moment it passes through extraction, even though it is{" "}
-        <em>stored</em> like first-class engine state. The engine does not enforce this by
-        checking a field — it enforces it by making the field unreachable from the decision.
+        <strong>The rule that shapes everything below.</strong> No <code>MemoryItem</code>,
+        regardless of its <code>memory_source</code>, may satisfy a policy predicate that
+        requires a user assertion. That is I3 applied to storage: memory is model-derived
+        content the moment it passes through extraction, even though it is <em>stored</em> like
+        first-class engine state. The engine does not enforce this by checking a field — it
+        enforces it by making the field unreachable from the decision.
       </>
     ),
+    s1NoteCite: <>029 §6</>,
 
     s2Eyebrow: "core/memory.hpp + core/worktree.hpp — 029 §2",
     s2Heading: "Storage: a worktree, one scope level up — no second storage engine",
@@ -127,7 +129,7 @@ const copy = {
     s2Note: (
       <>
         <strong>Both names are pure functions of the <code>Principal</code>, deliberately.</strong>{" "}
-        <code>mount_read</code>/<code>mount_write</code> compare bare <code>mount_id</code> STRINGS
+        <code>mount_read</code>/<code>mount_write</code> compare bare <code>mount_id</code> strings
         with no knowledge of which principal either side belongs to. An earlier draft let the
         caller choose the mount id — which meant a plausible deployment (every principal's memory
         mounted under a shared literal id) would let a capability minted for principal A satisfy
@@ -160,8 +162,8 @@ const copy = {
     ),
     s3Note: (
       <>
-        <strong>The forgery surface this had to close on its own (ADR-046).</strong> Retrieved
-        content is tainted, model-influenced text — it can contain the literal marker bytes of a
+        <strong>The forgery surface this had to close on its own.</strong> Retrieved content is
+        tainted, model-influenced text — it can contain the literal marker bytes of a
         higher-trust label, whether by coincidence or by a deliberate attempt to make a reader
         believe a differently-sourced item follows. Every occurrence of the marker's open token
         inside <code>content</code> is broken with a zero-width space before the item's own real,
@@ -171,6 +173,7 @@ const copy = {
         enforcement.
       </>
     ),
+    s3NoteCite: <>ADR-046</>,
 
     s4Eyebrow: "core/memory_provider.hpp — 029 §4",
     s4Heading: "The write path: extraction is an attributed effect, not a background job",
@@ -281,10 +284,9 @@ const copy = {
     s8Heading: "What is missing, or narrower than the RFC asks for",
     s8Body: (
       <>
-        Everything above is real code with tests behind it. Everything below is not — stated as
-        such rather than blurred into the same paragraph. Milestone 4's own breakdown named most
-        of these as deferred at the time rather than assuming them in scope, and they are still
-        deferred.
+        Everything above is real code with tests behind it. Everything below is not. Milestone
+        4's own breakdown named most of these as deferred at the time rather than assuming them
+        in scope, and they are still deferred.
       </>
     ),
     gapCols: ["What", "RFC / gate", "Where it actually stands"],
@@ -323,15 +325,16 @@ const copy = {
     sourceCols: ["memory_source", "Nhãn hiển thị (ADR-046)", "Nghĩa là gì", "Hôm nay ai ghi nó"],
     s1Note: (
       <>
-        <strong>Quy tắc định hình mọi thứ bên dưới (029 §6).</strong> Không một{" "}
-        <code>MemoryItem</code> nào, bất kể <code>memory_source</code> của nó là gì, được phép thỏa
-        mãn một điều kiện chính sách đòi hỏi một lời khẳng định của người dùng. Đó chính là I3 áp
-        dụng cho lưu trữ: bộ nhớ trở thành nội dung do model sinh ra ngay khoảnh khắc nó đi qua
-        bước trích xuất, dù nó được <em>lưu</em> như trạng thái hạng nhất của engine. Engine không
-        thực thi điều này bằng cách kiểm tra một trường — nó thực thi bằng cách làm cho trường đó
-        không thể với tới được từ nơi ra quyết định.
+        <strong>Quy tắc định hình mọi thứ bên dưới.</strong> Không một <code>MemoryItem</code>{" "}
+        nào, bất kể <code>memory_source</code> của nó là gì, được phép thỏa mãn một điều kiện
+        chính sách đòi hỏi một lời khẳng định của người dùng. Đó chính là I3 áp dụng cho lưu trữ:
+        bộ nhớ trở thành nội dung do model sinh ra ngay khoảnh khắc nó đi qua bước trích xuất, dù
+        nó được <em>lưu</em> như trạng thái hạng nhất của engine. Engine không thực thi điều này
+        bằng cách kiểm tra một trường — nó thực thi bằng cách làm cho trường đó không thể với tới
+        được từ nơi ra quyết định.
       </>
     ),
+    s1NoteCite: <>029 §6</>,
 
     s2Eyebrow: "core/memory.hpp + core/worktree.hpp — 029 §2",
     s2Heading: "Lưu trữ: một worktree, lùi ra một cấp phạm vi — không có kho lưu trữ thứ hai",
@@ -351,7 +354,7 @@ const copy = {
         <strong>
           Cả hai cái tên đều là hàm thuần túy của <code>Principal</code>, một cách có chủ ý.
         </strong>{" "}
-        <code>mount_read</code>/<code>mount_write</code> so sánh những CHUỖI <code>mount_id</code>{" "}
+        <code>mount_read</code>/<code>mount_write</code> so sánh những chuỗi <code>mount_id</code>{" "}
         trần trụi mà không hề biết mỗi bên thuộc về principal nào. Một bản nháp trước đó để người
         gọi tự chọn mount id — nghĩa là một cách triển khai hoàn toàn hợp lý (bộ nhớ của mọi
         principal cùng được mount dưới một id dùng chung) sẽ khiến một capability cấp cho principal
@@ -384,17 +387,18 @@ const copy = {
     ),
     s3Note: (
       <>
-        <strong>Bề mặt giả mạo mà chính cơ chế này phải tự đóng lại (ADR-046).</strong> Nội dung
-        được truy hồi là văn bản tainted, chịu ảnh hưởng của model — nó có thể chứa đúng những byte
-        đánh dấu của một nhãn đáng tin hơn, dù do trùng hợp hay do một nỗ lực cố ý khiến người đọc
-        tin rằng ngay sau đó là một mục có nguồn gốc khác. Mọi lần xuất hiện của token mở đầu chuỗi
-        đánh dấu bên trong <code>content</code> đều bị phá vỡ bằng một khoảng trắng rộng bằng không
+        <strong>Bề mặt giả mạo mà chính cơ chế này phải tự đóng lại.</strong> Nội dung được truy
+        hồi là văn bản tainted, chịu ảnh hưởng của model — nó có thể chứa đúng những byte đánh dấu
+        của một nhãn đáng tin hơn, dù do trùng hợp hay do một nỗ lực cố ý khiến người đọc tin rằng
+        ngay sau đó là một mục có nguồn gốc khác. Mọi lần xuất hiện của token mở đầu chuỗi đánh
+        dấu bên trong <code>content</code> đều bị phá vỡ bằng một khoảng trắng rộng bằng không
         trước khi nhãn thật, do cấu trúc phát ra, được gắn vào đầu — nên chuỗi đánh dấu nguyên vẹn
         chỉ có thể xuất hiện đúng ở nơi bộ hiển thị tự đặt nó. Bản thân nhãn không mang thẩm quyền
         nào — nó chỉ là một trợ giúp hiển thị, còn <code>tainted</code>/<code>origin</code> vẫn là
         cơ chế thực thi thật sự của 029 §6.
       </>
     ),
+    s3NoteCite: <>ADR-046</>,
 
     s4Eyebrow: "core/memory_provider.hpp — 029 §4",
     s4Heading: "Đường ghi: trích xuất là một hiệu ứng có quy trách nhiệm, không phải một tác vụ nền",
@@ -509,10 +513,9 @@ const copy = {
     s8Heading: "Những gì còn thiếu, hoặc hẹp hơn so với yêu cầu của RFC",
     s8Body: (
       <>
-        Mọi thứ ở trên là mã thật với kiểm thử đứng sau. Mọi thứ bên dưới thì không — và điều đó
-        được nói thẳng ra, thay vì hòa lẫn vào cùng một đoạn văn. Bản phân rã của Milestone 4 đã
-        nêu tên phần lớn những mục này là bị hoãn ngay từ lúc đó chứ không mặc nhiên coi là trong
-        phạm vi, và tới nay chúng vẫn còn bị hoãn.
+        Mọi thứ ở trên là mã thật với kiểm thử đứng sau. Mọi thứ bên dưới thì không. Bản phân rã
+        của Milestone 4 đã nêu tên phần lớn những mục này là bị hoãn ngay từ lúc đó chứ không mặc
+        nhiên coi là trong phạm vi, và tới nay chúng vẫn còn bị hoãn.
       </>
     ),
     gapCols: ["Cái gì", "RFC / cổng", "Thực tế đang ở đâu"],
@@ -575,6 +578,7 @@ export function ApiMemoryReference() {
             <p className="gs-note" style={{ marginTop: 20, borderLeftColor: "var(--accent-pink)" }}>
               {t.s1Note}
             </p>
+            <ApiDiagnosticNote>{t.s1NoteCite}</ApiDiagnosticNote>
           </RevealItem>
         </RevealGroup>
 
@@ -648,6 +652,7 @@ export function ApiMemoryReference() {
             <p className="gs-note" style={{ marginTop: 20, borderLeftColor: "var(--accent-pink)" }}>
               {t.s3Note}
             </p>
+            <ApiDiagnosticNote>{t.s3NoteCite}</ApiDiagnosticNote>
           </RevealItem>
 
           <RevealItem>

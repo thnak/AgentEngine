@@ -73,7 +73,7 @@ export const memoryEntries: Record<Lang, MemoryEntry[]> = {
       tag: "memory_source · MemoryOrigin",
       title: "Provenance is a trust signal, not decoration",
       body:
-        "Every item carries a MemoryOrigin{source, run_id, turn_id, principal}. 029 §6's rule is that a model_inferred item must never acquire a user_stated item's standing — and the enforcement is structural, not a naming convention: retrieval marks EVERY item tainted and content_origin::external regardless of source, and the approval decider that could be fooled by an authoritative-sounding item cannot see a MemoryItem at all. What source does change is rendering: since ADR-046, each injected item is prefixed with a confidence label derived only from the trusted origin.source field, never from the content itself.",
+        "Every item carries a MemoryOrigin{source, run_id, turn_id, principal}. 029 §6's rule is that a model_inferred item must never acquire a user_stated item's standing. The enforcement is structural, not a naming convention: retrieval marks every item tainted and content_origin::external regardless of source, and the approval decider that could be fooled by an authoritative-sounding item cannot see a MemoryItem at all. What source does change is rendering: since ADR-046, each injected item is prefixed with a confidence label derived only from the trusted origin.source field, never from the content itself.",
       cite: "include/agentengine/core/memory.hpp:30",
       href: gh("include/agentengine/core/memory.hpp"),
       status: "real",
@@ -83,7 +83,7 @@ export const memoryEntries: Record<Lang, MemoryEntry[]> = {
       tag: "memory_ref_name() · memory_mount_id()",
       title: "One principal, one worktree ref — tenant included",
       body:
-        "A principal's memory lives under the ref \"principal:<tenant_id>:<id>\", mounted under the mount id \"memory:<tenant_id>:<id>\". Both are pure functions of the Principal, never caller-supplied: mount_read/mount_write compare bare mount-id STRINGS with no idea which principal either side belongs to, so a caller-chosen mount id would let a capability minted for one principal satisfy the check against another's Mount. Deriving both from the principal closes that by construction.",
+        "A principal's memory lives under the ref \"principal:<tenant_id>:<id>\", mounted under the mount id \"memory:<tenant_id>:<id>\". Both are pure functions of the Principal, never caller-supplied: mount_read/mount_write compare bare mount-id strings with no idea which principal either side belongs to, so a caller-chosen mount id would let a capability minted for one principal satisfy the check against another's Mount. Deriving both from the principal closes that by construction.",
       cite: "include/agentengine/core/memory.hpp:79",
       href: gh("include/agentengine/core/memory.hpp"),
       status: "real",
@@ -93,7 +93,7 @@ export const memoryEntries: Record<Lang, MemoryEntry[]> = {
       tag: "class MemoryProvider<SummarizerT, OS, RS>",
       title: "A real ContextProvider, on both hooks",
       body:
-        "MemoryProvider holds an object store, a ref store, its Mount, an already-bound cap::FsRead and cap::FsWrite, a declared ChatClient used only for extraction, and max_injected (default 3). on_context() is the read path; on_turn_end() is the write path. It is a genuine ContextProvider conformer and composes with HistoryProvider through the standalone assemble_context() — but it is deliberately NOT wired into AgentSession's own provider slot in any shipped configuration, because that slot is a default-constructed value member and MemoryProvider has no default constructor (it needs real stores and real capabilities to exist at all).",
+        "MemoryProvider holds an object store, a ref store, its Mount, an already-bound cap::FsRead and cap::FsWrite, a declared ChatClient used only for extraction, and max_injected (default 3). on_context() is the read path; on_turn_end() is the write path. It is a genuine ContextProvider conformer and composes with HistoryProvider through the standalone assemble_context(). It is deliberately not wired into AgentSession's own provider slot in any shipped configuration: that slot is a default-constructed value member, and MemoryProvider has no default constructor — it needs real stores and real capabilities to exist at all.",
       cite: "include/agentengine/core/memory_provider.hpp:240",
       href: gh("include/agentengine/core/memory_provider.hpp"),
       status: "real",
@@ -135,7 +135,7 @@ export const memoryEntries: Record<Lang, MemoryEntry[]> = {
       tag: "memory_source · MemoryOrigin",
       title: "Nguồn gốc là một tín hiệu tin cậy, không phải đồ trang trí",
       body:
-        "Mỗi mục mang một MemoryOrigin{source, run_id, turn_id, principal}. Quy tắc của 029 §6 là một mục model_inferred không bao giờ được có cùng vị thế với một mục user_stated — và sự thực thi này mang tính cấu trúc, không phải một quy ước đặt tên: đường đọc đánh dấu MỌI mục là tainted và content_origin::external bất kể nguồn gốc, còn bộ quyết định phê duyệt (thứ có thể bị lừa bởi một mục nghe có vẻ đầy thẩm quyền) thì hoàn toàn không nhìn thấy một MemoryItem nào cả. Điều mà source thực sự thay đổi là cách hiển thị: từ ADR-046, mỗi mục được tiêm vào đều được gắn tiền tố một nhãn độ tin cậy suy ra CHỈ từ trường origin.source đáng tin, không bao giờ từ chính content.",
+        "Mỗi mục mang một MemoryOrigin{source, run_id, turn_id, principal}. Quy tắc của 029 §6 là một mục model_inferred không bao giờ được có cùng vị thế với một mục user_stated. Sự thực thi này mang tính cấu trúc, không phải một quy ước đặt tên: đường đọc đánh dấu mọi mục là tainted và content_origin::external bất kể nguồn gốc, còn bộ quyết định phê duyệt (thứ có thể bị lừa bởi một mục nghe có vẻ đầy thẩm quyền) thì hoàn toàn không nhìn thấy một MemoryItem nào cả. Điều mà source thực sự thay đổi là cách hiển thị: từ ADR-046, mỗi mục được tiêm vào đều được gắn tiền tố một nhãn độ tin cậy suy ra chỉ từ trường origin.source đáng tin, không bao giờ từ chính content.",
       cite: "include/agentengine/core/memory.hpp:30",
       href: gh("include/agentengine/core/memory.hpp"),
       status: "real",
@@ -145,7 +145,7 @@ export const memoryEntries: Record<Lang, MemoryEntry[]> = {
       tag: "memory_ref_name() · memory_mount_id()",
       title: "Một principal, một ref worktree — có cả tenant",
       body:
-        "Bộ nhớ của một principal nằm dưới ref \"principal:<tenant_id>:<id>\", được mount dưới mount id \"memory:<tenant_id>:<id>\". Cả hai đều là hàm thuần túy của Principal, không bao giờ do người gọi cung cấp: mount_read/mount_write so sánh CHUỖI mount id trần trụi mà không hề biết mỗi bên thuộc về principal nào, nên một mount id do người gọi tự chọn sẽ khiến một capability được cấp cho principal này thỏa mãn được phép kiểm tra đối với Mount của principal khác. Việc suy ra cả hai từ chính principal đóng lỗ hổng đó ngay từ cấu trúc.",
+        "Bộ nhớ của một principal nằm dưới ref \"principal:<tenant_id>:<id>\", được mount dưới mount id \"memory:<tenant_id>:<id>\". Cả hai đều là hàm thuần túy của Principal, không bao giờ do người gọi cung cấp: mount_read/mount_write so sánh chuỗi mount id trần trụi mà không hề biết mỗi bên thuộc về principal nào, nên một mount id do người gọi tự chọn sẽ khiến một capability được cấp cho principal này thỏa mãn được phép kiểm tra đối với Mount của principal khác. Việc suy ra cả hai từ chính principal đóng lỗ hổng đó ngay từ cấu trúc.",
       cite: "include/agentengine/core/memory.hpp:79",
       href: gh("include/agentengine/core/memory.hpp"),
       status: "real",
@@ -155,7 +155,7 @@ export const memoryEntries: Record<Lang, MemoryEntry[]> = {
       tag: "class MemoryProvider<SummarizerT, OS, RS>",
       title: "Một ContextProvider thật, trên cả hai hook",
       body:
-        "MemoryProvider giữ một object store, một ref store, Mount của nó, một cap::FsRead và cap::FsWrite đã được ràng buộc sẵn, một ChatClient được khai báo chỉ dùng cho việc trích xuất, và max_injected (mặc định 3). on_context() là đường đọc; on_turn_end() là đường ghi. Nó là một bên tuân theo ContextProvider thực thụ và kết hợp được với HistoryProvider qua assemble_context() độc lập — nhưng nó CỐ Ý không được nối vào slot provider của AgentSession trong bất kỳ cấu hình nào đang xuất xưởng, bởi slot đó là một thành viên giá trị được khởi tạo mặc định, còn MemoryProvider không có hàm khởi tạo mặc định (nó cần store thật và capability thật thì mới tồn tại được).",
+        "MemoryProvider giữ một object store, một ref store, Mount của nó, một cap::FsRead và cap::FsWrite đã được ràng buộc sẵn, một ChatClient được khai báo chỉ dùng cho việc trích xuất, và max_injected (mặc định 3). on_context() là đường đọc; on_turn_end() là đường ghi. Nó là một bên tuân theo ContextProvider thực thụ và kết hợp được với HistoryProvider qua assemble_context() độc lập. Nó cố ý không được nối vào slot provider của AgentSession trong bất kỳ cấu hình nào đang xuất xưởng: slot đó là một thành viên giá trị được khởi tạo mặc định, còn MemoryProvider không có hàm khởi tạo mặc định — nó cần store thật và capability thật thì mới tồn tại được.",
       cite: "include/agentengine/core/memory_provider.hpp:240",
       href: gh("include/agentengine/core/memory_provider.hpp"),
       status: "real",
@@ -399,7 +399,7 @@ export const memoryProofRows: Record<Lang, MemoryProofRow[]> = {
       href: gh("tests/test_memory_cross_tenant_isolation.cpp"),
       gate: "M5 I1 · 018 §6 · 029 §9 G4/G5",
       establishes:
-        "The regression proof for a bug that was real. Through Milestone 4, memory_ref_name() and memory_mount_id() derived from principal.id ALONE — so two tenants that each have a user literally named \"admin\" shared one memory worktree. The pre-existing cross-principal test never caught it, because both of its principals lived in the same tenant. This file is the missing different-tenant, same-id case: distinct refs, distinct log ids, tenant B's capability rejected outright against tenant A's mount, tenant B's worktree holding none of tenant A's items — and the same-tenant guarantee still intact.",
+        "The regression proof for a bug that was real. Through Milestone 4, memory_ref_name() and memory_mount_id() derived from principal.id alone, so two tenants that each have a user literally named \"admin\" shared one memory worktree. The pre-existing cross-principal test never caught it, because both of its principals lived in the same tenant. This file is the missing different-tenant, same-id case: distinct refs, distinct log ids, tenant B's capability rejected outright against tenant A's mount, tenant B's worktree holding none of tenant A's items — and the same-tenant guarantee still intact.",
     },
     {
       file: "test_memory_ranking_formula.cpp",
@@ -479,7 +479,7 @@ export const memoryGapRows: Record<Lang, MemoryGapRow[]> = {
       what: "Salience decay & consolidation",
       rfc: "029 §7",
       state:
-        "Not implemented. The only trace of it in code is a comment in memory_rank_score() noting that 029 §7's decay model trends salience toward zero — which is precisely why a zero-salience item must not be structurally unsurfaceable. Nothing decays anything today; salience is whatever a writer set. §10 Q1 settled the SHAPE (exponential half-life) and left the half-life value genuinely evidence-gated.",
+        "Not implemented. The only trace of it in code is a comment in memory_rank_score() noting that 029 §7's decay model trends salience toward zero — which is precisely why a zero-salience item must not be structurally unsurfaceable. Nothing decays anything today; salience is whatever a writer set. §10 Q1 settled the shape (exponential half-life) and left the half-life value genuinely evidence-gated.",
       status: "design",
     },
     {
@@ -514,14 +514,14 @@ export const memoryGapRows: Record<Lang, MemoryGapRow[]> = {
       what: "MemoryProvider inside AgentSession",
       rfc: "029 §4 · 005 §3",
       state:
-        "It composes with HistoryProvider through the standalone assemble_context(), which is real and tested — but AgentSession's provider slot is a default-constructed value member, and MemoryProvider has no default constructor. Widening AgentSession to take a provider pack natively is named as later, separately-scoped work in memory_provider.hpp's and composed_context_provider.hpp's own file-top comments.",
+        "It composes with HistoryProvider through the standalone assemble_context(), real and tested. AgentSession's provider slot, however, is a default-constructed value member, and MemoryProvider has no default constructor. Widening AgentSession to take a provider pack natively is named as later, separately-scoped work in memory_provider.hpp's and composed_context_provider.hpp's own file-top comments.",
       status: "design",
     },
     {
       what: "Concurrent writers to one principal's memory",
       rfc: "029 §2",
       state:
-        "A named residual, not a hidden one: write_memory_item() PREDICTS write_seq as last_seq + 1 rather than reading it back, which is correct for every caller today (one principal's memory, written sequentially by that principal's own turn loop) and is not structurally enforced against a future second writer to the same ref.",
+        "A named residual, not a hidden one: write_memory_item() predicts write_seq as last_seq + 1 rather than reading it back, which is correct for every caller today (one principal's memory, written sequentially by that principal's own turn loop) and is not structurally enforced against a future second writer to the same ref.",
       status: "design",
     },
   ],
@@ -530,14 +530,14 @@ export const memoryGapRows: Record<Lang, MemoryGapRow[]> = {
       what: "Truy hồi theo vector / ngữ nghĩa (plugin ae:memory)",
       rfc: "029 §5, §9 G6",
       state:
-        "Cố ý chưa xây. Tiêu chí thoát của M4 chỉ từng đòi hỏi đường mặc định không dùng vector; phần nâng cấp là một plugin WASM theo 009 và có thể xuất hiện ở bất kỳ milestone nào sau này. Quy tắc của chính G6 đã sẵn sàng: với trường hợp vector, việc miễn trừ tính tất định phải được KHAI BÁO và ghi vào vết chạy, không bao giờ được âm thầm bỏ qua.",
+        "Cố ý chưa xây. Tiêu chí thoát của M4 chỉ từng đòi hỏi đường mặc định không dùng vector; phần nâng cấp là một plugin WASM theo 009 và có thể xuất hiện ở bất kỳ milestone nào sau này. Quy tắc của chính G6 đã sẵn sàng: với trường hợp vector, việc miễn trừ tính tất định phải được khai báo và ghi vào vết chạy, không bao giờ được âm thầm bỏ qua.",
       status: "design",
     },
     {
       what: "Suy giảm salience & hợp nhất ký ức",
       rfc: "029 §7",
       state:
-        "Chưa được cài đặt. Dấu vết duy nhất của nó trong mã là một dòng chú thích trong memory_rank_score() lưu ý rằng mô hình suy giảm của 029 §7 kéo salience về gần không — và đó chính là lý do một mục có salience bằng không không được phép bị chặn khỏi việc nổi lên. Hôm nay không có gì suy giảm cả; salience là đúng giá trị mà bên ghi đã đặt. §10 Q1 đã chốt HÌNH DẠNG (nửa chu kỳ theo hàm mũ) và để lại giá trị nửa chu kỳ thực sự phải chờ bằng chứng.",
+        "Chưa được cài đặt. Dấu vết duy nhất của nó trong mã là một dòng chú thích trong memory_rank_score() lưu ý rằng mô hình suy giảm của 029 §7 kéo salience về gần không — và đó chính là lý do một mục có salience bằng không không được phép bị chặn khỏi việc nổi lên. Hôm nay không có gì suy giảm cả; salience là đúng giá trị mà bên ghi đã đặt. §10 Q1 đã chốt hình dạng (nửa chu kỳ theo hàm mũ) và để lại giá trị nửa chu kỳ thực sự phải chờ bằng chứng.",
       status: "design",
     },
     {
@@ -572,14 +572,14 @@ export const memoryGapRows: Record<Lang, MemoryGapRow[]> = {
       what: "MemoryProvider bên trong AgentSession",
       rfc: "029 §4 · 005 §3",
       state:
-        "Nó kết hợp được với HistoryProvider qua assemble_context() độc lập — thứ có thật và đã được kiểm thử — nhưng slot provider của AgentSession là một thành viên giá trị khởi tạo mặc định, còn MemoryProvider không có hàm khởi tạo mặc định. Việc mở rộng AgentSession để nhận thẳng một gói provider được nêu tên là phần việc riêng, muộn hơn, ngay trong chú thích đầu file của memory_provider.hpp và composed_context_provider.hpp.",
+        "Nó kết hợp được với HistoryProvider qua assemble_context() độc lập, thứ có thật và đã được kiểm thử. Slot provider của AgentSession, tuy vậy, là một thành viên giá trị khởi tạo mặc định, còn MemoryProvider không có hàm khởi tạo mặc định. Việc mở rộng AgentSession để nhận thẳng một gói provider được nêu tên là phần việc riêng, muộn hơn, ngay trong chú thích đầu file của memory_provider.hpp và composed_context_provider.hpp.",
       status: "design",
     },
     {
       what: "Nhiều bên cùng ghi vào bộ nhớ của một principal",
       rfc: "029 §2",
       state:
-        "Một phần dư được nêu tên, không bị giấu: write_memory_item() DỰ ĐOÁN write_seq bằng last_seq + 1 thay vì đọc lại sau khi ghi, điều này đúng với mọi bên gọi hiện nay (bộ nhớ của một principal, được ghi tuần tự bởi chính vòng lặp lượt của principal đó) và không được cấu trúc bảo đảm trước một bên ghi thứ hai trong tương lai vào cùng một ref.",
+        "Một phần dư được nêu tên, không bị giấu: write_memory_item() dự đoán write_seq bằng last_seq + 1 thay vì đọc lại sau khi ghi, điều này đúng với mọi bên gọi hiện nay (bộ nhớ của một principal, được ghi tuần tự bởi chính vòng lặp lượt của principal đó) và không được cấu trúc bảo đảm trước một bên ghi thứ hai trong tương lai vào cùng một ref.",
       status: "design",
     },
   ],

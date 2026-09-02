@@ -30,6 +30,7 @@ import { useLang } from "../i18n/LanguageContext";
 import type { Lang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
+import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
 import { ApiTable } from "./ApiTable";
 import { CodePanel } from "./CodePanel";
 import { DuEffectJournalDiagram } from "./DuEffectJournalDiagram";
@@ -159,13 +160,18 @@ const copy = {
     s1RoundtripBody: (
       <>
         Everything above is the record's own shape. Here is the round trip a host actually
-        performs: build a session, run a turn, <code>save_agent_session_snapshot()</code> it —
-        then genuinely throw that instance away and <code>load_agent_session_snapshot()</code>{" "}
-        into a BRAND-NEW one via <code>restore_from_record()</code>, the same discipline{" "}
-        <code>tests/test_rt_agent_session_snapshot.cpp</code> uses rather than just re-reading the
-        same object. <code>session_id</code> and <code>principal</code> come back
-        bit-identical; <code>history()</code> comes back empty, on purpose — the named gap above,
-        made concrete.
+        performs: build a session, run a turn, and call{" "}
+        <code>save_agent_session_snapshot()</code>. Then discard that instance entirely and call{" "}
+        <code>load_agent_session_snapshot()</code> into a brand-new one via{" "}
+        <code>restore_from_record()</code> — never just re-reading the same object.{" "}
+        <code>session_id</code> and <code>principal</code> come back bit-identical.{" "}
+        <code>history()</code> comes back empty, on purpose: the named gap above, made concrete.
+      </>
+    ),
+    s1RoundtripNote: (
+      <>
+        <code>tests/test_rt_agent_session_snapshot.cpp</code> follows this same
+        discard-and-reload discipline
       </>
     ),
     s1Note: (
@@ -189,7 +195,7 @@ const copy = {
     swBody: (
       <>
         Everything above is session-scoped. A <code>Workflow</code> run has its own, separate
-        durability story that rides the SAME <code>SessionStore</code> concept rather than
+        durability story that rides the same <code>SessionStore</code> concept rather than
         inventing a second one: <code>WorkflowCheckpointManager&lt;StoreT&gt;</code> wraps
         already-real <code>save_workflow_checkpoint()</code>/<code>load_workflow_checkpoint()</code>
         , so <code>attach(sup)</code> installs a checkpoint hook that persists after every round
@@ -204,7 +210,7 @@ const copy = {
         <code>request_port</code> gate, drops the original <code>WorkflowSupervisor</code> and{" "}
         <code>FileSessionStore</code> handle out of scope entirely, then resumes — from nothing
         but a freshly reopened on-disk store and the run's own id — into a brand-new supervisor
-        holding the SAME open interaction the original run left waiting.{" "}
+        holding the same open interaction the original run left waiting.{" "}
         <code>tests/test_rt_workflow_checkpoint_manager.cpp</code> adds the fail-closed guard this
         simple example doesn't exercise: an <code>agent</code>-kind or{" "}
         <code>sub_workflow</code>-kind executor is refused rather than checkpointed incompletely.
@@ -361,7 +367,7 @@ const copy = {
     card2Title: "Node loss — not handled, by decision",
     card2Body: "Quark's FenceToken prevented two activations of one session. ADR-037 removed it and nothing replaced it: there is no fence, epoch or lease anywhere in this tree, no cross-process locking in either store, and five node-loss/fencing test files were retired as an accepted permanent gap. What survives is an in-process FIFO AsyncMutex — enough to make a snapshot safe against a concurrent turn, and nothing more.",
     card3Title: "Deploys — the version pin is unbuilt",
-    card3Body: "019 §4 wants a version-skew policy defaulting to pin, so a resumed run doesn't silently change behaviour under new instructions. AgentMetadata::agent_version is real (ADR-044), but nothing consults it when a run resumes, so there is no pin-or-migrate decision being made at all.",
+    card3Body: "019 §4 wants a version-skew policy that defaults to pin, so a resumed run never silently changes behaviour under new instructions. AgentMetadata::agent_version exists, but nothing consults it when a run resumes — no pin-or-migrate decision gets made at all.",
     s8PoisonLabel: "tests/test_rt_agent_session_identity_and_admission.cpp — POISON-1…4, the real policy",
     s8PoisonBody: (
       <>
@@ -449,13 +455,18 @@ const copy = {
     s1RoundtripBody: (
       <>
         Mọi thứ ở trên là hình dạng của chính bản ghi. Đây là vòng lặp mà một host thực sự thực
-        hiện: dựng một session, chạy một lượt, <code>save_agent_session_snapshot()</code> nó — rồi
-        thực sự vứt bỏ thể hiện đó và <code>load_agent_session_snapshot()</code> vào một thể hiện
-        HOÀN TOÀN MỚI qua <code>restore_from_record()</code>, đúng kỷ luật mà{" "}
-        <code>tests/test_rt_agent_session_snapshot.cpp</code> dùng thay vì chỉ đọc lại cùng một
-        đối tượng. <code>session_id</code> và <code>principal</code> quay về giống hệt tới từng
-        bit; <code>history()</code> quay về rỗng, có chủ đích — khoảng trống đã nêu tên ở trên,
-        giờ thành cụ thể.
+        hiện: dựng một session, chạy một lượt, rồi gọi <code>save_agent_session_snapshot()</code>.
+        Sau đó vứt bỏ hẳn thể hiện đó và gọi <code>load_agent_session_snapshot()</code> vào một
+        thể hiện hoàn toàn mới qua <code>restore_from_record()</code> — không bao giờ chỉ đọc lại
+        cùng một đối tượng. <code>session_id</code> và <code>principal</code> quay về giống hệt
+        tới từng bit. <code>history()</code> quay về rỗng, có chủ đích: khoảng trống đã nêu tên ở
+        trên, giờ thành cụ thể.
+      </>
+    ),
+    s1RoundtripNote: (
+      <>
+        <code>tests/test_rt_agent_session_snapshot.cpp</code> theo đúng kỷ luật
+        vứt-bỏ-rồi-nạp-lại này
       </>
     ),
     s1Note: (
@@ -478,7 +489,7 @@ const copy = {
     swBody: (
       <>
         Mọi thứ ở trên đều thuộc phạm vi session. Một run <code>Workflow</code> có câu chuyện bền
-        vững riêng của nó, đi trên CÙNG một khái niệm <code>SessionStore</code> thay vì bịa ra một
+        vững riêng của nó, đi trên cùng một khái niệm <code>SessionStore</code> thay vì bịa ra một
         cái thứ hai: <code>WorkflowCheckpointManager&lt;StoreT&gt;</code> bọc quanh{" "}
         <code>save_workflow_checkpoint()</code>/<code>load_workflow_checkpoint()</code> vốn đã có
         thật, nên <code>attach(sup)</code> cài một hook checkpoint tự lưu sau mỗi round mà không
@@ -651,7 +662,7 @@ const copy = {
     card2Title: "Mất node — không xử lý, theo quyết định",
     card2Body: "FenceToken của Quark từng ngăn hai lần kích hoạt của cùng một session. ADR-037 bỏ nó và không gì thay thế: trong cây mã này không có fence, epoch hay lease nào, không store nào khóa liên tiến trình, và năm tệp kiểm thử về mất node/fencing đã bị rút như một khoảng trống vĩnh viễn được chấp nhận. Thứ còn lại là một AsyncMutex FIFO trong tiến trình — đủ để một snapshot an toàn trước một lượt đang chạy, và chỉ vậy thôi.",
     card3Title: "Triển khai — việc ghim phiên bản chưa xây",
-    card3Body: "019 §4 muốn một chính sách lệch phiên bản mặc định là ghim, để một run tiếp tục không âm thầm đổi hành vi dưới bộ chỉ dẫn mới. AgentMetadata::agent_version là thật (ADR-044), nhưng không gì tra tới nó khi một run tiếp tục, nên thực tế chẳng có quyết định ghim-hay-chuyển nào được đưa ra cả.",
+    card3Body: "019 §4 muốn một chính sách lệch phiên bản mặc định là ghim, để một run tiếp tục không bao giờ âm thầm đổi hành vi dưới bộ chỉ dẫn mới. AgentMetadata::agent_version tồn tại thật, nhưng không gì tra tới nó khi một run tiếp tục — chẳng có quyết định ghim-hay-chuyển nào được đưa ra cả.",
     s8PoisonLabel: "tests/test_rt_agent_session_identity_and_admission.cpp — POISON-1…4, chính sách thật",
     s8PoisonBody: (
       <>
@@ -773,6 +784,7 @@ export function ApiDurabilityReference() {
               <div className="gs-recommend">
                 <span className="gs-recommend-label">{t.s1RoundtripLabel}</span>
                 <p>{t.s1RoundtripBody}</p>
+                <ApiDiagnosticNote>{t.s1RoundtripNote}</ApiDiagnosticNote>
               </div>
             </RevealItem>
 

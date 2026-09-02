@@ -11,6 +11,7 @@ import { SITE_BASE } from "../data/content";
 import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
+import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
 import { ApiTable } from "./ApiTable";
 import { CodePanel } from "./CodePanel";
 import { RevealGroup, RevealItem } from "./Reveal";
@@ -36,7 +37,7 @@ const copy = {
         <code>Tool&lt;Derived, Policies...&gt;</code> conformance mechanism; the{" "}
         <a href={`${SITE_BASE}/api/skill.html`}>Skill page</a> documents the abstract{" "}
         <code>SKILL.md</code>/<code>SkillSource</code> loading mechanism. Neither one walks
-        through what this engine actually SHIPS with that mechanism. This page does: the five
+        through what this engine actually ships with that mechanism. This page does: the five
         real, tested <code>Tool&lt;&gt;</code> conformers under{" "}
         <code>include/agentengine/tools/</code> (009 §7's "generic tool catalog" — source-
         agnostic, capability-crossing operations an application would otherwise reinvent), and
@@ -48,14 +49,15 @@ const copy = {
     s1Heading: "The tools, field by field",
     s1Body: (
       <>
-        All five declare an empty static <code>Capabilities&lt;&gt;</code> ceiling — a per-call{" "}
-        <code>url</code>/<code>path</code> target can't be fixed at the type level (006 §1) — and
-        instead check a real, dynamic capability inside <code>invoke()</code> against{" "}
-        <code>EffectContext::capabilities</code> before touching the network or filesystem. Still
-        I2-compliant: authority is still gated by an explicit, pre-granted capability, checked
-        before any effect — only the pipeline step that checks it moves from static to dynamic.
+        All five declare an empty static <code>Capabilities&lt;&gt;</code> ceiling, because a
+        per-call <code>url</code>/<code>path</code> target can't be fixed at the type level. Each
+        one instead checks a dynamic capability inside <code>invoke()</code> against{" "}
+        <code>EffectContext::capabilities</code> before touching the network or filesystem. This
+        still satisfies I2: authority is gated by an explicit, pre-granted capability, checked
+        before any effect. Only the pipeline step that checks it moves from static to dynamic.
       </>
     ),
+    s1Note: <>006 §1 — why a per-call target can't be a static Capabilities&lt;&gt; member</>,
     predecessorNote: (
       <>
         <code>read_sandbox_file</code> (<code>tools/read_sandbox_file.hpp</code>) predates{" "}
@@ -66,8 +68,8 @@ const copy = {
     ),
     declarationIntro: (
       <>
-        <code>read_content</code>'s own declaration, not a paraphrase — the empty{" "}
-        <code>Capabilities&lt;&gt;</code> ceiling from 006 §1 and the dynamic{" "}
+        <code>read_content</code>'s own declaration, not a paraphrase: the empty{" "}
+        <code>Capabilities&lt;&gt;</code> ceiling and the dynamic{" "}
         <code>ctx.capabilities-&gt;find_fs_read(...)</code> check the paragraph above describes,
         in the actual class:
       </>
@@ -119,16 +121,12 @@ const copy = {
     ),
     statusNote: (
       <>
-        <strong>Status: every tool and skill on this page is real, compiled, and tested.</strong>{" "}
         The four PDF tools plus <code>extracting-document-text</code> exist only in a target
-        configured with <code>-DAGENTENGINE_WITH_PDF=ON</code> (PDFium fetched as a pinned,
-        checksummed prebuilt release — see <code>CMakeLists.txt</code>'s own option comment); a
-        default build has <code>read_content</code> and the five generic skills only.{" "}
-        <code>ADR-106</code> is the licensing decision behind the PDFium choice (poppler is GPL,
-        mupdf is AGPL — both ruled out against this project's own locked MIT license).{" "}
-        <code>docs/planning/pdf-text-extraction-design-draft.md</code> is the PDF tools' full
-        sandboxing design, six red-team rounds. Each tool/skill's own test file is linked from its
-        entry above.
+        configured with <code>-DAGENTENGINE_WITH_PDF=ON</code> — PDFium fetched as a pinned,
+        checksummed prebuilt release. A default build has <code>read_content</code> and the five
+        generic skills only. <code>ADR-106</code> is the licensing decision behind the PDFium
+        choice: poppler is GPL, mupdf is AGPL, both ruled out against this project's locked MIT
+        license. Each tool/skill's own test file is linked from its entry above.
       </>
     ),
   },
@@ -141,7 +139,7 @@ const copy = {
         <a href={`${SITE_BASE}/api/tool.html`}>Trang Tool</a> tài liệu hóa cơ chế tuân theo{" "}
         <code>Tool&lt;Derived, Policies...&gt;</code> trừu tượng; <a href={`${SITE_BASE}/api/skill.html`}>trang Skill</a> tài liệu hóa cơ chế nạp{" "}
         <code>SKILL.md</code>/<code>SkillSource</code> trừu tượng. Không trang nào trong hai
-        trang đó đi qua những gì engine này THỰC SỰ phát hành cùng với cơ chế đó. Trang này thì
+        trang đó đi qua những gì engine này thực sự phát hành cùng với cơ chế đó. Trang này thì
         có: năm conformer <code>Tool&lt;&gt;</code> thật, đã kiểm thử dưới{" "}
         <code>include/agentengine/tools/</code> ("danh mục tool chung" của 009 §7 — các thao tác
         vượt ranh giới capability, độc lập nguồn, mà một ứng dụng nếu không sẽ phải tự làm lại),
@@ -153,15 +151,16 @@ const copy = {
     s1Heading: "Các tool, theo từng trường một",
     s1Body: (
       <>
-        Cả năm đều khai báo trần capability tĩnh <code>Capabilities&lt;&gt;</code> RỖNG — một
-        target <code>url</code>/<code>path</code> theo từng lệnh gọi không thể cố định ở cấp kiểu
-        (006 §1) — và thay vào đó kiểm tra một capability động, có thật bên trong{" "}
+        Cả năm đều khai báo trần capability tĩnh <code>Capabilities&lt;&gt;</code> rỗng, vì một
+        target <code>url</code>/<code>path</code> theo từng lệnh gọi không thể cố định ở cấp
+        kiểu. Mỗi tool thay vào đó kiểm tra một capability động bên trong{" "}
         <code>invoke()</code> dựa trên <code>EffectContext::capabilities</code> trước khi chạm
-        vào mạng hay filesystem. Vẫn tuân thủ I2: quyền hạn vẫn bị kiểm soát bởi một capability
-        tường minh, đã được cấp trước, kiểm tra trước bất kỳ effect nào — chỉ có bước trong
-        pipeline thực hiện kiểm tra đó chuyển từ tĩnh sang động.
+        vào mạng hay filesystem. Điều này vẫn tuân thủ I2: quyền hạn vẫn bị kiểm soát bởi một
+        capability tường minh, đã được cấp trước, kiểm tra trước bất kỳ effect nào. Chỉ có bước
+        trong pipeline thực hiện kiểm tra đó chuyển từ tĩnh sang động.
       </>
     ),
+    s1Note: <>006 §1 — lý do một target theo từng lệnh gọi không thể là thành viên Capabilities&lt;&gt; tĩnh</>,
     predecessorNote: (
       <>
         <code>read_sandbox_file</code> (<code>tools/read_sandbox_file.hpp</code>) có trước nguồn{" "}
@@ -172,8 +171,8 @@ const copy = {
     ),
     declarationIntro: (
       <>
-        Chính khai báo của <code>read_content</code>, không phải một cách diễn giải lại — trần
-        capability tĩnh <code>Capabilities&lt;&gt;</code> RỖNG của 006 §1 và kiểm tra động{" "}
+        Chính khai báo của <code>read_content</code>, không phải một cách diễn giải lại: trần
+        capability tĩnh <code>Capabilities&lt;&gt;</code> rỗng và kiểm tra động{" "}
         <code>ctx.capabilities-&gt;find_fs_read(...)</code> mà đoạn văn trên mô tả, ngay trong
         chính lớp thật:
       </>
@@ -226,17 +225,13 @@ const copy = {
     ),
     statusNote: (
       <>
-        <strong>Trạng thái: mọi tool và skill trên trang này đều thật, đã biên dịch, và đã kiểm
-        thử.</strong> Bốn tool PDF cộng <code>extracting-document-text</code> chỉ tồn tại trong
-        một bản build được cấu hình với <code>-DAGENTENGINE_WITH_PDF=ON</code> (PDFium được tải
-        về dưới dạng một bản phát hành dựng sẵn, đã ghim phiên bản và kiểm tra checksum — xem
-        chú thích của chính option đó trong <code>CMakeLists.txt</code>); một bản build mặc định
-        chỉ có <code>read_content</code> và năm skill chung. <code>ADR-106</code> là quyết định
-        về giấy phép đứng sau lựa chọn PDFium (poppler là GPL, mupdf là AGPL — cả hai đều bị loại
-        vì xung đột với giấy phép MIT đã khóa của dự án này).{" "}
-        <code>docs/planning/pdf-text-extraction-design-draft.md</code> là thiết kế sandbox hóa
-        đầy đủ của các tool PDF, sáu vòng red-team. File test riêng của mỗi tool/skill được liên
-        kết từ mục tương ứng ở trên.
+        Bốn tool PDF cộng <code>extracting-document-text</code> chỉ tồn tại trong một bản build
+        được cấu hình với <code>-DAGENTENGINE_WITH_PDF=ON</code> — PDFium được tải về dưới dạng
+        một bản phát hành dựng sẵn, đã ghim phiên bản và kiểm tra checksum. Một bản build mặc
+        định chỉ có <code>read_content</code> và năm skill chung. <code>ADR-106</code> là quyết
+        định về giấy phép đứng sau lựa chọn PDFium: poppler là GPL, mupdf là AGPL, cả hai đều bị
+        loại vì xung đột với giấy phép MIT đã khóa của dự án này. File test riêng của mỗi
+        tool/skill được liên kết từ mục tương ứng ở trên.
       </>
     ),
   },
@@ -265,6 +260,7 @@ export function ApiBuiltinToolsReference() {
               <span className="eyebrow">{t.s1Eyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s1Heading}</h3>
               <p>{t.s1Body}</p>
+              <ApiDiagnosticNote>{t.s1Note}</ApiDiagnosticNote>
             </div>
           </RevealItem>
 

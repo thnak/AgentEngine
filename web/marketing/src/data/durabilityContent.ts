@@ -56,7 +56,7 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       tag: "rt::AgentSessionRecord · CheckpointCadence<N> · checkpoint_if_due()",
       title: "A checkpoint is a small, flat, JSON-encoded bookkeeping record — not the conversation",
       body:
-        "rt::AgentSessionRecord carries seven fields and nothing else: session_id, principal_id, principal_tenant_id, a deleted flag, run_counter, turn_index, and the run's open Interactions. It is encoded as JSON through the session's own hand-written codec (never a reflection macro) and handed to a host-supplied rt::SessionStore as opaque bytes. History, typed session state, metadata, standing effects and pending CodeAct asks are all deliberately outside it — each for a named reason, not by omission. save_agent_session_snapshot() reads that record under the SAME rt::AsyncMutex every public entry point holds, so a checkpoint can never observe a half-mutated session; CheckpointCadence<N>::due() decides whether a given turn boundary writes at all, with the turn counter owned by the caller because AgentSession has no ambient store access (I2).",
+        "rt::AgentSessionRecord carries seven fields and nothing else: session_id, principal_id, principal_tenant_id, a deleted flag, run_counter, turn_index, and the run's open Interactions. It is encoded as JSON through the session's own hand-written codec (never a reflection macro) and handed to a host-supplied rt::SessionStore as opaque bytes. History, typed session state, metadata, standing effects and pending CodeAct asks are all deliberately outside it — each for a named reason, not by omission. save_agent_session_snapshot() reads that record under the same rt::AsyncMutex every public entry point holds, so a checkpoint can never observe a half-mutated session; CheckpointCadence<N>::due() decides whether a given turn boundary writes at all, with the turn counter owned by the caller because AgentSession has no ambient store access (I2).",
       cite: "include/agentengine/rt/agent_session.hpp:389",
       href: gh("include/agentengine/rt/agent_session.hpp"),
     },
@@ -66,7 +66,7 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       tag: "rt::WorkflowCheckpointManager<StoreT> — ADR-149, issue #28",
       title: "The workflow-level counterpart: attach() to auto-checkpoint, resume_or_start() to pick a run back up",
       body:
-        "AgentSessionRecord above is session-scoped bookkeeping; a Workflow run has its own, separate durability story that rides the SAME SessionStore concept rather than inventing a second one. WorkflowCheckpointManager<StoreT> is a thin wrapper over already-real save_workflow_checkpoint()/load_workflow_checkpoint(): attach(sup) installs a checkpoint hook that persists automatically after every round, so a caller never hand-writes a set_checkpoint_hook() closure, and resume_or_start(store, run_id, sup, graph, bodies) is \"resume if a checkpoint exists for run_id, else start fresh\" as one call, returning which one happened. examples/20_workflow_checkpoint_resume.cpp proves the whole story by actually discarding the original WorkflowSupervisor and FileSessionStore handle, not just re-reading the same objects: a workflow suspended at a request_port gate resumes, from nothing but a freshly reopened on-disk store and the run's own id, into a BRAND-NEW supervisor holding the SAME open interaction the original run left waiting. tests/test_rt_workflow_checkpoint_manager.cpp adds the fail-closed guard this simple function-only example doesn't exercise: an agent-kind or sub_workflow-kind executor is refused rather than silently checkpointed incompletely.",
+        "AgentSessionRecord above is session-scoped bookkeeping; a Workflow run has its own, separate durability story that rides the same SessionStore concept rather than inventing a second one. WorkflowCheckpointManager<StoreT> is a thin wrapper over already-real save_workflow_checkpoint()/load_workflow_checkpoint(): attach(sup) installs a checkpoint hook that persists automatically after every round, so a caller never hand-writes a set_checkpoint_hook() closure, and resume_or_start(store, run_id, sup, graph, bodies) is \"resume if a checkpoint exists for run_id, else start fresh\" as one call, returning which one happened. examples/20_workflow_checkpoint_resume.cpp proves the whole story by actually discarding the original WorkflowSupervisor and FileSessionStore handle, not just re-reading the same objects: a workflow suspended at a request_port gate resumes, from nothing but a freshly reopened on-disk store and the run's own id, into a brand-new supervisor holding the same open interaction the original run left waiting. tests/test_rt_workflow_checkpoint_manager.cpp adds the fail-closed guard this simple function-only example doesn't exercise: an agent-kind or sub_workflow-kind executor is refused rather than silently checkpointed incompletely.",
       cite: "include/agentengine/rt/workflow_checkpoint_manager.hpp",
       href: gh("include/agentengine/rt/workflow_checkpoint_manager.hpp"),
     },
@@ -86,7 +86,7 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       tag: "interaction_reason · BackgroundTaskDone · due_standing_effects()",
       title: "A suspended run is a returned coroutine plus a durable record — never a parked thread",
       body:
-        "019 §2 wants a Suspended run to hold no activation, no sandbox, no connection, no thread. After ADR-037 there is no actor, no mailbox and no reminder service underneath a session at all, so this is closer to true by construction than it ever was: run_rounds() RETURNS when it suspends (with the kSuspendedForApproval sentinel), leaving only an Interaction record and whatever the host chooses to keep in memory. The cost of that shape is that nothing inside AgentEngine can wake a run by itself. Three of 019 §2's six wake rows have a real producer here — human input, local background-task completion, and timer/schedule — and each is delivered by a host calling start_run() or resolve_interaction() again. The other rows have no producer in this tree.",
+        "019 §2 wants a Suspended run to hold no activation, no sandbox, no connection, no thread. After ADR-037 there is no actor, no mailbox and no reminder service underneath a session at all, so this is closer to true by construction than it ever was: run_rounds() returns when it suspends (with the kSuspendedForApproval sentinel), leaving only an Interaction record and whatever the host chooses to keep in memory. The cost of that shape is that nothing inside AgentEngine can wake a run by itself. Three of 019 §2's six wake rows have a real producer here — human input, local background-task completion, and timer/schedule — and each is delivered by a host calling start_run() or resolve_interaction() again. The other rows have no producer in this tree.",
       cite: "include/agentengine/rt/agent_session.hpp:1488",
       href: gh("include/agentengine/rt/agent_session.hpp"),
     },
@@ -96,7 +96,7 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       tag: "derive_idempotency_key() · rt::EffectJournalEntry · authorize_reexecution()",
       title: "The key survives a restart because nothing in it comes from a clock or a random number",
       body:
-        "019 §3's key is {run_id, turn_index, call_index, argument_digest}, and derive_idempotency_key() uses exactly those four inputs — argument_digest being an FNV-1a hash of the call's canonical JSON arguments. No wall clock, no randomness, no process identity: recompute it from a session rebuilt after a crash and you get the same string back. invoke_tool() derives it unconditionally on every call and stamps it into the ToolInvocationAudit record, so an effect is recognizable as the same effect afterwards. The journal is the other half: journal_effect_intent() appends before execution, journal_effect_outcome() after, both into an append-only rt::AppendLogStore log named session_id + \":effect_journal\", and unconfirmed_effect_intents() replays that log to answer which intents have no matching outcome. It answers only that — deciding what to DO about an unconfirmed intent (019 §7 G6's indeterminate) is deliberately not built.",
+        "019 §3's key is {run_id, turn_index, call_index, argument_digest}, and derive_idempotency_key() uses exactly those four inputs — argument_digest being an FNV-1a hash of the call's canonical JSON arguments. No wall clock, no randomness, no process identity: recompute it from a session rebuilt after a crash and you get the same string back. invoke_tool() derives it unconditionally on every call and stamps it into the ToolInvocationAudit record, so an effect is recognizable as the same effect afterwards. The journal is the other half: journal_effect_intent() appends before execution, journal_effect_outcome() after, both into an append-only rt::AppendLogStore log named session_id + \":effect_journal\", and unconfirmed_effect_intents() replays that log to answer which intents have no matching outcome. It answers only that — deciding what to do about an unconfirmed intent (019 §7 G6's indeterminate) is deliberately not built.",
       cite: "include/agentengine/core/tool_pipeline.hpp:250",
       href: gh("include/agentengine/core/tool_pipeline.hpp"),
     },
@@ -106,7 +106,7 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       tag: "test_effect_reexecution.cpp — F4-R7 … F4-R11",
       title: "make_payment, interrupted and replayed, with the real key at every step",
       body:
-        "The rewind-and-replay path is proven end to end against a real invoke_tool() call in test_effect_reexecution.cpp: a MakePaymentTool declared EffectClass<at_most_once> runs once, and the SAME call is then re-run under the SAME idempotency key. Without an operator acknowledgement, authorize_reexecution() refuses BEFORE the pipeline is entered a second time, with the stable code effect.reexecution_requires_ack. With an acknowledgement, the re-execution runs and its audit record carries the identical key — recognizably a repeat of one effect, not a new, unrelated call. What the test does not do, and this page does not claim, is inject the fault itself: the interruption is manual, not a kill -9.",
+        "The rewind-and-replay path is proven end to end against a real invoke_tool() call in test_effect_reexecution.cpp: a MakePaymentTool declared EffectClass<at_most_once> runs once, and the same call is then re-run under the same idempotency key. Without an operator acknowledgement, authorize_reexecution() refuses before the pipeline is entered a second time, with the stable code effect.reexecution_requires_ack. With an acknowledgement, the re-execution runs and its audit record carries the identical key — recognizably a repeat of one effect, not a new, unrelated call. What the test does not do, and this page does not claim, is inject the fault itself: the interruption is manual, not a kill -9.",
       cite: "tests/test_effect_reexecution.cpp:109",
       href: gh("tests/test_effect_reexecution.cpp"),
     },
@@ -116,7 +116,7 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       tag: "Interaction{interaction_id, run_id, reason} · rt/interaction_codec.hpp",
       title: "A run that waits for a human is a durability question, not just a UX one",
       body:
-        "Interaction is the one internal correlation record behind every kind of waiting: input, auth, approval (ADR-029), and codeact_ask (ADR-057). It is all scalars and strings, so it round-trips through a checkpoint trivially — and it is the ONLY non-scalar field AgentSessionRecord carries, encoded by rt/interaction_codec.hpp. That makes an open approval durable and restorable. What is NOT durable is the round the approval was suspended in: resolve_interaction() requires history_'s tail to still be the exact assistant tool-call message that suspended, and history_ is not in the record. A restored session therefore knows an approval was pending and cannot resume it — ADR-029 named this residual itself. The approval flow's mechanics live on the AgentSession page; this is the persistence half of the same story.",
+        "Interaction is the one internal correlation record behind every kind of waiting: input, auth, approval (ADR-029), and codeact_ask (ADR-057). It is all scalars and strings, so it round-trips through a checkpoint trivially — and it is the only non-scalar field AgentSessionRecord carries, encoded by rt/interaction_codec.hpp. That makes an open approval durable and restorable. What is not durable is the round the approval was suspended in: resolve_interaction() requires history_'s tail to still be the exact assistant tool-call message that suspended, and history_ is not in the record. A restored session therefore knows an approval was pending and cannot resume it — ADR-029 named this residual itself. The approval flow's mechanics live on the AgentSession page; this is the persistence half of the same story.",
       cite: "include/agentengine/core/interaction.hpp:43",
       href: gh("include/agentengine/core/interaction.hpp"),
     },
@@ -126,7 +126,7 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       tag: "StandingEffect · start_background_task() · schedule_wakeup() · cancel_standing_effect()",
       title: "Authorized synchronously, executed detached, cancelled only by the principal that armed it",
       body:
-        "006 §6b's one handle shape has two real producers here. background_task() runs the tool pipeline's resolve, authorize/bind, and approve steps SYNCHRONOUSLY on the calling thread — an undeclared-Backgroundable tool, a session-state-capturing tool, a missing capability, an exhausted Background<max_concurrent> grant, or a refused approval all fail before any thread is spawned. Only step 8 onward detaches; completion is pushed into a small mutex-guarded queue held behind a shared_ptr, which the next start_run()/resolve_interaction() drains under the session lock, attributing ToolCallFinished to the run that ASKED for the work. schedule_wakeup() arms a wake time computed from a caller-supplied now, gated three ways by the cap::Schedule grant. cancel_standing_effect() cancels bookkeeping only, and denies a caller whose principal id does not match the effect's owner. None of this survives a checkpoint: StandingEffect is in-memory-only by design and is not a field of AgentSessionRecord.",
+        "006 §6b's one handle shape has two real producers here. background_task() runs the tool pipeline's resolve, authorize/bind, and approve steps synchronously on the calling thread — an undeclared-Backgroundable tool, a session-state-capturing tool, a missing capability, an exhausted Background<max_concurrent> grant, or a refused approval all fail before any thread is spawned. Only step 8 onward detaches; completion is pushed into a small mutex-guarded queue held behind a shared_ptr, which the next start_run()/resolve_interaction() drains under the session lock, attributing ToolCallFinished to the run that asked for the work. schedule_wakeup() arms a wake time computed from a caller-supplied now, gated three ways by the cap::Schedule grant. cancel_standing_effect() cancels bookkeeping only, and denies a caller whose principal id does not match the effect's owner. None of this survives a checkpoint: StandingEffect is in-memory-only by design and is not a field of AgentSessionRecord.",
       cite: "include/agentengine/core/standing_effect.hpp:18",
       href: gh("include/agentengine/core/standing_effect.hpp"),
     },
@@ -146,7 +146,7 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       tag: "tests/test_rt_*.cpp — deterministic, offline",
       title: "What each durability test actually asserts",
       body:
-        "Every test below is a standalone int main() with a file-local check(cond, label): the label IS the claim, and each one runs deterministically with no live model and no network. Read the third column as the honest scope line — several of these are genuinely narrower than the 019 §7 gate they sit closest to, and are listed that way rather than rounded up.",
+        "Every test below is a standalone int main() with a file-local check(cond, label): the label is the claim, and each one runs deterministically with no live model and no network. Read the third column as the honest scope line — several of these are genuinely narrower than the 019 §7 gate they sit closest to, and are listed that way rather than rounded up.",
       cite: "tests/test_rt_agent_session_snapshot.cpp",
       href: gh("tests/test_rt_agent_session_snapshot.cpp"),
     },
@@ -156,7 +156,7 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       tag: "019 §7 G1 … G6",
       title: "The gates 019 sets, and where this tree actually stands against them",
       body:
-        "019's promotion gate is six items long. One of them (G1's restart-identical resume) is met for WORKFLOWS — killed at every one of 20 superstep boundaries, all 20 resumes byte-identical to the control — and not for sessions, because a session's record carries no history to resume from. The other five are either unbuilt, unmeasured, or contradicted by a mechanism ADR-037 removed. This is the honest scoreboard, including two places where 019's own prose is now out of date with the code.",
+        "019's promotion gate is six items long. One of them (G1's restart-identical resume) is met for workflows — killed at every one of 20 superstep boundaries, all 20 resumes byte-identical to the control — and not for sessions, because a session's record carries no history to resume from. The other five are either unbuilt, unmeasured, or contradicted by a mechanism ADR-037 removed. This is the honest scoreboard, including two places where 019's own prose is now out of date with the code.",
       cite: "019-Durability-and-Long-Running-Agents.md:102",
       href: gh("019-Durability-and-Long-Running-Agents.md"),
     },
@@ -168,7 +168,7 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       tag: "rt::AgentSessionRecord · CheckpointCadence<N> · checkpoint_if_due()",
       title: "Một checkpoint là bản ghi sổ sách nhỏ, phẳng, mã hóa JSON — không phải cuộc hội thoại",
       body:
-        "rt::AgentSessionRecord mang đúng bảy trường và không gì khác: session_id, principal_id, principal_tenant_id, cờ deleted, run_counter, turn_index, và các Interaction đang mở của run. Nó được mã hóa JSON bằng codec viết tay của chính session (không hề dùng macro phản chiếu) rồi trao cho một rt::SessionStore do host cung cấp dưới dạng byte mờ. Lịch sử hội thoại, state có kiểu, metadata, hiệu ứng thường trực và các câu hỏi CodeAct đang chờ đều cố ý nằm ngoài — mỗi thứ đều có lý do được nêu tên, không phải bị bỏ quên. save_agent_session_snapshot() đọc bản ghi đó dưới CÙNG một rt::AsyncMutex mà mọi điểm vào công khai đều giữ, nên một checkpoint không bao giờ nhìn thấy session đang bị sửa dở; CheckpointCadence<N>::due() quyết định một mốc lượt có ghi hay không, còn bộ đếm lượt thuộc về caller vì AgentSession không có quyền truy cập store ngầm (I2).",
+        "rt::AgentSessionRecord mang đúng bảy trường và không gì khác: session_id, principal_id, principal_tenant_id, cờ deleted, run_counter, turn_index, và các Interaction đang mở của run. Nó được mã hóa JSON bằng codec viết tay của chính session (không hề dùng macro phản chiếu) rồi trao cho một rt::SessionStore do host cung cấp dưới dạng byte mờ. Lịch sử hội thoại, state có kiểu, metadata, hiệu ứng thường trực và các câu hỏi CodeAct đang chờ đều cố ý nằm ngoài — mỗi thứ đều có lý do được nêu tên, không phải bị bỏ quên. save_agent_session_snapshot() đọc bản ghi đó dưới cùng một rt::AsyncMutex mà mọi điểm vào công khai đều giữ, nên một checkpoint không bao giờ nhìn thấy session đang bị sửa dở; CheckpointCadence<N>::due() quyết định một mốc lượt có ghi hay không, còn bộ đếm lượt thuộc về caller vì AgentSession không có quyền truy cập store ngầm (I2).",
       cite: "include/agentengine/rt/agent_session.hpp:389",
       href: gh("include/agentengine/rt/agent_session.hpp"),
     },
@@ -178,7 +178,7 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       tag: "rt::WorkflowCheckpointManager<StoreT> — ADR-149, issue #28",
       title: "Bản đối ứng ở cấp workflow: attach() để tự checkpoint, resume_or_start() để tiếp tục một run",
       body:
-        "AgentSessionRecord ở trên là sổ sách theo phạm vi session; một run Workflow có câu chuyện bền vững riêng của nó, đi trên CÙNG một khái niệm SessionStore thay vì bịa ra một cái thứ hai. WorkflowCheckpointManager<StoreT> là một lớp bọc mỏng quanh save_workflow_checkpoint()/load_workflow_checkpoint() vốn đã có thật: attach(sup) cài một hook checkpoint tự động lưu sau mỗi round, nên caller không bao giờ phải tự viết một closure set_checkpoint_hook(), còn resume_or_start(store, run_id, sup, graph, bodies) là \"tiếp tục nếu tồn tại checkpoint cho run_id, nếu không thì bắt đầu mới\" gói trong một lệnh gọi, trả về cái nào đã xảy ra. examples/20_workflow_checkpoint_resume.cpp chứng minh toàn bộ câu chuyện bằng cách thực sự vứt bỏ WorkflowSupervisor gốc và handle FileSessionStore gốc, chứ không chỉ đọc lại cùng đối tượng: một workflow treo tại một cổng request_port tiếp tục, từ không gì khác ngoài một store trên đĩa vừa mở lại và chính id của run, vào một supervisor HOÀN TOÀN MỚI đang giữ đúng cùng interaction đang mở mà run gốc để lại. tests/test_rt_workflow_checkpoint_manager.cpp thêm vào điểm bảo vệ từ-chối-đóng mà ví dụ đơn giản chỉ-toàn-hàm này không thực hiện: một executor kiểu agent hay sub_workflow bị từ chối thay vì bị checkpoint thiếu sót một cách âm thầm.",
+        "AgentSessionRecord ở trên là sổ sách theo phạm vi session; một run Workflow có câu chuyện bền vững riêng của nó, đi trên cùng một khái niệm SessionStore thay vì bịa ra một cái thứ hai. WorkflowCheckpointManager<StoreT> là một lớp bọc mỏng quanh save_workflow_checkpoint()/load_workflow_checkpoint() vốn đã có thật: attach(sup) cài một hook checkpoint tự động lưu sau mỗi round, nên caller không bao giờ phải tự viết một closure set_checkpoint_hook(), còn resume_or_start(store, run_id, sup, graph, bodies) là \"tiếp tục nếu tồn tại checkpoint cho run_id, nếu không thì bắt đầu mới\" gói trong một lệnh gọi, trả về cái nào đã xảy ra. examples/20_workflow_checkpoint_resume.cpp chứng minh toàn bộ câu chuyện bằng cách thực sự vứt bỏ WorkflowSupervisor gốc và handle FileSessionStore gốc, chứ không chỉ đọc lại cùng đối tượng: một workflow treo tại một cổng request_port tiếp tục, từ không gì khác ngoài một store trên đĩa vừa mở lại và chính id của run, vào một supervisor hoàn toàn mới đang giữ đúng cùng interaction đang mở mà run gốc để lại. tests/test_rt_workflow_checkpoint_manager.cpp thêm vào điểm bảo vệ từ-chối-đóng mà ví dụ đơn giản chỉ-toàn-hàm này không thực hiện: một executor kiểu agent hay sub_workflow bị từ chối thay vì bị checkpoint thiếu sót một cách âm thầm.",
       cite: "include/agentengine/rt/workflow_checkpoint_manager.hpp",
       href: gh("include/agentengine/rt/workflow_checkpoint_manager.hpp"),
     },
@@ -198,7 +198,7 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       tag: "interaction_reason · BackgroundTaskDone · due_standing_effects()",
       title: "Một run đang treo là một coroutine đã trả về cộng bản ghi bền vững — không phải luồng bị ghim",
       body:
-        "019 §2 muốn một run ở trạng thái Suspended không giữ activation, không sandbox, không kết nối, không luồng. Sau ADR-037, bên dưới một session không còn actor, không hòm thư, không dịch vụ nhắc giờ nào cả, nên điều này đúng theo cấu trúc hơn bao giờ hết: run_rounds() TRẢ VỀ khi treo (kèm mã sentinel kSuspendedForApproval), chỉ để lại một bản ghi Interaction và bất cứ thứ gì host chọn giữ trong bộ nhớ. Cái giá của hình dạng ấy là không thứ gì bên trong AgentEngine có thể tự đánh thức một run. Ba trong sáu dòng wake của 019 §2 có nguồn phát thật ở đây — con người nhập vào, tác vụ nền cục bộ hoàn tất, và bộ đếm giờ/lịch — và mỗi cái đều tới nơi nhờ host gọi lại start_run() hoặc resolve_interaction(). Những dòng còn lại không có nguồn phát nào trong cây mã này.",
+        "019 §2 muốn một run ở trạng thái Suspended không giữ activation, không sandbox, không kết nối, không luồng. Sau ADR-037, bên dưới một session không còn actor, không hòm thư, không dịch vụ nhắc giờ nào cả, nên điều này đúng theo cấu trúc hơn bao giờ hết: run_rounds() trả về khi treo (kèm mã sentinel kSuspendedForApproval), chỉ để lại một bản ghi Interaction và bất cứ thứ gì host chọn giữ trong bộ nhớ. Cái giá của hình dạng ấy là không thứ gì bên trong AgentEngine có thể tự đánh thức một run. Ba trong sáu dòng wake của 019 §2 có nguồn phát thật ở đây — con người nhập vào, tác vụ nền cục bộ hoàn tất, và bộ đếm giờ/lịch — và mỗi cái đều tới nơi nhờ host gọi lại start_run() hoặc resolve_interaction(). Những dòng còn lại không có nguồn phát nào trong cây mã này.",
       cite: "include/agentengine/rt/agent_session.hpp:1488",
       href: gh("include/agentengine/rt/agent_session.hpp"),
     },
@@ -208,7 +208,7 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       tag: "derive_idempotency_key() · rt::EffectJournalEntry · authorize_reexecution()",
       title: "Khóa sống sót qua khởi động lại vì không thành phần nào của nó đến từ đồng hồ hay số ngẫu nhiên",
       body:
-        "Khóa của 019 §3 là {run_id, turn_index, call_index, argument_digest}, và derive_idempotency_key() dùng đúng bốn đầu vào đó — argument_digest là hàm băm FNV-1a trên chuỗi JSON chuẩn tắc của tham số lời gọi. Không đồng hồ tường, không ngẫu nhiên, không danh tính tiến trình: tính lại từ một session dựng lại sau sự cố thì vẫn ra đúng chuỗi cũ. invoke_tool() suy ra khóa này vô điều kiện ở mọi lời gọi và đóng dấu vào bản ghi ToolInvocationAudit, nhờ vậy về sau vẫn nhận ra đó là cùng một hiệu ứng. Nhật ký là nửa còn lại: journal_effect_intent() ghi thêm TRƯỚC khi thực thi, journal_effect_outcome() ghi SAU, cả hai vào một log chỉ-ghi-thêm rt::AppendLogStore mang tên session_id + \":effect_journal\", và unconfirmed_effect_intents() phát lại log đó để trả lời ý định nào chưa có kết cục tương ứng. Nó chỉ trả lời đúng chừng ấy — quyết định phải LÀM GÌ với một ý định chưa xác nhận (điều bất định của 019 §7 G6) thì cố ý chưa xây.",
+        "Khóa của 019 §3 là {run_id, turn_index, call_index, argument_digest}, và derive_idempotency_key() dùng đúng bốn đầu vào đó — argument_digest là hàm băm FNV-1a trên chuỗi JSON chuẩn tắc của tham số lời gọi. Không đồng hồ tường, không ngẫu nhiên, không danh tính tiến trình: tính lại từ một session dựng lại sau sự cố thì vẫn ra đúng chuỗi cũ. invoke_tool() suy ra khóa này vô điều kiện ở mọi lời gọi và đóng dấu vào bản ghi ToolInvocationAudit, nhờ vậy về sau vẫn nhận ra đó là cùng một hiệu ứng. Nhật ký là nửa còn lại: journal_effect_intent() ghi thêm trước khi thực thi, journal_effect_outcome() ghi sau, cả hai vào một log chỉ-ghi-thêm rt::AppendLogStore mang tên session_id + \":effect_journal\", và unconfirmed_effect_intents() phát lại log đó để trả lời ý định nào chưa có kết cục tương ứng. Nó chỉ trả lời đúng chừng ấy — quyết định phải làm gì với một ý định chưa xác nhận (điều bất định của 019 §7 G6) thì cố ý chưa xây.",
       cite: "include/agentengine/core/tool_pipeline.hpp:250",
       href: gh("include/agentengine/core/tool_pipeline.hpp"),
     },
@@ -218,7 +218,7 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       tag: "test_effect_reexecution.cpp — F4-R7 … F4-R11",
       title: "make_payment, bị ngắt rồi phát lại, với khóa thật ở từng bước",
       body:
-        "Đường tua-lại-rồi-chạy-lại được chứng minh đầu-cuối trên một lời gọi invoke_tool() thật trong test_effect_reexecution.cpp: một MakePaymentTool khai báo EffectClass<at_most_once> chạy một lần, rồi CHÍNH lời gọi đó được chạy lại dưới CHÍNH khóa idempotency cũ. Không có xác nhận của người vận hành, authorize_reexecution() từ chối TRƯỚC khi pipeline được vào lần thứ hai, với mã ổn định effect.reexecution_requires_ack. Có xác nhận rồi thì lần chạy lại diễn ra và bản ghi kiểm toán của nó mang đúng khóa cũ — nhận diện được là một lần lặp của một hiệu ứng, không phải một lời gọi mới không liên quan. Điều bài kiểm thử không làm, và trang này cũng không tuyên bố, là tự tiêm lỗi: sự gián đoạn ở đây là thủ công, không phải một kill -9.",
+        "Đường tua-lại-rồi-chạy-lại được chứng minh đầu-cuối trên một lời gọi invoke_tool() thật trong test_effect_reexecution.cpp: một MakePaymentTool khai báo EffectClass<at_most_once> chạy một lần, rồi chính lời gọi đó được chạy lại dưới chính khóa idempotency cũ. Không có xác nhận của người vận hành, authorize_reexecution() từ chối trước khi pipeline được vào lần thứ hai, với mã ổn định effect.reexecution_requires_ack. Có xác nhận rồi thì lần chạy lại diễn ra và bản ghi kiểm toán của nó mang đúng khóa cũ — nhận diện được là một lần lặp của một hiệu ứng, không phải một lời gọi mới không liên quan. Điều bài kiểm thử không làm, và trang này cũng không tuyên bố, là tự tiêm lỗi: sự gián đoạn ở đây là thủ công, không phải một kill -9.",
       cite: "tests/test_effect_reexecution.cpp:109",
       href: gh("tests/test_effect_reexecution.cpp"),
     },
@@ -228,7 +228,7 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       tag: "Interaction{interaction_id, run_id, reason} · rt/interaction_codec.hpp",
       title: "Một run chờ con người là câu hỏi về tính bền vững, không chỉ về trải nghiệm",
       body:
-        "Interaction là bản ghi tương quan nội bộ duy nhất đứng sau mọi kiểu chờ đợi: input, auth, approval (ADR-029) và codeact_ask (ADR-057). Nó toàn số và chuỗi, nên đi qua một checkpoint hết sức dễ dàng — và nó là trường KHÔNG vô hướng duy nhất mà AgentSessionRecord mang theo, mã hóa bởi rt/interaction_codec.hpp. Điều đó khiến một phê duyệt đang mở trở nên bền vững và khôi phục được. Thứ KHÔNG bền vững là chính vòng đã bị treo: resolve_interaction() đòi phần đuôi của history_ vẫn phải là đúng thông điệp gọi tool của assistant lúc treo, mà history_ lại không nằm trong bản ghi. Vì vậy một session vừa khôi phục biết rằng có một phê duyệt đang chờ nhưng không thể tiếp tục nó — chính ADR-029 đã nêu tên phần dư này. Cơ chế của luồng phê duyệt nằm ở trang AgentSession; đây là nửa bền vững của cùng câu chuyện.",
+        "Interaction là bản ghi tương quan nội bộ duy nhất đứng sau mọi kiểu chờ đợi: input, auth, approval (ADR-029) và codeact_ask (ADR-057). Nó toàn số và chuỗi, nên đi qua một checkpoint hết sức dễ dàng — và nó là trường không vô hướng duy nhất mà AgentSessionRecord mang theo, mã hóa bởi rt/interaction_codec.hpp. Điều đó khiến một phê duyệt đang mở trở nên bền vững và khôi phục được. Thứ không bền vững là chính vòng đã bị treo: resolve_interaction() đòi phần đuôi của history_ vẫn phải là đúng thông điệp gọi tool của assistant lúc treo, mà history_ lại không nằm trong bản ghi. Vì vậy một session vừa khôi phục biết rằng có một phê duyệt đang chờ nhưng không thể tiếp tục nó — chính ADR-029 đã nêu tên phần dư này. Cơ chế của luồng phê duyệt nằm ở trang AgentSession; đây là nửa bền vững của cùng câu chuyện.",
       cite: "include/agentengine/core/interaction.hpp:43",
       href: gh("include/agentengine/core/interaction.hpp"),
     },
@@ -238,7 +238,7 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       tag: "StandingEffect · start_background_task() · schedule_wakeup() · cancel_standing_effect()",
       title: "Cấp phép đồng bộ, thực thi tách rời, chỉ principal đã trang bị mới hủy được",
       body:
-        "Một hình dạng handle duy nhất của 006 §6b có hai nguồn phát thật ở đây. background_task() chạy các bước phân giải, cấp phép/ràng buộc và phê duyệt của pipeline tool một cách ĐỒNG BỘ trên luồng gọi — một tool không khai báo Backgroundable, một tool bắt trạng thái session, thiếu capability, hết hạn mức Background<max_concurrent>, hay một phê duyệt bị từ chối, tất cả đều hỏng trước khi có luồng nào được sinh ra. Chỉ từ bước 8 trở đi mới tách rời; kết quả được đẩy vào một hàng đợi nhỏ có mutex nằm sau một shared_ptr, và lần start_run()/resolve_interaction() kế tiếp sẽ rút nó ra dưới khóa session, quy ToolCallFinished về đúng run đã YÊU CẦU công việc đó. schedule_wakeup() trang bị một thời điểm đánh thức tính từ tham số now do caller cung cấp, chặn ba đường theo grant cap::Schedule. cancel_standing_effect() chỉ hủy phần sổ sách, và từ chối caller có principal id không khớp chủ sở hữu. Không thứ nào ở trên sống sót qua một checkpoint: StandingEffect chỉ nằm trong bộ nhớ theo thiết kế và không phải một trường của AgentSessionRecord.",
+        "Một hình dạng handle duy nhất của 006 §6b có hai nguồn phát thật ở đây. background_task() chạy các bước phân giải, cấp phép/ràng buộc và phê duyệt của pipeline tool một cách đồng bộ trên luồng gọi — một tool không khai báo Backgroundable, một tool bắt trạng thái session, thiếu capability, hết hạn mức Background<max_concurrent>, hay một phê duyệt bị từ chối, tất cả đều hỏng trước khi có luồng nào được sinh ra. Chỉ từ bước 8 trở đi mới tách rời; kết quả được đẩy vào một hàng đợi nhỏ có mutex nằm sau một shared_ptr, và lần start_run()/resolve_interaction() kế tiếp sẽ rút nó ra dưới khóa session, quy ToolCallFinished về đúng run đã yêu cầu công việc đó. schedule_wakeup() trang bị một thời điểm đánh thức tính từ tham số now do caller cung cấp, chặn ba đường theo grant cap::Schedule. cancel_standing_effect() chỉ hủy phần sổ sách, và từ chối caller có principal id không khớp chủ sở hữu. Không thứ nào ở trên sống sót qua một checkpoint: StandingEffect chỉ nằm trong bộ nhớ theo thiết kế và không phải một trường của AgentSessionRecord.",
       cite: "include/agentengine/core/standing_effect.hpp:18",
       href: gh("include/agentengine/core/standing_effect.hpp"),
     },
@@ -258,7 +258,7 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       tag: "tests/test_rt_*.cpp — tất định, ngoại tuyến",
       title: "Mỗi bài kiểm thử về tính bền vững thực sự khẳng định điều gì",
       body:
-        "Mọi bài kiểm thử dưới đây là một int main() độc lập với một hàm check(cond, label) cục bộ trong tệp: nhãn CHÍNH LÀ tuyên bố, và mỗi bài chạy tất định, không model thật, không mạng. Hãy đọc cột thứ ba như dòng phạm vi trung thực — vài bài trong số này thực sự hẹp hơn cổng 019 §7 mà chúng gần nhất, và được liệt kê đúng như vậy thay vì được làm tròn lên.",
+        "Mọi bài kiểm thử dưới đây là một int main() độc lập với một hàm check(cond, label) cục bộ trong tệp: nhãn chính là tuyên bố, và mỗi bài chạy tất định, không model thật, không mạng. Hãy đọc cột thứ ba như dòng phạm vi trung thực — vài bài trong số này thực sự hẹp hơn cổng 019 §7 mà chúng gần nhất, và được liệt kê đúng như vậy thay vì được làm tròn lên.",
       cite: "tests/test_rt_agent_session_snapshot.cpp",
       href: gh("tests/test_rt_agent_session_snapshot.cpp"),
     },
@@ -268,7 +268,7 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       tag: "019 §7 G1 … G6",
       title: "Những cổng 019 đặt ra, và cây mã này thực sự đứng ở đâu so với chúng",
       body:
-        "Cổng thăng hạng của 019 dài sáu mục. Một mục (G1, tiếp tục giống hệt sau khởi động lại) đã đạt cho WORKFLOW — bị giết ở cả 20 mốc superstep, cả 20 lần tiếp tục đều giống hệt bản đối chứng từng byte — nhưng chưa đạt cho session, vì bản ghi của một session không mang lịch sử để mà tiếp tục. Năm mục còn lại thì hoặc chưa xây, hoặc chưa đo, hoặc bị mâu thuẫn bởi một cơ chế mà ADR-037 đã bỏ. Đây là bảng điểm trung thực, gồm cả hai chỗ mà văn bản của chính 019 giờ đã lệch so với mã.",
+        "Cổng thăng hạng của 019 dài sáu mục. Một mục (G1, tiếp tục giống hệt sau khởi động lại) đã đạt cho workflow — bị giết ở cả 20 mốc superstep, cả 20 lần tiếp tục đều giống hệt bản đối chứng từng byte — nhưng chưa đạt cho session, vì bản ghi của một session không mang lịch sử để mà tiếp tục. Năm mục còn lại thì hoặc chưa xây, hoặc chưa đo, hoặc bị mâu thuẫn bởi một cơ chế mà ADR-037 đã bỏ. Đây là bảng điểm trung thực, gồm cả hai chỗ mà văn bản của chính 019 giờ đã lệch so với mã.",
       cite: "019-Durability-and-Long-Running-Agents.md:102",
       href: gh("019-Durability-and-Long-Running-Agents.md"),
     },
@@ -322,17 +322,17 @@ export interface WakeRow {
 
 export const wakeRows: Record<Lang, WakeRow[]> = {
   en: [
-    { condition: "Human / caller input", mechanism: "resolve_interaction({interaction_id, approved, answer}) resumes the SAME run — proven for approval (SU3/SU4) and for agent.ask() replay (B3/B4).", status: "real", cite: "include/agentengine/rt/agent_session.hpp:635" },
+    { condition: "Human / caller input", mechanism: "resolve_interaction({interaction_id, approved, answer}) resumes the same run — proven for approval (SU3/SU4) and for agent.ask() replay (B3/B4).", status: "real", cite: "include/agentengine/rt/agent_session.hpp:635" },
     { condition: "Local background task completion", mechanism: "A detached worker pushes BackgroundTaskDone into a mutex-guarded queue; the next start_run()/resolve_interaction() drains it as its first statement, under the session lock.", status: "real", cite: "include/agentengine/rt/agent_session.hpp:575" },
-    { condition: "Timer / schedule", mechanism: "schedule_wakeup(delay, label, now) arms a fire_at from a caller-supplied clock read; a HOST polls due_standing_effects(now). Nothing self-fires, and the armed effect is in-memory only — it does not survive a restart.", status: "real", cite: "include/agentengine/rt/agent_session.hpp:980" },
+    { condition: "Timer / schedule", mechanism: "schedule_wakeup(delay, label, now) arms a fire_at from a caller-supplied clock read; a host polls due_standing_effects(now). Nothing self-fires, and the armed effect is in-memory only — it does not survive a restart.", status: "real", cite: "include/agentengine/rt/agent_session.hpp:980" },
     { condition: "Manual resume", mechanism: "An operator calling start_run()/resolve_interaction() on a restored session — no separate mechanism, which is the point: the host owns residency.", status: "real", cite: "include/agentengine/rt/agent_session.hpp:573" },
     { condition: "External event", mechanism: "watch_resource is a standing_effect_kind enumerator with no producer anywhere in this tree. 019 §2 routes this row through 012 (A2A push / webhook / queue).", status: "design", cite: "include/agentengine/core/standing_effect.hpp:39" },
     { condition: "Remote task completion", mechanism: "No poller and no callback path exists for a remote A2A/MCP task to wake a suspended session. Named in the same header comment as the row above.", status: "design", cite: "include/agentengine/core/standing_effect.hpp:14" },
   ],
   vi: [
-    { condition: "Con người / caller nhập vào", mechanism: "resolve_interaction({interaction_id, approved, answer}) tiếp tục CHÍNH run cũ — đã chứng minh cho phê duyệt (SU3/SU4) và cho phát lại agent.ask() (B3/B4).", status: "real", cite: "include/agentengine/rt/agent_session.hpp:635" },
+    { condition: "Con người / caller nhập vào", mechanism: "resolve_interaction({interaction_id, approved, answer}) tiếp tục chính run cũ — đã chứng minh cho phê duyệt (SU3/SU4) và cho phát lại agent.ask() (B3/B4).", status: "real", cite: "include/agentengine/rt/agent_session.hpp:635" },
     { condition: "Tác vụ nền cục bộ hoàn tất", mechanism: "Một worker tách rời đẩy BackgroundTaskDone vào hàng đợi có mutex; lần start_run()/resolve_interaction() kế tiếp rút nó ra ngay ở câu lệnh đầu tiên, dưới khóa session.", status: "real", cite: "include/agentengine/rt/agent_session.hpp:575" },
-    { condition: "Bộ đếm giờ / lịch", mechanism: "schedule_wakeup(delay, label, now) đặt fire_at từ một lần đọc đồng hồ do caller cung cấp; HOST phải hỏi due_standing_effects(now). Không gì tự kích hoạt, và hiệu ứng đã trang bị chỉ nằm trong bộ nhớ — nó không sống sót qua khởi động lại.", status: "real", cite: "include/agentengine/rt/agent_session.hpp:980" },
+    { condition: "Bộ đếm giờ / lịch", mechanism: "schedule_wakeup(delay, label, now) đặt fire_at từ một lần đọc đồng hồ do caller cung cấp; host phải hỏi due_standing_effects(now). Không gì tự kích hoạt, và hiệu ứng đã trang bị chỉ nằm trong bộ nhớ — nó không sống sót qua khởi động lại.", status: "real", cite: "include/agentengine/rt/agent_session.hpp:980" },
     { condition: "Tiếp tục thủ công", mechanism: "Một người vận hành gọi start_run()/resolve_interaction() trên session vừa khôi phục — không có cơ chế riêng nào, và đó chính là điểm mấu chốt: host sở hữu việc cư trú trong bộ nhớ.", status: "real", cite: "include/agentengine/rt/agent_session.hpp:573" },
     { condition: "Sự kiện bên ngoài", mechanism: "watch_resource chỉ là một hằng liệt kê của standing_effect_kind, không có nguồn phát nào trong cây mã này. 019 §2 dẫn dòng này qua 012 (A2A push / webhook / hàng đợi).", status: "design", cite: "include/agentengine/core/standing_effect.hpp:39" },
     { condition: "Tác vụ từ xa hoàn tất", mechanism: "Không có bộ hỏi vòng lẫn đường callback nào để một tác vụ A2A/MCP từ xa đánh thức một session đang treo. Được nêu tên ngay trong cùng đoạn chú thích header với dòng trên.", status: "design", cite: "include/agentengine/core/standing_effect.hpp:14" },
@@ -351,13 +351,13 @@ export const effectClassRows: Record<Lang, EffectClassRow[]> = {
     { cls: "pure", onReexecution: "Re-runs freely, no acknowledgement", note: "authorize_reexecution() returns success immediately. Also the only class that can auto-declassify a text_derived tool call at step 5." },
     { cls: "idempotent", onReexecution: "Re-runs freely, under its original key", note: "The key is what makes the repeat safe — and F1 already derived it, identically, before the restart." },
     { cls: "at_most_once", onReexecution: "Refused until an operator acknowledges", note: "effect.reexecution_requires_ack. operator_acknowledged is an explicit host/human bool — never inferred, never derived from model output (I3)." },
-    { cls: "(undeclared)", onReexecution: "Treated as at_most_once", note: "The conservative direction, and the OPPOSITE default from declared_approval()'s least-restrictive one. A tool that forgot to classify itself is never silently safe to repeat." },
+    { cls: "(undeclared)", onReexecution: "Treated as at_most_once", note: "The conservative direction, and the opposite default from declared_approval()'s least-restrictive one. A tool that forgot to classify itself is never silently safe to repeat." },
   ],
   vi: [
     { cls: "pure", onReexecution: "Chạy lại tự do, không cần xác nhận", note: "authorize_reexecution() trả về thành công ngay. Đây cũng là lớp duy nhất có thể tự giải mật một lời gọi tool text_derived ở bước 5." },
     { cls: "idempotent", onReexecution: "Chạy lại tự do, dưới khóa gốc của nó", note: "Chính khóa làm cho việc lặp lại an toàn — và F1 đã suy ra khóa đó, y hệt, từ trước khi khởi động lại." },
     { cls: "at_most_once", onReexecution: "Bị từ chối cho tới khi người vận hành xác nhận", note: "effect.reexecution_requires_ack. operator_acknowledged là một bool tường minh do host/con người cấp — không bao giờ suy đoán, không bao giờ dẫn xuất từ đầu ra của model (I3)." },
-    { cls: "(không khai báo)", onReexecution: "Bị coi như at_most_once", note: "Hướng thận trọng, và là mặc định NGƯỢC lại với mặc định ít ràng buộc nhất của declared_approval(). Một tool quên tự phân loại thì không bao giờ mặc nhiên an toàn để lặp lại." },
+    { cls: "(không khai báo)", onReexecution: "Bị coi như at_most_once", note: "Hướng thận trọng, và là mặc định ngược lại với mặc định ít ràng buộc nhất của declared_approval(). Một tool quên tự phân loại thì không bao giờ mặc nhiên an toàn để lặp lại." },
   ],
 };
 
@@ -386,19 +386,19 @@ export const workedFlowStages: Record<Lang, FlowStage[]> = {
     {
       index: "03",
       title: "The effect runs — and the process dies before the outcome is written",
-      body: "This is 019 §7 G6's ambiguous moment: the payment may or may not have reached the outside world, and the journal cannot tell. What it CAN tell is that this exact key was attempted. On a file-backed log, everything appended before this point survives intact — only a torn trailing record can be lost, and read_from() stops cleanly before one rather than failing.",
+      body: "This is 019 §7 G6's ambiguous moment: the payment may or may not have reached the outside world, and the journal cannot tell. What it can tell is that this exact key was attempted. On a file-backed log, everything appended before this point survives intact — only a torn trailing record can be lost, and read_from() stops cleanly before one rather than failing.",
       mono: "MakePaymentTool::invoke(...) → Reply{charged:true}\n  ✗ crash before journal_effect_outcome(...)",
     },
     {
       index: "04",
       title: "After the restart, the journal is replayed and the intent stands out",
-      body: "unconfirmed_effect_intents() reads the whole log for the session and returns every intent with no matching outcome under the same key, in commit order. It is strictly a read: it answers WHICH intents need a decision, never what the decision should be. Deciding — 019 §7 G6's \"surface indeterminate, never guess\" — is deliberately not built here.",
+      body: "unconfirmed_effect_intents() reads the whole log for the session and returns every intent with no matching outcome under the same key, in commit order. It is strictly a read: it answers which intents need a decision, never what the decision should be. Deciding — 019 §7 G6's \"surface indeterminate, never guess\" — is deliberately not built here.",
       mono: "unconfirmed_effect_intents(store, \"s-rewind\")\n → [ {key …992899, make_payment, call-1, intent} ]",
     },
     {
       index: "05",
       title: "The re-execution is refused, and the refusal has a code",
-      body: "Nothing about the crash makes the repeat safe. MakePaymentTool declares EffectClass<at_most_once>, so authorize_reexecution() refuses BEFORE the pipeline is entered a second time — the gate sits in front of invoke_tool(), not inside it. An undeclared tool would land in exactly the same branch, because undeclared defaults to at_most_once.",
+      body: "Nothing about the crash makes the repeat safe. MakePaymentTool declares EffectClass<at_most_once>, so authorize_reexecution() refuses before the pipeline is entered a second time — the gate sits in front of invoke_tool(), not inside it. An undeclared tool would land in exactly the same branch, because undeclared defaults to at_most_once.",
       mono: "authorize_reexecution(at_most_once, /*ack=*/false)\n → error{policy, \"effect.reexecution_requires_ack\"}",
     },
     {
@@ -424,19 +424,19 @@ export const workedFlowStages: Record<Lang, FlowStage[]> = {
     {
       index: "03",
       title: "Hiệu ứng chạy — và tiến trình chết trước khi kết cục kịp ghi",
-      body: "Đây đúng là khoảnh khắc bất định của 019 §7 G6: khoản thanh toán có thể đã hoặc chưa ra tới thế giới bên ngoài, và nhật ký không thể biết. Thứ nó BIẾT được là đúng khóa này đã từng được thử. Trên log lưu tệp, mọi thứ ghi trước điểm này đều nguyên vẹn — chỉ bản ghi cuối bị đứt dở mới có thể mất, và read_from() dừng gọn trước nó thay vì báo lỗi.",
+      body: "Đây đúng là khoảnh khắc bất định của 019 §7 G6: khoản thanh toán có thể đã hoặc chưa ra tới thế giới bên ngoài, và nhật ký không thể biết. Thứ nó biết được là đúng khóa này đã từng được thử. Trên log lưu tệp, mọi thứ ghi trước điểm này đều nguyên vẹn — chỉ bản ghi cuối bị đứt dở mới có thể mất, và read_from() dừng gọn trước nó thay vì báo lỗi.",
       mono: "MakePaymentTool::invoke(...) → Reply{charged:true}\n  ✗ sập trước journal_effect_outcome(...)",
     },
     {
       index: "04",
       title: "Sau khi khởi động lại, nhật ký được phát lại và ý định lộ ra",
-      body: "unconfirmed_effect_intents() đọc toàn bộ log của session và trả về mọi ý định chưa có kết cục tương ứng dưới cùng một khóa, theo thứ tự ghi. Nó thuần là một phép đọc: nó trả lời NHỮNG ý định nào cần một quyết định, chứ không bao giờ nói quyết định phải là gì. Việc quyết định — \"nêu ra là bất định, không bao giờ đoán\" của 019 §7 G6 — cố ý chưa được xây ở đây.",
+      body: "unconfirmed_effect_intents() đọc toàn bộ log của session và trả về mọi ý định chưa có kết cục tương ứng dưới cùng một khóa, theo thứ tự ghi. Nó thuần là một phép đọc: nó trả lời những ý định nào cần một quyết định, chứ không bao giờ nói quyết định phải là gì. Việc quyết định — \"nêu ra là bất định, không bao giờ đoán\" của 019 §7 G6 — cố ý chưa được xây ở đây.",
       mono: "unconfirmed_effect_intents(store, \"s-rewind\")\n → [ {key …992899, make_payment, call-1, intent} ]",
     },
     {
       index: "05",
       title: "Lần chạy lại bị từ chối, và lời từ chối có mã riêng",
-      body: "Không có gì trong cú sập khiến việc lặp lại trở nên an toàn. MakePaymentTool khai báo EffectClass<at_most_once>, nên authorize_reexecution() từ chối TRƯỚC khi pipeline được vào lần thứ hai — cổng chặn nằm phía trước invoke_tool(), không nằm bên trong. Một tool không khai báo cũng rơi đúng vào nhánh này, vì không khai báo thì mặc định là at_most_once.",
+      body: "Không có gì trong cú sập khiến việc lặp lại trở nên an toàn. MakePaymentTool khai báo EffectClass<at_most_once>, nên authorize_reexecution() từ chối trước khi pipeline được vào lần thứ hai — cổng chặn nằm phía trước invoke_tool(), không nằm bên trong. Một tool không khai báo cũng rơi đúng vào nhánh này, vì không khai báo thì mặc định là at_most_once.",
       mono: "authorize_reexecution(at_most_once, /*ack=*/false)\n → error{policy, \"effect.reexecution_requires_ack\"}",
     },
     {
@@ -459,12 +459,12 @@ export const proofRows: Record<Lang, ProofRow[]> = {
   en: [
     {
       test: "test_rt_agent_session_checkpoint_restart.cpp — D1-R1…R4",
-      asserts: "A session checkpointed after turn 2 restores into a FRESH instance whose next start_run() mints s-ckpt:run:3 — never re-minting run:1 or run:2.",
-      scope: "This is what \"restart-identical resume\" amounts to for a session today: the run SEQUENCE is preserved, not the conversation. No kill -9, no history.",
+      asserts: "A session checkpointed after turn 2 restores into a fresh instance whose next start_run() mints s-ckpt:run:3 — never re-minting run:1 or run:2.",
+      scope: "This is what \"restart-identical resume\" amounts to for a session today: the run sequence is preserved, not the conversation. No kill -9, no history.",
     },
     {
       test: "test_rt_agent_session_snapshot.cpp — P1…P6",
-      asserts: "Record round-trips; a second save under the same id wins; delete_session() returns a both-halves-done receipt and the deleted session then reads back exactly like one that never existed; checkpoint_if_due() below the cadence writes NOTHING; a concurrent snapshot_record() queues behind an in-flight start_run() and observes post-run state.",
+      asserts: "Record round-trips; a second save under the same id wins; delete_session() returns a both-halves-done receipt and the deleted session then reads back exactly like one that never existed; checkpoint_if_due() below the cadence writes nothing; a concurrent snapshot_record() queues behind an in-flight start_run() and observes post-run state.",
       scope: "P6 is the replacement for Quark's FenceToken: a real serialization proof, in-process only.",
     },
     {
@@ -475,7 +475,7 @@ export const proofRows: Record<Lang, ProofRow[]> = {
     {
       test: "test_rt_session_store.cpp — M1…M5, F1…F7",
       asserts: "save/load/exists/remove contract, not-found as a real error code, idempotent remove, overwrite-not-append; and for FileSessionStore, a brand-new instance over the same root reads what a destroyed instance wrote, plus rejection of ids containing a separator or \"..\".",
-      scope: "Durability across a process boundary is proven for the file store. Torn-write safety is NOT — save() truncates in place, named in the header.",
+      scope: "Durability across a process boundary is proven for the file store. Torn-write safety is not — save() truncates in place, named in the header.",
     },
     {
       test: "test_rt_append_log_store.cpp — L1…L7",
@@ -485,11 +485,11 @@ export const proofRows: Record<Lang, ProofRow[]> = {
     {
       test: "test_rt_effect_journal.cpp — J1…J8",
       asserts: "Intent then outcome land in commit order carrying the real key; an intent with no outcome is reported unconfirmed and a confirmed one never is; with two effects only the interrupted one is reported, distinguished by key; two sessions' journals in one store never collide.",
-      scope: "The reconciliation PRIMITIVE. No fault injector, and no decision layer on top of it.",
+      scope: "The reconciliation primitive. No fault injector, and no decision layer on top of it.",
     },
     {
       test: "test_idempotency_key.cpp — F1-C1, F1-R1…R6",
-      asserts: "A key recomputed from a completely fresh EffectContext and freshly parsed arguments (a simulated restart) is identical; changing any ONE of the four inputs changes the key; and invoke_tool()'s own audit key equals what derive_idempotency_key() computes.",
+      asserts: "A key recomputed from a completely fresh EffectContext and freshly parsed arguments (a simulated restart) is identical; changing any one of the four inputs changes the key; and invoke_tool()'s own audit key equals what derive_idempotency_key() computes.",
       scope: "F1-R6 is what makes this more than an unused helper — the real pipeline is wired to it.",
     },
     {
@@ -499,32 +499,32 @@ export const proofRows: Record<Lang, ProofRow[]> = {
     },
     {
       test: "test_rt_agent_session_suspend_approval.cpp — SU1…SU6",
-      asserts: "The gated tool's invoke() is never reached; an approval Interaction opens naming the suspending run; a second start_run() is refused with run.approval_pending and mints no run id; approve resumes the SAME run and denial folds an ordinary tool error into history; a resolve from a foreign principal is denied and leaves the interaction OPEN.",
+      asserts: "The gated tool's invoke() is never reached; an approval Interaction opens naming the suspending run; a second start_run() is refused with run.approval_pending and mints no run id; approve resumes the same run and denial folds an ordinary tool error into history; a resolve from a foreign principal is denied and leaves the interaction open.",
       scope: "All in-process. Nothing here crosses a restart.",
     },
     {
       test: "test_agent_session_suspend_codeact_ask.cpp — B1…B7",
-      asserts: "agent.ask() suspends with its own reason tag and prompt; the same interaction_id is reused across chained questions; resolving replays the stored script; and B7 proves the cost of that design — a mediated file write before the ask runs TWICE in total (\"XX\", not \"X\").",
+      asserts: "agent.ask() suspends with its own reason tag and prompt; the same interaction_id is reused across chained questions; resolving replays the stored script; and B7 proves the cost of that design — a mediated file write before the ask runs twice in total (\"XX\", not \"X\").",
       scope: "B7 is a residual proven, not asserted away: replay re-executes the deterministic prefix, side effects included.",
     },
     {
       test: "test_rt_agent_session_identity_and_admission.cpp — POISON-1…4",
-      asserts: "An always-failing chat client is quarantined at EXACTLY the bound (3 attempts), never earlier or later; history keeps one entry per failed attempt; session identity is untouched.",
+      asserts: "An always-failing chat client is quarantined at exactly the bound (3 attempts), never earlier or later; history keeps one entry per failed attempt; session identity is untouched.",
       scope: "Against a test-local copy of PoisonRunPolicy<N> — the shipping headers contain no such policy at all.",
     },
     {
       test: "test_rt_workflow_checkpoint_g2.cpp — G2",
-      asserts: "A 20-node workflow is killed at EVERY one of its 20 superstep boundaries; every single resume, from a genuinely new supervisor, completes with output byte-identical to the uninterrupted control.",
+      asserts: "A 20-node workflow is killed at every one of its 20 superstep boundaries; every single resume, from a genuinely new supervisor, completes with output byte-identical to the uninterrupted control.",
       scope: "The strongest restart-identity proof in the repo — and it is 014's, for workflows, not 019's for sessions.",
     },
     {
       test: "test_rt_project_manifest.cpp — P1…P5 · test_rt_project_scale_isolation.cpp — G1(a)",
-      asserts: "pause_project() checkpoints every member first and flips status to paused ONLY if all checkpoints succeeded — a failing member store leaves the project active rather than falsely paused; and pausing one Project out of 100 writes to none of the other 99 stores.",
+      asserts: "pause_project() checkpoints every member first and flips status to paused only if all checkpoints succeeded — a failing member store leaves the project active rather than falsely paused; and pausing one Project out of 100 writes to none of the other 99 stores.",
       scope: "ADR-038's \"pause is checkpoint, full stop\": there is no eviction and no reactivation to measure.",
     },
     {
       test: "test_rt_agent_session_ack_policy.cpp — T1…T3",
-      asserts: "ack_policy::at_most_once never touches the store; require_durable writes the turn delta AND the session record before the caller sees a response; a failed durable write surfaces as run.durable_ack_failed rather than a false success.",
+      asserts: "ack_policy::at_most_once never touches the store; require_durable writes the turn delta and the session record before the caller sees a response; a failed durable write surfaces as run.durable_ack_failed rather than a false success.",
       scope: "005 §2's ack contract for one turn's delta — not whole-conversation durability, and nothing reads the delta back.",
     },
     {
@@ -536,12 +536,12 @@ export const proofRows: Record<Lang, ProofRow[]> = {
   vi: [
     {
       test: "test_rt_agent_session_checkpoint_restart.cpp — D1-R1…R4",
-      asserts: "Một session được checkpoint sau lượt 2 khôi phục vào một thể hiện MỚI TINH, và start_run() kế tiếp mint s-ckpt:run:3 — không bao giờ mint lại run:1 hay run:2.",
-      scope: "Đó là tất cả những gì \"tiếp tục giống hệt sau khởi động lại\" có nghĩa với một session hôm nay: DÃY run được giữ, còn cuộc hội thoại thì không. Không kill -9, không lịch sử.",
+      asserts: "Một session được checkpoint sau lượt 2 khôi phục vào một thể hiện mới tinh, và start_run() kế tiếp mint s-ckpt:run:3 — không bao giờ mint lại run:1 hay run:2.",
+      scope: "Đó là tất cả những gì \"tiếp tục giống hệt sau khởi động lại\" có nghĩa với một session hôm nay: dãy run được giữ, còn cuộc hội thoại thì không. Không kill -9, không lịch sử.",
     },
     {
       test: "test_rt_agent_session_snapshot.cpp — P1…P6",
-      asserts: "Bản ghi đi về nguyên vẹn; lần save thứ hai cùng id thì thắng; delete_session() trả biên nhận đủ hai nửa và session đã xóa đọc ra y hệt một session chưa từng tồn tại; checkpoint_if_due() dưới ngưỡng nhịp KHÔNG ghi gì; một snapshot_record() song song xếp hàng sau start_run() đang chạy và nhìn thấy trạng thái sau khi run xong.",
+      asserts: "Bản ghi đi về nguyên vẹn; lần save thứ hai cùng id thì thắng; delete_session() trả biên nhận đủ hai nửa và session đã xóa đọc ra y hệt một session chưa từng tồn tại; checkpoint_if_due() dưới ngưỡng nhịp không ghi gì; một snapshot_record() song song xếp hàng sau start_run() đang chạy và nhìn thấy trạng thái sau khi run xong.",
       scope: "P6 là thứ thay thế FenceToken của Quark: một bằng chứng tuần tự hóa thật, nhưng chỉ trong một tiến trình.",
     },
     {
@@ -552,7 +552,7 @@ export const proofRows: Record<Lang, ProofRow[]> = {
     {
       test: "test_rt_session_store.cpp — M1…M5, F1…F7",
       asserts: "Hợp đồng save/load/exists/remove, not-found là một mã lỗi thật, remove lũy đẳng, ghi đè chứ không nối thêm; và với FileSessionStore, một thể hiện mới tinh trên cùng thư mục gốc đọc được thứ mà thể hiện đã hủy từng ghi, kèm việc từ chối id chứa dấu phân cách hay \"..\".",
-      scope: "Tính bền vững qua ranh giới tiến trình đã được chứng minh cho store tệp. An toàn trước ghi đứt dở thì CHƯA — save() cắt cụt tại chỗ, điều này được nêu ngay trong header.",
+      scope: "Tính bền vững qua ranh giới tiến trình đã được chứng minh cho store tệp. An toàn trước ghi đứt dở thì chưa — save() cắt cụt tại chỗ, điều này được nêu ngay trong header.",
     },
     {
       test: "test_rt_append_log_store.cpp — L1…L7",
@@ -562,11 +562,11 @@ export const proofRows: Record<Lang, ProofRow[]> = {
     {
       test: "test_rt_effect_journal.cpp — J1…J8",
       asserts: "Ý định rồi kết cục nằm đúng thứ tự ghi và mang khóa thật; một ý định không kết cục bị báo là chưa xác nhận còn cái đã xác nhận thì không; với hai hiệu ứng, chỉ cái bị ngắt được báo, phân biệt bằng khóa; nhật ký của hai session trong một store không bao giờ lẫn nhau.",
-      scope: "Đây là NGUYÊN LIỆU đối chiếu. Không có bộ tiêm lỗi, và không có tầng quyết định đặt lên trên.",
+      scope: "Đây là nguyên liệu đối chiếu. Không có bộ tiêm lỗi, và không có tầng quyết định đặt lên trên.",
     },
     {
       test: "test_idempotency_key.cpp — F1-C1, F1-R1…R6",
-      asserts: "Khóa tính lại từ một EffectContext hoàn toàn mới và tham số vừa phân tích lại (mô phỏng khởi động lại) thì giống hệt; đổi MỘT trong bốn đầu vào là khóa đổi theo; và khóa trong bản ghi kiểm toán của chính invoke_tool() bằng đúng thứ derive_idempotency_key() tính ra.",
+      asserts: "Khóa tính lại từ một EffectContext hoàn toàn mới và tham số vừa phân tích lại (mô phỏng khởi động lại) thì giống hệt; đổi một trong bốn đầu vào là khóa đổi theo; và khóa trong bản ghi kiểm toán của chính invoke_tool() bằng đúng thứ derive_idempotency_key() tính ra.",
       scope: "F1-R6 là thứ khiến đây không chỉ là một hàm tiện ích bỏ không — pipeline thật đã nối vào nó.",
     },
     {
@@ -576,32 +576,32 @@ export const proofRows: Record<Lang, ProofRow[]> = {
     },
     {
       test: "test_rt_agent_session_suspend_approval.cpp — SU1…SU6",
-      asserts: "invoke() của tool bị chặn không bao giờ được chạm tới; một Interaction phê duyệt mở ra và nêu tên đúng run đang treo; start_run() thứ hai bị từ chối với run.approval_pending và không mint run id nào; chấp thuận thì tiếp tục CHÍNH run cũ còn từ chối thì gấp một lỗi tool thường vào lịch sử; một lệnh resolve từ principal lạ bị từ chối và để interaction VẪN MỞ.",
+      asserts: "invoke() của tool bị chặn không bao giờ được chạm tới; một Interaction phê duyệt mở ra và nêu tên đúng run đang treo; start_run() thứ hai bị từ chối với run.approval_pending và không mint run id nào; chấp thuận thì tiếp tục chính run cũ còn từ chối thì gấp một lỗi tool thường vào lịch sử; một lệnh resolve từ principal lạ bị từ chối và để interaction vẫn mở.",
       scope: "Tất cả đều trong một tiến trình. Không điều gì ở đây đi qua một lần khởi động lại.",
     },
     {
       test: "test_agent_session_suspend_codeact_ask.cpp — B1…B7",
-      asserts: "agent.ask() treo lại với thẻ lý do và câu hỏi riêng; cùng một interaction_id được tái dùng qua các câu hỏi nối tiếp; giải quyết thì phát lại đoạn script đã lưu; và B7 chứng minh cái giá của thiết kế ấy — một lần ghi tệp có trung gian đứng trước câu hỏi chạy TỔNG CỘNG HAI LẦN (\"XX\", không phải \"X\").",
+      asserts: "agent.ask() treo lại với thẻ lý do và câu hỏi riêng; cùng một interaction_id được tái dùng qua các câu hỏi nối tiếp; giải quyết thì phát lại đoạn script đã lưu; và B7 chứng minh cái giá của thiết kế ấy — một lần ghi tệp có trung gian đứng trước câu hỏi chạy tổng cộng hai lần (\"XX\", không phải \"X\").",
       scope: "B7 là một phần dư được chứng minh chứ không bị nói cho qua: phát lại chạy lại toàn bộ đoạn tất định phía trước, kể cả tác dụng phụ.",
     },
     {
       test: "test_rt_agent_session_identity_and_admission.cpp — POISON-1…4",
-      asserts: "Một chat client luôn hỏng bị cách ly đúng TẠI ngưỡng (3 lần thử), không sớm cũng không muộn; lịch sử giữ đúng một mục cho mỗi lần thử hỏng; danh tính session không bị đụng tới.",
+      asserts: "Một chat client luôn hỏng bị cách ly đúng tại ngưỡng (3 lần thử), không sớm cũng không muộn; lịch sử giữ đúng một mục cho mỗi lần thử hỏng; danh tính session không bị đụng tới.",
       scope: "Chạy trên một bản sao PoisonRunPolicy<N> cục bộ trong tệp kiểm thử — các header được xuất bản không hề chứa chính sách này.",
     },
     {
       test: "test_rt_workflow_checkpoint_g2.cpp — G2",
-      asserts: "Một workflow 20 nút bị giết ở CẢ 20 mốc superstep; mọi lần tiếp tục, từ một supervisor mới hoàn toàn, đều cho ra kết quả giống hệt bản đối chứng không bị ngắt tới từng byte.",
+      asserts: "Một workflow 20 nút bị giết ở cả 20 mốc superstep; mọi lần tiếp tục, từ một supervisor mới hoàn toàn, đều cho ra kết quả giống hệt bản đối chứng không bị ngắt tới từng byte.",
       scope: "Bằng chứng tiếp-tục-giống-hệt mạnh nhất trong kho mã — và nó thuộc về 014, cho workflow, chứ không phải 019 cho session.",
     },
     {
       test: "test_rt_project_manifest.cpp — P1…P5 · test_rt_project_scale_isolation.cpp — G1(a)",
-      asserts: "pause_project() checkpoint mọi thành viên trước rồi CHỈ lật trạng thái sang paused nếu tất cả checkpoint thành công — một store thành viên bị hỏng sẽ khiến project vẫn ở active thay vì bị báo paused sai sự thật; và tạm dừng một Project trong 100 cái không ghi vào bất kỳ store nào của 99 cái còn lại.",
+      asserts: "pause_project() checkpoint mọi thành viên trước rồi chỉ lật trạng thái sang paused nếu tất cả checkpoint thành công — một store thành viên bị hỏng sẽ khiến project vẫn ở active thay vì bị báo paused sai sự thật; và tạm dừng một Project trong 100 cái không ghi vào bất kỳ store nào của 99 cái còn lại.",
       scope: "Đúng tinh thần \"pause là checkpoint, hết\" của ADR-038: không có việc trục xuất khỏi bộ nhớ lẫn kích hoạt lại để mà đo.",
     },
     {
       test: "test_rt_agent_session_ack_policy.cpp — T1…T3",
-      asserts: "ack_policy::at_most_once không hề chạm vào store; require_durable ghi delta của lượt VÀ bản ghi session trước khi caller thấy phản hồi; một lần ghi bền vững hỏng thì nổi lên thành run.durable_ack_failed chứ không phải một thành công giả.",
+      asserts: "ack_policy::at_most_once không hề chạm vào store; require_durable ghi delta của lượt và bản ghi session trước khi caller thấy phản hồi; một lần ghi bền vững hỏng thì nổi lên thành run.durable_ack_failed chứ không phải một thành công giả.",
       scope: "Hợp đồng ack của 005 §2 cho delta một lượt — không phải tính bền vững cho cả cuộc hội thoại, và cũng chưa có ai đọc delta đó về.",
     },
     {
@@ -621,29 +621,29 @@ export interface GapRow {
 
 export const durabilityGaps: Record<Lang, GapRow[]> = {
   en: [
-    { item: "G1 — kill -9 at every checkpoint boundary, resume output identical to the control", state: "Met for workflows (20/20 boundaries, byte-identical), NOT for sessions: the session record carries no history, and ADR-037 retired test_session_restart_identical_resume.cpp as an accepted gap rather than porting it.", cite: "decisions/ADR-037-remove-quark-as-core-runtime.md:237" },
+    { item: "G1 — kill -9 at every checkpoint boundary, resume output identical to the control", state: "Met for workflows (20/20 boundaries, byte-identical), not for sessions: the session record carries no history, and ADR-037 retired test_session_restart_identical_resume.cpp as an accepted gap rather than porting it.", cite: "decisions/ADR-037-remove-quark-as-core-runtime.md:237" },
     { item: "G2 — an interrupted idempotent effect retried exactly once over 10⁴ fault-injected trials", state: "No fault injector exists anywhere in tests/. The journal proves the primitive; nothing drives it under injected duplication or delay.", cite: "tests/test_rt_effect_journal.cpp:1" },
     { item: "G3 — a suspended run's resident cost measured by census: no activation, no sandbox, no connection, no thread", state: "No census test exists; the M4-era test_suspended_zero_resources_e2e.cpp was retired with Quark. Structurally an rt::AgentSession owns no thread or timer at all — but that is an argument from the code, not the measurement 019 asks for.", cite: "decisions/ADR-037-remove-quark-as-core-runtime.md:237" },
     { item: "G4 — 10⁶ reminders due simultaneously wake without a thundering herd", state: "Unreachable: there is no reminder mechanism. 019 §2 and G4 both still say the durable reminders \"carried over intact\" into rt::, and the code disagrees — ADR-037 deleted Quark's ReminderService and rt:: has never had any timer primitive; schedule_wakeup is host-polled.", cite: "include/agentengine/rt/agent_session.hpp:148" },
     { item: "G5 — a poison run quarantined after its bound, state intact, operator-visible reason", state: "Half met. The bound-and-preserve behaviour is proven, but PoisonRunPolicy<N> exists only as a copy inside a test file — no shipping header defines it, and nothing surfaces an operator-visible reason.", cite: "tests/test_rt_agent_session_identity_and_admission.cpp:108" },
     { item: "G6 — an at-most-once effect interrupted at the ambiguous instant surfaces indeterminate, 10⁴ trials", state: "Deliberately not built. unconfirmed_effect_intents() answers which intents lack an outcome — a read, never a decision. The decision layer is named as separately-scoped work.", cite: "include/agentengine/rt/effect_journal.hpp:30" },
-    { item: "The effect journal is not wired into the turn loop", state: "journal_effect_intent()/journal_effect_outcome()/authorize_reexecution() have NO caller outside their own tests. run_rounds() derives and audits the idempotency key on every call, but journals nothing. A host wanting 019 §3's discipline must call the journal itself.", cite: "include/agentengine/rt/agent_session.hpp:1512" },
+    { item: "The effect journal is not wired into the turn loop", state: "journal_effect_intent()/journal_effect_outcome()/authorize_reexecution() have no caller outside their own tests. run_rounds() derives and audits the idempotency key on every call, but journals nothing. A host wanting 019 §3's discipline must call the journal itself.", cite: "include/agentengine/rt/agent_session.hpp:1512" },
     { item: "Node loss, fencing, leases, epochs", state: "None exist, by decision. 019 §4 now names this a real, permanent gap; there is no multi-node story and no compare-and-set primitive in either store.", cite: "019-Durability-and-Long-Running-Agents.md:73" },
     { item: "FileSessionStore has no atomic write", state: "save() truncates and rewrites in place — a crash mid-write can leave torn bytes. The append log does better by construction (only a torn tail is lost, and reads stop cleanly before it). Named in the header, not discovered in production.", cite: "include/agentengine/rt/session_store.hpp:149" },
-    { item: "019 §4 deploy version-skew pin", state: "Not implemented. AgentMetadata::agent_version is real (ADR-044), but nothing consults it when a run resumes, so there is no pin-vs-migrate decision to make.", cite: "include/agentengine/core/agent_registry.hpp:63" },
+    { item: "019 §4 deploy version-skew pin", state: "Not implemented. AgentMetadata::agent_version exists, but nothing consults it when a run resumes, so there is no pin-vs-migrate decision to make.", cite: "include/agentengine/core/agent_registry.hpp:63" },
     { item: "019 §5 retention and garbage collection", state: "No retention policy, no GC, no grace period anywhere — the project manifest header says so in as many words for the archive path.", cite: "include/agentengine/rt/project_manifest.hpp:242" },
   ],
   vi: [
-    { item: "G1 — kill -9 tại mọi mốc checkpoint, kết quả tiếp tục giống hệt bản đối chứng", state: "Đạt cho workflow (20/20 mốc, giống hệt từng byte), CHƯA đạt cho session: bản ghi session không mang lịch sử, và ADR-037 đã rút test_session_restart_identical_resume.cpp như một khoảng trống được chấp nhận thay vì chuyển đổi nó.", cite: "decisions/ADR-037-remove-quark-as-core-runtime.md:237" },
+    { item: "G1 — kill -9 tại mọi mốc checkpoint, kết quả tiếp tục giống hệt bản đối chứng", state: "Đạt cho workflow (20/20 mốc, giống hệt từng byte), chưa đạt cho session: bản ghi session không mang lịch sử, và ADR-037 đã rút test_session_restart_identical_resume.cpp như một khoảng trống được chấp nhận thay vì chuyển đổi nó.", cite: "decisions/ADR-037-remove-quark-as-core-runtime.md:237" },
     { item: "G2 — hiệu ứng idempotent bị ngắt được thử lại đúng một lần qua 10⁴ lần tiêm lỗi", state: "Không có bộ tiêm lỗi nào trong tests/. Nhật ký chứng minh nguyên liệu; không gì lái nó dưới cảnh nhân bản hay trì hoãn được tiêm vào.", cite: "tests/test_rt_effect_journal.cpp:1" },
     { item: "G3 — chi phí cư trú của một run đang treo đo bằng kiểm đếm: không activation, không sandbox, không kết nối, không luồng", state: "Không có bài kiểm đếm nào; test_suspended_zero_resources_e2e.cpp thời M4 đã bị rút cùng Quark. Về cấu trúc, một rt::AgentSession không sở hữu luồng hay bộ đếm giờ nào — nhưng đó là lập luận từ mã, không phải phép đo mà 019 yêu cầu.", cite: "decisions/ADR-037-remove-quark-as-core-runtime.md:237" },
     { item: "G4 — 10⁶ nhắc giờ cùng đến hạn mà không gây bão đánh thức", state: "Không thể chạm tới: không có cơ chế nhắc giờ nào. Cả 019 §2 lẫn G4 vẫn nói rằng phần nhắc giờ bền vững đã \"được chuyển nguyên vẹn\" sang rt::, còn mã thì nói ngược lại — ADR-037 đã xóa ReminderService của Quark và rt:: chưa từng có nguyên liệu đếm giờ nào; schedule_wakeup do host hỏi vòng.", cite: "include/agentengine/rt/agent_session.hpp:148" },
     { item: "G5 — một run độc bị cách ly sau ngưỡng, trạng thái còn nguyên, lý do người vận hành thấy được", state: "Đạt một nửa. Hành vi dừng-tại-ngưỡng và giữ nguyên trạng thái đã được chứng minh, nhưng PoisonRunPolicy<N> chỉ tồn tại như một bản sao trong một tệp kiểm thử — không header xuất bản nào định nghĩa nó, và không gì nêu ra lý do cho người vận hành thấy.", cite: "tests/test_rt_agent_session_identity_and_admission.cpp:108" },
     { item: "G6 — hiệu ứng at-most-once bị ngắt đúng khoảnh khắc bất định thì phải nêu là bất định, 10⁴ lần thử", state: "Cố ý chưa xây. unconfirmed_effect_intents() trả lời ý định nào thiếu kết cục — một phép đọc, không bao giờ là một quyết định. Tầng quyết định được nêu tên như phần việc có phạm vi riêng.", cite: "include/agentengine/rt/effect_journal.hpp:30" },
-    { item: "Nhật ký hiệu ứng chưa được nối vào vòng lặp lượt", state: "journal_effect_intent()/journal_effect_outcome()/authorize_reexecution() KHÔNG có caller nào ngoài chính bài kiểm thử của chúng. run_rounds() suy ra và kiểm toán khóa idempotency ở mọi lời gọi, nhưng không ghi nhật ký gì. Host nào muốn kỷ luật của 019 §3 thì phải tự gọi nhật ký.", cite: "include/agentengine/rt/agent_session.hpp:1512" },
+    { item: "Nhật ký hiệu ứng chưa được nối vào vòng lặp lượt", state: "journal_effect_intent()/journal_effect_outcome()/authorize_reexecution() không có caller nào ngoài chính bài kiểm thử của chúng. run_rounds() suy ra và kiểm toán khóa idempotency ở mọi lời gọi, nhưng không ghi nhật ký gì. Host nào muốn kỷ luật của 019 §3 thì phải tự gọi nhật ký.", cite: "include/agentengine/rt/agent_session.hpp:1512" },
     { item: "Mất node, fencing, lease, epoch", state: "Không thứ nào tồn tại, theo quyết định. 019 §4 nay gọi đây là khoảng trống thật và vĩnh viễn; không có câu chuyện đa node và không có nguyên liệu so-sánh-rồi-đặt trong cả hai store.", cite: "019-Durability-and-Long-Running-Agents.md:73" },
     { item: "FileSessionStore không ghi nguyên tử", state: "save() cắt cụt rồi ghi đè tại chỗ — sập giữa chừng có thể để lại byte đứt dở. Log ghi thêm làm tốt hơn theo cấu trúc (chỉ mất phần đuôi dở, và phép đọc dừng gọn trước nó). Điều này nêu trong header, không phải phát hiện khi chạy thật.", cite: "include/agentengine/rt/session_store.hpp:149" },
-    { item: "Chính sách ghim phiên bản khi triển khai của 019 §4", state: "Chưa hiện thực. AgentMetadata::agent_version là thật (ADR-044), nhưng không gì tra tới nó khi một run tiếp tục, nên chẳng có quyết định ghim-hay-chuyển nào để mà đưa ra.", cite: "include/agentengine/core/agent_registry.hpp:63" },
+    { item: "Chính sách ghim phiên bản khi triển khai của 019 §4", state: "Chưa hiện thực. AgentMetadata::agent_version tồn tại thật, nhưng không gì tra tới nó khi một run tiếp tục, nên chẳng có quyết định ghim-hay-chuyển nào để mà đưa ra.", cite: "include/agentengine/core/agent_registry.hpp:63" },
     { item: "Lưu giữ và thu gom rác của 019 §5", state: "Không chính sách lưu giữ, không thu gom rác, không thời hạn ân hạn ở đâu cả — header của project manifest nói đúng như vậy cho đường lưu trữ.", cite: "include/agentengine/rt/project_manifest.hpp:242" },
   ],
 };

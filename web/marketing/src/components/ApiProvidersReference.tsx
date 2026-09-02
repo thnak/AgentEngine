@@ -21,6 +21,7 @@ import { SITE_BASE } from "../data/content";
 import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
+import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
 import { ApiTable } from "./ApiTable";
 import { CodePanel } from "./CodePanel";
 import { PvCredentialDiagram, PvSseDiagram, PvWireDiagram } from "./PvDiagrams";
@@ -115,7 +116,7 @@ const copy = {
       [
         "ModelCallGatewayLike",
         "capabilities() + call()",
-        "ADR-036's alternate shape. AgentSession::run_model_call() picks between the two with if constexpr, so a raw single backend is completely unaffected. ModelCallGateway is the one conformer and is deliberately NOT a ChatClient.",
+        "ADR-036's alternate shape. AgentSession::run_model_call() picks between the two with if constexpr, so a raw single backend is completely unaffected. ModelCallGateway is the one conformer, and it is deliberately not a ChatClient.",
       ],
       [
         "HasProducerChatClientId",
@@ -152,26 +153,32 @@ const copy = {
     reasoningTitle: "reasoning_effort — one ordinal level, two genuinely different native shapes",
     reasoningBody: (
       <>
-        The single sampling-adjacent knob carved out of §1's elision (ADR-020), and an abstraction
-        each backend maps down rather than a vendor field passed through. OpenAI's{" "}
-        <code>minimal</code> is deliberately absent: Ollama has no equivalent, so admitting it
-        would make this OpenAI's enum with a rename. <code>nullopt</code> and <code>off</code> are
-        different requests — no opinion versus explicitly disable — and every surveyed backend can
-        express both.
+        <code>reasoning_effort</code> is the one sampling-adjacent knob carved out of §1's
+        elision. Each backend maps it down as an abstraction; none pass it through as a vendor
+        field. OpenAI's <code>minimal</code> is deliberately absent — Ollama has no equivalent, so
+        admitting it would make this OpenAI's enum with a rename. <code>nullopt</code> and{" "}
+        <code>off</code> are different requests, no opinion versus explicitly disabled, and every
+        surveyed backend can express both.
       </>
     ),
+    reasoningNote: <>ADR-020</>,
     reasoningCols: ["ChatRequest::reasoning_effort", "OpenAI-compatible", "Anthropic"],
     s2Note: (
       <>
-        <strong>Anthropic enforces its vendor's own floor here, client-side, on purpose.</strong>{" "}
+        Anthropic enforces its vendor's own floor here, client-side, and on purpose. A request
+        that a lenient gateway accepts can still fail against the real endpoint, so sending one
+        that only the lenient hop tolerates is exactly the silent divergence this project's
+        conventions exist to prevent. The client fails closed instead, with{" "}
+        <code>anthropic.thinking_budget_unsatisfiable</code>, and names both the numbers and the
+        remedy.
+      </>
+    ),
+    s2Evidence: (
+      <>
         Anthropic documents <code>budget_tokens &gt;= 1024</code> and{" "}
-        <code>budget_tokens &lt; max_tokens</code>. A gateway may not enforce them — OpenRouter was
-        measured returning HTTP 200 for both <code>budget_tokens == max_tokens</code> and{" "}
-        <code>budget_tokens == 512</code>, while <code>api.anthropic.com</code> rejects both.
-        Sending a request that works through the lenient hop and breaks against the strict one is
-        exactly the silent divergence this project's conventions exist to prevent, so the client
-        fails closed with <code>anthropic.thinking_budget_unsatisfiable</code> and names the
-        numbers and the remedy.
+        <code>budget_tokens &lt; max_tokens</code>. OpenRouter was measured returning HTTP 200 for
+        both <code>budget_tokens == max_tokens</code> and <code>budget_tokens == 512</code>;{" "}
+        <code>api.anthropic.com</code> rejects both.
       </>
     ),
 
@@ -241,10 +248,10 @@ const copy = {
         all: <code>ReplayChatClient</code> ignores the live request and{" "}
         <code>EffectContext</code> entirely and always serves its one recording, so there is no
         prompt comparison and no cassette-miss detection — only a call-shape check. Second, 004 §7
-        G3 is proven on each half separately (the recorder preserves per-chunk timing and the
-        terminal; the player reproduces exact inter-chunk deltas against an injected clock) but{" "}
-        <em>never across the seam</em>: no test in this tree records a real call and then replays
-        that same recording, and every replay test constructs its{" "}
+        G3 is proven on each half separately, <em>never across the seam</em>. The recorder
+        preserves per-chunk timing and the terminal; the player reproduces exact inter-chunk
+        deltas against an injected clock. But no test in this tree records a real call and then
+        replays that same recording — every replay test constructs its{" "}
         <code>ChatCallRecording</code> by hand.
       </>
     ),
@@ -303,7 +310,7 @@ const copy = {
       [
         "ModelCallGatewayLike",
         "capabilities() + call()",
-        "Hình dạng thay thế của ADR-036. AgentSession::run_model_call() chọn giữa hai hình dạng bằng if constexpr, nên một backend đơn lẻ thô hoàn toàn không bị ảnh hưởng. ModelCallGateway là conformer duy nhất và cố ý KHÔNG phải một ChatClient.",
+        "Hình dạng thay thế của ADR-036. AgentSession::run_model_call() chọn giữa hai hình dạng bằng if constexpr, nên một backend đơn lẻ thô hoàn toàn không bị ảnh hưởng. ModelCallGateway là conformer duy nhất, và nó cố ý không phải một ChatClient.",
       ],
       [
         "HasProducerChatClientId",
@@ -340,26 +347,33 @@ const copy = {
     reasoningTitle: "reasoning_effort — một mức thứ tự, hai hình dạng gốc thực sự khác nhau",
     reasoningBody: (
       <>
-        Núm điều chỉnh cận-sampling duy nhất được tách khỏi phần lược bỏ của §1 (ADR-020), và là
-        một trừu tượng mà mỗi backend tự ánh xạ xuống chứ không phải một trường của hãng được
-        chuyển tiếp nguyên xi. Mức <code>minimal</code> của OpenAI cố ý vắng mặt: Ollama không có
-        mức tương đương, nên thừa nhận nó sẽ biến đây thành enum của OpenAI chỉ đổi tên.{" "}
-        <code>nullopt</code> và <code>off</code> là hai yêu cầu khác nhau — không có ý kiến, so
-        với tắt hẳn một cách tường minh — và mọi backend đã khảo sát đều biểu đạt được cả hai.
+        <code>reasoning_effort</code> là núm điều chỉnh cận-sampling duy nhất được tách khỏi phần
+        lược bỏ của §1. Mỗi backend tự ánh xạ nó xuống như một trừu tượng; không backend nào
+        chuyển tiếp nó nguyên xi như một trường của hãng. Mức <code>minimal</code> của OpenAI cố ý
+        vắng mặt — Ollama không có mức tương đương, nên thừa nhận nó sẽ biến đây thành enum của
+        OpenAI chỉ đổi tên. <code>nullopt</code> và <code>off</code> là hai yêu cầu khác nhau,
+        không có ý kiến so với tắt hẳn một cách tường minh, và mọi backend đã khảo sát đều biểu
+        đạt được cả hai.
       </>
     ),
+    reasoningNote: <>ADR-020</>,
     reasoningCols: ["ChatRequest::reasoning_effort", "Tương thích OpenAI", "Anthropic"],
     s2Note: (
       <>
-        <strong>Anthropic tự thực thi sàn của chính hãng ngay tại đây, phía client, một cách cố ý.</strong>{" "}
-        Anthropic tài liệu hóa <code>budget_tokens &gt;= 1024</code> và{" "}
-        <code>budget_tokens &lt; max_tokens</code>. Một gateway có thể không thực thi chúng —
-        OpenRouter đã được đo là trả HTTP 200 cho cả <code>budget_tokens == max_tokens</code> lẫn{" "}
-        <code>budget_tokens == 512</code>, trong khi <code>api.anthropic.com</code> từ chối cả
-        hai. Gửi một request chạy được qua chặng dễ dãi rồi hỏng ở chặng khắt khe chính là kiểu
-        phân kỳ âm thầm mà các quy ước của dự án này tồn tại để ngăn chặn, nên client từ chối đóng
-        với <code>anthropic.thinking_budget_unsatisfiable</code> và nêu rõ các con số cùng cách
+        Anthropic tự thực thi sàn của chính hãng ngay tại đây, phía client, một cách cố ý. Một
+        request mà một gateway dễ dãi chấp nhận vẫn có thể hỏng khi chạy trước endpoint thật, nên
+        gửi một request mà chỉ chặng dễ dãi dung thứ chính là kiểu phân kỳ âm thầm mà các quy ước
+        của dự án này tồn tại để ngăn chặn. Client từ chối đóng thay vào đó, với{" "}
+        <code>anthropic.thinking_budget_unsatisfiable</code>, và nêu rõ cả các con số lẫn cách
         khắc phục.
+      </>
+    ),
+    s2Evidence: (
+      <>
+        Anthropic tài liệu hóa <code>budget_tokens &gt;= 1024</code> và{" "}
+        <code>budget_tokens &lt; max_tokens</code>. OpenRouter đã được đo là trả HTTP 200 cho cả{" "}
+        <code>budget_tokens == max_tokens</code> lẫn <code>budget_tokens == 512</code>;{" "}
+        <code>api.anthropic.com</code> từ chối cả hai.
       </>
     ),
 
@@ -429,11 +443,11 @@ const copy = {
         toàn không đối chiếu request: <code>ReplayChatClient</code> bỏ qua cả request đang chạy
         lẫn <code>EffectContext</code> và luôn phục vụ đúng một bản ghi của nó, nên không có so
         sánh prompt và không có phát hiện "trượt cassette" — chỉ có một kiểm tra hình dạng lệnh
-        gọi. Thứ hai, 004 §7 G3 được chứng minh trên từng nửa một cách riêng rẽ (bộ ghi giữ được
-        thời gian theo từng chunk cùng trạng thái kết thúc; bộ phát lại tái tạo chính xác khoảng
-        chênh giữa các chunk dựa trên một đồng hồ được tiêm vào) nhưng{" "}
-        <em>chưa bao giờ qua ranh giới</em>: không bài kiểm thử nào trong cây mã ghi một lệnh gọi
-        thật rồi phát lại chính bản ghi đó, và mọi bài kiểm thử phát lại đều tự tay dựng{" "}
+        gọi. Thứ hai, 004 §7 G3 được chứng minh trên từng nửa một cách riêng rẽ,{" "}
+        <em>chưa bao giờ qua ranh giới</em>. Bộ ghi giữ được thời gian theo từng chunk cùng trạng
+        thái kết thúc; bộ phát lại tái tạo chính xác khoảng chênh giữa các chunk dựa trên một
+        đồng hồ được tiêm vào. Nhưng không bài kiểm thử nào trong cây mã ghi một lệnh gọi thật rồi
+        phát lại chính bản ghi đó — mọi bài kiểm thử phát lại đều tự tay dựng{" "}
         <code>ChatCallRecording</code> của mình.
       </>
     ),
@@ -541,6 +555,7 @@ export function ApiProvidersReference() {
             <div className="section-head" style={{ marginTop: 34, marginBottom: 18, maxWidth: 820 }}>
               <h4 style={{ fontSize: "1.05rem", margin: "0 0 10px" }}>{t.reasoningTitle}</h4>
               <p>{t.reasoningBody}</p>
+              <ApiDiagnosticNote>{t.reasoningNote}</ApiDiagnosticNote>
             </div>
           </RevealItem>
           <RevealItem>
@@ -556,6 +571,7 @@ export function ApiProvidersReference() {
           </RevealItem>
           <RevealItem>
             <p className="gs-note">{t.s2Note}</p>
+            <ApiDiagnosticNote>{t.s2Evidence}</ApiDiagnosticNote>
           </RevealItem>
           <RevealItem>
             <CiteLink id="capabilities" />

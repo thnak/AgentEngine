@@ -13,6 +13,7 @@ import {
 import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
+import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
 import { ApiTable } from "./ApiTable";
 import { CodePanel } from "./CodePanel";
 import { RevealGroup, RevealItem } from "./Reveal";
@@ -25,13 +26,13 @@ const copy = {
     headingSuffix: ", field by field",
     intro: (
       <>
-        <code>Tool&lt;Derived, Policies...&gt;</code> fixes exactly one declaration surface —
-        a schema-typed name, description, argument/reply pair, and an <code>invoke</code>{" "}
-        reachable only through the host's ten-step pipeline (006 §3, walked through on the
-        Capabilities &amp; Sandbox page). Every row below is a real static member{" "}
+        <code>Tool&lt;Derived, Policies...&gt;</code> fixes one declaration surface: a
+        schema-typed name, description, an argument/reply pair, and an <code>invoke</code> the
+        host reaches through a fixed pipeline. Every row below is a static member{" "}
         <code>Derived</code> must or may provide.
       </>
     ),
+    introNote: <>pipeline walked through in 006 §3 and on the Capabilities &amp; Sandbox page</>,
     recoLabel: "Recommended default",
     recoBody: (
       <>
@@ -57,9 +58,9 @@ const copy = {
         <code>AE_JSON_SCHEMA(Type, field1, field2, ...)</code> can only see the bare field{" "}
         <em>names</em> you list — there is no macro parameter, no doc-comment extraction, and no
         per-field <code>"description"</code>, <code>"title"</code>, or <code>enum</code> value
-        list in the generated schema. A C++ enum flattens to a plain <code>"integer"</code>. If
-        you need a model to understand a parameter beyond its name and type, that explanation
-        currently has to live in the tool's own top-level <code>description</code> string.
+        list in the generated schema. A C++ enum flattens to a plain <code>"integer"</code>. A
+        parameter that needs more explanation than its name and type carries that explanation in
+        the tool's own top-level <code>description</code> string instead.
       </>
     ),
     typesEyebrow: "C++ type → JSON Schema type",
@@ -84,16 +85,16 @@ const copy = {
     ),
     descriptorBody: (
       <>
-        <code>register_agent&lt;A&gt;()</code> compiles every declared tool into this shape
-        (006 §6: "resolved at run start into an immutable per-run tool table"). This is a
-        real external serialization path, not internal-only validation: Anthropic's client
+        <code>register_agent&lt;A&gt;()</code> compiles every declared tool into this shape. It's
+        a real external serialization path, not internal-only validation: Anthropic's client
         parses <code>args_schema_json</code> into <code>{"{name, description, input_schema}"}</code>{" "}
         for <code>/v1/messages</code>; OpenAI's parses it into{" "}
         <code>{'{type:"function", function:{name, description, parameters}}'}</code> for{" "}
-        <code>/v1/chat/completions</code> — the exact JSON your tool's field types produced is
+        <code>/v1/chat/completions</code>. The exact JSON your tool's field types produced is
         what the model receives.
       </>
     ),
+    descriptorNote: <>006 §6 — "resolved at run start into an immutable per-run tool table"</>,
     multiToolEyebrow: "tests/test_rt_agent_session_live_multitool_e2e.cpp",
     multiToolHeading: "Four real tools, one ToolTable, one real model",
     multiToolBody: (
@@ -102,8 +103,8 @@ const copy = {
         give it — no arity limit in the API. This live-e2e fixture (runs when{" "}
         <code>AGENTENGINE_OPENROUTER_API_KEY</code> is set, skips otherwise) registers four tools
         into one table and makes two of them (<code>get_time</code>, <code>stock_price</code>)
-        deliberate distractors — the model must NEVER call them for this prompt, proving real tool
-        SELECTION discipline, not just declaration.
+        deliberate distractors — the model must never call them for this prompt. That's tool{" "}
+        <em>selection</em> discipline, not just declaration.
       </>
     ),
     describedEyebrow: 'tests/test_json_schema_described.cpp — Described<T, "...">',
@@ -114,12 +115,11 @@ const copy = {
     ),
     describedBody: (
       <>
-        The note above is accurate about <code>AE_JSON_SCHEMA(Type, field1, field2, ...)</code>{" "}
-        itself: the macro only sees bare field names. But <code>Described&lt;T, "..."&gt;</code>{" "}
-        (<code>core/json_schema.hpp</code>) is a SEPARATE second channel — the description lives on
-        the field's own TYPE, not on the macro — so it survives exactly the limitation above. Real,
-        tested beyond the schema-string layer too: the description survives both Anthropic's and
-        OpenAI's <code>translate_tool</code> byte-for-byte, from a real <code>ToolDescriptor</code>.
+        <code>Described&lt;T, "..."&gt;</code> (<code>core/json_schema.hpp</code>) is a separate
+        channel: the description lives on the field's own type, not on the{" "}
+        <code>AE_JSON_SCHEMA</code> macro, so the macro's bare-name limit above doesn't apply to
+        it. The description survives both Anthropic's and OpenAI's <code>translate_tool</code>{" "}
+        byte-for-byte, from a real <code>ToolDescriptor</code>.
       </>
     ),
     capabilityGatedEyebrow: "examples/06_capabilities_and_denial.cpp — 007 §9, I2",
@@ -130,13 +130,15 @@ const copy = {
     ),
     capabilityGatedBody: (
       <>
-        This is a declared ceiling — what the tool MIGHT need — not a grant. Nothing about this
-        declaration lets the tool run: what actually authorizes a call is the{" "}
-        <code>CapabilitySet</code> <code>session.set_capabilities()</code> installed, checked fresh
-        on every call (I2). The Capability &amp; Sandbox page walks the two-session proof in full:
-        an empty <code>CapabilitySet</code> denies the call before <code>invoke()</code> runs;
-        granting <code>FsWrite{'{"work"}'}</code> lets the SAME call through the SAME pipeline.
+        This is a declared ceiling — what the tool might need — not a grant. What actually
+        authorizes a call is the <code>CapabilitySet</code>{" "}
+        <code>session.set_capabilities()</code> installs, checked fresh on every call. An empty{" "}
+        <code>CapabilitySet</code> denies the call before <code>invoke()</code> runs; granting{" "}
+        <code>FsWrite{'{"work"}'}</code> lets the same call through the same pipeline.
       </>
+    ),
+    capabilityGatedNote: (
+      <>I2 — full two-session proof on the Capabilities &amp; Sandbox page</>
     ),
   },
   vi: {
@@ -146,13 +148,13 @@ const copy = {
     headingSuffix: "của một tool, theo từng trường",
     intro: (
       <>
-        <code>Tool&lt;Derived, Policies...&gt;</code> chốt đúng một bề mặt khai báo — một tên
-        định kiểu theo schema, description, cặp argument/reply, và một <code>invoke</code>{" "}
-        chỉ có thể chạm tới thông qua pipeline mười bước của host (006 §3, được đi qua chi
-        tiết ở trang Capability &amp; Sandbox). Mỗi hàng bên dưới là một thành viên static
-        thật mà <code>Derived</code> phải hoặc có thể cung cấp.
+        <code>Tool&lt;Derived, Policies...&gt;</code> chốt một bề mặt khai báo duy nhất: một
+        tên định kiểu theo schema, description, một cặp argument/reply, và một <code>invoke</code>{" "}
+        mà host chạm tới qua một pipeline cố định. Mỗi hàng bên dưới là một thành viên static
+        mà <code>Derived</code> phải hoặc có thể cung cấp.
       </>
     ),
+    introNote: <>pipeline được trình bày chi tiết ở 006 §3 và trang Capability &amp; Sandbox</>,
     recoLabel: "Mặc định khuyến nghị",
     recoBody: (
       <>
@@ -179,9 +181,9 @@ const copy = {
         <em>tên</em> trường trần trụi mà bạn liệt kê — không có tham số macro nào, không có
         trích xuất doc-comment nào, và không có danh sách giá trị <code>"description"</code>,{" "}
         <code>"title"</code>, hay <code>enum</code> theo từng trường trong schema được sinh ra.
-        Một enum trong C++ được làm phẳng thành một <code>"integer"</code> đơn thuần. Nếu bạn
-        cần model hiểu một tham số vượt ra ngoài tên và kiểu của nó, lời giải thích đó hiện
-        tại phải nằm trong chuỗi <code>description</code> ở cấp cao nhất của chính tool.
+        Một enum trong C++ được làm phẳng thành một <code>"integer"</code> đơn thuần. Một
+        tham số cần giải thích nhiều hơn tên và kiểu của nó thì lời giải thích đó nằm trong
+        chuỗi <code>description</code> ở cấp cao nhất của chính tool.
       </>
     ),
     typesEyebrow: "Kiểu C++ → Kiểu JSON Schema",
@@ -207,15 +209,17 @@ const copy = {
     descriptorBody: (
       <>
         <code>register_agent&lt;A&gt;()</code> biên dịch mọi tool đã khai báo thành hình dạng
-        này (006 §6: "được phân giải khi bắt đầu chạy thành một bảng tool bất biến theo từng
-        lần chạy"). Đây là một đường tuần tự hóa (serialization) hướng ra bên ngoài thật, không
+        này. Đây là một đường tuần tự hóa (serialization) hướng ra bên ngoài thật, không
         chỉ là xác thực nội bộ: client của Anthropic phân tích{" "}
         <code>args_schema_json</code> thành <code>{"{name, description, input_schema}"}</code>{" "}
         cho <code>/v1/messages</code>; client của OpenAI phân tích nó thành{" "}
         <code>{'{type:"function", function:{name, description, parameters}}'}</code> cho{" "}
-        <code>/v1/chat/completions</code> — đúng JSON mà các kiểu trường của tool bạn tạo ra
+        <code>/v1/chat/completions</code>. Đúng JSON mà các kiểu trường của tool bạn tạo ra
         chính là những gì model nhận được.
       </>
+    ),
+    descriptorNote: (
+      <>006 §6 — "được phân giải khi bắt đầu chạy thành một bảng tool bất biến theo từng lần chạy"</>
     ),
     multiToolEyebrow: "tests/test_rt_agent_session_live_multitool_e2e.cpp",
     multiToolHeading: "Bốn tool thật, một ToolTable, một model thật",
@@ -225,8 +229,8 @@ const copy = {
         được — không có giới hạn nào ở API. Fixture live-e2e này (chạy khi có{" "}
         <code>AGENTENGINE_OPENROUTER_API_KEY</code>, bỏ qua nếu không) đăng ký bốn tool vào một
         bảng và đặt hai trong số đó (<code>get_time</code>, <code>stock_price</code>) làm những
-        "phần gây nhiễu" có chủ đích — model KHÔNG BAO GIỜ được gọi chúng cho prompt này, chứng
-        minh kỷ luật CHỌN tool thật sự, không chỉ đơn thuần là khai báo.
+        "phần gây nhiễu" có chủ đích — model không bao giờ được gọi chúng cho prompt này. Đó là
+        kỷ luật <em>chọn</em> tool thật sự, không chỉ đơn thuần là khai báo.
       </>
     ),
     describedEyebrow: 'tests/test_json_schema_described.cpp — Described<T, "...">',
@@ -237,12 +241,11 @@ const copy = {
     ),
     describedBody: (
       <>
-        Ghi chú ở trên nói đúng về <code>AE_JSON_SCHEMA(Type, field1, field2, ...)</code>: macro
-        chỉ thấy tên trường trần trụi. Nhưng <code>Described&lt;T, "..."&gt;</code>{" "}
-        (<code>core/json_schema.hpp</code>) là một kênh THỨ HAI, tách biệt — mô tả nằm ngay trên
-        KIỂU của trường, không phải trên macro — nên nó sống sót qua chính hạn chế đó. Kiểm thử
-        thật, không chỉ ở lớp chuỗi schema: mô tả còn sống sót qua <code>translate_tool</code> của
-        cả Anthropic lẫn OpenAI, byte-for-byte, từ một <code>ToolDescriptor</code> thật.
+        <code>Described&lt;T, "..."&gt;</code> (<code>core/json_schema.hpp</code>) là một kênh
+        tách biệt: mô tả nằm ngay trên kiểu của trường, không phải trên macro{" "}
+        <code>AE_JSON_SCHEMA</code>, nên giới hạn tên-trần-trụi của macro ở trên không áp dụng
+        cho nó. Mô tả sống sót qua <code>translate_tool</code> của cả Anthropic lẫn OpenAI,
+        byte-for-byte, từ một <code>ToolDescriptor</code> thật.
       </>
     ),
     capabilityGatedEyebrow: "examples/06_capabilities_and_denial.cpp — 007 §9, I2",
@@ -253,14 +256,15 @@ const copy = {
     ),
     capabilityGatedBody: (
       <>
-        Đây là một trần đã khai báo — thứ tool CÓ THỂ cần — không phải một cấp phát. Không có gì
-        trong khai báo này khiến tool chạy được: điều thực sự cấp quyền cho một lệnh gọi là{" "}
-        <code>CapabilitySet</code> mà <code>session.set_capabilities()</code> đã cài đặt, được
-        kiểm tra lại mới mỗi lệnh gọi (I2). Trang Capability &amp; Sandbox đi qua chi tiết chứng
-        minh hai-session: một <code>CapabilitySet</code> rỗng từ chối lệnh gọi trước khi{" "}
-        <code>invoke()</code> chạy; cấp <code>FsWrite{'{"work"}'}</code> cho phép CHÍNH lệnh gọi
-        đó chạy qua CHÍNH pipeline đó.
+        Đây là một trần đã khai báo — thứ tool có thể cần — không phải một cấp phát. Điều thực
+        sự cấp quyền cho một lệnh gọi là <code>CapabilitySet</code> mà{" "}
+        <code>session.set_capabilities()</code> đã cài đặt, được kiểm tra lại mới mỗi lệnh gọi.
+        Một <code>CapabilitySet</code> rỗng từ chối lệnh gọi trước khi <code>invoke()</code> chạy;
+        cấp <code>FsWrite{'{"work"}'}</code> cho phép chính lệnh gọi đó chạy qua chính pipeline đó.
       </>
+    ),
+    capabilityGatedNote: (
+      <>I2 — chứng minh hai-session đầy đủ ở trang Capability &amp; Sandbox</>
     ),
   },
 } as const;
@@ -279,6 +283,7 @@ export function ApiToolReference() {
             {t.headingSuffix}
           </h2>
           <p>{t.intro}</p>
+          <ApiDiagnosticNote>{t.introNote}</ApiDiagnosticNote>
         </div>
 
         <RevealGroup>
@@ -415,6 +420,7 @@ export function ApiToolReference() {
               <span className="eyebrow">{t.descriptorEyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.descriptorHeading}</h3>
               <p>{t.descriptorBody}</p>
+              <ApiDiagnosticNote>{t.descriptorNote}</ApiDiagnosticNote>
             </div>
           </RevealItem>
           <RevealItem>
@@ -443,6 +449,7 @@ export function ApiToolReference() {
               <span className="eyebrow">{t.capabilityGatedEyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.capabilityGatedHeading}</h3>
               <p>{t.capabilityGatedBody}</p>
+              <ApiDiagnosticNote>{t.capabilityGatedNote}</ApiDiagnosticNote>
             </div>
           </RevealItem>
           <RevealItem>

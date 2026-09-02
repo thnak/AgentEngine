@@ -24,6 +24,7 @@ import { SITE_BASE } from "../data/content";
 import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
+import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
 import { ApiTable } from "./ApiTable";
 import { CodePanel } from "./CodePanel";
 import { RevealGroup, RevealItem } from "./Reveal";
@@ -91,7 +92,7 @@ const copy = {
     ),
     flowSessionCtxTitle: "SessionContext{session_id, principal, history}",
     flowSessionCtxSub: "Built once per turn, handed to every provider below — identically, not threaded through one another.",
-    flowFanOut: "fan-out — every provider sees the SAME input, independently",
+    flowFanOut: "fan-out — every provider sees the same input, independently",
     flowHistorySub: "Recent conversation, oldest dropped first over budget.",
     flowSkillsSub: "One advertisement message per mounted skill.",
     flowMemorySub: "Recalled notes + a real recall(query) tool.",
@@ -104,21 +105,21 @@ const copy = {
     s2Note: (
       <>
         <strong>Fan-out, not a pipeline — a deliberate divergence from MAF.</strong> MAF's{" "}
-        <code>AIContextProvider</code> hands provider N the ALREADY-MERGED output of provider
+        <code>AIContextProvider</code> hands provider N the already-merged output of provider
         N−1, so a later provider can react to an earlier one. AgentEngine's{" "}
         <code>assemble_context()</code> never does this: every provider sees only{" "}
-        <code>SessionContext</code> — chaining so a later provider could react to an earlier
-        one's merged output was designed, red-teamed, and rejected (
-        <code>OpenQuestions.md</code> OQ-18). Need a provider to react to another's output
-        anyway? Write a purpose-built composite that calls its sub-providers directly — it
-        knows exactly what each one produced, by construction. (An early proof of this pattern,{" "}
-        <code>HistoryAndSkillsProvider</code>, was a hand-written two-provider composite; ADR-074
-        later consolidated it into the general <code>ComposedContextProvider&lt;Ms...&gt;</code>{" "}
-        you'll see used throughout this page.) ADR-066, below, later closed OQ-18's own
-        missing-provenance objection on its own terms, without reopening the
-        fan-out-vs-chaining decision itself.
+        <code>SessionContext</code>. Chaining so a later provider could react to an earlier
+        one's merged output was designed, red-teamed, and rejected. Need a provider to react
+        to another's output anyway? Write a purpose-built composite that calls its
+        sub-providers directly — it knows exactly what each one produced, by construction. An
+        early proof of this pattern, <code>HistoryAndSkillsProvider</code>, was a hand-written
+        two-provider composite; ADR-074 later consolidated it into the general{" "}
+        <code>ComposedContextProvider&lt;Ms...&gt;</code> you'll see used throughout this page.
+        ADR-066, below, closes OQ-18's own missing-provenance objection on its own terms,
+        without reopening the fan-out-vs-chaining decision itself.
       </>
     ),
+    s2NoteCite: <>OpenQuestions.md OQ-18 — the rejected chained-pipeline design</>,
     s2bEyebrow: "ADR-066 — the OQ-18 prerequisite",
     s2bHeading: (
       <>
@@ -127,25 +128,23 @@ const copy = {
     ),
     s2bBody: (
       <>
-        OQ-18's own red-team gave five reasons a MAF-style chained <code>ContextProvider</code>{" "}
-        pipeline doesn't fit here (see the note above) — reason #1 was that neither{" "}
+        OQ-18's red-team found five reasons a MAF-style chained <code>ContextProvider</code>{" "}
+        pipeline doesn't fit here (see the note above). Reason #1: neither{" "}
         <code>Message</code> nor <code>ToolDescriptor</code> recorded which contributor
         produced them, so a later provider reacting to an earlier one would be reacting to
         unattributed content. <code>ContributorProvenance</code> closes that gap without
-        reopening OQ-18's own fan-out-vs-chaining decision: it doesn't change WHEN providers
-        run, only what the merged output remembers about where each piece came from.
+        reopening OQ-18's fan-out-vs-chaining decision. It changes what the merged output
+        remembers about where each piece came from — not when providers run.
       </>
     ),
     s2bBeforeLabel: "Design A — self-stamping (MAF's shape)",
     s2bBefore: (
       <>
         Each provider calls a stamping helper on its own output before returning it from{" "}
-        <code>on_context()</code> — <code>ChatMessage.WithAgentRequestMessageSource</code>,{" "}
-        <code>AIContextProvider.cs:174-176</code>. A provider that overrides its own merge path,
-        or simply never calls the helper, produces unstamped output — MAF's own{" "}
-        <code>CompactionProvider</code> has to remember to re-stamp manually (
-        <code>CompactionProvider.cs:150-151</code>): disciplined today, not structurally
-        guaranteed.
+        <code>on_context()</code>: <code>ChatMessage.WithAgentRequestMessageSource</code>. A
+        provider that overrides its own merge path, or simply never calls the helper, produces
+        unstamped output. MAF's own <code>CompactionProvider</code> has to remember to
+        re-stamp manually — disciplined today, not structurally guaranteed.
       </>
     ),
     s2bAfterLabel: "Design B — stamped at the seam (chosen)",
@@ -153,9 +152,13 @@ const copy = {
       <>
         <code>assemble_context()</code> stamps <code>{"{contributor_index, contributor_type}"}</code>{" "}
         once, at the one seam every contribution already flows through unconditionally. No
-        contributor — cooperating, careless, or a genuinely hostile third-party WASM plugin
-        (009 §2) — can produce unstamped output; there is nothing here for it to skip.
+        contributor can produce unstamped output — not a cooperating one, not a careless one,
+        not a genuinely hostile third-party WASM plugin. There is nothing here for any of them
+        to skip.
       </>
+    ),
+    s2bDesignNote: (
+      <>AIContextProvider.cs:174-176 · CompactionProvider.cs:150-151 (MAF) · 009 §2 (WASM plugin trust model)</>
     ),
     s2bTableColumns: ["Field", "Lives on", "Set by", "Notes"],
     s2bNote: (
@@ -164,19 +167,20 @@ const copy = {
         truthful-sounding side channel: a contributor claiming <code>content_origin::user</code>{" "}
         ("a human literally typed this") on text that isn't a verbatim match against{" "}
         <code>session_ctx.history</code> is downgraded to <code>content_origin::external</code>.
-        Every other origin is left exactly as the contributor set it — a clamp on ANY
+        Every other origin is left exactly as the contributor set it. A clamp on any
         non-replayed origin would have wrongly overridden <code>SkillsProvider</code>'s own
-        legitimate, already-shipped <code>content_origin::system</code> advertisement (
-        <code>skill_provider.hpp:136</code>). I3 constrains what a MODEL is allowed to claim,
-        not what host-authored C++ code is allowed to claim on its own behalf. Named as still
-        open, not closed here: <code>content_origin::system</code>/<code>::assistant</code>/
-        <code>::tool</code> forgery by a genuinely compromised conformer, a synthesized summary
-        message (<code>HistoryProvider&lt;Summarize&lt;N,SummarizerT&gt;&gt;</code>) that still
+        legitimate, already-shipped <code>content_origin::system</code> advertisement. I3
+        constrains what a model is allowed to claim, not what host-authored C++ code is
+        allowed to claim on its own behalf. Left open rather than closed here:{" "}
+        <code>content_origin::system</code>/<code>::assistant</code>/<code>::tool</code>{" "}
+        forgery by a genuinely compromised conformer, a synthesized summary message (
+        <code>HistoryProvider&lt;Summarize&lt;N,SummarizerT&gt;&gt;</code>) that still
         inherits <code>::assistant</code> with nothing marking it as a summary, and{" "}
         <code>attribution</code> surviving a JSON round-trip through{" "}
         <code>rt/message_codec.hpp</code> for durability across a checkpoint restart.
       </>
     ),
+    s2bNoteCite: <>skill_provider.hpp:136 — SkillsProvider's content_origin::system advertisement</>,
     s3Eyebrow: "tool_pipeline.hpp — ADR-030",
     s3Heading: "A tool that remembers things — per session, not per process",
     s3Body: (
@@ -192,7 +196,7 @@ const copy = {
     before: (
       <>
         <code>invoke()</code> reaches a <code>static int counter</code>. Every session in
-        the same process shares ONE counter — session A's tool call changes what session
+        the same process shares one counter — session A's tool call changes what session
         B sees.
       </>
     ),
@@ -200,7 +204,7 @@ const copy = {
     after: (
       <>
         <code>invoke()</code> is a lambda capturing <code>this</code> — the provider
-        instance living inside ONE <code>AgentSession</code>. Two sessions never see each
+        instance living inside one <code>AgentSession</code>. Two sessions never see each
         other's counter.
       </>
     ),
@@ -225,9 +229,9 @@ const copy = {
         <code>union_codeact_tools</code> unions a connected MCP server's or a loaded WASM
         plugin's entire tool surface the moment it's bound — every schema, all at once, no
         on-demand gate, unlike skills. Large MCP ecosystems can push past 200k tokens of
-        schema before tool-selection accuracy degrades (MCP-Zero, arXiv:2506.01056).{" "}
+        schema before tool-selection accuracy degrades.{" "}
         <code>ToolOptimizerProvider</code> is an ordinary <code>ContextProvider</code> that
-        applies <code>mount_skill</code>'s own trust shape (009 §8c) to that problem: a small{" "}
+        applies <code>mount_skill</code>'s own trust shape to that problem: a small{" "}
         <code>always_on</code> surface, grown by the model itself through three zero-capability
         management tools built with the{" "}
         <a href={`${SITE_BASE}/api/runtime.html#session-scoped-stateful-tools`}>
@@ -236,23 +240,30 @@ const copy = {
         .
       </>
     ),
+    s3bBodyNote: (
+      <>MCP-Zero, arXiv:2506.01056 (schema-scale degradation) · mount_skill's trust shape: 009 §8c</>
+    ),
     s3bTableColumns: ["Tool", "Args", "Grants", "Notes"],
     s3bNote: (
       <>
         <strong>Two divergences from mount_skill, named rather than assumed.</strong>{" "}
-        <code>search_tools</code> has no precedent in this codebase — 009 §8b's own survey found
-        neither MAF nor anything else surveyed doing search over skills or tools, so this stays
-        a plain keyword match rather than an embedding lookup. <code>unmount_tool</code> has no
-        precedent either — <code>mount_skill</code> never grew one, and ADR-024 §8 named that an
-        open gap; it closes here for tool sources specifically, without touching{" "}
-        <code>MountedSkillsState</code>. What carries over unchanged: mounting a tool grants
-        nothing new, it only moves the visibility window over what an operator already
-        authorized when the provider was constructed, and a mounted tool becomes callable
-        starting the NEXT turn, not the one it was mounted on — <code>AgentSession</code> builds
-        exactly one <code>ToolTable</code> per turn and reuses it for every{" "}
-        <code>invoke_tool()</code> call that turn, so there is no window where a tool is
-        declared to the model but not yet authorized, or authorized but not yet declared.
+        <code>search_tools</code> has no precedent in this codebase — a prior survey found
+        neither MAF nor anything else surveyed doing search over skills or tools, so this
+        stays a plain keyword match rather than an embedding lookup. <code>unmount_tool</code>{" "}
+        has no precedent either: <code>mount_skill</code> never grew one, and that gap was
+        previously named as open; it closes here for tool sources specifically, without
+        touching <code>MountedSkillsState</code>. What carries over unchanged: mounting a
+        tool grants nothing new, it only moves the visibility window over what an operator
+        already authorized when the provider was constructed. A mounted tool becomes
+        callable starting the next turn, not the one it was mounted on —{" "}
+        <code>AgentSession</code> builds exactly one <code>ToolTable</code> per turn and
+        reuses it for every <code>invoke_tool()</code> call that turn, so there is no window
+        where a tool is declared to the model but not yet authorized, or authorized but not
+        yet declared.
       </>
+    ),
+    s3bNoteCite: (
+      <>009 §8b — the search-over-skills/tools precedent survey · ADR-024 §8 — the unmount_tool gap</>
     ),
     s4Eyebrow: "ADR-029",
     s4Heading: "Pausing a whole run for a real human, not a synchronous callback",
@@ -279,25 +290,26 @@ const copy = {
     step04Title: 'resolve_interaction(ResolveInteraction{"{id, approved}"})',
     step04Body: (
       <>
-        Resumes the SAME run — never a new <code>run_id</code> (I4).{" "}
+        Resumes the same run — never a new <code>run_id</code> (I4).{" "}
         <code>approved=true</code> invokes the pending call for real, through the
         ordinary capability-checked pipeline; <code>approved=false</code> folds an
         ordinary tool-error denial into history.
       </>
     ),
     hookEyebrow: "OQ-21 — tool_call_hook.hpp",
-    hookHeading: "A different question, the same suspend/resume shape: should an EXTERNAL PROCESS decide?",
+    hookHeading: "A different question, the same suspend/resume shape: should an external process decide?",
     hookBody: (
       <>
-        <code>set_tool_call_hook()</code> runs once per call, immediately BEFORE the
-        approval pre-check above — a hook can deny a call, rewrite its arguments, or set{" "}
-        <code>needs_external_dispatch</code> to hand the decision to an outside process
-        (a policy engine, a queue an operator drains) without ever blocking inline. Deciding
-        this way suspends the round through the exact same machinery approval uses, but under
-        a genuinely distinct tag — <code>interaction_reason::hook_decision</code>, never{" "}
-        <code>::approval</code> — so an external process's dispatch ANSWER can never stand in
-        for a human's APPROVAL decision. Resolving one re-checks approval need against the
-        real deciders for every remaining call, rather than reusing a one-shot bypass.
+        <code>set_tool_call_hook()</code> runs once per call, immediately before the
+        approval pre-check above. A hook can deny a call, rewrite its arguments, or set{" "}
+        <code>needs_external_dispatch</code> to hand the decision to an outside process — a
+        policy engine, a queue an operator drains — without ever blocking inline. Deciding
+        this way suspends the round through the exact same machinery approval uses, but
+        under a genuinely distinct tag: <code>interaction_reason::hook_decision</code>,
+        never <code>::approval</code>. An external process's dispatch answer can never
+        stand in for a human's approval decision. Resolving one re-checks approval need
+        against the real deciders for every remaining call, rather than reusing a
+        one-shot bypass.
       </>
     ),
     hookNote: (
@@ -314,7 +326,7 @@ const copy = {
     s5Body: (
       <>
         <code>Ms...</code>, in registration order, wrap step 04 above — position 0 is the
-        OUTERMOST layer, matching a real nested decorator: its <code>before_model</code>{" "}
+        outermost layer, matching a real nested decorator: its <code>before_model</code>{" "}
         runs first, its <code>after_model</code> runs last. The thing being wrapped,{" "}
         <code>Inner</code>, is usually not a raw backend but a{" "}
         <code>ModelCallGateway&lt;Primary, Fallback...&gt;</code> — retry, one circuit breaker
@@ -369,9 +381,9 @@ const copy = {
     ),
     s5bBody: (
       <>
-        002 §5 declares a <code>turn</code> interception point distinct from the{" "}
-        <code>run</code>/model-call one above — until ADR-067, unwired. It closes 017 §4's{" "}
-        <code>pre_model</code> content-filter gap the same motion:{" "}
+        A <code>turn</code> interception point, distinct from the <code>run</code>/model-call
+        one above, stayed unwired until ADR-067. It closes the <code>pre_model</code>{" "}
+        content-filter gap the same motion:{" "}
         <code>AgentSession::set_turn_middleware_hook()</code> runs a declared chain exactly
         once per round, right after <code>assemble_context()</code> settles and before that
         round's <code>ChatRequest</code> is built — the one seam that sees the merged{" "}
@@ -379,15 +391,17 @@ const copy = {
         sandwich at this point, so this isn't a before/after onion like the gateway middleware
         above: each <code>Ms...</code>'s <code>on_turn(TurnContext&amp;)</code> runs once, in
         declared order, and either applies its edits in place and returns, or returns{" "}
-        <code>std::unexpected</code> — 017 §4's <code>deny</code> verdict — which stops the
-        chain outright. No later middleware runs, and the round fails before the model is ever
-        called.
+        <code>std::unexpected</code> — a deny verdict that stops the chain outright. No later
+        middleware runs, and the round fails before the model is ever called.
       </>
+    ),
+    s5bBodyNote: (
+      <>002 §5 — the declared turn interception point · 017 §4 — the pre_model content-filter gap and its deny verdict</>
     ),
     s5bFlowAssembled: "ContextAssemblyResult{combined, drops}",
     s5bFlowAssembledSub: "assemble_context() has already fully run — nothing left to sandwich",
     s5bFlowTurnCtx: "TurnContext{assembled, tool_surface}",
-    s5bFlowTurnCtxSub: "ONE ToolSurfaceView, shared by every middleware in the chain",
+    s5bFlowTurnCtxSub: "One ToolSurfaceView, shared by every middleware in the chain",
     s5bFlowChain: "M0.on_turn → M1.on_turn → … (declared order, forward only)",
     s5bFlowDenyLabel: "any on_turn returns std::unexpected",
     s5bFlowDenyNode: "Chain stops — round fails, model never called",
@@ -401,31 +415,33 @@ const copy = {
         <code>capability_ceiling</code>, or <code>approval_mode</code>:{" "}
         <code>redact(handle)</code> (drop a tool by its original index),{" "}
         <code>reorder(new_order)</code> (a handle left out of the new order is dropped, not
-        silently kept), <code>annotate_description(handle, text)</code> (the one field this
-        codebase never reads for a trust decision). A middleware never gets a mutable{" "}
+        silently kept), and <code>annotate_description(handle, text)</code> (the one field
+        this codebase never reads for a trust decision). A middleware never gets a mutable{" "}
         <code>ToolDescriptor&amp;</code> for anything fan-out already produced — mutation only
-        happens through these three calls, applied against the ORIGINAL fan-out-produced
+        happens through these three calls, applied against the original fan-out-produced
         vector by handle, at <code>finalize()</code>. That's what makes "the tool a middleware
-        looked at" and "the tool that actually dispatches" provably the same object — closing a
-        fatal finding the design review caught: an earlier draft checked four{" "}
-        <code>ToolDescriptor</code> fields for tamper but missed the fifth, executable one (
-        <code>invoke</code>).
+        looked at" and "the tool that actually dispatches" provably the same object. It closes
+        a fatal finding the design review caught: an earlier draft checked four{" "}
+        <code>ToolDescriptor</code> fields for tamper but missed the fifth, executable one —{" "}
+        <code>invoke</code>.
       </>
     ),
     s5bCompactorLabel: "Compactor<N> — a real turn middleware, not just an example",
     s5bCompactorBody: (
       <>
-        Keeps the last <code>N</code> messages of THIS TURN'S assembled view, extending the cut
-        backward (never forward) to avoid splitting a <code>ToolCall</code>/
-        <code>ToolResult</code> pair across the boundary — the identical atomicity rule 005
-        §4's own durable <code>history[]</code> compaction already enforces, applied here to a
-        transient, per-round view instead. <code>TurnContext</code> carries no reference to any
-        session's <code>history_</code> — provable by reading the type, not merely by testing
-        behavior — so there is no expression by which a <code>Compactor</code> COULD touch
-        durable history. 005 §8 Q3 re-resolved narrower by this: a <code>turn</code>-level
-        compactor may shape what one round's model call sees; it may not rewrite what the
-        session remembers.
+        Keeps the last <code>N</code> messages of this turn's assembled view, extending the
+        cut backward (never forward) to avoid splitting a <code>ToolCall</code>/
+        <code>ToolResult</code> pair across the boundary — the same atomicity rule the
+        durable <code>history[]</code> compaction already enforces, applied here to a
+        transient, per-round view instead. <code>TurnContext</code> carries no reference to
+        any session's <code>history_</code>, provable by reading the type rather than merely
+        by testing behavior, so there is no expression by which a <code>Compactor</code>{" "}
+        could touch durable history. A <code>turn</code>-level compactor may shape what one
+        round's model call sees; it may not rewrite what the session remembers.
       </>
+    ),
+    s5bCompactorNote: (
+      <>005 §4 — the durable history[] compaction atomicity rule · 005 §8 Q3 — re-resolved narrower by this boundary</>
     ),
     s5bNote: (
       <>
@@ -433,15 +449,18 @@ const copy = {
         only <code>ToolSurfaceView</code>'s public methods, there is no path to substituting a
         surviving tool's behavior. That guarantee does not extend to a middleware that bypasses{" "}
         <code>ToolSurfaceView</code> and reaches{" "}
-        <code>TurnContext::assembled.combined.tools</code> directly — it is still a plain,
+        <code>TurnContext::assembled.combined.tools</code> directly: that's still a plain,
         mutable reference, reachable through the same <code>TurnContext</code> a middleware
-        needs for message compaction. This mechanism closes 017 §4's <code>pre_model</code> gap
-        only — <code>post_model</code> stays open (the content replay gateway below narrows it,
-        doesn't close it), and <code>require_approval</code> (017 §4's fifth verdict) isn't
-        modeled at all: the binary allow/deny outcome here has no path to suspending a round
-        for a human, unlike the real suspend/approval machinery{" "}
+        needs for message compaction. This mechanism closes only the <code>pre_model</code>{" "}
+        gap. <code>post_model</code> stays open — the content replay gateway below narrows it,
+        doesn't close it — and the fifth verdict, <code>require_approval</code>, isn't modeled
+        at all: the binary allow/deny outcome here has no path to suspending a round for a
+        human, unlike the real suspend/approval machinery{" "}
         <a href={`${SITE_BASE}/api/runtime.html#suspend-for-approval`}>documented above</a>.
       </>
+    ),
+    s5bNoteCite: (
+      <>017 §4 — the five-verdict model: pre_model gap closed here, post_model and require_approval still open</>
     ),
     s5cEyebrow: "content_replay_gateway.hpp — ADR-069",
     s5cHeading: (
@@ -454,30 +473,32 @@ const copy = {
       <>
         <code>Middleware&lt;Ms...&gt;</code> above sees a response before it settles.{" "}
         <code>ContentReplayGateway&lt;Inner&gt;</code> answers a different question: a call
-        already succeeded, and only AFTER it settled does something flag the content itself — a
-        leaked secret, a policy hit, anything a pluggable trigger checks for. Wraps any{" "}
-        <code>ModelCallGatewayLike</code> (typically a <code>ModelCallGateway&lt;...&gt;</code>{" "}
-        or a <code>MiddlewareModelCallGateway&lt;...&gt;</code>, unmodified) the same way those
-        two already compose over each other — not a new hook on either. Not{" "}
-        <code>Retry&lt;Policy&gt;</code> (002 §3): that retries because a call ERRORED;{" "}
-        <code>ContentReplayGateway</code> retries because a call SUCCEEDED and what it produced
-        must never be kept. Also not <code>ReplayChatClient</code> (below): that replays a
-        previously RECORDED run offline for deterministic testing — unrelated code, unrelated
-        problem, sharing only the English word.
+        already succeeded, and only after it settled does something flag the content itself —
+        a leaked secret, a policy hit, anything a pluggable trigger checks for. It wraps any{" "}
+        <code>ModelCallGatewayLike</code> — typically a{" "}
+        <code>ModelCallGateway&lt;...&gt;</code> or a{" "}
+        <code>MiddlewareModelCallGateway&lt;...&gt;</code>, unmodified — the same way those
+        two already compose over each other, not through a new hook on either.{" "}
+        <code>Retry&lt;Policy&gt;</code> retries because a call errored; this gateway retries
+        because a call succeeded and what it produced must never be kept — a different
+        trigger entirely. <code>ReplayChatClient</code>, below, is unrelated code solving an
+        unrelated problem: it replays a previously recorded run offline for deterministic
+        testing, and shares only the English word "replay" with this gateway.
       </>
     ),
+    s5cBodyNote: <>002 §3 — Retry&lt;Policy&gt;, the error-triggered retry this gateway is not</>,
     s5cTableColumns: ["Bound", "Scope", "What happens at zero"],
     s5cNote: (
       <>
         <strong>Building the retry request forced a finding the original design didn't spell
-        out:</strong> the amended request appends ONLY the corrective instruction, never the
-        discarded response's own content — re-including it would re-send whatever got the
-        response discarded (a secret, for the motivating case) to the vendor a SECOND time,
+        out:</strong> the amended request appends only the corrective instruction, never the
+        discarded response's own content. Re-including it would re-send whatever got the
+        response discarded — a secret, for the motivating case — to the vendor a second time,
         inside the very call meant to correct it. Streaming is excluded structurally, not by a
         runtime check: this type declares no <code>chat_stream()</code> method at all, so there
         is no expression by which a caller could route a streaming call through it — the same
         proof-by-absence the turn-middleware section above uses for its own streaming
-        exclusion. Named, not glossed over: <code>TokenBudget&lt;N&gt;</code> accounting is not
+        exclusion. Named, not glossed over: <code>TokenBudget&lt;N&gt;</code> accounting isn't
         yet wired to this gateway's own discarded-attempt cost — a host that needs that number
         has to read it off the trace hook itself.
       </>
@@ -522,9 +543,9 @@ const copy = {
       <>
         Every <code>start_run()</code> call above resolves to one returned{" "}
         <code>AgentResponse</code> — nothing about the turn loop's own progress is visible while
-        it runs. <code>session.set_stream_model_calls(true)</code> opts the SAME session into the
+        it runs. <code>session.set_stream_model_calls(true)</code> opts the same session into the
         streaming turn loop instead of dispatching to the plain <code>chat()</code> method;{" "}
-        <code>session.enable_event_stream()</code>, subscribed BEFORE <code>start_run()</code>{" "}
+        <code>session.enable_event_stream()</code>, subscribed before <code>start_run()</code>{" "}
         (there is nothing to attach events to otherwise), hands back a real{" "}
         <code>stream&lt;RunEvent&gt;</code> reporting the whole lifecycle —{" "}
         <code>run_started</code>/<code>turn_started</code>/<code>model_call_started</code>/
@@ -539,12 +560,13 @@ const copy = {
     ),
     s7Note: (
       <>
-        <strong>The event stream outlives any one call.</strong> It stays open for the session's
-        whole lifetime — draining it is "take whatever is already buffered," never "wait for it
-        to close" the way a single <code>chat_stream()</code> call is. Mirrors{" "}
-        <code>tests/test_rt_agent_session_streaming_and_events.cpp</code>'s S1 (streamed deltas →{" "}
-        <code>model_delta</code> events) and A2 (the full non-streaming success-path sequence).
+        <strong>The event stream outlives any one call.</strong> It stays open for the
+        session's whole lifetime — draining it means "take whatever is already buffered,"
+        never "wait for it to close" the way a single <code>chat_stream()</code> call is.
       </>
+    ),
+    s7NoteCite: (
+      <>tests/test_rt_agent_session_streaming_and_events.cpp — S1 (streamed deltas → model_delta events), A2 (the full non-streaming success-path sequence)</>
     ),
   },
   vi: {
@@ -586,7 +608,7 @@ const copy = {
     ),
     flowSessionCtxTitle: "SessionContext{session_id, principal, history}",
     flowSessionCtxSub: "Được xây dựng một lần mỗi lượt, trao cho mọi provider bên dưới — giống hệt nhau, không xâu chuỗi qua nhau.",
-    flowFanOut: "fan-out — mọi provider nhìn thấy CÙNG một đầu vào, độc lập với nhau",
+    flowFanOut: "fan-out — mọi provider nhìn thấy cùng một đầu vào, độc lập với nhau",
     flowHistorySub: "Cuộc hội thoại gần đây, thông điệp cũ nhất bị loại bỏ trước khi vượt ngân sách.",
     flowSkillsSub: "Một thông điệp quảng cáo cho mỗi skill đã mount.",
     flowMemorySub: "Ghi chú đã gợi nhớ + một tool recall(query) thật.",
@@ -599,22 +621,21 @@ const copy = {
     s2Note: (
       <>
         <strong>Fan-out, không phải một pipeline — một khác biệt cố ý so với MAF.</strong>{" "}
-        <code>AIContextProvider</code> của MAF trao cho provider N đầu ra ĐÃ-ĐƯỢC-GỘP của
-        provider N−1, để một provider sau có thể phản ứng lại provider trước. {" "}
+        <code>AIContextProvider</code> của MAF trao cho provider N đầu ra đã-được-gộp của
+        provider N−1, để một provider sau có thể phản ứng lại provider trước.{" "}
         <code>assemble_context()</code> của AgentEngine không bao giờ làm vậy: mọi provider chỉ
-        nhìn thấy <code>SessionContext</code> — việc xâu chuỗi để một provider sau có thể phản
-        ứng lại đầu ra đã gộp của provider trước đã được thiết kế, red-team, và bị bác bỏ (
-        <code>OpenQuestions.md</code> OQ-18). Vẫn cần một provider phản ứng lại đầu ra của
-        provider khác? Hãy viết một composite chuyên biệt gọi trực tiếp các sub-provider của nó
-        — nó biết chính xác mỗi cái tạo ra gì, ngay từ cấu trúc. (Bằng chứng ban đầu cho mẫu
-        này, <code>HistoryAndSkillsProvider</code>, là một composite viết tay cho đúng hai
-        provider; ADR-074 sau đó đã hợp nhất nó vào{" "}
+        nhìn thấy <code>SessionContext</code>. Việc xâu chuỗi để một provider sau có thể phản
+        ứng lại đầu ra đã gộp của provider trước đã được thiết kế, red-team, và bị bác bỏ. Vẫn
+        cần một provider phản ứng lại đầu ra của provider khác? Hãy viết một composite chuyên
+        biệt gọi trực tiếp các sub-provider của nó — nó biết chính xác mỗi cái tạo ra gì, ngay
+        từ cấu trúc. Bằng chứng ban đầu cho mẫu này, <code>HistoryAndSkillsProvider</code>, là
+        một composite viết tay cho đúng hai provider; ADR-074 sau đó đã hợp nhất nó vào{" "}
         <code>ComposedContextProvider&lt;Ms...&gt;</code> tổng quát mà bạn sẽ thấy dùng xuyên
-        suốt trang này.) ADR-066, ngay bên dưới, sau đó đã đóng lại phản bác "thiếu provenance"
-        của chính OQ-18 theo cách riêng của nó, mà không mở lại quyết định
-        fan-out-hay-xâu-chuỗi.
+        suốt trang này. ADR-066, ngay bên dưới, đóng lại phản bác "thiếu provenance" của chính
+        OQ-18 theo cách riêng của nó, mà không mở lại quyết định fan-out-hay-xâu-chuỗi.
       </>
     ),
+    s2NoteCite: <>OpenQuestions.md OQ-18 — thiết kế pipeline xâu chuỗi bị bác bỏ</>,
     s2bEyebrow: "ADR-066 — điều kiện tiên quyết của OQ-18",
     s2bHeading: (
       <>
@@ -623,26 +644,25 @@ const copy = {
     ),
     s2bBody: (
       <>
-        Đợt red-team của chính OQ-18 đưa ra năm lý do khiến một pipeline{" "}
+        Đợt red-team của OQ-18 tìm ra năm lý do khiến một pipeline{" "}
         <code>ContextProvider</code> xâu chuỗi kiểu MAF không phù hợp ở đây (xem ghi chú ở
-        trên) — lý do #1 là cả <code>Message</code> lẫn <code>ToolDescriptor</code> đều không
+        trên). Lý do #1: cả <code>Message</code> lẫn <code>ToolDescriptor</code> đều không
         ghi lại contributor nào đã tạo ra chúng, nên một provider phía sau phản ứng lại một
         provider phía trước thực chất đang phản ứng lại nội dung không rõ nguồn gốc.{" "}
         <code>ContributorProvenance</code> đóng khoảng trống đó mà không mở lại quyết định
-        fan-out-hay-xâu-chuỗi của chính OQ-18: nó không thay đổi THỜI ĐIỂM các provider chạy,
-        chỉ thay đổi những gì đầu ra đã gộp còn nhớ được về nguồn gốc của từng phần.
+        fan-out-hay-xâu-chuỗi của OQ-18. Nó thay đổi những gì đầu ra đã gộp còn nhớ được về
+        nguồn gốc của từng phần — không thay đổi thời điểm các provider chạy.
       </>
     ),
     s2bBeforeLabel: "Design A — tự đóng dấu (hình dạng của MAF)",
     s2bBefore: (
       <>
         Mỗi provider tự gọi một helper đóng dấu lên đầu ra của chính mình trước khi trả về từ{" "}
-        <code>on_context()</code> — <code>ChatMessage.WithAgentRequestMessageSource</code>,{" "}
-        <code>AIContextProvider.cs:174-176</code>. Một provider ghi đè đường gộp của chính nó,
-        hoặc đơn giản là không bao giờ gọi helper đó, sẽ tạo ra đầu ra không được đóng dấu —
-        chính <code>CompactionProvider</code> của MAF phải tự nhớ đóng dấu lại thủ công (
-        <code>CompactionProvider.cs:150-151</code>): có kỷ luật ở hiện tại, nhưng không được
-        đảm bảo về mặt cấu trúc.
+        <code>on_context()</code>: <code>ChatMessage.WithAgentRequestMessageSource</code>. Một
+        provider ghi đè đường gộp của chính nó, hoặc đơn giản là không bao giờ gọi helper đó,
+        sẽ tạo ra đầu ra không được đóng dấu. Chính <code>CompactionProvider</code> của MAF
+        phải tự nhớ đóng dấu lại thủ công — có kỷ luật ở hiện tại, nhưng không được đảm bảo về
+        mặt cấu trúc.
       </>
     ),
     s2bAfterLabel: "Design B — đóng dấu tại điểm nút (được chọn)",
@@ -650,10 +670,14 @@ const copy = {
       <>
         <code>assemble_context()</code> đóng dấu{" "}
         <code>{"{contributor_index, contributor_type}"}</code> đúng một lần, tại điểm nút duy
-        nhất mà mọi contribution đã luôn đi qua một cách vô điều kiện. Không contributor nào —
-        hợp tác, bất cẩn, hay một WASM plugin bên thứ ba thực sự thù địch (009 §2) — có thể tạo
-        ra đầu ra không được đóng dấu; không có gì ở đây để nó bỏ qua.
+        nhất mà mọi contribution đã luôn đi qua một cách vô điều kiện. Không contributor nào có
+        thể tạo ra đầu ra không được đóng dấu — không một provider hợp tác, không một provider
+        bất cẩn, không cả một WASM plugin bên thứ ba thực sự thù địch. Không có gì ở đây để bất
+        kỳ ai trong số đó bỏ qua.
       </>
+    ),
+    s2bDesignNote: (
+      <>AIContextProvider.cs:174-176 · CompactionProvider.cs:150-151 (MAF) · 009 §2 (mô hình tin cậy của WASM plugin)</>
     ),
     s2bTableColumns: ["Trường", "Nằm trên", "Được đặt bởi", "Ghi chú"],
     s2bNote: (
@@ -663,11 +687,11 @@ const copy = {
         <code>content_origin::user</code> ("một con người thực sự đã gõ điều này") trên văn
         bản không khớp verbatim với <code>session_ctx.history</code> sẽ bị hạ xuống{" "}
         <code>content_origin::external</code>. Mọi origin khác được giữ nguyên đúng như
-        contributor đã đặt — một sự kẹp chặn trên BẤT KỲ origin nào chưa được replay sẽ vô
+        contributor đã đặt. Một sự kẹp chặn trên bất kỳ origin nào chưa được replay sẽ vô
         tình ghi đè tuyên bố <code>content_origin::system</code> hợp pháp, đã được phát hành
-        của chính <code>SkillsProvider</code> (<code>skill_provider.hpp:136</code>). I3 giới
-        hạn những gì một MODEL được phép tuyên bố, không giới hạn những gì mã C++ do host viết
-        được phép tự tuyên bố. Được nêu rõ là vẫn còn mở, chưa đóng ở đây: việc giả mạo{" "}
+        của chính <code>SkillsProvider</code>. I3 giới hạn những gì một model được phép tuyên
+        bố, không giới hạn những gì mã C++ do host viết được phép tự tuyên bố. Được nêu rõ là
+        vẫn còn mở, chưa đóng ở đây: việc giả mạo{" "}
         <code>content_origin::system</code>/<code>::assistant</code>/<code>::tool</code> bởi
         một conformer thực sự bị xâm phạm, một thông điệp tóm tắt (
         <code>HistoryProvider&lt;Summarize&lt;N,SummarizerT&gt;&gt;</code>) vẫn kế thừa{" "}
@@ -676,6 +700,7 @@ const copy = {
         <code>rt/message_codec.hpp</code> để bền vững qua một lần khởi động lại checkpoint.
       </>
     ),
+    s2bNoteCite: <>skill_provider.hpp:136 — quảng cáo content_origin::system của SkillsProvider</>,
     s3Eyebrow: "tool_pipeline.hpp — ADR-030",
     s3Heading: "Một tool biết ghi nhớ — theo từng session, không theo từng tiến trình",
     s3Body: (
@@ -691,7 +716,7 @@ const copy = {
     before: (
       <>
         <code>invoke()</code> chạm tới một <code>static int counter</code>. Mọi session
-        trong cùng tiến trình dùng chung MỘT counter — lệnh gọi tool của session A thay đổi
+        trong cùng tiến trình dùng chung một counter — lệnh gọi tool của session A thay đổi
         những gì session B nhìn thấy.
       </>
     ),
@@ -699,7 +724,7 @@ const copy = {
     after: (
       <>
         <code>invoke()</code> là một lambda capture <code>this</code> — thực thể provider
-        sống bên trong MỘT <code>AgentSession</code>. Hai session không bao giờ nhìn thấy
+        sống bên trong một <code>AgentSession</code>. Hai session không bao giờ nhìn thấy
         counter của nhau.
       </>
     ),
@@ -725,36 +750,41 @@ const copy = {
         <code>union_codeact_tools</code> hợp nhất toàn bộ bề mặt tool của một MCP server đã kết
         nối hoặc một WASM plugin đã nạp ngay khi nó được gắn vào — mọi schema, cùng một lúc,
         không có cổng kiểm soát theo yêu cầu nào, khác với skill. Một hệ sinh thái MCP lớn có
-        thể vượt quá 200k token schema trước khi độ chính xác chọn tool suy giảm (MCP-Zero,
-        arXiv:2506.01056). <code>ToolOptimizerProvider</code> là một <code>ContextProvider</code>{" "}
-        bình thường áp dụng chính hình dạng tin cậy của <code>mount_skill</code> (009 §8c) cho
-        vấn đề đó: một bề mặt <code>always_on</code> nhỏ, được chính model mở rộng thông qua ba
-        tool quản lý không có capability, được xây dựng bằng{" "}
+        thể vượt quá 200k token schema trước khi độ chính xác chọn tool suy giảm.{" "}
+        <code>ToolOptimizerProvider</code> là một <code>ContextProvider</code> bình thường áp
+        dụng chính hình dạng tin cậy của <code>mount_skill</code> cho vấn đề đó: một bề mặt{" "}
+        <code>always_on</code> nhỏ, được chính model mở rộng thông qua ba tool quản lý không
+        có capability, được xây dựng bằng{" "}
         <a href={`${SITE_BASE}/api/runtime.html#session-scoped-stateful-tools`}>
           mẫu tool có trạng thái theo phạm vi session ở trên
         </a>
         .
       </>
     ),
+    s3bBodyNote: (
+      <>MCP-Zero, arXiv:2506.01056 (schema suy giảm theo quy mô) · hình dạng tin cậy của mount_skill: 009 §8c</>
+    ),
     s3bTableColumns: ["Tool", "Args", "Cấp phát", "Ghi chú"],
     s3bNote: (
       <>
         <strong>Hai điểm khác biệt so với mount_skill, được nêu rõ chứ không mặc định.</strong>{" "}
-        <code>search_tools</code> không có tiền lệ nào trong codebase này — khảo sát của 009 §8b
-        trước đây không thấy MAF hay bất kỳ hệ thống nào khác tìm kiếm trên skill hay tool, nên
-        đây vẫn chỉ là so khớp từ khóa thuần túy chứ không phải tra cứu embedding.{" "}
-        <code>unmount_tool</code> cũng không có tiền lệ — <code>mount_skill</code> chưa từng có
-        một cơ chế tương ứng, và ADR-024 §8 từng nêu đó là một khoảng trống còn để ngỏ; nó được
-        đóng lại ở đây riêng cho các nguồn tool, không đụng tới{" "}
-        <code>MountedSkillsState</code>. Điều được giữ nguyên: mount một tool không cấp thêm
-        bất kỳ điều gì mới, nó chỉ dịch chuyển cửa sổ hiển thị trên những gì operator đã cấp
-        phép từ lúc provider được khởi tạo, và một tool đã mount chỉ gọi được kể từ lượt KẾ TIẾP,
-        không phải ngay lượt nó được mount — <code>AgentSession</code> xây dựng đúng một{" "}
-        <code>ToolTable</code> mỗi lượt và tái sử dụng nó cho mọi lệnh gọi{" "}
-        <code>invoke_tool()</code> trong lượt đó, nên không hề có khoảng thời gian nào mà một
-        tool được khai báo cho model nhưng chưa được cấp phép, hay đã được cấp phép nhưng chưa
-        được khai báo.
+        <code>search_tools</code> không có tiền lệ nào trong codebase này — một khảo sát trước
+        đây không thấy MAF hay bất kỳ hệ thống nào khác tìm kiếm trên skill hay tool, nên đây
+        vẫn chỉ là so khớp từ khóa thuần túy chứ không phải tra cứu embedding.{" "}
+        <code>unmount_tool</code> cũng không có tiền lệ: <code>mount_skill</code> chưa từng có
+        một cơ chế tương ứng, và đó từng được nêu là một khoảng trống còn để ngỏ; nó được đóng
+        lại ở đây riêng cho các nguồn tool, không đụng tới <code>MountedSkillsState</code>.
+        Điều được giữ nguyên: mount một tool không cấp thêm bất kỳ điều gì mới, nó chỉ dịch
+        chuyển cửa sổ hiển thị trên những gì operator đã cấp phép từ lúc provider được khởi
+        tạo. Một tool đã mount chỉ gọi được kể từ lượt kế tiếp, không phải ngay lượt nó được
+        mount — <code>AgentSession</code> xây dựng đúng một <code>ToolTable</code> mỗi lượt và
+        tái sử dụng nó cho mọi lệnh gọi <code>invoke_tool()</code> trong lượt đó, nên không hề
+        có khoảng thời gian nào mà một tool được khai báo cho model nhưng chưa được cấp phép,
+        hay đã được cấp phép nhưng chưa được khai báo.
       </>
+    ),
+    s3bNoteCite: (
+      <>009 §8b — khảo sát tiền lệ tìm kiếm trên skill/tool · ADR-024 §8 — khoảng trống unmount_tool</>
     ),
     s4Eyebrow: "ADR-029",
     s4Heading: "Tạm dừng cả một run để chờ một con người thật, không phải một callback đồng bộ",
@@ -781,24 +811,24 @@ const copy = {
     step04Title: 'resolve_interaction(ResolveInteraction{"{id, approved}"})',
     step04Body: (
       <>
-        Khôi phục lại CHÍNH run đó — không bao giờ tạo <code>run_id</code> mới (I4).{" "}
+        Khôi phục lại chính run đó — không bao giờ tạo <code>run_id</code> mới (I4).{" "}
         <code>approved=true</code> gọi thực thi thật lệnh gọi đang chờ, qua pipeline kiểm
         tra capability thông thường; <code>approved=false</code> gộp một sự từ chối như một
         lỗi tool bình thường vào history.
       </>
     ),
     hookEyebrow: "OQ-21 — tool_call_hook.hpp",
-    hookHeading: "Một câu hỏi khác, cùng một hình dạng suspend/resume: nên để một TIẾN TRÌNH BÊN NGOÀI quyết định?",
+    hookHeading: "Một câu hỏi khác, cùng một hình dạng suspend/resume: nên để một tiến trình bên ngoài quyết định?",
     hookBody: (
       <>
-        <code>set_tool_call_hook()</code> chạy đúng một lần cho mỗi lệnh gọi, NGAY TRƯỚC bước
-        kiểm tra approval ở trên — một hook có thể từ chối một lệnh gọi, viết lại tham số của
+        <code>set_tool_call_hook()</code> chạy đúng một lần cho mỗi lệnh gọi, ngay trước bước
+        kiểm tra approval ở trên. Một hook có thể từ chối một lệnh gọi, viết lại tham số của
         nó, hoặc đặt <code>needs_external_dispatch</code> để giao quyết định cho một tiến trình
-        bên ngoài (một policy engine, một hàng đợi mà operator xử lý dần) mà không bao giờ chặn
-        đồng bộ. Quyết định theo cách này treo lại vòng đó qua đúng cơ chế mà approval dùng,
-        nhưng dưới một thẻ thực sự khác biệt — <code>interaction_reason::hook_decision</code>,
-        không bao giờ là <code>::approval</code> — để câu trả lời dispatch của một tiến trình
-        bên ngoài không bao giờ có thể thay thế cho một quyết định APPROVAL của con người. Giải
+        bên ngoài — một policy engine, một hàng đợi mà operator xử lý dần — mà không bao giờ
+        chặn đồng bộ. Quyết định theo cách này treo lại vòng đó qua đúng cơ chế mà approval
+        dùng, nhưng dưới một thẻ thực sự khác biệt: <code>interaction_reason::hook_decision</code>,
+        không bao giờ là <code>::approval</code>. Câu trả lời dispatch của một tiến trình bên
+        ngoài không bao giờ có thể thay thế cho một quyết định phê duyệt của con người. Giải
         quyết nó kiểm tra lại nhu cầu approval trước các decider thật cho mọi lệnh gọi còn lại,
         thay vì tái sử dụng một lối tắt one-shot.
       </>
@@ -817,7 +847,7 @@ const copy = {
     s5Body: (
       <>
         <code>Ms...</code>, theo thứ tự đăng ký, bọc quanh bước 04 ở trên — vị trí 0 là lớp
-        NGOÀI CÙNG, giống một decorator lồng nhau thật sự: <code>before_model</code> của nó
+        ngoài cùng, giống một decorator lồng nhau thật sự: <code>before_model</code> của nó
         chạy trước tiên, <code>after_model</code> của nó chạy sau cùng. Thứ bị bọc,{" "}
         <code>Inner</code>, thường không phải một backend thô mà là một{" "}
         <code>ModelCallGateway&lt;Primary, Fallback...&gt;</code> — thử lại, một circuit
@@ -875,9 +905,9 @@ const copy = {
     ),
     s5bBody: (
       <>
-        002 §5 khai báo một điểm chặn <code>turn</code> tách biệt với điểm{" "}
-        <code>run</code>/lệnh gọi model ở trên — cho tới ADR-067 vẫn chưa được đấu nối. Nó đóng
-        khoảng trống lọc nội dung <code>pre_model</code> của 017 §4 bằng đúng một động tác:{" "}
+        Một điểm chặn <code>turn</code>, tách biệt với điểm <code>run</code>/lệnh gọi model ở
+        trên, vẫn chưa được đấu nối cho tới ADR-067. Nó đóng khoảng trống lọc nội dung{" "}
+        <code>pre_model</code> bằng đúng một động tác:{" "}
         <code>AgentSession::set_turn_middleware_hook()</code> chạy một chuỗi đã khai báo đúng
         một lần mỗi round, ngay sau khi <code>assemble_context()</code> ổn định và trước khi{" "}
         <code>ChatRequest</code> của round đó được xây dựng — chính điểm chặn duy nhất nhìn
@@ -886,14 +916,17 @@ const copy = {
         như middleware gateway ở trên: mỗi <code>Ms...</code> có{" "}
         <code>on_turn(TurnContext&amp;)</code> chạy đúng một lần, theo thứ tự khai báo, và
         hoặc áp dụng chỉnh sửa tại chỗ rồi trả về, hoặc trả về <code>std::unexpected</code> —
-        verdict <code>deny</code> của 017 §4 — dừng hẳn chuỗi lại. Không middleware nào sau đó
-        chạy, và round thất bại trước khi model từng được gọi.
+        một verdict từ chối dừng hẳn chuỗi lại. Không middleware nào sau đó chạy, và round
+        thất bại trước khi model từng được gọi.
       </>
+    ),
+    s5bBodyNote: (
+      <>002 §5 — điểm chặn turn đã khai báo · 017 §4 — khoảng trống lọc nội dung pre_model và verdict từ chối của nó</>
     ),
     s5bFlowAssembled: "ContextAssemblyResult{combined, drops}",
     s5bFlowAssembledSub: "assemble_context() đã chạy xong hoàn toàn — không còn gì để bọc quanh",
     s5bFlowTurnCtx: "TurnContext{assembled, tool_surface}",
-    s5bFlowTurnCtxSub: "MỘT ToolSurfaceView duy nhất, dùng chung cho mọi middleware trong chuỗi",
+    s5bFlowTurnCtxSub: "Một ToolSurfaceView duy nhất, dùng chung cho mọi middleware trong chuỗi",
     s5bFlowChain: "M0.on_turn → M1.on_turn → … (theo thứ tự khai báo, chỉ tiến tới)",
     s5bFlowDenyLabel: "bất kỳ on_turn nào trả về std::unexpected",
     s5bFlowDenyNode: "Chuỗi dừng lại — round thất bại, model không bao giờ được gọi",
@@ -913,26 +946,28 @@ const copy = {
         fan-out đã tạo ra — chỉnh sửa chỉ xảy ra qua ba lệnh gọi này, áp dụng lên chính vector
         do fan-out tạo ra theo handle, tại <code>finalize()</code>. Đó là điều khiến "tool mà
         một middleware nhìn thấy" và "tool thực sự được gọi thực thi" chắc chắn là cùng một đối
-        tượng — đóng lại một phát hiện chí mạng mà đợt red-team thiết kế đã bắt được: một bản
-        thảo trước đó kiểm tra bốn trường của <code>ToolDescriptor</code> để chống can thiệp
-        nhưng bỏ sót trường thứ năm, trường thực sự thực thi (<code>invoke</code>).
+        tượng. Nó đóng lại một phát hiện chí mạng mà đợt red-team thiết kế đã bắt được: một
+        bản thảo trước đó kiểm tra bốn trường của <code>ToolDescriptor</code> để chống can
+        thiệp nhưng bỏ sót trường thứ năm, trường thực sự thực thi — <code>invoke</code>.
       </>
     ),
     s5bCompactorLabel: "Compactor<N> — một turn middleware thật, không chỉ là ví dụ",
     s5bCompactorBody: (
       <>
-        Giữ lại <code>N</code> thông điệp cuối cùng của view đã lắp ráp CHO LƯỢT NÀY, mở rộng
+        Giữ lại <code>N</code> thông điệp cuối cùng của view đã lắp ráp cho lượt này, mở rộng
         điểm cắt về phía sau (không bao giờ về phía trước) để tránh tách một cặp{" "}
-        <code>ToolCall</code>/<code>ToolResult</code> qua ranh giới cắt — đúng quy tắc tính
-        nguyên tử mà chính cơ chế nén <code>history[]</code> bền vững của 005 §4 đã yêu cầu, áp
-        dụng ở đây cho một view tạm thời, theo từng round. <code>TurnContext</code> không mang
-        theo bất kỳ tham chiếu nào tới <code>history_</code> của session — có thể chứng minh
-        bằng cách đọc chính kiểu dữ liệu, không chỉ bằng cách kiểm thử hành vi — nên không có
-        biểu thức nào mà một <code>Compactor</code> CÓ THỂ chạm tới nó. 005 §8 Q3 được giải lại
-        hẹp hơn nhờ điều này: một compactor ở mức <code>turn</code> có thể định hình những gì
-        lệnh gọi model của một round nhìn thấy; nó không được viết lại những gì session ghi
-        nhớ.
+        <code>ToolCall</code>/<code>ToolResult</code> qua ranh giới cắt — cùng quy tắc tính
+        nguyên tử mà cơ chế nén <code>history[]</code> bền vững đã yêu cầu, áp dụng ở đây cho
+        một view tạm thời, theo từng round. <code>TurnContext</code> không mang theo bất kỳ
+        tham chiếu nào tới <code>history_</code> của session, chứng minh được bằng cách đọc
+        chính kiểu dữ liệu chứ không chỉ bằng cách kiểm thử hành vi, nên không có biểu thức
+        nào mà một <code>Compactor</code> có thể chạm tới nó. Một compactor ở mức{" "}
+        <code>turn</code> có thể định hình những gì lệnh gọi model của một round nhìn thấy; nó
+        không được viết lại những gì session ghi nhớ.
       </>
+    ),
+    s5bCompactorNote: (
+      <>005 §4 — quy tắc nguyên tử của nén history[] bền vững · 005 §8 Q3 — được giải lại hẹp hơn nhờ ranh giới này</>
     ),
     s5bNote: (
       <>
@@ -940,15 +975,18 @@ const copy = {
         dùng các phương thức công khai của <code>ToolSurfaceView</code>, không có đường nào để
         thay thế hành vi của một tool còn sống sót. Đảm bảo đó không mở rộng tới một middleware
         cố tình bỏ qua <code>ToolSurfaceView</code> và chạm thẳng vào{" "}
-        <code>TurnContext::assembled.combined.tools</code> — đó vẫn là một tham chiếu có thể
+        <code>TurnContext::assembled.combined.tools</code>: đó vẫn là một tham chiếu có thể
         sửa trực tiếp, tiếp cận được qua cùng một <code>TurnContext</code> mà một middleware
-        cần để nén thông điệp. Cơ chế này chỉ đóng khoảng trống <code>pre_model</code> của 017
-        §4 — <code>post_model</code> vẫn còn để ngỏ (content replay gateway bên dưới thu hẹp
-        nó, không đóng nó lại), và <code>require_approval</code> (verdict thứ năm của 017 §4)
-        hoàn toàn không được mô hình hóa: kết quả allow/deny nhị phân ở đây không có đường nào
-        để tạm dừng một round chờ con người, khác với cơ chế suspend/approval thật đã{" "}
+        cần để nén thông điệp. Cơ chế này chỉ đóng khoảng trống <code>pre_model</code>.{" "}
+        <code>post_model</code> vẫn còn để ngỏ — content replay gateway bên dưới thu hẹp nó,
+        không đóng nó lại — và verdict thứ năm, <code>require_approval</code>, hoàn toàn không
+        được mô hình hóa: kết quả allow/deny nhị phân ở đây không có đường nào để tạm dừng một
+        round chờ con người, khác với cơ chế suspend/approval thật đã{" "}
         <a href={`${SITE_BASE}/api/runtime.html#suspend-for-approval`}>được mô tả ở trên</a>.
       </>
+    ),
+    s5bNoteCite: (
+      <>017 §4 — mô hình năm verdict: khoảng trống pre_model đóng ở đây, post_model và require_approval vẫn để ngỏ</>
     ),
     s5cEyebrow: "content_replay_gateway.hpp — ADR-069",
     s5cHeading: (
@@ -959,29 +997,31 @@ const copy = {
     ),
     s5cBody: (
       <>
-        <code>Middleware&lt;Ms...&gt;</code> ở trên nhìn thấy một phản hồi TRƯỚC khi nó ổn
+        <code>Middleware&lt;Ms...&gt;</code> ở trên nhìn thấy một phản hồi trước khi nó ổn
         định. <code>ContentReplayGateway&lt;Inner&gt;</code> trả lời một câu hỏi khác: một lệnh
-        gọi đã thành công, và chỉ SAU KHI nó ổn định thì mới có thứ gì đó gắn cờ chính nội dung
+        gọi đã thành công, và chỉ sau khi nó ổn định thì mới có thứ gì đó gắn cờ chính nội dung
         của nó — một secret bị lộ, một vi phạm chính sách, bất cứ điều gì một trigger cắm-vào-được
-        kiểm tra. Bọc quanh bất kỳ <code>ModelCallGatewayLike</code> nào (thường là một{" "}
+        kiểm tra. Nó bọc quanh bất kỳ <code>ModelCallGatewayLike</code> nào — thường là một{" "}
         <code>ModelCallGateway&lt;...&gt;</code> hoặc một{" "}
-        <code>MiddlewareModelCallGateway&lt;...&gt;</code>, không sửa đổi) theo đúng cách hai
-        kiểu đó vốn đã bọc lẫn nhau — không phải một hook mới trên bất kỳ cái nào. Không phải{" "}
-        <code>Retry&lt;Policy&gt;</code> (002 §3): cái đó thử lại vì một lệnh gọi bị LỖI;{" "}
-        <code>ContentReplayGateway</code> thử lại vì một lệnh gọi đã THÀNH CÔNG nhưng những gì
-        nó tạo ra không bao giờ được phép giữ lại. Cũng không phải <code>ReplayChatClient</code>{" "}
-        (bên dưới): cái đó phát lại một run đã được GHI LẠI từ trước, ngoại tuyến, để kiểm thử
-        tất định — mã khác, vấn đề khác, chỉ chung nhau mỗi từ tiếng Anh "replay".
+        <code>MiddlewareModelCallGateway&lt;...&gt;</code>, không sửa đổi — theo đúng cách hai
+        kiểu đó vốn đã bọc lẫn nhau, không qua một hook mới trên bất kỳ cái nào.{" "}
+        <code>Retry&lt;Policy&gt;</code> thử lại vì một lệnh gọi bị lỗi;{" "}
+        <code>ContentReplayGateway</code> thử lại vì một lệnh gọi đã thành công nhưng những gì
+        nó tạo ra không bao giờ được phép giữ lại — một tác nhân kích hoạt hoàn toàn khác.{" "}
+        <code>ReplayChatClient</code>, bên dưới, là mã khác giải quyết một vấn đề khác: nó phát
+        lại một run đã được ghi từ trước, ngoại tuyến, để kiểm thử tất định, và chỉ chung nhau
+        với gateway này mỗi từ tiếng Anh "replay".
       </>
     ),
+    s5cBodyNote: <>002 §3 — Retry&lt;Policy&gt;, kiểu thử lại theo lỗi mà gateway này không phải</>,
     s5cTableColumns: ["Giới hạn", "Phạm vi", "Điều gì xảy ra khi về 0"],
     s5cNote: (
       <>
         <strong>Việc xây dựng request thử lại buộc phải đối mặt với một phát hiện mà thiết kế
-        gốc không nêu rõ:</strong> request được sửa đổi CHỈ thêm vào chỉ dẫn sửa lỗi, không bao
-        giờ thêm lại nội dung của phản hồi đã bị loại bỏ — việc thêm lại nó sẽ gửi lại đúng thứ
-        khiến phản hồi đó bị loại bỏ (một secret, với trường hợp khởi phát) tới nhà cung cấp mô
-        hình một LẦN NỮA, ngay bên trong lệnh gọi được cho là để sửa nó. Streaming bị loại trừ
+        gốc không nêu rõ:</strong> request được sửa đổi chỉ thêm vào chỉ dẫn sửa lỗi, không bao
+        giờ thêm lại nội dung của phản hồi đã bị loại bỏ. Việc thêm lại nó sẽ gửi lại đúng thứ
+        khiến phản hồi đó bị loại bỏ — một secret, với trường hợp khởi phát — tới nhà cung cấp
+        mô hình một lần nữa, ngay bên trong lệnh gọi được cho là để sửa nó. Streaming bị loại trừ
         về mặt cấu trúc, không phải bằng một kiểm tra runtime: kiểu này không khai báo phương
         thức <code>chat_stream()</code> nào cả, nên không có biểu thức nào để một caller định
         tuyến một lệnh gọi streaming qua nó — cùng kiểu "chứng minh bằng sự vắng mặt" mà phần
@@ -1034,8 +1074,8 @@ const copy = {
         Mọi lệnh gọi <code>start_run()</code> ở trên đều hội tụ về đúng một{" "}
         <code>AgentResponse</code> được trả về — không gì về tiến trình của chính vòng lặp lượt
         chạy hiển thị được trong lúc nó đang chạy. <code>session.set_stream_model_calls(true)</code>{" "}
-        đưa CHÍNH session đó vào vòng lặp lượt chạy dạng streaming thay vì gọi qua phương thức{" "}
-        <code>chat()</code> thuần; <code>session.enable_event_stream()</code>, được đăng ký TRƯỚC{" "}
+        đưa chính session đó vào vòng lặp lượt chạy dạng streaming thay vì gọi qua phương thức{" "}
+        <code>chat()</code> thuần; <code>session.enable_event_stream()</code>, được đăng ký trước{" "}
         <code>start_run()</code> (nếu không sẽ chẳng có gì để gắn sự kiện vào), trả về một{" "}
         <code>stream&lt;RunEvent&gt;</code> thật báo cáo toàn bộ vòng đời —{" "}
         <code>run_started</code>/<code>turn_started</code>/<code>model_call_started</code>/
@@ -1050,13 +1090,14 @@ const copy = {
     ),
     s7Note: (
       <>
-        <strong>Luồng sự kiện sống lâu hơn bất kỳ một lệnh gọi nào.</strong> Nó vẫn mở trong suốt
-        vòng đời của session — rút cạn nó nghĩa là "lấy bất cứ thứ gì đã có sẵn trong buffer",
-        không bao giờ là "chờ nó đóng lại" như một lệnh <code>chat_stream()</code> đơn lẻ. Phản
-        ánh đúng S1 (các delta streaming → sự kiện <code>model_delta</code>) và A2 (toàn bộ chuỗi
-        thành công không streaming) của{" "}
-        <code>tests/test_rt_agent_session_streaming_and_events.cpp</code>.
+        <strong>Luồng sự kiện sống lâu hơn bất kỳ một lệnh gọi nào.</strong> Nó vẫn mở trong
+        suốt vòng đời của session — rút cạn nó nghĩa là "lấy bất cứ thứ gì đã có sẵn trong
+        buffer", không bao giờ là "chờ nó đóng lại" như một lệnh <code>chat_stream()</code>{" "}
+        đơn lẻ.
       </>
+    ),
+    s7NoteCite: (
+      <>tests/test_rt_agent_session_streaming_and_events.cpp — S1 (delta streaming → sự kiện model_delta), A2 (toàn bộ chuỗi thành công không streaming)</>
     ),
   },
 } as const;
@@ -1177,6 +1218,7 @@ export function ApiRuntimeReference() {
 
           <RevealItem>
             <p className="gs-note" style={{ marginTop: 20, borderLeftColor: "var(--accent-pink)" }}>{t.s2Note}</p>
+            <ApiDiagnosticNote>{t.s2NoteCite}</ApiDiagnosticNote>
           </RevealItem>
 
           <RevealItem>
@@ -1205,6 +1247,7 @@ export function ApiRuntimeReference() {
                 <p style={{ color: "var(--text-dim)", fontSize: "0.9rem", lineHeight: 1.6 }}>{t.s2bAfter}</p>
               </div>
             </div>
+            <ApiDiagnosticNote>{t.s2bDesignNote}</ApiDiagnosticNote>
           </RevealItem>
 
           <RevealItem>
@@ -1226,6 +1269,7 @@ export function ApiRuntimeReference() {
 
           <RevealItem>
             <p className="gs-note" style={{ marginTop: 20, borderLeftColor: "var(--accent-pink)" }}>{t.s2bNote}</p>
+            <ApiDiagnosticNote>{t.s2bNoteCite}</ApiDiagnosticNote>
           </RevealItem>
 
           <RevealItem>
@@ -1276,6 +1320,7 @@ export function ApiRuntimeReference() {
               <span className="eyebrow">{t.s3bEyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s3bHeading}</h3>
               <p>{t.s3bBody}</p>
+              <ApiDiagnosticNote>{t.s3bBodyNote}</ApiDiagnosticNote>
             </div>
           </RevealItem>
 
@@ -1300,6 +1345,7 @@ export function ApiRuntimeReference() {
 
           <RevealItem>
             <p className="gs-note" style={{ marginTop: 20, borderLeftColor: "var(--accent-pink)" }}>{t.s3bNote}</p>
+            <ApiDiagnosticNote>{t.s3bNoteCite}</ApiDiagnosticNote>
           </RevealItem>
 
           <RevealItem>
@@ -1455,6 +1501,7 @@ export function ApiRuntimeReference() {
               <span className="eyebrow">{t.s5bEyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s5bHeading}</h3>
               <p>{t.s5bBody}</p>
+              <ApiDiagnosticNote>{t.s5bBodyNote}</ApiDiagnosticNote>
             </div>
           </RevealItem>
 
@@ -1502,10 +1549,12 @@ export function ApiRuntimeReference() {
                 <p style={{ color: "var(--text-dim)", fontSize: "0.9rem", lineHeight: 1.6 }}>{t.s5bCompactorBody}</p>
               </div>
             </div>
+            <ApiDiagnosticNote>{t.s5bCompactorNote}</ApiDiagnosticNote>
           </RevealItem>
 
           <RevealItem>
             <p className="gs-note" style={{ marginTop: 20, borderLeftColor: "var(--accent-pink)" }}>{t.s5bNote}</p>
+            <ApiDiagnosticNote>{t.s5bNoteCite}</ApiDiagnosticNote>
           </RevealItem>
 
           <RevealItem>
@@ -1520,6 +1569,7 @@ export function ApiRuntimeReference() {
               <span className="eyebrow">{t.s5cEyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s5cHeading}</h3>
               <p>{t.s5cBody}</p>
+              <ApiDiagnosticNote>{t.s5cBodyNote}</ApiDiagnosticNote>
             </div>
           </RevealItem>
 
@@ -1608,6 +1658,7 @@ export function ApiRuntimeReference() {
 
           <RevealItem>
             <p className="gs-note" style={{ marginTop: 20 }}>{t.s7Note}</p>
+            <ApiDiagnosticNote>{t.s7NoteCite}</ApiDiagnosticNote>
           </RevealItem>
 
           <RevealItem>

@@ -54,12 +54,12 @@ export const sessionBuilderMethodRows: Record<Lang, BuilderMethodRow[]> = {
     {
       method: ".api_key_from_env(name, env_var)",
       does:
-        "TEST-ONLY sugar, requires-gated to only exist when Store is default-constructible and exposes .set() (i.e. InMemorySecretStore-shaped). Reads the named environment variable at build() time and never compiles a value in. For a real deployment, use .api_key(...) + .store(...) with AgentEngineSecretStore directly.",
+        "Test-only sugar, requires-gated to only exist when Store is default-constructible and exposes .set() (i.e. InMemorySecretStore-shaped). Reads the named environment variable at build() time and never compiles a value in. For a real deployment, use .api_key(...) + .store(...) with AgentEngineSecretStore directly.",
     },
     {
       method: ".store(Args&&...)",
       does:
-        "The production path: constructs a Store of any real SecretStore conformer IN PLACE, forwarding whatever constructor arguments it needs — never requires Store to be movable or copyable, so it works with QuarantineSecretStore (ADR-068), which holds a std::mutex directly.",
+        "The production path: constructs a Store of any real SecretStore conformer in place, forwarding whatever constructor arguments it needs — never requires Store to be movable or copyable, so it works with QuarantineSecretStore (ADR-068), which holds a std::mutex directly.",
     },
     {
       method: ".declare_capabilities(ChatClientCapabilities)",
@@ -76,7 +76,7 @@ export const sessionBuilderMethodRows: Record<Lang, BuilderMethodRow[]> = {
     {
       method: ".approve_tools(names)",
       does:
-        "Installs an ApprovalDecider that auto-approves ONLY the named tools and denies every other already-gated call. Narrows or decides among already-required decisions only — it cannot make MORE tools require approval than their own approval_mode already does (I2).",
+        "Installs an ApprovalDecider that auto-approves only the named tools and denies every other already-gated call. Narrows or decides among already-required decisions only — it cannot make more tools require approval than their own approval_mode already does (I2).",
     },
     {
       method: ".policy(PolicyDecider)",
@@ -101,12 +101,12 @@ export const sessionBuilderMethodRows: Record<Lang, BuilderMethodRow[]> = {
     {
       method: ".api_key_from_env(name, env_var)",
       does:
-        "Sugar CHỈ-DÙNG-ĐỂ-TEST, được ràng buộc bằng requires để chỉ tồn tại khi Store có thể khởi tạo mặc định và có .set() (tức có hình dạng như InMemorySecretStore). Đọc biến môi trường được đặt tên tại thời điểm build() và không bao giờ biên dịch cứng một giá trị vào. Với triển khai thật, dùng .api_key(...) + .store(...) trực tiếp với AgentEngineSecretStore.",
+        "Sugar chỉ dùng để test, được ràng buộc bằng requires để chỉ tồn tại khi Store có thể khởi tạo mặc định và có .set() (tức có hình dạng như InMemorySecretStore). Đọc biến môi trường được đặt tên tại thời điểm build() và không bao giờ biên dịch cứng một giá trị vào. Với triển khai thật, dùng .api_key(...) + .store(...) trực tiếp với AgentEngineSecretStore.",
     },
     {
       method: ".store(Args&&...)",
       does:
-        "Đường sản xuất thật: dựng một Store thuộc bất kỳ conformer SecretStore thật nào NGAY TẠI CHỖ, chuyển tiếp bất kỳ đối số hàm khởi tạo nào nó cần — không bao giờ đòi Store phải movable hay copyable, nên hoạt động được cả với QuarantineSecretStore (ADR-068), thứ giữ trực tiếp một std::mutex.",
+        "Đường sản xuất thật: dựng một Store thuộc bất kỳ conformer SecretStore thật nào ngay tại chỗ, chuyển tiếp bất kỳ đối số hàm khởi tạo nào nó cần — không bao giờ đòi Store phải movable hay copyable, nên hoạt động được cả với QuarantineSecretStore (ADR-068), thứ giữ trực tiếp một std::mutex.",
     },
     {
       method: ".declare_capabilities(ChatClientCapabilities)",
@@ -123,7 +123,7 @@ export const sessionBuilderMethodRows: Record<Lang, BuilderMethodRow[]> = {
     {
       method: ".approve_tools(names)",
       does:
-        "Cài một ApprovalDecider chỉ tự động phê duyệt các tool được nêu tên và từ chối mọi lệnh gọi đã bị chặn khác. Chỉ thu hẹp hoặc quyết định trong số các quyết định đã được yêu cầu sẵn — nó không thể khiến THÊM tool cần phê duyệt vượt quá approval_mode tự khai báo của chúng (I2).",
+        "Cài một ApprovalDecider chỉ tự động phê duyệt các tool được nêu tên và từ chối mọi lệnh gọi đã bị chặn khác. Chỉ thu hẹp hoặc quyết định trong số các quyết định đã được yêu cầu sẵn — nó không thể khiến thêm tool cần phê duyệt vượt quá approval_mode tự khai báo của chúng (I2).",
     },
     {
       method: ".policy(PolicyDecider)",
@@ -168,7 +168,7 @@ export const workflowBuilderMethodRows: Record<Lang, BuilderMethodRow[]> = {
     { method: ".description() / .version()", does: "Native-authoring parity with the declarative form's metadata.description / metadata.version." },
     {
       method: ".build() -> result<Workflow>",
-      does: "Runs the SAME shared validate_workflow() the declarative loader uses — a type-correct graph with no bound is still rejected, so the C++ form cannot accept anything the YAML form would reject.",
+      does: "Runs the same shared validate_workflow() the declarative loader uses — a type-correct graph with no bound is still rejected, so the C++ form cannot accept anything the YAML form would reject.",
     },
   ],
   vi: [
@@ -193,7 +193,7 @@ export const workflowBuilderMethodRows: Record<Lang, BuilderMethodRow[]> = {
     { method: ".description() / .version()", does: "Ngang hàng với authoring gốc so với metadata.description / metadata.version của dạng khai báo." },
     {
       method: ".build() -> result<Workflow>",
-      does: "Chạy ĐÚNG CÙNG validate_workflow() dùng chung mà bộ nạp khai báo dùng — một đồ thị đúng kiểu nhưng không có bound vẫn bị từ chối, nên dạng C++ không thể chấp nhận thứ mà dạng YAML sẽ từ chối.",
+      does: "Chạy cùng validate_workflow() dùng chung mà bộ nạp khai báo dùng — một đồ thị đúng kiểu nhưng không có bound vẫn bị từ chối, nên dạng C++ không thể chấp nhận thứ mà dạng YAML sẽ từ chối.",
     },
   ],
 };
@@ -210,7 +210,7 @@ export const magenticBuilderMethodRows: Record<Lang, BuilderMethodRow[]> = {
     },
     {
       method: ".participant(TypedExecutor<TaskMsg, ReportMsg>)",
-      does: "A specialist: reads the manager's TaskMsg, reports back a ReportMsg. REVERSED relative to the manager's own types — that reversal is exactly what makes both directions type-check under connect()'s equality rule.",
+      does: "A specialist: reads the manager's TaskMsg, reports back a ReportMsg — reversed relative to the manager's own types. That reversal is exactly what makes both directions type-check under connect()'s equality rule.",
     },
     { method: ".done_selector(label)", does: "The switch_case label (and synthetic sink executor id) the manager's routing must produce to end the run." },
     {
@@ -223,7 +223,7 @@ export const magenticBuilderMethodRows: Record<Lang, BuilderMethodRow[]> = {
     },
     {
       method: ".build() -> result<MagenticGraph>",
-      does: "Synthesizes the manager/participant/done-sink graph, falls through to the SAME shared validate_workflow() — pure sugar over WorkflowBuilder, not a new engine primitive (ADR-149).",
+      does: "Synthesizes the manager/participant/done-sink graph, falls through to the same shared validate_workflow() — pure sugar over WorkflowBuilder, not a new engine primitive (ADR-149).",
     },
   ],
   vi: [
@@ -233,7 +233,7 @@ export const magenticBuilderMethodRows: Record<Lang, BuilderMethodRow[]> = {
     },
     {
       method: ".participant(TypedExecutor<TaskMsg, ReportMsg>)",
-      does: "Một chuyên gia: đọc TaskMsg của manager, báo cáo lại một ReportMsg. ĐẢO NGƯỢC so với kiểu của chính manager — chính sự đảo ngược đó khiến cả hai chiều đều đúng kiểu theo quy tắc so khớp của connect().",
+      does: "Một chuyên gia: đọc TaskMsg của manager, báo cáo lại một ReportMsg — đảo ngược so với kiểu của chính manager. Chính sự đảo ngược đó khiến cả hai chiều đều đúng kiểu theo quy tắc so khớp của connect().",
     },
     { method: ".done_selector(label)", does: "Nhãn switch_case (và id executor sink tổng hợp) mà việc định tuyến của manager phải phát ra để kết thúc lần chạy." },
     {
@@ -246,7 +246,7 @@ export const magenticBuilderMethodRows: Record<Lang, BuilderMethodRow[]> = {
     },
     {
       method: ".build() -> result<MagenticGraph>",
-      does: "Tổng hợp đồ thị manager/participant/done-sink, rồi rơi xuống ĐÚNG CÙNG validate_workflow() dùng chung — thuần túy là sugar phủ trên WorkflowBuilder, không phải một nguyên thủy engine mới (ADR-149).",
+      does: "Tổng hợp đồ thị manager/participant/done-sink, rồi rơi xuống cùng validate_workflow() dùng chung — thuần túy là sugar phủ trên WorkflowBuilder, không phải một nguyên thủy engine mới (ADR-149).",
     },
   ],
 };
@@ -272,7 +272,7 @@ export const builderGapRows: Record<Lang, BuilderGapRow[]> = {
     {
       what: ".with_fallback() / .with_middleware() / .with_content_replay()",
       cite: "core/session_builder.hpp top comment",
-      state: "Named, not silently dropped, in the file's own top comment as explicitly NOT implemented in this facade. A host needing them drops to the raw AgentSession/ModelCallGateway surface directly.",
+      state: "Named, not silently dropped, in the file's own top comment as explicitly not implemented in this facade. A host needing them drops to the raw AgentSession/ModelCallGateway surface directly.",
     },
     {
       what: "Bundle move-after-ask_stream() lifetime rule",
@@ -291,7 +291,7 @@ export const builderGapRows: Record<Lang, BuilderGapRow[]> = {
     {
       what: ".with_fallback() / .with_middleware() / .with_content_replay()",
       cite: "chú thích đầu file core/session_builder.hpp",
-      state: "Được nêu tên, không âm thầm bỏ qua, ngay trong chú thích đầu file rằng chúng CỐ Ý chưa được cài đặt trong facade này. Một host cần tới chúng phải hạ xuống thẳng bề mặt AgentSession/ModelCallGateway thô.",
+      state: "Được nêu tên, không âm thầm bỏ qua, ngay trong chú thích đầu file rằng chúng cố ý chưa được cài đặt trong facade này. Một host cần tới chúng phải hạ xuống thẳng bề mặt AgentSession/ModelCallGateway thô.",
     },
     {
       what: "Quy tắc vòng đời: không di chuyển Bundle sau khi gọi ask_stream()",

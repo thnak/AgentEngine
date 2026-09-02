@@ -1,32 +1,35 @@
 :root {
   color-scheme: dark;
 
-  --bg: #08080f;
-  --bg-soft: #0d0d18;
-  --bg-elevated: #121220;
-  --panel: rgba(255, 255, 255, 0.045);
+  --bg: #0b0d12;
+  --bg-soft: #0e1116;
+  --bg-elevated: #141821;
+  --panel: rgba(255, 255, 255, 0.04);
   --panel-strong: rgba(255, 255, 255, 0.07);
-  --border: rgba(255, 255, 255, 0.09);
-  --border-strong: rgba(255, 255, 255, 0.16);
+  --border: rgba(255, 255, 255, 0.1);
+  --border-strong: rgba(255, 255, 255, 0.18);
 
-  --text: #edf0fb;
-  --text-dim: #a3a6c2;
-  --text-faint: #6b6e8c;
+  --text: #eceef3;
+  --text-dim: #8c93a6;
+  --text-faint: #626a7d;
 
-  --accent-purple: #8b6bff;
-  --accent-teal: #34e0b4;
-  --accent-pink: #ff6bb3;
-  --gradient: linear-gradient(135deg, var(--accent-purple), var(--accent-teal));
-  --gradient-soft: linear-gradient(135deg, rgba(139, 107, 255, 0.16), rgba(52, 224, 180, 0.12));
+  /* Brand/signal accent (was purple) — the one warm note against the flat ink surfaces. */
+  --accent-purple: #f0a93c;
+  /* "real, tested" status (was teal) */
+  --accent-teal: #4caf7d;
+  /* stub/partial/boundary-warning status (was pink) */
+  --accent-pink: #d97757;
+  /* "design-only / spec described" status — new, previously conflated with pink */
+  --status-design: #5c8ae6;
 
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue",
-    Arial, sans-serif;
-  --font-mono: ui-monospace, "Cascadia Code", "SF Mono", "Consolas", "Liberation Mono", Menlo,
-    monospace;
+  --font-sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Code", "SF Mono", "Consolas",
+    "Liberation Mono", Menlo, monospace;
 
-  --radius-sm: 8px;
-  --radius-md: 14px;
-  --radius-lg: 22px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
 
   --max-width: 1160px;
 }
@@ -50,15 +53,14 @@ body {
   overflow-x: hidden;
 }
 
+/* A single quiet signal-colored vignette, not a three-hue wash — the ink surface is meant to
+   read as flat and settled, with amber spent sparingly as the one warm accent. */
 body::before {
   content: "";
   position: fixed;
   inset: 0;
   z-index: -1;
-  background:
-    radial-gradient(60vmax 40vmax at 12% -10%, rgba(139, 107, 255, 0.22), transparent 60%),
-    radial-gradient(50vmax 35vmax at 100% 10%, rgba(52, 224, 180, 0.14), transparent 60%),
-    radial-gradient(40vmax 30vmax at 50% 100%, rgba(255, 107, 179, 0.08), transparent 60%);
+  background: radial-gradient(70vmax 46vmax at 14% -12%, rgba(240, 169, 60, 0.1), transparent 60%);
 }
 
 h1,
@@ -97,7 +99,7 @@ button {
 }
 
 :focus-visible {
-  outline: 2px solid var(--accent-teal);
+  outline: 2px solid var(--accent-purple);
   outline-offset: 3px;
   border-radius: 4px;
 }
@@ -121,18 +123,14 @@ button {
 }
 
 .grad-text {
-  background: var(--gradient);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--accent-purple);
 }
 
+/* Flat hairline surface — replaces the old blurred glass panel everywhere. */
 .glass {
-  background: var(--panel);
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
 }
 
 .section {
@@ -150,6 +148,7 @@ button {
   font-size: clamp(1.8rem, 3vw, 2.4rem);
   line-height: 1.15;
   margin: 12px 0;
+  font-weight: 600;
 }
 
 .section-head p {
@@ -163,7 +162,7 @@ button {
   align-items: center;
   gap: 8px;
   padding: 12px 22px;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   font-size: 0.95rem;
   font-weight: 600;
   border: 1px solid transparent;
@@ -172,8 +171,8 @@ button {
 }
 
 .btn-primary {
-  background: var(--gradient);
-  color: #060609;
+  background: var(--accent-purple);
+  color: #17110a;
 }
 
 .btn-secondary {
@@ -193,9 +192,7 @@ button {
   top: 0;
   z-index: 50;
   border-bottom: 1px solid var(--border);
-  background: rgba(8, 8, 15, 0.72);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  background: var(--bg);
 }
 
 .nav-inner {
@@ -217,13 +214,13 @@ button {
 .brand-mark {
   width: 26px;
   height: 26px;
-  border-radius: 7px;
-  background: var(--gradient);
+  border-radius: var(--radius-sm);
+  background: var(--accent-purple);
   display: grid;
   place-items: center;
   font-family: var(--font-mono);
   font-size: 0.8rem;
-  color: #06060a;
+  color: #17110a;
   font-weight: 800;
 }
 
@@ -282,7 +279,7 @@ button {
   align-items: center;
   gap: 8px;
   padding: 6px 14px;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: 0.78rem;
   color: var(--text-dim);
@@ -294,14 +291,14 @@ button {
   height: 7px;
   border-radius: 50%;
   background: var(--accent-teal);
-  box-shadow: 0 0 10px var(--accent-teal);
+  box-shadow: 0 0 8px var(--accent-teal);
 }
 
 .hero h1 {
   font-size: clamp(2.4rem, 5.2vw, 3.6rem);
   line-height: 1.05;
   letter-spacing: -0.02em;
-  font-weight: 750;
+  font-weight: 650;
 }
 
 .hero .lede {
@@ -337,7 +334,8 @@ button {
 .code-panel {
   border-radius: var(--radius-lg);
   overflow: hidden;
-  box-shadow: 0 30px 80px -30px rgba(139, 107, 255, 0.35);
+  border: 1px solid var(--border);
+  box-shadow: 0 24px 60px -34px rgba(240, 169, 60, 0.28);
 }
 
 .code-panel-head {
@@ -369,7 +367,7 @@ button {
   overflow-x: auto;
   font-size: 0.82rem;
   line-height: 1.65;
-  color: #cfd3ee;
+  color: var(--text);
 }
 
 .code-panel .tok-kw {
@@ -381,7 +379,7 @@ button {
 }
 
 .code-panel .tok-str {
-  color: #ffcf86;
+  color: #e6c992;
 }
 
 .code-panel .tok-com {
@@ -419,8 +417,8 @@ button {
   font-family: var(--font-mono);
   font-size: 0.72rem;
   padding: 3px 9px;
-  border-radius: 6px;
-  background: var(--gradient-soft);
+  border-radius: var(--radius-sm);
+  background: rgba(76, 175, 125, 0.12);
   color: var(--accent-teal);
   margin-bottom: 16px;
   letter-spacing: 0.03em;
@@ -430,6 +428,7 @@ button {
   font-size: 1.1rem;
   margin-bottom: 10px;
   letter-spacing: -0.01em;
+  font-weight: 600;
 }
 
 .pillar-card p {
@@ -523,6 +522,8 @@ button {
   gap: 10px;
   padding: 14px 16px;
   border-radius: var(--radius-sm);
+  background: var(--panel);
+  border: 1px solid var(--border);
 }
 
 .invariant-chip .id {
@@ -603,7 +604,7 @@ button {
 }
 
 .arch-layer.is-l3 {
-  --layer-color: color-mix(in srgb, var(--accent-purple) 50%, var(--accent-pink) 50%);
+  --layer-color: color-mix(in srgb, var(--accent-purple) 50%, var(--status-design) 50%);
 }
 
 .arch-layer.is-l2 {
@@ -611,7 +612,7 @@ button {
 }
 
 .arch-layer.is-l1 {
-  --layer-color: #ffcf86;
+  --layer-color: var(--status-design);
 }
 
 .arch-layer.is-l0 {
@@ -634,7 +635,7 @@ button {
 }
 
 .arch-layer-name {
-  font-weight: 650;
+  font-weight: 600;
   font-size: 1rem;
 }
 
@@ -650,12 +651,12 @@ button {
   font-size: 0.66rem;
   letter-spacing: 0.03em;
   padding: 4px 10px;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   text-transform: uppercase;
   white-space: nowrap;
-  color: #ffcf86;
-  background: rgba(255, 207, 134, 0.12);
-  border: 1px solid rgba(255, 207, 134, 0.32);
+  color: var(--accent-purple);
+  background: rgba(240, 169, 60, 0.12);
+  border: 1px solid rgba(240, 169, 60, 0.32);
 }
 
 .arch-connector {
@@ -747,7 +748,7 @@ button {
   font-family: var(--font-mono);
   font-size: 0.78rem;
   padding: 7px 13px;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: var(--panel);
   border: 1px solid var(--border);
   color: var(--text-dim);
@@ -761,8 +762,8 @@ button {
 }
 
 .pattern-switcher-link.is-active {
-  color: var(--bg);
-  background: var(--gradient);
+  color: #17110a;
+  background: var(--accent-purple);
   border-color: transparent;
   font-weight: 700;
 }
@@ -851,7 +852,7 @@ button {
 }
 
 .pattern-card-name {
-  font-weight: 650;
+  font-weight: 600;
   font-size: 1rem;
   color: var(--text);
 }
@@ -908,7 +909,7 @@ button {
   font-family: var(--font-mono);
   font-size: 0.85rem;
   padding: 8px 14px;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: var(--panel);
   border: 1px solid var(--border);
 }
@@ -944,7 +945,7 @@ button {
 
 .stat .num {
   font-size: 1.9rem;
-  font-weight: 800;
+  font-weight: 700;
   font-family: var(--font-mono);
 }
 
@@ -983,6 +984,7 @@ button {
 .ladder-step h4 {
   font-size: 0.98rem;
   margin-bottom: 4px;
+  font-weight: 600;
 }
 
 .ladder-step p {
@@ -1331,7 +1333,7 @@ button {
   font-size: 0.72rem;
   letter-spacing: 0.03em;
   padding: 4px 10px;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   text-transform: uppercase;
   white-space: nowrap;
 }
@@ -1346,7 +1348,7 @@ button {
 
 .status-real {
   color: var(--accent-teal);
-  background: rgba(52, 224, 180, 0.12);
+  background: rgba(76, 175, 125, 0.12);
 }
 
 .status-real::before {
@@ -1355,12 +1357,12 @@ button {
 }
 
 .status-design {
-  color: var(--accent-pink);
-  background: rgba(255, 107, 179, 0.1);
+  color: var(--status-design);
+  background: rgba(92, 138, 230, 0.12);
 }
 
 .status-design::before {
-  background: var(--accent-pink);
+  background: var(--status-design);
 }
 
 .api-card-head {
@@ -1372,6 +1374,55 @@ button {
   font-size: 0.82rem;
   color: var(--accent-purple);
   word-break: break-word;
+}
+
+/* ---------- Diagnostic note — the site's citation channel ----------
+   Every RFC/ADR/file/test reference that used to live inline in a prose sentence renders here
+   instead: a compact monospace note in the style of a compiler diagnostic (file:line — note:
+   ...), left-ruled by status. Prose states its claim once, plainly; this is where a reader goes
+   to audit it. */
+
+.diagnostic-note {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-top: 10px;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  border-left: 2px solid var(--text-faint);
+  background: var(--panel);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: var(--text-faint);
+}
+
+.diagnostic-note .kind {
+  flex: none;
+  color: var(--text-faint);
+}
+
+.diagnostic-note a {
+  color: var(--text-dim);
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-underline-offset: 2px;
+}
+
+.diagnostic-note a:hover {
+  color: var(--text);
+}
+
+.diagnostic-note.is-real {
+  border-left-color: var(--accent-teal);
+}
+
+.diagnostic-note.is-design {
+  border-left-color: var(--status-design);
+}
+
+.diagnostic-note.is-stub {
+  border-left-color: var(--accent-pink);
 }
 
 /* ---------- Doc-style entry list (replaces the old card grid inside ApiSection) ---------- */
@@ -1411,6 +1462,7 @@ button {
   font-size: 1.15rem;
   letter-spacing: -0.01em;
   margin: 4px 0 10px;
+  font-weight: 600;
 }
 
 .doc-entry p {
@@ -1510,7 +1562,7 @@ button {
 }
 
 .protocol-name {
-  font-weight: 650;
+  font-weight: 600;
   font-size: 0.98rem;
 }
 
@@ -1675,7 +1727,7 @@ button {
 }
 
 .api-sidebar-dot.is-design {
-  background: var(--accent-pink);
+  background: var(--status-design);
 }
 
 /* ---------- Right rail: current-page TOC (ApiToc) ---------- */
@@ -1756,9 +1808,7 @@ button {
     top: 55px;
     z-index: 40;
     border-bottom: 1px solid var(--border);
-    background: rgba(8, 8, 15, 0.86);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
+    background: var(--bg);
   }
 
   .api-sidebar-mobile-inner {
@@ -1776,7 +1826,7 @@ button {
   .api-sidebar-mobile-link {
     flex: none;
     padding: 7px 13px;
-    border-radius: 999px;
+    border-radius: var(--radius-sm);
     font-size: 0.84rem;
     color: var(--text-dim);
     white-space: nowrap;
@@ -1909,6 +1959,7 @@ button {
 .flow-stage h4 {
   margin: 0 0 6px;
   font-size: 1rem;
+  font-weight: 600;
 }
 
 .flow-stage p {

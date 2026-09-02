@@ -10,11 +10,13 @@ import {
   streamingDrainLoopSnippet,
   streamingEntries,
   streamingJokerConformerSnippet,
+  streamingSessionLoopSnippet,
   workedExampleSnippet,
 } from "../data/streamingContent";
 import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
+import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
 import { CodePanel } from "./CodePanel";
 import { RevealGroup, RevealItem } from "./Reveal";
 import type { Lang } from "../i18n/LanguageContext";
@@ -74,11 +76,11 @@ const copy = {
       <>
         AgentEngine's streaming seam lives on <code>ChatClient</code> itself, not bolted onto{" "}
         <code>AgentSession</code> as a separate ask. Since ADR-035 Phase 3, every conformer must
-        implement <code>chat_stream()</code> — the whole-response <code>chat()</code> is now the
-        optional one. This page covers the primitive that return type actually is (
+        implement <code>chat_stream()</code>; the whole-response <code>chat()</code> is now
+        optional. This page covers what that return type actually is (
         <code>agentengine::stream&lt;T&gt;</code>), what rides inside each update, how a whole{" "}
-        <code>AgentSession</code> opts into streaming its turn loop, and — briefly — what is
-        actually on the wire underneath a live provider.
+        <code>AgentSession</code> opts into streaming its turn loop, and what is on the wire
+        underneath a live provider.
       </>
     ),
 
@@ -88,10 +90,10 @@ const copy = {
       <>
         The <code>ChatClient</code> concept's required shape is exactly two expressions:{" "}
         <code>capabilities()</code> and <code>chat_stream(request, ctx)</code>. That is a real
-        framing shift, not a documentation nuance — a backend that implements only{" "}
-        <code>chat_stream()</code>, with no <code>chat()</code> at all, now conforms where it
-        previously would not have. Nothing that exists today lost anything: every real backend
-        still has a <code>chat()</code> and keeps it, and the relaxation was verified
+        framing shift, not a documentation nuance. A backend that implements only{" "}
+        <code>chat_stream()</code>, with no <code>chat()</code> at all, now conforms — it
+        previously would not have. Every real backend still has a <code>chat()</code> and keeps
+        it, so nothing that exists today lost anything; the relaxation was verified
         zero-behavior-change across a 46-file conversion pass before it landed.
       </>
     ),
@@ -111,17 +113,18 @@ const copy = {
     s2Body: (
       <>
         <code>stream&lt;T&gt;</code> is 004 §1's literal <code>chat_stream()</code> return type. It
-        wraps <code>rt::channel_consumer&lt;T, error&gt;</code>: <code>next()</code> returns{" "}
-        <code>std::optional&lt;T&gt;</code>, where <code>nullopt</code> means "nothing buffered
-        right now, not done" — a caller drains to empty, then checks <code>done()</code>. There is
-        no cross-actor OPEN handshake and no actor addressing: <code>chat_stream()</code> is a
-        plain, synchronous, in-process call that hands back an already-connected pair.{" "}
-        <code>make_stream&lt;T&gt;</code> builds that pair over a bounded channel (default capacity
-        256) with one shared <code>std::stop_source</code> — dropping or cancelling the consumer
-        fires an out-of-band <code>std::stop_token</code> (ADR-017) that a background read loop can
+        wraps <code>rt::channel_consumer&lt;T, error&gt;</code>. <code>next()</code> returns{" "}
+        <code>std::optional&lt;T&gt;</code>; <code>nullopt</code> means "nothing buffered right
+        now, not done" — a caller drains to empty, then checks <code>done()</code>.{" "}
+        <code>chat_stream()</code> is a plain, synchronous, in-process call that hands back an
+        already-connected pair: no cross-actor OPEN handshake, no actor addressing.{" "}
+        <code>make_stream&lt;T&gt;</code> builds that pair over a bounded channel with a default
+        capacity of 256, and one shared <code>std::stop_source</code>. Dropping or cancelling the
+        consumer fires an out-of-band <code>std::stop_token</code> that a background read loop can
         observe even while parked in I/O with nothing left to push.
       </>
     ),
+    s2Note: <>ADR-017 defines this out-of-band stop_token cancellation path</>,
     s2CanonicalLabel: "The canonical drain loop",
     s2CanonicalBody:
       "examples/07_streaming.cpp's whole main() — short and self-contained, and the same shape every drain loop in this codebase follows.",
@@ -130,12 +133,12 @@ const copy = {
     s3Heading: "ChatResponseUpdate: delta, is_final, and usage that only lands at the end",
     s3Body: (
       <>
-        Each pushed item carries a <code>ContentItem delta</code> — the same type a whole{" "}
-        <code>ChatResponse</code>'s content is built from — plus <code>is_final</code> and an{" "}
-        <code>Usage</code> that is only meaningful once <code>is_final</code> is true.{" "}
+        Each pushed item carries a <code>ContentItem delta</code>, plus <code>is_final</code> and
+        an <code>Usage</code> that is only meaningful once <code>is_final</code> is true. The
+        delta is the same type a whole <code>ChatResponse</code>'s content is built from.{" "}
         <code>StreamingJokerChatClient</code> below is a real, tested <code>ChatClient</code>{" "}
         conformer that streams for real: one word per push, from a background thread, through a
-        ring whose capacity (2) is deliberately smaller than the reply's word count — proving a
+        ring whose capacity — 2 — is deliberately smaller than the reply's word count, proving a
         full ring blocks the producer thread rather than dropping an item.
       </>
     ),
@@ -148,6 +151,22 @@ const copy = {
       </>
     ),
 
+    s3bEyebrow: "examples/32_chat_stream_session_loop.cpp",
+    s3bHeading: "Driven as a session, not one call",
+    s3bBody: (
+      <>
+        <code>StreamingJokerChatClient</code> above proves one call streams for real. A real
+        interactive caller — a CLI reading stdin, or anything else with more than one turn — holds
+        one <code>ChatClient</code> and calls <code>chat_stream()</code> on it again for every turn,
+        growing a real message history in between. This example is that loop: one long-lived
+        client, one canned "human" queue standing in for stdin, each reply printed live as its
+        words arrive and folded back into history before the next turn.
+      </>
+    ),
+    s3bNote: (
+      <>bounded at a fixed round count, never a literal unbounded while(true) — the same "bounded, single-resume() loop" convention the Builder API page documents; tools/cli_chat.cpp's own while(true) loop reads real stdin for the exact same role the canned queue plays here, but streams through AgentSession's own event stream, not this raw chat_stream() layer</>
+    ),
+
     s4Eyebrow: "rt/agent_session.hpp:719-720 — ADR-034",
     s4Heading: "Session-level streaming: one flag, the whole turn loop",
     s4Body: (
@@ -158,8 +177,8 @@ const copy = {
         streaming <code>call_stream()</code> path instead of the plain <code>chat()</code> method,
         and each pushed <code>ChatResponseUpdate</code> is projected onto the session's own event
         stream as a <code>run_event_kind::model_delta</code> event. A streamed run also emits one{" "}
-        <code>run_event_kind::warning</code> right after <code>run_started</code>, because engaging
-        the flag is itself an operator-visible choice — a real, distinct event kind, not a
+        <code>run_event_kind::warning</code> right after <code>run_started</code>: engaging the
+        flag is itself an operator-visible choice, so this is a distinct event kind, not a
         fabricated placeholder.
       </>
     ),
@@ -191,36 +210,38 @@ const copy = {
     s4WorkflowNote: (
       <>
         <strong>When the backend behind <code>chat_stream()</code> is a whole Workflow, not a
-        model.</strong> <code>WorkflowChatClient</code> (GitHub issue #35, ADR-162/163) satisfies
-        this same <code>ChatClient</code> concept by wrapping a <code>WorkflowSupervisor</code> —
-        but it honestly reports <code>capabilities().streaming == false</code>: it never emits
-        token-level deltas from inside the graph, only the wrapped workflow's terminal result (or,
-        on a suspended <code>request_port</code>, a <code>Custom</code>-typed human-in-the-loop
-        ask). See{" "}
+        model.</strong> <code>WorkflowChatClient</code> satisfies this same <code>ChatClient</code>{" "}
+        concept by wrapping a <code>WorkflowSupervisor</code>. It honestly reports{" "}
+        <code>capabilities().streaming == false</code>: it never emits token-level deltas from
+        inside the graph. It returns only the wrapped workflow's terminal result, or, on a
+        suspended <code>request_port</code>, a <code>Custom</code>-typed human-in-the-loop ask.
+        See{" "}
         <a href={`${SITE_BASE}/api/workflow.html#workflow-hitl-chat-client`}>
           Workflow &amp; Orchestration — HITL over chat_client
         </a>{" "}
-        for the real wire shape and why it's <code>Custom</code>, never <code>ToolCall</code>.
+        for the wire shape and why it's <code>Custom</code>, never <code>ToolCall</code>.
       </>
     ),
+    s4WorkflowCiteNote: <>GitHub issue #35, ADR-162/163</>,
 
     s5Eyebrow: "protocol/openai · protocol/anthropic — if you're curious",
     s5Heading: "Two SSE wire framings, briefly",
     s5Body: (
       <>
         Everything above is the same regardless of backend. Underneath a live HTTP provider,
-        though, the two vendors frame their Server-Sent Events differently, and both feed the same
+        though, the two vendors frame their Server-Sent Events differently. Both feed the same
         shared primitives — <code>ChunkedBodyDecoder</code>, <code>SseEventFramer</code>, one{" "}
         <code>StreamingUpdateAccumulator</code> shape — so the two wire formats cannot drift into
-        two separate decoders. Since ADR-019 the bytes are decoded and pushed as they arrive:{" "}
+        two separate decoders. The bytes are decoded and pushed as they arrive:{" "}
         <code>perform_provider_streaming_exchange</code> delivers fragments to an{" "}
         <code>on_body</code> callback, and each ready update goes straight onto the
         credit-controlled ring above. The full depth of this — capability degradation, credential
         handling, the request bodies themselves — is{" "}
         <a href={`${SITE_BASE}/api/providers.html#streaming`}>the providers page</a>'s subject; this
-        is just what is actually on the wire.
+        is just what is on the wire.
       </>
     ),
+    s5Note: <>ADR-019 — bytes are decoded and pushed as they arrive, not buffered to completion</>,
     s5aLabel: "OpenAI-compatible: data:-only lines",
     s5bLabel: "Anthropic: named events",
 
@@ -258,11 +279,11 @@ const copy = {
       <>
         Ranh giới streaming của AgentEngine nằm ngay trên <code>ChatClient</code>, không phải được
         gắn thêm vào <code>AgentSession</code> như một yêu cầu riêng. Kể từ ADR-035 Phase 3, mọi
-        bên tuân theo phải cài đặt <code>chat_stream()</code> — <code>chat()</code> trả về nguyên
-        văn cả phản hồi giờ là phần tùy chọn. Trang này trình bày kiểu trả về thực sự đó là gì (
+        bên tuân theo phải cài đặt <code>chat_stream()</code>; <code>chat()</code> trả về nguyên
+        văn cả phản hồi giờ là tùy chọn. Trang này trình bày kiểu trả về đó thực sự là gì (
         <code>agentengine::stream&lt;T&gt;</code>), bên trong mỗi update mang theo gì, một{" "}
         <code>AgentSession</code> chọn tham gia streaming cả vòng lặp lượt của nó bằng cách nào, và
-        — ngắn gọn — thực sự có gì trên dây bên dưới một provider đang chạy thật.
+        thực sự có gì trên dây bên dưới một provider đang chạy thật.
       </>
     ),
 
@@ -272,11 +293,11 @@ const copy = {
       <>
         Hình dạng bắt buộc của concept <code>ChatClient</code> đúng là hai biểu thức:{" "}
         <code>capabilities()</code> và <code>chat_stream(request, ctx)</code>. Đó là một sự thay
-        đổi khung nhìn thật sự, không phải một sắc thái tài liệu — một backend chỉ cài đặt{" "}
-        <code>chat_stream()</code>, hoàn toàn không có <code>chat()</code>, giờ tuân theo được
-        trong khi trước đây thì không. Không có gì đang tồn tại bị mất đi: mọi backend thật vẫn có{" "}
-        <code>chat()</code> và vẫn giữ nó, và việc nới lỏng này đã được xác nhận không đổi hành vi
-        qua một đợt chuyển đổi 46 file trước khi triển khai.
+        đổi khung nhìn thật sự, không phải một sắc thái tài liệu. Một backend chỉ cài đặt{" "}
+        <code>chat_stream()</code>, hoàn toàn không có <code>chat()</code>, giờ tuân theo được —
+        trước đây thì không. Mọi backend thật vẫn có <code>chat()</code> và vẫn giữ nó, nên không
+        có gì đang tồn tại bị mất đi; việc nới lỏng này đã được xác nhận không đổi hành vi qua một
+        đợt chuyển đổi 46 file trước khi triển khai.
       </>
     ),
     s1Note: (
@@ -296,18 +317,18 @@ const copy = {
     s2Body: (
       <>
         <code>stream&lt;T&gt;</code> là kiểu trả về nguyên văn của <code>chat_stream()</code> theo
-        004 §1. Nó bọc <code>rt::channel_consumer&lt;T, error&gt;</code>: <code>next()</code> trả
-        về <code>std::optional&lt;T&gt;</code>, trong đó <code>nullopt</code> nghĩa là "hiện chưa
-        có gì trong bộ đệm, chưa xong" — bên gọi rút cạn tới hết rồi mới kiểm tra{" "}
-        <code>done()</code>. Không có bắt tay OPEN xuyên actor và không định địa chỉ actor:{" "}
+        004 §1. Nó bọc <code>rt::channel_consumer&lt;T, error&gt;</code>. <code>next()</code> trả
+        về <code>std::optional&lt;T&gt;</code>; <code>nullopt</code> nghĩa là "hiện chưa có gì
+        trong bộ đệm, chưa xong" — bên gọi rút cạn tới hết rồi mới kiểm tra <code>done()</code>.{" "}
         <code>chat_stream()</code> là một lệnh gọi đồng bộ, trong-tiến-trình thuần túy, trả về ngay
-        một cặp đã được nối sẵn. <code>make_stream&lt;T&gt;</code> dựng cặp đó trên một channel có
-        giới hạn (dung lượng mặc định 256) với một <code>std::stop_source</code> dùng chung —
-        buông hoặc hủy phía consumer sẽ phát ra một <code>std::stop_token</code> ngoài băng
-        (ADR-017) mà một vòng đọc nền có thể quan sát ngay cả khi đang mắc kẹt trong I/O và không
-        còn gì để đẩy.
+        một cặp đã được nối sẵn: không bắt tay OPEN xuyên actor, không định địa chỉ actor.{" "}
+        <code>make_stream&lt;T&gt;</code> dựng cặp đó trên một channel có giới hạn với dung lượng
+        mặc định 256, cùng một <code>std::stop_source</code> dùng chung. Buông hoặc hủy phía
+        consumer sẽ phát ra một <code>std::stop_token</code> ngoài băng mà một vòng đọc nền có thể
+        quan sát ngay cả khi đang mắc kẹt trong I/O và không còn gì để đẩy.
       </>
     ),
+    s2Note: <>ADR-017 định nghĩa đường hủy stop_token ngoài băng này</>,
     s2CanonicalLabel: "Vòng rút cạn chuẩn mực",
     s2CanonicalBody:
       "Toàn bộ main() của examples/07_streaming.cpp — ngắn gọn và tự đủ, đúng hình dạng mà mọi vòng rút cạn trong cây mã này đi theo.",
@@ -316,12 +337,12 @@ const copy = {
     s3Heading: "ChatResponseUpdate: delta, is_final, và usage chỉ đến ở lần cuối",
     s3Body: (
       <>
-        Mỗi mục được đẩy ra mang một <code>ContentItem delta</code> — cùng kiểu mà nội dung của cả
-        một <code>ChatResponse</code> được dựng từ đó — cộng với <code>is_final</code> và một{" "}
-        <code>Usage</code> chỉ có ý nghĩa khi <code>is_final</code> là true.{" "}
+        Mỗi mục được đẩy ra mang một <code>ContentItem delta</code>, cộng với <code>is_final</code>{" "}
+        và một <code>Usage</code> chỉ có ý nghĩa khi <code>is_final</code> là true. Delta đó cùng
+        kiểu mà nội dung của cả một <code>ChatResponse</code> được dựng từ đó.{" "}
         <code>StreamingJokerChatClient</code> bên dưới là một bên tuân theo <code>ChatClient</code>{" "}
         thật, có kiểm thử, streaming thật sự: mỗi từ một lần đẩy, từ một luồng nền, qua một vòng
-        đệm có dung lượng (2) cố ý nhỏ hơn số từ của câu trả lời — chứng minh một vòng đệm đầy sẽ
+        đệm có dung lượng — 2 — cố ý nhỏ hơn số từ của câu trả lời, chứng minh một vòng đệm đầy sẽ
         chặn luồng producer chứ không làm rớt một mục nào.
       </>
     ),
@@ -335,6 +356,22 @@ const copy = {
       </>
     ),
 
+    s3bEyebrow: "examples/32_chat_stream_session_loop.cpp",
+    s3bHeading: "Chạy như một phiên, không phải một lệnh gọi",
+    s3bBody: (
+      <>
+        <code>StreamingJokerChatClient</code> ở trên chứng minh một lệnh gọi stream thật sự. Một
+        caller tương tác thật — một CLI đọc stdin, hoặc bất kỳ thứ gì có nhiều hơn một lượt — giữ
+        một <code>ChatClient</code> và gọi <code>chat_stream()</code> trên nó lần nữa cho mỗi lượt,
+        cho lịch sử tin nhắn phát triển thật sự ở giữa. Ví dụ này chính là vòng lặp đó: một client
+        sống lâu dài, một hàng đợi "con người" đóng vai stdin, mỗi câu trả lời được in ra ngay khi
+        từng từ đến và được gộp lại vào lịch sử trước lượt tiếp theo.
+      </>
+    ),
+    s3bNote: (
+      <>bị giới hạn ở một số vòng cố định, không bao giờ là một while(true) không giới hạn theo nghĩa đen — cùng quy ước "vòng lặp bounded, single-resume()" mà trang Builder API đã tài liệu hóa; vòng lặp while(true) thật của tools/cli_chat.cpp đọc stdin thật cho đúng vai trò mà hàng đợi cố định đóng ở đây, nhưng stream qua event stream của chính AgentSession, không phải tầng chat_stream() thô này</>
+    ),
+
     s4Eyebrow: "rt/agent_session.hpp:719-720 — ADR-034",
     s4Heading: "Streaming ở cấp session: một cờ, cả vòng lặp lượt",
     s4Body: (
@@ -346,8 +383,8 @@ const copy = {
         thay vì phương thức <code>chat()</code> thuần túy, và mỗi <code>ChatResponseUpdate</code>{" "}
         được đẩy ra sẽ được chiếu lên luồng sự kiện riêng của session dưới dạng một sự kiện{" "}
         <code>run_event_kind::model_delta</code>. Một lượt chạy dạng streaming cũng phát ra đúng
-        một <code>run_event_kind::warning</code> ngay sau <code>run_started</code>, vì việc bật cờ
-        này tự nó là một lựa chọn đáng để người vận hành nhìn thấy — một loại sự kiện có thật,
+        một <code>run_event_kind::warning</code> ngay sau <code>run_started</code>: việc bật cờ
+        này tự nó là một lựa chọn đáng để người vận hành nhìn thấy, nên đây là một loại sự kiện
         riêng biệt, không phải một loại bịa ra.
       </>
     ),
@@ -379,13 +416,12 @@ const copy = {
     s4WorkflowNote: (
       <>
         <strong>Khi backend đứng sau <code>chat_stream()</code> là cả một Workflow, không phải
-        một model.</strong> <code>WorkflowChatClient</code> (GitHub issue #35, ADR-162/163) thỏa
-        mãn cùng khái niệm <code>ChatClient</code> này bằng cách bọc một{" "}
-        <code>WorkflowSupervisor</code> — nhưng nó báo cáo trung thực{" "}
-        <code>capabilities().streaming == false</code>: nó không bao giờ phát ra delta cấp token
-        từ bên trong đồ thị, chỉ có kết quả CUỐI CÙNG của workflow được bọc (hoặc, khi một{" "}
-        <code>request_port</code> bị đình chỉ, một câu hỏi human-in-the-loop kiểu{" "}
-        <code>Custom</code>). Xem{" "}
+        một model.</strong> <code>WorkflowChatClient</code> thỏa mãn cùng khái niệm{" "}
+        <code>ChatClient</code> này bằng cách bọc một <code>WorkflowSupervisor</code>. Nó báo cáo
+        trung thực <code>capabilities().streaming == false</code>: nó không bao giờ phát ra delta
+        cấp token từ bên trong đồ thị. Nó chỉ trả về kết quả cuối cùng của workflow được bọc,
+        hoặc, khi một <code>request_port</code> bị đình chỉ, một câu hỏi human-in-the-loop kiểu{" "}
+        <code>Custom</code>. Xem{" "}
         <a href={`${SITE_BASE}/api/workflow.html#workflow-hitl-chat-client`}>
           Workflow &amp; Orchestration — HITL qua chat_client
         </a>{" "}
@@ -393,17 +429,18 @@ const copy = {
         <code>ToolCall</code>.
       </>
     ),
+    s4WorkflowCiteNote: <>GitHub issue #35, ADR-162/163</>,
 
     s5Eyebrow: "protocol/openai · protocol/anthropic — nếu bạn tò mò",
     s5Heading: "Hai kiểu đóng khung SSE trên dây, ngắn gọn",
     s5Body: (
       <>
         Mọi thứ ở trên đều giống nhau bất kể backend nào. Nhưng bên dưới một provider HTTP đang
-        chạy thật, hai nhà cung cấp đóng khung Server-Sent Events của họ khác nhau, và cả hai đều
+        chạy thật, hai nhà cung cấp đóng khung Server-Sent Events của họ khác nhau. Cả hai đều
         dùng chung các nguyên thủy giống nhau — <code>ChunkedBodyDecoder</code>,{" "}
         <code>SseEventFramer</code>, một hình dạng <code>StreamingUpdateAccumulator</code> — nên
-        hai định dạng trên dây không thể trôi thành hai bộ giải mã khác nhau. Kể từ ADR-019, các
-        byte được giải mã và đẩy đi ngay khi tới nơi: <code>perform_provider_streaming_exchange</code>{" "}
+        hai định dạng trên dây không thể trôi thành hai bộ giải mã khác nhau. Các byte được giải
+        mã và đẩy đi ngay khi tới nơi: <code>perform_provider_streaming_exchange</code>{" "}
         giao các mảnh cho một callback <code>on_body</code>, và mỗi update đã sẵn sàng đi thẳng lên
         vòng đệm có kiểm soát tín dụng ở trên. Chiều sâu đầy đủ của phần này — suy giảm capability,
         xử lý credential, chính các thân request — là chủ đề của{" "}
@@ -411,6 +448,7 @@ const copy = {
         gì thực sự có trên dây.
       </>
     ),
+    s5Note: <>ADR-019 — các byte được giải mã và đẩy đi ngay khi tới nơi, không đệm tới khi xong</>,
     s5aLabel: "Tương thích OpenAI: chỉ các dòng data:",
     s5bLabel: "Anthropic: các sự kiện có tên",
 
@@ -495,6 +533,7 @@ export function ApiStreamingReference() {
               <span className="eyebrow">{t.s2Eyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s2Heading}</h3>
               <p>{t.s2Body}</p>
+              <ApiDiagnosticNote>{t.s2Note}</ApiDiagnosticNote>
             </div>
           </RevealItem>
 
@@ -566,6 +605,38 @@ export function ApiStreamingReference() {
           </RevealItem>
         </RevealGroup>
 
+        {/* ---- 3b. Driven as a session loop ---------------------------------------------------------- */}
+        <RevealGroup>
+          <RevealItem>
+            <div
+              className="section-head anchor-target"
+              id="chat-stream-session-loop"
+              style={{ marginTop: 56, marginBottom: 22 }}
+            >
+              <span className="eyebrow">{t.s3bEyebrow}</span>
+              <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s3bHeading}</h3>
+              <p>{t.s3bBody}</p>
+              <ApiDiagnosticNote>{t.s3bNote}</ApiDiagnosticNote>
+            </div>
+          </RevealItem>
+          <RevealItem>
+            <CodePanel filename="examples/32_chat_stream_session_loop.cpp">
+              {highlightCpp(streamingSessionLoopSnippet)}
+            </CodePanel>
+          </RevealItem>
+          <RevealItem>
+            <a
+              className="api-cite"
+              href={gh("examples/32_chat_stream_session_loop.cpp")}
+              target="_blank"
+              rel="noreferrer"
+              style={{ borderTop: "none", paddingTop: 0, display: "block" }}
+            >
+              examples/32_chat_stream_session_loop.cpp →
+            </a>
+          </RevealItem>
+        </RevealGroup>
+
         {/* ---- 4. Session-level streaming ---------------------------------------------------------- */}
         <RevealGroup>
           <RevealItem>
@@ -608,6 +679,7 @@ export function ApiStreamingReference() {
 
           <RevealItem>
             <p className="gs-note" style={{ marginTop: 12 }}>{t.s4WorkflowNote}</p>
+            <ApiDiagnosticNote>{t.s4WorkflowCiteNote}</ApiDiagnosticNote>
           </RevealItem>
         </RevealGroup>
 
@@ -618,6 +690,7 @@ export function ApiStreamingReference() {
               <span className="eyebrow">{t.s5Eyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.s5Heading}</h3>
               <p>{t.s5Body}</p>
+              <ApiDiagnosticNote>{t.s5Note}</ApiDiagnosticNote>
             </div>
           </RevealItem>
 

@@ -9,6 +9,7 @@ import { SITE_BASE } from "../data/content";
 import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
+import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
 import { CodePanel } from "./CodePanel";
 import { RevealGroup, RevealItem } from "./Reveal";
 import type { Lang } from "../i18n/LanguageContext";
@@ -42,18 +43,19 @@ const copy = {
     headingHighlight: "compile-time policy sets",
     intro: (
       <>
-        There is no runtime "agent config" object anywhere in this engine, and no virtual
-        dispatch. An agent's whole policy set — which chat client, which tools, which
-        capabilities, how many turns — is a list of template parameters, compiled and validated
-        exactly once by <code>register_agent&lt;A&gt;()</code>.
+        <code>Agent&lt;Derived, Policies...&gt;</code> declares an agent's whole policy set as a
+        list of template parameters — which chat client, which tools, which capabilities, how many
+        turns. <code>register_agent&lt;A&gt;()</code> compiles and validates that list exactly
+        once. There is no runtime "agent config" object anywhere in this engine, and no virtual
+        dispatch.
       </>
     ),
     builderNote: (
       <>
-        Building an application that USES agents, rather than authoring a new agent TYPE? The rest
-        of this page is a compile-time authoring surface — declare a policy set,{" "}
-        <code>register_agent&lt;A&gt;()</code> validates it. If you just need a running session in
-        app code, <code>QuickstartSessionBuilder</code> (see the{" "}
+        Building an application that uses agents, rather than authoring a new agent type? The rest
+        of this page is a compile-time authoring surface: declare a policy set, and{" "}
+        <code>register_agent&lt;A&gt;()</code> validates it. For a running session in app code,{" "}
+        <code>QuickstartSessionBuilder</code> (see the{" "}
         <a href={`${SITE_BASE}/api/builder.html`}>Builder API page</a>) reaches a running{" "}
         <code>AgentSession</code> in a few chained calls instead of the full CRTP declaration below.
       </>
@@ -64,12 +66,12 @@ const copy = {
         <code>Agent&lt;Derived, Policies...&gt;</code> — an empty tag, not a base class
       </>
     ),
-    isntLabel: "What this ISN'T",
+    isntLabel: "What this isn't",
     isnt: (
       <>
         A runtime configuration object you construct and pass around. There's no{" "}
-        <code>AgentConfig</code> instance, no virtual method an override participates in —{" "}
-        <code>Agent&lt;...&gt;</code> itself is empty; it carries zero state.
+        <code>AgentConfig</code> instance, and no virtual method for an override to participate
+        in. <code>Agent&lt;...&gt;</code> itself is empty; it carries zero state.
       </>
     ),
     isLabel: "What it actually is",
@@ -102,46 +104,48 @@ const copy = {
     ),
     section2Body: (
       <>
-        Returns <code>result&lt;AgentMetadata&gt;</code> — the SAME compiled table the
-        declarative YAML compiler also targets (015, I6). Not every check below enforces
-        something real today; each is labeled for what it actually is, not what it's meant
-        to eventually become.
+        <code>register_agent&lt;A&gt;()</code> returns <code>result&lt;AgentMetadata&gt;</code> —
+        the same compiled table the declarative YAML compiler also targets. Not every check below
+        enforces something real today; each check is labeled for what it actually is, not what
+        it's meant to eventually become.
       </>
     ),
+    section2Note: <>015, I6</>,
     stubsNote: (
       <>
-        <strong>Three of these eight are always-pass stubs</strong> — not because the design
-        is wrong, but because the machinery they'd check against (a per-deployment sandbox
-        backend registry, a per-tool sandbox policy tag, 014's workflow graph wired to this
-        specific check) doesn't exist yet at this call site. Named plainly rather than left to
-        look enforced.
+        <strong>Three of these eight checks are always-pass stubs.</strong> That isn't because the
+        design is wrong — the machinery they'd check against doesn't exist yet at this call site:
+        a per-deployment sandbox backend registry, a per-tool sandbox policy tag, and a workflow
+        graph wired to this specific check. Each stub is named plainly rather than left to look
+        enforced.
       </>
     ),
+    stubsNoteCite: <>014 — the workflow graph this check will wire to</>,
     section3Eyebrow: "examples/01_hello_agent.cpp, examples/03_multi_turn.cpp",
     section3Heading: "Running a turn, for real",
     section3Body: (
       <>
-        Both examples build <code>agentengine::rt::AgentSession&lt;ChatClientT&gt;</code>{" "}
-        directly from a <code>ChatClient</code> type — not from a registered{" "}
-        <code>Agent&lt;Derived, Policies...&gt;</code>. <code>register_agent&lt;A&gt;()</code>{" "}
-        (above) validates a policy set into <code>AgentMetadata</code>, but nothing in this
-        repo's examples yet constructs a running <code>AgentSession</code> FROM that validated
-        metadata — both surfaces are real, they just aren't wired to each other yet. The fake{" "}
+        Both examples build <code>agentengine::rt::AgentSession&lt;ChatClientT&gt;</code> directly
+        from a <code>ChatClient</code> type, not from a registered{" "}
+        <code>Agent&lt;Derived, Policies...&gt;</code>. <code>register_agent&lt;A&gt;()</code>,
+        described above, validates a policy set into <code>AgentMetadata</code>, but no example in
+        this repo yet constructs a running <code>AgentSession</code> from that validated metadata.
+        Both surfaces are real; they simply aren't wired to each other yet. The fake{" "}
         <code>JokerChatClient</code> below always answers the same pirate joke, so both examples
-        build and run completely offline, no API key, no network.
+        build and run completely offline: no API key, no network.
       </>
     ),
     section3aEyebrow: "The smallest possible turn",
-    section3bEyebrow: "The SAME session, across two turns",
+    section3bEyebrow: "The same session, across two turns",
     section3bBody: (
       <>
-        There is no separate "session" object threaded through calls — the{" "}
-        <code>rt::AgentSession</code> itself IS the conversation. Every{" "}
-        <code>start_run()</code> against the same session appends to its own durable{" "}
-        <code>history_</code> (005 §3), and that accumulated history is what the next turn's{" "}
-        <code>ChatClient</code> sees.
+        There is no separate "session" object threaded through calls. The{" "}
+        <code>rt::AgentSession</code> itself is the conversation: every <code>start_run()</code>{" "}
+        against the same session appends to its own durable <code>history_</code>, and that
+        accumulated history is what the next turn's <code>ChatClient</code> sees.
       </>
     ),
+    section3bNote: <>005 §3</>,
   },
   vi: {
     eyebrow: "Bề mặt viết mã CRTP trong C++ — 002",
@@ -149,16 +153,17 @@ const copy = {
     headingHighlight: "tập policy tại thời điểm biên dịch",
     intro: (
       <>
-        Không có bất kỳ đối tượng "agent config" nào lúc chạy trong toàn bộ engine này, và
-        không có virtual dispatch. Toàn bộ tập policy của một agent — dùng chat client nào, tool
-        nào, capability nào, bao nhiêu lượt — là một danh sách tham số template, được biên dịch
-        và xác thực đúng một lần bởi <code>register_agent&lt;A&gt;()</code>.
+        <code>Agent&lt;Derived, Policies...&gt;</code> khai báo toàn bộ tập policy của một agent
+        dưới dạng một danh sách tham số template — dùng chat client nào, tool nào, capability
+        nào, bao nhiêu lượt. <code>register_agent&lt;A&gt;()</code> biên dịch và xác thực danh
+        sách đó đúng một lần. Không có bất kỳ đối tượng "agent config" nào lúc chạy trong toàn bộ
+        engine này, và không có virtual dispatch.
       </>
     ),
     builderNote: (
       <>
-        Đang xây một ứng dụng SỬ DỤNG agent, thay vì viết ra một KIỂU agent mới? Phần còn lại của
-        trang này là một bề mặt viết mã tại thời điểm biên dịch — khai báo một tập policy,{" "}
+        Đang xây một ứng dụng sử dụng agent, thay vì viết ra một kiểu agent mới? Phần còn lại của
+        trang này là một bề mặt viết mã tại thời điểm biên dịch: khai báo một tập policy, rồi{" "}
         <code>register_agent&lt;A&gt;()</code> xác thực nó. Nếu bạn chỉ cần một session đang chạy
         trong code ứng dụng, <code>QuickstartSessionBuilder</code> (xem{" "}
         <a href={`${SITE_BASE}/api/builder.html`}>trang Builder API</a>) đưa bạn tới một{" "}
@@ -172,12 +177,12 @@ const copy = {
         <code>Agent&lt;Derived, Policies...&gt;</code> — một tag rỗng, không phải một base class
       </>
     ),
-    isntLabel: "Đây KHÔNG PHẢI là gì",
+    isntLabel: "Đây không phải là gì",
     isnt: (
       <>
         Một đối tượng cấu hình lúc chạy mà bạn tự khởi tạo và truyền đi. Không có thực thể{" "}
-        <code>AgentConfig</code> nào, không có phương thức virtual nào để một override tham
-        gia vào — chính <code>Agent&lt;...&gt;</code> là rỗng; nó không mang trạng thái nào cả.
+        <code>AgentConfig</code> nào, và không có phương thức virtual nào để một override tham
+        gia vào. Chính <code>Agent&lt;...&gt;</code> là rỗng; nó không mang trạng thái nào cả.
       </>
     ),
     isLabel: "Nó thực sự là gì",
@@ -211,46 +216,49 @@ const copy = {
     ),
     section2Body: (
       <>
-        Trả về <code>result&lt;AgentMetadata&gt;</code> — CHÍNH bảng đã biên dịch mà trình biên
-        dịch YAML khai báo cũng nhắm tới (015, I6). Không phải mọi kiểm tra bên dưới đều thực thi
-        điều gì đó có thật ngay hôm nay; mỗi kiểm tra được nêu nhãn đúng bản chất của nó, không
-        phải theo dự định cuối cùng nó sẽ trở thành.
+        <code>register_agent&lt;A&gt;()</code> trả về <code>result&lt;AgentMetadata&gt;</code> —
+        chính bảng đã biên dịch mà trình biên dịch YAML khai báo cũng nhắm tới. Không phải mọi
+        kiểm tra bên dưới đều thực thi điều gì đó có thật ngay hôm nay; mỗi kiểm tra được nêu nhãn
+        đúng bản chất của nó, không phải theo dự định cuối cùng nó sẽ trở thành.
       </>
     ),
+    section2Note: <>015, I6</>,
     stubsNote: (
       <>
-        <strong>Ba trong số tám kiểm tra này là stub luôn-pass</strong> — không phải vì thiết
-        kế sai, mà vì cơ chế mà chúng cần kiểm tra dựa vào (một registry backend sandbox theo
-        từng deployment, một thẻ chính sách sandbox theo từng tool, đồ thị workflow của 014 được
-        đấu nối vào đúng kiểm tra này) hiện chưa tồn tại tại điểm gọi này. Được nêu tên thẳng
-        thắn thay vì để trông như đã được thực thi.
+        <strong>Ba trong số tám kiểm tra này là stub luôn-pass.</strong> Đó không phải vì thiết kế
+        sai, mà vì cơ chế mà chúng cần kiểm tra dựa vào chưa tồn tại tại điểm gọi này: một registry
+        backend sandbox theo từng deployment, một thẻ chính sách sandbox theo từng tool, và một đồ
+        thị workflow được đấu nối vào đúng kiểm tra này. Mỗi stub được nêu tên thẳng thắn thay vì
+        để trông như đã được thực thi.
       </>
     ),
+    stubsNoteCite: <>014 — đồ thị workflow mà kiểm tra này sẽ được đấu nối tới</>,
     section3Eyebrow: "examples/01_hello_agent.cpp, examples/03_multi_turn.cpp",
     section3Heading: "Chạy một lượt, thật sự",
     section3Body: (
       <>
         Cả hai ví dụ đều dựng <code>agentengine::rt::AgentSession&lt;ChatClientT&gt;</code> trực
-        tiếp từ một kiểu <code>ChatClient</code> — không phải từ một{" "}
-        <code>Agent&lt;Derived, Policies...&gt;</code> đã đăng ký. <code>register_agent&lt;A&gt;()</code>{" "}
-        (ở trên) xác thực một tập policy thành <code>AgentMetadata</code>, nhưng chưa có ví dụ
-        nào trong repo này thực sự dựng một <code>AgentSession</code> đang chạy TỪ metadata đã
-        xác thực đó — cả hai bề mặt đều có thật, chỉ là chưa được đấu nối với nhau. Client giả{" "}
+        tiếp từ một kiểu <code>ChatClient</code>, không phải từ một{" "}
+        <code>Agent&lt;Derived, Policies...&gt;</code> đã đăng ký.{" "}
+        <code>register_agent&lt;A&gt;()</code>, đã trình bày ở trên, xác thực một tập policy
+        thành <code>AgentMetadata</code>, nhưng chưa có ví dụ nào trong repo này dựng một{" "}
+        <code>AgentSession</code> đang chạy từ metadata đã xác thực đó. Cả hai bề mặt đều có
+        thật; chúng chỉ đơn giản là chưa được đấu nối với nhau. Client giả{" "}
         <code>JokerChatClient</code> bên dưới luôn trả lời cùng một câu đùa về cướp biển, nên cả
-        hai ví dụ đều build và chạy hoàn toàn offline, không cần API key, không cần mạng.
+        hai ví dụ đều build và chạy hoàn toàn offline: không cần API key, không cần mạng.
       </>
     ),
     section3aEyebrow: "Lượt chạy nhỏ nhất có thể",
-    section3bEyebrow: "CÙNG một session, qua hai lượt",
+    section3bEyebrow: "Cùng một session, qua hai lượt",
     section3bBody: (
       <>
-        Không có một đối tượng "session" riêng nào được truyền qua các lệnh gọi — chính{" "}
-        <code>rt::AgentSession</code> LÀ cuộc hội thoại. Mỗi lần <code>start_run()</code> trên
-        cùng một session sẽ nối thêm vào <code>history_</code> bền vững của chính nó (005 §3), và
-        toàn bộ lịch sử tích lũy đó chính là những gì <code>ChatClient</code> ở lượt kế tiếp nhìn
-        thấy.
+        Không có một đối tượng "session" riêng nào được truyền qua các lệnh gọi. Chính{" "}
+        <code>rt::AgentSession</code> là cuộc hội thoại: mỗi lần <code>start_run()</code> trên
+        cùng một session sẽ nối thêm vào <code>history_</code> bền vững của chính nó, và toàn bộ
+        lịch sử tích lũy đó chính là những gì <code>ChatClient</code> ở lượt kế tiếp nhìn thấy.
       </>
     ),
+    section3bNote: <>005 §3</>,
   },
 } as const;
 
@@ -325,6 +333,7 @@ export function ApiAgentReference() {
               <span className="eyebrow">{t.section2Eyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.section2Heading}</h3>
               <p>{t.section2Body}</p>
+              <ApiDiagnosticNote>{t.section2Note}</ApiDiagnosticNote>
             </div>
           </RevealItem>
 
@@ -346,6 +355,7 @@ export function ApiAgentReference() {
             <p className="gs-note" style={{ marginTop: 20, borderLeftColor: "var(--accent-pink)" }}>
               {t.stubsNote}
             </p>
+            <ApiDiagnosticNote status="stub">{t.stubsNoteCite}</ApiDiagnosticNote>
           </RevealItem>
 
           <RevealItem>
@@ -369,6 +379,7 @@ export function ApiAgentReference() {
           <RevealItem>
             <span className="eyebrow" style={{ display: "block", margin: "28px 0 10px" }}>{t.section3bEyebrow}</span>
             <p style={{ color: "var(--text-dim)", lineHeight: 1.65, marginBottom: 16 }}>{t.section3bBody}</p>
+            <ApiDiagnosticNote>{t.section3bNote}</ApiDiagnosticNote>
             <CodePanel filename="examples/03_multi_turn.cpp">{highlightCpp(multiTurnSnippet)}</CodePanel>
           </RevealItem>
         </RevealGroup>

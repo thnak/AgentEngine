@@ -29,6 +29,7 @@ export const streamingSections: Record<Lang, StreamingSection[]> = {
     { id: "seam", label: "chat_stream() is required" },
     { id: "stream-primitive", label: "agentengine::stream<T>" },
     { id: "response-update", label: "ChatResponseUpdate" },
+    { id: "chat-stream-session-loop", label: "Driven as a session loop" },
     { id: "session-streaming", label: "Session-level streaming" },
     { id: "wire", label: "Two SSE wire framings" },
     { id: "worked-example", label: "Worked example" },
@@ -37,6 +38,7 @@ export const streamingSections: Record<Lang, StreamingSection[]> = {
     { id: "seam", label: "chat_stream() là bắt buộc" },
     { id: "stream-primitive", label: "agentengine::stream<T>" },
     { id: "response-update", label: "ChatResponseUpdate" },
+    { id: "chat-stream-session-loop", label: "Chạy như một vòng lặp phiên" },
     { id: "session-streaming", label: "Streaming ở cấp session" },
     { id: "wire", label: "Hai kiểu đóng khung SSE trên dây" },
     { id: "worked-example", label: "Ví dụ minh họa" },
@@ -55,7 +57,7 @@ export const streamingEntries: Record<Lang, ApiEntry[]> = {
       tag: "concept ChatClient",
       title: "Two required expressions, and chat_stream() is one of them",
       body:
-        "Since ADR-035 Phase 3, the concept requires exactly capabilities() and chat_stream(request, ctx) -> stream<ChatResponseUpdate>; the whole-response chat() is deliberately no longer part of the required shape. This WIDENS what can conform rather than narrowing it — every real backend (OpenAIChatClient, AnthropicChatClient) still has a chat() and keeps it, and the relaxation is what let a hypothetical chat_stream()-only backend compile against ChatClient for the first time. A pre-existing sibling, LegacyChatClient, still requires both methods — RecordingChatClient gates on it specifically because its own body unconditionally calls .chat(), and gating on the relaxed ChatClient would let a chat_stream()-only conformer compile there and then fail deep inside .chat() with an opaque template error instead of a named one.",
+        "Since ADR-035 Phase 3, the concept requires exactly capabilities() and chat_stream(request, ctx) -> stream<ChatResponseUpdate>; the whole-response chat() is deliberately no longer part of the required shape. This widens what can conform; it doesn't narrow anything. Every real backend — OpenAIChatClient, AnthropicChatClient — still has a chat() and keeps it. The relaxation is what let a hypothetical chat_stream()-only backend compile against ChatClient for the first time. A pre-existing sibling concept, LegacyChatClient, still requires both methods. RecordingChatClient gates on LegacyChatClient specifically, because its own body unconditionally calls .chat(): gating on the relaxed ChatClient would let a chat_stream()-only conformer compile there, then fail deep inside .chat() with an opaque template error instead of a named one.",
       cite: "include/agentengine/core/chat_client.hpp:205-209",
       href: gh("include/agentengine/core/chat_client.hpp"),
     },
@@ -107,7 +109,7 @@ export const streamingEntries: Record<Lang, ApiEntry[]> = {
       tag: "concept ChatClient",
       title: "Hai biểu thức bắt buộc, và chat_stream() là một trong số đó",
       body:
-        "Kể từ ADR-035 Phase 3, concept này bắt buộc đúng capabilities() và chat_stream(request, ctx) -> stream<ChatResponseUpdate>; chat() trả về nguyên văn cả phản hồi đã cố ý không còn nằm trong hình dạng bắt buộc nữa. Điều này MỞ RỘNG những gì có thể tuân theo chứ không thu hẹp — mọi backend thật (OpenAIChatClient, AnthropicChatClient) vẫn có chat() và vẫn giữ nó, và việc nới lỏng này là thứ lần đầu tiên cho phép một backend giả định chỉ có chat_stream() biên dịch được với ChatClient. Một concept anh em có từ trước, LegacyChatClient, vẫn đòi cả hai phương thức — RecordingChatClient ràng buộc riêng theo nó vì thân hàm của chính nó gọi .chat() một cách vô điều kiện, và nếu ràng buộc theo ChatClient đã nới lỏng thì một bên tuân theo chỉ có chat_stream() sẽ biên dịch qua đó rồi hỏng sâu bên trong .chat() với một lỗi template khó hiểu thay vì một lỗi có tên.",
+        "Kể từ ADR-035 Phase 3, concept này bắt buộc đúng capabilities() và chat_stream(request, ctx) -> stream<ChatResponseUpdate>; chat() trả về nguyên văn cả phản hồi đã cố ý không còn nằm trong hình dạng bắt buộc nữa. Điều này mở rộng những gì có thể tuân theo; nó không thu hẹp gì cả. Mọi backend thật — OpenAIChatClient, AnthropicChatClient — vẫn có chat() và vẫn giữ nó. Việc nới lỏng này là thứ lần đầu tiên cho phép một backend giả định chỉ có chat_stream() biên dịch được với ChatClient. Một concept anh em có từ trước, LegacyChatClient, vẫn đòi cả hai phương thức. RecordingChatClient ràng buộc riêng theo LegacyChatClient, vì thân hàm của chính nó gọi .chat() một cách vô điều kiện: nếu ràng buộc theo ChatClient đã nới lỏng, một bên tuân theo chỉ có chat_stream() sẽ biên dịch qua đó, rồi hỏng sâu bên trong .chat() với một lỗi template khó hiểu thay vì một lỗi có tên.",
       cite: "include/agentengine/core/chat_client.hpp:205-209",
       href: gh("include/agentengine/core/chat_client.hpp"),
     },
@@ -280,6 +282,37 @@ int main() {
     check(saw_final, "the last update is marked is_final");
     check(s.terminal() == stream_terminal::closed, "the stream reached the success terminal");
     return g_failures == 0 ? 0 : 1;
+}`;
+
+// ------------------------------------------------------------------------------------------------
+// examples/32_chat_stream_session_loop.cpp -- the same real streaming primitive above, driven by a
+// real, bounded session loop instead of one call: one long-lived ChatClient, called once per turn,
+// history grown turn by turn, each reply printed live as its words arrive.
+// ------------------------------------------------------------------------------------------------
+
+export const streamingSessionLoopSnippet = `// examples/32_chat_stream_session_loop.cpp:169-201 (trimmed) -- bounded, not a literal unbounded
+// while(true) (see the Builder API page's "bounded, single-resume() loop" note)
+constexpr int kMaxRounds = 8;
+for (int round = 0; round < kMaxRounds && !user_turns.empty(); ++round) {
+    std::string const user_text = user_turns.front();
+    user_turns.pop_front();
+    history.push_back(text_message(user_text, role::user));
+
+    ChatRequest req;
+    req.messages = history;                          // the whole growing history, like a real session
+    stream<ChatResponseUpdate> s = client.chat_stream(req, ctx);   // same client, called again
+
+    std::string reply;
+    while (!s.done()) {
+        while (auto update = s.next()) {
+            if (auto const* t = std::get_if<Text>(&update->delta.value)) {
+                std::printf("%s", t->text.c_str());    // printed live, as each word arrives
+                reply += t->text;
+            }
+        }
+        if (!s.done()) std::this_thread::yield();
+    }
+    history.push_back(text_message(reply, role::assistant));   // folded back in for the next turn
 }`;
 
 export const sessionStreamingSnippet = `// examples/29_agent_session_events.cpp:117-133 (trimmed) -- opting a whole session into streaming

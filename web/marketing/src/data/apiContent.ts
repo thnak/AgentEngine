@@ -14,8 +14,11 @@ export const gh = (path: string) => `${REPO_URL}/blob/main/${path}`;
 
 export type ApiStatus = "real" | "design";
 
+export type ApiGroup = "core" | "execution" | "runtime" | "workflow" | "state" | "interaction";
+
 export interface ApiPage {
   id: string;
+  group: ApiGroup;
   label: string;
   href: string;
   eyebrow: string;
@@ -23,13 +26,33 @@ export interface ApiPage {
   status: ApiStatus;
 }
 
+export const apiGroupLabels: Record<Lang, Record<ApiGroup, string>> = {
+  en: {
+    core: "Core",
+    execution: "Execution & trust",
+    runtime: "Runtime & protocols",
+    workflow: "Workflow",
+    state: "State",
+    interaction: "Interaction",
+  },
+  vi: {
+    core: "Cốt lõi",
+    execution: "Thực thi & tin cậy",
+    runtime: "Runtime & giao thức",
+    workflow: "Workflow",
+    state: "Trạng thái",
+    interaction: "Tương tác",
+  },
+};
+
 // The API section's own page system: one hub (api.html) plus one detail page per part, all
 // sharing ApiDetailLayout's ApiSidebar for cross-navigation. Order here is the order they appear
-// in both the hub grid and the sidebar list.
+// in both the hub grid and the sidebar list; ApiSidebar clusters them by `group` underneath.
 export const apiPages: Record<Lang, ApiPage[]> = {
   en: [
     {
       id: "agent",
+      group: "core",
       label: "Agent & register_agent",
       href: `${SITE_BASE}/api/agent.html`,
       eyebrow: "002 — Agent Model and Authoring",
@@ -38,6 +61,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "builder",
+      group: "core",
       label: "Builder API",
       href: `${SITE_BASE}/api/builder.html`,
       eyebrow: "Quickstart & native authoring",
@@ -46,6 +70,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "tool",
+      group: "core",
       label: "Tool",
       href: `${SITE_BASE}/api/tool.html`,
       eyebrow: "006 — Tool and Function Plane",
@@ -54,6 +79,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "codeact",
+      group: "execution",
       label: "CodeAct — agent.*",
       href: `${SITE_BASE}/api/codeact.html`,
       eyebrow: "026 — Agent-Facing Runtime Surface",
@@ -62,6 +88,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "skill",
+      group: "execution",
       label: "Skill",
       href: `${SITE_BASE}/api/skill.html`,
       eyebrow: "009 §8 — Plugin and Extension System",
@@ -70,6 +97,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "builtin-tools",
+      group: "execution",
       label: "First-Party Tools & Skills",
       href: `${SITE_BASE}/api/builtin-tools.html`,
       eyebrow: "009 §7/§8f — the generic tool catalog",
@@ -78,6 +106,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "trust-sandbox",
+      group: "execution",
       label: "Capabilities & Sandbox",
       href: `${SITE_BASE}/api/trust-sandbox.html`,
       eyebrow: "007/008 — Trust & Isolation (L1)",
@@ -86,6 +115,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "worktree",
+      group: "state",
       label: "Worktree & Virtual Filesystem",
       href: `${SITE_BASE}/api/worktree.html`,
       eyebrow: "025 — Worktree and Virtual Filesystem",
@@ -94,6 +124,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "runtime",
+      group: "runtime",
       label: "AgentSession & ChatClient",
       href: `${SITE_BASE}/api/runtime.html`,
       eyebrow: "Agent core (L2)",
@@ -102,6 +133,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "providers",
+      group: "runtime",
       label: "Model providers",
       href: `${SITE_BASE}/api/providers.html`,
       eyebrow: "004 — Model Provider Plane",
@@ -110,6 +142,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "streaming",
+      group: "runtime",
       label: "Streaming",
       href: `${SITE_BASE}/api/streaming.html`,
       eyebrow: "013 — UI and Streaming Surfaces",
@@ -118,6 +151,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "events",
+      group: "runtime",
       label: "Events",
       href: `${SITE_BASE}/api/events.html`,
       eyebrow: "013 §1 — the real run-event stream",
@@ -126,6 +160,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "memory",
+      group: "state",
       label: "Memory",
       href: `${SITE_BASE}/api/memory.html`,
       eyebrow: "029 — Memory System",
@@ -134,6 +169,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "durability",
+      group: "state",
       label: "Durability",
       href: `${SITE_BASE}/api/durability.html`,
       eyebrow: "019 — Durability and Long-Running Agents",
@@ -142,6 +178,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "plugins",
+      group: "execution",
       label: "WASM Plugin ABI",
       href: `${SITE_BASE}/api/plugins.html`,
       eyebrow: "Plugin ABI (D2)",
@@ -150,6 +187,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "workflow",
+      group: "workflow",
       label: "Workflow & Orchestration",
       href: `${SITE_BASE}/api/workflow.html`,
       eyebrow: "014 — Workflow and Orchestration",
@@ -158,6 +196,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "hitl",
+      group: "interaction",
       label: "Human-in-the-loop",
       href: `${SITE_BASE}/api/hitl.html`,
       eyebrow: "One Interaction record, six real surfaces",
@@ -166,6 +205,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "protocols",
+      group: "runtime",
       label: "Protocol surfaces",
       href: `${SITE_BASE}/api/protocols.html`,
       eyebrow: "L4 protocol surfaces — Milestone 7",
@@ -176,6 +216,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
   vi: [
     {
       id: "agent",
+      group: "core",
       label: "Agent & register_agent",
       href: `${SITE_BASE}/api/agent.html`,
       eyebrow: "002 — Agent Model and Authoring",
@@ -184,6 +225,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "builder",
+      group: "core",
       label: "Builder API",
       href: `${SITE_BASE}/api/builder.html`,
       eyebrow: "Quickstart & native authoring",
@@ -192,6 +234,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "tool",
+      group: "core",
       label: "Tool",
       href: `${SITE_BASE}/api/tool.html`,
       eyebrow: "006 — Tool and Function Plane",
@@ -200,6 +243,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "codeact",
+      group: "execution",
       label: "CodeAct — agent.*",
       href: `${SITE_BASE}/api/codeact.html`,
       eyebrow: "026 — Agent-Facing Runtime Surface",
@@ -208,6 +252,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "skill",
+      group: "execution",
       label: "Skill",
       href: `${SITE_BASE}/api/skill.html`,
       eyebrow: "009 §8 — Plugin and Extension System",
@@ -216,6 +261,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "builtin-tools",
+      group: "execution",
       label: "Tool & Skill chính chủ",
       href: `${SITE_BASE}/api/builtin-tools.html`,
       eyebrow: "009 §7/§8f — danh mục tool chung",
@@ -224,6 +270,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "trust-sandbox",
+      group: "execution",
       label: "Capabilities & Sandbox",
       href: `${SITE_BASE}/api/trust-sandbox.html`,
       eyebrow: "007/008 — Trust & Isolation (L1)",
@@ -232,6 +279,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "worktree",
+      group: "state",
       label: "Worktree & Virtual Filesystem",
       href: `${SITE_BASE}/api/worktree.html`,
       eyebrow: "025 — Worktree and Virtual Filesystem",
@@ -240,6 +288,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "runtime",
+      group: "runtime",
       label: "AgentSession & ChatClient",
       href: `${SITE_BASE}/api/runtime.html`,
       eyebrow: "Lõi Agent (L2)",
@@ -248,6 +297,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "providers",
+      group: "runtime",
       label: "Nhà cung cấp model",
       href: `${SITE_BASE}/api/providers.html`,
       eyebrow: "004 — Model Provider Plane",
@@ -256,6 +306,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "streaming",
+      group: "runtime",
       label: "Streaming",
       href: `${SITE_BASE}/api/streaming.html`,
       eyebrow: "013 — UI and Streaming Surfaces",
@@ -264,6 +315,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "events",
+      group: "runtime",
       label: "Sự kiện",
       href: `${SITE_BASE}/api/events.html`,
       eyebrow: "013 §1 — luồng run-event thật",
@@ -272,6 +324,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "memory",
+      group: "state",
       label: "Bộ nhớ",
       href: `${SITE_BASE}/api/memory.html`,
       eyebrow: "029 — Memory System",
@@ -280,6 +333,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "durability",
+      group: "state",
       label: "Độ bền",
       href: `${SITE_BASE}/api/durability.html`,
       eyebrow: "019 — Durability and Long-Running Agents",
@@ -288,6 +342,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "plugins",
+      group: "execution",
       label: "WASM Plugin ABI",
       href: `${SITE_BASE}/api/plugins.html`,
       eyebrow: "ABI Plugin (D2)",
@@ -296,6 +351,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "workflow",
+      group: "workflow",
       label: "Workflow & Điều phối",
       href: `${SITE_BASE}/api/workflow.html`,
       eyebrow: "014 — Workflow and Orchestration",
@@ -304,6 +360,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "hitl",
+      group: "interaction",
       label: "Human-in-the-loop",
       href: `${SITE_BASE}/api/hitl.html`,
       eyebrow: "Một bản ghi Interaction, sáu bề mặt thật",
@@ -312,6 +369,7 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
     {
       id: "protocols",
+      group: "runtime",
       label: "Bề mặt giao thức",
       href: `${SITE_BASE}/api/protocols.html`,
       eyebrow: "Bề mặt giao thức L4 — Milestone 7",

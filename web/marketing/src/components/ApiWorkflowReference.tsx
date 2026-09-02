@@ -11,6 +11,7 @@ import { SITE_BASE } from "../data/content";
 import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
+import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
 import { ApiTable } from "./ApiTable";
 import { type PatternId, patternHref } from "./ApiWorkflowPatternDetail";
 import { CodePanel } from "./CodePanel";
@@ -40,12 +41,15 @@ const copy = {
         <code>WorkflowSupervisor</code> is what actually runs one, over AgentEngine's own{" "}
         <code>agentengine::rt::</code> runtime, one superstep round at a time. 014 §3's eight named
         orchestration patterns (Sequential, Concurrent, Handoff, Router, and four more) are
-        proven as configurations of the same six edge kinds below — not eight separate
-        subsystems to build. See{" "}
+        configurations of the same six edge kinds below, not eight separate subsystems to build.
+      </>
+    ),
+    introNote: (
+      <>
+        Small, runnable programs built on exactly this shape:{" "}
         <code>examples/04_first_workflow.cpp</code>,{" "}
-        <code>examples/09_concurrent_workflow.cpp</code>, and{" "}
-        <code>examples/10_conditional_routing.cpp</code> for small, runnable programs built on
-        exactly this shape.
+        <code>examples/09_concurrent_workflow.cpp</code>,{" "}
+        <code>examples/10_conditional_routing.cpp</code>
       </>
     ),
     s1Eyebrow: "graph.hpp — edge_kind",
@@ -68,8 +72,8 @@ const copy = {
       </>
     ),
     sourceExecutorSub: "one source executor",
-    fanOutArrow: "fan_out — every target fires in the SAME superstep round, concurrently",
-    fanInArrow: "fan_in — the aggregator runs exactly ONCE per round",
+    fanOutArrow: "fan_out — every target fires in the same superstep round, concurrently",
+    fanInArrow: "fan_in — the aggregator runs exactly once per round",
     fanInResultSub: "one ContentItem per contributing branch, in graph-declared order — never once per inbound edge",
     graphShapeEyebrow: "The graph, verbatim",
     graphShapeHeading: (
@@ -105,10 +109,10 @@ const copy = {
     patternsBody: (
       <>
         Every row below is built from nothing but the six edge kinds above, executors, and a
-        termination bound — proven for real in <code>tests/test_rt_workflow_supervisor_patterns.cpp</code>, not
-        just asserted here.
+        termination bound.
       </>
     ),
+    patternsNote: <>proven in <code>tests/test_rt_workflow_supervisor_patterns.cpp</code></>,
     patternsTableColumns: ["Pattern", "Graph shape", "Use case"],
     patternsGuidance: (
       <>
@@ -122,9 +126,9 @@ const copy = {
     ),
     patternsDetailIntro: (
       <>
-        Each pattern below has its own page: the real graph, the real code a runnable example or
-        test builds — trimmed for the page, not invented for it — and, for the tested ones, what
-        it actually proves.
+        Each pattern below has its own page: the graph, the code a runnable example or test
+        builds — trimmed for the page, not invented for it — and, for the tested ones, what it
+        proves.
       </>
     ),
     patternsReadMore: "Read the graph & code →",
@@ -138,13 +142,14 @@ const copy = {
     hitlBody: (
       <>
         A request port is an executor that emits <code>InputRequired</code> and suspends the
-        workflow until a response arrives — one shape, four surfaces (013 §5): this is the same
-        mechanism as <code>AgentSession</code>'s tool-approval suspend and A2A's{" "}
-        <code>INPUT_REQUIRED</code>. Unlike the <code>agent</code>/<code>sub_workflow</code> kinds
-        above, <code>request_port</code> shipped in Milestone 6 Phase E —{" "}
-        <code>check_workflow_executable</code> runs it for real.
+        workflow until a response arrives. It's the same mechanism as{" "}
+        <code>AgentSession</code>'s tool-approval suspend and A2A's <code>INPUT_REQUIRED</code> —
+        one shape, four surfaces. Unlike the <code>agent</code>/<code>sub_workflow</code> kinds
+        above, <code>request_port</code> shipped in Milestone 6 Phase E:{" "}
+        <code>check_workflow_executable</code> runs it.
       </>
     ),
+    hitlBodyNote: <>013 §5</>,
     hitlStep01Title: "A superstep round reaches a request_port executor",
     hitlStep01Body: "Ordinary graph traversal — the port is just another node in the round.",
     hitlStep02Title: "The workflow suspends — genuinely, holding no resources",
@@ -164,7 +169,7 @@ const copy = {
     ),
     hitlStep04Body: (
       <>
-        Resumes the SAME run from its checkpoint — <code>routes</code> lets the response steer a
+        Resumes the same run from its checkpoint — <code>routes</code> lets the response steer a
         pending <code>switch_case</code>/<code>multi_selection</code> decision.
       </>
     ),
@@ -188,33 +193,33 @@ const copy = {
       <>
         Everything above is <code>WorkflowSupervisor</code>'s own API. <code>WorkflowChatClient</code>{" "}
         (<code>rt/workflow_as_chat_client.hpp</code>) wraps a whole, already-initialized workflow so
-        it satisfies this codebase's <code>ChatClient</code> concept instead — a direct caller, or an
-        outer <code>AgentSession</code>'s bound backend, sees the SAME suspension not as an{" "}
+        it satisfies this codebase's <code>ChatClient</code> concept instead. A direct caller, or an
+        outer <code>AgentSession</code>'s bound backend, sees the same suspension not as an{" "}
         <code>Interaction</code> record but as a <code>ChatResponseUpdate</code> arriving from{" "}
-        <code>chat_stream()</code>. Deliberately encoded as a <code>Custom</code>-typed content item,
-        never a <code>ToolCall</code>: an early design tried the latter (mirroring MAF's own{" "}
-        <code>function_call</code> envelope), and traced end to end against{" "}
-        <code>AgentSession</code>'s real turn loop it DETERMINISTICALLY AND SILENTLY corrupts the
-        paused interaction — <code>tool_calls_of()</code> extracts every <code>ToolCall</code> with no
-        name filtering, an unrecognized tool name still reaches <code>invoke_tool()</code>, and a
-        fabricated <code>ToolResult</code> answers the human-in-the-loop question with the absence of
-        anyone actually being asked. <code>Custom</code> items are invisible to{" "}
-        <code>tool_calls_of()</code>, closing this structurally.
+        <code>chat_stream()</code>. It's deliberately encoded as a <code>Custom</code>-typed content
+        item, never a <code>ToolCall</code>: an early design tried the latter, mirroring MAF's own{" "}
+        <code>function_call</code> envelope. Traced end to end against <code>AgentSession</code>'s
+        real turn loop, that design deterministically and silently corrupts the paused interaction —{" "}
+        <code>tool_calls_of()</code> extracts every <code>ToolCall</code> with no name filtering, an
+        unrecognized tool name still reaches <code>invoke_tool()</code>, and a fabricated{" "}
+        <code>ToolResult</code> answers the human-in-the-loop question with no one actually asked.{" "}
+        <code>Custom</code> items are invisible to <code>tool_calls_of()</code>, which closes this
+        structurally.
       </>
     ),
     hitlChatClientStreamNote: (
       <>
         <strong>Why this belongs on the Streaming page too, and doesn't fully live up to its name
         there:</strong> <code>WorkflowChatClient::capabilities()</code> reports{" "}
-        <code>streaming = false</code> — honestly. It still conforms via <code>chat_stream()</code>{" "}
-        alone (every <code>ChatClient</code> must), but it never streams token-level deltas from
-        inside the wrapped graph: the whole read-then-act cycle runs to completion or suspension on a
-        detached worker thread first, and only the TERMINAL result's content items — or, on
+        <code>streaming = false</code>. It still conforms via <code>chat_stream()</code> alone —
+        every <code>ChatClient</code> must — but it never streams token-level deltas from inside
+        the wrapped graph: the whole read-then-act cycle runs to completion or suspension on a
+        detached worker thread first, and only the terminal result's content items — or, on
         suspension, the <code>request_port</code> ask items below — get pushed. See{" "}
         <a href="./streaming.html#session-streaming">Streaming</a> for the contrast against a real
         per-token <code>chat_stream()</code> conformer, and <a href="./events.html">Events</a> for the
         coarser, node-level alternative (<code>enable_event_stream()</code>) when what you actually
-        want is visibility into the workflow's OWN execution, not just its final answer.
+        want is visibility into the workflow's own execution, not just its final answer.
       </>
     ),
 
@@ -229,7 +234,7 @@ const copy = {
     ),
     checkpointStep02Title: "Resume restores exactly, on the same node",
     checkpointStep02Body: "No multi-node cluster story exists to place a resumed run elsewhere — a real, permanent narrowing since ADR-037 removed Quark, not a renamed mechanism.",
-    checkpointStep03Title: "Time-travel rewinds to ANY retained checkpoint",
+    checkpointStep03Title: "Time-travel rewinds to any retained checkpoint",
     checkpointStep03Body: (
       <>
         Not just the latest one — a session's own store is single-slot, overwrite-latest by
@@ -240,8 +245,8 @@ const copy = {
     checkpointStep04Title: "Re-running forward re-executes tools",
     checkpointStep04Body: (
       <>
-        Effects are NOT rewound with the state — idempotency keys (019) are what keep a re-run
-        from double-charging someone.
+        Effects don't rewind with the state — idempotency keys (019) keep a re-run from
+        double-charging someone.
       </>
     ),
     checkpointNote: (
@@ -297,7 +302,7 @@ const copy = {
       <>
         {" "}<code>agent</code>-kind and <code>sub_workflow</code>-kind
         executors are real, validator-checked graph shapes (a graph naming one still
-        validates), but <code>check_workflow_executable</code> refuses to RUN one — this
+        validates), but <code>check_workflow_executable</code> refuses to run one — this
         build asks every non-port node through <code>FunctionExecutor</code>, so an{" "}
         <code>agent</code> node would silently run as a plain function otherwise. A refused
         graph is recoverable; a quietly reinterpreted one is not.
@@ -317,12 +322,15 @@ const copy = {
         quyết định lúc chạy. <code>WorkflowSupervisor</code> mới là thứ thực sự chạy nó, trên
         chính runtime <code>agentengine::rt::</code> của AgentEngine, từng vòng superstep một.
         Tám mẫu điều phối được nêu tên ở 014 §3 (Sequential, Concurrent, Handoff, Router, và
-        bốn mẫu khác) được chứng minh chỉ là các cấu hình của cùng sáu loại edge bên dưới —
-        không phải tám phân hệ riêng biệt cần xây dựng. Xem{" "}
-        <code>examples/04_first_workflow.cpp</code>,{" "}
-        <code>examples/09_concurrent_workflow.cpp</code>, và{" "}
-        <code>examples/10_conditional_routing.cpp</code> để có các chương trình nhỏ, chạy
-        được, xây trên đúng hình dạng này.
+        bốn mẫu khác) là các cấu hình của cùng sáu loại edge bên dưới, không phải tám phân hệ
+        riêng biệt cần xây dựng.
+      </>
+    ),
+    introNote: (
+      <>
+        Các chương trình nhỏ, chạy được, xây trên đúng hình dạng này:{" "}
+        <code>examples/04_first_workflow.cpp</code>, <code>examples/09_concurrent_workflow.cpp</code>,{" "}
+        <code>examples/10_conditional_routing.cpp</code>
       </>
     ),
     s1Eyebrow: "graph.hpp — edge_kind",
@@ -345,8 +353,8 @@ const copy = {
       </>
     ),
     sourceExecutorSub: "một executor nguồn",
-    fanOutArrow: "fan_out — mọi đích được kích hoạt trong CÙNG một vòng superstep, đồng thời",
-    fanInArrow: "fan_in — bộ tổng hợp chạy đúng MỘT LẦN mỗi vòng",
+    fanOutArrow: "fan_out — mọi đích được kích hoạt trong cùng một vòng superstep, đồng thời",
+    fanInArrow: "fan_in — bộ tổng hợp chạy đúng một lần mỗi vòng",
     fanInResultSub: "một ContentItem cho mỗi nhánh đóng góp, theo đúng thứ tự khai báo trong đồ thị — không bao giờ một lần cho mỗi cạnh đi vào",
     graphShapeEyebrow: "Đồ thị, nguyên văn",
     graphShapeHeading: (
@@ -383,9 +391,11 @@ const copy = {
     patternsBody: (
       <>
         Mỗi hàng bên dưới chỉ được xây từ sáu loại edge ở trên, các executor, và một
-        termination bound — được chứng minh thật trong{" "}
-        <code>tests/test_rt_workflow_supervisor_patterns.cpp</code>, không chỉ là khẳng định suông ở đây.
+        termination bound.
       </>
+    ),
+    patternsNote: (
+      <>được chứng minh trong <code>tests/test_rt_workflow_supervisor_patterns.cpp</code></>
     ),
     patternsTableColumns: ["Mẫu", "Hình dạng đồ thị", "Use case"],
     patternsGuidance: (
@@ -400,9 +410,9 @@ const copy = {
     ),
     patternsDetailIntro: (
       <>
-        Mỗi mẫu bên dưới có trang riêng: đồ thị thật, mã nguồn thật mà một ví dụ hoặc test chạy
-        được xây dựng — được cắt gọn cho trang tài liệu, không phải bịa ra cho nó — và, với
-        những mẫu đã được kiểm thử, điều nó thực sự chứng minh.
+        Mỗi mẫu bên dưới có trang riêng: đồ thị, mã nguồn mà một ví dụ hoặc test chạy được xây
+        dựng — được cắt gọn cho trang tài liệu, không phải bịa ra cho nó — và, với những mẫu đã
+        được kiểm thử, điều nó chứng minh.
       </>
     ),
     patternsReadMore: "Xem đồ thị & mã nguồn →",
@@ -416,13 +426,14 @@ const copy = {
     hitlBody: (
       <>
         Một request port là một executor phát ra <code>InputRequired</code> và tạm dừng
-        workflow cho tới khi có phản hồi — một hình dạng, bốn bề mặt (013 §5): đây là cùng cơ
-        chế với suspend chờ approval tool của <code>AgentSession</code> và{" "}
-        <code>INPUT_REQUIRED</code> của A2A. Khác với các loại <code>agent</code>/
-        <code>sub_workflow</code> ở trên, <code>request_port</code> đã được phát hành trong
-        Milestone 6 Phase E — <code>check_workflow_executable</code> chạy nó thật sự.
+        workflow cho tới khi có phản hồi. Đây là cùng cơ chế với suspend chờ approval tool của{" "}
+        <code>AgentSession</code> và <code>INPUT_REQUIRED</code> của A2A — một hình dạng, bốn
+        bề mặt. Khác với các loại <code>agent</code>/<code>sub_workflow</code> ở trên,{" "}
+        <code>request_port</code> đã được phát hành trong Milestone 6 Phase E:{" "}
+        <code>check_workflow_executable</code> chạy nó.
       </>
     ),
+    hitlBodyNote: <>013 §5</>,
     hitlStep01Title: "Một vòng superstep chạm tới một executor request_port",
     hitlStep01Body: "Duyệt đồ thị bình thường — port chỉ là một node khác trong vòng đó.",
     hitlStep02Title: "Workflow tạm dừng — thực sự, không giữ tài nguyên nào",
@@ -443,7 +454,7 @@ const copy = {
     ),
     hitlStep04Body: (
       <>
-        Khôi phục lại CHÍNH run đó từ checkpoint của nó — <code>routes</code> cho phép phản hồi
+        Khôi phục lại chính run đó từ checkpoint của nó — <code>routes</code> cho phép phản hồi
         định hướng một quyết định <code>switch_case</code>/<code>multi_selection</code> đang
         chờ.
       </>
@@ -461,39 +472,40 @@ const copy = {
     hitlChatClientEyebrow: "GitHub issue #35 (ADR-162/163) — cùng một sự đình chỉ, một hình dạng API khác",
     hitlChatClientHeading: (
       <>
-        Khoảng trống được nêu tên: <code>request_port</code> trông ra sao từ BÊN NGOÀI — qua
-        một <code>ChatClient</code> thuần túy
+        Khoảng trống được nêu tên: <code>request_port</code> trông ra sao từ{" "}
+        <em>bên ngoài</em> — qua một <code>ChatClient</code> thuần túy
       </>
     ),
     hitlChatClientBody: (
       <>
         Mọi thứ ở trên là API của chính <code>WorkflowSupervisor</code>. <code>WorkflowChatClient</code>{" "}
         (<code>rt/workflow_as_chat_client.hpp</code>) bọc cả một workflow đã khởi tạo để nó thỏa
-        mãn khái niệm <code>ChatClient</code> của codebase này thay vào đó — một caller trực
-        tiếp, hoặc backend được gắn của một <code>AgentSession</code> bên ngoài, thấy CÙNG một
+        mãn khái niệm <code>ChatClient</code> của codebase này thay vào đó. Một caller trực
+        tiếp, hoặc backend được gắn của một <code>AgentSession</code> bên ngoài, thấy cùng một
         sự đình chỉ đó không phải như một bản ghi <code>Interaction</code> mà như một{" "}
-        <code>ChatResponseUpdate</code> đến từ <code>chat_stream()</code>. Cố ý mã hóa dưới
-        dạng một content item kiểu <code>Custom</code>, không bao giờ là <code>ToolCall</code>:
-        một thiết kế ban đầu đã thử cách sau (phỏng theo envelope <code>function_call</code>
-        của chính MAF), và khi truy vết đến cùng trước vòng lặp lượt thật của{" "}
-        <code>AgentSession</code>, nó làm hỏng sự đình chỉ đang treo MỘT CÁCH TẤT ĐỊNH VÀ ÂM
-        THẦM — <code>tool_calls_of()</code> trích ra mọi <code>ToolCall</code> mà không lọc
-        tên, một tên tool không nhận diện được vẫn đến được <code>invoke_tool()</code>, và một{" "}
-        <code>ToolResult</code> giả tạo trả lời câu hỏi human-in-the-loop bằng sự vắng mặt của
-        bất kỳ ai thực sự được hỏi. Các item <code>Custom</code> vô hình với{" "}
-        <code>tool_calls_of()</code>, đóng lỗ hổng này về mặt cấu trúc.
+        <code>ChatResponseUpdate</code> đến từ <code>chat_stream()</code>. Nó được cố ý mã hóa
+        dưới dạng một content item kiểu <code>Custom</code>, không bao giờ là{" "}
+        <code>ToolCall</code>: một thiết kế ban đầu đã thử cách sau, phỏng theo envelope{" "}
+        <code>function_call</code> của chính MAF. Khi truy vết đến cùng trước vòng lặp lượt
+        thật của <code>AgentSession</code>, thiết kế đó làm hỏng sự đình chỉ đang treo một
+        cách tất định và âm thầm — <code>tool_calls_of()</code> trích ra mọi{" "}
+        <code>ToolCall</code> mà không lọc tên, một tên tool không nhận diện được vẫn đến được{" "}
+        <code>invoke_tool()</code>, và một <code>ToolResult</code> giả tạo trả lời câu hỏi
+        human-in-the-loop bằng sự vắng mặt của bất kỳ ai thực sự được hỏi. Các item{" "}
+        <code>Custom</code> vô hình với <code>tool_calls_of()</code>, khép lỗ hổng này về mặt
+        cấu trúc.
       </>
     ),
     hitlChatClientStreamNote: (
       <>
         <strong>Vì sao điều này cũng thuộc về trang Streaming, và vì sao ở đó nó không hoàn
         toàn đúng như tên gọi:</strong> <code>WorkflowChatClient::capabilities()</code> báo cáo{" "}
-        <code>streaming = false</code> — một cách trung thực. Nó vẫn tuân theo{" "}
-        <code>chat_stream()</code> đơn thuần (mọi <code>ChatClient</code> đều phải có), nhưng
-        nó không bao giờ stream các delta cấp token từ bên trong đồ thị được bọc: toàn bộ chu
-        trình đọc-rồi-hành-động chạy đến khi hoàn tất hoặc đình chỉ trên một worker thread tách
-        rời trước đã, và chỉ các content item của kết quả CUỐI CÙNG — hoặc, khi đình chỉ, các
-        ask item <code>request_port</code> bên dưới — mới được đẩy đi. Xem{" "}
+        <code>streaming = false</code>. Nó vẫn tuân theo <code>chat_stream()</code> đơn thuần —
+        mọi <code>ChatClient</code> đều phải có — nhưng nó không bao giờ stream các delta cấp
+        token từ bên trong đồ thị được bọc: toàn bộ chu trình đọc-rồi-hành-động chạy đến khi
+        hoàn tất hoặc đình chỉ trên một worker thread tách rời trước đã, và chỉ các content item
+        của kết quả cuối cùng — hoặc, khi đình chỉ, các ask item <code>request_port</code> bên
+        dưới — mới được đẩy đi. Xem{" "}
         <a href="./streaming.html#session-streaming">Streaming</a> để thấy sự tương phản với
         một conformer <code>chat_stream()</code> thật theo từng token, và{" "}
         <a href="./events.html">Events</a> cho lựa chọn thô hơn, ở cấp node (
@@ -513,7 +525,7 @@ const copy = {
     ),
     checkpointStep02Title: "Resume khôi phục chính xác, trên cùng một node",
     checkpointStep02Body: "Không có câu chuyện cluster nhiều node nào để đặt một run được resume ở nơi khác — một sự thu hẹp thật sự, vĩnh viễn kể từ khi ADR-037 loại bỏ Quark, không phải một cơ chế đổi tên.",
-    checkpointStep03Title: "Time-travel tua lại về BẤT KỲ checkpoint nào còn giữ lại",
+    checkpointStep03Title: "Time-travel tua lại về bất kỳ checkpoint nào còn giữ lại",
     checkpointStep03Body: (
       <>
         Không chỉ checkpoint gần nhất — kho lưu trữ của riêng session vốn chỉ có một khe, ghi
@@ -525,8 +537,8 @@ const copy = {
     checkpointStep04Title: "Chạy tiến trở lại sẽ thực thi lại các tool",
     checkpointStep04Body: (
       <>
-        Effect KHÔNG được tua lại cùng trạng thái — các idempotency key (019) là thứ giữ cho
-        việc chạy lại không tính phí ai đó hai lần.
+        Effect không tua lại cùng trạng thái — các idempotency key (019) giữ cho việc chạy lại
+        không tính phí ai đó hai lần.
       </>
     ),
     checkpointNote: (
@@ -586,7 +598,7 @@ const copy = {
       <>
         {" "}các executor loại <code>agent</code> và <code>sub_workflow</code> là các hình
         dạng đồ thị thật, được validator kiểm tra (một đồ thị nêu tên một trong hai vẫn xác
-        thực được), nhưng <code>check_workflow_executable</code> từ chối CHẠY một đồ thị như
+        thực được), nhưng <code>check_workflow_executable</code> từ chối chạy một đồ thị như
         vậy — build này yêu cầu mọi node không phải port chạy qua{" "}
         <code>FunctionExecutor</code>, nên nếu không một node <code>agent</code> sẽ âm thầm
         chạy như một function bình thường. Một đồ thị bị từ chối vẫn có thể khắc phục; một đồ
@@ -612,6 +624,7 @@ export function ApiWorkflowReference() {
             {t.statusBadge}
           </span>
           <p style={{ marginTop: 16 }}>{t.intro}</p>
+          <ApiDiagnosticNote>{t.introNote}</ApiDiagnosticNote>
         </div>
 
         <RevealGroup>
@@ -692,6 +705,7 @@ export function ApiWorkflowReference() {
               <span className="eyebrow">{t.patternsEyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.patternsHeading}</h3>
               <p>{t.patternsBody}</p>
+              <ApiDiagnosticNote>{t.patternsNote}</ApiDiagnosticNote>
             </div>
           </RevealItem>
           <RevealItem>
@@ -760,6 +774,7 @@ export function ApiWorkflowReference() {
               <span className="eyebrow">{t.hitlEyebrow}</span>
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.hitlHeading}</h3>
               <p>{t.hitlBody}</p>
+              <ApiDiagnosticNote>{t.hitlBodyNote}</ApiDiagnosticNote>
             </div>
           </RevealItem>
 
