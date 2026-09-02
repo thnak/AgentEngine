@@ -2639,6 +2639,16 @@ if(WIN32)
     agentengine::core agentengine::native_jail_backend agentengine_warnings)
   add_test(NAME test_native_jail_grant_ro_path_once_windows COMMAND test_native_jail_grant_ro_path_once_windows)
   set_tests_properties(test_native_jail_grant_ro_path_once_windows PROPERTIES TIMEOUT 30)
+
+  # ---- AppContainerProfile::grant_path()/revoke_path() ACE lifecycle (docs/planning/office-document-
+  # extraction-design-draft.md "Prove pass 2" -- the two central safety claims Revision 8's pool-
+  # elimination collapse and Revision 9/10's revoke_path() safety net rest on, argued from code reading
+  # across ten revisions/nine red-team rounds, proven for real here) -----------------------------------
+  add_executable(test_native_jail_grant_path_ace_lifecycle_windows test_native_jail_grant_path_ace_lifecycle_windows.cpp)
+  target_link_libraries(test_native_jail_grant_path_ace_lifecycle_windows PRIVATE
+    agentengine::core agentengine::native_jail_backend agentengine_warnings)
+  add_test(NAME test_native_jail_grant_path_ace_lifecycle_windows COMMAND test_native_jail_grant_path_ace_lifecycle_windows)
+  set_tests_properties(test_native_jail_grant_path_ace_lifecycle_windows PROPERTIES TIMEOUT 30)
 endif()
 
 # ---- LinuxNativeJailBackend end-to-end (M2 Phase C task C2's Linux follow-up, 008 §1b/§2/§3) ---

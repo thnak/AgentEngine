@@ -47,6 +47,17 @@ public:
     // would accumulate ACEs, not replace one) -- callers grant each mount exactly once.
     [[nodiscard]] result<void> grant_path(std::wstring const& path, bool read_write) const;
 
+    // Strips this profile's SID's own explicit ACE from `path`, if one exists -- the sibling
+    // `grant_path` never got, because nothing needed it as the PRIMARY retirement mechanism (deleting
+    // a granted path already destroys its ACE as a structural NTFS side effect -- see
+    // docs/planning/office-document-extraction-design-draft.md, "Fix for finding 14"). This exists
+    // ONLY as a failure-path safety net for the one case deletion cannot reach: a granted path that
+    // could not be deleted (finding 31's cleanup-retry-exhaustion path). Same three-Win32-call shape
+    // as `grant_path`, `SetEntriesInAclW`'s `ACCESS_MODE` flipped to `REVOKE_ACCESS`. `path` not
+    // existing is success, not failure (nothing to strip an ACE from) -- callers rely on this to make
+    // a fixed enumeration of possibly-uncreated children (finding 33's fix) safe to call unconditionally.
+    [[nodiscard]] result<void> revoke_path(std::wstring const& path) const;
+
 private:
     explicit AppContainerProfile(PSID sid) : sid_(sid) {}
     void free_now();

@@ -204,4 +204,63 @@ result<void> AppContainerProfile::grant_path(std::wstring const& path, bool read
     return {};
 }
 
+result<void> AppContainerProfile::revoke_path(std::wstring const& path) const {
+    if (sid_ == nullptr) {
+        return std::unexpected(ae::error{failure_class::contract,
+                                          "revoke_path called on a moved-from AppContainerProfile",
+                                          "app_container.no_sid"});
+    }
+
+    EXPLICIT_ACCESSW ea{};
+    ea.grfAccessPermissions = 0;  // ignored by SetEntriesInAclW for REVOKE_ACCESS
+    ea.grfAccessMode = REVOKE_ACCESS;
+    ea.grfInheritance = NO_INHERITANCE;
+    ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+    ea.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+    ea.Trustee.ptstrName = static_cast<LPWSTR>(sid_);
+
+    PACL existing_dacl = nullptr;
+    PSECURITY_DESCRIPTOR sd = nullptr;
+    DWORD rc = GetNamedSecurityInfoW(path.c_str(), SE_FILE_OBJECT,
+                                      DACL_SECURITY_INFORMATION, nullptr, nullptr,
+                                      &existing_dacl, nullptr, &sd);
+    // A path that no longer exists (or never existed -- finding 33's fixed, up-to-three-children
+    // enumeration always calls this against every child slot regardless of whether that call ever
+    // reached the point of creating it) has no ACE left to strip. Treat it as trivially satisfied,
+    // the same "nothing to collide with" reasoning finding 15's own cleanup fix already applies.
+    if (rc == ERROR_FILE_NOT_FOUND || rc == ERROR_PATH_NOT_FOUND) {
+        return {};
+    }
+    if (rc != ERROR_SUCCESS) {
+        return std::unexpected(ae::error{
+            failure_class::fatal,
+            "GetNamedSecurityInfoW failed: Win32 error " + std::to_string(rc),
+            "app_container.get_security_info_failed",
+        });
+    }
+
+    PACL new_dacl = nullptr;
+    rc = SetEntriesInAclW(1, &ea, existing_dacl, &new_dacl);
+    LocalFree(sd);
+    if (rc != ERROR_SUCCESS) {
+        return std::unexpected(ae::error{
+            failure_class::fatal,
+            "SetEntriesInAclW failed: Win32 error " + std::to_string(rc),
+            "app_container.set_entries_failed",
+        });
+    }
+
+    rc = SetNamedSecurityInfoW(const_cast<LPWSTR>(path.c_str()), SE_FILE_OBJECT,
+                                DACL_SECURITY_INFORMATION, nullptr, nullptr, new_dacl, nullptr);
+    LocalFree(new_dacl);
+    if (rc != ERROR_SUCCESS) {
+        return std::unexpected(ae::error{
+            failure_class::fatal,
+            "SetNamedSecurityInfoW failed: Win32 error " + std::to_string(rc),
+            "app_container.set_security_info_failed",
+        });
+    }
+    return {};
+}
+
 }  // namespace agentengine::native_jail
