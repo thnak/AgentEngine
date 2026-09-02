@@ -107,6 +107,13 @@ const copy = {
         <em>selection</em> discipline, not just declaration.
       </>
     ),
+    multiToolCliNote: (
+      <>
+        <code>tools/cli_chat.cpp</code> is the interactive counterpart to this automated fixture —
+        run it yourself and watch each real tool call render live as{" "}
+        <code>"-&gt; calling tool '...'"</code> / <code>"&lt;- tool call OK"</code>
+      </>
+    ),
     describedEyebrow: 'tests/test_json_schema_described.cpp — Described<T, "...">',
     describedHeading: (
       <>
@@ -231,6 +238,13 @@ const copy = {
         bảng và đặt hai trong số đó (<code>get_time</code>, <code>stock_price</code>) làm những
         "phần gây nhiễu" có chủ đích — model không bao giờ được gọi chúng cho prompt này. Đó là
         kỷ luật <em>chọn</em> tool thật sự, không chỉ đơn thuần là khai báo.
+      </>
+    ),
+    multiToolCliNote: (
+      <>
+        <code>tools/cli_chat.cpp</code> là đối tác tương tác của fixture tự động này — tự chạy nó
+        và xem từng tool call thật hiện ra ngay khi diễn ra dưới dạng{" "}
+        <code>"-&gt; calling tool '...'"</code> / <code>"&lt;- tool call OK"</code>
       </>
     ),
     describedEyebrow: 'tests/test_json_schema_described.cpp — Described<T, "...">',
@@ -440,6 +454,20 @@ export function ApiToolReference() {
             <CodePanel filename="test_rt_agent_session_live_multitool_e2e.cpp">
               {highlightCpp(multiToolRegistrationSnippet)}
             </CodePanel>
+          </RevealItem>
+          <RevealItem>
+            <div style={{ marginTop: 20 }}>
+              <ApiDiagnosticNote>{t.multiToolCliNote}</ApiDiagnosticNote>
+              <a
+                className="api-cite"
+                href={gh("tools/cli_chat.cpp")}
+                target="_blank"
+                rel="noreferrer"
+                style={{ display: "block", marginTop: 8 }}
+              >
+                tools/cli_chat.cpp →
+              </a>
+            </div>
           </RevealItem>
         </RevealGroup>
 

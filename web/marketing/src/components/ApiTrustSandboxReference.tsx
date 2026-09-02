@@ -270,6 +270,19 @@ const copy = {
         that actually supports the current platform.
       </>
     ),
+    s4KataNote: (
+      <>
+        <code>kata</code> is real and first-party (<code>src/backends/kata/</code>, 13 ADRs of
+        design/red-team/enforcement work) — a genuine KVM hardware-VM boundary via Kata
+        Containers/cloud-hypervisor, not a namespace/cgroup one. Its strength (90) never matters
+        to <code>Strict</code>'s own ranking: it's registered <code>named_only</code>, reachable
+        only by requesting it explicitly (<code>SandboxProfile&lt;Kata&gt;</code>), specifically
+        so a host that compiles it in never silently gets a stronger default than it asked for.
+        Off by default (<code>AGENTENGINE_BUILD_KATA_BACKEND</code>), Linux-only, and needs a
+        containerd + Kata deployment already running — this backend does not install one.
+      </>
+    ),
+    s4KataCite: <>ADR-080, ADR-084 — docs/planning/microvm-first-party-backend-design-draft.md</>,
     strengthLabel: "strength",
     coldStartLabel: "cold start",
     s5Eyebrow: "008 §4 — Capability enforcement per backend",
@@ -320,11 +333,13 @@ const copy = {
     ),
     s6Body: (
       <>
-        Nothing about the four profiles above is engine-private. Any type satisfying the same{" "}
-        <code>SandboxBackend</code> concept — a deployer's own gVisor, Kata, or future
-        microVM-backed wrapper — plugs into <code>SandboxProfile&lt;P&gt;</code> exactly the
-        way <code>NativeJailBackend</code> or <code>WasmBackend</code> does, because from the
-        engine's point of view there is no difference between them.
+        Nothing about the profiles above is engine-private. Any type satisfying the same{" "}
+        <code>SandboxBackend</code> concept — a deployer's own gVisor wrapper, say — plugs into{" "}
+        <code>SandboxProfile&lt;P&gt;</code> exactly the way <code>NativeJailBackend</code> or{" "}
+        <code>WasmBackend</code> does, because from the engine's point of view there is no
+        difference between them.{" "}
+        <code>KataBackend</code> above is what a first-party one built this same way actually
+        looks like, not a hypothetical.
       </>
     ),
     s6Note: (
@@ -705,6 +720,20 @@ const copy = {
         mọi backend thực sự hỗ trợ nền tảng hiện tại.
       </>
     ),
+    s4KataNote: (
+      <>
+        <code>kata</code> là thật và chính chủ (<code>src/backends/kata/</code>, 13 ADR thiết
+        kế/red-team/thực thi) — một ranh giới VM phần cứng KVM thật qua Kata Containers/
+        cloud-hypervisor, không phải ranh giới namespace/cgroup. Độ mạnh của nó (90) không bao
+        giờ ảnh hưởng tới xếp hạng của <code>Strict</code>: nó được đăng ký{" "}
+        <code>named_only</code>, chỉ chạm tới được khi yêu cầu tường minh (
+        <code>SandboxProfile&lt;Kata&gt;</code>), có chủ đích để một host biên dịch nó vào
+        không bao giờ âm thầm nhận một mặc định mạnh hơn những gì nó yêu cầu. Mặc định tắt (
+        <code>AGENTENGINE_BUILD_KATA_BACKEND</code>), chỉ Linux, và cần một triển khai
+        containerd + Kata đã chạy sẵn — backend này không tự cài đặt triển khai đó.
+      </>
+    ),
+    s4KataCite: <>ADR-080, ADR-084 — docs/planning/microvm-first-party-backend-design-draft.md</>,
     strengthLabel: "độ mạnh",
     coldStartLabel: "cold start",
     s5Eyebrow: "008 §4 — Thực thi capability theo từng backend",
@@ -757,12 +786,13 @@ const copy = {
     ),
     s6Body: (
       <>
-        Không có gì trong bốn profile ở trên là thứ riêng của engine. Bất kỳ kiểu nào thỏa
-        mãn cùng concept <code>SandboxBackend</code> — gVisor, Kata, hay một wrapper dựa trên
-        microVM trong tương lai do chính người triển khai tự viết — đều gắn được vào{" "}
+        Không có gì trong các profile ở trên là thứ riêng của engine. Bất kỳ kiểu nào thỏa
+        mãn cùng concept <code>SandboxBackend</code> — chẳng hạn một wrapper gVisor do chính
+        người triển khai tự viết — đều gắn được vào{" "}
         <code>SandboxProfile&lt;P&gt;</code> đúng theo cách mà <code>NativeJailBackend</code>{" "}
         hay <code>WasmBackend</code> làm, bởi vì từ góc nhìn của engine không có sự khác biệt
-        nào giữa chúng.
+        nào giữa chúng. <code>KataBackend</code> ở trên chính là hình dạng thật của một backend
+        chính chủ được xây theo đúng cách này, không phải một ví dụ giả định.
       </>
     ),
     s6Note: (
@@ -1166,6 +1196,13 @@ export function ApiTrustSandboxReference() {
                 </div>
               ))}
             </div>
+          </RevealItem>
+
+          <RevealItem>
+            <ApiDiagnosticNote>
+              {t.s4KataNote}
+              <span style={{ display: "block", marginTop: 4 }}>{t.s4KataCite}</span>
+            </ApiDiagnosticNote>
           </RevealItem>
 
           <RevealItem>

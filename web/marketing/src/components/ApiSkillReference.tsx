@@ -285,6 +285,18 @@ const copy = {
         unmounted, accepted once it's mounted — nothing else in the call changes:
       </>
     ),
+    s6CliNote: (
+      <>
+        <code>tools/cli_chat.cpp</code> is the live, interactive counterpart: a real model calls{" "}
+        <code>mount_skill</code> mid-conversation — the same tool this section describes, rendered
+        through the ordinary <code>tool_call_started</code>/<code>tool_call_finished</code> events
+        (
+        <a href={`${SITE_BASE}/api/events.html`}>Events page</a>) as{" "}
+        <code>"-&gt; calling tool 'mount_skill'"</code> / <code>"&lt;- tool call OK"</code>, with a
+        startup banner distinguishing resolved, materialized, and currently-mounted skills before
+        any of that happens. Needs a real model credential — see the file's own build guard.
+      </>
+    ),
     s7Eyebrow: "core/composed_context_provider.hpp — wiring into AgentSession",
     s7Heading: (
       <>
@@ -641,6 +653,18 @@ const copy = {
         cùng một lệnh gọi tool <code>word_count</code> hai lần vào cùng một pipeline{" "}
         <code>invoke_tool()</code>. Nó bị từ chối khi <code>word-counter</code> chưa được
         mount, được chấp nhận một khi đã mount — không có gì khác trong lệnh gọi thay đổi:
+      </>
+    ),
+    s6CliNote: (
+      <>
+        <code>tools/cli_chat.cpp</code> là đối tác thật, tương tác trực tiếp: một model thật gọi{" "}
+        <code>mount_skill</code> giữa cuộc hội thoại — chính tool mà mục này mô tả, được hiện ra
+        qua đúng các event <code>tool_call_started</code>/<code>tool_call_finished</code> (
+        <a href={`${SITE_BASE}/api/events.html`}>trang Events</a>) dưới dạng{" "}
+        <code>"-&gt; calling tool 'mount_skill'"</code> / <code>"&lt;- tool call OK"</code>, cùng
+        một banner khởi động phân biệt skill đã resolve, đã materialize, và đang mounted trước khi
+        bất kỳ điều gì trong số đó xảy ra. Cần một credential model thật — xem điều kiện build
+        ngay trong file.
       </>
     ),
     s7Eyebrow: "core/composed_context_provider.hpp — đấu nối vào AgentSession",
@@ -1023,6 +1047,21 @@ export function ApiSkillReference() {
             <CodePanel filename="examples/11_skill_mount.cpp">
               {highlightCpp(skillOnDemandMountSnippet)}
             </CodePanel>
+          </RevealItem>
+
+          <RevealItem>
+            <div style={{ marginTop: 20 }}>
+              <ApiDiagnosticNote>{t.s6CliNote}</ApiDiagnosticNote>
+              <a
+                className="api-cite"
+                href={gh("tools/cli_chat.cpp")}
+                target="_blank"
+                rel="noreferrer"
+                style={{ display: "block", marginTop: 8 }}
+              >
+                tools/cli_chat.cpp →
+              </a>
+            </div>
           </RevealItem>
         </RevealGroup>
 

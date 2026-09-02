@@ -1019,12 +1019,14 @@ export const sandboxBackends: Record<Lang, SandboxBackendRow[]> = {
     { name: "native_jail (Windows)", strength: 50, platforms: "Windows x86_64", coldStart: "milliseconds", note: "AppContainer + Job Objects" },
     { name: "native_jail (Linux)", strength: 50, platforms: "Linux x86_64", coldStart: "milliseconds", note: "cgroups + seccomp" },
     { name: "wasm", strength: 40, platforms: "Windows + Linux x86_64", coldStart: "microseconds–low ms", note: "Wasmtime-backed" },
+    { name: "kata (named-only)", strength: 90, platforms: "Linux x86_64 — optional, off by default", coldStart: "milliseconds", note: "real KVM VM via cloud-hypervisor — never resolves from Strict, opt in by name" },
     { name: "remote", strength: 0, platforms: "n/a — scaffolding only", coldStart: "network-dependent", note: "deferred to Milestone 9" },
   ],
   vi: [
     { name: "native_jail (Windows)", strength: 50, platforms: "Windows x86_64", coldStart: "mili giây", note: "AppContainer + Job Objects" },
     { name: "native_jail (Linux)", strength: 50, platforms: "Linux x86_64", coldStart: "mili giây", note: "cgroups + seccomp" },
     { name: "wasm", strength: 40, platforms: "Windows + Linux x86_64", coldStart: "micro giây – vài mili giây", note: "dựa trên Wasmtime" },
+    { name: "kata (named-only)", strength: 90, platforms: "Linux x86_64 — tùy chọn, mặc định tắt", coldStart: "mili giây", note: "VM KVM thật qua cloud-hypervisor — không bao giờ được Strict tự chọn, phải opt-in theo tên" },
     { name: "remote", strength: 0, platforms: "n/a — chỉ là khung sườn", coldStart: "tùy thuộc mạng", note: "hoãn đến Milestone 9" },
   ],
 };
