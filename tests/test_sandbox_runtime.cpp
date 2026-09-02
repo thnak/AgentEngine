@@ -20,7 +20,10 @@
 //   [5]  RunCost is consumed BEFORE the real command executes, not merely before commit: with
 //        run_quota exhausted, run() is rejected AND the real Docker container count does not change.
 //   [6]  RunCost is REFUNDED when the surface rejects a command before ever attempting it (a
-//        shell-injection-guard refusal) -- not silently kept for zero real execution.
+//        pre-execution argv-safety refusal -- an embedded NUL byte, the one check that survives
+//        `DockerCliBackend` no longer shelling commands through a host shell at all, see
+//        docker_execution_surface.hpp's own top comment) -- not silently kept for zero real
+//        execution.
 //   [7]  reset_to_turn() moves the branch's HEAD back to an earlier real checkpoint as a NEW forward
 //        checkpoint (never an in-place history rewrite).
 //   [8]  The REAL, load-bearing rollback proof: the NEXT run(), against a genuinely fresh container,
@@ -166,15 +169,22 @@ int main() {
     }
 
     // [6] REAL ADVERSARIAL PROOF: RunCost is REFUNDED when the surface rejects a command before ever
-    // attempting it (the shell-injection guard) -- not silently kept for zero real execution.
+    // attempting it (a pre-execution argv-safety refusal) -- not silently kept for zero real
+    // execution. Post-argv-hardening, a double-quote/`%`/`^` no longer trips any guard at all (that
+    // was exactly issue #50's own over-blocking defect -- those characters are only dangerous relative
+    // to a host shell DockerCliBackend no longer has, docker_execution_surface.hpp's own top comment)
+    // -- the one check that still rejects a command before it ever reaches `docker` is an embedded NUL
+    // byte, matching `ContainerdCliBackend`'s own identical, already-shipped posture.
     {
         std::uint64_t const before_remaining = run_quota.remaining();
-        auto rejected = drive(runtime.run(surface, "echo \"this double-quote trips the shell guard\"",
-                                             owner, run_quota, storage_quota));
-        check(!rejected.has_value(), "a shell-guard-rejected command fails run()");
+        std::string command_with_embedded_nul = "echo this command has an embedded NUL byte -> ";
+        command_with_embedded_nul.push_back('\0');
+        command_with_embedded_nul += "<- right there";
+        auto rejected = drive(runtime.run(surface, command_with_embedded_nul, owner, run_quota, storage_quota));
+        check(!rejected.has_value(), "a NUL-byte command fails run() before ever reaching docker");
         if (!rejected.has_value()) {
-            check(rejected.error().code == "docker_cli_backend.unsafe_shell_argument",
-                  "rejection carries docker_cli_backend.unsafe_shell_argument");
+            check(rejected.error().code == "docker_cli_backend.unsafe_argv_value",
+                  "rejection carries docker_cli_backend.unsafe_argv_value");
         }
         check(run_quota.remaining() == before_remaining,
               "RunCost fully refunded when the surface never attempted the command");

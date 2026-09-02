@@ -24,10 +24,19 @@
 //     own naming decision -- see that file's own top comment for why).
 //
 // The Linux port (ADR-104) added the `#ifdef _WIN32` split for `run_capture()` and the platform-
-// specific `docker_cli_reject_unsafe_for_shell`/`docker_cli_reject_shell_breakout` pair. A same-day
-// follow-on (ADR-104 §7, "SINCE WIDENED") added `docker_cli_reject_empty()` (shared) and
-// `docker_cli_reject_unsafe_for_unquoted_arg()` (per-platform, real second check on Windows only) --
-// see their own comments below for why.
+// specific shell-breakout denylist pair this file originally carried.
+//
+// UPDATE (docker-execution-surface-argv-hardening, closing issue #50): `run_capture()` and its
+// platform-specific shell-quoting denylist are RETIRED as `DockerCliBackend`'s own internal transport --
+// every subcommand now builds a real `std::vector<std::string>` argv and spawns `docker`/`docker.exe`
+// DIRECTLY via the new `run_argv()` (this namespace, both platforms), never through `cmd.exe`/`/bin/sh`,
+// matching `ContainerdCliBackend`'s own already-shipped shape (containerd_execution_surface.hpp)
+// exactly. `run_capture()` itself is KEPT, unchanged, purely because real test files
+// (`tests/test_docker_orphan_reap.cpp`, `tests/test_sandbox_runtime.cpp`) call it directly, with
+// static, non-attacker-influenced strings, for host-side setup/assertions outside the code path under
+// test -- it is no longer used by any production call site in this file. See the class-level comment
+// on `DockerCliBackend` below and `docs/planning/docker-execution-surface-argv-hardening-design-draft.md`
+// for the full before/after reasoning and red-team round.
 
 #include <algorithm>
 #include <array>
@@ -238,7 +247,236 @@ constexpr std::size_t kOutputSafetyCapBytes = 1u << 20;  // 1 MiB, merged stdout
     CloseHandle(pi.hThread);
     return out;
 }
+
+// Widens a UTF-8 string to UTF-16 for CreateProcessW/the MS-CRT argv-quoting algorithm below --
+// duplicated from `native_process/native_process_spawn.cpp`'s own identical helper rather than linked
+// against: that file's own header comment already establishes this project's convention of
+// duplicating small per-backend process-spawn helpers instead of sharing them ("duplicated per-backend
+// ... since each backend's HANDLE lifetime story differs slightly"), and here there's a second, sharper
+// reason to follow it -- `native_process_spawn.cpp` is only ever compiled when the ADR-071
+// `AGENTENGINE_WITH_NATIVE_PROCESS` option is explicitly enabled (off by default, CMakeLists.txt).
+// Linking this always-built, header-only file against that optional target would make
+// `DockerExecutionSurface`'s own build silently depend on an unrelated, opt-in capability class.
+[[nodiscard]] inline std::wstring widen(std::string const& utf8) {
+    if (utf8.empty()) return {};
+    int needed = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+    std::wstring out(static_cast<std::size_t>(needed), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), out.data(), needed);
+    return out;
+}
+
+// code-review finding (post-ADR-164): `widen()` above documents its input as UTF-8, but
+// `std::filesystem::path::string()` on Windows narrows via the process's ACTIVE CODE PAGE (`GetACP()`),
+// never UTF-8 -- the OLD `run_capture()`/`CreateProcessA` path was internally ANSI-consistent (an ACP
+// string handed to an ANSI API), so this mismatch was never live; the new `run_argv()`/`CreateProcessW`
+// path made it real: a `host_path` containing a non-ASCII byte would silently mis-decode through
+// `widen()`, corrupting the `docker cp` argv element for any non-ASCII path. Matches this codebase's own
+// already-established fix for the identical class of bug -- `native_process/native_providers.hpp`'s own
+// `detail::narrow()` (the same `WideCharToMultiByte(CP_UTF8, ...)` call, mirrored here) is paired with
+// converting FROM a path's native `wstring()`, never its ACP-narrowed `string()`. This function is that
+// same fix, scoped to this file: converts a path's TRUE Unicode content (`wstring()`, lossless) to UTF-8
+// (matching `widen()`'s own documented contract), never through the lossy ACP `string()` narrowing.
+[[nodiscard]] inline std::string path_to_utf8(std::filesystem::path const& p) {
+    std::wstring const& w = p.native();
+    if (w.empty()) return {};
+    int needed = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0,
+                                       nullptr, nullptr);
+    std::string out(static_cast<std::size_t>(needed), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), out.data(), needed, nullptr,
+                         nullptr);
+    return out;
+}
+
+// The documented Microsoft C runtime argv-quoting algorithm
+// (https://learn.microsoft.com/en-us/cpp/c-language/parsing-c-command-line-arguments), applied per
+// argument -- the ONLY correct way to build a real Win32 command line from a real argv vector, and the
+// primitive that makes `run_argv()` below possible: every argument is quoted independently and joined
+// with single spaces, so a value containing `"`, `%`, `^`, or embedded whitespace lands as ONE argv
+// element on the far side, with no host-shell reparsing step left for it to escape. Same algorithm as,
+// and independently re-verifiable against the same test vectors as,
+// `native_process/native_process_spawn.cpp`'s own `quote_one_argument()`/`build_command_line()`
+// (exposed there for exactly this reason -- "the same class of bug this project's own
+// MediatedShellRunner grammar work already treats as security-relevant") -- duplicated here per the
+// `widen()` comment above, not reused via that file's own, differently-gated build target.
+[[nodiscard]] inline std::wstring quote_one_argument(std::wstring const& arg) {
+    bool const needs_quotes = arg.empty() || arg.find_first_of(L" \t\n\v\"") != std::wstring::npos;
+    if (!needs_quotes) return arg;
+    std::wstring out = L"\"";
+    std::size_t backslashes = 0;
+    for (wchar_t c : arg) {
+        if (c == L'\\') {
+            ++backslashes;
+            continue;
+        }
+        if (c == L'"') {
+            out.append(backslashes * 2 + 1, L'\\');
+            out.push_back(L'"');
+            backslashes = 0;
+            continue;
+        }
+        if (backslashes > 0) {
+            out.append(backslashes, L'\\');
+            backslashes = 0;
+        }
+        out.push_back(c);
+    }
+    out.append(backslashes * 2, L'\\');
+    out.push_back(L'"');
+    return out;
+}
+
+[[nodiscard]] inline std::wstring build_command_line(std::vector<std::string> const& argv) {
+    std::wstring line;
+    for (std::size_t i = 0; i < argv.size(); ++i) {
+        if (i != 0) line.push_back(L' ');
+        line += quote_one_argument(widen(argv[i]));
+    }
+    return line;
+}
+
+// Argv-based sibling of `run_capture()` above -- spawns `argv[0]` (e.g. `"docker"`) DIRECTLY, never
+// through `cmd.exe`, and never through a reconstructed command STRING: every element of `argv` is
+// quoted independently by `build_command_line()` above, so a caller-supplied value (most importantly
+// `exec()`'s own `command` argument, see `DockerCliBackend::exec()` below) can no longer break out of
+// any surrounding quoting, because there is no longer a shell in front of it to escape from. This is
+// the fix for the real, live-tested defect this file's own top comment and issue #50 both describe: a
+// model-issued command containing `"`/`%`/`^` no longer needs to be rejected, because those characters
+// were only ever dangerous relative to `cmd.exe`'s own reinterpretation of a shell STRING, and that
+// reinterpretation step no longer exists.
+//
+// `lpApplicationName = nullptr` (like `spawn_native_process()`'s own identical choice,
+// `native_process_spawn.cpp:209`): Win32's own standard module-search order, including `%PATH%`,
+// resolves `argv[0]` the same way `cmd.exe`'s own lookup did before -- this is NOT a new grant of
+// ambient authority, it is the exact same PATH-based resolution `docker`/`cmd.exe` always used,
+// matching `ctr_cli_detail::run_argv()`'s own `posix_spawnp()` precedent on the POSIX side below (see
+// this design's own red-team round for why requiring a pre-resolved absolute path here, matching
+// `native_process::NativeExecRequest`'s stricter I2 posture, would be an inconsistency this change
+// introduces rather than a gap it closes -- that posture is specific to ADR-071's deliberately
+// weaker-isolation native-automation capability class, not a general rule this subsystem is bound by).
+//
+// Reuses the exact Job-Object timeout-kill machinery `run_capture()` above already carries (ADR-104) --
+// see that function's own header comment for the real host-process-orphaning bug that machinery closes.
+// Removing the `cmd.exe` layer here means the Job Object now binds THIS function's own top-level
+// spawned process (`argv[0]` itself, e.g. `docker.exe`) directly instead of binding `cmd.exe` and
+// relying on job-membership inheritance to reach its real child -- fewer moving parts, not a weaker
+// guarantee: `CREATE_SUSPENDED` + `AssignProcessToJobObject()` before `ResumeThread()` still guarantees
+// there is no window where the spawned process could do anything before it is job-bound.
+//
+// DISCLOSED, PRE-EXISTING, NOT a regression (ADR-164 red-team round, real bisection): Windows'
+// `CreateProcessW` rejects an `lpCommandLine` longer than roughly 32K characters outright, and this
+// function surfaces that failure identically to any other spawn failure -- `exit_code == -1`, empty
+// output, no distinguishing error. The OLD `"cmd.exe /c " + command` path hit the same OS ceiling at an
+// even SMALLER effective `command` length (the literal `"cmd.exe /c "` prefix ate into the same 32K
+// budget), so this is not new; an extremely long `command`/argv value was always silently
+// indistinguishable from an ordinary spawn failure on this platform, before and after this port.
+[[nodiscard]] inline SurfaceRunOutcome run_argv(std::vector<std::string> const& argv,
+                                                 int timeout_seconds = kProcessTimeoutSeconds,
+                                                 std::size_t output_cap = kOutputSafetyCapBytes) {
+    SurfaceRunOutcome out;
+    if (argv.empty()) { out.exit_code = -1; return out; }
+    SECURITY_ATTRIBUTES sa{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+    HANDLE read_h = nullptr;
+    HANDLE write_h = nullptr;
+    if (!CreatePipe(&read_h, &write_h, &sa, 0)) { out.exit_code = -1; return out; }
+    SetHandleInformation(read_h, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = write_h;
+    si.hStdError = write_h;
+    si.hStdInput = nullptr;
+    PROCESS_INFORMATION pi{};
+
+    std::wstring const cmdline = build_command_line(argv);
+    std::vector<wchar_t> mutable_cmdline(cmdline.begin(), cmdline.end());
+    mutable_cmdline.push_back(L'\0');
+
+    // Same Job Object shape as `run_capture()` above -- see this function's own header comment for why
+    // it now binds `argv[0]` directly rather than `cmd.exe`.
+    HANDLE job = CreateJobObjectA(nullptr, nullptr);
+    if (job != nullptr) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+            CloseHandle(job);
+            job = nullptr;
+        }
+    }
+
+    DWORD const creation_flags = CREATE_NO_WINDOW | (job != nullptr ? CREATE_SUSPENDED : 0);
+    BOOL created = CreateProcessW(nullptr, mutable_cmdline.data(), nullptr, nullptr,
+                                   /*bInheritHandles=*/TRUE, creation_flags, nullptr, nullptr, &si, &pi);
+    CloseHandle(write_h);
+    if (!created) {
+        CloseHandle(read_h);
+        if (job != nullptr) CloseHandle(job);
+        out.exit_code = -1;
+        return out;
+    }
+    if (job != nullptr) {
+        if (!AssignProcessToJobObject(job, pi.hProcess)) {
+            CloseHandle(job);
+            job = nullptr;
+        }
+        ResumeThread(pi.hThread);
+    }
+
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_seconds);
+    bool stopped_early = false;
+    char buf[4096];
+    for (;;) {
+        if (out.stdout_text.size() >= output_cap) { stopped_early = true; break; }
+        if (std::chrono::steady_clock::now() >= deadline) { stopped_early = true; break; }
+        DWORD available = 0;
+        if (!PeekNamedPipe(read_h, nullptr, 0, nullptr, &available, nullptr)) break;  // pipe closed/error -- natural EOF
+        if (available == 0) {
+            DWORD const wait_rc = WaitForSingleObject(pi.hProcess, 20);
+            if (wait_rc == WAIT_OBJECT_0) {
+                if (!PeekNamedPipe(read_h, nullptr, 0, nullptr, &available, nullptr) || available == 0) break;
+            } else {
+                continue;
+            }
+        }
+        DWORD to_read = static_cast<DWORD>(std::min<std::size_t>(sizeof(buf), available));
+        DWORD read = 0;
+        if (!ReadFile(read_h, buf, to_read, &read, nullptr) || read == 0) break;
+        std::size_t const remaining = output_cap > out.stdout_text.size() ? output_cap - out.stdout_text.size() : 0;
+        std::size_t const take = static_cast<std::size_t>(read) < remaining ? static_cast<std::size_t>(read) : remaining;
+        out.stdout_text.append(buf, take);
+    }
+    CloseHandle(read_h);
+
+    DWORD exit_code = 0;
+    if (stopped_early) {
+        if (job != nullptr) {
+            TerminateJobObject(job, 1);
+        } else {
+            TerminateProcess(pi.hProcess, 1);
+        }
+        WaitForSingleObject(pi.hProcess, 5000);
+        out.exit_code = -1;
+    } else {
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        if (GetExitCodeProcess(pi.hProcess, &exit_code)) {
+            out.exit_code = static_cast<int>(exit_code);
+        } else {
+            out.exit_code = -1;
+        }
+    }
+    if (job != nullptr) CloseHandle(job);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    return out;
+}
 #else
+// POSIX counterpart to the Windows-side `path_to_utf8()` -- a pure passthrough, not a real conversion:
+// POSIX paths are already just byte sequences (by this codebase's own established convention, e.g.
+// `ctr_cli_detail`'s own `host_dir.generic_string()` usage, containerd_execution_surface.hpp), with no
+// Windows-style ACP-vs-UTF-8 distinction for `std::filesystem::path::string()` to get wrong. Defined
+// under the SAME NAME on both platforms so the shared call sites below don't need their own `#ifdef`.
+[[nodiscard]] inline std::string path_to_utf8(std::filesystem::path const& p) { return p.string(); }
+
 // Real `posix_spawn("/bin/sh", {"/bin/sh", "-c", command})` + anonymous pipe (stdout AND stderr
 // dup2'd to the SAME write end, reproducing the "2>&1" merge the previous `popen((command + "
 // 2>&1").c_str(), "r")` shape relied on) + poll()-based bounded read, replacing `popen`/`pclose` --
@@ -322,6 +560,90 @@ constexpr std::size_t kOutputSafetyCapBytes = 1u << 20;  // 1 MiB, merged stdout
             out.exit_code = WEXITSTATUS(status);
         } else if (reaped == pid && WIFSIGNALED(status)) {
             out.exit_code = 128 + WTERMSIG(status);
+        } else {
+            out.exit_code = -1;
+        }
+    }
+    return out;
+}
+
+// Argv-based sibling of `run_capture()` above, adapted from `ctr_cli_detail::run_argv()`
+// (containerd_execution_surface.hpp:85-213 -- the already-shipped, ADR-145 precedent this port
+// follows) -- same `posix_spawnp()`/timeout/output-cap discipline, but merges stdout+stderr into ONE
+// stream, matching `SurfaceRunOutcome`'s own single-field shape and `run_capture()`'s own existing
+// merge convention (unlike `ctr_cli_detail::ProcessOutcome`'s two separate fields): nothing downstream
+// of `DockerCliBackend` needs the streams kept separate, and widening `SurfaceRunOutcome` itself is out
+// of scope for this change. `posix_spawnp()` (the `p`-suffixed, PATH-searching variant) resolves
+// `argv[0]` (e.g. `"docker"`) exactly the way it already does for `ctr` in the sibling file -- not a
+// new posture, a deliberately consistent one (see this file's own Windows-side `run_argv()` comment).
+[[nodiscard]] inline SurfaceRunOutcome run_argv(std::vector<std::string> const& argv,
+                                                 int timeout_seconds = kProcessTimeoutSeconds,
+                                                 std::size_t output_cap = kOutputSafetyCapBytes) {
+    SurfaceRunOutcome out;
+    if (argv.empty()) { out.exit_code = -1; return out; }
+    std::array<int, 2> pipe_fds{-1, -1};
+    if (::pipe(pipe_fds.data()) != 0) { out.exit_code = -1; return out; }
+    ::fcntl(pipe_fds[0], F_SETFD, FD_CLOEXEC);
+
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_adddup2(&actions, pipe_fds[1], STDOUT_FILENO);
+    posix_spawn_file_actions_adddup2(&actions, pipe_fds[1], STDERR_FILENO);
+    posix_spawn_file_actions_addclose(&actions, pipe_fds[0]);
+    posix_spawn_file_actions_addclose(&actions, pipe_fds[1]);
+    posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+
+    std::vector<char*> c_argv;
+    c_argv.reserve(argv.size() + 1);
+    for (auto const& a : argv) c_argv.push_back(const_cast<char*>(a.c_str()));
+    c_argv.push_back(nullptr);
+
+    pid_t pid = -1;
+    int const spawn_rc = ::posix_spawnp(&pid, c_argv[0], &actions, nullptr, c_argv.data(), environ);
+    posix_spawn_file_actions_destroy(&actions);
+    ::close(pipe_fds[1]);
+    if (spawn_rc != 0) {
+        ::close(pipe_fds[0]);
+        out.exit_code = -1;
+        return out;
+    }
+
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_seconds);
+    bool stopped_early = false;
+    char buf[4096];
+    for (;;) {
+        if (out.stdout_text.size() >= output_cap) { stopped_early = true; break; }
+        auto const now = std::chrono::steady_clock::now();
+        if (now >= deadline) { stopped_early = true; break; }
+        struct pollfd pfd{pipe_fds[0], POLLIN, 0};
+        int const timeout_ms = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
+        int const rc = ::poll(&pfd, 1, timeout_ms > 0 ? timeout_ms : 0);
+        if (rc < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (rc == 0) { stopped_early = true; break; }
+        if ((pfd.revents & (POLLIN | POLLHUP | POLLERR)) == 0) continue;
+        ssize_t const n = ::read(pipe_fds[0], buf, sizeof(buf));
+        if (n <= 0) break;
+        std::size_t const remaining = output_cap > out.stdout_text.size() ? output_cap - out.stdout_text.size() : 0;
+        std::size_t const take = static_cast<std::size_t>(n) < remaining ? static_cast<std::size_t>(n) : remaining;
+        out.stdout_text.append(buf, take);
+    }
+    ::close(pipe_fds[0]);
+
+    int status2 = 0;
+    if (stopped_early) {
+        ::kill(pid, SIGKILL);
+        ::waitpid(pid, &status2, 0);
+        out.exit_code = -1;
+    } else {
+        pid_t const reaped = ::waitpid(pid, &status2, 0);
+        if (reaped == pid && WIFEXITED(status2)) {
+            out.exit_code = WEXITSTATUS(status2);
+        } else if (reaped == pid && WIFSIGNALED(status2)) {
+            out.exit_code = 128 + WTERMSIG(status2);
         } else {
             out.exit_code = -1;
         }
@@ -532,284 +854,105 @@ struct OrphanIdentity {
     }
 }
 
+// Diagnostic-only: joins an argv vector with spaces for an error message (ADR-146 §10's own "log what
+// was actually generated" posture, adapted for a real argv vector instead of a single command string).
+// Every real caller only invokes this AFTER every element has already passed
+// `docker_cli_reject_argv_value()`/`docker_cli_reject_embedded_nul()`, so this is safe to log verbatim
+// by construction -- not itself a validation step, and not meant to be re-parsed by anything.
+[[nodiscard]] inline std::string join_argv_for_log(std::vector<std::string> const& argv) {
+    std::string out;
+    for (std::size_t i = 0; i < argv.size(); ++i) {
+        if (i != 0) out += ' ';
+        out += argv[i];
+    }
+    return out;
+}
+
 }  // namespace docker_cli_detail
 
-// Every method below builds a HOST-shell-interpreted command STRING by concatenation (`cmd.exe` on
-// Windows, `/bin/sh` on Linux, since `popen`/`_popen` both invoke the platform's own shell) -- a
-// caller-supplied value could otherwise break out of the intended quoting and execute
-// attacker-controlled commands on the HOST, defeating the very isolation boundary this type exists
-// to provide. Defended by REJECTING (not attempting to escape) any such value outright -- a
-// NECESSARY, not sufficient, defense; a fully general shell escaper is its own hard problem this
-// type does not attempt to solve in full.
-// A caller-supplied `std::string` CAN legally hold an embedded NUL byte (it's length-based, not
-// null-terminated); every caller below ultimately feeds the built command through `.c_str()` into
-// `popen`/`_popen`, which silently truncates at the first NUL -- so a value the guard "approved"
-// could differ from what the shell actually runs. Rejected here, once, for every caller, rather than
-// folded into each platform's own `dangerous` character set (a plain C-string literal can't itself
-// contain a NUL to add to that set). REAL, independent-red-team-found finding (2026-08-29): proven
-// non-exploitable for `command` specifically (a NUL there always lands inside the still-open
-// `sh -c "..."` region this file builds, so `dash`'s lexer fails closed on the resulting unterminated
-// quote rather than running anything) -- fixed anyway as defense-in-depth, since "approved but not
-// what actually ran" is a real correctness gap on its own, independent of whether today's specific
-// callers happen to make it unexploitable.
-[[nodiscard]] inline agentengine::result<void> docker_cli_reject_chars(std::string const& value,
-                                                                           char const* what,
-                                                                           char const* dangerous) {
+// ADR (docker-execution-surface-argv-hardening) -- every method below now builds a REAL argv vector
+// (`docker_cli_detail::run_argv()` above) instead of a host-shell-interpreted command STRING. There is
+// no longer a `cmd.exe`/`/bin/sh` sitting in front of the OUTER `docker` invocation for a
+// caller-supplied value to break out of -- so the platform-split shell-breakout denylist this comment
+// used to introduce (`docker_cli_reject_unsafe_for_shell`'s POSIX allowlist,
+// `docker_cli_reject_unsafe_for_unquoted_arg`'s Windows whitespace check, `docker_cli_reject_shell_breakout`,
+// `docker_cli_win_double_trailing_backslashes`) is REMOVED, not narrowed: none of it was ever a real
+// defense against anything other than that now-gone shell layer, and it is exactly what made a
+// legitimate model command containing `"`/`%`/`^` get rejected as "unsafe" (issue #50). What survives,
+// unified across both platforms because the risk itself was never platform-specific, is:
+//
+//   - `docker_cli_reject_embedded_nul()` -- a `std::string` can legally hold an embedded NUL byte;
+//     every argv element below ultimately reaches the OS's own NUL-terminated-buffer boundary
+//     (`execve()`'s `argv[]` on POSIX, the wide command-line buffer `CreateProcessW` reads on
+//     Windows), which would silently truncate at the first NUL -- an "approved" value could then
+//     differ from what actually runs. Matches `ctr_cli_detail::reject_embedded_nul()`'s own identical
+//     reasoning (containerd_execution_surface.hpp) -- the one check that already IS that file's entire
+//     defense against `exec()`'s own `command` argument, now also this file's only defense against it.
+//   - `docker_cli_reject_leading_dash()` -- unchanged in substance, still real: a leading `-` is read
+//     as a `docker` CLI FLAG by `docker`'s OWN argument parser regardless of which OS spawned the
+//     process or whether a shell sits in front of it at all (REAL, empirically proven 2026-08-29
+//     against a live `docker` CLI). Applied to `image`/`host_path`/`container_path`, never to
+//     `exec()`'s `command` (which is `sh -c`'s own positional argument, not something `docker`'s own
+//     flag parser ever scans).
+//   - `docker_cli_reject_empty()` -- kept as a fail-fast correctness check, but no longer a security
+//     boundary: its original rationale (an empty value collapsing two literal spaces in a
+//     concatenated STRING, shifting every later token) was purely an artifact of string concatenation.
+//     A real argv vector has no such hazard -- an empty argv element is just its own, separate,
+//     fixed-position slot regardless of content. Kept because rejecting it here still produces a
+//     clearer error than `docker`'s own (e.g. attempting to pull image `""` as a nonexistent
+//     `sh:latest`, the exact confusing failure this function's history already documented).
+[[nodiscard]] inline agentengine::result<void> docker_cli_reject_embedded_nul(std::string const& value,
+                                                                                   char const* what) {
     if (value.find('\0') != std::string::npos) {
         return std::unexpected(agentengine::error{
             agentengine::failure_class::policy,
-            std::string("refusing to build a shell command: '") + what +
-                "' contains an embedded NUL byte (would silently truncate at the C-string boundary)",
-            "docker_cli_backend.unsafe_shell_argument"});
-    }
-    if (value.find_first_of(dangerous) != std::string::npos) {
-        return std::unexpected(agentengine::error{
-            agentengine::failure_class::policy,
-            std::string("refusing to build a shell command: '") + what +
-                "' contains a character that could break out of the surrounding quoting",
-            "docker_cli_backend.unsafe_shell_argument"});
+            std::string("refusing to spawn docker: '") + what +
+                "' contains an embedded NUL byte (would silently truncate at the argv boundary)",
+            "docker_cli_backend.unsafe_argv_value"});
     }
     return agentengine::result<void>{};
 }
 
-// A value that is entirely alnum/`-` (e.g. `--privileged`) satisfies EVERY character-set check below
-// on both platforms yet is emitted as a bare, unquoted token positioned exactly where the real
-// `docker` CLI parses its own flags (`docker run -d --rm -w /workspace <image> ...`) -- CWE-88
-// argument/flag injection, a different and in some ways worse class than a shell-quoting escape,
-// since it needs no shell metacharacter at all. REAL, independent-red-team-found finding
-// (2026-08-29), empirically proven against the real `docker` CLI on this host: `--privileged` is
-// parsed as a flag (proceeds past arg-parsing to a daemon-dial error), while a bogus
-// `--not-a-real-flag` is rejected immediately with `unknown flag`. Not live-reachable today (the one
-// production caller, `MandatorySandboxProvider::bind_sandbox()`, always hardcodes `image`/
-// `container_path` and derives `host_path` from `std::filesystem::temp_directory_path()`, never from
-// attacker/model input) -- fixed anyway since this is a shared, reusable function.
-//
-// Rejects a LEADING DASH specifically, not "must start with alnum": `container_path`/`host_path`
-// (POSIX) legitimately start with `/` (e.g. `/workspace`) and are ALSO checked by this same shared
-// function at every call site -- an alnum-start requirement (correct for Docker's own image-reference
-// grammar) would have broken those real, legitimate values. Only `image` actually needs the stricter
-// reference-grammar rule; this weaker, shared rule is what's safe to apply uniformly at every
-// call site without a false-positive rejection of a real path.
 [[nodiscard]] inline agentengine::result<void> docker_cli_reject_leading_dash(std::string const& value,
                                                                                   char const* what) {
     if (!value.empty() && value[0] == '-') {
         return std::unexpected(agentengine::error{
             agentengine::failure_class::policy,
-            std::string("refusing to build a shell command: '") + what +
+            std::string("refusing to spawn docker: '") + what +
                 "' starts with '-', which could be parsed as a docker CLI flag instead of a value",
-            "docker_cli_backend.unsafe_shell_argument"});
+            "docker_cli_backend.unsafe_argv_value"});
     }
     return agentengine::result<void>{};
 }
 
-// A caller-supplied value that is empty is never a legitimate `image`/`host_path`/`container_path` --
-// all three are REQUIRED arguments to the `docker` subcommands that consume them. Rejecting it isn't
-// merely a "no-op is odd" nicety: for the values embedded UNQUOTED in the generated command (`image`
-// in create(), `container_path` in copy_to_container()/copy_from_container()), an empty value
-// collapses the two literal spaces surrounding it in the source string into one, SHIFTING every token
-// positioned after it by one slot -- e.g. `docker run -d --rm -w /workspace  sh -c "..."` (a double
-// space where `image` should have landed) is re-tokenized by the shell as IMAGE=`sh`,
-// COMMAND=[`-c`, "..."], not "IMAGE=<empty>, then sh -c ...". REAL, empirically proven (2026-08-29)
-// against the real `docker` CLI with a live daemon: `create("")` makes docker attempt to pull a
-// nonexistent `sh:latest` image ("pull access denied for sh, repository does not exist") -- proving
-// the collapse really does reach the CLI's own argument parser, not just a reasoned-about string. This
-// is the same "confuses docker's own argument/flag boundary logic" class `docker_cli_reject_leading_dash`
-// exists to prevent, just triggered by the ABSENCE of a token rather than the presence of a dangerous
-// one -- a token-count shift, not a token-content attack. Not live-reachable today (same disclaimer as
-// `docker_cli_reject_leading_dash`: the one production caller, `MandatorySandboxProvider::bind_sandbox()`,
-// always hardcodes non-empty `image`/`container_path`/`host_path` values) -- fixed anyway, on both
-// platforms, since this is a shared, reusable function.
 [[nodiscard]] inline agentengine::result<void> docker_cli_reject_empty(std::string const& value,
                                                                             char const* what) {
     if (value.empty()) {
         return std::unexpected(agentengine::error{
             agentengine::failure_class::policy,
-            std::string("refusing to build a shell command: '") + what +
-                "' is empty, which would shift every token positioned after it in the generated "
-                "command line instead of producing a single empty argument",
-            "docker_cli_backend.unsafe_shell_argument"});
+            std::string("refusing to spawn docker: '") + what + "' must not be empty",
+            "docker_cli_backend.unsafe_argv_value"});
     }
     return agentengine::result<void>{};
 }
 
-#ifdef _WIN32
-// For image names/paths: NONE of `"&|<>^%` are ever legitimately needed, so reject the whole set.
-// Also anchors against leading-dash flag injection (see `docker_cli_reject_leading_dash`'s own
-// comment) -- real on this platform too, not Linux-specific. Used for `host_path` at both its call
-// sites (copy_to_container()/copy_from_container()): `host_path` is always wrapped in literal double
-// quotes there (`docker cp \"<host_path>\" ...`), so it deliberately does NOT go through the
-// additional `docker_cli_reject_unsafe_for_unquoted_arg` check below -- a real Windows path can
-// legitimately contain a space (e.g. a username with a space in it,
-// `C:\Users\John Doe\AppData\Local\Temp\...`, which `std::filesystem::temp_directory_path()` can
-// genuinely produce), and that space stays safely inside the quoted region.
-[[nodiscard]] inline agentengine::result<void> docker_cli_reject_unsafe_for_shell(
-        std::string const& value, char const* what) {
-    if (auto safe = docker_cli_reject_chars(value, what, "\"&|<>^%\r\n"); !safe.has_value())
-        return safe;
-    if (auto safe = docker_cli_reject_empty(value, what); !safe.has_value()) return safe;
+// Combined check for `image`/`host_path`/`container_path` -- every value that becomes its own argv
+// element (never embedded in a shell-parsed string) needs exactly these three, platform-independent
+// checks, nothing more. Deliberately NOT applied to `exec()`'s own `command` argument -- that one only
+// needs `docker_cli_reject_embedded_nul()` alone, matching `ctr_cli_detail`'s own precedent (see this
+// section's own top comment).
+[[nodiscard]] inline agentengine::result<void> docker_cli_reject_argv_value(std::string const& value,
+                                                                                 char const* what) {
+    if (auto ok = docker_cli_reject_embedded_nul(value, what); !ok.has_value()) return ok;
+    if (auto ok = docker_cli_reject_empty(value, what); !ok.has_value()) return ok;
     return docker_cli_reject_leading_dash(value, what);
 }
-
-// `image` (create()) and `container_path` (copy_to_container()/copy_from_container()) are always
-// embedded UNQUOTED in the generated cmd.exe command line -- unlike `host_path` (see the comment
-// above), an embedded space/tab here does NOT stay inside a quoted region: it becomes a real argv
-// boundary once cmd.exe hands the built command line through to `docker.exe`, whose own Windows argv
-// reconstruction follows the same space/tab-delimited, quote-aware convention every standard
-// MSVC-CRT-started process (and the Go runtime, which `docker.exe` uses) does. REAL, empirically
-// proven (2026-08-29) against a real Docker Desktop daemon and the real `docker.exe` CLI, driven
-// through the exact `cmd.exe /c "docker cp ..."` shape `_popen()` itself uses:
-// `container_path = "tmp --archive"` made the resulting `docker cp <id>:tmp --archive <dest>`
-// invocation apply `--archive` (archive mode, preserving uid/gid) as a REAL `docker cp` flag rather
-// than treating it as part of the path -- confirmed both via a direct `docker.exe` invocation and via
-// `cmd /c "docker cp ..."` end-to-end (the actual code path this file uses), against a live Docker
-// Desktop daemon and a real running container, with the destination directory populated as proof the
-// flag really was consumed, not merely accepted as an extra positional argument. `docker cp`'s own
-// flag parser (Cobra/pflag, default interspersed-flags behavior) accepts a flag positioned AFTER the
-// first positional SRC_PATH argument, not only before it -- a more consequential flag in the same
-// family (`-L`/`--follow-link`, "always follow symlinks in SRC_PATH") would let a value shaped this
-// way make a copy operation follow a symlink an attacker planted inside the container, a real
-// path-escape primitive, not merely a cosmetic argument-count mismatch. This closes a WIDER class than
-// `docker_cli_reject_leading_dash` alone can: that check only protects a guarded value's OWN first
-// character; this one prevents the value from smuggling in a SECOND, independent argv element
-// anywhere after itself. (Checked and ruled out as unnecessary: parenthesis grouping, `%`-expansion,
-// `&&`/`||` chaining, and `^`-escaping were re-verified against a real `cmd.exe` in this same pass --
-// see this ADR's own residuals section -- and none of them create a NEW gap beyond what the existing
-// blacklist plus this whitespace check already close; comma/semicolon were confirmed, empirically,
-// NOT to split into separate argv elements for a real Windows console app the way space/tab do, so
-// adding them here would be a redundant, unproven-necessary restriction, not a real fix.)
-[[nodiscard]] inline agentengine::result<void> docker_cli_reject_unsafe_for_unquoted_arg(
-        std::string const& value, char const* what) {
-    if (auto safe = docker_cli_reject_unsafe_for_shell(value, what); !safe.has_value()) return safe;
-    if (value.find_first_of(" \t") != std::string::npos) {
-        return std::unexpected(agentengine::error{
-            agentengine::failure_class::policy,
-            std::string("refusing to build a shell command: '") + what +
-                "' contains whitespace, which could split into a separate, unquoted docker CLI "
-                "argument once this value reaches docker's own argv parser",
-            "docker_cli_backend.unsafe_shell_argument"});
-    }
-    return agentengine::result<void>{};
-}
-
-// For exec()'s own `command` argument specifically: it is legitimately a shell command meant for the
-// CONTAINER's inner `sh` and needs `&|<>` for its own real use (pipes/redirects/backgrounding) --
-// rejecting those would defeat exec()'s whole purpose. Only the characters that actually break the
-// OUTER cmd.exe quoting this string sits inside (a literal double-quote; `%`/`^`, cmd.exe's own
-// escape/expansion quirks) are rejected here.
-[[nodiscard]] inline agentengine::result<void> docker_cli_reject_shell_breakout(
-        std::string const& value, char const* what) {
-    return docker_cli_reject_chars(value, what, "\"%^\r\n");
-}
-
-// Windows-only: doubles a TRAILING run of backslashes in `value` before it is embedded inside a
-// closing double-quote (`"...<value>\""`) at its call sites -- `host_path` in
-// copy_to_container()/copy_from_container(), `command` in exec(). REAL, independent-red-team-found
-// finding (2026-08-29), adjacent to but distinct from the argument-injection checks above (this is a
-// QUOTING-correctness bug, not an argument-boundary one): the Microsoft C-runtime/Go-runtime
-// argv-parsing convention treats a run of N backslashes immediately preceding a `"` specially -- an
-// EVEN N contributes N/2 literal backslashes and the `"` toggles quote mode; an ODD N contributes
-// (N-1)/2 literal backslashes PLUS one literal `"` character, and quote mode does NOT toggle. Neither
-// `host_path` nor `command` was ever guaranteed to end in an even number of backslashes -- a bare
-// Windows directory path ending in exactly one `\` (the common case: `std::filesystem::
-// temp_directory_path()` itself returns a trailing `\` on this platform) hits the ODD case, which
-// SWALLOWS the closing quote this file appends, leaving the rest of the generated command line inside
-// an unterminated quoted region. Proven live (2026-08-29) against a real Docker Desktop daemon:
-// `copy_to_container()` with a `host_path` ending in a single `\` produced `docker: 'docker cp'
-// requires 2 arguments` -- the SRC_PATH and DEST_PATH tokens had merged into one, exactly as this
-// analysis predicts (an even nonzero trailing count has a quieter failure mode: the quote still
-// toggles correctly, but half the value's own trailing backslashes silently vanish). Doubling the
-// trailing run before embedding guarantees the closing `"` this file appends always sees an EVEN count
-// immediately before it, so it always toggles correctly and always preserves every one of the value's
-// own literal trailing backslashes. Not needed for `image`/`container_path`: those are never wrapped
-// in a closing quote at all (see their own call sites), so this specific hazard cannot arise for them
-// regardless of what characters they contain.
-[[nodiscard]] inline std::string docker_cli_win_double_trailing_backslashes(std::string value) {
-    std::size_t trailing = 0;
-    while (trailing < value.size() && value[value.size() - 1 - trailing] == '\\') ++trailing;
-    value.append(trailing, '\\');
-    return value;
-}
-#else
-// POSIX parity, NOT a mechanical port of the Windows character set -- `/bin/sh`'s injection surface
-// is structurally different from `cmd.exe`'s, so blacklisting the same characters here would be a
-// real, exploitable gap (e.g. a value containing `` ` `` or `$(...)`  triggers HOST-side command
-// substitution on Linux even though neither character is special to cmd.exe).
-//
-// `docker_cli_reject_unsafe_for_shell` covers `image` and `container_path` -- both interpolated
-// UNQUOTED into the generated `sh -c` string (see create()/copy_to_container()/copy_from_container()
-// below). An unquoted POSIX shell word treats almost every non-alphanumeric character as meaningful
-// (word-splitting, globbing, redirection, substitution, ...), so this is a POSITIVE allowlist --
-// exactly the grammar Docker's own image-name/path reference already restricts itself to -- rather
-// than an attempted blacklist of "every POSIX shell metacharacter", which is the class of bug this
-// project treats as a real defect, not an acceptable residual (CLAUDE.md: "security claims need
-// positive controls -- a test that cannot fail proves nothing"). DISCLOSED, narrower than the
-// Windows side: a `host_path` containing a space is rejected here even though it is legitimate on
-// Windows (host_path is quoted below, but reuses this same allowlist-based check for both platforms'
-// call sites rather than forking the call site itself) -- fails closed on an unusual path rather than
-// silently mishandling it.
-[[nodiscard]] inline agentengine::result<void> docker_cli_reject_unsafe_for_shell(
-        std::string const& value, char const* what) {
-    for (char const c : value) {
-        bool const safe = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-                           c == '.' || c == '_' || c == '-' || c == '/' || c == ':' || c == '@';
-        if (!safe) {
-            return std::unexpected(agentengine::error{
-                agentengine::failure_class::policy,
-                std::string("refusing to build a shell command: '") + what +
-                    "' contains a character outside the safe image/path allowlist",
-                "docker_cli_backend.unsafe_shell_argument"});
-        }
-    }
-    // See `docker_cli_reject_leading_dash`'s own comment -- an all-allowlisted value like
-    // `--privileged` would otherwise pass this function cleanly and be emitted as a bare docker CLI
-    // flag, not a value.
-    if (auto safe = docker_cli_reject_empty(value, what); !safe.has_value()) return safe;
-    return docker_cli_reject_leading_dash(value, what);
-}
-
-// POSIX counterpart to the Windows-side `docker_cli_reject_unsafe_for_unquoted_arg` -- kept as a pure
-// ALIAS, not a second real check: the allowlist above already excludes every whitespace character
-// (space/tab are not in the safe set), so a value that passes `docker_cli_reject_unsafe_for_shell` can
-// never contain the token-splitting character the Windows-side function's own comment describes.
-// Defined under the SAME NAME on both platforms purely so the shared call sites below
-// (create()/copy_to_container()/copy_from_container()) don't need their own `#ifdef` -- verified, not
-// assumed, that this is genuinely redundant here rather than a real second defense (CLAUDE.md: don't
-// add a check for an input that's already impossible).
-[[nodiscard]] inline agentengine::result<void> docker_cli_reject_unsafe_for_unquoted_arg(
-        std::string const& value, char const* what) {
-    return docker_cli_reject_unsafe_for_shell(value, what);
-}
-
-// Covers exec()'s own `command` argument, embedded inside escaped double quotes in the generated
-// string (`docker exec <id> sh -c "<command>"`) -- deliberately NOT applied to `host_path` (that one
-// goes through the stricter allowlist above at both call sites, unchanged from the Windows version,
-// which is why the allowlist function's own comment discloses the host_path residual). Inside POSIX
-// double quotes, only `` ` ``, `$`, `"`, and `\` remain special (word-splitting/globbing/`&|<>(){}`
-// do NOT apply inside double quotes) -- rejecting exactly those four (plus CR/LF for hygiene,
-// matching the Windows side) blocks HOST-shell command substitution and quote breakout while still
-// letting `command` use `&|<>` for the CONTAINER's own inner `sh`, preserving this function's
-// original intent unchanged from the Windows version.
-[[nodiscard]] inline agentengine::result<void> docker_cli_reject_shell_breakout(
-        std::string const& value, char const* what) {
-    return docker_cli_reject_chars(value, what, "\"$`\\\r\n");
-}
-
-// POSIX counterpart to the Windows-side `docker_cli_win_double_trailing_backslashes` -- a pure
-// no-op passthrough, not a real transformation: `/bin/sh`'s own quoting rules have no analogue of the
-// Windows/CRT trailing-backslash-before-quote special case, and both of this function's real callers
-// (`host_path` via `docker_cli_reject_unsafe_for_shell`'s allowlist, `command` via
-// `docker_cli_reject_shell_breakout`'s `"\"$\`\\\r\n"` blacklist) already reject a literal backslash
-// outright on this platform, so a value reaching this function can never contain one to begin with.
-// Defined under the SAME NAME on both platforms so the shared call sites below don't need their own
-// `#ifdef`.
-[[nodiscard]] inline std::string docker_cli_win_double_trailing_backslashes(std::string value) {
-    return value;
-}
-#endif
 
 // A thin, real wrapper over the `docker` CLI -- create()/exec()/destroy() over `docker run`/
-// `docker exec`/`docker rm`, `copy_to_container()`/`copy_from_container()` over `docker cp`.
-// Deliberately NOT a `SandboxBackend` conformer (see this file's own top comment).
+// `docker exec`/`docker rm`, `copy_to_container()`/`copy_from_container()` over `docker cp`. Every
+// invocation is a real argv vector via `docker_cli_detail::run_argv()` -- never a shell-interpreted
+// string -- matching `ContainerdCliBackend`'s own already-shipped shape (containerd_execution_surface.hpp)
+// exactly. Deliberately NOT a `SandboxBackend` conformer (see this file's own top comment).
 class DockerCliBackend {
 public:
     struct Instance {
@@ -823,7 +966,7 @@ public:
     // allowlist. The container's OWN internal filesystem is still real, still isolated by the
     // kernel's own mount/pid/network namespaces regardless.
     [[nodiscard]] agentengine::result<Instance> create(std::string const& image = "alpine:latest") {
-        if (auto safe = docker_cli_reject_unsafe_for_unquoted_arg(image, "image"); !safe.has_value())
+        if (auto safe = docker_cli_reject_argv_value(image, "image"); !safe.has_value())
             return std::unexpected(safe.error());
         // A discoverable NAME (distinct from the docker-assigned `container_id` this method returns
         // below) -- exists purely so a later process can find and `reap_orphans()` this container if
@@ -833,36 +976,44 @@ public:
         // process" from "the pid was later reused by something unrelated", which would otherwise let
         // a genuinely orphaned container stay permanently unreapable. Built entirely from this
         // process's own pid/start-key and an internal counter, never caller/model input, so it already
-        // trivially satisfies every character-set check above; no validation call needed for a value
-        // this function itself constructs from only digits and literal underscores (CLAUDE.md: don't
-        // add a check for an input that's already impossible).
+        // trivially satisfies every check above; no validation call needed for a value this function
+        // itself constructs from only digits and literal underscores (CLAUDE.md: don't add a check for
+        // an input that's already impossible).
         std::string const name = std::string(docker_cli_detail::kOrphanNamePrefix) +
                                   std::to_string(docker_cli_detail::current_pid()) + "_" +
                                   std::to_string(docker_cli_detail::current_process_start_key()) + "_" +
                                   std::to_string(++docker_cli_detail::g_next_container_seq);
-        std::ostringstream cmd;
-        cmd << "docker run -d --rm -w /workspace --name " << name << " " << image
-            << " sh -c \"mkdir -p /workspace && sleep infinity\"";
-        auto r = docker_cli_detail::run_capture(cmd.str());
+        // Real argv vector -- `sh -c "mkdir -p /workspace && sleep infinity"` is still one shell string,
+        // but it is the CONTAINER's own inner shell reading it (a documented, accepted risk layer, not
+        // a host one -- see this section's own top comment), passed here as ONE literal argv element,
+        // never concatenated into anything a host shell re-parses.
+        std::vector<std::string> const argv = {
+            "docker", "run", "-d", "--rm", "-w", "/workspace", "--name", name, image,
+            "sh", "-c", "mkdir -p /workspace && sleep infinity"};
+        auto r = docker_cli_detail::run_argv(argv);
         if (r.exit_code != 0) {
-            return std::unexpected(agentengine::error{agentengine::failure_class::fatal,
-                                                          "docker run failed: " + r.stdout_text,
-                                                          "docker_cli_backend.create_failed"});
+            return std::unexpected(agentengine::error{
+                agentengine::failure_class::fatal,
+                "docker run failed: " + r.stdout_text + " (argv: " + docker_cli_detail::join_argv_for_log(argv) + ")",
+                "docker_cli_backend.create_failed"});
         }
         // ADR-146 §11: a REAL, reproduced-on-CI bug found here, not the naive trailing-newline trim
-        // this used to be. `run_capture()` merges stdout AND stderr into one stream (by design, see
-        // its own header comment). When `image` is not yet cached locally, `docker run` writes
-        // multi-line pull-progress noise ("Unable to find image '...' locally", "Pulling from...",
-        // "Status: Downloaded newer image for...") BEFORE its own final, single-line, machine-
-        // readable container id -- the ONLY output `docker run -d` guarantees on success is that its
-        // LAST line is the id. Trimming only trailing whitespace kept that entire pull-progress
-        // preamble glued onto the id, which then got embedded verbatim into `copy_to_container()`'s
-        // generated `docker cp <id>:<path>` command -- multiple embedded newlines/spaces there is
-        // exactly what turned one shell argument into several, producing the CI failure this ADR's
-        // own diagnostic finally captured: `docker: 'docker cp' requires 2 arguments`. Fixed by
-        // extracting only the LAST NON-EMPTY line of the captured output, unconditionally correct
-        // whether or not a pull preamble is present (a cache-hit `docker run` output IS just the id,
-        // a single line, so this is a strict generalization, not a special case).
+        // this used to be. `run_argv()` merges stdout AND stderr into one stream (by design, matching
+        // `run_capture()`'s own established convention -- see this file's own top comment). When
+        // `image` is not yet cached locally, `docker run` writes multi-line pull-progress noise
+        // ("Unable to find image '...' locally", "Pulling from...", "Status: Downloaded newer image
+        // for...") BEFORE its own final, single-line, machine-readable container id -- the ONLY output
+        // `docker run -d` guarantees on success is that its LAST line is the id. Trimming only trailing
+        // whitespace kept that entire pull-progress preamble glued onto the id, which then got embedded
+        // verbatim into `copy_to_container()`'s own generated command -- multiple embedded
+        // newlines/spaces there is exactly what turned one shell argument into several, producing the
+        // CI failure this ADR's own diagnostic finally captured: `docker: 'docker cp' requires 2
+        // arguments`. Fixed by extracting only the LAST NON-EMPTY line of the captured output,
+        // unconditionally correct whether or not a pull preamble is present (a cache-hit `docker run`
+        // output IS just the id, a single line, so this is a strict generalization, not a special
+        // case). Still relevant post-argv-port: the id is embedded into a fresh argv element at each
+        // call site below, not concatenated into a string, but a multi-line/whitespace-polluted id
+        // would still be the WRONG id.
         std::string const trimmed = [&] {
             std::string s = r.stdout_text;
             while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
@@ -871,6 +1022,15 @@ public:
         auto const last_newline = trimmed.find_last_of('\n');
         std::string id = (last_newline == std::string::npos) ? trimmed : trimmed.substr(last_newline + 1);
         while (!id.empty() && id.back() == '\r') id.pop_back();
+        // ADR-164 red-team Finding B: `id` is used as a bare/prefix argv element at every downstream
+        // call site (exec()/destroy()/copy_to_container()/copy_from_container()) WITHOUT going through
+        // docker_cli_reject_leading_dash() the way image/host_path/container_path already do -- not
+        // currently reachable (`docker run -d`'s own documented output contract guarantees a hex
+        // container id, which can never start with '-', and `id` is never attacker/model-influenced),
+        // but checked here once, at the source, so every downstream call site is covered by
+        // construction rather than by an argument this class's own contract happens to make true today.
+        if (auto safe = docker_cli_reject_leading_dash(id, "container_id"); !safe.has_value())
+            return std::unexpected(safe.error());
         return Instance{id};
     }
 
@@ -878,26 +1038,28 @@ public:
     [[nodiscard]] agentengine::result<void> copy_to_container(Instance const& inst,
                                                                   std::filesystem::path const& host_path,
                                                                   std::string const& container_path) {
-        if (auto safe = docker_cli_reject_unsafe_for_shell(host_path.string(), "host_path"); !safe.has_value())
+        // `path_to_utf8()`, not `host_path.string()` -- on Windows, `std::filesystem::path::string()`
+        // narrows via the process's ACTIVE CODE PAGE, not UTF-8; `run_argv()`'s own `widen()` explicitly
+        // expects UTF-8 (code-review finding, post-ADR-164). Validating and embedding the SAME
+        // UTF-8-correct bytes keeps what was checked and what actually reaches `docker` identical.
+        std::string const host_path_utf8 = docker_cli_detail::path_to_utf8(host_path);
+        if (auto safe = docker_cli_reject_argv_value(host_path_utf8, "host_path"); !safe.has_value())
             return std::unexpected(safe.error());
-        if (auto safe = docker_cli_reject_unsafe_for_unquoted_arg(container_path, "container_path"); !safe.has_value())
+        if (auto safe = docker_cli_reject_argv_value(container_path, "container_path"); !safe.has_value())
             return std::unexpected(safe.error());
-        std::ostringstream cmd;
-        cmd << "docker cp \"" << docker_cli_win_double_trailing_backslashes(host_path.string()) << "\" "
-            << inst.container_id << ":" << container_path;
-        auto r = docker_cli_detail::run_capture(cmd.str());
+        std::vector<std::string> const argv = {"docker", "cp", host_path_utf8,
+                                                 inst.container_id + ":" + container_path};
+        auto r = docker_cli_detail::run_argv(argv);
         if (r.exit_code != 0) {
-            // ADR-146 §10: the command itself is included here, not just the daemon's own reply --
-            // `test_composed_sandbox_providers_live` failed on ubuntu-latest CI with `docker: 'docker
-            // cp' requires 2 arguments` and no visibility into what was actually generated (every
-            // input to `cmd` above already passed a strict allowlist, so the malformed shape has to be
-            // in something this function assembles, not in unchecked user input). `cmd.str()` is
-            // already fully allowlist-safe to log by construction (`host_path`/`container_path` both
-            // passed `docker_cli_reject_unsafe_for_shell`/`docker_cli_reject_unsafe_for_unquoted_arg`
-            // above before being embedded).
+            // ADR-146 §10: what was actually generated is included here, not just the daemon's own
+            // reply -- `test_composed_sandbox_providers_live` failed on ubuntu-latest CI with `docker:
+            // 'docker cp' requires 2 arguments` and no visibility into what was actually run. Safe to
+            // log verbatim by construction (`host_path`/`container_path` both passed
+            // `docker_cli_reject_argv_value` above before being embedded).
             return std::unexpected(agentengine::error{
                 agentengine::failure_class::fatal,
-                "docker cp (to container) failed: " + r.stdout_text + " (command: " + cmd.str() + ")",
+                "docker cp (to container) failed: " + r.stdout_text +
+                    " (argv: " + docker_cli_detail::join_argv_for_log(argv) + ")",
                 "docker_cli_backend.copy_to_failed"});
         }
         return agentengine::result<void>{};
@@ -907,42 +1069,43 @@ public:
     [[nodiscard]] agentengine::result<void> copy_from_container(Instance const& inst,
                                                                     std::string const& container_path,
                                                                     std::filesystem::path const& host_path) {
-        if (auto safe = docker_cli_reject_unsafe_for_unquoted_arg(container_path, "container_path"); !safe.has_value())
+        if (auto safe = docker_cli_reject_argv_value(container_path, "container_path"); !safe.has_value())
             return std::unexpected(safe.error());
-        if (auto safe = docker_cli_reject_unsafe_for_shell(host_path.string(), "host_path"); !safe.has_value())
+        // See copy_to_container()'s own comment above -- same `path_to_utf8()` reasoning.
+        std::string const host_path_utf8 = docker_cli_detail::path_to_utf8(host_path);
+        if (auto safe = docker_cli_reject_argv_value(host_path_utf8, "host_path"); !safe.has_value())
             return std::unexpected(safe.error());
-        std::ostringstream cmd;
-        cmd << "docker cp " << inst.container_id << ":" << container_path << " \""
-            << docker_cli_win_double_trailing_backslashes(host_path.string()) << "\"";
-        auto r = docker_cli_detail::run_capture(cmd.str());
+        std::vector<std::string> const argv = {"docker", "cp", inst.container_id + ":" + container_path,
+                                                 host_path_utf8};
+        auto r = docker_cli_detail::run_argv(argv);
         if (r.exit_code != 0) {
             // ADR-146 §10: see copy_to_container()'s own comment above -- same reasoning, kept
             // symmetric for whichever direction fails next.
             return std::unexpected(agentengine::error{
                 agentengine::failure_class::fatal,
-                "docker cp (from container) failed: " + r.stdout_text + " (command: " + cmd.str() + ")",
+                "docker cp (from container) failed: " + r.stdout_text +
+                    " (argv: " + docker_cli_detail::join_argv_for_log(argv) + ")",
                 "docker_cli_backend.copy_from_failed"});
         }
         return agentengine::result<void>{};
     }
 
     // Real `docker exec <id> sh -c "<command>"` -- runs INSIDE the container's own isolated
-    // filesystem/process namespace, never in this process at all.
+    // filesystem/process namespace, never in this process at all. `command` reaches the CONTAINER's own
+    // inner `sh -c` as ONE literal argv element (never a host-shell-parsed string, see this file's own
+    // top comment) -- the fix for issue #50: a model command containing `"`/`%`/`^` no longer needs to
+    // be rejected, because there is no host shell left for those characters to break out of. Matches
+    // `ContainerdCliBackend::exec()`'s own already-shipped shape exactly.
     [[nodiscard]] agentengine::result<SurfaceRunOutcome> exec(Instance const& inst, std::string const& command) {
-        if (auto safe = docker_cli_reject_shell_breakout(command, "command"); !safe.has_value())
+        if (auto safe = docker_cli_reject_embedded_nul(command, "command"); !safe.has_value())
             return std::unexpected(safe.error());
-        std::ostringstream cmd;
-        cmd << "docker exec " << inst.container_id << " sh -c \""
-            << docker_cli_win_double_trailing_backslashes(command) << "\"";
-        return docker_cli_detail::run_capture(cmd.str());   // exit_code intentionally passed through
-                                                                // as-is -- a non-zero exit from the
-                                                                // CONTAINED command is a normal,
-                                                                // meaningful result, never itself a
-                                                                // result<>-level error
+        return docker_cli_detail::run_argv({"docker", "exec", inst.container_id, "sh", "-c", command});
+        // exit_code intentionally passed through as-is -- a non-zero exit from the CONTAINED command is
+        // a normal, meaningful result, never itself a result<>-level error.
     }
 
     [[nodiscard]] agentengine::result<void> destroy(Instance const& inst) {
-        auto r = docker_cli_detail::run_capture("docker rm -f " + inst.container_id);
+        auto r = docker_cli_detail::run_argv({"docker", "rm", "-f", inst.container_id});
         if (r.exit_code != 0) {
             return std::unexpected(agentengine::error{agentengine::failure_class::fatal,
                                                           "docker rm failed: " + r.stdout_text,
@@ -977,7 +1140,7 @@ public:
     };
 
     [[nodiscard]] agentengine::result<OrphanReapReport> reap_orphans() {
-        auto listed = docker_cli_detail::run_capture("docker ps -a --format \"{{.Names}}\"");
+        auto listed = docker_cli_detail::run_argv({"docker", "ps", "-a", "--format", "{{.Names}}"});
         if (listed.exit_code != 0) {
             return std::unexpected(agentengine::error{agentengine::failure_class::fatal,
                                                           "docker ps failed: " + listed.stdout_text,
@@ -998,7 +1161,7 @@ public:
                 docker_cli_detail::ProcessMatch::kGoneOrReplaced) {
                 continue;
             }
-            auto rm = docker_cli_detail::run_capture("docker rm -f " + name);
+            auto rm = docker_cli_detail::run_argv({"docker", "rm", "-f", name});
             if (rm.exit_code == 0) {
                 ++report.reaped;
             } else {

@@ -3464,6 +3464,27 @@ target_link_libraries(test_docker_orphan_reap PRIVATE agentengine::core agenteng
 add_test(NAME test_docker_orphan_reap COMMAND test_docker_orphan_reap)
 set_tests_properties(test_docker_orphan_reap PROPERTIES RESOURCE_LOCK docker_daemon)
 
+# ---- docker-execution-surface-argv-hardening (issue #50) -- run_argv()'s Job-Object timeout kill,
+# no longer through a cmd.exe layer, still leaves no orphaned host docker.exe process. Windows-only:
+# see the test file's own top comment for why (the historical bug and its fix are both Windows-specific;
+# the file itself is a no-op main() on other platforms so it stays buildable everywhere for anyone who
+# still lists it, but only actually gated into the suite here on Windows).
+if(WIN32)
+  add_executable(test_docker_run_argv_timeout test_docker_run_argv_timeout.cpp)
+  target_link_libraries(test_docker_run_argv_timeout PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_docker_run_argv_timeout COMMAND test_docker_run_argv_timeout)
+  set_tests_properties(test_docker_run_argv_timeout PROPERTIES RESOURCE_LOCK docker_daemon TIMEOUT 60)
+endif()
+
+# ---- code-review finding (post-ADR-164): host_path.string()'s Windows ACP-vs-widen()'s-UTF-8
+# mismatch, fixed by docker_cli_detail::path_to_utf8() -- proves the fix for real, cross-platform
+# (the underlying bug was Windows-only, but copy_to_container()/copy_from_container() are shared code,
+# so this runs everywhere the other Docker-backed tests do).
+add_executable(test_docker_non_ascii_path test_docker_non_ascii_path.cpp)
+target_link_libraries(test_docker_non_ascii_path PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_docker_non_ascii_path COMMAND test_docker_non_ascii_path)
+set_tests_properties(test_docker_non_ascii_path PROPERTIES RESOURCE_LOCK docker_daemon)
+
 # ---- ADR-102 Phase 4 -- MandatorySandboxProvider<Surface>/RunCommandTool
 # (sandbox/mandatory_sandbox_provider.hpp), composed as a REAL agentengine::rt::AgentSession's actual
 # HistoryProviderT, driven through the real, unmodified invoke_tool() 10-step pipeline for the first
