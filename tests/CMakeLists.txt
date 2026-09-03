@@ -3695,3 +3695,9 @@ if(AGENTENGINE_WITH_HTTPS)
   # line's own established TIMEOUT posture for cross-process proofs of this shape.
   set_tests_properties(test_durable_sandboxed_shell_chat_cross_process PROPERTIES TIMEOUT 60)
 endif()
+
+# ---- decisions/ADR-168-bounded-reflection-loop.md -- issue #55: run_with_bounded_reflection()
+# (rt/bounded_reflection.hpp), a thin outer driver over repeated AgentSession::start_run() calls.
+add_executable(test_bounded_reflection test_bounded_reflection.cpp)
+target_link_libraries(test_bounded_reflection PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_bounded_reflection COMMAND test_bounded_reflection)

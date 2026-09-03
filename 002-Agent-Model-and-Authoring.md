@@ -212,11 +212,27 @@ composition order). This supersedes ADR-033's original consumer, `MiddlewareChat
 `FailoverChatClient`, were REMOVED 2026-08-12: this repo had shipped nowhere, so there was no
 deprecation-then-migration cost to justify keeping the three `chat()`-only wrappers once
 `ModelCallGateway`/`MiddlewareModelCallGateway` gave `AgentSession` a real, streaming-capable
-successor with the identical combined-not-layered reasoning. The RUN/TURN/TOOL-CALL interception
-points remain declared-but-unwired — `AgentSession`'s turn loop
-is large, mature, and heavily tested; threading a middleware chain through it is separately-scoped,
-larger work this pass does not attempt, matching this project's own established "prove the mechanism
-against one real consumer, name the rest" precedent (`decisions/ADR-028-session-scoped-stateful-tools.md`).
+successor with the identical combined-not-layered reasoning. **The TURN interception point is now
+also real and wired** (`decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md`,
+implementation complete and proven by `tests/test_turn_middleware.cpp`, 22/22, though the ADR itself
+is still Proposed, awaiting explicit project-owner "Judged"): `AgentSession::set_turn_middleware_hook()`
+runs a `TurnMiddlewareHook` (`core/turn_middleware.hpp`) once per round, after the final tool surface
+and instructions are assembled and before the model is called (`run_rounds()`,
+`agent_session.hpp:2406-2417`) — a single forward pass, first-deny-short-circuits, not the full
+before/after sandwich MODEL-CALL's chain runs (ADR-067 §"two real mid-implementation findings": there
+is no inner action for `turn` to sandwich the way MODEL-CALL sandwiches the backend call). It can
+inspect/redact/reorder the tool surface and deny the round, but has no seam on the OTHER side of a
+model response — it cannot force another round after the model has already produced a final,
+no-tool-calls answer (verified directly against `run_rounds()`: that path `co_return`s an
+`AgentResponse` immediately, `agent_session.hpp:2511-2546`, with nothing in between for a hook to
+intercept). `decisions/ADR-168-bounded-reflection-loop.md` (issue #55) is grounded in this exact gap:
+bounded single-agent reflection could not be built on the TURN point for that reason, and is instead a
+thin outer driver over repeated `start_run()` calls, one layer up from this middleware chain entirely.
+RUN and TOOL-CALL remain declared-but-unwired — `AgentSession`'s turn loop
+is large, mature, and heavily tested; threading a middleware chain through those two is separately-
+scoped, larger work this pass does not attempt, matching this project's own established "prove the
+mechanism against one real consumer, name the rest" precedent
+(`decisions/ADR-028-session-scoped-stateful-tools.md`).
 MAF's verified decorator-chain mechanics remain the prior art for that future work — a *separate*
 wrapping pipeline around the raw model call from the one around the whole run/turn (`AIAgentBuilder`),
 both composed by reverse-apply ordering so the first-registered middleware ends up outermost —
