@@ -159,10 +159,19 @@ composite used to provide bespoke. A *reactive* composite (one whose sub-provide
 output, the case this paragraph is actually about) still has no built-in type and remains
 consumer-authored, same as before. Full reasoning: `OpenQuestions.md` OQ-18.
 
-Kinds: `HistoryProvider` (conversation history) · `SkillsProvider` (009 §8) · **working** memory
-(in-session scratch, this RFC's `state`) · **episodic** / **semantic** / **procedural** memory,
-whose storage model, writing, retrieval ranking, and consolidation are their own RFC (029) — this
-section owns the seam they attach through, not the memory architecture itself.
+Kinds: `HistoryProvider` (conversation history) · `SkillsProvider` (009 §8) · `TodoProvider`
+(session-scoped plan/execute task-list state; `decisions/ADR-166-todo-provider.md`) · **working**
+memory (in-session scratch, this RFC's `state`) · **episodic** / **semantic** / **procedural**
+memory, whose storage model, writing, retrieval ranking, and consolidation are their own RFC (029)
+— this section owns the seam they attach through, not the memory architecture itself.
+
+`TodoProvider` (`include/agentengine/core/todo_provider.hpp`) is adaptive, not always-on: it
+contributes nothing (`instructions`/`messages`) until its tools have been used at least once this
+session, unlike MAF's `TodoProvider` (which pays a fixed instructions+placeholder-message tax on
+every turn regardless of use) — see the ADR for the full rationale and what it corrects. Deliberately
+in-memory, session-lifetime-only state, not persisted through `save_agent_session_snapshot`/
+`load_agent_session_snapshot` — a checkpoint restart starts with an empty todo list, a disclosed
+residual the ADR records rather than leaves implicit.
 
 This is also the seam CodeAct attaches to, matching the integration point MAF settled on — which is
 why keeping it singular matters (010, 026).
