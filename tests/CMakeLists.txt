@@ -642,6 +642,13 @@ add_executable(test_todo_provider test_todo_provider.cpp)
 target_link_libraries(test_todo_provider PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_todo_provider COMMAND test_todo_provider)
 
+# ---- decisions/ADR-167-plan-execute-mode.md, issue #54: PlanExecuteMode, a ContextProvider + a
+# PolicyDecider factory gating a single agent into "plan first, then execute." Depends on
+# TodoProvider's shared TodoState (todo_provider.hpp) for its plan evidence.
+add_executable(test_plan_execute_mode test_plan_execute_mode.cpp)
+target_link_libraries(test_plan_execute_mode PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_plan_execute_mode COMMAND test_plan_execute_mode)
+
 # ---- ADR-063 (retrieval-augmented ContextProvider shape) -- foundation layer, Proposed status ----
 # §2.6b / §3 claim 6: neutralize_forged_provenance_markers() (core/provenance_marker.hpp), the
 # marker-forgery defense generalized out of memory_provider.hpp's own gap-17 fix.
