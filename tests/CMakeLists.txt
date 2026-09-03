@@ -634,6 +634,14 @@ if(WIN32)
   add_test(NAME test_memory_no_authority_laundering COMMAND test_memory_no_authority_laundering)
 endif()
 
+# ---- decisions/ADR-166-todo-provider.md, issue #53: TodoProvider, a ContextProvider conformer for
+# plan/execute state (005 §5). Adaptive contribution, bounded item count/title length, unknown-id
+# rejection, and composition with a second real ContextProvider through the shared assemble_context().
+# No worktree dependency (pure in-memory, no persistence) -- unlike MemoryProvider, not WIN32-gated.
+add_executable(test_todo_provider test_todo_provider.cpp)
+target_link_libraries(test_todo_provider PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_todo_provider COMMAND test_todo_provider)
+
 # ---- ADR-063 (retrieval-augmented ContextProvider shape) -- foundation layer, Proposed status ----
 # §2.6b / §3 claim 6: neutralize_forged_provenance_markers() (core/provenance_marker.hpp), the
 # marker-forgery defense generalized out of memory_provider.hpp's own gap-17 fix.
