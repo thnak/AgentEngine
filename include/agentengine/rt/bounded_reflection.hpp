@@ -45,7 +45,6 @@
 
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/error.hpp"
-#include "agentengine/core/task.hpp"
 #include "agentengine/rt/agent_session.hpp"  // StartRun, AgentResponse
 
 namespace agentengine::rt {

@@ -19,7 +19,6 @@ using agentengine::rt::AgentResponse;
 using agentengine::rt::EvaluationVerdict;
 using agentengine::rt::ReflectionOutcome;
 using agentengine::rt::run_with_bounded_reflection;
-using agentengine::rt::StartRun;
 
 namespace {
 
