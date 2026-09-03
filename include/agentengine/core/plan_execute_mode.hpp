@@ -84,6 +84,39 @@ namespace plan_execute_detail {
 
 }  // namespace plan_execute_detail
 
+// Independent review (2026-09-03, PR #58) confirmed the gate this file builds has zero effect on
+// any tool declared `approval_mode::never_require` -- the common/default posture for a tool with no
+// capability reach -- because `resolve_approval_outcome()` (`tool_pipeline.hpp`) only ever consults
+// a `PolicyDecider` for `approval_mode::policy_driven` tools; a `never_require` tool bypasses the
+// decider (and therefore this gate) unconditionally, regardless of gate state. This is not a defect
+// in the gate itself -- `make_plan_execute_policy_decider()` correctly denies every call it is ever
+// actually asked about -- it is a coverage question: a host composing this gate must explicitly mark
+// every tool the gate is meant to hold back as `Approval<Mode::PolicyDriven>` (006 §4), or that tool
+// is silently ungated. `count_gated_execute_tools()` below is a diagnostic a host can call once,
+// after building its `ToolTable`, to catch the mistake of forgetting to do that -- it does not (and
+// cannot) change the gate's own runtime behavior, since `resolve_approval_outcome()`'s dispatch on
+// `approval_mode` is not something this file owns or can override.
+//
+// Counts tools that are (a) not planning-safe by `is_planning_safe`'s own bar -- i.e. tools the gate
+// is meant to hold back -- and (b) declared `approval_mode::policy_driven` -- i.e. tools actually
+// reachable by ANY `PolicyDecider`, this one included. A caller wiring `PlanExecuteMode` for real
+// protective effect should check this returns > 0 for their own tool table; a return of 0 means the
+// gate has literally nothing to enforce against, most often because every non-planning-safe tool in
+// the table was left at `Approval<Mode>`'s own default (`PolicyDriven` per 002 §3's table -- but a
+// tool can override that per-declaration) or was explicitly set to `never_require`/`always_require`.
+[[nodiscard]] inline std::size_t count_gated_execute_tools(
+    ToolTable const& table,
+    std::function<bool(ToolDescriptor const&)> const& is_planning_safe =
+        plan_execute_detail::default_is_planning_safe) {
+    std::size_t reachable = 0;
+    for (ToolDescriptor const& tool : table.descriptors()) {
+        if (!is_planning_safe(tool) && tool.approval == approval_mode::policy_driven) {
+            ++reachable;
+        }
+    }
+    return reachable;
+}
+
 // A `ContextProvider` conformer (005 §5) that gates a session into "plan first, then execute."
 // Requires a `TodoProvider` (#53) to already exist for this session -- the plan the gate demands
 // evidence of IS the todo list; there is no separate planning representation invented here. Compose

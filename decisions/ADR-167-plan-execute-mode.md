@@ -205,8 +205,30 @@ updated to point at this mechanism rather than either a new inert tag or the Pla
 
 **Residual risks, disclosed:**
 
-- **Not independently red-teamed** — self-conducted, same disclosed posture as ADR-166 §7. Should get
-  a genuinely independent pass before being treated as fully Judged.
+- **Independently reviewed (2026-09-03).** A fresh reviewer (no context from this ADR's own
+  implementation) checked out this branch cold, built and ran `test_plan_execute_mode` on their own
+  machine, and specifically attacked the gate-bypass, shared-state, decider-correctness, and
+  stacking-cleanliness questions. Every claim in §'s per-claim verdict table held — no code defect
+  found; `gate_handle()`'s read-only guarantee was independently reverified (a direct-mutation attempt
+  through it was independently confirmed to fail to compile), and the `feature/todo-provider` stacking
+  base was confirmed to match `origin/feature/todo-provider`'s exact tip with no drift.
+- **Real finding, promoted from a design-rationale aside to an explicit residual: the gate is opt-in
+  PER TOOL, and a host can leave it silently toothless.** `resolve_approval_outcome()`
+  (`tool_pipeline.hpp`) only ever consults a `PolicyDecider` for a tool declared
+  `approval_mode::policy_driven` — a tool left at `never_require` (a common, easy-to-reach-for
+  default for a tool with no capability reach) bypasses this gate's `PolicyDecider` unconditionally,
+  regardless of gate state, and the independent review confirmed this directly by compiling a
+  throwaway `never_require` tool through `resolve_approval_outcome()` and observing it proceed without
+  ever invoking the decider. §5 finding 3 already explained *why* the gate has to work this way
+  (`TodoProvider`'s own tools are deliberately `never_require`, which is what forced the shared-state
+  `TodoState`/`GateState` design in the first place) — what was missing was flagging the SAME
+  mechanism as a footgun for a host's OWN execute-phase tools, not just explaining why `TodoProvider`'s
+  tools are exempt. Mitigated, not eliminated, by the new `count_gated_execute_tools()` diagnostic
+  (`plan_execute_mode.hpp`, proven by R10a/R10b in `test_plan_execute_mode.cpp`) — a host should call
+  it once against their own `ToolTable` after composing `PlanExecuteMode` and confirm it returns > 0,
+  or the gate has nothing real to enforce. This is a coverage check, not an automatic fix:
+  `count_gated_execute_tools()` cannot change what `approval_mode` a host declared on their own tools,
+  it can only tell them they forgot to declare it correctly.
 - **DoS-by-spin under `MaxTurns`/`TokenBudget`** (§5 finding 4) — bounded, not unbounded, but not
   specifically measured or mitigated beyond relying on those existing budgets.
 - **No `Agent<>`-declarative authoring surface.** This is host/session-builder-level composition

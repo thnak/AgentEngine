@@ -243,6 +243,41 @@ int main() {
               "a specific tool without waiting for the gate to open");
     }
 
+    // --- R10 (independent review finding): count_gated_execute_tools() correctly flags whether a
+    // host's own ToolTable has ANY tool the gate can actually reach -- a `never_require` tool is
+    // structurally invisible to any PolicyDecider (resolve_approval_outcome() never consults one for
+    // it), so a table built entirely of such tools leaves the gate with zero real protective effect
+    // even though make_plan_execute_policy_decider() itself is correct.
+    {
+        ae::ToolDescriptor ungated_execute_tool;
+        ungated_execute_tool.name          = "delete_file";
+        ungated_execute_tool.approval       = ae::approval_mode::never_require;  // the coverage trap
+        ungated_execute_tool.effect_class   = ae::effect_class::at_most_once;
+
+        ae::ToolDescriptor gated_execute_tool;
+        gated_execute_tool.name          = "wipe_disk";
+        gated_execute_tool.approval       = ae::approval_mode::policy_driven;
+        gated_execute_tool.effect_class   = ae::effect_class::at_most_once;
+
+        ae::ToolDescriptor planning_safe_tool;
+        planning_safe_tool.name          = "read_notes";
+        planning_safe_tool.approval       = ae::approval_mode::policy_driven;
+        planning_safe_tool.effect_class   = ae::effect_class::pure;  // planning-safe, not counted
+
+        auto table_with_no_coverage = ae::ToolTable::from_descriptors({ungated_execute_tool, planning_safe_tool});
+        check(ae::count_gated_execute_tools(table_with_no_coverage) == 0,
+              "R10a: a table with only never_require/planning-safe tools reports zero real gate "
+              "coverage -- the diagnostic catches the exact silent-no-protection mistake the "
+              "independent review found");
+
+        auto table_with_coverage =
+            ae::ToolTable::from_descriptors({ungated_execute_tool, gated_execute_tool, planning_safe_tool});
+        check(ae::count_gated_execute_tools(table_with_coverage) == 1,
+              "R10b: adding one properly-marked policy_driven, non-planning-safe tool makes the "
+              "diagnostic report real coverage, counting only that tool -- not the never_require one, "
+              "not the planning-safe one");
+    }
+
     std::printf("test_plan_execute_mode: %s\n", g_failures == 0 ? "all checks passed" : "FAILED");
     return g_failures == 0 ? 0 : 1;
 }
