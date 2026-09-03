@@ -264,12 +264,6 @@ export interface BuilderGapRow {
 export const builderGapRows: Record<Lang, BuilderGapRow[]> = {
   en: [
     {
-      what: ".raw_client_only() escape hatch",
-      cite: "core/session_builder.hpp top comment · design draft §0f (line ~44, ~199)",
-      state:
-        "Named in the design draft as a way to bypass ModelCallGateway's retry/circuit-breaker wrapping entirely and substitute a scripted client — explicitly not implemented. Every QuickstartSessionBuilder session today is gateway-wrapped by default, with no opt-out.",
-    },
-    {
       what: ".with_fallback() / .with_middleware() / .with_content_replay()",
       cite: "core/session_builder.hpp top comment",
       state: "Named, not silently dropped, in the file's own top comment as explicitly not implemented in this facade. A host needing them drops to the raw AgentSession/ModelCallGateway surface directly.",
@@ -282,12 +276,6 @@ export const builderGapRows: Record<Lang, BuilderGapRow[]> = {
     },
   ],
   vi: [
-    {
-      what: "Lối thoát .raw_client_only()",
-      cite: "chú thích đầu file core/session_builder.hpp · design draft §0f (dòng ~44, ~199)",
-      state:
-        "Được nêu tên trong design draft như một cách bỏ qua hoàn toàn lớp bọc retry/circuit-breaker của ModelCallGateway để thay bằng một client kịch bản sẵn — nhưng cố ý chưa được cài đặt. Mọi session của QuickstartSessionBuilder hôm nay đều được bọc gateway mặc định, không có cách tắt.",
-    },
     {
       what: ".with_fallback() / .with_middleware() / .with_content_replay()",
       cite: "chú thích đầu file core/session_builder.hpp",

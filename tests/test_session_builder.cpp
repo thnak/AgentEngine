@@ -1,20 +1,25 @@
 // Prove pass for docs/planning/quickstart-session-builder-design-draft.md / core/session_builder.hpp
-// -- covers §2a (gateway-wrapped-by-default client stack)/§2b (history/context composition, B14-B17,
-// added in a 4th pass -- see session_builder.hpp's own top comment, finding 8)/§2c (capability+secret
-// sugar, fail-closed at build() time, generalized to any real SecretStore conformer -- proven against
-// the project's own production AgentEngineSecretStore, not just InMemorySecretStore)/§3 (Store/
-// CapabilitySet lifetime safety across a move), matching the header's own scope comment.
+// -- covers §2a (gateway-wrapped-by-default client stack; `.raw_client_only()`'s IMPLEMENTATION as
+// `RawQuickstartSessionBuilder`, B26-B29, added in a 5th pass -- see session_builder.hpp's own top
+// comment)/§2b (history/context composition, B14-B17, added in a 4th pass -- see session_builder.hpp's
+// own top comment, finding 8)/§2c (capability+secret sugar, fail-closed at build() time, generalized to
+// any real SecretStore conformer -- proven against the project's own production AgentEngineSecretStore,
+// not just InMemorySecretStore)/§3 (Store/CapabilitySet lifetime safety across a move), matching the
+// header's own scope comment.
 //
-// Deliberately NOT exercised here, named as a real scope limit rather than silently skipped: no
-// `.ask()`/`start_run()` call, so no real (or even attempted) network exchange happens in this test --
-// `OpenAIChatClient::chat()`'s body is therefore never instantiated, which is also why this test needs
-// no MbedTLS/provider_http_client link (see tests/CMakeLists.txt's own comment on this target). A
-// live, real-network proof of `.ask()` end to end is separately scoped future work, matching this
-// project's own "live-network" label convention for that class of test. B14-B17 (§2b) similarly never
-// drive a live `start_run()` through `ComposedQuickstartSessionBuilder`'s own session -- it has no
-// `.raw_client_only()` escape hatch either (§2a, still unimplemented) -- so `ComposedContextProvider
-// ::on_context()` is driven DIRECTLY instead, the same scope limit `tests/test_composed_context_
-// provider.cpp`'s own "Part 1" uses for the equivalent reason.
+// Deliberately NOT exercised for the §2a/§2c/§2d builders (`QuickstartSessionBuilder`,
+// `ComposedQuickstartSessionBuilder`): no `.ask()`/`start_run()` call, so no real (or even attempted)
+// network exchange happens for THOSE builders in this test -- `OpenAIChatClient::chat()`'s body is
+// therefore never instantiated for them, which is also why this test needs no MbedTLS/
+// provider_http_client link (see tests/CMakeLists.txt's own comment on this target). A live,
+// real-network proof of `.ask()` end to end through a REAL backend is separately scoped future work,
+// matching this project's own "live-network" label convention for that class of test. B14-B17 (§2b)
+// similarly never drive a live `start_run()` through `ComposedQuickstartSessionBuilder`'s own session --
+// `ComposedContextProvider::on_context()` is driven DIRECTLY instead, the same scope limit
+// `tests/test_composed_context_provider.cpp`'s own "Part 1" uses for the equivalent reason; that
+// specific gap is now closed, just not for THIS builder -- B26-B29 close it for `RawQuickstartSession
+// Builder` instead (a scripted `ChatClientT`, no real backend involved at all, so `.ask()` really can
+// run live in this test binary with zero network dependency).
 //
 // Also NOT exercised: a genuine multi-threaded proof of the red-team's #1 finding fix (`ask_mutex_`
 // serializing concurrent `.ask()` calls against a real, contended `session_mutex_`). That needs a
@@ -27,6 +32,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <memory>
+#include <memory_resource>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -127,6 +133,55 @@ struct ThrowingProvider {
     }
 };
 
+// B26-B29 (§2a's `.raw_client_only()` escape hatch, IMPLEMENTED as `RawQuickstartSessionBuilder` --
+// session_builder.hpp's own top comment). A minimal deterministic ChatClient fake, same shape as
+// examples/01_hello_agent.cpp's JokerChatClient (not shared with it -- examples/ isn't linked into
+// this test binary). Its whole point: prove what this file's own top comment says B14-B17 were
+// blocked on -- driving a REAL, live `start_run()` (via `Bundle::ask()`) with NO network at all, by
+// installing a scripted client directly instead of a real OpenAI/Anthropic backend.
+struct ScriptedChatClient {
+    [[nodiscard]] agentengine::ChatClientCapabilities capabilities() const { return {}; }
+
+    agentengine::task<agentengine::result<agentengine::ChatResponse>> chat(
+        agentengine::ChatRequest const&, agentengine::EffectContext&) {
+        agentengine::ContentItem item{};
+        item.origin = agentengine::content_origin::assistant;
+        item.value  = agentengine::Text{"scripted reply"};
+        agentengine::Message reply{};
+        reply.role       = agentengine::role::assistant;
+        reply.message_id = "m-scripted";
+        reply.content.push_back(item);
+        co_return agentengine::ChatResponse{reply, agentengine::Usage{1, 1, 0, 0, 0.0}};
+    }
+
+    agentengine::stream<agentengine::ChatResponseUpdate> chat_stream(
+        agentengine::ChatRequest const&, agentengine::EffectContext&) {
+        agentengine::stream_config<agentengine::ChatResponseUpdate> cfg;
+        cfg.capacity = 8;
+        auto pair = agentengine::make_stream<agentengine::ChatResponseUpdate>(
+            std::pmr::get_default_resource(), cfg);
+        agentengine::ChatResponseUpdate upd;
+        upd.delta.origin = agentengine::content_origin::assistant;
+        upd.delta.value  = agentengine::Text{"scripted reply"};
+        upd.is_final     = true;
+        upd.usage        = agentengine::Usage{1, 1, 0, 0, 0.0};
+        (void)pair.producer.push(upd);
+        pair.producer.close();
+        return std::move(pair.consumer);
+    }
+};
+static_assert(agentengine::ChatClient<ScriptedChatClient>,
+              "ScriptedChatClient must satisfy the ChatClient concept -- "
+              "RawQuickstartSessionBuilder is concept-constrained on this (core/chat_client.hpp)");
+
+// A Store deliberately with NO default constructor -- proves B29 (RawQuickstartSessionBuilder::
+// build()'s "Store not default-constructible and .store() never called" fail-closed path) fires for a
+// real non-default-constructible type, not just a hypothetical. Never actually instantiated -- B29
+// only needs `std::default_initializable<NoDefaultStore>` to be false.
+struct NoDefaultStore {
+    explicit NoDefaultStore(int) {}
+};
+
 }  // namespace
 
 namespace {
@@ -147,6 +202,7 @@ int main() {
     using namespace agentengine;
     using quickstart::ComposedQuickstartSessionBuilder;
     using quickstart::OpenAiSessionBuilder;
+    using quickstart::RawQuickstartSessionBuilder;
 
     // §2b's own env-var setup, reused for B14-B17 (same value B3+ already use).
 #if defined(_WIN32)
@@ -958,6 +1014,86 @@ int main() {
               "first attempt survived into the successful retry and is being invoked a second, "
               "duplicate time on the wire, exactly the hazard engage()'s own already_engaged guard "
               "exists to prevent");
+    }
+
+    // B26-B29: §2a's `.raw_client_only()` escape hatch, IMPLEMENTED as `RawQuickstartSessionBuilder`
+    // (session_builder.hpp's own top comment). Closes the exact gap B14-B17's own comment above names:
+    // a live, real `start_run()` (driven through `Bundle::ask()`) with a scripted `ChatClientT` and NO
+    // network at all.
+    {
+        // ---- B26: happy path -- no .store() call at all; build() default-constructs one since
+        // InMemorySecretStore is default-constructible. Also proves .grant() reaches capabilities(),
+        // same as the base builder's own equivalent check above -- this builder has no auto-granted
+        // cap::Secret (there is no credential slot), so capabilities().size() reflects ONLY the
+        // explicit grant.
+        auto built = RawQuickstartSessionBuilder(ScriptedChatClient{})
+                         .session_id("s-b26")
+                         .grant(Capability{cap::FsRead{"scratch", "", std::nullopt}})
+                         .build();
+        check(built.has_value(), "B26: build() succeeds with a scripted ChatClientT and no .store() call");
+        if (built.has_value()) {
+            check(built->session().has_chat_client(),
+                  "B26: the built session has a ChatClientT emplaced (the bare ScriptedChatClient, no "
+                  "ModelCallGateway wrapping at all)");
+            check(built->capabilities().size() == 1,
+                  "B26: capabilities() holds ONLY the explicit .grant() -- no implicit cap::Secret, "
+                  "since this builder has no credential slot to auto-grant one for");
+            check(built->capabilities().contains(
+                      Capability{cap::FsRead{"scratch", "", std::nullopt}}),
+                  "B26: the explicit .grant() is really present");
+
+            // ---- B27 (THE GAP THIS CLOSES): drive a REAL, live start_run() via .ask() -- no network,
+            // no mock at the transport layer, the actual run loop end to end against a scripted
+            // ChatClientT. This is exactly what B14-B17's own comment says was previously impossible.
+            auto reply = built->ask("hello");
+            check(reply.has_value(), "B27: Bundle::ask() completes a real, live run against a scripted "
+                                      "ChatClientT with zero network dependency");
+            if (reply.has_value()) {
+                check(*reply == "scripted reply",
+                      "B27: the reply text is exactly what ScriptedChatClient::chat() returned -- a "
+                      "real round trip through AgentSession::start_run(), not a stubbed shortcut");
+            }
+        }
+
+        // ---- B28: a second .build() call on the SAME builder fails closed -- with its OWN error code
+        // (`already_built`), not the base builder's `no_store` -- because a bare `!store_` check alone
+        // cannot distinguish "genuinely never supplied" from "already moved out by a prior build() call"
+        // here (unlike the base builder, this one has no credential to also gate on). Without the
+        // explicit `built_` flag, a second call would silently default-construct a FRESH Store and move
+        // an already-moved-from `client_` into a second session instead of failing.
+        {
+            auto builder = RawQuickstartSessionBuilder(ScriptedChatClient{});
+            auto first   = builder.build();
+            check(first.has_value(), "B28 setup: first build() call succeeds");
+            auto second = builder.build();
+            check(!second.has_value(), "B28: second build() call on the SAME builder fails closed");
+            if (!second.has_value()) {
+                check(second.error().code == "raw_quickstart_builder.already_built",
+                      "B28: the failure is specifically 'already_built', not 'no_store' -- proving the "
+                      "dedicated single-use guard fired, not a coincidental empty-store false negative");
+            }
+            if (first.has_value()) {
+                auto reply = first->ask("still alive");
+                check(reply.has_value() && *reply == "scripted reply",
+                      "B28: the first, successful Bundle remains fully usable after the second call "
+                      "fails");
+            }
+        }
+
+        // ---- B29: Store genuinely not default-constructible, and .store() never called -- build()
+        // fails closed instead of the (impossible-here) default-construct fallback B26 relies on.
+        {
+            auto builder    = RawQuickstartSessionBuilder<ScriptedChatClient, NoDefaultStore>(
+                ScriptedChatClient{});
+            auto built_b29 = builder.build();
+            check(!built_b29.has_value(),
+                  "B29: build() fails closed when Store is not default-constructible and .store() was "
+                  "never called");
+            if (!built_b29.has_value()) {
+                check(built_b29.error().code == "raw_quickstart_builder.no_store",
+                      "B29: the failure is specifically 'no_store'");
+            }
+        }
     }
 
     std::fprintf(stderr, g_failures == 0 ? "test_session_builder: ALL PASS\n"

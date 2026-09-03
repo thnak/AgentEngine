@@ -6,9 +6,12 @@
 // SessionBuilder` -- resolved during a 4th pass, see finding 8 below; a real structural gap, not just
 // unstarted work)/§2c (capability+secret sugar, generalized past the draft's own original sketch --
 // see finding 3 below)/§2d (approval/policy sugar, corrected from its original sketch -- see finding 5
-// below)/§3 (the Store-lifetime finding)/§4 (`.ask()`). Explicitly NOT implemented here, named rather
-// than silently dropped: `.with_fallback()`/`.with_middleware()`/`.with_content_replay()`, and the
-// draft's own `.raw_client_only()` escape hatch. A convenience layer over already-Reviewed RFCs (002,
+// below)/§3 (the Store-lifetime finding)/§4 (`.ask()`)/§2a's own `.raw_client_only()` escape hatch --
+// IMPLEMENTED 2026-09-03 as `RawQuickstartSessionBuilder<ChatClientT, Store>`, a separate builder type
+// (see its own comment, just above its definition, for why a fluent method on `QuickstartSessionBuilder`
+// itself could not work, and for the two-readings-of-the-draft finding that pass resolved). Explicitly
+// still NOT implemented here, named rather than silently dropped: `.with_fallback()`/`.with_middleware()`/
+// `.with_content_replay()`. A convenience layer over already-Reviewed RFCs (002,
 // 004, 005, 006, 007, 018), not itself a new invariant or capability shape, so it has no ADR of its
 // own -- round 1 found findings 1-2; round 2, specifically against finding 3's own fix, found finding
 // 3's own `.store(Store)` shape was itself wrong (finding 4); round 3, specifically against finding
@@ -608,6 +611,8 @@ private:
     template <Provider, class, class... Ms>
         requires (sizeof...(Ms) >= 1)
     friend class ComposedQuickstartSessionBuilder;
+    template <agentengine::ChatClient, class>
+    friend class RawQuickstartSessionBuilder;
 
     Bundle(std::unique_ptr<Store> store, std::unique_ptr<agentengine::CapabilitySet> capabilities,
            std::unique_ptr<SessionT> session)
@@ -868,6 +873,181 @@ private:
 
 using OpenAiSessionBuilder    = QuickstartSessionBuilder<Provider::openai>;
 using AnthropicSessionBuilder = QuickstartSessionBuilder<Provider::anthropic>;
+
+// §2a "Escape hatch, not a second default" -- IMPLEMENTED as a separate builder type, not a fluent
+// method on QuickstartSessionBuilder itself, for the same structural reason §2b's history/context slot
+// needed a separate ComposedQuickstartSessionBuilder (see that section's own comment below): a caller-
+// supplied ChatClientT is a genuinely different, unrelated C++ type from `Primary`/`ModelCallGateway<
+// Primary>` -- there is no single `build()` return type a runtime toggle on `QuickstartSessionBuilder`
+// could produce (the exact "two different C++ types, no clean single build() type" constraint this
+// file's own §2b comment names).
+//
+// Two readings of the design draft's own `.raw_client_only()` prose were possible: (a) keep the SAME
+// real backend (`Primary`, from `.openai()`/`.anthropic()`) but skip only `ModelCallGateway`'s retry/
+// circuit-breaker wrapping, or (b) let the host install an entirely different, already-constructed
+// `ChatClientT` (a scripted double, e.g. `JokerChatClient` from `examples/01_hello_agent.cpp`), bypassing
+// `Provider`/credentials/`ModelCallGateway` altogether. Reading (a) alone does not resolve what this
+// file's own top comment and `tests/test_session_builder.cpp`'s comment on B14-B17 both say they are
+// blocked on -- driving a live `start_run()` in a test with NO real network -- since a bare `Primary` is
+// still a real OpenAI/Anthropic backend that still does real HTTP. `RawQuickstartSessionBuilder` below
+// implements reading (b), the one that actually closes that gap; project-owner confirmed this reading
+// 2026-09-03 when the ambiguity was surfaced. Reading (a) (stripping `ModelCallGateway` off an otherwise
+// real `.openai()`/`.anthropic()`-configured `Primary`) remains unimplemented, named here rather than
+// silently conflated with this class -- a real, separate, smaller gap if a host ever wants it.
+//
+// Bypasses `Provider`/`.openai()`/`.anthropic()`/credential machinery entirely -- the caller already
+// owns a fully-constructed `ChatClientT`, so there is no backend to select and no `SecretRef` to
+// resolve here. `Store` stays a template parameter (defaulted to `InMemorySecretStore`) purely so
+// `Bundle<ChatClientT, Store>` has something to heap-own for the constructed session's lifetime -- see
+// `.store()`'s own comment below for when a host actually needs to supply one. `ChatClientT` is
+// concept-constrained (`agentengine::ChatClient`, `core/chat_client.hpp`) so an unsatisfying type fails
+// at this class's own instantiation with a named diagnostic, not a cascade of opaque errors deep inside
+// `AgentSession<ChatClientT, ...>`.
+//
+// Deliberately duplicates QuickstartSessionBuilder's session_id()/principal()/max_turns()/token_budget()/
+// store()/grant()/approve_tools()/policy() rather than sharing them through a common base -- the same,
+// already-named simplification §2b's own comment makes for the identical reason: extracting a shared
+// base would mean touching the already-shipped, already-red-teamed §2a class too, a larger, separate-
+// risk refactor. `.declare_capabilities()`/`.endpoint()`/`.api_key()`/`.api_key_from_env()` are NOT
+// duplicated here -- they exist only to configure `Primary`'s own construction, which this builder never
+// does.
+template <agentengine::ChatClient ChatClientT, class Store = agentengine::InMemorySecretStore>
+class RawQuickstartSessionBuilder {
+public:
+    using BundleT = Bundle<ChatClientT, Store>;
+
+    explicit RawQuickstartSessionBuilder(ChatClientT client) : client_(std::move(client)) {}
+
+    RawQuickstartSessionBuilder& session_id(std::string id) {
+        session_id_ = std::move(id);
+        return *this;
+    }
+    RawQuickstartSessionBuilder& principal(agentengine::Principal p) {
+        principal_ = std::move(p);
+        return *this;
+    }
+    // Same divergence from AgentSession's own raw `std::nullopt` default, and the same reason, as
+    // QuickstartSessionBuilder::max_turns()'s own comment (this file's top comment, finding 7) -- a
+    // scripted ChatClientT that keeps returning an approval-denied tool call can hang a run exactly the
+    // same way a real backend can.
+    RawQuickstartSessionBuilder& max_turns(std::optional<std::uint64_t> n) {
+        max_turns_ = n;
+        return *this;
+    }
+    RawQuickstartSessionBuilder& token_budget(std::optional<std::uint64_t> n) {
+        token_budget_ = n;
+        return *this;
+    }
+
+    // Optional. Most scripted `ChatClientT` fixtures (e.g. `JokerChatClient`) never reference a Store at
+    // all -- `build()` below default-constructs one (when `Store` is default-constructible) if this was
+    // never called, so a host driving a test double never has to think about secrets. A host whose
+    // `ChatClientT` (or a later-granted capability) DOES need a real Store calls this explicitly, same
+    // emplace-forwarding shape as `QuickstartSessionBuilder::store()` (see that method's own comment for
+    // why emplace rather than a by-value parameter -- identical reasoning, unchanged here).
+    template <class... Args>
+    RawQuickstartSessionBuilder& store(Args&&... args) {
+        store_ = std::make_unique<Store>(std::forward<Args>(args)...);
+        return *this;
+    }
+
+    // Escape hatch for anything the constructed session's tools need authorized (FsRead, NativeExec,
+    // ...) -- host-authored only, same I2/I3 discipline as QuickstartSessionBuilder::grant()'s own
+    // comment. There is no auto-granted `cap::Secret` here (no credential slot exists on this builder).
+    RawQuickstartSessionBuilder& grant(agentengine::Capability cap) {
+        grants_.push_back(std::move(cap));
+        return *this;
+    }
+    // Same shape and same I2 narrows-never-widens guarantee as QuickstartSessionBuilder::approve_tools()
+    // -- see that method's own comment for the full account.
+    RawQuickstartSessionBuilder& approve_tools(std::vector<std::string> tool_names) {
+        approved_tool_names_ = std::move(tool_names);
+        return *this;
+    }
+    RawQuickstartSessionBuilder& policy(agentengine::PolicyDecider decide) {
+        policy_decider_ = std::move(decide);
+        return *this;
+    }
+
+    // Fails closed -- a `result<BundleT>` error, never a thrown exception or a silent partial build --
+    // on a second call (this builder is single-use, same as QuickstartSessionBuilder::build()'s own
+    // "MOVES store_/client_ out" behavior; unlike that class, `!store_` alone cannot detect a repeat call
+    // here, since a repeat call would otherwise just default-construct a FRESH Store and silently move
+    // an already-moved-from `client_` into a second session -- an explicit `built_` flag closes that gap
+    // rather than relying on the same store-emptiness signal the base builder uses) -- and when `Store`
+    // is not default-constructible and `.store(...)` was never called.
+    //
+    // Code-review finding, fixed before this file's own follow-up-round row: `built_` used to flip
+    // BEFORE `capabilities`/`session` were allocated (both `std::make_unique<...>`, both a real
+    // `std::bad_alloc` path per `AgentSession::emplace_chat_client`'s own declaration comment,
+    // `rt/agent_session.hpp`) -- a transient allocation failure there permanently bricked the builder
+    // (retry always hit `already_built`) even though `client_` had NOT been touched yet and a retry
+    // would have been perfectly safe. `built_` now flips immediately before `client_` is actually
+    // consumed (`emplace_chat_client(std::move(client_))` below), not one statement earlier: any throw
+    // BEFORE that point leaves `client_` (and `store_`) untouched, so `built_` staying `false` correctly
+    // permits a real retry; any throw AT OR AFTER that point means `client_` is gone regardless, so
+    // `built_` must already read `true` to stop a retry from moving an already-moved-from client into a
+    // second session -- the exact hazard this flag exists to prevent in the first place.
+    [[nodiscard]] agentengine::result<BundleT> build() {
+        if (built_) {
+            return std::unexpected(agentengine::error{
+                agentengine::failure_class::contract,
+                "build() already called on this RawQuickstartSessionBuilder -- it is single-use (the "
+                "supplied ChatClientT and Store are both moved out on the first call)",
+                "raw_quickstart_builder.already_built"});
+        }
+        if (!store_) {
+            if constexpr (std::default_initializable<Store>) {
+                store_ = std::make_unique<Store>();
+            } else {
+                return std::unexpected(agentengine::error{
+                    agentengine::failure_class::contract,
+                    "no Store supplied and Store is not default-constructible -- call .store(args...) "
+                    "before build()",
+                    "raw_quickstart_builder.no_store"});
+            }
+        }
+
+        // grant_root() takes std::vector<Capability> BY VALUE -- moved, not copied, since grants_ is
+        // never read again after this line and this whole method runs at most once per instance
+        // (guarded by built_ above/below).
+        auto capabilities = std::make_unique<agentengine::CapabilitySet>(
+            agentengine::CapabilitySet::grant_root(std::move(grants_)));
+
+        auto session = std::make_unique<typename BundleT::SessionT>();
+        session->initialize(session_id_, principal_, token_budget_, max_turns_);
+        built_ = true;  // see this method's own doc comment for exactly why HERE, not earlier
+        session->emplace_chat_client(std::move(client_));
+        session->set_capabilities(capabilities.get());
+        session->set_static_instructions(agentengine::trust::push_side_summary(*capabilities));
+
+        if (approved_tool_names_.has_value()) {
+            std::vector<std::string> const allow = *approved_tool_names_;
+            session->set_approval_decider(
+                [allow](agentengine::Principal const&, std::string_view tool_name,
+                        std::string const&) {
+                    return std::find(allow.begin(), allow.end(), tool_name) != allow.end();
+                });
+        }
+        if (policy_decider_) {
+            session->set_policy_decider(policy_decider_);
+        }
+
+        return BundleT(std::move(store_), std::move(capabilities), std::move(session));
+    }
+
+private:
+    ChatClientT client_;
+    std::string session_id_ = "s-quickstart";
+    agentengine::Principal principal_{"p-quickstart", ""};
+    std::unique_ptr<Store> store_;
+    std::vector<agentengine::Capability> grants_;
+    std::optional<std::vector<std::string>> approved_tool_names_;
+    agentengine::PolicyDecider policy_decider_;
+    std::optional<std::uint64_t> max_turns_ = std::uint64_t{25};
+    std::optional<std::uint64_t> token_budget_;
+    bool built_ = false;
+};
 
 // §2b -- history/context composition. `Ms...` is a compile-time pack chosen ONCE, at this builder's
 // own declaration, the same reason `Provider` is (§2a's own top-of-class comment): a runtime toggle

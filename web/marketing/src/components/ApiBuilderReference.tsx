@@ -106,6 +106,20 @@ const copy = {
         it in full.
       </>
     ),
+    s2RawNote: (
+      <>
+        <strong>A second escape hatch installs a caller-supplied ChatClient directly.</strong>{" "}
+        <code>RawQuickstartSessionBuilder&lt;ChatClientT, Store&gt;</code> takes an already-
+        constructed, concept-conforming <code>ChatClientT</code> (a scripted double like{" "}
+        <code>JokerChatClient</code>, <code>examples/01_hello_agent.cpp</code>) and bypasses{" "}
+        <code>Provider</code>/<code>.openai()</code>/<code>.anthropic()</code>/credential resolution
+        entirely — there is no backend to select and no <code>SecretRef</code> to resolve when the
+        client already exists. This is what closes the real gap named in{" "}
+        <code>tests/test_session_builder.cpp</code>'s own comment on B14-B17: a live{" "}
+        <code>.ask()</code> round trip through <code>AgentSession::start_run()</code> with zero
+        network dependency, proven end to end by that file's B26-B29.
+      </>
+    ),
 
     s3Eyebrow: "core/session_builder.hpp:442-643 — Bundle",
     s3Heading: "Bundle::ask() and .ask_stream(): the one-shot round trip",
@@ -299,6 +313,20 @@ const copy = {
         sẻ chúng qua một lớp cơ sở chung — một đơn giản hóa có chủ ý, được nêu tên ngay trong chú
         thích đầu file của header. Trang này chỉ dành cho nó một đoạn văn; design draft và file
         test bên dưới trình bày đầy đủ hơn.
+      </>
+    ),
+    s2RawNote: (
+      <>
+        <strong>Một lối thoát thứ hai cài trực tiếp một ChatClient do caller tự cung cấp.</strong>{" "}
+        <code>RawQuickstartSessionBuilder&lt;ChatClientT, Store&gt;</code> nhận một{" "}
+        <code>ChatClientT</code> đã được dựng sẵn, thỏa mãn concept (một client kịch bản như{" "}
+        <code>JokerChatClient</code>, <code>examples/01_hello_agent.cpp</code>) và bỏ qua hoàn toàn{" "}
+        <code>Provider</code>/<code>.openai()</code>/<code>.anthropic()</code>/việc phân giải
+        credential — không có backend nào cần chọn, không có <code>SecretRef</code> nào cần phân
+        giải khi client đã tồn tại sẵn. Đây chính là thứ đóng lại lỗ hổng thật được nêu tên trong chú
+        thích của <code>tests/test_session_builder.cpp</code> về B14-B17: một vòng khứ hồi{" "}
+        <code>.ask()</code> sống qua <code>AgentSession::start_run()</code> không phụ thuộc mạng,
+        được B26-B29 của file đó chứng minh trọn vẹn.
       </>
     ),
 
@@ -505,7 +533,11 @@ export function ApiBuilderReference() {
           </RevealItem>
 
           <RevealItem>
-            <Cite path="docs/planning/quickstart-session-builder-design-draft.md" label="docs/planning/quickstart-session-builder-design-draft.md — §2b · tests/test_session_builder.cpp" />
+            <p className="gs-note" style={{ marginTop: 12 }}>{t.s2RawNote}</p>
+          </RevealItem>
+
+          <RevealItem>
+            <Cite path="docs/planning/quickstart-session-builder-design-draft.md" label="docs/planning/quickstart-session-builder-design-draft.md — §2a/§2b · tests/test_session_builder.cpp" />
           </RevealItem>
         </RevealGroup>
 

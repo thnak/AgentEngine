@@ -40,8 +40,12 @@ same honesty level as `docs/planning/tool-optimizer-provider-design-draft.md` an
 model-call-gateway-routing-design-draft.md`. Real, compiling, passing code:
 `include/agentengine/core/session_builder.hpp`, `tests/test_session_builder.cpp` (65/65 checks,
 Windows/MSVC, `AGENTENGINE_WITH_HTTPS=ON`, full suite 221/221 `ctest -LE live-network`). Still not
-implemented: `.with_fallback()`/`.with_middleware()`/`.with_content_replay()`, and this draft's own
-`.raw_client_only()` escape hatch — named in the header's own top comment, not silently dropped.
+implemented: `.with_fallback()`/`.with_middleware()`/`.with_content_replay()`. This draft's own
+`.raw_client_only()` escape hatch is now IMPLEMENTED (2026-09-03) as `RawQuickstartSessionBuilder<
+ChatClientT, Store>` (`session_builder.hpp`, right after the `OpenAiSessionBuilder`/
+`AnthropicSessionBuilder` aliases) — see §0k below and that class's own header comment for the full
+account, including the two-readings ambiguity this draft's own §2a prose left open and how it was
+resolved.
 
 ## §0b. Red-team pass against the real code — two findings fixed, one still open
 
@@ -522,6 +526,93 @@ held up; finding 13's own fix held up, but the round found one new MEDIUM bug (1
 class it was told to also stress, and two LOW findings (16, 17) in the mechanism finding 13 lives
 inside.** Finding 15 has not yet been independently re-examined a second time.
 
+## §0k. `.raw_client_only()` implemented (2026-09-03) — resolving a real ambiguity this draft's own §2a prose left open
+
+This section's own §2a prose ("bypasses `ModelCallGateway` entirely and installs the bare client
+directly — for a deterministic fake (`JokerChatClient`...) or a test double") reads two different ways:
+
+1. **Reading (a), "unwrap the same real backend":** keep `Primary` (`OpenAIChatClient`/
+   `AnthropicChatClient`, from `.openai()`/`.anthropic()`), skip only `ModelCallGateway`'s retry/
+   circuit-breaker wrapping around it. A small, well-scoped change (one NTTP + one method + an
+   `if constexpr` in `build()`).
+2. **Reading (b), "install a caller-supplied ChatClient":** let the host hand over an entirely
+   different, already-constructed `ChatClientT` (a scripted double, unrelated to `Provider`), bypassing
+   `.openai()`/`.anthropic()`/credential machinery altogether.
+
+These are NOT the same feature, and only one of them resolves what two other files in this codebase
+independently say `.raw_client_only()`'s absence blocks: `tests/test_session_builder.cpp`'s own comment
+on B14-B17 ("it has no `.raw_client_only()` escape hatch... to substitute a scripted client without real
+network") and `decisions/ADR-102-identity-native-sandbox-implementation-phase-1.md:1218`'s identical
+framing. Reading (a) alone does NOT close that gap — a bare `Primary` is still a real OpenAI/Anthropic
+backend that still does real HTTP the instant `.ask()` is called. Only reading (b) does.
+
+Project owner confirmed reading (b) (2026-09-03, ambiguity surfaced via `AskUserQuestion`) as the
+intended, larger design — explicitly accepting the bigger scope (a new builder type, not a fluent method
+on `QuickstartSessionBuilder`) over the smaller reading that would have left the B14-B17/ADR-102 claim
+still false after "implementing" `.raw_client_only()`.
+
+**Implemented as `RawQuickstartSessionBuilder<ChatClientT, Store>`** (`session_builder.hpp`, right after
+the `OpenAiSessionBuilder`/`AnthropicSessionBuilder` aliases) — a separate builder type, not a fluent
+`QuickstartSessionBuilder` method, for the identical structural reason §2b needed
+`ComposedQuickstartSessionBuilder`: a caller-supplied `ChatClientT` is a genuinely different C++ type
+from `Primary`/`ModelCallGateway<Primary>`, so there is no single `build()` return type a runtime toggle
+on the existing class could produce. `ChatClientT` is concept-constrained
+(`agentengine::ChatClient`, `core/chat_client.hpp`) for a named diagnostic instead of a template-error
+cascade. Duplicates `QuickstartSessionBuilder`'s `session_id()`/`principal()`/`max_turns()`/
+`token_budget()`/`store()`/`grant()`/`approve_tools()`/`policy()` rather than sharing them through a
+common base — the same, already-named simplification §2b's own comment makes, for the identical reason
+(extracting a shared base would mean touching the already-shipped, already-red-teamed §2a class too, a
+larger, separate-risk refactor). Does NOT duplicate `.declare_capabilities()`/`.endpoint()`/`.api_key()`/
+`.api_key_from_env()` — those exist only to configure `Primary`'s construction, which this builder never
+does; there is no credential slot on this class at all, so `build()`'s `CapabilitySet` holds only
+explicit `.grant()` calls, never an auto-derived `cap::Secret`.
+
+**A real correctness gap found and fixed during implementation, not anticipated by this section's own
+sketch above:** unlike `QuickstartSessionBuilder::build()`, `!store_` alone cannot detect a repeat
+`.build()` call here. The base builder's double-build guard works because `.api_key(...)` is mandatory
+and `store_` moving out is the ONLY way `!store_` becomes true after a successful build — so a second
+call reliably hits `no_store`. `RawQuickstartSessionBuilder` has no mandatory credential, and `Store`
+defaults to `InMemorySecretStore` (default-constructible) — without an explicit guard, a second
+`.build()` call would silently default-construct a FRESH `Store` (since `store_` was moved out by the
+first call) and move an already-moved-from `client_` into a second session, producing a Bundle wrapping
+a moved-from `ChatClientT` instead of failing closed. **Fixed**: an explicit `built_` flag fails closed
+with `raw_quickstart_builder.already_built` — a DIFFERENT error code from the base builder's `no_store`,
+deliberately, so a caller (or a test) can tell which guard actually fired rather than reading `no_store`
+as evidence the dedicated check ran.
+
+**Round 2 (code review, same day): `built_` was itself flipped too early.** The first version set
+`built_ = true` right after the `!store_` check, BEFORE `capabilities`/`session` were allocated — both a
+real `std::bad_alloc` path (`std::make_unique<...>`, per `AgentSession::emplace_chat_client`'s own
+declaration comment, `rt/agent_session.hpp`). A transient allocation failure there permanently bricked
+the builder (every retry hit `already_built` forever) even though `client_` had not been touched yet and
+a retry would have been perfectly safe — the doc comment's own promise ("never a silent partial build")
+did not actually hold for this specific throw window. **Fixed**: `built_` now flips immediately before
+`client_` is actually consumed (`emplace_chat_client(std::move(client_))`), not one statement earlier —
+any throw BEFORE that point leaves `client_`/`store_` untouched, so `built_` staying `false` correctly
+permits a real retry; any throw AT OR AFTER that point means `client_` is gone regardless, so `built_`
+must already read `true` to stop a retry from moving an already-moved-from client into a second session.
+Same pass also fixed a minor, real inefficiency: `CapabilitySet::grant_root(grants_)` copied `grants_`
+where `std::move(grants_)` is free and correct (`grants_` is never read again, and this code path runs
+at most once per instance).
+
+Regression-proofed: `tests/test_session_builder.cpp`'s new B26-B29 (5th pass) — B26 proves the happy
+path (default-constructed `Store`, `.grant()` reaching `capabilities()`); **B27 is the proof that
+actually closes the B14-B17/ADR-102 gap**, driving a REAL, live `AgentSession::start_run()` (via
+`Bundle::ask()`) against a scripted `ScriptedChatClient` fixture (same shape as `JokerChatClient`, kept
+test-local since `examples/` isn't linked into the test binary) with zero network dependency and reading
+back the exact scripted reply text; B28 proves the double-build guard fires with its own error code, and
+that the first, successful `Bundle` remains fully usable afterward; B29 proves the `no_store` fail-closed
+path for a genuinely non-default-constructible `Store` (a local `NoDefaultStore` fixture). Full suite
+green (`test_session_builder` 93/93 checks standalone, 0 failures; full-tree rebuild and the rest of
+`ctest -LE live-network` unaffected — 12 pre-existing, unrelated Docker/native-jail/sandbox-timing
+failures in that run, none linking `session_builder.hpp`) on Windows/MSVC, `AGENTENGINE_WITH_HTTPS=ON`.
+
+Reading (a) (stripping `ModelCallGateway` off an otherwise real `.openai()`/`.anthropic()`-configured
+`Primary`) remains unimplemented — a real, smaller, separate gap if a host ever specifically wants
+"real backend, no retry/breaker," named here rather than silently conflated with this class. Not yet
+independently red-teamed a second time (this is the first pass); a candidate follow-up, matching this
+draft's own established discipline for a change of this size.
+
 ## 0. Correction found during implementation — §3's own fix does not compile as written
 
 **`AgentSession` cannot be moved or copied at all.** It holds `rt::AsyncMutex session_mutex_`
@@ -631,6 +722,11 @@ installs the bare client directly — for a deterministic fake (`JokerChatClient
 `examples/01_hello_agent.cpp`) or a test double, where retry/breaker semantics are meaningless noise.
 Named explicitly as escape hatch, not a coequal option, so a reader doesn't reach for it by habit in
 production code.
+
+**IMPLEMENTED, 5th pass (2026-09-03): as `RawQuickstartSessionBuilder<ChatClientT, Store>`, a separate
+builder type, resolving a real ambiguity this very paragraph's prose left open — see §0k below for the
+full account (two competing readings, which one project-owner confirmed, the correctness gap found and
+fixed during implementation, and the regression proof).
 
 ### 2b. `HistoryProviderT`/context slot — RESOLVED and red-teamed three times (rounds 4-6, §0f-§0h), see findings 8-12
 
