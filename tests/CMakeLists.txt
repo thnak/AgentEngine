@@ -1590,6 +1590,19 @@ target_link_libraries(test_workflow_fanin_concurrent_failure_policy_fix PRIVATE
 add_test(NAME test_workflow_fanin_concurrent_failure_policy_fix
   COMMAND test_workflow_fanin_concurrent_failure_policy_fix)
 
+# ---- Characterization test pinning a real, DIFFERENT, currently-unfixed gap than the one above: an
+# ordinary `fan_in` target does not wait for every declared source before dispatching -- when two
+# sources resolve at genuinely different round counts (no failure/fallback involved at all), the
+# target dispatches TWICE, and the second invocation silently overwrites the first. Found live via
+# tests/test_workflow_research_pipeline_large_context_live_e2e.cpp, see this file's own top comment
+# for the full trace.
+add_executable(test_workflow_fanin_uneven_round_sources_gap
+  test_workflow_fanin_uneven_round_sources_gap.cpp)
+target_link_libraries(test_workflow_fanin_uneven_round_sources_gap PRIVATE
+  agentengine::core agentengine_warnings)
+add_test(NAME test_workflow_fanin_uneven_round_sources_gap
+  COMMAND test_workflow_fanin_uneven_round_sources_gap)
+
 # ---- ADR-037 Phase 3 -- routing behavior (fan_in/switch_case/multi_selection/cyclic, plus retry
 # composing with each) ported from the two retired Quark-actor-based
 # test_workflow_patterns(.cpp)/test_workflow_patterns_resilience(.cpp) onto rt::WorkflowSupervisor
