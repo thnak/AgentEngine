@@ -1989,6 +1989,34 @@ private:
                 case edge_failure_policy::retry:
                     return route_result::workflow_failed;
 
+                // KNOWN GAP, found live 2026-09-03 via tests/test_workflow_research_pipeline_live_e2e.cpp
+                // (a production-shaped concurrent research pipeline against real OpenRouter calls),
+                // pinned offline by tests/test_workflow_fanin_concurrent_failure_policy_gap.cpp: NEITHER
+                // `propagate` NOR `fallback` composes correctly with a `fan_in` target that a SIBLING
+                // executor ALSO delivers to normally in the SAME round. `deliver_once()` below (unlike
+                // the normal-path merge loop just below this switch, which correctly APPENDS onto an
+                // existing `next` entry for the same target) is a plain "insert if absent, else no-op" --
+                // so:
+                //   - `propagate`: if a succeeding sibling's normal delivery already created the fan_in
+                //     target's entry in `next` THIS round (order-dependent -- real concurrent dispatch
+                //     order is not controlled), the failure marker is SILENTLY DROPPED with no trace.
+                //     If the failing executor happens to be processed FIRST instead, the marker becomes
+                //     the initial entry and siblings' later merges correctly append onto it -- i.e. this
+                //     is not just wrong, it is ORDER-DEPENDENT wrong.
+                //   - `fallback`: the recovery executor is a DIFFERENT node with its own edge back to
+                //     the shared target, which can only fire in a LATER round -- so the fan_in target
+                //     runs TWICE (once with the succeeding siblings' content, once with just the
+                //     recovery's), and `WorkflowResult::partial`'s "at most one entry per executor_id"
+                //     rule means the SECOND invocation's output silently overwrites/discards the first.
+                // D4 in tests/test_rt_workflow_supervisor_failure_policies.cpp only ever exercises
+                // `fallback` on a single-source (non-fan_in-shared) edge, so this combination was never
+                // gate-proven despite 014 §8 G1's "each pattern... under injected executor failures"
+                // language. NOT fixed here -- this is hot-path/correctness-critical routing logic used
+                // by every workflow pattern, and CLAUDE.md reserves changes here for a real
+                // design→red-team→prove→judge pass, not an inline patch discovered mid-task. Disclosed,
+                // not silently worked around: `tests/test_workflow_research_pipeline_live_e2e.cpp`'s own
+                // production graph deliberately does NOT rely on either policy for its one degraded
+                // branch, for exactly this reason.
                 case edge_failure_policy::propagate:
                     for (auto const& edge : graph_.edges) {
                         if (edge.from == from_id) deliver_once(next, index_of(edge.to), marker);

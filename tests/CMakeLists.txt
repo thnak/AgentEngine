@@ -1211,6 +1211,19 @@ if(AGENTENGINE_WITH_HTTPS)
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_test(NAME test_session_builder_openrouter_live_e2e COMMAND test_session_builder_openrouter_live_e2e)
   set_tests_properties(test_session_builder_openrouter_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
+
+  # ---- A production-shaped multi-agent workflow (planner + concurrent specialists + fan-in + writer
+  # + human publish gate + checkpoint/resume across a simulated restart), driven against REAL
+  # OpenRouter calls -- see the .cpp's own top comment for the three specific bug classes this hunts
+  # for that an offline/synthetic workflow test cannot reach: real failure-classification of a live
+  # response, fan-in correctness under real jittered concurrency, and checkpoint/resume not re-doing
+  # already-paid-for live work.
+  add_executable(test_workflow_research_pipeline_live_e2e test_workflow_research_pipeline_live_e2e.cpp)
+  target_link_libraries(test_workflow_research_pipeline_live_e2e PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_workflow_research_pipeline_live_e2e COMMAND test_workflow_research_pipeline_live_e2e)
+  set_tests_properties(test_workflow_research_pipeline_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
 endif()
 
 # ---- Gap-3 fix (2026-08-14, decisions/ADR-045-*.md) -- core/json_schema_validator.hpp, proving
@@ -1542,6 +1555,17 @@ add_test(NAME test_rt_workflow_live_view COMMAND test_rt_workflow_live_view)
 add_executable(test_rt_workflow_supervisor_failure_policies test_rt_workflow_supervisor_failure_policies.cpp)
 target_link_libraries(test_rt_workflow_supervisor_failure_policies PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_workflow_supervisor_failure_policies COMMAND test_rt_workflow_supervisor_failure_policies)
+
+# ---- Characterization test pinning a real gap D4 above never exercised: `propagate`/`fallback` on a
+# `fan_in` edge whose target a SIBLING also delivers to normally in the SAME round -- found live via
+# tests/test_workflow_research_pipeline_live_e2e.cpp, see this file's own top comment for the full
+# root-cause trace (route_from()'s deliver_once() vs the normal merge loop, workflow_supervisor.hpp).
+add_executable(test_workflow_fanin_concurrent_failure_policy_gap
+  test_workflow_fanin_concurrent_failure_policy_gap.cpp)
+target_link_libraries(test_workflow_fanin_concurrent_failure_policy_gap PRIVATE
+  agentengine::core agentengine_warnings)
+add_test(NAME test_workflow_fanin_concurrent_failure_policy_gap
+  COMMAND test_workflow_fanin_concurrent_failure_policy_gap)
 
 # ---- ADR-037 Phase 3 -- routing behavior (fan_in/switch_case/multi_selection/cyclic, plus retry
 # composing with each) ported from the two retired Quark-actor-based
