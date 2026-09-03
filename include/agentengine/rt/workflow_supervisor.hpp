@@ -6,9 +6,11 @@
 //
 // SCOPE OF SLICE 1 (matching the discipline `rt::AgentSession`'s own Slice 1 established): the core
 // superstep loop -- `run_workflow()`/`resume_workflow()`/`continue_workflow()`'s full `execute()`
-// and every pure routing helper (`route_from`/`policy_for`/`edge_fires`/`deliver_once`/
+// and every pure routing helper (`route_from`/`policy_for`/`edge_fires`/`deliver_or_merge`/
 // `record_partial`/`index_of`/`is_output_selected`/`is_retryable`/`mint_interaction`/`finish` -- all
-// already zero-Quark-dependency in the original, ported near-verbatim).
+// already zero-Quark-dependency in the original, ported near-verbatim). `deliver_to_fan_in`/
+// `register_fan_in_holds`/`RunState::held_fan_in` (GitHub issue #52 fix, 2026-09-03) are new, not
+// part of the original port.
 //
 // SLICE 2 ADDITION (checkpointing): `to_record()`/`restore_from_record()`, `snapshot_record()`, and
 // the free functions `save_workflow_checkpoint`/`load_workflow_checkpoint`, built against
@@ -409,6 +411,17 @@ struct ExecutorOutputRecord {
     agentengine::Message  payload;
 };
 
+// GitHub issue #52 fix: checkpoint-record twin of `WorkflowSupervisor::HeldFanIn` -- see that
+// struct's own comment. Optional on read (default: empty), matching this record's existing
+// stall_streak/resets_used precedent for a field added after the record shape was first shipped.
+// ae-naming-lint: allow HeldFanInRecord — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
+struct HeldFanInRecord {
+    std::uint64_t              executor_index = 0;
+    agentengine::Message       payload;
+    bool                        seeded = false;
+    std::vector<std::uint64_t> awaiting_recovery;
+};
+
 // ae-naming-lint: allow OpenPortRecord — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct OpenPortRecord {
     agentengine::Interaction interaction;
@@ -437,6 +450,8 @@ struct RunStateRecord {
     // taken before ADR-149 still decodes.
     std::uint32_t stall_streak = 0;
     std::uint32_t resets_used  = 0;
+    // GitHub issue #52 fix: see HeldFanInRecord's own comment.
+    std::vector<HeldFanInRecord> held_fan_in;
 };
 
 // interaction_to_json()/interaction_from_json() live in interaction_codec.hpp -- shared with
@@ -492,6 +507,50 @@ struct RunStateRecord {
     o.round       = static_cast<std::uint32_t>(round->as_number());
     o.payload     = std::move(*msg);
     return o;
+}
+
+[[nodiscard]] inline agentengine::json::Value held_fan_in_record_to_json(HeldFanInRecord const& h) {
+    std::vector<agentengine::json::Value> awaiting;
+    awaiting.reserve(h.awaiting_recovery.size());
+    for (std::uint64_t const idx : h.awaiting_recovery) {
+        awaiting.push_back(agentengine::json::Value::make_number(static_cast<double>(idx)));
+    }
+    return agentengine::json::Value::make_object({
+        {"executor_index", agentengine::json::Value::make_number(static_cast<double>(h.executor_index))},
+        {"payload", message_to_json(h.payload)},
+        {"seeded", agentengine::json::Value::make_bool(h.seeded)},
+        {"awaiting_recovery", agentengine::json::Value::make_array(std::move(awaiting))},
+    });
+}
+[[nodiscard]] inline agentengine::result<HeldFanInRecord> held_fan_in_record_from_json(
+    agentengine::json::Value const& v) {
+    agentengine::json::Value const* executor_index    = v.find("executor_index");
+    agentengine::json::Value const* payload           = v.find("payload");
+    agentengine::json::Value const* seeded            = v.find("seeded");
+    agentengine::json::Value const* awaiting_recovery = v.find("awaiting_recovery");
+    if (executor_index == nullptr || !executor_index->is_number() || payload == nullptr ||
+        seeded == nullptr || !seeded->is_bool() || awaiting_recovery == nullptr ||
+        !awaiting_recovery->is_array()) {
+        return std::unexpected(agentengine::error{agentengine::failure_class::contract,
+                                                    "malformed HeldFanInRecord",
+                                                    "rt.workflow_supervisor.record.malformed"});
+    }
+    agentengine::result<agentengine::Message> msg = message_from_json(*payload);
+    if (!msg) return std::unexpected(msg.error());
+    HeldFanInRecord h;
+    h.executor_index = static_cast<std::uint64_t>(executor_index->as_number());
+    h.payload         = std::move(*msg);
+    h.seeded          = seeded->as_bool();
+    h.awaiting_recovery.reserve(awaiting_recovery->as_array().size());
+    for (agentengine::json::Value const& item : awaiting_recovery->as_array()) {
+        if (!item.is_number()) {
+            return std::unexpected(agentengine::error{agentengine::failure_class::contract,
+                                                        "malformed HeldFanInRecord.awaiting_recovery entry",
+                                                        "rt.workflow_supervisor.record.malformed"});
+        }
+        h.awaiting_recovery.push_back(static_cast<std::uint64_t>(item.as_number()));
+    }
+    return h;
 }
 
 [[nodiscard]] inline agentengine::json::Value open_port_record_to_json(OpenPortRecord const& p) {
@@ -560,6 +619,10 @@ struct RunStateRecord {
     ports.reserve(rec.ports.size());
     for (auto const& p : rec.ports) ports.push_back(open_port_record_to_json(p));
 
+    std::vector<agentengine::json::Value> held_fan_in;
+    held_fan_in.reserve(rec.held_fan_in.size());
+    for (auto const& h : rec.held_fan_in) held_fan_in.push_back(held_fan_in_record_to_json(h));
+
     return agentengine::json::Value::make_object({
         {"run_counter", agentengine::json::Value::make_number(static_cast<double>(rec.run_counter))},
         {"run_id", agentengine::json::Value::make_string(rec.run_id)},
@@ -573,6 +636,7 @@ struct RunStateRecord {
         {"ports", agentengine::json::Value::make_array(std::move(ports))},
         {"stall_streak", agentengine::json::Value::make_number(static_cast<double>(rec.stall_streak))},
         {"resets_used", agentengine::json::Value::make_number(static_cast<double>(rec.resets_used))},
+        {"held_fan_in", agentengine::json::Value::make_array(std::move(held_fan_in))},
     });
 }
 
@@ -643,6 +707,18 @@ struct RunStateRecord {
     if (agentengine::json::Value const* resets_used = v.find("resets_used");
         resets_used != nullptr && resets_used->is_number()) {
         rec.resets_used = static_cast<std::uint32_t>(resets_used->as_number());
+    }
+    // GitHub issue #52 fix: optional on read -- a pre-fix checkpoint has no such field, and "no
+    // outstanding holds" is the correct value for one, matching stall_streak/resets_used's own
+    // precedent immediately above.
+    if (agentengine::json::Value const* held_fan_in = v.find("held_fan_in");
+        held_fan_in != nullptr && held_fan_in->is_array()) {
+        rec.held_fan_in.reserve(held_fan_in->as_array().size());
+        for (agentengine::json::Value const& item : held_fan_in->as_array()) {
+            auto h = held_fan_in_record_from_json(item);
+            if (!h) return std::unexpected(h.error());
+            rec.held_fan_in.push_back(std::move(*h));
+        }
     }
     return rec;
 }
@@ -1145,6 +1221,14 @@ public:
         }
         rec.stall_streak = stall_streak_;
         rec.resets_used  = resets_used_;
+        rec.held_fan_in.reserve(state_.held_fan_in.size());
+        for (auto const& h : state_.held_fan_in) {
+            std::vector<std::uint64_t> awaiting;
+            awaiting.reserve(h.awaiting_recovery.size());
+            for (std::size_t const idx : h.awaiting_recovery) awaiting.push_back(static_cast<std::uint64_t>(idx));
+            rec.held_fan_in.push_back(HeldFanInRecord{static_cast<std::uint64_t>(h.executor_index), h.payload,
+                                                        h.seeded, std::move(awaiting)});
+        }
         return rec;
     }
 
@@ -1173,6 +1257,14 @@ public:
         }
         stall_streak_ = rec.stall_streak;
         resets_used_  = rec.resets_used;
+        state_.held_fan_in.reserve(rec.held_fan_in.size());
+        for (auto const& h : rec.held_fan_in) {
+            std::vector<std::size_t> awaiting;
+            awaiting.reserve(h.awaiting_recovery.size());
+            for (std::uint64_t const idx : h.awaiting_recovery) awaiting.push_back(static_cast<std::size_t>(idx));
+            state_.held_fan_in.push_back(HeldFanIn{static_cast<std::size_t>(h.executor_index), h.payload,
+                                                     h.seeded, std::move(awaiting)});
+        }
     }
 
     // The in-flight-safe read: acquires run_mutex_ for the whole read, the same I1 guard every
@@ -1189,6 +1281,24 @@ private:
         agentengine::Message  payload;
     };
 
+    // GitHub issue #52 fix: a fan_in target whose `fallback` sibling's recovery executor rejoins it
+    // directly (a `fallback` edge whose named recovery has its own `fan_in` edge back to the SAME
+    // target the failed edge would have delivered to -- 014 §6/§7's "a fallback branch is
+    // drawable... exactly like any other edge") is HELD here across round boundaries instead of
+    // being dispatched early, so it runs exactly once with every contribution merged rather than
+    // twice with the second overwriting the first. Registered by `register_fan_in_holds()` (called
+    // once per round, before any route_from() call that round, so sibling merge order within the
+    // round cannot matter) and resolved/released by `deliver_to_fan_in()`. Only this DIRECT
+    // recovery-rejoins-the-same-target shape is tracked -- a `fallback` whose recovery reaches the
+    // target indirectly (through further executors) is not held and keeps the pre-fix behavior; a
+    // narrower, disclosed scope, not a silent gap.
+    struct HeldFanIn {
+        std::size_t               executor_index = 0;
+        agentengine::Message      payload;
+        bool                       seeded = false;
+        std::vector<std::size_t>  awaiting_recovery;
+    };
+
     struct RunState {
         std::vector<Delivery>       pending;
         std::vector<ExecutorOutput> partial;
@@ -1196,6 +1306,7 @@ private:
         std::string                 failed_executor;
         std::vector<std::string>    unopened_ports;
         std::int64_t                elapsed_ns = 0;
+        std::vector<HeldFanIn>      held_fan_in;
     };
 
     struct OpenPort {
@@ -1775,8 +1886,13 @@ private:
             std::vector<Delivery> next;
             bool                  broke = false;
             fan_in_edges_this_round_.clear();
+            // GitHub issue #52 fix: register this round's fallback holds BEFORE any route_from() call
+            // below -- see register_fan_in_holds()'s own comment for why call order matters here.
+            register_fan_in_holds(exec_deliveries, replies);
             for (std::size_t i = 0; i < exec_deliveries.size(); ++i) {
-                route_result const rr = route_from(exec_deliveries[i].executor_index, replies[i], next);
+                bool const quarantine_echo = is_same_round_quarantine_echo(exec_deliveries, replies, i);
+                route_result const rr =
+                    route_from(exec_deliveries[i].executor_index, replies[i], next, quarantine_echo);
                 if (rr == route_result::ok) continue;
                 state_.failed_executor = graph_.executors[exec_deliveries[i].executor_index].id;
                 status = rr == route_result::routing_failed ? workflow_status::routing_failed
@@ -1974,8 +2090,18 @@ private:
     // SEVERAL different route_from() calls within one round gets ONE aggregated event, not one per
     // contributing call. No longer `const` -- pushing a structural event mutates
     // workflow_event_producer_'s underlying channel state.
+    // `is_quarantine_echo` (GitHub issue #52 fix, added alongside the propagate/fallback fix below):
+    // true when THIS `!ok` reply is the OQ-19 same-round duplicate-delivery quarantine's synthetic
+    // failure for an executor that ALSO has a real, successful (`ok`) delivery THIS round (see
+    // is_same_round_quarantine_echo()). ADR-077 P9/T7 (test_rt_agent_workflow_executor.cpp) requires
+    // that quarantine artifact to be "silently absorbed" -- it must inject NOTHING into any
+    // downstream target, not even a marker `deliver_or_merge()` would harmlessly no-op against a
+    // matching target, since a target the survivor's real routing never reached would otherwise get
+    // a spurious failure marker despite the executor genuinely having succeeded once this round.
+    // Default `false` for every other caller (the request-port prologue's replies are always `ok`,
+    // so this branch never runs there).
     [[nodiscard]] route_result route_from(std::size_t from_index, ExecuteReply const& reply,
-                                          std::vector<Delivery>& next) {
+                                          std::vector<Delivery>& next, bool is_quarantine_echo = false) {
         using agentengine::workflow::edge_kind;
         using agentengine::workflow::edge_failure_policy;
         std::string const& from_id = graph_.executors[from_index].id;
@@ -1989,45 +2115,45 @@ private:
                 case edge_failure_policy::retry:
                     return route_result::workflow_failed;
 
-                // KNOWN GAP, found live 2026-09-03 via tests/test_workflow_research_pipeline_live_e2e.cpp
-                // (a production-shaped concurrent research pipeline against real OpenRouter calls),
-                // pinned offline by tests/test_workflow_fanin_concurrent_failure_policy_gap.cpp: NEITHER
-                // `propagate` NOR `fallback` composes correctly with a `fan_in` target that a SIBLING
-                // executor ALSO delivers to normally in the SAME round. `deliver_once()` below (unlike
-                // the normal-path merge loop just below this switch, which correctly APPENDS onto an
-                // existing `next` entry for the same target) is a plain "insert if absent, else no-op" --
-                // so:
-                //   - `propagate`: if a succeeding sibling's normal delivery already created the fan_in
-                //     target's entry in `next` THIS round (order-dependent -- real concurrent dispatch
-                //     order is not controlled), the failure marker is SILENTLY DROPPED with no trace.
-                //     If the failing executor happens to be processed FIRST instead, the marker becomes
-                //     the initial entry and siblings' later merges correctly append onto it -- i.e. this
-                //     is not just wrong, it is ORDER-DEPENDENT wrong.
-                //   - `fallback`: the recovery executor is a DIFFERENT node with its own edge back to
-                //     the shared target, which can only fire in a LATER round -- so the fan_in target
-                //     runs TWICE (once with the succeeding siblings' content, once with just the
-                //     recovery's), and `WorkflowResult::partial`'s "at most one entry per executor_id"
-                //     rule means the SECOND invocation's output silently overwrites/discards the first.
-                // D4 in tests/test_rt_workflow_supervisor_failure_policies.cpp only ever exercises
-                // `fallback` on a single-source (non-fan_in-shared) edge, so this combination was never
-                // gate-proven despite 014 §8 G1's "each pattern... under injected executor failures"
-                // language. NOT fixed here -- this is hot-path/correctness-critical routing logic used
-                // by every workflow pattern, and CLAUDE.md reserves changes here for a real
-                // design→red-team→prove→judge pass, not an inline patch discovered mid-task. Disclosed,
-                // not silently worked around: `tests/test_workflow_research_pipeline_live_e2e.cpp`'s own
-                // production graph deliberately does NOT rely on either policy for its one degraded
-                // branch, for exactly this reason.
+                // GitHub issue #52 FIX (2026-09-03, was a KNOWN GAP): found live via
+                // tests/test_workflow_research_pipeline_live_e2e.cpp (a production-shaped concurrent
+                // research pipeline against real OpenRouter calls), pinned offline by
+                // tests/test_workflow_fanin_concurrent_failure_policy_gap.cpp. Two composition bugs vs a
+                // `fan_in` target a SIBLING executor also delivers to normally in the SAME round:
+                //   - `propagate` used to drop the marker (or not) depending on iteration order --
+                //     `deliver_once()` was "insert if absent, else no-op", asymmetric with the
+                //     normal-path merge loop below (which always appends). Fixed by making
+                //     `deliver_or_merge()` (renamed from `deliver_once()`) use that SAME append-or-
+                //     insert semantics, so whichever of {marker, siblings} is routed first no longer
+                //     matters -- the marker always survives, merged with every sibling's content.
+                //   - `fallback` used to run the shared fan_in target TWICE: the named recovery
+                //     executor is a different node whose own rejoining edge can only fire in a LATER
+                //     round, so the target dispatched once with the succeeding siblings and again,
+                //     overwriting the first, with just the recovery's output. Fixed by
+                //     `register_fan_in_holds()`/`deliver_to_fan_in()`/`RunState::held_fan_in`: when a
+                //     `fallback` edge's named recovery has its own DIRECT `fan_in` edge back to the
+                //     SAME target, that target is held back (not dispatched) until the recovery
+                //     resolves, then released with every contribution merged -- an actual cross-round
+                //     join, not a same-round patch. See HeldFanIn's own comment for the exact
+                //     mechanics and the narrower (direct-rejoin-only) scope this covers.
+                // D4 in tests/test_rt_workflow_supervisor_failure_policies.cpp only ever exercised
+                // `fallback` on a single-source (non-fan_in-shared) edge; F1/F2/F3 in
+                // test_workflow_fanin_concurrent_failure_policy_gap.cpp now assert the CORRECT
+                // merged-once behavior this fix produces, closing the 014 §8 G1 gap that combination
+                // left unproven.
                 case edge_failure_policy::propagate:
+                    if (is_quarantine_echo) return route_result::ok;
                     for (auto const& edge : graph_.edges) {
-                        if (edge.from == from_id) deliver_once(next, index_of(edge.to), marker);
+                        if (edge.from == from_id) deliver_or_merge(next, index_of(edge.to), marker);
                     }
                     return route_result::ok;
 
                 case edge_failure_policy::fallback:
+                    if (is_quarantine_echo) return route_result::ok;
                     for (auto const& edge : graph_.edges) {
                         if (edge.from != from_id) continue;
                         if (edge.on_failure.kind != edge_failure_policy::fallback) continue;
-                        deliver_once(next, index_of(edge.on_failure.fallback), marker);
+                        deliver_or_merge(next, index_of(edge.on_failure.fallback), marker);
                     }
                     return route_result::ok;
             }
@@ -2064,16 +2190,8 @@ private:
                     from_id, to_id, edge.kind, edge.case_label});
 
             if (edge.kind == edge_kind::fan_in) {
-                bool merged = false;
-                for (auto& delivery : next) {
-                    if (delivery.executor_index != target) continue;
-                    for (auto const& item : reply.payload.content) {
-                        delivery.payload.content.push_back(item);
-                    }
-                    merged = true;
-                    break;
-                }
-                if (merged) continue;
+                deliver_to_fan_in(next, from_index, target, reply.payload);
+                continue;
             }
             next.push_back(Delivery{target, reply.payload});
         }
@@ -2119,17 +2237,134 @@ private:
         fan_in_edges_this_round_.clear();
     }
 
+    // GitHub issue #52 fix. See route_from()'s own comment on `is_quarantine_echo` for what this
+    // detects and why: this exact `!ok` entry shares its executor_index with another entry THIS
+    // round that succeeded (`ok`) -- the OQ-19 same-round duplicate-delivery quarantine's synthetic
+    // failure, not a genuine independent failure.
+    [[nodiscard]] static bool is_same_round_quarantine_echo(std::vector<Delivery> const& exec_deliveries,
+                                                             std::vector<ExecuteReply> const& replies,
+                                                             std::size_t i) noexcept {
+        if (replies[i].ok) return false;
+        for (std::size_t j = 0; j < exec_deliveries.size(); ++j) {
+            if (j != i && exec_deliveries[j].executor_index == exec_deliveries[i].executor_index &&
+                replies[j].ok) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     [[nodiscard]] static bool is_retryable(agentengine::failure_class klass) noexcept {
         return klass == agentengine::failure_class::transient ||
                klass == agentengine::failure_class::resource;
     }
 
-    static void deliver_once(std::vector<Delivery>& next, std::size_t target,
-                             agentengine::Message const& marker) {
-        for (auto const& d : next) {
-            if (d.executor_index == target) return;
+    // GitHub issue #52 fix (renamed from `deliver_once`, which used to no-op on an existing entry --
+    // see route_from()'s own comment on the `propagate`/`fallback` switch for the bug that caused).
+    // Symmetric with the normal-path merge below it: append onto an existing `next` entry for
+    // `target` if one already exists this round, or create one -- order-independent regardless of
+    // whether the marker or a sibling's normal delivery reaches `target` first.
+    static void deliver_or_merge(std::vector<Delivery>& next, std::size_t target,
+                                 agentengine::Message const& marker) {
+        for (auto& d : next) {
+            if (d.executor_index != target) continue;
+            for (auto const& item : marker.content) d.payload.content.push_back(item);
+            return;
         }
         next.push_back(Delivery{target, marker});
+    }
+
+    // GitHub issue #52 fix. Delivers `payload` (routed by executor `from_index`) to fan_in target
+    // `target` for THIS round. If `target` is currently held back (an entry in
+    // `state_.held_fan_in`, registered by `register_fan_in_holds()` before this round's routing
+    // began, or carried over from an earlier round), the content merges into the held accumulator
+    // instead of `next`; when `from_index` is one of that hold's `awaiting_recovery` executors, that
+    // debt resolves, and once every outstanding recovery has resolved the accumulated content is
+    // released into `next` for dispatch, exactly like an ordinary delivery. A target with no
+    // outstanding hold behaves exactly like the pre-existing normal-path merge: append onto an
+    // existing `next` entry, or create one.
+    void deliver_to_fan_in(std::vector<Delivery>& next, std::size_t from_index, std::size_t target,
+                           agentengine::Message const& payload) {
+        for (auto it = state_.held_fan_in.begin(); it != state_.held_fan_in.end(); ++it) {
+            if (it->executor_index != target) continue;
+            if (!it->seeded) {
+                it->payload = payload;
+                it->seeded  = true;
+            } else {
+                for (auto const& item : payload.content) it->payload.content.push_back(item);
+            }
+            for (auto r = it->awaiting_recovery.begin(); r != it->awaiting_recovery.end(); ++r) {
+                if (*r != from_index) continue;
+                it->awaiting_recovery.erase(r);
+                break;
+            }
+            if (it->awaiting_recovery.empty()) {
+                agentengine::Message released = std::move(it->payload);
+                state_.held_fan_in.erase(it);
+                for (auto& delivery : next) {
+                    if (delivery.executor_index != target) continue;
+                    for (auto const& item : released.content) delivery.payload.content.push_back(item);
+                    return;
+                }
+                next.push_back(Delivery{target, std::move(released)});
+            }
+            return;
+        }
+        for (auto& delivery : next) {
+            if (delivery.executor_index != target) continue;
+            for (auto const& item : payload.content) delivery.payload.content.push_back(item);
+            return;
+        }
+        next.push_back(Delivery{target, payload});
+    }
+
+    // GitHub issue #52 fix. Called ONCE per round, BEFORE any route_from() call that round (see the
+    // caller in execute()) -- so a normal sibling's fan_in merge sees an outstanding hold already in
+    // place regardless of which executor's route_from() call happens to run first this round; the
+    // exact order-dependence this issue was filed against. Scans this round's FAILING deliveries for
+    // a `fallback` policy whose named recovery executor has its own DIRECT `fan_in` edge back to the
+    // SAME target the failed edge would have delivered to -- see HeldFanIn's own comment for why
+    // only this direct shape is tracked.
+    void register_fan_in_holds(std::vector<Delivery> const& exec_deliveries,
+                               std::vector<ExecuteReply> const& replies) {
+        using agentengine::workflow::edge_kind;
+        using agentengine::workflow::edge_failure_policy;
+        for (std::size_t i = 0; i < exec_deliveries.size(); ++i) {
+            if (replies[i].ok) continue;
+            if (is_same_round_quarantine_echo(exec_deliveries, replies, i)) continue;
+            std::size_t const idx = exec_deliveries[i].executor_index;
+            if (policy_for(idx).kind != edge_failure_policy::fallback) continue;
+            std::string const& id = graph_.executors[idx].id;
+            for (auto const& edge : graph_.edges) {
+                if (edge.from != id || edge.on_failure.kind != edge_failure_policy::fallback) continue;
+                bool recovery_rejoins = false;
+                for (auto const& e2 : graph_.edges) {
+                    if (e2.from == edge.on_failure.fallback && e2.kind == edge_kind::fan_in &&
+                        e2.to == edge.to) {
+                        recovery_rejoins = true;
+                        break;
+                    }
+                }
+                if (!recovery_rejoins) continue;
+                std::size_t const target_idx   = index_of(edge.to);
+                std::size_t const recovery_idx = index_of(edge.on_failure.fallback);
+                bool found = false;
+                for (auto& held : state_.held_fan_in) {
+                    if (held.executor_index != target_idx) continue;
+                    found = true;
+                    bool already = false;
+                    for (std::size_t const r : held.awaiting_recovery) {
+                        if (r == recovery_idx) { already = true; break; }
+                    }
+                    if (!already) held.awaiting_recovery.push_back(recovery_idx);
+                    break;
+                }
+                if (!found) {
+                    state_.held_fan_in.push_back(
+                        HeldFanIn{target_idx, agentengine::Message{}, false, {recovery_idx}});
+                }
+            }
+        }
     }
 
     void record_partial(std::vector<ExecutorOutput>& partial, std::size_t executor_index,

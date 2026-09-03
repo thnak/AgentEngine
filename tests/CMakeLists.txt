@@ -634,6 +634,21 @@ if(WIN32)
   add_test(NAME test_memory_no_authority_laundering COMMAND test_memory_no_authority_laundering)
 endif()
 
+# ---- decisions/ADR-166-todo-provider.md, issue #53: TodoProvider, a ContextProvider conformer for
+# plan/execute state (005 §5). Adaptive contribution, bounded item count/title length, unknown-id
+# rejection, and composition with a second real ContextProvider through the shared assemble_context().
+# No worktree dependency (pure in-memory, no persistence) -- unlike MemoryProvider, not WIN32-gated.
+add_executable(test_todo_provider test_todo_provider.cpp)
+target_link_libraries(test_todo_provider PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_todo_provider COMMAND test_todo_provider)
+
+# ---- decisions/ADR-167-plan-execute-mode.md, issue #54: PlanExecuteMode, a ContextProvider + a
+# PolicyDecider factory gating a single agent into "plan first, then execute." Depends on
+# TodoProvider's shared TodoState (todo_provider.hpp) for its plan evidence.
+add_executable(test_plan_execute_mode test_plan_execute_mode.cpp)
+target_link_libraries(test_plan_execute_mode PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_plan_execute_mode COMMAND test_plan_execute_mode)
+
 # ---- ADR-063 (retrieval-augmented ContextProvider shape) -- foundation layer, Proposed status ----
 # §2.6b / §3 claim 6: neutralize_forged_provenance_markers() (core/provenance_marker.hpp), the
 # marker-forgery defense generalized out of memory_provider.hpp's own gap-17 fix.
@@ -1224,6 +1239,28 @@ if(AGENTENGINE_WITH_HTTPS)
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_test(NAME test_workflow_research_pipeline_live_e2e COMMAND test_workflow_research_pipeline_live_e2e)
   set_tests_properties(test_workflow_research_pipeline_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
+
+  # ---- The SAME production pipeline shape, but each concurrent specialist is fed a large (~60K+
+  # token) REAL reference corpus sliced from this repo's own design docs before the actual brief --
+  # 2026-09-03, added at the project owner's request after the small-context test above showed only
+  # ~1-2K tokens of context per call on the OpenRouter dashboard, nothing like a real document-
+  # grounded production call. See the .cpp's own top comment for what this specifically hunts for.
+  # Deliberately NOT labeled "live-network" -- tools/run-live-provider-tests.ps1's own `-L live-
+  # network` selection (and any other sweep keyed on that label) must never pick this up as a side
+  # effect; it needs its own explicit AGENTENGINE_RUN_LARGE_CONTEXT_LIVE_TESTS=1 opt-in (checked
+  # inside the test itself) on top of the ordinary API-key gate, because a single run is well over
+  # 100K billed tokens.
+  add_executable(test_workflow_research_pipeline_large_context_live_e2e
+    test_workflow_research_pipeline_large_context_live_e2e.cpp)
+  target_compile_definitions(test_workflow_research_pipeline_large_context_live_e2e PRIVATE
+    AGENTENGINE_REPO_ROOT="${CMAKE_SOURCE_DIR}")
+  target_link_libraries(test_workflow_research_pipeline_large_context_live_e2e PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_workflow_research_pipeline_large_context_live_e2e
+    COMMAND test_workflow_research_pipeline_large_context_live_e2e)
+  set_tests_properties(test_workflow_research_pipeline_large_context_live_e2e PROPERTIES
+    LABELS "live-network-heavy" TIMEOUT 900)
 endif()
 
 # ---- Gap-3 fix (2026-08-14, decisions/ADR-045-*.md) -- core/json_schema_validator.hpp, proving
@@ -1556,16 +1593,30 @@ add_executable(test_rt_workflow_supervisor_failure_policies test_rt_workflow_sup
 target_link_libraries(test_rt_workflow_supervisor_failure_policies PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_workflow_supervisor_failure_policies COMMAND test_rt_workflow_supervisor_failure_policies)
 
-# ---- Characterization test pinning a real gap D4 above never exercised: `propagate`/`fallback` on a
-# `fan_in` edge whose target a SIBLING also delivers to normally in the SAME round -- found live via
-# tests/test_workflow_research_pipeline_live_e2e.cpp, see this file's own top comment for the full
-# root-cause trace (route_from()'s deliver_once() vs the normal merge loop, workflow_supervisor.hpp).
-add_executable(test_workflow_fanin_concurrent_failure_policy_gap
-  test_workflow_fanin_concurrent_failure_policy_gap.cpp)
-target_link_libraries(test_workflow_fanin_concurrent_failure_policy_gap PRIVATE
+# ---- GitHub issue #52 fix proof: `propagate`/`fallback` on a `fan_in` edge whose target a SIBLING
+# also delivers to normally in the SAME round -- a real gap D4 above never exercised, found live via
+# tests/test_workflow_research_pipeline_live_e2e.cpp, now fixed (route_from()'s deliver_or_merge()/
+# register_fan_in_holds()/deliver_to_fan_in(), workflow_supervisor.hpp) -- see this file's own top
+# comment for the full trace.
+add_executable(test_workflow_fanin_concurrent_failure_policy_fix
+  test_workflow_fanin_concurrent_failure_policy_fix.cpp)
+target_link_libraries(test_workflow_fanin_concurrent_failure_policy_fix PRIVATE
   agentengine::core agentengine_warnings)
-add_test(NAME test_workflow_fanin_concurrent_failure_policy_gap
-  COMMAND test_workflow_fanin_concurrent_failure_policy_gap)
+add_test(NAME test_workflow_fanin_concurrent_failure_policy_fix
+  COMMAND test_workflow_fanin_concurrent_failure_policy_fix)
+
+# ---- Characterization test pinning a real, DIFFERENT, currently-unfixed gap than the one above: an
+# ordinary `fan_in` target does not wait for every declared source before dispatching -- when two
+# sources resolve at genuinely different round counts (no failure/fallback involved at all), the
+# target dispatches TWICE, and the second invocation silently overwrites the first. Found live via
+# tests/test_workflow_research_pipeline_large_context_live_e2e.cpp, see this file's own top comment
+# for the full trace.
+add_executable(test_workflow_fanin_uneven_round_sources_gap
+  test_workflow_fanin_uneven_round_sources_gap.cpp)
+target_link_libraries(test_workflow_fanin_uneven_round_sources_gap PRIVATE
+  agentengine::core agentengine_warnings)
+add_test(NAME test_workflow_fanin_uneven_round_sources_gap
+  COMMAND test_workflow_fanin_uneven_round_sources_gap)
 
 # ---- ADR-037 Phase 3 -- routing behavior (fan_in/switch_case/multi_selection/cyclic, plus retry
 # composing with each) ported from the two retired Quark-actor-based

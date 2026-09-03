@@ -24,10 +24,12 @@
 //         the underlying AgentSession exactly ONCE (never a concurrent double-call -- the real hazard
 //         this quarantine exists to prevent), with the SURVIVING delivery's result recorded either
 //         way. T6 uses the default `fail` policy (the round fails cleanly, no hang/crash); T7 uses
-//         `propagate` (the round completes normally, the duplicate's marker is silently absorbed by
-//         the existing `deliver_once` same-round dedup -- "every OTHER delivery... completes
-//         normally", the design draft's own central corrected-design claim, proven rather than
-//         merely asserted).
+//         `propagate` (the round completes normally, the duplicate's marker is silently absorbed --
+//         since GitHub issue #52's fix (2026-09-03), by route_from()'s `is_quarantine_echo` check,
+//         not `deliver_once`'s old no-op-on-collision semantics, which that fix replaced with a real
+//         merge; see workflow_supervisor.hpp's own comment on that parameter for why the carve-out
+//         exists -- "every OTHER delivery... completes normally", the design draft's own central
+//         corrected-design claim, proven rather than merely asserted).
 //   T8 -- checkpoint/resume's documented, TESTED limitation (design draft §5 item 1): a resumed run's
 //         agent-kind node gets a fresh, history-less AgentSession -- the caller-resupplied one bound
 //         at the NEW WorkflowSupervisor's own initialize() call, never the pre-checkpoint session.
@@ -330,9 +332,9 @@ int main() {
               "normally -- the quarantine does not force a whole-round failure regardless of policy");
         check(text_of(r.output) == "survivor-2>sink",
               "T7: 'sink' received the REAL survivor payload, not a failure marker -- the quarantined "
-              "duplicate's marker was silently absorbed by the existing same-round deliver_once() "
-              "dedup, exactly as the design draft's 'every OTHER delivery completes normally' claim "
-              "requires");
+              "duplicate's marker was silently absorbed by route_from()'s same-round "
+              "is_quarantine_echo check (GitHub issue #52's fix), exactly as the design draft's "
+              "'every OTHER delivery completes normally' claim requires");
         check(session.history().size() == 2,
               "T7: here too, the AgentSession was dispatched exactly once this round");
     }

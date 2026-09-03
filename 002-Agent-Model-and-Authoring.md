@@ -109,6 +109,19 @@ class template cannot share one identifier in the same namespace. `ChatClientId`
 | `Stateless<N>` | Agent holds no cross-run state (historical: hosted as a Quark pool before ADR-037 removed Quark; the `rt::` hosting mechanism for this policy is not yet re-specified) | off |
 | `OutputSchema<T>` | Structured-output contract (003) | free text |
 
+**No `Mode<PlanExecute>` policy tag (issue #54, decisions/ADR-167-plan-execute-mode.md).** MAF's
+Harness bundles single-agent "plan then execute" phase gating by default. AgentEngine gets the same
+behavior without a new table row here: `core/agent.hpp`'s own comments already disclose that most of
+this table's tags (`Concurrency`, `Memory`, `Retry`, `Middleware`, `Telemetry`, `Stateless`) are
+API-surface-only, uninterpreted by `register_agent<A>()` — adding a bare `Mode<PlanExecute>` tag
+would be exactly that pattern again, not real behavior. Two already-real, already-wired seams
+compose instead: `ContextProvider` (005 §5) injects gating instructions and a `plan_ready` tool while
+the gate is closed, and a `PolicyDecider` (ADR-070) auto-denies non-planning-safe `policy_driven`
+tool calls until it opens — `core/plan_execute_mode.hpp`'s `PlanExecuteMode`, composed with a
+`TodoProvider` (#53) as the plan the gate demands evidence of. 014 §9 Q1's reasoning against routing
+the dominant single-agent path through supervising-actor/typed-edge machinery applies identically
+here, which is why this isn't authored as a degenerate one-node Planner (014 §3) either.
+
 **What `SandboxProfile<P>` governs.** It is not one dial over every sandboxed effect an agent can
 reach: 009 §6 hardcodes plugins to run in the `wasm` profile regardless of what an agent declares
 here, and 008 §1/CLAUDE.md permanently lock the code interpreter to `native-jail` — neither is
