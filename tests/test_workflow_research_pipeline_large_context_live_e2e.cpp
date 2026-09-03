@@ -615,6 +615,26 @@ int main() {
         // ever reached, restoring this file's ORIGINAL intended expectation.
         check(r.status == workflow_status::suspended,
               "the run suspends at the human publish-review gate rather than auto-publishing");
+        if (r.status != workflow_status::suspended) {
+            // Robustness gap found live 2026-09-03: `r.open_interactions.at(0)` below is only valid
+            // once the run genuinely suspended -- on ANY other terminal status (a real transient
+            // network failure partway through market/technical's own ~11-turn loop is a real,
+            // observed case: this run is well over an hour of real sequential network calls, and a
+            // single dropped/truncated response anywhere in it ends the whole run via the default
+            // `fail` failure policy) `open_interactions` is empty and `.at(0)` used to THROW
+            // std::out_of_range, uncaught -- turning a clear "FAIL: run suspends..." diagnostic into
+            // an opaque process abort (exit code 3) with no further output at all. Fails clean instead.
+            std::fprintf(stderr,
+                         "[before restart] run did NOT suspend as expected -- status=%d, "
+                         "failed_executor=\"%s\" (see the FAILED diagnostic further up for which live "
+                         "call actually failed) -- skipping the rest of this test rather than crashing "
+                         "on an out-of-range open_interactions access\n",
+                         static_cast<int>(r.status), r.failed_executor.c_str());
+            std::error_code ec;
+            std::filesystem::remove_all(root, ec);
+            std::fprintf(stderr, "test_workflow_research_pipeline_large_context_live_e2e: FAIL\n");
+            return 1;
+        }
         check(planner_calls->load(std::memory_order_relaxed) == 1, "planner ran exactly once");
         std::printf("market turns completed: %u/%zu; technical: %u/%zu (FIXED: both expected to "
                      "reach the full %zu before aggregate ever dispatches)\n",
