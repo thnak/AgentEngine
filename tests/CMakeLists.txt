@@ -1224,6 +1224,28 @@ if(AGENTENGINE_WITH_HTTPS)
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_test(NAME test_workflow_research_pipeline_live_e2e COMMAND test_workflow_research_pipeline_live_e2e)
   set_tests_properties(test_workflow_research_pipeline_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
+
+  # ---- The SAME production pipeline shape, but each concurrent specialist is fed a large (~60K+
+  # token) REAL reference corpus sliced from this repo's own design docs before the actual brief --
+  # 2026-09-03, added at the project owner's request after the small-context test above showed only
+  # ~1-2K tokens of context per call on the OpenRouter dashboard, nothing like a real document-
+  # grounded production call. See the .cpp's own top comment for what this specifically hunts for.
+  # Deliberately NOT labeled "live-network" -- tools/run-live-provider-tests.ps1's own `-L live-
+  # network` selection (and any other sweep keyed on that label) must never pick this up as a side
+  # effect; it needs its own explicit AGENTENGINE_RUN_LARGE_CONTEXT_LIVE_TESTS=1 opt-in (checked
+  # inside the test itself) on top of the ordinary API-key gate, because a single run is well over
+  # 100K billed tokens.
+  add_executable(test_workflow_research_pipeline_large_context_live_e2e
+    test_workflow_research_pipeline_large_context_live_e2e.cpp)
+  target_compile_definitions(test_workflow_research_pipeline_large_context_live_e2e PRIVATE
+    AGENTENGINE_REPO_ROOT="${CMAKE_SOURCE_DIR}")
+  target_link_libraries(test_workflow_research_pipeline_large_context_live_e2e PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_workflow_research_pipeline_large_context_live_e2e
+    COMMAND test_workflow_research_pipeline_large_context_live_e2e)
+  set_tests_properties(test_workflow_research_pipeline_large_context_live_e2e PROPERTIES
+    LABELS "live-network-heavy" TIMEOUT 900)
 endif()
 
 # ---- Gap-3 fix (2026-08-14, decisions/ADR-045-*.md) -- core/json_schema_validator.hpp, proving
