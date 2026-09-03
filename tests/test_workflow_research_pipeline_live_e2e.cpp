@@ -9,9 +9,10 @@
 // Three things this file specifically hunts for, each because an OFFLINE/synthetic test structurally
 // cannot exercise it:
 //
-//   1. FAILURE CLASSIFICATION AGAINST A REAL RESPONSE (014 §6, `EdgeFailurePolicy`). The
-//      "competitive" specialist is deliberately pointed at a model id that does not exist, so its
-//      live call fails against the REAL OpenRouter error response, not a synthetic std::unexpected --
+//   1. FAILURE CLASSIFICATION AGAINST A REAL RESPONSE (014 §6, `EdgeFailurePolicy`), AND ITS
+//      COMPOSITION WITH A SHARED `fan_in` TARGET UNDER REAL, JITTERED CONCURRENCY. The "competitive"
+//      specialist is deliberately pointed at a model id that does not exist, so its live call fails
+//      against the REAL OpenRouter error response, not a synthetic std::unexpected --
 //      protocol/openai/chat_client.hpp's `map_http_status_error` is what turns that real HTTP 4xx
 //      into `failure_class::contract`. A SEPARATE small graph (P1 below) proves the sharper claim
 //      `tests/test_rt_workflow_supervisor_failure_policies.cpp`'s D2c already proves offline -- that a
@@ -20,21 +21,16 @@
 //      response to a 5xx, that offline test would not notice the reclassification to `transient`
 //      (suddenly, wrongly, retryable); this one would.
 //
-//      KNOWN ENGINE GAP, found BY THIS FILE'S FIRST LIVE RUN (2026-09-03), pinned offline by
-//      `tests/test_workflow_fanin_concurrent_failure_policy_gap.cpp`: neither `propagate` nor
-//      `fallback` composes correctly with a `fan_in` target that a SIBLING also delivers to normally
-//      in the SAME round -- `propagate`'s marker is order-dependently dropped, and `fallback`'s
-//      recovery executor causes the shared target to run TWICE, the second (recovery-only)
-//      invocation silently overwriting the first (see that file's top comment for the full trace
-//      into `route_from()`). Concretely, that means declaring `fallback` on `competitive`'s edge to
-//      `aggregate` -- which is exactly what this file's FIRST version did -- silently discarded the
-//      market/technical specialists' real findings from the final report. So the competitive
-//      specialist's own body (`resilient_competitive_body` below) catches its own failure and
-//      degrades to a successful, low-confidence message ITSELF, never returning `std::unexpected` to
-//      the graph at all -- an application-level try/catch, not an engine-level `EdgeFailurePolicy`.
-//      This is disclosed, not silently worked around; do not "fix" this file by switching back to
-//      `fallback`/`propagate` on that edge until the linked characterization test's pinned
-//      assertions have changed to reflect a real engine fix.
+//      `competitive`'s edge to `aggregate` declares a REAL `EdgeFailurePolicy::fallback` naming
+//      `competitive_fallback` as the recovery executor, which has its own `fan_in` edge back to the
+//      SAME `aggregate` target `market`/`technical` also feed. THIS FILE'S FIRST LIVE RUN (2026-09-03)
+//      found that composition genuinely broken -- GitHub issue #52, pinned offline by
+//      `tests/test_workflow_fanin_concurrent_failure_policy_fix.cpp` -- and an interim version of this
+//      file routed around it with an application-level try/catch instead of the engine policy. That
+//      gap is now FIXED (`route_from()`'s `register_fan_in_holds()`/`deliver_to_fan_in()`/
+//      `RunState::held_fan_in`, see workflow_supervisor.hpp), and this file was switched back to the
+//      real `EdgeFailurePolicy::fallback` specifically so a live, jittered run keeps exercising the
+//      fix, not just the offline characterization test.
 //
 //   2. FAN-IN UNDER REAL, JITTERED CONCURRENCY (014 §2's determinism obligation). The three
 //      specialists run in the SAME round via `edge_kind::fan_out`/`fan_in`
@@ -210,37 +206,23 @@ using RealClient = openai::OpenAIChatClient<InMemorySecretStore>;
     };
 }
 
-// The degraded-source path lives INSIDE this body, not on the edge (see this file's top comment,
-// "KNOWN ENGINE GAP"): `fan_in` does not currently compose safely with `propagate`/`fallback` when a
-// sibling shares the same target this round, so competitive's own failure is caught and turned into a
-// successful, low-confidence message here -- application-level graceful degradation, exactly what a
-// real caller writes to keep shipping a report when one upstream integration is down, and the only
-// way to do it that survives fan-in merge correctly with today's engine.
-[[nodiscard]] ExecutorBody resilient_competitive_body(RealClient& client, EffectContext& ctx) {
-    return [&client, &ctx](Message const& in, EffectContext&) -> agentengine::result<Message> {
-        auto const t0 = std::chrono::steady_clock::now();
-        auto        resp = live_call(
-            client, ctx,
-            "You are a Competitive-landscape specialist. In 1-2 sentences, summarize the "
-            "competitive landscape for the given brief.",
-            text_of(in));
-        auto const ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - t0).count();
-        if (!resp.has_value()) {
-            std::fprintf(stderr,
-                         "[competitive] FAILED after %lldms: %s (%s) -- degrading in-body to a "
-                         "successful low-confidence message, not via EdgeFailurePolicy\n",
-                         static_cast<long long>(ms), resp.error().message.c_str(),
-                         resp.error().code.c_str());
-            return text_message(
-                "Competitive findings: UNAVAILABLE (live lookup failed: " + resp.error().message +
-                ") -- using cached baseline: no major competitor announcements on file. Treat this "
-                "section as low-confidence.");
+// The engine-level recovery executor `competitive`'s edge's real `EdgeFailurePolicy::fallback` names
+// (see this file's top comment). Runs on the failure_marker() Message competitive's real failure
+// produced -- reads the real classification/message out of it for a slightly more informative
+// degraded report, exactly what a real caller's recovery node would do, but doesn't need to (a fixed
+// degraded message would work just as well for this test's own assertions).
+[[nodiscard]] agentengine::result<Message> competitive_fallback_body(Message const& in, EffectContext&) {
+    std::string reason = "live lookup failed";
+    for (auto const& item : in.content) {
+        if (auto const* e = std::get_if<Error>(&item.value)) {
+            reason = e->message;
+            break;
         }
-        std::string const reply = text_of(resp->message);
-        std::printf("[competitive] (%lldms) %s\n", static_cast<long long>(ms), reply.c_str());
-        return text_message("competitive findings: " + reply);
-    };
+    }
+    std::printf("[competitive_fallback] recovering from: %s\n", reason.c_str());
+    return text_message(
+        "competitive findings: UNAVAILABLE (" + reason + ") -- using cached baseline: no major "
+        "competitor announcements on file. Treat this section as low-confidence.");
 }
 
 [[nodiscard]] agentengine::result<Message> aggregate_body(Message const& in, EffectContext&) {
@@ -393,7 +375,7 @@ int main() {
     wf.id        = "research-go-no-go-pipeline";
     wf.executors = {
         node_desc("planner"), node_desc("market"), node_desc("technical"), node_desc("competitive"),
-        node_desc("aggregate"), node_desc("writer"),
+        node_desc("competitive_fallback"), node_desc("aggregate"), node_desc("writer"),
         node_desc("publish_review", executor_kind::request_port), node_desc("publish_decision"),
         node_desc("publish"), node_desc("abandon"), node_desc("done"),
     };
@@ -403,10 +385,13 @@ int main() {
         Edge{"planner", "competitive", edge_kind::fan_out, {}},
         Edge{"market", "aggregate", edge_kind::fan_in, {}},
         Edge{"technical", "aggregate", edge_kind::fan_in, {}},
-        // Plain fan_in, default on_failure (fail) -- never triggered, since `competitive`'s own body
-        // (resilient_competitive_body) degrades to a successful message on failure ITSELF rather than
-        // returning an error to the graph. See this file's top comment: "KNOWN ENGINE GAP".
-        Edge{"competitive", "aggregate", edge_kind::fan_in, {}},
+        // The real engine policy this file's top comment describes: competitive's own real failure
+        // routes to `competitive_fallback`, whose own `fan_in` edge below rejoins the SAME `aggregate`
+        // target `market`/`technical` also feed -- exactly the composition GitHub issue #52 found
+        // broken and workflow_supervisor.hpp's `register_fan_in_holds()`/`deliver_to_fan_in()` fix.
+        Edge{"competitive", "aggregate", edge_kind::fan_in, {},
+             EdgeFailurePolicy{edge_failure_policy::fallback, 0, "competitive_fallback"}},
+        Edge{"competitive_fallback", "aggregate", edge_kind::fan_in, {}},
         Edge{"aggregate", "writer", edge_kind::direct, {}},
         Edge{"writer", "publish_review", edge_kind::direct, {}},
         Edge{"publish_review", "publish_decision", edge_kind::direct, {}},
@@ -424,6 +409,7 @@ int main() {
     auto market_calls     = std::make_shared<std::atomic<std::uint32_t>>(0);
     auto technical_calls  = std::make_shared<std::atomic<std::uint32_t>>(0);
     auto competitive_calls = std::make_shared<std::atomic<std::uint32_t>>(0);
+    auto competitive_fallback_calls = std::make_shared<std::atomic<std::uint32_t>>(0);
     auto aggregate_calls  = std::make_shared<std::atomic<std::uint32_t>>(0);
     auto writer_calls     = std::make_shared<std::atomic<std::uint32_t>>(0);
 
@@ -438,7 +424,14 @@ int main() {
                                  "the single biggest technical risk for the given brief.",
                                  main_client, ctx),
                 technical_calls),
-        counted(resilient_competitive_body(bad_client, ctx), competitive_calls),
+        // Deliberately pointed at `bad_client` (the nonexistent model id) -- a REAL failure, routed by
+        // the engine's own `EdgeFailurePolicy::fallback`, not caught in-body.
+        counted(specialist_body("competitive",
+                                 "You are a Competitive-landscape specialist. In 1-2 sentences, "
+                                 "summarize the competitive landscape for the given brief.",
+                                 bad_client, ctx),
+                competitive_calls),
+        counted(competitive_fallback_body, competitive_fallback_calls),
         counted(aggregate_body, aggregate_calls),
         counted(writer_body(main_client, ctx), writer_calls),
         {},  // publish_review: request_port, never dispatched
@@ -452,9 +445,10 @@ int main() {
     std::string                 run_id;
     std::string                 interaction_id;
 
-    // ---- "before the restart": planner -> concurrent specialists (competitive degrades IN-BODY on a
-    //      real failure) -> aggregate (exactly once, despite real jitter) -> writer -> suspend for a
-    //      human publish decision, auto-checkpointing every round --------------------------------
+    // ---- "before the restart": planner -> concurrent specialists (competitive's REAL failure routes
+    //      through the engine's own `fallback` to competitive_fallback) -> aggregate (exactly once,
+    //      despite real jitter AND the cross-round fallback join) -> writer -> suspend for a human
+    //      publish decision, auto-checkpointing every round ----------------------------------------
     {
         FileSessionStore store2(root);
         WorkflowSupervisor sup;
@@ -474,11 +468,17 @@ int main() {
         check(technical_calls->load(std::memory_order_relaxed) == 1,
               "P2: technical specialist ran exactly once");
         check(competitive_calls->load(std::memory_order_relaxed) == 1,
-              "P2: competitive specialist was genuinely ATTEMPTED (not skipped) before its real "
-              "failure was caught and degraded in-body");
+              "P2: competitive specialist was genuinely ATTEMPTED (not skipped) and its real failure "
+              "routed through the engine's own `EdgeFailurePolicy::fallback`, not an in-body catch");
+        check(competitive_fallback_calls->load(std::memory_order_relaxed) == 1,
+              "P2: the fallback recovery executor ran exactly once, dispatched by the engine off "
+              "competitive's real failure marker");
         check(aggregate_calls->load(std::memory_order_relaxed) == 1,
-              "P2: under REAL jittered concurrency, the aggregator still ran EXACTLY ONCE -- three "
-              "real, independently-timed network calls merged into one delivery, not three");
+              "P2 (GitHub issue #52's fix, exercised live): the aggregator still ran EXACTLY ONCE with "
+              "ALL THREE contributions merged -- market/technical's real, independently-timed network "
+              "calls under real jitter, AND competitive_fallback's later-round recovery -- proving the "
+              "cross-round fan_in hold/release actually works against real concurrent network timing, "
+              "not just the offline characterization test's synthetic ordering");
         check(writer_calls->load(std::memory_order_relaxed) == 1, "P2: the writer ran exactly once");
 
         // A suspended run's own `WorkflowResult::output` is not meaningfully populated (the run never
@@ -508,6 +508,7 @@ int main() {
         auto market_calls2      = std::make_shared<std::atomic<std::uint32_t>>(0);
         auto technical_calls2   = std::make_shared<std::atomic<std::uint32_t>>(0);
         auto competitive_calls2 = std::make_shared<std::atomic<std::uint32_t>>(0);
+        auto competitive_fallback_calls2 = std::make_shared<std::atomic<std::uint32_t>>(0);
         auto aggregate_calls2   = std::make_shared<std::atomic<std::uint32_t>>(0);
         auto writer_calls2      = std::make_shared<std::atomic<std::uint32_t>>(0);
 
@@ -516,7 +517,9 @@ int main() {
             counted(specialist_body("market", "unused after resume", main_client, ctx), market_calls2),
             counted(specialist_body("technical", "unused after resume", main_client, ctx),
                     technical_calls2),
-            counted(resilient_competitive_body(bad_client, ctx), competitive_calls2),
+            counted(specialist_body("competitive", "unused after resume", bad_client, ctx),
+                    competitive_calls2),
+            counted(competitive_fallback_body, competitive_fallback_calls2),
             counted(aggregate_body, aggregate_calls2),
             counted(writer_body(main_client, ctx), writer_calls2),
             {},
@@ -568,11 +571,12 @@ int main() {
                   market_calls2->load(std::memory_order_relaxed) == 0 &&
                   technical_calls2->load(std::memory_order_relaxed) == 0 &&
                   competitive_calls2->load(std::memory_order_relaxed) == 0 &&
+                  competitive_fallback_calls2->load(std::memory_order_relaxed) == 0 &&
                   aggregate_calls2->load(std::memory_order_relaxed) == 0 &&
                   writer_calls2->load(std::memory_order_relaxed) == 0,
               "P2: NONE of the resumed supervisor's fresh body closures ran -- the finished live work "
-              "(5 real API calls' worth) genuinely came from the checkpoint, not from silently "
-              "re-doing it after resume");
+              "(5 real API calls' worth, plus the fallback join) genuinely came from the checkpoint, "
+              "not from silently re-doing it after resume");
     }
 
     std::error_code ec;

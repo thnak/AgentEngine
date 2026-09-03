@@ -1556,16 +1556,17 @@ add_executable(test_rt_workflow_supervisor_failure_policies test_rt_workflow_sup
 target_link_libraries(test_rt_workflow_supervisor_failure_policies PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_workflow_supervisor_failure_policies COMMAND test_rt_workflow_supervisor_failure_policies)
 
-# ---- Characterization test pinning a real gap D4 above never exercised: `propagate`/`fallback` on a
-# `fan_in` edge whose target a SIBLING also delivers to normally in the SAME round -- found live via
-# tests/test_workflow_research_pipeline_live_e2e.cpp, see this file's own top comment for the full
-# root-cause trace (route_from()'s deliver_once() vs the normal merge loop, workflow_supervisor.hpp).
-add_executable(test_workflow_fanin_concurrent_failure_policy_gap
-  test_workflow_fanin_concurrent_failure_policy_gap.cpp)
-target_link_libraries(test_workflow_fanin_concurrent_failure_policy_gap PRIVATE
+# ---- GitHub issue #52 fix proof: `propagate`/`fallback` on a `fan_in` edge whose target a SIBLING
+# also delivers to normally in the SAME round -- a real gap D4 above never exercised, found live via
+# tests/test_workflow_research_pipeline_live_e2e.cpp, now fixed (route_from()'s deliver_or_merge()/
+# register_fan_in_holds()/deliver_to_fan_in(), workflow_supervisor.hpp) -- see this file's own top
+# comment for the full trace.
+add_executable(test_workflow_fanin_concurrent_failure_policy_fix
+  test_workflow_fanin_concurrent_failure_policy_fix.cpp)
+target_link_libraries(test_workflow_fanin_concurrent_failure_policy_fix PRIVATE
   agentengine::core agentengine_warnings)
-add_test(NAME test_workflow_fanin_concurrent_failure_policy_gap
-  COMMAND test_workflow_fanin_concurrent_failure_policy_gap)
+add_test(NAME test_workflow_fanin_concurrent_failure_policy_fix
+  COMMAND test_workflow_fanin_concurrent_failure_policy_fix)
 
 # ---- ADR-037 Phase 3 -- routing behavior (fan_in/switch_case/multi_selection/cyclic, plus retry
 # composing with each) ported from the two retired Quark-actor-based
