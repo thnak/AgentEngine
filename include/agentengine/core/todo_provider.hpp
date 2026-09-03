@@ -18,6 +18,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -88,6 +89,24 @@ struct TodoItem {
 
 }  // namespace todo_detail
 
+// ADR-167 (issue #54, single-agent Plan/Execute mode): pulled out from three direct data members
+// into one heap-allocated, shared block. `TodoProvider` itself is still copied around by value the
+// same way it always was (`ComposedContextProvider`'s own `make_context_provider_descriptor()`
+// wraps a fresh copy of whatever `ProviderT` value the host constructed in its own `shared_ptr`) --
+// but every copy of a `TodoProvider` now shares ONE underlying `TodoState`, so a party that captured
+// a `plan_state_handle()` before the provider was ever copied into a session's context-provider
+// tuple still observes every later mutation `todos_add`/`todos_complete`/`todos_remove` makes to the
+// live, in-session copy. `plan_execute_mode.hpp`'s `PlanExecuteMode` is the reason this exists: it
+// needs to read `ever_used` from the SAME state the session's own `TodoProvider` copy is mutating,
+// without reaching into `ComposedContextProvider`'s private contributor table to find it. 027 §2-4's
+// tables not yet reconciled against this milestone's additions (ADR-025 §4c's deferred backlog).
+// ae-naming-lint: allow TodoState — matches this file's own established `Todo*` naming
+struct TodoState {
+    std::vector<todo_detail::TodoItem> items;
+    std::uint64_t                      next_id    = 0;
+    bool                                ever_used  = false;
+};
+
 // A `ContextProvider` conformer (005 §5). Adaptive by default (draft §1/§4, retained): contributes
 // no `instructions`/`messages` until `todos_add` has fired at least once this session -- an agent
 // that never plans pays nothing, not even the placeholder-empty-list line MAF's `TodoProvider`
@@ -118,12 +137,23 @@ public:
         c.tools.push_back(make_get_remaining_descriptor());
         c.tools.push_back(make_get_all_descriptor());
 
-        if (ever_used_) {
+        if (state_->ever_used) {
             c.instructions = TaintedText{std::string(kGuidance)};
             c.messages.push_back(status_message());
         }
         co_return c;
     }
+
+    // ADR-167 (#54): whether `todos_add` has ever succeeded in this session -- the same flag §4's
+    // adaptive `on_context()` gates on above, exposed read-only so a cooperating mechanism outside
+    // this provider (e.g. `PlanExecuteMode`) can condition its own behavior on "has this agent
+    // actually planned anything," without duplicating this provider's own bookkeeping.
+    [[nodiscard]] bool has_planned() const noexcept { return state_->ever_used; }
+
+    // A handle to the SAME live state THIS copy of the provider mutates -- see `TodoState`'s own
+    // comment above for why this needs to be shared, not copied, across whatever further copies of
+    // `TodoProvider` a `ComposedContextProvider` makes.
+    [[nodiscard]] std::shared_ptr<TodoState const> plan_state_handle() const noexcept { return state_; }
 
     // Nothing to extract: unlike MemoryProvider's on_turn_end (which calls a summarizer ChatClient
     // to write new memory), this provider's only state mutations happen synchronously inside the
@@ -149,10 +179,10 @@ private:
     // never re-acquiring authority), it just has no multi-level-forgery surface to close.
     [[nodiscard]] Message status_message() const {
         std::string text = "### Current todo list\n";
-        if (items_.empty()) {
+        if (state_->items.empty()) {
             text += "- none yet";
         } else {
-            for (auto const& item : items_) {
+            for (auto const& item : state_->items) {
                 text += (item.completed ? "- [x] " : "- [ ] ");
                 text += item.title;
                 text += "\n";
@@ -173,7 +203,7 @@ private:
 
     [[nodiscard]] std::string render(bool remaining_only) const {
         std::string out;
-        for (auto const& item : items_) {
+        for (auto const& item : state_->items) {
             if (remaining_only && item.completed) continue;
             out += std::to_string(item.id);
             out += (item.completed ? ". [x] " : ". [ ] ");
@@ -212,15 +242,15 @@ private:
                     "todo title exceeds the " + std::to_string(kMaxTitleLength) + "-character limit",
                     "todo.title_too_long"});
             }
-            if (items_.size() >= kMaxItems) {
+            if (state_->items.size() >= kMaxItems) {
                 return std::unexpected(
                     error{failure_class::resource,
                           "todo list already holds the maximum of " + std::to_string(kMaxItems) + " items",
                           "todo.list_full"});
             }
-            ever_used_ = true;
-            std::uint64_t const id = next_id_++;
-            items_.push_back(todo_detail::TodoItem{id, args->title, false});
+            state_->ever_used = true;
+            std::uint64_t const id = state_->next_id++;
+            state_->items.push_back(todo_detail::TodoItem{id, args->title, false});
             return schema::to_json(TodoAddReply{id});
         };
         return d;
@@ -240,7 +270,7 @@ private:
             // ADR-166 red-team finding 3: fails CLOSED with a real error on an unknown id -- never a
             // silent no-op `{ok:false}` that would hide a bug (a stale/hallucinated id) from the
             // model rather than surfacing it as something to correct.
-            for (auto& item : items_) {
+            for (auto& item : state_->items) {
                 if (item.id == args->id) {
                     item.completed = true;
                     return schema::to_json(TodoOkReply{true});
@@ -263,12 +293,12 @@ private:
         d.invoke = [this](json::Value const& args_value, EffectContext&) -> result<json::Value> {
             auto args = schema::from_json<TodoIdArgs>(args_value);
             if (!args) return std::unexpected(args.error());
-            // ADR-166 red-team finding 4: `next_id_` is monotonic and never reused (see
-            // `make_add_descriptor()` -- `next_id_++`), so a removed id can never collide with a
-            // later item's id; this loop cannot mistakenly "revive" a removed item under a reused id.
-            for (auto it = items_.begin(); it != items_.end(); ++it) {
+            // ADR-166 red-team finding 4: `next_id` is monotonic and never reused (see
+            // `make_add_descriptor()` -- `state_->next_id++`), so a removed id can never collide with
+            // a later item's id; this loop cannot mistakenly "revive" a removed item under a reused id.
+            for (auto it = state_->items.begin(); it != state_->items.end(); ++it) {
                 if (it->id == args->id) {
-                    items_.erase(it);
+                    state_->items.erase(it);
                     return schema::to_json(TodoOkReply{true});
                 }
             }
@@ -312,13 +342,13 @@ private:
         return d;
     }
 
-    std::vector<todo_detail::TodoItem> items_;
-    std::uint64_t                      next_id_   = 0;
-    // ADR-166: flips true the first time `todos_add` succeeds, never resets -- draft §4's adaptive
-    // default. Deliberately keyed on "ever used", not "list non-empty": completing/removing every
-    // item back to empty must not silently withdraw the guidance an already-engaged agent is relying
-    // on (draft §4's own stated intent, "keep the agent aware of outstanding work").
-    bool                                ever_used_ = false;
+    // ADR-166: `ever_used` flips true the first time `todos_add` succeeds, never resets -- draft
+    // §4's adaptive default. Deliberately keyed on "ever used", not "list non-empty":
+    // completing/removing every item back to empty must not silently withdraw the guidance an
+    // already-engaged agent is relying on (draft §4's own stated intent, "keep the agent aware of
+    // outstanding work"). ADR-167 moved this and its two siblings into one shared `TodoState` block
+    // -- see that struct's own comment for why.
+    std::shared_ptr<TodoState> state_ = std::make_shared<TodoState>();
 };
 
 static_assert(ContextProvider<TodoProvider>, "TodoProvider must satisfy the ContextProvider concept (005 §5)");
