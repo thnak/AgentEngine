@@ -56,13 +56,15 @@ int main() {
             t.on_context(session_ctx, ctx));
         auto const* add = find_tool(*t_out, "todos_add");
         auto add_args = json::parse(R"({"title":"plan it"})");
-        (void)add->invoke(*add_args, ctx);
+        auto add_result = add->invoke(*add_args, ctx);
+        check(add_result.has_value(), "setup: todos_add succeeds");
 
         auto m_out = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
             m.on_context(session_ctx, ctx));
         auto const* ready = find_tool(*m_out, "plan_ready");
         auto no_args = json::parse(R"({})");
-        (void)ready->invoke(*no_args, ctx);
+        auto ready_result = ready->invoke(*no_args, ctx);
+        check(ready_result.has_value(), "setup: plan_ready succeeds");
     };
 
     // --- R1: before any planning, on_context() declares plan_ready and injects gating guidance -----
