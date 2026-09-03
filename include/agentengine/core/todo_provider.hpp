@@ -40,17 +40,20 @@ struct TodoAddArgs {
 };
 AE_JSON_SCHEMA(TodoAddArgs, title)
 
+// ae-naming-lint: allow TodoAddReply — matches RecallReply's own established naming (memory_provider.hpp)
 struct TodoAddReply {
     std::uint64_t id = 0;
 };
 AE_JSON_SCHEMA(TodoAddReply, id)
 
 // Shared by todos_complete and todos_remove.
+// ae-naming-lint: allow TodoIdArgs — matches RecallArgs/TodoAddArgs' own established naming (memory_provider.hpp)
 struct TodoIdArgs {
     std::uint64_t id = 0;
 };
 AE_JSON_SCHEMA(TodoIdArgs, id)
 
+// ae-naming-lint: allow TodoOkReply — matches RecallReply's own established naming (memory_provider.hpp)
 struct TodoOkReply {
     bool ok = false;
 };
@@ -63,11 +66,13 @@ AE_JSON_SCHEMA(TodoOkReply, ok)
 // would have made the model-facing schema demand a key that means nothing; `std::optional` is the
 // one type this codec treats as genuinely absent-tolerant (`from_json_field`, json_schema.hpp:384),
 // so a bare `{}` call (the natural shape for a no-argument tool) actually validates.
+// ae-naming-lint: allow TodoNoArgs — matches RecallArgs/TodoAddArgs' own established naming (memory_provider.hpp)
 struct TodoNoArgs {
     std::optional<bool> ignored;
 };
 AE_JSON_SCHEMA(TodoNoArgs, ignored)
 
+// ae-naming-lint: allow TodoListReply — matches RecallReply's own established naming (memory_provider.hpp)
 struct TodoListReply {
     std::string rendered;
 };
@@ -88,7 +93,9 @@ struct TodoItem {
 // that never plans pays nothing, not even the placeholder-empty-list line MAF's `TodoProvider`
 // always emits. `tools` is unconditional every call (the model must see `todos_add` before it can
 // ever use it) -- the same "sometimes-empty content, always-present tool" shape
-// `MemoryProvider::on_context()` already established (memory_provider.hpp:253-266).
+// `MemoryProvider::on_context()` already established (memory_provider.hpp:253-266). 027 §2-4's
+// tables not yet reconciled against this milestone's additions (ADR-025 §4c's deferred backlog).
+// ae-naming-lint: allow TodoProvider — matches MemoryProvider/HistoryProvider's own established naming
 class TodoProvider {
 public:
     // decisions/ADR-066-context-provider-attribution-provenance.md §3.
