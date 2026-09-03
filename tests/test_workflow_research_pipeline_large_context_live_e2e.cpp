@@ -222,7 +222,16 @@ using RealSession = AgentSession<RealClient>;
             "specialist, and a Competitive-landscape specialist should each look into. Do not answer "
             "the question yourself.",
             goal);
-        if (!resp.has_value()) return std::unexpected(resp.error());
+        if (!resp.has_value()) {
+            // Real diagnostic gap found live 2026-09-03: every OTHER body in this file
+            // (specialist_body, cyclic_multiturn_specialist_body) prints its own real error on
+            // failure; this one silently swallowed it, so a real planner-call failure (which aborts
+            // the whole run immediately -- planner's fan_out edges use the default `fail` policy)
+            // left no trace of WHY, only that market/technical/competitive never got dispatched.
+            std::fprintf(stderr, "[planner] FAILED: %s (%s)\n", resp.error().message.c_str(),
+                         resp.error().code.c_str());
+            return std::unexpected(resp.error());
+        }
         std::string const plan = text_of(resp->message);
         std::printf("[planner] %s\n", plan.c_str());
         return text_message("Research brief: " + plan + "\n\nOriginal question: " + goal);

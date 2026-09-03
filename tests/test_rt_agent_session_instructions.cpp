@@ -335,6 +335,48 @@ int main() {
         }
     }
 
+    // T8 FIX PROOF (found live 2026-09-03, the project owner inspecting OpenRouter's own dashboard/
+    // request-log view mid-run): `set_static_instructions()`'s own message used to be
+    // `contribution->messages.push_back(...)` -- appended at the ABSOLUTE END of the assembled
+    // message list. T4/T5/T6/T7 above are all SINGLE-turn, so `contribution->messages` held nothing
+    // else to land after and the bug was invisible there. Drives the SAME session through TWO real
+    // turns -- on the second turn, `contribution->messages` genuinely holds prior conversation
+    // (turn 1's user+assistant messages) ahead of turn 2's own new user message, exactly the shape
+    // that exposed the bug live. The fix (agent_session.hpp) inserts right after any `contribution->
+    // instructions` message instead of at the end.
+    {
+        AgentSession<RecordingChatClient, NoSessionState, NoInstructionsProvider> session;
+        session.initialize("t8", Principal{"p1", ""});
+        session.set_static_instructions("static text");
+        RecordingChatClient& client = session.emplace_chat_client();
+
+        auto outcome1 = drive(session.start_run(StartRun{user_message("turn 1")}));
+        check(outcome1.has_value(), "T8: the first turn converges");
+        auto outcome2 = drive(session.start_run(StartRun{user_message("turn 2")}));
+        check(outcome2.has_value(), "T8: the second turn converges");
+
+        check(client.requests().size() == 2, "T8: two real requests reached the wire, one per turn");
+        if (client.requests().size() == 2) {
+            auto const& msgs2 = client.requests().back().messages;
+            check(!msgs2.empty() && msgs2.front().role == role::system,
+                  "T8 (FIXED): on the SECOND turn -- with real prior conversation already in the "
+                  "assembled message list -- the system message is STILL the very FIRST message, not "
+                  "appended after turn 1's user+assistant messages and turn 2's own new user message");
+            auto system_count =
+                std::ranges::count_if(msgs2, [](Message const& m) { return m.role == role::system; });
+            check(system_count == 1,
+                  "T8: still exactly ONE system message on turn 2 -- not re-duplicated by history "
+                  "accumulation (the synthesized message is never itself pushed into session history)");
+            check(msgs2.size() == 4,
+                  "T8: message count is exactly system + turn1-user + turn1-assistant + turn2-user");
+            if (!msgs2.empty() && msgs2.front().role == role::system && !msgs2.front().content.empty()) {
+                auto const* t = std::get_if<Text>(&msgs2.front().content.front().value);
+                check(t != nullptr && t->text == "static text",
+                      "T8: the system message at index 0 still carries the exact configured text");
+            }
+        }
+    }
+
     std::printf(g_failures == 0 ? "test_rt_agent_session_instructions: OK\n"
                                  : "test_rt_agent_session_instructions: FAIL\n");
     return g_failures == 0 ? 0 : 1;

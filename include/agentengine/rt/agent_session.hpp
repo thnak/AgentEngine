@@ -2442,11 +2442,25 @@ private:
             // `set_static_instructions()`'s own comment above for why this is unconditionally
             // untainted (host/engine-derived from a `CapabilitySet`, never model output, so no
             // `TaintedText` declassification step applies the way `contribution->instructions` above
-            // needed one). Reuses the same "a second, independent role::system message from another
-            // contributor coexists fine" precedent this block's own comment already names -- both
-            // real backends already concatenate every role::system message they see, not just the
-            // first. No-op (empty string, nothing pushed) until a caller actually calls
+            // needed one). No-op (empty string, nothing pushed) until a caller actually calls
             // `set_static_instructions()` -- every existing session unaffected.
+            //
+            // ORDERING FIX (found live 2026-09-03 -- the project owner inspected OpenRouter's own
+            // dashboard/request-log view mid-run and spotted the system message NOT at index 0): this
+            // used to be `contribution->messages.push_back(...)` -- appended at the ABSOLUTE END of
+            // the fully-assembled message list, AFTER every turn of real conversation history AND the
+            // current turn's own new user message. Invisible on a session's very first turn (nothing
+            // else in `contribution->messages` yet to land after), which is exactly why
+            // test_rt_agent_session_instructions.cpp's T4/T5 -- both single-turn -- never caught it; a
+            // genuinely multi-turn session
+            // (test_workflow_research_pipeline_large_context_live_e2e.cpp's market/technical
+            // specialists) makes it visible on the real wire: the system prompt landed as the LAST
+            // message in a growing conversation, directly contradicting `contribution->instructions`'
+            // own comment just above ("prepended so it establishes context ahead of everything
+            // else"). Fixed by inserting right after any already-prepended `contribution->instructions`
+            // message (index 1) or at the very front (index 0) if there is none -- preserving T5's own
+            // "contribution's own message first, static second" order, and now correctly ahead of
+            // every history/turn message no matter how many turns have already accumulated.
             if (!static_instructions_.empty()) {
                 Message static_instructions_msg;
                 static_instructions_msg.role = role::system;
@@ -2455,7 +2469,10 @@ private:
                 item.tainted = false;  // host/engine-derived (CapabilitySet), never model output (I3)
                 item.value   = Text{static_instructions_};
                 static_instructions_msg.content.push_back(std::move(item));
-                contribution->messages.push_back(std::move(static_instructions_msg));
+                std::size_t const insert_pos = contribution->instructions.has_value() ? 1 : 0;
+                contribution->messages.insert(
+                    contribution->messages.begin() + static_cast<std::ptrdiff_t>(insert_pos),
+                    std::move(static_instructions_msg));
             }
             ChatRequest request{contribution->messages, contribution->tools};
             // ADR-058 §8 (Design B) -- scoped to `native` ONLY, deliberately. Both real backends'
