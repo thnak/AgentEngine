@@ -61,10 +61,18 @@ struct EvaluationVerdict {
 // without the evaluator ever being satisfied -- a legitimate, expected outcome (not an error): the
 // caller decides whether "best attempt within budget" is good enough for their own use case, the
 // same way a caller already decides what to do with `AgentResponse` today.
+//
+// `total_tokens_used` (independent review, 2026-09-03): `max_iterations` bounds CALL COUNT only --
+// `AgentSession::start_run()` resets its own per-run `TokenBudget` check every call (agent_session.hpp
+// :954), so nothing in this file previously bounded, or even reported, the AGGREGATE cost of a
+// multi-iteration loop. This field is always populated (input_tokens + output_tokens summed across
+// every iteration actually run, including a run that exhausts `max_iterations` unsatisfied) so a
+// caller can observe real spend even when not opting into the hard bound below.
 struct ReflectionOutcome {
     AgentResponse response;
     bool          satisfied = false;
     std::uint32_t iterations_used = 0;
+    std::uint64_t total_tokens_used = 0;
 };
 
 namespace bounded_reflection_detail {
@@ -96,20 +104,40 @@ namespace bounded_reflection_detail {
 // conformer). `Evaluator` is any callable `task<result<EvaluationVerdict>>(AgentResponse const&)`.
 // `max_iterations` must be >= 1; the FIRST `start_run()` always happens regardless of any bound --
 // this is "keep retrying if unsatisfied, up to N", not "call N times unconditionally".
+//
+// `max_total_tokens` (independent review, 2026-09-03; default 0 == no additional bound, so every
+// existing call site's behavior is unchanged): an OPT-IN hard ceiling on the cumulative
+// input+output tokens spent across every iteration this call makes. `max_iterations` alone bounds
+// call count, never cost -- a host that sets no per-run `TokenBudget` and no `max_total_tokens` here
+// can still see `max_iterations` calls at whatever cost each one happens to incur, with nothing in
+// this file throttling it. Checked AFTER each iteration completes (so the iteration that crosses the
+// ceiling is the one reported, never silently discarded) -- exceeding it aborts the loop immediately
+// with a real, distinguishable error, the same "never laundered into a different outcome" posture
+// this file already applies to evaluator failures.
 template <class SessionT, class Evaluator>
 task<result<ReflectionOutcome>> run_with_bounded_reflection(SessionT& session, Message initial_input,
                                                               std::uint32_t max_iterations,
-                                                              Evaluator evaluator) {
+                                                              Evaluator evaluator,
+                                                              std::uint64_t max_total_tokens = 0) {
     if (max_iterations == 0) {
         co_return std::unexpected(error{failure_class::contract,
                                           "run_with_bounded_reflection: max_iterations must be >= 1",
                                           "bounded_reflection.zero_iterations"});
     }
 
+    std::uint64_t total_tokens_used = 0;
     StartRun request{std::move(initial_input)};
     for (std::uint32_t iteration = 1; iteration <= max_iterations; ++iteration) {
         result<AgentResponse> response = co_await session.start_run(std::move(request));
         if (!response) co_return std::unexpected(response.error());
+
+        total_tokens_used += response->usage.input_tokens + response->usage.output_tokens;
+        if (max_total_tokens != 0 && total_tokens_used > max_total_tokens) {
+            co_return std::unexpected(
+                error{failure_class::resource,
+                      "run_with_bounded_reflection: cumulative token spend exceeded max_total_tokens",
+                      "bounded_reflection.token_budget_exceeded"});
+        }
 
         result<EvaluationVerdict> verdict = co_await evaluator(*response);
         if (!verdict) {
@@ -119,7 +147,8 @@ task<result<ReflectionOutcome>> run_with_bounded_reflection(SessionT& session, M
         }
 
         if (verdict->satisfied || iteration == max_iterations) {
-            co_return ReflectionOutcome{std::move(*response), verdict->satisfied, iteration};
+            co_return ReflectionOutcome{std::move(*response), verdict->satisfied, iteration,
+                                          total_tokens_used};
         }
 
         request = StartRun{bounded_reflection_detail::make_feedback_message(std::move(verdict->feedback))};

@@ -228,7 +228,23 @@ this branch — not a gap, a consequence of the independent base.
 
 **Residual risks, disclosed:**
 
-- **Not independently red-teamed** — self-conducted, same disclosed posture as ADR-166 §7/ADR-167 §7.
+- **Independently reviewed (2026-09-03), one real gap found and fixed, not just disclosed.** A fresh
+  reviewer (no context from this ADR's own implementation) checked out this branch cold, built and ran
+  `test_bounded_reflection` on their own machine, and specifically attacked bound enforcement,
+  evaluator-error handling, the I3 taint claim, and `start_run()` reuse correctness — every claim in
+  the per-claim verdict table held (C1-C8 unchanged). The real finding: `max_iterations` bounds CALL
+  COUNT only, never AGGREGATE COST — reproduced directly (50 iterations at 5000 tokens/call spent
+  250,000 tokens with zero throttling when no per-run `TokenBudget` was set; a per-run `TokenBudget`
+  set to 500 still let 20 iterations run to completion at 2000 total spend, since it resets every
+  `start_run()` call). This was a genuine gap in what this mechanism enforces, not merely an
+  under-disclosed residual — **fixed, not just documented**: `ReflectionOutcome.total_tokens_used`
+  now always reports real cumulative input+output token spend across every iteration, and a new
+  opt-in `max_total_tokens` parameter (default 0, preserving every pre-existing call site's behavior
+  unchanged) aborts the loop with a real, distinguishable `bounded_reflection.token_budget_exceeded`
+  error the iteration it's crossed, rather than letting an unsatisfied evaluator spend without limit.
+  Proven by R7 (total always populated and correctly summed), R8 (the ceiling actually aborts
+  mid-loop, at the right iteration, with a real error), and R9 (default-0 backward compatibility with
+  every existing call site).
 - **No `Agent<>`-declarative authoring surface.** A caller writes `run_with_bounded_reflection(session,
   ...)` directly; there is no CRTP policy sugar. Same honest state as most of 002 §3's table today
   (ADR-167 §7's identical disclosure) — a future declarative form, if built, should compile down to
@@ -236,9 +252,11 @@ this branch — not a gap, a consequence of the independent base.
 - **Design B (a real, wired post-response `Middleware` interception point) is the more "native"
   long-term answer** if this pattern recurs elsewhere — not built here, named as future work, not a
   precondition to shipping this (§3).
-- **Evaluator cost/latency is entirely the caller's own responsibility** — this mechanism does not
-  budget or bound how expensive a single `Evaluator` invocation is (e.g. a judge-model call with its
-  own token cost); only the number of iterations is bounded.
+- **Evaluator cost/latency is still entirely the caller's own responsibility.** `max_total_tokens`
+  (above) bounds the driven session's own `start_run()` spend, not the `Evaluator` callable itself —
+  a judge-model call an evaluator makes internally (its own token cost, its own latency) is outside
+  what this file can see or bound, by construction (`Evaluator` is an opaque callable, §2's own I3
+  reasoning for why it must stay that way).
 - **Does not persist reflection-loop progress across a checkpoint restart** — there is no loop-level
   state at all beyond local variables in the driving coroutine (a structurally simpler position than
   `TodoState`/`GateState`'s ADR-166/167 §7 disclosures, not a gap of the same kind, but worth stating:

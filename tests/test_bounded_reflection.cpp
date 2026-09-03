@@ -219,6 +219,87 @@ int main() {
         }
     }
 
+    // --- R7 (independent review finding): total_tokens_used is always populated, and correctly sums
+    // every iteration's real Usage -- DraftingChatClient::chat() always returns Usage{1,1,...}, so
+    // three iterations must report exactly 3*(1+1) == 6, never just the last iteration's cost or 0. --
+    {
+        AgentSession<DraftingChatClient> session;
+        session.initialize("s-r7", principal);
+        session.emplace_chat_client();
+
+        int calls = 0;
+        auto evaluator = [&calls](AgentResponse const&) -> task<result<EvaluationVerdict>> {
+            ++calls;
+            co_return EvaluationVerdict{calls >= 3, "keep going"};
+        };
+
+        auto outcome = test_support::run_task_sync<result<ReflectionOutcome>>(
+            run_with_bounded_reflection(session, user_message("write it"), 5, evaluator));
+        check(outcome.has_value(), "R7: loop succeeds");
+        if (outcome) {
+            check(outcome->iterations_used == 3, "R7: setup -- three iterations, matching R2");
+            check(outcome->total_tokens_used == 6,
+                  "R7: total_tokens_used sums all three iterations' real Usage (3 * (1 input + 1 "
+                  "output) == 6), not just the last one or a default-constructed zero");
+        }
+    }
+
+    // --- R8 (independent review finding): max_total_tokens is a real, opt-in, hard ceiling on
+    // CUMULATIVE cost -- closes the exact gap the independent review demonstrated (50 iterations *
+    // 5000 tokens/call spent unthrottled with no per-run TokenBudget set). DraftingChatClient spends
+    // 2 tokens/iteration; a ceiling of 3 must abort partway through what would otherwise be a
+    // 5-iteration loop, with a real, distinguishable error -- never silently truncated output. -------
+    {
+        AgentSession<DraftingChatClient> session;
+        session.initialize("s-r8", principal);
+        session.emplace_chat_client();
+
+        auto never_satisfied = [](AgentResponse const&) -> task<result<EvaluationVerdict>> {
+            co_return EvaluationVerdict{false, "still not good enough"};
+        };
+
+        auto outcome = test_support::run_task_sync<result<ReflectionOutcome>>(run_with_bounded_reflection(
+            session, user_message("write it"), /*max_iterations=*/5, never_satisfied,
+            /*max_total_tokens=*/3));
+        check(!outcome.has_value(),
+              "R8a: exceeding max_total_tokens aborts the loop as a real error, not a truncated "
+              "success");
+        if (!outcome) {
+            check(outcome.error().code == "bounded_reflection.token_budget_exceeded",
+                  "R8b: rejected with the specific cumulative-token-budget diagnostic");
+        }
+        // Iteration 1 spends 2 (running total 2, <= 3, continues); iteration 2 spends 2 more (running
+        // total 4, > 3, aborts) -- exactly two real start_run() turns, never a third.
+        check(session.history().size() == 4,
+              "R8c: exactly two start_run() turns happened before the cumulative ceiling aborted the "
+              "loop -- the SAME iteration that crosses the ceiling is the one reported, not silently "
+              "swallowed a turn early or a turn late");
+    }
+
+    // --- R9: max_total_tokens defaults to 0 (unbounded) -- every existing call site (R1-R8 above,
+    // none of which pass a 5th argument) is unaffected by this addition. -----------------------------
+    {
+        AgentSession<DraftingChatClient> session;
+        session.initialize("s-r9", principal);
+        session.emplace_chat_client();
+
+        auto never_satisfied = [](AgentResponse const&) -> task<result<EvaluationVerdict>> {
+            co_return EvaluationVerdict{false, "still not good enough"};
+        };
+
+        // 5 iterations * 2 tokens/iteration == 10 total -- would exceed a max_total_tokens of 3, but
+        // none is passed here, so the loop must run to its full max_iterations bound unimpeded.
+        auto outcome = test_support::run_task_sync<result<ReflectionOutcome>>(
+            run_with_bounded_reflection(session, user_message("write it"), 5, never_satisfied));
+        check(outcome.has_value(),
+              "R9: with no max_total_tokens argument, cumulative cost is never enforced -- backward "
+              "compatible with every pre-existing call site");
+        if (outcome) {
+            check(outcome->iterations_used == 5, "R9: ran to the full max_iterations bound");
+            check(outcome->total_tokens_used == 10, "R9: total_tokens_used still reports the real sum");
+        }
+    }
+
     std::fprintf(stderr, g_failures == 0 ? "test_bounded_reflection: all checks passed\n"
                                           : "test_bounded_reflection: FAILURES\n");
     return g_failures == 0 ? 0 : 1;
