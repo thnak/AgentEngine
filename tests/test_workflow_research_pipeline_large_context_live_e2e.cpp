@@ -256,9 +256,19 @@ using RealSession = AgentSession<RealClient>;
     std::shared_ptr<RealSession> session, EffectContext& ctx,
     std::shared_ptr<std::atomic<std::uint32_t>> turns_out,
     std::shared_ptr<agentengine::Usage> final_usage_out) {
+    // Real bug found live 2026-09-03 (user inspected OpenRouter's own dashboard/request-log view):
+    // an earlier version of this function never called `AgentSession::set_static_instructions()` --
+    // `role_description` was baked into the per-turn USER prompt text instead, so `market`/
+    // `technical`'s real live requests carried NO `role: "system"` message at all, unlike
+    // `planner`/`writer`/`competitive` (built via `live_call()`, which constructs its own `ChatRequest`
+    // with an explicit system message directly). `set_static_instructions()` is AgentSession's own
+    // real, documented mechanism for this (agent_session.hpp, ADR-116/OQ-16) -- a configuration-time
+    // call, made once here per this comment's own "called once, before the first start_run()"
+    // contract, not per turn. Fixed by calling it once, right at body-construction time.
+    session->set_static_instructions("You are a " + role_description + ".");
     auto round       = std::make_shared<std::size_t>(0);
     auto saved_brief = std::make_shared<std::string>();
-    return [label, role_description, chunks = std::move(chunks), session, &ctx, turns_out,
+    return [label, chunks = std::move(chunks), session, &ctx, turns_out,
             final_usage_out, round, saved_brief](
                Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
         session->set_capabilities(ctx.capabilities.get());
@@ -270,17 +280,15 @@ using RealSession = AgentSession<RealClient>;
         if (!is_final) {
             prompt = "Reference material -- part " + std::to_string(i + 1) + " of " +
                      std::to_string(chunks.size()) + ":\n\n" + chunks[i] +
-                     "\n\n---\nYou are a " + role_description +
-                     ". In ONE short sentence, note the single most notable detail from THIS part "
-                     "(it is unrelated engineering documentation, included only to build up "
+                     "\n\n---\nIn ONE short sentence, note the single most notable detail from THIS "
+                     "part (it is unrelated engineering documentation, included only to build up "
                      "conversation length -- do not try to connect it to the business question). "
                      "Respond with ONLY that one sentence.";
         } else {
             prompt = "You have now reviewed " + std::to_string(chunks.size()) +
                      " parts of the reference material across our conversation above. Ignore that "
-                     "material's actual content -- it was unrelated filler. As a " + role_description +
-                     ", give your real, thorough 150-250 word analysis addressing this brief:\n\n" +
-                     *saved_brief;
+                     "material's actual content -- it was unrelated filler. Give your real, thorough "
+                     "150-250 word analysis addressing this brief:\n\n" + *saved_brief;
         }
 
         auto const t0     = std::chrono::steady_clock::now();
