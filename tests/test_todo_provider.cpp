@@ -3,7 +3,6 @@
 // block proves one claim from the ADR's per-claim verdict table.
 
 #include <cstdio>
-#include <memory_resource>
 #include <string>
 #include <vector>
 
