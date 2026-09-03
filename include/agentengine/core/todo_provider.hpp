@@ -98,7 +98,9 @@ struct TodoItem {
 // tuple still observes every later mutation `todos_add`/`todos_complete`/`todos_remove` makes to the
 // live, in-session copy. `plan_execute_mode.hpp`'s `PlanExecuteMode` is the reason this exists: it
 // needs to read `ever_used` from the SAME state the session's own `TodoProvider` copy is mutating,
-// without reaching into `ComposedContextProvider`'s private contributor table to find it.
+// without reaching into `ComposedContextProvider`'s private contributor table to find it. 027 §2-4's
+// tables not yet reconciled against this milestone's additions (ADR-025 §4c's deferred backlog).
+// ae-naming-lint: allow TodoState — matches this file's own established `Todo*` naming
 struct TodoState {
     std::vector<todo_detail::TodoItem> items;
     std::uint64_t                      next_id    = 0;

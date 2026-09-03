@@ -46,11 +46,13 @@
 
 namespace agentengine {
 
+// ae-naming-lint: allow PlanReadyArgs — matches RecallArgs/TodoAddArgs' own established naming (memory_provider.hpp, todo_provider.hpp)
 struct PlanReadyArgs {
     std::optional<bool> ignored;  // json_schema.hpp's zero-real-argument idiom, matching TodoNoArgs
 };
 AE_JSON_SCHEMA(PlanReadyArgs, ignored)
 
+// ae-naming-lint: allow PlanReadyReply — matches RecallReply/TodoAddReply's own established naming (memory_provider.hpp, todo_provider.hpp)
 struct PlanReadyReply {
     bool ok = false;
 };
@@ -62,7 +64,8 @@ AE_JSON_SCHEMA(PlanReadyReply, ok)
 // `PolicyDecider` closure `make_plan_execute_policy_decider()` returns (living in
 // `AgentSession::policy_decider_`, a completely separate slot) hold their own `shared_ptr` to the
 // SAME `GateState`, obtained from the SAME `PlanExecuteMode::gate_handle()` call before either was
-// copied anywhere.
+// copied anywhere. 027 §2-4's tables not yet reconciled against this milestone's additions.
+// ae-naming-lint: allow GateState — matches TodoState's own established naming (todo_provider.hpp)
 struct GateState {
     bool executing = false;
 };
@@ -122,7 +125,9 @@ namespace plan_execute_detail {
 // evidence of IS the todo list; there is no separate planning representation invented here. Compose
 // alongside `TodoProvider` in the same `ComposedContextProvider` tuple; use
 // `make_plan_execute_policy_decider(mode.gate_handle())` to build the `PolicyDecider` that actually
-// enforces the gate on tool calls (`AgentSession::set_policy_decider()`).
+// enforces the gate on tool calls (`AgentSession::set_policy_decider()`). 027 §2-4's tables not yet
+// reconciled against this milestone's additions (ADR-025 §4c's deferred backlog).
+// ae-naming-lint: allow PlanExecuteMode — 002/014's own gap analysis (issue #54) names this mechanism
 class PlanExecuteMode {
 public:
     static constexpr std::string_view name = "plan_execute";  // ae-naming-lint: allow name — ADR-066 §3, same convention as "todo"/"memory"
