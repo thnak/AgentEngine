@@ -1596,8 +1596,8 @@ add_test(NAME test_rt_workflow_supervisor_failure_policies COMMAND test_rt_workf
 # ---- GitHub issue #52 fix proof: `propagate`/`fallback` on a `fan_in` edge whose target a SIBLING
 # also delivers to normally in the SAME round -- a real gap D4 above never exercised, found live via
 # tests/test_workflow_research_pipeline_live_e2e.cpp, now fixed (route_from()'s deliver_or_merge()/
-# register_fan_in_holds()/deliver_to_fan_in(), workflow_supervisor.hpp) -- see this file's own top
-# comment for the full trace.
+# seed_fan_in_holds()/deliver_to_fan_in()/resolve_fan_in_await(), workflow_supervisor.hpp) -- see this
+# file's own top comment for the full trace.
 add_executable(test_workflow_fanin_concurrent_failure_policy_fix
   test_workflow_fanin_concurrent_failure_policy_fix.cpp)
 target_link_libraries(test_workflow_fanin_concurrent_failure_policy_fix PRIVATE
@@ -1605,18 +1605,19 @@ target_link_libraries(test_workflow_fanin_concurrent_failure_policy_fix PRIVATE
 add_test(NAME test_workflow_fanin_concurrent_failure_policy_fix
   COMMAND test_workflow_fanin_concurrent_failure_policy_fix)
 
-# ---- Characterization test pinning a real, DIFFERENT, currently-unfixed gap than the one above: an
-# ordinary `fan_in` target does not wait for every declared source before dispatching -- when two
-# sources resolve at genuinely different round counts (no failure/fallback involved at all), the
-# target dispatches TWICE, and the second invocation silently overwrites the first. Found live via
-# tests/test_workflow_research_pipeline_large_context_live_e2e.cpp, see this file's own top comment
-# for the full trace.
-add_executable(test_workflow_fanin_uneven_round_sources_gap
-  test_workflow_fanin_uneven_round_sources_gap.cpp)
-target_link_libraries(test_workflow_fanin_uneven_round_sources_gap PRIVATE
+# ---- GitHub issue #62 fix proof: a real, DIFFERENT (broader) gap than the one above -- an ordinary
+# `fan_in` target did not wait for every declared source before dispatching -- when two sources
+# resolved at genuinely different round counts (no failure/fallback involved at all), the target
+# dispatched TWICE, and the second invocation silently overwrote the first. Found live via
+# tests/test_workflow_research_pipeline_large_context_live_e2e.cpp, now fixed by generalizing #52's
+# fix (seed_fan_in_holds() pre-registers every multi-source fan_in target's barrier up front, not just
+# a fallback's direct-rejoin shape) -- see this file's own top comment for the full trace.
+add_executable(test_workflow_fanin_uneven_round_sources_fix
+  test_workflow_fanin_uneven_round_sources_fix.cpp)
+target_link_libraries(test_workflow_fanin_uneven_round_sources_fix PRIVATE
   agentengine::core agentengine_warnings)
-add_test(NAME test_workflow_fanin_uneven_round_sources_gap
-  COMMAND test_workflow_fanin_uneven_round_sources_gap)
+add_test(NAME test_workflow_fanin_uneven_round_sources_fix
+  COMMAND test_workflow_fanin_uneven_round_sources_fix)
 
 # ---- ADR-037 Phase 3 -- routing behavior (fan_in/switch_case/multi_selection/cyclic, plus retry
 # composing with each) ported from the two retired Quark-actor-based

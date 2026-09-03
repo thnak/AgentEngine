@@ -9,7 +9,8 @@
 // and every pure routing helper (`route_from`/`policy_for`/`edge_fires`/`deliver_or_merge`/
 // `record_partial`/`index_of`/`is_output_selected`/`is_retryable`/`mint_interaction`/`finish` -- all
 // already zero-Quark-dependency in the original, ported near-verbatim). `deliver_to_fan_in`/
-// `register_fan_in_holds`/`RunState::held_fan_in` (GitHub issue #52 fix, 2026-09-03) are new, not
+// `seed_fan_in_holds`/`resolve_fan_in_await`/`RunState::held_fan_in` (GitHub issue #52 fix,
+// 2026-09-03, generalized by issue #62, 2026-09-03 -- see `HeldFanIn`'s own comment) are new, not
 // part of the original port.
 //
 // SLICE 2 ADDITION (checkpointing): `to_record()`/`restore_from_record()`, `snapshot_record()`, and
@@ -411,15 +412,20 @@ struct ExecutorOutputRecord {
     agentengine::Message  payload;
 };
 
-// GitHub issue #52 fix: checkpoint-record twin of `WorkflowSupervisor::HeldFanIn` -- see that
-// struct's own comment. Optional on read (default: empty), matching this record's existing
-// stall_streak/resets_used precedent for a field added after the record shape was first shipped.
+// GitHub issue #52 fix, GENERALIZED by issue #62: checkpoint-record twin of
+// `WorkflowSupervisor::HeldFanIn` -- see that struct's own comment. Optional on read (default:
+// empty), matching this record's existing stall_streak/resets_used precedent for a field added
+// after the record shape was first shipped. `awaiting_sources` was `awaiting_recovery` before issue
+// #62's fix widened this from "hold only a fallback-recovery rejoin" to "hold every fan_in target
+// until every declared source resolves" -- renamed to match what it now tracks; this codebase makes
+// no checkpoint-format back-compat promise across a code version change (file banner's own
+// single-slot/latest-only narrowing already disclosed that).
 // ae-naming-lint: allow HeldFanInRecord — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct HeldFanInRecord {
     std::uint64_t              executor_index = 0;
     agentengine::Message       payload;
     bool                        seeded = false;
-    std::vector<std::uint64_t> awaiting_recovery;
+    std::vector<std::uint64_t> awaiting_sources;
 };
 
 // ae-naming-lint: allow OpenPortRecord — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
@@ -450,7 +456,7 @@ struct RunStateRecord {
     // taken before ADR-149 still decodes.
     std::uint32_t stall_streak = 0;
     std::uint32_t resets_used  = 0;
-    // GitHub issue #52 fix: see HeldFanInRecord's own comment.
+    // GitHub issue #52 fix, generalized by issue #62: see HeldFanInRecord's own comment.
     std::vector<HeldFanInRecord> held_fan_in;
 };
 
@@ -511,26 +517,26 @@ struct RunStateRecord {
 
 [[nodiscard]] inline agentengine::json::Value held_fan_in_record_to_json(HeldFanInRecord const& h) {
     std::vector<agentengine::json::Value> awaiting;
-    awaiting.reserve(h.awaiting_recovery.size());
-    for (std::uint64_t const idx : h.awaiting_recovery) {
+    awaiting.reserve(h.awaiting_sources.size());
+    for (std::uint64_t const idx : h.awaiting_sources) {
         awaiting.push_back(agentengine::json::Value::make_number(static_cast<double>(idx)));
     }
     return agentengine::json::Value::make_object({
         {"executor_index", agentengine::json::Value::make_number(static_cast<double>(h.executor_index))},
         {"payload", message_to_json(h.payload)},
         {"seeded", agentengine::json::Value::make_bool(h.seeded)},
-        {"awaiting_recovery", agentengine::json::Value::make_array(std::move(awaiting))},
+        {"awaiting_sources", agentengine::json::Value::make_array(std::move(awaiting))},
     });
 }
 [[nodiscard]] inline agentengine::result<HeldFanInRecord> held_fan_in_record_from_json(
     agentengine::json::Value const& v) {
-    agentengine::json::Value const* executor_index    = v.find("executor_index");
-    agentengine::json::Value const* payload           = v.find("payload");
-    agentengine::json::Value const* seeded            = v.find("seeded");
-    agentengine::json::Value const* awaiting_recovery = v.find("awaiting_recovery");
+    agentengine::json::Value const* executor_index   = v.find("executor_index");
+    agentengine::json::Value const* payload          = v.find("payload");
+    agentengine::json::Value const* seeded           = v.find("seeded");
+    agentengine::json::Value const* awaiting_sources = v.find("awaiting_sources");
     if (executor_index == nullptr || !executor_index->is_number() || payload == nullptr ||
-        seeded == nullptr || !seeded->is_bool() || awaiting_recovery == nullptr ||
-        !awaiting_recovery->is_array()) {
+        seeded == nullptr || !seeded->is_bool() || awaiting_sources == nullptr ||
+        !awaiting_sources->is_array()) {
         return std::unexpected(agentengine::error{agentengine::failure_class::contract,
                                                     "malformed HeldFanInRecord",
                                                     "rt.workflow_supervisor.record.malformed"});
@@ -541,14 +547,14 @@ struct RunStateRecord {
     h.executor_index = static_cast<std::uint64_t>(executor_index->as_number());
     h.payload         = std::move(*msg);
     h.seeded          = seeded->as_bool();
-    h.awaiting_recovery.reserve(awaiting_recovery->as_array().size());
-    for (agentengine::json::Value const& item : awaiting_recovery->as_array()) {
+    h.awaiting_sources.reserve(awaiting_sources->as_array().size());
+    for (agentengine::json::Value const& item : awaiting_sources->as_array()) {
         if (!item.is_number()) {
             return std::unexpected(agentengine::error{agentengine::failure_class::contract,
-                                                        "malformed HeldFanInRecord.awaiting_recovery entry",
+                                                        "malformed HeldFanInRecord.awaiting_sources entry",
                                                         "rt.workflow_supervisor.record.malformed"});
         }
-        h.awaiting_recovery.push_back(static_cast<std::uint64_t>(item.as_number()));
+        h.awaiting_sources.push_back(static_cast<std::uint64_t>(item.as_number()));
     }
     return h;
 }
@@ -1025,6 +1031,7 @@ public:
         pending_sub_workflows_.clear();  // ADR-157 -- a fresh run carries no stale nested interactions
         rounds_ = 0;
         total_usage_ = agentengine::Usage{};  // GitHub issue #35 follow-up -- see usage()'s own comment
+        seed_fan_in_holds();  // issue #62 -- must run AFTER state_ is reset, before round 1
         state_.pending.push_back(Delivery{index_of(graph_.start), request.input});
 
         push_structural_event(workflow_event_kind::workflow_run_started);
@@ -1224,8 +1231,8 @@ public:
         rec.held_fan_in.reserve(state_.held_fan_in.size());
         for (auto const& h : state_.held_fan_in) {
             std::vector<std::uint64_t> awaiting;
-            awaiting.reserve(h.awaiting_recovery.size());
-            for (std::size_t const idx : h.awaiting_recovery) awaiting.push_back(static_cast<std::uint64_t>(idx));
+            awaiting.reserve(h.awaiting_sources.size());
+            for (std::size_t const idx : h.awaiting_sources) awaiting.push_back(static_cast<std::uint64_t>(idx));
             rec.held_fan_in.push_back(HeldFanInRecord{static_cast<std::uint64_t>(h.executor_index), h.payload,
                                                         h.seeded, std::move(awaiting)});
         }
@@ -1260,8 +1267,8 @@ public:
         state_.held_fan_in.reserve(rec.held_fan_in.size());
         for (auto const& h : rec.held_fan_in) {
             std::vector<std::size_t> awaiting;
-            awaiting.reserve(h.awaiting_recovery.size());
-            for (std::uint64_t const idx : h.awaiting_recovery) awaiting.push_back(static_cast<std::size_t>(idx));
+            awaiting.reserve(h.awaiting_sources.size());
+            for (std::uint64_t const idx : h.awaiting_sources) awaiting.push_back(static_cast<std::size_t>(idx));
             state_.held_fan_in.push_back(HeldFanIn{static_cast<std::size_t>(h.executor_index), h.payload,
                                                      h.seeded, std::move(awaiting)});
         }
@@ -1281,22 +1288,37 @@ private:
         agentengine::Message  payload;
     };
 
-    // GitHub issue #52 fix: a fan_in target whose `fallback` sibling's recovery executor rejoins it
-    // directly (a `fallback` edge whose named recovery has its own `fan_in` edge back to the SAME
-    // target the failed edge would have delivered to -- 014 §6/§7's "a fallback branch is
-    // drawable... exactly like any other edge") is HELD here across round boundaries instead of
-    // being dispatched early, so it runs exactly once with every contribution merged rather than
-    // twice with the second overwriting the first. Registered by `register_fan_in_holds()` (called
-    // once per round, before any route_from() call that round, so sibling merge order within the
-    // round cannot matter) and resolved/released by `deliver_to_fan_in()`. Only this DIRECT
-    // recovery-rejoins-the-same-target shape is tracked -- a `fallback` whose recovery reaches the
-    // target indirectly (through further executors) is not held and keeps the pre-fix behavior; a
-    // narrower, disclosed scope, not a silent gap.
+    // GitHub issue #52 fix, GENERALIZED by issue #62 (2026-09-03): a `fan_in` target with 2+
+    // DISTINCT declared sources (edges of kind `fan_in` sharing the same `to`) is HELD here for the
+    // target's whole join episode -- from before round 1 ever runs (seeded by `seed_fan_in_holds()`,
+    // called once per `run_workflow()`) until every declared source has resolved -- instead of
+    // dispatching as soon as ANY source's contribution arrives. 014 §2's "Concurrent = fan-out +
+    // fan-in with an aggregator" is the only documented fan_in shape, and a fan_out's targets always
+    // ALL fire (`edge_fires()` never conditions a `fan_out`/`fan_in` edge), so waiting for every
+    // declared source is the correct join semantic, not an optional refinement.
+    //
+    // Originally (issue #52) this struct only ever held the ONE narrow shape a `fallback` edge's
+    // named recovery rejoining the SAME target directly produced, registered freshly each round by a
+    // since-removed `register_fan_in_holds()`. Issue #62 found -- via
+    // tests/test_workflow_research_pipeline_large_context_live_e2e.cpp, a production-shaped pipeline
+    // where two genuinely multi-round cyclic specialists (each ~11 real sequential turns) shared a
+    // fan_in target with a fast-resolving third branch -- that this left the GENERAL case (two
+    // ORDINARY, non-failing fan_in sources that simply resolve after different numbers of rounds)
+    // completely unguarded: the target dispatched as soon as the fast source delivered, then AGAIN
+    // once the slow source finally delivered, silently overwriting the first (pinned offline by
+    // tests/test_workflow_fanin_uneven_round_sources_fix.cpp's U1, before this fix; now a positive
+    // proof of the fix instead). Pre-registering EVERY multi-source fan_in target up front, once,
+    // subsumes the narrow #52 shape too (a `fallback` edge's own `to` and the recovery's own `fan_in`
+    // edge back to it are both ordinary declared sources under this generalization) -- so
+    // `register_fan_in_holds()`'s per-round, direct-rejoin-only registration is gone; only
+    // `route_from()`'s `propagate`/`fallback` failure handling still needs to know about a hold, to
+    // resolve a permanently-failed source's OWN slot without ever receiving a delivery from it (see
+    // `resolve_fan_in_await()`). Resolved/released by `deliver_to_fan_in()`, same as before.
     struct HeldFanIn {
         std::size_t               executor_index = 0;
         agentengine::Message      payload;
         bool                       seeded = false;
-        std::vector<std::size_t>  awaiting_recovery;
+        std::vector<std::size_t>  awaiting_sources;
     };
 
     struct RunState {
@@ -1886,9 +1908,10 @@ private:
             std::vector<Delivery> next;
             bool                  broke = false;
             fan_in_edges_this_round_.clear();
-            // GitHub issue #52 fix: register this round's fallback holds BEFORE any route_from() call
-            // below -- see register_fan_in_holds()'s own comment for why call order matters here.
-            register_fan_in_holds(exec_deliveries, replies);
+            // Issue #62: every multi-source fan_in target's hold already exists by now -- seeded
+            // once, up front, by `seed_fan_in_holds()` (called from `run_workflow()`, before round 1
+            // -- see that function's own comment for why a per-round registration pass here, like the
+            // since-removed `register_fan_in_holds()` used to run, is no longer needed).
             for (std::size_t i = 0; i < exec_deliveries.size(); ++i) {
                 bool const quarantine_echo = is_same_round_quarantine_echo(exec_deliveries, replies, i);
                 route_result const rr =
@@ -2115,36 +2138,51 @@ private:
                 case edge_failure_policy::retry:
                     return route_result::workflow_failed;
 
-                // GitHub issue #52 FIX (2026-09-03, was a KNOWN GAP): found live via
-                // tests/test_workflow_research_pipeline_live_e2e.cpp (a production-shaped concurrent
-                // research pipeline against real OpenRouter calls), pinned offline by
-                // tests/test_workflow_fanin_concurrent_failure_policy_gap.cpp. Two composition bugs vs a
-                // `fan_in` target a SIBLING executor also delivers to normally in the SAME round:
+                // GitHub issue #52 FIX (2026-09-03, was a KNOWN GAP), GENERALIZED by issue #62
+                // (2026-09-03): found live via tests/test_workflow_research_pipeline_live_e2e.cpp (a
+                // production-shaped concurrent research pipeline against real OpenRouter calls),
+                // pinned offline first by test_workflow_fanin_concurrent_failure_policy_gap.cpp (#52,
+                // since promoted to test_workflow_fanin_concurrent_failure_policy_fix.cpp) and again
+                // by test_workflow_fanin_uneven_round_sources_fix.cpp (#62, same promotion). Two
+                // composition bugs vs a `fan_in` target a SIBLING executor also delivers to normally,
+                // possibly several rounds apart:
                 //   - `propagate` used to drop the marker (or not) depending on iteration order --
                 //     `deliver_once()` was "insert if absent, else no-op", asymmetric with the
                 //     normal-path merge loop below (which always appends). Fixed by making
                 //     `deliver_or_merge()` (renamed from `deliver_once()`) use that SAME append-or-
-                //     insert semantics, so whichever of {marker, siblings} is routed first no longer
-                //     matters -- the marker always survives, merged with every sibling's content.
+                //     insert semantics for a non-fan_in edge, so whichever of {marker, siblings} is
+                //     routed first no longer matters there. For a `fan_in` edge specifically, the
+                //     marker now goes through `deliver_to_fan_in()` instead (issue #62) -- it IS that
+                //     failed source's own contribution to the barrier below, so it must resolve that
+                //     source's slot exactly like a genuine successful delivery would, not bypass the
+                //     hold via a raw `next`-append that could dispatch the target before a slower
+                //     sibling (issue #62's own general defect) ever gets there.
                 //   - `fallback` used to run the shared fan_in target TWICE: the named recovery
                 //     executor is a different node whose own rejoining edge can only fire in a LATER
                 //     round, so the target dispatched once with the succeeding siblings and again,
-                //     overwriting the first, with just the recovery's output. Fixed by
-                //     `register_fan_in_holds()`/`deliver_to_fan_in()`/`RunState::held_fan_in`: when a
-                //     `fallback` edge's named recovery has its own DIRECT `fan_in` edge back to the
-                //     SAME target, that target is held back (not dispatched) until the recovery
-                //     resolves, then released with every contribution merged -- an actual cross-round
-                //     join, not a same-round patch. See HeldFanIn's own comment for the exact
-                //     mechanics and the narrower (direct-rejoin-only) scope this covers.
+                //     overwriting the first, with just the recovery's output. Issue #52 fixed the one
+                //     shape it was scoped to (a direct rejoin) via a since-removed per-round
+                //     `register_fan_in_holds()`; issue #62 replaced that with a target-wide barrier
+                //     seeded once up front (`seed_fan_in_holds()`, `HeldFanIn`'s own comment) covering
+                //     EVERY multi-source fan_in target, not just this one shape -- the failed source's
+                //     OWN slot in that barrier is resolved here, via `resolve_fan_in_await()`, since it
+                //     will never independently deliver; the recovery executor is itself an ordinary
+                //     declared source (when its own edge back to `edge.to` is ALSO `fan_in`) and
+                //     resolves its own slot normally, later, via `deliver_to_fan_in()`.
                 // D4 in tests/test_rt_workflow_supervisor_failure_policies.cpp only ever exercised
-                // `fallback` on a single-source (non-fan_in-shared) edge; F1/F2/F3 in
-                // test_workflow_fanin_concurrent_failure_policy_gap.cpp now assert the CORRECT
-                // merged-once behavior this fix produces, closing the 014 §8 G1 gap that combination
-                // left unproven.
+                // `fallback` on a single-source (non-fan_in-shared) edge; F1-F4 in
+                // test_workflow_fanin_concurrent_failure_policy_fix.cpp assert the CORRECT merged-once
+                // behavior this fix produces, closing the 014 §8 G1 gap that combination left unproven.
                 case edge_failure_policy::propagate:
                     if (is_quarantine_echo) return route_result::ok;
                     for (auto const& edge : graph_.edges) {
-                        if (edge.from == from_id) deliver_or_merge(next, index_of(edge.to), marker);
+                        if (edge.from != from_id) continue;
+                        std::size_t const target = index_of(edge.to);
+                        if (edge.kind == edge_kind::fan_in) {
+                            deliver_to_fan_in(next, from_index, target, marker);
+                        } else {
+                            deliver_or_merge(next, target, marker);
+                        }
                     }
                     return route_result::ok;
 
@@ -2154,6 +2192,14 @@ private:
                         if (edge.from != from_id) continue;
                         if (edge.on_failure.kind != edge_failure_policy::fallback) continue;
                         deliver_or_merge(next, index_of(edge.on_failure.fallback), marker);
+                        // issue #62: this failed source itself will never deliver to `edge.to` --
+                        // resolve its own barrier slot (if `edge.to` is a held fan_in target) so the
+                        // target isn't left waiting forever on a source that has permanently exited.
+                        // A no-op when `edge.to` has no hold (a single-source fan_in target, or a
+                        // non-fan_in edge kind entirely).
+                        if (edge.kind == edge_kind::fan_in) {
+                            resolve_fan_in_await(next, index_of(edge.to), from_index);
+                        }
                     }
                     return route_result::ok;
             }
@@ -2274,14 +2320,15 @@ private:
         next.push_back(Delivery{target, marker});
     }
 
-    // GitHub issue #52 fix. Delivers `payload` (routed by executor `from_index`) to fan_in target
-    // `target` for THIS round. If `target` is currently held back (an entry in
-    // `state_.held_fan_in`, registered by `register_fan_in_holds()` before this round's routing
-    // began, or carried over from an earlier round), the content merges into the held accumulator
-    // instead of `next`; when `from_index` is one of that hold's `awaiting_recovery` executors, that
-    // debt resolves, and once every outstanding recovery has resolved the accumulated content is
-    // released into `next` for dispatch, exactly like an ordinary delivery. A target with no
-    // outstanding hold behaves exactly like the pre-existing normal-path merge: append onto an
+    // GitHub issue #52 fix, generalized by issue #62. Delivers `payload` (routed by executor
+    // `from_index`) to fan_in target `target`. If `target` is currently held back (an entry in
+    // `state_.held_fan_in` -- seeded once, before round 1, by `seed_fan_in_holds()`, for every
+    // fan_in target with 2+ declared sources; persists across as many rounds as it takes), the
+    // content merges into the held accumulator instead of `next`; when `from_index` is one of that
+    // hold's `awaiting_sources`, that source's slot resolves, and once every declared source has
+    // resolved the accumulated content is released into `next` for dispatch, exactly like an
+    // ordinary delivery. A target with no outstanding hold (a single-source fan_in target, or one
+    // already released) behaves exactly like the pre-existing normal-path merge: append onto an
     // existing `next` entry, or create one.
     void deliver_to_fan_in(std::vector<Delivery>& next, std::size_t from_index, std::size_t target,
                            agentengine::Message const& payload) {
@@ -2293,12 +2340,12 @@ private:
             } else {
                 for (auto const& item : payload.content) it->payload.content.push_back(item);
             }
-            for (auto r = it->awaiting_recovery.begin(); r != it->awaiting_recovery.end(); ++r) {
+            for (auto r = it->awaiting_sources.begin(); r != it->awaiting_sources.end(); ++r) {
                 if (*r != from_index) continue;
-                it->awaiting_recovery.erase(r);
+                it->awaiting_sources.erase(r);
                 break;
             }
-            if (it->awaiting_recovery.empty()) {
+            if (it->awaiting_sources.empty()) {
                 agentengine::Message released = std::move(it->payload);
                 state_.held_fan_in.erase(it);
                 for (auto& delivery : next) {
@@ -2318,52 +2365,61 @@ private:
         next.push_back(Delivery{target, payload});
     }
 
-    // GitHub issue #52 fix. Called ONCE per round, BEFORE any route_from() call that round (see the
-    // caller in execute()) -- so a normal sibling's fan_in merge sees an outstanding hold already in
-    // place regardless of which executor's route_from() call happens to run first this round; the
-    // exact order-dependence this issue was filed against. Scans this round's FAILING deliveries for
-    // a `fallback` policy whose named recovery executor has its own DIRECT `fan_in` edge back to the
-    // SAME target the failed edge would have delivered to -- see HeldFanIn's own comment for why
-    // only this direct shape is tracked.
-    void register_fan_in_holds(std::vector<Delivery> const& exec_deliveries,
-                               std::vector<ExecuteReply> const& replies) {
-        using agentengine::workflow::edge_kind;
-        using agentengine::workflow::edge_failure_policy;
-        for (std::size_t i = 0; i < exec_deliveries.size(); ++i) {
-            if (replies[i].ok) continue;
-            if (is_same_round_quarantine_echo(exec_deliveries, replies, i)) continue;
-            std::size_t const idx = exec_deliveries[i].executor_index;
-            if (policy_for(idx).kind != edge_failure_policy::fallback) continue;
-            std::string const& id = graph_.executors[idx].id;
-            for (auto const& edge : graph_.edges) {
-                if (edge.from != id || edge.on_failure.kind != edge_failure_policy::fallback) continue;
-                bool recovery_rejoins = false;
-                for (auto const& e2 : graph_.edges) {
-                    if (e2.from == edge.on_failure.fallback && e2.kind == edge_kind::fan_in &&
-                        e2.to == edge.to) {
-                        recovery_rejoins = true;
-                        break;
-                    }
-                }
-                if (!recovery_rejoins) continue;
-                std::size_t const target_idx   = index_of(edge.to);
-                std::size_t const recovery_idx = index_of(edge.on_failure.fallback);
-                bool found = false;
-                for (auto& held : state_.held_fan_in) {
-                    if (held.executor_index != target_idx) continue;
-                    found = true;
-                    bool already = false;
-                    for (std::size_t const r : held.awaiting_recovery) {
-                        if (r == recovery_idx) { already = true; break; }
-                    }
-                    if (!already) held.awaiting_recovery.push_back(recovery_idx);
-                    break;
-                }
-                if (!found) {
-                    state_.held_fan_in.push_back(
-                        HeldFanIn{target_idx, agentengine::Message{}, false, {recovery_idx}});
-                }
+    // Issue #62. Resolves `from_index`'s own slot in `target`'s fan_in barrier WITHOUT contributing
+    // any payload -- used from route_from()'s `fallback` handling, when the failed source itself will
+    // never independently deliver to `target` (a NAMED recovery executor, a separate declared source
+    // when its own edge back to `target` is also `fan_in`, resolves its own slot later, normally, via
+    // `deliver_to_fan_in()`). Mirrors that function's own release logic. A no-op if `target` has no
+    // outstanding hold (a single-source fan_in target the `fallback` edge itself is the sole source
+    // of -- nothing left to wait for once it fails and reroutes -- or one already released).
+    void resolve_fan_in_await(std::vector<Delivery>& next, std::size_t target, std::size_t from_index) {
+        for (auto it = state_.held_fan_in.begin(); it != state_.held_fan_in.end(); ++it) {
+            if (it->executor_index != target) continue;
+            for (auto r = it->awaiting_sources.begin(); r != it->awaiting_sources.end(); ++r) {
+                if (*r != from_index) continue;
+                it->awaiting_sources.erase(r);
+                break;
             }
+            if (!it->awaiting_sources.empty()) return;
+            bool const had_content = it->seeded;
+            agentengine::Message released = std::move(it->payload);
+            state_.held_fan_in.erase(it);
+            if (!had_content) return;  // every declared source resolved without ever contributing
+            for (auto& delivery : next) {
+                if (delivery.executor_index != target) continue;
+                for (auto const& item : released.content) delivery.payload.content.push_back(item);
+                return;
+            }
+            next.push_back(Delivery{target, std::move(released)});
+            return;
+        }
+    }
+
+    // Issue #62. Called ONCE, at the very start of a fresh `run_workflow()` (after `state_` is
+    // reset), before round 1 ever runs -- NOT per round; see `HeldFanIn`'s own comment for why the
+    // since-removed `register_fan_in_holds()`'s per-round re-registration is no longer needed once
+    // every multi-source target is held from the very beginning of its whole join episode. For every
+    // executor `T` with 2 or more DISTINCT declared `fan_in` sources (edges of kind `fan_in` whose
+    // `to` names `T`), registers a `HeldFanIn` awaiting every one of them. A target with 0 or 1
+    // sources is untouched -- a single fan_in source is an ordinary immediate-dispatch edge, no
+    // barrier needed (matches this codebase's pre-#62 behavior exactly for that common case).
+    void seed_fan_in_holds() {
+        using agentengine::workflow::edge_kind;
+        for (std::size_t target = 0; target < graph_.executors.size(); ++target) {
+            std::string const& to_id = graph_.executors[target].id;
+            std::vector<std::size_t> sources;
+            for (auto const& edge : graph_.edges) {
+                if (edge.kind != edge_kind::fan_in || edge.to != to_id) continue;
+                std::size_t const from_idx = index_of(edge.from);
+                bool already = false;
+                for (std::size_t const s : sources) {
+                    if (s == from_idx) { already = true; break; }
+                }
+                if (!already) sources.push_back(from_idx);
+            }
+            if (sources.size() < 2) continue;
+            state_.held_fan_in.push_back(
+                HeldFanIn{target, agentengine::Message{}, false, std::move(sources)});
         }
     }
 

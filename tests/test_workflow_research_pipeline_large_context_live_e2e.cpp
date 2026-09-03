@@ -30,23 +30,35 @@
 //   4. Checkpoint serialization of a real run whose specialist outputs and final report are
 //      meaningfully larger than a one-line tag, same as the previous version of this file.
 //
-// KNOWN ENGINE GAP, found BY THIS FILE'S FIRST MULTI-TURN LIVE RUN (2026-09-03), pinned offline by
-// tests/test_workflow_fanin_uneven_round_sources_gap.cpp: item 3 above ("the fan_in merge only firing
-// once BOTH cyclic specialists have finished") was this file's ORIGINAL expectation and is FALSE. An
-// ordinary `fan_in` target does not wait for every declared source -- it dispatches as soon as ANY
-// source has delivered THIS round. `competitive` (via GitHub issue #52's own already-fixed `fallback`
-// path) resolves in ~2-3 rounds; `market`/`technical` take ~11 rounds each. `aggregate` dispatches
-// EARLY, once `competitive_fallback` delivers, with ONLY that content -- then `writer` -> the
-// `publish_review` request_port opens -> `execute()`'s round loop (`if (!ports_.empty() || ...)
-// {status = suspended; break;}`) ends the ENTIRE run immediately, abandoning `market`/`technical`
-// mid-loop. The assertions below reflect this REAL, disclosed, NOT-fixed-here behavior (turn counts
-// stopping short of the full 11, the final context therefore NOT reaching 60K, `aggregate` running
-// with incomplete content) rather than the ORIGINAL (wrong) expectation -- see the offline pin's own
-// top comment for the full trace and why a real fix is out of scope for an inline patch. On resume,
-// the abandoned cyclic branches DO correctly continue from their checkpointed state (a real, if
-// perhaps unintended, form of partial-resume) -- proven by the SAME real turn logs continuing to
-// appear post-resume, not reflected in a structural assertion here since it depends on exactly which
-// round the port happened to open in, itself nondeterministic (real network jitter).
+// ENGINE GAP FOUND, THEN FIXED: THIS FILE'S FIRST MULTI-TURN LIVE RUN (2026-09-03) found that item 3
+// above ("the fan_in merge only firing once BOTH cyclic specialists have finished") -- this file's
+// ORIGINAL expectation -- was FALSE. An ordinary `fan_in` target did not wait for every declared
+// source; it dispatched as soon as ANY source delivered THIS round. `competitive` (via GitHub issue
+// #52's own already-fixed `fallback` path) resolves in ~2-3 rounds; `market`/`technical` take ~11
+// rounds each. `aggregate` dispatched EARLY, once `competitive_fallback` delivered, with ONLY that
+// content -- then `writer` -> the `publish_review` request_port opened -> `execute()`'s round loop
+// (`if (!ports_.empty() || ...) {status = suspended; break;}`) ended the ENTIRE run immediately,
+// abandoning `market`/`technical` mid-loop. Filed as GitHub issue #62, pinned offline by (the
+// since-renamed) tests/test_workflow_fanin_uneven_round_sources_fix.cpp, and FIXED the same day:
+// `seed_fan_in_holds()` (workflow_supervisor.hpp) now pre-registers, before round 1 ever runs, a
+// join barrier for EVERY fan_in target with 2+ declared sources -- `aggregate` now genuinely waits
+// for `market_done`, `technical_done`, AND `competitive`/`competitive_fallback` before it ever
+// dispatches, no matter how many rounds apart they resolve. The assertions below reflect that FIXED
+// behavior (both specialists complete their full ~11-turn loop, `aggregate` runs exactly once with
+// every contribution merged, the final context genuinely exceeds 60K) -- the ORIGINAL, correct
+// expectation this file always intended, restored once the fix landed. NOTE: this specific file has
+// NOT itself been re-run live since the fix (a genuine multi-hour-of-turns, real-money live run) --
+// the fix is verified by test_workflow_fanin_uneven_round_sources_fix.cpp's offline U1 and
+// test_workflow_fanin_concurrent_failure_policy_fix.cpp's F1-F4 (all passing), not yet by re-executing
+// THIS file end to end; run it (AGENTENGINE_RUN_LARGE_CONTEXT_LIVE_TESTS=1) to close that gap.
+//
+// A SEPARATE, COMPOUNDING characteristic this fix does NOT address (still real, disclosed, not fixed
+// here): `execute()`'s round loop still breaks the ENTIRE round loop the instant ANY request_port
+// opens anywhere in the graph, abandoning every OTHER still-pending branch regardless of whether it
+// has anything to do with that port. For THIS file's own shape (the port is strictly downstream of
+// `aggregate`) that no longer matters in practice -- `market`/`technical` finish before the port can
+// ever open -- but a graph where a port can open from an unrelated branch while a fan_in target is
+// still genuinely waiting would still see that branch paused mid-loop until resume.
 //
 // Needs BOTH `AGENTENGINE_OPENROUTER_API_KEY` AND `AGENTENGINE_RUN_LARGE_CONTEXT_LIVE_TESTS=1` -- see
 // tests/CMakeLists.txt's own comment for why this carries its own "live-network-heavy" label instead
@@ -94,6 +106,7 @@ using agentengine::rt::AgentSession;
 using agentengine::rt::ExecutorBody;
 using agentengine::rt::ExecutorOutcome;
 using agentengine::rt::FileSessionStore;
+using agentengine::rt::ResumeWorkflow;
 using agentengine::rt::RunStateRecord;
 using agentengine::rt::RunWorkflow;
 using agentengine::rt::StartRun;
@@ -579,53 +592,55 @@ int main() {
         WorkflowResult r = drive(sup.run_workflow(RunWorkflow{
             text_message("Should we launch a mid-tier home-espresso machine in the US market?")}));
 
-        // KNOWN ENGINE GAP (see this file's own top comment, pinned offline by
-        // tests/test_workflow_fanin_uneven_round_sources_gap.cpp): `competitive` (via #52's `fallback`)
-        // typically resolves in ~2-3 rounds, well before market/technical's own ~11-round loop --
-        // `aggregate` dispatches EARLY with only `competitive_fallback`'s content, `writer` runs on
-        // that incomplete input, and the `publish_review` port opening then aborts the ENTIRE run,
-        // abandoning market/technical mid-loop. So: r.status is suspended EITHER WAY (an ordinary
-        // request_port always suspends), but WHEN it suspends is what changed -- typically well before
-        // market/technical finish, not after, so their own turn counts below are printed, not asserted
-        // to any exact value; real network timing decides how far they got.
+        // GitHub issue #62's fix (this file's own top comment): `aggregate` now genuinely holds until
+        // `market_done`, `technical_done`, AND `competitive`/`competitive_fallback` have ALL delivered
+        // -- so `market`/`technical` run their FULL ~11-turn loop before `writer`/`publish_review` are
+        // ever reached, restoring this file's ORIGINAL intended expectation.
         check(r.status == workflow_status::suspended,
               "the run suspends at the human publish-review gate rather than auto-publishing");
         check(planner_calls->load(std::memory_order_relaxed) == 1, "planner ran exactly once");
-        std::printf("market turns completed before suspend: %u/%zu; technical: %u/%zu (KNOWN GAP: "
-                     "expected to be LESS than the full %zu -- see this file's top comment)\n",
+        std::printf("market turns completed: %u/%zu; technical: %u/%zu (FIXED: both expected to "
+                     "reach the full %zu before aggregate ever dispatches)\n",
                      market_turns->load(std::memory_order_relaxed), kChunksPerSpecialist + 1,
                      technical_turns->load(std::memory_order_relaxed), kChunksPerSpecialist + 1,
                      kChunksPerSpecialist + 1);
-        check(market_turns->load(std::memory_order_relaxed) >= 1 &&
-                  technical_turns->load(std::memory_order_relaxed) >= 1,
-              "both cyclic specialists genuinely got at least one real turn in before the run was "
-              "cut short -- proof this is real multi-turn work interrupted, not zero turns");
+        check(market_turns->load(std::memory_order_relaxed) == kChunksPerSpecialist + 1 &&
+                  technical_turns->load(std::memory_order_relaxed) == kChunksPerSpecialist + 1,
+              "GitHub issue #62 FIXED: the market specialist genuinely ran ALL expected turns (chunks "
+              "+ one final synthesis turn) on the SAME AgentSession, and so did technical -- real "
+              "multi-turn work, run to genuine completion, not cut short by an early fan_in dispatch");
         check(competitive_calls->load(std::memory_order_relaxed) == 1,
               "competitive specialist was genuinely ATTEMPTED before its real failure routed through "
               "EdgeFailurePolicy::fallback");
         check(competitive_fallback_calls->load(std::memory_order_relaxed) == 1,
               "the fallback recovery executor ran exactly once");
+        check(market_done_calls->load(std::memory_order_relaxed) == 1 &&
+                  technical_done_calls->load(std::memory_order_relaxed) == 1,
+              "GitHub issue #62 FIXED: market_done AND technical_done both ran exactly once -- the "
+              "real signal each cyclic specialist's own loop genuinely finished, dispatched only once "
+              "`aggregate`'s fan_in barrier saw both (this used to never happen before the fix, since "
+              "the run suspended well before either specialist's loop could finish)");
         check(aggregate_calls->load(std::memory_order_relaxed) == 1,
-              "aggregate ran exactly once -- but see the KNOWN GAP comment above: this is EARLY and "
-              "INCOMPLETE (typically just competitive_fallback's content), not proof market/technical "
-              "were both merged in. GitHub issue #52's own fix (propagate/fallback + shared fan_in) is "
-              "working correctly here in isolation -- this is a DIFFERENT, broader gap.");
+              "aggregate ran exactly once -- and, unlike before the fix, this is now the CORRECT, "
+              "COMPLETE merge: market_done, technical_done, AND competitive_fallback ALL delivered "
+              "before it ever dispatched, exercised under REAL multi-turn concurrent load");
         check(writer_calls->load(std::memory_order_relaxed) == 1,
-              "the writer ran exactly once, on whatever aggregate actually had at the time");
-        check(market_done_calls->load(std::memory_order_relaxed) == 0 &&
-                  technical_done_calls->load(std::memory_order_relaxed) == 0,
-              "KNOWN GAP, directly proven: neither market_done NOR technical_done EVER ran before the "
-              "run suspended -- aggregate's real content could only have come from "
-              "competitive_fallback alone. If this starts failing (either reaches 1), fan_in's "
-              "dispatch timing changed -- re-examine whether the gap this file documents still holds.");
+              "the writer ran exactly once, on aggregate's now-complete, fully-merged input");
 
-        std::printf("REAL last-observed-turn usage: market=%llu+%llu technical=%llu+%llu "
-                     "(input+output tokens) -- KNOWN GAP: not expected to exceed 60K, since the run "
-                     "was cut short well before either specialist's final turn\n",
+        std::printf("REAL final-turn usage: market=%llu+%llu technical=%llu+%llu (input+output tokens, "
+                     "after %zu real prior turns each)\n",
                      static_cast<unsigned long long>(market_final_usage->input_tokens),
                      static_cast<unsigned long long>(market_final_usage->output_tokens),
                      static_cast<unsigned long long>(technical_final_usage->input_tokens),
-                     static_cast<unsigned long long>(technical_final_usage->output_tokens));
+                     static_cast<unsigned long long>(technical_final_usage->output_tokens),
+                     kChunksPerSpecialist);
+        check(market_final_usage->input_tokens + market_final_usage->output_tokens > 60000,
+              "the market specialist's FINAL turn's REAL reported context (input+output tokens) "
+              "exceeds 60K -- reached through genuine multi-turn accumulation across "
+              "kChunksPerSpecialist+1 real sequential calls, not one stuffed prompt, and no longer cut "
+              "short by GitHub issue #62's fan_in gap");
+        check(technical_final_usage->input_tokens + technical_final_usage->output_tokens > 60000,
+              "the technical specialist's FINAL turn's REAL reported context exceeds 60K, same way");
 
         auto const asks = sup.open_interaction_asks();
         check(asks.size() == 1, "exactly one interaction ask is pending");
@@ -710,21 +725,41 @@ int main() {
         check(resumed_report.find("REPORT:") != std::string::npos,
               "the report recovered from the resumed checkpoint's own ask is real, not a stub");
 
-        // Deliberately NOT driving this resumed run to completion. Doing so would dispatch
-        // market/technical's own remaining `state_.pending` entries -- correctly continuing the
-        // abandoned cyclic branches per the BSP round model -- but agent_workflow_executor.hpp's own
-        // ALREADY-DOCUMENTED, accepted checkpoint/resume limitation ("conversation history does NOT
-        // survive a checkpoint/resume cycle") means `market_session2`/`technical_session2` start with
-        // NO history, and this file's own body-local turn counter is a FRESH closure-local variable
-        // too -- so a driven-to-completion resume would redo BOTH cyclic specialists' ENTIRE ~11-turn
-        // loop from scratch (not continue from wherever the KNOWN GAP above cut them off), at real,
-        // effectively unbounded additional cost. An earlier version of this file DID drive it to
-        // completion and hit a genuine live TLS timeout partway through that second full loop --
-        // real network flakiness, not an assertion failure, but proof this path is expensive and
-        // fragile for no additional evidence: the checks above already fully establish this file's
-        // point (genuine multi-turn accumulation, and the fan_in gap's real live symptom).
-        std::printf("[after restart] resume verified structurally; NOT driven to completion (see "
-                     "comment above) -- would redo market/technical's full loop from scratch\n");
+        // GitHub issue #62's fix changes what "drive this resumed run to completion" costs: `market`/
+        // `technical` are NOT in `state_.pending` at the checkpoint anymore -- their fan_in barrier
+        // already released and `aggregate`/`writer` already ran BEFORE `publish_review` ever opened
+        // (that is the whole point of the fix), so the only thing left pending across the restart is
+        // the port answer itself. Resolving it drives straight through `publish_decision` -> `publish`
+        // -> `done`, at ZERO additional live model cost -- unlike before the fix, where the abandoned
+        // cyclic branches WOULD have still been mid-loop at checkpoint time, and (per
+        // agent_workflow_executor.hpp's own already-documented, accepted checkpoint/resume limitation,
+        // "conversation history does NOT survive a checkpoint/resume cycle") a driven-to-completion
+        // resume back then would have redone BOTH specialists' ENTIRE ~11-turn loop from scratch on
+        // fresh, history-less AgentSessions. `market_session2`/`technical_session2` above exist
+        // precisely to prove that did NOT happen: their own turn counters must stay at zero.
+        WorkflowResult const r2 =
+            drive(sup.resume_workflow(ResumeWorkflow{interaction_id, text_message("approved"), {}}));
+        check(r2.status == workflow_status::completed,
+              "resuming with the human's approval drives the run through publish_decision to "
+              "completion");
+        check(market_turns2->load(std::memory_order_relaxed) == 0 &&
+                  technical_turns2->load(std::memory_order_relaxed) == 0,
+              "GitHub issue #62 FIXED (and a happy consequence of it): NEITHER fresh AgentSession took "
+              "a single turn on resume -- market/technical had ALREADY fully finished (and fed "
+              "aggregate/writer) before the checkpoint was ever taken, so completing the resumed run "
+              "costs nothing beyond the port answer itself, unlike before the fix");
+        check(aggregate_calls2->load(std::memory_order_relaxed) == 0 &&
+                  writer_calls2->load(std::memory_order_relaxed) == 0,
+              "aggregate/writer did not re-run either -- their real output already lived inside the "
+              "checkpoint (the writer's report `open_interaction_asks()` recovered above), not "
+              "recomputed after resume");
+        std::string const published = text_of(r2.output);
+        check(published.find("PUBLISHED:") != std::string::npos,
+              "the completed run's output carries the real publish branch, not a stub");
+        check(published.find("REPORT:") != std::string::npos,
+              "the published output still carries the writer's real, earlier-produced (multi-turn-"
+              "grounded) report -- proving it survived the checkpoint round-trip at this scale");
+        std::printf("[after restart] completed (%zu chars)\n", published.size());
     }
 
     std::error_code ec;

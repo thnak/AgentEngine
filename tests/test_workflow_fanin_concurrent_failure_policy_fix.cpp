@@ -10,24 +10,28 @@
 // the engine fix landed; that live test now also exercises the fix directly (its own top comment).
 //
 // THE FIX (include/agentengine/rt/workflow_supervisor.hpp's `route_from()`):
-//   - `propagate`: `deliver_or_merge()` (renamed from `deliver_once()`, which used to no-op on an
-//     existing `next` entry instead of merging into it) now uses the SAME append-or-insert semantics
-//     the normal-path merge already used -- order-independent regardless of whether the marker or a
-//     sibling's normal delivery reaches the shared target first. See F1/F2 below.
-//   - `fallback`: `register_fan_in_holds()`/`deliver_to_fan_in()`/`RunState::held_fan_in` hold the
-//     shared target back across the round boundary when the named recovery executor has its own
-//     DIRECT `fan_in` edge back to the SAME target, releasing it -- with every contribution merged --
-//     only once the recovery resolves, instead of dispatching the target twice with the second
-//     invocation overwriting the first. See F3 below. F4 additionally proves the hold survives a real
-//     checkpoint/resume round-trip through the JSON wire format (`HeldFanInRecord`'s own codec).
+//   - `propagate`: for a non-fan_in edge, `deliver_or_merge()` (renamed from `deliver_once()`, which
+//     used to no-op on an existing `next` entry instead of merging into it) now uses the SAME
+//     append-or-insert semantics the normal-path merge already used -- order-independent regardless
+//     of whether the marker or a sibling's normal delivery reaches the shared target first. For a
+//     `fan_in` edge specifically, the marker goes through `deliver_to_fan_in()` instead (issue #62),
+//     so it also resolves the failed source's own slot in that target's join barrier. See F1/F2 below.
+//   - `fallback`: `seed_fan_in_holds()`/`deliver_to_fan_in()`/`resolve_fan_in_await()`/
+//     `RunState::held_fan_in` hold the shared target back until every one of its declared `fan_in`
+//     sources resolves (issue #62 generalized this from #52's original narrower "only when the named
+//     recovery has its own DIRECT `fan_in` edge back to the SAME target" shape to every multi-source
+//     fan_in target), releasing it -- with every contribution merged -- only once the recovery
+//     resolves, instead of dispatching the target twice with the second invocation overwriting the
+//     first. See F3 below. F4 additionally proves the hold survives a real checkpoint/resume
+//     round-trip through the JSON wire format (`HeldFanInRecord`'s own codec).
 //
 // A quarantine-specific carve-out (`route_from()`'s `is_quarantine_echo` parameter) had to ship
 // alongside this fix: ADR-077 P9 / T7 in tests/test_rt_agent_workflow_executor.cpp relies on the
 // OQ-19 same-round duplicate-delivery quarantine's synthetic failure being "silently absorbed" with
 // NO effect on any downstream target -- including one the survivor's real delivery never reached --
-// which a blanket "always merge" propagate/fallback fix would have broken. `deliver_or_merge()` and
-// `register_fan_in_holds()` both skip a `!ok` reply that shares its executor_index with an `ok` reply
-// THIS round (is_same_round_quarantine_echo()), so that guarantee still holds.
+// which a blanket "always merge" propagate/fallback fix would have broken. `route_from()`'s
+// `propagate`/`fallback` handling both skip a `!ok` reply that shares its executor_index with an `ok`
+// reply THIS round (is_same_round_quarantine_echo()), so that guarantee still holds.
 //
 // `tests/test_rt_workflow_supervisor_failure_policies.cpp`'s own D4 only ever exercised `fallback` on
 // a single-source (non-fan_in-shared) edge, so this combination was never gate-proven despite 014 §8
@@ -314,18 +318,23 @@ int main() {
         WorkflowResult r1 = drive(sup1.run_workflow(RunWorkflow{text_message("go")}));
         check(r1.status == workflow_status::completed, "F4: the first (uninterrupted) run completes");
 
-        // Find the checkpoint taken while `agg` was genuinely held -- must exist, or this test isn't
-        // exercising the cross-round hold at all.
+        // Find the checkpoint taken while `agg` was held back awaiting ONLY `recovery` -- must exist,
+        // or this test isn't exercising the cross-round hold at all. Issue #62 generalized the hold to
+        // seed for EVERY multi-source fan_in target up front (before round 1 ever runs), so `agg`'s
+        // hold now shows up NON-empty from the very first checkpoint (initially awaiting all four of
+        // okA/okB/bad/recovery) -- this test wants the SPECIFIC later state where okA/okB have already
+        // delivered and `bad` has already failed-and-rerouted, leaving `recovery` as the one remaining
+        // debt, not just "any non-empty hold".
         RunStateRecord const* held_record = nullptr;
         for (auto const& rec : records) {
-            if (!rec.held_fan_in.empty()) {
+            if (rec.held_fan_in.size() == 1 && rec.held_fan_in.front().awaiting_sources.size() == 1) {
                 held_record = &rec;
                 break;
             }
         }
         check(held_record != nullptr,
-              "F4: at least one checkpoint was taken while `agg` was held back awaiting `recovery` -- "
-              "otherwise this test isn't exercising the cross-round hold at all");
+              "F4: at least one checkpoint was taken while `agg` was held back awaiting ONLY `recovery` "
+              "-- otherwise this test isn't exercising the cross-round hold at all");
 
         if (held_record != nullptr) {
             // Round-trip through the REAL JSON wire format, exactly like WorkflowCheckpointManager
@@ -335,7 +344,7 @@ int main() {
             check(decoded.has_value(),
                   "F4: the held-back checkpoint decodes cleanly from its own JSON wire bytes");
             check(decoded.has_value() && decoded->held_fan_in.size() == 1 &&
-                      decoded->held_fan_in.at(0).awaiting_recovery.size() == 1,
+                      decoded->held_fan_in.at(0).awaiting_sources.size() == 1,
                   "F4: the decoded record still carries the held fan_in entry with its ONE outstanding "
                   "recovery debt -- HeldFanInRecord's own JSON codec round-trips correctly");
 

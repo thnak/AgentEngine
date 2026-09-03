@@ -27,7 +27,7 @@
 //      found that composition genuinely broken -- GitHub issue #52, pinned offline by
 //      `tests/test_workflow_fanin_concurrent_failure_policy_fix.cpp` -- and an interim version of this
 //      file routed around it with an application-level try/catch instead of the engine policy. That
-//      gap is now FIXED (`route_from()`'s `register_fan_in_holds()`/`deliver_to_fan_in()`/
+//      gap is now FIXED (`route_from()`'s `seed_fan_in_holds()`/`deliver_to_fan_in()`/
 //      `RunState::held_fan_in`, see workflow_supervisor.hpp), and this file was switched back to the
 //      real `EdgeFailurePolicy::fallback` specifically so a live, jittered run keeps exercising the
 //      fix, not just the offline characterization test.
@@ -388,7 +388,7 @@ int main() {
         // The real engine policy this file's top comment describes: competitive's own real failure
         // routes to `competitive_fallback`, whose own `fan_in` edge below rejoins the SAME `aggregate`
         // target `market`/`technical` also feed -- exactly the composition GitHub issue #52 found
-        // broken and workflow_supervisor.hpp's `register_fan_in_holds()`/`deliver_to_fan_in()` fix.
+        // broken and workflow_supervisor.hpp's `seed_fan_in_holds()`/`deliver_to_fan_in()` fix.
         Edge{"competitive", "aggregate", edge_kind::fan_in, {},
              EdgeFailurePolicy{edge_failure_policy::fallback, 0, "competitive_fallback"}},
         Edge{"competitive_fallback", "aggregate", edge_kind::fan_in, {}},
