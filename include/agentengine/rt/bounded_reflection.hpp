@@ -50,7 +50,9 @@
 namespace agentengine::rt {
 
 // Returned by `Evaluator`. `feedback` is shown to the model as the next turn ONLY when
-// `satisfied == false`; ignored otherwise.
+// `satisfied == false`; ignored otherwise. 027 §2-4's tables not yet reconciled against this
+// milestone's additions (ADR-025 §4c's deferred backlog).
+// ae-naming-lint: allow EvaluationVerdict — issue #55's own gap analysis names this mechanism
 struct EvaluationVerdict {
     bool        satisfied = false;
     std::string feedback;
@@ -68,6 +70,7 @@ struct EvaluationVerdict {
 // multi-iteration loop. This field is always populated (input_tokens + output_tokens summed across
 // every iteration actually run, including a run that exhausts `max_iterations` unsatisfied) so a
 // caller can observe real spend even when not opting into the hard bound below.
+// ae-naming-lint: allow ReflectionOutcome — issue #55's own gap analysis names this mechanism
 struct ReflectionOutcome {
     AgentResponse response;
     bool          satisfied = false;
