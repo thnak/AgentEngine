@@ -1,6 +1,6 @@
 # 020 — Configuration and Hosting
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 002, 006, 008, 015, 018, 019 (historical: originally also Quark 013 — ADR-037 removed Quark as a dependency) · **Gate:** §7
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-04 by ADR-061** (§3, §3a, §4, §7 G2/G5, §8 Q2 — the engine binds no listener; §8 Q2 reopened) · **Depends on:** 002, 006, 008, 015, 018, 019 (historical: originally also Quark 013 — ADR-037 removed Quark as a dependency) · **Gate:** §7
 
 ## Goal
 
@@ -45,12 +45,34 @@ turn off the sandbox through an environment variable does not have a sandbox.
 | Shape | Description | Use |
 |---|---|---|
 | **Embedded library** | Link the engine into an application; own the event loop or let the engine own one | Desktop apps, games, existing C++ services |
-| **Standalone server** | One process exposing the protocol surfaces (011/012/013) over HTTP | The common deployment |
+| **Engine + host adapter** (renamed from "Standalone server", ADR-061 — see the amendment note below) | One process exposing the protocol surfaces (011/012/013) over HTTP, where **the host binary owns the listener and the engine does not**: consumer code binds the socket, terminates TLS/auth, and calls engine-provided request handlers with already-parsed requests | The common deployment |
 | **Cluster** | N nodes with sessions placed by HRW/VirtualBins (historical design intent only — no cluster placement mechanism exists in `agentengine::rt::`; this used to ride Quark's cluster machinery, ADR-037 removed Quark and there is no multi-node story at all today, see §5) | Scale-out, HA (not currently buildable) |
 | **CLI / one-shot** | Run an agent or workflow to completion and exit | Automation, CI, scripting |
 | **Sidecar** | Engine alongside an application, local IPC | Polyglot deployments before bindings exist |
 
-**The same binary serves all five**; the shape is configuration plus which surfaces are enabled.
+~~**The same binary serves all five**; the shape is configuration plus which surfaces are enabled.~~
+
+**Amendment (ADR-061, applied 2026-09-04).** Project-owner direction of 2026-08-15, Judged
+2026-08-20, removed the assumption every row above was written under —
+`decisions/ADR-061-host-provided-inbound-transport.md` §0: *"**AgentEngine will not implement HTTP
+networking at all.** The engine exposes a protocol-handler API; consumer code owns the socket, TLS,
+HTTP framing, and routing"*, and, in the same section, *"the reactor question is moot **if no
+first-party listener is ever built**."* That ADR's §2a conflict table names this section's two
+casualties directly, and §8.6 committed to the edits now applied here:
+
+- **The Standalone row is renamed, not deleted.** §2a: *"AgentEngine alone no longer satisfies this
+  row."* §8.6 left an either/or — rename to "engine + host adapter", or drop the table to four
+  shapes; **renaming is the choice made here (2026-09-04)**, because the deployment shape is still
+  real and still the common one. Only *who binds the socket* changed. The adapter is an ordinary
+  §3a embedded-library host that routes its own HTTP paths to engine-provided handlers —
+  `McpServer::dispatch()` (`include/agentengine/protocol/mcp/server.hpp`) and its A2A sibling take
+  the caller's `Principal` and per-request `CapabilityGrant` as arguments precisely because they
+  never see a connection of their own.
+- **"The same binary serves all five" does not survive** — ADR-061 §7c R21, in those words. The
+  engine *library* is the same across shapes; the binary is not, because the shapes that speak a
+  protocol surface now require host-supplied transport the engine does not ship. (The Cluster row was
+  already void for the unrelated reason recorded in §5.) What remains true, and is the property §7 G2
+  was reaching for, is that **the agent** is unchanged across shapes — see G2's own amendment.
 
 ### 3a. Embedded library: the host contract
 
@@ -58,6 +80,17 @@ turn off the sandbox through an environment variable does not have a sandbox.
 a game, a native UI shell — actually calls. No protocol surface (011/012/013 §2) sits between host
 and engine here: the host is in the same process as the `Run`, so it consumes 013 §1's event stream
 directly, in its native struct form, with none of the wire translation AG-UI/A2A/MCP exist to do.
+
+**As-built status (2026-09-04): not yet implemented, targeted for Milestone 9.** No `EmbeddedHost`
+type exists anywhere in the tree; this whole subsection is a contract, written in the present tense
+like the rest of this RFC, not a description of shipped code. 020 is an M9 RFC
+(`docs/planning/v1-implementation-roadmap.md:207-227`), and the facade's absence is already tracked
+where it bites: `docs/planning/milestone-6-multi-agent-orchestration-breakdown.md` decision 2 builds
+030 §6's four project verbs as engine-level operations *beneath* the facade rather than waiting for
+it, and `decisions/ADR-053-schedule-wakeup-standing-effect.md` §"does not design" names the missing
+facade as why the host-side wake poller is out of its own scope. The individual primitives this
+subsection composes — `start_run`, `agentengine::stream<RunEvent>`, `std::stop_token` cancellation —
+are real and usable today; only the bring-up object that packages them is not.
 
 **Bring-up.** The host constructs an **`EmbeddedHost`** from resolved configuration (§2), which
 brings up AgentEngine's own `agentengine::rt::` runtime in-process (historical: this used to bring
@@ -163,6 +196,29 @@ Each is independently enable-able, and each is off unless configured:
 **The admin API is never on the same listener as the public surfaces by default.** Making that
 mistake once is enough.
 
+**Amendment (ADR-061, applied 2026-09-04): this is now a host obligation, and the engine cannot
+enforce it.** Per §3's amendment the engine binds no listener, so it cannot see how many listeners
+exist or which surface a request arrived on unless told. ADR-061 §2a states the consequence in one
+line — the rule *"becomes a host obligation the engine cannot enforce"* — and the paths listed above
+are read as **the paths a host adapter routes to engine handlers**, not paths the engine serves.
+
+**No engine-side backstop exists, and one was wrongly claimed.** ADR-061 §13.7 originally asserted
+that an admin method is engine-refused on a public-API-surfaced `EndpointId`; §33.3 explicitly
+retracts that — *"this claim was never true and stood uncorrected in this document for six days...
+No such refusal mechanism was ever built"*, confirmed against both the §30.1 prove-phase file list
+and current `include/agentengine/`. `EndpointId::surface` is unbuilt design text; §31.1 declined to
+build it for want of a consumer. So the separation above is stated here as what a host **must** do,
+with nothing in the engine that will catch a host that doesn't:
+
+- Bind the admin API on its own listener, with its own credentials, per the original rule.
+- Do not multiplex admin and public paths onto one listener and rely on path routing alone.
+- Treat this as security-relevant configuration the host owns end-to-end, exactly like TLS
+  termination and inbound authentication (018, ADR-061 Tier 3).
+
+**020 §8 Q2 is reopened by this amendment** — its resolution rested on §3's "same binary serves all
+five" and on this section's separate-listener rule being engine-guaranteed, and both premises are
+now gone. See §8.
+
 ## 5. Cluster concerns
 
 **Historical note (ADR-037):** this section describes multi-node cluster placement as it was
@@ -197,15 +253,30 @@ today.
 - **G1** — a security-relevant knob cannot widen authority: an exhaustive test over the config
   surface attempts to reach a wider capability set, weaker profile, or disabled approval, from
   every source, and fails in every case.
-- **G2** — the same agent runs unchanged in all five hosting shapes.
+- **G2** — the same agent runs unchanged in every hosting shape §3 still names as buildable.
+  *(Amended 2026-09-04. Original: "the same agent runs unchanged in all five hosting shapes." Two
+  rows no longer support the literal claim: Cluster is not buildable at all (§5, ADR-037), and the
+  renamed engine-plus-host-adapter row needs a host binary the engine does not ship (§3 amendment,
+  ADR-061 §7c R21). The property this gate is actually for — an **agent** is portable across shapes,
+  its policy and behaviour unchanged by where it is hosted — is untouched by ADR-061 and is what the
+  gate now states. A run of this gate must say which shapes it covered and which it could not, rather
+  than claiming five.)*
 - **G3** — invalid configuration fails at startup with a precise diagnostic, never at first request
   (negative corpus per knob class).
 - **G4** — graceful shutdown under load: zero lost acknowledged turns, zero orphaned sandboxes,
   audit flushed, within the declared bound.
 - **G5 (§3a)** — a reference embedded C++ host (headless, no UI) drives N concurrent runs, each
-  through its own `ReplyStream<RunEvent>` obtained via `ask_stream`: zero cross-run event
-  interleaving observed by any drain loop, and a stalled drain measurably applies backpressure to
-  its run (the run's provider read slows or blocks) without affecting the other N-1 runs.
+  through its own `agentengine::stream<RunEvent>` (`core/stream.hpp`, over `rt::channel<T,E>`):
+  zero cross-run event interleaving observed by any drain loop, and a stalled drain measurably
+  applies backpressure to its run (the run's provider read slows or blocks) without affecting the
+  other N-1 runs.
+  *(Type names corrected 2026-09-04. Original: "its own `ReplyStream<RunEvent>` obtained via
+  `ask_stream`." `ReplyStream` was Quark's type and survives only as a historical comment
+  (`include/agentengine/core/chat_client.hpp`) after ADR-037. `ask_stream()` does exist
+  (`include/agentengine/core/session_builder.hpp`, ADR-073) but returns
+  `result<stream<std::string>>` — a text stream, not a `RunEvent` stream — so it was never the
+  right call for this gate. §3a's own body already named the correct shapes; this gate now agrees
+  with the section it gates.)*
 - **G6 (§3b)** — a webhook trigger fired without passing verification (018) never reaches
   `StartRun`, proven over a negative corpus, not merely asserted; a trigger that passes verification
   produces a run whose principal matches the trigger config exactly, never one derived from request
@@ -224,15 +295,36 @@ today.
   deliberate signal an author can't miss, not an inconsistency to fix for uniformity's sake. 009's
   `manifest.toml` (a request, never a grant) is a consistent precedent for TOML as this project's
   lightweight-declaration format, distinct from 015's heavier, capability-bearing shape.
-- ~~**Q2** — Whether the admin API should exist in-process at all, or only as a separate binary.~~
-  **Resolved, in-process, same binary (2026-08-04):** §3's "same binary serves all five [hosting]
-  shapes" is a strong existing commitment this question would otherwise cut against for no clear
-  gain. §4's separate-listener, separately-authenticated rule already delivers the actual security
-  property at stake — an admin-surface compromise doesn't automatically compromise a public surface,
-  different bind, different credentials. A genuinely process-isolated admin surface (real isolation
-  beyond listener separation) is already reachable today as an operator's own deployment choice — run
-  the admin surface as its own instance pointed at the same session/policy store via ordinary
-  configuration — not a v1 architectural requirement forcing every deployment to run two binaries.
+- **Q2 — REOPENED 2026-08-20 by ADR-061 §13.7, un-struck here 2026-09-04.** Whether the admin API
+  should exist in-process at all, or only as a separate binary.
+
+  *Prior resolution, withdrawn — kept for the record:* ~~**Resolved, in-process, same binary
+  (2026-08-04):** §3's "same binary serves all five [hosting] shapes" is a strong existing commitment
+  this question would otherwise cut against for no clear gain. §4's separate-listener, separately-
+  authenticated rule already delivers the actual security property at stake — an admin-surface
+  compromise doesn't automatically compromise a public surface, different bind, different
+  credentials. A genuinely process-isolated admin surface (real isolation beyond listener separation)
+  is already reachable today as an operator's own deployment choice — run the admin surface as its
+  own instance pointed at the same session/policy store via ordinary configuration — not a v1
+  architectural requirement forcing every deployment to run two binaries.~~
+
+  **Why it is open again:** that resolution cited exactly two grounds, and ADR-061 voided both.
+  §3's "same binary serves all five" does not survive (§7c R21, and §3's amendment above), and §4's
+  separate-listener rule is no longer a property the engine delivers — it is a host obligation with
+  no engine-side backstop, the supposed backstop having been explicitly retracted at ADR-061 §33.3.
+  ADR-061 §13.7, in its own words: *"**020 §8 Q2 is reopened**, tracked explicitly (not silently,
+  T16's finding) as a real open question this ADR's acceptance carries forward, because both
+  premises of its prior 'in-process, same binary' resolution are gone under a host-owned listener."*
+
+  **What answering it now requires, which the 2026-08-04 pass did not face:** the question is no
+  longer "one binary or two" — under ADR-061 the admin API, like every other surface, is served by a
+  host adapter the engine does not ship, so the real question is what this RFC *obliges an adapter to
+  do*, and whether any of it is engine-checkable at all (e.g. whether the engine should refuse
+  admin-class operations arriving without an admin-surfaced endpoint identity, which is the unbuilt
+  `EndpointId::surface` idea ADR-061 §31.1 declined to build for want of a consumer). Milestone 9,
+  which builds the first real adapter, is the natural forcing function. Cross-referenced from
+  `OpenQuestions.md` OQ-26 residual item 4; per that file's own convention this stays a per-RFC
+  question and is tracked here, not promoted there.
 - ~~**Q3** — A C ABI is the intended seam for future Python/.NET bindings; its shape is unspecified
   and will constrain those bindings once frozen.~~ **Resolved, design early against stable concepts,
   freeze late against a real consumer (OQ-8, 2026-08-04):** the dilemma assumed the C ABI is a

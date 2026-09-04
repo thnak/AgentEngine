@@ -6,11 +6,15 @@ shape of the project.
 
 **Legend:** 🔴 blocks a v1 decision · 🟠 needed before implementation of its area · 🟡 can wait
 
-**Two open cross-cutting questions as of 2026-08-23: OQ-20, OQ-25.** OQ-1 through OQ-19 and OQ-21
-through OQ-24 are all resolved (OQ-22 was closed 2026-08-21 by ADR-066, ahead of this file's own stale
-"seven open" count; OQ-24 was scoped and resolved as a non-issue on 2026-08-23; OQ-23 was closed the
-same day by `decisions/ADR-076-undeclared-tool-call-leak-refusal.md`, judged the same session it was
-first raised in; OQ-19 was closed the same day too, by `decisions/ADR-077-agent-executor-
+**Two open cross-cutting questions as of 2026-09-04: OQ-20, OQ-25.** OQ-26 was raised, answered and
+closed the same day: both questions it asked turned out to be already decided, and its real content —
+five spec amendments ADR-061 itself committed to and never applied — is now applied to 020/027, with
+the one genuinely reopened item (020 §8 Q2) left where this file's own rule puts a per-RFC question,
+in 020's own §8. OQ-1 through OQ-19 and
+OQ-21 through OQ-24 are all resolved (OQ-22 was closed 2026-08-21 by ADR-066, ahead of this file's own
+stale "seven open" count; OQ-24 was scoped and resolved as a non-issue on 2026-08-23; OQ-23 was closed
+the same day by `decisions/ADR-076-undeclared-tool-call-leak-refusal.md`, judged the same session it
+was first raised in; OQ-19 was closed the same day too, by `decisions/ADR-077-agent-executor-
 capabilityset-bridge.md`, once the project owner explicitly lifted this file's own prior "document
 only, do not implement yet" instruction; OQ-21's minimum tool-call-point slice was closed the same day
 by `decisions/ADR-078-tool-call-hook-stage.md`, run/turn-level gating hooks and a reference external
@@ -40,6 +44,17 @@ a time), and surfaced a real, independent gap worth fixing on its own regardless
 **`WorkflowSupervisor::resume_workflow()` has no caller/admission check at all** — unlike
 `AgentSession::resolve_interaction()`'s own `principal_admitted_for()` check (ADR-029). Five remaining
 punch-list items, none implemented.
+
+**That admission gap is now tracked separately and is NOT parked with this question (2026-09-04):**
+filed as **issue #65**, after re-confirming it against `main` — `ResumeWorkflow`
+(`include/agentengine/rt/workflow_supervisor.hpp:358-362`) still carries no principal, and
+`workflow_supervisor.hpp` still has zero `principal_admitted_for` call sites, while
+`agent_session.hpp:909,1024` gate both of theirs. (The draft's own citation, `:540-570`, has gone
+stale; the function is at `:1041` today.) It is a pre-existing defect in shipped HITL code that batch
+would inherit rather than introduce, so the "document only, do not implement yet" direction governing
+*this* question does not govern *it* — as the design draft's own punch list already said ("worth its
+own, separate small fix regardless"). Note the fix is not a one-liner: `WorkflowSupervisor` has no
+owner `Principal` member to admit against, only per-executor `contexts_`.
 
 **Load-bearing finding, confirmed from real vendor docs, not assumed:** batch mode is structurally
 single-shot — neither OpenAI's nor Anthropic's batch API lets a batched request see a tool result and
@@ -95,6 +110,115 @@ direction.
 ---
 
 ## Resolved
+
+### OQ-26 — 020 §3/§4/§7/§8 described a first-party HTTP listener ADR-061 had abolished
+
+Raised, answered, and closed on 2026-09-04, during a walkthrough of the sandbox/worktree/streaming
+layers that checked 020's as-built status directly rather than from memory. **Neither of the two
+things this entry originally asked was an open question**, and finding that out took reading ADR-061
+end-to-end rather than trusting this file's own first pass: `EmbeddedHost`'s absence is
+roadmap-tracked, and the "standalone server" shape was decided on 2026-08-15 and Judged 2026-08-20.
+What was genuinely open was only that **the spec amendments ADR-061 itself committed to had never
+been applied to 020** — spec debt with a known correct answer, needing no new ADR. Those five edits
+are now applied (see the punch list below), which is what closes this entry.
+
+**The one thing that stays open, by design, is not cross-cutting:** ADR-061 §13.7 reopened 020 §8 Q2
+(should the admin API exist in-process at all), and it is now un-struck and open in 020's own §8.
+Per this file's rule, a per-RFC question stays in its RFC and is not promoted here.
+
+**Part A, answered — `EmbeddedHost` is unbuilt, and that is tracked, not open.** No `EmbeddedHost`
+type exists anywhere in the tree (only prose references: `020` §3a/§7 G5, `027-Vocabulary-and-
+Naming.md:144`, `030-Project-Workspace-and-Lifecycle.md:151`, and one forward-looking comment at
+`include/agentengine/rt/agent_session.hpp:196`). Four separate planning documents already say why and
+when: `docs/planning/v1-implementation-roadmap.md:207-227` (020 is a Milestone 9 RFC),
+`docs/planning/milestone-6-multi-agent-orchestration-breakdown.md:28,41,56` (*"Does not exist. It
+belongs to 020 (Configuration and Hosting), scheduled M9"* — with 030 §6's four verbs deliberately
+built as engine-level operations *beneath* the not-yet-existing facade), `docs/planning/milestone-6-
+residuals-for-m7-m9.md:51,130`, and `decisions/ADR-053-schedule-wakeup-standing-effect.md:129-130`
+(which names the missing facade as the reason the host-side poller is out of its own scope). Nothing
+about this is undecided. The only defensible complaint is editorial and is folded into the residual
+list below: 020 §3a's present-tense prose reads as if the contract already ships.
+
+**Part B, answered — "Standalone server" means engine-plus-host-adapter (reading 1). Decided
+2026-08-15, Judged 2026-08-20.** The original entry offered two readings and said nothing pinned down
+which. ADR-061 pins it down four separate times, and this file simply had not read it:
+
+- **§0**: *"Project-owner direction (2026-08-15) removes that assumption: **AgentEngine will not
+  implement HTTP networking at all.** The engine exposes a protocol-handler API; consumer code owns
+  the socket, TLS, HTTP framing, and routing"* — and, in the same section, *"Supersedes ADR-022 in
+  effect (the reactor question is moot **if no first-party listener is ever built**) and re-scopes
+  ADR-021."*
+- **§2a**, the ADR's own "where the RFCs conflict with the new direction" table, names both offending
+  020 sentences explicitly: 020 §3's Standalone row → *"AgentEngine alone no longer satisfies this
+  row"*; 020 §4's admin-listener rule → *"Becomes a host obligation the engine cannot enforce."*
+- **§8.6**, "Spec amendments this iteration commits to", carries the concrete edits: 020 §3 →
+  *"Standalone row becomes 'engine + host adapter', or the table drops to four shapes (R21)"*;
+  020 §4 → re-expressed at the endpoint level; 020 §8 Q2 → **reopened**.
+- **§45 (Judge, 2026-08-20)**: project-owner sign-off on the Tier-3 block, verified by an independent
+  `/code-review` pass, 207/207 tests green.
+
+The as-built code agrees with reading 1 and contradicts reading 2. `McpServer::dispatch()`
+(`include/agentengine/protocol/mcp/server.hpp:178,201`) is a request/response *dispatcher* a caller
+hands an already-parsed JSON-RPC message to — its own banner says so ("this dispatcher"), and it
+takes the caller's `Principal` and per-request `CapabilityGrant` as arguments rather than deriving
+them from any connection it owns. The single `tcp_listen` in the whole tree is the PAL primitive at
+`include/agentengine/pal/net.hpp:140`, whose banner scopes it to the sandbox egress proxy, the TLS
+client, and test fixtures' canned servers — and grepping `src/`, `include/`, `tools/`, `examples/`
+finds **no call site at all**. Nothing anywhere binds a socket for `/mcp`, `/a2a`, `/agui`, or
+`/v1/*`.
+
+**The five edits, all applied 2026-09-04 — this was the entire residual.** Four were mechanical; item
+1 carried an either/or ADR-061 §8.6 deliberately left to the editor, decided here by the project
+owner. 020's own status line now records the amendment set.
+
+1. **020 §3 table, Standalone row — renamed, not deleted.** It read *"One process exposing the
+   protocol surfaces (011/012/013) over HTTP"*, called *"The common deployment"*. ADR-061 §8.6
+   offered two wordings — rename to "engine + host adapter", or drop the table to four shapes.
+   **Project-owner decision (2026-09-04): rename.** The deployment shape is still real and still the
+   common one; only who binds the socket changed, and deleting the row would have read as "this
+   shape is unsupported" to exactly the M9 reader the amendment exists for. The row now says the
+   host binary owns the listener and the engine does not.
+2. **020 §3's "The same binary serves all five" — struck, with the surviving property named.** Voided
+   by ADR-061 R21 (§7c) in those words. The engine *library* is the same across shapes; the binary is
+   not. What survives — an **agent** is portable across shapes — is now stated in §7 G2, which was
+   what that gate was actually reaching for.
+3. **020 §4's admin-listener rule — re-expressed as a host obligation with no engine backstop.** Per
+   §2a it *"becomes a host obligation the engine cannot enforce"*, and ADR-061 §33.3 explicitly
+   retracts the claim (which had stood uncorrected in that ADR for six days) that any engine-side
+   admin refusal was ever built: *"It is not."* §4 now states the separation as something a host
+   **must** do, lists what that means concretely, and says plainly that nothing in the engine will
+   catch a host that doesn't. `EndpointId::surface` is named as unbuilt design text (§31.1 declined
+   to build it for want of a consumer), not as a control.
+4. **020 §8 Q2 — un-struck and reopened, per ADR-061 §13.7**: ***"020 §8 Q2 is reopened**, tracked
+   explicitly (not silently, T16's finding) as a real open question this ADR's acceptance carries
+   forward, because both premises of its prior 'in-process, same binary' resolution are gone under a
+   host-owned listener."* This was the item that actively misled: a reader of 020 alone saw a settled
+   question the project had withdrawn, whose stated grounds were the very two sentences items 2 and 3
+   just amended. The withdrawn resolution is kept struck-through for the record, and §8 Q2 now also
+   states what answering it *now* requires — under a host-owned listener the question is no longer
+   "one binary or two" but what this RFC obliges an adapter to do, and whether any of it is
+   engine-checkable at all.
+5. **Stale type names in 020 §7 G5 and 027 §2 — corrected.** G5 said each run is driven *"through its
+   own `ReplyStream<RunEvent>` obtained via `ask_stream`"*, and 027's `EmbeddedHost` row repeated
+   *"mint `Run`/`ReplyStream` handles"*. `ReplyStream` was Quark's type, removed by ADR-037,
+   surviving only as a historical comment (`include/agentengine/core/chat_client.hpp:183`); and
+   `ask_stream()` does exist (`include/agentengine/core/session_builder.hpp:524`, ADR-073) but
+   returns `result<stream<std::string>>` — a text stream, not a `RunEvent` stream — so it was never
+   the right call for that gate. Both now say `agentengine::stream<RunEvent>`, agreeing with §3a's
+   own body. §3a additionally gained the as-built marker Part A called for ("not yet implemented,
+   targeted for M9"), matching how 008/025 mark as-built gaps inline rather than only in the roadmap.
+
+**Why this was worth doing now rather than at M9**, which is the argument the entry was opened on and
+which survived it: Milestone 9 is where someone writes the first real host adapter, and 020 is the
+document they will read. Five edits now is cheap; discovering mid-M9 that the RFC describes a listener
+the project decided in August 2026 never to build is not.
+
+References: `decisions/ADR-061-host-provided-inbound-transport.md` §0, §2a, §7c R21, §8.6, §13.7,
+§33.3, §45; `020-Configuration-and-Hosting.md` §3, §3a, §4, §7 G2/G5, §8 Q2; `027-Vocabulary-and-
+Naming.md:144`; `include/agentengine/protocol/mcp/server.hpp:178,201`;
+`include/agentengine/pal/net.hpp:140`; `include/agentengine/core/session_builder.hpp:524`;
+`docs/planning/v1-implementation-roadmap.md:207-227`;
+`docs/planning/milestone-6-multi-agent-orchestration-breakdown.md:28,41,56`.
 
 ### OQ-18 — Should `ContextProvider` composition become a sequential pipeline, like MAF's?
 

@@ -141,7 +141,7 @@ word is free, and we take it. §5 records the collision so nobody re-imports the
 | **`Sandbox`** / **`Profile`** | An isolation boundary instance / a named backend + limits configuration (008) | **ours** |
 | **`Worktree`** | The session's content-addressed virtual disk (025) | **ours** |
 | **`Runner`** / **`PythonRunner`** / **`ShellRunner`** | A code/shell execution unit inside a session's sandbox (010 §1a) | **ours** |
-| **`EmbeddedHost`** | The in-process bring-up object a C++ application constructs to link the engine as a library and mint `Run`/`ReplyStream` handles (020 §3a) | **ours** |
+| **`EmbeddedHost`** | The in-process bring-up object a C++ application constructs to link the engine as a library and drive `Run`s, each drained through its own `agentengine::stream<RunEvent>` (020 §3a; *not yet implemented, targeted for M9*. Corrected 2026-09-04: previously said "mint `Run`/`ReplyStream` handles" — `ReplyStream` was Quark's type, removed by ADR-037) | **ours** |
 | **`Project`** | A durable index above a session — a root session plus every session it transitively owns, with directed pause/restore distinct from idle passivation (030) | **ours** |
 | **`ExecState`** | The `{cwd, env}` shared by reference across every `Runner` call in a session (010 §3a) | **ours** |
 | **`SecretDetector`** | A host-injected seam scanning content for secrets (a pasted API key, a leaked credential) — AgentEngine ships no regex/NER of its own (`decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md` §2) | **ours** |
