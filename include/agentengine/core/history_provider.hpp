@@ -135,11 +135,28 @@ public:
         // `content_origin::assistant` (chat_stream_drain.hpp), which without this loop would make a
         // synthesized summary indistinguishable from a real assistant turn to anything reading
         // `content_origin` -- including `assemble_context()`'s own ADR-066 stamping loop, which only
-        // special-cases `::user`. Relabeled to `::system` here, matching `role` above and the same
-        // claim `SkillsProvider::on_context()` already makes for its own host-synthesized advertisement
-        // (skill_provider.hpp) -- host/engine-authored synthesized content, not model output passed
-        // through, is entitled to claim `::system` (ADR-066 §5).
-        for (ContentItem& item : summary_message.content) item.origin = content_origin::system;
+        // special-cases `::user`.
+        //
+        // ADR-173 (GitHub issue #61) CORRECTS what it is relabeled TO. This used to stamp
+        // `content_origin::system` + leave `tainted` at its default `false`, citing ADR-066 §5's
+        // "host/engine-authored synthesized content ... is entitled to claim `::system`" and
+        // `SkillsProvider`'s advertisement as the precedent. That precedent does not transfer:
+        // `SkillsProvider`'s advertisement is a string this codebase's own C++ composes from
+        // declared skill names, whereas THIS text is `summarizer_`'s own model output, produced from
+        // a prompt containing the conversation's history -- tool results and retrieved documents
+        // included. Stamping it `::system`/untainted took the single most injection-reachable
+        // content in the file and gave it the most trusted provenance in the enum, and after
+        // ADR-173's fence that would also have been the one tainted-in-fact producer the fence
+        // silently skipped. `::external` + `tainted = true` is the identical stamping every other
+        // "model-derived text re-presented to the model as data" site already uses
+        // (memory_provider.hpp, todo_provider.hpp, vector_rag_context_provider.hpp,
+        // rt/bounded_reflection.hpp), and it still satisfies the original reason this loop exists:
+        // `::external` is just as distinguishable from a real assistant turn as `::system` was, and
+        // `assemble_context()`'s `::user`-only check leaves it untouched either way.
+        for (ContentItem& item : summary_message.content) {
+            item.origin  = content_origin::external;
+            item.tainted = true;
+        }
         contribution.messages.push_back(std::move(summary_message));
         contribution.messages.insert(contribution.messages.end(), recent.begin(), recent.end());
         co_return contribution;

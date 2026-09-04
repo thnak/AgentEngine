@@ -109,6 +109,7 @@
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/core/stream.hpp"
+#include "agentengine/core/system_channel_fence.hpp"
 #include "agentengine/sandbox/incremental_http_body.hpp"
 #include "agentengine/sandbox/provider_http_client.hpp"
 #include "agentengine/trust/secret.hpp"
@@ -153,11 +154,31 @@ struct SplitMessages {
     for (Message const& m : messages) {
         if (m.role == role::system) {
             for (ContentItem const& item : m.content) {
-                if (auto const* t = std::get_if<Text>(&item.value)) append_fragment(t->text);
+                auto const* t = std::get_if<Text>(&item.value);
+                if (t == nullptr) continue;
+                // ADR-173 (issue #61): a tainted item is fenced before it joins the blob. Emptiness
+                // is checked by `needs_system_channel_fence` itself, so an empty tainted item still
+                // contributes nothing at all rather than a content-free marker pair.
+                if (needs_system_channel_fence(m.role, item)) {
+                    append_fragment(fence_untrusted_text(t->text, item.origin));
+                } else {
+                    append_fragment(t->text);
+                }
             }
         } else {
             out.rest.push_back(&m);
         }
+    }
+    // ADR-173: the reading rule goes FIRST, ahead of the agent's own instructions and everything
+    // else — it explains markers that appear later, and nothing tainted can get above it (fenced
+    // content is, by construction, inside a fence emitted after this point). Only emitted when
+    // there is something to explain, so a request with no tainted system content is byte-identical
+    // to before this fix.
+    if (!out.system_text.empty() && has_fenced_system_content(messages)) {
+        std::string prefixed(untrusted_fence_preamble());
+        prefixed += "\n\n";
+        prefixed += out.system_text;
+        out.system_text = std::move(prefixed);
     }
     return out;
 }

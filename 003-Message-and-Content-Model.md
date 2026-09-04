@@ -1,6 +1,6 @@
 # 003 — Message and Content Model
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** (historical: originally also depended on Quark 003/016 — ADR-037 removed that dependency) · **Used by:** 004, 005, 011, 012, 013 · **Gate:** §7
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-04** (§2, `decisions/ADR-173-system-channel-taint-fence.md` / GitHub issue #61: taint had no obligation at the serializer, so every conformer legitimately dropped it on the way to the wire) · **Depends on:** (historical: originally also depended on Quark 003/016 — ADR-037 removed that dependency) · **Used by:** 004, 005, 011, 012, 013 · **Gate:** §7
 
 ## Goal
 
@@ -77,6 +77,24 @@ flag**.
   enforcing **I3** and the static half of the prompt-injection defense (017).
 - Untainting requires an explicit, logged decision (a sanitizer, a schema validation, or an
   operator policy), never an implicit cast.
+- **Taint carries a wire-level obligation, not only a type-level one** (amended 2026-09-04,
+  `decisions/ADR-173-system-channel-taint-fence.md`, GitHub issue #61). Everything above describes
+  taint as a marker on an *accessor* — which left a real gap this section did not name: a
+  `ContextProvider` may legitimately place tainted content in the `role::system` channel (memory,
+  RAG, todo, reflection feedback, and summarizer output all do, correctly), and every serializer was
+  then free to emit its text with nothing marking it, because no rule here said otherwise. It is not
+  an untainting, so the bullet above never applied; the content simply reached the model as bytes
+  indistinguishable from host-authored instructions. **A conformer that emits tainted content on the
+  `role::system` channel must delimit it on the wire, with markers the content itself cannot
+  produce, and must state the reading rule once per request.** This is a marking obligation, not a
+  claim that a model cannot be persuaded by fenced text — see the ADR's §5 for what is and is not
+  claimed. Conformers: `protocol/anthropic/chat_client.hpp`, `protocol/openai/chat_client.hpp`;
+  shared mechanism: `core/system_channel_fence.hpp`.
+- Related, and settled by the same ADR: **only host-authored text may claim `content_origin::system`
+  with `tainted = false`.** ADR-066 §5 established that a `ContextProvider` is compiled-in code and
+  so is entitled to claim `::system` for text *it* composes; that entitlement does not extend to
+  text a model produced, however trusted the provider relaying it. `HistoryProvider`'s summary was
+  the one place in the tree that crossed this line.
 
 **This section's extension of the taint trigger to assistant-origin content is security-critical
 and invariant-touching (I3).** Closing the textual contradiction here is not the same as this being

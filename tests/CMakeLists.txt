@@ -905,6 +905,14 @@ if(AGENTENGINE_WITH_HTTPS)
     agentengine::core agentengine::provider_http_client agentengine_warnings)
   add_test(NAME test_anthropic_chat_client_translation COMMAND test_anthropic_chat_client_translation)
 
+  # ---- ADR-173 (GitHub issue #61): the system-channel taint fence, proven on BOTH serializers ----
+  # Lives with the protocol tests (not core) because its claim is about the WIRE bytes two different
+  # backends produce, which is what needs the provider_http_client link both chat clients pull in.
+  add_executable(test_system_channel_taint_fence test_system_channel_taint_fence.cpp)
+  target_link_libraries(test_system_channel_taint_fence PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings)
+  add_test(NAME test_system_channel_taint_fence COMMAND test_system_channel_taint_fence)
+
   add_executable(test_anthropic_chat_client_live test_anthropic_chat_client_live.cpp)
   target_link_libraries(test_anthropic_chat_client_live PRIVATE
     agentengine::core agentengine::provider_http_client agentengine_warnings

@@ -142,10 +142,16 @@ int main() {
                  text_of(out1->messages[2]) == "five",
              "B4-R4: the last 2 messages (four, five) survive verbatim, unmodified by the summarizer");
     AE_CHECK(out1.has_value() && out1->messages.size() == 3 &&
-                 out1->messages[0].content.front().origin == ae::content_origin::system,
-             "B4-R6 (ADR-066 §7 residual): the summary message's content_origin is `::system`, not "
-             "the summarizer's raw `::assistant` reply origin -- marks it as a synthesized summary, "
-             "not a real assistant turn, closing ADR-066 §7's named gap");
+                 out1->messages[0].content.front().origin == ae::content_origin::external &&
+                 out1->messages[0].content.front().tainted,
+             "B4-R6 (ADR-066 §7 residual, CORRECTED by ADR-173 / issue #61): the summary message's "
+             "content is re-stamped away from the summarizer's raw `::assistant` reply origin -- "
+             "still marking it as a synthesized summary rather than a real assistant turn, which is "
+             "all this check ever needed. It re-stamps to `::external` + tainted, NOT the "
+             "`::system` this line used to assert: the text is the summarizer model's own output, "
+             "produced from a history containing tool results and retrieved documents, so claiming "
+             "the enum's most trusted origin on it was authority laundering -- and it would have "
+             "made this the one tainted-in-fact producer ADR-173's wire-level fence skipped");
 
     // --- Bounded-divergence gate (005 §7 G3): the SAME history summarized twice produces a
     // byte-identical result -- deterministic given a deterministic summarizer, never re-derived

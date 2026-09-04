@@ -65,6 +65,7 @@
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/core/response_format_leak_scan.hpp"
 #include "agentengine/core/stream.hpp"
+#include "agentengine/core/system_channel_fence.hpp"
 #include "agentengine/sandbox/incremental_http_body.hpp"
 #include "agentengine/sandbox/provider_http_client.hpp"
 #include "agentengine/trust/secret.hpp"
@@ -98,7 +99,13 @@ namespace detail {
 
     for (ContentItem const& item : m.content) {
         if (auto const* t = std::get_if<Text>(&item.value)) {
-            text += t->text;
+            // ADR-173 (issue #61): OpenAI keeps `system` as its own wire role rather than
+            // concatenating into one blob, so it never had Anthropic's fragment-bleed problem --
+            // but it dropped `tainted`/`origin` at exactly the same point, leaving a
+            // `{"role":"system"}` message carrying tool/document/model-derived text
+            // indistinguishable from a host-authored one. Same fence, same bytes, same predicate.
+            text += needs_system_channel_fence(m.role, item) ? fence_untrusted_text(t->text, item.origin)
+                                                             : t->text;
         } else if (auto const* tc = std::get_if<ToolCall>(&item.value)) {
             std::vector<std::pair<std::string, json::Value>> fn{
                 {"name", json::Value::make_string(tc->tool_name)},
@@ -342,7 +349,19 @@ namespace detail {
     obj.emplace_back("model", json::Value::make_string(model));
 
     std::vector<json::Value> messages;
-    messages.reserve(request.messages.size());
+    messages.reserve(request.messages.size() + 1);
+    // ADR-173 (issue #61): the fence's reading rule, as its own leading host-authored system
+    // message -- the once-per-request point this backend has, since it emits one wire object per
+    // AE Message and has no single concatenated system blob to prepend to. Same predicate as the
+    // fences themselves (`has_fenced_system_content`), so preamble and fences cannot disagree; a
+    // request with no tainted system content produces a byte-identical body to before this fix.
+    if (has_fenced_system_content(request.messages)) {
+        std::vector<std::pair<std::string, json::Value>> preamble;
+        preamble.emplace_back("role", json::Value::make_string("system"));
+        preamble.emplace_back("content",
+                              json::Value::make_string(std::string(untrusted_fence_preamble())));
+        messages.push_back(json::Value::make_object(std::move(preamble)));
+    }
     for (auto const& m : request.messages) {
         for (auto& wire : translate_message_to_wire(m)) messages.push_back(std::move(wire));
     }
