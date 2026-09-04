@@ -2573,6 +2573,18 @@ if(NOT WIN32)
   # tests do.
   set_tests_properties(test_containerd_execution_surface PROPERTIES TIMEOUT 60 RESOURCE_LOCK containerd_daemon)
 
+  # ---- ADR-172 (GitHub issue #66) -- the containerd sibling of ADR-171's Docker isolation work.
+  # C1-C6 are offline (argv shape, --cpus formatting, the 008 §2 mapping, and TWO refusals: a
+  # NetPolicy allowlist and -- unlike Docker -- a pids limit, which `ctr run` genuinely cannot
+  # express). L1-L5 need a live containerd and prove what the kernel applied: only loopback, a ZEROED
+  # CapBnd read from inside the container (proving the 14-name drop list is complete), the host-side
+  # cgroup memory/cpu values, and that the surface threads a caller's isolation through reset().
+  # L2 is the positive control. Same REQUIRES as test_containerd_execution_surface above.
+  add_executable(test_containerd_isolation test_containerd_isolation.cpp)
+  target_link_libraries(test_containerd_isolation PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_containerd_isolation COMMAND test_containerd_isolation)
+  set_tests_properties(test_containerd_isolation PROPERTIES TIMEOUT 120 RESOURCE_LOCK containerd_daemon)
+
   # ---- ADR-106 §7 residual, closed: the ContainerdExecutionSurface counterpart to
   # test_composed_sandbox_providers_live above -- proves MandatorySandboxProvider<
   # ContainerdExecutionSurface> (not just ContainerdExecutionSurface standalone) works through the

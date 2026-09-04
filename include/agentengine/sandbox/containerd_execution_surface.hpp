@@ -29,6 +29,26 @@
 //     `docker_execution_surface.hpp`'s own identical rename for the identical reason (that file's own
 //     top comment).
 //
+// ==== WHAT THIS FILE IS, AND IS NOT (ADR-172, GitHub issue #66) =================================
+//
+// Same statement `docker_execution_surface.hpp` carries, and for the same reason: NEITHER
+// `ContainerdCliBackend` NOR `ContainerdExecutionSurface` IS A `SandboxBackend` (`sandbox.hpp`,
+// 008 §2a), neither is reachable through 008 §3's profile resolution, and **living under
+// `include/agentengine/sandbox/` does not confer RFC 008's guarantees**. `src/backends/kata/` is the
+// real `SandboxBackend` conformer built on this same `ctr` lineage.
+//
+// ADR-172 closed the isolation half only: before it, `create()` emitted a `ctr run` with no memory,
+// CPU or capability flags at all. Now it emits real ones, verified against a live containerd 2.2.2
+// by reading the kernel's own records (host cgroup files, and `CapBnd` from inside the container).
+// STILL MISSING for a real 008 §2 backend:
+//   - NO `CapabilitySet` mediation. `create()` takes no `EffectContext`; 008 §2 rule 1 (I2) is
+//     unsatisfied, and that is a property of the `ExecutionSurface` CONCEPT, not a missing flag.
+//   - NO pids limit is possible on this path at all -- refused rather than silently ignored, see
+//     `containerd_isolation_from()`.
+//   - NO `NetPolicy` allowlist (008 §4) -- also refused; the only opt-in `ctr run` offers is
+//     `--net-host`, which is broader than Docker's bridge, not narrower.
+//   - `SandboxSpec::mounts` is not honored; this surface takes exactly one bind mount at /workspace.
+//
 // Linux-only, matching `KataBackend`'s own real platform scope (`ctr` only meaningfully talks to a
 // local containerd Unix socket) -- gated at the CMake level (`NOT WIN32`), not by a header guard here,
 // matching this codebase's own established convention for other Linux-only files
@@ -57,6 +77,10 @@
 
 #include "agentengine/core/error.hpp"
 #include "agentengine/sandbox/execution_surface.hpp"
+// ADR-172 (issue #66): `ResourceLimits`/`NetPolicy`, the 008 §2 vocabulary
+// `containerd_isolation_from()` bridges. Same non-cycle as docker_execution_surface.hpp's own
+// include of it, and it still does NOT make anything here a `SandboxBackend` conformer.
+#include "agentengine/sandbox/sandbox.hpp"
 
 extern char** environ;
 
@@ -400,6 +424,132 @@ struct OrphanIdentity {
 
 }  // namespace ctr_cli_detail
 
+// ---- ADR-172 (GitHub issue #66): real, fail-closed container isolation -------------------------
+//
+// The containerd sibling of ADR-171's `ContainerIsolation`. Split from that ADR deliberately: the two
+// CLIs are NOT interchangeable, and pretending otherwise would have produced flags that look right
+// and enforce nothing. Every difference below was established by running `ctr` against a live
+// containerd 2.2.2 on WSL2 and reading the result back, not by reading its `--help`:
+//
+//   - **`ctr run`'s network default is ALREADY isolated.** With no flag at all the container gets a
+//     fresh netns holding only `lo` (verified: `ls /sys/class/net` inside reports `lo`). This is the
+//     one axis where containerd was never in the state issue #63 found Docker in. So `host_network`
+//     defaults false and emits NOTHING -- the guarantee comes from containerd, and this type's job is
+//     to keep it rather than to establish it.
+//   - **Opting in is `--net-host`, which is strictly WORSE than Docker's `bridge`.** Docker's opt-in
+//     is a NAT bridge; containerd's convenience-flag opt-in is the HOST's own network namespace --
+//     the container shares the host's interfaces and can reach anything the host can, including
+//     loopback-only services. (`--cni` exists but needs CNI plugins configured on the host, which
+//     nothing in this tree provisions.) Named here, and in the field's own comment, because a reader
+//     transferring intuition from ADR-171 would otherwise assume parity that does not exist.
+//   - **`--cap-drop ALL` DOES NOT WORK.** `ctr` rejects it outright: "capabilities must be specified
+//     with 'CAP_' prefix". Dropping everything means enumerating containerd's own OCI default set,
+//     which is what `kDefaultDroppedCapabilities` below is -- proven complete by the container's
+//     `CapBnd` reading exactly `0000000000000000` afterwards, not by assuming the list is right.
+//   - **There is NO pids limit on this path, at all.** `ctr run` has no `--pids-limit`, and this
+//     class deliberately never uses `--config`/OCI-spec mode (see this file's own top comment). The
+//     honest consequence is enforced in `containerd_isolation_from()`: a non-zero
+//     `ResourceLimits::pids` is REFUSED rather than silently dropped on the floor.
+//
+// What IS enforced is enforced by the kernel: `--memory-limit` and `--cpus` land in the container's
+// own cgroup (verified on the host at `/sys/fs/cgroup/<namespace>/<id>`: `memory.max` and `cpu.max`
+// read back exactly the requested values).
+struct ContainerdIsolation {  // ae-naming-lint: allow ContainerdIsolation — ADR-172 (issue #66); 008 §2 names the obligations, 027 has not been updated
+    // `false` (the default) emits no network flag: containerd already gives the container its own
+    // netns with only loopback. `true` emits `--net-host` -- see this type's own comment above: that
+    // is HOST networking, not a bridge, and is the most dangerous single field on this struct.
+    bool          host_network  = false;
+    std::uint64_t memory_bytes  = 512ull * 1024 * 1024;
+    // Thousandths of a CPU, matching `ContainerIsolation::cpu_milli`'s own rationale (an integer, so
+    // the argv is byte-stable and locale-independent -- `std::to_string(double)` is neither).
+    std::uint32_t cpu_milli     = 1000;
+    bool          drop_default_capabilities = true;
+};
+
+// containerd's own OCI default capability bounding set -- the 14 that make up the `CapBnd`
+// `00000000a80425fb` a flagless `ctr run` produces. Dropping exactly these yields `CapBnd:
+// 0000000000000000`, which is what makes "drop everything" a checkable claim rather than a hopeful
+// list. Deliberately NOT the full 41-capability kernel set: `ctr` validates each name, and naming a
+// capability this containerd/kernel pair does not know would fail the whole `create()` rather than
+// drop one more bit.
+inline constexpr std::array<char const*, 14> kDefaultDroppedCapabilities = {
+    "CAP_CHOWN",   "CAP_DAC_OVERRIDE",      "CAP_FSETID",     "CAP_FOWNER",
+    "CAP_MKNOD",   "CAP_NET_RAW",           "CAP_SETGID",     "CAP_SETUID",
+    "CAP_SETFCAP", "CAP_SETPCAP",           "CAP_NET_BIND_SERVICE",
+    "CAP_SYS_CHROOT", "CAP_KILL",           "CAP_AUDIT_WRITE"};
+
+// The isolation flags as argv elements, for splicing into a `ctr run` line. Pure -- no daemon, no
+// process, no I/O -- so the mapping is provable offline, which matters because the live half of this
+// proof only runs on Linux with a containerd daemon.
+[[nodiscard]] inline std::vector<std::string> containerd_isolation_argv(ContainerdIsolation const& iso) {
+    std::vector<std::string> argv;
+    // Emitted ONLY on opt-in: the absence of a network flag is what keeps containerd's own isolated
+    // default, so a `--net-none`-style flag would be both nonexistent and unnecessary.
+    if (iso.host_network) argv.emplace_back("--net-host");
+    argv.emplace_back("--memory-limit");
+    argv.emplace_back(std::to_string(iso.memory_bytes));
+    argv.emplace_back("--cpus");
+    argv.emplace_back(std::to_string(iso.cpu_milli / 1000) + "." +
+                       [&] {
+                           std::string frac = std::to_string(iso.cpu_milli % 1000);
+                           return std::string(3 - frac.size(), '0') + frac;
+                       }());
+    if (iso.drop_default_capabilities) {
+        for (char const* cap : kDefaultDroppedCapabilities) {
+            argv.emplace_back("--cap-drop");
+            argv.emplace_back(cap);
+        }
+    }
+    return argv;
+}
+
+// The bridge from 008 §2's own vocabulary to what `ctr run` can actually enforce. Mirrors
+// `container_isolation_from()` (docker_execution_surface.hpp) in shape and in discipline -- it
+// refuses what it cannot enforce rather than accepting it and doing nothing -- but the refusal SET is
+// larger here, because `ctr`'s convenience-flag path is narrower than `docker run`'s:
+//
+//   - `NetPolicy::allowlist` is REFUSED, for exactly ADR-171's reason (008 §4: egress is always
+//     host-mediated; no `ctr run` flag expresses an allowlist). Worse here than there, in fact: the
+//     only opt-in available is `--net-host`, so silently honoring an allowlist would hand the
+//     container the HOST's network namespace.
+//   - `ResourceLimits::pids` is REFUSED when non-zero. This is the honest difference from the Docker
+//     surface, which maps it to `--pids-limit`. Accepting a pids limit here and emitting nothing
+//     would be strictly worse than refusing: the caller would believe a fork bomb had a ceiling it
+//     does not have. A caller that genuinely needs one uses the Docker surface, or a real
+//     `SandboxBackend` (`src/backends/kata/`, built on this same `ctr` lineage but through the OCI
+//     spec rather than convenience flags).
+//   - `cpu_ms` is NOT mapped to `--cpus`, same reasoning as ADR-171: a CPU-time BUDGET is not a
+//     bandwidth SHARE.
+//   - `fds`/`disk_bytes`/`net_bytes`/`wall_ms`/`output_bytes` are unmapped here for the same reasons
+//     ADR-171 records for the Docker side.
+//
+// An UNSET (zero) limit maps to this type's own conservative default, never to "unlimited".
+[[nodiscard]] inline agentengine::result<ContainerdIsolation> containerd_isolation_from(
+    agentengine::ResourceLimits const& limits, agentengine::NetPolicy const& net) {
+    if (!net.allowlist.empty()) {
+        return std::unexpected(agentengine::error{
+            agentengine::failure_class::policy,
+            "ContainerdExecutionSurface cannot enforce a NetPolicy allowlist: `ctr run`'s only "
+            "network opt-in is --net-host, which shares the HOST's network namespace and is strictly "
+            "broader than an allowlist (008 §4). Use deny_all, or route egress through "
+            "sandbox/net_egress_proxy.hpp.",
+            "containerd_execution_surface.netpolicy_allowlist_unsupported"});
+    }
+    if (limits.pids != 0) {
+        return std::unexpected(agentengine::error{
+            agentengine::failure_class::policy,
+            "ContainerdExecutionSurface cannot enforce a pids limit: `ctr run` has no --pids-limit "
+            "and this backend never uses --config/OCI-spec mode. Refused rather than silently "
+            "ignored -- a caller must not believe a fork bomb has a ceiling it does not have. Use the "
+            "Docker surface, or a real SandboxBackend.",
+            "containerd_execution_surface.pids_limit_unsupported"});
+    }
+    ContainerdIsolation iso;
+    iso.host_network = !net.deny_all;
+    if (limits.memory_bytes != 0) iso.memory_bytes = limits.memory_bytes;
+    return iso;
+}
+
 // A thin, real wrapper over the `ctr` CLI (containerd's own client) -- create()/exec()/destroy() over
 // `ctr run`/`ctr tasks exec`/`ctr task kill`+`ctr task rm`+`ctr container rm`. Deliberately NOT a
 // `SandboxBackend` conformer (see this file's own top comment). Every invocation is a real argv
@@ -428,9 +578,14 @@ public:
     // defended against here -- `RealIoFileSystem::host_root()`, the one real production caller of this
     // path, is a host-configured scratch root never influenced by model/guest input (I2/I3), so a
     // comma reaching this argument would be an operator configuration error, not an attacker input.
+    // ADR-172 (issue #66): `isolation` defaults to a conservative `ContainerdIsolation` -- see that
+    // type's own comment. Every existing 2- and 3-argument `create()` call site keeps compiling and
+    // now runs with real, kernel-enforced memory/CPU ceilings and a zeroed capability bounding set it
+    // did not have before; loosening any axis is an explicit field assignment a reader can see.
     [[nodiscard]] agentengine::result<Instance> create(
             std::string const& id, std::filesystem::path const& host_dir,
-            std::string const& image = "docker.io/library/alpine:latest") {
+            std::string const& image = "docker.io/library/alpine:latest",
+            ContainerdIsolation const& isolation = {}) {
         if (auto ok = ctr_cli_detail::reject_unsafe_token(id, "id"); !ok.has_value())
             return std::unexpected(ok.error());
         if (auto ok = ctr_cli_detail::reject_unsafe_token(image, "image"); !ok.has_value())
@@ -445,8 +600,18 @@ public:
         }
         std::string const mount_arg =
             "type=bind,src=" + host_dir_str + ",dst=/workspace,options=rbind:rw";
-        auto r = ctr_cli_detail::run_argv(
-            {"ctr", "run", "-d", "--mount", mount_arg, image, id, "sleep", "infinity"});
+        // ADR-172: the isolation flags go BEFORE `image` -- `ctr run [flags] IMAGE ID [COMMAND]`, so
+        // anything after the image is positional (the id, then the container's own argv), and a flag
+        // placed there would be consumed as one of those instead of being enforced. Every element
+        // comes from `containerd_isolation_argv()`, built from this process's own numbers and a fixed
+        // capability-name table -- never caller or model input -- so no extra argv hygiene is needed
+        // for values this class itself constructs (CLAUDE.md: don't check an already-impossible input).
+        std::vector<std::string> argv = {"ctr", "run", "-d", "--mount", mount_arg};
+        for (std::string& flag : containerd_isolation_argv(isolation)) argv.push_back(std::move(flag));
+        argv.push_back(image);
+        argv.push_back(id);
+        argv.insert(argv.end(), {"sleep", "infinity"});
+        auto r = ctr_cli_detail::run_argv(argv);
         if (!r.has_value()) return std::unexpected(r.error());
         if (r->exit_code != 0) {
             return std::unexpected(agentengine::error{
@@ -617,8 +782,14 @@ public:
     // occupies it. Mirrors `DockerCliBackend`'s own identical fix -- this asymmetry (Docker already
     // had this before ADR-108, Containerd did not) was itself a red-team finding: ADR-108 §2 claimed
     // the two naming schemes "mirror" each other without this piece actually matching.
-    explicit ContainerdExecutionSurface(std::string image = "docker.io/library/alpine:latest")
-        : image_(std::move(image)),
+    //
+    // ADR-172 (issue #66): `isolation` defaults to `ContainerdIsolation`'s own conservative values --
+    // an existing `ContainerdExecutionSurface{}` / `{"docker.io/library/alpine:latest"}` call site
+    // keeps compiling and now runs contained. Use `containerd_isolation_from()` to derive this from an
+    // engine `SandboxSpec`'s own `limits`/`net`.
+    explicit ContainerdExecutionSurface(std::string image = "docker.io/library/alpine:latest",
+                                          ContainerdIsolation isolation = {})
+        : image_(std::move(image)), isolation_(isolation),
           seq_(static_cast<std::uint64_t>(std::chrono::system_clock::now().time_since_epoch().count())) {}
 
     ~ContainerdExecutionSurface() {
@@ -635,8 +806,14 @@ public:
     // `instance_` without destroying it first. Fixed identically: reset-the-source on move-construct,
     // swap-not-overwrite on move-assign (no possibly-failing `destroy()` call happens inside the
     // assignment operator at all, so there is no failure path here to mishandle).
+    //
+    // ADR-172: `isolation_` is carried explicitly by BOTH, for the reason ADR-171 §3 found the hard
+    // way on the Docker sibling: these two enumerate their members by hand, so a member added without
+    // touching them is silently dropped -- which for this one means a moved-to surface quietly
+    // reverting to the type's defaults and discarding a host's deliberate opt-in. Safe direction,
+    // still wrong. The identical bug was live in `DockerExecutionSurface` for the length of one edit.
     ContainerdExecutionSurface(ContainerdExecutionSurface&& other) noexcept
-        : image_(std::move(other.image_)), ctr_(std::move(other.ctr_)),
+        : image_(std::move(other.image_)), isolation_(other.isolation_), ctr_(std::move(other.ctr_)),
           instance_(std::move(other.instance_)), mounted_at_(std::move(other.mounted_at_)),
           seq_(other.seq_) {
         other.instance_.reset();
@@ -644,6 +821,7 @@ public:
     ContainerdExecutionSurface& operator=(ContainerdExecutionSurface&& other) noexcept {
         if (this != &other) {
             image_.swap(other.image_);
+            std::swap(isolation_, other.isolation_);  // ADR-172 -- see the move ctor's own comment
             std::swap(ctr_, other.ctr_);
             instance_.swap(other.instance_);
             mounted_at_.swap(other.mounted_at_);
@@ -677,7 +855,7 @@ public:
         std::string const id = "ae_ces_" + std::to_string(::getpid()) + "_" +
                                 std::to_string(ctr_cli_detail::current_process_start_key()) + "_" +
                                 std::to_string(++seq_);
-        auto inst = ctr_.create(id, host_dir, image_);
+        auto inst = ctr_.create(id, host_dir, image_, isolation_);
         if (!inst.has_value()) return std::unexpected(inst.error());
         instance_ = *inst;
         mounted_at_ = host_dir;
@@ -724,6 +902,9 @@ public:
 
 private:
     std::string image_;
+    // ADR-172 (issue #66). Held by value and applied on every `reset()`, so a re-materialized surface
+    // is contained identically to its first container -- not only the first one.
+    ContainerdIsolation isolation_{};
     ContainerdCliBackend ctr_;
     std::optional<ContainerdCliBackend::Instance> instance_;
     std::filesystem::path mounted_at_;
