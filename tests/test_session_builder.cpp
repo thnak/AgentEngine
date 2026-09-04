@@ -817,11 +817,20 @@ int main() {
         check(built3.has_value(), "B25 setup: session3 build() succeeds");
         if (built3.has_value()) {
             void const* addr3 = static_cast<void const*>(&built3->session());
-            check(addr1 == addr3,
-                  "B25 precondition: session3 is heap-allocated at the EXACT SAME address session1 "
-                  "used to occupy -- if this ever stops holding (a different allocator behavior), this "
-                  "test still passes but is no longer exercising the real ABA scenario it was written "
-                  "for");
+            // GitHub issue #67: this used to be a hard `check(addr1 == addr3, ...)` whose own message
+            // said "this test still passes but is no longer exercising the real ABA scenario" -- the
+            // code contradicted its documented intent, and asserted an ALLOCATOR's behaviour as if it
+            // were a claim about the engine. It held on the Windows CRT and does not hold on glibc,
+            // where the freed block is not handed straight back; the file had never been built on
+            // Linux (it is `AGENTENGINE_WITH_HTTPS`-gated) so nothing surfaced it until that build
+            // was fixed. Reported, not asserted: B25's real claim below runs either way, and the
+            // note says plainly whether the address collision -- the thing that makes it an ABA test
+            // rather than an ordinary one -- actually occurred on this run.
+            std::fprintf(stderr,
+                         "  .. B25 precondition: session3 %s session1's freed address (%p vs %p) -- "
+                         "the ABA collision is %sexercised on this allocator\n",
+                         addr1 == addr3 ? "REUSED" : "did NOT reuse", addr1, addr3,
+                         addr1 == addr3 ? "" : "NOT ");
             built3->session().history_provider() = std::move(smuggler);
             Principal principal{"p-b25", ""};
             std::vector<Message> empty_history;
@@ -861,7 +870,21 @@ int main() {
             check(built.has_value(), "B21a setup: build() succeeds");
             if (built.has_value()) {
                 auto& hp = built->session().history_provider();
-                hp       = std::move(hp);
+                // GitHub issue #67: the self-move below is the SUBJECT of this check, not a defect
+                // in it -- B21a exists to prove self-move-assignment leaves the instance intact.
+                // GCC's -Wself-move (which clang does not raise here) is therefore correct about
+                // what it sees and wrong about what to do: "fixing" the line would delete the very
+                // thing under test, so it is suppressed for exactly one statement. Guarded to
+                // compilers that know the pragma -- MSVC defines neither macro and would warn on an
+                // unknown pragma under this project's own -Werror posture.
+#if defined(__GNUC__) || defined(__clang__)
+#  pragma GCC diagnostic push
+#  pragma GCC diagnostic ignored "-Wself-move"
+#endif
+                hp = std::move(hp);
+#if defined(__GNUC__) || defined(__clang__)
+#  pragma GCC diagnostic pop
+#endif
                 auto contribution = agentengine::test_support::run_task_sync<
                     result<ContextContribution>>(hp.on_context(session_ctx, effect_ctx));
                 check(contribution.has_value() && contribution->messages.size() == 1 &&

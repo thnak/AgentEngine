@@ -144,9 +144,21 @@ int main() {
 
     std::vector<ExecutorBody> bodies = {agent_session_as_executor_body(session)};
 
+    // GitHub issue #67: GCC applies `-Wmissing-field-initializers` to a DESIGNATED initializer that
+    // names only some members; clang does not, which is why this built on Windows and broke the
+    // Linux build. Every other `EffectContext` member wants exactly its default here, so the two
+    // this example actually cares about are set by assignment -- no member list to fall out of date
+    // as the struct grows, which is the same reason nothing else in the tree designated-initializes
+    // this type.
+    EffectContext wf_ctx{};
+    wf_ctx.principal    = Principal{"example-26-principal", ""};
+    wf_ctx.capabilities = borrow_capabilities(held);
+
+    std::vector<EffectContext> contexts;
+    contexts.push_back(std::move(wf_ctx));
+
     WorkflowSupervisor sup;
-    sup.initialize(wf, bodies, {EffectContext{.principal = Principal{"example-26-principal", ""},
-                                               .capabilities = borrow_capabilities(held)}});
+    sup.initialize(wf, bodies, std::move(contexts));
     WorkflowEventStream stream = sup.enable_event_stream(std::pmr::get_default_resource());
 
     agentengine::rt::task<WorkflowResult> run = sup.run_workflow(

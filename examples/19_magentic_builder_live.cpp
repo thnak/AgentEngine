@@ -118,12 +118,10 @@ using RealClient = openai::OpenAIChatClient<InMemorySecretStore>;
             else if (raw.find("RESEARCHER") != std::string::npos) { decision = "researcher"; live_decided = true; }
             else if (raw.find("WRITER") != std::string::npos) { decision = "writer"; live_decided = true; }
         }
-        bool fallback_decided = false;
         if (!live_decided) {
             bool const has_facts   = transcript.find("Researcher:") != std::string::npos;
             bool const has_summary = transcript.find("Writer:") != std::string::npos;
-            decision          = !has_facts ? "researcher" : (!has_summary ? "writer" : "done");
-            fallback_decided  = true;
+            decision               = !has_facts ? "researcher" : (!has_summary ? "writer" : "done");
         }
         std::printf("[moderator] %s%s\n", decision.c_str(), live_decided ? "" : " (fallback ledger)");
 

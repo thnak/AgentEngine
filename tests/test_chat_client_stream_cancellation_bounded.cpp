@@ -576,7 +576,11 @@ int main() {
         if (server.ok()) {
             openai::OpenAIChatClient client("localhost", server.port(), "gpt-5", SecretRef{"openai-api-key"},
                                              ChatClientCapabilities{}, store, "/v1", fake_resolver, leaf.cert_pem);
-            auto const t_create = std::chrono::steady_clock::now();
+            // GitHub issue #67: a `t_create` stamp used to be taken here. It was residue from the
+            // timing assertions this case deliberately DROPPED -- see the long "WHAT THIS HARNESS
+            // CAN AND CANNOT MEASURE" note below, which explains why consumer-side timings prove
+            // nothing here. Nothing read it, so it is gone rather than silenced; the two stamps that
+            // ARE read (`t_cancel_requested`, `t_released`) feed the context-only fprintf.
             std::chrono::steady_clock::time_point t_cancel_requested;
             {
                 stream<ChatResponseUpdate> s = client.chat_stream(request_asking("hi"), ctx);
@@ -590,7 +594,10 @@ int main() {
                 // caring" shape as well as the explicit cancel() call.
             }
             auto const t_released = std::chrono::steady_clock::now();
-            auto const t_cancel = t_released;  // kept for the server-side poll budget below
+            // GitHub issue #67: a `t_cancel = t_released` alias sat here, commented "kept for the
+            // server-side poll budget below". The poll below is a fixed 100 x 50ms loop that never
+            // consulted it, and the fprintf uses `t_released`/`t_cancel_requested` directly -- the
+            // comment described a use that did not exist. Removed rather than silenced.
 
             // Poll (bounded, generous) for the server's write loop to finish one way or the other.
             bool observed = false;
