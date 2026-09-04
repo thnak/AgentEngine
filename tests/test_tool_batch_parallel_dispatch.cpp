@@ -12,13 +12,22 @@
 //      (§5 MUST-FIX 5's "one job per group, not per member" -- verified by a shared, instrumented
 //      concurrent-count high-water mark, never observed above 1).
 //   3. `history_`'s appended `ToolResult` order is always the model's EMITTED order, regardless of
-//      which call PHYSICALLY completed first -- proven by deliberately making the first-emitted call
-//      the slower one and directly observing (a) real completion happens out of emitted order, and
-//      (b) the appended history is nonetheless in emitted order every time (006 §5 / G4's own claim).
+//      which call PHYSICALLY completed first -- proven by making the first-emitted call block on a
+//      rendezvous signal the second-emitted call sets after it finishes (same `wait_up_to()` idiom
+//      as claim 1), so real completion is DETERMINISTICALLY out of emitted order, and directly
+//      observing the appended history is nonetheless in emitted order every time (006 §5 / G4's own
+//      claim). An earlier revision raced two `sleep_for()` calls (15ms vs 1ms) instead -- that
+//      assumption broke under real CI load: GitHub-hosted Windows runners' ~15.6ms default timer
+//      granularity means `sleep_for(1ms)` can legitimately take nearly as long as `sleep_for(15ms)`,
+//      which is exactly what happened (2026-09-04): this test failed in the fast Release legs (where
+//      nothing else pads out an iteration) but passed in both ASan legs (slow enough to swamp the
+//      jitter), the signature of a margin eaten by scheduler granularity, not a real concurrency
+//      defect. The rendezvous is bounded (2s timeout, same ceiling claim 1 uses), so a genuinely
+//      broken (secretly-sequential) dispatch path still fails loudly instead of hanging.
 //
 // NOT the literal "10^4 randomized completions" G4 asks for (ADR-160 §6: named as a still-open
-// question whether that scale is CI-practical) -- 64 iterations here, with a large (15ms vs 1ms),
-// non-flaky timing margin, real `AgentSession` round-trips each time.
+// question whether that scale is CI-practical) -- 64 iterations here, real `AgentSession` round-trips
+// each time.
 
 #include <atomic>
 #include <chrono>
@@ -264,9 +273,11 @@ struct GroupToolY : agentengine::Tool<GroupToolY, Capabilities<>, EffectClass<ef
     }
 };
 
-// -- Claim 3 fixture: append order vs. completion order -- the first-EMITTED call sleeps LONGER ---
-struct DelayArgs { int delay_ms = 0; };
-AE_JSON_SCHEMA(DelayArgs, delay_ms)
+// -- Claim 3 fixture: append order vs. completion order -- delay_a (first-emitted) blocks on a
+// rendezvous signal delay_b (second-emitted) sets after IT finishes, so real completion order is
+// DETERMINISTICALLY [b, a] regardless of OS scheduler timing jitter (see file banner). Reset before
+// each iteration below, same as `g_completion_order`.
+std::atomic<bool> g_delay_b_done{false};
 
 std::mutex g_completion_mutex;
 std::vector<std::string> g_completion_order;  // cleared before each iteration below
@@ -274,11 +285,12 @@ std::vector<std::string> g_completion_order;  // cleared before each iteration b
 struct DelayToolA : agentengine::Tool<DelayToolA, Capabilities<>, EffectClass<effect_class::pure>,
                                         Parallelizable> {
     static constexpr std::string_view name = "delay_a";
-    static constexpr std::string_view description = "Sleeps delay_ms, then records completion.";
-    using Args = DelayArgs;
+    static constexpr std::string_view description =
+            "Waits for delay_b to signal completion, then records its own completion.";
+    using Args = NoArgs;
     using Reply = TagReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(a.delay_ms));
+    static agentengine::result<Reply> invoke(Args, EffectContext&) {
+        wait_up_to(g_delay_b_done, std::chrono::milliseconds(2000));
         std::lock_guard<std::mutex> lock(g_completion_mutex);
         g_completion_order.push_back("a");
         return Reply{"a"};
@@ -287,13 +299,15 @@ struct DelayToolA : agentengine::Tool<DelayToolA, Capabilities<>, EffectClass<ef
 struct DelayToolB : agentengine::Tool<DelayToolB, Capabilities<>, EffectClass<effect_class::pure>,
                                         Parallelizable> {
     static constexpr std::string_view name = "delay_b";
-    static constexpr std::string_view description = "Sleeps delay_ms, then records completion.";
-    using Args = DelayArgs;
+    static constexpr std::string_view description = "Records completion, then signals delay_a.";
+    using Args = NoArgs;
     using Reply = TagReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(a.delay_ms));
-        std::lock_guard<std::mutex> lock(g_completion_mutex);
-        g_completion_order.push_back("b");
+    static agentengine::result<Reply> invoke(Args, EffectContext&) {
+        {
+            std::lock_guard<std::mutex> lock(g_completion_mutex);
+            g_completion_order.push_back("b");
+        }
+        g_delay_b_done.store(true, std::memory_order_release);
         return Reply{"b"};
     }
 };
@@ -355,17 +369,20 @@ int main() {
         int out_of_order_completions_observed = 0;
         for (int i = 0; i < kIterations; ++i) {
             g_completion_order.clear();
+            g_delay_b_done.store(false, std::memory_order_release);
             using Session = AgentSession<RecordingChatClient, NoSessionState,
                                            ToolsHistoryProvider<DelayToolA, DelayToolB>>;
             Session session;
             session.initialize("delay-" + std::to_string(i), owner);
-            // delay_a (emitted FIRST, call c1) sleeps 15ms; delay_b (emitted SECOND, call c2)
-            // sleeps 1ms -- if dispatch is genuinely concurrent, b finishes first every time (a
-            // 15x margin, not a coin flip); if dispatch were secretly still sequential, completion
-            // order would ALWAYS equal emitted order regardless of these sleep values.
+            // delay_a (emitted FIRST, call c1) blocks until delay_b (emitted SECOND, call c2) signals
+            // its own completion -- real completion order is DETERMINISTICALLY [b, a] every iteration
+            // (see file banner); if dispatch were secretly still sequential, delay_a would run to
+            // completion before delay_b's tool function ever got a chance to run, so delay_a's
+            // rendezvous wait would time out (bounded, not a hang) and this iteration's completion
+            // order would stay empty/wrong, failing the check below instead of hanging.
             session.emplace_chat_client().set_script({
-                ScriptedOutcome{multi_tool_call_response({{"c1", "delay_a", R"({"delay_ms":15})"},
-                                                            {"c2", "delay_b", R"({"delay_ms":1})"}}),
+                ScriptedOutcome{multi_tool_call_response({{"c1", "delay_a", "{\"ignored\":false}"},
+                                                            {"c2", "delay_b", "{\"ignored\":false}"}}),
                                 Usage{}},
                 ScriptedOutcome{text_response("done"), Usage{}},
             });
