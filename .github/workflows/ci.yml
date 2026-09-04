@@ -89,7 +89,7 @@ jobs:
             if ($dll) { $env:PATH = "$($dll.DirectoryName);$env:PATH"; Write-Host "ASan runtime: $($dll.DirectoryName)" }
             else { Write-Host "WARNING: clang_rt.asan_dynamic-x86_64.dll not found under $vs" }
           }
-          # ADR-146 §12: excludes the 6 real-Docker-daemon tests -- confirmed (2026-08-31, same
+          # ADR-146 §12: excludes the real-Docker-daemon tests -- confirmed (2026-08-31, same
           # failure present on this branch's own tip BEFORE this ADR's own work started, so not a
           # regression) that `windows-latest` GitHub-hosted runners have no Docker daemon at all
           # ("failed to connect to the docker API at npipe:////./pipe/docker_engine ... The system
@@ -100,8 +100,12 @@ jobs:
           # own self-hosted-only precedent is the same class of decision). Local developer verification
           # against a real Windows Docker Desktop daemon (this session's own established discipline)
           # is unaffected -- this exclusion is CI-only.
+          # test_docker_run_argv_timeout/test_docker_non_ascii_path added 2026-09-04: both carry the
+          # same `RESOURCE_LOCK docker_daemon` / "REQUIRES a running Docker daemon" posture as the
+          # other six (tests/CMakeLists.txt) but were left off this list when they were added, so CI
+          # ran them against the same nonexistent daemon and failed every Windows leg.
           ctest --test-dir build -C Release -j 4 --output-on-failure --timeout 180 `
-            -E '^(test_composed_sandbox_providers_live|test_sandbox_runtime|test_docker_orphan_reap|test_mandatory_sandbox_provider|test_task_branch_tools|test_task_branch_concurrent_dispatch)$'
+            -E '^(test_composed_sandbox_providers_live|test_sandbox_runtime|test_docker_orphan_reap|test_mandatory_sandbox_provider|test_task_branch_tools|test_task_branch_concurrent_dispatch|test_docker_run_argv_timeout|test_docker_non_ascii_path)$'
 
   windows-clang-cl:
     name: Windows / clang-cl / ${{ matrix.build_type }}
@@ -215,7 +219,7 @@ jobs:
           # ADR-146 §12: see the windows-msvc job's own Test step comment above -- same exclusion,
           # same reason (no Docker daemon on GitHub-hosted windows-latest runners), applied here too.
           ctest --test-dir build -j 4 --output-on-failure --timeout 180 `
-            -E '^(test_composed_sandbox_providers_live|test_sandbox_runtime|test_docker_orphan_reap|test_mandatory_sandbox_provider|test_task_branch_tools|test_task_branch_concurrent_dispatch)$'
+            -E '^(test_composed_sandbox_providers_live|test_sandbox_runtime|test_docker_orphan_reap|test_mandatory_sandbox_provider|test_task_branch_tools|test_task_branch_concurrent_dispatch|test_docker_run_argv_timeout|test_docker_non_ascii_path)$'
           # Explicit, not incidental: this step became a pwsh block to set PATH, and a shell block
           # that ends on a native command must still surface that command's exit code. Stated here
           # rather than relying on the runner appending it, so a failing ctest can never read green.
