@@ -23,6 +23,21 @@
 // deliberately NOT built as a conforming `agentengine::SandboxBackend` (`sandbox.hpp`, 008 §2a) and
 // are NOT wired to any of the real backends (`NativeJailBackend`/`WasmBackend`/`KataBackend`) --
 // matching ADR-099 §7's own explicit project-owner direction, carried into this port unchanged.
+//
+// MADE EXPLICIT (ADR-171, GitHub issue #63 step 2): that scope decision is PERMANENT until an ADR
+// says otherwise, and it has a consequence a reader must not have to infer. **An `ExecutionSurface`
+// conformer inherits none of RFC 008's guarantees** -- not 008 §2's mandatory resource limits, not
+// §4's host-mediated egress, and above all not §2 rule 1's empty-by-default authority: `reset()`/
+// `run()`/`drain_to()` take no `EffectContext` and no `CapabilitySet`, so there is nothing for a
+// conformer to check a caller against, and no conformer does. Whatever authority the calling code
+// already holds is the authority the contained command runs with.
+//
+// A conformer is therefore obliged to contain its OWN blast radius by construction (ADR-171 gave
+// `DockerExecutionSurface` deny-all network plus real memory/pids/CPU ceilings by default, for
+// exactly this reason), and a caller must never treat "it is an `ExecutionSurface`" as evidence that
+// a command run through it was authorized. Promoting any conformer toward a real `SandboxBackend`
+// owes 008 §9's full gate first (G1 parity, G2 containment with a positive control, G3
+// no-ambient-authority probe, G4 teardown).
 
 #include <filesystem>
 #include <string>

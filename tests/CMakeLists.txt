@@ -3594,6 +3594,18 @@ target_link_libraries(test_docker_non_ascii_path PRIVATE agentengine::core agent
 add_test(NAME test_docker_non_ascii_path COMMAND test_docker_non_ascii_path)
 set_tests_properties(test_docker_non_ascii_path PROPERTIES RESOURCE_LOCK docker_daemon)
 
+# ---- ADR-171 (GitHub issue #63) -- real, fail-closed container isolation for DockerCliBackend/
+# DockerExecutionSurface, which previously emitted a `docker run` with NO isolation flags at all.
+# I1-I5 are offline (argv shape, --cpus formatting, the 008 §2 ResourceLimits/NetPolicy mapping, and
+# the security-critical refusal of a NetPolicy allowlist). L1-L4 need a live daemon and prove the
+# KERNEL applied the limits, by reading the container's own /sys/class/net and cgroup files from
+# inside it -- with L2 as the positive control that the probe can report the opposite.
+# REQUIRES a running Docker daemon reachable via `docker` on PATH.
+add_executable(test_docker_isolation test_docker_isolation.cpp)
+target_link_libraries(test_docker_isolation PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_docker_isolation COMMAND test_docker_isolation)
+set_tests_properties(test_docker_isolation PROPERTIES RESOURCE_LOCK docker_daemon)
+
 # ---- ADR-102 Phase 4 -- MandatorySandboxProvider<Surface>/RunCommandTool
 # (sandbox/mandatory_sandbox_provider.hpp), composed as a REAL agentengine::rt::AgentSession's actual
 # HistoryProviderT, driven through the real, unmodified invoke_tool() 10-step pipeline for the first

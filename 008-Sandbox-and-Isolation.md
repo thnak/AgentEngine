@@ -1,6 +1,6 @@
 # 008 — Sandbox and Isolation
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 007, 009, 021 · **Gate:** §9 · **Research:** [2026 landscape §6–8](docs/research/2026-standards-landscape.md)
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-04 by ADR-171** (§2a — isolation machinery in the tree is not a backend until it satisfies §2; proximity is not conformance) · **Depends on:** 007, 009, 021 · **Gate:** §9 · **Research:** [2026 landscape §6–8](docs/research/2026-standards-landscape.md)
 
 ## Goal
 
@@ -241,6 +241,9 @@ deliberately not a claim that a `Runner` must sit between every caller and every
 may satisfy this contract by construction instead (e.g. trusted test code, or a host tool that already
 only ever passes fixed, non-model-derived commands).
 
+<!-- Amended 2026-09-04 by ADR-171 (GitHub issue #63): §2a gains a bullet stating that isolation
+     machinery in the tree is not a backend until it satisfies §2 — proximity is not conformance. -->
+
 ## 2a. Custom backends — the seam is open, not a closed set
 
 §3's table is what the engine ships, not the exhaustive set of what `SandboxBackend` can be. Nothing
@@ -264,6 +267,19 @@ no difference.
 - **No special status for engine-shipped profiles beyond having already cleared that bar.**
   `native-jail`, `wasm`, and `remote` are not privileged by the contract — they are simply the three
   the project has done the work (and, for `native-jail`, the ADR-proven measurement) to back.
+- **Isolation machinery in the tree is not a backend until it satisfies §2** (added 2026-09-04 by
+  `ADR-171`, GitHub issue #63). `ExecutionSurface` and its conformers
+  (`sandbox/execution_surface.hpp`, `sandbox/docker_execution_surface.hpp`) run real commands in real
+  containers and live under `sandbox/`, and are deliberately **not** `SandboxBackend` conformers:
+  their verbs take no `EffectContext` and no `CapabilitySet`, so there is nothing for them to check a
+  caller against, which is precisely why §2 rule 1 (empty-by-default authority, I2) is the property
+  they cannot satisfy — no amount of container flags substitutes for it. They are consequently not
+  reachable through §3's profile resolution, and an agent's `SandboxProfile<P>` cannot select one.
+  This is stated here because the inverse assumption is the natural one: proximity in the source tree
+  is not conformance, and a mechanism can be genuinely well-contained (ADR-171 gave the Docker
+  surface deny-all egress and real kernel-enforced memory/pids/CPU ceilings, verified from inside the
+  container) while still owing every one of §9's gates before it may be trusted with a real workload
+  grant.
 
 ## 3. Profiles
 

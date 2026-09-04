@@ -37,6 +37,37 @@
 // test -- it is no longer used by any production call site in this file. See the class-level comment
 // on `DockerCliBackend` below and `docs/planning/docker-execution-surface-argv-hardening-design-draft.md`
 // for the full before/after reasoning and red-team round.
+//
+// ==== WHAT THIS FILE IS, AND IS NOT (ADR-171, GitHub issue #63) ==================================
+//
+// NEITHER `DockerCliBackend` NOR `DockerExecutionSurface` IS A `SandboxBackend` (`sandbox.hpp`,
+// 008 §2a), and neither is reachable through 008 §3's profile resolution (`Strict`,
+// `SandboxBackendRegistry`). An agent declaring `SandboxProfile<P>` (002 §3) has no path to select
+// Docker-backed execution through the normal machinery, by design and by explicit project-owner
+// direction (ADR-099 §7). **Living under `include/agentengine/sandbox/` does not confer RFC 008's
+// guarantees**, and issue #63 was filed precisely because a reader could reasonably assume it does.
+//
+// This file therefore does NOT satisfy 008 §2's backend contract, and has not cleared 008 §9's
+// promotion gate (G1 parity / G2 containment / G3 no-ambient-authority / G4 teardown). What ADR-171
+// changed is narrower and worth stating exactly: before it, `create()` emitted a `docker run` with
+// **no isolation flags at all** -- unfiltered bridge egress, unbounded memory/pids/CPU, the default
+// Linux capability set. That is now closed and proven against a live daemon by reading the container's
+// OWN cgroup values from inside it (`tests/test_docker_isolation.cpp`), not by trusting a flag string.
+//
+// STILL MISSING for a real 008 §2 backend, so nobody has to re-derive it:
+//   - NO `CapabilitySet` mediation. `create()` takes no `EffectContext` and consults no capability;
+//     008 §2 rule 1 ("empty-by-default authority", I2) is unsatisfied. THIS is the reason the type
+//     is not a backend, and no amount of `docker run` flags fixes it.
+//   - NO `NetPolicy` allowlist. `container_isolation_from()` REFUSES one rather than silently
+//     widening it to full bridge access -- see that function's own comment.
+//   - `ResourceLimits::cpu_ms`/`fds`/`disk_bytes`/`net_bytes` are unmapped; `wall_ms`/`output_bytes`
+//     are enforced host-side by `run_argv()` (ADR-139), not by the container.
+//   - `SandboxSpec::mounts` is not honored at all -- this surface moves data with `docker cp`.
+//
+// The identically-shaped sibling `ContainerdCliBackend` (containerd_execution_surface.hpp) still has
+// the pre-ADR-171 gap: grepping it for isolation flags returns nothing. Not fixed here (its `ctr`
+// flag syntax differs and this session could not execute a live containerd proof) -- tracked
+// separately rather than silently fixed or silently ignored.
 
 #include <algorithm>
 #include <array>
@@ -68,6 +99,11 @@
 
 #include "agentengine/core/error.hpp"
 #include "agentengine/sandbox/execution_surface.hpp"
+// ADR-171 (issue #63): for `ResourceLimits`/`NetPolicy` -- the 008 §2 vocabulary
+// `container_isolation_from()` bridges into real `docker run` flags. No cycle: `sandbox.hpp` does not
+// include this file, and this file still does NOT make anything here a `SandboxBackend` conformer
+// (see the top-of-file scope statement).
+#include "agentengine/sandbox/sandbox.hpp"
 
 #ifndef _WIN32
 // Global scope, matching `ctr_cli_detail`'s own identical declaration
@@ -948,6 +984,109 @@ struct OrphanIdentity {
     return docker_cli_reject_leading_dash(value, what);
 }
 
+// ---- ADR-171 (GitHub issue #63): real, fail-closed container isolation --------------------------
+//
+// Until ADR-171, `create()` emitted a bare `docker run -d --rm -w /workspace <image> ...` -- grepping
+// this file for `--network`, `--memory`, `--pids-limit` or `--cpus` returned NOTHING. Every container
+// this class produced therefore got Docker's own defaults: full bridge-network egress, unbounded
+// memory, unbounded pids, unbounded CPU, and the default capability set. That is not a theoretical
+// gap: 008 §2 makes enforced resource limits and empty-by-default authority mandatory for a backend,
+// and 008 §4 says egress is ALWAYS host-mediated. None of it was wired.
+//
+// This type is the fix, and its defaults are the point: a default-constructed `ContainerIsolation`
+// denies the network outright, drops every Linux capability, forbids privilege escalation, and caps
+// memory/pids/CPU. A caller that passes nothing gets containment; loosening any of it is an explicit,
+// visible, host-written field assignment. That inversion -- rather than a comment asking callers to
+// remember -- is what makes the header's own scope statement enforceable instead of advisory.
+//
+// The numeric ceilings below are deliberately CONSERVATIVE DEFAULTS a host raises, not tuned values.
+// 006 §7's "a fixed byte constant applied uniformly is an anti-pattern" warning is about deriving a
+// per-call budget from a model's context window; it does not argue for leaving a container
+// unbounded. An unset `ResourceLimits` field maps to these, never to "unlimited" (see
+// `container_isolation_from()` below).
+struct ContainerIsolation {  // ae-naming-lint: allow ContainerIsolation — ADR-171 (issue #63); 008 §2 names the obligations, 027 has not been updated
+    // `false` => `--network none`. The container gets a loopback interface and nothing else --
+    // verified by reading `/sys/class/net` from inside, not merely by passing the flag (see
+    // tests/test_docker_isolation.cpp).
+    bool          network_enabled = false;
+    std::uint64_t memory_bytes    = 512ull * 1024 * 1024;
+    std::uint32_t pids            = 128;
+    // Thousandths of a CPU: 1000 == `--cpus 1.000`. An integer, not a double, so the argv this
+    // produces is byte-stable and locale-independent -- `std::to_string(double)` is neither.
+    std::uint32_t cpu_milli       = 1000;
+    bool          drop_all_capabilities = true;  // --cap-drop ALL
+    bool          no_new_privileges     = true;  // --security-opt no-new-privileges
+};
+
+// The isolation flags, as argv elements, for splicing into a `docker run` line. A pure function of
+// its argument -- no daemon, no process, no I/O -- so the mapping is provable offline, which matters
+// because the live half of this proof only runs where a Docker daemon exists.
+[[nodiscard]] inline std::vector<std::string> docker_isolation_argv(ContainerIsolation const& iso) {
+    std::vector<std::string> argv;
+    argv.emplace_back("--network");
+    argv.emplace_back(iso.network_enabled ? "bridge" : "none");
+    // Docker's own `b` suffix -- explicit bytes, never a bare number whose unit the daemon has to
+    // guess (it defaults to bytes today, but stating it costs nothing and cannot drift).
+    argv.emplace_back("--memory");
+    argv.emplace_back(std::to_string(iso.memory_bytes) + "b");
+    argv.emplace_back("--pids-limit");
+    argv.emplace_back(std::to_string(iso.pids));
+    argv.emplace_back("--cpus");
+    argv.emplace_back(std::to_string(iso.cpu_milli / 1000) + "." +
+                       [&] {
+                           std::string frac = std::to_string(iso.cpu_milli % 1000);
+                           return std::string(3 - frac.size(), '0') + frac;
+                       }());
+    if (iso.drop_all_capabilities) {
+        argv.emplace_back("--cap-drop");
+        argv.emplace_back("ALL");
+    }
+    if (iso.no_new_privileges) {
+        argv.emplace_back("--security-opt");
+        argv.emplace_back("no-new-privileges");
+    }
+    return argv;
+}
+
+// The bridge from the engine's own 008 §2 vocabulary (`ResourceLimits`/`NetPolicy`, sandbox.hpp) to
+// what `docker run` can actually enforce. Written now, ahead of any `SandboxBackend` promotion,
+// because it is where the honest gaps become visible rather than being discovered later by whoever
+// attempts that promotion:
+//
+//   - `NetPolicy::allowlist` is REFUSED, not silently widened. 008 §4's rule is "egress is always
+//     host-mediated"; `docker run --network bridge` grants unfiltered egress, which is not an
+//     allowlist by any reading. Mapping a 3-entry allowlist onto full bridge access would be the
+//     single most dangerous thing this function could do, so a non-empty allowlist fails closed and
+//     says why. A host that needs filtered egress routes through the existing mediated proxy
+//     (`sandbox/net_egress_proxy.hpp`), not through this surface.
+//   - `ResourceLimits::cpu_ms` is NOT mapped to `--cpus`. They answer different questions: `cpu_ms`
+//     is a total CPU-time BUDGET, `--cpus` is a bandwidth SHARE. Silently treating one as the other
+//     would produce a limit that looks enforced and is not. Left at the default ceiling; named here.
+//   - `wall_ms` is enforced host-side by `run_argv()`'s own timeout kill (ADR-139), not by any
+//     container flag, and `output_bytes` by that same function's capture cap -- both already real,
+//     neither expressible as a `docker run` argument.
+//   - `fds`, `disk_bytes`, `net_bytes` have no `docker run` equivalent this function can honestly
+//     emit. Unmapped, and said so.
+//
+// An UNSET (zero) limit maps to this type's own conservative default, never to "unlimited" -- the
+// fail-closed direction. A caller that genuinely wants a bigger ceiling states it.
+[[nodiscard]] inline agentengine::result<ContainerIsolation> container_isolation_from(
+    agentengine::ResourceLimits const& limits, agentengine::NetPolicy const& net) {
+    if (!net.allowlist.empty()) {
+        return std::unexpected(agentengine::error{
+            agentengine::failure_class::policy,
+            "DockerExecutionSurface cannot enforce a NetPolicy allowlist: `docker run --network "
+            "bridge` grants unfiltered egress, which is not host-mediated (008 §4). Use deny_all, or "
+            "route egress through sandbox/net_egress_proxy.hpp.",
+            "docker_execution_surface.netpolicy_allowlist_unsupported"});
+    }
+    ContainerIsolation iso;
+    iso.network_enabled = !net.deny_all;
+    if (limits.memory_bytes != 0) iso.memory_bytes = limits.memory_bytes;
+    if (limits.pids != 0) iso.pids = limits.pids;
+    return iso;
+}
+
 // A thin, real wrapper over the `docker` CLI -- create()/exec()/destroy() over `docker run`/
 // `docker exec`/`docker rm`, `copy_to_container()`/`copy_from_container()` over `docker cp`. Every
 // invocation is a real argv vector via `docker_cli_detail::run_argv()` -- never a shell-interpreted
@@ -965,7 +1104,13 @@ public:
     // host<->container data movement uses `docker cp` instead (below), which needs no such
     // allowlist. The container's OWN internal filesystem is still real, still isolated by the
     // kernel's own mount/pid/network namespaces regardless.
-    [[nodiscard]] agentengine::result<Instance> create(std::string const& image = "alpine:latest") {
+    //
+    // ADR-171 (issue #63): `isolation` defaults to a DENY-ALL `ContainerIsolation` -- see that type's
+    // own comment. Every existing `create()`/`create(image)` call site keeps compiling and now gets
+    // containment it did not have before; nothing has to opt in to be safe, and loosening is an
+    // explicit field assignment a reader can see.
+    [[nodiscard]] agentengine::result<Instance> create(std::string const& image = "alpine:latest",
+                                                          ContainerIsolation const& isolation = {}) {
         if (auto safe = docker_cli_reject_argv_value(image, "image"); !safe.has_value())
             return std::unexpected(safe.error());
         // A discoverable NAME (distinct from the docker-assigned `container_id` this method returns
@@ -987,9 +1132,19 @@ public:
         // but it is the CONTAINER's own inner shell reading it (a documented, accepted risk layer, not
         // a host one -- see this section's own top comment), passed here as ONE literal argv element,
         // never concatenated into anything a host shell re-parses.
-        std::vector<std::string> const argv = {
-            "docker", "run", "-d", "--rm", "-w", "/workspace", "--name", name, image,
-            "sh", "-c", "mkdir -p /workspace && sleep infinity"};
+        //
+        // ADR-171: the isolation flags are spliced in BEFORE `image` -- `docker run`'s own grammar is
+        // `docker run [OPTIONS] IMAGE [COMMAND]`, so anything after the image name is the container's
+        // argv, not a daemon option, and a flag placed there would be silently handed to `sh` instead
+        // of being enforced. Every element comes from `docker_isolation_argv()`, which builds them
+        // from this process's own numbers -- never caller or model input -- so no additional argv
+        // validation is needed for a value this class itself constructs from digits and literals
+        // (CLAUDE.md: don't add a check for an input that's already impossible).
+        std::vector<std::string> argv = {"docker", "run", "-d", "--rm", "-w", "/workspace",
+                                          "--name", name};
+        for (std::string& flag : docker_isolation_argv(isolation)) argv.push_back(std::move(flag));
+        argv.push_back(image);
+        argv.insert(argv.end(), {"sh", "-c", "mkdir -p /workspace && sleep infinity"});
         auto r = docker_cli_detail::run_argv(argv);
         if (r.exit_code != 0) {
             return std::unexpected(agentengine::error{
@@ -1207,7 +1362,12 @@ public:
 // "no reclaim mechanism exists at all" gap, not "orphans can never accumulate".
 class DockerExecutionSurface {
 public:
-    explicit DockerExecutionSurface(std::string image = "alpine:latest") : image_(std::move(image)) {}
+    // ADR-171 (issue #63): `isolation` defaults to deny-all (`ContainerIsolation`'s own defaults) --
+    // an existing `DockerExecutionSurface{}` / `DockerExecutionSurface{"alpine:latest"}` call site
+    // keeps compiling and now runs contained. Use `container_isolation_from()` to derive this from an
+    // engine `SandboxSpec`'s own `limits`/`net`.
+    explicit DockerExecutionSurface(std::string image = "alpine:latest", ContainerIsolation isolation = {})
+        : image_(std::move(image)), isolation_(isolation) {}
 
     ~DockerExecutionSurface() {
         if (instance_) { (void)docker_.destroy(*instance_); }
@@ -1219,9 +1379,16 @@ public:
     // move-construction semantics only move the CONTAINED value, `has_value()` is unchanged by
     // default, which would otherwise fire a malformed `docker rm -f ` (empty id) from the moved-from
     // object's own destructor.
+    //
+    // ADR-171 (issue #63): `isolation_` is carried explicitly. Both this constructor and the move
+    // assignment below enumerate their members by hand, so a member added without touching them is
+    // silently dropped -- which for THIS member would mean a moved-to surface quietly reverting to
+    // the deny-all defaults, discarding a host's deliberate opt-in. Safe direction, still wrong, and
+    // exactly the class of silent divergence this file's own moved-from `instance_` comment above
+    // exists because of.
     DockerExecutionSurface(DockerExecutionSurface&& other) noexcept
-        : image_(std::move(other.image_)), docker_(std::move(other.docker_)),
-          instance_(std::move(other.instance_)) {
+        : image_(std::move(other.image_)), isolation_(other.isolation_),
+          docker_(std::move(other.docker_)), instance_(std::move(other.instance_)) {
         other.instance_.reset();
     }
     // Move assignment SWAPS rather than overwrite-then-discard: `a = std::move(b)` where `a` already
@@ -1233,6 +1400,7 @@ public:
     DockerExecutionSurface& operator=(DockerExecutionSurface&& other) noexcept {
         if (this != &other) {
             image_.swap(other.image_);
+            std::swap(isolation_, other.isolation_);  // ADR-171 -- see the move ctor's own comment
             std::swap(docker_, other.docker_);
             instance_.swap(other.instance_);
         }
@@ -1249,7 +1417,7 @@ public:
             if (!destroyed.has_value()) return std::unexpected(destroyed.error());
             instance_.reset();
         }
-        auto inst = docker_.create(image_);
+        auto inst = docker_.create(image_, isolation_);
         if (!inst.has_value()) return std::unexpected(inst.error());
         instance_ = *inst;
 
@@ -1288,6 +1456,9 @@ public:
 
 private:
     std::string image_;
+    // ADR-171 (issue #63). Held by value and applied on every `reset()`, so a re-materialized surface
+    // is contained identically to its first container -- not only the first one.
+    ContainerIsolation isolation_{};
     DockerCliBackend docker_;
     std::optional<DockerCliBackend::Instance> instance_;
 };
