@@ -15,6 +15,17 @@
 # Machine safety (CLAUDE.md, CONVENTIONS.md "Build & test — machine safety"): -j4 max everywhere,
 # applies to CI configuration too (roadmap's own framing) — GitHub-hosted runners are 2-4 cores, so
 # this caps at, not below, what's already available.
+#
+# sccache (every build job below, 2026-09-04): every run before this was a full from-scratch build
+# of ~190 targets with no compiler cache at all. `mozilla-actions/sccache-action` installs the
+# sccache binary and, via SCCACHE_GHA_ENABLED below, backs its object cache with the GitHub Actions
+# cache service directly -- no separate actions/cache save/restore steps or cache-key management
+# needed, sccache's own content hashing decides hit/miss per translation unit. Wired as
+# CMAKE_C_COMPILER_LAUNCHER/CMAKE_CXX_COMPILER_LAUNCHER on every Configure step below. The
+# windows-msvc job's ASan leg also switches /Zi -> /Z7 (see that job's own Configure comment):
+# sccache cannot reliably cache MSVC's /Zi output (a shared, incrementally-written .pdb is not a
+# pure function of one TU's inputs), and /Z7 needs neither that shared .pdb nor the /FS flag that
+# used to serialize writes to it.
 
 name: CI
 
@@ -35,6 +46,10 @@ env:
   # catches an exception and calls what(). Measured clean on 22.1.8 across static/DLL CRT and
   # ASan/ASan+UBSan.
   AE_LLVM_VERSION: 22.1.8
+  # C/C++ path (README, mozilla-actions/sccache-action): sccache backs its cache with the GitHub
+  # Actions cache service when this is set, instead of a local-disk cache that would need its own
+  # actions/cache save/restore steps.
+  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
   windows-msvc:
@@ -53,28 +68,48 @@ jobs:
         with:
           submodules: recursive
 
+      # Ninja (below) doesn't auto-locate the VS toolchain the way the default VS-generator
+      # Configure used to -- it needs cl.exe and INCLUDE/LIB on PATH, which is what this provides.
+      - name: Enter MSVC dev shell
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
       - name: Configure
         shell: pwsh
         run: |
           $flags = ""
-          # /Zi (debug info) is required alongside /fsanitize=address -- without it MSVC raises
-          # C5072 ("ASAN enabled without debug information emission"), which agentengine_warnings'
-          # /WX (cmake/AgentEngineWarnings.cmake) promotes to a hard build failure across every TU.
-          # /FS serializes PDB writes across this job's -j 4 parallel cl.exe invocations, which all
-          # share one .pdb under the MSBuild/vcxproj generator this job uses.
-          if ("${{ matrix.build_type }}" -eq "ASan") { $flags = "/fsanitize=address /Zi /FS" }
-          cmake -S . -B build -DCMAKE_CXX_FLAGS="$flags"
+          # /Z7 (debug info embedded in each .obj) is required alongside /fsanitize=address --
+          # without SOME debug-info format MSVC raises C5072 ("ASAN enabled without debug
+          # information emission"), which agentengine_warnings' /WX (cmake/AgentEngineWarnings.cmake)
+          # promotes to a hard build failure across every TU. /Z7, not /Zi: sccache can't reliably
+          # cache /Zi's output (a shared, incrementally-written .pdb is not a pure function of one
+          # TU's inputs -- see the file-header sccache note), and /Z7 needs neither that shared .pdb
+          # nor the /FS flag that used to serialize writes to it under the old MSBuild generator.
+          if ("${{ matrix.build_type }}" -eq "ASan") { $flags = "/fsanitize=address /Z7" }
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="$flags" `
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
       - name: Build
-        run: cmake --build build --config Release -j 4
+        run: cmake --build build -j 4
+
+      - name: sccache stats
+        if: always()
+        shell: pwsh
+        run: "& $env:SCCACHE_PATH --show-stats"
 
       - name: Test
         shell: pwsh
         run: |
-          # MSVC's ASan links against clang_rt.asan_dynamic-x86_64.dll (it is a /MD-only feature),
-          # and this job never enters a VS dev shell -- CMake finds the toolchain by itself for
-          # Configure/Build, but the Test step inherits no MSVC PATH. So every ASan-instrumented
-          # test binary failed to start with 0xC0000135 (DLL not found).
+          # MSVC's ASan links against clang_rt.asan_dynamic-x86_64.dll (it is a /MD-only feature).
+          # This job now enters a VS dev shell before Configure (2026-09-04, needed for the Ninja
+          # generator to find cl.exe at all), which already puts that DLL's directory on PATH for
+          # every later step including this one -- but the lookup below is kept as a harmless,
+          # explicit belt-and-suspenders: BEFORE that dev-shell step existed, the job never entered
+          # one (CMake's old default VS-generator Configure found the toolchain by itself without
+          # needing PATH, but the Test step inherited none of it), so every ASan-instrumented test
+          # binary failed to start with 0xC0000135 (DLL not found).
           #
           # That is why the ASan leg reported ZERO passes out of 169 while appearing to "hang":
           # a launch failure on the runner does not exit promptly the way it does locally, so ctest
@@ -104,7 +139,9 @@ jobs:
           # same `RESOURCE_LOCK docker_daemon` / "REQUIRES a running Docker daemon" posture as the
           # other six (tests/CMakeLists.txt) but were left off this list when they were added, so CI
           # ran them against the same nonexistent daemon and failed every Windows leg.
-          ctest --test-dir build -C Release -j 4 --output-on-failure --timeout 180 `
+          # No -C Release: Ninja (switched to above, 2026-09-04) is single-config, unlike the old
+          # default VS-generator build this flag used to select a config out of.
+          ctest --test-dir build -j 4 --output-on-failure --timeout 180 `
             -E '^(test_composed_sandbox_providers_live|test_sandbox_runtime|test_docker_orphan_reap|test_mandatory_sandbox_provider|test_task_branch_tools|test_task_branch_concurrent_dispatch|test_docker_run_argv_timeout|test_docker_non_ascii_path)$'
 
   windows-clang-cl:
@@ -156,6 +193,9 @@ jobs:
       - name: Enter MSVC dev shell
         uses: ilammy/msvc-dev-cmd@v1
 
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
       - name: Configure
         shell: pwsh
         run: |
@@ -184,14 +224,21 @@ jobs:
             cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo `
               -DCMAKE_CXX_COMPILER=clang++ `
               -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
-              -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=undefined -D_DISABLE_STRING_ANNOTATION -D_DISABLE_VECTOR_ANNOTATION -g -O1"
+              -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=undefined -D_DISABLE_STRING_ANNOTATION -D_DISABLE_VECTOR_ANNOTATION -g -O1" `
+              -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
           } else {
             cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
-              -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL
+              -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL `
+              -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
           }
 
       - name: Build
         run: cmake --build build -j 4
+
+      - name: sccache stats
+        if: always()
+        shell: pwsh
+        run: "& $env:SCCACHE_PATH --show-stats"
 
       # The ASanUBSan leg needs clang's sanitizer runtime DLLs on PATH before ctest launches
       # anything. Without them nothing runs: EVERY test in this job timed out at its full limit
@@ -271,6 +318,9 @@ jobs:
       - name: Enter MSVC dev shell
         uses: ilammy/msvc-dev-cmd@v1
 
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
       - name: Configure (ASan+UBSan, static CRT to match libFuzzer's runtime lib)
         shell: pwsh
         run: |
@@ -280,10 +330,16 @@ jobs:
             -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=undefined -D_DISABLE_STRING_ANNOTATION -D_DISABLE_VECTOR_ANNOTATION -g -O1" `
             -DAGENTENGINE_BUILD_SHELL_FUZZER=ON `
-            -DAGENTENGINE_BUILD_TESTS=OFF
+            -DAGENTENGINE_BUILD_TESTS=OFF `
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
       - name: Build fuzz target
         run: cmake --build build-fuzz --target agentengine_mediated_shell_parser_fuzz -j 4
+
+      - name: sccache stats
+        if: always()
+        shell: pwsh
+        run: "& $env:SCCACHE_PATH --show-stats"
 
       - name: Run declared-minimum corpus-driven fuzz pass (120s, single-process -- CLAUDE.md machine safety)
         shell: pwsh
@@ -317,13 +373,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-14 g++-14 llvm
 
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
       - name: Configure
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14
+            -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14 \
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
       - name: Build
         run: cmake --build build -j 4
+
+      - name: sccache stats
+        if: always()
+        run: "$SCCACHE_PATH --show-stats"
 
       # test_containerd_execution_surface / test_composed_containerd_providers_live talk to
       # /run/containerd/containerd.sock directly via the raw `ctr` CLI. Unlike the Docker socket
