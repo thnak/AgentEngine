@@ -1,6 +1,6 @@
 # 014 — Workflow and Orchestration
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 001, 002, 005, 013, 019 · **Gate:** §8
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-04 by ADR-169** (§4 — resolving a request port requires caller admission; holding an `interaction_id` is not authority) · **Depends on:** 001, 002, 005, 013, 018, 019 · **Gate:** §8
 
 ## Goal
 
@@ -96,6 +96,19 @@ garbage-collected by policy, not leaked. The request port's `InputRequired` carr
 `request_id`-shaped correlation token defined in 001 §2; a checkpoint taken while suspended stores
 the pending request indexed by that token, matching MAF's own checkpoint/request-info coupling
 (`docs/research/2026-08-03-maf-workflow-and-hitl-model.md` §2).
+
+**Holding a correlation token is not authority to resolve it** (added 2026-09-04 by `ADR-169`,
+GitHub issue #65 — this section was previously silent on *who* may answer, and that silence was the
+gap). Resolving a request port injects a `Message` into a suspended run **and** may name `routes`,
+which on a `switch_case`/`multi_selection` edge decides where the run goes next; that is authority
+over the run, spending effects and budget belonging to the run's owner. An `interaction_id` is not a
+secret — it crosses the run-result surface to the driving host, and per `ADR-061` that host is
+exactly the layer relaying a possibly-untrusted caller. So every entry point that starts, resumes, or
+continues a run admits its caller against the run's owning principal first, using the same 018 §2
+predicate every other actor boundary uses (I2), and a refusal is recorded as itself — distinct from
+an invalid token, and carrying no other interaction's id back to the refused caller (I4). The unit of
+admission is the run, not the individual port: a workflow whose concurrent ports genuinely belong to
+*different* principals needs per-interaction ownership, which `ADR-169` §9 names as unbuilt.
 
 ## 5. Checkpointing, resume, and time-travel
 

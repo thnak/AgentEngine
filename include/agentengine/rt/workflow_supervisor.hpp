@@ -154,6 +154,19 @@
 // I1 ("one workflow run, one executor") is enforced the same way `rt::AgentSession` enforces it for
 // sessions: `rt::AsyncMutex run_mutex_`, acquired for the whole duration of every public async entry
 // point (`run_workflow()`/`resume_workflow()`/`continue_workflow()`).
+//
+// ADMISSION (ADR-169, GitHub issue #65): I1's mutex answers "one caller at a time"; it never answered
+// "WHICH caller". Until ADR-169 those same three entry points performed no ownership check at all --
+// `resume_workflow()` in particular let any holder of an `interaction_id` resolve a suspended HITL
+// interaction, supply its response `Message` AND name its `routes`, which is authority over the run
+// reachable without presenting any (I2), attributed to nobody (I4). `AgentSession`'s own analogues
+// (`start_run()`/`resolve_interaction()`) had gated exactly this since Milestone 5 Phase H2; this
+// class did not. Every public entry point now consults `admit_caller()` FIRST -- before the `valid_`
+// check, before any lookup, before any structural event a denied caller could otherwise push -- and a
+// denial returns a BARE `WorkflowResult{workflow_status::admission_denied}` that deliberately carries
+// no `open_interactions`, so a probing caller learns nothing it did not already know. See
+// decisions/ADR-169-workflow-supervisor-admission.md for the full design, including why this is
+// identity-only (no `RequestAuthority` capability half) and how a bound sub-workflow inherits.
 
 #include <algorithm>
 #include <chrono>
@@ -181,6 +194,9 @@
 #include "agentengine/rt/session_store.hpp"
 #include "agentengine/rt/task.hpp"
 #include "agentengine/rt/thread_pool.hpp"
+// ADR-169 (issue #65): `Principal` + `principal_admitted_for()`, the one shared ownership predicate
+// 018 §2 requires at every actor boundary. Depends only on core/error.hpp -- no cycle with rt/.
+#include "agentengine/trust/principal.hpp"
 #include "agentengine/workflow/graph.hpp"
 #include "agentengine/workflow/live_view.hpp"
 #include "agentengine/workflow/workflow_event.hpp"
@@ -324,6 +340,16 @@ enum class workflow_status {
     // An honest, expected, non-error termination -- the same shape bound_max_rounds/bound_max_stalls
     // already are, never a fault.
     cancelled,
+    // ADR-169 (GitHub issue #65): the caller named on this request is not admitted for this
+    // supervisor's owning principal (or omitted an identity a `require_caller()` supervisor demands).
+    // Deliberately DISTINCT from `invalid`, which this path could have reused: `invalid` already
+    // means three unrelated things (graph never validated, unknown/replayed interaction_id, a bound
+    // sub-workflow gone), and folding a security decision into that bucket would make an admission
+    // denial indistinguishable from a typo in an id -- unusable for the audit surface I4 requires,
+    // and unusable for a host that wants to alert on one but not the other. No run state is touched
+    // on this path, so it is not a run OUTCOME in the sense every other enumerator here is: it is a
+    // refusal to start/resume at all.
+    admission_denied,
 };
 
 // ADR-152 (issue #29): the plain-string form of `workflow_status` used ONLY for
@@ -343,22 +369,48 @@ enum class workflow_status {
         case workflow_status::bound_max_resets:  return "bound_max_resets";
         case workflow_status::invalid:           return "invalid";
         case workflow_status::cancelled:         return "cancelled";
+        case workflow_status::admission_denied:  return "admission_denied";
     }
     return "invalid";
 }
 
+// ADR-169 (GitHub issue #65): all three request types below carry the SAME additive, defaulted
+// `caller` field, appended last -- this project's established field-ordering convention, so every
+// existing positional aggregate-init call site (`RunWorkflow{input}`, `ResumeWorkflow{id, msg,
+// routes}`, `ContinueWorkflow{}`) compiles and behaves byte-for-byte unchanged.
+//
+// A full `agentengine::Principal`, NOT the narrower `rt::SessionCaller` (`{id, tenant_id}` only)
+// that `StartRun`/`ResolveInteraction` carry. That narrowing exists in agent_session.hpp for a
+// wire-shape reason its own comment records, and it has a real cost there: reconstructing
+// `Principal{caller->id, caller->tenant_id}` DROPS `on_behalf_of`, so a legitimately delegated
+// principal (007 §2) is not admitted by an `AgentSession`'s non-Tier-3 branch even though
+// `principal_admitted_for()` would admit it. There is no wire shape here to be constrained by, so
+// this surface carries the identity the predicate actually reads, and the single-hop delegation
+// 018 §2 grants works -- matching `rt/multi_agent.hpp:191`'s own full-`Principal` use, not
+// agent_session.hpp's narrowing.
+//
+// Identity ONLY -- deliberately no `RequestAuthority` (identity + `CapabilitySet` + expiry) half.
+// ADR-169 §4: a workflow's capabilities are per-EXECUTOR (`contexts_`, fixed at `initialize()` and
+// checked against each node's `capability_ceiling` by `check_workflow_executable()`), not
+// per-request; a per-request `CapabilitySet` would need a defined interaction with that per-executor
+// ceiling that nothing in 014/007 specifies today. Building half of it here -- accepting the
+// capabilities and ignoring them -- would be worse than not having it.
 struct RunWorkflow {
     agentengine::Message input;
+    std::optional<agentengine::Principal> caller = std::nullopt;
 };
 
 // ae-naming-lint: allow ContinueWorkflow — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
-struct ContinueWorkflow {};
+struct ContinueWorkflow {
+    std::optional<agentengine::Principal> caller = std::nullopt;
+};
 
 // ae-naming-lint: allow ResumeWorkflow — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ResumeWorkflow {
     std::string           interaction_id;
     agentengine::Message  response;
     std::vector<std::string> routes;
+    std::optional<agentengine::Principal> caller = std::nullopt;
 };
 
 struct ExecutorOutput {
@@ -766,6 +818,56 @@ public:
     // duplicating the literal (a duplicated literal would silently drift from the real bound).
     [[nodiscard]] static constexpr std::size_t max_nesting_depth() noexcept { return kMaxNestingDepth; }
 
+    // ---- ADR-169 (GitHub issue #65): admission ------------------------------------------------
+    //
+    // The owning principal every `RunWorkflow`/`ResumeWorkflow`/`ContinueWorkflow` caller is admitted
+    // against, mirroring `rt::AgentSession::principal_`'s role exactly. Host configuration, set by the
+    // host binary (never from model output -- I3), and deliberately NOT a parameter of `initialize()`
+    // nor part of `RunStateRecord`:
+    //
+    //   - Not in `initialize()` because that function is the GRAPH's bring-up (graph/bodies/contexts)
+    //     and is legitimately called twice in the ADR-157 bind sequence; an admission setting reset by
+    //     the second call would be a fail-OPEN footgun of exactly the shape this ADR exists to close.
+    //     Ordering is therefore free: `set_principal()` before or after `initialize()` both work.
+    //   - Not in `RunStateRecord` for the same reason `designated_stall_reporter_`/`bodies_`/
+    //     `contexts_`/`sub_workflows_` are not: a restored run's caller re-supplies host configuration
+    //     fresh. Because these are object-level members that `restore_from_record()` never touches, a
+    //     supervisor configured and THEN restored keeps its gate -- proven by A10 in
+    //     tests/test_rt_workflow_supervisor_admission.cpp, which is the positive control for the
+    //     "checkpoint round-trip silently disarms the gate" failure this shape could otherwise have.
+    //
+    // Unset (a default-constructed `Principal`) plus a caller-bearing request is DENIED, not admitted:
+    // `principal_admitted_for()` needs a real owner to admit against, and "no owner configured" must
+    // never read as "everyone is the owner". This is the same behavior `AgentSession` already has for
+    // an unconfigured session, reached the same way (through the predicate, not a special case).
+    void set_principal(agentengine::Principal principal) {
+        principal_             = std::move(principal);
+        inherited_admission_   = false;  // an explicit host choice outranks any inherited value
+        propagate_admission_to_children();
+    }
+    [[nodiscard]] agentengine::Principal const& principal() const noexcept { return principal_; }
+
+    // Strict mode: a request with NO `caller` is refused outright rather than admitted. Off by
+    // default -- every existing call site passes no caller, and flipping the default would break all
+    // of them while proving nothing about the mechanism. A host that fronts this supervisor for
+    // anything but its own trusted in-process code turns this ON; see ADR-169 §6 for why the engine
+    // cannot make that choice on the host's behalf (ADR-070's Delegated Decision Seam: explicit host
+    // opt-in, fails closed once set, host code never model output, always audited).
+    void set_require_caller(bool require) {
+        require_caller_      = require;
+        inherited_admission_ = false;  // same reason as set_principal()
+        propagate_admission_to_children();
+    }
+    [[nodiscard]] bool require_caller() const noexcept { return require_caller_; }
+
+    // Monotonic count of requests refused by `admit_caller()`, mirroring
+    // `AgentSession::admission_denied_count_`. The cheap metric a host alerts on, and the negative
+    // control every admission test in this project asserts against -- a gate that "denies" by doing
+    // nothing observable is exactly the security claim that cannot fail, which CLAUDE.md forbids.
+    // Never reset by `run_workflow()` (unlike `rounds_`/`total_usage_`): a denial is not part of any
+    // one run's accounting, it is a property of this supervisor's whole lifetime.
+    [[nodiscard]] std::uint64_t admission_denied_count() const noexcept { return admission_denied_count_; }
+
     // `bodies`/`contexts` are parallel to `graph.executors` by INDEX -- the same convention the
     // original's `refs_` used (see that file's own comment: it was originally forced by the 192-byte
     // wire cell, but index-addressing is kept here anyway since the graph description already
@@ -861,6 +963,11 @@ public:
         if (!inner || nesting_depth_ + 1 > kMaxNestingDepth) return;
         inner->nesting_depth_ = nesting_depth_ + 1;
         sub_workflows_[idx] = std::move(inner);
+        // ADR-169 (issue #65): a child bound AFTER this supervisor was given an owner inherits it
+        // here; a child bound BEFORE inherits it when `set_principal()` runs. Both orderings converge
+        // -- see propagate_admission_to_children()'s own comment. Runs after the bind, deliberately,
+        // so the just-bound child is included.
+        propagate_admission_to_children();
         valid_ = valid_base_ && sub_workflow_kind_nodes_are_bound();
     }
 
@@ -1018,6 +1125,13 @@ public:
         using agentengine::workflow::workflow_event_kind;
         using agentengine::workflow::workflow_event_payload::RunFailed;
         AsyncMutex::Guard guard = co_await run_mutex_.lock();  // I1 -- see file banner
+        // ADR-169 (issue #65): FIRST -- see admit_caller()'s own comment for why this dominates the
+        // `valid_` check below. Starting a fresh run is not a lesser authority than resuming one: it
+        // resets `state_`/`ports_`/`pending_sub_workflows_` unconditionally three lines down, so an
+        // unadmitted `RunWorkflow` against a SUSPENDED supervisor destroys exactly the open HITL
+        // interactions an unadmitted `resume_workflow()` would have hijacked. Gating resume but not
+        // run would have left the same authority reachable through a different verb.
+        if (!admit_caller(request.caller)) co_return deny_admission();
         if (!valid_) {
             push_structural_event(workflow_event_kind::workflow_run_failed,
                                    RunFailed{workflow_status_tag(workflow_status::invalid)});
@@ -1042,6 +1156,15 @@ public:
         using agentengine::workflow::workflow_event_kind;
         using agentengine::workflow::workflow_event_payload::RunFailed;
         AsyncMutex::Guard guard = co_await run_mutex_.lock();  // I1 -- see file banner
+        // ADR-169 (issue #65) -- THE entry point this ADR exists for. Before `valid_`, and before
+        // BOTH lookups below: the pre-ADR-169 body's only guard was id VALIDITY (an unknown or
+        // already-resolved `interaction_id` fails closed, proven by E2 in
+        // tests/test_rt_workflow_supervisor_request_port.cpp), never OWNERSHIP -- so knowing a live
+        // id was sufficient authority to inject this run's next `Message` AND name its `routes`,
+        // which on a switch_case/multi_selection edge decides where the run goes next. Ids are not
+        // secrets: they cross `WorkflowResult::open_interactions` to the host, and per ADR-061 the
+        // host owning the inbound transport is exactly the layer relaying an untrusted caller.
+        if (!admit_caller(request.caller)) co_return deny_admission();
         if (!valid_) {
             push_structural_event(workflow_event_kind::workflow_run_failed,
                                    RunFailed{workflow_status_tag(workflow_status::invalid)});
@@ -1081,8 +1204,35 @@ public:
                 child_path.push_back(graph_.executors[pending.executor_index].id);
                 ScopedForwardedEventSink const event_sink_guard(*inner, event_sink, std::move(child_path));
                 inner_result =
+                    // ADR-169 (issue #65) item 5: `request.caller` is FORWARDED, not dropped, so the
+                    // inner supervisor's own gate genuinely runs and the nested effect stays
+                    // attributed to the real caller (I4) rather than to "the outer supervisor".
+                    // `propagate_admission_to_children()` is what keeps that from denying every
+                    // forwarded caller on an inner the host never separately configured.
                     drive(inner->resume_workflow(ResumeWorkflow{pending.inner_interaction_id,
-                                                                  request.response, request.routes}));
+                                                                  request.response, request.routes,
+                                                                  request.caller}));
+            }
+            // ADR-169 (issue #65), found by A11c during implementation, NOT designed up front: an
+            // inner `admission_denied` must NOT fall through to the terminal-failure branch below.
+            // That branch converts any non-`completed` inner outcome into a `failure_marker()`
+            // message and routes it onward as an ordinary port resolution -- correct for a real inner
+            // run FAILURE (ADR-157's own S4 shape), badly wrong for a refusal: the outer would report
+            // `completed` while carrying a poisoned payload, and -- worse -- `pending_sub_workflows_`
+            // was already erased above, so the nested interaction would be destroyed by an attempt
+            // that decided nothing. Restore the entry verbatim and surface the refusal as itself.
+            //
+            // `admission_denied_count_` is deliberately NOT incremented here: THIS supervisor's gate
+            // admitted this caller (that check ran and passed at the top of this function). The
+            // refusal happened at the inner's gate and is counted there, which is where a host
+            // debugging it needs to look. The structural event IS pushed, so the outer's own event
+            // stream still shows the run stopping and why.
+            if (inner_result.status == workflow_status::admission_denied) {
+                pending_sub_workflows_[request.interaction_id] = pending;
+                push_structural_event(
+                    workflow_event_kind::workflow_run_failed,
+                    RunFailed{workflow_status_tag(workflow_status::admission_denied)});
+                co_return WorkflowResult{workflow_status::admission_denied};
             }
             if (inner_result.status == workflow_status::suspended) {
                 // Suspended again -- mint a fresh outer interaction, re-track, report suspended
@@ -1187,10 +1337,16 @@ public:
         co_return co_await execute();
     }
 
-    task<WorkflowResult> continue_workflow(ContinueWorkflow) {
+    task<WorkflowResult> continue_workflow(ContinueWorkflow request) {
         using agentengine::workflow::workflow_event_kind;
         using agentengine::workflow::workflow_event_payload::RunFailed;
         AsyncMutex::Guard guard = co_await run_mutex_.lock();  // I1 -- see file banner
+        // ADR-169 (issue #65) item 4: gated identically to its two siblings. Not an afterthought --
+        // this is the entry point a checkpoint-restored run is driven through
+        // (rt/workflow_checkpoint_manager.hpp's own `resumed == true` contract), so leaving it open
+        // would mean an unadmitted caller could drive any run that had ever been checkpointed to
+        // completion, using effects and budget belonging to the run's real owner.
+        if (!admit_caller(request.caller)) co_return deny_admission();
         if (!valid_) {
             push_structural_event(workflow_event_kind::workflow_run_failed,
                                    RunFailed{workflow_status_tag(workflow_status::invalid)});
@@ -2524,9 +2680,93 @@ private:
         return true;
     }
 
+    // ---- ADR-169 (GitHub issue #65): the one admission predicate every entry point calls ------
+    //
+    // Placement at each call site is FIRST -- immediately after the I1 lock, before the `valid_`
+    // check, before any `ports_`/`pending_sub_workflows_` lookup, before any structural event.
+    // Deliberately dominating the `valid_` check rather than following it: an unadmitted caller must
+    // not be able to push `workflow_run_failed` into the host's event stream (a denied caller with no
+    // rate limit in front of it would otherwise have a free, unattributed write into an observability
+    // surface), and must not learn whether this supervisor holds a runnable graph at all.
+    //
+    // Two modes, mirroring ADR-061 §20.4's own mode-branch discipline in the shape this narrower
+    // surface actually needs. §20.4's rule is "no code path reads BOTH `caller` and `authority`";
+    // there is only one identity field here, so what survives is the half that matters: a
+    // `require_caller_` supervisor NEVER admits an identity-less request by falling through to the
+    // permissive branch. Written as an explicit early return, not a widened `||`, because the widened
+    // condition is precisely the shape §20.4 records as having broken once already.
+    [[nodiscard]] bool admit_caller(std::optional<agentengine::Principal> const& caller) const {
+        if (!caller.has_value()) return !require_caller_;
+        return agentengine::principal_admitted_for(*caller, principal_);
+    }
+
+    // The one denial path. Returns a BARE result: `status` and nothing else. Specifically NOT
+    // `open_interactions()` (which every other early return in `resume_workflow()` does populate) --
+    // handing a caller the live interaction ids of a run it was just refused would turn the denial
+    // into an id-enumeration oracle for the very authority the gate withholds. Nor `rounds`/`partial`/
+    // `output`, which are run content for the same reason. Not `[[nodiscard]]`-free bookkeeping
+    // either: `admission_denied_count_` is bumped and a structural event IS pushed, because I4 makes
+    // a refused attempt an event the host must be able to see -- the asymmetry is deliberate, the
+    // host learns everything, the denied caller learns nothing.
+    [[nodiscard]] WorkflowResult deny_admission() {
+        ++admission_denied_count_;
+        push_structural_event(
+            agentengine::workflow::workflow_event_kind::workflow_run_failed,
+            agentengine::workflow::workflow_event_payload::RunFailed{
+                workflow_status_tag(workflow_status::admission_denied)});
+        return WorkflowResult{workflow_status::admission_denied};
+    }
+
+    // A bound sub-workflow that the host gave NO owner of its own inherits this one's -- recursively,
+    // bounded by `kMaxNestingDepth`. Called from `set_principal()`/`set_require_caller()` AND from
+    // `bind_sub_workflow()`, so the two possible orderings (configure-then-bind, bind-then-configure)
+    // converge on the same state; neither is privileged and a host need not know which it used.
+    //
+    // Why this exists at all: `resume_workflow()` forwards the ORIGINAL caller into
+    // `inner->resume_workflow()` rather than treating the nested hop as pre-admitted by construction
+    // (issue #65's own item 5). That is the correct attribution -- the effect belongs to the real
+    // caller, not to "the outer supervisor" -- but it means the inner gate now runs against the
+    // inner's own owner, and an un-owned inner would deny every forwarded caller, breaking nested
+    // HITL for hosts that reasonably configured only the root. Inheritance closes that without
+    // weakening anything: the child's gate still genuinely runs, and a child the host DID give a
+    // distinct owner keeps it and gates independently (ADR-169 §7 -- a deliberate, documented cost:
+    // such a host must make its callers admissible at both levels).
+    //
+    // `inherited_admission_` is what makes this idempotent across SEVERAL configuration calls, and
+    // its absence was a real bug caught by A11b before this shape existed: with only an "is the
+    // child's principal empty?" test, `set_principal()` followed by `set_require_caller()` propagated
+    // the first and then skipped the second -- the child, now non-empty, looked exactly like a child
+    // the host had deliberately given its own owner. The flag distinguishes "owner arrived by
+    // inheritance" (overwritable, keeps tracking the parent) from "owner set explicitly on this
+    // object" (never overwritten), and either setter called directly on a child clears it, because an
+    // explicit host choice outranks inheritance from that point on.
+    void propagate_admission_to_children() {
+        for (auto const& [idx, inner] : sub_workflows_) {
+            (void)idx;
+            if (!inner) continue;
+            bool const child_owns_its_config =
+                !inner->inherited_admission_ &&
+                (!inner->principal_.id.empty() || !inner->principal_.tenant_id.empty());
+            if (child_owns_its_config) continue;
+            inner->principal_            = principal_;
+            inner->require_caller_       = require_caller_;
+            inner->inherited_admission_  = true;
+            inner->propagate_admission_to_children();
+        }
+    }
+
     agentengine::workflow::Workflow         graph_;
     std::vector<ExecutorBody>               bodies_;
     std::vector<agentengine::EffectContext> contexts_;
+    // ADR-169 (issue #65) -- see set_principal()/set_require_caller()/admission_denied_count() for
+    // the full contract. Host configuration, never reset by initialize() or restore_from_record().
+    agentengine::Principal principal_{};
+    bool                   require_caller_ = false;
+    std::uint64_t          admission_denied_count_ = 0;
+    // True only while `principal_`/`require_caller_` arrived from a parent's
+    // propagate_admission_to_children() and were never set explicitly on THIS object. See that
+    // function's own comment for the bug this exists to prevent.
+    bool                   inherited_admission_ = false;
     bool           valid_       = false;
     // ADR-157 -- see initialize()'s own comment. Everything `valid_` depends on EXCEPT sub_workflow
     // binding; set once per initialize() call, read by bind_sub_workflow() to recompute `valid_`.

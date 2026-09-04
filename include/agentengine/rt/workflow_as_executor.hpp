@@ -118,6 +118,14 @@ template <class T>
         // independent red-team pass before implementation (this project builds under -Werror on
         // gcc/clang; an unhandled enumerator here would have broken that build).
         case workflow_status::cancelled:        return "cancelled";
+        // ADR-169 (issue #65): same reason the `cancelled` case above names -- this is the SECOND
+        // exhaustive switch(workflow_status) besides workflow_supervisor.hpp's own
+        // `workflow_status_tag()`, and an unhandled enumerator breaks this project's -Werror build.
+        // Unreachable in practice from `run_once()` below (that call passes no `caller`, and a
+        // `workflow_as_executor_body`-wrapped inner is never given its own owner principal) --
+        // handled anyway rather than left to the `return "unknown"` fallthrough, because "cannot
+        // happen today" is not a property the compiler or a future caller is obliged to preserve.
+        case workflow_status::admission_denied: return "admission_denied";
     }
     return "unknown";
 }

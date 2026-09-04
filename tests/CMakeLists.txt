@@ -1567,6 +1567,16 @@ add_executable(test_rt_workflow_supervisor_request_port test_rt_workflow_supervi
 target_link_libraries(test_rt_workflow_supervisor_request_port PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_workflow_supervisor_request_port COMMAND test_rt_workflow_supervisor_request_port)
 
+# ---- ADR-169 (GitHub issue #65) -- caller admission on rt::WorkflowSupervisor's three entry points.
+# The ownership half of what the file above only proved for id VALIDITY: knowing a live interaction_id
+# was previously sufficient authority to resolve a suspended HITL interaction and name its routes.
+# A1-A12: legacy compatibility, owner/stranger, cross-tenant, single-hop delegation, require_caller()
+# strict mode, unset-owner fail-closed, run_workflow()/continue_workflow() parity, survival across
+# initialize()/restore_from_record(), nested (ADR-157) forwarding + inheritance, and the audit event.
+add_executable(test_rt_workflow_supervisor_admission test_rt_workflow_supervisor_admission.cpp)
+target_link_libraries(test_rt_workflow_supervisor_admission PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_workflow_supervisor_admission COMMAND test_rt_workflow_supervisor_admission)
+
 # ---- OQ-19: the runtime half of the agent-executor CapabilitySet bridge (rt/agent_workflow_
 # executor.hpp) -- AgentExecutorBodyTag's positive control, WorkflowSupervisor::initialize()'s
 # structural-marker refusal (closing test_workflow_graph_validation.cpp's own stale-comment gap),
