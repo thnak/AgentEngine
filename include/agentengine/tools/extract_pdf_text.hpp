@@ -270,6 +270,24 @@ template <sandbox::NetEgressBackend Proxy>
     return "pdf_" + std::to_string(static_cast<long long>(pid)) + "_" + std::to_string(n) + ".pdf";
 }
 
+// ADR-170 (GitHub issue #64): the correlation id shared by one extraction's four
+// `sandbox_exec_started`/`finished` events (create-start, create-finish, exec-start, exec-finish).
+// Same process-id + monotonic-counter construction as `unique_scratch_filename()` immediately above,
+// and for the same reason: `invoke_worker()` is reachable concurrently from a parallel tool batch
+// (ADR-160), and two extractions sharing an `exec_id` would splice into one activity in any consumer
+// that correlates by it. NOT wall-clock-derived (I5) and never model-influenced (I3) -- it is an
+// opaque bookkeeping label, not an identity anything is authorized against.
+[[nodiscard]] inline std::string next_exec_id() {
+    static std::atomic<std::uint64_t> counter{0};
+    std::uint64_t const n = counter.fetch_add(1, std::memory_order_relaxed);
+#if defined(_WIN32)
+    unsigned long const pid = GetCurrentProcessId();
+#else
+    pid_t const pid = ::getpid();
+#endif
+    return "pdfexec_" + std::to_string(static_cast<long long>(pid)) + "_" + std::to_string(n);
+}
+
 inline constexpr std::uint64_t kWorkerWallMs = 15000;
 inline constexpr std::uint64_t kWorkerMemoryBytes = 256ull * 1024 * 1024;
 inline constexpr std::uint32_t kWorkerPids = 4;
@@ -306,13 +324,43 @@ inline constexpr std::uint64_t kWorkerOutputBytes = 1024 * 1024;
     spec.limits.pids = kWorkerPids;
     spec.limits.output_bytes = kWorkerOutputBytes;
 
-    auto handle = backend.create(spec, ctx);
+    // ADR-170 (GitHub issue #64): the two halves are bracketed SEPARATELY because they cost wildly
+    // different amounts and a caller needs to see which one it is waiting on -- `create()` is the
+    // AppContainer/jail provisioning (the cold start issue #64's "practical consequence" section is
+    // about), `exec()` is the worker run itself. `exec_id` correlates all four events of one
+    // extraction. See extract_pdf_text_detail::next_exec_id() for why the id is process-unique.
+    std::string const exec_id = next_exec_id();
+    result<SandboxHandle> handle = [&] {
+        SandboxExecScope scope(ctx, exec_id, "native-jail", "create");
+        auto h = backend.create(spec, ctx);
+        if (!h) {
+            scope.failed(h.error().code);
+            return h;
+        }
+        scope.succeeded();
+        return h;
+    }();
     if (!handle) return std::unexpected(handle.error());
 
     std::string const cmdline = "\"" + std::string(AE_PDF_WORKER_EXE_PATH) + "\" " +
                                  std::string(mode) + " \"" + pdf_file.string() + "\"";
     ExecRequest const req{.language = "native", .source = cmdline};
-    auto outcome = backend.exec(*handle, req, ctx);
+    result<ExecOutcome> outcome = [&] {
+        SandboxExecScope scope(ctx, exec_id, "native-jail", "exec");
+        auto o = backend.exec(*handle, req, ctx);
+        if (!o) {
+            scope.failed(o.error().code);
+        } else if (o->klass != exec_outcome_class::ok) {
+            // A worker that ran but did not exit cleanly is NOT a successful exec on this channel,
+            // even though `backend.exec()` returned a value -- the caller below turns exactly this
+            // into an error, and reporting it as `ok` here would make the event stream disagree with
+            // the tool result a UI shows next to it.
+            scope.failed("extract_pdf_text.worker_failed");
+        } else {
+            scope.succeeded();
+        }
+        return o;
+    }();
     backend.destroy(*handle);
     if (!outcome) return std::unexpected(outcome.error());
     if (outcome->klass != exec_outcome_class::ok) {
@@ -355,13 +403,37 @@ inline constexpr std::uint64_t kWorkerOutputBytes = 1024 * 1024;
     spec.limits.pids = kWorkerPids;
     spec.limits.output_bytes = kWorkerOutputBytes;
 
-    auto handle = backend.create(spec, ctx);
+    // ADR-170 (issue #64) -- see the Windows branch above for the full reasoning; kept byte-for-byte
+    // parallel here so the two platform bodies stay diffable, which is this function's own
+    // established convention.
+    std::string const exec_id = next_exec_id();
+    result<SandboxHandle> handle = [&] {
+        SandboxExecScope scope(ctx, exec_id, "linux-native-jail", "create");
+        auto h = backend.create(spec, ctx);
+        if (!h) {
+            scope.failed(h.error().code);
+            return h;
+        }
+        scope.succeeded();
+        return h;
+    }();
     if (!handle) return std::unexpected(handle.error());
 
     std::string const cmdline = "\"" + std::string(AE_PDF_WORKER_EXE_PATH) + "\" " +
                                  std::string(mode) + " \"" + pdf_file.string() + "\"";
     ExecRequest const req{.language = "native", .source = cmdline};
-    auto outcome = backend.exec(*handle, req, ctx);
+    result<ExecOutcome> outcome = [&] {
+        SandboxExecScope scope(ctx, exec_id, "linux-native-jail", "exec");
+        auto o = backend.exec(*handle, req, ctx);
+        if (!o) {
+            scope.failed(o.error().code);
+        } else if (o->klass != exec_outcome_class::ok) {
+            scope.failed("extract_pdf_text.worker_failed");
+        } else {
+            scope.succeeded();
+        }
+        return o;
+    }();
     backend.destroy(*handle);
     if (!outcome) return std::unexpected(outcome.error());
     if (outcome->klass != exec_outcome_class::ok) {

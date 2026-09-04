@@ -132,8 +132,29 @@ struct ToolCallFinished {
 };
 
 // SandboxExecStarted/Finished share this shape.
+//
+// ADR-170 (GitHub issue #64) widened this from `{exec_id}` alone. The three fields below are
+// additive and defaulted, appended last (this project's established field-ordering convention), so
+// every existing positional `SandboxExec{id}` construction is unaffected. `exec_id` alone could not
+// carry the signal 013 §1 promises here: a UI receiving one opaque string cannot say WHICH backend is
+// provisioning, nor tell the slow half (cold-start `create()` — a `docker create` plus a worktree
+// seed) from the fast half (`exec()` itself), which is the entire practical reason this event pair
+// exists rather than post-hoc 008 §8 metrics.
+//
+// `stage` is deliberately a plain string, not an enum: the set of meaningful stages is a property of
+// whatever execution stack a producer sits on (`SandboxBackend`'s create/exec/destroy, `Runner`'s
+// single `run`, a future `ExecutionSurface` reset/run/drain), and an engine-side enum would either
+// enumerate all of them speculatively or force a real producer to lie. Producers in this tree use
+// "create" and "exec"; a consumer treats an unrecognized value as an opaque label, never a failure.
+//
+// `ok`/`error_code` are meaningful ONLY on `sandbox_exec_finished`. A started event leaves them at
+// their defaults and a consumer must not read them there.
 struct SandboxExec {
     std::string exec_id;
+    std::string backend{};     // which backend/runner ran it ("native-jail", "mediated-shell", ...)
+    std::string stage{};       // "create" | "exec" -- provisioning vs the run itself
+    bool        ok = true;     // finished only
+    std::string error_code{};  // finished only; empty when ok
 };
 
 // 013 §1: "a run's set of active StandingEffects is exposed as part of [StateChanged]" (006 §6b) --

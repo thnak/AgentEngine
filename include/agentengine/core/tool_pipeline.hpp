@@ -933,6 +933,16 @@ using BackgroundTaskCompletion = std::function<void(ToolResult, ToolInvocationAu
     // because nobody has tried yet.
     ctx.report_progress = [](ContentItem) {};
 
+    // ADR-170 (issue #64): identical hazard, identical fix. `sandbox_exec_sink` is bound at the same
+    // three bracket sites `report_progress` is, captures the same `[this]` into the originating
+    // session, and ends at the same `emit_run_event_for()` -- so a backgrounded tool that reaches a
+    // sandbox (exactly the long-running shape `Backgroundable` exists for) would otherwise emit from
+    // this function's detached thread into a session that may already have been forked, cleared, or
+    // destroyed. `emit_run_event_for()` taking `run_event_mutex_` since ADR-160 fixes the map race
+    // but NOT the object-lifetime half, which is what this reset closes. Backgrounded work is
+    // deliberately silent on this channel, by construction, for the same reason it is on the other.
+    ctx.sandbox_exec_sink = [](run_event_kind, run_event_payload::SandboxExec) {};
+
     // Same hazard class as `report_progress` above, same fix: `sandbox_fs` is a raw pointer into
     // session-owned mediated-filesystem state (docs/planning/session-sandbox-lifecycle-wiring-
     // design-draft.md), not synchronized against `fork_from()`/`clear_in_process_state()`/session

@@ -199,5 +199,15 @@ never wires it up proceeds with byte-identical output/status, no behavior change
   separate, further translation layer downstream of `run_event_kind`, out of scope here.
 - Whether a given `Tool<>` itself calls `ctx.report_progress()` — that's per-tool, not per-`ChatClient`/
   adapter, and already has its own real audit surface (`tool_pipeline.hpp`'s own dispatch).
-- Sandbox-level events (`sandbox_exec_started`/`finished`) beyond confirming they're real `run_event_kind`
-  values — which backend/path actually fires them is a separate question this pass didn't chase.
+- ~~Sandbox-level events (`sandbox_exec_started`/`finished`) beyond confirming they're real `run_event_kind`
+  values — which backend/path actually fires them is a separate question this pass didn't chase.~~
+  **ANSWERED 2026-09-04 by `ADR-170` (GitHub issue #64): at the time this line was written, the honest
+  answer was "none" — nothing anywhere in the tree emitted either kind.** They now have real producers:
+  `extract_pdf_text_detail::invoke_worker()` (all four PDF tools share it) brackets `create` and `exec`
+  separately, and `SessionShellSandbox::run()` brackets its single `exec` stage. Note this line's own
+  framing was slightly off in a way worth recording: the producer is not a "backend/path" that fires
+  events on its own, because there is no such seam — the emission goes through a new
+  `EffectContext::sandbox_exec_sink` that `AgentSession` binds with the same per-call bracket
+  `report_progress` uses. Line 27's "Only `AgentSession` itself ever emits these" therefore remains
+  true (`emit_run_event()` is still the only emitter), but it should not be read as "AgentSession knows
+  when a sandbox runs" — it does not, and issue #64's own suggested fix assumed it did.

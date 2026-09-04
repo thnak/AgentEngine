@@ -1,6 +1,6 @@
 # 013 — UI and Streaming Surfaces
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 001, 003, 006, 012, 019 · **Gate:** §6
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-04 by ADR-170** (§1 — the `SandboxExec*` producer is named, and its payload carries `backend`/`stage`/`ok`/`error_code`) · **Depends on:** 001, 003, 006, 012, 019 · **Gate:** §6
 
 ## Goal
 
@@ -40,6 +40,26 @@ rather than the engine: a call to `EffectContext.report_progress` during `invoke
 only source. It is distinct from the tool-call argument streaming folded into `ModelDelta` above —
 that is the *model* incrementally producing a call's arguments before invocation starts;
 `ToolCallDelta` is the *tool* reporting on work already in flight.
+
+**`SandboxExecStarted`/`SandboxExecFinished`'s producer** (added 2026-09-04 by `ADR-170`, GitHub
+issue #64 — this section previously named no producer for the pair, and for that whole period
+*nothing anywhere emitted one*, while this table, the AG-UI mapping in §2.1, and a projection test all
+described events that never existed). The producer is **not** the session: `AgentSession` never calls
+`SandboxBackend::create()`/`exec()` and never did. Every real sandbox execution happens beneath an
+opaque `Tool<>::invoke()`, in sandbox- or backend-level code — which already receives an
+`EffectContext` by contract (008 §2's `create(spec, ctx)`/`exec(handle, req, ctx)`). So the pair is
+emitted there, through `EffectContext.sandbox_exec_sink`, the same shape `ToolCallDelta`'s own
+`report_progress` producer above already establishes, and the session binds that sink with the same
+per-call bracket.
+
+The payload carries `{exec_id, backend, stage, ok, error_code}`, not `exec_id` alone. `stage`
+distinguishes provisioning (`"create"` — the cold start this pair exists to make visible: a
+`docker create` plus a worktree seed, versus a millisecond-scale warm `native-jail`) from the run
+itself (`"exec"`), because a caller told only "something started" cannot tell which half it is waiting
+on, and 008 §8's per-exec metrics are post-hoc, not a live signal. A producer with no distinct
+provisioning phase — a `per_session` sandbox reused across calls (008 §6) — emits only `"exec"` and
+must not fabricate a `"create"` it never performed. `ok`/`error_code` are meaningful only on
+`SandboxExecFinished`.
 
 **`StandingEffect` visibility rides `StateChanged`, not a new event pair.** Registering, resolving
 (fired, completed, or expired), or cancelling a `schedule_wakeup`/`watch_resource`/`background_task`

@@ -178,11 +178,23 @@ public:
             case run_event_kind::sandbox_exec_finished: {
                 auto const& p = std::get<run_event_payload::SandboxExec>(ev.payload);
                 bool const finished = ev.kind == run_event_kind::sandbox_exec_finished;
-                return {ActivitySnapshot{
-                    p.exec_id, "sandbox_exec",
-                    json::Value::make_object(
-                        {{"status", json::Value::make_string(finished ? "finished" : "started")}}),
-                    std::nullopt}};
+                // ADR-170 (issue #64): `backend`/`stage` are projected unconditionally (empty string
+                // for a producer that supplies neither -- the shape stays stable rather than the key
+                // appearing and disappearing), while `ok`/`error_code` appear ONLY on the finished
+                // event, because they are meaningless on a started one (SandboxExec's own comment)
+                // and emitting a default `"ok": true` next to `"status": "started"` would read as a
+                // result that has not happened yet.
+                std::vector<std::pair<std::string, json::Value>> fields{
+                    {"status", json::Value::make_string(finished ? "finished" : "started")},
+                    {"backend", json::Value::make_string(p.backend)},
+                    {"stage", json::Value::make_string(p.stage)},
+                };
+                if (finished) {
+                    fields.emplace_back("ok", json::Value::make_bool(p.ok));
+                    fields.emplace_back("error_code", json::Value::make_string(p.error_code));
+                }
+                return {ActivitySnapshot{p.exec_id, "sandbox_exec",
+                                          json::Value::make_object(std::move(fields)), std::nullopt}};
             }
 
             case run_event_kind::state_changed: {

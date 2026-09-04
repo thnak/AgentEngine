@@ -114,6 +114,38 @@ struct EffectContext {
     // `rt/agent_session.hpp`'s `force_tainted()`.
     std::function<void(ContentItem)> report_progress = [](ContentItem) {};
 
+    // ADR-170 (GitHub issue #64): the producer side of `run_event_kind::sandbox_exec_started`/
+    // `sandbox_exec_finished`. Those two kinds, and 013 §1's `SandboxExecStarted`/`SandboxExecFinished`
+    // rows, and the AG-UI projection that turns them into an `ActivitySnapshot`
+    // (`protocol/agui/projection.hpp`), all existed and were tested -- with **nothing anywhere in the
+    // tree ever emitting one**. Only a synthetic event in `tests/test_rt_agui_projection.cpp` did.
+    //
+    // A DEDICATED field, not `report_progress` above, for the same "one field per audience" reason
+    // ADR-152's own two bridge fields are separate from it: `report_progress` is bound per CALL and
+    // carries that call's `call_id` into a `tool_call_delta`; a sandbox exec is not a tool-call
+    // delta, has its own correlation id (`SandboxExec::exec_id`), and is emitted by the sandbox
+    // layer beneath a tool rather than by the tool's own `invoke()` body.
+    //
+    // WHY A SINK ON THIS STRUCT, and not a bracket inside `AgentSession` the way `tool_call_started`/
+    // `tool_call_finished` are emitted: issue #64 proposed the latter, and it cannot work --
+    // `AgentSession` never calls `SandboxBackend::create()`/`exec()` at all (grep it: the class
+    // contains no such call site, and never did). Every real sandbox execution in this tree happens
+    // BENEATH an opaque `Tool<>::invoke()`, inside `sandbox/`- or `src/backends/`-level code. What
+    // those call sites DO all already have is an `EffectContext&` -- `SandboxBackend::create(spec,
+    // ctx)`/`exec(handle, req, ctx)` (sandbox/sandbox.hpp) and `Runner::run(request, state, ctx)`
+    // (sandbox/runner.hpp) take one by contract -- so the reverse channel this needs already exists
+    // structurally; only the field was missing. See ADR-170 §2.
+    //
+    // Bound and reset with EXACTLY the same call-scoped bracket discipline as `report_progress`
+    // (ADR-060), at the same three `invoke_tool()` sites in `rt/agent_session.hpp`, and reset to this
+    // no-op by `tool_pipeline.hpp::background_task()` for the same detached-thread reason that
+    // function already resets `report_progress`/`sandbox_fs`.
+    //
+    // Prefer `SandboxExecScope` below over calling this directly -- a raw call site that early-returns
+    // between the started and finished halves silently reports a start that never ends.
+    std::function<void(run_event_kind, run_event_payload::SandboxExec)> sandbox_exec_sink =
+        [](run_event_kind, run_event_payload::SandboxExec) {};
+
     // ADR-152 (issue #29): two DEDICATED bridge fields for WorkflowSupervisor's per-node
     // multiplexed live event stream (workflow/workflow_event.hpp) -- deliberately NOT the same
     // field as `report_progress` above. A red-team pass on the design found a real collision, not
@@ -209,6 +241,68 @@ struct EffectContext {
     // would require. See `tools/read_content.hpp`'s own file-top comment for why that gap existed in
     // the first place -- this field is what closes it.
     FileSystemAdapter* sandbox_fs = nullptr;
+};
+
+// ADR-170 (GitHub issue #64): the bracket every real producer of `sandbox_exec_started`/
+// `sandbox_exec_finished` should use, rather than calling `EffectContext::sandbox_exec_sink`
+// directly twice.
+//
+// FAILS CLOSED BY CONSTRUCTION, which is the whole reason this is a scope object and not two free
+// functions. The finished event's default outcome is `ok = false` with error code
+// `"sandbox.exec.abandoned"`: a call site that returns early between provisioning and completion --
+// `extract_pdf_text_detail::invoke_worker()` has four such returns between `create()` and `exec()`
+// -- reports honestly that the exec did not finish, instead of either emitting nothing (a start with
+// no end, which a UI must then time out on its own) or emitting a success that never happened. A
+// caller marks the real outcome explicitly with `succeeded()` or `failed(code)`.
+//
+// Neither copyable nor movable: two live objects sharing one `exec_id` would emit two finished
+// events for one exec, and this type's entire value is that the pairing is structural.
+//
+// Costs one no-op `std::function` call at each end when nothing is listening -- the same
+// "optional-but-always-safe-to-call" bargain `report_progress` already makes.
+// ae-naming-lint: allow SandboxExecScope — ADR-170 (issue #64); 013 §1 names the event pair, 027 has not been updated to list this producer-side helper
+class SandboxExecScope {
+public:
+    SandboxExecScope(EffectContext& ctx, std::string exec_id, std::string backend, std::string stage)
+        : ctx_(ctx) {
+        payload_.exec_id = std::move(exec_id);
+        payload_.backend = std::move(backend);
+        payload_.stage   = std::move(stage);
+        run_event_payload::SandboxExec started = payload_;
+        started.ok         = true;   // meaningless on a started event; see SandboxExec's own comment
+        started.error_code = {};
+        ctx_.sandbox_exec_sink(run_event_kind::sandbox_exec_started, std::move(started));
+        payload_.ok         = false;
+        payload_.error_code = "sandbox.exec.abandoned";
+    }
+
+    SandboxExecScope(SandboxExecScope const&)            = delete;
+    SandboxExecScope& operator=(SandboxExecScope const&) = delete;
+    SandboxExecScope(SandboxExecScope&&)                 = delete;
+    SandboxExecScope& operator=(SandboxExecScope&&)      = delete;
+
+    void succeeded() noexcept {
+        payload_.ok = true;
+        payload_.error_code.clear();
+    }
+    void failed(std::string error_code) {
+        payload_.ok         = false;
+        payload_.error_code = std::move(error_code);
+    }
+
+    ~SandboxExecScope() {
+        // A sink is a host-supplied `std::function`; a throwing one must not propagate out of a
+        // destructor. Swallowed deliberately -- an observability event is never worth terminating a
+        // run over, and there is no channel to report it through from here anyway.
+        try {
+            ctx_.sandbox_exec_sink(run_event_kind::sandbox_exec_finished, std::move(payload_));
+        } catch (...) {  // NOLINT(bugprone-empty-catch)
+        }
+    }
+
+private:
+    EffectContext&                   ctx_;
+    run_event_payload::SandboxExec   payload_{};
 };
 
 } // namespace agentengine

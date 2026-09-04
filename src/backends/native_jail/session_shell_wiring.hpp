@@ -145,8 +145,29 @@ private:
         : fs_(std::move(fs)), registry_(), state_(), shell_(fs_, registry_, kShellWorkMount) {}
 
     [[nodiscard]] result<RunShellReply> run(RunShellArgs const& args, EffectContext& ctx) {
+        // ADR-170 (GitHub issue #64): the second real producer of `sandbox_exec_started`/`finished`.
+        // ONE stage ("exec"), not the create/exec pair the PDF worker emits: this sandbox is
+        // provisioned once per SESSION at `SessionShellSandbox::create()` time (008 §6's
+        // `per_session` lifetime) and reused for every `run_shell` call thereafter, so there is no
+        // per-call provisioning phase to bracket. Reporting a synthetic "create" here would be a
+        // fabricated cold start on a mount that has existed since the session began.
+        //
+        // `exec_id` is minted from the session's own monotonic counter rather than reused from the
+        // model's tool call_id: the two are not the same thing (a single tool call could in principle
+        // run more than one exec) and coupling them would make this event pair depend on model
+        // output (I3).
+        std::string const exec_id = "shell_" + std::to_string(++exec_counter_);
+        SandboxExecScope scope(ctx, exec_id, "mediated-shell", "exec");
         auto outcome = shell_.run(ExecRequest{"shell", args.source}, state_, ctx);
-        if (!outcome) return std::unexpected(outcome.error());
+        if (!outcome) {
+            scope.failed(outcome.error().code);
+            return std::unexpected(outcome.error());
+        }
+        // A non-`ok` exec_outcome_class is a command that RAN and failed -- a real, completed exec,
+        // reported as such here, unlike the PDF worker's own case where the tool itself turns that
+        // into an error result. `RunShellReply::ok` below carries the command's own success/failure
+        // to the model; this channel reports whether the EXEC completed.
+        scope.succeeded();
         RunShellReply reply;
         reply.ok = (outcome->klass == exec_outcome_class::ok);
         reply.stdout_text = std::move(outcome->stdout_text);
@@ -161,6 +182,11 @@ private:
     native_jail::mediated_shell::DefaultCommandRegistry registry_;
     ExecState state_;
     native_jail::mediated_shell::MediatedShellRunner shell_;
+    // ADR-170 (issue #64) -- see run()'s own comment. Plain, not atomic: this descriptor is built by
+    // `make_tool_descriptor_with_invoke()`, which marks it `captures_session_state = true`, and
+    // `tool_pipeline.hpp`'s own guard refuses to background or parallel-dispatch such a tool -- so
+    // `run()` is only ever reached on the session's single `session_mutex_`-serialized thread (I1).
+    std::uint64_t exec_counter_ = 0;
 };
 
 }  // namespace agentengine

@@ -1671,6 +1671,18 @@ add_executable(test_agent_session_tool_call_progress test_agent_session_tool_cal
 target_link_libraries(test_agent_session_tool_call_progress PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_session_tool_call_progress COMMAND test_agent_session_tool_call_progress)
 
+# ---- ADR-170 (GitHub issue #64) -- the PRODUCER side of run_event_kind::sandbox_exec_started/
+# finished, which 013 §1 declares and protocol/agui/projection.hpp already projects, but which
+# nothing in the tree ever emitted. S1-S9: the SandboxExecScope bracket and its fail-closed default,
+# end-to-end emission through a real AgentSession event stream, the silent-tool positive control, the
+# per-call bracket, background_task()'s detached-thread reset, the AG-UI projection of the new
+# payload fields, and a real shipped producer (SessionShellSandbox's run_shell) through the real
+# 006 §3 pipeline. Links mediated_shell_runner/worktree_store for S9, like test_session_shell_wiring.
+add_executable(test_sandbox_exec_events test_sandbox_exec_events.cpp)
+target_link_libraries(test_sandbox_exec_events PRIVATE
+  agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_sandbox_exec_events COMMAND test_sandbox_exec_events)
+
 # ---- ADR-042 (Design B) prove phase -- OutputSchema<T> wired into a live rt::AgentSession turn:
 # set_output_schema()'s additive opt-in, native-only request-side scoping, and response-side
 # validation at the convergence branch. Pure AgentSession/ChatClient logic, no CPython -- belongs in

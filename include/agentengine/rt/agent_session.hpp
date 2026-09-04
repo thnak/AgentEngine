@@ -1743,6 +1743,14 @@ private:
                 emit_run_event_for(run_id, run_event_kind::tool_call_delta,
                                      run_event_payload::ToolCallDelta{call_id, std::move(item)});
             };
+            // ADR-170 (issue #64): bound on the per-call COPY, so no reset is needed -- the copy dies
+            // with the job. Unlike report_progress it captures no `call_id`: a sandbox exec carries
+            // its own correlation id (`SandboxExec::exec_id`) and is emitted from beneath the tool,
+            // by sandbox-layer code that has no notion of which model tool call it serves.
+            ctx.sandbox_exec_sink = [this, run_id = ctx.run_id](
+                                         run_event_kind kind, run_event_payload::SandboxExec p) {
+                emit_run_event_for(run_id, kind, std::move(p));
+            };
             return ctx;
         };
 
@@ -1775,10 +1783,18 @@ private:
                         emit_run_event(run_event_kind::tool_call_delta,
                                         run_event_payload::ToolCallDelta{call_id, std::move(item)});
                     };
+                    // ADR-170 (issue #64): its own independent set/clear pair around this same call,
+                    // the discipline `codeact_preseeded_answers`/`report_progress` already establish.
+                    effect_context_.sandbox_exec_sink =
+                        [this](run_event_kind kind, run_event_payload::SandboxExec p) {
+                            emit_run_event(kind, std::move(p));
+                        };
                     ToolInvocationAudit audit;
                     ToolResult result =
                         invoke_tool(tool_table, held, req, effect_context_, approve, &audit, policy);
                     effect_context_.report_progress = [](ContentItem) {};
+                    effect_context_.sandbox_exec_sink =
+                        [](run_event_kind, run_event_payload::SandboxExec) {};
                     emit_run_event(run_event_kind::tool_call_finished,
                                     run_event_payload::ToolCallFinished{audit.call_id, result});
                     out[i] = DispatchedCall{std::move(result), std::move(audit)};
@@ -2040,6 +2056,13 @@ private:
             emit_run_event(run_event_kind::tool_call_delta,
                             run_event_payload::ToolCallDelta{call_id, std::move(item)});
         };
+        // ADR-170 (issue #64): the third and last of this class's `report_progress` bracket sites --
+        // a codeact-ask replay re-invokes `execute_code`, which is exactly a sandbox-executing tool,
+        // so leaving this one out would make the replayed run silently quieter than the original.
+        effect_context_.sandbox_exec_sink =
+            [this](run_event_kind kind, run_event_payload::SandboxExec p) {
+                emit_run_event(kind, std::move(p));
+            };
         ToolInvocationAudit audit;
         // Named `tool_result`, not `result` -- the latter would shadow the `agentengine::result<T>`
         // alias template for the rest of this function's scope (a real MSVC C2760 hit while writing
@@ -2049,6 +2072,7 @@ private:
             invoke_tool(tool_table, held, req, effect_context_, one_shot_approve, &audit);
         effect_context_.codeact_preseeded_answers.clear();
         effect_context_.report_progress = [](ContentItem) {};
+        effect_context_.sandbox_exec_sink = [](run_event_kind, run_event_payload::SandboxExec) {};
         emit_run_event(run_event_kind::tool_call_finished,
                         run_event_payload::ToolCallFinished{audit.call_id, tool_result});
 
