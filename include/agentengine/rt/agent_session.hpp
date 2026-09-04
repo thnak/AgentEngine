@@ -1834,7 +1834,7 @@ private:
                 for (std::size_t k = 0; k < job.call_indices.size(); ++k) {
                     auto const started = std::chrono::steady_clock::now();
                     ToolCallRequest const& req = *job.requests[k];
-                    RunOutcome outcome = run_admitted_call(*job.tools[k], req, job.ctxs[k], job.bounds[k]);
+                    AdmittedCallOutcome outcome = run_admitted_call(*job.tools[k], req, job.ctxs[k], job.bounds[k]);
                     ToolInvocationAudit audit = make_call_audit(req, job.ctxs[k], started, outcome);
                     emit_run_event_for(job.ctxs[k].run_id, run_event_kind::tool_call_finished,
                                          run_event_payload::ToolCallFinished{audit.call_id, outcome.result});

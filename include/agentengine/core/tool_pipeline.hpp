@@ -657,13 +657,13 @@ struct AdmittedCall {
 // completion span -- sharing a `finish()`-style closure between the two would silently change one
 // of their two, deliberately different, "duration" semantics. `failure` is a real copy (an
 // `error`, not a pointer into a temporary) so it safely outlives this call.
-struct RunOutcome {
+struct AdmittedCallOutcome {
     ToolResult result;
     std::optional<error> failure;
     std::size_t bytes = 0;
 };
 
-[[nodiscard]] inline RunOutcome run_admitted_call(ToolDescriptor const& tool, ToolCallRequest const& request,
+[[nodiscard]] inline AdmittedCallOutcome run_admitted_call(ToolDescriptor const& tool, ToolCallRequest const& request,
                                                     EffectContext& ctx, std::vector<BoundCapability>& bound) {
     using namespace tool_pipeline_detail;
     // -- step 8: invoke (deadline checked at the call boundary, not preemptible mid-call) ---------
@@ -671,7 +671,7 @@ struct RunOutcome {
         std::chrono::steady_clock::now() > ctx.deadline) {
         for (auto const& b : bound) b.revoke();
         error e{failure_class::resource, "deadline already exceeded", "tool.deadline_exceeded"};
-        return RunOutcome{make_error_result(request.call_id, e), e, 0};
+        return AdmittedCallOutcome{make_error_result(request.call_id, e), e, 0};
     }
 
     ctx.bound_capabilities = &bound;
@@ -684,15 +684,15 @@ struct RunOutcome {
     // -- step 9: normalize --------------------------------------------------------------------------
     if (!invoke_result) {
         error const& e = invoke_result.error();
-        return RunOutcome{make_error_result(request.call_id, e), e, 0};
+        return AdmittedCallOutcome{make_error_result(request.call_id, e), e, 0};
     }
 
     auto normalized = normalize_success(request.call_id, *invoke_result, ctx);
     if (!normalized) {
         error const& e = normalized.error();
-        return RunOutcome{make_error_result(request.call_id, e), e, 0};
+        return AdmittedCallOutcome{make_error_result(request.call_id, e), e, 0};
     }
-    return RunOutcome{std::move(normalized->first), std::nullopt, normalized->second};
+    return AdmittedCallOutcome{std::move(normalized->first), std::nullopt, normalized->second};
 }
 
 // ADR-160 §5: a small, shared audit-record builder for the parallel-batch fan-out path only --
@@ -702,7 +702,7 @@ struct RunOutcome {
 [[nodiscard]] inline ToolInvocationAudit make_call_audit(ToolCallRequest const& request,
                                                            EffectContext const& ctx,
                                                            std::chrono::steady_clock::time_point started,
-                                                           RunOutcome const& outcome) {
+                                                           AdmittedCallOutcome const& outcome) {
     ToolInvocationAudit audit;
     audit.call_id = request.call_id;
     audit.tool_name = request.tool_name;
@@ -771,7 +771,7 @@ struct RunOutcome {
     // -- step 6: admit -- deferred (Quark 022 not in M2 scope; documented no-op, see file top) ----
 
     // -- steps 8, 9, 10 (invoke, normalize, account): `run_admitted_call()` above, ADR-160 §5 -------
-    RunOutcome outcome = run_admitted_call(*tool, request, ctx, bound);
+    AdmittedCallOutcome outcome = run_admitted_call(*tool, request, ctx, bound);
     return finish(std::move(outcome.result), outcome.failure ? &*outcome.failure : nullptr, outcome.bytes);
 }
 
@@ -799,8 +799,7 @@ struct RunOutcome {
 // `ExclusivityGroup<Name>` members sharing one `Name` land in exactly ONE class together (ADR-160
 // §5 MUST-FIX 5: the whole group, not each member, is the unit of fan-out) -- never one class per
 // member.
-enum class concurrency_class_kind : std::uint8_t { sequential, parallel, exclusivity_group };
-// ae-naming-lint: allow concurrency_class_kind — ADR-160, same enum-tag idiom as approval_outcome/policy_decision
+enum class concurrency_class_kind : std::uint8_t { sequential, parallel, exclusivity_group };  // ae-naming-lint: allow concurrency_class_kind — ADR-160, same enum-tag idiom as approval_outcome/policy_decision
 
 struct ConcurrencyClass {
     concurrency_class_kind kind = concurrency_class_kind::sequential;
