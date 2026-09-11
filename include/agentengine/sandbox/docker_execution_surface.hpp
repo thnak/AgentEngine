@@ -79,6 +79,7 @@
 #include <fstream>
 #include <limits>
 #include <optional>
+#include <random>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -93,6 +94,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <spawn.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -104,6 +106,8 @@
 // include this file, and this file still does NOT make anything here a `SandboxBackend` conformer
 // (see the top-of-file scope statement).
 #include "agentengine/sandbox/sandbox.hpp"
+// ADR-174 (issue #68): the root-owned ustar archive `seed_tree_as_root()` streams into `docker cp -`.
+#include "agentengine/sandbox/ustar_writer.hpp"
 
 #ifndef _WIN32
 // Global scope, matching `ctr_cli_detail`'s own identical declaration
@@ -405,9 +409,18 @@ constexpr std::size_t kOutputSafetyCapBytes = 1u << 20;  // 1 MiB, merged stdout
 // even SMALLER effective `command` length (the literal `"cmd.exe /c "` prefix ate into the same 32K
 // budget), so this is not new; an extremely long `command`/argv value was always silently
 // indistinguishable from an ordinary spawn failure on this platform, before and after this port.
+// ADR-174 (issue #68): `stdin_file`, when non-null, is opened and handed to the child as its stdin.
+// A FILE rather than a pipe we feed, deliberately. The first implementation wrote the archive into a
+// pipe from a dedicated thread, which worked but needed a writer thread, SIGPIPE masking, a join
+// ordered after the kill, and an in-memory copy of the whole archive -- four mechanisms, each with
+// its own failure mode, to solve a problem the OS already solves. Redirecting stdin from a file the
+// caller streamed to disk has none of them: no thread, no pipe, no signal handling, no deadlock to
+// reason about, and peak memory independent of tree size. Callers that pass nullptr get
+// byte-identical behaviour to before, `hStdInput` null included.
 [[nodiscard]] inline SurfaceRunOutcome run_argv(std::vector<std::string> const& argv,
                                                  int timeout_seconds = kProcessTimeoutSeconds,
-                                                 std::size_t output_cap = kOutputSafetyCapBytes) {
+                                                 std::size_t output_cap = kOutputSafetyCapBytes,
+                                                 std::filesystem::path const* stdin_file = nullptr) {
     SurfaceRunOutcome out;
     if (argv.empty()) { out.exit_code = -1; return out; }
     SECURITY_ATTRIBUTES sa{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
@@ -416,12 +429,28 @@ constexpr std::size_t kOutputSafetyCapBytes = 1u << 20;  // 1 MiB, merged stdout
     if (!CreatePipe(&read_h, &write_h, &sa, 0)) { out.exit_code = -1; return out; }
     SetHandleInformation(read_h, HANDLE_FLAG_INHERIT, 0);
 
+    HANDLE in_h = nullptr;
+    if (stdin_file != nullptr) {
+        // FILE_SHARE_DELETE as well as READ (ADR-174 round-2 finding F5): without it, a child that
+        // outlives the timeout's 5-second wait keeps the staged archive undeletable, and the guard's
+        // `remove_all` then fails SILENTLY, leaving a full copy of the worktree in %TEMP% forever.
+        in_h = CreateFileW(stdin_file->wstring().c_str(), GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_DELETE, &sa, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (in_h == INVALID_HANDLE_VALUE) {
+            CloseHandle(read_h);
+            CloseHandle(write_h);
+            out.exit_code = -1;
+            return out;
+        }
+    }
+
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESTDHANDLES;
     si.hStdOutput = write_h;
     si.hStdError = write_h;
-    si.hStdInput = nullptr;
+    si.hStdInput = in_h;
     PROCESS_INFORMATION pi{};
 
     std::wstring const cmdline = build_command_line(argv);
@@ -444,6 +473,8 @@ constexpr std::size_t kOutputSafetyCapBytes = 1u << 20;  // 1 MiB, merged stdout
     BOOL created = CreateProcessW(nullptr, mutable_cmdline.data(), nullptr, nullptr,
                                    /*bInheritHandles=*/TRUE, creation_flags, nullptr, nullptr, &si, &pi);
     CloseHandle(write_h);
+    // The parent's own handle to the stdin file goes as soon as the child has inherited it.
+    if (in_h != nullptr) CloseHandle(in_h);
     if (!created) {
         CloseHandle(read_h);
         if (job != nullptr) CloseHandle(job);
@@ -612,22 +643,28 @@ constexpr std::size_t kOutputSafetyCapBytes = 1u << 20;  // 1 MiB, merged stdout
 // of scope for this change. `posix_spawnp()` (the `p`-suffixed, PATH-searching variant) resolves
 // `argv[0]` (e.g. `"docker"`) exactly the way it already does for `ctr` in the sibling file -- not a
 // new posture, a deliberately consistent one (see this file's own Windows-side `run_argv()` comment).
+// ADR-174 (issue #68): `stdin_file`, when non-null, replaces `/dev/null` as the child's stdin -- see
+// the Windows sibling's comment for why a file rather than a pipe this process feeds. `addopen` does
+// the work in the CHILD after fork, so there is no parent-side descriptor to leak, close or set
+// FD_CLOEXEC on. Callers that pass nullptr get byte-identical behaviour to before.
 [[nodiscard]] inline SurfaceRunOutcome run_argv(std::vector<std::string> const& argv,
                                                  int timeout_seconds = kProcessTimeoutSeconds,
-                                                 std::size_t output_cap = kOutputSafetyCapBytes) {
+                                                 std::size_t output_cap = kOutputSafetyCapBytes,
+                                                 std::filesystem::path const* stdin_file = nullptr) {
     SurfaceRunOutcome out;
     if (argv.empty()) { out.exit_code = -1; return out; }
     std::array<int, 2> pipe_fds{-1, -1};
     if (::pipe(pipe_fds.data()) != 0) { out.exit_code = -1; return out; }
     ::fcntl(pipe_fds[0], F_SETFD, FD_CLOEXEC);
 
+    std::string const stdin_path = stdin_file != nullptr ? stdin_file->string() : std::string("/dev/null");
     posix_spawn_file_actions_t actions;
     posix_spawn_file_actions_init(&actions);
     posix_spawn_file_actions_adddup2(&actions, pipe_fds[1], STDOUT_FILENO);
     posix_spawn_file_actions_adddup2(&actions, pipe_fds[1], STDERR_FILENO);
     posix_spawn_file_actions_addclose(&actions, pipe_fds[0]);
     posix_spawn_file_actions_addclose(&actions, pipe_fds[1]);
-    posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, stdin_path.c_str(), O_RDONLY, 0);
 
     std::vector<char*> c_argv;
     c_argv.reserve(argv.size() + 1);
@@ -1220,6 +1257,141 @@ public:
         return agentengine::result<void>{};
     }
 
+    // ADR-174 (GitHub issue #68): seeds `container_path` from `host_dir`'s CONTENTS with every entry
+    // owned by root:root, by streaming a ustar archive into `docker cp -`.
+    //
+    // This exists because `copy_to_container()` above cannot do it. `docker cp <host path>` preserves
+    // the HOST file's ownership, and ADR-171's `--cap-drop ALL` took CAP_DAC_OVERRIDE and
+    // CAP_DAC_READ_SEARCH away from the container's root -- so a seeded file, which
+    // `write_verified()` creates at mode 0600, was neither readable nor writable by the only user the
+    // container has. `docker cp -` instead reads a tar from stdin, and what the container ends up
+    // owning is whatever the ARCHIVE HEADERS say. Writing those headers ourselves (ustar_writer.hpp)
+    // is what makes the seeded tree root-owned WITHOUT handing any capability back.
+    //
+    // The archive goes to a TEMP FILE which becomes the child's stdin, rather than being held in
+    // memory and pushed through a pipe. That is what keeps peak memory independent of worktree size
+    // -- an adversarial review demonstrated the in-memory version spending 2.0 GiB of RSS on a 1 GiB
+    // file before refusing it, and `std::terminate`-ing via an uncaught `bad_alloc` under a memory
+    // ceiling. The file is created 0600-equivalent by `ofstream` under the process umask, holds the
+    // same bytes as the worktree it was built from (so it is not a new exposure class), and is
+    // removed on every exit path including the failure ones.
+    //
+    // A second, unplanned property worth naming because a reviewer will ask: `host_dir` never reaches
+    // the command line at all. `copy_to_container()` has to embed a host path as an argv element and
+    // validate it; this path has no host-path argument to validate, so that whole class of question
+    // does not arise here.
+    [[nodiscard]] agentengine::result<void> seed_tree_as_root(Instance const& inst,
+                                                                  std::filesystem::path const& host_dir,
+                                                                  std::string const& container_path) {
+        if (auto safe = docker_cli_reject_argv_value(container_path, "container_path"); !safe.has_value())
+            return std::unexpected(safe.error());
+
+        std::error_code ec;
+        std::filesystem::path const temp_root = std::filesystem::temp_directory_path(ec);
+        if (ec) {
+            return std::unexpected(agentengine::error{agentengine::failure_class::fatal,
+                                                      "no temp directory to stage the seed archive in",
+                                                      "docker_cli_backend.seed_stage_failed"});
+        }
+
+        // ADR-174 §3, round-2 finding F1 -- a REAL, demonstrated local arbitrary-file-overwrite, not
+        // a theoretical one. The first version staged to
+        // `<temp>/ae_seed_<pid>_<g_next_container_seq>.tar`. On Linux `<temp>` is /tmp, mode 1777, and
+        // `g_next_container_seq` is the SAME counter that mints container names -- which `docker ps`
+        // PUBLISHES as `ae_des_<pid>_<ticks>_<seq>`. So any local user could read one container name,
+        // compute the next staged filename exactly, plant a symlink there, and have this function
+        // truncate and overwrite any file the engine's uid can write. The red-team executed it: a
+        // victim file went from 24 bytes of text to 2048 bytes of tar, the guard then deleted only the
+        // symlink, and this function returned SUCCESS.
+        //
+        // Two things fix it, and both are needed. The name is now UNPREDICTABLE (random_device, not a
+        // counter a bystander can observe), and the archive lives inside a PRIVATE DIRECTORY created
+        // 0700 in one atomic step -- so even a guessed name lands somewhere no other user may create
+        // an entry. `::mkdir(..., 0700)` rather than `create_directory()` + `permissions()`, because
+        // the two-step version is 0755 for the width of the window between them, which is all the
+        // attack needs.
+        std::string nonce;
+        {
+            std::random_device rd;
+            for (int i = 0; i < 4; ++i) {
+                char chunk[9];
+                std::snprintf(chunk, sizeof(chunk), "%08x", static_cast<unsigned>(rd()));
+                nonce += chunk;
+            }
+        }
+        std::filesystem::path const stage_dir =
+            temp_root / ("ae_seed_" + std::to_string(docker_cli_detail::current_pid()) + "_" + nonce);
+#ifdef _WIN32
+        // `%LOCALAPPDATA%\Temp` is already per-user on Windows, so there is no shared-directory race
+        // to close; `create_directory` fails if the name is taken, which is the property that matters.
+        if (!std::filesystem::create_directory(stage_dir, ec) || ec) {
+#else
+        if (::mkdir(stage_dir.c_str(), 0700) != 0) {
+#endif
+            return std::unexpected(agentengine::error{
+                agentengine::failure_class::fatal,
+                "cannot create a private directory to stage the seed archive in",
+                "docker_cli_backend.seed_stage_failed"});
+        }
+        std::filesystem::path const staged = stage_dir / "seed.tar";
+
+        // Removes the whole private directory on EVERY exit path below, including the early failures
+        // -- an abandoned archive is a copy of the worktree left lying in the temp directory.
+        struct StagedDirGuard {
+            std::filesystem::path path;
+            ~StagedDirGuard() {
+                std::error_code ignored;
+                std::filesystem::remove_all(path, ignored);
+            }
+        } const guard{stage_dir};
+
+        {
+            std::ofstream archive(staged, std::ios::binary | std::ios::trunc);
+            if (!archive) {
+                return std::unexpected(agentengine::error{
+                    agentengine::failure_class::fatal,
+                    "cannot open a temp file to stage the seed archive: " +
+                        agentengine::ustar::detail::path_to_utf8(staged),
+                    "docker_cli_backend.seed_stage_failed"});
+            }
+            // Round-2 finding F2: `ofstream` obeys the umask, so the archive was mode 0644 -- a
+            // world-readable copy of the entire worktree. The private directory above already denies
+            // traversal, but the file's own bits are stated rather than inherited, so the claim in
+            // this function's comment is true of the file and not only of its parent.
+            std::filesystem::permissions(staged,
+                                         std::filesystem::perms::owner_read |
+                                             std::filesystem::perms::owner_write,
+                                         std::filesystem::perm_options::replace, ec);
+            auto written = agentengine::ustar::write_archive_as_root(host_dir, archive);
+            if (!written.has_value()) return std::unexpected(written.error());
+            archive.flush();
+            if (!archive) {
+                return std::unexpected(agentengine::error{agentengine::failure_class::fatal,
+                                                          "failed writing the staged seed archive",
+                                                          "docker_cli_backend.seed_stage_failed"});
+            }
+        }
+
+        // The literal "-" is this class's own constant, not caller input, so it is deliberately not
+        // run through `docker_cli_reject_argv_value()` -- that function rejects a leading dash, which
+        // is exactly what this argument is.
+        std::vector<std::string> const argv = {"docker", "cp", "-",
+                                                 inst.container_id + ":" + container_path};
+        auto r = docker_cli_detail::run_argv(argv, docker_cli_detail::kProcessTimeoutSeconds,
+                                             docker_cli_detail::kOutputSafetyCapBytes, &staged);
+        if (r.exit_code != 0) {
+            std::error_code size_ec;
+            auto const bytes = std::filesystem::file_size(staged, size_ec);
+            return std::unexpected(agentengine::error{
+                agentengine::failure_class::fatal,
+                "docker cp (tar stream to container) failed: " + r.stdout_text +
+                    " (argv: " + docker_cli_detail::join_argv_for_log(argv) + ", archive bytes: " +
+                    (size_ec ? std::string("unknown") : std::to_string(bytes)) + ")",
+                "docker_cli_backend.seed_tree_failed"});
+        }
+        return agentengine::result<void>{};
+    }
+
     // Real `docker cp <container>:<container_path> <host_path>`.
     [[nodiscard]] agentengine::result<void> copy_from_container(Instance const& inst,
                                                                     std::string const& container_path,
@@ -1422,13 +1594,15 @@ public:
         instance_ = *inst;
 
         if (!std::filesystem::exists(host_dir)) return agentengine::result<void>{};  // nothing to seed yet
-        // Trailing "/." copies host_dir's CONTENTS into /workspace (which create() already made),
-        // not host_dir itself as a nested subdirectory. `generic_string()`, not `string()`, so the
-        // result uses forward slashes throughout even on Windows -- `string()` + a literal "/."
-        // would produce a mixed-separator path fragile against docker CLI's own path normalization.
-        std::filesystem::path const source(host_dir.generic_string() + "/.");
-        auto copied = docker_.copy_to_container(*instance_, source, "/workspace");
-        if (!copied.has_value()) return std::unexpected(copied.error());
+        // ADR-174 (issue #68): a root-owned tar stream, NOT `docker cp <host path>`. With ADR-171's
+        // `--cap-drop ALL` the container's root has neither CAP_DAC_OVERRIDE nor CAP_DAC_READ_SEARCH,
+        // and `write_verified()` materializes at mode 0600 -- so a seed carrying host ownership was
+        // neither readable NOR writable by the only user the container has, and every turn after the
+        // first got a tree it could not touch. `seed_tree_as_root()` takes `host_dir` itself (its
+        // CONTENTS are what the archive holds), so the trailing "/." that `docker cp`'s own path
+        // grammar needed is gone with it.
+        auto seeded = docker_.seed_tree_as_root(*instance_, host_dir, "/workspace");
+        if (!seeded.has_value()) return std::unexpected(seeded.error());
         return agentengine::result<void>{};
     }
 

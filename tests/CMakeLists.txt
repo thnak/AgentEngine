@@ -3626,6 +3626,29 @@ target_link_libraries(test_docker_isolation PRIVATE agentengine::core agentengin
 add_test(NAME test_docker_isolation COMMAND test_docker_isolation)
 set_tests_properties(test_docker_isolation PROPERTIES RESOURCE_LOCK docker_daemon)
 
+# ---- ADR-174 (GitHub issue #68) -- the root-owned ustar seed archive, OFFLINE half.
+# Needs no daemon, no network and no privileges: it asserts the ARCHIVE BYTES (uid/gid 0, the POSIX
+# ustar magic, the reader-recomputed checksum, block padding and terminators, the symlink and cap
+# refusals) plus the regression guards for the defects two adversarial review rounds found -- ".."
+# checked per-component rather than as a substring, long names carried by PAX instead of refused, and
+# non-ASCII names reaching the header as UTF-8 rather than through the Windows active code page.
+# Registered unconditionally and deliberately kept OUT of the daemon-requiring exclusion lists in
+# .github/workflows/ci.yml: it is the half of this ADR's evidence that every CI leg can actually run.
+add_executable(test_ustar_writer test_ustar_writer.cpp)
+target_link_libraries(test_ustar_writer PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_ustar_writer COMMAND test_ustar_writer)
+
+# ---- ADR-174 (GitHub issue #68) -- the LIVE half: a container seeded through `docker cp -` owns its
+# workspace as root and can WRITE what it was handed, with ADR-171's --cap-drop ALL fully in place.
+# S7 additionally puts the long and ".."-containing names through the real daemon, so the PAX header
+# is proven against the daemon's own tar reader and not only against our own bytes.
+# REQUIRES a running Docker daemon reachable via `docker` on PATH, same posture as
+# test_docker_isolation/test_sandbox_runtime.
+add_executable(test_docker_seed_ownership test_docker_seed_ownership.cpp)
+target_link_libraries(test_docker_seed_ownership PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_docker_seed_ownership COMMAND test_docker_seed_ownership)
+set_tests_properties(test_docker_seed_ownership PROPERTIES TIMEOUT 180 RESOURCE_LOCK docker_daemon)
+
 # ---- ADR-102 Phase 4 -- MandatorySandboxProvider<Surface>/RunCommandTool
 # (sandbox/mandatory_sandbox_provider.hpp), composed as a REAL agentengine::rt::AgentSession's actual
 # HistoryProviderT, driven through the real, unmodified invoke_tool() 10-step pipeline for the first
