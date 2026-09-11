@@ -147,10 +147,17 @@ jobs:
           # same `RESOURCE_LOCK docker_daemon` / "REQUIRES a running Docker daemon" posture as the
           # other six (tests/CMakeLists.txt) but were left off this list when they were added, so CI
           # ran them against the same nonexistent daemon and failed every Windows leg.
+          # test_docker_isolation added 2026-09-11, the SAME omission one commit later: ADR-171
+          # (issue #63) shipped it with `RESOURCE_LOCK docker_daemon` and its own "REQUIRES a running
+          # Docker daemon" header, and it went straight to red on all four Windows legs -- L1/L2/L4
+          # are container-CREATION setup steps, so with no daemon they cannot even reach the kernel
+          # readback they exist to perform. This list is hand-maintained and nothing checks it
+          # against `RESOURCE_LOCK docker_daemon` in tests/CMakeLists.txt, which is why the same
+          # class of miss has now happened twice; a lint over that property would end it for good.
           # No -C Release: Ninja (switched to above, 2026-09-04) is single-config, unlike the old
           # default VS-generator build this flag used to select a config out of.
           ctest --test-dir build -j 4 --output-on-failure --timeout 180 `
-            -E '^(test_composed_sandbox_providers_live|test_sandbox_runtime|test_docker_orphan_reap|test_mandatory_sandbox_provider|test_task_branch_tools|test_task_branch_concurrent_dispatch|test_docker_run_argv_timeout|test_docker_non_ascii_path)$'
+            -E '^(test_composed_sandbox_providers_live|test_sandbox_runtime|test_docker_orphan_reap|test_mandatory_sandbox_provider|test_task_branch_tools|test_task_branch_concurrent_dispatch|test_docker_run_argv_timeout|test_docker_non_ascii_path|test_docker_isolation)$'
 
   windows-clang-cl:
     name: Windows / clang-cl / ${{ matrix.build_type }}
@@ -292,7 +299,7 @@ jobs:
           # ADR-146 §12: see the windows-msvc job's own Test step comment above -- same exclusion,
           # same reason (no Docker daemon on GitHub-hosted windows-latest runners), applied here too.
           ctest --test-dir build -j 4 --output-on-failure --timeout 180 `
-            -E '^(test_composed_sandbox_providers_live|test_sandbox_runtime|test_docker_orphan_reap|test_mandatory_sandbox_provider|test_task_branch_tools|test_task_branch_concurrent_dispatch|test_docker_run_argv_timeout|test_docker_non_ascii_path)$'
+            -E '^(test_composed_sandbox_providers_live|test_sandbox_runtime|test_docker_orphan_reap|test_mandatory_sandbox_provider|test_task_branch_tools|test_task_branch_concurrent_dispatch|test_docker_run_argv_timeout|test_docker_non_ascii_path|test_docker_isolation)$'
           # Explicit, not incidental: this step became a pwsh block to set PATH, and a shell block
           # that ends on a native command must still surface that command's exit code. Stated here
           # rather than relying on the runner appending it, so a failing ctest can never read green.
@@ -414,20 +421,23 @@ jobs:
         if: always()
         run: "$SCCACHE_PATH --show-stats"
 
-      # test_containerd_execution_surface / test_composed_containerd_providers_live talk to
-      # /run/containerd/containerd.sock directly via the raw `ctr` CLI. Unlike the Docker socket
+      # test_containerd_execution_surface / test_composed_containerd_providers_live /
+      # test_containerd_isolation talk to /run/containerd/containerd.sock directly via the raw `ctr` CLI. Unlike the Docker socket
       # (already runner-user-accessible on ubuntu-latest, see test_docker_orphan_reap passing
       # unprivileged), containerd's socket is root-only by default and was never granted equivalent
       # access -- ADR-145 (ex-ADR-106)'s own text already said "Run as root (containerd's default
       # socket permissions require it)" when this suite was first verified; it just never had a CI
-      # leg to run on until this branch. Root is scoped to ONLY these two tests, not the whole
+      # leg to run on until this branch. test_containerd_isolation (ADR-172, issue #66) joined them
+      # 2026-09-11: it was added with the same `RESOURCE_LOCK containerd_daemon` posture but landed in
+      # NEITHER this exclusion nor the root step's `-R` below, so it ran unprivileged, failed, and
+      # took the Linux leg red. Root is scoped to ONLY these three tests, not the whole
       # suite: several tests (the escape-corpus permission-denial suites) specifically assert a
       # POSIX permission check REJECTS an operation, which root bypasses -- running everything as
       # root would silently flip that signal.
       - name: Test
         run: |
           ctest --test-dir build -j 4 --output-on-failure --timeout 180 \
-            -E '^(test_containerd_execution_surface|test_composed_containerd_providers_live)$'
+            -E '^(test_containerd_execution_surface|test_composed_containerd_providers_live|test_containerd_isolation)$'
 
       # `if: always()`: a GitHub Actions step only runs if every prior step in the job succeeded,
       # by default -- without this, an unrelated failure in the step above (any of the ~185 other
@@ -451,7 +461,7 @@ jobs:
         if: always()
         run: |
           sudo ctest --test-dir build -j 4 --output-on-failure --timeout 180 \
-            -R '^(test_containerd_execution_surface|test_composed_containerd_providers_live)$'
+            -R '^(test_containerd_execution_surface|test_composed_containerd_providers_live|test_containerd_isolation)$'
 
   naming-lint:
     name: 027 naming lint (stub)
