@@ -3790,3 +3790,14 @@ add_test(NAME test_console_utf8 COMMAND test_console_utf8)
 # Every console wait inside the test is already bounded, but the input half blocks on a real console
 # handle, so a hard ceiling here too: a hung console must fail this leg, never stall it.
 set_tests_properties(test_console_utf8 PROPERTIES TIMEOUT 60)
+
+# ---- GitHub issue #69 -- FileWorktreeObjectStore::put_blob()'s dedup check used the THROWING
+# std::filesystem::is_regular_file() overload on the one path the surrounding code documents as being
+# concurrently renamed onto. The escaping filesystem_error took the whole process with it (0xC0000409
+# on MSVC, the intermittent CI crash), rather than failing closed into result<T> like every other
+# error there. Carries a real positive control: the test first proves the race window opens HERE.
+add_executable(test_file_worktree_object_store_race test_file_worktree_object_store_race.cpp)
+target_link_libraries(test_file_worktree_object_store_race PRIVATE agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_file_worktree_object_store_race COMMAND test_file_worktree_object_store_race)
+# Real threads hammering real filesystem renames -- bounded, but give it room on a loaded CI runner.
+set_tests_properties(test_file_worktree_object_store_race PROPERTIES TIMEOUT 300)

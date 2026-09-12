@@ -102,7 +102,26 @@ public:
         // that was never actually placed on disk anywhere: a genuine I4 attributability gap, distinct
         // from and predating ADR-137's write/rename-failure handling below. `is_regular_file` forces
         // that case through the real write+rename path instead, where it now fails closed correctly.
-        if (!std::filesystem::is_regular_file(path)) {   // real dedup: an existing blob file is never rewritten
+        // The `error_code` overload, NOT the throwing one, and that is load-bearing rather than
+        // stylistic (GitHub issue #69). The throwing overload raises `filesystem_error` when Windows
+        // denies a status query on this path -- which happens for real, on THIS path, because another
+        // writer renaming onto it is exactly the case the rename-failure branch below documents and
+        // handles. Measured on a real Windows 11 host: 15263 throws of "status: Access is denied" in
+        // 2665982 queries while sibling threads renamed onto the same name. That exception escaped
+        // this function entirely, past the `result<T>` contract every other failure here fails closed
+        // into, and in `tests/test_content_durability_concurrency.cpp`'s own 16-thread same-digest
+        // case it escaped a `std::thread` body -- which on MSVC terminates the process with exit code
+        // 0xC0000409, the intermittent CI crash issue #69 was filed for.
+        //
+        // A failed status query is treated as "not present", which is the SAFE direction: the dedup
+        // check is a pure optimisation, and falling through costs one redundant temp-file write whose
+        // rename then hits the branch below that already handles a racing writer correctly by reading
+        // the destination back and recomputing its digest. Treating it as "present" would be the
+        // unsafe direction -- it would skip the write and report success for content that may never
+        // have landed.
+        std::error_code stat_ec;
+        bool const already_durable = std::filesystem::is_regular_file(path, stat_ec) && !stat_ec;
+        if (!already_durable) {   // real dedup: an existing blob file is never rewritten
             // Temp-file + atomic-rename, the same discipline `persist_snapshot_locked()`
             // (`ledger.hpp`) and `identity_authority.hpp`'s `persist_high_water_mark()` already use
             // elsewhere in this codebase -- a crash mid-write must never leave a half-written file
