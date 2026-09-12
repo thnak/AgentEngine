@@ -134,12 +134,44 @@ namespace agent_yaml_compiler_detail {
         // no equivalent policy tag for them either, so this is not a declarative-form-only gap.
     }
 
+    // I8 (budgets are enforced) is decided HERE for every declarative agent, so a bad value must be
+    // refused rather than coerced -- the same stance this file already takes for an unrecognized
+    // approval, concurrency or telemetry mode a few lines up.
+    //
+    // Both of these used to be a bare `static_cast` guarded only by `is_number()`. Every JSON number
+    // is a double, and `static_cast<std::uint32_t>(-1.0)` is undefined ([conv.fpint]); on these
+    // compilers it lands on 4294967295. So `max_turns: -1` -- which reads like "no limit" to anyone
+    // writing YAML, and is the natural thing to try -- compiled to the LARGEST representable limit,
+    // which `run_rounds()`'s `turn_index < *max_turns_` bound then treats as unbounded in practice.
+    // A declared budget silently became no budget. `token_budget: -1` did the same at 64 bits.
+    //
+    // It broke I6 as well: the native surface takes `std::optional<std::uint64_t>`, in which a
+    // negative limit cannot be spelled at all, so the declarative form accepted something its
+    // supposedly equivalent C++ counterpart rejects at compile time.
+    //
+    // A present-but-non-numeric value is refused too, rather than silently left at the default. A
+    // `limits:` block someone actually wrote and that quietly does nothing is the same failure in a
+    // quieter register.
     if (json::Value const* limits = spec->find("limits")) {
-        if (json::Value const* mt = limits->find("max_turns"); mt && mt->is_number()) {
-            meta.max_turns = static_cast<std::uint32_t>(mt->as_number());
+        if (json::Value const* mt = limits->find("max_turns")) {
+            auto bounded = json::as_bounded_integer(*mt, 0xFFFFFFFFull);
+            if (!bounded.has_value()) {
+                return std::unexpected(error{
+                    failure_class::contract,
+                    "limits.max_turns must be a whole number between 0 and 4294967295",
+                    "agent_yaml_compiler.invalid_limit"});
+            }
+            meta.max_turns = static_cast<std::uint32_t>(*bounded);
         }
-        if (json::Value const* tb = limits->find("token_budget"); tb && tb->is_number()) {
-            meta.token_budget = static_cast<std::uint64_t>(tb->as_number());
+        if (json::Value const* tb = limits->find("token_budget")) {
+            auto bounded = json::as_bounded_integer(*tb);
+            if (!bounded.has_value()) {
+                return std::unexpected(error{
+                    failure_class::contract,
+                    "limits.token_budget must be a whole, non-negative number",
+                    "agent_yaml_compiler.invalid_limit"});
+            }
+            meta.token_budget = *bounded;
         }
     }
 

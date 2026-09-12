@@ -2061,6 +2061,10 @@ add_test(NAME test_workflow_yaml_compiler COMMAND test_workflow_yaml_compiler)
 # ---- Milestone 7 Phase F3 -- 015 §2's Agent-document compiler (core\agent_yaml_compiler.hpp):
 # compiles a parsed YAML Agent document to a real AgentMetadata, cross-checked against register_
 # agent<A>()'s own C++-form output for the same agent (I6 in action) --------------------------
+add_executable(test_agent_yaml_limits test_agent_yaml_limits.cpp)
+target_link_libraries(test_agent_yaml_limits PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agent_yaml_limits COMMAND test_agent_yaml_limits)
+
 add_executable(test_agent_yaml_compiler test_agent_yaml_compiler.cpp)
 target_link_libraries(test_agent_yaml_compiler PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_yaml_compiler COMMAND test_agent_yaml_compiler)
