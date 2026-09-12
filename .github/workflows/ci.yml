@@ -397,7 +397,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "libFuzzer found a crash/hang/OOB read -- see the log above" }
 
   linux:
-    name: Linux / gcc-14 / Release (build-only — see file header)
+    name: Linux / gcc-14 / Release (build + test, non-sanitized)
     runs-on: ubuntu-latest
     # Bounds a hang. Without this a stuck ctest runs to GitHub's 6-hour
     # default -- the MSVC ASan leg has done exactly that, reporting one
@@ -451,7 +451,7 @@ jobs:
             -E '^(test_containerd_execution_surface|test_composed_containerd_providers_live|test_containerd_isolation)$'
 
       # `if: always()`: a GitHub Actions step only runs if every prior step in the job succeeded,
-      # by default -- without this, an unrelated failure in the step above (any of the ~185 other
+      # by default -- without this, an unrelated failure in the step above (any of the other
       # tests) would silently SKIP this step entirely rather than fail it, leaving the containerd
       # fix this ADR exists for completely unexercised while the job still correctly shows red for
       # the unrelated reason. `always()` runs it unconditionally; the job's own overall result still
