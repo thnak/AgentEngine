@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -439,6 +440,41 @@ inline void dump_into(Value const& v, std::string& out) {
     out.reserve(256);  // modest head-start; no cheap exact bound exists, just cuts reallocation churn
     detail::dump_into(v, out);
     return out;
+}
+
+
+// A JSON number turned into an integer WITHOUT the silent corruption `static_cast` gives you
+// (GitHub issue #72). Every JSON number is a `double`, and every one of these inputs is a value a
+// remote party can put on the wire:
+//
+//   -1        `static_cast<std::size_t>(-1.0)` is UNDEFINED ([conv.fpint]); on the compilers here it
+//             lands on SIZE_MAX, so a subsequent `resize(n + 1)` wraps to `resize(0)` and the
+//             "bounds check" that looked like one silently permits an out-of-bounds write.
+//   1e18      converts fine and then asks a container for an impossible size, throwing
+//             `std::length_error` out of whatever `result<T>`-returning function was parsing.
+//   1.5       is not the integer the caller believes it read.
+//   NaN, inf  are undefined to convert at all.
+//
+// So: finite, non-negative, integral, and inside `max`. Anything else is `nullopt` and the caller
+// decides -- these are all "skip this record" situations at the call sites that have them, not
+// reasons to fail a whole stream, which is why this returns an optional rather than a `result<T>`.
+//
+// `max` is compared AFTER the conversion, deliberately. Comparing `d > static_cast<double>(max)`
+// first is the obvious spelling and it is wrong for a large `max`: `static_cast<double>(UINT64_MAX)`
+// rounds UP to 2^64, so exactly 2^64 would slip through and then convert as undefined behaviour.
+// Screening on 2^64 as a double first makes the narrowing cast below always defined.
+[[nodiscard]] inline std::optional<std::uint64_t> as_bounded_integer(
+        Value const& v, std::uint64_t max = static_cast<std::uint64_t>(-1)) {
+    if (!v.is_number()) return std::nullopt;
+    double const d = v.as_number();
+    if (!std::isfinite(d)) return std::nullopt;
+    if (d < 0.0) return std::nullopt;
+    if (d != std::floor(d)) return std::nullopt;
+    // 2^64 exactly, the first double no std::uint64_t can represent.
+    if (d >= 18446744073709551616.0) return std::nullopt;
+    auto const n = static_cast<std::uint64_t>(d);
+    if (n > max) return std::nullopt;
+    return n;
 }
 
 }  // namespace agentengine::json

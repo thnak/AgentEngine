@@ -905,6 +905,16 @@ if(AGENTENGINE_WITH_HTTPS)
     agentengine::core agentengine::provider_http_client agentengine_warnings)
   add_test(NAME test_anthropic_chat_client_translation COMMAND test_anthropic_chat_client_translation)
 
+  # ---- GitHub issue #72 -- both streaming accumulators cast a provider-supplied tool-call /
+  # content-block index straight to std::size_t after checking only that it was a number. A negative
+  # one became SIZE_MAX, the resize that looked like a bounds check wrapped to resize(0), and the
+  # next line wrote out of bounds: segfault in Release, on one SSE chunk. Offline, both providers,
+  # with a positive control that the ordinary stream still parses.
+  add_executable(test_chat_stream_index_hardening test_chat_stream_index_hardening.cpp)
+  target_link_libraries(test_chat_stream_index_hardening PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings)
+  add_test(NAME test_chat_stream_index_hardening COMMAND test_chat_stream_index_hardening)
+
   # ---- ADR-173 (GitHub issue #61): the system-channel taint fence, proven on BOTH serializers ----
   # Lives with the protocol tests (not core) because its claim is about the WIRE bytes two different
   # backends produce, which is what needs the provider_http_client link both chat clients pull in.

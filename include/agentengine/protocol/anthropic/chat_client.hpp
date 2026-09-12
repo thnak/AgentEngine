@@ -867,8 +867,12 @@ private:
                 if (!parsed) continue;
                 auto const* idx = parsed->find("index");
                 auto const* cb = parsed->find("content_block");
-                if (!idx || !idx->is_number() || !cb) continue;
-                PendingBlock& b = ensure_index(static_cast<std::size_t>(idx->as_number()));
+                // Issue #72: bounded, not coerced. See core/chat_client.hpp's kMaxStreamBlockIndex.
+                auto const bounded =
+                    idx != nullptr ? json::as_bounded_integer(*idx, kMaxStreamBlockIndex)
+                                   : std::nullopt;
+                if (!bounded.has_value() || !cb) continue;
+                PendingBlock& b = ensure_index(static_cast<std::size_t>(*bounded));
                 b.seen = true;
                 if (auto const* type = cb->find("type"); type && type->is_string()) b.kind = type->as_string();
                 if (b.kind == "tool_use") {
@@ -884,8 +888,12 @@ private:
                 if (!parsed) continue;
                 auto const* idx = parsed->find("index");
                 auto const* delta = parsed->find("delta");
-                if (!idx || !idx->is_number() || !delta) continue;
-                PendingBlock& b = ensure_index(static_cast<std::size_t>(idx->as_number()));
+                // Issue #72: bounded, not coerced. See core/chat_client.hpp's kMaxStreamBlockIndex.
+                auto const bounded =
+                    idx != nullptr ? json::as_bounded_integer(*idx, kMaxStreamBlockIndex)
+                                   : std::nullopt;
+                if (!bounded.has_value() || !delta) continue;
+                PendingBlock& b = ensure_index(static_cast<std::size_t>(*bounded));
                 b.seen = true;
                 auto const* dtype = delta->find("type");
                 std::string const dkind = (dtype && dtype->is_string()) ? dtype->as_string() : std::string{};
@@ -930,8 +938,15 @@ private:
                 auto parsed = json::parse(ev.data);
                 if (!parsed) continue;
                 auto const* idx = parsed->find("index");
-                if (!idx || !idx->is_number()) continue;
-                std::size_t const index = static_cast<std::size_t>(idx->as_number());
+                // Issue #72. This site already bounds-checked before indexing, so it was never the
+                // out-of-bounds write the other two were -- but the cast itself is undefined for a
+                // negative or huge double, so it goes through the same guard rather than relying on
+                // SIZE_MAX happening to fail the check below on this compiler.
+                auto const bounded =
+                    idx != nullptr ? json::as_bounded_integer(*idx, kMaxStreamBlockIndex)
+                                   : std::nullopt;
+                if (!bounded.has_value()) continue;
+                std::size_t const index = static_cast<std::size_t>(*bounded);
                 if (index >= pending_by_index_.size()) continue;
                 PendingBlock const& b = pending_by_index_[index];
                 if (b.kind == "tool_use") {

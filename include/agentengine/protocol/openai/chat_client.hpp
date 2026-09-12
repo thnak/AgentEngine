@@ -838,8 +838,19 @@ private:
             if (auto const* tool_calls = delta->find("tool_calls"); tool_calls && tool_calls->is_array()) {
                 for (auto const& tc : tool_calls->as_array()) {
                     auto const* idx = tc.find("index");
-                    std::size_t const index =
-                        (idx && idx->is_number()) ? static_cast<std::size_t>(idx->as_number()) : 0;
+                    // Issue #72. An ABSENT index still means 0 -- a single-tool-call delta legally
+                    // omits it. A PRESENT one that is negative, fractional, non-finite or absurd is
+                    // skipped, not coerced: `static_cast<std::size_t>(-1.0)` is SIZE_MAX here, so
+                    // `resize(index + 1)` wrapped to `resize(0)` and the line below then wrote far
+                    // out of bounds -- a segfault in Release, from one SSE field. Coercing a hostile
+                    // index to 0 instead would be its own bug, quietly corrupting the real call at
+                    // index 0, so a bad fragment is dropped exactly like every other malformed one.
+                    std::size_t index = 0;
+                    if (idx != nullptr) {
+                        auto const bounded = json::as_bounded_integer(*idx, kMaxStreamBlockIndex);
+                        if (!bounded.has_value()) continue;
+                        index = static_cast<std::size_t>(*bounded);
+                    }
                     if (index >= pending_by_index_.size()) pending_by_index_.resize(index + 1);
                     PendingToolCall& acc = pending_by_index_[index];
                     acc.seen = true;

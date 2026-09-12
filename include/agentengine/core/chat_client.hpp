@@ -140,6 +140,18 @@ struct ChatResponse {
 // type at this layer rather than reused directly, since `core/` (backend-facing) and
 // `run_event_payload` (session/UI-facing) are deliberately different vocabularies elsewhere in this
 // file too (e.g. `ChatResponseUpdate::delta` vs `ModelDelta`).
+// The largest per-stream block/tool-call index either backend's accumulator will honour (GitHub
+// issue #72). Both wire formats identify a streamed fragment by an integer index and both
+// accumulators keep a vector keyed on it, so the index is a REMOTE PARTY choosing how much memory
+// this process allocates. It is bounded here rather than trusted.
+//
+// 4096 is far above anything real -- OpenAI's parallel tool-call fan-out and Anthropic's content
+// blocks are single or low double digits in every observed response -- and far below anything that
+// matters as an allocation. An index past it means the stream is malformed or hostile, and the
+// fragment carrying it is skipped, which is the same thing both accumulators already do with every
+// other unparseable fragment.
+inline constexpr std::uint64_t kMaxStreamBlockIndex = 4096;
+
 struct ToolCallArgumentChunk {
     std::string call_id;
     std::string tool_name;           // present on the fragment that opens the call
