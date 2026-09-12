@@ -78,9 +78,20 @@ std::vector<DiscoveredExecutable> scan_path(std::vector<std::string> const& gran
         std::error_code ec;
         if (!std::filesystem::is_directory(dir, ec) || ec) continue;  // stale PATH entry -- skip, not an error
 
-        for (auto const& entry : std::filesystem::directory_iterator(dir, ec)) {
-            if (ec) break;
-            if (!entry.is_regular_file(ec) || ec) continue;
+        // Best-effort by design: a stale or unreadable PATH entry is skipped, never an error. But a
+        // range-for calls the THROWING `operator++`, so a directory vanishing mid-scan threw
+        // `filesystem_error` out of a function that returns no `result` to fail through. An explicit
+        // `increment(ec)` loop keeps the skip-and-continue behaviour without that. See fs_walk.hpp;
+        // this body's five `continue`s are why it is spelled out here rather than using the visitor.
+        std::filesystem::directory_iterator it(dir, ec);
+        if (ec) continue;
+        std::filesystem::directory_iterator const walk_end;
+        for (; it != walk_end; it.increment(ec)) {
+            // A failed increment leaves `it` equal to end, so the loop condition ends this PATH
+            // entry's scan on the next round -- best-effort, and never a throw.
+            auto const& entry = *it;
+            std::error_code kind_ec;
+            if (!entry.is_regular_file(kind_ec) || kind_ec) continue;
 
             std::string const filename = entry.path().filename().string();
             std::string short_name;

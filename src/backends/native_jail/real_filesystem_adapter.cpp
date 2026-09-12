@@ -3,6 +3,8 @@
 
 #include "backends/native_jail/real_filesystem_adapter.hpp"
 
+#include "agentengine/core/fs_walk.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -321,14 +323,39 @@ result<std::vector<DirEntry>> RealFileSystemAdapter::list_directory(std::string_
             ae::error{failure_class::contract, "not a directory: " + std::string(path),
                       "shell.fs.not_a_directory"});
     }
+    // Three swallowed errors here before: the iterator's `ec` was never re-read after construction,
+    // its `operator++` was the throwing one (a range-for always calls that), and `is_directory`/
+    // `file_size` reused that same `ec` without anyone ever testing it -- so a file removed between
+    // the listing and the stat reported `size_bytes == 0` as though it were empty. See fs_walk.hpp.
     std::vector<DirEntry> entries;
-    for (auto const& e : std::filesystem::directory_iterator(*resolved, ec)) {
-        DirEntry de;
-        de.name         = e.path().filename().string();
-        de.is_directory = e.is_directory(ec);
-        de.size_bytes   = de.is_directory ? 0 : static_cast<std::uint64_t>(e.file_size(ec));
-        entries.push_back(std::move(de));
-    }
+    auto listed = ae::fs_walk::for_each_directory_entry(
+        *resolved, "failed to list directory", "shell.fs.list_failed",
+        [&](std::filesystem::directory_entry const& e) -> ae::result<void> {
+            DirEntry de;
+            de.name = e.path().filename().string();
+            std::error_code kind_ec;
+            de.is_directory = e.is_directory(kind_ec);
+            if (kind_ec) {
+                return std::unexpected(ae::error{failure_class::contract,
+                                                 "failed to stat a directory entry: " + kind_ec.message(),
+                                                 "shell.fs.list_failed", kind_ec.value()});
+            }
+            if (de.is_directory) {
+                de.size_bytes = 0;
+            } else {
+                std::error_code size_ec;
+                auto const size = std::filesystem::file_size(e.path(), size_ec);
+                if (size_ec) {
+                    return std::unexpected(ae::error{failure_class::contract,
+                                                     "failed to size a directory entry: " + size_ec.message(),
+                                                     "shell.fs.list_failed", size_ec.value()});
+                }
+                de.size_bytes = static_cast<std::uint64_t>(size);
+            }
+            entries.push_back(std::move(de));
+            return ae::result<void>{};
+        });
+    if (!listed.has_value()) return std::unexpected(listed.error());
     return entries;
 }
 

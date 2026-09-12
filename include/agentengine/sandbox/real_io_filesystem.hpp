@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/fs_walk.hpp"
 #include "agentengine/core/ledger.hpp"
 #include "agentengine/core/worktree_types.hpp"
 #include "agentengine/rt/async_mutex.hpp"
@@ -181,15 +182,38 @@ public:
             agentengine::Ledger<Store>& ledger, agentengine::IdentityHandle author) {
         agentengine::rt::AsyncMutex::Guard commit_guard = co_await commit_lock_->lock();
 
+        // This walks a directory a container was writing to moments ago, so a file vanishing
+        // mid-scan or a subdirectory that cannot be read are the expected failures, not exotic ones.
+        // Every query here previously used a THROWING overload -- `exists`, the iterator's
+        // constructor, its `operator++` (which a range-for always calls), and `relative` -- inside a
+        // coroutine whose declared contract is `result<Tree>`. See fs_walk.hpp for the measurements
+        // behind that; this is issue #71's class.
         std::vector<std::pair<std::string, std::vector<std::byte>>> collected;
-        if (std::filesystem::exists(host_root_)) {
-            for (auto const& entry : std::filesystem::recursive_directory_iterator(host_root_)) {
-                if (!entry.is_regular_file()) continue;
-                std::string rel = std::filesystem::relative(entry.path(), host_root_).generic_string();
-                auto bytes = read_real_file(rel);
-                if (!bytes.has_value()) co_return std::unexpected(bytes.error());
-                collected.emplace_back(std::move(rel), std::move(*bytes));
-            }
+        std::error_code exists_ec;
+        if (std::filesystem::exists(host_root_, exists_ec) && !exists_ec) {
+            auto walked = agentengine::fs_walk::for_each_regular_file_recursive(
+                host_root_, std::filesystem::directory_options::none,
+                "failed to scan the sandbox working directory", "real_io.scan_walk_failed",
+                [&](std::filesystem::directory_entry const& entry) -> agentengine::result<void> {
+                    // `relative()` (weakly-canonical, symlink-following) rather than
+                    // `lexically_relative()` is what this site has always used; only the discarded
+                    // error is being fixed here, not the resolution semantics.
+                    std::error_code rel_ec;
+                    std::filesystem::path const rel_path =
+                        std::filesystem::relative(entry.path(), host_root_, rel_ec);
+                    if (rel_ec) {
+                        return std::unexpected(agentengine::error{
+                            agentengine::failure_class::contract,
+                            "failed to relativize a scanned path: " + rel_ec.message(),
+                            "real_io.scan_walk_failed", rel_ec.value()});
+                    }
+                    std::string rel = rel_path.generic_string();
+                    auto bytes = read_real_file(rel);
+                    if (!bytes.has_value()) return std::unexpected(bytes.error());
+                    collected.emplace_back(std::move(rel), std::move(*bytes));
+                    return agentengine::result<void>{};
+                });
+            if (!walked.has_value()) co_return std::unexpected(walked.error());
         }
         for (auto const& [rel, bytes] : collected) {
             if (!ledger.would_accept_blob_write(bytes, author)) {

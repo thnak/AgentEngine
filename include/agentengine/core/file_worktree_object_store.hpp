@@ -29,6 +29,7 @@
 //   - Doc comments reference this file's own real location and the real `Ledger<Store>` constructor
 //     it composes with, rather than the standalone probe's own framing.
 
+#include "agentengine/core/fs_walk.hpp"
 #include "agentengine/core/worktree_types.hpp"
 
 #include <algorithm>
@@ -290,23 +291,28 @@ public:
     }
 
     // Test-only introspection, mirroring InMemoryWorktreeObjectStore's own blob_count()/tree_count().
+    // Deliberately best-effort -- an unreadable directory counts as zero, which is what these
+    // introspection helpers already did. What changed is that a concurrent removal mid-iteration now
+    // ends the count instead of throwing `filesystem_error` out of a plain accessor.
     [[nodiscard]] std::size_t blob_count() const {
         std::size_t n = 0;
-        std::error_code ec;
-        for (auto const& e : std::filesystem::directory_iterator(root_ / "blobs", ec)) {
-            (void)e;
-            ++n;
-        }
+        (void)agentengine::fs_walk::for_each_directory_entry(
+            root_ / "blobs", "failed to list blobs", "file_worktree_store.list_failed",
+            [&](std::filesystem::directory_entry const&) -> agentengine::result<void> {
+                ++n;
+                return agentengine::result<void>{};
+            });
         return n;
     }
 
     [[nodiscard]] std::size_t tree_count() const {
         std::size_t n = 0;
-        std::error_code ec;
-        for (auto const& e : std::filesystem::directory_iterator(root_ / "trees", ec)) {
-            (void)e;
-            ++n;
-        }
+        (void)agentengine::fs_walk::for_each_directory_entry(
+            root_ / "trees", "failed to list trees", "file_worktree_store.list_failed",
+            [&](std::filesystem::directory_entry const&) -> agentengine::result<void> {
+                ++n;
+                return agentengine::result<void>{};
+            });
         return n;
     }
 

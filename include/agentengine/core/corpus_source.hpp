@@ -99,6 +99,7 @@
 #include "agentengine/core/corpus_chunk.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/embedder.hpp"
+#include "agentengine/core/fs_walk.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/task.hpp"
 #include "agentengine/core/vector_index.hpp"
@@ -531,20 +532,19 @@ public:
         // Mirrors `skill_source_detail::collect_files` (skill_source.hpp) exactly: same iterator,
         // same options, same `lexically_relative`+`generic_string()` POSIX-join, same "a walk error
         // aborts the whole call" stance.
-        for (auto const& entry : std::filesystem::recursive_directory_iterator(
-                 root_, std::filesystem::directory_options::skip_permission_denied, ec)) {
-            if (ec) {
-                co_return std::unexpected(error{failure_class::contract,
-                                                 "failed to walk corpus source directory: " + ec.message(),
-                                                 "corpus_source.disk_read_failed"});
-            }
-            if (!entry.is_regular_file()) continue;
-
+        // The `if (ec)` that used to sit at the top of this loop body could never run: a failed
+        // iterator construction leaves the iterator equal to end, so the body was skipped entirely
+        // and an unreadable root reported a successful scan of ZERO files. The increment threw, too.
+        // See fs_walk.hpp for both measurements.
+        auto walked = fs_walk::for_each_regular_file_recursive(
+            root_, std::filesystem::directory_options::skip_permission_denied,
+            "failed to walk corpus source directory", "corpus_source.disk_read_failed",
+            [&](std::filesystem::directory_entry const& entry) -> result<void> {
             std::ifstream in(entry.path(), std::ios::binary);
             if (!in) {
-                co_return std::unexpected(error{failure_class::contract,
-                                                 "failed to open corpus source file: " + entry.path().string(),
-                                                 "corpus_source.disk_read_failed"});
+                return std::unexpected(error{failure_class::contract,
+                                              "failed to open corpus source file: " + entry.path().string(),
+                                              "corpus_source.disk_read_failed"});
             }
             std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
             std::string const posix_rel = entry.path().lexically_relative(root_).generic_string();
@@ -552,19 +552,22 @@ public:
 
             auto content_bytes = std::as_bytes(std::span{content.data(), content.size()});
             auto file_hash = compute_digest(content_bytes);
-            if (!file_hash) co_return std::unexpected(file_hash.error());
+            if (!file_hash) return std::unexpected(file_hash.error());
 
             auto const prev_it = previous_file_hashes.find(posix_rel);
             bool const unchanged = prev_it != previous_file_hashes.end() && prev_it->second == *file_hash;
             out.file_hashes.emplace(posix_rel, *file_hash);
             if (unchanged) {
                 ++out.files_unchanged;
-                continue;  // §2.4A: no chunking, no embedding, no index/store/record writes at all
-                           // for this file's chunks -- this is the whole point of claim 2.
+                return result<void>{};  // §2.4A: no chunking, no embedding, no index/store/record
+                                        // writes at all for this file's chunks -- this is the whole
+                                        // point of claim 2.
             }
             ++out.files_changed;
             changed_files.push_back(ChangedFile{posix_rel, std::move(content), *file_hash});
-        }
+            return result<void>{};
+        });
+        if (!walked.has_value()) co_return std::unexpected(walked.error());
 
         // --- Chunk every changed file, dedup against the index AND within this pass --------------------
         struct PendingChunk {

@@ -23,6 +23,7 @@
 #include <string_view>
 #include <vector>
 
+#include "agentengine/core/fs_walk.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/skill.hpp"
 
@@ -114,28 +115,28 @@ namespace skill_source_detail {
                                                   std::vector<SkillBundleFile>& out) {
     std::error_code ec;
     if (!std::filesystem::exists(dir, ec) || ec) return {};
-    for (auto const& entry : std::filesystem::recursive_directory_iterator(
-             dir, std::filesystem::directory_options::skip_permission_denied, ec)) {
-        if (ec) {
-            return std::unexpected(error{failure_class::contract,
-                                          "failed to walk skill bundle directory: " + ec.message(),
-                                          "skill.disk_read_failed"});
-        }
-        if (!entry.is_regular_file()) continue;
-        std::ifstream in(entry.path(), std::ios::binary);
-        if (!in) {
-            return std::unexpected(error{failure_class::contract,
-                                          "failed to open skill bundle file: " + entry.path().string(),
-                                          "skill.disk_read_failed"});
-        }
-        std::string const content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        std::vector<std::byte> bytes(reinterpret_cast<std::byte const*>(content.data()),
-                                      reinterpret_cast<std::byte const*>(content.data()) + content.size());
-        std::filesystem::path const rel = entry.path().lexically_relative(skill_root);
-        std::string posix_rel = rel.generic_string();
-        out.push_back(SkillBundleFile{std::move(posix_rel), std::move(bytes)});
-    }
-    return {};
+    // The `if (ec)` that used to sit at the top of this loop body could never run: a failed iterator
+    // construction leaves the iterator equal to end, so the body is skipped entirely and this
+    // returned an EMPTY bundle with no error. The increment threw, too. See fs_walk.hpp.
+    return fs_walk::for_each_regular_file_recursive(
+        dir, std::filesystem::directory_options::skip_permission_denied,
+        "failed to walk skill bundle directory", "skill.disk_read_failed",
+        [&](std::filesystem::directory_entry const& entry) -> result<void> {
+            std::ifstream in(entry.path(), std::ios::binary);
+            if (!in) {
+                return std::unexpected(error{failure_class::contract,
+                                              "failed to open skill bundle file: " + entry.path().string(),
+                                              "skill.disk_read_failed"});
+            }
+            std::string const content((std::istreambuf_iterator<char>(in)),
+                                       std::istreambuf_iterator<char>());
+            std::vector<std::byte> bytes(reinterpret_cast<std::byte const*>(content.data()),
+                                          reinterpret_cast<std::byte const*>(content.data()) + content.size());
+            std::filesystem::path const rel = entry.path().lexically_relative(skill_root);
+            std::string posix_rel = rel.generic_string();
+            out.push_back(SkillBundleFile{std::move(posix_rel), std::move(bytes)});
+            return result<void>{};
+        });
 }
 
 }  // namespace skill_source_detail
@@ -162,18 +163,22 @@ public:
         }
 
         std::vector<SkillSourceResult> results;
-        for (auto const& entry : std::filesystem::directory_iterator(root_, ec)) {
-            if (ec) {
+        auto listed = fs_walk::for_each_directory_entry(
+            root_, "failed to list skill source root", "skill.disk_read_failed",
+            [&](std::filesystem::directory_entry const& entry) -> result<void> {
+            std::error_code dir_ec;
+            bool const is_dir = entry.is_directory(dir_ec);
+            if (dir_ec) {
                 return std::unexpected(error{failure_class::contract,
-                                              "failed to list skill source root: " + ec.message(),
-                                              "skill.disk_read_failed"});
+                                              "failed to stat a skill source entry: " + dir_ec.message(),
+                                              "skill.disk_read_failed", dir_ec.value()});
             }
-            if (!entry.is_directory()) continue;
+            if (!is_dir) return result<void>{};
 
             std::filesystem::path const manifest_path = entry.path() / "SKILL.md";
             std::error_code manifest_ec;
             if (!std::filesystem::is_regular_file(manifest_path, manifest_ec) || manifest_ec) {
-                continue;  // no SKILL.md here -- not a skill directory, not an error
+                return result<void>{};  // no SKILL.md here -- not a skill directory, not an error
             }
 
             std::ifstream in(manifest_path, std::ios::binary);
@@ -200,7 +205,9 @@ public:
             }
 
             results.push_back(SkillSourceResult{std::move(*skill), std::move(files)});
-        }
+            return result<void>{};
+        });
+        if (!listed.has_value()) return std::unexpected(listed.error());
         return results;
     }
 

@@ -2077,6 +2077,10 @@ add_executable(test_json_value test_json_value.cpp)
 target_link_libraries(test_json_value PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_json_value COMMAND test_json_value)
 
+add_executable(test_fs_walk test_fs_walk.cpp)
+target_link_libraries(test_fs_walk PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_fs_walk COMMAND test_fs_walk)
+
 add_executable(test_json_parse_allocation test_json_parse_allocation.cpp)
 target_link_libraries(test_json_parse_allocation PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_json_parse_allocation COMMAND test_json_parse_allocation)
