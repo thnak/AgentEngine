@@ -241,9 +241,38 @@ public:
         // directory tree.
         std::lock_guard<std::mutex> guard(*sync_mutex_);
 
+        // A rollback that cannot wipe must not report that it wiped. This `ec` was previously
+        // constructed and never read. The failure it swallowed is not exotic on Windows: a file held
+        // open by any other process makes `remove_all` return -1 with ERROR_SHARING_VIOLATION, which
+        // is the routine shape here because the directory being cleared is the one an execution
+        // surface was just reading from. Every subsequent line then behaved as though the wipe had
+        // happened -- `create_directories` on a root that still exists reports no error at all, and
+        // the loop below only writes the entries the Tree names, so anything NOT in the Tree simply
+        // survived -- and the function returned success.
+        //
+        // What that costs, given this method's two callers: `SandboxRuntime::run()` step 3 pushes
+        // `host_root_` into the execution surface, so the next turn's command sees files the
+        // rollback was supposed to have erased; and `commit()` recursively scans `host_root_` and
+        // commits everything it finds under the caller's identity, so those same files re-enter
+        // durable history attributed to an author who never wrote them (I4).
         std::error_code ec;
         std::filesystem::remove_all(host_root_, ec);
-        std::filesystem::create_directories(host_root_);
+        if (ec) {
+            co_return std::unexpected(agentengine::error{
+                agentengine::failure_class::fatal,
+                "could not clear the sandbox working directory before materializing: " + ec.message(),
+                "real_io.materialize_wipe_failed", ec.value()});
+        }
+        // This was the throwing overload, so a failure here unwound out of a `task<result<void>>`
+        // instead of failing closed through it -- the defect class audited in issue #71.
+        std::error_code mkroot_ec;
+        std::filesystem::create_directories(host_root_, mkroot_ec);
+        if (mkroot_ec) {
+            co_return std::unexpected(agentengine::error{
+                agentengine::failure_class::fatal,
+                "could not recreate the sandbox working directory: " + mkroot_ec.message(),
+                "real_io.materialize_root_create_failed", mkroot_ec.value()});
+        }
 
         for (auto const& entry : tree->entries) {
             auto bytes = ledger.get_blob_safe(entry.digest, caller);
@@ -251,6 +280,13 @@ public:
             std::filesystem::path const full_parent = (host_root_ / entry.name).parent_path();
             std::error_code mkdir_ec;
             std::filesystem::create_directories(full_parent, mkdir_ec);
+            if (mkdir_ec) {
+                co_return std::unexpected(agentengine::error{
+                    agentengine::failure_class::fatal,
+                    "could not create the parent directory for materialized entry '" + entry.name +
+                        "': " + mkdir_ec.message(),
+                    "real_io.materialize_parent_create_failed", mkdir_ec.value()});
+            }
             auto written = write_verified(entry.name, *bytes);
             if (!written.has_value()) co_return std::unexpected(written.error());
         }

@@ -2081,6 +2081,12 @@ add_executable(test_json_parse_allocation test_json_parse_allocation.cpp)
 target_link_libraries(test_json_parse_allocation PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_json_parse_allocation COMMAND test_json_parse_allocation)
 
+# No daemon, no network: it drives RealIoFileSystem::materialize() directly against a real temp
+# directory, so it does NOT belong on any of ci.yml's daemon-requiring exclusion lists.
+add_executable(test_real_io_materialize_wipe_failure test_real_io_materialize_wipe_failure.cpp)
+target_link_libraries(test_real_io_materialize_wipe_failure PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+add_test(NAME test_real_io_materialize_wipe_failure COMMAND test_real_io_materialize_wipe_failure)
+
 # ---- wasmtime C API smoke proof (M2 Phase D task D1, decision 5) -------------------------------
 # Only built when AGENTENGINE_WITH_WASM is explicitly turned ON (root CMakeLists.txt) -- proves the
 # vendored dependency itself links and runs a real WebAssembly module, independent of the real
