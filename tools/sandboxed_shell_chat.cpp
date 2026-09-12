@@ -64,6 +64,7 @@
 
 #include "agentengine/core/composed_context_provider.hpp"
 #include "agentengine/core/session_builder.hpp"
+#include "agentengine/pal/console.hpp"
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
 #include "agentengine/trust/secret_quarantine.hpp"
@@ -78,6 +79,13 @@
 
 int main(int argc, char** argv) {
     using namespace agentengine;
+
+    // GitHub issue #48, first statement on purpose. The Windows console decodes bytes through its
+    // OUTPUT code page when they reach it, not when they enter std::cout's buffer -- so a real
+    // model's em dashes and accented letters only survive if this runs before the very first write,
+    // including the orphan-sweep report just below. Restored on return, because the code page
+    // belongs to the window the parent shell is still using. A no-op off Windows.
+    ::agentengine::pal::ConsoleUtf8Scope console_utf8;
 
     // ADR-108 §7 residual, closed here: an explicit, best-effort startup sweep for containers this
     // same naming scheme orphaned on a PRIOR run of this tool (a crash, a SIGKILL, or an ordinary exit

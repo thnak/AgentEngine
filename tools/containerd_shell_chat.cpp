@@ -32,6 +32,7 @@
 
 #include "agentengine/core/composed_context_provider.hpp"
 #include "agentengine/core/session_builder.hpp"
+#include "agentengine/pal/console.hpp"
 #include "agentengine/sandbox/containerd_execution_surface.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
 #include "agentengine/trust/secret_quarantine.hpp"
@@ -46,6 +47,13 @@
 
 int main(int argc, char** argv) {
     using namespace agentengine;
+
+    // GitHub issue #48, carried here for uniformity with this tool's three siblings rather than for
+    // an effect it has today: this target is Linux-only (see the root CMakeLists' `NOT WIN32` gate),
+    // and off Windows the scope is an empty no-op, because a POSIX terminal decodes by locale. It is
+    // present so that a future Windows port of the containerd surface does not quietly ship the
+    // mojibake bug its Docker sibling just had fixed.
+    ::agentengine::pal::ConsoleUtf8Scope console_utf8;
 
     // ADR-108 §7 residual, closed here: an explicit, best-effort startup sweep for containers this
     // same naming scheme orphaned on a PRIOR run of this tool -- see tools/sandboxed_shell_chat.cpp's

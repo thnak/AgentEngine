@@ -47,6 +47,7 @@
 
 #include "agentengine/core/file_worktree_object_store.hpp"
 #include "agentengine/core/session_builder.hpp"
+#include "agentengine/pal/console.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
@@ -78,6 +79,13 @@ namespace {
 
 int main(int argc, char** argv) {
     using namespace agentengine;
+
+    // GitHub issue #48, first statement on purpose. The Windows console decodes bytes through its
+    // OUTPUT code page when they reach it, not when they enter std::cout's buffer -- so a real
+    // model's em dashes and accented letters only survive if this runs before the very first write,
+    // including the orphan-sweep report just below. Restored on return, because the code page
+    // belongs to the window the parent shell is still using. A no-op off Windows.
+    ::agentengine::pal::ConsoleUtf8Scope console_utf8;
 
     {
         DockerCliBackend orphan_sweep;

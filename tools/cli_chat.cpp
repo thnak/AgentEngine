@@ -78,6 +78,7 @@
 #include "agentengine/core/skill_provider.hpp"
 #include "agentengine/core/skill_tool_scoping.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
+#include "agentengine/pal/console.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/protocol/anthropic/chat_client.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
@@ -96,6 +97,20 @@
 using namespace agentengine;
 
 namespace {
+
+// GitHub issue #48. The console's code page is set here, once, before anything in this process
+// writes a byte -- a real model's reply routinely contains an em dash or a curly quote, and a
+// Windows console left on its OEM page renders every one of those as mojibake.
+//
+// A function-local static rather than a local in `main()` because this CLI's success path ends in
+// `std::_Exit(0)` (see `run_interactive()`'s teardown below), which runs no destructor: the console
+// has to be put back BY HAND on the line before that call, from a different function than the one
+// that set it. Construction order is therefore first-use, not link order, and `restore()` is
+// idempotent so the eventual destructor -- if this ever exits normally -- does nothing twice.
+::agentengine::pal::ConsoleUtf8Scope& console_utf8() {
+    static ::agentengine::pal::ConsoleUtf8Scope scope;
+    return scope;
+}
 
 [[nodiscard]] std::string env_or(char const* name, std::string fallback) {
     auto const v = ::agentengine::pal::env_var(name);
@@ -1120,6 +1135,11 @@ template <class Inner>
     // a host reboot) cleans it up. Not fixed here -- doing so needs a real reclaim mechanism (the
     // same "persist instance ids somewhere reclaimable" follow-on work Phase 3's own residual
     // already named), not a one-off special case in this CLI alone.
+
+    // Issue #48: `_Exit` runs no destructor and no atexit handler, so the console's code page
+    // is the one piece of shared, outside-this-process state that has to be put back by hand.
+    // It belongs to the window the parent shell is still using.
+    console_utf8().restore();
     std::_Exit(0);
 }
 
@@ -1133,6 +1153,10 @@ template <class Inner>
 constexpr char const* kSessionId = "cli-chat-session";
 
 int main() {
+    // Issue #48, first statement on purpose: the console decodes bytes when they reach it, so this
+    // has to happen before the very first write -- including the orphan-sweep report just below.
+    console_utf8();
+
     // ADR-136: this CLI's own top comment (~line 1088) already discloses that a real container from
     // `run_command` is orphaned on EVERY ordinary exit here (the `std::_Exit(0)` teardown below skips
     // `DockerExecutionSurface::~DockerExecutionSurface()` deliberately, to dodge a real CPython

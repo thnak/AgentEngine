@@ -42,6 +42,7 @@
 #include <vector>
 
 #include "agentengine/core/json_value.hpp"
+#include "agentengine/pal/console.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/protocol/anthropic/chat_client.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
@@ -294,6 +295,11 @@ void print_results(json::Value const& completed_batch, char const* label, bool a
 }  // namespace
 
 int main() {
+    // GitHub issue #48. Not interactive, but it prints a real model's own replies, which is the same
+    // bug: a Windows console left on its OEM code page renders every non-ASCII byte as mojibake.
+    // First statement, because the console decodes when bytes reach it, not when they are buffered.
+    ::agentengine::pal::ConsoleUtf8Scope console_utf8;
+
     auto const key_env = ::agentengine::pal::env_var("AGENTENGINE_OPENROUTER_API_KEY");
     if (!key_env || key_env->empty()) {
         std::fprintf(stderr,

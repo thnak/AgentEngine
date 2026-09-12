@@ -3779,3 +3779,14 @@ endif()
 add_executable(test_bounded_reflection test_bounded_reflection.cpp)
 target_link_libraries(test_bounded_reflection PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_bounded_reflection COMMAND test_bounded_reflection)
+
+# ---- GitHub issue #48 -- pal/console.hpp, the one place a Windows console is put into UTF-8 so a
+# real model's em dashes and accented letters do not reach the terminal as OEM-code-page mojibake.
+# Header-only and daemon-free; reads the code page back through Win32 rather than inspecting glyphs,
+# since a test's own stdout under ctest is a pipe where nothing is transcoded at all.
+add_executable(test_console_utf8 test_console_utf8.cpp)
+target_link_libraries(test_console_utf8 PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_console_utf8 COMMAND test_console_utf8)
+# Every console wait inside the test is already bounded, but the input half blocks on a real console
+# handle, so a hard ceiling here too: a hung console must fail this leg, never stall it.
+set_tests_properties(test_console_utf8 PROPERTIES TIMEOUT 60)
