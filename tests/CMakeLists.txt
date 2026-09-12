@@ -2077,6 +2077,11 @@ add_executable(test_json_value test_json_value.cpp)
 target_link_libraries(test_json_value PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_json_value COMMAND test_json_value)
 
+add_executable(test_block_on_exception test_block_on_exception.cpp)
+target_link_libraries(test_block_on_exception PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_block_on_exception COMMAND test_block_on_exception)
+set_tests_properties(test_block_on_exception PROPERTIES TIMEOUT 60)
+
 add_executable(test_fs_walk test_fs_walk.cpp)
 target_link_libraries(test_fs_walk PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_fs_walk COMMAND test_fs_walk)

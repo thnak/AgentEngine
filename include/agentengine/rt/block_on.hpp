@@ -44,9 +44,15 @@
 // already been destroyed. `agentengine::rt::task<T>`'s own `FinalAwaiter` is deliberately NOT reused
 // for this driver (it has a different job -- resuming a `continuation_`, or none) -- signaling as an
 // ordinary body statement BEFORE reaching final_suspend is exactly the bug this file exists to avoid.
+//
+// EXCEPTIONS: an exception escaping the driven task is captured and rethrown on the CALLING thread by
+// `BlockOnState::take()`, the same contract `std::future` offers. This driver used to call
+// `std::terminate()` instead -- see `promise_type::unhandled_exception()` below for why that was
+// wrong and what it cost.
 
 #include <atomic>
 #include <coroutine>
+#include <exception>
 #include <optional>
 #include <thread>
 #include <utility>
@@ -61,18 +67,28 @@ public:
     // Stores the delivered value -- safe to call from the coroutine body BEFORE final_suspend, since
     // nothing reads `value_` until `ready()` observes the flag this does NOT set.
     void set_value(T value) { value_.emplace(std::move(value)); }
+    // Stores an escaping exception under the SAME timing rule as `set_value()`, and for the same
+    // reason: written before the flag, read only once `ready()` has observed it. A coroutine whose
+    // `unhandled_exception()` returns normally still runs `final_suspend()`, so recording the fault
+    // here does not cost the completion signal.
+    void set_fault(std::exception_ptr fault) noexcept { fault_ = std::move(fault); }
     // The actual cross-thread signal -- must be called ONLY from a point that is guaranteed to be the
     // last touch on the signaling frame (see `block_on_detail::SignalTask` below).
     void signal_done() { flag_.store(true, std::memory_order_release); }
     [[nodiscard]] bool ready() const noexcept { return flag_.load(std::memory_order_acquire); }
     [[nodiscard]] T take() {
         while (!ready()) std::this_thread::yield();
+        // Before `value_`, necessarily: a driven task that threw never reached `set_value()`, so
+        // dereferencing the optional first would be undefined behaviour on exactly the path this
+        // exists to handle.
+        if (fault_) std::rethrow_exception(fault_);
         return std::move(*value_);
     }
 
 private:
     std::atomic<bool> flag_{false};
     std::optional<T> value_;
+    std::exception_ptr fault_;
 };
 
 namespace block_on_detail {
@@ -116,8 +132,20 @@ struct SignalTask {
         [[nodiscard]] FinalAwaiter final_suspend() noexcept { return {}; }
 
         void return_void() noexcept {}
-        void unhandled_exception() { std::terminate(); }  // matches the prove-phase original's own
-                                                              // no-exception-handling posture
+        // This was `std::terminate()`, carried over from the prove-phase original's own
+        // no-exception-handling posture. That posture was wrong once this driver reached production
+        // callers. `agentengine::rt::task<T>` deliberately CATCHES an exception into its promise and
+        // rethrows it at the awaiting `co_await` -- which is the `co_await inner` in
+        // `drive_and_signal()` below. So every throw anywhere inside any task driven through
+        // `block_on()` landed here and killed the process, turning a failure a caller could have
+        // handled into one nobody can. `sandbox/ustar_writer.hpp`'s own comment records a red-team
+        // reproducing exactly that, via a `filesystem_error` from an unreadable subdirectory.
+        //
+        // The fault is now carried out to the calling thread and rethrown there by `take()`, which
+        // is what a synchronous driver is supposed to do (`std::future` has the same contract). No
+        // current caller drives `block_on()` from a destructor or a `noexcept` function, so nothing
+        // trades a terminate here for a terminate somewhere worse; checked before making the change.
+        void unhandled_exception() noexcept { state->set_fault(std::current_exception()); }
     };
 
     explicit SignalTask(std::coroutine_handle<promise_type> h) noexcept : h_(h) {}
