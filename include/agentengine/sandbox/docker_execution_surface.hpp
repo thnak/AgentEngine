@@ -1362,6 +1362,16 @@ public:
                                          std::filesystem::perms::owner_read |
                                              std::filesystem::perms::owner_write,
                                          std::filesystem::perm_options::replace, ec);
+            // That `ec` used to be set and never read, which made the paragraph above a claim rather
+            // than a fact: if the call failed, the archive stayed at whatever the umask gave it
+            // (0644 was the measured default -- a world-readable copy of the entire worktree) and
+            // nothing said so. A hardening step that cannot report its own failure is not hardening.
+            if (ec) {
+                return std::unexpected(agentengine::error{
+                    agentengine::failure_class::fatal,
+                    "cannot restrict the staged seed archive to owner-only: " + ec.message(),
+                    "docker_cli_backend.seed_stage_permissions_failed", ec.value()});
+            }
             auto written = agentengine::ustar::write_archive_as_root(host_dir, archive);
             if (!written.has_value()) return std::unexpected(written.error());
             archive.flush();
@@ -1593,7 +1603,19 @@ public:
         if (!inst.has_value()) return std::unexpected(inst.error());
         instance_ = *inst;
 
-        if (!std::filesystem::exists(host_dir)) return agentengine::result<void>{};  // nothing to seed yet
+        // The error_code overload: a status query that cannot be answered is not the same as "the
+        // directory is not there", and the throwing one would unwind past this function's own
+        // `result<void>` contract (issue #71). A query that fails is reported; only a query that
+        // SUCCEEDS and says "absent" takes the nothing-to-seed shortcut.
+        std::error_code exists_ec;
+        bool const seed_present = std::filesystem::exists(host_dir, exists_ec);
+        if (exists_ec) {
+            return std::unexpected(agentengine::error{
+                agentengine::failure_class::fatal,
+                "cannot determine whether there is anything to seed: " + exists_ec.message(),
+                "docker_execution_surface.seed_stat_failed", exists_ec.value()});
+        }
+        if (!seed_present) return agentengine::result<void>{};  // nothing to seed yet
         // ADR-174 (issue #68): a root-owned tar stream, NOT `docker cp <host path>`. With ADR-171's
         // `--cap-drop ALL` the container's root has neither CAP_DAC_OVERRIDE nor CAP_DAC_READ_SEARCH,
         // and `write_verified()` materializes at mode 0600 -- so a seed carrying host ownership was
@@ -1621,7 +1643,14 @@ public:
                                                           "reset() must be called before drain_to()",
                                                           "docker_execution_surface.not_reset"});
         }
-        std::filesystem::create_directories(host_dir);
+        std::error_code mkdir_ec;
+        std::filesystem::create_directories(host_dir, mkdir_ec);
+        if (mkdir_ec) {
+            return std::unexpected(agentengine::error{
+                agentengine::failure_class::fatal,
+                "cannot create the host directory to drain into: " + mkdir_ec.message(),
+                "docker_execution_surface.host_dir_create_failed", mkdir_ec.value()});
+        }
         // Same "/." convention in the other direction: copies /workspace's CONTENTS onto host_dir.
         auto copied = docker_.copy_from_container(*instance_, "/workspace/.", host_dir);
         if (!copied.has_value()) return std::unexpected(copied.error());

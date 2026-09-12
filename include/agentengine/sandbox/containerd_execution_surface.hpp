@@ -847,7 +847,14 @@ public:
             if (!destroyed.has_value()) return std::unexpected(destroyed.error());
             instance_.reset();
         }
-        std::filesystem::create_directories(host_dir);
+        std::error_code mkdir_ec;
+        std::filesystem::create_directories(host_dir, mkdir_ec);
+        if (mkdir_ec) {
+            return std::unexpected(agentengine::error{
+                agentengine::failure_class::fatal,
+                "cannot create the host directory to reset into: " + mkdir_ec.message(),
+                "containerd_execution_surface.host_dir_create_failed", mkdir_ec.value()});
+        }
         // Carries this process's own pid AND its start-key (ADR-108 §7 pid-reuse fix -- see
         // `check_process_identity()`'s own comment): a plain pid alone cannot tell "still the same
         // process" from "the pid was later reused by something unrelated", which would otherwise let

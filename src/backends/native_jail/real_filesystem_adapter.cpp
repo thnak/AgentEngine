@@ -306,7 +306,14 @@ result<void> RealFileSystemAdapter::make_directory(std::string_view path, bool p
     std::error_code ec;
     bool ok = parents ? std::filesystem::create_directories(*resolved, ec)
                        : std::filesystem::create_directory(*resolved, ec);
-    if (ec || (!ok && !std::filesystem::exists(*resolved))) {
+    // The second half only runs when `create_director{y,ies}` reported no error but also said it
+    // created nothing, i.e. "it was already there" -- so this is confirming an existing directory,
+    // not diagnosing a failure. It used the THROWING overload, which would unwind past this
+    // function's own `result<void>` contract (issue #71); a status query that cannot be answered
+    // now counts as "not there" and produces the same reported failure as an absent path.
+    std::error_code exists_ec;
+    bool const present = std::filesystem::exists(*resolved, exists_ec) && !exists_ec;
+    if (ec || (!ok && !present)) {
         return std::unexpected(
             ae::error{failure_class::contract, "mkdir failed: " + std::string(path),
                       "shell.fs.io_error"});
