@@ -27,13 +27,14 @@
 # incrementally-written .pdb is not a pure function of one TU's inputs), and /Z7 needs neither that
 # shared .pdb nor the /FS flag that used to serialize writes to it.
 #
-# NOT wired into windows-clang-cl's ASanUBSan leg or windows-shell-fuzz (both use the plain clang++
-# driver + a non-default CMAKE_MSVC_RUNTIME_LIBRARY targeting the MSVC ABI): CMake injects an
-# `-Xclang -flto-visibility-public-std` sccache 0.17.0 doesn't recognize into every such compile,
-# which makes sccache refuse to cache the whole invocation -- confirmed against a real CI run (295
-# compiles, 0 hits, 0 misses, all logged "Can't handle UnknownFlag arguments with -Xclang") and
-# reproduced locally against the generated build.ninja. See windows-clang-cl's own Configure step
-# for the full trace (mozilla/sccache issues #955/#1266/#1603).
+# The plain clang++ driver + a non-default CMAKE_MSVC_RUNTIME_LIBRARY targeting the MSVC ABI makes
+# CMake inject an `-Xclang -flto-visibility-public-std` that sccache 0.17.0 doesn't recognize into
+# every such compile, which made sccache refuse to cache the whole invocation -- confirmed against a
+# real CI run (295 compiles, 0 hits, 0 misses, all logged "Can't handle UnknownFlag arguments with
+# -Xclang"). Since 2026-09-12 (issue #73) the root CMakeLists.txt overrides the option list that
+# variable expands to, keeping the static CRT and dropping only that flag, so windows-clang-cl's
+# ASanUBSan leg IS cached now. windows-shell-fuzz still is not -- it has no second build_type leg to
+# share a cache with, so see its own Configure step (mozilla/sccache issues #955/#1266/#1603).
 
 name: CI
 
@@ -211,11 +212,11 @@ jobs:
       - name: Enter MSVC dev shell
         uses: ilammy/msvc-dev-cmd@v1
 
-      # Release only -- see the Configure step below for why the ASanUBSan leg can never benefit
-      # from sccache no matter how it's configured, so this (and the launcher flags, and the stats
-      # step) is skipped there rather than installed for zero possible benefit.
+      # Every leg, as of 2026-09-12 (issue #73). This used to be Release-only, because the
+      # ASanUBSan leg genuinely could not cache anything -- see the Configure step below for what
+      # changed. Now that it can, skipping the install would leave
+      # `-DCMAKE_CXX_COMPILER_LAUNCHER=sccache` pointing at a binary that is not there.
       - name: Run sccache-cache
-        if: matrix.build_type != 'ASanUBSan'
         uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Configure
@@ -243,24 +244,30 @@ jobs:
           # to the clang++ one. That is a real reduction, accepted because the Release leg above
           # still covers clang-cl parsing, and a sanitizer job that cannot link covers nothing.
           #
-          # No sccache launcher here (2026-09-04): CMake's own Clang-on-Windows module ALWAYS
-          # injects `-Xclang --dependent-lib=<crt>` for a plain (non-clang-cl) clang++ targeting
-          # the MSVC ABI -- sccache 0.17.0 (src/compiler/clang.rs) recognizes that one -- but setting
-          # CMAKE_MSVC_RUNTIME_LIBRARY away from its own default (required here for the static CRT)
-          # ALSO injects `-Xclang -flto-visibility-public-std`, which sccache 0.17.0 does NOT
-          # recognize (mozilla/sccache issues #955/#1266 fixed the -gcodeview/--dependent-lib
-          # cases specifically; -flto-visibility-public-std was never added). One unrecognized
-          # -Xclang pair anywhere on the command line makes sccache refuse to cache the WHOLE
-          # compile ("Can't handle UnknownFlag arguments with -Xclang") -- verified locally: every
-          # one of this leg's 295 compiles in the previous CI run was marked non-cacheable for
-          # exactly this reason, 0 hits and 0 misses, sccache installed for no benefit. Dropping
-          # -DCMAKE_MSVC_RUNTIME_LIBRARY to dodge it would silently change the CRT away from the
-          # static one this leg deliberately needs (see the block comment above) -- not an
-          # acceptable trade for a build-speed win.
+          # sccache IS used here as of 2026-09-12 (issue #73). The problem this leg used to have,
+          # and why the fix is not the obvious one: CMake's Clang-on-Windows module ALWAYS injects
+          # `-Xclang --dependent-lib=<crt>` for a plain (non-clang-cl) clang++ targeting the MSVC
+          # ABI -- sccache 0.17.0 (src/compiler/clang.rs) recognizes that one -- but setting
+          # CMAKE_MSVC_RUNTIME_LIBRARY away from its default (required here for the static CRT) ALSO
+          # injects `-Xclang -flto-visibility-public-std`, which sccache does NOT recognize
+          # (mozilla/sccache #955/#1266 fixed -gcodeview and --dependent-lib specifically; this one
+          # was never added). One unrecognized -Xclang pair makes sccache refuse the WHOLE compile.
+          # Every one of this leg's 295 compiles was non-cacheable for exactly that reason: 0 hits,
+          # 0 misses, sccache installed for no benefit, and an 1110-second build that set this
+          # pipeline's entire wall clock.
+          #
+          # Dropping -DCMAKE_MSVC_RUNTIME_LIBRARY to dodge it was rejected, and still is: it would
+          # silently change the CRT away from the static one this leg deliberately needs. The fix in
+          # the root CMakeLists.txt instead overrides the OPTION LIST that variable expands to, so
+          # the static CRT is kept exactly (`-D_MT --dependent-lib=libcmt`) and only the
+          # LTO-visibility flag is dropped -- inert without LTO/CFI/whole-program devirtualization,
+          # none of which this project enables, and not a sanitizer flag. See that file's comment
+          # for the before/after measurement.
           if ("${{ matrix.build_type }}" -eq "ASanUBSan") {
             cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo `
               -DCMAKE_CXX_COMPILER=clang++ `
               -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+              -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
               -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=undefined -D_DISABLE_STRING_ANNOTATION -D_DISABLE_VECTOR_ANNOTATION -g -O1"
           } else {
             cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
@@ -271,8 +278,10 @@ jobs:
       - name: Build
         run: cmake --build build -j 4
 
+      # Every leg now, including ASanUBSan (issue #73). This is also the check that the fix is
+      # still working: a run where this prints non-cacheable calls means the flag list regressed.
       - name: sccache stats
-        if: always() && matrix.build_type != 'ASanUBSan'
+        if: always()
         shell: pwsh
         run: "& $env:SCCACHE_PATH --show-stats"
 
@@ -354,14 +363,13 @@ jobs:
       - name: Enter MSVC dev shell
         uses: ilammy/msvc-dev-cmd@v1
 
-      # No sccache in this job (2026-09-04): it always uses the same clang++ raw-driver + static
-      # CRT recipe the windows-clang-cl job's own ASanUBSan leg uses, which sccache 0.17.0
-      # structurally cannot cache -- see that leg's Configure step for the full root-cause (a
-      # CMake-injected `-Xclang -flto-visibility-public-std` sccache's clang.rs parser doesn't
-      # recognize, present on every compile whenever CMAKE_MSVC_RUNTIME_LIBRARY is set away from
-      # its default for a non-clang-cl Clang target, unrelated to any flag this project chose).
-      # There is no other build_type leg in this job to benefit the way windows-clang-cl's Release
-      # leg does, so installing sccache here would be pure overhead for zero possible cache hits.
+      # No sccache in this job, and as of 2026-09-12 (issue #73) the reason is economics, not the
+      # old structural one. It uses the same clang++ raw-driver + static CRT recipe as
+      # windows-clang-cl's ASanUBSan leg, which sccache could not cache at all until the root
+      # CMakeLists.txt override landed; it now could. But this job builds ONE fuzz target, has no
+      # second build_type leg to share a warm cache with, and its Build step is 14 seconds. Adding a
+      # cache install to save a fraction of that is not worth the step. Revisit if this job ever
+      # grows a real build.
       - name: Configure (ASan+UBSan, static CRT to match libFuzzer's runtime lib)
         shell: pwsh
         run: |

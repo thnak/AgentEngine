@@ -10,6 +10,53 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# ---- C++20 module scanning: OFF, because there are no modules ----------------
+# CMake runs a separate dependency-scan process per translation unit before compiling it, so that a
+# C++20 `import` can be ordered correctly. This project has none: a search for `export module`,
+# `import <name>;`, `.ixx` and `.cppm` across include/, src/, tests/ and examples/ finds nothing but
+# two Python source strings. The scan ran anyway, on every TU, for nothing.
+#
+# Measured on this tree: 297 ms per TU idle and 648 ms under `-j4`, 261 s of scan work across 403
+# TUs, plus a dyndep step on every configure. Turning it off is worth roughly 50 s off a cold CI
+# build leg and 80 s off a clean local build.
+#
+# Safe to the point of being self-policing: if anyone later adds a real module, CMake fails loudly
+# and says exactly this flag is why, rather than miscompiling. Delete this line at that point.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+
+# ---- Keep clang-on-Windows compiles cacheable (GitHub issue #73) -------------
+# CMake's Clang-on-Windows module implements `CMAKE_MSVC_RUNTIME_LIBRARY` by injecting, for the
+# static CRT, `-D_MT -Xclang --dependent-lib=libcmt` AND `-Xclang -flto-visibility-public-std`.
+# sccache 0.17.0 recognizes the first pair and not the second, and ONE unrecognized `-Xclang` pair
+# makes it refuse to cache the entire compile ("Can't handle UnknownFlag arguments with -Xclang").
+# The result was a whole CI leg with sccache installed and 0 hits, 0 misses, every compile marked
+# non-cacheable -- an 1110-second build on the job that sets the pipeline's wall clock.
+#
+# Overriding the option list keeps the static CRT exactly as it was and drops only the LTO-visibility
+# flag. That flag controls the LTO visibility of `std::` types and is inert without LTO, CFI or
+# whole-program devirtualization, none of which this project enables anywhere. It is not a sanitizer
+# flag and changes nothing about what ASan or UBSan instrument.
+#
+# Measured, not reasoned: without the override, one compile -> `Non-cacheable calls 1`, 0 hits, 0
+# misses. With it -> cacheable, and a second build in a fresh build directory with identical inputs
+# reports a real `Cache hits 1`. The generated command line keeps `-D_MT --dependent-lib=libcmt` and
+# loses only `-flto-visibility-public-std`.
+#
+# Scoped as narrowly as the problem is. MSVC's own spelling of this variable is plain `-MT` and must
+# not be touched. Neither must clang-cl's: CMake gives the MSVC-frontend variant `-MT` too, which
+# sccache already caches fine, and measured here, overriding it there would have replaced a working
+# `-MT` with the equivalent-but-different `-D_MT --dependent-lib=libcmt` for no reason. Only the
+# GNU-frontend clang++ targeting the MSVC ABI gets the LTO-visibility flag, so only it is touched.
+# `.github/workflows/ci.yml`'s ASanUBSan leg is the one that needs this; it lives here rather than
+# there so a local clang++ build gets the same treatment.
+if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang"
+        AND NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+  set(CMAKE_CXX_COMPILE_OPTIONS_MSVC_RUNTIME_LIBRARY_MultiThreaded
+      -D_MT -Xclang --dependent-lib=libcmt)
+  set(CMAKE_CXX_COMPILE_OPTIONS_MSVC_RUNTIME_LIBRARY_MultiThreadedDebug
+      -D_MT -D_DEBUG -Xclang --dependent-lib=libcmtd)
+endif()
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(AgentEngineWarnings)
 include(AgentEngineCompilerGuard) # 021 §5 compiler-version floor
