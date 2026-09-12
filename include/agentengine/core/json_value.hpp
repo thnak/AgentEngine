@@ -226,20 +226,48 @@ private:
             return std::unexpected(error{failure_class::contract, "expected '\"'", "json.expected_string"});
         }
         ++pos_;
+
+        // Scan to the first byte that is not literal content. Everything before it is copied in one
+        // go rather than a byte at a time, and -- the point of this -- the buffer is sized from the
+        // TOKEN rather than from the input. The line this replaced read
+        // `out.reserve(text_.size() - pos_)`, a "safe upper bound" in the only sense that mattered
+        // to correctness and in no other: it sized every string token to the whole remaining
+        // document, and that capacity then travelled into the parsed tree, because `Value` holds the
+        // `std::string` it was handed. Measured on a 41 KB object of 2000 short pairs: the tree
+        // held 29,780 bytes of content in 86,025,808 bytes of capacity, 2888x. After this
+        // change the same document holds it in 60,000 bytes, 2.0x
+        // (tests/test_json_parse_allocation.cpp A4).
+        std::size_t const first_special = text_.find_first_of("\"\\", pos_);
+        if (first_special == std::string_view::npos) {
+            pos_ = text_.size();
+            return std::unexpected(
+                error{failure_class::contract, "unterminated string", "json.unterminated_string"});
+        }
+        // By far the common shape: no escape anywhere in the token. Build straight from the span, so
+        // a short key costs no allocation at all (SSO) and a long one allocates exactly its length.
+        if (text_[first_special] == '"') {
+            std::string out(text_.substr(pos_, first_special - pos_));
+            pos_ = first_special + 1;
+            return out;
+        }
+
         std::string out;
-        out.reserve(text_.size() - pos_);  // safe upper bound: remaining input can't be shorter
+        out.reserve(first_special - pos_ + 16);  // literal head, plus room for the decoded tail
         while (true) {
-            if (at_end()) {
+            std::size_t const run_end = text_.find_first_of("\"\\", pos_);
+            if (run_end == std::string_view::npos) {
+                pos_ = text_.size();
                 return std::unexpected(
                     error{failure_class::contract, "unterminated string", "json.unterminated_string"});
             }
-            char c = peek();
-            if (c == '"') {
+            out.append(text_.substr(pos_, run_end - pos_));
+            pos_ = run_end;
+            if (text_[pos_] == '"') {
                 ++pos_;
                 return out;
             }
-            if (c == '\\') {
-                ++pos_;
+            {
+                ++pos_;  // consume the backslash
                 if (at_end()) {
                     return std::unexpected(
                         error{failure_class::contract, "unterminated escape", "json.unterminated_escape"});
@@ -277,8 +305,6 @@ private:
                 }
                 continue;
             }
-            out += c;
-            ++pos_;
         }
     }
 

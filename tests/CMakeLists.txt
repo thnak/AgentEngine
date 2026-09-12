@@ -2077,6 +2077,10 @@ add_executable(test_json_value test_json_value.cpp)
 target_link_libraries(test_json_value PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_json_value COMMAND test_json_value)
 
+add_executable(test_json_parse_allocation test_json_parse_allocation.cpp)
+target_link_libraries(test_json_parse_allocation PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_json_parse_allocation COMMAND test_json_parse_allocation)
+
 # ---- wasmtime C API smoke proof (M2 Phase D task D1, decision 5) -------------------------------
 # Only built when AGENTENGINE_WITH_WASM is explicitly turned ON (root CMakeLists.txt) -- proves the
 # vendored dependency itself links and runs a real WebAssembly module, independent of the real
