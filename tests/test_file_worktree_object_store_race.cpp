@@ -211,6 +211,7 @@ int main() {
         std::atomic<int> escaped{0};   // an exception left put_blob() -- before the fix, a process kill
         std::atomic<int> returned{0};
         std::atomic<int> failed{0};
+        std::atomic<int> unverified{0};  // issue #70: the bounded retry window expired, nothing concluded
 
         for (int iter = 0; iter < kIterations; ++iter) {
             fs::remove_all(objects_dir, ec);
@@ -236,6 +237,14 @@ int main() {
                             ++returned;
                         } else {
                             ++failed;
+                            // The two failure codes mean different things and a future regression
+                            // should not have to guess which one fired. `blob_write_failed` says
+                            // the destination was read back and was wrong or absent;
+                            // `blob_commit_unverified` (issue #70) says it stayed unreadable for
+                            // the whole bounded retry window and nothing was concluded.
+                            if (put_r.error().code == "worktree.blob_commit_unverified") {
+                                ++unverified;
+                            }
                         }
                     } catch (...) {
                         ++escaped;
@@ -247,25 +256,33 @@ int main() {
             for (auto& th : threads) th.join();
         }
 
-        std::printf("       put_blob race: %d returned a value, %d returned an error, %d let an "
-                    "exception escape\n",
-                    returned.load(), failed.load(), escaped.load());
+        std::printf("       put_blob race: %d returned a value, %d returned an error (%d of them "
+                    "unverified-window), %d let an exception escape\n",
+                    returned.load(), failed.load(), unverified.load(), escaped.load());
         check(escaped.load() == 0,
               "C3: put_blob() never lets an exception escape under concurrent same-digest writes "
               "through separate store instances -- the shape that exited 0xC0000409");
-        // Measured rather than asserted, because it is a SEPARATE, PRE-EXISTING defect and this
-        // change does not get to quietly absorb it: under this shape roughly 18% of calls report
-        // `worktree.blob_write_failed` even though C4 below then finds the content durable and
-        // byte-correct. The rename loses to a sibling, and the readback-and-recompute that is
-        // supposed to rescue that case fails too, because the destination is momentarily
-        // inaccessible for the same reason the rename was. It is the SAFE direction -- fail closed,
-        // a false negative, never a false claim of durability -- and it is unchanged by the fix
-        // here: 169 of 960 measured against the unfixed code, 174 of 960 against the fixed one.
-        // Filed separately. `test_content_durability_concurrency.cpp`'s own [1b] case never saw it
-        // because it discards the result (`(void)put_r;`).
         check(returned.load() + failed.load() == kThreads * kIterations,
               "C3: ... and every call is accounted for -- each one either returned a digest or "
               "reported an error through result<T>, none vanished");
+        // This WAS a printed measurement rather than a check, because it was a separate pre-existing
+        // defect (issue #70) that #69's fix did not get to quietly absorb: the rename loses to a
+        // sibling, and the readback-and-recompute meant to rescue that case failed too, because the
+        // destination was momentarily inaccessible for the same reason the rename was. Content that
+        // was on disk and byte-correct was reported as a durability failure. Measured in one
+        // session, same binary otherwise, fix stashed and restored:
+        //
+        //     unfixed   182, 179, 201 failures of 960
+        //     fixed       0,   0,   0 failures of 960
+        //
+        // The bound below is 1%, not zero, deliberately. Zero is what three runs measured, but the
+        // rescue closes the window by waiting a BOUNDED time, and a sufficiently loaded host could
+        // still exhaust it. A knife-edge assertion would turn that into a flake and teach the next
+        // reader to distrust the check. One percent is still two orders of magnitude below the
+        // defect this guards against.
+        check(failed.load() * 100 < kThreads * kIterations,
+              "C3: ... and under 1% of calls report a failure for content that is in fact durable "
+              "-- this measured ~19% before issue #70's fix");
 
         // C4: a fix that simply stopped writing would satisfy C3.
         FileWorktreeObjectStore probe(objects_dir);

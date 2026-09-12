@@ -41,6 +41,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace agentengine {
@@ -182,14 +183,72 @@ public:
                 // non-racing path since it only runs after a rename failure already happened. Only a
                 // genuine content mismatch (or the destination still being absent) is a reportable
                 // durability failure.
-                if (auto existing = get_blob(*digest); existing.has_value() &&
-                    agentengine::compute_digest(existing.value()).value_or(std::string{}) == *digest) {
-                    return *digest;
+                //
+                // ISSUE #70: that rescue was itself failing, for content that was on disk and
+                // byte-for-byte correct at that very moment. `get_blob()` opens `path`, and inside
+                // the very window that made `MoveFileExW` return "Access is denied" the open is
+                // denied too -- so a transient denial was reported as a permanent durability
+                // failure. Measured on a real Windows 11 host: 176 of 640 calls, every one of them
+                // this branch, with the content verified present and correct immediately after.
+                //
+                // The GATE is unchanged. Success still requires reading the destination back and
+                // recomputing its digest; bare existence is still not trusted, for the reason the
+                // paragraph above gives. What changed is only how many chances that gate gets:
+                //
+                //   * a digest MISMATCH ends the loop immediately and is never retried -- that is a
+                //     real signal, and retrying it would be retrying evidence of corruption;
+                //   * a destination positively observed ABSENT (a status query that succeeds and
+                //     says "no") ends it immediately too;
+                //   * only "could not read it yet" waits and looks again.
+                //
+                // So the safety property is untouched: this can still only report success for bytes
+                // it has actually read back and hashed. Only the false-negative rate moves.
+                //
+                // `mutex_` is held across the wait, and that costs nothing that matters here. Two
+                // threads sharing ONE store instance never reach this branch for the same digest --
+                // the second finds it already durable at the top and returns before writing at all.
+                // The race this rescues is between SEPARATE store instances over one root, which
+                // this mutex does not serialize in the first place.
+                constexpr int kRescueAttempts = 12;
+                constexpr auto kRescueBackoff = std::chrono::milliseconds(2);
+                bool mismatched = false;
+                bool absent = false;
+                for (int attempt = 0; attempt < kRescueAttempts; ++attempt) {
+                    if (auto existing = get_blob(*digest); existing.has_value()) {
+                        if (agentengine::compute_digest(existing.value()).value_or(std::string{}) ==
+                            *digest) {
+                            return *digest;
+                        }
+                        mismatched = true;
+                        break;
+                    }
+                    // `get_blob()` cannot tell a genuine absence from a momentary denial -- it
+                    // reports `blob_not_found` for any failed open. This status query can, because
+                    // an error_code that stays CLEAR while reporting "not a regular file" is a
+                    // positive observation of absence rather than a failure to look.
+                    std::error_code probe_ec;
+                    bool const present = std::filesystem::is_regular_file(path, probe_ec);
+                    if (!probe_ec && !present) {
+                        absent = true;
+                        break;
+                    }
+                    if (attempt + 1 < kRescueAttempts) std::this_thread::sleep_for(kRescueBackoff);
                 }
+                if (mismatched || absent) {
+                    return std::unexpected(agentengine::error{
+                        agentengine::failure_class::resource,
+                        "failed to durably commit blob content (rename failed): " + ec.message(),
+                        "worktree.blob_write_failed"});
+                }
+                // Distinct from the case above, and a caller can act on the difference: nothing
+                // here says the content is missing or wrong, only that the destination stayed
+                // unreadable for the whole bounded window. `transient` is error.hpp's own
+                // "retryable within the caller's remaining deadline".
                 return std::unexpected(agentengine::error{
-                    agentengine::failure_class::resource,
-                    "failed to durably commit blob content (rename failed): " + ec.message(),
-                    "worktree.blob_write_failed"});
+                    agentengine::failure_class::transient,
+                    "could not verify the blob's durable content within the retry window (rename "
+                    "failed: " + ec.message() + ")",
+                    "worktree.blob_commit_unverified"});
             }
         }
         return *digest;
