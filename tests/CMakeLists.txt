@@ -2077,6 +2077,11 @@ add_test(NAME test_tool_registry COMMAND test_tool_registry)
 # ---- Dependency-free JSON value/parser/serializer (M2 Phase B task B2, core/json_value.hpp) ----
 # Header-only, core-tier -- links only agentengine::core (no nlohmann::json; this IS the seam that
 # keeps nlohmann out of product code, see CONVENTIONS.md dependency-tier discipline).
+# json::dump string escaping, appending unescaped runs: byte-identical to the per-byte writer it replaced.
+add_executable(test_json_dump_escape test_json_dump_escape.cpp)
+target_link_libraries(test_json_dump_escape PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_json_dump_escape COMMAND test_json_dump_escape)
+
 add_executable(test_json_value test_json_value.cpp)
 target_link_libraries(test_json_value PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_json_value COMMAND test_json_value)

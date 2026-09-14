@@ -363,16 +363,12 @@ struct RunStateRecord {
 
 [[nodiscard]] inline std::vector<std::byte> encode_run_state_record(RunStateRecord const& rec) {
     std::string const text = agentengine::json::dump(run_state_record_to_json(rec));
-    std::vector<std::byte> bytes;
-    bytes.reserve(text.size());
-    for (char c : text) bytes.push_back(static_cast<std::byte>(c));
-    return bytes;
+    auto const* const first = reinterpret_cast<std::byte const*>(text.data());
+    return std::vector<std::byte>(first, first + text.size());
 }
 [[nodiscard]] inline agentengine::result<RunStateRecord> decode_run_state_record(
     std::vector<std::byte> const& bytes) {
-    std::string text;
-    text.reserve(bytes.size());
-    for (std::byte b : bytes) text.push_back(static_cast<char>(b));
+    std::string const text(reinterpret_cast<char const*>(bytes.data()), bytes.size());
     agentengine::result<agentengine::json::Value> parsed = agentengine::json::parse(text);
     if (!parsed) return std::unexpected(parsed.error());
     return run_state_record_from_json(*parsed);

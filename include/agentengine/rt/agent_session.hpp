@@ -536,17 +536,13 @@ struct AgentSessionRecord {
 
 [[nodiscard]] inline std::vector<std::byte> encode_agent_session_record(AgentSessionRecord const& rec) {
     std::string const text = json::dump(agent_session_record_to_json(rec));
-    std::vector<std::byte> bytes;
-    bytes.reserve(text.size());
-    for (char c : text) bytes.push_back(static_cast<std::byte>(c));
-    return bytes;
+    auto const* const first = reinterpret_cast<std::byte const*>(text.data());
+    return std::vector<std::byte>(first, first + text.size());
 }
 
 [[nodiscard]] inline result<AgentSessionRecord> decode_agent_session_record(
     std::vector<std::byte> const& bytes) {
-    std::string text;
-    text.reserve(bytes.size());
-    for (std::byte b : bytes) text.push_back(static_cast<char>(b));
+    std::string const text(reinterpret_cast<char const*>(bytes.data()), bytes.size());
     result<json::Value> parsed = json::parse(text);
     if (!parsed) return std::unexpected(parsed.error());
     return agent_session_record_from_json(*parsed);
@@ -3138,16 +3134,12 @@ struct TurnDeltaRecord {
 
 [[nodiscard]] inline std::vector<std::byte> encode_turn_delta_record(TurnDeltaRecord const& rec) {
     std::string const text = json::dump(turn_delta_record_to_json(rec));
-    std::vector<std::byte> bytes;
-    bytes.reserve(text.size());
-    for (char c : text) bytes.push_back(static_cast<std::byte>(c));
-    return bytes;
+    auto const* const first = reinterpret_cast<std::byte const*>(text.data());
+    return std::vector<std::byte>(first, first + text.size());
 }
 
 [[nodiscard]] inline result<TurnDeltaRecord> decode_turn_delta_record(std::vector<std::byte> const& bytes) {
-    std::string text;
-    text.reserve(bytes.size());
-    for (std::byte b : bytes) text.push_back(static_cast<char>(b));
+    std::string const text(reinterpret_cast<char const*>(bytes.data()), bytes.size());
     result<json::Value> parsed = json::parse(text);
     if (!parsed) return std::unexpected(parsed.error());
     return turn_delta_record_from_json(*parsed);

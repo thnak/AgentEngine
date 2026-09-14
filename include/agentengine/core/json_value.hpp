@@ -388,27 +388,43 @@ private:
     }
 };
 
+// Appends each run of bytes that need no escaping in one `append`, rather than one `+=` per byte: every
+// `json::dump` of message history, recordings and checkpoints goes through here. The bytes that ARE
+// escaped, and how, are exactly as before: '"', '\\', and every byte below 0x20 (0x7f and every byte
+// of a UTF-8 sequence pass through verbatim). tests/test_json_dump_escape.cpp holds the old per-byte
+// loop and compares the two.
 inline void dump_escaped_string(std::string const& s, std::string& out) {
     out += '"';
-    for (unsigned char c : s) {
+    char const* const data = s.data();
+    std::size_t run_start = 0;
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        unsigned char const c = static_cast<unsigned char>(data[i]);
+        if (c >= 0x20 && c != '"' && c != '\\') continue;
+        // Escape-dense text (source code: a tab or newline every few bytes) makes most runs empty or
+        // one byte long, where an `append` call costs more than it saves -- measured 15% slower than the
+        // per-byte loop on such text before these two cases were split out.
+        if (std::size_t const run = i - run_start; run == 1) {
+            out += data[run_start];
+        } else if (run > 1) {
+            out.append(data + run_start, run);
+        }
+        run_start = i + 1;
         switch (c) {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\b': out += "\\b"; break;
-            case '\f': out += "\\f"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                if (c < 0x20) {
-                    char buf[8];
-                    std::snprintf(buf, sizeof(buf), "\\u%04x", c);
-                    out += buf;
-                } else {
-                    out += static_cast<char>(c);
-                }
+            case '"': out.append("\\\"", 2); break;
+            case '\\': out.append("\\\\", 2); break;
+            case '\b': out.append("\\b", 2); break;
+            case '\f': out.append("\\f", 2); break;
+            case '\n': out.append("\\n", 2); break;
+            case '\r': out.append("\\r", 2); break;
+            case '\t': out.append("\\t", 2); break;
+            default: {
+                char buf[8];
+                std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+                out += buf;
+            }
         }
     }
+    out.append(data + run_start, s.size() - run_start);
     out += '"';
 }
 
