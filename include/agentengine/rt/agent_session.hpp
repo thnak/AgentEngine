@@ -2498,7 +2498,10 @@ private:
                     contribution->messages.begin() + static_cast<std::ptrdiff_t>(insert_pos),
                     std::move(static_instructions_msg));
             }
-            ChatRequest request{contribution->messages, contribution->tools};
+            // Moved, not copied: `contribution` is this iteration's own local and is never read again
+            // after this line, and `tool_table` above already took the copy of the tools it keeps.
+            // This used to deep-copy the whole assembled history into the request once per turn.
+            ChatRequest request{std::move(contribution->messages), std::move(contribution->tools)};
             // ADR-058 §8 (Design B) -- scoped to `native` ONLY, deliberately. Both real backends'
             // own translation code (protocol/openai/chat_client.hpp:289-293,
             // protocol/anthropic/chat_client.hpp:409-413) serialize `request.output_schema_json`
@@ -2659,8 +2662,14 @@ private:
                     // A call the hook stage already denied is finished -- its outcome is already
                     // decided, never re-litigated by approval.
                     if (hook_touched_round && processed[i].outcome == hook_call_outcome::denied) continue;
-                    ToolCallRequest const& req_i =
-                        hook_touched_round ? processed[i].request : tool_call_request_of(calls[i], i);
+                    // Both arms are lvalues, so the reference binds to `processed[i].request` itself.
+                    // It used to be `cond ? processed[i].request : tool_call_request_of(...)`: an
+                    // lvalue and a prvalue make the whole conditional a prvalue, which silently COPIED
+                    // the post-hook request, parsed argument tree included, just to read two fields.
+                    std::optional<ToolCallRequest> parsed_i;
+                    ToolCallRequest const& req_i = hook_touched_round
+                                                       ? processed[i].request
+                                                       : parsed_i.emplace(tool_call_request_of(calls[i], i));
                     ToolDescriptor const* td = tool_table.find(req_i.tool_name);
                     // ADR-070: a `policy_decider_`-resolved policy_driven call (auto_approve/
                     // auto_deny) never needs a real human -- only `needs_decider` should count
@@ -2758,8 +2767,14 @@ private:
                     results[i] = std::move(*processed[i].denial_result);
                     continue;
                 }
-                reqs.push_back(hook_touched_round ? processed[i].request
-                                                    : tool_call_request_of(calls[i], i));
+                // Moved out of `processed`, which nothing reads past this loop (the suspend branch that
+                // keeps it for resume has already returned). A conditional mixing `processed[i].request`
+                // with a prvalue copied it instead.
+                if (hook_touched_round) {
+                    reqs.push_back(std::move(processed[i].request));
+                } else {
+                    reqs.push_back(tool_call_request_of(calls[i], i));
+                }
                 req_positions.push_back(i);
             }
 
