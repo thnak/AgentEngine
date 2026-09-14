@@ -3,7 +3,7 @@
 // §7): `ChatClient`, not `Provider` — "provider" stays free for the colloquial vendor sense.
 //
 // Milestone 5 Phase B1/B2 (docs/planning/milestone-5-providers-identity-secrets-breakdown.md):
-// un-elides ChatRequest.tools/output_schema_json (006's real ToolDescriptor, core/tool_pipeline.hpp
+// un-elides ChatRequest.tools/output_schema_json (006's real ToolDescriptor, core/tool_descriptor.hpp
 // — there is no second, provider-facing declaration shape, the same finding
 // core/context_provider.hpp's own top comment already made for ContextContribution.tools) and
 // completes ChatClientCapabilities to 004 §2's full declared bitset. Sampling parameters
@@ -25,7 +25,7 @@
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/stream.hpp"
 #include "agentengine/core/task.hpp"
-#include "agentengine/core/tool_pipeline.hpp"
+#include "agentengine/core/tool_descriptor.hpp"
 
 namespace agentengine {
 

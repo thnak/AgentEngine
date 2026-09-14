@@ -21,7 +21,7 @@
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/task.hpp"
-#include "agentengine/core/tool_pipeline.hpp"
+#include "agentengine/core/tool_descriptor.hpp"
 #include "agentengine/trust/principal.hpp"
 
 namespace agentengine {

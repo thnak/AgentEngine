@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "agentengine/core/error.hpp"
-#include "agentengine/core/tool_pipeline.hpp"
+#include "agentengine/core/tool_descriptor.hpp"
 
 namespace agentengine {
 

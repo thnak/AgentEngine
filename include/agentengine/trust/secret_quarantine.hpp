@@ -56,7 +56,7 @@
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool.hpp"
-#include "agentengine/core/tool_pipeline.hpp"
+#include "agentengine/core/tool_descriptor.hpp"
 #include "agentengine/trust/hmac.hpp"
 #include "agentengine/trust/secret.hpp"
 

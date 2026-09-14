@@ -34,7 +34,7 @@
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_value.hpp"
-#include "agentengine/core/tool_pipeline.hpp"
+#include "agentengine/core/tool_descriptor.hpp"
 
 namespace agentengine {
 

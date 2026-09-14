@@ -32,7 +32,7 @@
 #include <vector>
 
 #include "agentengine/core/error.hpp"
-#include "agentengine/core/tool_pipeline.hpp"
+#include "agentengine/core/tool_descriptor.hpp"
 #include "agentengine/trust/capability.hpp"
 
 namespace agentengine {
@@ -107,7 +107,7 @@ private:
     std::unordered_map<std::string, std::string> exclusions_;
 };
 
-// Defined here, declared in tool_pipeline.hpp's `ToolTable` (that header cannot depend on this one --
+// Defined here, declared in tool_descriptor.hpp's `ToolTable` (that header cannot depend on this one --
 // this file already needs ToolDescriptor/ToolTable from it). §3 of the design draft: "now a thin
 // consequence of §2" -- for each name, a real diagnostic naming the SPECIFIC missing tool
 // (`agent.tool_not_found_in_registry`), never a generic parse error; the descriptor-keyed half
