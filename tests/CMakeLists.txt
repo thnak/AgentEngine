@@ -3638,6 +3638,13 @@ add_executable(test_worktree_blob_size test_worktree_blob_size.cpp)
 target_link_libraries(test_worktree_blob_size PRIVATE agentengine::worktree_store agentengine_warnings)
 add_test(NAME test_worktree_blob_size COMMAND test_worktree_blob_size)
 
+# materialize_mount()/harvest_mount() against verbatim copies of the code they replaced, on random
+# trees and random capabilities. No daemon, no network, no real filesystem (a recording adapter).
+add_executable(test_worktree_mount_sync_equivalence test_worktree_mount_sync_equivalence.cpp)
+target_link_libraries(test_worktree_mount_sync_equivalence PRIVATE agentengine::mediated_shell_runner agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_worktree_mount_sync_equivalence COMMAND test_worktree_mount_sync_equivalence)
+set_tests_properties(test_worktree_mount_sync_equivalence PROPERTIES TIMEOUT 300)
+
 # ---- ADR-102 Phase 3 -- ExecutionSurface/SandboxRuntime/DockerExecutionSurface/RealIoFileSystem ---
 # (sandbox/{execution_surface,docker_execution_surface,real_io_filesystem,sandbox_runtime}.hpp).
 # Needs agentengine::worktree_store the same way test_ledger does (real Ledger/compute_digest), plus

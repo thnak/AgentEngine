@@ -8,9 +8,9 @@
 // Two directions, both reusing the ALREADY-real, capability-gated primitives one layer down rather
 // than re-deriving authority checks: `materialize_mount` primes a real host directory (what
 // MediatedPythonConfig::mount_roots / MediatedShellRunner's own root point at) with a worktree
-// mount's CURRENT tree content, read through `granted` via the same `mount_read` guest code itself
-// is mediated through (025 §5's own capability, checked once per file exactly as a guest `open()`
-// would be); `harvest_mount` walks that real directory back into the mount's tree through `granted`
+// mount's CURRENT tree content, read through `granted` with the same capability and size-cap checks
+// `mount_read` -- what guest code itself is mediated through -- applies (025 §5's own capability,
+// checked once per file exactly as a guest `open()` would be); `harvest_mount` walks that real directory back into the mount's tree through `granted`
 // via `mount_write` (same quota/capability enforcement a guest `open(..., "w")` gets), and reports
 // each harvested file as a `ContentItem` (003) -- 025 §7's "the agent saves a file, the user
 // receives an artifact" claim, made literal.
@@ -25,7 +25,9 @@
 //
 // PRECONDITION `materialize_mount` relies on rather than works around: `granted.path_prefix` must
 // cover everything actually present in the mount's current subtree, or the walk fails closed on the
-// first entry it doesn't cover (`mount_read`'s own policy error) rather than silently priming a
+// first FILE it doesn't cover (the same policy error `mount_read` returns; directories are created on
+// the host without a capability check, before their files are reached -- so an uncovered directory's
+// NAME can reach the host even though its content cannot) rather than silently priming a
 // partial tree -- fail-closed over "clever" partial materialization, matching this project's
 // existing discipline (a host wanting a genuinely narrower prime should scope the MOUNT's
 // `subtree_path`, not lean on a narrower capability against a wider tree).
@@ -34,8 +36,10 @@
 // loop's job, same as `commit_turn` itself); `harvest_mount`'s own `mount_write` calls commit the
 // mount's Ref once per file written, exactly as a guest `open(..., "w").write()` already would.
 
+#include <algorithm>
 #include <cctype>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "agentengine/core/content.hpp"
@@ -69,28 +73,86 @@ namespace detail {
     return "application/octet-stream";
 }
 
+// Succeeds iff every entry's name in `tree` is one valid path segment that no other entry shares --
+// the condition under which resolving an entry's path from the mount root, as `mount_read()` does,
+// lands on exactly that entry. Otherwise that walk could land somewhere else: a name containing '/'
+// is split into several segments and can name a different file, and a duplicated name resolves to
+// whichever entry comes first. `materialize_subtree()` refuses such a tree rather than guess which
+// content was meant. O(n log n) in the tree's entries: sorted, then adjacent names compared.
+[[nodiscard]] inline result<void> require_unambiguous_entry_names(Tree const& tree) {
+    std::vector<std::string_view> names;
+    names.reserve(tree.entries.size());
+    for (TreeEntry const& entry : tree.entries) {
+        auto segments = split_mount_path(entry.name);
+        if (!segments) return std::unexpected(segments.error());
+        if (segments->size() != 1) {
+            return std::unexpected(error{failure_class::contract,
+                                          "a tree entry's name must be exactly one path segment",
+                                          "worktree.mount_path_malformed"});
+        }
+        names.push_back(entry.name);
+    }
+    std::ranges::sort(names);
+    if (auto dup = std::ranges::adjacent_find(names); dup != names.end()) {
+        // The name is deliberately left out: this runs before any capability check, so the
+        // duplicated entry may sit outside `granted.path_prefix`, and naming it would disclose a path
+        // the caller cannot read.
+        return std::unexpected(error{failure_class::contract, "two entries in one tree share a name",
+                                      "worktree.mount_path_ambiguous"});
+    }
+    return {};
+}
+
 // Recursively walks `tree_digest` (already resolved to `mount`'s subtree root), writing every blob
-// leaf into `fs` at its tree-relative path through `mount_read` -- so the SAME `granted`-capability
-// check a guest `open(path, "r")` would get applies here, per file. Directories are created on the
-// host side before anything beneath them is written: `FileSystemAdapter::write_file` does not
-// create parents itself (both existing implementations fail closed on a missing parent rather than
-// silently `mkdir -p`ing).
-template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<void> materialize_subtree(OS& object_store, RS& ref_store, Mount const& mount,
-                                                cap::FsRead const& granted, Digest const& tree_digest,
-                                                std::string const& guest_prefix, FileSystemAdapter& fs) {
+// leaf into `fs` at its tree-relative path. Every file passes the SAME checks a guest
+// `open(path, "r")` gets through `mount_read()` -- `detail::authorize_mount_read()` for the
+// capability and `detail::read_blob_within_size_cap()` for the size cap, the same functions
+// `mount_read()` itself calls. `mount_read()`'s third check, `detail::combined_mount_segments()`,
+// cannot fail here and is not repeated: every `guest_path` is a '/'-join of names
+// `require_unambiguous_entry_names()` has already validated as single segments, under a
+// `subtree_path` `materialize_mount()` has already split and resolved (a planted removal of that
+// call changed no outcome across test_worktree_mount_sync_equivalence's 6000 trees). Directories are
+// created on the host side before anything beneath them is written: `FileSystemAdapter::write_file`
+// does not create parents itself (both existing implementations fail closed on a missing parent
+// rather than silently `mkdir -p`ing).
+//
+// What it no longer does is call `mount_read()` per file, which re-read the ref's whole log and
+// re-walked the tree from the root -- Theta(n^2) name comparisons and n log reads for a flat n-file
+// mount -- only to arrive at the entry this loop is already holding. The digest in hand is read
+// directly; `require_unambiguous_entry_names()` refuses, before touching any of its entries, every
+// tree in which that re-walk could have arrived somewhere else. It refuses the WHOLE tree, so where
+// the old walk wrote a tree's well-named entries before failing at (or aliasing) an odd one, this one
+// writes none of that tree -- stricter, on the tree it reads (including two entries of one exact
+// name, which the old walk accepted by writing the first one's content twice).
+//
+// WHICH tree it reads did change, and that is not "stricter": the whole walk reads the ONE tree the
+// ref named when `materialize_mount()` started. The old per-file re-read followed the ref as it
+// moved, so a commit landing mid-walk (a `commit_ref`/`reset_to_turn` racing it) could make it fail
+// on a file the new tree dropped -- or, had that file come earlier in the walk, write it anyway. This
+// walk instead completes against its starting snapshot: every file in it is one the same `granted`
+// capability covers and the ref named at the start, so no authority is widened, but a file removed
+// by a concurrent commit can still be primed. A red-team probe (2026-09-14) demonstrated exactly
+// that; a caller that needs "the ref did not move" must re-read the ref after materializing.
+template <WorktreeObjectStore OS>
+[[nodiscard]] result<void> materialize_subtree(OS& object_store, Mount const& mount, cap::FsRead const& granted,
+                                                Digest const& tree_digest, std::string const& guest_prefix,
+                                                FileSystemAdapter& fs) {
     auto tree = object_store.get_tree(tree_digest);
     if (!tree) return std::unexpected(tree.error());
-    for (auto const& entry : tree->entries) {
+    auto unambiguous = require_unambiguous_entry_names(*tree);
+    if (!unambiguous) return std::unexpected(unambiguous.error());
+    for (TreeEntry const& entry : tree->entries) {
         std::string guest_path = guest_prefix.empty() ? entry.name : guest_prefix + "/" + entry.name;
         if (entry.is_tree) {
             auto mk = fs.make_directory(guest_path, /*parents=*/true);
             if (!mk) return std::unexpected(mk.error());
-            auto r = materialize_subtree(object_store, ref_store, mount, granted, entry.digest, guest_path, fs);
+            auto r = materialize_subtree(object_store, mount, granted, entry.digest, guest_path, fs);
             if (!r) return r;
             continue;
         }
-        auto bytes = mount_read(object_store, ref_store, mount, granted, guest_path);
+        auto authorized = agentengine::detail::authorize_mount_read(mount, granted, guest_path);
+        if (!authorized) return std::unexpected(authorized.error());
+        auto bytes = agentengine::detail::read_blob_within_size_cap(object_store, granted, entry.digest);
         if (!bytes) return std::unexpected(bytes.error());
         auto written = fs.write_file(guest_path, *bytes, /*append=*/false);
         if (!written) return std::unexpected(written.error());
@@ -117,14 +179,15 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
         }
         auto bytes = fs.read_file(guest_path);
         if (!bytes) return std::unexpected(bytes.error());
-        auto digest = compute_digest(*bytes);
-        if (!digest) return std::unexpected(digest.error());
-        auto written = mount_write(object_store, ref_store, mount, granted, guest_path, *bytes);
+        // The stored blob's digest comes back from the write itself: hashing the bytes here first, as
+        // this once did, SHA-256'd every harvested file twice.
+        auto written =
+            agentengine::detail::mount_write_with_blob(object_store, ref_store, mount, granted, guest_path, *bytes);
         if (!written) return std::unexpected(written.error());
 
         std::string media_type = guess_media_type(entry.name);
         out.push_back(ContentItem{
-            Media{BlobRef{*digest, media_type, bytes->size(), "worktree"}, media_type},
+            Media{BlobRef{written->second, media_type, bytes->size(), "worktree"}, media_type},
             content_origin::tool,
             /*tainted=*/true});
     }
@@ -147,7 +210,7 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
     auto subtree_digest =
         agentengine::detail::resolve_subtree_digest(object_store, (*ref)->tree_digest, mount.subtree_path);
     if (!subtree_digest) return std::unexpected(subtree_digest.error());
-    return detail::materialize_subtree(object_store, ref_store, mount, granted, *subtree_digest, "", fs);
+    return detail::materialize_subtree(object_store, mount, granted, *subtree_digest, "", fs);
 }
 
 // Harvests every real file currently under `fs` (e.g. what a run just wrote to /out's real host

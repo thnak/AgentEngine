@@ -2,10 +2,13 @@
 // Mounts (025 §5) -- Phase C1. "A worktree subtree becomes visible to a sandbox only through a
 // capability": `Mount` is the host-side declaration of WHICH worktree location a guest-visible
 // mount_id names (never guest-supplied, I2 -- a host policy value, the same posture every other
-// `cap::*` payload in trust/capability.hpp already has), and `mount_read`/`mount_write` are the only
-// way a guest-relative path is ever turned into an actual `Blob`/`Tree` lookup, gated by an already-
-// bound `cap::FsRead`/`cap::FsWrite` (trust/capability.hpp, existing since ADR-009 -- this phase
-// consumes that machinery, it does not invent a second capability shape).
+// `cap::*` payload in trust/capability.hpp already has), and `mount_read`/`mount_write` are the way a
+// guest-relative path is turned into an actual `Blob`/`Tree` lookup, gated by an already-bound
+// `cap::FsRead`/`cap::FsWrite` (trust/capability.hpp, existing since ADR-009 -- this phase consumes
+// that machinery, it does not invent a second capability shape). The one other reader,
+// `materialize_mount()` (src/backends/native_jail/worktree_mount_sync.hpp), walks the tree itself and
+// gates each file through the same `detail::authorize_mount_read()`/`detail::read_blob_within_size_cap()`
+// `mount_read` is built from.
 //
 // **This is NOT yet 025 §5's OS-level path-escape corpus** (Phase C2, ADR-track per the milestone-3
 // breakdown's decision 6, `decisions/ADR-0NN-worktree-mount-path-canonicalization.md`). There is no
@@ -256,6 +259,39 @@ template <WorktreeObjectStore S>
     return full_segments;
 }
 
+// The two capability checks a read of `guest_path` makes before any store access -- `mount_read()`'s
+// own, and the per-file check `materialize_mount()` (src/backends/native_jail/worktree_mount_sync.hpp)
+// makes for every file it primes. One function, so the two cannot drift apart.
+[[nodiscard]] inline result<void> authorize_mount_read(Mount const& mount, cap::FsRead const& granted,
+                                                       std::string const& guest_path) {
+    if (granted.mount_id != mount.mount_id) {
+        return std::unexpected(error{failure_class::policy,
+                                      "this capability does not authorize the requested mount",
+                                      "worktree.mount_capability_mismatch"});
+    }
+    if (!capability_detail::path_prefix_covers(granted.path_prefix, guest_path)) {
+        return std::unexpected(error{failure_class::policy,
+                                      "this capability's path scope does not cover the requested path",
+                                      "worktree.mount_path_outside_capability"});
+    }
+    return {};
+}
+
+// The blob's bytes, refused past `granted.size_cap_bytes` -- `mount_read()`'s last step, shared the
+// same way.
+template <WorktreeObjectStore OS>
+[[nodiscard]] result<std::vector<std::byte>> read_blob_within_size_cap(OS& object_store, cap::FsRead const& granted,
+                                                                       Digest const& blob_digest) {
+    auto bytes = object_store.get_blob(blob_digest);
+    if (!bytes) return std::unexpected(bytes.error());
+    if (granted.size_cap_bytes.has_value() && bytes->size() > *granted.size_cap_bytes) {
+        return std::unexpected(error{failure_class::policy,
+                                      "the requested file exceeds this capability's size cap",
+                                      "worktree.mount_read_exceeds_size_cap"});
+    }
+    return bytes;
+}
+
 } // namespace detail
 
 // Reads the file at `guest_path` (relative to `mount`) through `granted`, the caller's already-bound
@@ -271,16 +307,8 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 [[nodiscard]] result<std::vector<std::byte>> mount_read(OS& object_store, RS& ref_store, Mount const& mount,
                                                           cap::FsRead const& granted,
                                                           std::string const& guest_path) {
-    if (granted.mount_id != mount.mount_id) {
-        return std::unexpected(error{failure_class::policy,
-                                      "this capability does not authorize the requested mount",
-                                      "worktree.mount_capability_mismatch"});
-    }
-    if (!capability_detail::path_prefix_covers(granted.path_prefix, guest_path)) {
-        return std::unexpected(error{failure_class::policy,
-                                      "this capability's path scope does not cover the requested path",
-                                      "worktree.mount_path_outside_capability"});
-    }
+    auto authorized = detail::authorize_mount_read(mount, granted, guest_path);
+    if (!authorized) return std::unexpected(authorized.error());
 
     auto full_segments = detail::combined_mount_segments(mount, guest_path);
     if (!full_segments) return std::unexpected(full_segments.error());
@@ -299,14 +327,7 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
                                       "worktree.mount_read_is_directory"});
     }
 
-    auto bytes = object_store.get_blob(entry->digest);
-    if (!bytes) return std::unexpected(bytes.error());
-    if (granted.size_cap_bytes.has_value() && bytes->size() > *granted.size_cap_bytes) {
-        return std::unexpected(error{failure_class::policy,
-                                      "the requested file exceeds this capability's size cap",
-                                      "worktree.mount_read_exceeds_size_cap"});
-    }
-    return bytes;
+    return detail::read_blob_within_size_cap(object_store, granted, entry->digest);
 }
 
 // Writes `content` to `guest_path` (relative to `mount`) through `granted`, the caller's already-
@@ -325,11 +346,19 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 // Error framing matches 026 §3's mapping table exactly ("Quota exhausted -> OSError (No space left
 // on device)"): a `failure_class::resource` error with that literal message, so a future guest-
 // facing translator (Phase E's `PythonRunner`/`ShellRunner`) has an ordinary OS-shaped message ready
-// to raise, not a policy identifier to reword.
+// to raise, not a policy identifier to reword. (Its body is `detail::mount_write_with_blob()`, just
+// below, which also hands back the stored blob's digest.)
+namespace detail {
+
+// `mount_write()` itself, also handing back the digest of the blob it stored -- which a caller that
+// needs it (`harvest_mount()`'s ContentItem) would otherwise have to SHA-256 the same bytes again for.
+// The digest is the store's own `put_blob()` result: for every in-tree store that is
+// `compute_digest(content)`, and for any store it is the key `get_blob()` resolves.
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<Ref> mount_write(OS& object_store, RS& ref_store, Mount const& mount,
-                                       cap::FsWrite const& granted, std::string const& guest_path,
-                                       std::span<std::byte const> content) {
+[[nodiscard]] result<std::pair<Ref, Digest>> mount_write_with_blob(OS& object_store, RS& ref_store, Mount const& mount,
+                                                                   cap::FsWrite const& granted,
+                                                                   std::string const& guest_path,
+                                                                   std::span<std::byte const> content) {
     if (granted.mount_id != mount.mount_id) {
         return std::unexpected(error{failure_class::policy,
                                       "this capability does not authorize the requested mount",
@@ -373,7 +402,20 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
         }
     }
 
-    return commit_ref(ref_store, mount.ref_name, *new_root);
+    auto committed = commit_ref(ref_store, mount.ref_name, *new_root);
+    if (!committed) return std::unexpected(committed.error());
+    return std::make_pair(std::move(*committed), std::move(*blob_digest));
+}
+
+} // namespace detail
+
+template <WorktreeObjectStore OS, rt::AppendLogStore RS>
+[[nodiscard]] result<Ref> mount_write(OS& object_store, RS& ref_store, Mount const& mount,
+                                       cap::FsWrite const& granted, std::string const& guest_path,
+                                       std::span<std::byte const> content) {
+    auto written = detail::mount_write_with_blob(object_store, ref_store, mount, granted, guest_path, content);
+    if (!written) return std::unexpected(written.error());
+    return std::move(written->first);
 }
 
 // ============================================================================================

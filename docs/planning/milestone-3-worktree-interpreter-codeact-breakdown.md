@@ -821,7 +821,9 @@ for M3 regardless.
   (`src/backends/native_jail/worktree_mount_sync.hpp`) bridge a worktree `Mount`'s content-addressed
   Tree with the real host directory `MediatedPythonConfig::mount_roots`/`MediatedShellRunner` already
   point at (Phase C/E) — `materialize_mount` primes a real directory from the mount's current tree
-  through `mount_read` per file (the same `cap::FsRead` check a guest `open()` gets); `harvest_mount`
+  with the same per-file `cap::FsRead` check a guest `open()` gets (originally by calling `mount_read`
+  per file; since 2026-09-14 by walking the tree once through the same authorization and size-cap
+  functions `mount_read` is built from); `harvest_mount`
   walks a real directory back into the tree through `mount_write` per file (same `cap::FsWrite` +
   quota check a guest `open(..., "w")` gets) and returns one `ContentItem` per file harvested
   (digested via A1's `compute_digest`, `BlobRef{digest, media_type, size, store="worktree"}") —
