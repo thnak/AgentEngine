@@ -9,15 +9,15 @@
 //         close): N concurrent callers, each consuming from the SAME budget instance concurrently.
 //         Asserts the sum of every granted amount never exceeds the initial pool -- the exact
 //         double-spend 026 Sec9 Q1 names as the reason a bare copyable value type would be actively
-//         wrong for a consumed pool. Uses the same "each thread calls resume() exactly once, an
-//         atomic finished counter instead of polling task<T>::done() from a racing thread" pattern
-//         already proven correct in test_rt_async_mutex.cpp's own M3 -- rt::AsyncMutex is what
+//         wrong for a consumed pool. Each thread calls resume() exactly once, as in
+//         test_rt_async_mutex.cpp's own M3, and results are read only after every thread has joined
+//         (see the comment at the join for why reading them any earlier is UB) -- rt::AsyncMutex is what
 //         actually serializes the concurrent consume() calls underneath, so this is exercising
 //         AsyncMutex's own already-proven FIFO hand-off, not inventing a new concurrency mechanism.
 //
 // MACHINE SAFETY (CLAUDE.md): 8 real threads, bounded, matching the original's own cap.
 
-#include <atomic>
+#include <cstdint>
 #include <cstdio>
 #include <thread>
 #include <vector>
@@ -92,13 +92,6 @@ int main() {
         SpawnCostBudget budget;
         budget.initialize(kInitialPool);
 
-        std::atomic<std::uint64_t> total_granted{0};
-        std::atomic<int> denied_count{0};
-        std::atomic<int> finished{0};  // NOT task<T>::done() polled from a racing thread -- see
-                                        // test_rt_async_mutex.cpp's own M3 comment for why that would
-                                        // itself be a data race; this counter is the synchronization
-                                        // edge instead.
-
         std::vector<agentengine::rt::task<agentengine::result<SpawnTokenGrant>>> jobs;
         jobs.reserve(kCallerCount);
         for (int i = 0; i < kCallerCount; ++i) jobs.push_back(budget.consume(ConsumeSpawnTokens{kPerCallerAmount}));
@@ -107,34 +100,45 @@ int main() {
             std::vector<std::thread> callers;
             callers.reserve(kCallerCount);
             for (auto& j : jobs) {
-                callers.emplace_back([&j, &total_granted, &denied_count, &finished] {
-                    j.resume();  // exactly one resume() call per job, from its own real thread --
-                                 // AsyncMutex's own trampoline hands a contended waiter off to
-                                 // whichever thread next calls unlock(), possibly a DIFFERENT
-                                 // thread than the one that started it (already proven safe by
-                                 // test_rt_async_mutex.cpp's own M3).
-                    agentengine::result<SpawnTokenGrant> const& r = j.take_value();
-                    if (r.has_value()) {
-                        total_granted.fetch_add(r->granted, std::memory_order_relaxed);
-                    } else {
-                        denied_count.fetch_add(1, std::memory_order_relaxed);
-                    }
-                    finished.fetch_add(1, std::memory_order_release);
-                });
+                // Exactly one resume() per job, from its own real thread, and NOTHING else. A job that
+                // finds the mutex held is not finished when this returns: it is parked in lock(), and
+                // AsyncMutex::unlock()'s trampoline resumes it later, on whichever thread releases.
+                // Reading its value here -- as this test once did, right after resume() -- reads the
+                // task's result storage before anything was constructed in it (UBSan: "load of value
+                // 190, which is not a valid value for type 'bool'"; on MSVC Debug it failed the
+                // remaining() check below in 45 of 300 runs).
+                callers.emplace_back([&j] { j.resume(); });
             }
             for (auto& t : callers) t.join();
         }
-        check(finished.load(std::memory_order_acquire) == kCallerCount,
+
+        // consume() has one suspension point, and every resume of a parked job runs inside some
+        // caller's resume() -> ... -> unlock() chain, so once every caller thread has joined, every
+        // job has run to completion and join() is the synchronization edge for reading it here.
+        std::uint64_t total_granted = 0;
+        int denied_count = 0;
+        int finished = 0;
+        for (auto& j : jobs) {
+            if (!j.done()) continue;  // counted as unfinished below, never read
+            ++finished;
+            agentengine::result<SpawnTokenGrant> r = j.take_value();
+            if (r.has_value()) {
+                total_granted += r->granted;
+            } else {
+                ++denied_count;
+            }
+        }
+        check(finished == kCallerCount,
               "T2 setup: all 8 concurrent consume() calls actually completed");
 
-        check(total_granted.load() <= kInitialPool,
+        check(total_granted <= kInitialPool,
               "T2: the sum of every granted amount across 8 REAL concurrent callers never exceeds "
               "the initial pool -- no double-spend under genuine concurrent access, the exact "
               "hazard a bare copyable value type would have");
-        check(denied_count.load() > 0,
+        check(denied_count > 0,
               "T2: at least one caller was genuinely denied (8*130=1040 > 1000 guarantees this) -- "
               "proving this test exercises the contended case, not just a lucky everyone-fits run");
-        check(budget.remaining() == kInitialPool - total_granted.load(),
+        check(budget.remaining() == kInitialPool - total_granted,
               "T2: the budget's own final remaining() is EXACTLY consistent with the sum of grants "
               "-- no lost or double-counted decrement across the concurrent run");
     }
