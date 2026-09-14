@@ -737,6 +737,7 @@ public:
         if (held_) {
             ChatResponseUpdate last;
             last.delta = std::move(*held_);
+            last.continues_previous = held_continues_previous_;
             last.is_final = true;
             last.usage = captured_usage_;  // nullopt if the vendor never sent stream_options.include_usage
             held_.reset();
@@ -768,17 +769,32 @@ private:
     // Gap-audit finding 20 / 003 §8 Q2: the single choke point every `ContentItem` this accumulator
     // produces passes through -- stamping `producer_chat_client_id` here once, rather than at each
     // construction site, mirrors `AnthropicChatClient::StreamingUpdateAccumulator::release()` exactly.
+    //
+    // 004 §1 amendment (`ChatResponseUpdate::continues_previous`): also the one place that knows what
+    // was released immediately before this item. On this wire a choice has exactly ONE `content`
+    // string and ONE reasoning string, each streamed as consecutive `delta` fragments, and tool calls
+    // are only released from `finish()` after both. So a `Text` fragment released straight after a
+    // `Text` fragment is the next piece of the same string, and likewise for `Reasoning` -- the
+    // continuation is a fact of the wire format here, not a guess from adjacency. Anything else
+    // (the first fragment, a switch between reasoning and text, a tool call) starts a new item.
     void release(std::vector<ChatResponseUpdate>* out, ContentItem item) {
         if (auto* r = std::get_if<Reasoning>(&item.value)) {
             r->producer_chat_client_id = producer_chat_client_id_;
         }
+        bool const continues =
+            held_.has_value() &&
+            ((std::holds_alternative<Text>(held_->value) && std::holds_alternative<Text>(item.value)) ||
+             (std::holds_alternative<Reasoning>(held_->value) &&
+              std::holds_alternative<Reasoning>(item.value)));
         if (held_) {
             ChatResponseUpdate update;
             update.delta = std::move(*held_);
+            update.continues_previous = held_continues_previous_;
             update.is_final = false;
             out->push_back(std::move(update));
         }
         held_ = std::move(item);
+        held_continues_previous_ = continues;
     }
 
     // One SSE event block -> zero or more content items, updating tool-call accumulation state.
@@ -886,6 +902,7 @@ private:
     sandbox::SseEventFramer framer_;
     std::vector<PendingToolCall> pending_by_index_;
     std::optional<ContentItem> held_;
+    bool held_continues_previous_ = false;  // `continues_previous` for the update `held_` becomes
     std::optional<Usage> captured_usage_;  // ADR-034: from a stream_options.include_usage trailing chunk
 };
 

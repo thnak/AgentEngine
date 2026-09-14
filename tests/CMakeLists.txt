@@ -2086,6 +2086,15 @@ target_link_libraries(test_block_on_exception PRIVATE agentengine::core agenteng
 add_test(NAME test_block_on_exception COMMAND test_block_on_exception)
 set_tests_properties(test_block_on_exception PROPERTIES TIMEOUT 60)
 
+add_executable(test_stream_delta_coalescing test_stream_delta_coalescing.cpp)
+target_link_libraries(test_stream_delta_coalescing PRIVATE agentengine::core agentengine_warnings)
+if(AGENTENGINE_WITH_HTTPS)
+  # P1-P4 drive the real Anthropic/OpenAI stream accumulators, which only exist in HTTPS builds.
+  target_link_libraries(test_stream_delta_coalescing PRIVATE agentengine::provider_http_client)
+endif()
+add_test(NAME test_stream_delta_coalescing COMMAND test_stream_delta_coalescing)
+set_tests_properties(test_stream_delta_coalescing PROPERTIES TIMEOUT 60)
+
 add_executable(test_fs_walk test_fs_walk.cpp)
 target_link_libraries(test_fs_walk PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_fs_walk COMMAND test_fs_walk)

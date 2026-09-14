@@ -488,6 +488,11 @@ namespace recording_detail {
     std::vector<std::pair<std::string, json::Value>> obj;
     obj.emplace_back("delta", content_item_to_json(u.delta));
     obj.emplace_back("is_final", json::Value::make_bool(u.is_final));
+    // Written only when set, so every recording made before this field existed is byte-identical to
+    // what this function writes for the same updates today. Round-tripped at all because a replayed
+    // stream must reconstruct the SAME message the live one did (I5): drop it, and a replay rebuilds
+    // one item per token where the recorded run had one item per block.
+    if (u.continues_previous) obj.emplace_back("continues_previous", json::Value::make_bool(true));
     return json::Value::make_object(std::move(obj));
 }
 
@@ -499,6 +504,7 @@ namespace recording_detail {
     ChatResponseUpdate u;
     u.delta = std::move(*delta);
     u.is_final = recording_detail::opt_bool(j, "is_final");
+    u.continues_previous = recording_detail::opt_bool(j, "continues_previous");
     return u;
 }
 

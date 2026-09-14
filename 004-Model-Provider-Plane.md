@@ -39,6 +39,20 @@ struct ChatClient {                                 // concept, not a base class
   EffectContext&)` shape 018 §4 defines for plugins. A `ChatClient` backend is a native seam backend,
   not a plugin, but it earns no exemption from "never read into a config struct at startup."
 
+**Amendment (2026-09-14 — reconstructing a streamed reply).** A drained `chat_stream()` must yield
+a `Message` whose content boundaries are the backend's, not the transport's: one item per piece of
+content (an OpenAI `content` string, an Anthropic text block), never one item per SSE chunk.
+Every check that reads a reply reads it item by item, so a reply rebuilt per chunk is a different
+input to those checks than the non-streamed reply of the same bytes — measured, a raw
+`<tool_call>` leak in nineteen fragments passed both OQ-23's refusal and ADR-035's promotion scan
+that the unfragmented reply failed. `ChatResponseUpdate::continues_previous` carries the boundary:
+the **producer** sets it when a delta is the next fragment of the content the previous update
+carried, because only the producer can see the boundary (Anthropic's `tool_use` blocks arrive after
+the text blocks either side of them, so adjacency is not continuity); an update without it starts a
+new item. A drain joins a marked delta only onto an item of the same kind with identical metadata,
+and never joins encrypted reasoning. The flag is part of a recorded chunk (§6), so a replay
+rebuilds the message the live run did. Proof: `tests/test_stream_delta_coalescing.cpp`.
+
 ## 2. Capabilities
 
 `ChatClientCapabilities` is a declared bitset, not a runtime probe:

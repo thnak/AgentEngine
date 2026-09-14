@@ -760,7 +760,7 @@ public:
         }
         std::vector<ChatResponseUpdate> out;
         for (std::string const& block : framer_.feed(decoded)) {
-            for (ContentItem& item : items_from_block(block, &out)) release(&out, std::move(item));
+            for (BlockItem& bi : items_from_block(block, &out)) release(&out, std::move(bi.item), bi.text_block);
         }
         return out;
     }
@@ -768,7 +768,7 @@ public:
     [[nodiscard]] std::vector<ChatResponseUpdate> finish() {
         std::vector<ChatResponseUpdate> out;
         if (std::string tail = framer_.take_remainder(); !tail.empty()) {
-            for (ContentItem& item : items_from_block(tail, &out)) release(&out, std::move(item));
+            for (BlockItem& bi : items_from_block(tail, &out)) release(&out, std::move(bi.item), bi.text_block);
         }
         for (auto const& b : pending_by_index_) {
             if (!b.seen) continue;
@@ -801,6 +801,7 @@ public:
         if (held_) {
             ChatResponseUpdate last;
             last.delta = std::move(*held_);
+            last.continues_previous = held_continues_previous_;
             last.is_final = true;
             last.usage = captured_usage();
             held_.reset();
@@ -835,18 +836,36 @@ private:
     // `thinking`/`redacted_thinking` block reconstructed here in `finish()`, or any future content
     // kind) -- stamping `producer_chat_client_id` here once, rather than at each construction site
     // individually, means a future third construction site can never forget to stamp it.
-    void release(std::vector<ChatResponseUpdate>* out, ContentItem item) {
+    //
+    // 004 §1 amendment (`ChatResponseUpdate::continues_previous`): `text_block` is the content-block
+    // index a live `text_delta` item came from, and empty for everything else. A text item continues
+    // the previous item only when the previous item was text from the SAME block. That is the whole
+    // point of asking the producer: `tool_use` and `thinking` blocks are held until `finish()`, so the
+    // text of block 0 and the text of block 2 either side of a tool call arrive here back to back,
+    // and adjacency alone would glue two blocks the non-streamed reply keeps separate.
+    void release(std::vector<ChatResponseUpdate>* out, ContentItem item,
+                 std::optional<std::size_t> text_block = std::nullopt) {
         if (auto* r = std::get_if<Reasoning>(&item.value)) {
             r->producer_chat_client_id = producer_chat_client_id_;
         }
+        bool const continues = text_block.has_value() && last_released_text_block_ == text_block;
+        last_released_text_block_ = text_block;
         if (held_) {
             ChatResponseUpdate update;
             update.delta = std::move(*held_);
+            update.continues_previous = held_continues_previous_;
             update.is_final = false;
             out->push_back(std::move(update));
         }
         held_ = std::move(item);
+        held_continues_previous_ = continues;
     }
+
+    // One content item out of `items_from_block()`, with the block a live text fragment belongs to.
+    struct BlockItem {
+        ContentItem item;
+        std::optional<std::size_t> text_block;
+    };
 
     PendingBlock& ensure_index(std::size_t index) {
         if (index >= pending_by_index_.size()) pending_by_index_.resize(index + 1);
@@ -858,9 +877,9 @@ private:
     // `PendingBlock`/SSE-named-events vocabulary instead of OpenAI's `PendingToolCall`/JSON-array
     // one. Unlike OpenAI, Anthropic's wire protocol gives a real per-index completion signal
     // (`content_block_stop`) -- `is_final` is a resolved answer here, not an open question.
-    [[nodiscard]] std::vector<ContentItem> items_from_block(std::string const& block,
-                                                              std::vector<ChatResponseUpdate>* chunk_out) {
-        std::vector<ContentItem> out;
+    [[nodiscard]] std::vector<BlockItem> items_from_block(std::string const& block,
+                                                            std::vector<ChatResponseUpdate>* chunk_out) {
+        std::vector<BlockItem> out;
         for (SseEvent const& ev : split_sse_named_events(block)) {
             if (ev.type == "content_block_start") {
                 auto parsed = json::parse(ev.data);
@@ -911,7 +930,7 @@ private:
                         ContentItem item;
                         item.origin = content_origin::assistant;
                         item.value = Text{text->as_string()};
-                        out.push_back(std::move(item));
+                        out.push_back(BlockItem{std::move(item), static_cast<std::size_t>(*bounded)});
                     }
                 } else if (dkind == "input_json_delta") {
                     if (auto const* pj = delta->find("partial_json"); pj && pj->is_string() &&
@@ -997,6 +1016,8 @@ private:
     sandbox::SseEventFramer framer_;
     std::vector<PendingBlock> pending_by_index_;
     std::optional<ContentItem> held_;
+    bool held_continues_previous_ = false;  // `continues_previous` for the update `held_` becomes
+    std::optional<std::size_t> last_released_text_block_;  // block of the last released item, if text
     AnthropicUsageSnapshot usage_snapshot_;
 };
 

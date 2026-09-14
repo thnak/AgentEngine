@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "agentengine/core/chat_client.hpp"
+#include "agentengine/core/chat_stream_drain.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/context_provider.hpp"
 #include "agentengine/core/error.hpp"
@@ -123,8 +124,10 @@ inline void filter_cross_provider_reasoning(agentengine::ContextContribution& co
             // A pure argument-chunk update carries no real content in `delta` (it's left at its
             // default) -- appending it would push a spurious placeholder ContentItem into the
             // accumulated message. unified-streaming-design-draft.md §1, Finding 14.
+            // Joined onto the previous item when the producer marked it as continuing that item: see
+            // `append_stream_delta()`'s comment for the leak scan one-item-per-token used to blind.
             if (!upd->tool_call_argument_chunk.has_value()) {
-                accumulated.content.push_back(upd->delta);
+                agentengine::append_stream_delta(accumulated, std::move(upd->delta), upd->continues_previous);
             }
             if (upd->is_final && upd->usage.has_value()) usage = upd->usage;
         }

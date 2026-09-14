@@ -176,6 +176,19 @@ struct ChatResponseUpdate {  // ae-naming-lint: allow ChatResponseUpdate — pre
     // (`rt/agent_session.hpp`) must skip appending `delta` to accumulated content when this is set,
     // to avoid a spurious placeholder content item.
     std::optional<ToolCallArgumentChunk> tool_call_argument_chunk = std::nullopt;
+    // 004 §1 amendment (stream reconstruction). Set by the PRODUCER when `delta` is the next fragment
+    // of the same piece of content the previous content update carried -- the next token of one
+    // OpenAI `content` string, the next `text_delta` of one Anthropic text block. A drain joins such a
+    // fragment onto the item before it (`append_stream_delta()`, core/chat_stream_drain.hpp); an
+    // update without it always starts a new item.
+    //
+    // The producer decides because only the producer can see the boundary. Two Anthropic text blocks
+    // separated by a `tool_use` block arrive as adjacent `Text` deltas (that client defers `tool_use`
+    // to `finish()`), and a workflow's fan-in hands over one agent's text right after another's; a
+    // drain guessing from adjacency glued both into one string. The default is therefore "does not
+    // continue": a producer that never sets this keeps exactly the one-item-per-update shape it had.
+    // Appended last, additive, same precedent as the two fields above.
+    bool continues_previous = false;
 };
 
 // concept, not a base class (004 §1) — a backend satisfies this shape; it is never inherited from
