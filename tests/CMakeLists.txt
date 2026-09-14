@@ -3620,6 +3620,12 @@ target_link_libraries(test_ledger_case_folding PRIVATE agentengine::worktree_sto
 add_test(NAME test_ledger_case_folding COMMAND test_ledger_case_folding)
 set_tests_properties(test_ledger_case_folding PROPERTIES TIMEOUT 300)
 
+# Ledger::BlobWriteBatch: a drain writes the durable snapshot once, not once per file. No daemon, no
+# network -- real temp directories only.
+add_executable(test_ledger_blob_batch test_ledger_blob_batch.cpp)
+target_link_libraries(test_ledger_blob_batch PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+add_test(NAME test_ledger_blob_batch COMMAND test_ledger_blob_batch)
+
 # ---- ADR-102 Phase 3 -- ExecutionSurface/SandboxRuntime/DockerExecutionSurface/RealIoFileSystem ---
 # (sandbox/{execution_surface,docker_execution_surface,real_io_filesystem,sandbox_runtime}.hpp).
 # Needs agentengine::worktree_store the same way test_ledger does (real Ledger/compute_digest), plus

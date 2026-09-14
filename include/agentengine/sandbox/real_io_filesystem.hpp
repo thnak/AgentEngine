@@ -153,13 +153,16 @@ public:
         agentengine::rt::AsyncMutex::Guard commit_guard = co_await commit_lock_->lock();
 
         agentengine::Tree tree;
+        // One snapshot write for the whole drain, not one per file (`Ledger::BlobWriteBatch`).
+        typename agentengine::Ledger<Store>::BlobWriteBatch batch(ledger, author);
         for (auto const& path : paths) {
             auto bytes = read_real_file(path);   // REAL disk read, independent of what write() staged
             if (!bytes.has_value()) co_return std::unexpected(bytes.error());
-            auto blob_digest = ledger.put_blob_safe(*bytes, author);
+            auto blob_digest = batch.put(*bytes);
             if (!blob_digest.has_value()) co_return std::unexpected(blob_digest.error());
             tree.entries.push_back(agentengine::TreeEntry{path, *blob_digest, false});
         }
+        batch.finish();
         co_return tree;
     }
 
@@ -226,11 +229,14 @@ public:
         }
 
         agentengine::Tree tree;
+        // One snapshot write for the whole scan, not one per file (`Ledger::BlobWriteBatch`).
+        typename agentengine::Ledger<Store>::BlobWriteBatch batch(ledger, author);
         for (auto const& [rel, bytes] : collected) {
-            auto blob_digest = ledger.put_blob_safe(bytes, author);
+            auto blob_digest = batch.put(bytes);
             if (!blob_digest.has_value()) co_return std::unexpected(blob_digest.error());
             tree.entries.push_back(agentengine::TreeEntry{rel, *blob_digest, false});
         }
+        batch.finish();
 
         {
             std::lock_guard<std::mutex> guard(*sync_mutex_);

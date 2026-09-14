@@ -403,15 +403,58 @@ public:
     [[nodiscard]] agentengine::result<agentengine::Digest> put_blob_safe(std::span<std::byte const> bytes,
                                                                              agentengine::IdentityHandle writer) {
         std::lock_guard<std::mutex> g(mutex_);
-        auto d = store_.put_blob(bytes);
-        if (!d) {
-            return std::unexpected(agentengine::error{agentengine::failure_class::fatal, d.error().message,
-                                                          "ledger.put_blob_failed"});
+        auto d = put_blob_locked(bytes, writer);
+        if (d.has_value()) persist_snapshot_locked();
+        return d;
+    }
+
+    // Several blobs written as one drain. `put()` is `put_blob_safe()` minus its snapshot write: the
+    // same store write and the same bounded ACL insertion, each under `mutex_`, which is released
+    // between blobs exactly as it is between two `put_blob_safe()` calls. What the batch defers is only
+    // `persist_snapshot_locked()`, to ONE call when the batch ends (`finish()`, or the destructor on
+    // any early return) -- instead of one full rewrite of every branch, checkpoint and ACL per blob,
+    // which made an n-file drain write Theta(n^2) bytes to disk.
+    //
+    // Nothing a reader of the in-memory Ledger sees changes: every ACL root is inserted before `put()`
+    // returns. Only the durable snapshot lags, and only until the batch ends; a crash inside that
+    // window loses the ACL roots of blobs no commit references yet, so the content they name is
+    // unreadable by anyone (`authorized_for()` fails closed on a missing entry) until a later drain
+    // writes it again. Any other mutation that persists meanwhile writes the batch's roots too, since
+    // the snapshot is always of the whole in-memory state.
+    class BlobWriteBatch {
+    public:
+        BlobWriteBatch(Ledger& ledger, agentengine::IdentityHandle writer)
+            : ledger_(&ledger), writer_(std::move(writer)) {}
+        BlobWriteBatch(BlobWriteBatch const&) = delete;
+        BlobWriteBatch& operator=(BlobWriteBatch const&) = delete;
+        ~BlobWriteBatch() { finish(); }
+
+        [[nodiscard]] agentengine::result<agentengine::Digest> put(std::span<std::byte const> bytes) {
+            std::lock_guard<std::mutex> g(ledger_->mutex_);
+            auto d = ledger_->put_blob_locked(bytes, writer_);
+            if (d.has_value()) unpersisted_ = true;
+            return d;
         }
-        auto acl_ok = insert_acl_root_bounded(blob_acl_, *d, writer.id(), max_acl_roots_per_digest_);
-        if (!acl_ok.has_value()) return std::unexpected(acl_ok.error());
-        persist_snapshot_locked();
-        return *d;
+
+        // Writes the snapshot iff a `put()` succeeded since the last write. Idempotent.
+        void finish() {
+            if (!unpersisted_) return;
+            std::lock_guard<std::mutex> g(ledger_->mutex_);
+            ledger_->persist_snapshot_locked();
+            unpersisted_ = false;
+        }
+
+    private:
+        Ledger* ledger_;
+        agentengine::IdentityHandle writer_;
+        bool unpersisted_ = false;
+    };
+
+    // How many times the durable snapshot has been written by this Ledger (0 without `durable_dir`).
+    // Observability for the drain batching above; not an authority input.
+    [[nodiscard]] std::uint64_t snapshot_write_count() const {
+        std::lock_guard<std::mutex> g(mutex_);
+        return snapshot_writes_;
     }
     [[nodiscard]] agentengine::result<std::vector<std::byte>> get_blob_safe(
             agentengine::Digest const& digest, agentengine::IdentityHandle caller) {
@@ -940,6 +983,20 @@ private:
         pending_abandons_.push_back(name);
     }
 
+    // The store write and bounded ACL insertion shared by `put_blob_safe()` and `BlobWriteBatch::put()`.
+    // Must be called with mutex_ already held. Does not persist.
+    [[nodiscard]] agentengine::result<agentengine::Digest> put_blob_locked(std::span<std::byte const> bytes,
+                                                                               agentengine::IdentityHandle const& writer) {
+        auto d = store_.put_blob(bytes);
+        if (!d) {
+            return std::unexpected(agentengine::error{agentengine::failure_class::fatal, d.error().message,
+                                                          "ledger.put_blob_failed"});
+        }
+        auto acl_ok = insert_acl_root_bounded(blob_acl_, *d, writer.id(), max_acl_roots_per_digest_);
+        if (!acl_ok.has_value()) return std::unexpected(acl_ok.error());
+        return *d;
+    }
+
     // True iff `requested_by` is `state`'s own recorded creator, or an ancestor of that creator (the
     // same ancestor-inclusion `authorized_for()` already extends for content-digest ACLs) -- i.e.
     // real branch ownership, never incidental content-digest overlap. See `reclaim_orphaned_branch()`'s
@@ -1256,6 +1313,7 @@ private:
             }
             out.flush();
         }
+        ++snapshot_writes_;
         std::error_code ec;
         std::filesystem::rename(temp_path, final_path, ec);
         // A rename failure here is intentionally not escalated -- durability is a best-effort
@@ -1331,6 +1389,7 @@ private:
     std::set<std::string> orphaned_from_restart_;   // branch names restored by load_durable_state()
                                                         // with no live handle anywhere in THIS process
     std::uint64_t branch_seq_ = 0;
+    mutable std::uint64_t snapshot_writes_ = 0;   // see snapshot_write_count()
     Store store_;   // the REAL content-addressed store -- InMemoryWorktreeObjectStore by default
     std::unordered_map<agentengine::Digest, std::set<std::uint64_t>> blob_acl_;
     std::unordered_map<agentengine::Digest, std::set<std::uint64_t>> tree_acl_;
