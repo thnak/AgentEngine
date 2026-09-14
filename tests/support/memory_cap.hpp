@@ -19,7 +19,8 @@
 //
 // Returns whether a cap is in force. A test should prove it with an over-cap allocation that must throw
 // -- see test_json_dump_escape's M0 -- rather than trusting this return value alone; and should skip that
-// probe when the cap is not in force (a sanitizer allocator aborts on failure instead of throwing).
+// probe when the cap is not in force AND under any sanitizer even when it is: a sanitizer allocator aborts
+// on an over-cap allocation instead of throwing (Windows ASan CI legs, where the job limit does apply).
 
 #include <cstddef>
 #include <cstdio>

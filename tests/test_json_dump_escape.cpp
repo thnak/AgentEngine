@@ -94,10 +94,12 @@ int main() {
     constexpr std::size_t kSanitizerCap = std::size_t{2048} << 20;
     bool const capped = agentengine::test_support::cap_process_memory(kCap, kSanitizerCap);
 
-    // ---- M0: the cap is real. Skipped, and said so, where it is not in force (a sanitizer allocator
-    //          aborts on failure instead of throwing).
-    if (capped) {
-        std::size_t const over = (agentengine::test_support::running_under_sanitizer() ? kSanitizerCap : kCap) * 2;
+    // ---- M0: the cap is real. Skipped, and said so, where it is not in force, AND under any sanitizer
+    //          even where it is (the Windows job limit still applies there): a sanitizer allocator
+    //          aborts the process on an over-cap allocation instead of throwing -- the cap still
+    //          contains a runaway, it just cannot be probed from inside.
+    if (capped && !agentengine::test_support::running_under_sanitizer()) {
+        std::size_t const over = kCap * 2;
         bool refused = false;
         try {
             std::vector<char> too_big(over, 'x');
@@ -108,7 +110,8 @@ int main() {
         check(refused, "M0: the memory cap is in force -- an allocation of " + std::to_string(over >> 20) +
                            " MiB is refused");
     } else {
-        std::printf("[info] M0 skipped: no memory cap in force on this build\n");
+        std::printf("[info] M0 skipped: %s\n", capped ? "sanitizer build (its allocator aborts instead of throwing)"
+                                                      : "no memory cap in force on this build");
     }
 
     // A broken escaper that grows without bound hits the cap as std::bad_alloc: reported as a failure
