@@ -58,7 +58,7 @@
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/rt/append_log_store.hpp"
-#include "agentengine/rt/workflow_supervisor.hpp"
+#include "agentengine/rt/workflow_run_state_record.hpp"
 
 namespace agentengine::rt {
 

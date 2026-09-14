@@ -25,6 +25,8 @@
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/task.hpp"
+#include "agentengine/rt/workflow_supervisor.hpp"  // drives a real WorkflowSupervisor, not just its checkpoint records
 #include "agentengine/rt/workflow_time_travel.hpp"
 
 using agentengine::rt::ContinueWorkflow;
