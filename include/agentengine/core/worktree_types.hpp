@@ -111,6 +111,7 @@ concept WorktreeObjectStore =
 // with the same error code; a store that does not model it still conforms to
 // `WorktreeObjectStore` and is sized through `get_blob()` as before.
 template <class S>
+// ae-naming-lint: allow WorktreeObjectStoreWithBlobSize — ADR-025 §4c precedent (WorktreeObjectStore's own identical suppression, the concept this refines): deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 concept WorktreeObjectStoreWithBlobSize =
     WorktreeObjectStore<S> && requires(S& s, Digest const& digest) {
         { s.blob_size(digest) } -> std::same_as<result<std::uint64_t>>;
