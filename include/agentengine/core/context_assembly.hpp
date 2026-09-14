@@ -26,6 +26,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -290,9 +291,16 @@ struct ContextAssemblyResult {
             t.attribution = ContributorProvenance{i, contributor.name};
         }
 
-        out.combined.messages.insert(out.combined.messages.end(), msgs.begin(), msgs.end());
-        out.combined.tools.insert(out.combined.tools.end(), contribution->tools.begin(),
-                                   contribution->tools.end());
+        // Moved, not copied: `contribution` is this iteration's own local and is destroyed straight
+        // after. Every check above has already run on these exact objects, so moving them changes
+        // nothing any check saw; it only stops each message and each `ToolDescriptor` (a parsed schema
+        // tree plus a `std::function`) being duplicated and then thrown away, once per contributor,
+        // per turn.
+        out.combined.messages.insert(out.combined.messages.end(), std::make_move_iterator(msgs.begin()),
+                                     std::make_move_iterator(msgs.end()));
+        out.combined.tools.insert(out.combined.tools.end(),
+                                  std::make_move_iterator(contribution->tools.begin()),
+                                  std::make_move_iterator(contribution->tools.end()));
     }
 
     co_return out;
