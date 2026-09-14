@@ -58,6 +58,7 @@
 // future phase can supply a durable one without touching this file, but this phase does not build or
 // prove one.
 
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
@@ -68,6 +69,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/error.hpp"
@@ -106,6 +108,55 @@ namespace ledger_detail {
     std::unordered_map<std::string, agentengine::TreeEntry> out;
     for (auto const& e : t.entries) out.emplace(e.name, e);
     return out;
+}
+
+// The search behind `Ledger::check_case_folding_collision()`: the first pair of entries whose names
+// are DIFFERENT but case-fold (ASCII `tolower` per byte) to the same string, as indices `{i, j}` with
+// `i < j`, or nullopt. Exact duplicates are not a collision here, as they never were.
+//
+// This used to be a nested loop that re-allocated and re-lowercased the inner name on every one of
+// its n(n-1)/2 comparisons. `Ledger::commit()` runs it on every commit, against the flat tree
+// `RealIoFileSystem::scan_and_drain_into_tree()` builds for a WHOLE sandbox (one entry per file, full
+// relative path as the name), so a 2000-file sandbox cost ~2M string allocations per command. Now
+// each name is folded once and the folded names are sorted, so equal folds become adjacent runs:
+// O(n log n).
+//
+// It reports the SAME pair the nested loop did, so the rejection message is unchanged. The nested
+// loop returned the smallest `i` that had any later differently-named match, paired with the
+// smallest such `j`. Within one run of equal folds (ordered by index), a run contains a collision
+// exactly when some name in it differs from its FIRST member's -- and then that first member is the
+// run's smallest such `i`, and the first later member with a different name is its `j`. The answer
+// is the run whose first member has the smallest index. `test_ledger_case_folding.cpp` checks this
+// equivalence against a verbatim copy of the old loop on generated trees.
+[[nodiscard]] inline std::optional<std::pair<std::size_t, std::size_t>> find_case_folding_collision(
+    agentengine::Tree const& tree) {
+    std::vector<std::pair<std::string, std::size_t>> folded;
+    folded.reserve(tree.entries.size());
+    for (std::size_t i = 0; i < tree.entries.size(); ++i) {
+        std::string f = tree.entries[i].name;
+        for (char& c : f) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        folded.emplace_back(std::move(f), i);
+    }
+    std::sort(folded.begin(), folded.end());  // by folded name, then by index within equal folds
+
+    std::optional<std::pair<std::size_t, std::size_t>> best;
+    for (std::size_t run = 0; run < folded.size();) {
+        std::size_t run_end = run + 1;
+        while (run_end < folded.size() && folded[run_end].first == folded[run].first) ++run_end;
+        std::size_t const i = folded[run].second;
+        if (!best.has_value() || i < best->first) {
+            std::string const& first_name = tree.entries[i].name;
+            for (std::size_t k = run + 1; k < run_end; ++k) {
+                std::size_t const j = folded[k].second;
+                if (tree.entries[j].name != first_name) {
+                    best = std::pair{i, j};
+                    break;
+                }
+            }
+        }
+        run = run_end;
+    }
+    return best;
 }
 }  // namespace ledger_detail
 
@@ -950,26 +1001,18 @@ private:
     // default macOS HFS+) on materialize. Rejected outright rather than silently dropping one.
     // HONEST RESIDUAL: this checks ASCII case-folding only (`tolower` per byte) -- not Unicode
     // "ignorable" codepoints, a materially harder problem this check does not attempt.
+    // The search itself is `ledger_detail::find_case_folding_collision()`, above.
     [[nodiscard]] static agentengine::result<void> check_case_folding_collision(agentengine::Tree const& tree) {
-        for (std::size_t i = 0; i < tree.entries.size(); ++i) {
-            std::string folded_i = tree.entries[i].name;
-            for (char& c : folded_i) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            for (std::size_t j = i + 1; j < tree.entries.size(); ++j) {
-                std::string folded_j = tree.entries[j].name;
-                for (char& c : folded_j) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-                if (folded_i == folded_j && tree.entries[i].name != tree.entries[j].name) {
-                    return std::unexpected(agentengine::error{
-                        agentengine::failure_class::contract,
-                        "tree contains two entries that case-fold to the same real path ('" +
-                            tree.entries[i].name + "' and '" + tree.entries[j].name +
-                            "') -- rejected before materialize() could silently drop one of them on a "
-                            "case-insensitive filesystem, matching git's own real CVE-2014-9390 fix "
-                            "direction",
-                        "ledger.case_folding_collision"});
-                }
-            }
-        }
-        return {};
+        auto const collision = ledger_detail::find_case_folding_collision(tree);
+        if (!collision.has_value()) return {};
+        return std::unexpected(agentengine::error{
+            agentengine::failure_class::contract,
+            "tree contains two entries that case-fold to the same real path ('" +
+                tree.entries[collision->first].name + "' and '" + tree.entries[collision->second].name +
+                "') -- rejected before materialize() could silently drop one of them on a "
+                "case-insensitive filesystem, matching git's own real CVE-2014-9390 fix "
+                "direction",
+            "ledger.case_folding_collision"});
     }
 
     // Must be called with mutex_ already held. Marks `child` as a reclaimable orphan iff it still

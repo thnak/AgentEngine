@@ -3615,6 +3615,11 @@ add_executable(test_ledger test_ledger.cpp)
 target_link_libraries(test_ledger PRIVATE agentengine::worktree_store agentengine_warnings)
 add_test(NAME test_ledger COMMAND test_ledger)
 
+add_executable(test_ledger_case_folding test_ledger_case_folding.cpp)
+target_link_libraries(test_ledger_case_folding PRIVATE agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_ledger_case_folding COMMAND test_ledger_case_folding)
+set_tests_properties(test_ledger_case_folding PROPERTIES TIMEOUT 300)
+
 # ---- ADR-102 Phase 3 -- ExecutionSurface/SandboxRuntime/DockerExecutionSurface/RealIoFileSystem ---
 # (sandbox/{execution_surface,docker_execution_surface,real_io_filesystem,sandbox_runtime}.hpp).
 # Needs agentengine::worktree_store the same way test_ledger does (real Ledger/compute_digest), plus
