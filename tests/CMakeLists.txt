@@ -3626,6 +3626,12 @@ add_executable(test_ledger_blob_batch test_ledger_blob_batch.cpp)
 target_link_libraries(test_ledger_blob_batch PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
 add_test(NAME test_ledger_blob_batch COMMAND test_ledger_blob_batch)
 
+# Ledger::would_accept_blob_write() predicts put_blob_safe() under any configured ACL-root cap and for
+# shared digests. No daemon, no network.
+add_executable(test_ledger_scan_precheck test_ledger_scan_precheck.cpp)
+target_link_libraries(test_ledger_scan_precheck PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+add_test(NAME test_ledger_scan_precheck COMMAND test_ledger_scan_precheck)
+
 # ---- ADR-102 Phase 3 -- ExecutionSurface/SandboxRuntime/DockerExecutionSurface/RealIoFileSystem ---
 # (sandbox/{execution_surface,docker_execution_surface,real_io_filesystem,sandbox_runtime}.hpp).
 # Needs agentengine::worktree_store the same way test_ledger does (real Ledger/compute_digest), plus

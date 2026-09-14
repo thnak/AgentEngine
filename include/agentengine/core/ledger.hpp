@@ -496,15 +496,23 @@ public:
     // mutation. Lets a caller validate the WHOLE batch before writing any of it, instead of
     // discovering an ACL-cap rejection partway through with earlier blobs already durably persisted
     // and unreferenced by any Tree/Checkpoint.
+    //
+    // It answers with `acl_root_admissible()`, the same rule `insert_acl_root_bounded()` enforces, under
+    // this ledger's own configured cap. It once restated that rule by hand and drifted from it twice:
+    // it compared against the compile-time default `kMaxAclRootsPerDigest` instead of
+    // `max_acl_roots_per_digest_`, and it ignored a digest marked publicly shared. So on a ledger with
+    // a lower cap it approved a batch that `put_blob_safe()` then refused partway through -- the very
+    // outcome it exists to prevent -- and it refused a scan of a digest `mark_digest_shared()` had
+    // already exempted from the cap.
     [[nodiscard]] bool would_accept_blob_write(std::span<std::byte const> bytes,
                                                   agentengine::IdentityHandle writer) {
         auto digest = agentengine::compute_digest(bytes);
         if (!digest) return false;
         std::lock_guard<std::mutex> g(mutex_);
         auto it = blob_acl_.find(*digest);
-        if (it == blob_acl_.end()) return true;         // brand-new digest, nothing to exceed yet
-        if (it->second.contains(writer.id())) return true;  // no-op re-touch, always allowed
-        return it->second.size() < kMaxAclRootsPerDigest;
+        static std::set<std::uint64_t> const kNoRoots;
+        return acl_root_admissible(it == blob_acl_.end() ? kNoRoots : it->second, writer.id(),
+                                   max_acl_roots_per_digest_);
     }
 
     // `disambiguator` is OPTIONAL, empty by default. Omitting it reproduces the deterministic
@@ -1027,6 +1035,14 @@ private:
         return false;
     }
 
+    // The admission rule itself, shared with `would_accept_blob_write()`'s dry run so the two cannot
+    // disagree: an already-recorded root re-touches for free, a publicly shared digest is exempt, and
+    // otherwise a new root needs room under `cap`.
+    [[nodiscard]] static bool acl_root_admissible(std::set<std::uint64_t> const& roots, std::uint64_t root_id,
+                                                  std::size_t cap) {
+        return roots.contains(root_id) || roots.contains(kPubliclySharedSentinelRootId) || roots.size() < cap;
+    }
+
     // Bounded ACL insertion. Must be called with mutex_ already held. A root id already present is a
     // no-op success; only a genuinely NEW distinct root id past the cap fails, and it fails CLOSED
     // (the whole calling operation is rejected) rather than silently dropping the id.
@@ -1036,7 +1052,7 @@ private:
         auto& set = acl[digest];
         if (set.contains(root_id)) return agentengine::result<void>{};
         if (set.contains(kPubliclySharedSentinelRootId)) return agentengine::result<void>{};
-        if (set.size() >= cap) {
+        if (!acl_root_admissible(set, root_id, cap)) {
             return std::unexpected(agentengine::error{
                 agentengine::failure_class::resource,
                 "digest '" + digest.substr(0, 12) + "...' has reached its maximum of " +
