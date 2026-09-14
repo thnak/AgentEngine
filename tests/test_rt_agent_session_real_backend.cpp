@@ -163,6 +163,13 @@ private:
             std::lock_guard<std::mutex> lock(mu_);
             last_body_ = buf.substr(head_end + 4);
         }
+        // Counted here, once the whole request has arrived and BEFORE the reply is written. This used
+        // to be incremented after the send loop, which raced the client: the session could read the
+        // complete response, return, and have J1-R6 read `requests_served()` before this thread got
+        // back from `send_some()` to bump it. Observed once as "J1-R6: it crossed the socket again"
+        // failing under a parallel full-suite run, never standalone. What J1-R6 claims is that a
+        // second request reached the server, which is true at this line.
+        requests_served_.fetch_add(1);
 
         std::string const body = std::string(R"({"model":"canned-model","choices":[{"index":0,)") +
                                  R"("finish_reason":"stop","message":{"role":"assistant","content":")" +
@@ -180,7 +187,6 @@ private:
             }
             sent += *w;
         }
-        requests_served_.fetch_add(1);
     }
 
     [[nodiscard]] static std::size_t content_length_of(std::string_view head) {

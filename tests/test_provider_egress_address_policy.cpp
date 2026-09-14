@@ -20,6 +20,7 @@
 
 #include "agentengine/pal/net.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -77,7 +78,7 @@ public:
 
     [[nodiscard]] bool ok() const { return ok_; }
     [[nodiscard]] std::uint16_t port() const { return port_; }
-    [[nodiscard]] int connections_served() const { return connections_served_; }
+    [[nodiscard]] int connections_served() const { return connections_served_.load(); }
 
 private:
     void run(std::stop_token st) {
@@ -112,6 +113,15 @@ private:
             if (buf.find("\r\n\r\n") != std::string::npos) break;
         }
         if (buf.find("\r\n\r\n") == std::string::npos) return;  // never a valid HTTP request
+        // Issue #77. Counted here, once a complete HTTP request has arrived and BEFORE the reply is
+        // written. It used to be counted after the send loop, in a plain `int`: the client could read
+        // the whole response, run the guest-path checks below (pure refusals, no socket, done in
+        // microseconds) and read this counter while this thread was still returning from
+        // `send_some()`, getting 0. Captured once under `ctest -j 6` with 358 tests. The unsynchronized
+        // `int` was also a data race on its own. The claim the final check makes -- only the
+        // plaintext attempt got a real HTTP request through to this server -- is already true here:
+        // a TLS ClientHello never completes a request head, and a refused guest attempt never connects.
+        connections_served_.fetch_add(1);
 
         std::string const body = kResponseBody;
         std::string response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
@@ -126,13 +136,12 @@ private:
             }
             sent += *w;
         }
-        ++connections_served_;
     }
 
     bool ok_ = false;
     agentengine::pal::fd_t listen_fd_{};
     std::uint16_t port_ = 0;
-    int connections_served_ = 0;
+    std::atomic<int> connections_served_{0};
     std::jthread thread_;
 };
 
@@ -327,14 +336,17 @@ int main() {
         }
     }
 
-    // The server counts only connections it answered with a real HTTP response. Exactly one case
+    // The server counts only connections that delivered a complete HTTP request. Exactly one case
     // above should have got that far -- if the TLS-default or guest-path cases had also reached it,
     // this would be higher, and one of those two assertions above would be passing for the wrong
     // reason.
-    check(server.connections_served() == 1,
-          "exactly ONE of the three attempts above actually completed an HTTP exchange with the "
-          "server -- the TLS-default attempt and the guest attempt did not merely return errors, "
-          "they never got a response out of it");
+    // The count is printed because issue #77's first failure left no way to tell a lost race (0)
+    // from a blocked attempt really reaching the server (2), and those mean very different things.
+    int const served = server.connections_served();
+    check(served == 1,
+          ("exactly ONE of the three attempts above actually got an HTTP request through to the "
+           "server -- the TLS-default attempt and the guest attempt did not merely return errors, "
+           "they never delivered a request (served=" + std::to_string(served) + ")").c_str());
 
     if (g_failures == 0) {
         std::fprintf(stderr, "test_provider_egress_address_policy: ALL PASS\n");
