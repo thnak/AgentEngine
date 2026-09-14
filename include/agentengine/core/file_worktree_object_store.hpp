@@ -273,6 +273,27 @@ public:
         return out;
     }
 
+    // `get_blob(digest)->size()` without reading the file: a blob file only ever appears at its final
+    // path by atomic rename of a fully written temp file (put_blob() above), so its size on disk IS
+    // its content size. Same malformed/not-found errors as get_blob(), in the same order. The one
+    // entry the two could answer differently is one this store never writes: a DIRECTORY planted at
+    // blobs/<digest>, which file_size() refuses and (on POSIX) an ifstream opens and reads as empty.
+    [[nodiscard]] agentengine::result<std::uint64_t> blob_size(agentengine::Digest const& digest) const {
+        if (!is_well_formed_digest(digest)) {
+            return std::unexpected(agentengine::error{agentengine::failure_class::contract,
+                                                          "digest is not a well-formed 64-char hex SHA-256 string",
+                                                          "worktree.malformed_digest"});
+        }
+        std::error_code ec;
+        std::uintmax_t const size = std::filesystem::file_size(root_ / "blobs" / digest, ec);
+        if (ec) {
+            return std::unexpected(agentengine::error{agentengine::failure_class::contract,
+                                                          "no blob with this digest exists in the store",
+                                                          "worktree.blob_not_found"});
+        }
+        return static_cast<std::uint64_t>(size);
+    }
+
     [[nodiscard]] agentengine::result<agentengine::Digest> put_tree(agentengine::Tree tree) {
         std::ranges::sort(tree.entries, {}, &agentengine::TreeEntry::name);
         auto bytes = agentengine::canonical_tree_bytes(tree);
@@ -431,6 +452,6 @@ private:
     mutable std::unique_ptr<std::mutex> mutex_;
 };
 
-static_assert(agentengine::WorktreeObjectStore<FileWorktreeObjectStore>);
+static_assert(agentengine::WorktreeObjectStoreWithBlobSize<FileWorktreeObjectStore>);
 
 }  // namespace agentengine

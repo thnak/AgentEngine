@@ -104,6 +104,18 @@ concept WorktreeObjectStore =
         { s.get_tree(digest) } -> std::same_as<result<Tree>>;
     };
 
+// An OPTIONAL refinement: a store that can report a blob's size without handing over its bytes. A
+// quota check (`detail::subtree_usage`, core/worktree_mount.hpp) needs every file's size under a
+// mount on every write, and `get_blob()` returns the content by value. A store that models this
+// must answer exactly `get_blob(digest)->size()`, and fail exactly when `get_blob(digest)` fails,
+// with the same error code; a store that does not model it still conforms to
+// `WorktreeObjectStore` and is sized through `get_blob()` as before.
+template <class S>
+concept WorktreeObjectStoreWithBlobSize =
+    WorktreeObjectStore<S> && requires(S& s, Digest const& digest) {
+        { s.blob_size(digest) } -> std::same_as<result<std::uint64_t>>;
+    };
+
 // The reference adapter -- in-memory, not durable across process exit. Exercises the full
 // `WorktreeObjectStore` contract (dedup, tree-diff-by-digest-comparison, immutability) so it's
 // directly testable; a crash-durable adapter (pal::file_io-backed, the same InMemory/File split
@@ -128,6 +140,16 @@ public:
                                           "worktree.blob_not_found"});
         }
         return it->second;
+    }
+
+    [[nodiscard]] result<std::uint64_t> blob_size(Digest const& digest) const {
+        auto it = blobs_.find(digest);
+        if (it == blobs_.end()) {
+            return std::unexpected(error{failure_class::contract,
+                                          "no blob with this digest exists in the store",
+                                          "worktree.blob_not_found"});
+        }
+        return static_cast<std::uint64_t>(it->second.size());
     }
 
     [[nodiscard]] result<Digest> put_tree(Tree tree) {
@@ -160,6 +182,6 @@ private:
     std::unordered_map<Digest, Tree>                   trees_;
 };
 
-static_assert(WorktreeObjectStore<InMemoryWorktreeObjectStore>);
+static_assert(WorktreeObjectStoreWithBlobSize<InMemoryWorktreeObjectStore>);
 
 }  // namespace agentengine

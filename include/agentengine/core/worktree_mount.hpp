@@ -195,6 +195,22 @@ template <WorktreeObjectStore S>
 // write that REPLACES a large file with a small one must show reduced usage, not accumulate a
 // stale delta) at the cost of walking the subtree on every write -- a named, accepted cost for a
 // milestone whose own gates (025 §9 G4) defer real p99 cost measurement past M3 project-wide.
+//
+// A blob is sized through `blob_size()` when the store models `WorktreeObjectStoreWithBlobSize`
+// (both in-tree stores do), and only otherwise through `get_blob()` -- which returns the whole file
+// by value, so without it every quota-checked write copied every file in the mount just to read
+// `.size()`. Same numbers either way: the refinement's contract is `get_blob(d)->size()`.
+template <WorktreeObjectStore S>
+[[nodiscard]] result<std::uint64_t> blob_size_of(S& store, Digest const& digest) {
+    if constexpr (WorktreeObjectStoreWithBlobSize<S>) {
+        return store.blob_size(digest);
+    } else {
+        auto blob = store.get_blob(digest);
+        if (!blob) return std::unexpected(blob.error());
+        return static_cast<std::uint64_t>(blob->size());
+    }
+}
+
 template <WorktreeObjectStore S>
 [[nodiscard]] result<std::pair<std::uint64_t, std::uint32_t>> subtree_usage(S& store, Digest const& tree_digest) {
     auto tree = store.get_tree(tree_digest);
@@ -208,9 +224,9 @@ template <WorktreeObjectStore S>
             bytes += sub->first;
             files += sub->second;
         } else {
-            auto blob = store.get_blob(entry.digest);
-            if (!blob) return std::unexpected(blob.error());
-            bytes += blob->size();
+            auto size = blob_size_of(store, entry.digest);
+            if (!size) return std::unexpected(size.error());
+            bytes += *size;
             ++files;
         }
     }

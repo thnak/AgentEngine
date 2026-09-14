@@ -3632,6 +3632,12 @@ add_executable(test_ledger_scan_precheck test_ledger_scan_precheck.cpp)
 target_link_libraries(test_ledger_scan_precheck PRIVATE agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
 add_test(NAME test_ledger_scan_precheck COMMAND test_ledger_scan_precheck)
 
+# A quota-checked mount_write() sizes files through blob_size(), not by copying them out of the store.
+# No daemon, no network; a real temp directory for the file-backed store.
+add_executable(test_worktree_blob_size test_worktree_blob_size.cpp)
+target_link_libraries(test_worktree_blob_size PRIVATE agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_worktree_blob_size COMMAND test_worktree_blob_size)
+
 # ---- ADR-102 Phase 3 -- ExecutionSurface/SandboxRuntime/DockerExecutionSurface/RealIoFileSystem ---
 # (sandbox/{execution_surface,docker_execution_surface,real_io_filesystem,sandbox_runtime}.hpp).
 # Needs agentengine::worktree_store the same way test_ledger does (real Ledger/compute_digest), plus
