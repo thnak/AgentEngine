@@ -40,6 +40,7 @@
 #include <string>
 #include <utility>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/history_provider.hpp"
@@ -100,16 +101,13 @@ struct ChildSpawnRequest {
 
 namespace agent_spawn_detail {
 
-// Drives an `rt::task<T>` to completion from a plain, non-coroutine call site -- the SAME hand-rolled
-// "resume until done" loop `rt/agent_workflow_executor.hpp`'s own `agent_executor_detail::drive<T>()`
-// already uses for the identical "fresh session, referenced by nothing else, uncontended
-// session_mutex_" precondition (that file's own CONCURRENCY CONTRACT comment; this file's own top
-// comment restates why it holds here too). Not shared from there -- deliberately kept byte-for-byte
-// identical in shape rather than introducing a header/namespace coupling neither file otherwise needs.
+// Drives an `rt::task<T>` to completion from a plain, non-coroutine call site. Formerly the same
+// hand-rolled resume-until-done loop as `rt/agent_workflow_executor.hpp`, argued safe because a fresh
+// session's `session_mutex_` is uncontended -- but the child's round can still park on something shared
+// (a quota), and the loop then resumed a parked handle twice. `block_on()` since decisions/ADR-175.
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));  // ADR-175: was `while (!t.done()) t.resume();`
 }
 
 }  // namespace agent_spawn_detail

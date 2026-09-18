@@ -21,6 +21,9 @@
 // is a separate file's own change -- see `session_builder.hpp`'s own top comment.
 //
 // -- §4.4c SpawnPump, built here (bounded to this file, not a separate design/red-team/prove pass) --
+// (decisions/ADR-175 replaced that drive loop with `rt::block_on()`, and a parked waiter is now posted
+// back to its own `block_on()` rather than resumed on the unlocking thread; the reasoning below is the
+// pump's original justification and is left as written.)
 // The design doc's own RC-2/WT-2 findings are real and load-bearing, not merely theoretical: a naive
 // "while (!t.done()) t.resume()" drive loop (rt/agent_spawn_child_run.hpp's own
 // agent_spawn_detail::drive(), reused unmodified below) is safe ONLY when nothing else can ever

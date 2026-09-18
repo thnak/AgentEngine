@@ -49,35 +49,91 @@
 // `BlockOnState::take()`, the same contract `std::future` offers. This driver used to call
 // `std::terminate()` instead -- see `promise_type::unhandled_exception()` below for why that was
 // wrong and what it cost.
+//
+// ADR-175 (issue #78) -- THE CALLING THREAD IS THE DRIVEN TASK'S HOME. When the task parks on an
+// `AsyncMutex` or `channel<T>` await, the awaiter records this call as its home (`rt/resume_home.hpp`,
+// created lazily on that first park), and the waker POSTS the handle back instead of resuming it on its
+// own thread; this thread, waiting in `take()`, resumes it. So the task runs only on the calling thread,
+// never inside another thread's `unlock()` trampoline (where a nested `block_on` relock livelocked,
+// ADR-175 round 1 finding 2). The wait sleeps on a condition variable once a home exists; a task that never
+// parked through a homing awaiter falls back to the original yield loop. Every synchronous driver in `rt::`
+// now goes through here -- the five resume-until-done `drive()` loops, `drive_leaf_task()`,
+// `ThreadPool::run_job()` and `Bundle::ask()` each mishandled a task that suspends in its own way.
+//
+// HOLDER. A nested call (a tool closure inside a round that is itself being driven) is a synchronous part
+// of the task already running, and keeps its holder id; `AsyncMutex::is_held_by_current_thread()` depends on
+// that (`AgentSession::fork_from()`'s reentrant case, ADR-123).
 
 #include <atomic>
 #include <coroutine>
+#include <cstdint>
 #include <exception>
+#include <memory>
 #include <optional>
 #include <thread>
 #include <utility>
 
+#include "agentengine/rt/resume_home.hpp"
 #include "agentengine/rt/task.hpp"
 
 namespace agentengine::rt {
 
+namespace block_on_detail {
+
+// What completion signalling and the wait share, for either `T` or `void`.
+class CompletionSignal {
+public:
+    explicit CompletionSignal(detail::HomeSlot* slot) noexcept : slot_(slot) {}
+
+    // The last touch on the signalling frame (see `SignalTask` below). The home is copied BEFORE the flag
+    // is set: once the flag is observed the calling thread may return and destroy `*slot_`.
+    void signal_done() noexcept {
+        std::shared_ptr<detail::CallerHome> const home = slot_->home;
+        flag_.store(true, std::memory_order_release);
+        if (home) home->mark_done();
+    }
+
+    // Resumes posted handles on this thread until the driven task is done. `holder` is the id this call
+    // drives under; a posted record carries the same id.
+    void wait(std::uint64_t holder) {
+        std::shared_ptr<detail::CallerHome> const home = slot_->home;
+        if (!home) {
+            // Nothing parked through a homing awaiter: either already done, or suspended on a foreign
+            // awaitable that resumes it elsewhere and signals through the flag.
+            while (!flag_.load(std::memory_order_acquire)) std::this_thread::yield();
+            return;
+        }
+        for (;;) {
+            detail::CallerHome::Posted const next = home->wait_next();
+            if (!next.handle) return;
+            ScopedExecution const context(slot_, next.holder != 0 ? next.holder : holder);
+            next.handle.resume();
+        }
+    }
+
+private:
+    detail::HomeSlot* slot_;
+    std::atomic<bool> flag_{false};
+};
+
+}  // namespace block_on_detail
+
 template <class T>
 class BlockOnState {
 public:
+    explicit BlockOnState(detail::HomeSlot* slot) noexcept : signal_(slot) {}
     // Stores the delivered value -- safe to call from the coroutine body BEFORE final_suspend, since
-    // nothing reads `value_` until `ready()` observes the flag this does NOT set.
+    // nothing reads `value_` until the completion signal has been observed.
     void set_value(T value) { value_.emplace(std::move(value)); }
     // Stores an escaping exception under the SAME timing rule as `set_value()`, and for the same
-    // reason: written before the flag, read only once `ready()` has observed it. A coroutine whose
-    // `unhandled_exception()` returns normally still runs `final_suspend()`, so recording the fault
-    // here does not cost the completion signal.
+    // reason. A coroutine whose `unhandled_exception()` returns normally still runs `final_suspend()`,
+    // so recording the fault here does not cost the completion signal.
     void set_fault(std::exception_ptr fault) noexcept { fault_ = std::move(fault); }
-    // The actual cross-thread signal -- must be called ONLY from a point that is guaranteed to be the
-    // last touch on the signaling frame (see `block_on_detail::SignalTask` below).
-    void signal_done() { flag_.store(true, std::memory_order_release); }
-    [[nodiscard]] bool ready() const noexcept { return flag_.load(std::memory_order_acquire); }
-    [[nodiscard]] T take() {
-        while (!ready()) std::this_thread::yield();
+    // The actual signal -- must be called ONLY from a point that is guaranteed to be the last touch on
+    // the signaling frame (see `block_on_detail::SignalTask` below).
+    void signal_done() noexcept { signal_.signal_done(); }
+    [[nodiscard]] T take(std::uint64_t holder) {
+        signal_.wait(holder);
         // Before `value_`, necessarily: a driven task that threw never reached `set_value()`, so
         // dereferencing the optional first would be undefined behaviour on exactly the path this
         // exists to handle.
@@ -86,8 +142,25 @@ public:
     }
 
 private:
-    std::atomic<bool> flag_{false};
+    block_on_detail::CompletionSignal signal_;
     std::optional<T> value_;
+    std::exception_ptr fault_;
+};
+
+template <>
+class BlockOnState<void> {
+public:
+    explicit BlockOnState(detail::HomeSlot* slot) noexcept : signal_(slot) {}
+    void set_value() noexcept {}
+    void set_fault(std::exception_ptr fault) noexcept { fault_ = std::move(fault); }
+    void signal_done() noexcept { signal_.signal_done(); }
+    void take(std::uint64_t holder) {
+        signal_.wait(holder);
+        if (fault_) std::rethrow_exception(fault_);
+    }
+
+private:
+    block_on_detail::CompletionSignal signal_;
     std::exception_ptr fault_;
 };
 
@@ -176,21 +249,45 @@ SignalTask<T> drive_and_signal(agentengine::rt::task<T> inner, BlockOnState<T>* 
     // strictly after that teardown, never here.
 }
 
+// `task<void>` (ADR-175: `ThreadPool::run_job()` drives its jobs through here).
+inline SignalTask<void> drive_and_signal(agentengine::rt::task<void> inner, BlockOnState<void>* state) {
+    co_await inner;
+    state->set_value();
+    co_return;
+}
+
+// Runs `driver` on the calling thread under the current task's holder id (a fresh one at top level is
+// the thread's ambient id), then waits in `state` for completion.
+template <class T>
+decltype(auto) run_to_completion(SignalTask<T>& driver, BlockOnState<T>& state, detail::HomeSlot& slot) {
+    std::uint64_t const holder = current_holder_id();
+    {
+        ScopedExecution const context(&slot, holder);
+        driver.resume();
+    }
+    return state.take(holder);
+}
+
 }  // namespace block_on_detail
 
-// Blocks (busy-waits) the CALLING thread until `t` completes, wherever/whenever that completion
-// actually happens (immediately on this call stack if uncontended, or later via a DIFFERENT thread's
-// `AsyncMutex::unlock()` trampoline symmetric-transferring all the way through to completion). This is
-// the correct, general-purpose way to synchronously drive an `agentengine::rt::task<T>` from a plain,
-// non-coroutine call site when the task MAY genuinely suspend on a contended `AsyncMutex`/`AsyncQuota`
-// -- see this file's own top comment for the real hazard a naive "resume until done" loop has here
-// that this mechanism avoids.
+// Blocks the CALLING thread until `t` completes. If `t` parks on a contended `AsyncMutex`/`channel<T>`
+// await, the waker hands it back to this thread, which resumes it (ADR-175); this is the correct,
+// general-purpose way to synchronously drive an `agentengine::rt::task<T>` from a plain, non-coroutine
+// call site when the task MAY genuinely suspend -- see this file's own top comment for the real hazard a
+// naive "resume until done" loop has here that this mechanism avoids.
 template <class T>
 [[nodiscard]] T block_on(agentengine::rt::task<T> t) {
-    BlockOnState<T> state;
+    detail::HomeSlot slot;
+    BlockOnState<T> state(&slot);
     block_on_detail::SignalTask<T> driver = block_on_detail::drive_and_signal(std::move(t), &state);
-    driver.resume();
-    return state.take();
+    return block_on_detail::run_to_completion(driver, state, slot);
+}
+
+inline void block_on(agentengine::rt::task<void> t) {
+    detail::HomeSlot slot;
+    BlockOnState<void> state(&slot);
+    block_on_detail::SignalTask<void> driver = block_on_detail::drive_and_signal(std::move(t), &state);
+    block_on_detail::run_to_completion(driver, state, slot);
 }
 
 }  // namespace agentengine::rt

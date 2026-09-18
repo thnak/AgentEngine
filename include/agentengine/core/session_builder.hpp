@@ -100,6 +100,9 @@
 //    reaches the raw session via `Bundle::session()` and calls `start_run()`/`resolve_interaction()`
 //    directly, concurrently with `.ask()` -- that bypasses `ask_mutex_` entirely and inherits
 //    `AgentSession`'s own ordinary I1 single-executor obligation, same as any other direct use.
+//    SUPERSEDED BY decisions/ADR-175: the bounded single `resume()` had issue #78's shape -- a run that
+//    parked could already have been handed the lock and be running on the releasing thread when it was
+//    destroyed. `ask()`/`ask_stream()` now drive with `rt::block_on()`; see `ask()`'s own comment.
 // 2. `api_key_from_env()` pushed a NEW `cap::Secret` grant into `grants_` on every call, unconditionally
 //    -- calling it twice (e.g. to correct a typo'd env-var name) left a phantom, unusable grant for the
 //    FIRST name behind. Fixed: the auto-derived secret grant is now tracked in its own single
@@ -313,10 +316,12 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <memory>
 #include <memory_resource>
 #include <mutex>
@@ -339,6 +344,7 @@
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/agent_library_manifest.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "agentengine/trust/principal.hpp"
@@ -472,41 +478,30 @@ public:
     [[nodiscard]] SessionT& session() noexcept { return *session_; }
     [[nodiscard]] agentengine::CapabilitySet const& capabilities() const noexcept { return *capabilities_; }
 
-    // Design draft §4 -- the one-shot round-trip sugar. Serializes against itself via `ask_mutex_` and
-    // drives with a BOUNDED, single-resume(), fail-closed loop (matching rt/drive_leaf_task.hpp's own
-    // shape) rather than the naive `while(!done()) resume()` idiom examples/*.cpp use -- that idiom is
-    // only safe when `session_mutex_` (rt::AsyncMutex) is never contended, which a linear, single-
-    // threaded example `main()` guarantees by construction but a reusable `Bundle` does not. See this
-    // file's own top comment for the full red-team finding this fixes.
+    // Design draft §4 -- the one-shot round-trip sugar. Serializes against itself via `ask_mutex_`.
+    // Driven by `rt::block_on()` (decisions/ADR-175). It used to resume the run exactly once and, if that
+    // did not finish it -- most likely a concurrent caller holding `session_mutex_` via the raw
+    // `session()` accessor -- return `quickstart_bundle.ask_would_block` and destroy the run. That
+    // destruction is issue #78's shape: the run may already have been handed the lock and be running on
+    // the releasing thread. `ask()` now waits for such a caller to finish instead. Changed behaviour,
+    // stated: a tool inside a round started through `session()` that calls `ask()` on the same Bundle
+    // now blocks forever on `session_mutex_` held by its own round, where it used to fail fast.
     [[nodiscard]] agentengine::result<std::string> ask(std::string text) {
         std::lock_guard<std::mutex> guard(*ask_mutex_);
-        auto t =
-            session_->start_run(agentengine::rt::StartRun{detail::user_message(std::move(text))});
-        t.resume();
-        if (!t.done()) {
-            return std::unexpected(agentengine::error{
-                agentengine::failure_class::fatal,
-                "Bundle::ask() needed more than one resume() to complete -- the run suspended on "
-                "something this synchronous helper will not drive further (most likely a concurrent "
-                "caller holding session_mutex_ via the raw session() accessor, since ask() already "
-                "serializes against itself). Stopping here rather than resuming again, to avoid a "
-                "cross-thread double-resume race.",
-                "quickstart_bundle.ask_would_block"});
-        }
-        auto r = t.take_value();
+        auto r = agentengine::rt::block_on(
+            session_->start_run(agentengine::rt::StartRun{detail::user_message(std::move(text))}));
         if (!r) return std::unexpected(r.error());
         return agentengine::text_of(r->message);
     }
 
-    // unified-streaming-design-draft.md §4 (Piece D), Rev 7. Reuses `ask()`'s OWN bounded-single-
-    // `resume()` contract exactly (see that method's own comment for why one `resume()` is always
-    // enough for a healthy, uncontended run) -- just moved onto a background thread, because this call
-    // will legitimately block for the run's whole real-world duration and the caller wants to consume
-    // text live, not because more than one `resume()` is ever needed. Two cooperating threads, not a
-    // resume loop (the 4th red-team pass's Finding 3: a resume loop is what reintroduces the exact
-    // double-resume hazard `ask()` was built to avoid):
-    //   - the OUTER driver (`ask_stream_driver_`, a `std::jthread`) calls `start_run()` then `resume()`
-    //     exactly once, matching `ask()`'s own fail-closed check if that alone doesn't finish;
+    // unified-streaming-design-draft.md §4 (Piece D), Rev 7. Drives the run exactly as `ask()` does
+    // (`rt::block_on()` since decisions/ADR-175; the design's bounded single `resume()` is superseded,
+    // see `ask()`'s comment) -- just moved onto a background thread, because this call will legitimately
+    // block for the run's whole real-world duration and the caller wants to consume text live. Two
+    // cooperating threads, not a resume loop (the 4th red-team pass's Finding 3: a resume loop is what
+    // reintroduces the double-resume hazard):
+    //   - the OUTER driver (`ask_stream_driver_`, a `std::jthread`) calls `start_run()` and drives it to
+    //     completion with `block_on()`;
     //   - a nested relay thread, spawned BEFORE `resume()` is called (so no event is ever missed --
     //     `emit_run_event()` pushes onto a real, backpressured channel, `core/stream.hpp:211`'s default
     //     256-item capacity, so nothing is silently dropped even if the relay is a poll or two behind,
@@ -546,9 +541,18 @@ public:
         ask_stream_driver_ = std::jthread([this, text = std::move(text), producer = std::move(pair.producer)]() mutable {
             std::string current_run_id;
             bool run_id_known = false;
-            std::jthread relay([this, &current_run_id, &run_id_known,
+            // Set by this driver once the run has returned or thrown. Every run event is emitted before
+            // start_run() completes, so one drain after observing this flag sees all of them. The relay used
+            // to exit on its jthread's stop request instead -- issued the moment block_on() returned, usually
+            // while the relay was inside its 5 ms sleep -- and so ended the stream without relaying its text
+            // (ADR-175 round 4 finding 4: `text=""` 5/5 with a fast provider; pre-existing, not introduced by
+            // ADR-175).
+            std::atomic<bool> run_complete{false};
+            std::jthread relay([this, &current_run_id, &run_id_known, &run_complete,
                                  &producer](std::stop_token stop_tok) {
-                while (!stop_tok.stop_requested()) {
+                for (;;) {
+                    bool const finishing =
+                        run_complete.load(std::memory_order_acquire) || stop_tok.stop_requested();
                     while (std::optional<agentengine::RunEvent> ev = event_stream_->next()) {
                         if (!run_id_known) {
                             if (ev->kind == agentengine::run_event_kind::run_started) {
@@ -580,27 +584,48 @@ public:
                             return;
                         }
                     }
+                    if (finishing) return;  // drained once more after completion was signalled
                     std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 }
             });
 
-            auto t = session_->start_run(agentengine::rt::StartRun{detail::user_message(std::move(text))});
-            t.resume();
-            if (!t.done()) {
-                producer.fail(agentengine::error{
-                    agentengine::failure_class::fatal,
-                    "Bundle::ask_stream() needed more than one resume() to complete -- the run "
-                    "suspended on something this driver will not drive further (most likely a "
-                    "concurrent caller holding session_mutex_ via the raw session() accessor, since "
-                    "ask_stream() already serializes against ask()/ask_stream() via ask_mutex_). "
-                    "Stopping here rather than resuming again, to avoid a cross-thread double-resume "
-                    "race.",
-                    "quickstart_bundle.ask_stream_would_block"});
+            // decisions/ADR-175: driven to completion by block_on(), as `ask()` is -- this used to resume
+            // once and fail the stream with `quickstart_bundle.ask_stream_would_block` if the run parked,
+            // destroying a run that might already be running on the releasing thread. The relay above
+            // observes this run's own terminal event either way. A run that parks waits here; `~Bundle`
+            // and the next `ask_stream()` join this thread, so they wait for it too.
+            //
+            // block_on() RETHROWS a round that threw (a provider or tool exception), and this is a
+            // std::jthread body: uncaught, that is std::terminate for the whole process (ADR-175 round 3
+            // finding 1, demonstrated). The old single resume() never took the value, so the fault stayed
+            // inside the task and the stream simply ended closed. Caught here and reported on the stream
+            // instead -- after the relay has drained and exited, since it is the producer's only other
+            // writer. A round that throws after the relay already saw a terminal event keeps that terminal
+            // (first terminal wins).
+            std::exception_ptr run_fault;
+            try {
+                (void)agentengine::rt::block_on(
+                    session_->start_run(agentengine::rt::StartRun{detail::user_message(std::move(text))}));
+            } catch (...) {
+                run_fault = std::current_exception();
             }
-            // `relay`'s own destructor (end of this lambda's scope) requests-stop-and-joins it -- by
-            // design it should already have stopped itself above, having observed this run's own
-            // terminal event once resume() returned; this is a formality, not a real wait, in the
-            // healthy case.
+            run_complete.store(true, std::memory_order_release);
+            relay.join();  // the relay drains what the run emitted, then exits
+            if (run_fault) {
+                std::string what = "the run threw";
+                try {
+                    std::rethrow_exception(run_fault);
+                } catch (std::exception const& e) {
+                    what += ": ";
+                    what += e.what();
+                } catch (...) {
+                }
+                // First terminal wins: a no-op if the relay already closed or failed the stream.
+                producer.fail(agentengine::error{agentengine::failure_class::fatal, std::move(what),
+                                                 "quickstart_bundle.ask_stream_run_threw"});
+            }
+            // A consumer that stops reading while the relay is blocked in push() (capacity 256) leaves the
+            // join above waiting for it, and ~Bundle with it -- unchanged from before.
         });
         return std::move(pair.consumer);
     }

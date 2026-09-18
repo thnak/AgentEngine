@@ -1294,6 +1294,14 @@ public:
     // mechanism (this one included) can give by construction -- real, contained follow-on work, not a
     // same-pass mechanical tightening. Matches this hazard's own pre-ADR-123 status: not reachable
     // through any real call site in this codebase today.
+    //
+    // CLOSED BY decisions/ADR-175 -- and a worse failure the thread comparison also had: after a lock
+    // hand-off, the thread that released `session_mutex_` (or resumed the new holder inline) could run
+    // unrelated code for which the check was TRUE, and this function then skipped the lock while the real
+    // holder was mid-round (an I1 violation, demonstrated). `is_held_by_current_thread()` now compares the
+    // holder id of the logical task (`rt/resume_home.hpp`), recorded when the lock is granted, and a
+    // round's holder id travels with it through `block_on()` -- including across the thread hop this
+    // paragraph describes, since a homed round now resumes on its own `block_on()` thread.
     void fork_from(AgentSession const& source, std::string new_session_id,
                     std::optional<std::size_t> history_prefix_len = std::nullopt) {
         AsyncMutex::Guard source_guard;

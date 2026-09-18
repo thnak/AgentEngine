@@ -79,6 +79,8 @@
 #include <string>
 #include <utility>
 
+#include "agentengine/rt/resume_home.hpp"
+
 namespace agentengine::rt {
 
 // The four states a channel can be in. `open` is the only state new items may still be pushed in;
@@ -119,7 +121,9 @@ struct channel_state {
     // call next makes progress possible -- `push()`/`close()`/`fail()` from the producer, or `cancel()`
     // from the consumer itself -- takes this handle, clears the slot, and resumes it directly -- see
     // file banner for why this is not a cv wait.
-    std::coroutine_handle<> waiting_consumer;
+    // ADR-175: the parked consumer's handle plus its home and holder id (rt/resume_home.hpp) -- a homed
+    // consumer is posted back to its block_on() rather than resumed on the producer's thread.
+    detail::ParkedResumer waiting_consumer;
 
     explicit channel_state(std::size_t cap) noexcept : capacity(cap) {}
 
@@ -137,7 +141,7 @@ struct channel_state {
     // already empty here -- `next_awaiter::await_suspend()` never parks a handle while `terminal !=
     // open`, so once any terminal is set, no later caller can find a handle left to double-resume).
     void finish_terminal(channel_terminal which, std::optional<E> err) noexcept {
-        std::coroutine_handle<> waiter;
+        detail::ParkedResumer waiter;
         {
             std::lock_guard lock(m);
             if (terminal == channel_terminal::open) {
@@ -149,7 +153,7 @@ struct channel_state {
         // Wakes any thread blocked in push() with a full queue -- a terminal transition is the only
         // OTHER way (besides draining) that push()'s wait predicate can become true.
         not_full.notify_all();
-        if (waiter) waiter.resume();
+        detail::wake(std::move(waiter));
     }
 };
 
@@ -201,9 +205,9 @@ public:
         // Hand off directly to a parked async consumer, if any -- see file banner. Cleared under the
         // same lock that guarded the push, so a second concurrent producer call (a caller bug, per the
         // move-only/single-writer contract above) cannot double-resume the same handle.
-        std::coroutine_handle<> waiter = std::exchange(state_->waiting_consumer, {});
+        detail::ParkedResumer waiter = std::exchange(state_->waiting_consumer, {});
         lock.unlock();
-        if (waiter) waiter.resume();
+        detail::wake(std::move(waiter));
         return push_result::ok;
     }
 
@@ -346,40 +350,45 @@ private:
     // separate, still-unsafe single-consumer misuse this type does not protect against, see the file
     // banner's "single-consumer" note -- is never accidentally cleared by the wrong owner).
     struct next_awaiter {
-        channel_consumer* self;
+        // ADR-175 round 2 finding 6: its own reference to the shared state, not the consumer object. A
+        // posted resumption can run after the consumer that parked it was destroyed (its destructor
+        // cancels, which wakes this awaiter), so await_resume() must not reach state through it.
+        std::shared_ptr<detail::channel_state<T, E>> state;
         std::optional<T> value{};
         bool have_value = false;
         bool parked = false;
         std::coroutine_handle<> handle_{};
 
         [[nodiscard]] bool await_ready() {
-            std::unique_lock lock(self->state_->m);
-            if (!self->state_->queue.empty()) {
-                value = std::move(self->state_->queue.front());
-                self->state_->queue.pop_front();
+            std::unique_lock lock(state->m);
+            if (!state->queue.empty()) {
+                value = std::move(state->queue.front());
+                state->queue.pop_front();
                 lock.unlock();
-                self->state_->not_full.notify_one();
+                state->not_full.notify_one();
                 have_value = true;
                 return true;  // resume immediately, no suspension needed
             }
-            if (self->state_->terminal != channel_terminal::open) {
+            if (state->terminal != channel_terminal::open) {
                 return true;  // drained AND terminal -- resume immediately with a nullopt result
             }
             return false;  // must suspend
         }
 
         [[nodiscard]] bool await_suspend(std::coroutine_handle<> h) {
-            std::lock_guard lock(self->state_->m);
+            // ADR-175: captured before locking and registering -- a first-park home allocation may throw.
+            detail::ParkedResumer record = detail::capture_parked(h);
+            std::lock_guard lock(state->m);
             // Re-check under lock: a push()/close()/fail()/cancel() may have landed in the gap between
             // await_ready()'s unlock and this lock -- if so, don't suspend at all (returning `false`
             // tells the compiler-generated machinery to resume the coroutine immediately instead).
-            if (!self->state_->queue.empty() || self->state_->terminal != channel_terminal::open) {
+            if (!state->queue.empty() || state->terminal != channel_terminal::open) {
                 return false;
             }
-            self->state_->waiting_consumer = h;
+            state->waiting_consumer = std::move(record);
             handle_ = h;
             parked = true;
-            return true;  // genuinely suspend -- a producer call resumes `h` directly, later
+            return true;  // genuinely suspend -- a producer call posts `h` to its home, or resumes it inline
         }
 
         [[nodiscard]] std::optional<T> await_resume() {
@@ -387,12 +396,12 @@ private:
             if (have_value) return std::move(value);
             // Either await_ready()'s second branch fired (drained+terminal, no value), or a producer
             // call woke us after enqueuing something -- check the queue once more under lock.
-            std::unique_lock lock(self->state_->m);
-            if (!self->state_->queue.empty()) {
-                T v = std::move(self->state_->queue.front());
-                self->state_->queue.pop_front();
+            std::unique_lock lock(state->m);
+            if (!state->queue.empty()) {
+                T v = std::move(state->queue.front());
+                state->queue.pop_front();
                 lock.unlock();
-                self->state_->not_full.notify_one();
+                state->not_full.notify_one();
                 return v;
             }
             return std::nullopt;
@@ -400,8 +409,8 @@ private:
 
         ~next_awaiter() {
             if (!parked) return;  // never suspended here, or resumed the ordinary way -- nothing to do
-            std::lock_guard lock(self->state_->m);
-            if (self->state_->waiting_consumer == handle_) self->state_->waiting_consumer = {};
+            std::lock_guard lock(state->m);
+            if (state->waiting_consumer.handle == handle_) state->waiting_consumer = {};
         }
     };
 
@@ -413,7 +422,7 @@ public:
     // terminal", exactly like `try_pop()` plus a `done()` check, but without the caller ever having to
     // poll: `await_suspend()` above does nothing but record a handle and return -- no loop, no cv wait
     // on this thread. See file banner for the full rationale.
-    [[nodiscard]] next_awaiter next_async() noexcept { return next_awaiter{this}; }
+    [[nodiscard]] next_awaiter next_async() noexcept { return next_awaiter{state_}; }
 
 private:
     std::shared_ptr<detail::channel_state<T, E>> state_;

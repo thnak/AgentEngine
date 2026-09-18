@@ -1,11 +1,13 @@
 #pragma once
 // decisions/ADR-160-parallel-tool-batch-scheduler.md §5 "Fan-out" / SHOULD-FIX 7. A batch's real
 // concurrent execution mechanism for step 8 (invoke) of an already-admitted tool call -- explicitly
-// NOT `agentengine::rt::ThreadPool` (rt/thread_pool.hpp): that type resumes a `task<void>` exactly
-// once and FAULTS it if it isn't `done()` yet, which would silently abandon (and leak the capability
-// tickets of) any job whose `invoke()` genuinely suspends on something other than a nested,
-// synchronously-resolving `task<T>` -- e.g. a nested `invoke_agent_tool()` waiting on a DIFFERENT
-// session's own `AsyncMutex` under real contention. This type sidesteps that hazard class entirely
+// NOT `agentengine::rt::ThreadPool` (rt/thread_pool.hpp): when this was written that type resumed a
+// `task<void>` exactly once and FAULTED it if it wasn't `done()` yet, which would silently abandon (and
+// leak the capability tickets of) any job whose `invoke()` genuinely suspends on something other than a
+// nested, synchronously-resolving `task<T>` -- e.g. a nested `invoke_agent_tool()` waiting on a DIFFERENT
+// session's own `AsyncMutex` under real contention. (decisions/ADR-175 changed ThreadPool to drive each
+// job with `block_on()` so a suspending job completes; this file was not moved onto it.) This type
+// sidesteps that hazard class entirely
 // by never touching a coroutine at all: each job is a plain callable run to completion, synchronously,
 // on one real OS worker thread -- if it needs to block waiting on something, it just blocks, exactly
 // like today's single-threaded sequential dispatch loop already does, generalized to N threads.

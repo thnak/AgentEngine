@@ -12,17 +12,16 @@
 //         "rt.leaf_task_faulted" error, distinct from D2's inner-error channel.
 //   D4 -- a leaf task that internally co_awaits ANOTHER nested task<T> (real C++20 symmetric
 //         transfer) still completes in exactly one resume(), regardless of nesting depth.
-//   D5 -- a task that genuinely suspends on something other than a nested task<T>/task<void> (an
-//         AsyncMutex::lock() under real contention) violates the synchronous_leaf contract:
-//         drive_leaf_task() reports it as "rt.leaf_task_contract_violation" instead of looping
-//         resume() on a parked coroutine handle (the exact hazard ADR-064 found in
-//         rt::ThreadPool::run_job(), reproduced here directly against drive_leaf_task() itself, not
-//         only through ThreadPool). Also proves the abandoned contender's destruction does not
-//         corrupt the mutex for later legitimate use (AsyncMutex's own cancellation-safe self-
-//         removal, ADR-017's "drop the handle = cancel").
+//   D5 -- a task that genuinely suspends (an AsyncMutex::lock() held by another thread) is waited for and
+//         completes on the calling thread (decisions/ADR-175). It used to be reported as
+//         "rt.leaf_task_contract_violation" and destroyed -- a destruction that could free a frame the
+//         releasing thread had already resumed (issue #78's shape).
 
+#include <chrono>
 #include <cstdio>
+#include <future>
 #include <stdexcept>
+#include <thread>
 
 #include "agentengine/core/error.hpp"
 #include "agentengine/rt/async_mutex.hpp"
@@ -73,9 +72,10 @@ task<result<int>> nested_leaf() {
 // suspending body finishes running).
 task<void> hold(AsyncMutex* mtx, AsyncMutex::Guard* out) { *out = co_await mtx->lock(); }
 
-task<result<int>> contend_and_lock(AsyncMutex* mtx) {
+task<result<int>> contend_and_lock(AsyncMutex* mtx, std::thread::id* resumed_on) {
     AsyncMutex::Guard guard = co_await mtx->lock();  // parks while `mtx` is already held elsewhere
-    co_return 1;                                      // unreachable while genuinely contended
+    *resumed_on = std::this_thread::get_id();
+    co_return 7;
 }
 
 }  // namespace
@@ -117,32 +117,41 @@ int main() {
               "D4: a leaf task composing another nested task<T> still drives cleanly in one resume()");
     }
 
-    // D5: a task that genuinely suspends (AsyncMutex::lock() under real contention) violates the
-    // synchronous_leaf contract -- reported, not looped into a cross-thread double-resume hazard.
+    // D5 (rewritten for decisions/ADR-175): a task that genuinely suspends (AsyncMutex::lock() held by
+    // ANOTHER thread) is waited for and completes, on the calling thread -- it used to be reported as
+    // `rt.leaf_task_contract_violation` and destroyed, which could free a frame the releasing thread was
+    // already running (issue #78's shape).
     {
         AsyncMutex mtx;
-        AsyncMutex::Guard holder_guard;
-        task<void> holder = hold(&mtx, &holder_guard);
-        if (!holder.done()) holder.resume();
-        check(holder.done() && !holder.faulted() && holder_guard.held(),
-              "D5 setup: the holder acquires the (uncontended) mutex directly and keeps it held");
+        std::promise<void> held;
+        std::promise<void> release;
+        std::thread holder_thread([&] {
+            AsyncMutex::Guard holder_guard;
+            task<void> holder = hold(&mtx, &holder_guard);
+            if (!holder.done()) holder.resume();
+            held.set_value();
+            release.get_future().wait();
+            // holder_guard destroyed here: the release hands the lock to the parked leaf
+        });
+        held.get_future().wait();
+        std::thread releaser([&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            release.set_value();
+        });
 
-        auto driven = drive_leaf_task(contend_and_lock(&mtx));
-        check(!driven.has_value() && driven.error().code == "rt.leaf_task_contract_violation",
-              "D5: a task parked on a genuinely contended AsyncMutex::lock() is reported as a "
-              "violated synchronous_leaf contract, not resumed a second time");
+        std::thread::id resumed_on{};
+        auto driven = drive_leaf_task(contend_and_lock(&mtx, &resumed_on));
+        releaser.join();
+        holder_thread.join();
+        check(driven.has_value() && driven->has_value() && **driven == 7,
+              "D5: a leaf parked on an AsyncMutex held by another thread completes once it is released");
+        check(resumed_on == std::this_thread::get_id(),
+              "D5: the parked leaf resumed on the calling thread, not on the thread that released the lock");
 
-        // Release the holder, then prove the mutex is still fully usable -- the abandoned contender's
-        // destruction (which ran when `driven`'s local `task<result<int>>` parameter went out of
-        // scope inside drive_leaf_task()) correctly self-removed from AsyncMutex's waiter queue.
-        holder_guard = AsyncMutex::Guard{};
-        check(!holder_guard.held(), "D5 setup: releasing the holder's guard frees the mutex");
-
-        task<result<int>> later = contend_and_lock(&mtx);  // uncontended now
+        task<result<int>> later = contend_and_lock(&mtx, &resumed_on);  // uncontended now
         if (!later.done()) later.resume();
         check(later.done() && !later.faulted() && later.take_value().has_value(),
-              "D5: the mutex is still fully usable afterward -- the abandoned contender left no "
-              "corruption behind");
+              "D5: the mutex is still fully usable afterward");
     }
 
     if (g_failures != 0) {

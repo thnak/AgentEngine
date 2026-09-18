@@ -182,6 +182,7 @@
 #include <utility>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
@@ -1248,10 +1249,11 @@ private:
         co_return;
     }
 
-    // ADR-157 (issues #33/#38): the SAME hand-rolled "resume until done" drive loop
-    // rt/workflow_as_executor.hpp's own `workflow_as_executor_detail::drive()` already duplicates
-    // (no shared helper exists for it anywhere in this codebase, matching that file's own comment
-    // on why). Safe here for the identical reason ADR-150 established for that adapter, PLUS one
+    // ADR-157 (issues #33/#38), driven by `block_on()` since decisions/ADR-175: this was a hand-rolled
+    // `while (!t.done()) t.resume();` loop, and the argument below guarantees only that `inner`'s own
+    // `run_mutex_` is uncontended -- a node inside `inner` can still park on something shared, which
+    // the loop resumed a second time. The original argument, for `run_mutex_`: the identical reason
+    // ADR-150 established for rt/workflow_as_executor.hpp's adapter, PLUS one
     // additional guarantee specific to nesting: `inner->run_workflow()`/`inner->resume_workflow()`
     // are only ever called from (a) inside THIS supervisor's own execute() round loop (via
     // run_sub_workflow_job, below) or (b) THIS supervisor's own resume_workflow()'s pending-sub-
@@ -1270,8 +1272,7 @@ private:
     // own per-index dedup.
     template <class T>
     [[nodiscard]] static T drive(agentengine::rt::task<T> t) {
-        while (!t.done()) t.resume();
-        return t.take_value();
+        return agentengine::rt::block_on(std::move(t));  // ADR-175: was `while (!t.done()) t.resume();`
     }
 
     // docs/planning/nested-workflow-event-forwarding-design-draft.md (issue #42 item 3, red-teamed):

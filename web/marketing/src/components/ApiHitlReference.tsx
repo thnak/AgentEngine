@@ -179,7 +179,7 @@ const copy = {
       </>
     ),
     sessionLoopNote: (
-      <>bounded at a fixed round count, never a literal unbounded while(true) — the same "bounded, single-resume() loop" convention the Builder API page documents</>
+      <>bounded at a fixed round count, never a literal unbounded while(true)</>
     ),
 
     magenticEyebrow: "ADR-149, GitHub issue #28 item 3 — typed, not free-text",
@@ -423,7 +423,7 @@ const copy = {
       </>
     ),
     sessionLoopNote: (
-      <>bị giới hạn ở một số vòng cố định, không bao giờ là một while(true) không giới hạn theo nghĩa đen — cùng quy ước "vòng lặp bounded, single-resume()" mà trang Builder API đã tài liệu hóa</>
+      <>bị giới hạn ở một số vòng cố định, không bao giờ là một while(true) không giới hạn theo nghĩa đen</>
     ),
 
     magenticEyebrow: "ADR-149, GitHub issue #28 item 3 — có kiểu, không phải văn bản tự do",

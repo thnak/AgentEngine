@@ -1483,6 +1483,14 @@ add_executable(test_rt_thread_pool test_rt_thread_pool.cpp)
 target_link_libraries(test_rt_thread_pool PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_thread_pool COMMAND test_rt_thread_pool)
 
+# ---- decisions/ADR-175 (issue #78) -- a parked coroutine is resumed by its home (the block_on() driving
+# it, including every ThreadPool job), and AsyncMutex ownership is a holder id. Issue #78's reproduction
+# plus every red-team finding against the intermediate designs. Memory-capped, self-watchdogged.
+add_executable(test_rt_parked_task_home test_rt_parked_task_home.cpp)
+target_link_libraries(test_rt_parked_task_home PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_parked_task_home COMMAND test_rt_parked_task_home)
+set_tests_properties(test_rt_parked_task_home PROPERTIES TIMEOUT 300)
+
 # ---- ADR-037 Phase 1 -- agentengine::rt::CircuitBreaker, a self-contained reimplementation of
 # quark::CircuitBreaker's algorithm (include/agentengine/rt/circuit_breaker.hpp), standalone and NOT
 # yet wired into core/model_call_gateway.hpp.

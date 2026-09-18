@@ -77,6 +77,7 @@
 #include <string>
 #include <utility>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
@@ -88,16 +89,13 @@ namespace agentengine::rt {
 
 namespace workflow_as_executor_detail {
 
-// Drives an agentengine::rt::task<T> to completion from a plain, non-coroutine call site -- the SAME
-// hand-rolled "resume until done" loop agent_workflow_executor.hpp and examples/10/19/20 already
-// duplicate. Safe for WorkflowSupervisor::run_workflow() specifically because every existing
-// example/test in this codebase already drives it this way from a plain main() -- safe here ONLY
-// because the file banner's own `call_mutex` prevents two of these loops ever running concurrently
-// against the same `inner`.
+// Drives an agentengine::rt::task<T> to completion from a plain, non-coroutine call site. Formerly a
+// hand-rolled resume-until-done loop, argued safe because the file banner's `call_mutex` keeps two callers
+// off the same `inner`; an inner node can still park on something shared, which the loop resumed twice.
+// `block_on()` since decisions/ADR-175.
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));  // ADR-175: was `while (!t.done()) t.resume();`
 }
 
 [[nodiscard]] inline char const* status_tag(workflow_status s) {

@@ -130,7 +130,8 @@ const copy = {
         reference for as long as it's used, and exposes <code>.session()</code> as a raw{" "}
         <code>AgentSession&amp;</code> escape hatch. <code>.ask(text)</code> is the synchronous
         one-shot: it serializes every call against itself through an internal mutex, then drives
-        with a bounded, single-<code>resume()</code> loop. The plain examples use the naive{" "}
+        the run with <code>rt::block_on()</code>, which waits correctly if the run has to wait for
+        the session's mutex (ADR-175). The plain examples use the naive{" "}
         <code>while(!done()) resume()</code> idiom instead; that idiom only stays safe when
         nothing else can contend the session's mutex, a guarantee a reusable <code>Bundle</code>{" "}
         doesn't make.
@@ -138,8 +139,8 @@ const copy = {
     ),
     s3StreamNote: (
       <>
-        <code>.ask_stream(text)</code> is the streaming counterpart, with the same bounded-
-        <code>resume()</code> contract. It runs on a background <code>std::jthread</code> pair
+        <code>.ask_stream(text)</code> is the streaming counterpart, driven the same way. It runs
+        on a background <code>std::jthread</code> pair
         instead — an outer driver plus a relay draining the session's event stream — so the caller
         can consume text live rather than waiting for the whole reply. See{" "}
         <a href={`${SITE_BASE}/api/streaming.html`}>the streaming page</a> for{" "}
@@ -339,7 +340,8 @@ const copy = {
         tham chiếu tới trong suốt thời gian nó được dùng, và phơi ra <code>.session()</code> như
         một lối thoát <code>AgentSession&amp;</code> thô. <code>.ask(text)</code> là phiên bản
         đồng bộ một-lần: nó tuần tự hóa mọi lệnh gọi với chính nó qua một mutex nội bộ, rồi lái
-        bằng một vòng lặp bị chặn, chỉ một <code>resume()</code>. Các ví dụ đơn giản dùng thành
+        lượt chạy bằng <code>rt::block_on()</code>, vốn chờ đúng cách nếu lượt chạy phải đợi mutex
+        của session (ADR-175). Các ví dụ đơn giản dùng thành
         ngữ ngây thơ <code>while(!done()) resume()</code> thay vào đó; thành ngữ đó chỉ an toàn
         khi không gì khác có thể tranh chấp mutex của session — một đảm bảo mà một{" "}
         <code>Bundle</code> tái sử dụng được không có.
@@ -347,8 +349,8 @@ const copy = {
     ),
     s3StreamNote: (
       <>
-        <code>.ask_stream(text)</code> là phiên bản streaming tương ứng, với cùng hợp đồng{" "}
-        <code>resume()</code> bị chặn. Nó chạy trên một cặp <code>std::jthread</code> nền thay vào
+        <code>.ask_stream(text)</code> là phiên bản streaming tương ứng, được lái theo cùng cách.
+        Nó chạy trên một cặp <code>std::jthread</code> nền thay vào
         đó — một driver ngoài cộng một relay rút cạn luồng sự kiện của session — để bên gọi có thể
         tiêu thụ văn bản trực tiếp thay vì đợi toàn bộ câu trả lời. Xem{" "}
         <a href={`${SITE_BASE}/api/streaming.html`}>trang streaming</a> để biết về chính{" "}

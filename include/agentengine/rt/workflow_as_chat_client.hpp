@@ -124,6 +124,7 @@
 #include <utility>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/effect_context.hpp"
@@ -137,13 +138,12 @@ namespace agentengine::rt {
 
 namespace workflow_chat_client_detail {
 
-// Same hand-rolled "resume until done" loop every rt:: file driving a task<T> from a plain,
-// non-coroutine call site duplicates (workflow_as_executor.hpp's own copy, this codebase's own
-// established convention -- not deduplicated elsewhere, not deduplicated here).
+// Drives a task<T> from a plain, non-coroutine call site. Formerly the resume-until-done loop every such
+// rt:: call site duplicated, which resumed a parked handle a second time; `block_on()` since
+// decisions/ADR-175.
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));  // ADR-175: was `while (!t.done()) t.resume();`
 }
 
 // File banner's "EffectContext" paragraph, extracted as its own directly-testable function rather than

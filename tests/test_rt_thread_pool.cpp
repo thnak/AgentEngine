@@ -18,13 +18,12 @@
 //         in-flight work to finish rather than abandoning it mid-job.
 //   T5 -- worker_count() reports what the constructor was asked for (explicit count) and falls back to
 //         a real default (>=1) when 0 / omitted.
-//   T6 -- (2026-08-19, found via red-team against decisions/ADR-064-recall-tool-sync-invoke-vs-async-
-//         embedder.md) a job that genuinely contends an AsyncMutex while running under ThreadPool fails
-//         LOUDLY (a diagnosable JobOutcome::faulted) instead of the pre-fix behavior, which would have
-//         looped resume() on a coroutine parked waiting for a DIFFERENT thread's unlock() -- a real
-//         cross-thread double-resume race, undefined behavior. Also proves the abandoned contender does
-//         not corrupt the mutex for later legitimate use (AsyncMutex's own cancellation-safe self-
-//         removal, exercised via this exact "destroyed while parked" path, not merely asserted).
+//   T6 -- a job that genuinely contends an AsyncMutex while running under ThreadPool waits for the holder
+//         and completes, on its own worker (decisions/ADR-175). History: ADR-064 §7 made such a job fail
+//         loudly and destroyed it, instead of looping resume() on a parked handle; issue #78 showed that
+//         destruction could free a frame the releasing thread was already running.
+//         tests/test_rt_parked_task_home.cpp carries the issue #78 reproduction and the rest of ADR-175's
+//         proof.
 
 #include <atomic>
 #include <chrono>
@@ -85,12 +84,15 @@ task<void> lock_hold_release(AsyncMutex* mtx, std::atomic<bool>* acquired, std::
     co_return;  // guard destructor releases here
 }
 
-task<void> contend_and_lock(AsyncMutex* mtx, std::atomic<bool>* acquired) {
+task<void> contend_and_lock(AsyncMutex* mtx, std::atomic<bool>* acquired, std::thread::id* before,
+                            std::thread::id* after) {
     while (!acquired->load(std::memory_order_acquire)) {
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
-    AsyncMutex::Guard guard = co_await mtx->lock();  // genuinely contends -- parks, never reached again
-    co_return;                                        // unreachable while abandoned (T6's whole point)
+    *before = std::this_thread::get_id();
+    AsyncMutex::Guard guard = co_await mtx->lock();  // genuinely contends -- parks until the holder releases
+    *after = std::this_thread::get_id();
+    co_return;
 }
 
 task<void> lock_once(AsyncMutex* mtx) {
@@ -223,51 +225,38 @@ int main() {
               "T5: explicitly requesting 0 workers still yields a usable (>=1) pool, not an inert one");
     }
 
-    // T6: a job that genuinely contends an AsyncMutex under ThreadPool fails loudly, and does not
-    // corrupt the mutex for later legitimate use.
+    // T6 (rewritten for decisions/ADR-175): a job that genuinely contends an AsyncMutex under ThreadPool
+    // WAITS for the holder and completes cleanly -- it used to be reported faulted and destroyed, which
+    // could free a frame the releasing thread was already running (issue #78). Also: the parked job
+    // resumes on its own worker, and the mutex is usable afterwards.
     {
         ThreadPool pool(2);
         AsyncMutex mtx;
         std::atomic<bool> acquired{false};
         std::atomic<bool> release_now{false};
+        std::thread::id contender_before{};
+        std::thread::id contender_after{};
 
         std::future<JobOutcome> holder_fut = pool.submit(lock_hold_release(&mtx, &acquired, &release_now));
-        std::future<JobOutcome> contender_fut = pool.submit(contend_and_lock(&mtx, &acquired));
+        std::future<JobOutcome> contender_fut =
+            pool.submit(contend_and_lock(&mtx, &acquired, &contender_before, &contender_after));
 
-        JobOutcome const contender_outcome = contender_fut.get();
-        check(contender_outcome.faulted,
-              "T6: a job that genuinely contends an AsyncMutex under ThreadPool is reported faulted() "
-              "-- abandoned cleanly, never looped resume() on a coroutine parked for a different "
-              "thread's unlock()");
-        bool named_the_real_cause = false;
-        if (contender_outcome.fault) {
-            try {
-                std::rethrow_exception(contender_outcome.fault);
-            } catch (std::runtime_error const& e) {
-                named_the_real_cause =
-                    std::string(e.what()).find("did not reach done() within one resume()") != std::string::npos;
-            } catch (...) {
-            }
-        }
-        check(named_the_real_cause,
-              "T6: the fault names the exact contract violation (one-resume scope), not a generic "
-              "failure -- diagnosable, not just 'something went wrong'");
+        check(contender_fut.wait_for(std::chrono::milliseconds(150)) == std::future_status::timeout,
+              "T6: a job parked on a held AsyncMutex is not reported finished while the holder holds it");
 
-        // Let the holder finish normally -- proves the LEGITIMATE (uncontended-at-acquire-time) side of
-        // this same mutex is entirely unaffected by the abandoned contender.
         release_now.store(true, std::memory_order_release);
         JobOutcome const holder_outcome = holder_fut.get();
         check(!holder_outcome.faulted, "T6: the holder job itself completes cleanly and releases normally");
 
-        // A THIRD, later job locks the SAME mutex after the holder released -- proves the abandoned
-        // contender's destroy() correctly removed itself from the waiter queue (AsyncMutex's own
-        // cancellation-safety, ADR-017's "drop the handle = cancel") rather than leaving `held_` stuck
-        // true or a dangling handle in `waiters_` that a future unlock() might otherwise try to resume.
+        JobOutcome const contender_outcome = contender_fut.get();
+        check(!contender_outcome.faulted,
+              "T6: the contender completes once the holder releases -- not faulted, not abandoned");
+        check(contender_after != std::thread::id{} && contender_after == contender_before,
+              "T6: the contender resumed on the worker it parked on, not on the holder's worker");
+
         std::future<JobOutcome> later_fut = pool.submit(lock_once(&mtx));
         JobOutcome const later_outcome = later_fut.get();
-        check(!later_outcome.faulted,
-              "T6: the mutex is still fully usable afterward -- the abandoned contender left no "
-              "corruption behind");
+        check(!later_outcome.faulted, "T6: the mutex is still fully usable afterward");
     }
 
     // ---- T7: split_worker_budget() (issue #42 item 2 -- nested WorkflowSupervisor resource

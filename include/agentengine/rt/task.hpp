@@ -29,11 +29,14 @@
 // handler-boundary guard `quark::task<>` already established, reproduced here rather than assumed.
 
 #include <coroutine>
+#include <cstdint>
 #include <exception>
 #include <memory>
 #include <new>
 #include <type_traits>
 #include <utility>
+
+#include "agentengine/rt/resume_home.hpp"
 
 namespace agentengine::rt {
 
@@ -73,6 +76,7 @@ public:
 
         std::coroutine_handle<> continuation_{};
         std::exception_ptr fault_{};
+        std::uint64_t raw_holder_ = 0;  // ADR-175: this task's holder id when driven by raw resume()
     };
 
     task() noexcept = default;
@@ -98,7 +102,18 @@ public:
     // it. Safe to call repeatedly until done() -- each resume() runs the body until its next
     // suspension point or completion. `start()` is `resume()` under a name that reads correctly at
     // the FIRST call site; both do the same thing.
-    void resume() { h_.resume(); }
+    // decisions/ADR-175: a raw resume() drives this task outside any block_on(), so it runs with NO home
+    // (a lock grant resumes it inline, as before ADR-175) and under ITS OWN holder id, minted on first
+    // resume -- not the calling thread's context. Otherwise a task raw-resumed inside a pool job or tool
+    // closure would park homed to a block_on() that may have returned by the time the lock is granted, and
+    // a homeless task that parks on one thread and holds a lock on another would lend its identity to the
+    // thread it parked from (ADR-175 round 3 findings 2 and 3).
+    void resume() {
+        auto& p = h_.promise();
+        if (p.raw_holder_ == 0) p.raw_holder_ = mint_holder_id();
+        ScopedExecution const raw(nullptr, p.raw_holder_);
+        h_.resume();
+    }
     void start() { resume(); }
     [[nodiscard]] bool done() const noexcept { return !h_ || h_.done(); }
     [[nodiscard]] bool faulted() const noexcept { return h_ && h_.promise().faulted(); }
@@ -167,6 +182,7 @@ public:
 
         std::coroutine_handle<> continuation_{};
         std::exception_ptr fault_{};
+        std::uint64_t raw_holder_ = 0;  // ADR-175: this task's holder id when driven by raw resume()
         alignas(T) unsigned char store_[sizeof(T)];
         bool has_value_ = false;
     };
@@ -194,7 +210,18 @@ public:
     // moves the result out (or rethrows a fault) -- named distinctly from await_resume() since a
     // mode-(b) driver calls resume() in a loop until done(), THEN takes the value once, whereas
     // await_resume() is only ever called by the compiler-generated co_await machinery.
-    void resume() { h_.resume(); }
+    // decisions/ADR-175: a raw resume() drives this task outside any block_on(), so it runs with NO home
+    // (a lock grant resumes it inline, as before ADR-175) and under ITS OWN holder id, minted on first
+    // resume -- not the calling thread's context. Otherwise a task raw-resumed inside a pool job or tool
+    // closure would park homed to a block_on() that may have returned by the time the lock is granted, and
+    // a homeless task that parks on one thread and holds a lock on another would lend its identity to the
+    // thread it parked from (ADR-175 round 3 findings 2 and 3).
+    void resume() {
+        auto& p = h_.promise();
+        if (p.raw_holder_ == 0) p.raw_holder_ = mint_holder_id();
+        ScopedExecution const raw(nullptr, p.raw_holder_);
+        h_.resume();
+    }
     void start() { resume(); }
     [[nodiscard]] bool done() const noexcept { return !h_ || h_.done(); }
     [[nodiscard]] bool faulted() const noexcept { return h_ && h_.promise().faulted(); }

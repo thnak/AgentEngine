@@ -62,14 +62,25 @@
 // guarantees at most one logical "holder" exists at a time, so at most one unlock() call is ever
 // legitimately in flight for a given instance -- a boolean is sufficient, no counter needed. See
 // `unlock()`'s own body for the loop.
+//
+// ADR-175 (issue #78) -- WHO RESUMES A WAITER, AND WHO OWNS THE LOCK. Everything above about inline
+// hand-off and the trampoline now applies only to HOMELESS waiters: coroutines driven by raw `resume()`
+// calls. A waiter that parks while a `block_on()` drives it records that call as its home
+// (`rt/resume_home.hpp`), and `unlock()` POSTS it back there instead of resuming it -- the blocked thread
+// resumes its own task, and the releasing thread never runs a successor's critical section on its stack.
+// Ownership is the HOLDER ID of the task the lock was granted to, recorded under `m_` at the moment of
+// granting (fast path, or hand-off pop) -- not the OS thread that happens to resume it, which after a
+// posted or inline hand-off can be running somebody else entirely.
 
 #include <algorithm>
 #include <atomic>
 #include <coroutine>
+#include <cstdint>
 #include <deque>
 #include <mutex>
-#include <thread>
 #include <utility>
+
+#include "agentengine/rt/resume_home.hpp"
 
 namespace agentengine::rt {
 
@@ -123,33 +134,36 @@ public:
             std::lock_guard lock(self->m_);
             if (!self->held_) {
                 self->held_ = true;
+                self->owner_.store(current_holder_id(), std::memory_order_release);
                 return true;  // uncontended fast path -- no suspension needed
             }
             return false;
         }
 
         [[nodiscard]] bool await_suspend(std::coroutine_handle<> h) {
+            // Before taking m_ and before registering: capturing may allocate a home and throw, which
+            // is only safe while nothing refers to `h` yet.
+            detail::ParkedResumer record = detail::capture_parked(h);
             std::lock_guard lock(self->m_);
             // Re-check under lock: an unlock() may have raced in between await_ready()'s unlock and
             // this lock (e.g. on a different thread) -- if the mutex is free now, take it without
             // ever actually suspending.
             if (!self->held_) {
                 self->held_ = true;
+                self->owner_.store(record.holder, std::memory_order_release);
                 return false;
             }
+            self->waiters_.push_back(std::move(record));
             handle_ = h;
             parked = true;
-            self->waiters_.push_back(h);
-            return true;  // genuinely suspend -- some future unlock() resumes `h` directly
+            return true;  // genuinely suspend -- unlock() posts `h` to its home, or resumes it inline
         }
 
         [[nodiscard]] Guard await_resume() noexcept {
             parked = false;  // reached the ordinary way -- nothing stale for the destructor to remove
-            // Runs on the thread that is about to actually hold the mutex -- both the uncontended fast
-            // path and the resumed-after-hand-off path reach here synchronously on that exact thread
-            // (unlock()'s own trampoline calls next.resume() directly, not via a scheduler hop), so
-            // std::this_thread::get_id() here is always the real, current owner.
-            self->owner_.store(std::this_thread::get_id(), std::memory_order_release);
+            // ADR-175: ownership was already recorded under m_ by whoever granted the lock. Stamping it
+            // here instead -- on whichever thread resumes, whenever that is -- left the RELEASING task
+            // reported as owner for as long as a posted successor waited (round 2 finding 1).
             return Guard{self};
         }
 
@@ -160,7 +174,8 @@ public:
             if (!parked) return;
             std::lock_guard lock(self->m_);
             auto& q = self->waiters_;
-            auto it = std::find(q.begin(), q.end(), handle_);
+            auto it = std::find_if(q.begin(), q.end(),
+                                   [this](detail::ParkedResumer const& r) { return r.handle == handle_; });
             if (it != q.end()) q.erase(it);
         }
     };
@@ -170,30 +185,62 @@ public:
     // ADR-123 -- a real, disclosed reentrant-self-deadlock hazard (AgentSession::fork_from(), agent_
     // session.hpp's own comment) needed a way to ask "does the CALLING thread already own this mutex"
     // without adding a second, incompatible locking discipline (a recursive mutex would silently change
-    // this type's own semantics for every existing caller). Purely additive: `owner_` is written only
-    // where mutual exclusion already guarantees exactly one thread can be doing so (`LockAwaiter::
-    // await_resume()`, reached only by whichever coroutine has just become the sole, exclusive holder --
-    // uncontended or freshly handed off via `unlock()`'s own trampoline, itself already serialized by
-    // `m_`) and cleared only where `unlock()` already sets `held_ = false` under `m_`. No existing
-    // caller's behavior changes -- nothing reads `owner_` unless it explicitly calls this method.
+    // this type's own semantics for every existing caller). Nothing reads `owner_` unless it explicitly
+    // calls this method.
     //
-    // KNOWN LIMITATION (same-day independent red-team round, ADR-123 §7): `owner_` is stamped ONCE, at
-    // acquisition, to whichever OS thread is physically running at that instant -- it is NOT updated as
-    // the holder's own execution continues. If the coroutine holding the Guard later suspends on some
-    // OTHER async primitive and its continuation resumes on a DIFFERENT OS thread (this file's sibling
-    // `block_on.hpp` documents that as a normal, exercised case, not a hypothetical), this method gives
-    // a FALSE NEGATIVE on that new thread -- it reports "not held by you" even though the calling
-    // (new) thread is, in fact, the sole physical executor of the still-open critical section. Correct
-    // only for reentrancy checks where the ENTIRE held duration, from acquisition to the check, runs on
-    // one unchanging OS thread (`AgentSession::fork_from()`'s own reentrant-call fix, `agent_
-    // session.hpp`, is scoped to exactly that case and documents this same limitation). A general fix
-    // needs coroutine/round identity, not OS-thread identity -- out of this method's own scope.
+    // ADR-175 replaced the owner-THREAD comparison ADR-123 §7 documented as a known limitation: the name is
+    // kept for source compatibility, but the question answered is "is this mutex held by the logical task
+    // running on the calling thread" (`current_holder_id()`, rt/resume_home.hpp). The thread comparison
+    // was wrong both ways once a task can park while holding the lock: a false NEGATIVE after the holder
+    // resumed on another thread (ADR-123 §7), and a false POSITIVE on the thread that released the lock,
+    // or resumed the holder inline, and then ran unrelated code (ADR-175 round 1 finding 3, round 2
+    // finding 2) -- the latter letting `AgentSession::fork_from()` skip `session_mutex_` while the real
+    // holder was mid-round, an I1 violation. A holder id travels with the task through `block_on()`
+    // (inherited by a nested call), through raw `task<T>::resume()` (the task's own id), and through a
+    // homeless inline resume (restored from the waiter's record). Residual: a coroutine resumed by a bare
+    // `coroutine_handle::resume()` from inside another driver's context runs under THAT driver's id until
+    // it next parks -- the same class of wrong answer the thread comparison gave, confined to foreign
+    // awaitables (none in tree).
+    //
+    // Lock-free: `owner_` is written under `m_` at every grant and release, and is 0 whenever the mutex is
+    // free. The only task for which it can equal `current_holder_id()` is one the lock was granted to, and
+    // that grant happened-before the task could ask; a concurrent grant to or release by ANOTHER task can
+    // only move it between values that are not this task's id.
     [[nodiscard]] bool is_held_by_current_thread() const noexcept {
-        return owner_.load(std::memory_order_acquire) == std::this_thread::get_id();
+        return owner_.load(std::memory_order_acquire) == current_holder_id();
     }
 
 private:
     friend struct LockAwaiter;
+
+    // Pops the next waiter and grants it the lock, under m_. The owner is its recorded holder from this
+    // instant, whenever it actually resumes -- stored BEFORE posting, so a successor its home resumes at
+    // once already sees itself as holder.
+    //
+    // A homed waiter is posted to its home here and an empty record is returned: nothing is left for the
+    // caller to run. A homeless waiter is returned for the caller's trampoline to resume inline -- and so
+    // is a homed waiter whose home has CLOSED (its block_on() returned; ADR-175 round 4 finding 1: resuming
+    // those inside post() nested each one in the previous one's unlock() and overflowed the stack). Such a
+    // waiter parked under a block_on() it did not belong to -- a foreign awaitable's bare handle resume --
+    // and recorded that call's holder id; it is granted under a FRESH id instead, so the thread that ran
+    // that block_on() is not reported as holder for this critical section (round 4 finding 2).
+    [[nodiscard]] detail::ParkedResumer grant_next_locked() noexcept {
+        detail::ParkedResumer next = std::move(waiters_.front());
+        waiters_.pop_front();
+        owner_.store(next.holder, std::memory_order_release);
+        if (next.home) {
+            if (next.home->try_post(next.handle, next.holder)) return detail::ParkedResumer{};
+            next.home.reset();
+            next.holder = mint_holder_id();
+            owner_.store(next.holder, std::memory_order_release);
+        }
+        return next;
+    }
+
+    void release_locked() noexcept {
+        held_ = false;
+        owner_.store(0, std::memory_order_release);
+    }
 
     // Hands ownership directly to the next queued waiter (FIFO), if any, or marks the mutex free.
     // ITERATIVE trampoline, not recursive -- see file banner's second numbered note for why: a naive
@@ -204,7 +251,7 @@ private:
     // OWN loop is what's about to notice `pending_release_`)"; a reentrant call arriving while that's
     // set just records the pending release and returns immediately -- one call frame, always.
     void unlock() noexcept {
-        std::coroutine_handle<> next;
+        detail::ParkedResumer next;
         {
             std::lock_guard lock(m_);
             if (draining_) {
@@ -214,36 +261,35 @@ private:
                 pending_release_ = true;
                 return;
             }
-            draining_ = true;
-            if (!waiters_.empty()) {
-                next = waiters_.front();
-                waiters_.pop_front();
-            } else {
-                held_ = false;
-                owner_.store(std::thread::id{}, std::memory_order_release);
+            if (waiters_.empty()) {
+                release_locked();
+                return;
             }
+            next = grant_next_locked();
+            if (!next.handle) return;  // ADR-175: posted to its home -- nothing runs on this thread
+            draining_ = true;
         }
 
-        // The trampoline: resume the current candidate (if any), then check whether that resume()
-        // call (or, in principle, a concurrent release on a genuinely different thread -- exclusivity
-        // means at most one is ever actually pending, see file banner) queued up another hand-off
-        // while we were inside it. Loop until there is nothing left to do; every iteration reuses THIS
-        // one stack frame, never nests a new one.
+        // The trampoline, for waiters resumed inline (homeless, or homed to a closed home): resume the
+        // current candidate, then check whether that resume() call (or, in principle, a concurrent release
+        // on a genuinely different thread -- exclusivity means at most one is ever actually pending, see
+        // file banner) queued up another hand-off while we were inside it. Every iteration reuses THIS one
+        // stack frame. A successor posted to its home ends the loop.
         for (;;) {
-            if (next) next.resume();
+            detail::wake(std::move(next));  // no home: inline, on behalf of its own holder id
             std::lock_guard lock(m_);
             if (!pending_release_) {
                 draining_ = false;
                 return;
             }
             pending_release_ = false;
-            if (!waiters_.empty()) {
-                next = waiters_.front();
-                waiters_.pop_front();
-            } else {
-                held_ = false;
-                owner_.store(std::thread::id{}, std::memory_order_release);
-                next = {};
+            if (waiters_.empty()) {
+                release_locked();
+                draining_ = false;
+                return;
+            }
+            next = grant_next_locked();
+            if (!next.handle) {
                 draining_ = false;
                 return;
             }
@@ -254,11 +300,10 @@ private:
     bool held_ = false;
     bool draining_ = false;
     bool pending_release_ = false;
-    std::deque<std::coroutine_handle<>> waiters_;
-    // ADR-123 -- default-constructed std::thread::id{} means "not held," and no real running thread's
-    // own get_id() can ever equal it (the standard's own "not-a-thread" guarantee), so
-    // is_held_by_current_thread() above never false-positives against an unheld mutex.
-    std::atomic<std::thread::id> owner_{};
+    std::deque<detail::ParkedResumer> waiters_;
+    // ADR-175: the holder id the lock is granted to (resume_home.hpp); written under m_, read lock-free by
+    // is_held_by_current_thread(). Holder ids start at 1, so 0 (free) never matches a running task.
+    std::atomic<std::uint64_t> owner_{0};
 };
 
 }  // namespace agentengine::rt

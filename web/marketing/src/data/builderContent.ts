@@ -322,31 +322,19 @@ if (!built.has_value()) {
 auto reply = built->ask("Reply with exactly one word: pong");
 check(reply.has_value(), "Bundle::ask() succeeds end to end against a real remote model");`;
 
-export const bundleAskSnippet = `// include/agentengine/core/session_builder.hpp:478-496
+export const bundleAskSnippet = `// include/agentengine/core/session_builder.hpp:489-495
 [[nodiscard]] agentengine::result<std::string> ask(std::string text) {
     std::lock_guard<std::mutex> guard(*ask_mutex_);
-    auto t =
-        session_->start_run(agentengine::rt::StartRun{detail::user_message(std::move(text))});
-    t.resume();
-    if (!t.done()) {
-        return std::unexpected(agentengine::error{
-            agentengine::failure_class::fatal,
-            "Bundle::ask() needed more than one resume() to complete -- the run suspended on "
-            "something this synchronous helper will not drive further (most likely a concurrent "
-            "caller holding session_mutex_ via the raw session() accessor, since ask() already "
-            "serializes against itself). Stopping here rather than resuming again, to avoid a "
-            "cross-thread double-resume race.",
-            "quickstart_bundle.ask_would_block"});
-    }
-    auto r = t.take_value();
+    auto r = agentengine::rt::block_on(
+        session_->start_run(agentengine::rt::StartRun{detail::user_message(std::move(text))}));
     if (!r) return std::unexpected(r.error());
     return agentengine::text_of(r->message);
 }`;
 
-export const bundleAskStreamSignatureSnippet = `// include/agentengine/core/session_builder.hpp:521
+export const bundleAskStreamSignatureSnippet = `// include/agentengine/core/session_builder.hpp:519
 [[nodiscard]] agentengine::result<agentengine::stream<std::string>> ask_stream(std::string text) {
-    // ... reuses ask()'s own bounded-single-resume() contract exactly, just driven on a
-    // background std::jthread pair (driver + relay) so the caller can consume text live.
+    // ... drives the run with rt::block_on() exactly as ask() does, just on a background
+    // std::jthread pair (driver + relay) so the caller can consume text live.
     // See api/streaming.html for stream<T> itself -- not re-explained here.
 }`;
 

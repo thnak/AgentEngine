@@ -29,6 +29,7 @@
 // task.hpp`'s own documented precedent for this exact bug class, not by a live concurrency test.
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <memory>
@@ -36,6 +37,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <type_traits>
 #include <vector>
@@ -170,6 +172,23 @@ struct ScriptedChatClient {
         return std::move(pair.consumer);
     }
 };
+// B30 (decisions/ADR-175 round 3 finding 1): a provider that throws. `ask_stream()`'s driver thread runs
+// the round through `rt::block_on()`, which rethrows -- uncaught on a std::jthread that was std::terminate.
+struct ThrowingChatClient {
+    bool throws = true;  // a member, not a literal: a bare `throw` before `co_return` is unreachable code (C4702)
+    [[nodiscard]] agentengine::ChatClientCapabilities capabilities() const { return {}; }
+    agentengine::task<agentengine::result<agentengine::ChatResponse>> chat(agentengine::ChatRequest const&,
+                                                                          agentengine::EffectContext&) {
+        if (throws) throw std::runtime_error("provider threw (chat)");
+        co_return agentengine::ChatResponse{};
+    }
+    agentengine::stream<agentengine::ChatResponseUpdate> chat_stream(agentengine::ChatRequest const&,
+                                                                    agentengine::EffectContext&) {
+        if (throws) throw std::runtime_error("provider threw (chat_stream)");
+        return {};
+    }
+};
+
 static_assert(agentengine::ChatClient<ScriptedChatClient>,
               "ScriptedChatClient must satisfy the ChatClient concept -- "
               "RawQuickstartSessionBuilder is concept-constrained on this (core/chat_client.hpp)");
@@ -1115,6 +1134,55 @@ int main() {
             if (!built_b29.has_value()) {
                 check(built_b29.error().code == "raw_quickstart_builder.no_store",
                       "B29: the failure is specifically 'no_store'");
+            }
+        }
+
+        // ---- B30: ask_stream() against a provider that throws -- the process survives and the stream
+        // ends FAILED, not closed as if the run had succeeded (decisions/ADR-175 round 3 finding 1).
+        {
+            auto built_b30 = RawQuickstartSessionBuilder(ThrowingChatClient{}).session_id("s-b30").build();
+            check(built_b30.has_value(), "B30 setup: a Bundle over a throwing provider builds");
+            if (built_b30.has_value()) {
+                auto s = built_b30->ask_stream("hello");
+                check(s.has_value(), "B30 setup: ask_stream() returns a stream");
+                if (s.has_value()) {
+                    for (int i = 0; i < 1000 && !s->done(); ++i) {
+                        while (s->next()) {}
+                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    }
+                    check(s->done() && s->terminal() == agentengine::stream_terminal::failed,
+                          "B30: a throwing provider ends ask_stream()'s stream FAILED, and the process is "
+                          "still alive to observe it");
+                }
+            }
+        }
+
+        // ---- B31: ask_stream() delivers the reply's text with a provider that answers at once. The relay
+        // used to exit on the stop request issued as soon as the run returned -- usually mid-sleep, before
+        // relaying anything -- so the stream ended closed and empty (decisions/ADR-175 round 4 finding 4,
+        // pre-existing). Five consecutive calls on one Bundle.
+        {
+            auto built_b31 = RawQuickstartSessionBuilder(ScriptedChatClient{}).session_id("s-b31").build();
+            check(built_b31.has_value(), "B31 setup: a Bundle over the scripted provider builds");
+            if (built_b31.has_value()) {
+                int delivered = 0;
+                for (int call = 0; call < 5; ++call) {
+                    auto s = built_b31->ask_stream("hello");
+                    if (!s.has_value()) continue;
+                    std::string text;
+                    for (int i = 0; i < 1000; ++i) {
+                        while (auto piece = s->next()) text += *piece;
+                        if (s->done()) break;
+                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    }
+                    while (auto piece = s->next()) text += *piece;
+                    if (s->terminal() == agentengine::stream_terminal::closed && text == "scripted reply") {
+                        ++delivered;
+                    }
+                }
+                check(delivered == 5, ("B31: ask_stream() relayed the full reply text on " +
+                                       std::to_string(delivered) + " of 5 calls")
+                                          .c_str());
             }
         }
     }

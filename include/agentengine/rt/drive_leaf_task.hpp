@@ -19,20 +19,12 @@
 // here fails via undefined behavior (resuming a not-actually-ready coroutine handle), not a soft,
 // contained error.
 //
-// BOUND IS 1, NOT A LARGER NUMBER -- deliberately: under the stated contract (only nested
-// task<T>/task<void> awaits, real C++20 symmetric transfer), a conforming leaf task reaches done()
-// in EXACTLY ONE resume() call, regardless of nesting depth -- symmetric transfer never returns
-// control to this function until the whole chain completes or hits a genuinely-suspending non-task
-// awaitable. There is no legitimate scenario where a second resume() would ever be correct, so a
-// larger "safety margin" bound does not add safety -- it only delays detecting a violated contract.
-// CAVEAT, stated plainly rather than overclaimed: this bound is a hang-preventer for an ALREADY-
-// suspended, already-corrupted-state coroutine, not a soundness guarantee -- by the time a second
-// resume() would fire, `await_resume()` on the foreign awaitable has already run against a
-// precondition that was never satisfied. The REAL protection is the `synchronous_leaf` review
-// discipline at the declaration site; this bound only stops an already-bad situation from ALSO
-// becoming an unbounded hang.
+// SUPERSEDED BY decisions/ADR-175 -- the paragraphs above describe the original single-resume() design and
+// its `synchronous_leaf` argument, kept for the record. The function now drives through `block_on()`; see
+// the comment on `drive_leaf_task()` below for why and what changed.
 
 #include "agentengine/core/error.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/task.hpp"
 
 namespace agentengine::rt {
@@ -62,26 +54,23 @@ namespace agentengine::rt {
 // real and unexplained. Fixed by wrapping the whole drive (resume() through take_value()) in one
 // try/catch, matching run_job()'s shape exactly rather than reasoning independently about which
 // calls can throw.
+//
+// decisions/ADR-175: the bounded single resume() is gone. On a violated contract it returned
+// `rt.leaf_task_contract_violation` and destroyed `t` -- but a task parked on a contended `AsyncMutex` may
+// already have been popped and resumed by the releasing thread, so that destruction could free a frame
+// running elsewhere (the shape of issue #78). `block_on()` waits for the task instead, resuming it on this
+// thread. The `synchronous_leaf` declaration still says a conformer does not block its caller; it is no
+// longer what keeps this function memory-safe. A leaf that parks on a lock held by THIS thread now blocks
+// forever instead of erroring -- a deadlock the caller composed, no longer "detected" by a use-after-free.
 template <class T>
 [[nodiscard]] result<T> drive_leaf_task(task<T> t) {
     try {
-        if (!t.done()) t.resume();
-        if (!t.done()) {
-            return std::unexpected(error{
-                failure_class::fatal,
-                "drive_leaf_task() needed more than one resume() to reach done() -- the task "
-                "suspended on something other than a nested task<T>/task<void>, violating its "
-                "synchronous_leaf contract. The coroutine state from here on is not trustworthy (see "
-                "this function's own comment) -- this error exists to stop cleanly, not to recover.",
-                "rt.leaf_task_contract_violation"});
-        }
-        // take_value() rethrows a fault via std::rethrow_exception (a genuine C++ exception escaping
-        // the coroutine body -- allocation failure, a bug, NOT the ordinary provider-error channel,
-        // which for every task<result<U>> in this codebase already flows through the normal
-        // co_return/return_value path as an ordinary std::unexpected(...) value, not a fault).
-        // Translated to ae::error here so a caller never has to catch task<T>'s exception-based fault
-        // protocol directly.
-        return t.take_value();
+        // block_on() rethrows a fault (a genuine C++ exception escaping the coroutine body --
+        // allocation failure, a bug, NOT the ordinary provider-error channel, which for every
+        // task<result<U>> in this codebase already flows through the normal co_return/return_value path
+        // as an ordinary std::unexpected(...) value, not a fault). Translated to ae::error here so a
+        // caller never has to catch task<T>'s exception-based fault protocol directly.
+        return block_on(std::move(t));
     } catch (...) {
         return std::unexpected(error{failure_class::transient, "leaf task faulted", "rt.leaf_task_faulted"});
     }
