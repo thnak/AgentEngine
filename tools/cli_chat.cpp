@@ -76,6 +76,7 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <memory_resource>
 #include <mutex>
@@ -192,6 +193,64 @@ inline std::filesystem::path g_action_log_path;
                              ? std::filesystem::temp_directory_path() / "agentengine_cli_actions.log"
                              : g_action_log_path);
     return log;
+}
+
+// ---- Capping what a tool result puts into the NEXT model request ---------------------------------
+//
+// A 32-second shell harness can return tens of kilobytes, and every byte of it goes into the next
+// request verbatim. The session this was written for lost a 93-second model call immediately after
+// one: the provider accepted a ~250 KB request, streamed reasoning for 3.2 seconds, went silent, and
+// the stream died on `net_egress_proxy.cpp`'s 90s TLS read timeout with `stream_terminal: failed`.
+//
+// Truncating here does NOT prevent that -- a slow model can go quiet whatever the prompt size, and
+// the honest fix for a stalled stream is a retry, which is its own decision. What it does is remove
+// the largest single thing this CLI hands a provider, and cost less per turn while doing it.
+//
+// ANNOUNCED, never silent. The model is told exactly how many bytes it is not seeing, so it can ask
+// for a narrower command instead of reasoning confidently over a result it only half received --
+// silent truncation would be the worse failure here by a wide margin. The full reply goes to the
+// action log, so nothing is actually lost.
+[[nodiscard]] std::size_t max_tool_output_bytes() {
+    static std::size_t const cap = [] {
+        constexpr std::size_t kDefault = 8192;
+        auto const v = ::agentengine::pal::env_var("AGENTENGINE_CLI_CHAT_MAX_TOOL_OUTPUT");
+        if (!v || v->empty()) return kDefault;
+        char* end = nullptr;
+        unsigned long long const parsed = std::strtoull(v->c_str(), &end, 10);
+        if (end == nullptr || *end != '\0') return kDefault;
+        return parsed == 0 ? std::numeric_limits<std::size_t>::max()  // "0" means do not cap
+                            : static_cast<std::size_t>(parsed);
+    }();
+    return cap;
+}
+
+// Recursive because a reply is an arbitrary JSON shape, not a known `{stdout_text: ...}`: capping
+// only the field this CLI happens to know about would silently stop working the day a tool returns
+// its bulk somewhere else.
+[[nodiscard]] json::Value cap_strings(json::Value const& v, std::size_t cap, std::size_t& withheld) {
+    if (v.is_string()) {
+        std::string const& text = v.as_string();
+        if (text.size() <= cap) return v;
+        std::size_t const dropped = text.size() - cap;
+        withheld += dropped;
+        return json::Value::make_string(
+            text.substr(0, cap) + "\n\n... [truncated by the host CLI: " + std::to_string(dropped) +
+            " more bytes were NOT sent to you. Re-run with a narrower command, or filter the output, "
+            "rather than assuming the rest looked like what you can see.]");
+    }
+    if (v.is_array()) {
+        std::vector<json::Value> out;
+        out.reserve(v.as_array().size());
+        for (json::Value const& item : v.as_array()) out.push_back(cap_strings(item, cap, withheld));
+        return json::Value::make_array(std::move(out));
+    }
+    if (v.is_object()) {
+        std::vector<std::pair<std::string, json::Value>> out;
+        out.reserve(v.as_object().size());
+        for (auto const& [key, val] : v.as_object()) out.emplace_back(key, cap_strings(val, cap, withheld));
+        return json::Value::make_object(std::move(out));
+    }
+    return v;
 }
 
 // Puts the old trace back on screen, for when the log file is the inconvenient place to look.
@@ -709,6 +768,28 @@ public:
                     break;
                 }
             }
+
+            // Wrap this turn's invoke in the output cap (see `cap_strings`). Safe to do on every
+            // contribution because descriptors are REBUILT here each turn rather than carried over --
+            // a wrapper never wraps a wrapper. A descriptor with no invoke is declaration-only;
+            // wrapping it would turn a tool that was never callable into one that throws.
+            if (!td.invoke) continue;
+            ToolDescriptor::InvokeFn inner = std::move(td.invoke);
+            std::string tool_name = td.name;
+            td.invoke = [inner = std::move(inner), tool_name = std::move(tool_name)](
+                            json::Value const& args, EffectContext& ec) -> result<json::Value> {
+                result<json::Value> reply = inner(args, ec);
+                if (!reply) return reply;
+                std::size_t withheld = 0;
+                json::Value capped = cap_strings(*reply, max_tool_output_bytes(), withheld);
+                if (withheld > 0) {
+                    action_log().write("tool " + tool_name + " reply CAPPED: " +
+                                        std::to_string(withheld) +
+                                        " bytes withheld from the model. Full reply follows.\n" +
+                                        json::dump(*reply));
+                }
+                return capped;
+            };
         }
         co_return contribution;
     }
@@ -977,8 +1058,23 @@ void print_skills_banner(std::ostream& out,
         }
         case run_event_kind::tool_call_finished: {
             auto const& p = std::get<run_event_payload::ToolCallFinished>(ev.payload);
-            return std::string("  <- tool call ") + (!p.result.is_error ? "OK" : "FAILED") +
-                   " (call_id=" + p.call_id + ")";
+            std::string line = std::string("  <- tool call ") + (!p.result.is_error ? "OK" : "FAILED") +
+                               " (call_id=" + p.call_id + ")";
+            // WHY a failure carries its reason here: this line used to say "FAILED" and nothing else,
+            // and the first real question ever asked of this log -- why did the Python worker stop
+            // answering mid-session -- could not be answered from it. The reason was sitting in the
+            // call dumps the whole time (`native_jail.session_terminated`, a watchdog kill with no
+            // respawn by design), one directory over, in a 400 KB JSON file. A log that records that
+            // something failed but not what failed is a log you still have to leave to use.
+            if (p.result.is_error) {
+                for (ContentItem const& item : p.result.content) {
+                    if (auto const* e = std::get_if<Error>(&item.value)) {
+                        line += ": " + e->message;
+                        break;
+                    }
+                }
+            }
+            return line;
         }
         case run_event_kind::input_required: return "  [suspended: waiting for input]";
         case run_event_kind::input_resolved: return "  [resumed]";
