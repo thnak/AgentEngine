@@ -47,6 +47,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstddef>
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -141,6 +142,23 @@ constexpr char const* kLivestockSkillName = "livestock-care-operations";
     static std::vector<std::string> names;
     return names;
 }
+// Every tool ENTRY, in order -- so a failed "was actually called" assertion distinguishes the two
+// stories that look identical from outside: the tool was never OFFERED, or it was offered and the
+// model did not CHOOSE it. Getting that wrong cost a full live investigation (see the comment on the
+// two skills below), and the same ambiguity is waiting in every other skill-gated live test.
+[[nodiscard]] std::vector<std::string>& tool_entry_log() {
+    static std::vector<std::string> entries;
+    return entries;
+}
+[[nodiscard]] std::string tool_entries_since(std::size_t from) {
+    std::string joined;
+    for (std::size_t i = from; i < tool_entry_log().size(); ++i) {
+        if (!joined.empty()) joined += ", ";
+        joined += tool_entry_log()[i];
+    }
+    return joined.empty() ? std::string("(none)") : joined;
+}
+
 [[nodiscard]] bool& check_weather_called_log() {
     static bool called = false;
     return called;
@@ -180,11 +198,23 @@ constexpr char const* kLivestockSkillName = "livestock-care-operations";
 
 // ================= Two skills, one source, mirroring builtin_skills.hpp's own multi-skill pattern
 // (one make_*_source() eagerly parsing several SKILL.md literals into one std::vector<SkillSourceResult>).
+//
+// `allowed-tools` IS SPACE-SEPARATED, NOT COMMA-SEPARATED (009 s8's frontmatter list says so
+// explicitly). Both lists below were comma-separated until 2026-09-18, and the cost of that one
+// character is worth recording, because nothing anywhere reported it:
+// `skill_detail::split_on_whitespace` splits on ' ' alone, so "a, b" parses to ["a,", "b"] -- and
+// "check_field_weather," matches no tool in `scope_tools_to_mounted_skills`, so the FIRST tool of each
+// skill was never offered to the model at all. The two assertions that then failed --
+// "check_field_weather was actually called", "check_animal_health was actually called" -- read as the
+// model being lazy, and were investigated as model behaviour across three models on two providers
+// before anyone looked at the frontmatter. A tool that is silently not offered and a tool the model
+// declines to call are indistinguishable from outside the session, which is what `tool_entry_log()`
+// below now fixes.
 
 inline constexpr std::string_view kCropSkillMd = R"SKILL(---
 name: crop-field-operations
 description: Decide irrigation and pesticide-spraying actions for a crop field, using real weather and pest-pressure data for that field. Use this for a farmer growing crops (rice, vegetables, and similar) asking about a named field.
-allowed-tools: check_field_weather, check_pest_pressure
+allowed-tools: check_field_weather check_pest_pressure
 metadata:
   version: "1"
 ---
@@ -207,7 +237,7 @@ your recommendation.
 inline constexpr std::string_view kLivestockSkillMd = R"SKILL(---
 name: livestock-care-operations
 description: Decide feeding and health-check actions for livestock (cattle, poultry, and similar), using real herd data for a named herd or flock. Use this for a farmer raising animals asking about care for a named group.
-allowed-tools: check_animal_health, calculate_feed_ration
+allowed-tools: check_animal_health calculate_feed_ration
 metadata:
   version: "1"
 ---
@@ -273,6 +303,7 @@ struct CheckFieldWeatherTool
     using Args = FieldQueryArgs;
     using Reply = FieldWeatherReply;
     static result<Reply> invoke(Args a, EffectContext&) {
+        tool_entry_log().push_back("check_field_weather");
         check_weather_called_log() = true;
         return Reply{"Clear skies, no rain expected for 3 days, around 34C.",
                      "No rain in the forecast for " + a.field_name +
@@ -296,6 +327,7 @@ struct CheckPestPressureTool
     using Args = FieldQueryArgs;
     using Reply = PestPressureReply;
     static result<Reply> invoke(Args a, EffectContext&) {
+        tool_entry_log().push_back("check_pest_pressure");
         check_pest_called_log() = true;
         // Deliberately says NOTHING about weather/forecast -- an earlier version mentioned "the dry
         // forecast" here, and a captured live transcript showed the model treating that as if it had
@@ -327,6 +359,7 @@ struct CheckAnimalHealthTool
     using Args = HerdQueryArgs;
     using Reply = AnimalHealthReply;
     static result<Reply> invoke(Args a, EffectContext&) {
+        tool_entry_log().push_back("check_animal_health");
         check_animal_health_called_log() = true;
         return Reply{"healthy",
                      "No signs of illness in " + a.herd_name + " -- proceed with standard feeding."};
@@ -364,6 +397,7 @@ struct CalculateFeedRationTool
     using Args = FeedRationArgs;
     using Reply = FeedRationReply;
     static result<Reply> invoke(Args a, EffectContext&) {
+        tool_entry_log().push_back("calculate_feed_ration");
         calculate_feed_ration_called_log() = true;
         double const total = static_cast<double>(a.animal_count) * feed_rate_kg_per_animal(a.animal_type);
         return Reply{total, a.herd_name + "'s ration is based on " + std::to_string(a.animal_count) +
@@ -694,6 +728,7 @@ private:
                 error{failure_class::contract, "unknown skill: " + a.skill_name, "skill.unknown_name"});
         }
         mounted_skill_names_log().push_back(a.skill_name);
+        tool_entry_log().push_back("mount_skill(" + a.skill_name + ")");
         mounted_skills_.mount(a.skill_name);
         return MountSkillReply{true, "mounted: " + a.skill_name};
     }
@@ -819,6 +854,7 @@ int main() {
     }
 
     // ==================== Turn 2: the crop-farming skill, phrased around the SKILL, not the tool ====
+    std::size_t const turn2_from = tool_entry_log().size();
     result<AgentResponse> crop_resp = drive(session.start_run(StartRun{user_message(
         "I'm a rice farmer. My field is called 'North Paddy'. Using whatever skill you have for crop "
         "field operations, check the weather and pest pressure for North Paddy today, and tell me "
@@ -835,10 +871,12 @@ int main() {
         mounted_skill_names_log().end();
     check(crop_skill_mounted,
           "TURN2: mount_skill(crop-field-operations) was called -- the model activated the crop skill");
+    note("TURN2 tool entries", tool_entries_since(turn2_from));
     check(check_weather_called_log(), "TURN2: check_field_weather was actually called");
     check(check_pest_called_log(), "TURN2: check_pest_pressure was actually called");
 
     // ==================== Turn 3: the livestock skill -- a DIFFERENT farm model, same round-trip ====
+    std::size_t const turn3_from = tool_entry_log().size();
     result<AgentResponse> livestock_resp = drive(session.start_run(StartRun{user_message(
         "I also raise chickens. My flock is called 'Coop A' and has 200 birds. Using whatever skill "
         "you have for livestock care, check their health and calculate today's feed ration.")}));
@@ -857,6 +895,7 @@ int main() {
           "TURN3: mount_skill(livestock-care-operations) was called -- the model activated the "
           "SECOND, independently-mounted skill, proving multi-skill selection, not just repeat calls "
           "into the first skill");
+    note("TURN3 tool entries", tool_entries_since(turn3_from));
     check(check_animal_health_called_log(), "TURN3: check_animal_health was actually called");
     check(calculate_feed_ration_called_log(), "TURN3: calculate_feed_ration was actually called");
 
