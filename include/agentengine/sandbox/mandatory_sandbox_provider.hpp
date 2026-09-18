@@ -468,7 +468,12 @@ private:
     [[nodiscard]] auto with_image_provenance(Fn fn) {
         return [this, fn = std::move(fn)](auto args, agentengine::EffectContext& ctx) {
             auto reply = fn(std::move(args), ctx);
-            if (reply.has_value()) stamp_image_provenance(*reply);
+            // `this->`, explicitly: the unqualified spelling is a DEPENDENT call inside a generic
+            // lambda in a member template, and clang analyses the lambda's pattern rather than its
+            // instantiations -- so it cannot see that `this` is used and rejects the capture under
+            // -Werror=unused-lambda-capture. MSVC and gcc-14 both accepted it; only the clang-cl legs
+            // caught it, which is the whole reason this project builds on three compilers.
+            if (reply.has_value()) this->stamp_image_provenance(*reply);
             return reply;
         };
     }
