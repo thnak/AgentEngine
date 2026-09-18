@@ -1,8 +1,9 @@
 // GitHub issue #80 -- an execution surface must report which sandbox image a command actually ran in.
 //
 // A host could already PIN the image (`DockerExecutionSurface("alpine:3.20")`), but nothing reported back
-// what that pin RESOLVED to, so a provenance manifest (RFC 015 §4c.6: node, tool version, sandbox image)
-// could only ever restate the host's own configuration. Restating a TAG is worth nothing: `alpine:latest`
+// what that pin RESOLVED to, so a provenance manifest (node, tool version, sandbox image -- the
+// requester's own use case, from AeroCoWorker's RFC 015 §4c.6, a different project's document; this
+// repo's own 015 has no §4c) could only ever restate the host's own configuration. Restating a TAG is worth nothing: `alpine:latest`
 // names different bytes on two machines, or on one machine a week apart. `ImageIdentifiedSurface`
 // (sandbox/execution_surface.hpp) adds `image()` (the configured reference) and `image_digest()` (what it
 // resolved to, or empty for "not known").

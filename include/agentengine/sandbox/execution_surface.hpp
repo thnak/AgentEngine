@@ -80,7 +80,9 @@ concept ExecutionSurface = requires(T& t, std::filesystem::path const& host_dir,
 
 // GitHub issue #80 -- WHICH IMAGE DID THIS ACTUALLY RUN IN. A host could already PIN a surface's image
 // (`DockerExecutionSurface("alpine:3.20")`), but nothing reported back what the pin resolved to, so a
-// provenance record (RFC 015 §4c.6's per-piece manifest: node, tool version, sandbox image) could only
+// provenance record (the requester's own per-piece manifest -- node, tool version, sandbox image; the
+// cited "015 §4c.6" is AeroCoWorker's RFC, a DIFFERENT project's document, not this repo's own 015,
+// which has no §4c) could only
 // ever restate the reference the host itself configured. That is worth nothing when the reference was a
 // TAG: `alpine:latest` names a different set of bytes on two machines, or on one machine a week apart.
 //
@@ -97,6 +99,20 @@ concept ExecutionSurface = requires(T& t, std::filesystem::path const& host_dir,
 //                          that environment was created. EMPTY, never fabricated, when nothing has been
 //                          created yet or the backend could not answer -- an empty digest means "not
 //                          known", and a caller must record its absence rather than substitute `image()`.
+//
+// NOT COMPARABLE ACROSS CONFORMERS, and this concept deliberately does not pretend otherwise. Every
+// conformer answers `sha256:<64 hex>`, but they do not all digest the same thing: `ContainerdExecution
+// Surface` reports the MANIFEST digest, while `DockerExecutionSurface` reports the container's image ID,
+// which is the manifest digest under the containerd image store and the image CONFIG digest under the
+// classic graph driver -- so for Docker the KIND depends on how the operator configured the daemon, and
+// no value carries a tag saying which it is. A consumer may compare two digests recorded from the SAME
+// surface type; comparing across surface types, or across differently-configured Docker hosts, can report
+// "different image" for one image. Widening this concept to carry the digest's kind is real follow-on
+// work (ADR-176 §6), deliberately not smuggled into the change that introduced the field.
+//
+// I3: a conformer's answers are serialized into tool replies the model reads. A host assembling a
+// provenance record must take them from the surface or from the reply struct it received -- never from a
+// digest restated in model output, which is an ordinary untrusted string like any other.
 template <class T>
 concept ImageIdentifiedSurface = ExecutionSurface<T> && requires(T const& t) {
     { t.image() } -> std::convertible_to<std::string_view>;

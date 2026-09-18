@@ -1447,8 +1447,21 @@ public:
     // distinction is the whole point: asking `docker image inspect alpine:latest` again can answer with
     // a different image than the one this container was created from, if the tag moved or a pull
     // happened in between; a container's own image binding is fixed at creation and cannot drift.
-    // The value is the image CONFIG digest (`sha256:...`), Docker's own immutable local identity for an
-    // image -- not a registry repo digest, which a locally built or never-pushed image does not have.
+    //
+    // WHAT KIND OF DIGEST THIS IS DEPENDS ON THE DAEMON, and that is a property of the value, not a
+    // detail -- an earlier version of this comment asserted flatly that it is the image CONFIG digest,
+    // which was measured FALSE on the machine this was written on. `{{.Image}}` is the image ID, and what
+    // the image ID digests is decided by the daemon's image store: with the CONTAINERD image store
+    // (Docker Desktop's default, and increasingly the Linux one) it is the MANIFEST digest -- verified
+    // here across three images, each `{{.Id}}` identical to its own `RepoDigests[0]` digest -- while with
+    // the classic graph driver Docker documents it as the image CONFIG digest, a different value for the
+    // same image. NOT verified on a classic-store daemon: none was reachable from this machine.
+    //
+    // The consequence a caller must not have to infer: `image_digest()` from a Docker surface and from a
+    // `ContainerdExecutionSurface` (a manifest digest, always) are NOT reliably comparable, and whether
+    // they happen to match is decided by how the operator configured their daemon. Compare digests only
+    // within one surface's own records. See `ImageIdentifiedSurface` (execution_surface.hpp) for the
+    // contract-level statement of this.
     //
     // Returns an EMPTY string, never an error, on any failure: this is provenance enrichment, and a
     // command must not fail to run because the daemon declined to describe its own container. An empty

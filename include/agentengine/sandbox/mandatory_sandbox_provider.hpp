@@ -90,6 +90,13 @@ AE_JSON_SCHEMA(RunCommandArgs, command)
 // all (`ImageIdentifiedSurface`, sandbox/execution_surface.hpp), and `image_digest` alone is empty when the
 // surface has an image but its backend could not resolve one -- an absent digest means "not known" and is
 // never backfilled from `image`, because a tag is exactly the thing a digest exists to replace.
+//
+// Two things a consumer must not infer. These fields are serialized into the tool reply the MODEL reads,
+// so a host building a provenance record takes them from this struct or from `bound_image()`, never from
+// a digest the model restated (I3 -- model output is data, never authority). And `image_digest` is not
+// comparable across surface types, or across differently-configured Docker hosts: see
+// `ImageIdentifiedSurface` (sandbox/execution_surface.hpp) for what each conformer's digest actually
+// digests, and ADR-176 §6 for why carrying the kind is separate follow-on work.
 struct RunCommandReply {
     bool ok = false;
     int exit_code = -1;
