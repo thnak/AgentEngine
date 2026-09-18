@@ -131,6 +131,18 @@ constexpr char const* kDefaultModel = "~deepseek/deepseek-v4-flash-latest";
 constexpr char const* kDefaultHost = "openrouter.ai";
 constexpr std::uint16_t kHttpsPort = 443;
 constexpr char const* kPathPrefix = "/api/v1";
+
+// The endpoint's path prefix. OpenRouter serves its OpenAI-compatible surface under `/api/v1`; a
+// vendor's own endpoint typically serves `/v1` (DeepSeek: `https://api.deepseek.com/v1`, confirmed
+// live 2026-09-18). Host, model and key were already environment-driven -- this constant was the one
+// remaining thing pinning these tests to a single provider, so it is overridable too, via
+// AGENTENGINE_OPENROUTER_PATH_PREFIX. Read through a function-local static because call sites below
+// sit outside main(), where no local could reach them.
+[[nodiscard]] std::string const& path_prefix() {
+    static std::string const value = env_or("AGENTENGINE_OPENROUTER_PATH_PREFIX", kPathPrefix);
+    return value;
+}
+
 constexpr char const* kSecretName = "openrouter-api-key";
 // OpenRouter's dashboard Activity view groups/labels rows by this (the `X-Title` header), NOT by the
 // `user` field (`end_user_id`, configure_session's own `id` param below) -- confirmed directly against
@@ -248,7 +260,7 @@ void configure_session(Session& session, std::string const& id, std::string cons
     // `end_user_id`, which that vendor does not use for cache routing at all, correcting this file's
     // own earlier claim that it did). A fresh/random value per call would defeat caching for every
     // multi-turn case in this file.
-    session.emplace_chat_client(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store, kPathPrefix,
+    session.emplace_chat_client(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store, path_prefix(),
                                  sandbox::resolve_host, /*ca=*/std::string{}, /*http_referer=*/std::string{},
                                  /*x_title=*/kXTitle, /*end_user_id=*/id, /*seed=*/std::nullopt,
                                  /*transport=*/sandbox::ProviderTransport::tls,

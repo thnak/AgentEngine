@@ -33,6 +33,8 @@
 //   AGENTENGINE_OPENROUTER_OPENAI_MODEL     optional -- default below, the same concretely-named
 //     OpenAI-family model test_openai_chat_client_openrouter_live_e2e.cpp already confirmed live.
 //   AGENTENGINE_OPENROUTER_HOST             optional -- default `openrouter.ai`.
+//   AGENTENGINE_OPENROUTER_PATH_PREFIX      optional -- default `/api/v1`. Set to `/v1` for a
+//                                           vendor endpoint such as api.deepseek.com.
 
 #include <chrono>
 #include <cstdio>
@@ -72,6 +74,18 @@ constexpr char const* kDefaultModel = "openai/gpt-4o-mini";
 constexpr char const* kDefaultHost  = "openrouter.ai";
 constexpr std::uint16_t kHttpsPort  = 443;
 constexpr char const* kPathPrefix   = "/api/v1";
+
+// The endpoint's path prefix. OpenRouter serves its OpenAI-compatible surface under `/api/v1`; a
+// vendor's own endpoint typically serves `/v1` (DeepSeek: `https://api.deepseek.com/v1`, confirmed
+// live 2026-09-18). Host, model and key were already environment-driven -- this constant was the one
+// remaining thing pinning these tests to a single provider, so it is overridable too, via
+// AGENTENGINE_OPENROUTER_PATH_PREFIX. Read through a function-local static because call sites below
+// sit outside main(), where no local could reach them.
+[[nodiscard]] std::string const& path_prefix() {
+    static std::string const value = env_or("AGENTENGINE_OPENROUTER_PATH_PREFIX", kPathPrefix);
+    return value;
+}
+
 constexpr char const* kSecretName   = "openrouter-api-key";
 
 }  // namespace
@@ -101,7 +115,7 @@ int main() {
     // ---- first time ever (test_session_builder_prototype.cpp's own named scope gap) -----------------
     {
         auto built = OpenAiSessionBuilder(model)
-                         .endpoint(host, kHttpsPort, kPathPrefix)
+                         .endpoint(host, kHttpsPort, path_prefix())
                          .api_key_from_env(kSecretName, "AGENTENGINE_OPENROUTER_API_KEY")
                          .declare_capabilities(caps)
                          .build();
@@ -126,7 +140,7 @@ int main() {
     // ---- body was never even instantiated until this call. Piece D's real proof. --------------------
     {
         auto built = OpenAiSessionBuilder(model)
-                         .endpoint(host, kHttpsPort, kPathPrefix)
+                         .endpoint(host, kHttpsPort, path_prefix())
                          .api_key_from_env(kSecretName, "AGENTENGINE_OPENROUTER_API_KEY")
                          .declare_capabilities(caps)
                          .build();
@@ -180,7 +194,7 @@ int main() {
                "sk-or-v1-0000000000000000000000000000000000000000000000000000000000000000", 1);
 #endif
         auto built = OpenAiSessionBuilder(model)
-                         .endpoint(host, kHttpsPort, kPathPrefix)
+                         .endpoint(host, kHttpsPort, path_prefix())
                          .api_key_from_env(kSecretName, "AGENTENGINE_OPENROUTER_BAD_KEY")
                          .declare_capabilities(caps)
                          .build();

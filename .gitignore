@@ -70,3 +70,6 @@ apt-openrouter.txt
 # Local debug dumps of live-provider chat transcripts -- scratch, never committed
 response-dumps/
 dumps/
+
+# Local-only DeepSeek API key for the `live-network` label -- never commit
+deep-seek.txt

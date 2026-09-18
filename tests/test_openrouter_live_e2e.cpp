@@ -25,6 +25,8 @@
 //   AGENTENGINE_OPENROUTER_API_KEY   required -- unset means SKIP (exit 0), never a failure
 //   AGENTENGINE_OPENROUTER_MODEL     optional -- default below
 //   AGENTENGINE_OPENROUTER_HOST      optional -- default `openrouter.ai`
+//   AGENTENGINE_OPENROUTER_PATH_PREFIX optional -- default `/api/v1`. Set to `/v1` for a
+//                                      vendor endpoint such as api.deepseek.com.
 // The key reaches the client the same way a production one would: through a real SecretStore,
 // resolved at the point of use inside chat()/chat_stream() against a real capability grant, never
 // held as a member. `tools/run-live-provider-tests.ps1` populates these from a local key file.
@@ -88,6 +90,17 @@ constexpr std::uint16_t kHttpsPort = 443;
 // compatible base is `https://openrouter.ai/api` (+ the Messages API's own `/v1/messages`). Same
 // resulting path prefix for both clients; they differ only in the endpoint each appends.
 constexpr char const* kPathPrefix = "/api/v1";
+
+// The endpoint's path prefix. OpenRouter serves its OpenAI-compatible surface under `/api/v1`; a
+// vendor's own endpoint typically serves `/v1` (DeepSeek: `https://api.deepseek.com/v1`, confirmed
+// live 2026-09-18). Host, model and key were already environment-driven -- this constant was the one
+// remaining thing pinning these tests to a single provider, so it is overridable too, via
+// AGENTENGINE_OPENROUTER_PATH_PREFIX. Read through a function-local static because call sites below
+// sit outside main(), where no local could reach them.
+[[nodiscard]] std::string const& path_prefix() {
+    static std::string const value = env_or("AGENTENGINE_OPENROUTER_PATH_PREFIX", kPathPrefix);
+    return value;
+}
 
 constexpr char const* kSecretName = "openrouter-api-key";
 
@@ -264,14 +277,14 @@ int main() {
     // openrouter-session-id-header.md -- a DIFFERENT field; a default-empty `session_id` would leave
     // every one of these calls without sticky routing at all).
     openai::OpenAIChatClient oai(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
-                                  kPathPrefix, sandbox::resolve_host, /*ca=*/{},
+                                  path_prefix(), sandbox::resolve_host, /*ca=*/{},
                                   /*http_referer=*/{}, /*x_title=*/kXTitle,
                                   /*end_user_id=*/"test-openrouter-live-e2e-oai", /*seed=*/std::nullopt,
                                   /*transport=*/sandbox::ProviderTransport::tls,
                                   /*scan_response_format_leaks=*/false,
                                   /*session_id=*/"test-openrouter-live-e2e-oai");
     anthropic::AnthropicChatClient ant(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
-                                        kPathPrefix, "2023-06-01", sandbox::resolve_host,
+                                        path_prefix(), "2023-06-01", sandbox::resolve_host,
                                         /*ca=*/{}, /*http_referer=*/{}, /*x_title=*/kXTitle,
                                         /*end_user_id=*/"test-openrouter-live-e2e-ant",
                                         /*cache_ttl=*/{}, /*transport=*/sandbox::ProviderTransport::tls,
@@ -434,7 +447,7 @@ int main() {
     // CONSTRUCTION; only the real service can show it does not reject them.
     {
         openai::OpenAIChatClient attributed(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
-                                             kPathPrefix, sandbox::resolve_and_validate, /*ca=*/{},
+                                             path_prefix(), sandbox::resolve_and_validate, /*ca=*/{},
                                              "https://agentengine.test/", "AgentEngine Live E2E",
                                              "live-e2e-user", std::optional<std::int64_t>{7});
         auto resp = run_task_sync<result<ChatResponse>>(
@@ -456,7 +469,7 @@ int main() {
         InMemorySecretStore bad_store;
         bad_store.set(kSecretName, "sk-or-v1-0000000000000000000000000000000000000000000000000000000000000000");
         openai::OpenAIChatClient bad(host, kHttpsPort, model, SecretRef{kSecretName}, caps, bad_store,
-                                      kPathPrefix);
+                                      path_prefix());
         auto resp = run_task_sync<result<ChatResponse>>(bad.chat(request_asking("hi"), ctx));
         check(!resp.has_value(),
               "OR-OAI-7 (positive control): a syntactically valid but WRONG api key is rejected by the "
@@ -608,7 +621,7 @@ int main() {
         ChatClientCapabilities cache_caps = caps;
         cache_caps.prompt_caching = true;
         anthropic::AnthropicChatClient cached(host, kHttpsPort, model, SecretRef{kSecretName}, cache_caps,
-                                               store, kPathPrefix, "2023-06-01",
+                                               store, path_prefix(), "2023-06-01",
                                                sandbox::resolve_and_validate, /*ca=*/{},
                                                "https://agentengine.test/", "AgentEngine Live E2E",
                                                "live-e2e-user", /*cache_ttl=*/"5m");
@@ -645,7 +658,7 @@ int main() {
         InMemorySecretStore bad_store;
         bad_store.set(kSecretName, "sk-or-v1-0000000000000000000000000000000000000000000000000000000000000000");
         anthropic::AnthropicChatClient bad(host, kHttpsPort, model, SecretRef{kSecretName}, caps,
-                                            bad_store, kPathPrefix);
+                                            bad_store, path_prefix());
         auto resp = run_task_sync<result<ChatResponse>>(bad.chat(request_asking("hi"), ctx));
         check(!resp.has_value(),
               "OR-ANT-7 (positive control): the `x-api-key` header path is genuinely authenticated too "
@@ -675,7 +688,7 @@ int main() {
         // below is the smallest that makes the case expressible while still bounding cost.
         think_caps.max_output_tokens = 4096;
         anthropic::AnthropicChatClient thinker(host, kHttpsPort, model, SecretRef{kSecretName},
-                                                think_caps, store, kPathPrefix, "2023-06-01",
+                                                think_caps, store, path_prefix(), "2023-06-01",
                                                 sandbox::resolve_and_validate, /*ca=*/{},
                                                 /*http_referer=*/{}, /*x_title=*/kXTitle,
                                                 /*end_user_id=*/"test-openrouter-live-e2e-ant-reasoning",

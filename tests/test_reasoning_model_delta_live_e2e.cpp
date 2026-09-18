@@ -48,6 +48,8 @@
 //     (Reuses the SAME key every other live test in this suite uses.)
 //   AGENTENGINE_OPENROUTER_REASONING_MODEL     optional -- default below, confirmed live to work.
 //   AGENTENGINE_OPENROUTER_HOST                optional -- default `openrouter.ai`.
+//   AGENTENGINE_OPENROUTER_PATH_PREFIX         optional -- default `/api/v1`. Set to `/v1` for a
+//                                              vendor endpoint such as api.deepseek.com.
 
 #include <cstdio>
 #include <cstdlib>
@@ -92,6 +94,18 @@ constexpr char const* kDefaultModel = "~deepseek/deepseek-v4-flash-latest";
 constexpr char const* kDefaultHost = "openrouter.ai";
 constexpr std::uint16_t kHttpsPort = 443;
 constexpr char const* kPathPrefix = "/api/v1";
+
+// The endpoint's path prefix. OpenRouter serves its OpenAI-compatible surface under `/api/v1`; a
+// vendor's own endpoint typically serves `/v1` (DeepSeek: `https://api.deepseek.com/v1`, confirmed
+// live 2026-09-18). Host, model and key were already environment-driven -- this constant was the one
+// remaining thing pinning these tests to a single provider, so it is overridable too, via
+// AGENTENGINE_OPENROUTER_PATH_PREFIX. Read through a function-local static because call sites below
+// sit outside main(), where no local could reach them.
+[[nodiscard]] std::string const& path_prefix() {
+    static std::string const value = env_or("AGENTENGINE_OPENROUTER_PATH_PREFIX", kPathPrefix);
+    return value;
+}
+
 constexpr char const* kSecretName = "openrouter-api-key";
 constexpr char const* kXTitle = "AgentEngine: issue-49-reasoning-model-delta-live-e2e";
 
@@ -136,7 +150,7 @@ int main() {
     caps.max_output_tokens = 512;
 
     openai::OpenAIChatClient<InMemorySecretStore> oai(
-        host, kHttpsPort, model, SecretRef{kSecretName}, caps, store, kPathPrefix, sandbox::resolve_host,
+        host, kHttpsPort, model, SecretRef{kSecretName}, caps, store, path_prefix(), sandbox::resolve_host,
         /*ca=*/{}, /*http_referer=*/{}, /*x_title=*/kXTitle,
         /*end_user_id=*/"test-reasoning-model-delta-live-e2e", /*seed=*/std::nullopt,
         /*transport=*/sandbox::ProviderTransport::tls, /*scan_response_format_leaks=*/false,
