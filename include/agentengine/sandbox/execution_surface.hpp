@@ -39,8 +39,10 @@
 // owes 008 §9's full gate first (G1 parity, G2 containment with a positive control, G3
 // no-ambient-authority probe, G4 teardown).
 
+#include <concepts>
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 #include "agentengine/core/error.hpp"
 
@@ -74,6 +76,31 @@ concept ExecutionSurface = requires(T& t, std::filesystem::path const& host_dir,
     { t.reset(host_dir) } -> std::same_as<agentengine::result<void>>;
     { t.run(command) } -> std::same_as<agentengine::result<SurfaceRunOutcome>>;
     { t.drain_to(host_dir) } -> std::same_as<agentengine::result<void>>;
+};
+
+// GitHub issue #80 -- WHICH IMAGE DID THIS ACTUALLY RUN IN. A host could already PIN a surface's image
+// (`DockerExecutionSurface("alpine:3.20")`), but nothing reported back what the pin resolved to, so a
+// provenance record (RFC 015 §4c.6's per-piece manifest: node, tool version, sandbox image) could only
+// ever restate the reference the host itself configured. That is worth nothing when the reference was a
+// TAG: `alpine:latest` names a different set of bytes on two machines, or on one machine a week apart.
+//
+// A SEPARATE, OPT-IN refinement of `ExecutionSurface`, deliberately not folded into it: a surface that
+// runs commands somewhere with no image identity at all (every in-tree test double, and any future
+// process/chroot conformer) is a perfectly valid `ExecutionSurface`, and forcing it to invent an answer
+// would make the field a lie rather than an absence. Callers ask with `if constexpr` and record nothing
+// when the answer does not exist.
+//
+//   T::image()        -- the reference the surface was CONFIGURED with, verbatim. Never empty for a
+//                          conformer; it is the constructor argument.
+//   T::image_digest() -- the resolved, content-addressed identity of the image the surface's CURRENT
+//                          execution environment actually runs, as the backend reported it at the moment
+//                          that environment was created. EMPTY, never fabricated, when nothing has been
+//                          created yet or the backend could not answer -- an empty digest means "not
+//                          known", and a caller must record its absence rather than substitute `image()`.
+template <class T>
+concept ImageIdentifiedSurface = ExecutionSurface<T> && requires(T const& t) {
+    { t.image() } -> std::convertible_to<std::string_view>;
+    { t.image_digest() } -> std::convertible_to<std::string_view>;
 };
 
 }  // namespace agentengine

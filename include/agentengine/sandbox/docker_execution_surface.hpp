@@ -82,6 +82,7 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -1441,6 +1442,40 @@ public:
         // a normal, meaningful result, never itself a result<>-level error.
     }
 
+    // GitHub issue #80 -- the resolved, content-addressed identity of the image `inst` is ACTUALLY
+    // running, read back off the live container rather than re-resolved from the reference. That
+    // distinction is the whole point: asking `docker image inspect alpine:latest` again can answer with
+    // a different image than the one this container was created from, if the tag moved or a pull
+    // happened in between; a container's own image binding is fixed at creation and cannot drift.
+    // The value is the image CONFIG digest (`sha256:...`), Docker's own immutable local identity for an
+    // image -- not a registry repo digest, which a locally built or never-pushed image does not have.
+    //
+    // Returns an EMPTY string, never an error, on any failure: this is provenance enrichment, and a
+    // command must not fail to run because the daemon declined to describe its own container. An empty
+    // digest travels outward as "not known" (see `ImageIdentifiedSurface` in execution_surface.hpp).
+    // `inst.container_id` went through `docker_cli_reject_leading_dash()` at `create()` before this
+    // class ever returned it, so it is already safe as a bare argv element here.
+    [[nodiscard]] std::string resolve_image_digest(Instance const& inst) {
+        auto r = docker_cli_detail::run_argv({"docker", "inspect", "--format", "{{.Image}}",
+                                                inst.container_id});
+        if (r.exit_code != 0) return {};
+        // `run_argv()` merges stdout and stderr (this file's own convention), so take the LAST non-empty
+        // line -- the same reason, and the same shape, as `create()`'s own id extraction.
+        std::string digest;
+        std::istringstream lines(r.stdout_text);
+        std::string line;
+        while (std::getline(lines, line)) {
+            while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+            if (!line.empty()) digest = line;
+        }
+        // Only a value that LOOKS like the digest Docker documents itself as printing is reported. A
+        // daemon that answered with a warning, a template error, or `<no value>` must produce "not
+        // known", not a provenance record naming a string that is not an image.
+        if (digest.rfind("sha256:", 0) != 0 || digest.size() != 7 + 64) return {};
+        if (digest.find_first_not_of("0123456789abcdef", 7) != std::string::npos) return {};
+        return digest;
+    }
+
     [[nodiscard]] agentengine::result<void> destroy(Instance const& inst) {
         auto r = docker_cli_detail::run_argv({"docker", "rm", "-f", inst.container_id});
         if (r.exit_code != 0) {
@@ -1569,9 +1604,15 @@ public:
     // exactly the class of silent divergence this file's own moved-from `instance_` comment above
     // exists because of.
     DockerExecutionSurface(DockerExecutionSurface&& other) noexcept
-        : image_(std::move(other.image_)), isolation_(other.isolation_),
-          docker_(std::move(other.docker_)), instance_(std::move(other.instance_)) {
+        : image_(std::move(other.image_)), resolved_digest_(std::move(other.resolved_digest_)),
+          isolation_(other.isolation_), docker_(std::move(other.docker_)),
+          instance_(std::move(other.instance_)) {
         other.instance_.reset();
+        // Issue #80: a moved-from surface runs nothing and must claim no image, so the cached digest goes
+        // with `image_` and `instance_` rather than being left behind. Explicit because a moved-from
+        // std::string is only "valid but unspecified" -- this makes the postcondition this type's own
+        // guarantee instead of an inherited library habit.
+        other.resolved_digest_.clear();
     }
     // Move assignment SWAPS rather than overwrite-then-discard: `a = std::move(b)` where `a` already
     // owns a live container must not silently leak `a`'s own instance by simply copying `b`'s state
@@ -1582,6 +1623,7 @@ public:
     DockerExecutionSurface& operator=(DockerExecutionSurface&& other) noexcept {
         if (this != &other) {
             image_.swap(other.image_);
+            resolved_digest_.swap(other.resolved_digest_);  // issue #80 -- travels with `instance_`
             std::swap(isolation_, other.isolation_);  // ADR-171 -- see the move ctor's own comment
             std::swap(docker_, other.docker_);
             instance_.swap(other.instance_);
@@ -1602,6 +1644,21 @@ public:
         auto inst = docker_.create(image_, isolation_);
         if (!inst.has_value()) return std::unexpected(inst.error());
         instance_ = *inst;
+        // Issue #80, and a MEASURED cost decision, not an assumed-cheap one. `SandboxRuntime::run()`
+        // calls `reset()` once per command, so anything spawned here is spawned once per tool call; on
+        // this project's own Windows/Docker Desktop development machine `docker inspect` measured ~480 ms
+        // against a ~900 ms warm `docker run -d`, i.e. a >50% regression on every run_command had this
+        // been resolved per reset. It is resolved ONCE per surface instead, on the first `reset()` that
+        // produces a container to read it from, and reused for every later container this surface creates.
+        //
+        // What that trades, stated rather than glossed: `image_` never changes for the life of a surface,
+        // and `docker run` does not re-pull an image already present locally, so every container this
+        // surface creates runs the same image UNLESS something outside this process re-pulls the tag
+        // mid-session. In that case the cached digest names the image the FIRST container genuinely ran,
+        // not the latest one -- a real value that is stale, never a fabricated one, and a strictly better
+        // answer than the nothing-at-all that preceded this. A failed resolution leaves the field empty
+        // and is retried on the next `reset()`, so one daemon hiccup does not blind the surface forever.
+        if (resolved_digest_.empty()) resolved_digest_ = docker_.resolve_image_digest(*instance_);
 
         // The error_code overload: a status query that cannot be answered is not the same as "the
         // directory is not there", and the throwing one would unwind past this function's own
@@ -1637,6 +1694,14 @@ public:
         return docker_.exec(*instance_, "cd /workspace && " + command);
     }
 
+    // Issue #80 (`ImageIdentifiedSurface`, execution_surface.hpp). `image()` is the reference this surface
+    // was CONFIGURED with -- a tag, a digest reference, whatever the host passed; `image_digest()` is what
+    // that reference resolved to for the container currently in place, and is empty before the first
+    // `reset()` and whenever the daemon could not answer. Both are reported deliberately: the configured
+    // reference is what an operator recognizes, the digest is what a provenance record can be trusted on.
+    [[nodiscard]] std::string_view image() const noexcept { return image_; }
+    [[nodiscard]] std::string_view image_digest() const noexcept { return resolved_digest_; }
+
     [[nodiscard]] agentengine::result<void> drain_to(std::filesystem::path const& host_dir) {
         if (!instance_) {
             return std::unexpected(agentengine::error{agentengine::failure_class::contract,
@@ -1659,12 +1724,19 @@ public:
 
 private:
     std::string image_;
+    // Issue #80. What `image_` resolved to, cached: empty until the first `reset()` that creates a
+    // container the daemon could describe, then reused for this surface's whole life. See `reset()` for
+    // the measured cost this caching exists for, and the one staleness case it accepts.
+    std::string resolved_digest_;
     // ADR-171 (issue #63). Held by value and applied on every `reset()`, so a re-materialized surface
     // is contained identically to its first container -- not only the first one.
     ContainerIsolation isolation_{};
     DockerCliBackend docker_;
     std::optional<DockerCliBackend::Instance> instance_;
 };
+
+static_assert(ImageIdentifiedSurface<DockerExecutionSurface>,
+              "DockerExecutionSurface must report which image it runs (issue #80)");
 
 static_assert(ExecutionSurface<DockerExecutionSurface>,
               "DockerExecutionSurface must satisfy the real ExecutionSurface concept");

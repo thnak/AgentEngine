@@ -108,6 +108,14 @@ int main() {
     {
         agentengine::ContainerdExecutionSurface surface;
 
+        // --- Issue #80: which image did this actually run in? Before anything is created the answer is
+        //     "the configured reference, and no digest" -- an absent digest means "not known" and must
+        //     never be backfilled from the reference, because a tag is exactly what a digest replaces.
+        check(surface.image() == "docker.io/library/alpine:latest",
+              "issue #80: image() reports the configured reference before reset()");
+        check(surface.image_digest().empty(),
+              "issue #80: image_digest() is empty before reset() -- not known, never backfilled");
+
         // --- Turn 1: reset() against a freshly-seeded host_dir, no explicit `ctr images pull`
         //     anywhere in this process -- a real, live test of "ctr run's own convenience-flag path
         //     handles image pull/unpack automatically, no separate step needed."
@@ -120,6 +128,27 @@ int main() {
             std::printf("    (a common cause: containerd's socket is not reachable by this process --\n"
                         "     this test REQUIRES root or an unprivileged containerd-socket ACL)\n");
             return 1;
+        }
+
+        // --- Issue #80, after the `ctr run` that pulled and unpacked the image. The digest is checked
+        //     against an INDEPENDENT `ctr images ls` query rather than a literal, so a fabricated or
+        //     accidentally-constant value cannot pass; the second check is the other half of that control,
+        //     proving the "not known" path is reachable at all (a reference containerd does not hold).
+        {
+            std::string const resolved(surface.image_digest());
+            bool const well_formed =
+                resolved.size() == 7 + 64 && resolved.rfind("sha256:", 0) == 0 &&
+                resolved.find_first_not_of("0123456789abcdef", 7) == std::string::npos;
+            check(well_formed, "issue #80: image_digest() is a well-formed sha256:<64 hex> after reset() ('" +
+                                   resolved + "')");
+            agentengine::ContainerdCliBackend backend;
+            std::string const independent = backend.resolve_image_digest("docker.io/library/alpine:latest");
+            check(!independent.empty() && independent == resolved,
+                  "issue #80 CONTROL: the digest matches an INDEPENDENT `ctr images ls` lookup of the same "
+                  "reference ('" + independent + "')");
+            check(backend.resolve_image_digest("example.invalid/no-such/image:never").empty(),
+                  "issue #80 CONTROL: a reference containerd does not hold resolves to empty -- the "
+                  "'not known' path is real, not a branch that always yields a digest");
         }
 
         // --- The container sees turn-1 content via the LIVE bind mount (no copy_to_container step

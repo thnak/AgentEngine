@@ -237,6 +237,20 @@ int main() {
                       "the direct reply reports ok:true");
                 check(reply_json.find("from parent, direct call") != std::string::npos,
                       "the direct reply's stdout contains the real command's real output");
+                // Issue #80: the reply names the environment that produced those bytes, not only the
+                // bytes. `image` is the surface's configured reference; `image_digest` is what it
+                // resolved to, cross-checked against the SAME surface's own accessor rather than a
+                // literal -- a hardcoded expectation here would still pass if both were fabricated.
+                auto const img = parent.history_provider().bound_image();
+                check(img.reference == "alpine:latest",
+                      "issue #80: the bound provider reports the surface's configured image reference");
+                check(img.digest.size() == 7 + 64 && img.digest.rfind("sha256:", 0) == 0,
+                      "issue #80: the bound provider reports a well-formed resolved image digest");
+                check(reply_json.find("\"image\":\"alpine:latest\"") != std::string::npos,
+                      "issue #80: the direct reply's JSON carries the image reference");
+                check(reply_json.find("\"image_digest\":\"" + img.digest + "\"") != std::string::npos,
+                      "issue #80: the direct reply's JSON carries the SAME resolved digest the surface "
+                      "reports");
             }
         }
     }

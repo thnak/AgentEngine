@@ -2610,8 +2610,11 @@ target_link_libraries(test_composed_sandbox_providers_live PRIVATE
 # ADR-175 grew the rt headers this TU pulls in (resume_home.hpp, and every driver that now posts to a
 # home) enough to tip its single .obj past MSVC's COFF section-count limit (C1128) -- on the ASan leg
 # only, whose instrumentation adds sections of its own; the plain MSVC and clang-cl legs still build it.
-# A mechanical compiler limit, not a code defect: same documented fix, and the same scoped-to-one-target
-# reasoning, as agentengine_cli_chat's own /bigobj in the root CMakeLists.txt.
+# Issue #80 then pushed the plain legs over too: this TU instantiates three whole sandbox-provider
+# stacks, and the two fields `RunCommandReply`/`TaskBranchRunReply` gained cost another AE_JSON_SCHEMA
+# codec instantiation per reply type per stack. A mechanical compiler limit either way, not a code
+# defect: same documented fix, and the same scoped-to-one-target reasoning, as agentengine_cli_chat's
+# own /bigobj in the root CMakeLists.txt.
 if(MSVC)
   target_compile_options(test_composed_sandbox_providers_live PRIVATE /bigobj)
 endif()
@@ -3685,6 +3688,19 @@ add_executable(test_docker_orphan_reap test_docker_orphan_reap.cpp)
 target_link_libraries(test_docker_orphan_reap PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_docker_orphan_reap COMMAND test_docker_orphan_reap)
 set_tests_properties(test_docker_orphan_reap PROPERTIES RESOURCE_LOCK docker_daemon)
+
+# ---- issue #80: an execution surface reports WHICH IMAGE a command ran in. Real Docker daemon, same
+# RESOURCE_LOCK as every other daemon-backed test here (see test_composed_sandbox_providers_live's own
+# comment for the CI failure that lock exists because of). /bigobj for the same mechanical reason
+# test_composed_sandbox_providers_live needs it: this TU instantiates MandatorySandboxProvider too.
+add_executable(test_execution_surface_image_identity test_execution_surface_image_identity.cpp)
+target_link_libraries(test_execution_surface_image_identity PRIVATE
+  agentengine::core agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+if(MSVC)
+  target_compile_options(test_execution_surface_image_identity PRIVATE /bigobj)
+endif()
+add_test(NAME test_execution_surface_image_identity COMMAND test_execution_surface_image_identity)
+set_tests_properties(test_execution_surface_image_identity PROPERTIES RESOURCE_LOCK docker_daemon)
 
 # ---- docker-execution-surface-argv-hardening (issue #50) -- run_argv()'s Job-Object timeout kill,
 # no longer through a cmd.exe layer, still leaves no orphaned host docker.exe process. Windows-only:

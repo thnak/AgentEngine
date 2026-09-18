@@ -72,6 +72,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -652,6 +653,42 @@ public:
     // Best-effort on the first two (matching `DockerExecutionSurface::destroy()`'s own posture of not
     // treating an already-gone task as fatal); the final `container rm` is the one call whose failure
     // this method actually reports.
+    // GitHub issue #80 -- the resolved, content-addressed identity of `image`, as containerd's own image
+    // store currently records it: the MANIFEST digest, the value that makes `repo@sha256:...` a portable
+    // reference. Read from `ctr images ls`, whose columns are REF, TYPE, DIGEST, SIZE, PLATFORMS, LABELS;
+    // the row is matched on an EXACT ref, so `alpine:3.20` is never answered with `alpine:3.20.1`'s digest.
+    //
+    // Weaker than `DockerExecutionSurface`'s own answer, and said plainly rather than glossed: this
+    // re-resolves the REFERENCE, it does not read the binding off the running container. `ctr run` pulls
+    // and unpacks the image at creation, so a pull that moved the tag between this container's creation
+    // and this call would be reported here as the container's image when it is not. `ctr` has no
+    // single-command equivalent of docker's own container-level image field (a containerd container record
+    // holds the REF, not a resolved digest), and reaching the snapshot's parent chain means the gRPC API,
+    // which this CLI-shaped backend deliberately does not speak. Called immediately after `create()`, so
+    // the window is the width of one `ctr run`, and the failure mode is a stale-but-real digest, never a
+    // fabricated one.
+    //
+    // Returns an EMPTY string, never an error, on any failure -- provenance enrichment must not be able to
+    // fail a command. `image` went through `reject_unsafe_token()` at `create()`.
+    [[nodiscard]] std::string resolve_image_digest(std::string const& image) {
+        auto r = ctr_cli_detail::run_argv({"ctr", "images", "ls"});
+        if (!r.has_value() || r->exit_code != 0) return {};
+        std::istringstream lines(r->stdout_text);
+        std::string line;
+        while (std::getline(lines, line)) {
+            std::istringstream fields(line);
+            std::string ref;
+            std::string type;
+            std::string digest;
+            if (!(fields >> ref >> type >> digest)) continue;
+            if (ref != image) continue;
+            if (digest.rfind("sha256:", 0) != 0 || digest.size() != 7 + 64) return {};
+            if (digest.find_first_not_of("0123456789abcdef", 7) != std::string::npos) return {};
+            return digest;
+        }
+        return {};
+    }
+
     [[nodiscard]] agentengine::result<void> destroy(Instance const& inst) {
         (void)ctr_cli_detail::run_argv({"ctr", "task", "kill", "--signal", "SIGKILL", inst.container_id});
         (void)ctr_cli_detail::run_argv({"ctr", "task", "rm", inst.container_id});
@@ -813,14 +850,20 @@ public:
     // reverting to the type's defaults and discarding a host's deliberate opt-in. Safe direction,
     // still wrong. The identical bug was live in `DockerExecutionSurface` for the length of one edit.
     ContainerdExecutionSurface(ContainerdExecutionSurface&& other) noexcept
-        : image_(std::move(other.image_)), isolation_(other.isolation_), ctr_(std::move(other.ctr_)),
+        : image_(std::move(other.image_)), resolved_digest_(std::move(other.resolved_digest_)),
+          isolation_(other.isolation_), ctr_(std::move(other.ctr_)),
           instance_(std::move(other.instance_)), mounted_at_(std::move(other.mounted_at_)),
           seq_(other.seq_) {
         other.instance_.reset();
+        // Issue #80: a moved-from surface runs nothing and must claim no image, so the cached digest goes
+        // with `image_` rather than being left behind. Explicit because a moved-from std::string is only
+        // "valid but unspecified".
+        other.resolved_digest_.clear();
     }
     ContainerdExecutionSurface& operator=(ContainerdExecutionSurface&& other) noexcept {
         if (this != &other) {
             image_.swap(other.image_);
+            resolved_digest_.swap(other.resolved_digest_);  // issue #80 -- travels with `instance_`
             std::swap(isolation_, other.isolation_);  // ADR-172 -- see the move ctor's own comment
             std::swap(ctr_, other.ctr_);
             instance_.swap(other.instance_);
@@ -865,6 +908,11 @@ public:
         auto inst = ctr_.create(id, host_dir, image_, isolation_);
         if (!inst.has_value()) return std::unexpected(inst.error());
         instance_ = *inst;
+        // Issue #80: resolved ONCE per surface, on the first `reset()` -- not per reset, which
+        // `SandboxRuntime::run()` calls once per command, so a `ctr images ls` here would be a process
+        // spawn on every tool call (the Docker surface's own `reset()` carries the measured numbers that
+        // settled this). Retried while it is still empty, so one failed lookup is not permanent.
+        if (resolved_digest_.empty()) resolved_digest_ = ctr_.resolve_image_digest(image_);
         mounted_at_ = host_dir;
         return agentengine::result<void>{};
     }
@@ -877,6 +925,14 @@ public:
         }
         return ctr_.exec(*instance_, "cd /workspace && " + command);
     }
+
+    // Issue #80 (`ImageIdentifiedSurface`, execution_surface.hpp). `image()` is the reference this surface
+    // was CONFIGURED with; `image_digest()` is the manifest digest that reference resolved to when the
+    // container currently in place was created, and is empty before the first `reset()` and whenever
+    // containerd could not answer. See `ContainerdCliBackend::resolve_image_digest()` for the one way this
+    // is weaker than the Docker surface's answer -- stated there, not hidden behind these accessors.
+    [[nodiscard]] std::string_view image() const noexcept { return image_; }
+    [[nodiscard]] std::string_view image_digest() const noexcept { return resolved_digest_; }
 
     // drain_to(): when host_dir IS the same directory reset() bind-mounted (the common case, and the
     // only case `SandboxRuntime::run()`'s own materialize→reset→run→drain sequence exercises), this
@@ -909,6 +965,10 @@ public:
 
 private:
     std::string image_;
+    // Issue #80. What `image_` resolved to, cached: empty until the first successful `reset()`, then
+    // reused for this surface's whole life. See `reset()` for why, and `ContainerdCliBackend::
+    // resolve_image_digest()` for the staleness window this backend's lookup already has anyway.
+    std::string resolved_digest_;
     // ADR-172 (issue #66). Held by value and applied on every `reset()`, so a re-materialized surface
     // is contained identically to its first container -- not only the first one.
     ContainerdIsolation isolation_{};
@@ -917,6 +977,9 @@ private:
     std::filesystem::path mounted_at_;
     std::uint64_t seq_ = 0;
 };
+
+static_assert(ImageIdentifiedSurface<ContainerdExecutionSurface>,
+              "ContainerdExecutionSurface must report which image it runs (issue #80)");
 
 static_assert(ExecutionSurface<ContainerdExecutionSurface>,
               "ContainerdExecutionSurface must satisfy the real ExecutionSurface concept");

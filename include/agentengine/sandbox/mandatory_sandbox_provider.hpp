@@ -84,14 +84,22 @@ struct RunCommandArgs {
 };
 AE_JSON_SCHEMA(RunCommandArgs, command)
 
+// GitHub issue #80 -- `image`/`image_digest` join `tree_digest` as the second half of what a provenance
+// record needs about one sandboxed run. `tree_digest` already named the bytes the command produced; these
+// name the environment that produced them. Both are EMPTY when the bound surface has no image identity at
+// all (`ImageIdentifiedSurface`, sandbox/execution_surface.hpp), and `image_digest` alone is empty when the
+// surface has an image but its backend could not resolve one -- an absent digest means "not known" and is
+// never backfilled from `image`, because a tag is exactly the thing a digest exists to replace.
 struct RunCommandReply {
     bool ok = false;
     int exit_code = -1;
     std::string stdout_text;
     std::string tree_digest;
     std::uint64_t turn_index = 0;
+    std::string image;
+    std::string image_digest;
 };
-AE_JSON_SCHEMA(RunCommandReply, ok, exit_code, stdout_text, tree_digest, turn_index)
+AE_JSON_SCHEMA(RunCommandReply, ok, exit_code, stdout_text, tree_digest, turn_index, image, image_digest)
 
 // ADR-119: now declares a real `Capabilities<cap::decl::RunCommand>` ceiling -- see this file's own
 // top comment for the double-gate shape this creates (the identity/quota model is unchanged and
@@ -148,11 +156,15 @@ struct TaskBranchRunArgs {
 };
 AE_JSON_SCHEMA(TaskBranchRunArgs, handle_id, command)
 
+// Issue #80: a task-branch run executes in the SAME bound surface `run_command` does, so it answers the
+// "which image ran this" question the same way -- see `RunCommandReply` above for what empty means.
 struct TaskBranchRunReply {
     int         exit_code = -1;
     std::string stdout_text;
+    std::string image;
+    std::string image_digest;
 };
-AE_JSON_SCHEMA(TaskBranchRunReply, exit_code, stdout_text)
+AE_JSON_SCHEMA(TaskBranchRunReply, exit_code, stdout_text, image, image_digest)
 
 struct TaskBranchCommitArgs {
     std::string handle_id;
@@ -349,6 +361,25 @@ public:
     // compile at all. Safe by construction: every accessor/`on_context()` checks `runtime_.has_value()`
     // first.
     MandatorySandboxProvider() = default;
+
+    // Issue #80. The bound surface's image identity, or two empty strings when `Surface` has none. A
+    // `constexpr`-dispatched accessor rather than a widened `ExecutionSurface` concept: a surface with no
+    // image is a legitimate conformer (every test double in tree is one), and making it invent an answer
+    // would put a value into a provenance record that nothing stands behind. Public because a host
+    // assembling its own manifest wants the same answer the tools put in their replies, from the same
+    // place, rather than reaching for the surface and re-deriving the `if constexpr` itself.
+    struct BoundImage {
+        std::string reference;  // what the surface was configured with; empty if it has no image at all
+        std::string digest;     // what that resolved to; empty when unresolved -- never backfilled
+    };
+    [[nodiscard]] BoundImage bound_image() const {
+        if constexpr (agentengine::ImageIdentifiedSurface<Surface>) {
+            if (!surface_.has_value()) return {};
+            return BoundImage{std::string(surface_->image()), std::string(surface_->image_digest())};
+        } else {
+            return {};
+        }
+    }
 
     // The REAL binding call -- mirrors `AgentSession::initialize()`'s own established "config-time
     // setter, called once before first use" convention exactly. A host that never calls this gets a
@@ -659,8 +690,13 @@ public:
                     auto outcome = agentengine::rt::block_on(
                         runtime_->run(*surface_, args.command, caller, *run_quota_, *storage_quota_));
                     if (!outcome.has_value()) return std::unexpected(outcome.error());
+                    // Issue #80: read AFTER the run, so it reports the container the command actually ran
+                    // in -- `SandboxRuntime::run()` may reset() the surface, and a value captured before
+                    // that would name the previous container's image.
+                    BoundImage img = bound_image();
                     return RunCommandReply{true, outcome->exec.exit_code, outcome->exec.stdout_text,
-                                             outcome->checkpoint.tree, outcome->checkpoint.turn_index};
+                                             outcome->checkpoint.tree, outcome->checkpoint.turn_index,
+                                             std::move(img.reference), std::move(img.digest)};
                 }));
         }
         // Second, deliberately separate gate (`bind_task_branch_tools()`'s own comment) -- these four
@@ -786,7 +822,9 @@ public:
         auto outcome = co_await it->second.run(*surface_, std::move(command), requested_by,
                                                   *run_quota_, *storage_quota_);
         if (!outcome.has_value()) co_return std::unexpected(outcome.error());
-        co_return TaskBranchRunReply{outcome->exec.exit_code, outcome->exec.stdout_text};
+        BoundImage img = bound_image();  // issue #80 -- after the run, for the reason run_command's own says
+        co_return TaskBranchRunReply{outcome->exec.exit_code, outcome->exec.stdout_text,
+                                       std::move(img.reference), std::move(img.digest)};
     }
 
     // Mirrors docs/planning/proofs/task_branch_tool/task_branch_sandbox.hpp's own A10 fix
