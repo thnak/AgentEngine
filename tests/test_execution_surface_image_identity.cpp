@@ -11,6 +11,14 @@
 // creates a REAL container. Same posture as every other real-daemon test in this suite: no special CMake
 // opt-in, the test just fails cleanly when the daemon is not reachable.
 //
+// MEMORY: capped at 256 MiB (tests/support/memory_cap.hpp, CLAUDE.md "Machine safety"). This test's own
+// peak is a few MiB -- it holds one digest string and shells out -- but every value it handles comes from
+// a DAEMON's stdout, read into memory by `run_argv()`, and a `docker inspect`/`docker images ls` against a
+// host with thousands of images is not a size this code chooses. `run_argv()` has its own 1 MiB per-stream
+// safety cap, so the bound here is the second layer, not the first: it is what keeps a mutant planted in
+// the parsing loop (the kind that grew a string quadratically and nearly took this project's development
+// machine down -- see memory_cap.hpp's own header) from doing it again on a machine running the suite.
+//
 // The checks, and what each one exists to rule out:
 //   [N1] the CONCEPT discriminates. A surface that runs commands somewhere with no image identity is a
 //        legitimate `ExecutionSurface` and must NOT satisfy `ImageIdentifiedSurface` -- otherwise the
@@ -47,6 +55,7 @@
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 #include "agentengine/sandbox/execution_surface.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
+#include "support/memory_cap.hpp"
 
 namespace {
 
@@ -110,6 +119,12 @@ constexpr char const* kImage = "alpine:latest";
 }  // namespace
 
 int main() {
+    // Machine safety, before anything allocates. Not asserted with an over-cap probe the way
+    // test_json_dump_escape's M0 does: this test has no growth path of its own to bound, so the cap is a
+    // ceiling on a mutant, not a behaviour under test -- and an over-cap probe would have to be skipped
+    // under every sanitizer leg anyway (memory_cap.hpp's own header explains why).
+    (void)agentengine::test_support::cap_process_memory(std::size_t{256} << 20, std::size_t{1024} << 20);
+
     std::error_code ec;
     std::filesystem::path const work =
         std::filesystem::temp_directory_path(ec) / "ae_image_identity_probe";
