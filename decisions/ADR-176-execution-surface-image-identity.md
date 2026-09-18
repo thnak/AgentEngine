@@ -1,10 +1,15 @@
 # ADR-176 — Which sandbox image did a command actually run in, and which surfaces are allowed to answer?
 
-- **Status**: Proposed — implemented, proven, and **red-teamed in one round (§11)**, pending
-  project-owner sign-off.
+- **Status**: **Judged — accepted, project-owner sign-off 2026-09-18.** Implemented, proven, and
+  **red-teamed in TWO rounds (§11, §15)**, the second of which found a FATAL defect in a mechanism the
+  first round's fixes had introduced. Both residuals §6 carried at Proposed are closed or narrowed by
+  measurement (§13 the digest kinds, §14 the provenance stamp), and §3e's cost decision — the one this
+  ADR got wrong twice — was re-measured and reversed (§16). What remains open is listed in §6 as
+  residual, not as pending work.
 - **Date**: 2026-09-18
-- **Closes**: GitHub issue #80 (PR #83, commit `5404f1e`, plus an uncommitted follow-up adding a memory
-  cap to the new test — see §7).
+- **Closes**: GitHub issue #80 (PR #83, `5404f1e`..`e578315`). The feature landed in `5404f1e`; the
+  rest is this ADR's own evidence trail — the memory cap and its `RLIMIT_DATA` correction (§7), the
+  digest kind (§9), the bench that falsified §3e (§10), the two red-team rounds, and §16's reversal.
 - **Refines** ADR-102 Phase 3's `ExecutionSurface` concept without widening it, and extends
   ADR-145's `ContainerdExecutionSurface`. **Reopens nothing** in ADR-099 §7 (the disclosed
   `ExecutionSurface`-is-not-a-`SandboxBackend` boundary is untouched), ADR-171/ADR-172 (isolation),
@@ -14,9 +19,12 @@
   `include/agentengine/sandbox/containerd_execution_surface.hpp`,
   `include/agentengine/sandbox/mandatory_sandbox_provider.hpp`,
   `tests/test_execution_surface_image_identity.cpp` (new), `tests/test_containerd_execution_surface.cpp`,
-  `tests/test_mandatory_sandbox_provider.cpp`, `tests/support/memory_cap.hpp`,
+  `tests/test_mandatory_sandbox_provider.cpp`, `tests/test_task_branch_tools.cpp`,
+  `tests/support/memory_cap.hpp`, `tests/support/image_provenance_shape.hpp` (new),
+  `tests/test_image_provenance_shape.cpp` (new),
+  `tests/compile_fail/image_provenance_unstampable_reply.cpp` (new) and its positive control (new),
   `bench/docker_image_digest_resolution.cpp` (new), `tests/CMakeLists.txt`, `.github/workflows/ci.yml`,
-  `027-Vocabulary-and-Naming.md`.
+  `027-Vocabulary-and-Naming.md`, `docs/research/2026-09-18-image-id-vs-descriptor-digest.md` (new).
 - **Why an ADR at all.** PR #83 argued none was needed: additive observability, no capability decision
   touched. That is true of the surface area (§2, last paragraph) and false of two things underneath it.
   First, the resolution sits on the per-command hot path — `SandboxRuntime::run()` calls `reset()` once
@@ -293,6 +301,15 @@ previous container's image.
   unknown") then declines *every* comparison. The identity is still recorded; only its comparability is
   lost. That is the correct failure direction, and it is a real reduction in what this feature delivers on
   such a host, not a corner case.
+- ~~**Nothing proves future callers go through `bound_image()`.**~~ **CLOSED by §14**, structurally: the
+  stamp is applied by the wrapper every contributed tool goes through, a reply that declares `image`
+  without stampable companions fails to compile, and a wire-level gate requires every contributed tool to
+  carry provenance or be named as an exemption. **Three residuals of that mechanism stay open and are
+  stated in §14 rather than repeated here**: four of the five wrappings have no positive control (only
+  `run_command`'s body was emptied, so only it can demonstrate the fill); the reply-JSON *kind* check is
+  satisfied by an unstamped reply on a daemon that reports no kind, though the `image`/`image_digest`
+  checks beside it are not; and a future reply that adds three `image*` strings to a verb like `discard`
+  would begin being stamped silently — an I4 question currently decided by an `if constexpr`.
 - **containerd's answer is structurally weaker** (§3c), and nothing in the accessor names says so; only
   the function comment and this ADR do. A caller that treats the two surfaces' `image_digest()` as
   equally strong is not warned by the type system.
