@@ -161,7 +161,7 @@ jobs:
           # No -C Release: Ninja (switched to above, 2026-09-04) is single-config, unlike the old
           # default VS-generator build this flag used to select a config out of.
           ctest --test-dir build -j 4 --output-on-failure --timeout 180 `
-            -E '^(test_composed_sandbox_providers_live|test_sandbox_runtime|test_docker_orphan_reap|test_mandatory_sandbox_provider|test_task_branch_tools|test_task_branch_concurrent_dispatch|test_docker_run_argv_timeout|test_docker_non_ascii_path|test_docker_isolation|test_docker_seed_ownership)$'
+            -E '^(test_composed_sandbox_providers_live|test_sandbox_runtime|test_docker_orphan_reap|test_mandatory_sandbox_provider|test_task_branch_tools|test_task_branch_concurrent_dispatch|test_docker_run_argv_timeout|test_docker_non_ascii_path|test_docker_isolation|test_docker_seed_ownership|test_execution_surface_image_identity)$'
 
   windows-clang-cl:
     name: Windows / clang-cl / ${{ matrix.build_type }}
@@ -311,7 +311,7 @@ jobs:
           # ADR-146 §12: see the windows-msvc job's own Test step comment above -- same exclusion,
           # same reason (no Docker daemon on GitHub-hosted windows-latest runners), applied here too.
           ctest --test-dir build -j 4 --output-on-failure --timeout 180 `
-            -E '^(test_composed_sandbox_providers_live|test_sandbox_runtime|test_docker_orphan_reap|test_mandatory_sandbox_provider|test_task_branch_tools|test_task_branch_concurrent_dispatch|test_docker_run_argv_timeout|test_docker_non_ascii_path|test_docker_isolation|test_docker_seed_ownership)$'
+            -E '^(test_composed_sandbox_providers_live|test_sandbox_runtime|test_docker_orphan_reap|test_mandatory_sandbox_provider|test_task_branch_tools|test_task_branch_concurrent_dispatch|test_docker_run_argv_timeout|test_docker_non_ascii_path|test_docker_isolation|test_docker_seed_ownership|test_execution_surface_image_identity)$'
           # Explicit, not incidental: this step became a pwsh block to set PATH, and a shell block
           # that ends on a native command must still surface that command's exit code. Stated here
           # rather than relying on the runner appending it, so a failing ctest can never read green.
@@ -431,6 +431,80 @@ jobs:
       - name: sccache stats
         if: always()
         run: "$SCCACHE_PATH --show-stats"
+
+      # ADR-176 §13(a)/§16. FIRST, while this runner still has its DEFAULT classic-graph-driver Docker:
+      # run the image-identity test against it.
+      #
+      # This exists because enabling the containerd image store below (which is what makes the `index` and
+      # `manifest` kinds reachable at all) silently DESTROYED the only coverage of the opposite path. A
+      # classic daemon populates no `.Descriptor`, so the surface reports a real digest with an EMPTY kind
+      # -- the documented degradation in ADR-176 §12, and an end-to-end path that no other machine in this
+      # project exercises: both Windows CI legs exclude this test for having no daemon, and the
+      # development machines run Docker Desktop, which uses the containerd store. Reconfiguring the leg
+      # without this step traded one blind spot for another.
+      #
+      # Five seconds, and the leg now covers BOTH daemon shapes: kind-less here, kind-bearing below.
+      - name: Test the kind-less daemon path (ADR-176 §12, classic graph driver)
+        run: |
+          echo "storage driver: $(docker info --format '{{.Driver}}' 2>&1)"
+          echo "descriptor media type of alpine:latest: [$(docker image inspect --format '{{.Descriptor.mediaType}}' alpine:latest 2>&1)]"
+          ctest --test-dir build --output-on-failure --timeout 180 \
+            -R '^test_execution_surface_image_identity$'
+
+      # ADR-176 §13(a). Switch this runner's Docker to the CONTAINERD IMAGE STORE before testing.
+      #
+      # Why: `test_execution_surface_image_identity`'s N11/N14 measure what a digest DIGESTS by asking the
+      # daemon for `{{.Descriptor.mediaType}}`. A classic-graph-driver daemon -- what ubuntu-latest ships
+      # -- has no such field, so both checks take their "kind not knowable here" branch and the `index`
+      # and `manifest` kinds are exercised on NO CI leg at all (the three Windows legs exclude the test
+      # outright, having no daemon). ADR-176 §6 then had a residual marked closed by a check that ran only
+      # on the author's own machine, which is not a regression gate. This is also Docker 29's own default
+      # and what the development machine runs, so it makes CI resemble the target rather than diverge from
+      # it -- the two CI failures on this branch were both caused by that divergence.
+      #
+      # FAILS SAFE. The previous daemon.json is saved; if the reconfigured daemon does not come back
+      # within the wait, it is restored and Docker restarted, and the suite runs exactly as it did before
+      # -- the two checks skip and say so in the log. A runner whose Docker cannot do this must not take
+      # the leg down for a test-coverage improvement.
+      - name: Enable Docker's containerd image store (ADR-176 §13a)
+        run: |
+          set -u
+          sudo mkdir -p /etc/docker
+          if [ -f /etc/docker/daemon.json ]; then
+            sudo cp /etc/docker/daemon.json /etc/docker/daemon.json.ae-backup
+          else
+            echo '{}' | sudo tee /etc/docker/daemon.json >/dev/null
+            sudo cp /etc/docker/daemon.json /etc/docker/daemon.json.ae-backup
+          fi
+          python3 - <<'PY'
+          import json
+          with open('/etc/docker/daemon.json') as f:
+              text = f.read().strip()
+          config = json.loads(text) if text else {}
+          config.setdefault('features', {})['containerd-snapshotter'] = True
+          with open('/tmp/ae-daemon.json', 'w') as f:
+              json.dump(config, f)
+          PY
+          sudo cp /tmp/ae-daemon.json /etc/docker/daemon.json
+          sudo systemctl restart docker || true
+          ok=0
+          for _ in $(seq 1 30); do
+            if docker info >/dev/null 2>&1; then ok=1; break; fi
+            sleep 2
+          done
+          if [ "$ok" != "1" ]; then
+            echo "::warning::containerd image store did not come up; restoring the previous daemon.json"
+            sudo cp /etc/docker/daemon.json.ae-backup /etc/docker/daemon.json
+            sudo systemctl restart docker || true
+            for _ in $(seq 1 30); do
+              if docker info >/dev/null 2>&1; then break; fi
+              sleep 2
+            done
+          fi
+          echo "storage driver: $(docker info --format '{{.Driver}}' 2>&1)"
+          echo "server version: $(docker version --format '{{.Server.Version}}' 2>&1)"
+          docker pull alpine:latest >/dev/null 2>&1 || true
+          echo "descriptor media type of alpine:latest: [$(docker image inspect --format '{{.Descriptor.mediaType}}' alpine:latest 2>&1)]"
 
       # test_containerd_execution_surface / test_composed_containerd_providers_live /
       # test_containerd_isolation talk to /run/containerd/containerd.sock directly via the raw `ctr` CLI. Unlike the Docker socket

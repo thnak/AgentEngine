@@ -11,11 +11,58 @@
 //   - Windows: puts the process in a Job Object with JOB_OBJECT_LIMIT_PROCESS_MEMORY -- a commit beyond
 //     the cap fails, and `operator new` throws std::bad_alloc. (Nested jobs are supported since Windows 8,
 //     so this also works under a CI runner that already runs tests inside a job.)
-//   - POSIX: RLIMIT_AS -- the address-space bound, so a mmap/brk past it fails the same way.
-//   - Under a sanitizer build the POSIX bound is NOT applied: ASan/TSan reserve terabytes of shadow
-//     address space up front, and RLIMIT_AS would kill the process before main(). The Windows job limit
-//     counts committed memory, not reservations, so it still applies there, at the larger
-//     `sanitizer_bytes` to leave room for the ASan allocator's quarantine.
+//   - POSIX: RLIMIT_DATA -- the data-segment bound (brk plus private anonymous mappings, which is what
+//     a runaway `new` actually consumes), so an allocation past it fails the same way.
+//   - Under a sanitizer build the POSIX bound is NOT applied, and this survived the switch to RLIMIT_DATA
+//     for a MEASURED reason rather than an inherited one. ASan maps its shadow as a private writable
+//     range, not a PROT_NONE reservation, so RLIMIT_DATA counts it: a trivial ASan binary on the same
+//     kernel dies before main() under a 256 MiB RLIMIT_DATA ("ReserveShadowMemoryRange failed while
+//     trying to map 0x10000000 bytes") and still dies under a 1 GiB one, where it asks for ~15 TB. No cap
+//     this project would set can accommodate that, so the POSIX legs of a sanitizer build run UNCAPPED --
+//     a real hole, disclosed. The Windows job limit counts committed memory, not reservations, so it
+//     still applies there, at the larger `sanitizer_bytes` to leave room for the ASan allocator's
+//     quarantine.
+//
+// NOT RLIMIT_AS, and this is load-bearing rather than a preference. RLIMIT_AS bounds the whole address
+// space including PROT_NONE RESERVATIONS, and it is INHERITED ACROSS fork/exec -- so it applies to a test's
+// child processes too. Every container CLI this repo shells out to (`docker`, `ctr`) is a Go binary, and
+// the Go runtime reserves a large virtual arena during `mallocinit()` before main(); under an RLIMIT_AS of
+// any size a test would tolerate, that reservation fails and the child dies with
+// "fatal error: failed to reserve page summary memory". This is not hypothetical: it is exactly how
+// commit a3864e1 turned test_execution_surface_image_identity red on the Linux CI leg, where the capped
+// test spawned `docker run` and the CLI aborted in its own runtime startup. Go's arena is a PROT_NONE
+// reservation, which RLIMIT_DATA does not count, so the children start normally -- measured on this
+// project's WSL2 Ubuntu (kernel 6.6, Docker 29.7.2, containerd 2.2.2): `docker run --rm alpine echo` and
+// `ctr` both run under a 256 MiB RLIMIT_DATA and both die under a 256 MiB RLIMIT_AS.
+//
+// WHAT RLIMIT_DATA ACTUALLY COUNTS, measured rather than assumed, because the first version of this
+// comment got it wrong in both directions. The kernel test since 4.7 is on the mapping's flags -- private
+// AND writable AND not stack -- applied to its VIRTUAL size. Probed directly on the same kernel, 512 MiB
+// mappings under a 256 MiB cap:
+//
+//     private writable ANONYMOUS, never touched   REFUSED   <- virtual size, NOT resident size
+//     PROT_NONE reservation                       allowed   <- what Go reserves; why the children live
+//     private writable FILE-BACKED, never touched REFUSED   <- file-backed IS counted when private+write
+//     MAP_SHARED file-backed                      allowed
+//
+// So the earlier claims "RLIMIT_DATA does not count reservations" and "does not bound file-backed
+// mappings" were both wrong as stated. The accurate one: it bounds the virtual size of every private
+// writable mapping, and lets through PROT_NONE reservations and shared mappings. That is a NARROWER cap
+// than RLIMIT_AS, but much less narrow than previously written, and it is exactly the right shape for the
+// failure mode being defended against -- a broken test allocating without bound, which is private
+// writable memory.
+//
+// Two things it does NOT do, stated because three files cite this cap as satisfying CLAUDE.md's machine-
+// safety rule and that rule's own example is a fork bomb:
+//   - It does not bound PROCESS COUNT. Both rlimits are per-process and inherited, so N children x N MiB
+//     is unbounded. This cap defends against a runaway ALLOCATION, never against a fork bomb; a test that
+//     proves fork-bomb containment needs RLIMIT_NPROC (POSIX) or JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+//     (Windows), neither of which is set here.
+//   - It has only covered mmap since Linux 4.7, and a sysadmin can degrade it to brk-only on any later
+//     kernel with `ignore_rlimit_data=1` (checked: N on the machine this was measured on). Nothing here
+//     detects either case, which is why a caller must PROVE the cap with an over-cap allocation
+//     (test_json_dump_escape's M0) rather than trust the return value -- on a platform where this
+//     mechanism does not hold, that probe fails loudly instead of silently passing.
 //
 // Returns whether a cap is in force. A test should prove it with an over-cap allocation that must throw
 // -- see test_json_dump_escape's M0 -- rather than trusting this return value alone; and should skip that
@@ -77,15 +124,17 @@ inline bool cap_process_memory(std::size_t bytes, std::size_t sanitizer_bytes) n
     return true;
 #else
     if (sanitized) {
-        std::fprintf(stderr, "[memory_cap] sanitizer build: RLIMIT_AS not applied (shadow memory); UNCAPPED\n");
+        std::fprintf(stderr, "[memory_cap] sanitizer build: RLIMIT_DATA not applied (shadow memory); UNCAPPED\n");
         return false;
     }
+    // RLIMIT_DATA, never RLIMIT_AS: this limit is inherited by child processes, and a Go child (`docker`,
+    // `ctr`) cannot start under an address-space bound. See the header comment.
     rlimit const rl{static_cast<rlim_t>(limit), static_cast<rlim_t>(limit)};
-    if (::setrlimit(RLIMIT_AS, &rl) != 0) {
-        std::fprintf(stderr, "[memory_cap] setrlimit(RLIMIT_AS) failed; running UNCAPPED\n");
+    if (::setrlimit(RLIMIT_DATA, &rl) != 0) {
+        std::fprintf(stderr, "[memory_cap] setrlimit(RLIMIT_DATA) failed; running UNCAPPED\n");
         return false;
     }
-    std::fprintf(stderr, "[memory_cap] address space capped at %zu MiB\n", limit >> 20);
+    std::fprintf(stderr, "[memory_cap] data segment capped at %zu MiB\n", limit >> 20);
     return true;
 #endif
 }

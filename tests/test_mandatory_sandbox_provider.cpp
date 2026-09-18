@@ -35,6 +35,8 @@
 
 #include "agentengine/rt/agent_session.hpp"
 
+#include "support/image_provenance_shape.hpp"
+
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -47,10 +49,13 @@ using namespace agentengine;
 namespace {
 
 int g_failures = 0;
-void check(bool cond, char const* what) {
+// Takes a `std::string` so a check can name WHICH thing failed rather than only that something
+// did -- ADR-176 §14's gate reports the offending tool in its message, and a `char const*` would
+// have thrown that away at the call site.
+void check(bool cond, std::string const& what) {
     if (!cond) {
         ++g_failures;
-        std::fprintf(stderr, "FAIL: %s\n", what);
+        std::fprintf(stderr, "FAIL: %s\n", what.c_str());
     }
 }
 
@@ -225,6 +230,15 @@ int main() {
         if (contribution.has_value() && !contribution->tools.empty()) {
             check(contribution->tools.size() == 1, "a bound provider contributes exactly one tool");
             check(contribution->tools[0].name == "run_command", "the contributed tool is run_command");
+            // ADR-176 §14/§15. The same gate test_task_branch_tools runs over all five tools, run here
+            // over the one a provider contributes without the task-branch opt-in -- the surface most
+            // hosts actually get. NO exemptions: the only tool here runs a command in a container, so
+            // there is nothing to excuse. Its controls live in `test_image_provenance_shape`.
+            auto const shape = agentengine::test_support::image_provenance_shape(contribution->tools);
+            check(shape.ok,
+                  "ADR-176 §14: run_command's reply carries `image`, `image_digest` and "
+                  "`image_digest_kind` as required strings -- " +
+                      (shape.ok ? std::string("it conforms") : shape.detail));
 
             auto args = json::Value::make_object(
                 {{"command", json::Value::make_string(
@@ -237,6 +251,46 @@ int main() {
                       "the direct reply reports ok:true");
                 check(reply_json.find("from parent, direct call") != std::string::npos,
                       "the direct reply's stdout contains the real command's real output");
+                // Issue #80: the reply names the environment that produced those bytes, not only the
+                // bytes. `image` is the surface's configured reference; `image_digest` is what it
+                // resolved to, cross-checked against the SAME surface's own accessor rather than a
+                // literal -- a hardcoded expectation here would still pass if both were fabricated.
+                auto const img = parent.history_provider().bound_image();
+                check(img.reference == "alpine:latest",
+                      "issue #80: the bound provider reports the surface's configured image reference");
+                check(img.digest.size() == 7 + 64 && img.digest.rfind("sha256:", 0) == 0,
+                      "issue #80: the bound provider reports a well-formed resolved image digest");
+                check(reply_json.find("\"image\":\"alpine:latest\"") != std::string::npos,
+                      "issue #80: the direct reply's JSON carries the image reference");
+                check(reply_json.find("\"image_digest\":\"" + img.digest + "\"") != std::string::npos,
+                      "issue #80: the direct reply's JSON carries the SAME resolved digest the surface "
+                      "reports");
+                // ADR-176 §14 changed what the two checks above PROVE, without changing a character of
+                // them. `run_command`'s body no longer fills these three fields at all -- it returns a
+                // reply with them default-empty, and `with_image_provenance()` stamps them after the
+                // body returns. So a broken stamp now shows up right here as an empty `image_digest`
+                // against a well-formed `img.digest` -- a positive control the mechanism did not have
+                // while the body stamped itself.
+                check(!img.digest.empty(),
+                      "ADR-176 §14 CONTROL: the digest the stamp had to carry is non-empty on this "
+                      "daemon, so the check above can actually tell a stamped reply from an unstamped "
+                      "one");
+                // ADR-176 §9: the digest's KIND rides with it into the reply. Without this a consumer
+                // has to infer comparability from the surface type, which is exactly how two digests of
+                // different kinds get compared and report "different image" for one image.
+                // Not a hardcoded kind: which kind is reachable depends on whether this daemon exposes a
+                // descriptor media type (CI's Linux Docker does not), and pinning the VALUE here would
+                // duplicate test_execution_surface_image_identity's N11 badly. What this test owns is the
+                // PLUMBING -- that whatever the surface reports arrives in the reply unchanged, and that
+                // the provider never invents a kind of its own.
+                check(img.digest_kind.empty() || img.digest_kind == "index" ||
+                          img.digest_kind == "manifest" || img.digest_kind == "config",
+                      "ADR-176 §9: the bound provider reports a kind from the closed set, or empty for "
+                      "not-known -- never a fabricated spelling");
+                check(reply_json.find("\"image_digest_kind\":\"" + img.digest_kind + "\"") !=
+                          std::string::npos,
+                      "ADR-176 §9: the direct reply's JSON carries the SAME kind the surface reports, "
+                      "next to the digest it describes");
             }
         }
     }

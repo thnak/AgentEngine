@@ -41,6 +41,43 @@ message(STATUS
   "007 §9 G2 compile-fail proof: OK (Tainted<T> rejects implicit conversion; explicit "
   "declassification compiles)")
 
+# ---- ADR-176 §14/§15 compile-fail proof -------------------------------------------------------
+# A tool reply that declares `image` must carry `image_digest` and `image_digest_kind` as plain
+# `std::string`s. The spelling this rejects -- `std::optional<std::string>` -- is invisible in the
+# published reply schema (it emits the same `{"type":"string"}` fragment), so the wire-level gate in
+# tests/support/image_provenance_shape.hpp cannot be the only thing standing here; a red-team round
+# compiled exactly that reply and watched it ship an image reference with nothing beside it. Same two-file
+# idiom as the proofs above: the negative must NOT compile, the positive MUST.
+try_compile(AE_IMAGE_PROVENANCE_REJECTS_UNSTAMPABLE
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/image_provenance_unstampable"
+  "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/image_provenance_unstampable_reply.cpp"
+  CXX_STANDARD 23
+  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
+  OUTPUT_VARIABLE AE_IMAGE_PROVENANCE_REJECTS_UNSTAMPABLE_LOG)
+if(AE_IMAGE_PROVENANCE_REJECTS_UNSTAMPABLE)
+  message(FATAL_ERROR
+    "ADR-176 §14 VIOLATED: tests/compile_fail/image_provenance_unstampable_reply.cpp compiled, but a "
+    "reply declaring `image` with optional/wrapped companions must be REJECTED -- it publishes three "
+    "plain strings in its schema while defeating stamp_image_provenance(), so nothing else would catch "
+    "it. Build log:\n${AE_IMAGE_PROVENANCE_REJECTS_UNSTAMPABLE_LOG}")
+endif()
+
+try_compile(AE_IMAGE_PROVENANCE_POSITIVE_CONTROL
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/image_provenance_stampable"
+  "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/image_provenance_stampable_reply.cpp"
+  CXX_STANDARD 23
+  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
+  OUTPUT_VARIABLE AE_IMAGE_PROVENANCE_POSITIVE_CONTROL_LOG)
+if(NOT AE_IMAGE_PROVENANCE_POSITIVE_CONTROL)
+  message(FATAL_ERROR
+    "ADR-176 §14 positive control FAILED: tests/compile_fail/image_provenance_stampable_reply.cpp must "
+    "compile (three plain std::strings is what every real reply uses) but did not. Build log:\n"
+    "${AE_IMAGE_PROVENANCE_POSITIVE_CONTROL_LOG}")
+endif()
+message(STATUS
+  "ADR-176 §14 compile-fail proof: OK (an optional/wrapped provenance field is rejected; three plain "
+  "std::strings compile)")
+
 # ---- 007 §9 G1 / ADR-009 compile-fail proof (M2 Phase A task A4) -------------------------------
 # Miniature "no ambient authority" claim, one level below A4's original full scope (a tool/agent
 # declaration site doesn't exist yet -- that's Phase B/E): CapabilitySet itself has no construction
@@ -2610,8 +2647,11 @@ target_link_libraries(test_composed_sandbox_providers_live PRIVATE
 # ADR-175 grew the rt headers this TU pulls in (resume_home.hpp, and every driver that now posts to a
 # home) enough to tip its single .obj past MSVC's COFF section-count limit (C1128) -- on the ASan leg
 # only, whose instrumentation adds sections of its own; the plain MSVC and clang-cl legs still build it.
-# A mechanical compiler limit, not a code defect: same documented fix, and the same scoped-to-one-target
-# reasoning, as agentengine_cli_chat's own /bigobj in the root CMakeLists.txt.
+# Issue #80 then pushed the plain legs over too: this TU instantiates three whole sandbox-provider
+# stacks, and the two fields `RunCommandReply`/`TaskBranchRunReply` gained cost another AE_JSON_SCHEMA
+# codec instantiation per reply type per stack. A mechanical compiler limit either way, not a code
+# defect: same documented fix, and the same scoped-to-one-target reasoning, as agentengine_cli_chat's
+# own /bigobj in the root CMakeLists.txt.
 if(MSVC)
   target_compile_options(test_composed_sandbox_providers_live PRIVATE /bigobj)
 endif()
@@ -3685,6 +3725,26 @@ add_executable(test_docker_orphan_reap test_docker_orphan_reap.cpp)
 target_link_libraries(test_docker_orphan_reap PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_docker_orphan_reap COMMAND test_docker_orphan_reap)
 set_tests_properties(test_docker_orphan_reap PROPERTIES RESOURCE_LOCK docker_daemon)
+
+# ---- issue #80: an execution surface reports WHICH IMAGE a command ran in. Real Docker daemon, same
+# RESOURCE_LOCK as every other daemon-backed test here (see test_composed_sandbox_providers_live's own
+# comment for the CI failure that lock exists because of). /bigobj for the same mechanical reason
+# test_composed_sandbox_providers_live needs it: this TU instantiates MandatorySandboxProvider too.
+# ADR-176 §14/§15: the image-provenance shape gate's controls. Pure JSON-schema shape checking -- NO
+# Docker daemon, deliberately, so that unlike the two binaries that apply the gate for real this one runs
+# on every CI leg including the Windows ones, which exclude every daemon-backed test.
+add_executable(test_image_provenance_shape test_image_provenance_shape.cpp)
+target_link_libraries(test_image_provenance_shape PRIVATE agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_image_provenance_shape COMMAND test_image_provenance_shape)
+
+add_executable(test_execution_surface_image_identity test_execution_surface_image_identity.cpp)
+target_link_libraries(test_execution_surface_image_identity PRIVATE
+  agentengine::core agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+if(MSVC)
+  target_compile_options(test_execution_surface_image_identity PRIVATE /bigobj)
+endif()
+add_test(NAME test_execution_surface_image_identity COMMAND test_execution_surface_image_identity)
+set_tests_properties(test_execution_surface_image_identity PROPERTIES RESOURCE_LOCK docker_daemon)
 
 # ---- docker-execution-surface-argv-hardening (issue #50) -- run_argv()'s Job-Object timeout kill,
 # no longer through a cmd.exe layer, still leaves no orphaned host docker.exe process. Windows-only:
