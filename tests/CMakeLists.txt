@@ -2607,6 +2607,14 @@ add_executable(test_composed_sandbox_providers_live test_composed_sandbox_provid
 target_link_libraries(test_composed_sandbox_providers_live PRIVATE
   agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store
   agentengine::sandbox_io agentengine_warnings)
+# ADR-175 grew the rt headers this TU pulls in (resume_home.hpp, and every driver that now posts to a
+# home) enough to tip its single .obj past MSVC's COFF section-count limit (C1128) -- on the ASan leg
+# only, whose instrumentation adds sections of its own; the plain MSVC and clang-cl legs still build it.
+# A mechanical compiler limit, not a code defect: same documented fix, and the same scoped-to-one-target
+# reasoning, as agentengine_cli_chat's own /bigobj in the root CMakeLists.txt.
+if(MSVC)
+  target_compile_options(test_composed_sandbox_providers_live PRIVATE /bigobj)
+endif()
 add_test(NAME test_composed_sandbox_providers_live COMMAND test_composed_sandbox_providers_live)
 # RESOURCE_LOCK, not a lower -j: this and every other real-Docker-daemon test below share ONE
 # `docker_daemon` lock name, so CTest never schedules two of them concurrently regardless of -j,
