@@ -67,17 +67,29 @@
 //        cannot mint a kind -- which matters because the CLI helper merges stderr into the text searched.
 //   [N13] the kind travels with the digest across a move, in both directions. A kind that outlives its
 //        digest would describe an image the surface no longer reports.
+//   [N14] THE DISCRIMINATION, and the check that retired "manifest is unproven". A `docker commit` image
+//        is single-platform by construction, so the SAME accessor must answer `index` for the
+//        multi-platform reference and `manifest` for the committed one -- one process, one daemon,
+//        different digests. Before this, every run this suite had ever produced saw `index` and nothing
+//        else, so a backend ignoring the daemon and returning `index` unconditionally would have passed
+//        every check above, N11's control included: agreeing with an independent oracle about ONE image
+//        cannot tell a lookup from a constant that happens to be right.
+//   [N15] the mapper itself, exhaustively over ADR-176 §9's closed list -- both CONFIG spellings
+//        included -- with truncated, extended and space-prefixed near-misses as controls, so the
+//        exactness that stops a daemon warning from minting a kind is proven per spelling.
 //
-// NOT PROVEN HERE, and disclosed rather than papered over: the `config` and `manifest` kinds. `config`
-// needs a Docker daemon whose image ID is a config digest AND that says so through a media type; no
-// reachable daemon does both. `manifest` needs a single-platform reference; every image this suite uses
-// is multi-platform. So the executed coverage is `index` (on a daemon exposing `.Descriptor`) and
-// `unknown` (everywhere else) -- and which of those two a given run exercises depends on the daemon, which
-// is why N11 branches and says which it took. ADR-176 §9 and §12 carry the same gaps.
+// NOT PROVEN HERE, and disclosed rather than papered over: a `config` kind arriving from a real backend.
+// ADR-176 §13 measures WHY, and it is not this suite's choice of images: what both backends report is the
+// media type of an image's TARGET descriptor, which is an index or a manifest, while the one daemon whose
+// image ID really is a config digest (the classic graph driver) exposes no `.Descriptor` to say so and is
+// therefore answered `unknown` rather than inferred. N15 proves the mapping; nothing here proves a
+// producer. Which of `index`/`manifest` versus `unknown` a given run exercises still depends on the
+// daemon, which is why N11 and N14 both branch and say which they took.
 
 #include <cstdio>
 #include <filesystem>
 #include <string>
+#include <vector>
 #include <string_view>
 
 #include "agentengine/sandbox/docker_execution_surface.hpp"
@@ -165,6 +177,72 @@ constexpr char const* kImage = "alpine:latest";
         {"docker", "image", "inspect", "--format", "{{.Descriptor.mediaType}}", image});
     if (r.exit_code != 0) return {};
     return trailing_line(r.stdout_text);
+}
+
+// [N14] Names the daemon in the log when it cannot answer the kind question. ADR-176 §13 claims a
+// SHAPE of daemon behaves this way; without this, the claim rests on which CI runner happened to be
+// green that week, and a reader six months from now cannot tell whether the shape changed.
+[[nodiscard]] std::string daemon_shape() {
+    auto driver = agentengine::docker_cli_detail::run_argv(
+        {"docker", "info", "--format", "{{.Driver}}"});
+    auto version = agentengine::docker_cli_detail::run_argv(
+        {"docker", "version", "--format", "{{.Server.Version}}"});
+    return "storage driver '" + (driver.exit_code == 0 ? trailing_line(driver.stdout_text) : "?") +
+           "', server " + (version.exit_code == 0 ? trailing_line(version.stdout_text) : "?");
+}
+
+// [N14] A locally COMMITTED image -- the one thing a developer machine can produce whose descriptor is a
+// single-platform MANIFEST rather than an index. `docker commit` writes one manifest for one platform;
+// there is nothing for an index to point at.
+//
+// This is what closes ADR-176 §6's "the manifest kind is unproven" residual. Before it, every image the
+// suite touched was multi-platform, so `index` was the only kind any run had ever observed and the enum's
+// central distinction had never once been exercised end to end.
+constexpr char const* kCommittedImage = "ae_esii_manifest_probe:latest";
+
+// The source container's name follows `DockerCliBackend::create()`'s OWN convention --
+// `ae_des_<pid>_<start_key>_<suffix>` -- and that is a §15 correction, not decoration. A fixed name had
+// two defects: `DockerCliBackend::reap_orphans()` matches only `kOrphanNamePrefix`, so a leaked probe
+// container could never be cleaned by the machinery that exists for exactly that; and two processes
+// running this binary at once (a developer's direct run alongside a `ctest` invocation -- `RESOURCE_LOCK`
+// only serializes WITHIN one invocation) would collide, with each `docker rm -f` killing the other's
+// container mid-commit. Embedding pid+start_key makes the name unique per process AND reapable.
+[[nodiscard]] std::string commit_source_container() {
+    return std::string(agentengine::docker_cli_detail::kOrphanNamePrefix) +
+           std::to_string(agentengine::docker_cli_detail::current_pid()) + "_" +
+           std::to_string(agentengine::docker_cli_detail::current_process_start_key()) + "_esii_commit";
+}
+
+// `run_argv` is [[nodiscard]] and these calls genuinely do not care: a leftover from a previous run may
+// or may not exist, and either outcome is fine. Named and discarded explicitly rather than cast to void,
+// so the disregard is legible.
+void run_and_ignore(std::vector<std::string> const& argv) {
+    [[maybe_unused]] auto const ignored = agentengine::docker_cli_detail::run_argv(argv);
+}
+
+[[nodiscard]] bool build_committed_image(std::string& why_not) {
+    std::string const container = commit_source_container();
+    run_and_ignore({"docker", "rm", "-f", container});
+    run_and_ignore({"docker", "image", "rm", "-f", kCommittedImage});
+    auto created = agentengine::docker_cli_detail::run_argv(
+        {"docker", "create", "--name", container, kImage, "true"});
+    if (created.exit_code != 0) {
+        why_not = "`docker create` failed: " + trailing_line(created.stdout_text);
+        return false;
+    }
+    auto committed =
+        agentengine::docker_cli_detail::run_argv({"docker", "commit", container, kCommittedImage});
+    run_and_ignore({"docker", "rm", "-f", container});
+    if (committed.exit_code != 0) {
+        why_not = "`docker commit` failed: " + trailing_line(committed.stdout_text);
+        return false;
+    }
+    return true;
+}
+
+void remove_committed_image() {
+    run_and_ignore({"docker", "rm", "-f", commit_source_container()});
+    run_and_ignore({"docker", "image", "rm", "-f", kCommittedImage});
 }
 
 
@@ -255,8 +333,9 @@ int main() {
             check(!surface.image_digest().empty(),
                   "N11: ...and the DIGEST is still resolved on such a daemon -- losing the kind does not "
                   "lose the identity");
-            std::printf("[note] this daemon does not expose {{.Descriptor.mediaType}}; the `index` and "
-                        "`manifest` kinds are NOT exercised on this run\n");
+            std::printf("[note] this daemon does not expose {{.Descriptor.mediaType}} (%s); the "
+                        "`index` and `manifest` kinds are NOT exercised on this run\n",
+                        daemon_shape().c_str());
         } else {
             check(media_type == "application/vnd.oci.image.index.v1+json",
                   "N11 SETUP: " + std::string(kImage) + " is multi-platform on this daemon, so its "
@@ -309,6 +388,159 @@ int main() {
         check(surface.image_digest_kind() == agentengine::ImageDigestKind::unknown,
               "N13: the moved-FROM surface no longer claims a KIND either -- a kind describing a digest "
               "the surface no longer reports is the one combination that must be impossible");
+    }
+
+    // [N14] -- the MANIFEST kind, end to end, against a real daemon.
+    //
+    // ADR-176 §6 carried "the manifest and config kinds are unproven" as a residual: every image in the
+    // suite is multi-platform, so every run had only ever seen `index`.
+    //
+    // What that leaves missing is DISCRIMINATION BETWEEN TWO NON-`unknown` VALUES -- and not, as an
+    // earlier version of this comment claimed, that a constant-`index` backend "would have passed every
+    // check written so far". It would not: N12's malformed-id check and N13's moved-from check both
+    // require `unknown` and would fail it outright. What no check could do was tell a real media-type
+    // lookup from one that is only ever asked questions with a single answer. A locally committed image
+    // is single-platform by construction, so this asks the SAME code the SAME question about a different
+    // image on the SAME daemon and requires a different answer.
+    if (independent_media_type(kImage).empty()) {
+        std::printf("[note] N14 skipped: this daemon exposes no descriptor media type (%s), so no image "
+                    "on it has a knowable kind\n",
+                    daemon_shape().c_str());
+    } else if (std::string why_not; !build_committed_image(why_not)) {
+        // §15: the branch where a permanently-green-because-permanently-skipped run is hardest to
+        // notice, so it says which command failed, what it said, and what daemon said it.
+        std::printf("[note] N14 skipped: could not build a committed image on this daemon (%s) -- %s\n",
+                    daemon_shape().c_str(), why_not.c_str());
+    } else {
+        // §15 correction: this asserted the OCI spelling as a literal. Which manifest spelling a commit
+        // writes is a property of the daemon and its version -- the docker-schema2 spelling demonstrably
+        // occurs on this very machine for pulled images -- so a daemon whose commit emits schema2 would
+        // have turned a CORRECT system red, with a SETUP failure that reads like a broken backend. What
+        // N14 needs is that the descriptor is a manifest of SOME spelling; which one is not the claim.
+        std::string const committed_media_type = independent_media_type(kCommittedImage);
+        bool const is_a_manifest_spelling =
+            committed_media_type == "application/vnd.oci.image.manifest.v1+json" ||
+            committed_media_type == "application/vnd.docker.distribution.manifest.v2+json" ||
+            committed_media_type == "application/vnd.docker.distribution.manifest.v1+json" ||
+            committed_media_type == "application/vnd.docker.distribution.manifest.v1+prettyjws";
+        check(is_a_manifest_spelling,
+              "N14 SETUP: a committed image's descriptor is a single-platform MANIFEST, measured "
+              "independently and matched against every manifest spelling rather than one literal ('" +
+                  committed_media_type + "')");
+
+        std::error_code n14_ec;
+        std::filesystem::path const n14_work =
+            std::filesystem::temp_directory_path(n14_ec) / "ae_image_identity_manifest_probe";
+        std::filesystem::path const n14_work_indexed =
+            std::filesystem::temp_directory_path(n14_ec) / "ae_image_identity_index_probe";
+        for (auto const& dir : {n14_work, n14_work_indexed}) {
+            std::filesystem::remove_all(dir, n14_ec);
+            std::filesystem::create_directories(dir, n14_ec);
+        }
+        {
+            agentengine::DockerExecutionSurface committed(kCommittedImage);
+            auto const started = committed.reset(n14_work);
+            check(started.has_value(), "N14: a surface over the committed image starts");
+            if (started.has_value()) {
+                check(committed.image_digest_kind() == agentengine::ImageDigestKind::manifest,
+                      "N14: its kind is `manifest` -- the kind no run of this suite had ever produced "
+                      "before, so `index` was never a constant the backend could get away with");
+                check(agentengine::image_digest_kind_name(committed.image_digest_kind()) == "manifest",
+                      "N14: the wire spelling of that kind is \"manifest\"");
+                check(well_formed_digest(committed.image_digest()),
+                      "N14: and the digest beside it is well-formed -- a kind without a digest would be "
+                      "a claim about nothing");
+                // THE DISCRIMINATION. Two images, one daemon, one code path, two different answers.
+                agentengine::DockerExecutionSurface indexed(kImage);
+                // A SIBLING directory, not `n14_work / "indexed"`: the committed surface's worktree is a
+                // live bind mount, and nesting a second container's worktree inside it would have two
+                // containers sharing overlapping host state for no reason.
+                auto const indexed_started = indexed.reset(n14_work_indexed);
+                check(indexed_started.has_value(), "N14: a surface over the multi-platform image starts");
+                if (indexed_started.has_value()) {
+                    check(indexed.image_digest_kind() == agentengine::ImageDigestKind::index &&
+                              committed.image_digest_kind() == agentengine::ImageDigestKind::manifest,
+                          "N14: the same accessor reports `index` for the multi-platform image and "
+                          "`manifest` for the committed one, in the same process against the same "
+                          "daemon -- the distinction the enum exists for, measured rather than asserted");
+                    check(indexed.image_digest() != committed.image_digest(),
+                          "N14: and they are different digests, so the two kinds are not two names for "
+                          "one object");
+                }
+            }
+        }
+        std::filesystem::remove_all(n14_work, n14_ec);
+        std::filesystem::remove_all(n14_work_indexed, n14_ec);
+        remove_committed_image();
+    }
+
+    // [N15] -- the mapper itself, exhaustively, over the CLOSED list it is documented to accept.
+    //
+    // This is the other half of ADR-176 §6's residual, and it is deliberately not an end-to-end check.
+    // The `config` kind cannot be produced by either backend in tree: a descriptor-exposing Docker daemon
+    // reports index or manifest (N11, N14), containerd's TYPE column reports the same two
+    // (test_containerd_execution_surface), and a daemon whose image ID really IS a config digest -- the
+    // classic graph driver -- exposes no `.Descriptor` at all to say so, which is exactly why N11 has an
+    // empty-media-type branch. ADR-176 §13 records that measurement and why the enum keeps the value
+    // anyway. What is provable here is the mapping itself, and every spelling of it.
+    {
+        // §15 correction: this block used to carry its OWN hand-copy of the eight media types. The copies
+        // were identical -- a red-team pass diffed them entry by entry -- but duplication could only ever
+        // catch a REMOVAL or a RE-MAPPING. Add a ninth entry to the mapper and this test would have
+        // stayed green while "proves the mapping exhaustively" quietly stopped being true, and an
+        // addition is exactly how a wrong kind would enter. The table now lives in execution_surface.hpp
+        // and is iterated here, so "exhaustive" is true by construction rather than by diligence.
+        bool all_mapped = true;
+        for (auto const& known : agentengine::kImageDigestKindMediaTypes) {
+            if (agentengine::image_digest_kind_from_media_type(known.media_type) != known.kind) {
+                all_mapped = false;
+                std::printf("[detail] N15: '%.*s' did not map to its documented kind\n",
+                            static_cast<int>(known.media_type.size()), known.media_type.data());
+            }
+        }
+        check(all_mapped,
+              "N15: every media type on ADR-176 §9's closed list maps to the kind it documents -- the "
+              "list ITERATED from the mapper's own table, including both CONFIG spellings, which no "
+              "in-tree backend has been observed to emit");
+        check(std::size(agentengine::kImageDigestKindMediaTypes) == 8,
+              "N15: the closed list is the eight entries ADR-176 §9 documents -- a ninth is a deliberate "
+              "edit that should update the ADR, not something that slips past a green suite");
+        check(agentengine::image_digest_kind_from_media_type(
+                  "application/vnd.oci.image.config.v1+json") == agentengine::ImageDigestKind::config &&
+                  agentengine::image_digest_kind_name(agentengine::ImageDigestKind::config) == "config",
+              "N15: the config kind round-trips to the wire spelling \"config\", so the value a future "
+              "backend produces is already the value a consumer would read");
+
+        // The controls. Without these, a mapper that returned a kind for ANY string would pass above.
+        //
+        // §15 correction: these near-misses used to be three hand-written variations of ONE of the eight
+        // spellings -- the config one, which no backend can even produce -- so "the exactness is proven
+        // per spelling" was false; it was proven once, for the least important entry. They are now
+        // DERIVED from each entry in turn, so the index/manifest spellings whose confusion the enum
+        // exists to prevent get the same treatment as every other.
+        bool all_rejected = true;
+        auto reject = [&](std::string const& candidate, char const* how) {
+            if (agentengine::image_digest_kind_from_media_type(candidate) !=
+                agentengine::ImageDigestKind::unknown) {
+                all_rejected = false;
+                std::printf("[detail] N15 CONTROL: %s -- '%s' was accepted and should not have been\n",
+                            how, candidate.c_str());
+            }
+        };
+        for (auto const& known : agentengine::kImageDigestKindMediaTypes) {
+            std::string const exact(known.media_type);
+            reject(exact.substr(0, exact.size() - 1), "truncated by one character");
+            reject(exact + "x", "extended by one character");
+            reject(" " + exact, "prefixed with a space");
+            reject("warning: unexpected " + exact, "embedded in a daemon warning line");
+        }
+        reject("", "the empty string");
+        reject("application/vnd.oci.image.layer.v1.tar+gzip", "a layer media type");
+        reject("application/vnd.oci.descriptor.v1+json", "a descriptor media type");
+        check(all_rejected,
+              "N15 CONTROL: for EVERY entry on the list, a truncated, extended, space-prefixed or "
+              "warning-embedded spelling of it is `unknown` -- the match is exact per spelling, so no "
+              "entry can be reached by accident");
     }
 
     // [N9] -- no image identity means two empty strings, not an invented one.

@@ -275,11 +275,14 @@ previous container's image.
   The Docker surface re-attempts the kind whenever the digest changes, so a transient failure is not
   permanent — but while the digest is unchanged the failed kind is *not* retried, which is a deliberate
   trade against spawning a CLI process per command for every image whose kind is genuinely unestablished.
-- **`config` and `manifest` are both UNPROVEN kinds in this tree.** Every image the suite uses is
-  multi-platform, so the executed checks exercise `index` and `unknown` only. `config` additionally needs
-  a daemon whose image ID is a config digest *and* that says so through a media type; no reachable daemon
-  does both. Named in the test header too, so a reader of the checks is not left inferring coverage from
-  which ones happen to exist.
+- ~~**`config` and `manifest` are both UNPROVEN kinds in this tree.**~~ **`manifest` is CLOSED by §13**,
+  which produces one with `docker commit` and requires the same accessor to answer `index` for the
+  multi-platform image and `manifest` for the committed one in the same process against the same daemon.
+  **`config` is not closed and cannot be**, and §13 replaces "unproven" with a measurement: no backend in
+  this tree can emit it, for a reason that is a property of the two backends rather than of the suite's
+  images. The mapping itself is proven exhaustively (`N15`), so the value a future backend produces is
+  already the value a consumer would read. **What is still unobserved is a `config` kind arriving from a
+  real daemon**, and §13 names the one experiment that would produce one and why it was not run here.
 - **THE KIND IS NOT AVAILABLE ON EVERY DAEMON, and that is bigger than "older daemons are unverified"**
   — see §12. On a daemon that does not populate `.Descriptor`, every Docker-sourced record carries a real
   digest with an EMPTY kind, and the §9 rule ("compare only when the kinds match, never when either is
@@ -604,3 +607,287 @@ Safe, and a real reduction in what the feature delivers there.
 `test_containerd_isolation` and `test_composed_containerd_providers_live` pass **3/3** on CI's root leg
 against real containerd 2.2.2 — including the single-call `resolve_image_identity()` that §11 finding 5
 forced, which cannot be executed on the development machine at all.
+
+## 13. The kinds that had never been produced
+
+§6 carried this as "**`config` and `manifest` are both UNPROVEN kinds in this tree**". That wording was
+honest about the hole and wrong about its shape: it blamed the suite's images, as though pulling a
+different image would fix both halves. One half is exactly that. The other is not fixable by choosing a
+better image, and saying so took a measurement rather than a re-read of the code.
+
+### (a) `manifest`, produced — and the discrimination that makes it mean something
+
+Every image the suite touches is multi-platform, so every run ever recorded had seen `index` and nothing
+else. §9's control compared the backend's answer against an independent `docker image inspect` of **the
+same image** — and agreement on one image cannot distinguish a lookup from a constant that happens to be
+right.
+
+*An earlier draft of this paragraph said such a constant "would have passed every check written before
+this section". §15's round showed that is false, and the correction matters more than the sentence did:*
+`N12`'s malformed-id check and `N13`'s moved-from check both require `unknown`, and a constant-`index`
+backend fails them outright. What was genuinely missing was **discrimination between two non-`unknown`
+values** — the one thing that distinguishes a real media-type lookup from a lookup that only ever gets
+asked questions with one answer. That is what `N14` adds, and it is the narrower claim.
+
+`docker commit` produces a single-platform image: one manifest, for one platform, with nothing for an
+index to point at. Measured on the development daemon (Docker 29.7.2, containerd image store):
+
+| image | independently measured `.Descriptor.mediaType` | kind |
+| --- | --- | --- |
+| `alpine:latest` (pulled, multi-platform) | `application/vnd.oci.image.index.v1+json` | `index` |
+| a `docker commit` of a container from it | `application/vnd.oci.image.manifest.v1+json` | `manifest` |
+
+`N14` requires **both**, in one process, against one daemon, through one accessor — and requires the two
+digests to differ, so the two kinds cannot be two names for one object. On a daemon that exposes no
+`.Descriptor`, `N14` does not run and says so — with the daemon's storage driver and server version, and,
+on the other skip path, which command failed and what it said — so a green run on such a host is never
+mistaken for coverage it did not have.
+
+**Where this check actually runs, which §15 caught the first draft quietly assuming.** All three Windows
+CI legs exclude `test_execution_surface_image_identity` outright (no daemon), and CI's Linux runner ships
+a classic-graph-driver Docker that populates no `.Descriptor` — so on the first version of this work,
+`N14` contributed **zero checks on every CI leg**, and the residual was "closed" by a check that ran only
+on the author's own machine. That is not a regression gate. The Linux leg now enables Docker's containerd
+image store before testing (`.github/workflows/ci.yml`), which is Docker 29's own default and what the
+development machine already runs, so `N11`'s `index` branch and `N14` both execute in CI. The step
+restores the previous daemon configuration and restarts if the reconfigured daemon does not come back, so
+a runner whose Docker cannot do this degrades to the old behaviour instead of taking the leg down.
+
+### (b) `config`, measured unreachable — which is a different claim from "unproven"
+
+The residual said `config` "needs a daemon whose image ID is a config digest *and* that says so through
+a media type; no reachable daemon does both." That is right, and the interesting part is *why* it is not
+an accident of this machine:
+
+- **containerd has not been observed to emit it, and the mechanism makes it implausible.** What
+  `ctr images ls` prints in TYPE is the image record's **target descriptor** media type, and the tools
+  that write image records write an index or a manifest there; a config descriptor is something a
+  manifest points *at*. `test_containerd_execution_surface` now asserts `kind != config` as its own check
+  rather than leaving it implicit in an index-or-manifest OR, because it is half of this claim.
+  **Deliberately NOT claimed:** that containerd's metadata store *enforces* this. Nobody here read
+  `containerd`'s image-validation source, and a client calling `images.Create` directly may well be able
+  to write a config descriptor as a target. "Structurally impossible" was the first draft's word and it
+  outran the evidence; this is a property of the tools that write image records, as far as anyone here
+  has actually checked.
+- **A descriptor-exposing Docker daemon has not been observed to emit it either.** The backend does not
+  inspect a *reference*: it reads `{{.Image}}` off the live container — an image **ID** — and inspects
+  that. Under the containerd image store that ID names a descriptor in the content store, and every value
+  measured for it has been an index or a manifest (`N11`, `N14`, and the 22-image survey above).
+- **The one daemon whose image ID really *is* a config digest cannot say so.** Under the classic graph
+  driver, Docker documents the image ID as the config digest — and that is precisely the daemon that
+  populates no `.Descriptor` for `{{.Descriptor.mediaType}}` to read, which is why §12 exists at all. On
+  that host the kind is not *wrong*; it is **unknowable by measurement**, and this design reports
+  `unknown` rather than inferring `config` from the absence of a field. Inferring it would be the same
+  move §3b already had to retract once.
+
+A wider measurement, taken on the development daemon rather than reasoned about: asking every one of the
+22 images in its local store for `{{.Descriptor.mediaType}}` yields **four distinct values and no config**
+— 18 `application/vnd.oci.image.index.v1+json`, 2
+`application/vnd.docker.distribution.manifest.list.v2+json`, 1
+`application/vnd.oci.image.manifest.v1+json`, 1 `application/vnd.docker.distribution.manifest.v2+json`.
+Both index spellings and both modern manifest spellings occur in the wild on one ordinary machine; neither
+config spelling occurs at all. That is a sample, not a proof — but it is the sample the "no backend can
+emit it" claim is built on, and it is written down here so the next reader can re-take it rather than
+trust it.
+
+So `config` is reachable by the mapper and unreachable by both backends. The value **stays in the enum**:
+`image_digest_kind_from_media_type()` is a shared OCI media-type mapper, not a Docker-specific one, and a
+mapper that answered `unknown` for an unambiguous config media type would be lying by omission to the
+next backend — an OCI-layout reader, a registry client — rather than merely being incomplete. `N15`
+proves the mapping exhaustively over the closed list, both config spellings included, with truncated,
+extended and space-prefixed near-misses as controls, so the exactness that keeps a daemon warning on the
+merged stderr stream from minting a kind is proven per spelling rather than once.
+
+### (c) What would close it, and why this session did not run it
+
+Toggling Docker Desktop's containerd image store **off** would produce a classic-graph-driver daemon on
+this machine, which would let the `.Descriptor`-absent path be measured directly rather than inferred
+from a CI failure — and would settle whether Docker 29 exposes the field at all there or merely leaves it
+empty. It is a global setting on the project owner's own daemon that invalidates the local image store,
+and every daemon-backed test in the suite runs against it. **Not flipped.** It is the right experiment and
+it needs the owner's say-so, not a session's.
+
+WSL's containerd socket is root-only and this machine has no passwordless `sudo`, so a second, classic
+daemon could not be stood up beside the existing one either. That is the same wall §11's containerd work
+hit, and it is recorded here so the next session does not re-derive it.
+
+**Residual, narrowed — and stated as an observation, not an impossibility.** A `config` kind has still
+never been observed arriving from a real backend, and §15's round was right that the first draft's
+"cannot" contradicted this very subsection: a configuration recorded as unmeasured cannot also be ruled
+out. If a future Docker populated `.Descriptor` on a classic-graph-driver daemon to describe an ID that
+genuinely *is* a config digest, `config` becomes reachable through the existing code path, and the mapper
+would map it correctly. What changed with this section is that the gap is now a measured property of the
+backends rather than an untested guess, and that the mapping which would carry such a value is proven.
+
+## 14. Making the stamp unforgettable
+
+**Scope note, because a reviewer reading by section heading would get this wrong.** §13 is measurement and
+tests; **§14 changes shipping code.** `mandatory_sandbox_provider.hpp` gains two private helpers, all five
+contributed tool closures are wrapped, and `run_command`'s reply is now populated by the wrapper instead
+of by its own body. `execution_surface.hpp` gains a named concept and turns the media-type list into a
+table the mapper iterates. Nothing about a capability decision changes, and nothing model-derived reaches
+one -- but the blast radius is production headers, not documentation.
+
+
+§6's other residual: "**nothing proves future callers go through `bound_image()`**". The provider does not
+expose its surface, so a *host* cannot bypass it — there is no accessor to reach. The real exposure was
+inside the provider: `run_command` and `run_in_task_branch` each called `bound_image()` by hand and copied
+three strings into their reply, which is a convention, and a convention is exactly what the sixth tool
+added by someone who never read this ADR will not follow.
+
+**The fix is to take the decision away from the tool body.** `with_image_provenance()` wraps every tool
+this provider contributes and fills the reply *after* the body returns — the same ordering issue #80
+established, for the same reason (`SandboxRuntime::run()` may `reset()` the surface, so an identity read
+before the body names the previous container's image). `run_command`'s body no longer mentions image
+provenance at all; it returns a reply with those three fields default-empty. An error result passes
+through untouched: a reply that does not exist must not acquire provenance.
+
+**What that sentence does NOT say, because §15 caught the first draft saying it.** *Wrapping* every tool
+is not *stamping* every reply. Three of the five contributed tools (`start`/`commit`/`discard`) return
+replies with no image fields at all, so for them the wrapper is a compile-time no-op — correctly, since
+none of them runs a command in a container. A fourth, `run_in_task_branch()`, stamps inside its own
+`task_branch_mutex_` guard and is deliberately left alone (below). So **one** tool is actually filled
+here, and **one** has a positive control for it; the wrapper is on all five so that the *sixth* does not
+depend on its author having read this ADR. Removing it from the other four fails no test today, and that
+is disclosed rather than dressed up.
+
+**It fills; it does not overwrite — a correction, not a refinement.** The first version overwrote
+whatever the body had set, and argued for it. §15 measured the cost: `run_in_task_branch()` reads
+`bound_image()` *while holding* `task_branch_mutex_`, and the wrapper necessarily runs after that guard
+is gone. Overwriting therefore replaced a correctly-locked read with a later **unlocked** one — a data
+race against a concurrent `reset()` (`test_task_branch_concurrent_dispatch` drives two real OS threads
+through this provider) and, separately, an **I4 regression**: the reply would have named whatever the
+surface said after the lock dropped rather than what ran the command, which is the exact error issue #80
+exists to prevent, reintroduced one lock-release later. Filling only an unanswered reply keeps the
+in-lock answer and still covers a body that said nothing.
+
+Three consequences worth stating plainly:
+
+- **The existing reply check became a positive control without changing a character.**
+  `test_mandatory_sandbox_provider` already asserted that the reply's JSON carries the same digest the
+  surface reports. With the body no longer stamping, a broken wrapper shows up there as an empty
+  `image_digest` against a well-formed one — so the mechanism is proven by a check that predates it. A
+  companion check pins that the digest is non-empty on this daemon, because against an empty digest that
+  comparison could not tell a stamped reply from an unstamped one.
+- **The `if constexpr` was silently doing a job only a `static_assert` can do — §15's FATAL finding.**
+  The first version guarded on the reply having three *assignable* `std::string` members, and skipped
+  quietly when it did not. But `core/json_schema.hpp` supports `std::optional<std::string>` (which
+  collapses to the same `{"type":"string"}` fragment) and `Described<std::string, "...">` (which splices
+  a description onto it), so a reply spelling its fields either way publishes **three plain strings on
+  the wire** while failing the C++ test — and the `if constexpr` then skipped the reply entirely,
+  including `image` itself. The round demonstrated this by compiling it: the wire carried
+  `{"image":"alpine:latest"}` and nothing else, which is precisely the claim-with-its-falsifiable-half-
+  missing that §2 calls worse than a visible hole. The trigger is now **presence of `image`**, and
+  stampability is a `static_assert` — so that reply no longer ships, it fails to build, at the site that
+  declared it.
+- **The gate reads the wire, and its default is now the other way round.** `tests/support/image_provenance_shape.hpp`
+  walks the provider's contributed `ToolDescriptor`s and requires **every** tool to declare `image`,
+  `image_digest` and `image_digest_kind` as *required strings* — unless its name appears in an explicit
+  exemption list the call site passes. The first version only checked replies that already declared
+  `image`, which inverted the residual: the realistic sixth tool is one that runs a command and carries
+  no provenance at all, and that tool declared no `image`, hit the skip, and passed. The three
+  task-branch verbs that legitimately name no image are now *written down* as exemptions, with the
+  reason, and `unknown_exemptions()` reports any entry that no longer matches a contributed tool so the
+  list cannot rot into blanket permission.
+- **The walk is recursive, and `required` is part of the check.** Also §15: the first version looked only
+  at top-level `properties`, so the obvious next reply shape —
+  `struct BatchRunReply { std::vector<RunCommandReply> runs; };` — declared `image` one level down where
+  neither the gate nor the C++ stamp could see it, and passed. And requiring the three names to appear in
+  the schema's `"required"` array is what catches the `std::optional` spelling from the wire side, since
+  that is the only thing an optional field changes in the published schema.
+
+The controls live in **`tests/test_image_provenance_shape.cpp`**, a separate binary with no daemon
+dependency — because the two binaries that apply the gate for real are excluded from all three Windows CI
+legs, and controls that run on one leg are not much of a control. Nine hand-built descriptors: conforming
+passes; missing companion fails; non-string companion fails; **no image at all fails**, and passes only
+once exempted; a nested `image` fails; an `image` inside an array of objects fails; present-but-not-
+required companions fail; an empty schema passes (publishing nothing is not a claim) while non-empty
+garbage fails; and a stale exemption is reported.
+
+**Residuals.**
+- Four of the five wrappings have no positive control. Only `run_command`'s body was emptied, so only it
+  can demonstrate the fill; deleting `with_image_provenance(` from the other four call sites fails
+  nothing.
+- The reply-JSON *kind* check in `test_mandatory_sandbox_provider` is weak on a daemon that reports no
+  kind: it searches for the surface's own value, which on such a daemon is the empty string, and an
+  unstamped reply satisfies that. The `image` and `image_digest` checks beside it are not weak in this
+  way, and they are what actually pins the stamp.
+- A future reply that adds three `std::string` members named `image*` to, say, `discard` would begin
+  being stamped silently. That is an I4 question decided by an `if constexpr`, and the gate would then
+  *require* those fields rather than flag them.
+
+## 15. Red-team round 2 — on the two residuals §13 and §14 claim to close
+
+Two independent hostile passes, one per residual, told to falsify rather than confirm. **25 findings, one
+FATAL, and the FATAL was in the mechanism that had been written specifically to make the residual go
+away.** Both of the new mechanisms shipped in this branch were wrong in ways their author could not see,
+and the round is recorded at the same length as the fix because the pattern is the point: *a mechanism
+built to remove a class of mistake is exactly the kind of code nobody re-examines.*
+
+### The FATAL: the two halves had a gap between them, not an overlap
+
+`stamp_image_provenance()` guarded on the reply having three assignable `std::string` members and skipped
+silently otherwise; the wire gate required three `"type":"string"` properties. Those are different
+definitions of "string", and `core/json_schema.hpp` can produce values that satisfy one and not the other.
+The reviewer compiled it rather than arguing it:
+
+```
+OptReply  stampable=0  schema=… "image":{"type":"string"},"image_digest":{"type":"string"} …
+OptReply  gate_ok=1
+OptReply  wire: {"image":"alpine:latest"}
+```
+
+A reply spelling its companions `std::optional<std::string>` publishes three plain strings, passes the
+gate, fails the stamp's `requires` — and the `if constexpr` then skips the whole reply, `image` included.
+The wire carries a reference and nothing else. Two mechanisms, each assuming the other covers this.
+
+**Fixed three ways, because one was not enough.** The trigger is now the *presence* of `image`;
+stampability is a `static_assert` on a named `ImageProvenanceReply` concept, so the reply fails to build;
+and the gate additionally requires all three names in the schema's `"required"` array, which is the only
+thing the optional spelling changes on the wire. `tests/compile_fail/image_provenance_unstampable_reply.cpp`
+proves the rejection at configure time, with a positive control beside it proving the plain spelling still
+compiles — the repo's existing two-file idiom, chosen because a fail-only proof cannot tell one compile
+error from another.
+
+### The rest, by what they cost
+
+| # | Finding | Disposition |
+| --- | --- | --- |
+| 1 | FATAL, above | Fixed: concept + `static_assert` + compile-fail proof + `required` check |
+| 2 | The gate walked only top-level `properties`; `std::vector<RunCommandReply>` hides `image` under `items` | Fixed: recursive walk, path reported |
+| 3 | The wrapper moved a read OUT of `task_branch_mutex_` and discarded the locked value — data race + I4 regression | Fixed: it FILLS, never overwrites |
+| 4 | The gate ran inside `if (tools.size() == 5)`, so a sixth tool skipped it entirely | Fixed: moved out of the guard |
+| 5 | "Declares no image" PASSED — the realistic sixth tool, and the residual's actual case | Fixed: default inverted, exemptions named and rot-checked |
+| 6 | `N14` runs on NO CI leg (Windows legs exclude it; CI's Linux daemon has no `.Descriptor`) | Fixed: the Linux leg now enables the containerd image store, fail-safe |
+| 7 | "A constant-`index` backend would have passed every check" — false; `N12`/`N13` kill it | Fixed: §13(a) scoped to the real claim |
+| 8 | `N14 SETUP` hardcoded one of four manifest spellings; docker-schema2 occurs on this very machine | Fixed: matched against every manifest spelling |
+| 9 | "containerd cannot emit `config`, structurally" — nobody read containerd's validation source | Fixed: downgraded to observed + mechanism, with the unverified part named |
+| 10 | §13(b) argued over a *reference* while the code inspects an image **ID** | Fixed |
+| 11 | §13(b)'s "cannot" contradicted §13(c)'s "not measured" 19 lines later | Fixed: stated as an observation |
+| 12 | `N15`'s closed list was a hand-copy — a ninth mapper entry would not have been caught | Fixed: one `constexpr` table, iterated by mapper and test |
+| 13 | `N15`'s near-misses covered one of eight spellings, the one no backend can produce | Fixed: derived per entry, plus a warning-embedded case |
+| 14 | The probe container's fixed name was unreapable by `reap_orphans()` and collided across processes | Fixed: `ae_des_<pid>_<start_key>_…`, the backend's own convention |
+| 15 | The `docker commit` skip branch printed no daemon, no command, no stderr | Fixed |
+| 16 | `stamp_image_provenance()`/`with_image_provenance()` were accidentally PUBLIC API | Fixed: private |
+| 17 | The gate treated an empty reply schema as a violation; four in-tree providers hand-build descriptors | Fixed: empty passes, non-empty garbage still fails |
+| 18 | Gate controls lived in daemon-gated binaries excluded from all three Windows legs | Fixed: `test_image_provenance_shape`, no daemon, runs everywhere |
+| 19 | §14 said "wraps every tool" where only one reply is actually filled | Fixed: §14 now says which, and that four have no control |
+| 20 | §14 said "the ONE place provenance is filled" while `run_in_task_branch` still stamps | Fixed: both named, with the locking reason |
+| 21 | The reply-JSON *kind* check is satisfied by an unstamped reply on a kind-less daemon | Disclosed in §14's residuals; the `image`/`image_digest` checks beside it are not weak this way |
+| 22 | Deleting the wrapper from four of five call sites fails no test | Disclosed in §14's residuals |
+| 23 | The nested probe worktree sat inside a live bind mount | Fixed: sibling directory |
+| 24 | `run_and_ignore` took its argv by value | Fixed |
+| 25 | A stray `ae-kindprobe-a` image from manual exploration was left on the daemon | Removed |
+
+### What both passes checked and could not break
+
+The mapper's exactness (`==` only, no substring, `unknown` fallthrough) and the last-non-empty-line parse
+that makes it safe against `run_argv`'s merged stderr. The wrapper's C++ validity — copyability as a
+`std::function`, `this`-capture lifetime against the existing `captures_session_state` contract, exception
+safety, and that an error result passes through unstamped. That no batch or background path bypasses
+`descriptor.invoke`. That `RunCommandReply`/`TaskBranchRunReply` are constructed nowhere else in the tree.
+That `N14`'s discrimination genuinely defeats a constant-`index` backend, and that its rebuild-from-scratch
+means a leaked image cannot contaminate a later run. And — after trying `docker load`/`save`/`import`/
+`build`/`--platform`/v1-schema/`FROM scratch` and `ctr import`/`convert`/lazy-pull — that **no path either
+reviewer could construct produces a `config` kind**, which is the empirical half of §13(b) surviving a
+genuine attempt to falsify it.

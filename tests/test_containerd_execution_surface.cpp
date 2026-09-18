@@ -172,6 +172,14 @@ int main() {
                       std::string(agentengine::image_digest_kind_name(identity.kind)) + "'");
             check(surface.image_digest_kind() == identity.kind,
                   "ADR-176 §9: the surface reports the SAME kind an independent lookup does");
+            // ADR-176 §13. Stated as its own check rather than left implicit in the two-way OR above,
+            // because it is half the measurement behind §13's claim that NO backend in this tree can
+            // emit the `config` kind: what `ctr images ls` prints in TYPE is the image's TARGET
+            // descriptor, and an image's target is an index or a manifest. A config descriptor is
+            // something a manifest points AT, never something an image record points at.
+            check(identity.kind != agentengine::ImageDigestKind::config,
+                  "ADR-176 §13: a containerd TYPE never maps to `config` -- so a config-kind record "
+                  "cannot originate here, whatever the mapper would do with the media type");
             check(backend.resolve_image_digest_kind("example.invalid/no-such/image:never") ==
                       agentengine::ImageDigestKind::unknown,
                   "ADR-176 §9 CONTROL: a reference containerd does not hold has kind `unknown` -- so the "

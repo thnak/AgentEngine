@@ -400,6 +400,80 @@ public:
         }
     }
 
+private:
+    // ADR-176 §14 -- where a tool reply's image provenance comes from, so that no tool body has to
+    // remember. PRIVATE: these were briefly public by accident of where they were written, which would
+    // have made `provider.stamp_image_provenance(anything)` part of this class's API for no reason.
+    // They sit here, mid-class, rather than in the private section at the bottom, because `on_context()`
+    // below calls `with_image_provenance()` and its return type is deduced.
+    //
+    // `with_image_provenance()` applies the stamp to every tool this provider contributes, after the
+    // body returns. That closes §6's "nothing proves a future caller goes through `bound_image()`"
+    // residual from the only direction that works: not by asking the next author to remember, but by
+    // taking the decision away from them.
+    //
+    // TWO corrections from ADR-176 §15's round, both of which the first version got wrong:
+    //
+    // 1. The trigger is `image` being PRESENT, and stampability is then a hard `static_assert` rather
+    //    than a silent second condition. The first version made both a `requires`, so a reply declaring
+    //    `image` as `std::optional<std::string>` or `Described<std::string, "...">` -- shapes
+    //    `core/json_schema.hpp` really does support, and which both publish `"type":"string"` on the
+    //    wire -- fell out of the `if constexpr` entirely and would have shipped an image reference with
+    //    NOTHING beside it, while the schema gate that exists to catch exactly that saw three string
+    //    fields and passed. A silent filter and a wire-level gate cannot be each other's backstop while
+    //    they disagree about what a string is. Such a reply now fails to COMPILE, at the site that
+    //    declared it.
+    //
+    // 2. It FILLS; it does not overwrite. `run_in_task_branch()` reads `bound_image()` while holding
+    //    `task_branch_mutex_`, and this wrapper necessarily runs after that guard is gone. Overwriting
+    //    -- which the first version did deliberately, and argued for -- replaced a correctly-locked read
+    //    with a later unlocked one: a data race against a concurrent `reset()` (see
+    //    `test_task_branch_concurrent_dispatch`, two real OS threads) and an I4 regression besides, since
+    //    the reply would name whatever the surface said after the lock dropped rather than what ran the
+    //    command. Filling only an unanswered reply keeps the in-lock answer and still covers a body that
+    //    said nothing at all.
+    template <class ReplyT>
+    void stamp_image_provenance(ReplyT& reply) const {
+        if constexpr (requires(ReplyT& r) { r.image; }) {
+            static_assert(agentengine::ImageProvenanceReply<ReplyT>,
+                          "ADR-176 §14: a tool reply that declares `image` must declare `image_digest` "
+                          "and `image_digest_kind` beside it, all three as plain std::string. A "
+                          "reference with no resolved identity next to it is a provenance claim with its "
+                          "falsifiable half missing (ADR-176 §2), and an optional or wrapped spelling "
+                          "publishes a plain string on the wire while silently defeating this stamp.");
+            if (!reply.image.empty() || !reply.image_digest.empty() ||
+                !reply.image_digest_kind.empty()) {
+                return;  // already answered -- and answered under whatever lock the body held
+            }
+            BoundImage img = bound_image();
+            reply.image = std::move(img.reference);
+            reply.image_digest = std::move(img.digest);
+            reply.image_digest_kind = std::move(img.digest_kind);
+        }
+    }
+
+    // Wraps a tool body so the stamp lands AFTER it returns -- the ordering issue #80 established, and
+    // that `run_command`'s own comment gives the reason for: `SandboxRuntime::run()` may `reset()` the
+    // surface, so an identity read before the body would name the PREVIOUS container's image. An error
+    // result passes through untouched: there is no run to attribute, and a reply that does not exist must
+    // not acquire provenance.
+    //
+    // Honest about its reach, because §15's round measured it: three of the five tools this provider
+    // contributes return replies with no image fields at all, so for them this is a compile-time no-op;
+    // the fourth (`run_in_task_branch`) is already stamped inside its own lock and is left alone by the
+    // fill-don't-overwrite rule above. Only `run_command` is actually filled here, and only `run_command`
+    // has a positive control for it. The wrapper is on all five so that the SIXTH does not depend on its
+    // author having read any of this.
+    template <class Fn>
+    [[nodiscard]] auto with_image_provenance(Fn fn) {
+        return [this, fn = std::move(fn)](auto args, agentengine::EffectContext& ctx) {
+            auto reply = fn(std::move(args), ctx);
+            if (reply.has_value()) stamp_image_provenance(*reply);
+            return reply;
+        };
+    }
+
+public:
     // The REAL binding call -- mirrors `AgentSession::initialize()`'s own established "config-time
     // setter, called once before first use" convention exactly. A host that never calls this gets a
     // session with no execution capability, never a crash and never a session that silently aliases
@@ -702,22 +776,31 @@ public:
         agentengine::ContextContribution contribution;
         if (runtime_.has_value()) {
             contribution.tools.push_back(agentengine::make_tool_descriptor_with_invoke<RunCommandTool>(
-                [this](RunCommandArgs args, agentengine::EffectContext& ctx)
-                    -> agentengine::result<RunCommandReply> {
+                with_image_provenance([this](RunCommandArgs args, agentengine::EffectContext& ctx)
+                                          -> agentengine::result<RunCommandReply> {
                     agentengine::IdentityHandle caller =
                         agentengine::IdentityAuthority::bootstrap().adopt(ctx.principal);
                     auto outcome = agentengine::rt::block_on(
                         runtime_->run(*surface_, args.command, caller, *run_quota_, *storage_quota_));
                     if (!outcome.has_value()) return std::unexpected(outcome.error());
-                    // Issue #80: read AFTER the run, so it reports the container the command actually ran
-                    // in -- `SandboxRuntime::run()` may reset() the surface, and a value captured before
-                    // that would name the previous container's image.
-                    BoundImage img = bound_image();
-                    return RunCommandReply{true, outcome->exec.exit_code, outcome->exec.stdout_text,
-                                             outcome->checkpoint.tree, outcome->checkpoint.turn_index,
-                                             std::move(img.reference), std::move(img.digest),
-                                             std::move(img.digest_kind)};
-                }));
+                    // ADR-176 §14: the three image fields are left default-empty HERE and filled by
+                    // `with_image_provenance()` after this body returns -- same value, same ordering as
+                    // the hand-written `bound_image()` call this replaced, but no longer this body's job
+                    // to remember. The fields set below are the ones only this body can know.
+                    //
+                    // Member-by-member rather than the braced aggregate this replaced, and that is
+                    // forced: a braced initializer listing five of eight members is a
+                    // -Wmissing-field-initializers error under this project's -Werror, and the two ways
+                    // to silence it -- spelling out three `{}` or re-listing the image fields -- would
+                    // each put the thing this section removed back into the body.
+                    RunCommandReply reply;
+                    reply.ok = true;
+                    reply.exit_code = outcome->exec.exit_code;
+                    reply.stdout_text = std::move(outcome->exec.stdout_text);
+                    reply.tree_digest = outcome->checkpoint.tree;
+                    reply.turn_index = outcome->checkpoint.turn_index;
+                    return reply;
+                })));
         }
         // Second, deliberately separate gate (`bind_task_branch_tools()`'s own comment) -- these four
         // tools are contributed only once BOTH `runtime_` is bound AND a host has opted in with a
@@ -725,16 +808,16 @@ public:
         // same "never assume owner_" discipline `run_command`'s own closure already established.
         if (runtime_.has_value() && merge_quota_ != nullptr) {
             contribution.tools.push_back(agentengine::make_tool_descriptor_with_invoke<StartTaskBranchTool>(
-                [this](TaskBranchStartArgs, agentengine::EffectContext& ctx)
+                with_image_provenance([this](TaskBranchStartArgs, agentengine::EffectContext& ctx)
                     -> agentengine::result<TaskBranchStartReply> {
                     agentengine::IdentityHandle caller =
                         agentengine::IdentityAuthority::bootstrap().adopt(ctx.principal);
                     auto outcome = agentengine::rt::block_on(start_task_branch(caller));
                     if (!outcome.has_value()) return std::unexpected(outcome.error());
                     return *outcome;
-                }));
+                })));
             contribution.tools.push_back(agentengine::make_tool_descriptor_with_invoke<RunInTaskBranchTool>(
-                [this](TaskBranchRunArgs args, agentengine::EffectContext& ctx)
+                with_image_provenance([this](TaskBranchRunArgs args, agentengine::EffectContext& ctx)
                     -> agentengine::result<TaskBranchRunReply> {
                     agentengine::IdentityHandle caller =
                         agentengine::IdentityAuthority::bootstrap().adopt(ctx.principal);
@@ -742,9 +825,9 @@ public:
                         run_in_task_branch(std::move(args.handle_id), std::move(args.command), caller));
                     if (!outcome.has_value()) return std::unexpected(outcome.error());
                     return *outcome;
-                }));
+                })));
             contribution.tools.push_back(agentengine::make_tool_descriptor_with_invoke<CommitTaskBranchTool>(
-                [this](TaskBranchCommitArgs args, agentengine::EffectContext& ctx)
+                with_image_provenance([this](TaskBranchCommitArgs args, agentengine::EffectContext& ctx)
                     -> agentengine::result<TaskBranchCommitReply> {
                     agentengine::IdentityHandle caller =
                         agentengine::IdentityAuthority::bootstrap().adopt(ctx.principal);
@@ -752,14 +835,14 @@ public:
                         agentengine::rt::block_on(commit_task_branch(std::move(args.handle_id), caller));
                     if (!outcome.has_value()) return std::unexpected(outcome.error());
                     return *outcome;
-                }));
+                })));
             contribution.tools.push_back(agentengine::make_tool_descriptor_with_invoke<DiscardTaskBranchTool>(
-                [this](TaskBranchDiscardArgs args, agentengine::EffectContext&)
+                with_image_provenance([this](TaskBranchDiscardArgs args, agentengine::EffectContext&)
                     -> agentengine::result<TaskBranchDiscardReply> {
                     auto outcome = agentengine::rt::block_on(discard_task_branch(std::move(args.handle_id)));
                     if (!outcome.has_value()) return std::unexpected(outcome.error());
                     return *outcome;
-                }));
+                })));
         }
         co_return contribution;
     }

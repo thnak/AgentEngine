@@ -41,6 +41,43 @@ message(STATUS
   "007 §9 G2 compile-fail proof: OK (Tainted<T> rejects implicit conversion; explicit "
   "declassification compiles)")
 
+# ---- ADR-176 §14/§15 compile-fail proof -------------------------------------------------------
+# A tool reply that declares `image` must carry `image_digest` and `image_digest_kind` as plain
+# `std::string`s. The spelling this rejects -- `std::optional<std::string>` -- is invisible in the
+# published reply schema (it emits the same `{"type":"string"}` fragment), so the wire-level gate in
+# tests/support/image_provenance_shape.hpp cannot be the only thing standing here; a red-team round
+# compiled exactly that reply and watched it ship an image reference with nothing beside it. Same two-file
+# idiom as the proofs above: the negative must NOT compile, the positive MUST.
+try_compile(AE_IMAGE_PROVENANCE_REJECTS_UNSTAMPABLE
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/image_provenance_unstampable"
+  "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/image_provenance_unstampable_reply.cpp"
+  CXX_STANDARD 23
+  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
+  OUTPUT_VARIABLE AE_IMAGE_PROVENANCE_REJECTS_UNSTAMPABLE_LOG)
+if(AE_IMAGE_PROVENANCE_REJECTS_UNSTAMPABLE)
+  message(FATAL_ERROR
+    "ADR-176 §14 VIOLATED: tests/compile_fail/image_provenance_unstampable_reply.cpp compiled, but a "
+    "reply declaring `image` with optional/wrapped companions must be REJECTED -- it publishes three "
+    "plain strings in its schema while defeating stamp_image_provenance(), so nothing else would catch "
+    "it. Build log:\n${AE_IMAGE_PROVENANCE_REJECTS_UNSTAMPABLE_LOG}")
+endif()
+
+try_compile(AE_IMAGE_PROVENANCE_POSITIVE_CONTROL
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/image_provenance_stampable"
+  "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/image_provenance_stampable_reply.cpp"
+  CXX_STANDARD 23
+  CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
+  OUTPUT_VARIABLE AE_IMAGE_PROVENANCE_POSITIVE_CONTROL_LOG)
+if(NOT AE_IMAGE_PROVENANCE_POSITIVE_CONTROL)
+  message(FATAL_ERROR
+    "ADR-176 §14 positive control FAILED: tests/compile_fail/image_provenance_stampable_reply.cpp must "
+    "compile (three plain std::strings is what every real reply uses) but did not. Build log:\n"
+    "${AE_IMAGE_PROVENANCE_POSITIVE_CONTROL_LOG}")
+endif()
+message(STATUS
+  "ADR-176 §14 compile-fail proof: OK (an optional/wrapped provenance field is rejected; three plain "
+  "std::strings compile)")
+
 # ---- 007 §9 G1 / ADR-009 compile-fail proof (M2 Phase A task A4) -------------------------------
 # Miniature "no ambient authority" claim, one level below A4's original full scope (a tool/agent
 # declaration site doesn't exist yet -- that's Phase B/E): CapabilitySet itself has no construction
@@ -3693,6 +3730,13 @@ set_tests_properties(test_docker_orphan_reap PROPERTIES RESOURCE_LOCK docker_dae
 # RESOURCE_LOCK as every other daemon-backed test here (see test_composed_sandbox_providers_live's own
 # comment for the CI failure that lock exists because of). /bigobj for the same mechanical reason
 # test_composed_sandbox_providers_live needs it: this TU instantiates MandatorySandboxProvider too.
+# ADR-176 §14/§15: the image-provenance shape gate's controls. Pure JSON-schema shape checking -- NO
+# Docker daemon, deliberately, so that unlike the two binaries that apply the gate for real this one runs
+# on every CI leg including the Windows ones, which exclude every daemon-backed test.
+add_executable(test_image_provenance_shape test_image_provenance_shape.cpp)
+target_link_libraries(test_image_provenance_shape PRIVATE agentengine::worktree_store agentengine_warnings)
+add_test(NAME test_image_provenance_shape COMMAND test_image_provenance_shape)
+
 add_executable(test_execution_surface_image_identity test_execution_surface_image_identity.cpp)
 target_link_libraries(test_execution_surface_image_identity PRIVATE
   agentengine::core agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)

@@ -177,23 +177,59 @@ enum class ImageDigestKind { unknown, index, manifest, config };
 // for a digest nobody measured. An exact match against known types cannot: an unrecognized string is
 // `unknown`, which is the honest answer and the safe one. This closed list is also why adding a new
 // registry media type is a deliberate edit here rather than an accident somewhere else.
-[[nodiscard]] inline ImageDigestKind image_digest_kind_from_media_type(std::string_view media_type) noexcept {
-    if (media_type == "application/vnd.oci.image.index.v1+json" ||
-        media_type == "application/vnd.docker.distribution.manifest.list.v2+json") {
-        return ImageDigestKind::index;
-    }
-    if (media_type == "application/vnd.oci.image.manifest.v1+json" ||
-        media_type == "application/vnd.docker.distribution.manifest.v2+json" ||
-        media_type == "application/vnd.docker.distribution.manifest.v1+json" ||
-        media_type == "application/vnd.docker.distribution.manifest.v1+prettyjws") {
-        return ImageDigestKind::manifest;
-    }
-    if (media_type == "application/vnd.oci.image.config.v1+json" ||
-        media_type == "application/vnd.docker.container.image.v1+json") {
-        return ImageDigestKind::config;
+//
+// The list is a NAMED TABLE rather than a chain of `||`s, and that is ADR-176 §13's doing: the test that
+// proves this mapping used to carry its own hand-copy of the same eight strings. The two were identical
+// when written and a red-team pass diffed them entry by entry to confirm it -- but the duplication could
+// only ever catch a REMOVAL or a RE-MAPPING. Add a ninth entry here and the test would have stayed green
+// while "proven exhaustively" quietly stopped being true, and an addition is precisely how a wrong kind
+// would enter. One table, iterated by the mapper and read by the test, cannot drift from itself.
+struct ImageDigestKindMapping {
+    std::string_view media_type;
+    ImageDigestKind kind;
+};
+
+inline constexpr ImageDigestKindMapping kImageDigestKindMediaTypes[] = {
+    {"application/vnd.oci.image.index.v1+json", ImageDigestKind::index},
+    {"application/vnd.docker.distribution.manifest.list.v2+json", ImageDigestKind::index},
+    {"application/vnd.oci.image.manifest.v1+json", ImageDigestKind::manifest},
+    {"application/vnd.docker.distribution.manifest.v2+json", ImageDigestKind::manifest},
+    {"application/vnd.docker.distribution.manifest.v1+json", ImageDigestKind::manifest},
+    {"application/vnd.docker.distribution.manifest.v1+prettyjws", ImageDigestKind::manifest},
+    // ADR-176 §13: no backend in this tree has been observed to emit either config spelling -- both
+    // read the media type of an image's TARGET descriptor, which is an index or a manifest. They stay
+    // because this is a shared OCI mapper: answering `unknown` for an unambiguous config media type
+    // would lie to the next backend rather than merely being incomplete.
+    {"application/vnd.oci.image.config.v1+json", ImageDigestKind::config},
+    {"application/vnd.docker.container.image.v1+json", ImageDigestKind::config},
+};
+
+[[nodiscard]] constexpr ImageDigestKind image_digest_kind_from_media_type(
+    std::string_view media_type) noexcept {
+    for (auto const& mapping : kImageDigestKindMediaTypes) {
+        if (media_type == mapping.media_type) return mapping.kind;
     }
     return ImageDigestKind::unknown;
 }
+
+// ADR-176 §14/§15. What a tool reply must look like to CARRY image provenance: three plain, assignable
+// `std::string` members. Named here, rather than written inline at the one place that checks it, for two
+// reasons -- `MandatorySandboxProvider::stamp_image_provenance()` `static_assert`s on it, and
+// `tests/compile_fail/image_provenance_unstampable_reply.cpp` proves a non-conforming reply is REJECTED
+// while its positive control proves a conforming one still builds. A requirement that only exists inside
+// an `if constexpr` cannot be shown to reject anything.
+//
+// Plain `std::string` deliberately, and not merely "assignable from a string". `std::optional<std::string>`
+// and `Described<std::string, "...">` both publish `{"type":"string"}` in the reply schema, so neither is
+// distinguishable on the wire -- but the first is absent from the schema's `required` list when unset and
+// serializes away entirely, and both defeat an `empty()`-based "has this already been answered" test. A
+// provenance field is not a place for a spelling that can vanish.
+template <class R>
+concept ImageProvenanceReply = requires(R& r) {
+    { r.image } -> std::same_as<std::string&>;
+    { r.image_digest } -> std::same_as<std::string&>;
+    { r.image_digest_kind } -> std::same_as<std::string&>;
+};
 
 template <class T>
 concept ImageIdentifiedSurface = ExecutionSurface<T> && requires(T const& t) {

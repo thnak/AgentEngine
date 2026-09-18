@@ -38,6 +38,11 @@
 
 #include "agentengine/rt/agent_session.hpp"
 
+#include <initializer_list>
+#include <string_view>
+
+#include "support/image_provenance_shape.hpp"
+
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -50,10 +55,13 @@ using namespace agentengine;
 namespace {
 
 int g_failures = 0;
-void check(bool cond, char const* what) {
+// Takes a `std::string` so a check can name WHICH thing failed rather than only that something
+// did -- ADR-176 §14's gate reports the offending tool in its message, and a `char const*` would
+// have thrown that away at the call site.
+void check(bool cond, std::string const& what) {
     if (!cond) {
         ++g_failures;
-        std::fprintf(stderr, "FAIL: %s\n", what);
+        std::fprintf(stderr, "FAIL: %s\n", what.c_str());
     }
 }
 
@@ -202,6 +210,11 @@ int main() {
 
     RealCallContext call("task-branch-tools-test", real_owner_principal);
 
+    // ADR-176 §14's gate has its controls in `test_image_provenance_shape` -- a separate, daemon-free
+    // binary, because this one is excluded from all three Windows CI legs and a control nobody runs on
+    // most legs is not much of a control. What happens HERE is the gate applied to the real thing: the
+    // five descriptors this provider actually contributes.
+
     // [1] the opt-in gate.
     Session parent;
     parent.initialize("parent-session", real_owner_principal);
@@ -230,6 +243,36 @@ int main() {
             }
             check(has_start && has_run && has_commit && has_discard,
                   "all four task-branch tool names are present");
+
+        }
+
+        // ADR-176 §14/§15. The gate runs over the whole contributed surface -- this is the only place in
+        // the suite where every tool this provider can contribute exists at once.
+        //
+        // OUTSIDE the `tools.size() == 5` block above, deliberately, and that is a §15 correction: while
+        // it was inside, a sixth tool would have made that condition false, skipped the block, and left
+        // the gate unrun on the very tool it exists to catch -- the opposite of the "covered the moment
+        // it is contributed" property this is for.
+        //
+        // The three exempt tools are a WRITTEN decision, not a default. `start_task_branch` creates a
+        // branch and runs nothing; `commit_task_branch` merges one; `discard_task_branch` throws one
+        // away. None executes a command in a container, so none has an image to name -- unlike
+        // `run_command` and `run_in_task_branch`, which do and must. A fourth tool added later is NOT
+        // covered by this list and fails the gate until someone decides which it is.
+        if (after.has_value()) {
+            static constexpr std::initializer_list<std::string_view> kNoImageToName = {
+                "start_task_branch", "commit_task_branch", "discard_task_branch"};
+            auto const shape = agentengine::test_support::image_provenance_shape(after->tools,
+                                                                                    kNoImageToName);
+            check(shape.ok,
+                  "ADR-176 §14: every contributed tool either carries image provenance in its reply or is "
+                  "named exempt -- " + (shape.ok ? std::string("all five accounted for") : shape.detail));
+            auto const stale = agentengine::test_support::unknown_exemptions(after->tools,
+                                                                                kNoImageToName);
+            check(stale.empty(),
+                  "ADR-176 §15: no exemption names a tool that is not contributed -- a renamed tool must "
+                  "not leave a standing exemption behind" +
+                      (stale.empty() ? std::string() : " (stale: " + stale.front() + ")"));
         }
     }
 
