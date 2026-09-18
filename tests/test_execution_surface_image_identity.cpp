@@ -53,11 +53,14 @@
 //        absence, never fabrication.
 //   [N10] `image_digest_kind()` is `unknown` before the first `reset()`, for the same reason [N3] holds:
 //        a kind without a digest describes nothing.
-//   [N11] after `reset()` the kind is `index` -- and `index`, NOT `manifest`, is the whole point.
-//        ADR-176 §11's red-team round found this enum's first version spelling both the same, which would
-//        have licensed comparing an index digest against a per-platform manifest digest and reporting one
-//        image as two. THE CONTROL: the kind equals what an INDEPENDENT `docker image inspect
-//        {{.Descriptor.mediaType}}` resolves the same image to. A hardcoded kind cannot pass it.
+//   [N11] THE CONTROL: the kind equals what an INDEPENDENT `docker image inspect
+//        {{.Descriptor.mediaType}}` resolves the same image to. A hardcoded kind cannot pass it. The
+//        check then BRANCHES on whether this daemon exposes that field at all: where it does, the kind
+//        must be `index` for a multi-platform reference -- and `index`, NOT `manifest`, is the whole
+//        point, since ADR-176 §11's round found the enum's first version spelling both the same, which
+//        would have licensed comparing an index digest against a per-platform manifest digest and
+//        reporting one image as two. Where it does not (CI's Linux Docker), the kind must be `unknown`
+//        while the DIGEST is still resolved. Both branches assert; neither is a pass-by-default.
 //   [N12] THE OTHER HALF. `unknown` is reachable, so no kind is a constant: an unrecognized media type
 //        and a malformed image id both answer `unknown` rather than a guess. The media-type mapping is an
 //        EXACT match against a closed list, so a daemon line that merely CONTAINS the word "manifest"
@@ -65,12 +68,12 @@
 //   [N13] the kind travels with the digest across a move, in both directions. A kind that outlives its
 //        digest would describe an image the surface no longer reports.
 //
-// NOT PROVEN HERE, and disclosed rather than papered over: the `config` kind, and the `manifest` kind.
-// `config` needs a Docker daemon using the classic graph driver, and none was reachable from the machine
-// this was developed on (Docker Desktop shares one containerd-image-store daemon into WSL2). `manifest`
-// needs a single-platform reference; every image this suite uses is multi-platform, so the checks below
-// exercise `index` and `unknown` only. Both gaps are named in ADR-176 §9 rather than left to be inferred
-// from which checks happen to exist.
+// NOT PROVEN HERE, and disclosed rather than papered over: the `config` and `manifest` kinds. `config`
+// needs a Docker daemon whose image ID is a config digest AND that says so through a media type; no
+// reachable daemon does both. `manifest` needs a single-platform reference; every image this suite uses
+// is multi-platform. So the executed coverage is `index` (on a daemon exposing `.Descriptor`) and
+// `unknown` (everywhere else) -- and which of those two a given run exercises depends on the daemon, which
+// is why N11 branches and says which it took. ADR-176 §9 and §12 carry the same gaps.
 
 #include <cstdio>
 #include <filesystem>
@@ -230,18 +233,40 @@ int main() {
               "the 'not known' path is reachable, so N4/N5 are not a branch that always yields a digest");
 
         // [N11] -- the kind, and the independent measurement that makes the answer mean something.
+        //
+        // BRANCHED ON THE DAEMON'S CAPABILITY, not hardcoded, and that is a correction: the first version
+        // asserted `index` unconditionally and went red on CI, whose Linux Docker does not populate
+        // `.Descriptor` at all. The backend behaved correctly there -- it reported `unknown`, the
+        // documented degradation -- and the CONTROL below passed, agreeing with the independent oracle.
+        // Only the hardcoded expectation was wrong. Both branches assert something real, so this cannot
+        // become a check that passes whatever happens.
         std::string const media_type = independent_media_type(kImage);
-        check(media_type == "application/vnd.oci.image.index.v1+json",
-              "N11 SETUP: " + std::string(kImage) + " is multi-platform on this daemon, so its descriptor "
-              "is an INDEX -- the precondition for the kind expected below ('" + media_type + "')");
-        check(surface.image_digest_kind() == agentengine::ImageDigestKind::index,
-              "N11: after reset(), image_digest_kind() is `index` -- NOT `manifest`: an index digest and a "
-              "per-platform manifest digest name different objects and must not share a kind");
-        check(agentengine::image_digest_kind_name(surface.image_digest_kind()) == "index",
-              "N11: the wire spelling of that kind is \"index\"");
         check(surface.image_digest_kind() == agentengine::image_digest_kind_from_media_type(media_type),
               "N11 CONTROL: the reported kind equals what an INDEPENDENT `docker image inspect "
-              "{{.Descriptor.mediaType}}` resolves the same image to -- measured, not hardcoded");
+              "{{.Descriptor.mediaType}}` resolves the same image to -- measured, not hardcoded "
+              "(media type: '" + media_type + "')");
+        if (media_type.empty()) {
+            // A daemon with no `.Descriptor` field. The kind is not knowable, and the contract is that an
+            // unknowable kind is `unknown` -- while the DIGEST is still resolved, so the degradation is
+            // partial rather than total. Both halves are asserted; neither is assumed.
+            check(surface.image_digest_kind() == agentengine::ImageDigestKind::unknown,
+                  "N11: this daemon exposes no descriptor media type, so the kind is `unknown` -- never "
+                  "guessed from which image store the operator configured");
+            check(!surface.image_digest().empty(),
+                  "N11: ...and the DIGEST is still resolved on such a daemon -- losing the kind does not "
+                  "lose the identity");
+            std::printf("[note] this daemon does not expose {{.Descriptor.mediaType}}; the `index` and "
+                        "`manifest` kinds are NOT exercised on this run\n");
+        } else {
+            check(media_type == "application/vnd.oci.image.index.v1+json",
+                  "N11 SETUP: " + std::string(kImage) + " is multi-platform on this daemon, so its "
+                  "descriptor is an INDEX ('" + media_type + "')");
+            check(surface.image_digest_kind() == agentengine::ImageDigestKind::index,
+                  "N11: after reset(), image_digest_kind() is `index` -- NOT `manifest`: an index digest "
+                  "and a per-platform manifest digest name different objects and must not share a kind");
+            check(agentengine::image_digest_kind_name(surface.image_digest_kind()) == "index",
+                  "N11: the wire spelling of that kind is \"index\"");
+        }
 
         // [N12] -- `unknown` is reachable, so no kind is a constant.
         check(agentengine::image_digest_kind_from_media_type("application/vnd.oci.image.layer.v1.tar") ==
@@ -267,14 +292,16 @@ int main() {
 
         // [N8] -- the digest travels with the container it describes.
         std::string const before_move(surface.image_digest());
+        auto const kind_before_move = surface.image_digest_kind();
         agentengine::DockerExecutionSurface moved(std::move(surface));
         check(moved.image_digest() == before_move, "N8: a move carries the digest to the destination");
         check(moved.image() == kImage, "N8: a move carries the configured reference too");
         // [N13] -- and the kind with it. Unlike the digest, this one CANNOT pass by accident: an enum is
         // copied intact by a move, so without the explicit reset in the move constructor the moved-from
         // surface would still answer `manifest`. This is the check N8 could not be.
-        check(moved.image_digest_kind() == agentengine::ImageDigestKind::index,
-              "N13: a move carries the digest KIND to the destination");
+        check(moved.image_digest_kind() == kind_before_move,
+              "N13: a move carries the digest KIND to the destination -- whatever kind this daemon "
+              "supports, which is the property under test rather than the particular value");
         // NOLINTNEXTLINE(bugprone-use-after-move) -- reading the moved-FROM object is the point of N8.
         check(surface.image_digest().empty(),
               "N8: the moved-FROM surface no longer claims a digest -- its container went with instance_");

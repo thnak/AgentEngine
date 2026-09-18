@@ -61,8 +61,9 @@ Two questions, not one:
 ```cpp
 template <class T>
 concept ImageIdentifiedSurface = ExecutionSurface<T> && requires(T const& t) {
-    { t.image() }        -> std::convertible_to<std::string_view>;
-    { t.image_digest() } -> std::convertible_to<std::string_view>;
+    { t.image() }             -> std::convertible_to<std::string_view>;
+    { t.image_digest() }      -> std::convertible_to<std::string_view>;
+    { t.image_digest_kind() } -> std::same_as<ImageDigestKind>;   // §9
 };
 ```
 
@@ -72,7 +73,7 @@ provenance record — the one failure mode a provenance record cannot survive. C
 `if constexpr` and record *nothing* when the answer does not exist. `MandatorySandboxProvider::
 bound_image()` is that dispatch, done once, in one place, so a host is not left re-deriving it.
 
-**Two fields, and they mean different things.**
+**Three fields, and they mean different things.**
 
 - `image()` — the reference the host **configured**, verbatim. Never empty for a conformer; it is the
   constructor argument.
@@ -80,6 +81,9 @@ bound_image()` is that dispatch, done once, in one place, so a host is not left 
   It is never backfilled from `image()`**, because a tag is precisely the thing a digest exists to
   replace: a record that silently substitutes the one for the other is worse than a record with a hole
   in it, since a hole is visible.
+- `image_digest_kind()` — **what that digest digests** (§9). Added after the fact, and §9 explains why
+  the field is not optional: a bare `sha256:` says nothing about whether comparing it against another
+  record's digest is even meaningful.
 
 **This touches no capability decision, on any path.** Both accessors are `const` reads of a string the
 host set or the daemon reported; `bound_image()` is called *after* the run and its result flows only
@@ -113,13 +117,23 @@ quietly empty provenance field.
 `docker inspect --format {{.Image}} <container_id>`. That is a query about **this container**, not
 about the reference: a container's image binding is fixed at creation and cannot drift, whereas asking
 `docker image inspect alpine:latest` again can answer with a different image if the tag moved or a pull
-happened in between. The value is Docker's image **config** digest — its immutable local identity —
-not a registry repo digest, which a locally built or never-pushed image does not have.
+happened in between.
+
+**What KIND of digest that is, this section originally got wrong** — and this is the third place the same
+false claim had to be corrected, after the code comment and `decisions/README.md`. It said flatly that the
+value is Docker's image **config** digest. It is the image **ID**, and what an image ID digests is decided
+by the daemon: under the containerd image store it is the digest of the descriptor the reference resolves
+to (an index, for a multi-platform reference), which was measured here; Docker documents it as the config
+digest under the classic graph driver, which was not. §9 exists because the honest answer is "ask the
+daemon", and `image_digest_kind()` is that answer. The value is in any case not a registry *repo* digest
+by construction — a locally built or never-pushed image does not have one.
 
 ### (c) containerd — re-resolve the reference, and say plainly that it is weaker
 
 `ContainerdCliBackend::resolve_image_digest(std::string const&)` runs `ctr images ls` and matches the
-**exact** ref against its REF column, taking the DIGEST column — containerd's **manifest** digest, the
+**exact** ref against its REF column, taking the DIGEST column — the digest of the image's target
+descriptor, whose media type the **TYPE column on the same row** states, which is where §9's kind comes
+from. It is the
 value that makes `repo@sha256:…` portable. The exact match is deliberate: `alpine:3.20` is never
 answered with `alpine:3.20.1`'s digest.
 
@@ -263,9 +277,15 @@ previous container's image.
   trade against spawning a CLI process per command for every image whose kind is genuinely unestablished.
 - **`config` and `manifest` are both UNPROVEN kinds in this tree.** Every image the suite uses is
   multi-platform, so the executed checks exercise `index` and `unknown` only. `config` additionally needs
-  a Docker daemon on the classic graph driver, and none is reachable from this machine — Docker Desktop
-  shares one containerd-image-store daemon into WSL2. Both gaps are named in the test header too, so a
-  reader of the checks is not left inferring coverage from which ones happen to exist.
+  a daemon whose image ID is a config digest *and* that says so through a media type; no reachable daemon
+  does both. Named in the test header too, so a reader of the checks is not left inferring coverage from
+  which ones happen to exist.
+- **THE KIND IS NOT AVAILABLE ON EVERY DAEMON, and that is bigger than "older daemons are unverified"**
+  — see §12. On a daemon that does not populate `.Descriptor`, every Docker-sourced record carries a real
+  digest with an EMPTY kind, and the §9 rule ("compare only when the kinds match, never when either is
+  unknown") then declines *every* comparison. The identity is still recorded; only its comparability is
+  lost. That is the correct failure direction, and it is a real reduction in what this feature delivers on
+  such a host, not a corner case.
 - **containerd's answer is structurally weaker** (§3c), and nothing in the accessor names says so; only
   the function comment and this ADR do. A caller that treats the two surfaces' `image_digest()` as
   equally strong is not warned by the type system.
@@ -551,3 +571,36 @@ both backends (I2/I3 intact — nothing model-derived reaches either argv, and n
 the kind); `image_digest_kind_name()` lifetimes; containerd column misalignment; a config media type
 falsely matching the manifest test; and the `unknown`/empty-string encoding being distinguishable from
 "no image at all".
+
+---
+
+## 12. What CI found after the round, and why it is in this ADR
+
+The commit carrying §9–§11 went **red on the Linux CI leg**, and the failure is worth recording because
+of *which* part failed.
+
+`docker image inspect --format {{.Descriptor.mediaType}}` returned **empty** on CI's Linux Docker. The
+backend did the right thing — reported `unknown`, which is §9's documented degradation — and **N11's
+CONTROL passed**, because the backend agreed with the independent oracle that there was no media type to
+be had. What failed was the *hardcoded expectation* next to it: three checks asserting `index`
+unconditionally, written on a machine where `.Descriptor` happens to be populated.
+
+So the design survived its first contact with an environment it had not been written on; the test did
+not. That is the better way round, and it is only visible because the check was built as a relationship
+against an independent oracle rather than as a literal. A test that had only asserted `index` would have
+failed identically and told us nothing about whether the backend was right.
+
+**Fixed by branching on the daemon's capability, with both branches asserting.** Where a media type
+exists: the kind must be `index` for a multi-platform reference. Where it does not: the kind must be
+`unknown` **and the digest must still be resolved** — losing the kind must not lose the identity. The run
+says which branch it took, so "no media type here" is never silent. `N13` now pins that a move carries
+*whatever kind this daemon supports*, which is the property under test; the particular value never was.
+
+**The residual this exposes is recorded in §6 rather than buried in a test fix:** on such a host every
+Docker-sourced record has a real digest and no kind, so §9's comparison rule declines every comparison.
+Safe, and a real reduction in what the feature delivers there.
+
+**Also confirmed by the same run:** the containerd redesign works. `test_containerd_execution_surface`,
+`test_containerd_isolation` and `test_composed_containerd_providers_live` pass **3/3** on CI's root leg
+against real containerd 2.2.2 — including the single-call `resolve_image_identity()` that §11 finding 5
+forced, which cannot be executed on the development machine at all.

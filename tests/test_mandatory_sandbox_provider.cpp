@@ -254,9 +254,15 @@ int main() {
                 // ADR-176 §9: the digest's KIND rides with it into the reply. Without this a consumer
                 // has to infer comparability from the surface type, which is exactly how two digests of
                 // different kinds get compared and report "different image" for one image.
-                check(img.digest_kind == "index",
-                      "ADR-176 §9: the bound provider reports the digest's kind -- `index` for the "
-                      "multi-platform alpine:latest reference this test binds");
+                // Not a hardcoded kind: which kind is reachable depends on whether this daemon exposes a
+                // descriptor media type (CI's Linux Docker does not), and pinning the VALUE here would
+                // duplicate test_execution_surface_image_identity's N11 badly. What this test owns is the
+                // PLUMBING -- that whatever the surface reports arrives in the reply unchanged, and that
+                // the provider never invents a kind of its own.
+                check(img.digest_kind.empty() || img.digest_kind == "index" ||
+                          img.digest_kind == "manifest" || img.digest_kind == "config",
+                      "ADR-176 §9: the bound provider reports a kind from the closed set, or empty for "
+                      "not-known -- never a fabricated spelling");
                 check(reply_json.find("\"image_digest_kind\":\"" + img.digest_kind + "\"") !=
                           std::string::npos,
                       "ADR-176 §9: the direct reply's JSON carries the SAME kind the surface reports, "

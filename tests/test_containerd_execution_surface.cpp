@@ -162,6 +162,10 @@ int main() {
             auto const identity = backend.resolve_image_identity("docker.io/library/alpine:latest");
             check(identity.digest == resolved,
                   "ADR-176 §9: resolve_image_identity() reports the same digest the surface does");
+            // `ctr images ls` always prints a TYPE, so unlike the Docker surface this one does NOT have
+            // a "daemon does not expose it" branch -- a registry-object kind is required here, and an
+            // `unknown` would mean containerd printed a media type this project's closed list does not
+            // know, which is a real finding rather than an environment difference.
             check(identity.kind == agentengine::ImageDigestKind::index ||
                       identity.kind == agentengine::ImageDigestKind::manifest,
                   "ADR-176 §9: that row's TYPE maps to a registry-object kind, not `unknown` -- got '" +
