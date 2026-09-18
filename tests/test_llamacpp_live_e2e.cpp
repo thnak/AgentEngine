@@ -48,7 +48,9 @@
 //
 // Configuration (no endpoint is compiled in as a default that would make this run by accident):
 //   AGENTENGINE_LLAMACPP_PORT     required -- unset means SKIP (exit 0), never a failure
-//   AGENTENGINE_LLAMACPP_HOST     optional -- default 127.0.0.1
+//   AGENTENGINE_LLAMACPP_HOST     optional -- default 127.0.0.1. A PUBLIC host is supported and runs
+//                                 every check but LC-8, whose claim is about the blocked-range table
+//                                 and is therefore a property of a private address -- see LC-8.
 //   AGENTENGINE_LLAMACPP_MODEL    optional -- llama.cpp ignores it; default "local"
 //   AGENTENGINE_LLAMACPP_PREFIX   optional -- prepended to every prompt, default "/no_think "
 //
@@ -427,13 +429,25 @@ int main() {
         }
     }
 
-    // ---- LC-8: the GUEST path is still refused at this very same live server -------------------------
+    // ---- LC-8: the GUEST path, at this very same live server -----------------------------------------
     // ADR-016's gate G1, restated where it matters most: a real, currently-serving endpoint that the
     // provider path just completed four exchanges against, which a sandboxed guest must still not be
     // able to reach. The allowlist deliberately NAMES this exact target, so a passing result could
     // not be dismissed as a mis-specified capability.
     // test_provider_egress_address_policy.cpp proves the same property deterministically and offline;
     // this is the version with a real inference server on the other end.
+    //
+    // WHICH HALF OF THAT RUNS DEPENDS ON THE ENDPOINT, and the endpoint is configuration. The refusal
+    // is a property of the ADDRESS, not of the guest path: it is what the blocked-range table says
+    // about loopback/RFC-1918, which is where a llama.cpp server normally sits. Point
+    // AGENTENGINE_LLAMACPP_HOST at a PUBLIC server (this branch was added when one was pointed at a
+    // remote llama.cpp over DDNS) and the guest is NOT refused, correctly -- a guest reaching a public
+    // address it was explicitly granted is ordinary egress, not the SSRF the table exists to stop.
+    // Asserting `net.address_blocked` there would be asserting something false about ADR-016.
+    // So ask the production classifier which case this is, and run the control that is real for it.
+    // The two branches are complements, and together they say more than the original single branch
+    // did: one proves the refusal happens, the other proves it is ADDRESS-SPECIFIC rather than the
+    // guest path refusing everything -- which is what would make the first branch vacuous.
     {
         sandbox::HostEgressProxy proxy;  // real resolver, exactly as production constructs it
         cap::NetOut granted;
@@ -442,10 +456,29 @@ int main() {
         req.method = "GET";
         req.path = "/v1/models";
         auto resp = proxy.fetch(req, granted);
-        check(!resp.has_value() && resp.error().code == "net.address_blocked",
-              "LC-8 (ADR-016 G1): a WASM guest holding a cap::NetOut grant that explicitly allowlists "
-              "this exact live local server is STILL refused on address policy -- ADR-016 relaxed the "
-              "host-initiated provider path and demonstrably nothing else");
+
+        auto const guest_view = sandbox::resolve_and_validate(host, static_cast<std::uint16_t>(port_value));
+        if (!guest_view) {
+            check(!resp.has_value() && resp.error().code == "net.address_blocked",
+                  "LC-8 (ADR-016 G1): a WASM guest holding a cap::NetOut grant that explicitly "
+                  "allowlists this exact live local server is STILL refused on address policy -- "
+                  "ADR-016 relaxed the host-initiated provider path and demonstrably nothing else");
+        } else {
+            std::fprintf(stderr,
+                         "  .. LC-8 (ADR-016 G1) does not apply to this endpoint: %s:%u is a PUBLIC "
+                         "address, which the guest blocked-range table deliberately does not cover. "
+                         "Re-run against a loopback/RFC-1918 llama.cpp server to exercise it; "
+                         "test_provider_egress_address_policy.cpp proves it offline either way.\n",
+                         host.c_str(), static_cast<unsigned>(port_value));
+            check(resp.has_value(),
+                  "LC-8b (the complement, and the reason LC-8 is not vacuous): at a PUBLIC address the "
+                  "same guest grant SUCCEEDS -- so the refusal LC-8 asserts on a private address is a "
+                  "decision about that address, not the guest path failing closed on everything");
+            if (resp) {
+                check(resp->status == 200,
+                      "LC-8b: the guest-path fetch reached the real server and got its real answer");
+            }
+        }
     }
 
     if (g_failures == 0) {

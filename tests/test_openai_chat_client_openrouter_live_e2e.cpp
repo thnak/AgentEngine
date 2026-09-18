@@ -25,6 +25,8 @@
 //     (Reuses the SAME key every other live test in this suite uses.)
 //   AGENTENGINE_OPENROUTER_OPENAI_MODEL     optional -- default below, confirmed live to work.
 //   AGENTENGINE_OPENROUTER_HOST             optional -- default `openrouter.ai`.
+//   AGENTENGINE_OPENROUTER_PATH_PREFIX      optional -- default `/api/v1`. Set to `/v1` for a
+//                                           vendor endpoint such as api.deepseek.com.
 
 #include <cstdio>
 #include <cstdlib>
@@ -70,6 +72,31 @@ constexpr char const* kDefaultModel = "openai/gpt-4o-mini";
 constexpr char const* kDefaultHost = "openrouter.ai";
 constexpr std::uint16_t kHttpsPort = 443;
 constexpr char const* kPathPrefix = "/api/v1";
+
+// The endpoint's path prefix. OpenRouter serves its OpenAI-compatible surface under `/api/v1`; a
+// vendor's own endpoint typically serves `/v1` (DeepSeek: `https://api.deepseek.com/v1`, confirmed
+// live 2026-09-18). Host, model and key were already environment-driven -- this constant was the one
+// remaining thing pinning these tests to a single provider, so it is overridable too, via
+// AGENTENGINE_OPENROUTER_PATH_PREFIX. Read through a function-local static because call sites below
+// sit outside main(), where no local could reach them.
+// The family token the answering model's id must still contain -- derived from the model actually
+// CONFIGURED rather than hardcoded to one vendor, so that pointing this test at a second provider
+// keeps the check meaningful instead of turning it into a guaranteed failure. `openai/gpt-4o-mini`
+// yields `gpt`; `deepseek-flash` yields `deepseek`. Overridable for an id whose family token is not
+// its own first segment.
+[[nodiscard]] std::string model_family_token(std::string const& model) {
+    std::string tail = model.substr(model.rfind('/') + 1);
+    if (!tail.empty() && tail.front() == '~') tail.erase(0, 1);
+    auto const cut = tail.find_first_of("-.:_0123456789");
+    if (cut != std::string::npos && cut > 0) tail.resize(cut);
+    return env_or("AGENTENGINE_OPENROUTER_MODEL_FAMILY", tail);
+}
+
+[[nodiscard]] std::string const& path_prefix() {
+    static std::string const value = env_or("AGENTENGINE_OPENROUTER_PATH_PREFIX", kPathPrefix);
+    return value;
+}
+
 constexpr char const* kSecretName = "openrouter-api-key";
 constexpr char const* kXTitle = "AgentEngine: openai-via-openrouter-live-e2e";
 
@@ -121,6 +148,7 @@ int main() {
 
     std::string const model = env_or("AGENTENGINE_OPENROUTER_OPENAI_MODEL", kDefaultModel);
     std::string const host  = env_or("AGENTENGINE_OPENROUTER_HOST", kDefaultHost);
+    std::string const family = model_family_token(model);
     std::fprintf(stderr, "test_openai_chat_client_openrouter_live_e2e: host=%s model=%s\n", host.c_str(),
                  model.c_str());
 
@@ -140,7 +168,7 @@ int main() {
 
     // Default resolver AND default CA bundle, same as every other file in this live suite.
     openai::OpenAIChatClient<InMemorySecretStore> oai(
-        host, kHttpsPort, model, SecretRef{kSecretName}, caps, store, kPathPrefix, sandbox::resolve_host,
+        host, kHttpsPort, model, SecretRef{kSecretName}, caps, store, path_prefix(), sandbox::resolve_host,
         /*ca=*/{}, /*http_referer=*/{}, /*x_title=*/kXTitle,
         /*end_user_id=*/"test-openai-via-openrouter", /*seed=*/std::nullopt,
         /*transport=*/sandbox::ProviderTransport::tls, /*scan_response_format_leaks=*/false,
@@ -170,12 +198,14 @@ int main() {
             note("reported model", resp->model);
             // Unlike test_openrouter_live_e2e.cpp's routing-ALIAS case (where the reported model is
             // deliberately unpredictable -- that file's own OR-OAI-1 comment), a CONCRETE request here
-            // makes "the reported model is the OpenAI family we asked for" a meaningful structural
-            // check, not a guess. Not asserted byte-equal to `model`: OpenRouter may report the
-            // underlying dated snapshot rather than echoing the alias/slug verbatim.
-            check(resp->model.find("gpt") != std::string::npos ||
-                      resp->model.find("openai") != std::string::npos,
-                  "OC-1: the reported model is recognizably an OpenAI-family model, not a silent "
+            // makes "the model that answered is the family we asked for" a meaningful structural
+            // check, not a guess. Not asserted byte-equal to `model`: a provider may report the
+            // underlying dated snapshot rather than echoing the alias/slug verbatim. The family token
+            // comes from the configured model (above), NOT from a hardcoded vendor name -- a hardcoded
+            // one made this the single assertion that could not survive a second provider, which is
+            // precisely the thing a second provider is here to detect.
+            check(resp->model.find(family) != std::string::npos,
+                  "OC-1: the reported model is recognizably the family that was asked for, not a silent "
                   "reroute to a different vendor");
             check(resp->usage.input_tokens > 0 && resp->usage.output_tokens > 0,
                   "OC-1: real, nonzero token usage came back");
@@ -204,7 +234,7 @@ int main() {
         bad_store.set(kSecretName,
                        "sk-or-v1-0000000000000000000000000000000000000000000000000000000000000000");
         openai::OpenAIChatClient<InMemorySecretStore> bad(
-            host, kHttpsPort, model, SecretRef{kSecretName}, caps, bad_store, kPathPrefix,
+            host, kHttpsPort, model, SecretRef{kSecretName}, caps, bad_store, path_prefix(),
             sandbox::resolve_host);
         auto resp = run_task_sync<result<ChatResponse>>(bad.chat(request_asking("hi"), ctx));
         check(!resp.has_value(),

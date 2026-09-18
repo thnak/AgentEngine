@@ -22,6 +22,8 @@
 //     "openai/text-embedding-3-small" per OpenRouter's own collection listing, docs/research/2026-08-
 //     19-embedding-provider-landscape.md §1).
 //   AGENTENGINE_OPENROUTER_HOST            optional -- default `openrouter.ai`.
+//   AGENTENGINE_OPENROUTER_PATH_PREFIX     optional -- default `/api/v1`. Set to `/v1` for a
+//                                          vendor endpoint such as api.deepseek.com.
 // The key reaches the client the same production route test_openrouter_live_e2e.cpp uses: a real
 // SecretStore, a real cap::Secret grant, resolution at the point of use inside embed_batch() (004 §1,
 // 018 §4). Nothing below ever holds the key text itself.
@@ -70,6 +72,17 @@ constexpr std::uint16_t kHttpsPort = 443;
 // (docs/research/2026-08-19-embedding-provider-landscape.md §1).
 constexpr char const* kPathPrefix = "/api/v1";
 
+// The endpoint's path prefix. OpenRouter serves its OpenAI-compatible surface under `/api/v1`; a
+// vendor's own endpoint typically serves `/v1` (DeepSeek: `https://api.deepseek.com/v1`, confirmed
+// live 2026-09-18). Host, model and key were already environment-driven -- this constant was the one
+// remaining thing pinning these tests to a single provider, so it is overridable too, via
+// AGENTENGINE_OPENROUTER_PATH_PREFIX. Read through a function-local static because call sites below
+// sit outside main(), where no local could reach them.
+[[nodiscard]] std::string const& path_prefix() {
+    static std::string const value = env_or("AGENTENGINE_OPENROUTER_PATH_PREFIX", kPathPrefix);
+    return value;
+}
+
 constexpr char const* kSecretName = "openrouter-api-key";
 
 // Sourced default: text-embedding-3-small's published vector length
@@ -116,7 +129,7 @@ int main() {
     // Default resolver AND default CA bundle -- the real ones, matching test_openrouter_live_e2e.cpp's
     // own choice not to inject a fake resolver or a self-signed leaf for this test.
     openai::OpenAIEmbedder embedder(host, kHttpsPort, model, SecretRef{kSecretName}, caps, store,
-                                     kPathPrefix);
+                                     path_prefix());
 
     static_assert(Embedder<decltype(embedder)>, "OpenAIEmbedder must satisfy the Embedder concept");
 
@@ -181,7 +194,7 @@ int main() {
         bad_store.set(kSecretName,
                        "sk-or-v1-0000000000000000000000000000000000000000000000000000000000000000");
         openai::OpenAIEmbedder bad(host, kHttpsPort, model, SecretRef{kSecretName}, caps, bad_store,
-                                    kPathPrefix);
+                                    path_prefix());
         auto resp = run_task_sync<result<std::vector<std::vector<float>>>>(
             bad.embed_batch({"hi"}, ctx));
         check(!resp.has_value(),

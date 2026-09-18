@@ -16,9 +16,15 @@
     1  the API key
     2  the OpenAI-compatible base URL      (e.g. https://openrouter.ai/api/v1)
     3  the Anthropic-compatible base URL   (e.g. https://openrouter.ai/api)
-    4  a local llama.cpp endpoint URL      (e.g. http://localhost:8080/v1/chat/completions)
-  Lines 2-4 are optional; only the host is taken from lines 2/3 (both backends share it) and only
-  the port from line 4. A missing line simply means that backend's tests skip.
+    4  a llama.cpp endpoint URL            (e.g. http://localhost:8080/v1/chat/completions;
+                                           a remote one works too -- see LC-8 in that test)
+  Lines 2-4 are optional; line 2 supplies the host AND the path prefix, and only the port is taken
+  from line 4. A missing line simply means that backend's tests skip.
+
+  The endpoint need not be OpenRouter. Any OpenAI-compatible provider works -- proven live against
+  DeepSeek (2026-09-18) with line 2 = https://api.deepseek.com/v1 and -Model deepseek-flash. Only
+  test_openrouter_live_e2e.cpp and the embedder test need more than that surface (an Anthropic-
+  compatible one, and an embeddings model), so against a chat-only vendor select the rest by name.
 
 .PARAMETER BuildDir
   A build tree configured with -DAGENTENGINE_WITH_HTTPS=ON. Both tests need it: the OpenAI-
@@ -71,11 +77,18 @@ if (Test-Path $KeyFile) {
     $env:AGENTENGINE_OPENROUTER_API_KEY = $lines[0]
     Write-Host "OpenRouter key   : loaded from $KeyFile (length $($lines[0].Length))"
   }
-  # Both OpenRouter surfaces share a host; the tests append the path prefix themselves.
+  # Line 2 carries BOTH halves of the endpoint: the host and the path prefix under which the
+  # OpenAI-compatible surface lives. OpenRouter serves `/api/v1`; a vendor's own endpoint typically
+  # serves `/v1` (https://api.deepseek.com/v1). Taking only the host, as this script used to, silently
+  # pinned every live test to OpenRouter's prefix -- so a key file pointing anywhere else produced a
+  # 404 or an edge-level 400 rather than a run.
   if ($lines.Count -ge 2) {
     try {
-      $env:AGENTENGINE_OPENROUTER_HOST = ([Uri]$lines[1]).Host
-      Write-Host "OpenRouter host  : $($env:AGENTENGINE_OPENROUTER_HOST)"
+      $u = [Uri]$lines[1]
+      $env:AGENTENGINE_OPENROUTER_HOST = $u.Host
+      $prefix = $u.AbsolutePath.TrimEnd('/')
+      if ($prefix) { $env:AGENTENGINE_OPENROUTER_PATH_PREFIX = $prefix }
+      Write-Host "OpenRouter host  : $($env:AGENTENGINE_OPENROUTER_HOST)$prefix"
     } catch {
       Write-Warning "Line 2 of $KeyFile is not a URL; falling back to the test's default host."
     }
