@@ -639,9 +639,12 @@ index to point at. Measured on the development daemon (Docker 29.7.2, containerd
 
 `N14` requires **both**, in one process, against one daemon, through one accessor — and requires the two
 digests to differ, so the two kinds cannot be two names for one object. On a daemon that exposes no
-`.Descriptor`, `N14` does not run and says so — with the daemon's storage driver and server version, and,
-on the other skip path, which command failed and what it said — so a green run on such a host is never
-mistaken for coverage it did not have.
+`.Descriptor`, `N14` does not run and says so, with the daemon's storage driver and server version — so a
+green run on such a host is never mistaken for coverage it did not have. On a daemon that DOES expose one,
+there is no skip path at all: a `docker commit` that fails there is a FAILED CHECK naming the command and
+the daemon, not a note. Otherwise a green run could not distinguish `N14` proving the manifest kind from
+`N14` quietly doing nothing, which is the same hole that let this check sit unrun on every CI leg while
+the residual was recorded as closed.
 
 **Where this check actually runs, which §15 caught the first draft quietly assuming.** All three Windows
 CI legs exclude `test_execution_surface_image_identity` outright (no daemon), and CI's Linux runner ships

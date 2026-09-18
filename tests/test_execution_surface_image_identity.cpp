@@ -407,10 +407,16 @@ int main() {
                     "on it has a knowable kind\n",
                     daemon_shape().c_str());
     } else if (std::string why_not; !build_committed_image(why_not)) {
-        // §15: the branch where a permanently-green-because-permanently-skipped run is hardest to
-        // notice, so it says which command failed, what it said, and what daemon said it.
-        std::printf("[note] N14 skipped: could not build a committed image on this daemon (%s) -- %s\n",
-                    daemon_shape().c_str(), why_not.c_str());
+        // A FAILURE, not a note -- and that is the difference between a regression gate and a green
+        // light. This branch is only reachable when the daemon DOES expose a descriptor media type,
+        // so the kind is knowable and `docker commit` -- core Docker, not an optional feature -- has
+        // no business failing. Left as a skip, it made a green run unable to distinguish "N14 proved
+        // the manifest kind" from "N14 quietly did nothing", which is the same hole that let the
+        // first version of this check sit unrun on every CI leg while the residual was marked closed.
+        check(false,
+              "N14: this daemon exposes a descriptor media type, so a committed image must be "
+              "buildable and the `manifest` kind must be exercised -- " +
+                  why_not + " (" + daemon_shape() + ")");
     } else {
         // §15 correction: this asserted the OCI spelling as a literal. Which manifest spelling a commit
         // writes is a property of the daemon and its version -- the docker-schema2 spelling demonstrably
