@@ -158,7 +158,7 @@ that is not an image. The Docker path additionally takes the **last** non-empty 
 `run_argv()` merges stdout and stderr by this file's own convention (the same reason and the same shape
 as `create()`'s own id extraction).
 
-### (e) Resolved once per surface — a measured decision, and a CORRECTED measurement
+### (e) Resolved EVERY reset — a measured decision, corrected twice
 
 > **This section's original numbers were wrong.** It claimed `docker inspect` measured ~480 ms against a
 > ~900 ms warm `docker run -d`, i.e. a **>50% regression on every `run_command`**, and §5 rejected an
@@ -184,16 +184,19 @@ So resolving both per reset would cost about **25% of a `reset()`+`exec`** — a
 itself an under-estimate of a real tool call, which also materializes the worktree, drains the container
 through another `docker cp`, rescans the tree and commits to the Ledger. 25% is an **upper bound**.
 
-The cache survives the correction, on a smaller and now-honest argument: 25% of every tool call, to
-re-derive a value that only something *outside* this process can change, is still not worth paying. But
-it is a 25% saving bought with a real staleness window (§6), not a catastrophe averted, and §5's
-rejection of per-reset resolution is re-argued on that basis rather than on the retracted figure. Both
-surfaces instead resolve **once per surface**, guarded by `if (resolved_digest_.empty())` on the first
-`reset()` that produces something to read it from — which also means a failed lookup leaves the field
-empty and is **retried on the next `reset()`**, so one daemon hiccup does not blind the surface for its
-whole life. The cached digest travels with `instance_` through both move operations (explicitly
-enumerated, and explicitly `clear()`ed on the moved-from object — see §7's disclosed uncovered mutant
-for what that clear does and does not buy).
+**The cache survived that correction and did not survive the next look — see §16.** The argument for
+keeping it was that 25% of every tool call, to re-derive a value only something *outside* this process
+can change, is not worth paying. Two things were wrong with that. The 25% covers digest **and** kind; the
+digest alone is **~5%**, and the kind can stay memoized against the digest it describes, so the choice was
+never 25-or-nothing. And "only something outside this process can change it" describes exactly the case
+§6 then had to carry as a residual — a record that is *knowably wrong* in it.
+
+So both surfaces now resolve the digest on **every** `reset()`, from the container just created, and
+memoize the kind against that digest. A failed lookup leaves the field empty — which is also the rule
+everywhere else here: empty means "not known", and the previous container's digest is not an answer about
+this one. The digest still travels with `instance_` through both move operations (explicitly enumerated,
+and explicitly `clear()`ed on the moved-from object — see §7's disclosed uncovered mutant for what that
+clear does and does not buy).
 
 ### (f) The reply plumbing
 
@@ -241,14 +244,16 @@ previous container's image.
 - **Return a `result<std::string>` and let resolution failure surface as an error.** Rejected: it lets
   provenance enrichment fail a command. An unavailable digest is a normal, meaningful outcome, not an
   error — the same posture `DockerCliBackend::exec()` already takes toward a non-zero exit code.
-- **Resolve on every `reset()`.** Rejected on measured grounds (§3e) — but on **corrected** grounds,
-  and the correction shrinks the margin a lot: ~25% added latency on every `run_command` (upper bound),
-  not the >50% this ADR originally asserted. The staleness window it would close is one nothing
-  *in-process* can open. This is the alternative most worth revisiting if the surfaces ever read identity
-  through a daemon API instead of the CLI, because essentially all of the 25% is process startup and
-  round trip rather than work — §10's harness exists so that re-examination is a re-run, not an argument.
-  A reviewer who weighs a per-command-correct provenance record above 25% latency should overturn this;
-  the ADR records the number rather than the preference.
+- ~~**Resolve on every `reset()`.**~~ **ADOPTED — see §16.** This bullet is kept because its history is
+  the most instructive thing in the section. It was first rejected on a figure (">50%") that was never
+  measured; then re-argued at ~25% and still rejected, with the note that "a reviewer who weighs a
+  per-command-correct provenance record above 25% latency should overturn this; the ADR records the number
+  rather than the preference." The project owner overturned it, and re-measuring for §16 showed the
+  rejection had been arguing against the wrong number a *second* time: 25% covers digest **and** kind,
+  while the digest alone — the only half that can go stale — is **~5%**. Two corrections, in the same
+  direction, before the answer came out right. The lesson is not that the number moved; it is that a
+  decision defended by a number nobody re-derived stayed standing through one correction that should have
+  overturned it.
 - **Resolve once in the constructor.** Rejected: there is no container to read a binding off before the
   first `reset()`, so the Docker surface would have had to re-resolve the reference — i.e. adopt the
   containerd surface's weaker answer on the backend that does not need it.
@@ -258,17 +263,16 @@ previous container's image.
 
 ## 6. Residuals, named not hidden
 
-- **The accepted staleness case, and it now costs less to reject than this ADR first claimed.** `image_`
-  never changes for a surface's life and `docker run` does not re-pull an image already present locally,
-  so every container a surface creates runs the same image **unless something outside this process
-  re-pulls the tag mid-session**. In that case the cached digest names the image the *first* container
-  genuinely ran, not the one a later container ran. A real value that is stale, never a fabricated one —
-  and strictly better than the nothing-at-all that preceded it — but it is a wrong answer in a provenance
-  record, and under **I4** a digest attached to a command that ran in container N while naming container
-  1's image is not "stale but real" *for that effect*: it is wrong for that effect. This ADR bought that
-  with ">50%"; it actually costs ~25% (§3e), and a reviewer may reasonably decide that is too cheap a
-  price to charge for a correct record. A host that cannot tolerate it today should pin a digest
-  reference rather than a tag.
+- ~~**The accepted staleness case**~~ — **CLOSED by §16**, and it is worth recording that this residual
+  existed only because of a measurement error. The reasoning was: `image_` never changes for a surface's
+  life and `docker run` does not re-pull an image already present locally, so every container runs the
+  same image *unless something outside this process re-pulls the tag mid-session* — in which case the
+  cached digest named the image the FIRST container ran, attached to a command that ran in a later one.
+  Under **I4** that is not "stale but real" for that effect; it is wrong for that effect. The ADR bought
+  it with ">50%", which was false; the honest price of rejecting it turned out to be **~5% of a
+  `reset()`+`exec`**, an upper bound. `N16` now moves a tag between two resets and requires the reported
+  digest *and* kind to move with it; the old caching, planted back as a mutant, fails exactly those two
+  checks.
 - **The KIND can be `unknown` for a real, correctly-resolved digest** (§9): a media type this project's
   closed list does not recognize, or a daemon with no `.Descriptor` field. `unknown` means "not
   established", never "not a manifest digest", and a consumer must decline to compare rather than guess.
@@ -523,7 +527,9 @@ Three things it is careful about, each because §11 found the first version was 
 - `reset()` is labelled **destroy + create + seed**, because it is several processes and a tar build, not
   one CLI call like the other three rows.
 - The denominator `reset()+exec` is stated as **less than a real tool call**, so the printed share is an
-  upper bound — the direction that argues *against* the cache this bench defends.
+  upper bound — the direction that argues *against* the cache this bench was originally written to
+  defend. It argued against it twice, and §16 eventually agreed: the digest cache is gone, and the
+  bench's verdict now names the ~5% digest-only line as what this design pays.
 
 Its probe container carries ADR-171's isolation flags and the `ae_`-prefixed name
 `DockerCliBackend::reap_orphans()` looks for, so it is not a container this repo's own machinery would be
@@ -549,7 +555,7 @@ false, and to report bluntly when they found nothing. Findings and dispositions:
 | 4 | **The heuristic's stated safety premise was false**: `run_argv()` merges stderr into `stdout_text`, so "the template emits that one field and nothing else" did not hold, and a warning containing `sha256:` could mint a kind. | SERIOUS | **FIXED** by the same change — the match is now exact against a closed list, and a check pins that a line merely *containing* a known media type resolves to `unknown`. |
 | 5 | **containerd's "same row" guarantee did not exist**: two separate `ctr images ls` spawns matched by a mutable tag, and the kind function parsed the row's digest and discarded it. | SERIOUS | **FIXED.** `resolve_image_identity()` returns both from one call; `resolve_image_digest()` and `resolve_image_digest_kind()` are now thin wrappers over it, so there is one parsing path. |
 | 6 | **The kind was never retried**: guarded inside the digest's `if (empty)` block, so one transient failure pinned `unknown` for the surface's life while the comment above promised a retry. | SERIOUS | **FIXED** by keying the cache on the digest (§9). |
-| 7 | **`image_digest()`'s concept-level contract was false** after the first `reset()` — it said "the CURRENT execution environment ... at the moment that environment was created", which the caching makes untrue from command 2 onward. | SERIOUS | **FIXED.** The contract now says FIRST, explains why, and points at the residual. |
+| 7 | **`image_digest()`'s concept-level contract was false** after the first `reset()` — it said "the CURRENT execution environment ... at the moment that environment was created", which the caching makes untrue from command 2 onward. | SERIOUS | **FIXED** in round 1 by making the contract say FIRST, matching the code. **Superseded by §16**, which re-measured the cost that justified the caching and changed the CODE instead -- so the contract says CURRENT again, now with an implementation and `N16` behind it. The sentence has been wrong in both directions; that history is kept in the header rather than tidied away. |
 | 8 | **The bench was untracked and built by nothing**, so the replacement numbers had the same "not reproducible from anything checked in" property as the ones they replaced. | MINOR | **FIXED** (committed). Not CMake-built, which is the existing `bench/` convention (`bench/README.md`: no bench build yet). |
 | 9 | **`reset()` was mislabelled** in the bench as one `docker run -d`; it is destroy + create + seed. And the `reset()+exec` denominator omits `drain_to()`, materialize, rescan and commit, so both headline ratios were overstated — in the direction that flatters the cache. | SERIOUS | **FIXED.** Row relabelled; the share is now stated as an upper bound. |
 | 10 | **"a value that cannot change for this surface"** contradicted the staleness paragraph fourteen lines below it. | SERIOUS | **FIXED** in §3e and the code comment; §6 now states the I4 consequence plainly. |
@@ -894,3 +900,68 @@ means a leaked image cannot contaminate a later run. And — after trying `docke
 `build`/`--platform`/v1-schema/`FROM scratch` and `ctr import`/`convert`/lazy-pull — that **no path either
 reviewer could construct produces a `config` kind**, which is the empirical half of §13(b) surviving a
 genuine attempt to falsify it.
+
+
+## 16. Resolving per reset — the decision the corrected measurement should have produced
+
+§3e retracted the ">50% regression" figure that justified caching the digest, re-argued the cache on the
+corrected number, and left the staleness it buys in §6 as an accepted residual with a note that a reviewer
+might reasonably decide otherwise. The project owner did. This section records the change and, more
+usefully, why the first correction stopped one step short.
+
+**What was actually being traded.** The corrected figure — 25% of a `reset()`+`exec` — covered the digest
+**and** the kind lookup together. But the kind is a pure function of the digest and was already memoized
+against it, so it is only re-resolved when the digest changes. The digest alone, re-measured on the same
+harness:
+
+| | per `reset()`+`exec` |
+|---|---|
+| digest + kind (first reset only) | ~16% |
+| **digest alone (steady state)** | **~5%** |
+
+`bench/docker_image_digest_resolution.cpp` prints both lines and its verdict now names the ~5% as what
+this design pays, so the number cannot drift away from the decision it justifies. The denominator remains
+an under-estimate of a real tool call, so ~5% is an upper bound.
+
+**Why 5% loses to correctness here.** A provenance record's whole job is to be checkable. A record that
+names container 1's image beside a command that ran in container 7 is not a degraded answer; it is a
+confident wrong one, and it is wrong in the direction that matters — it *looks* authoritative. I4 asks
+that every effect be attributable, and attribution to the wrong image is worse than the empty string this
+design otherwise uses for "not known". Five percent of a container reset is not a price worth charging to
+keep that.
+
+**The containerd surface changes too, and had more reason to.** Docker's surface reads the binding off the
+live container and cannot drift; containerd's RE-RESOLVES the reference (§3c), so a cached value there was
+stale from a wider window to begin with. Re-reading per reset narrows it to one `ctr run`. No bench exists
+for `ctr` (root-only, §10), so the cost is still an assumption of similarity — but the assumption now
+argues for the safer behaviour rather than the cheaper one, so being wrong about it costs latency, not
+accuracy.
+
+**Proven, not asserted.** `N16` points a tag this test owns at `alpine:latest`, resets, moves the tag to a
+locally committed image, and resets again — which is what an external `docker pull` does to a local tag,
+without needing a registry. It requires the reported digest to change, and on a descriptor-exposing daemon
+requires the KIND to change with it (`index` → `manifest`), which also proves the kind's memo re-resolves
+rather than describing an image the surface no longer runs. The old `if (resolved_digest_.empty())`
+caching, planted back as a mutant, fails precisely those two checks and nothing else.
+
+**What is still cached, deliberately:** the kind, keyed by the digest it describes. A tag that moves
+changes the digest, which is what re-triggers the lookup — so the kind cannot go stale while keyed this
+way, and the steady state is one CLI spawn per reset rather than two.
+
+## 17. Coverage this branch nearly traded away
+
+Worth its own section because it was self-inflicted and nearly invisible. Enabling the containerd image
+store on the Linux CI leg (§13(a)) made the `index` and `manifest` kinds reachable in CI for the first
+time — and in doing so removed the **only** end-to-end coverage of the opposite path anywhere in this
+project. A classic-graph-driver daemon populates no `.Descriptor`, so the surface reports a real digest
+with an empty kind; that is §12's documented degradation, and CI's default daemon was the one machine that
+exercised it. Both Windows legs exclude the test for having no daemon, and the development machines run
+Docker Desktop's containerd store.
+
+The fix is not to choose: the Linux leg now runs `test_execution_surface_image_identity` **twice** — once
+before the reconfiguration, against the classic daemon, and once after, against the containerd store. Five
+seconds, and one leg covers both daemon shapes.
+
+The general lesson is the one this whole branch kept re-learning in different costumes: a change that
+makes a claim testable in one environment can silently untest it in another, and "CI is green" does not
+distinguish the two.

@@ -432,6 +432,25 @@ jobs:
         if: always()
         run: "$SCCACHE_PATH --show-stats"
 
+      # ADR-176 §13(a)/§16. FIRST, while this runner still has its DEFAULT classic-graph-driver Docker:
+      # run the image-identity test against it.
+      #
+      # This exists because enabling the containerd image store below (which is what makes the `index` and
+      # `manifest` kinds reachable at all) silently DESTROYED the only coverage of the opposite path. A
+      # classic daemon populates no `.Descriptor`, so the surface reports a real digest with an EMPTY kind
+      # -- the documented degradation in ADR-176 §12, and an end-to-end path that no other machine in this
+      # project exercises: both Windows CI legs exclude this test for having no daemon, and the
+      # development machines run Docker Desktop, which uses the containerd store. Reconfiguring the leg
+      # without this step traded one blind spot for another.
+      #
+      # Five seconds, and the leg now covers BOTH daemon shapes: kind-less here, kind-bearing below.
+      - name: Test the kind-less daemon path (ADR-176 §12, classic graph driver)
+        run: |
+          echo "storage driver: $(docker info --format '{{.Driver}}' 2>&1)"
+          echo "descriptor media type of alpine:latest: [$(docker image inspect --format '{{.Descriptor.mediaType}}' alpine:latest 2>&1)]"
+          ctest --test-dir build --output-on-failure --timeout 180 \
+            -R '^test_execution_surface_image_identity$'
+
       # ADR-176 §13(a). Switch this runner's Docker to the CONTAINERD IMAGE STORE before testing.
       #
       # Why: `test_execution_surface_image_identity`'s N11/N14 measure what a digest DIGESTS by asking the

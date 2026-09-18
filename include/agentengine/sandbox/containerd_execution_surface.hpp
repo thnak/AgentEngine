@@ -942,20 +942,25 @@ public:
         if (!inst.has_value()) return std::unexpected(inst.error());
         instance_ = *inst;
         // Issue #80: resolved ONCE per surface, on the first `reset()` -- not per reset, which
-        // `SandboxRuntime::run()` calls once per command, so the `ctr images ls` pair here would be two
-        // process spawns on every tool call. The Docker surface's own `reset()` carries the measured
-        // numbers that settled this, INCLUDING the correction that the original ">50% regression" figure
-        // was wrong; the real argument is a ~24%-of-a-tool-call saving on a value that cannot change for
-        // this surface. No equivalent bench exists for `ctr` (it needs root, so it cannot run on the
-        // machine the Docker one was measured on) -- that is an unmeasured assumption of similarity, not a
-        // second measurement, and ADR-176 §10 records it as such.
-        // Retried while it is still empty, so one failed lookup is not permanent.
-        if (resolved_digest_.empty()) {
+        // ADR-176 §16: resolved EVERY reset, matching the Docker surface, and for the same reason -- the
+        // cost that justified caching was measured wrong by ~7x, and what the cache bought was a
+        // provenance record that is knowably wrong in the tag-moved case. One `ctr images ls` per reset.
+        //
+        // This surface has MORE reason to re-resolve than Docker's, not less. Docker reads the binding off
+        // the live container and cannot drift; this one RE-RESOLVES THE REFERENCE (§3c), because `ctr` has
+        // no container-level image field -- so a cached value here was stale from a wider window to begin
+        // with. Re-reading per reset narrows that window to one `ctr run`, which is as good as this
+        // CLI-shaped backend can be made without the gRPC API it deliberately does not speak.
+        //
+        // No equivalent bench exists for `ctr` (it needs root, so it cannot run on the machine the Docker
+        // one was measured on) -- the cost is an assumption of similarity, not a second measurement, and
+        // ADR-176 §10 records it as such. What changed is that the assumption now argues for the SAFER
+        // behaviour rather than for the cheaper one, so being wrong about it costs latency, not accuracy.
+        {
             // ADR-176 §9: ONE `ctr images ls`, both values, same row. A failed lookup leaves the digest
-            // empty and the kind `unknown` together, and both are retried on the next `reset()` -- so
-            // unlike the Docker surface there is no way for a kind lookup to fail on its own and pin
-            // `unknown` for the surface's life. The pairing needs no separate key here because the two
-            // values are never resolved apart.
+            // empty and the kind `unknown` together -- so unlike the Docker surface there is no way for a
+            // kind lookup to fail on its own and pin `unknown`. The pairing needs no separate key because
+            // the two values are never resolved apart.
             auto identity = ctr_.resolve_image_identity(image_);
             resolved_digest_ = std::move(identity.digest);
             resolved_kind_ = identity.kind;

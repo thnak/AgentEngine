@@ -95,22 +95,26 @@ concept ExecutionSurface = requires(T& t, std::filesystem::path const& host_dir,
 //   T::image()        -- the reference the surface was CONFIGURED with, verbatim. Never empty for a
 //                          conformer; it is the constructor argument.
 //   T::image_digest() -- the content-addressed identity of the image this surface runs, as the backend
-//                          reported it at the moment the surface's FIRST execution environment was
+//                          reported it at the moment the surface's CURRENT execution environment was
 //                          created. EMPTY, never fabricated, when nothing has been created yet or the
 //                          backend could not answer -- an empty digest means "not known", and a caller
 //                          must record its absence rather than substitute `image()`.
 //
-//                          "FIRST", not "current", and the distinction is a real one a conformer may not
-//                          quietly narrow. A surface that re-creates its environment per command (both
-//                          in-tree conformers do; `SandboxRuntime::run()` calls `reset()` once per tool
-//                          call) resolves this ONCE and reuses it, because resolving per command costs a
-//                          CLI round trip on every call to re-derive a value that only something outside
-//                          this process can change. So from the second command onward the value names
-//                          the image the first environment ran, which is the same image unless the tag
-//                          was re-pulled out of process -- stale then, never fabricated. An earlier
-//                          version of this contract said "CURRENT ... at the moment that environment was
-//                          created", which the caching made false; ADR-176 §6 carries the residual and
-//                          §9 the correction.
+//                          "CURRENT", and a conformer may not quietly weaken it to "first". A surface
+//                          that re-creates its environment per command (both in-tree conformers do;
+//                          `SandboxRuntime::run()` calls `reset()` once per tool call) MUST re-resolve
+//                          this per environment, so that a record naming this digest beside a command
+//                          names the environment that command actually ran in. That is I4's requirement
+//                          here, and it costs ~5% of a reset (ADR-176 §16, measured).
+//
+//                          THIS SENTENCE HAS NOW BEEN WRONG IN BOTH DIRECTIONS, which is worth leaving
+//                          on the record. It first said "CURRENT" while the implementation cached the
+//                          digest for the surface's whole life, so the contract was false and ADR-176
+//                          §11's round found it; it was corrected to "FIRST" to match the code. §16 then
+//                          re-measured the cost that justified the caching, found it ~5% rather than the
+//                          ">50%" originally claimed, and changed the CODE instead -- so the contract
+//                          returns to "CURRENT", this time with the implementation and a test (`N16`,
+//                          which moves a tag between two resets) behind it rather than an assumption.
 //   T::image_digest_kind() -- WHAT that digest digests, so a consumer can tell whether two digests are
 //                          even candidates for comparison. See `ImageDigestKind`.
 //

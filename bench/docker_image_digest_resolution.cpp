@@ -9,11 +9,16 @@
 // figure -- cheaper than the `docker exec` a tool call already pays -- so the ">50%" claim was retracted
 // and the caching kept on a smaller, honest argument. That is what a harness is for.
 //
-// THE DECISION THESE NUMBERS SETTLE. `SandboxRuntime::run()` calls `reset()` once per tool call. Resolving
-// the identity inside `reset()` unconditionally would add two CLI round trips to every command; resolving
-// it once per surface adds them to the first command only, at the cost of a real staleness window
-// (ADR-176 §6). The printed share is the whole argument, so if a future change makes resolution cheap --
-// a daemon API instead of the CLI -- this is the measurement that says the caching may be dropped.
+// THE DECISION THESE NUMBERS SETTLE, and they settled it TWICE, in opposite directions.
+// `SandboxRuntime::run()` calls `reset()` once per tool call, so anything spawned there is spawned per
+// command. This bench first falsified the ">50% regression" figure that justified caching the identity
+// once per surface (~16% for digest+kind, not >50%), and the cache was kept on the smaller honest
+// argument. ADR-176 §16 then re-read the same output and noticed the argument was still using the wrong
+// number: 16% covers digest AND kind, while the kind is memoized against the digest and only re-resolved
+// when it changes. The DIGEST alone -- the only half that can go stale -- is ~5%, and ~5% does not buy a
+// provenance record that is knowably wrong when a tag moves. So the digest is now resolved every reset
+// and the kind is still memoized; both lines are printed, and the verdict names which one this design
+// pays, so the decision cannot drift away from the measurement again.
 //
 // There is no bench build yet (bench/README.md, RFC 023). Build and run by hand, Release, no sanitizer:
 //   MSVC:   cl /nologo /std:c++latest /EHsc /O2 /DNOMINMAX /DWIN32_LEAN_AND_MEAN
@@ -60,8 +65,9 @@ using clock_type = std::chrono::steady_clock;
 constexpr char const* kImage = "alpine:latest";
 constexpr int kReps = 5;
 
-// The share of a tool call above which the cache is unambiguously worth its staleness window. ADR-176
-// originally asserted the real figure was above this; it is not, and the verdict keeps that honest.
+// The share ADR-176 originally asserted, retracted, and must never quietly reacquire. The verdict fails
+// above it. It is kept as a tripwire against the retracted claim, NOT as a threshold for the current
+// design -- §16 decided on the ~5% digest-only line, far below this.
 constexpr double kRetractedClaimShare = 50.0;
 
 int g_failures = 0;
@@ -205,7 +211,9 @@ int main() {
     std::printf("\nADR-176 §5/§10, computed from the run above:\n");
     std::printf("  digest alone, per command : %+.0f%% of a docker exec, %+.0f%% of a reset()+exec\n",
                 100.0 * digest_ms / exec_ms, 100.0 * digest_ms / tool_call_ms);
-    std::printf("  digest + kind, per command: %+.0f%% of a reset()+exec  <- what caching avoids\n", share);
+    std::printf("  digest + kind, per command: %+.0f%% of a reset()+exec  <- the FIRST reset only\n", share);
+    std::printf("  digest alone, steady state: %+.0f%% of a reset()+exec  <- what ADR-176 §16 now pays\n",
+                100.0 * digest_ms / tool_call_ms);
     std::printf("  (reset()+exec = %.0f ms is an UNDER-estimate of a tool call, so these are upper"
                 " bounds)\n", tool_call_ms);
 
@@ -221,8 +229,11 @@ int main() {
         return 1;
     }
     std::printf("\nVERDICT: PASS -- identity resolution is %.0f%% of a tool call, below the %.0f%%\n"
-                "         ADR-176 originally asserted and retracted. The cache is a %.0f%% saving\n"
-                "         bought with the staleness window in ADR-176 §6, not a catastrophe averted.\n",
-                share, kRetractedClaimShare, share);
+                "         ADR-176 originally asserted and retracted.\n"
+                "         ADR-176 §16 then stopped caching the DIGEST on the strength of the left-\n"
+                "         hand number: %.0f%% per reset to keep the record describing the container\n"
+                "         the command actually ran in. The KIND is still memoized against the digest,\n"
+                "         so the %.0f%% figure is paid only when the digest itself changes.\n",
+                share, kRetractedClaimShare, 100.0 * digest_ms / tool_call_ms, share);
     return 0;
 }

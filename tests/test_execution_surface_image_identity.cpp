@@ -240,6 +240,20 @@ void run_and_ignore(std::vector<std::string> const& argv) {
     return true;
 }
 
+// [N16] A tag this test OWNS and can move between two resets -- the staleness case ADR-176 carried as an
+// accepted residual until §16 measured that removing it costs ~9% rather than the ">50%" the first draft
+// claimed. Nothing else in the suite uses this name, so moving it cannot disturb another test.
+constexpr char const* kMovingTag = "ae_esii_moving_tag:latest";
+
+[[nodiscard]] bool point_tag_at(char const* target) {
+    auto tagged = agentengine::docker_cli_detail::run_argv({"docker", "tag", target, kMovingTag});
+    return tagged.exit_code == 0;
+}
+
+void remove_moving_tag() {
+    run_and_ignore({"docker", "image", "rm", "-f", kMovingTag});
+}
+
 void remove_committed_image() {
     run_and_ignore({"docker", "rm", "-f", commit_source_container()});
     run_and_ignore({"docker", "image", "rm", "-f", kCommittedImage});
@@ -478,6 +492,76 @@ int main() {
         std::filesystem::remove_all(n14_work, n14_ec);
         std::filesystem::remove_all(n14_work_indexed, n14_ec);
         remove_committed_image();
+    }
+
+    // [N16] -- THE STALENESS CASE, executed. ADR-176 §16.
+    //
+    // Until §16 this design resolved the digest ONCE per surface and documented the consequence as an
+    // accepted residual: if something outside the process moves the tag mid-session, every later container
+    // runs a different image while the record still names the first one. That is not "stale but real" for
+    // the command that ran in the later container -- under I4 it is WRONG for that effect, and the ">50%
+    // regression" figure that bought it was measured false (~9%, ADR-176 §3e/§10).
+    //
+    // This moves a tag between two `reset()` calls and requires the reported identity to move with it.
+    // Before the fix the surface reported the FIRST image forever, so this is also the mutant detector for
+    // any future re-introduction of that cache. The DIGEST half runs on any daemon; the KIND half needs a
+    // daemon that exposes a descriptor media type and is guarded accordingly.
+    {
+        std::string n16_why_not;
+        if (!build_committed_image(n16_why_not)) {
+            std::printf("[note] N16 skipped: %s (%s)\n", n16_why_not.c_str(),
+                        daemon_shape().c_str());
+        } else if (!point_tag_at(kImage)) {
+            std::printf("[note] N16 skipped: `docker tag` failed on this daemon (%s)\n",
+                        daemon_shape().c_str());
+        } else {
+            std::error_code n16_ec;
+            std::filesystem::path const n16_work =
+                std::filesystem::temp_directory_path(n16_ec) / "ae_image_identity_moving_tag_probe";
+            std::filesystem::remove_all(n16_work, n16_ec);
+            std::filesystem::create_directories(n16_work, n16_ec);
+            {
+                agentengine::DockerExecutionSurface surface(kMovingTag);
+                auto const first = surface.reset(n16_work);
+                check(first.has_value(), "N16: a surface over a tag this test owns starts");
+                if (first.has_value()) {
+                    std::string const digest_before(surface.image_digest());
+                    auto const kind_before = surface.image_digest_kind();
+                    check(well_formed_digest(digest_before),
+                          "N16 SETUP: the first container resolves a well-formed digest");
+
+                    // The re-pull, simulated exactly: the SAME reference now names a different image.
+                    // `docker tag` does to the local tag what an external `docker pull` would, without
+                    // needing a registry or a network.
+                    check(point_tag_at(kCommittedImage),
+                          "N16 SETUP: the tag is moved to a different image between the two resets");
+
+                    auto const second = surface.reset(n16_work);
+                    check(second.has_value(), "N16: the surface resets again onto the moved tag");
+                    if (second.has_value()) {
+                        std::string const digest_after(surface.image_digest());
+                        check(well_formed_digest(digest_after),
+                              "N16: the second container resolves a well-formed digest too");
+                        check(digest_after != digest_before,
+                              "N16: the reported digest MOVED with the tag -- the container this command "
+                              "would run in is the one the record names, which is the whole of I4's claim "
+                              "here. A surface that resolved once per lifetime reports the FIRST image "
+                              "forever and fails exactly this check");
+                        if (!independent_media_type(kImage).empty()) {
+                            check(kind_before == agentengine::ImageDigestKind::index &&
+                                      surface.image_digest_kind() ==
+                                          agentengine::ImageDigestKind::manifest,
+                                  "N16: and the KIND moved with it, index -> manifest -- so the kind "
+                                  "cache, keyed by digest, re-resolves rather than describing the image "
+                                  "the surface no longer runs");
+                        }
+                    }
+                }
+            }
+            std::filesystem::remove_all(n16_work, n16_ec);
+            remove_moving_tag();
+            remove_committed_image();
+        }
     }
 
     // [N15] -- the mapper itself, exhaustively, over the CLOSED list it is documented to accept.

@@ -1737,25 +1737,25 @@ public:
         // order of magnitude. The ">50%" figure should not be repeated; it is preserved here only so a
         // reader who saw it elsewhere knows it was retracted.
         //
-        // The cache SURVIVES that correction, on a smaller and now-honest argument: `SandboxRuntime::run()`
-        // calls `reset()` once per command, so resolving here per reset would spawn TWO CLI processes on
-        // every tool call (digest plus kind, ~180 ms, ~+24% of a tool call) to re-derive a value that
-        // cannot change for this surface. Paying that once per surface instead is worth the staleness
-        // window described below -- but it is a ~24% saving, not a catastrophe averted, and if the surface
-        // ever reads these through a daemon API instead of the CLI the trade should be re-examined rather
-        // than assumed still to hold.
+        // The cache did NOT survive that correction for the digest, and ADR-176 §16 records why the
+        // second look changed the answer. Once the real number was ~69 ms rather than ~480 ms, what the
+        // cache bought was ~9% of a `reset()` -- itself an under-estimate of a whole tool call -- and what
+        // it cost was a documented, known-wrong case: an external re-pull that moved the tag mid-session
+        // left the cached digest naming the image the FIRST container ran, attached to a command that ran
+        // in a later one. Under **I4** that is not "stale but real" for that effect; it is wrong for that
+        // effect, and a provenance record is the one artifact that cannot survive being quietly wrong.
+        // Nine percent is not a price worth charging for that.
         //
-        // Resolved ONCE per surface, on the first `reset()` that produces a container to read it from, and
-        // reused for every later container this surface creates.
+        // So: RESOLVED EVERY RESET, from the container this surface just created. `resolve_image_digest()`
+        // reads `{{.Image}}` off that live container, so the answer describes the thing the next command
+        // will actually run in, by construction rather than by assumption.
         //
-        // What that trades, stated rather than glossed: `image_` never changes for the life of a surface,
-        // and `docker run` does not re-pull an image already present locally, so every container this
-        // surface creates runs the same image UNLESS something outside this process re-pulls the tag
-        // mid-session. In that case the cached digest names the image the FIRST container genuinely ran,
-        // not the latest one -- a real value that is stale, never a fabricated one, and a strictly better
-        // answer than the nothing-at-all that preceded this. A failed resolution leaves the field empty
-        // and is retried on the next `reset()`, so one daemon hiccup does not blind the surface forever.
-        if (resolved_digest_.empty()) resolved_digest_ = docker_.resolve_image_digest(*instance_);
+        // A failed resolution now BLANKS the digest rather than leaving the previous one standing. That is
+        // deliberate and is the same rule as everywhere else in this design: empty means "not known", and
+        // the previous container's digest is not an answer about this one. `test_execution_surface_image_
+        // identity`'s N16 moves a tag between two resets and requires the reported digest AND kind to move
+        // with it -- the staleness case, executed.
+        resolved_digest_ = docker_.resolve_image_digest(*instance_);
         // ADR-176 §9, and keyed by the DIGEST rather than guarded by a "have we tried yet" flag. The kind
         // is a pure function of the digest, so caching it against the digest it describes makes drift
         // impossible by construction: if the digest ever changes, the kind is re-resolved for the new one;
@@ -1764,6 +1764,11 @@ public:
         // kind lookup failed pinned `image_digest_kind()` to `unknown` for the surface's ENTIRE LIFE, from
         // one transient CLI failure, with the comment above still promising a retry. Keyed this way the
         // retry is automatic and costs nothing in the common case.
+        //
+        // THIS cache is the one §16 kept. The digest is now re-read every reset (above) and the kind is
+        // memoized against it, so the steady state is one CLI spawn per reset rather than two, and the
+        // staleness the other cache bought is gone. The kind cannot go stale while keyed this way: a tag
+        // that moves changes the digest, which is exactly what re-triggers the lookup.
         if (!resolved_digest_.empty() && kind_resolved_for_ != resolved_digest_) {
             resolved_kind_ = docker_.resolve_image_digest_kind(resolved_digest_);
             kind_resolved_for_ = resolved_digest_;
