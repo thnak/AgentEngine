@@ -91,12 +91,15 @@ AE_JSON_SCHEMA(RunCommandArgs, command)
 // surface has an image but its backend could not resolve one -- an absent digest means "not known" and is
 // never backfilled from `image`, because a tag is exactly the thing a digest exists to replace.
 //
-// Two things a consumer must not infer. These fields are serialized into the tool reply the MODEL reads,
-// so a host building a provenance record takes them from this struct or from `bound_image()`, never from
-// a digest the model restated (I3 -- model output is data, never authority). And `image_digest` is not
-// comparable across surface types, or across differently-configured Docker hosts: see
-// `ImageIdentifiedSurface` (sandbox/execution_surface.hpp) for what each conformer's digest actually
-// digests, and ADR-176 §6 for why carrying the kind is separate follow-on work.
+// `image_digest_kind` says WHAT `image_digest` digests -- "manifest", "config", or empty for not known
+// (ADR-176 §9, `ImageDigestKind` in sandbox/execution_surface.hpp). It is carried next to the digest
+// rather than left for a reader to infer from the surface type, because two digests of DIFFERENT kinds
+// for one image do not match, and a consumer that compares them without checking concludes "different
+// image" and is wrong. Compare two digests only when both kinds are non-empty and equal.
+//
+// I3, and it applies to all three: these fields are serialized into the tool reply the MODEL reads, so a
+// host building a provenance record takes them from this struct or from `bound_image()`, never from a
+// digest the model restated back -- model output is data, never authority.
 struct RunCommandReply {
     bool ok = false;
     int exit_code = -1;
@@ -105,8 +108,10 @@ struct RunCommandReply {
     std::uint64_t turn_index = 0;
     std::string image;
     std::string image_digest;
+    std::string image_digest_kind;
 };
-AE_JSON_SCHEMA(RunCommandReply, ok, exit_code, stdout_text, tree_digest, turn_index, image, image_digest)
+AE_JSON_SCHEMA(RunCommandReply, ok, exit_code, stdout_text, tree_digest, turn_index, image, image_digest,
+               image_digest_kind)
 
 // ADR-119: now declares a real `Capabilities<cap::decl::RunCommand>` ceiling -- see this file's own
 // top comment for the double-gate shape this creates (the identity/quota model is unchanged and
@@ -170,8 +175,9 @@ struct TaskBranchRunReply {
     std::string stdout_text;
     std::string image;
     std::string image_digest;
+    std::string image_digest_kind;
 };
-AE_JSON_SCHEMA(TaskBranchRunReply, exit_code, stdout_text, image, image_digest)
+AE_JSON_SCHEMA(TaskBranchRunReply, exit_code, stdout_text, image, image_digest, image_digest_kind)
 
 struct TaskBranchCommitArgs {
     std::string handle_id;
@@ -378,11 +384,17 @@ public:
     struct BoundImage {
         std::string reference;  // what the surface was configured with; empty if it has no image at all
         std::string digest;     // what that resolved to; empty when unresolved -- never backfilled
+        // ADR-176 §9. What `digest` digests: "manifest", "config", or empty for not known. Always empty
+        // when `digest` is, and carried as the wire spelling rather than the enum so a caller copying
+        // this into a reply or an audit record does not re-derive the mapping at each site.
+        std::string digest_kind;
     };
     [[nodiscard]] BoundImage bound_image() const {
         if constexpr (agentengine::ImageIdentifiedSurface<Surface>) {
             if (!surface_.has_value()) return {};
-            return BoundImage{std::string(surface_->image()), std::string(surface_->image_digest())};
+            return BoundImage{
+                std::string(surface_->image()), std::string(surface_->image_digest()),
+                std::string(agentengine::image_digest_kind_name(surface_->image_digest_kind()))};
         } else {
             return {};
         }
@@ -703,7 +715,8 @@ public:
                     BoundImage img = bound_image();
                     return RunCommandReply{true, outcome->exec.exit_code, outcome->exec.stdout_text,
                                              outcome->checkpoint.tree, outcome->checkpoint.turn_index,
-                                             std::move(img.reference), std::move(img.digest)};
+                                             std::move(img.reference), std::move(img.digest),
+                                             std::move(img.digest_kind)};
                 }));
         }
         // Second, deliberately separate gate (`bind_task_branch_tools()`'s own comment) -- these four
@@ -831,7 +844,8 @@ public:
         if (!outcome.has_value()) co_return std::unexpected(outcome.error());
         BoundImage img = bound_image();  // issue #80 -- after the run, for the reason run_command's own says
         co_return TaskBranchRunReply{outcome->exec.exit_code, outcome->exec.stdout_text,
-                                       std::move(img.reference), std::move(img.digest)};
+                                       std::move(img.reference), std::move(img.digest),
+                                       std::move(img.digest_kind)};
     }
 
     // Mirrors docs/planning/proofs/task_branch_tool/task_branch_sandbox.hpp's own A10 fix

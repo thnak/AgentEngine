@@ -3,10 +3,12 @@
 // A host could already PIN the image (`DockerExecutionSurface("alpine:3.20")`), but nothing reported back
 // what that pin RESOLVED to, so a provenance manifest (node, tool version, sandbox image -- the
 // requester's own use case, from AeroCoWorker's RFC 015 §4c.6, a different project's document; this
-// repo's own 015 has no §4c) could only ever restate the host's own configuration. Restating a TAG is worth nothing: `alpine:latest`
-// names different bytes on two machines, or on one machine a week apart. `ImageIdentifiedSurface`
-// (sandbox/execution_surface.hpp) adds `image()` (the configured reference) and `image_digest()` (what it
-// resolved to, or empty for "not known").
+// repo's own 015 has no §4c) could only ever restate the host's own configuration. Restating a TAG is
+// worth nothing: `alpine:latest` names different bytes on two machines, or on one machine a week apart.
+// `ImageIdentifiedSurface` (sandbox/execution_surface.hpp) adds `image()` (the configured reference),
+// `image_digest()` (what it resolved to, or empty for "not known") and, since ADR-176 §9,
+// `image_digest_kind()` -- WHAT that digest digests, so a consumer can tell whether comparing it against
+// another record's digest is meaningful at all.
 //
 // REQUIRES a running Docker daemon reachable via the `docker` CLI on PATH -- every runtime check below
 // creates a REAL container. Same posture as every other real-daemon test in this suite: no special CMake
@@ -34,9 +36,11 @@
 //        returns EMPTY -- the failure path is real and reachable, not a branch that always yields a
 //        digest. Without this, [N4]/[N5] could not tell "resolved" from "cannot fail".
 //   [N7] a SECOND `reset()` -- which destroys the first container and creates another -- leaves the same
-//        well-formed digest in place. That is the CACHING contract (`reset()`'s own comment: resolving per
-//        reset measured a >50% regression on every run_command), and the check that the destroy-then-
-//        create sequence does not blank it.
+//        well-formed digest in place. That is the CACHING contract (`reset()`'s own comment, and
+//        bench/docker_image_digest_resolution.cpp for the numbers) -- note that comment records a
+//        CORRECTION: the ">50% regression on every run_command" figure this check was originally written
+//        under was measured WRONG, and the surviving argument is a much smaller saving. This check pins
+//        the caching BEHAVIOUR either way, which is why it did not have to change.
 //   [N8] a moved-from surface no longer claims a digest, and the moved-TO one carries it -- the digest
 //        describes the container that travelled with `instance_`, so it must travel with it. DISCLOSED,
 //        not overclaimed: deleting the explicit `other.resolved_digest_.clear()` does NOT fail this check
@@ -45,8 +49,28 @@
 //        unspecified", so the explicit clear turns an implementation's habit into this type's guarantee;
 //        this check pins the guarantee, and would only catch its removal on a library that behaves
 //        differently. A planted mutant confirmed exactly that (and no test in tree catches it).
-//   [N9] a `MandatorySandboxProvider` over a surface with NO image identity reports two empty strings --
+//   [N9] a `MandatorySandboxProvider` over a surface with NO image identity reports empty strings --
 //        absence, never fabrication.
+//   [N10] `image_digest_kind()` is `unknown` before the first `reset()`, for the same reason [N3] holds:
+//        a kind without a digest describes nothing.
+//   [N11] after `reset()` the kind is `index` -- and `index`, NOT `manifest`, is the whole point.
+//        ADR-176 §11's red-team round found this enum's first version spelling both the same, which would
+//        have licensed comparing an index digest against a per-platform manifest digest and reporting one
+//        image as two. THE CONTROL: the kind equals what an INDEPENDENT `docker image inspect
+//        {{.Descriptor.mediaType}}` resolves the same image to. A hardcoded kind cannot pass it.
+//   [N12] THE OTHER HALF. `unknown` is reachable, so no kind is a constant: an unrecognized media type
+//        and a malformed image id both answer `unknown` rather than a guess. The media-type mapping is an
+//        EXACT match against a closed list, so a daemon line that merely CONTAINS the word "manifest"
+//        cannot mint a kind -- which matters because the CLI helper merges stderr into the text searched.
+//   [N13] the kind travels with the digest across a move, in both directions. A kind that outlives its
+//        digest would describe an image the surface no longer reports.
+//
+// NOT PROVEN HERE, and disclosed rather than papered over: the `config` kind, and the `manifest` kind.
+// `config` needs a Docker daemon using the classic graph driver, and none was reachable from the machine
+// this was developed on (Docker Desktop shares one containerd-image-store daemon into WSL2). `manifest`
+// needs a single-platform reference; every image this suite uses is multi-platform, so the checks below
+// exercise `index` and `unknown` only. Both gaps are named in ADR-176 §9 rather than left to be inferred
+// from which checks happen to exist.
 
 #include <cstdio>
 #include <filesystem>
@@ -117,6 +141,30 @@ static_assert(agentengine::ImageIdentifiedSurface<agentengine::DockerExecutionSu
 
 constexpr char const* kImage = "alpine:latest";
 
+[[nodiscard]] std::string trailing_line(std::string text) {
+    while (!text.empty() && (text.back() == '\n' || text.back() == '\r' || text.back() == ' ')) {
+        text.pop_back();
+    }
+    auto const last_newline = text.find_last_of('\n');
+    if (last_newline != std::string::npos) text = text.substr(last_newline + 1);
+    return text;
+}
+
+// [N11] The control behind the KIND. Asks Docker, through a completely separate invocation, for the media
+// type of the descriptor the image ID names -- the same question the backend asks, asked independently, so
+// a hardcoded or accidentally-constant kind cannot pass.
+//
+// This replaced a RepoDigests-based oracle that ADR-176 §11's red-team round broke: membership in
+// RepoDigests cannot tell an image INDEX from a per-platform MANIFEST, so it would have confirmed a kind
+// that erased the distinction the enum exists to carry.
+[[nodiscard]] std::string independent_media_type(std::string const& image) {
+    auto r = agentengine::docker_cli_detail::run_argv(
+        {"docker", "image", "inspect", "--format", "{{.Descriptor.mediaType}}", image});
+    if (r.exit_code != 0) return {};
+    return trailing_line(r.stdout_text);
+}
+
+
 }  // namespace
 
 int main() {
@@ -124,7 +172,15 @@ int main() {
     // test_json_dump_escape's M0 does: this test has no growth path of its own to bound, so the cap is a
     // ceiling on a mutant, not a behaviour under test -- and an over-cap probe would have to be skipped
     // under every sanitizer leg anyway (memory_cap.hpp's own header explains why).
-    (void)agentengine::test_support::cap_process_memory(std::size_t{256} << 20, std::size_t{1024} << 20);
+    bool const capped =
+        agentengine::test_support::cap_process_memory(std::size_t{256} << 20, std::size_t{1024} << 20);
+    if (!capped) {
+        // Said out loud rather than left as a header claim that quietly stops being true. The header says
+        // this test is capped at 256 MiB; on a POSIX sanitizer leg, or a kernel where RLIMIT_DATA does not
+        // bound mmap, it is not. Not a failure -- the checks below do not need the cap -- but a reader of
+        // the log should not have to know memory_cap.hpp's internals to find that out.
+        std::printf("[note] memory cap NOT in force -- this run is uncapped (see memory_cap.hpp)\n");
+    }
 
     std::error_code ec;
     std::filesystem::path const work =
@@ -143,6 +199,9 @@ int main() {
         check(surface.image() == kImage, "N2: image() is the configured reference, verbatim");
         check(surface.image_digest().empty(),
               "N3: image_digest() is empty before reset() -- 'not known', never backfilled from image()");
+        check(surface.image_digest_kind() == agentengine::ImageDigestKind::unknown,
+              "N10: image_digest_kind() is unknown before reset() -- a kind without a digest describes "
+              "nothing");
 
         auto first = surface.reset(work);
         if (!first.has_value()) {
@@ -170,6 +229,34 @@ int main() {
               "N6 CONTROL: resolve_image_digest() against a container that does not exist returns empty -- "
               "the 'not known' path is reachable, so N4/N5 are not a branch that always yields a digest");
 
+        // [N11] -- the kind, and the independent measurement that makes the answer mean something.
+        std::string const media_type = independent_media_type(kImage);
+        check(media_type == "application/vnd.oci.image.index.v1+json",
+              "N11 SETUP: " + std::string(kImage) + " is multi-platform on this daemon, so its descriptor "
+              "is an INDEX -- the precondition for the kind expected below ('" + media_type + "')");
+        check(surface.image_digest_kind() == agentengine::ImageDigestKind::index,
+              "N11: after reset(), image_digest_kind() is `index` -- NOT `manifest`: an index digest and a "
+              "per-platform manifest digest name different objects and must not share a kind");
+        check(agentengine::image_digest_kind_name(surface.image_digest_kind()) == "index",
+              "N11: the wire spelling of that kind is \"index\"");
+        check(surface.image_digest_kind() == agentengine::image_digest_kind_from_media_type(media_type),
+              "N11 CONTROL: the reported kind equals what an INDEPENDENT `docker image inspect "
+              "{{.Descriptor.mediaType}}` resolves the same image to -- measured, not hardcoded");
+
+        // [N12] -- `unknown` is reachable, so no kind is a constant.
+        check(agentengine::image_digest_kind_from_media_type("application/vnd.oci.image.layer.v1.tar") ==
+                  agentengine::ImageDigestKind::unknown,
+              "N12 CONTROL: an unrecognized media type maps to `unknown` -- a closed list, not a guess");
+        check(agentengine::image_digest_kind_from_media_type(
+                  "warning: could not read application/vnd.oci.image.manifest.v1+json") ==
+                  agentengine::ImageDigestKind::unknown,
+              "N12 CONTROL: a line that merely CONTAINS a known media type is `unknown` -- the match is "
+              "exact, so a daemon warning on the merged stderr stream cannot mint a kind");
+        check(backend.resolve_image_digest_kind("not-a-digest") == agentengine::ImageDigestKind::unknown,
+              "N12 CONTROL: a malformed image id is `unknown` without reaching the daemon");
+        check(agentengine::image_digest_kind_name(agentengine::ImageDigestKind::unknown).empty(),
+              "N12: `unknown` serializes to the EMPTY string, matching the empty-digest convention");
+
         // [N7] -- a second reset() destroys the first container and creates another.
         auto second = surface.reset(work);
         check(second.has_value(), "N7: a second reset() succeeds");
@@ -183,18 +270,27 @@ int main() {
         agentengine::DockerExecutionSurface moved(std::move(surface));
         check(moved.image_digest() == before_move, "N8: a move carries the digest to the destination");
         check(moved.image() == kImage, "N8: a move carries the configured reference too");
+        // [N13] -- and the kind with it. Unlike the digest, this one CANNOT pass by accident: an enum is
+        // copied intact by a move, so without the explicit reset in the move constructor the moved-from
+        // surface would still answer `manifest`. This is the check N8 could not be.
+        check(moved.image_digest_kind() == agentengine::ImageDigestKind::index,
+              "N13: a move carries the digest KIND to the destination");
         // NOLINTNEXTLINE(bugprone-use-after-move) -- reading the moved-FROM object is the point of N8.
         check(surface.image_digest().empty(),
               "N8: the moved-FROM surface no longer claims a digest -- its container went with instance_");
+        // NOLINTNEXTLINE(bugprone-use-after-move)
+        check(surface.image_digest_kind() == agentengine::ImageDigestKind::unknown,
+              "N13: the moved-FROM surface no longer claims a KIND either -- a kind describing a digest "
+              "the surface no longer reports is the one combination that must be impossible");
     }
 
     // [N9] -- no image identity means two empty strings, not an invented one.
     {
         agentengine::MandatorySandboxProvider<PlainSurface> provider;
         auto const img = provider.bound_image();
-        check(img.reference.empty() && img.digest.empty(),
+        check(img.reference.empty() && img.digest.empty() && img.digest_kind.empty(),
               "N9: a provider over a surface with no image identity reports absence, not a fabricated "
-              "reference");
+              "reference -- and no kind either");
     }
 
     std::filesystem::remove_all(work, ec);

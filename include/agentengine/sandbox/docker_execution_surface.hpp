@@ -1452,16 +1452,13 @@ public:
     // detail -- an earlier version of this comment asserted flatly that it is the image CONFIG digest,
     // which was measured FALSE on the machine this was written on. `{{.Image}}` is the image ID, and what
     // the image ID digests is decided by the daemon's image store: with the CONTAINERD image store
-    // (Docker Desktop's default, and increasingly the Linux one) it is the MANIFEST digest -- verified
-    // here across three images, each `{{.Id}}` identical to its own `RepoDigests[0]` digest -- while with
-    // the classic graph driver Docker documents it as the image CONFIG digest, a different value for the
-    // same image. NOT verified on a classic-store daemon: none was reachable from this machine.
+    // (Docker Desktop's default, and increasingly the Linux one) it is the digest of the descriptor the
+    // reference resolves to -- an image INDEX for a multi-platform reference -- while with the classic
+    // graph driver Docker documents it as the image CONFIG digest, a different value for the same image.
     //
-    // The consequence a caller must not have to infer: `image_digest()` from a Docker surface and from a
-    // `ContainerdExecutionSurface` (a manifest digest, always) are NOT reliably comparable, and whether
-    // they happen to match is decided by how the operator configured their daemon. Compare digests only
-    // within one surface's own records. See `ImageIdentifiedSurface` (execution_surface.hpp) for the
-    // contract-level statement of this.
+    // This function does not try to say which; `resolve_image_digest_kind()` below answers that by
+    // MEASURING it, and `DockerExecutionSurface::image_digest_kind()` reports the answer alongside the
+    // digest so a consumer never has to infer comparability from the surface type (ADR-176 §9).
     //
     // Returns an EMPTY string, never an error, on any failure: this is provenance enrichment, and a
     // command must not fail to run because the daemon declined to describe its own container. An empty
@@ -1487,6 +1484,63 @@ public:
         if (digest.rfind("sha256:", 0) != 0 || digest.size() != 7 + 64) return {};
         if (digest.find_first_not_of("0123456789abcdef", 7) != std::string::npos) return {};
         return digest;
+    }
+
+    // GitHub issue #80 / ADR-176 §9 -- WHAT `image_id` digests, read off the daemon rather than inferred.
+    //
+    // `docker image inspect --format {{.Descriptor.mediaType}}` answers this directly: the media type of
+    // the descriptor the image ID names. `application/vnd.oci.image.index.v1+json` means the ID is an
+    // index digest, `...image.manifest.v1+json` a manifest digest, `...image.config.v1+json` a config
+    // digest. No inference from which image store the operator configured, and no appeal to what Docker
+    // documents an image ID to be -- both of which this file has already been wrong about once.
+    //
+    // THIS REPLACED A HEURISTIC, and the heuristic's failure is worth keeping visible because it looked
+    // reasonable. The first version asked whether `image_id` appeared among the image's own RepoDigests:
+    // present -> manifest, absent-but-RepoDigests-nonempty -> config, empty -> unknown. ADR-176 §11's
+    // red-team round broke it in three ways. (1) It could not tell an INDEX digest from a per-platform
+    // MANIFEST digest -- both are RepoDigest-shaped -- so it reported one kind for two different objects,
+    // which is precisely the false "same kind" the enum exists to prevent. (2) Its `config` answer was
+    // reached by ELIMINATION, so any cause other than the classic graph driver -- and the space was never
+    // enumerated -- produced a confident `config` label for a digest nobody had measured. (3) Its stated
+    // safety argument ("the template emits that one field and nothing else") was false: `run_argv()`
+    // MERGES stderr into `stdout_text`, as `resolve_image_digest()` above reasons about explicitly, so
+    // the searched text was never governed by the template at all. Reading a media type and matching it
+    // EXACTLY against a closed list (`image_digest_kind_from_media_type()`) has none of those problems:
+    // an unrecognized line is `unknown`, which is both the honest answer and the safe one.
+    //
+    // Degrades to `unknown`, never to a guess, on a daemon whose `docker image inspect` has no
+    // `.Descriptor` field: the template fails, the exit code is non-zero or the text is `<no value>`, and
+    // neither matches a known media type. `.Descriptor` is present on Docker 29.7.2 (measured); older
+    // daemons are not verified here and get `unknown`, which is correct rather than merely safe.
+    //
+    // Costs ONE `docker image inspect`, resolved once per resolved digest -- see
+    // `DockerExecutionSurface::reset()` for the caching and what it trades, and
+    // bench/docker_image_digest_resolution.cpp for the numbers.
+    [[nodiscard]] agentengine::ImageDigestKind resolve_image_digest_kind(std::string const& image_id) {
+        // `image_id` is this class's own output from `resolve_image_digest()`, already validated to be
+        // `sha256:` + 64 hex -- it cannot be a leading-dash argv injection. Re-checked anyway, because
+        // that reasoning is about the CALLER and this function is public.
+        if (image_id.rfind("sha256:", 0) != 0 || image_id.size() != 7 + 64) {
+            return agentengine::ImageDigestKind::unknown;
+        }
+        if (image_id.find_first_not_of("0123456789abcdef", 7) != std::string::npos) {
+            return agentengine::ImageDigestKind::unknown;
+        }
+        auto r = docker_cli_detail::run_argv({"docker", "image", "inspect", "--format",
+                                                "{{.Descriptor.mediaType}}", image_id});
+        if (r.exit_code != 0) return agentengine::ImageDigestKind::unknown;
+        // LAST non-empty line, for the reason `resolve_image_digest()` takes the last one: `run_argv()`
+        // merges stderr into this text, so a daemon warning can precede the answer. A warning cannot be
+        // MISTAKEN for the answer -- the match below is exact against known media types -- but it can
+        // precede it, and taking the first line would lose it.
+        std::string media_type;
+        std::istringstream lines(r.stdout_text);
+        std::string line;
+        while (std::getline(lines, line)) {
+            while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+            if (!line.empty()) media_type = line;
+        }
+        return agentengine::image_digest_kind_from_media_type(media_type);
     }
 
     [[nodiscard]] agentengine::result<void> destroy(Instance const& inst) {
@@ -1618,6 +1672,7 @@ public:
     // exists because of.
     DockerExecutionSurface(DockerExecutionSurface&& other) noexcept
         : image_(std::move(other.image_)), resolved_digest_(std::move(other.resolved_digest_)),
+          resolved_kind_(other.resolved_kind_), kind_resolved_for_(std::move(other.kind_resolved_for_)),
           isolation_(other.isolation_), docker_(std::move(other.docker_)),
           instance_(std::move(other.instance_)) {
         other.instance_.reset();
@@ -1626,6 +1681,11 @@ public:
         // std::string is only "valid but unspecified" -- this makes the postcondition this type's own
         // guarantee instead of an inherited library habit.
         other.resolved_digest_.clear();
+        // ADR-176 §9: and the kind with it. An enum is not "valid but unspecified" after a move -- it is
+        // simply copied -- so without this line the moved-from surface would answer `manifest` while
+        // answering "" for the digest it describes, which is the one combination that must be impossible.
+        other.resolved_kind_ = agentengine::ImageDigestKind::unknown;
+        other.kind_resolved_for_.clear();
     }
     // Move assignment SWAPS rather than overwrite-then-discard: `a = std::move(b)` where `a` already
     // owns a live container must not silently leak `a`'s own instance by simply copying `b`'s state
@@ -1637,6 +1697,8 @@ public:
         if (this != &other) {
             image_.swap(other.image_);
             resolved_digest_.swap(other.resolved_digest_);  // issue #80 -- travels with `instance_`
+            std::swap(resolved_kind_, other.resolved_kind_);  // ADR-176 §9 -- and never without it
+            kind_resolved_for_.swap(other.kind_resolved_for_);
             std::swap(isolation_, other.isolation_);  // ADR-171 -- see the move ctor's own comment
             std::swap(docker_, other.docker_);
             instance_.swap(other.instance_);
@@ -1657,12 +1719,34 @@ public:
         auto inst = docker_.create(image_, isolation_);
         if (!inst.has_value()) return std::unexpected(inst.error());
         instance_ = *inst;
-        // Issue #80, and a MEASURED cost decision, not an assumed-cheap one. `SandboxRuntime::run()`
-        // calls `reset()` once per command, so anything spawned here is spawned once per tool call; on
-        // this project's own Windows/Docker Desktop development machine `docker inspect` measured ~480 ms
-        // against a ~900 ms warm `docker run -d`, i.e. a >50% regression on every run_command had this
-        // been resolved per reset. It is resolved ONCE per surface instead, on the first `reset()` that
-        // produces a container to read it from, and reused for every later container this surface creates.
+        // Issue #80, a cost decision, and a CORRECTED one -- the numbers that first justified this cache
+        // were wrong, and are recorded here rather than quietly replaced. The original comment claimed
+        // `docker inspect` measured ~480 ms against a ~900 ms warm `docker run -d`, "a >50% regression on
+        // every run_command". Those numbers existed only as prose; writing the harness that ADR-176 §10
+        // should have had from the start (bench/docker_image_digest_resolution.cpp) measured them, on the
+        // same machine, as:
+        //
+        //     docker exec (what a tool call pays)               123 ms
+        //     docker inspect {{.Image}} (the digest)             65 ms
+        //     docker image inspect RepoDigests (the kind)       115 ms
+        //     docker run -d (a full reset())                    622 ms
+        //
+        // So `docker inspect` is CHEAPER than the `docker exec` it was claimed to dwarf, and per-command
+        // resolution of the digest alone would have been about +9% on a reset()+exec tool call, not >50%.
+        // Cross-checked against a shell loop outside this process, which agrees on the ordering and the
+        // order of magnitude. The ">50%" figure should not be repeated; it is preserved here only so a
+        // reader who saw it elsewhere knows it was retracted.
+        //
+        // The cache SURVIVES that correction, on a smaller and now-honest argument: `SandboxRuntime::run()`
+        // calls `reset()` once per command, so resolving here per reset would spawn TWO CLI processes on
+        // every tool call (digest plus kind, ~180 ms, ~+24% of a tool call) to re-derive a value that
+        // cannot change for this surface. Paying that once per surface instead is worth the staleness
+        // window described below -- but it is a ~24% saving, not a catastrophe averted, and if the surface
+        // ever reads these through a daemon API instead of the CLI the trade should be re-examined rather
+        // than assumed still to hold.
+        //
+        // Resolved ONCE per surface, on the first `reset()` that produces a container to read it from, and
+        // reused for every later container this surface creates.
         //
         // What that trades, stated rather than glossed: `image_` never changes for the life of a surface,
         // and `docker run` does not re-pull an image already present locally, so every container this
@@ -1672,6 +1756,21 @@ public:
         // answer than the nothing-at-all that preceded this. A failed resolution leaves the field empty
         // and is retried on the next `reset()`, so one daemon hiccup does not blind the surface forever.
         if (resolved_digest_.empty()) resolved_digest_ = docker_.resolve_image_digest(*instance_);
+        // ADR-176 §9, and keyed by the DIGEST rather than guarded by a "have we tried yet" flag. The kind
+        // is a pure function of the digest, so caching it against the digest it describes makes drift
+        // impossible by construction: if the digest ever changes, the kind is re-resolved for the new one;
+        // while it does not, nothing is spawned. A first version guarded this inside the digest's own
+        // `if (empty)` block, which ADR-176 §11's red-team round broke -- a digest that resolved while its
+        // kind lookup failed pinned `image_digest_kind()` to `unknown` for the surface's ENTIRE LIFE, from
+        // one transient CLI failure, with the comment above still promising a retry. Keyed this way the
+        // retry is automatic and costs nothing in the common case.
+        if (!resolved_digest_.empty() && kind_resolved_for_ != resolved_digest_) {
+            resolved_kind_ = docker_.resolve_image_digest_kind(resolved_digest_);
+            kind_resolved_for_ = resolved_digest_;
+        } else if (resolved_digest_.empty()) {
+            resolved_kind_ = agentengine::ImageDigestKind::unknown;
+            kind_resolved_for_.clear();
+        }
 
         // The error_code overload: a status query that cannot be answered is not the same as "the
         // directory is not there", and the throwing one would unwind past this function's own
@@ -1714,6 +1813,9 @@ public:
     // reference is what an operator recognizes, the digest is what a provenance record can be trusted on.
     [[nodiscard]] std::string_view image() const noexcept { return image_; }
     [[nodiscard]] std::string_view image_digest() const noexcept { return resolved_digest_; }
+    // ADR-176 §9 -- what `image_digest()` digests, so a consumer can decide whether comparing it against
+    // another record's digest is even meaningful. `unknown` whenever there is no digest.
+    [[nodiscard]] agentengine::ImageDigestKind image_digest_kind() const noexcept { return resolved_kind_; }
 
     [[nodiscard]] agentengine::result<void> drain_to(std::filesystem::path const& host_dir) {
         if (!instance_) {
@@ -1741,6 +1843,12 @@ private:
     // container the daemon could describe, then reused for this surface's whole life. See `reset()` for
     // the measured cost this caching exists for, and the one staleness case it accepts.
     std::string resolved_digest_;
+    // ADR-176 §9. Moved/swapped with `resolved_digest_` everywhere, because a kind that outlives its
+    // digest describes a value this surface no longer holds. `kind_resolved_for_` is the digest
+    // `resolved_kind_` was measured for -- the key that makes a stale kind unrepresentable rather than
+    // merely unlikely, and that lets a failed kind lookup be retried without re-spawning on every reset.
+    agentengine::ImageDigestKind resolved_kind_{agentengine::ImageDigestKind::unknown};
+    std::string kind_resolved_for_;
     // ADR-171 (issue #63). Held by value and applied on every `reset()`, so a re-materialized surface
     // is contained identically to its first container -- not only the first one.
     ContainerIsolation isolation_{};

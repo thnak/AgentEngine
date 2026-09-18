@@ -13,10 +13,15 @@
 //     so this also works under a CI runner that already runs tests inside a job.)
 //   - POSIX: RLIMIT_DATA -- the data-segment bound (brk plus private anonymous mappings, which is what
 //     a runaway `new` actually consumes), so an allocation past it fails the same way.
-//   - Under a sanitizer build the POSIX bound is NOT applied: ASan/TSan reserve terabytes of shadow
-//     address space up front, and a POSIX memory rlimit would kill the process before main(). The Windows
-//     job limit counts committed memory, not reservations, so it still applies there, at the larger
-//     `sanitizer_bytes` to leave room for the ASan allocator's quarantine.
+//   - Under a sanitizer build the POSIX bound is NOT applied, and this survived the switch to RLIMIT_DATA
+//     for a MEASURED reason rather than an inherited one. ASan maps its shadow as a private writable
+//     range, not a PROT_NONE reservation, so RLIMIT_DATA counts it: a trivial ASan binary on the same
+//     kernel dies before main() under a 256 MiB RLIMIT_DATA ("ReserveShadowMemoryRange failed while
+//     trying to map 0x10000000 bytes") and still dies under a 1 GiB one, where it asks for ~15 TB. No cap
+//     this project would set can accommodate that, so the POSIX legs of a sanitizer build run UNCAPPED --
+//     a real hole, disclosed. The Windows job limit counts committed memory, not reservations, so it
+//     still applies there, at the larger `sanitizer_bytes` to leave room for the ASan allocator's
+//     quarantine.
 //
 // NOT RLIMIT_AS, and this is load-bearing rather than a preference. RLIMIT_AS bounds the whole address
 // space including PROT_NONE RESERVATIONS, and it is INHERITED ACROSS fork/exec -- so it applies to a test's
@@ -25,18 +30,39 @@
 // any size a test would tolerate, that reservation fails and the child dies with
 // "fatal error: failed to reserve page summary memory". This is not hypothetical: it is exactly how
 // commit a3864e1 turned test_execution_surface_image_identity red on the Linux CI leg, where the capped
-// test spawned `docker run` and the CLI aborted in its own runtime startup. RLIMIT_DATA does not count
-// reservations, so the Go children start normally -- measured on this project's WSL2 Ubuntu (kernel 6.6,
-// Docker 29.7.2, containerd 2.2.2): `docker run --rm alpine echo` and `ctr` both run under a 256 MiB
-// RLIMIT_DATA and both die under a 256 MiB RLIMIT_AS.
+// test spawned `docker run` and the CLI aborted in its own runtime startup. Go's arena is a PROT_NONE
+// reservation, which RLIMIT_DATA does not count, so the children start normally -- measured on this
+// project's WSL2 Ubuntu (kernel 6.6, Docker 29.7.2, containerd 2.2.2): `docker run --rm alpine echo` and
+// `ctr` both run under a 256 MiB RLIMIT_DATA and both die under a 256 MiB RLIMIT_AS.
 //
-// What this costs: RLIMIT_DATA does not bound file-backed or shared mappings, so it is a narrower cap than
-// RLIMIT_AS was. That is the right trade here -- the failure mode being defended against is a broken test
-// allocating without bound, which is private anonymous memory -- but it is a real narrowing, not a
-// no-cost substitution. RLIMIT_DATA has only covered mmap since Linux 4.7; on an older kernel it bounds
-// brk alone and a large `new` would escape it. Nothing here detects that, which is why a caller must prove
-// the cap with an over-cap allocation (test_json_dump_escape's M0) rather than trust the return value:
-// on a platform where this mechanism does not hold, that probe fails loudly instead of silently passing.
+// WHAT RLIMIT_DATA ACTUALLY COUNTS, measured rather than assumed, because the first version of this
+// comment got it wrong in both directions. The kernel test since 4.7 is on the mapping's flags -- private
+// AND writable AND not stack -- applied to its VIRTUAL size. Probed directly on the same kernel, 512 MiB
+// mappings under a 256 MiB cap:
+//
+//     private writable ANONYMOUS, never touched   REFUSED   <- virtual size, NOT resident size
+//     PROT_NONE reservation                       allowed   <- what Go reserves; why the children live
+//     private writable FILE-BACKED, never touched REFUSED   <- file-backed IS counted when private+write
+//     MAP_SHARED file-backed                      allowed
+//
+// So the earlier claims "RLIMIT_DATA does not count reservations" and "does not bound file-backed
+// mappings" were both wrong as stated. The accurate one: it bounds the virtual size of every private
+// writable mapping, and lets through PROT_NONE reservations and shared mappings. That is a NARROWER cap
+// than RLIMIT_AS, but much less narrow than previously written, and it is exactly the right shape for the
+// failure mode being defended against -- a broken test allocating without bound, which is private
+// writable memory.
+//
+// Two things it does NOT do, stated because three files cite this cap as satisfying CLAUDE.md's machine-
+// safety rule and that rule's own example is a fork bomb:
+//   - It does not bound PROCESS COUNT. Both rlimits are per-process and inherited, so N children x N MiB
+//     is unbounded. This cap defends against a runaway ALLOCATION, never against a fork bomb; a test that
+//     proves fork-bomb containment needs RLIMIT_NPROC (POSIX) or JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+//     (Windows), neither of which is set here.
+//   - It has only covered mmap since Linux 4.7, and a sysadmin can degrade it to brk-only on any later
+//     kernel with `ignore_rlimit_data=1` (checked: N on the machine this was measured on). Nothing here
+//     detects either case, which is why a caller must PROVE the cap with an over-cap allocation
+//     (test_json_dump_escape's M0) rather than trust the return value -- on a platform where this
+//     mechanism does not hold, that probe fails loudly instead of silently passing.
 //
 // Returns whether a cap is in force. A test should prove it with an over-cap allocation that must throw
 // -- see test_json_dump_escape's M0 -- rather than trusting this return value alone; and should skip that

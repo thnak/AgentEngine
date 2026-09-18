@@ -251,6 +251,16 @@ int main() {
                 check(reply_json.find("\"image_digest\":\"" + img.digest + "\"") != std::string::npos,
                       "issue #80: the direct reply's JSON carries the SAME resolved digest the surface "
                       "reports");
+                // ADR-176 §9: the digest's KIND rides with it into the reply. Without this a consumer
+                // has to infer comparability from the surface type, which is exactly how two digests of
+                // different kinds get compared and report "different image" for one image.
+                check(img.digest_kind == "index",
+                      "ADR-176 §9: the bound provider reports the digest's kind -- `index` for the "
+                      "multi-platform alpine:latest reference this test binds");
+                check(reply_json.find("\"image_digest_kind\":\"" + img.digest_kind + "\"") !=
+                          std::string::npos,
+                      "ADR-176 §9: the direct reply's JSON carries the SAME kind the surface reports, "
+                      "next to the digest it describes");
             }
         }
     }

@@ -653,10 +653,20 @@ public:
     // Best-effort on the first two (matching `DockerExecutionSurface::destroy()`'s own posture of not
     // treating an already-gone task as fatal); the final `container rm` is the one call whose failure
     // this method actually reports.
-    // GitHub issue #80 -- the resolved, content-addressed identity of `image`, as containerd's own image
-    // store currently records it: the MANIFEST digest, the value that makes `repo@sha256:...` a portable
-    // reference. Read from `ctr images ls`, whose columns are REF, TYPE, DIGEST, SIZE, PLATFORMS, LABELS;
-    // the row is matched on an EXACT ref, so `alpine:3.20` is never answered with `alpine:3.20.1`'s digest.
+    // GitHub issue #80 / ADR-176 §9 -- the resolved identity of `image` AND what kind of digest that is,
+    // read from ONE `ctr images ls` so the two cannot describe different objects.
+    //
+    // That single call is the whole point, and it is a correction. The first version had two functions
+    // that each spawned their own `ctr images ls` and each matched the row by TAG, while the comment
+    // claimed the kind was read "off the SAME ROW the digest came from". ADR-176 §11's red-team round
+    // pointed out that was simply false -- two spawns, two snapshots, a mutable tag between them -- and
+    // that the second function parsed the row's digest and threw it away instead of using it. One call
+    // returning both makes the claim true by construction rather than by hope.
+    //
+    // containerd's own image store records images by their TARGET DESCRIPTOR, and `ctr images ls` prints
+    // that descriptor's media type in its TYPE column and its digest in DIGEST -- so the kind is read off
+    // the daemon, never inferred. Columns are REF, TYPE, DIGEST, SIZE, PLATFORMS, LABELS; the row is
+    // matched on an EXACT ref, so `alpine:3.20` is never answered with `alpine:3.20.1`'s digest.
     //
     // Weaker than `DockerExecutionSurface`'s own answer, and said plainly rather than glossed: this
     // re-resolves the REFERENCE, it does not read the binding off the running container. `ctr run` pulls
@@ -668,9 +678,16 @@ public:
     // the window is the width of one `ctr run`, and the failure mode is a stale-but-real digest, never a
     // fabricated one.
     //
-    // Returns an EMPTY string, never an error, on any failure -- provenance enrichment must not be able to
-    // fail a command. `image` went through `reject_unsafe_token()` at `create()`.
-    [[nodiscard]] std::string resolve_image_digest(std::string const& image) {
+    // Returns an EMPTY digest, never an error, on any failure -- provenance enrichment must not be able to
+    // fail a command -- and `unknown` alongside it. `image` went through `reject_unsafe_token()` at
+    // `create()`. A row whose digest is malformed yields NEITHER a digest nor a kind, so the pairing
+    // "kind is empty whenever the digest is" holds on every path out of here.
+    struct ResolvedImageIdentity {
+        std::string digest;
+        agentengine::ImageDigestKind kind{agentengine::ImageDigestKind::unknown};
+    };
+
+    [[nodiscard]] ResolvedImageIdentity resolve_image_identity(std::string const& image) {
         auto r = ctr_cli_detail::run_argv({"ctr", "images", "ls"});
         if (!r.has_value() || r->exit_code != 0) return {};
         std::istringstream lines(r->stdout_text);
@@ -684,9 +701,20 @@ public:
             if (ref != image) continue;
             if (digest.rfind("sha256:", 0) != 0 || digest.size() != 7 + 64) return {};
             if (digest.find_first_not_of("0123456789abcdef", 7) != std::string::npos) return {};
-            return digest;
+            return ResolvedImageIdentity{digest, agentengine::image_digest_kind_from_media_type(type)};
         }
         return {};
+    }
+
+    // The digest alone, for callers that want only it -- including this file's own test, which uses it as
+    // an INDEPENDENT oracle against what a surface reports. Implemented in terms of the pair so there is
+    // exactly one parsing path to be wrong.
+    [[nodiscard]] std::string resolve_image_digest(std::string const& image) {
+        return resolve_image_identity(image).digest;
+    }
+
+    [[nodiscard]] agentengine::ImageDigestKind resolve_image_digest_kind(std::string const& image) {
+        return resolve_image_identity(image).kind;
     }
 
     [[nodiscard]] agentengine::result<void> destroy(Instance const& inst) {
@@ -851,7 +879,7 @@ public:
     // still wrong. The identical bug was live in `DockerExecutionSurface` for the length of one edit.
     ContainerdExecutionSurface(ContainerdExecutionSurface&& other) noexcept
         : image_(std::move(other.image_)), resolved_digest_(std::move(other.resolved_digest_)),
-          isolation_(other.isolation_), ctr_(std::move(other.ctr_)),
+          resolved_kind_(other.resolved_kind_), isolation_(other.isolation_), ctr_(std::move(other.ctr_)),
           instance_(std::move(other.instance_)), mounted_at_(std::move(other.mounted_at_)),
           seq_(other.seq_) {
         other.instance_.reset();
@@ -859,11 +887,16 @@ public:
         // with `image_` rather than being left behind. Explicit because a moved-from std::string is only
         // "valid but unspecified".
         other.resolved_digest_.clear();
+        // ADR-176 §9: and the kind with it. An enum IS copied intact by a move, so without this line the
+        // moved-from surface would answer `manifest` for a digest it no longer reports -- the one
+        // combination that must be impossible.
+        other.resolved_kind_ = agentengine::ImageDigestKind::unknown;
     }
     ContainerdExecutionSurface& operator=(ContainerdExecutionSurface&& other) noexcept {
         if (this != &other) {
             image_.swap(other.image_);
             resolved_digest_.swap(other.resolved_digest_);  // issue #80 -- travels with `instance_`
+            std::swap(resolved_kind_, other.resolved_kind_);  // ADR-176 §9 -- and never without it
             std::swap(isolation_, other.isolation_);  // ADR-172 -- see the move ctor's own comment
             std::swap(ctr_, other.ctr_);
             instance_.swap(other.instance_);
@@ -909,10 +942,24 @@ public:
         if (!inst.has_value()) return std::unexpected(inst.error());
         instance_ = *inst;
         // Issue #80: resolved ONCE per surface, on the first `reset()` -- not per reset, which
-        // `SandboxRuntime::run()` calls once per command, so a `ctr images ls` here would be a process
-        // spawn on every tool call (the Docker surface's own `reset()` carries the measured numbers that
-        // settled this). Retried while it is still empty, so one failed lookup is not permanent.
-        if (resolved_digest_.empty()) resolved_digest_ = ctr_.resolve_image_digest(image_);
+        // `SandboxRuntime::run()` calls once per command, so the `ctr images ls` pair here would be two
+        // process spawns on every tool call. The Docker surface's own `reset()` carries the measured
+        // numbers that settled this, INCLUDING the correction that the original ">50% regression" figure
+        // was wrong; the real argument is a ~24%-of-a-tool-call saving on a value that cannot change for
+        // this surface. No equivalent bench exists for `ctr` (it needs root, so it cannot run on the
+        // machine the Docker one was measured on) -- that is an unmeasured assumption of similarity, not a
+        // second measurement, and ADR-176 §10 records it as such.
+        // Retried while it is still empty, so one failed lookup is not permanent.
+        if (resolved_digest_.empty()) {
+            // ADR-176 §9: ONE `ctr images ls`, both values, same row. A failed lookup leaves the digest
+            // empty and the kind `unknown` together, and both are retried on the next `reset()` -- so
+            // unlike the Docker surface there is no way for a kind lookup to fail on its own and pin
+            // `unknown` for the surface's life. The pairing needs no separate key here because the two
+            // values are never resolved apart.
+            auto identity = ctr_.resolve_image_identity(image_);
+            resolved_digest_ = std::move(identity.digest);
+            resolved_kind_ = identity.kind;
+        }
         mounted_at_ = host_dir;
         return agentengine::result<void>{};
     }
@@ -927,12 +974,17 @@ public:
     }
 
     // Issue #80 (`ImageIdentifiedSurface`, execution_surface.hpp). `image()` is the reference this surface
-    // was CONFIGURED with; `image_digest()` is the manifest digest that reference resolved to when the
-    // container currently in place was created, and is empty before the first `reset()` and whenever
-    // containerd could not answer. See `ContainerdCliBackend::resolve_image_digest()` for the one way this
-    // is weaker than the Docker surface's answer -- stated there, not hidden behind these accessors.
+    // was CONFIGURED with; `image_digest()` is the digest that reference resolved to when this surface's
+    // FIRST container was created, and is empty before the first `reset()` and whenever containerd could
+    // not answer. See `ContainerdCliBackend::resolve_image_identity()` for the one way this is weaker than
+    // the Docker surface's answer -- stated there, not hidden behind these accessors.
     [[nodiscard]] std::string_view image() const noexcept { return image_; }
     [[nodiscard]] std::string_view image_digest() const noexcept { return resolved_digest_; }
+    // ADR-176 §9 -- what `image_digest()` digests, read off the same `ctr images ls` row as the digest
+    // (its TYPE column is the target descriptor's media type). `index` for a multi-platform reference,
+    // `manifest` for a single-platform one, `unknown` when there is no digest or the media type is not one
+    // this project recognizes. See `ContainerdCliBackend::resolve_image_identity()`.
+    [[nodiscard]] agentengine::ImageDigestKind image_digest_kind() const noexcept { return resolved_kind_; }
 
     // drain_to(): when host_dir IS the same directory reset() bind-mounted (the common case, and the
     // only case `SandboxRuntime::run()`'s own materialize→reset→run→drain sequence exercises), this
@@ -969,6 +1021,9 @@ private:
     // reused for this surface's whole life. See `reset()` for why, and `ContainerdCliBackend::
     // resolve_image_digest()` for the staleness window this backend's lookup already has anyway.
     std::string resolved_digest_;
+    // ADR-176 §9. Resolved in the same `reset()` step as `resolved_digest_`, and moved/swapped with it
+    // everywhere, because a kind that outlives its digest describes a value this surface no longer holds.
+    agentengine::ImageDigestKind resolved_kind_{agentengine::ImageDigestKind::unknown};
     // ADR-172 (issue #66). Held by value and applied on every `reset()`, so a re-materialized surface
     // is contained identically to its first container -- not only the first one.
     ContainerdIsolation isolation_{};

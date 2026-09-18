@@ -82,9 +82,9 @@ concept ExecutionSurface = requires(T& t, std::filesystem::path const& host_dir,
 // (`DockerExecutionSurface("alpine:3.20")`), but nothing reported back what the pin resolved to, so a
 // provenance record (the requester's own per-piece manifest -- node, tool version, sandbox image; the
 // cited "015 §4c.6" is AeroCoWorker's RFC, a DIFFERENT project's document, not this repo's own 015,
-// which has no §4c) could only
-// ever restate the reference the host itself configured. That is worth nothing when the reference was a
-// TAG: `alpine:latest` names a different set of bytes on two machines, or on one machine a week apart.
+// which has no §4c) could only ever restate the reference the host itself configured. That is worth
+// nothing when the reference was a TAG: `alpine:latest` names a different set of bytes on two machines,
+// or on one machine a week apart.
 //
 // A SEPARATE, OPT-IN refinement of `ExecutionSurface`, deliberately not folded into it: a surface that
 // runs commands somewhere with no image identity at all (every in-tree test double, and any future
@@ -94,29 +94,112 @@ concept ExecutionSurface = requires(T& t, std::filesystem::path const& host_dir,
 //
 //   T::image()        -- the reference the surface was CONFIGURED with, verbatim. Never empty for a
 //                          conformer; it is the constructor argument.
-//   T::image_digest() -- the resolved, content-addressed identity of the image the surface's CURRENT
-//                          execution environment actually runs, as the backend reported it at the moment
-//                          that environment was created. EMPTY, never fabricated, when nothing has been
-//                          created yet or the backend could not answer -- an empty digest means "not
-//                          known", and a caller must record its absence rather than substitute `image()`.
+//   T::image_digest() -- the content-addressed identity of the image this surface runs, as the backend
+//                          reported it at the moment the surface's FIRST execution environment was
+//                          created. EMPTY, never fabricated, when nothing has been created yet or the
+//                          backend could not answer -- an empty digest means "not known", and a caller
+//                          must record its absence rather than substitute `image()`.
 //
-// NOT COMPARABLE ACROSS CONFORMERS, and this concept deliberately does not pretend otherwise. Every
-// conformer answers `sha256:<64 hex>`, but they do not all digest the same thing: `ContainerdExecution
-// Surface` reports the MANIFEST digest, while `DockerExecutionSurface` reports the container's image ID,
-// which is the manifest digest under the containerd image store and the image CONFIG digest under the
-// classic graph driver -- so for Docker the KIND depends on how the operator configured the daemon, and
-// no value carries a tag saying which it is. A consumer may compare two digests recorded from the SAME
-// surface type; comparing across surface types, or across differently-configured Docker hosts, can report
-// "different image" for one image. Widening this concept to carry the digest's kind is real follow-on
-// work (ADR-176 §6), deliberately not smuggled into the change that introduced the field.
+//                          "FIRST", not "current", and the distinction is a real one a conformer may not
+//                          quietly narrow. A surface that re-creates its environment per command (both
+//                          in-tree conformers do; `SandboxRuntime::run()` calls `reset()` once per tool
+//                          call) resolves this ONCE and reuses it, because resolving per command costs a
+//                          CLI round trip on every call to re-derive a value that only something outside
+//                          this process can change. So from the second command onward the value names
+//                          the image the first environment ran, which is the same image unless the tag
+//                          was re-pulled out of process -- stale then, never fabricated. An earlier
+//                          version of this contract said "CURRENT ... at the moment that environment was
+//                          created", which the caching made false; ADR-176 §6 carries the residual and
+//                          §9 the correction.
+//   T::image_digest_kind() -- WHAT that digest digests, so a consumer can tell whether two digests are
+//                          even candidates for comparison. See `ImageDigestKind`.
+//
+// COMPARE DIGESTS ONLY WHEN THE KINDS MATCH, and never when either is `unknown`. Every conformer answers
+// `sha256:<64 hex>`, but they do not all digest the same thing, and a bare digest carries no tag saying
+// which -- so `image_digest_kind()` exists to make the question answerable instead of leaving a consumer
+// to guess from the surface type. ADR-176 §6 originally left this as follow-on work and named the
+// guessing as the residual; ADR-176 §9 closes it, because a provenance field whose comparability a
+// reader has to infer is a field that will eventually be compared wrongly.
+//
+// Matching kinds make a comparison MEANINGFUL; they do not make two records the same image. Two hosts can
+// legitimately hold different objects for one reference -- one the index, one a single platform's
+// manifest -- and those are different kinds, so the rule declines the comparison rather than answering it
+// wrongly. What the rule guarantees is the direction that matters for provenance: when the kinds match
+// and the digests differ, the images really are different.
 //
 // I3: a conformer's answers are serialized into tool replies the model reads. A host assembling a
 // provenance record must take them from the surface or from the reply struct it received -- never from a
 // digest restated in model output, which is an ordinary untrusted string like any other.
+
+// GitHub issue #80 / ADR-176 §9 -- what an `image_digest()` actually digests.
+//
+// The two values are NOT interchangeable and do not agree for one image: a `manifest` digest names the
+// object a registry hands back for a reference, a `config` digest names the image's config blob. A
+// consumer comparing across kinds gets "different image" for one image.
+//
+//   index    -- the digest of an image INDEX (a manifest list): the object a MULTI-PLATFORM reference
+//               resolves to, which names one manifest per platform.
+//   manifest -- the digest of a single image MANIFEST: one platform's layers plus its config.
+//   config   -- the digest of the image's CONFIG BLOB. Docker documents its image ID as this under the
+//               classic graph driver.
+//   unknown  -- no digest, or a digest whose kind the backend could not ESTABLISH. It does NOT mean "not
+//               a manifest digest": it means nothing was measured. A consumer must not compare an
+//               `unknown` against anything, including another `unknown`.
+//
+// INDEX AND MANIFEST ARE SEPARATE KINDS, and collapsing them was a real defect in this enum's first
+// version, caught by ADR-176 §11's red-team round. They are digests of two DIFFERENT objects for one
+// image -- an index names the manifests, so its digest can never equal any of theirs. Spelling both
+// "manifest" made the rule above ("compare only when the kinds match") license exactly the false
+// "different image" verdict this type exists to prevent, for one image recorded from a host holding the
+// index and a host holding one platform's manifest. The distinction costs nothing to keep: every backend
+// reads it from a media type that already states it.
+enum class ImageDigestKind { unknown, index, manifest, config };
+
+// The wire spelling, for a reply struct or an audit record. `unknown` is the EMPTY string, matching the
+// empty-digest convention: absence is absence, never the word "unknown" masquerading as a value.
+[[nodiscard]] constexpr std::string_view image_digest_kind_name(ImageDigestKind kind) noexcept {
+    switch (kind) {
+        case ImageDigestKind::index:    return "index";
+        case ImageDigestKind::manifest: return "manifest";
+        case ImageDigestKind::config:   return "config";
+        case ImageDigestKind::unknown:  break;
+    }
+    return "";
+}
+
+// The one place a media type becomes a kind, shared by every conformer so two backends cannot disagree
+// about what `application/vnd.oci.image.index.v1+json` means.
+//
+// EXACT match against a closed list, never a substring test, and that is a correctness requirement rather
+// than tidiness. A backend reads this string out of a CLI's output, and the CLI helpers in this tree MERGE
+// stderr into the text they return -- so the candidate string can be any line a daemon chose to emit. A
+// substring rule ("contains manifest") would let a warning mentioning a media type mint a confident kind
+// for a digest nobody measured. An exact match against known types cannot: an unrecognized string is
+// `unknown`, which is the honest answer and the safe one. This closed list is also why adding a new
+// registry media type is a deliberate edit here rather than an accident somewhere else.
+[[nodiscard]] inline ImageDigestKind image_digest_kind_from_media_type(std::string_view media_type) noexcept {
+    if (media_type == "application/vnd.oci.image.index.v1+json" ||
+        media_type == "application/vnd.docker.distribution.manifest.list.v2+json") {
+        return ImageDigestKind::index;
+    }
+    if (media_type == "application/vnd.oci.image.manifest.v1+json" ||
+        media_type == "application/vnd.docker.distribution.manifest.v2+json" ||
+        media_type == "application/vnd.docker.distribution.manifest.v1+json" ||
+        media_type == "application/vnd.docker.distribution.manifest.v1+prettyjws") {
+        return ImageDigestKind::manifest;
+    }
+    if (media_type == "application/vnd.oci.image.config.v1+json" ||
+        media_type == "application/vnd.docker.container.image.v1+json") {
+        return ImageDigestKind::config;
+    }
+    return ImageDigestKind::unknown;
+}
+
 template <class T>
 concept ImageIdentifiedSurface = ExecutionSurface<T> && requires(T const& t) {
     { t.image() } -> std::convertible_to<std::string_view>;
     { t.image_digest() } -> std::convertible_to<std::string_view>;
+    { t.image_digest_kind() } -> std::same_as<ImageDigestKind>;
 };
 
 }  // namespace agentengine

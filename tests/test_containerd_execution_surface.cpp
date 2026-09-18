@@ -115,6 +115,9 @@ int main() {
               "issue #80: image() reports the configured reference before reset()");
         check(surface.image_digest().empty(),
               "issue #80: image_digest() is empty before reset() -- not known, never backfilled");
+        check(surface.image_digest_kind() == agentengine::ImageDigestKind::unknown,
+              "ADR-176 §9: image_digest_kind() is unknown before reset() -- a kind without a digest "
+              "describes nothing");
 
         // --- Turn 1: reset() against a freshly-seeded host_dir, no explicit `ctr images pull`
         //     anywhere in this process -- a real, live test of "ctr run's own convenience-flag path
@@ -149,6 +152,26 @@ int main() {
             check(backend.resolve_image_digest("example.invalid/no-such/image:never").empty(),
                   "issue #80 CONTROL: a reference containerd does not hold resolves to empty -- the "
                   "'not known' path is real, not a branch that always yields a digest");
+
+            // --- ADR-176 §9: the digest's KIND, read from the SAME `ctr images ls` row as the digest
+            //     -- one call returning both (`resolve_image_identity()`), so the kind cannot describe a
+            //     different object than the digest does. The TYPE column is the target descriptor's media
+            //     type, so this is read off the daemon, never inferred. `docker.io/library/alpine:latest`
+            //     is multi-platform, so the expected kind is `index`; a single-platform reference would
+            //     be `manifest`, and the two are deliberately NOT the same kind (ADR-176 §9).
+            auto const identity = backend.resolve_image_identity("docker.io/library/alpine:latest");
+            check(identity.digest == resolved,
+                  "ADR-176 §9: resolve_image_identity() reports the same digest the surface does");
+            check(identity.kind == agentengine::ImageDigestKind::index ||
+                      identity.kind == agentengine::ImageDigestKind::manifest,
+                  "ADR-176 §9: that row's TYPE maps to a registry-object kind, not `unknown` -- got '" +
+                      std::string(agentengine::image_digest_kind_name(identity.kind)) + "'");
+            check(surface.image_digest_kind() == identity.kind,
+                  "ADR-176 §9: the surface reports the SAME kind an independent lookup does");
+            check(backend.resolve_image_digest_kind("example.invalid/no-such/image:never") ==
+                      agentengine::ImageDigestKind::unknown,
+                  "ADR-176 §9 CONTROL: a reference containerd does not hold has kind `unknown` -- so the "
+                  "kind above is a lookup, not a hardcoded return");
         }
 
         // --- The container sees turn-1 content via the LIVE bind mount (no copy_to_container step
