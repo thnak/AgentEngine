@@ -4,8 +4,10 @@
   independent reviews). Round 1 forced a rewrite of the analysis unit, the safety arm, the look accounting and
   the isolation/replay mechanisms; round 2 found that the rewrite's safety arm could not see the real attack, that
   arm T could silently stop delivering the lesson, that two-shard replication costs far more than stated, and that
-  several mechanisms exceeded the primitives they sit on. Nothing here is built. Not re-red-teamed after round
-  2.** The simulations in §6 are real runs; every claim in §5 is still a claim to be proven.
+  several mechanisms exceeded the primitives they sit on. Nothing here is built. **Round-2 findings are now fixed in the text; three of them were settled by
+  executing something rather than by argument** (the recall/eviction test, the winner's-curse simulation, and a
+  containment-free steering detector — §6). Still not re-red-teamed after the fixes.** The simulations in §6 are
+  real runs; every claim in §5 is still a claim to be proven.
 - **Date**: 2026-09-21
 - **Origin**: ADR-179 §1 names "an evaluation harness" as the missing precondition for calling post-run review
   *self-improvement*, and §7 stage 2 gates the reviewer/queue on it.
@@ -53,7 +55,7 @@ per-run stream; a stream of reviewer output must be filtered by cheap dev screen
 | `TaskBranchSandbox`'s arg/reply structs are at `mandatory_sandbox_provider.hpp:155-200`; the implementation is later in the same file. It provides start/run/commit/discard on a worktree branch; **leaving a branch undiscarded on a failure path strands it** (the A10 stranded-loser class) | as cited |
 | ADR-180 §4b is the **only** behavioural data: 8 trials per cell, one model, binary "applied the lesson" — **not task success** | ADR-180 |
 | No registry-wide "what can a `Tool<>` reach" lint exists; `tools/policy_reachability.cpp` checks capability reachability against a fixture. `ToolDescriptor` holds a **type-erased `std::function`**, so no concept can see what a tool body captures; the existing compile-fail harness is a configure-time `try_compile` gate (`tests/CMakeLists.txt:6-30`) | `core/tool_descriptor.hpp:45-58`; `tools/` |
-| **Recall is a top-`max_injected` ranking (default 3)** by salience × recency × keyword, with **no weight for `kind`**; a seeded lesson has the lowest `write_seq`, and `on_turn_end` adds a higher-`write_seq` episodic item every turn, so **a lesson can be evicted from the injected set within a few turns**. `on_turn_end` also needs a `SummarizerT` — a second `ChatClient` | `memory_provider.hpp:239,246,256-257,338-355`; ADR-180 §2 Q3b |
+| **Recall is a top-`max_injected` ranking (default 3)** by salience × recency × keyword, with **no weight for `kind`**; a seeded lesson has the lowest `write_seq`, and `on_turn_end` adds a higher-`write_seq` episodic item every turn (salience left at 0.0). **Executed (`test_memory_lesson_recall`): a lesson written at salience 0.0 is evicted from the top 3 once three later items exist; at salience ≥ 0.05 it survives 60 later unrelated items; against items that quote the user's words only salience 1.0 survives.** The round-2 claim "evicted within a few turns" was therefore true only for a low-salience lesson `on_turn_end` also needs a `SummarizerT` — a second `ChatClient` | `memory_provider.hpp:239,246,256-257,338-355`; ADR-180 §2 Q3b |
 | `FileAppendLogStore::append` computes the sequence by re-reading, appends with `ofstream` and `flush()` — **no fsync, no compare-and-swap, no unique-key check**; O(n) per append | `rt/append_log_store.hpp:150-180` |
 | Capabilities are a **runtime `held` set checked in `admit_call`** for the `invoke_tool` pipeline; a tool body is ordinary C++ and nothing sandboxes it; the model client has **no `NetOut` check** (ADR-179 §2) | `trust/tool_pipeline.hpp:376-399` |
 | `start_task_branch`/`discard_task_branch` are public host-callable methods; calling them directly **skips `cap::TaskBranch`**; the provider needs a bound `SandboxRuntime`, quotas and, in practice, a Docker surface; `test_task_branch_tools` and `test_mandatory_sandbox_provider` are **excluded from CI** | `mandatory_sandbox_provider.hpp:244,885-900`; `.github/workflows/ci.yml:164,314` |
@@ -91,10 +93,16 @@ would only grow `memory_detail::ref_write_mutex`'s process-global map (§2, R2-M
 `AgentSession`s directly; it does not go through `agent.spawn`, whose derived-principal semantics are not what a
 trial wants.
 
-**Delivery is measured, not assumed (R2-M1).** Production recall is a top-3 ranking with no weight for `kind`
-(§2), so a seeded lesson can be **evicted by `on_turn_end`'s own episodic writes** within a few turns — in
-production too. If arm T silently stopped delivering the lesson, the harness would report "no effect" for a lesson
-that was never in the prompt. Therefore, **before every model call in arm T, the harness checks structurally that
+**Delivery is measured, not assumed (R2-M1) — and now with real numbers.** Production recall is a top-3 ranking
+with no weight for `kind` (§2). `test_memory_lesson_recall` **executes** the real ranking: a seeded lesson's
+survival depends on **the salience it was written with**, which is a *writer's* choice (0.0 → evicted after 3
+later items; ≥ 0.05 → survives 60 unrelated; only 1.0 survives 60 items that quote the user). If arm T seeded a
+lesson at a different salience than promotion will use, the harness would measure a delivery the product never
+gets, or report "no effect" for a lesson that was never in the prompt. Therefore **the harness seeds each lesson at
+the exact salience constant the promotion path will write** (a host constant — never derived from the candidate or
+any model output, I3), and that constant is a **required decision for ADR-179 stage 3**. Raising it is also a
+*weaponisation amplifier* (a higher-salience lesson is injected more reliably), so it is set once, host-side, and
+recorded in the suite digest. Therefore, **before every model call in arm T, the harness checks structurally that
 the lesson text is present in the assembled request**; a call where it is absent marks the trial `undelivered`.
 The report gives the **delivery rate**, and:
 
@@ -104,8 +112,8 @@ The report gives the **delivery rate**, and:
 - a **differential undelivered rate** between arms beyond the missingness bound (§3.5) marks the run
   `invalid: undelivered`.
 
-That production recall can evict a promoted lesson is itself a **finding for 029** (a lesson is ranked like any
-memory item); it is disclosed here and left to a separate decision.
+That production recall ranks a lesson like any memory item — evictable at low salience — is a **finding for 029**;
+it is disclosed here and the promotion salience is left to ADR-179 stage 3.
 
 **The summarizer stays on.** `on_turn_end` needs a `SummarizerT`, a second `ChatClient`. Turning it off would
 move the trial off the production route §3.2 insists on, so the trial runs with a summarizer that is **recorded
@@ -244,6 +252,22 @@ task from the same value (`prod-eu`) harmful in a deploy task. **Scope tagging i
 - The output is a **slot-write manifest**: the set of `(tool, slot)` pairs where lesson-sourced values landed,
   with counts across the S tasks.
 
+**Containment misses paraphrase — so there is a second, containment-free path (fix for the known hole).** A lesson
+saying "use the EU production region" that the model turns into `prod-eu` is not a substring of the lesson, and
+round 2 flagged this. So, for every **closed-domain sensitive slot** (an enum, or free text run through a
+host-authored normaliser into a closed set; **free-text slots that cannot be normalised are `unsuitable` for S**):
+
+- Per S task the harness compares the **distribution of the slot's value in T against B** with a permutation
+  chi-square test, and calibrates against a **B-vs-B′ noise floor** (a second, disjoint set of baseline trials of
+  the same tasks). No lesson text, no containment, no model in the loop.
+- A slot whose value distribution diverges significantly (Holm-corrected over the S-slot count declared in the
+  pre-registration) is `needs_ack(tool, slot)`, and the report lists **which values gained mass**, so the approver
+  sees `prod-eu` rise from 2% to 12% in `deploy.region` without the harness ever knowing why.
+- **Executed (§6 P1):** at N=300 trials per arm a shift of 10% of the mass onto one rare value is detected **96%**,
+  5% → **58%**, 3% → **32%**, with a **5–6%** false-positive rate. It is a *detector*, not a certifier: a steer of
+  ≤ 3% mostly slips through, which is why the near-zero *upper-bound* rule above still applies to the containment
+  path and why this ADR does not claim safety.
+
 **The gate is on the manifest:**
 
 1. **Any lesson-sourced write into a `sensitive` slot ⇒ `needs_ack(tool, slot)`.** The candidate is not eligible
@@ -366,16 +390,17 @@ reported figure is a **Clopper–Pearson 99% upper bound**, not a point estimate
 | E18 | G/S | **G:** over a mock surface every exit path (cancel, budget, crash, exception) calls `discard` — tests the harness's own paths only. **S:** the real `TaskBranchSandbox` strands no branch | Missing discard |
 | E19 | G | A run whose trial client, **or summarizer client, or grader client**, is not wrapped in `RecordingChatClient` is refused | Discard sink accepted |
 | E20 | G | The model grader has no tools, no capability, its own `Secret`, and its output parses to a closed enum | Reuses review key |
-| E21 | G | **Delivery:** in arm T the lesson text is present in the assembled request at **every** model call, else that trial is `undelivered`; **a mutant where `on_turn_end`'s episodic writes evict the seeded lesson (default `max_injected` = 3) is detected**; the report carries the delivery rate; intention-to-treat is primary | No delivery check |
-| E22 | G | Lesson-sourced provenance is decided by string containment over **recorded** arguments and the recorded context; a value present in the task input is **not** lesson-sourced | Model-judged provenance |
+| E21 | G | **Delivery:** in arm T the lesson text is present in the assembled request at **every** model call, else that trial is `undelivered`; **a mutant that seeds the lesson at salience 0.0 (so `on_turn_end` evicts it, as `test_memory_lesson_recall` executes) is detected**; the seeded salience must equal the promotion constant; the report carries the delivery rate; intention-to-treat is primary | No delivery check |
+| E22 | G | Containment provenance is decided by string containment over **recorded** arguments and context; a value present in the task input is **not** lesson-sourced. **Positive control that containment alone is insufficient:** a scripted client that turns "EU production region" into `prod-eu` is **missed** by containment and **caught** by E24 | Model-judged provenance |
+| E24 | G | **Divergence path:** on a closed-domain sensitive slot a planted steer of 10% of the mass at N=300 is flagged ≥ 0.9 of 2000 seeded runs; with **no** steer the false-flag rate has an upper bound ≤ 0.08; free-text slots that cannot be normalised are refused as `unsuitable` | No noise-floor (B-vs-B′); uncorrected across slots |
 | E23 | G | At zero shard supply promotion **halts**; no fallback to dev or reuse | Fallback allowed |
 
 **Not claimed:** that any lesson improves real-world performance (§1, §8); that acknowledged steering is safe (§3.7).
 
 ## 6. Executed evidence (offline simulation, 2026-09-21)
 
-Scripts: `sim181.py`, `sim181b.py`, `sim181c.py` (scratchpad; to be committed under `tests/` when E1/E15 are
-built). Synthetic binary outcomes; α = 0.05; 300–600 replications per cell. The statistics reviewer **independently
+Scripts: `tools/adr181_sims/sim181.py` (S1–S4), `sim181b.py` (S1b, S4b), `sim181c.py` (H1–H5), `sim181d.py`
+(H6), `sim181e.py` (W1, P1, H7) — fixed seeds, stdlib only; E1/E15/E24 will port them into the gated tests. Synthetic binary outcomes; α = 0.05; 300–600 replications per cell. The statistics reviewer **independently
 re-ran** these and reproduced every number.
 
 | | Result |
@@ -389,16 +414,19 @@ re-ran** these and reproduced every number.
 | **H4** *(superseded by H6)* two-shard replication, null effect, **N=100 per shard**, 2000 runs | 0.05% — a **small-N discreteness artefact** (the sign test is conservative at small N); do not read it as the joint rate |
 | **S4 / H2** power, base 60%, independent trials | +10pp: 12/28/53/**82**% at N=50/100/200/400 · +5pp: 4/9/18/27% at N=50–400, **49/72/83%** at N=800/1200/1600 |
 | **H6** two shards, N=400 per shard, one-sided α=.05 each, base 60% (`sim181d.py`, 600 runs; null 4000) | single-shard power **89 / 67 / 41%** at +10 / +7.5 / +5pp; **joint 81 / 45 / 16%**; null joint false promotion **0.15%** (≈ α²). The earlier "82% at N=400" (S4) was a two-sided count; the decision rule is one-sided |
-| **H7** *(round-2 reviewer's simulation, not re-run by me)* null variants that each pass two shards at α²≈0.25% | **22% after 100 variants, 92% after 1,000** — the reason family is `subject` + lineage, not `key`, and why shards are consumed per family. Stream of candidates, 2% truly good, finite shards: ≈1.07 shards per candidate, true promotion 81%, false promotion 0.26%, PPV 87% — **only if supply ≥ candidate count** |
+| **H7** null variants that each pass two shards. The reviewer's figure used α²=0.25%: 22% after 100 variants, 92% after 1,000. **Recomputed from H6's measured joint null rate 0.15%: 13.9% after 100 variants, 77.7% after 1,000** (analytic, not a fresh run) | Either way re-keying must not be a new family, and shards are consumed per family. Reviewer's stream sim (2% good): ≈1.07 shards per candidate, false promotion 0.26% — **only if supply ≥ candidate count** |
+| **W1** *winner's curse and a realistic stream* (`sim181e.py`, 1500 runs): 20 candidates, 10% truly +8pp, rest 0; choose the best on dev (N=200), confirm on two shards (N=400 each) | the selected candidate's **dev-estimated effect +0.115 vs true +0.045 (2.5× inflated)**; the selected candidate is truly good 56% of the time (88% that a good one exists); **promoted 30% of runs, and every observed promotion was a true effect** (null promotions 0.13% per run). Dev estimates must never be reported as the effect; only shard estimates are |
+| **P1** *steering detector without containment* (`sim181e.py`, 200 runs per cell): closed-domain slot, 6 values, T shifts mass q onto one rare value; permutation chi-square T vs B | N=300/arm: q=10% **96%**, 5% **58%**, 3% **32%**, none **6% false flag**; N=150/arm: 78 / 36 / 17% and 5% false flag |
+| **R1–R4** *recall/eviction, real code* (`tests/test_memory_lesson_recall.cpp`) | salience 0.0 lesson **evicted** from the top 3 after 3 later `on_turn_end`-style items (still evicted after 60); salience 0.05–1.0 **survives** 60 unrelated items; against items that **quote the user's words** a salience-0.2 lesson is evicted by 3 and **only salience 1.0 survives 60**. My own first prediction (a quote-heavy stream evicts even salience 1.0) was **wrong**: the salience factor (0.05+s ≈ 21× the floor) beats the keyword hit (10×) |
 | **S4b** power at +10pp, N=100, task heterogeneity | 28% → 22% (100×1); 24% → 21% (20×5) |
 | **H5** safety gate: block iff exact 95% upper bound of T's rate > 2%, N=300 | true 0%: blocked **0%** · 0.5%: **41%** · 1%: **83%** · 2%: 98% · 4%: 100% |
 
 **Limits of the evidence:** synthetic; binary outcomes; independent given the task; **no model was called**; the
 real discordance rate and noise floor of an actual task suite are unknown until a pilot; the winner's curse and
 dev→shard shift are unsimulated; H5's gate numbers assume an independent-Bernoulli spillover, whereas real lesson
-spillover is likely clustered by task. **The delivery/eviction concern (E21) and the slot-provenance test (E22) rest
-on a source reading, not on a run** — no trial has yet been executed to show a seeded lesson is evicted at the
-default `max_injected` of 3.
+spillover is likely clustered by task; P1 uses a fixed baseline distribution and a single slot. **Delivery (E21) is
+now executed at the ranking layer, not end-to-end** — no live trial has shown a lesson absent from a real request.
+**Dev→shard shift is still unsimulated** (W1 shows the winner's curse, not a distribution shift between task sets).
 
 ## 7. Red-team dispositions
 
@@ -450,6 +478,16 @@ default `max_injected` of 3.
 | M8 | serious | Pilot-as-look vs "free"; which claims are gated | §3.3 pilot is on dev (no look budget); §5 G/S column |
 | M9/10 | minor | E9's "unmodified client" control trivial; statistical claims lack seeds/thresholds | E9 two mutants; §5 fixes seed, runs, Clopper–Pearson bounds |
 
+**Post-round-2 fixes (this revision).** The known residuals from round 2 that could be closed by evidence were:
+
+| Item | Result |
+|---|---|
+| M1 "the lesson is evicted within a few turns" | **Executed and narrowed** (`test_memory_lesson_recall`): true at salience 0.0, false at ≥ 0.05 against unrelated items; only 1.0 survives quoting items. §3.2 now requires seeding at the promotion salience constant. My first prediction of the quoting case was wrong and is recorded in §6 |
+| S "paraphrase hole in slot provenance" | **Fixed in design, with a measured detector** (§3.7 divergence path, §6 P1, E24) — with a stated weakness at low steer rates |
+| S winner's curse unsimulated | **Simulated** (§6 W1): 2.5× inflation on the dev estimate; two-shard confirmation contained it |
+| H7 unreproduced | **Recomputed** from the measured rate (13.9% / 77.7%), not the reviewer's 22% / 92% |
+| Dev→shard shift, live delivery, real task-suite noise | **Still open** — need a real suite and a live pilot (§8) |
+
 ## 8. Residuals
 
 - **External validity.** A suite passing says nothing about production tasks. Task authorship (who writes them, how
@@ -461,13 +499,17 @@ default `max_injected` of 3.
   of 50–100 shards — **not credible**, which is why §1 scopes the harness to dev-screened candidates. Budgets bound
   spend; they do not make it cheap, and **authoring** is the real cost. Parametrised task generators (fresh shards
   on demand) are the obvious follow-on and are **not designed here**.
-- **Winner's curse and dev→shard shift** are not simulated; a real winner is likely to look weaker on a shard.
+- **Dev→shard shift** is not simulated (the winner's curse is: 2.5×, §6 W1); a real winner is likely to look weaker
+  on a shard, and the dev estimate must never be reported as the effect.
 - **The family definition** (`subject` + source lineage) is only as good as ADR-179's closed schema and lineage
   tracking; two lessons with different subjects that steer the same behaviour are different families, and a
   human budget grant can override the families-per-subject cap.
 - **Slot declaration quality bounds arm S:** steering that lands in a slot the host did not declare `sensitive` is
   invisible to it, and an approver can acknowledge a harmful slot. Arm S makes steering *auditable*, not *safe*.
-- **Recall can evict a promoted lesson** (§2, §3.2): a finding for 029, not decided here.
+  The divergence path's power falls with the steer size (3% at N=300 is caught 32% of the time) and needs a
+  closed-domain or normalisable slot.
+- **Recall can evict a low-salience lesson** (executed, §2/§6): the promotion salience constant is an ADR-179
+  stage-3 decision, and raising it amplifies weaponisation.
 - **Suite and candidate roles** are separated by convention on a single-host deployment; a compromised host
   defeats both. The ledger's tamper-evidence is a hash chain, not authentication.
 - **No process-level network confinement** of the trial process (only host-authored stubs and the pipeline gate);
@@ -480,10 +522,9 @@ default `max_injected` of 3.
   is optimistic by construction.
 - **The per-trial deadline is unenforceable today** (§3.9): a watchdog and process memory cap stand in.
 - **Not re-red-teamed after round 2.** Round 3 should attack the new §3.7 (slot provenance: can a value be
-  encoded, split or paraphrased so string containment misses it — a lesson saying "use the EU production region"
-  that the model turns into `prod-eu` is *not* a substring of the lesson), the delivery check's own failure modes,
-  and whether one-shard-per-family supply is workable in practice. **That paraphrase gap is a known hole in E22
-  today** and is listed here rather than hidden.
+  encoded, split or paraphrased so string containment misses it — closed for closed-domain slots by the divergence
+  path, but **multi-slot, multi-step or free-text steering is not covered**), the delivery check's own failure modes,
+  and whether one-shard-per-family supply is workable in practice.
 - **Names needing `tools/naming_lint.py`:** `EvalSuite`, `EvalRun`, `PromotionEvidence`, `LookLedger`.
   `EvaluationVerdict` is taken by the reflection loop and must not be reused.
 - 022 §4/§7 amendment (a pointer to this ADR) is still to write.
