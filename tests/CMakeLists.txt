@@ -659,6 +659,12 @@ if(WIN32)
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_memory_provider COMMAND test_memory_provider)
 
+  # ADR-179 stage 0: concurrent writers to one principal's memory ref must not lose items.
+  add_executable(test_memory_write_concurrency test_memory_write_concurrency.cpp)
+  target_link_libraries(test_memory_write_concurrency PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_memory_write_concurrency COMMAND test_memory_write_concurrency)
+
   # ADR-180: which channel a procedural memory item reaches the model by (029 §10 Q2's route).
   add_executable(test_memory_procedural_channel test_memory_procedural_channel.cpp)
   target_link_libraries(test_memory_procedural_channel PRIVATE
