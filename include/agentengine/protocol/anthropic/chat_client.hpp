@@ -772,7 +772,12 @@ public:
     // like a stream that ended. It then surfaces as "completed with no usage", a contract failure
     // nothing retries, when the truth is a transient one. Only meaningful when chunked: an unchunked
     // SSE body legitimately ends at connection close and carries no such signal.
-    [[nodiscard]] bool truncated() const noexcept { return chunked_ && !chunked_decoder_.complete(); }
+    // A stream that already delivered `message_stop` is COMPLETE whatever the framing did afterwards
+    // (some proxies close without the final 0-chunk after a whole answer); failing it would discard a
+    // finished, billed response and pay for it again.
+    [[nodiscard]] bool truncated() const noexcept {
+        return chunked_ && !chunked_decoder_.complete() && !message_stop_seen_;
+    }
 
     [[nodiscard]] std::vector<ChatResponseUpdate> finish() {
         std::vector<ChatResponseUpdate> out;
@@ -890,6 +895,7 @@ private:
                                                             std::vector<ChatResponseUpdate>* chunk_out) {
         std::vector<BlockItem> out;
         for (SseEvent const& ev : split_sse_named_events(block)) {
+            if (ev.type == "message_stop") message_stop_seen_ = true;
             if (ev.type == "content_block_start") {
                 auto parsed = json::parse(ev.data);
                 if (!parsed) continue;
@@ -1020,6 +1026,7 @@ private:
     }
 
     bool chunked_;
+    bool message_stop_seen_ = false;
     std::string producer_chat_client_id_;
     sandbox::ChunkedBodyDecoder chunked_decoder_;
     sandbox::SseEventFramer framer_;

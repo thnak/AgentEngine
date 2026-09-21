@@ -166,6 +166,13 @@ were run with it). Live, against DeepSeek `deepseek-flash`: OC, reasoning-delta,
 live tests pass, so a healthy chunked TLS stream is not misflagged truncated; the CLI answers normally
 with retries on.
 
+**Code-review follow-up (same PR).** A review pointed out that the truncation check as first written
+also failed a COMPLETE answer whose body merely closed without the final chunk (some proxies do), which
+the session would then retry and pay for twice. It now defers to the stream's own terminal event
+(`[DONE]` for OpenAI, `message_stop` for Anthropic). Proven on the OpenAI path with a loopback server
+(mutant: dropping the clause is caught); **the Anthropic clause has no loopback test** and rests on the
+same one-line shape. Also: `AGENTENGINE_CLI_CHAT_STREAM_RETRIES` is now parsed strictly.
+
 ## 10. Still open
 
 1. **The 90 s silent-provider path is not exercised** — the incident that started this — only the

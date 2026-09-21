@@ -260,6 +260,26 @@ int main() {
         }
     }
 
+    // ---- a COMPLETE answer whose body then closes without the final chunk is NOT a failure ----------------
+    // Some proxies do exactly this. Failing it would throw away a finished, billed response and pay for it
+    // again -- so the truncation check must defer to the stream's own terminal event.
+    {
+        Script complete_but_unterminated;
+        complete_but_unterminated.events = {sse(R"({"choices":[{"delta":{"content":"whole"}}]})"), usage_chunk,
+                                            "data: [DONE]\n\n"};
+        complete_but_unterminated.finish_cleanly = false;
+        ScriptedSseServer server({complete_but_unterminated, complete_but_unterminated});
+        if (server.ok()) {
+            auto [r, warnings] = run_against(server, /*retries=*/1);
+            check(r.has_value() && text_of(r->message) == "whole",
+                  "a finished answer (its own [DONE] seen) is kept even though the body closed without "
+                  "the final chunk");
+            check(server.connections() == 1 && warnings == 0,
+                  "and it is NOT retried: one connection, no retry warning -- a retry here would bill a "
+                  "completed response twice");
+        }
+    }
+
     if (g_failures != 0) {
         std::fprintf(stderr, "%d check(s) FAILED\n", g_failures);
         return 1;

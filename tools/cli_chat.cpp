@@ -70,6 +70,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <charconv>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -1139,10 +1140,12 @@ void print_skills_banner(std::ostream& out,
             if (!p.message.starts_with(agentengine::rt::detail::kStreamRetryWarningPrefix)) return std::nullopt;
             // The one warning a person needs at the screen: what they just watched stop is being redone.
             // The provider's own reason is in the action log (describe_event() writes it there).
-            return "  ! the reply stopped part-way; asking again (" +
-                   p.message.substr(agentengine::rt::detail::kStreamRetryWarningPrefix.size(),
-                                    p.message.find(':') - agentengine::rt::detail::kStreamRetryWarningPrefix.size()) +
-                   ")";
+            // "<prefix>N/M: <reason>" -- show N/M; if the shape ever changes, show the line without it.
+            auto const from = agentengine::rt::detail::kStreamRetryWarningPrefix.size();
+            auto const colon = p.message.find(':', from);
+            std::string const which = colon == std::string::npos ? std::string{}
+                                                                 : " (" + p.message.substr(from, colon - from) + ")";
+            return "  ! the reply stopped part-way; asking again" + which;
         }
         default: return std::nullopt;
     }
@@ -1252,8 +1255,15 @@ template <class Inner>
     // timeout fires) is re-issued instead of ending the session. One retry by default, per RUN;
     // `0` restores the old behaviour. The dead attempt's partial output stays on screen -- it was
     // real output -- and the retry says so.
-    actor.set_stream_retries(static_cast<std::uint32_t>(
-        std::strtoul(env_or("AGENTENGINE_CLI_CHAT_STREAM_RETRIES", "1").c_str(), nullptr, 10)));
+    {
+        // Strict: a value that is not a plain non-negative integer keeps the default rather than being
+        // read as 0 (silently disabling the retry) or wrapping to something enormous.
+        std::string const raw = env_or("AGENTENGINE_CLI_CHAT_STREAM_RETRIES", "1");
+        std::uint32_t retries = 1;
+        auto const [end, ec] = std::from_chars(raw.data(), raw.data() + raw.size(), retries);
+        if (ec != std::errc{} || end != raw.data() + raw.size()) retries = 1;
+        actor.set_stream_retries(retries);
+    }
     // ADR-035 Phase 1: the scan that actually matters for this CLI now that streaming is always on
     // -- runs post-hoc, once per round, on the reconstructed Message (agent_session.hpp's
     // run_model_call()), so reasoning_texts_of() below sees real extracted Reasoning items again.

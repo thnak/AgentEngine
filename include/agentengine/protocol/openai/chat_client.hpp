@@ -715,8 +715,6 @@ public:
         return out;
     }
 
-    // End of stream: flushes the held-back update and every assembled tool call, marking the very
-    // last one final. Safe to call on a stream that produced nothing (returns empty).
     // ADR-177: true when the body was chunk-framed and the peer went away BEFORE the terminating
     // 0-chunk. That is an HTTP framing violation, not a short answer -- the transport hands a close
     // to its caller as an ordinary end-of-body ("the terminal 0-chunk is the CALLER's to notice",
@@ -724,8 +722,15 @@ public:
     // like a stream that ended. It then surfaces as "completed with no usage", a contract failure
     // nothing retries, when the truth is a transient one. Only meaningful when chunked: an unchunked
     // SSE body legitimately ends at connection close and carries no such signal.
-    [[nodiscard]] bool truncated() const noexcept { return chunked_ && !chunked_decoder_.complete(); }
+    // A stream that already delivered its own terminal event (`[DONE]`) is COMPLETE whatever the framing
+    // did afterwards: some proxies close without the final 0-chunk after a whole answer, and failing
+    // that would throw away a finished, billed response and pay for it again.
+    [[nodiscard]] bool truncated() const noexcept {
+        return chunked_ && !chunked_decoder_.complete() && !done_seen_;
+    }
 
+    // End of stream: flushes the held-back update and every assembled tool call, marking the very
+    // last one final. Safe to call on a stream that produced nothing (returns empty).
     [[nodiscard]] std::vector<ChatResponseUpdate> finish() {
         std::vector<ChatResponseUpdate> out;
         // A truncated final event still carries a real item -- do not silently drop it.
