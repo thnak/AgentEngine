@@ -658,6 +658,12 @@ if(WIN32)
   target_link_libraries(test_memory_provider PRIVATE
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_memory_provider COMMAND test_memory_provider)
+
+  # ADR-180: which channel a procedural memory item reaches the model by (029 §10 Q2's route).
+  add_executable(test_memory_procedural_channel test_memory_procedural_channel.cpp)
+  target_link_libraries(test_memory_procedural_channel PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_memory_procedural_channel COMMAND test_memory_procedural_channel)
 endif()
 
 # ---- Milestone 4 Phase G5 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
@@ -990,6 +996,30 @@ if(AGENTENGINE_WITH_HTTPS)
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_test(NAME test_openrouter_live_e2e COMMAND test_openrouter_live_e2e)
   set_tests_properties(test_openrouter_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
+
+  # ADR-179 §1 / ADR-181 precondition: is a PLAUSIBLE learned lesson still followed by the safe route?
+  # Live, observation only (see the file's own top comment); self-skips without a key.
+  add_executable(test_memory_lesson_effectiveness_live_e2e test_memory_lesson_effectiveness_live_e2e.cpp)
+  target_link_libraries(test_memory_lesson_effectiveness_live_e2e PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_memory_lesson_effectiveness_live_e2e COMMAND test_memory_lesson_effectiveness_live_e2e)
+  set_tests_properties(test_memory_lesson_effectiveness_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 900)
+
+  # ADR-180 (wire half): what BOTH real serializers do with the two shapes the routes produce.
+  add_executable(test_memory_procedural_wire test_memory_procedural_wire.cpp)
+  target_link_libraries(test_memory_procedural_wire PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings)
+  add_test(NAME test_memory_procedural_wire COMMAND test_memory_procedural_wire)
+
+  # ADR-180: a live measurement of what a real model does with a hostile learned instruction
+  # delivered by each route (observation only; see the file's own top comment).
+  add_executable(test_memory_procedural_channel_live_e2e test_memory_procedural_channel_live_e2e.cpp)
+  target_link_libraries(test_memory_procedural_channel_live_e2e PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_memory_procedural_channel_live_e2e COMMAND test_memory_procedural_channel_live_e2e)
+  set_tests_properties(test_memory_procedural_channel_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
 
   # ---- ADR-063 §2.5: OpenAIEmbedder (protocol/openai/embedder.hpp) -- offline-provable surface --
   # request/response construction and embed_batch()'s two synchronous pre-network gates. No server,

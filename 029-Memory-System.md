@@ -349,6 +349,15 @@ Items decayed below a threshold are consolidation candidates, never silently gon
   designed per-turn, attributed, tainted injection path) is the only route: a learned instruction is
   injected alongside the static instructions each turn, visibly sourced (§6), never silently becoming
   part of the agent's reviewed baseline.
+  **Superseded 2026-09-21 (`decisions/ADR-180-procedural-memory-channel.md`) — the ROUTE above is
+  withdrawn; the principle (memory never rewrites the reviewed baseline) stands.** `ContextContribution.
+  instructions` is materialized `origin=system, tainted=false`, outside ADR-173's fence and its
+  reading-rule preamble, so routing model-derived text through it launders it past §6's own "tainted
+  external content" rule (and the "designed ... tainted injection path" wording above is inaccurate:
+  `agent_session.hpp` declassifies it). **Procedural memory reaches the model only as tainted
+  `role::system` `messages`, fenced, exactly as every other retrieved item does; it is never contributed
+  through `.instructions`.** This is what `MemoryProvider` already does; no code changes. Not yet
+  enforced by any gate (ADR-180 §5).
 - ~~**Q3** — Consolidation cadence: per-turn (cheap per step, many small merges) versus periodic
   batch (cheaper overall, a staleness window in between).~~ **Resolved, operator-configurable,
   defaulting to periodic batch (2026-08-04):** this dissolves the per-turn-vs-batch framing as a
