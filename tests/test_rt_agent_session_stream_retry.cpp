@@ -117,6 +117,33 @@ public:
     task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) { co_return std::monostate{}; }
 };
 
+// ---- A tool that needs approval: the run SUSPENDS on it (ADR-029), which is what P13 crosses -----------
+
+struct GatedTool : agentengine::Tool<GatedTool, agentengine::Capabilities<>,
+                                      agentengine::EffectClass<agentengine::effect_class::pure>,
+                                      agentengine::Approval<agentengine::approval_mode::always_require>> {
+    static constexpr std::string_view name = "gated_tool";
+    static constexpr std::string_view description = "Needs approval before every call.";
+    using Args = EchoArgs;
+    using Reply = EchoReply;
+    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+        ++g_echo_invocations;
+        return Reply{a.value};
+    }
+};
+
+class GatedHistoryProvider {
+public:
+    [[nodiscard]] task<agentengine::result<agentengine::ContextContribution>> on_context(
+        agentengine::SessionContext& sc, EffectContext&) {
+        agentengine::ContextContribution c;
+        c.messages.assign(sc.history.begin(), sc.history.end());
+        c.tools = agentengine::ToolTable::from_tools<GatedTool>().descriptors();
+        co_return c;
+    }
+    task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) { co_return std::monostate{}; }
+};
+
 // ---- A scripted streaming client: each call is a list of updates then close OR fail -----------------
 
 struct Attempt {
@@ -697,6 +724,69 @@ int main() {
         check(*calls == 1,
               "P10 (R6): the backend was called ONCE -- the session-level retry did not engage on a "
               "gateway session, so it cannot have crossed a tier boundary");
+    }
+
+    // ---- P13: the retry state survives an approval suspend/resume of the SAME run ------------------------
+    {
+        using GatedSession = AgentSession<ScriptedStreamClient, NoSessionState, GatedHistoryProvider>;
+        auto const gated_call = [](bool is_final) {
+            ChatResponseUpdate upd = echo_call(is_final, kUsage);
+            std::get<ToolCall>(upd.delta.value).tool_name = "gated_tool";
+            return upd;
+        };
+        // dead stream -> (retry) tool call -> SUSPEND -> approve -> dead stream -> (retry?) -> answer
+        auto const script = [&] {
+            std::vector<Attempt> a(4);
+            a[0].updates = {text_delta("Let me check")};
+            a[0].fail    = dead_stream();
+            a[1].updates = {gated_call(/*is_final=*/true)};
+            a[2].updates = {text_delta("Done, partly")};
+            a[2].fail    = dead_stream();
+            a[3].updates = {text_delta("All done.", /*is_final=*/true, kUsage)};
+            return a;
+        };
+        auto const make = [&](std::uint32_t retries, GatedSession& session, CapabilitySet const& held) {
+            session.initialize("s13", Principal{"p", ""});
+            session.emplace_chat_client().attempts = script();
+            session.set_capabilities(&held);
+            session.set_stream_model_calls(true);
+            session.set_stream_retries(retries);
+            session.set_suspend_for_approval(true);
+        };
+        CapabilitySet const held = CapabilitySet::grant_root({});
+
+        // Two retries allowed for the RUN: one spent before the suspend, one after the resume.
+        g_echo_invocations = 0;
+        GatedSession two;
+        make(2, two, held);
+        auto r1 = drive(two.start_run(StartRun{user_message("hi")}));
+        std::fprintf(stderr, "  .. P13 r1: %s / %s\n", r1.has_value() ? "value" : r1.error().code.c_str(),
+                     r1.has_value() ? "-" : r1.error().message.c_str());
+        check(!r1.has_value() && two.has_open_interactions(), "P13 setup: the run suspends for approval");
+        if (!two.has_open_interactions()) return 1;
+        check(two.stream_retries_used() == 1, "P13: the retry made BEFORE the suspend is counted");
+        std::uint64_t const est_before = two.discarded_tokens_estimate();
+        check(est_before > 0, "P13: and its budget charge is recorded");
+        auto r2 = drive(two.resolve_interaction(agentengine::rt::ResolveInteraction{
+            two.open_interactions().front().interaction_id, /*approved=*/true, std::nullopt}));
+        check(r2.has_value() && agentengine::text_of(r2->message) == "All done.",
+              "P13: with two retries the resumed run recovers from a second dead stream and converges");
+        check(two.stream_retries_used() == 2,
+              "P13: the bound is per RUN -- the resume did not reset the count");
+        check(two.discarded_tokens_estimate() > est_before,
+              "P13: the estimate accumulated across the resume, it was not reset");
+        check(g_echo_invocations == 1, "P13: the gated tool ran exactly once, after approval");
+
+        // One retry allowed: spent before the suspend, so the resumed run has none left.
+        g_echo_invocations = 0;
+        GatedSession one;
+        make(1, one, held);
+        (void)drive(one.start_run(StartRun{user_message("hi")}));
+        auto s2 = drive(one.resolve_interaction(agentengine::rt::ResolveInteraction{
+            one.open_interactions().front().interaction_id, /*approved=*/true, std::nullopt}));
+        check(!s2.has_value() && one.stream_retries_used() == 1,
+              "P13 control: with one retry, spent before the suspend, the resumed run's dead stream FAILS "
+              "-- so the count really does carry across the resume");
     }
 
     if (g_failures != 0) {

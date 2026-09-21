@@ -485,6 +485,23 @@ int main() {
             check(!r.has_value() && c.connections() == 1 && warnings == 0,
                   "Anthropic control: with retries off the same cut stream fails the run");
         }
+
+        // (c) 200 head, then a cut before ANY body byte (the case that needed the `!acc` rule on the OpenAI
+        // side): no accumulator exists to ask `truncated()`, so it must still be a truncation, and retried.
+        Script head_then_cut;
+        head_then_cut.raw = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
+        ScriptedSseServer d({head_then_cut, complete_clean});
+        if (d.ok()) {
+            auto [r, warnings] = run_anthropic(d, 1);
+            check(r.has_value() && text_of(r->message) == "whole" && d.connections() == 2 && warnings == 1,
+                  "Anthropic: a 200 head followed by a cut before ANY body byte is retried");
+        }
+        ScriptedSseServer e({head_then_cut, head_then_cut});
+        if (e.ok()) {
+            auto [r, warnings] = run_anthropic(e, 0);
+            check(!r.has_value() && e.connections() == 1 && warnings == 0,
+                  "Anthropic control: with retries off the same head-then-cut fails the run");
+        }
     }
 
     if (g_failures != 0) {
