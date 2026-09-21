@@ -279,9 +279,11 @@ generated, which nobody has confirmed either way.
 
 ## 10. Still open
 
-1. **Provider billing of an unfinished stream is unmeasured.** The project's answer is to ASSUME it is
-   billed (§4, I8 decided above), which makes the estimate an over-count if providers do not bill it.
-   Closing it needs a first-party statement or a killed-stream measurement against a provider dashboard.
+1. ~~Provider billing of an unfinished stream is unmeasured.~~ **A note, not an open item** (project owner,
+   2026-09-21). No provider states whether a stream that never finished is billed, and none is going to; the
+   project treats it as paid for the tokens generated (§4, I8), so the budget charge is an estimate that
+   over-counts if a provider does not bill it. That is the accepted position, not a question awaiting a
+   measurement.
 2. ~~Consumers cannot erase a discarded partial~~ -- closed by §11 for any consumer that acts on the
    event; a consumer that ignores it still sees the dead attempt's text and then the full one.
 3. Gateway sessions still die post-commit; a tier-aware answer is separate, larger work (it has to
