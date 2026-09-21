@@ -206,6 +206,10 @@ struct ModelOutputDiscarded {
     std::uint32_t attempt = 0;
     std::uint32_t max_attempts = 0;
     std::string   reason;
+    // What the run's token budget was CHARGED for this attempt: an ESTIMATE (~4 bytes/token, input plus
+    // the output the dead stream delivered), never a billed count. A failed stream reports no `Usage` and
+    // providers do not say whether they bill it, so the project treats it as billed (ADR-177 §4).
+    std::uint64_t estimated_tokens = 0;
 };
 
 struct PolicyDecision {

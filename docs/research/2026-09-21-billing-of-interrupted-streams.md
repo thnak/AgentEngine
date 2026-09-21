@@ -27,12 +27,16 @@
 
 ## Consequence for the design
 
-ADR-177 therefore treats the budget hole as REAL and UNQUANTIFIED, and does the only things available
-without the number: it bounds the COUNT (per-run cap, clamped to 3), never hides it (a `warning` per
-retry, and `AgentSession::stream_retries_used()` for a host that wants to apply its own estimate), and
-keeps the feature off by default. The token figure cannot be enforced: a failed stream reports no
-`Usage`, and inventing one would put a fabricated number into a budget.
+**Decision (project owner, 2026-09-21): since no provider is clear about it, believe they still count a
+discarded attempt toward cost.** ADR-177 therefore CHARGES it to the per-run token budget as an estimate
+(the request as input plus the output the dead stream delivered, ~4 bytes/token, rounded up), never into the
+real-usage report, and refuses to retry once that charge breaks the budget. The count is also bounded
+(per-run cap, clamped to 3), announced (`ModelOutputDiscarded`, carrying the estimate) and exposed
+(`stream_retries_used()`, `discarded_tokens_estimate()`).
 
-To close this properly someone needs a first-party statement per provider, or a measurement: make a
-streamed call, kill it at a known point, and compare the provider's usage dashboard with the tokens
-actually received. That needs a provider account and is not done here.
+The estimate is a bias toward over-counting, chosen because the alternative -- treating it as free -- has
+no evidence behind it either and errs the unsafe way for a budget.
+
+To replace the assumption with a fact someone needs a first-party statement per provider, or a
+measurement: make a streamed call, kill it at a known point, and compare the provider's usage dashboard
+with the tokens actually received. That needs a provider account and is not done here.

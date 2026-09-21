@@ -730,6 +730,9 @@ public:
     // docs/research/2026-09-21-billing-of-interrupted-streams.md: whether providers bill such an
     // attempt is not established.
     [[nodiscard]] std::uint32_t stream_retries_used() const noexcept { return stream_retries_used_; }
+    // The ESTIMATED tokens this run's token budget was charged for discarded attempts (already inside
+    // `run_tokens_consumed()`, and NOT inside `run_usage()`, which reports only what a provider said).
+    [[nodiscard]] std::uint64_t discarded_tokens_estimate() const noexcept { return discarded_tokens_estimate_; }
 
     void set_scan_response_format_leaks(bool scan) noexcept { scan_response_format_leaks_ = scan; }
     [[nodiscard]] bool scan_response_format_leaks() const noexcept { return scan_response_format_leaks_; }
@@ -964,6 +967,7 @@ public:
 
         run_counter_ += 1;
         stream_retries_used_ = 0;
+        discarded_tokens_estimate_ = 0;
         run_tokens_consumed_ = 0;
         run_usage_ = agentengine::Usage{};
         // ADR-061 §20.3: principal/capabilities are already set by apply_dispatch_authority() above
@@ -1344,6 +1348,7 @@ public:
         history_provider_ = source.history_provider_;
         run_counter_ = 0;
         stream_retries_used_ = 0;
+        discarded_tokens_estimate_ = 0;
         last_run_id_.clear();
         effect_context_ = EffectContext{};
         open_interactions_.clear();
@@ -1383,6 +1388,7 @@ public:
         metadata_.clear();
         run_counter_ = 0;
         stream_retries_used_ = 0;
+        discarded_tokens_estimate_ = 0;
         last_run_id_.clear();
         effect_context_ = EffectContext{};
         open_interactions_.clear();
@@ -2601,10 +2607,31 @@ private:
                 // 013 §1: the output streamed since the `model_call_started` above is VOID. Emitted after
                 // that call's `model_call_finished` and before the next `model_call_started`, so a
                 // consumer that keeps per-call state can retract it at a clean boundary.
+                // I8: providers do not say whether they bill a stream that never finished, so it is
+                // treated as billed (project owner, 2026-09-21; docs/research/2026-09-21-billing-of-
+                // interrupted-streams.md). The dead stream reported no `Usage`, so the charge is an
+                // ESTIMATE -- the request as input plus the output it delivered -- and it goes against the
+                // token BUDGET only, never into `run_usage_` (which reports what a provider actually said).
+                std::uint64_t const charged =
+                    detail::estimate_request_tokens(request) + agentengine::estimate_tokens_for_bytes(f.bytes_seen);
+                discarded_tokens_estimate_ += charged;
+                run_tokens_consumed_ += charged;
                 emit_run_event(run_event_kind::model_output_discarded,
                                 run_event_payload::ModelOutputDiscarded{
                                     stream_retries_used_, stream_retries_ + 1,
-                                    f.inner.message + (f.inner.code.empty() ? "" : " (" + f.inner.code + ")")});
+                                    f.inner.message + (f.inner.code.empty() ? "" : " (" + f.inner.code + ")"),
+                                    charged});
+                // The charge can itself break the budget -- and a retry must not go ahead if it has.
+                if (token_budget_.has_value() && run_tokens_consumed_ > *token_budget_) {
+                    emit_run_event(run_event_kind::run_failed,
+                                    run_event_payload::RunFailed{
+                                        "run.token_budget_exceeded",
+                                        "per-run token budget exceeded (including an estimate for a discarded attempt)"});
+                    co_return std::unexpected(error{failure_class::resource,
+                                                     "per-run token budget exceeded (including an estimate for a "
+                                                     "discarded attempt)",
+                                                     "run.token_budget_exceeded"});
+                }
             }
             if (!response) {
                 emit_run_event(run_event_kind::run_failed,
@@ -3077,6 +3104,7 @@ private:
     // ADR-177. `stream_retries_used_` is per RUN (reset in start_run), never per round.
     std::uint32_t                                         stream_retries_ = 0;
     std::uint32_t                                         stream_retries_used_ = 0;
+    std::uint64_t                                         discarded_tokens_estimate_ = 0;
     std::optional<detail::StreamFailure>                  last_stream_failure_;
     bool                                                  scan_response_format_leaks_ = false;
     // §9 RC-1 (design doc above) -- see set_background_execution_disabled()'s own comment.

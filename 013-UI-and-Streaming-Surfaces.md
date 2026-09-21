@@ -44,7 +44,10 @@ session's opt-in stream retry (`set_stream_retries`) re-tries it. It is emitted 
 or stored any of it should retract it.** The run continues; a fresh `ModelCallStarted ... ModelCallFinished`
 bracket follows. Payload: `attempt` (the 1-based attempt that was discarded), `max_attempts` (the most
 attempts a run will make: retries allowed + 1) and `reason` (the failure that ended the dead stream -- host
-text, for display and logs, never a control input). Nothing was appended to the conversation history and no
+text, for display and logs, never a control input) and `estimated_tokens` (what the run's token budget was
+CHARGED for the dead attempt -- an estimate, ~4 bytes/token over the request plus the output delivered,
+never a billed count; a provider's billing of an unfinished stream is not established, so it is treated as
+billed, ADR-177 §4). Nothing was appended to the conversation history and no
 tool ran from a discarded call, so the void is presentation-only. A consumer that ignores the event is
 still correct; it just shows the dead attempt's text followed by the full one, which is what the
 projection did before this event existed.

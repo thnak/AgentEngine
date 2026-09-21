@@ -224,8 +224,8 @@ struct Harness {
     ScriptedStreamClient* client = nullptr;
 
     explicit Harness(std::vector<Attempt> attempts, std::uint32_t retries, bool stream_live = true,
-                     char const* id = "s") {
-        session.initialize(id, Principal{"p", ""});
+                     char const* id = "s", std::optional<std::uint64_t> budget = std::nullopt) {
+        session.initialize(id, Principal{"p", ""}, budget);
         client = &session.emplace_chat_client();
         client->attempts = std::move(attempts);
         session.set_capabilities(&held);
@@ -403,6 +403,50 @@ int main() {
         (void)drive(hc.session.start_run(StartRun{user_message("hi")}));
         check(count_retry_warnings(drain_events(hc.viewer)) == 0,
               "P11 control: a run with no dead stream emits no ModelOutputDiscarded");
+    }
+
+    // ---- P12: a discarded attempt is treated as BILLED (I8) -----------------------------------------------
+    // Providers do not say whether they bill a stream that never finished (docs/research/2026-09-21-...),
+    // so the project assumes they do. The dead stream reports no Usage, so the charge is an ESTIMATE, and
+    // it goes against the token BUDGET only -- run_usage() keeps reporting what a provider actually said.
+    {
+        auto script = [] {
+            std::vector<Attempt> a(2);
+            a[0].updates = {text_delta("a fairly long partial answer that was delivered before the stream died")};
+            a[0].fail    = dead_stream();
+            a[1].updates = {text_delta("done", true, kUsage)};
+            return a;
+        };
+
+        Harness h(script(), 1, true, "s-p12", /*budget=*/1'000'000);
+        auto r = drive(h.session.start_run(StartRun{user_message("hi")}));
+        check(r.has_value(), "P12: with a generous budget the run recovers");
+        std::uint64_t const est = h.session.discarded_tokens_estimate();
+        check(est > 0, "P12 (I8): the discarded attempt was CHARGED an estimate, not treated as free");
+        check(h.session.run_tokens_consumed() == kUsage.input_tokens + kUsage.output_tokens + est,
+              "P12 (I8): the budget counter holds the real usage PLUS the estimate for the dead attempt");
+        check(h.session.run_usage().input_tokens == kUsage.input_tokens &&
+                  h.session.run_usage().output_tokens == kUsage.output_tokens,
+              "P12: run_usage() still reports ONLY what a provider said -- an estimate never masquerades as it");
+        std::uint64_t reported = 0;
+        for (auto const& e : drain_events(h.viewer)) {
+            if (e.kind == run_event_kind::model_output_discarded) {
+                reported = std::get<agentengine::run_event_payload::ModelOutputDiscarded>(e.payload).estimated_tokens;
+            }
+        }
+        check(reported == est, "P12: the event carries the same estimate, so a consumer can show what was charged");
+
+        // The charge can itself break the budget, and then the retry must NOT go ahead.
+        Harness tight(script(), 1, true, "s-p12-tight", /*budget=*/5);
+        auto rt = drive(tight.session.start_run(StartRun{user_message("hi")}));
+        check(!rt.has_value() && rt.error().code == "run.token_budget_exceeded",
+              "P12 (I8): a charge that breaks the budget fails the run as run.token_budget_exceeded");
+        check(tight.client->calls == 1,
+              "P12 (I8): and the retry was NOT issued -- the dead attempt alone had already spent the budget "
+              "(the control above, same script with a generous budget, made both calls)");
+
+        // A fresh run starts from zero again.
+        check(Session{}.discarded_tokens_estimate() == 0, "P12: the estimate starts at zero");
     }
 
     // ---- P4: default 0 == today's behaviour ---------------------------------------------------------

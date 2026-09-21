@@ -1091,7 +1091,8 @@ void print_skills_banner(std::ostream& out,
         case run_event_kind::model_output_discarded: {
             auto const& p = std::get<run_event_payload::ModelOutputDiscarded>(ev.payload);
             return "  [model output discarded] attempt " + std::to_string(p.attempt) + " of " +
-                   std::to_string(p.max_attempts) + ": " + p.reason;
+                   std::to_string(p.max_attempts) + " (budget charged ~" + std::to_string(p.estimated_tokens) +
+                   " tokens, estimated): " + p.reason;
         }
         default: return "  [event]";  // auth_*/policy_decision/artifact_produced/sandbox_exec_*/
                                        // tool_call_delta/model_delta: real kinds, no emitter yet

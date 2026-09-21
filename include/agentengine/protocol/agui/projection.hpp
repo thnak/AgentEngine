@@ -289,7 +289,8 @@ public:
                 std::vector<std::pair<std::string, json::Value>> members{
                     {"attempt", json::Value::make_number(static_cast<double>(p.attempt))},
                     {"maxAttempts", json::Value::make_number(static_cast<double>(p.max_attempts))},
-                    {"reason", json::Value::make_string(p.reason)}};
+                    {"reason", json::Value::make_string(p.reason)},
+                    {"estimatedTokens", json::Value::make_number(static_cast<double>(p.estimated_tokens))}};
                 return {CustomEvent{"ae:model_output_discarded", json::Value::make_object(std::move(members))}};
             }
             case run_event_kind::policy_decision: {

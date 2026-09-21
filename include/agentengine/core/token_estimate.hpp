@@ -15,9 +15,15 @@
 
 namespace agentengine {
 
+// ADR-177: the same estimate for a byte COUNT, for callers that have measured a payload without holding
+// it as one string (a dead stream's deltas, a request's messages and tool schemas).
+[[nodiscard]] inline std::uint64_t estimate_tokens_for_bytes(std::uint64_t bytes) {
+    return (bytes + 3) / 4;  // ceiling division, ~4 chars/token
+}
+
 [[nodiscard]] inline std::uint64_t estimate_tokens(std::string_view text) {
     if (text.empty()) return 0;
-    return (text.size() + 3) / 4;  // ceiling division, ~4 chars/token
+    return estimate_tokens_for_bytes(text.size());
 }
 
 }  // namespace agentengine

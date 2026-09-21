@@ -62,11 +62,15 @@ from a partially streamed `ToolCall`. That proviso is R1 below and is the first 
 
 ## 4. What it costs, stated plainly
 
-- **I8 (budgets).** A failed stream reports no `Usage`; `run_tokens_consumed_` is charged only on
-  success. So today a failed call is already invisible to the token budget, and a retry multiplies
-  that blind spot by up to `1 + n`. The retry cap bounds the *count*, not the tokens. Whether a
-  provider bills a stream it never finished is an **external claim this ADR does not make** — it
-  needs dated, cited research (`docs/research/`) before §6 can be closed.
+- **I8 (budgets).** A failed stream reports no `Usage`, so `run_tokens_consumed_` was charged only on
+  success and a discarded attempt was invisible to the token budget. Whether a provider bills a stream it
+  never finished is not established (`docs/research/2026-09-21-billing-of-interrupted-streams.md`), and the
+  project owner decided (2026-09-21): **treat it as billed.** So a discarded attempt is CHARGED, as an
+  ESTIMATE: the request as input plus the output the dead stream delivered, at the repo's existing
+  conservative ~4 bytes/token (`core/token_estimate.hpp`). The charge goes against the token BUDGET only;
+  `run_usage()` keeps reporting what a provider actually said. A charge that itself breaks the budget fails
+  the run as `run.token_budget_exceeded` and the retry is NOT issued. The estimate is on the event
+  (`estimated_tokens`) and on `AgentSession::discarded_tokens_estimate()`.
 - **Wall clock.** A stalled attempt costs up to 90 s. A retry that stalls again doubles the wait for
   the same failure. The single incident is one data point; it does not show that a second attempt
   succeeds.
@@ -94,7 +98,7 @@ from a partially streamed `ToolCall`. That proviso is R1 below and is the first 
 
 ## 6. Residuals named up front
 
-1. Token cost of a discarded attempt is invisible to the budget (needs provider-billing research).
+1. ~~Token cost of a discarded attempt is invisible to the budget~~ -- decided in §4/§9 (charged as an estimate; the owner's call to assume it is billed).
 2. Consumers cannot erase a discarded partial (no discard event; 013 change deferred).
 3. Gateway sessions still die post-commit; a *tier-aware* answer is separate, larger work.
 4. Pre-first-byte failures (rate limit, refused connect) want backoff; this ADR retries them without
@@ -257,10 +261,20 @@ full answer. The owner accepted a new event kind to let a consumer retract it. *
 - **Not done**: I7 wants a conformance run for any protocol claim. This adds no AG-UI wire claim beyond
   the existing CUSTOM escape hatch, and no consumer other than `cli_chat` acts on the event yet.
 
+**I8, decided (project owner, 2026-09-21): treat a discarded attempt as billed.** It is now charged to
+the token budget as an estimate (§4), and a charge that breaks the budget stops the retry. Proven by P12
+(charged; budget counter = real + estimate; `run_usage()` unchanged; the event carries the same number;
+a tight budget fails the run and the retry is not issued, with a generous-budget control). Mutants caught:
+charge never reaching the budget, the estimate leaking into `run_usage()`, the budget not re-checked.
+Limits, stated: the figure is an ESTIMATE (~4 bytes/token) and is wrong in both directions for a real
+tokenizer; media in a request is not counted (an undercount); and it assumes providers bill what they
+generated, which nobody has confirmed either way.
+
 ## 10. Still open
 
-1. **Provider billing of an unfinished stream is unmeasured** (above). Closing it needs a first-party
-   statement or a killed-stream measurement against a provider dashboard.
+1. **Provider billing of an unfinished stream is unmeasured.** The project's answer is to ASSUME it is
+   billed (§4, I8 decided above), which makes the estimate an over-count if providers do not bill it.
+   Closing it needs a first-party statement or a killed-stream measurement against a provider dashboard.
 2. ~~Consumers cannot erase a discarded partial~~ -- closed by §11 for any consumer that acts on the
    event; a consumer that ignores it still sees the dead attempt's text and then the full one.
 3. Gateway sessions still die post-commit; a tier-aware answer is separate, larger work (it has to
