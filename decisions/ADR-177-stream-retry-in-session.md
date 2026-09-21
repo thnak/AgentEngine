@@ -1,7 +1,8 @@
 # ADR-177 — A stream that dies mid-answer: retry the model call, and what that costs
 
-- **Status**: **Proposed — implemented and proven (§9); awaiting a fresh-adversary red-team round and
-  project-owner sign-off.** Round 1 (§7) was the author's own read of the code; §9 is executed evidence.
+- **Status**: **Judged -- accepted, project-owner sign-off 2026-09-21.** Implemented, proven, and red-teamed
+  in two rounds (§7 by the author; §9 by a fresh adversary, no fatal or serious finding). The owner also
+  accepted the new event kind (§11). What remains open is listed in §10 as residual, not pending work.
 - **Date**: 2026-09-21
 - **Origin**: a real interactive `cli_chat` session (2026-09-18) lost a 93 s model call:
   `chat_stream() did not reach a clean terminal`. The provider streamed 526 reasoning chunks in 3.2 s,
@@ -264,4 +265,5 @@ full answer. The owner accepted a new event kind to let a consumer retract it. *
    event; a consumer that ignores it still sees the dead attempt's text and then the full one.
 3. Gateway sessions still die post-commit; a tier-aware answer is separate, larger work (it has to
    reckon with 004 §4's no-silent-substitution rule).
-4. Round 2 by a fresh adversary; **Judged is the project owner's to give.**
+4. ~~Round 2 by a fresh adversary; Judged.~~ Done (§9) and Judged 2026-09-21. The residuals above are
+   accepted, not pending; each would be its own ADR.
