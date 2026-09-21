@@ -50,6 +50,21 @@
 // (core/chat_recording.hpp), replayable offline via `ReplayChatClient` -- this is how a real HITL
 // suspend/approve/resume run against a real model gets debugged after the fact, not just watched
 // scroll past in the terminal.
+//
+// HUMAN APPROVAL: `run_command` -- and only `run_command` -- is raised to
+// `approval_mode::always_require` for this CLI, host-side, by setting `ToolDescriptor::approval` on
+// the contribution (`ToolDeclaringHistoryProvider::require_approval_for`). The tool itself is
+// unchanged and every other consumer of it is unaffected: which effects need a human is a property of
+// a DEPLOYMENT, not of a tool. A `set_approval_decider()` callback then asks, synchronously, at
+// `invoke_tool()`'s step 5, with the canonical JSON of the exact arguments about to run. Anything but
+// `y`/`yes` denies, and so does a closed stdin -- nobody is assumed to have said yes.
+//
+// THE SCREEN SHOWS A CONVERSATION; `actions.log` SHOWS THE MACHINE. Run events -- turn indices, call
+// ids, model-call boundaries, the once-per-run ADR-034 streaming warning, dump-file writes, the
+// startup skills/mount inventory, the orphan sweep -- all go to `actions.log` in the same dump
+// directory, with millisecond offsets. The terminal keeps the conversation, plus a `* <tool>` line
+// when a tool starts (a container can take seconds; silence reads as a hang) and a `!` line when one
+// fails. `AGENTENGINE_CLI_CHAT_VERBOSE=1` puts the full trace back on screen alongside the log.
 
 #ifdef AGENTENGINE_WITH_HTTPS
 
@@ -58,13 +73,19 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <memory_resource>
+#include <mutex>
+#include <optional>
+#include <sstream>
 #include <stop_token>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "agentengine/core/builtin_skills.hpp"
@@ -115,6 +136,130 @@ namespace {
 [[nodiscard]] std::string env_or(char const* name, std::string fallback) {
     auto const v = ::agentengine::pal::env_var(name);
     return (v && !v->empty()) ? *v : std::move(fallback);
+}
+
+// ---- The action log: everything the screen no longer says ----------------------------------------
+//
+// This CLI used to print its whole run-event trace -- turn indices, call ids, model-call boundaries,
+// the once-per-run ADR-034 streaming warning -- into the same stream as the conversation, so reading
+// what the agent SAID meant skipping what the engine DID. That trace is not noise, it is just not UI:
+// it is exactly what you want when something goes wrong, and never what you want while talking to an
+// agent. So it goes to `actions.log` in this run's dump directory, beside the request/response dumps
+// that were already landing there, and the screen keeps the conversation.
+//
+// Deliberately line-buffered-and-flushed rather than buffered: a log that loses its last lines to a
+// crash is worthless precisely when it matters. Thread-safe because the drain thread, the approval
+// decider (which runs on the pool worker) and main() all write to it.
+class ActionLog {
+public:
+    explicit ActionLog(std::filesystem::path path)
+        : path_(std::move(path)), out_(path_, std::ios::out | std::ios::app) {}
+
+    void write(std::string_view what) {
+        std::lock_guard<std::mutex> const guard(mutex_);
+        if (!out_) return;
+        out_ << stamp() << ' ' << what << '\n';
+        out_.flush();
+    }
+
+    [[nodiscard]] std::filesystem::path const& path() const noexcept { return path_; }
+
+private:
+    // Milliseconds since this process started, not wall clock: portable with no `localtime` variant
+    // per platform, monotonic, and what you actually read a log like this for -- ordering and gaps.
+    [[nodiscard]] static std::string stamp() {
+        static auto const started = std::chrono::steady_clock::now();
+        auto const ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - started)
+                            .count();
+        char buf[32];
+        std::snprintf(buf, sizeof buf, "[%9lld ms]", static_cast<long long>(ms));
+        return buf;
+    }
+
+    std::mutex            mutex_;
+    std::filesystem::path path_;   // declared before `out_`: the stream is constructed FROM it
+    std::ofstream         out_;
+};
+
+// One per process: this CLI is one process = one session by construction (see `kSessionId`'s own
+// comment), and `DumpSink` -- built in `main()`, moved into the chat client, and called from a
+// detached streaming thread -- needs to reach the same log as `run_interactive()` without either
+// owning it. `main()` sets the path before anything can log.
+inline std::filesystem::path g_action_log_path;
+
+[[nodiscard]] ActionLog& action_log() {
+    static ActionLog log(g_action_log_path.empty()
+                             ? std::filesystem::temp_directory_path() / "agentengine_cli_actions.log"
+                             : g_action_log_path);
+    return log;
+}
+
+// ---- Capping what a tool result puts into the NEXT model request ---------------------------------
+//
+// A 32-second shell harness can return tens of kilobytes, and every byte of it goes into the next
+// request verbatim. The session this was written for lost a 93-second model call immediately after
+// one: the provider accepted a ~250 KB request, streamed reasoning for 3.2 seconds, went silent, and
+// the stream died on `net_egress_proxy.cpp`'s 90s TLS read timeout with `stream_terminal: failed`.
+//
+// Truncating here does NOT prevent that -- a slow model can go quiet whatever the prompt size, and
+// the honest fix for a stalled stream is a retry, which is its own decision. What it does is remove
+// the largest single thing this CLI hands a provider, and cost less per turn while doing it.
+//
+// ANNOUNCED, never silent. The model is told exactly how many bytes it is not seeing, so it can ask
+// for a narrower command instead of reasoning confidently over a result it only half received --
+// silent truncation would be the worse failure here by a wide margin. The full reply goes to the
+// action log, so nothing is actually lost.
+[[nodiscard]] std::size_t max_tool_output_bytes() {
+    static std::size_t const cap = [] {
+        constexpr std::size_t kDefault = 8192;
+        auto const v = ::agentengine::pal::env_var("AGENTENGINE_CLI_CHAT_MAX_TOOL_OUTPUT");
+        if (!v || v->empty()) return kDefault;
+        char* end = nullptr;
+        unsigned long long const parsed = std::strtoull(v->c_str(), &end, 10);
+        if (end == nullptr || *end != '\0') return kDefault;
+        return parsed == 0 ? std::numeric_limits<std::size_t>::max()  // "0" means do not cap
+                            : static_cast<std::size_t>(parsed);
+    }();
+    return cap;
+}
+
+// Recursive because a reply is an arbitrary JSON shape, not a known `{stdout_text: ...}`: capping
+// only the field this CLI happens to know about would silently stop working the day a tool returns
+// its bulk somewhere else.
+[[nodiscard]] json::Value cap_strings(json::Value const& v, std::size_t cap, std::size_t& withheld) {
+    if (v.is_string()) {
+        std::string const& text = v.as_string();
+        if (text.size() <= cap) return v;
+        std::size_t const dropped = text.size() - cap;
+        withheld += dropped;
+        return json::Value::make_string(
+            text.substr(0, cap) + "\n\n... [truncated by the host CLI: " + std::to_string(dropped) +
+            " more bytes were NOT sent to you. Re-run with a narrower command, or filter the output, "
+            "rather than assuming the rest looked like what you can see.]");
+    }
+    if (v.is_array()) {
+        std::vector<json::Value> out;
+        out.reserve(v.as_array().size());
+        for (json::Value const& item : v.as_array()) out.push_back(cap_strings(item, cap, withheld));
+        return json::Value::make_array(std::move(out));
+    }
+    if (v.is_object()) {
+        std::vector<std::pair<std::string, json::Value>> out;
+        out.reserve(v.as_object().size());
+        for (auto const& [key, val] : v.as_object()) out.emplace_back(key, cap_strings(val, cap, withheld));
+        return json::Value::make_object(std::move(out));
+    }
+    return v;
+}
+
+// Puts the old trace back on screen, for when the log file is the inconvenient place to look.
+[[nodiscard]] bool verbose_ui() {
+    static bool const on = [] {
+        auto const v = ::agentengine::pal::env_var("AGENTENGINE_CLI_CHAT_VERBOSE");
+        return v && (*v == "1" || *v == "true");
+    }();
+    return on;
 }
 
 // Real, direct api.openai.com -- distinct from the "openrouter" provider below. Untestable in an
@@ -168,11 +313,12 @@ public:
         std::filesystem::path const path =
             state_->dir / ("call-" + std::to_string(index) + ".json");
         auto written = write_chat_call_recording(path, rec);
+        // To the log, never to the screen: one of these fires per model call, and "a file was
+        // written" is the definition of something a person did not ask to be told mid-sentence.
         if (!written) {
-            std::cerr << "[dump] failed to write " << path.string() << ": "
-                       << written.error().message << "\n";
+            action_log().write("dump FAILED " + path.string() + ": " + written.error().message);
         } else {
-            std::cerr << "[dump] wrote " << path.string() << "\n";
+            action_log().write("dump wrote " + path.string());
         }
     }
 
@@ -520,6 +666,20 @@ public:
         return {};
     }
 
+    // WHICH TOOLS NEED A HUMAN IS THE HOST'S CALL, NOT THE TOOL'S. `approval_mode` is a compile-time
+    // tag carrying each tool's own DEFAULT (`never_require`, tool.hpp's fail-open default, which
+    // `run_command` takes), but `ToolDescriptor::approval` is a plain field on the descriptor this
+    // provider hands to the session -- so a host can raise a tool to `always_require` for ITS
+    // deployment without touching the tool, the provider that owns it, or any other consumer of
+    // either. Applied in `on_context()` below, on every contribution.
+    //
+    // Host-only and configuration-time, exactly like `configure()` above and
+    // `AgentSession::set_capabilities()` one layer up: I3 -- nothing here is ever derived from model
+    // output, and no tool can talk its way onto or off this list mid-conversation.
+    void require_approval_for(std::vector<std::string> tool_names) {
+        approval_required_ = std::move(tool_names);
+    }
+
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& session_ctx,
                                                                  EffectContext& ec) {
         auto skills_contribution = co_await skills_.on_context(session_ctx, ec);
@@ -595,6 +755,42 @@ public:
         for (ToolDescriptor& td : run_command_contribution->tools) {
             contribution.tools.push_back(std::move(td));
         }
+
+        // See `require_approval_for()`. Applied to the WHOLE contribution rather than to the
+        // run_command half alone, so raising a CodeAct or skill-gated tool later needs no new code
+        // here. `invoke_tool()`'s step 5 and `AgentSession`'s own suspend-for-approval check both read
+        // this same field off this same descriptor (`tool_call_requires_approval`, tool_pipeline.hpp),
+        // so there is no way for the declaration and the enforcement to disagree.
+        for (ToolDescriptor& td : contribution.tools) {
+            for (std::string const& needs_human : approval_required_) {
+                if (td.name == needs_human) {
+                    td.approval = agentengine::approval_mode::always_require;
+                    break;
+                }
+            }
+
+            // Wrap this turn's invoke in the output cap (see `cap_strings`). Safe to do on every
+            // contribution because descriptors are REBUILT here each turn rather than carried over --
+            // a wrapper never wraps a wrapper. A descriptor with no invoke is declaration-only;
+            // wrapping it would turn a tool that was never callable into one that throws.
+            if (!td.invoke) continue;
+            ToolDescriptor::InvokeFn inner = std::move(td.invoke);
+            std::string tool_name = td.name;
+            td.invoke = [inner = std::move(inner), tool_name = std::move(tool_name)](
+                            json::Value const& args, EffectContext& ec) -> result<json::Value> {
+                result<json::Value> reply = inner(args, ec);
+                if (!reply) return reply;
+                std::size_t withheld = 0;
+                json::Value capped = cap_strings(*reply, max_tool_output_bytes(), withheld);
+                if (withheld > 0) {
+                    action_log().write("tool " + tool_name + " reply CAPPED: " +
+                                        std::to_string(withheld) +
+                                        " bytes withheld from the model. Full reply follows.\n" +
+                                        json::dump(*reply));
+                }
+                return capped;
+            };
+        }
         co_return contribution;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -610,6 +806,8 @@ public:
     }
 
 private:
+    std::vector<std::string> approval_required_;
+
     // The real `execute_code` implementation (ADR-030) -- was `ExecuteCodeTool::invoke()`'s body
     // before this pass, unchanged in substance, only in where it reaches its state FROM: `skills_`
     // (this provider's own member, replacing the third independent `shared_codeact_skills()`
@@ -767,26 +965,30 @@ template <class Inner>
 // round loop that used to need them here moved inside `AgentSession::handle()` itself; only
 // `text_of` is still called directly, to print the session's final converged answer.
 
-void print_skills_banner(std::vector<native_jail::MaterializedSkillMount> const& materialized,
+// Writes to `out` rather than std::cout: this is startup DIAGNOSTICS -- which skills resolved, where
+// they materialized, what is mounted, what is invocable right now. Genuinely useful, and not what a
+// person wants to read before their first message, so it goes to the action log unless -- verbose.
+void print_skills_banner(std::ostream& out,
+                          std::vector<native_jail::MaterializedSkillMount> const& materialized,
                           SkillsProvider<>& startup_skills, MountedSkillsState const& mounted_skills) {
-    std::cout << "Skills RESOLVED at /skills/<name> -- every one's files are unconditionally readable "
+    out << "Skills RESOLVED at /skills/<name> -- every one's files are unconditionally readable "
                  "from turn 1 (009 §8b, unaffected by mount state):\n";
     for (auto const& source : demo_skill_sources()) {
         auto skills = source.load_skills();
         if (skills) {
             for (auto const& s : *skills) {
-                std::cout << "  - " << s.skill.frontmatter.name << ": "
+                out << "  - " << s.skill.frontmatter.name << ": "
                            << s.skill.frontmatter.description << "\n";
             }
         } else {
-            std::cout << "  (failed to resolve '" << source.origin_id
+            out << "  (failed to resolve '" << source.origin_id
                        << "': " << skills.error().message << ")\n";
         }
     }
 
-    std::cout << "Materialized into the real sandbox (native_jail::materialize_skill_mounts):\n";
+    out << "Materialized into the real sandbox (native_jail::materialize_skill_mounts):\n";
     if (materialized.empty()) {
-        std::cout << "  (none)\n";
+        out << "  (none)\n";
     } else {
         for (auto const& [mount_id, host_dir] : materialized) {
             // Deliberate, explicit narrowing (pre-existing behavior, byte-truncating for any
@@ -796,31 +998,31 @@ void print_skills_banner(std::vector<native_jail::MaterializedSkillMount> const&
             std::string narrow_host_dir;
             narrow_host_dir.reserve(host_dir.size());
             for (wchar_t const wc : host_dir) narrow_host_dir.push_back(static_cast<char>(wc));
-            std::cout << "  - mount_id=" << mount_id << " host_dir=" << narrow_host_dir << "\n";
+            out << "  - mount_id=" << mount_id << " host_dir=" << narrow_host_dir << "\n";
         }
     }
 
-    std::cout << "Currently MOUNTED skills (agent-triggered via mount_skill -- 009 §8c Phase 3): ";
+    out << "Currently MOUNTED skills (agent-triggered via mount_skill -- 009 §8c Phase 3): ";
     auto const& mounted = mounted_skills.all();
     if (mounted.empty()) {
-        std::cout << "(none -- nothing is pre-mounted; the agent must call mount_skill)\n";
+        out << "(none -- nothing is pre-mounted; the agent must call mount_skill)\n";
     } else {
-        for (std::size_t i = 0; i < mounted.size(); ++i) std::cout << (i ? ", " : "") << mounted[i];
-        std::cout << "\n";
+        for (std::size_t i = 0; i < mounted.size(); ++i) out << (i ? ", " : "") << mounted[i];
+        out << "\n";
     }
 
-    std::cout << "Tools declared+invocable right now (mount_skill is always available; others unlock "
+    out << "Tools declared+invocable right now (mount_skill is always available; others unlock "
                  "once their owning skill is mounted): ";
     auto const universe = ToolTable::from_tools<ExecuteCodeTool, MountSkillTool>();
     auto const scoped = scope_tools_to_mounted_skills(
         universe, startup_skills.allowed_tool_names_for(mounted), {std::string(MountSkillTool::name)});
     if (scoped.descriptors().empty()) {
-        std::cout << "(none)\n";
+        out << "(none)\n";
     } else {
         for (std::size_t i = 0; i < scoped.descriptors().size(); ++i) {
-            std::cout << (i ? ", " : "") << scoped.descriptors()[i].name;
+            out << (i ? ", " : "") << scoped.descriptors()[i].name;
         }
-        std::cout << "\n";
+        out << "\n";
     }
 }
 
@@ -848,7 +1050,7 @@ void print_skills_banner(std::vector<native_jail::MaterializedSkillMount> const&
             auto const& p = std::get<run_event_payload::Turn>(ev.payload);
             return "turn " + std::to_string(p.turn_index) + " finished";
         }
-        case run_event_kind::model_call_started: return "  thinking... (calling the model)";
+        case run_event_kind::model_call_started: return "  thinking... (calling the model)";  // NOLINT
         case run_event_kind::model_call_finished: return "  model responded";
         case run_event_kind::tool_call_started: {
             auto const& p = std::get<run_event_payload::ToolCallStarted>(ev.payload);
@@ -856,8 +1058,23 @@ void print_skills_banner(std::vector<native_jail::MaterializedSkillMount> const&
         }
         case run_event_kind::tool_call_finished: {
             auto const& p = std::get<run_event_payload::ToolCallFinished>(ev.payload);
-            return std::string("  <- tool call ") + (!p.result.is_error ? "OK" : "FAILED") +
-                   " (call_id=" + p.call_id + ")";
+            std::string line = std::string("  <- tool call ") + (!p.result.is_error ? "OK" : "FAILED") +
+                               " (call_id=" + p.call_id + ")";
+            // WHY a failure carries its reason here: this line used to say "FAILED" and nothing else,
+            // and the first real question ever asked of this log -- why did the Python worker stop
+            // answering mid-session -- could not be answered from it. The reason was sitting in the
+            // call dumps the whole time (`native_jail.session_terminated`, a watchdog kill with no
+            // respawn by design), one directory over, in a 400 KB JSON file. A log that records that
+            // something failed but not what failed is a log you still have to leave to use.
+            if (p.result.is_error) {
+                for (ContentItem const& item : p.result.content) {
+                    if (auto const* e = std::get_if<Error>(&item.value)) {
+                        line += ": " + e->message;
+                        break;
+                    }
+                }
+            }
+            return line;
         }
         case run_event_kind::input_required: return "  [suspended: waiting for input]";
         case run_event_kind::input_resolved: return "  [resumed]";
@@ -874,6 +1091,50 @@ void print_skills_banner(std::vector<native_jail::MaterializedSkillMount> const&
                                        // tool_call_delta/model_delta: real kinds, no emitter yet
                                        // (agent_session.hpp) -- kept generic rather than silently
                                        // dropped, so a future emitter is visible here immediately.
+    }
+}
+
+// What a PERSON wants to see while the agent works, which is almost none of the above. `std::nullopt`
+// means "this event belongs in the log, not on screen" -- the default for every kind, so a new event
+// kind is silent here until someone decides it is worth a human's attention, rather than appearing as
+// a bare "[event]" the way `describe_event`'s own `default:` arm does.
+//
+// Tool calls are the exception worth showing: `run_command` starts a real container and can take
+// seconds, and a UI that goes silent for that long reads as a hang. So a call announces itself when it
+// STARTS (responsiveness) and says nothing more unless it FAILED -- success is already implied by the
+// answer that follows it.
+// `denied` counts calls the human refused, by tool name, so a refusal is not reported back to them
+// as a malfunction. The engine cannot tell the two apart -- a denial IS a failed call, correctly
+// (`tool.approval_denied`, failure_class::policy), and the model is told exactly that -- but the
+// person who just typed `n` does not need "run_command failed, see the log" in reply to their own
+// decision. Counted by the decider rather than recognised from the result's text: matching on an
+// error MESSAGE would break silently the day that string changes, and a UI that quietly starts
+// calling denials failures again is worse than one that never tried.
+[[nodiscard]] std::optional<std::string> ui_line_of(RunEvent const& ev,
+                                                     std::unordered_map<std::string, std::string>& names,
+                                                     std::unordered_map<std::string, int>& denied) {
+    switch (ev.kind) {
+        case run_event_kind::tool_call_started: {
+            auto const& p = std::get<run_event_payload::ToolCallStarted>(ev.payload);
+            names[p.call_id] = p.tool_name;
+            return "  * " + p.tool_name;
+        }
+        case run_event_kind::tool_call_finished: {
+            auto const& p = std::get<run_event_payload::ToolCallFinished>(ev.payload);
+            auto const it = names.find(p.call_id);
+            std::string const name = it != names.end() ? it->second : std::string("tool call");
+            if (it != names.end()) names.erase(it);
+            if (!p.result.is_error) return std::nullopt;
+            if (auto const d = denied.find(name); d != denied.end() && d->second > 0) {
+                --d->second;
+                // NOT silence. `tool_call_started` fires BEFORE the approval check, so the human has
+                // already seen "* run_command" go by -- saying nothing here leaves that line standing
+                // as the last word about a command that never ran, which reads exactly like it did.
+                return "  * " + name + " -- not run, you denied it";
+            }
+            return "  ! " + name + " failed -- see the action log";
+        }
+        default: return std::nullopt;
     }
 }
 
@@ -902,7 +1163,8 @@ template <class Inner>
 [[nodiscard]] int run_interactive(Inner chat_client, DumpSink sink, std::string session_id,
                                     CapabilitySet held,
                                     std::vector<native_jail::MaterializedSkillMount> const& materialized,
-                                    SkillsProvider<>& startup_skills) {
+                                    SkillsProvider<>& startup_skills,
+                                    std::filesystem::path const& log_dir) {
     // ADR-037: real per-token streaming needs the session's own execution to genuinely run
     // concurrently with a caller draining its event stream. Previously a real, single-worker
     // `quark::Engine` (`quark::TestKit` runs everything "on the calling thread... no threads, no
@@ -990,9 +1252,90 @@ template <class Inner>
     // as AgentSession::handle() actually reaches them. Enabled once, for the whole session; the
     // drain thread below (per turn) is what actually prints model_delta text AS it arrives.
     auto event_stream = actor.enable_event_stream(std::pmr::get_default_resource());
-    // `ExecuteCodeTool`/`MountSkillTool` declare no `Approval<M>` policy (`approval_mode::
-    // never_require`, tool.hpp's own fail-open default), so `invoke_tool`'s step 5 never consults a
-    // decider for either -- no `set_approval_decider()` call is needed for this demo to keep working.
+    ActionLog& log = action_log();
+    log.write("session " + session_id + " starting");
+
+    // THE SCREEN IS SHARED, AND TWO THREADS WANT IT. The drain thread below prints model deltas as
+    // they stream; the approval decider runs on the pool's worker thread, mid-round, and needs to ask
+    // a question and read an answer. Unsynchronized, the prompt lands inside a half-printed sentence.
+    //
+    // `ui_mutex` makes each write atomic. `ui_paused` does the other half: while an approval is open,
+    // the drain thread keeps DRAINING (it must -- the event channel is bounded, and a drain thread
+    // that blocked here would stall the very round waiting for the answer) but routes what it would
+    // have printed to the log instead. Nothing is lost and nothing interrupts the question.
+    std::mutex             ui_mutex;
+    std::atomic<bool>      ui_paused{false};
+    // Answer text that streamed in WHILE an approval was open. Held rather than dropped: the first
+    // version routed it to the log only, and the sentence the model was mid-way through simply lost
+    // its middle on screen. Reasoning deltas are still log-only while paused -- they are commentary,
+    // they arrive in volume, and replaying a paragraph of them after the answer resumes reads worse
+    // than not replaying it.
+    std::string            held_text;
+    // tool name -> calls the human refused but whose `tool_call_finished` has not been rendered yet.
+    std::unordered_map<std::string, int> denied_calls;
+
+    // `run_command` runs a real shell command in a real container. `ExecuteCodeTool`/`MountSkillTool`
+    // stay unguarded: mounting a skill is not an effect, and `execute_code` is already mediated by the
+    // interpreter's own gates (010 §1a) -- approving every line of Python would train the human to
+    // type `y` without reading, which is worse than not asking.
+    actor.history_provider().require_approval_for({"run_command"});
+
+    // The blocking-decider shape (006 §4): `invoke_tool()`'s step 5 calls this synchronously, with the
+    // canonical JSON of the EXACT arguments about to execute -- so what the human sees is what runs,
+    // not a paraphrase the model supplied. Returning false denies the call; the round continues and
+    // the model is told. The alternative shape -- `set_suspend_for_approval(true)` plus
+    // `resolve_interaction()` -- is for a UI that cannot block a thread on a question; a terminal can.
+    actor.set_approval_decider([&](Principal const& caller, std::string_view tool_name,
+                                    std::string const& args_json) -> bool {
+        log.write("approval REQUESTED tool=" + std::string(tool_name) + " caller=" + caller.id +
+                  " args=" + args_json);
+        ui_paused.store(true, std::memory_order_release);
+
+        // Long arguments are truncated on screen and whole in the log: a prompt that scrolls the
+        // question off the top is a prompt nobody reads.
+        constexpr std::size_t kMaxShown = 240;
+        std::string shown = args_json;
+        if (shown.size() > kMaxShown) shown = shown.substr(0, kMaxShown) + "... (full text in the log)";
+        {
+            std::lock_guard<std::mutex> const guard(ui_mutex);
+            std::cout << "\n  approval needed\n"
+                       << "    tool  " << tool_name << "\n"
+                       << "    args  " << shown << "\n"
+                       << "    allow? [y/N] ";
+            std::cout.flush();
+        }
+
+        // stdin is genuinely free here: the main thread is blocked in `fut.get()` for this whole turn,
+        // not in its own getline. Read OUTSIDE the lock so the drain thread is never held off while a
+        // human thinks.
+        std::string answer;
+        bool const got = static_cast<bool>(std::getline(std::cin, answer));
+        // Unconditionally end the prompt line. A person's Enter is echoed by the terminal and already
+        // did this; a piped or redirected stdin echoes nothing, and without this the verdict lands on
+        // the end of "allow? [y/N] ". Costs one blank line interactively, fixes every other case.
+        {
+            std::lock_guard<std::mutex> const guard(ui_mutex);
+            std::cout << "\n";
+        }
+        for (char& c : answer) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        // Fail-closed, and EOF (a piped or closed stdin) denies rather than proceeding unattended --
+        // the whole point of the seam is that nobody is assumed to have said yes.
+        bool const approved = got && (answer == "y" || answer == "yes");
+
+        {
+            std::lock_guard<std::mutex> const guard(ui_mutex);
+            std::cout << (approved ? "    approved\n\n" : "    denied\n\n");
+            std::cout.flush();
+        }
+        if (!approved) {
+            std::lock_guard<std::mutex> const guard(ui_mutex);
+            ++denied_calls[std::string(tool_name)];
+        }
+        ui_paused.store(false, std::memory_order_release);
+        log.write(std::string("approval ") + (approved ? "GRANTED" : "DENIED") + " tool=" +
+                  std::string(tool_name) + (got ? "" : " (stdin closed -- denied unattended)"));
+        return approved;
+    });
 
     // ADR-030: hands the provider its real per-session mount-root/session-id knowledge -- must
     // happen before the first StartRun that could reach execute_code. ADR-034 correction: no
@@ -1014,7 +1357,14 @@ template <class Inner>
         cli_ledger, std::move(*root_branch), owner, sandbox_staging_root, *branch_quota, *run_quota,
         *storage_quota);
 
-    print_skills_banner(materialized, startup_skills, actor.history_provider().mounted_skills());
+    {
+        std::ostringstream banner;
+        print_skills_banner(banner, materialized, startup_skills,
+                            actor.history_provider().mounted_skills());
+        log.write("startup state --\n" + banner.str());
+        if (verbose_ui()) std::cout << banner.str();
+    }
+    std::cout << "Logs: " << log_dir.string() << "\n";
     std::cout << "\nType a message and press Enter. Type 'exit' or 'quit' to stop.\n\n";
 
     std::string line;
@@ -1043,19 +1393,37 @@ template <class Inner>
             // its final answer while it streamed. `reasoning_open` tracks whether the "[thinking] "
             // prefix below is currently active, so the two never run together on one line.
             bool reasoning_open = false;
+            // call_id -> tool name, so a failure can say WHICH tool failed: `tool_call_finished`
+            // carries only the call id.
+            std::unordered_map<std::string, std::string> tool_names;
             std::jthread drain([&](std::stop_token stop) {
                 auto drain_once = [&] {
                     while (std::optional<RunEvent> ev = event_stream.next()) {
+                        bool const paused = ui_paused.load(std::memory_order_acquire);
                         if (ev->kind == run_event_kind::model_delta) {
                             auto const& d = std::get<run_event_payload::ModelDelta>(ev->payload);
                             if (auto const* text =
                                     std::get_if<run_event_payload::ModelTextDelta>(&d.value)) {
+                                if (paused) {
+                                    log.write("delta(text, held) " + text->text);
+                                    std::lock_guard<std::mutex> const guard(ui_mutex);
+                                    held_text += text->text;
+                                    continue;
+                                }
+                                std::lock_guard<std::mutex> const guard(ui_mutex);
                                 if (reasoning_open) { std::cout << "\n"; reasoning_open = false; }
+                                if (!held_text.empty()) {
+                                    std::cout << held_text;
+                                    held_text.clear();
+                                    mid_line = true;
+                                }
                                 std::cout << text->text;
                                 std::cout.flush();
                                 mid_line = true;
                             } else if (auto const* reasoning =
                                            std::get_if<run_event_payload::ModelReasoningDelta>(&d.value)) {
+                                if (paused) { log.write("delta(reasoning) " + reasoning->text); continue; }
+                                std::lock_guard<std::mutex> const guard(ui_mutex);
                                 if (!reasoning_open) {
                                     if (mid_line) std::cout << "\n";
                                     std::cout << "[thinking] ";
@@ -1069,9 +1437,19 @@ template <class Inner>
                             // silently skipped, same as it was invisible before this design (013's own
                             // display-tier gap this piece closes for consumers that DO project it).
                         } else {
+                            // EVERY non-delta event, in full, unconditionally -- the log is the
+                            // complete trace whether or not anything reached the screen.
+                            log.write(describe_event(*ev));
+                            // The lock covers `denied_calls` too, which the approval decider writes
+                            // from the pool worker thread.
+                            std::lock_guard<std::mutex> const guard(ui_mutex);
+                            std::optional<std::string> const line =
+                                verbose_ui() ? std::optional<std::string>(describe_event(*ev))
+                                              : ui_line_of(*ev, tool_names, denied_calls);
+                            if (!line || paused) continue;
                             if (mid_line) { std::cout << "\n"; mid_line = false; }
                             reasoning_open = false;
-                            std::cout << describe_event(*ev) << "\n";
+                            std::cout << *line << "\n";
                         }
                     }
                 };
@@ -1080,6 +1458,7 @@ template <class Inner>
                     std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 }
                 drain_once();  // whatever landed between the last poll and stop being requested
+                std::lock_guard<std::mutex> const guard(ui_mutex);
                 if (mid_line) std::cout << "\n";
             });
             std::future<agentengine::rt::JobOutcome> fut = pool.submit(
@@ -1088,22 +1467,31 @@ template <class Inner>
         }  // drain's destructor: request_stop() then join(), guaranteed before `result_slot` is read
 
         if (outcome.faulted) {
-            std::cout << "[internal error: start_run() faulted unexpectedly]\n";
+            log.write("start_run() FAULTED unexpectedly");
+            std::cout << "  ! something went wrong inside the engine -- see " << log.path().string()
+                       << "\n";
             continue;
         }
         agentengine::result<agentengine::rt::AgentResponse> const& resp = *result_slot;
         if (!resp.has_value()) {
-            std::cout << "[error: " << resp.error().message << "]\n";
+            log.write("run FAILED code=" + resp.error().code + " message=" + resp.error().message);
+            std::cout << "  ! " << resp.error().message << "\n";
             continue;
         }
+        // To the log only. This used to print here as well, which meant every reasoning block was
+        // shown TWICE -- once live, token by token, as `[thinking]` while it streamed, and again in
+        // full once the round converged. The live copy is the one worth having (it arrives while the
+        // model is actually thinking); this one is the cleaned-up post-scan copy (ADR-035 Phase 1),
+        // which is exactly what a log is for.
         for (std::string const& reasoning : reasoning_texts_of(resp->message)) {
-            std::cout << "  [thinking] " << reasoning << "\n";
+            log.write("reasoning (post-scan): " + reasoning);
         }
         // No separate "Agent: <text>" line: every round's text (including the final converging
         // round's) was already printed token-by-token via model_delta above, live, as it was
         // actually generated -- repeating it here would just duplicate it.
     }
 
+    log.write("session " + session_id + " ending");
     std::cout << "Goodbye.\n";
     std::cout.flush();
     // ADR-034 CORRECTION, UPDATED for ADR-037: `shared_python_runner()`'s process-lifetime singleton
@@ -1157,6 +1545,14 @@ int main() {
     // has to happen before the very first write -- including the orphan-sweep report just below.
     console_utf8();
 
+    // SECOND on purpose, and for the same reason one line up. `action_log()` builds its file on FIRST
+    // USE, and the first use is the orphan sweep immediately below -- so resolving this AFTER the
+    // sweep (where the rest of the dump-directory setup naturally sits) silently pinned the whole
+    // session's log to the fallback path in the system temp directory, while the CLI printed the
+    // directory it was NOT writing to. Found by looking for the file the banner promised.
+    std::filesystem::path const dump_dir = resolve_dump_dir();
+    g_action_log_path = dump_dir / "actions.log";
+
     // ADR-136: this CLI's own top comment (~line 1088) already discloses that a real container from
     // `run_command` is orphaned on EVERY ordinary exit here (the `std::_Exit(0)` teardown below skips
     // `DockerExecutionSurface::~DockerExecutionSurface()` deliberately, to dodge a real CPython
@@ -1170,11 +1566,15 @@ int main() {
         DockerCliBackend orphan_sweep;
         auto swept = orphan_sweep.reap_orphans();
         if (swept.has_value() && (swept->reaped > 0 || !swept->reap_failures.empty())) {
-            std::cerr << "startup orphan sweep: inspected " << swept->inspected << ", reaped "
+            action_log().write("startup orphan sweep: inspected " +
+                                std::to_string(swept->inspected) + ", reaped " +
+                                std::to_string(swept->reaped) + ", " +
+                                std::to_string(swept->reap_failures.size()) + " destroy failure(s)");
+            if (verbose_ui()) std::cerr << "startup orphan sweep: inspected " << swept->inspected << ", reaped "
                       << swept->reaped << ", " << swept->reap_failures.size()
                       << " destroy failure(s)\n";
         } else if (!swept.has_value()) {
-            std::cerr << "startup orphan sweep skipped (non-fatal): " << swept.error().message << "\n";
+            action_log().write("startup orphan sweep skipped (non-fatal): " + swept.error().message);
         }
     }
 
@@ -1214,9 +1614,9 @@ int main() {
     caps.reasoning = true;
     caps.max_output_tokens = 2048;
 
-    std::filesystem::path const dump_dir = resolve_dump_dir();
-    std::cout << "Conversation dump: every real request/response this session's chat client sees is "
-                 "written to " << dump_dir.string() << "\n";
+    // `dump_dir`/`g_action_log_path` are resolved at the very top of main(), before the orphan sweep
+    // makes the first log write. The path is announced once, by run_interactive() -- one line naming
+    // one place, rather than a paragraph per artifact.
     DumpSink sink(dump_dir);
 
     if (provider == "openai") {
@@ -1265,7 +1665,7 @@ int main() {
             std::nullopt, sandbox::ProviderTransport::tls, /*scan_response_format_leaks=*/true,
             /*session_id=*/std::string{});
         return run_interactive(std::move(chat_client), std::move(sink), kSessionId, std::move(held),
-                                *materialized, startup_skills);
+                                *materialized, startup_skills, dump_dir);
     }
 
     if (provider == "openrouter") {
@@ -1305,7 +1705,7 @@ int main() {
             std::nullopt, sandbox::ProviderTransport::tls, /*scan_response_format_leaks=*/true,
             /*session_id=*/kSessionId);
         return run_interactive(std::move(chat_client), std::move(sink), kSessionId, std::move(held),
-                                *materialized, startup_skills);
+                                *materialized, startup_skills, dump_dir);
     }
 
     // provider == "anthropic"
@@ -1345,7 +1745,7 @@ int main() {
         kAnthropicApiVersion, sandbox::resolve_host, std::string{}, std::string{}, std::string{},
         kSessionId, std::string{}, sandbox::ProviderTransport::tls, /*session_id=*/kSessionId);
     return run_interactive(std::move(chat_client), std::move(sink), kSessionId, std::move(held),
-                            *materialized, startup_skills);
+                            *materialized, startup_skills, dump_dir);
 }
 
 #else   // AGENTENGINE_WITH_HTTPS

@@ -134,9 +134,28 @@ inline void filter_cross_provider_reasoning(agentengine::ContextContribution& co
         if (!s.done()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     if (s.terminal() != agentengine::stream_terminal::closed) {
+        // Carry the stream's OWN reason, not just the fact that it failed. `stream::fail_error()` has
+        // held it all along and this line used to discard it, so a caller was told only that the
+        // terminal was unclean -- the one thing they already knew from the failure itself.
+        //
+        // A real interactive session (2026-09-18) lost a 93-second model call here and the message
+        // said nothing about why. The reason was `TLS read failed: SSL - The operation timed out`:
+        // the provider streamed reasoning tokens for 3s, went silent, and net_egress_proxy.cpp's
+        // 90s `kIoTimeoutMs` fired. That was recoverable only by opening the call recording
+        // afterwards and reading `stream_error_detail` -- a debugging step nobody should need for a
+        // reason the process was already holding in a variable.
+        //
+        // `failure_class` stays `transient` deliberately: it describes THIS failure (an incomplete
+        // stream is worth retrying) and promoting the inner error's class would silently change how
+        // existing callers treat it. Only the message grows.
+        agentengine::error const inner = s.fail_error();
+        std::string message = "chat_stream() did not reach a clean terminal";
+        if (!inner.message.empty()) {
+            message += ": " + inner.message;
+            if (!inner.code.empty()) message += " (" + inner.code + ")";
+        }
         return std::unexpected(agentengine::error{agentengine::failure_class::transient,
-                                                    "chat_stream() did not reach a clean terminal",
-                                                    "run.stream_incomplete"});
+                                                    std::move(message), "run.stream_incomplete"});
     }
     if (!usage.has_value()) {
         return std::unexpected(
