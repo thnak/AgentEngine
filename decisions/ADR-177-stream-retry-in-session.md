@@ -45,10 +45,8 @@ A **session-level, opt-in, same-client retry of the whole model call**, bounded 
 - **Change the gateway's commit rule.** Rejected: it exists for a real reason (004 §4), and the
   substitution risk is real there. A *same-client* retry does not substitute a backend; a fallback tier
   would.
-- **Add a `model_delta_discard` event so consumers erase the partial.** Rejected for v1: it is a
-  013 §1 vocabulary change (I7 gate: AG-UI mapping, conformance), and the partial output was *real
-  output the user saw*. Two closed brackets is honest; erasing is a UI policy that belongs to a
-  consumer. Named residual (§6).
+- **Add an event so consumers can retract the partial.** Rejected for v1 as a vocabulary change (I7
+  gate), and then ACCEPTED by the project owner (2026-09-21) and built: see §11.
 - **Retry inside `drain_streaming_response`.** Rejected: it has already emitted deltas and owns no
   request to resend.
 - **Just shorten `kIoTimeoutMs`.** Orthogonal, not a fix: it shortens the wait for a dead stream, it
@@ -230,13 +228,40 @@ reviewer; each item below was then reproduced and fixed here:
   `ReplayChatClient`'s cursor is never reset, so a second run on one client sees `sequence_exhausted`;
   that is a divergence made loud on purpose, not a bug.
 
+## 11. `ModelOutputDiscarded` (project-owner decision 2026-09-21)
+
+The consumer-visible cost of a retry was that a live consumer showed the dead attempt's text and then the
+full answer. The owner accepted a new event kind to let a consumer retract it. **013 was amended first
+(the spec wins): §1's vocabulary, a producer paragraph, and a §2.1 mapping row.**
+
+- **Kind**: `run_event_kind::model_output_discarded`, appended LAST so no existing kind's value moves.
+  Payload `ModelOutputDiscarded{attempt, max_attempts, reason}`.
+- **Meaning**: every `model_delta` since the preceding `model_call_started` is void. Fired after the dead
+  call's `model_call_finished` and before the next `model_call_started`, so a consumer that keeps
+  per-call state retracts at a clean boundary. History was not appended and no tool ran, so the void is
+  presentation-only.
+- **It REPLACES the retry `warning`.** The warning was a free-text message a reader had to prefix-match
+  (the round-1 review flagged exactly that fragility); the structured event carries the same facts. The
+  `kStreamRetryWarningPrefix` constant is gone.
+- **AG-UI**: no event in 013 §2.1's list expresses retraction, so it projects as
+  `CUSTOM ae:model_output_discarded {attempt, maxAttempts, reason}`, the §2.1 escape hatch `ae:warning`
+  already uses. **A2A**: no task-lifecycle slot; the existing `default` returns an empty vector, unchanged.
+  **`cli_chat`**: a terminal cannot un-print streamed text, so it prints
+  `! the reply stopped part-way; asking again (N/M)` and logs the reason.
+- **Ignoring it is safe.** A consumer that does nothing with the event is as correct as before the event
+  existed (P8: both message brackets close), just redundant.
+- **Proof** (`test_rt_agent_session_stream_retry.cpp` P11): ordering, payload, the AG-UI projection, and a
+  control that a clean run emits none. Mutants: emit removed (caught by 3 unit checks and 3 loopback
+  checks), projection dropped (caught).
+- **Not done**: I7 wants a conformance run for any protocol claim. This adds no AG-UI wire claim beyond
+  the existing CUSTOM escape hatch, and no consumer other than `cli_chat` acts on the event yet.
+
 ## 10. Still open
 
 1. **Provider billing of an unfinished stream is unmeasured** (above). Closing it needs a first-party
    statement or a killed-stream measurement against a provider dashboard.
-2. Consumers still cannot erase a discarded partial (§6.2): the retry replays the answer from the start,
-   so a live consumer sees the dead attempt's text and then the full one. Erasing needs a new event kind
-   and a 013 change (I7 gate), which is a separate decision.
+2. ~~Consumers cannot erase a discarded partial~~ -- closed by §11 for any consumer that acts on the
+   event; a consumer that ignores it still sees the dead attempt's text and then the full one.
 3. Gateway sessions still die post-commit; a tier-aware answer is separate, larger work (it has to
    reckon with 004 §4's no-silent-substitution rule).
 4. Round 2 by a fresh adversary; **Judged is the project owner's to give.**

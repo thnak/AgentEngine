@@ -210,9 +210,7 @@ std::size_t count_kind(std::vector<RunEvent> const& evs, run_event_kind k) {
 std::size_t count_retry_warnings(std::vector<RunEvent> const& evs) {
     std::size_t n = 0;
     for (auto const& e : evs) {
-        if (e.kind != run_event_kind::warning) continue;
-        auto const& w = std::get<agentengine::run_event_payload::Warning>(e.payload);
-        if (w.message.starts_with(agentengine::rt::detail::kStreamRetryWarningPrefix)) ++n;
+        if (e.kind == run_event_kind::model_output_discarded) ++n;
     }
     return n;
 }
@@ -346,6 +344,65 @@ int main() {
               "P3b: run 2 was ALSO allowed its retry -- the per-run counter is reset at run start, so a "
               "long-lived session does not run out of retries after its first recovery");
         check(h.client->calls == 4, "P3b: four model calls in all");
+    }
+
+    // ---- P11: the ModelOutputDiscarded event (013 §1, ADR-177) -------------------------------------------
+    {
+        std::vector<Attempt> a(2);
+        a[0].updates = {text_delta("partial")};
+        a[0].fail    = dead_stream();
+        a[1].updates = {text_delta("final", true, kUsage)};
+        Harness h(std::move(a), 1);
+        (void)drive(h.session.start_run(StartRun{user_message("hi")}));
+        auto evs = drain_events(h.viewer);
+
+        // The boundary a consumer retracts at: finished(attempt 1) -> discarded -> started(attempt 2).
+        std::vector<run_event_kind> model_kinds;
+        for (auto const& e : evs) {
+            if (e.kind == run_event_kind::model_call_started || e.kind == run_event_kind::model_call_finished ||
+                e.kind == run_event_kind::model_output_discarded) {
+                model_kinds.push_back(e.kind);
+            }
+        }
+        std::vector<run_event_kind> const expected = {
+            run_event_kind::model_call_started, run_event_kind::model_call_finished,
+            run_event_kind::model_output_discarded, run_event_kind::model_call_started,
+            run_event_kind::model_call_finished};
+        check(model_kinds == expected,
+              "P11: the discard arrives AFTER the dead call's model_call_finished and BEFORE the next "
+              "model_call_started -- a clean boundary for a consumer to retract at");
+
+        for (auto const& e : evs) {
+            if (e.kind != run_event_kind::model_output_discarded) continue;
+            auto const& p = std::get<agentengine::run_event_payload::ModelOutputDiscarded>(e.payload);
+            check(p.attempt == 1 && p.max_attempts == 2,
+                  "P11: the payload names the discarded attempt (1) and the most a run will make (2)");
+            check(p.reason.find("net.connect_failed") != std::string::npos,
+                  "P11: the reason carries the stream's own failure, for display and logs");
+        }
+
+        // The projection carries it (013 §2.1: CUSTOM), and a consumer that IGNORES it still gets a
+        // well-formed stream -- both message brackets close (P8), so ignoring is safe, just redundant.
+        agentengine::agui::RunEventProjector proj("thread-11");
+        std::size_t custom_discards = 0;
+        for (auto const& e : evs) {
+            for (auto const& out : proj.project(e)) {
+                if (auto const* c = std::get_if<agentengine::agui::CustomEvent>(&out);
+                    c != nullptr && c->name == "ae:model_output_discarded") {
+                    ++custom_discards;
+                }
+            }
+        }
+        check(custom_discards == 1, "P11: AG-UI projects it as CUSTOM ae:model_output_discarded, exactly once");
+
+        // Control: a run that never retried emits none, so the checks above are not satisfied by a
+        // discard that fires on every run.
+        std::vector<Attempt> clean(1);
+        clean[0].updates = {text_delta("fine", true, kUsage)};
+        Harness hc(std::move(clean), 1, true, "s-p11-clean");
+        (void)drive(hc.session.start_run(StartRun{user_message("hi")}));
+        check(count_retry_warnings(drain_events(hc.viewer)) == 0,
+              "P11 control: a run with no dead stream emits no ModelOutputDiscarded");
     }
 
     // ---- P4: default 0 == today's behaviour ---------------------------------------------------------

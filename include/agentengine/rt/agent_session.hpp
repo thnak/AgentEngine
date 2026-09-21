@@ -2598,12 +2598,13 @@ private:
                 if (response || !should_retry_stream(response.error())) break;
                 ++stream_retries_used_;
                 detail::StreamFailure const& f = *last_stream_failure_;
-                emit_run_event(run_event_kind::warning,
-                                run_event_payload::Warning{
-                                    std::string(detail::kStreamRetryWarningPrefix) + std::to_string(stream_retries_used_) + "/" +
-                                    std::to_string(stream_retries_) + ": the response stream died mid-answer (" +
-                                    f.inner.message + (f.inner.code.empty() ? "" : " (" + f.inner.code + ")") +
-                                    "); its partial output was discarded, not added to the conversation"});
+                // 013 §1: the output streamed since the `model_call_started` above is VOID. Emitted after
+                // that call's `model_call_finished` and before the next `model_call_started`, so a
+                // consumer that keeps per-call state can retract it at a clean boundary.
+                emit_run_event(run_event_kind::model_output_discarded,
+                                run_event_payload::ModelOutputDiscarded{
+                                    stream_retries_used_, stream_retries_ + 1,
+                                    f.inner.message + (f.inner.code.empty() ? "" : " (" + f.inner.code + ")")});
             }
             if (!response) {
                 emit_run_event(run_event_kind::run_failed,

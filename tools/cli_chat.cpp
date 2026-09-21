@@ -1088,6 +1088,11 @@ void print_skills_banner(std::ostream& out,
             auto const& p = std::get<run_event_payload::Warning>(ev.payload);
             return "  [warning] " + p.message;
         }
+        case run_event_kind::model_output_discarded: {
+            auto const& p = std::get<run_event_payload::ModelOutputDiscarded>(ev.payload);
+            return "  [model output discarded] attempt " + std::to_string(p.attempt) + " of " +
+                   std::to_string(p.max_attempts) + ": " + p.reason;
+        }
         default: return "  [event]";  // auth_*/policy_decision/artifact_produced/sandbox_exec_*/
                                        // tool_call_delta/model_delta: real kinds, no emitter yet
                                        // (agent_session.hpp) -- kept generic rather than silently
@@ -1135,17 +1140,12 @@ void print_skills_banner(std::ostream& out,
             }
             return "  ! " + name + " failed -- see the action log";
         }
-        case run_event_kind::warning: {
-            auto const& p = std::get<run_event_payload::Warning>(ev.payload);
-            if (!p.message.starts_with(agentengine::rt::detail::kStreamRetryWarningPrefix)) return std::nullopt;
-            // The one warning a person needs at the screen: what they just watched stop is being redone.
-            // The provider's own reason is in the action log (describe_event() writes it there).
-            // "<prefix>N/M: <reason>" -- show N/M; if the shape ever changes, show the line without it.
-            auto const from = agentengine::rt::detail::kStreamRetryWarningPrefix.size();
-            auto const colon = p.message.find(':', from);
-            std::string const which = colon == std::string::npos ? std::string{}
-                                                                 : " (" + p.message.substr(from, colon - from) + ")";
-            return "  ! the reply stopped part-way; asking again" + which;
+        case run_event_kind::model_output_discarded: {
+            auto const& p = std::get<run_event_payload::ModelOutputDiscarded>(ev.payload);
+            // What they just watched stop is being redone. A terminal cannot un-print streamed text, so
+            // this line is the retraction; the provider's own reason is in the action log.
+            return "  ! the reply stopped part-way; asking again (" + std::to_string(p.attempt) + "/" +
+                   std::to_string(p.max_attempts - 1) + ")";
         }
         default: return std::nullopt;
     }

@@ -233,9 +233,7 @@ int main() {
         auto r = drive(session.start_run(StartRun{user_message("hi")}));
         std::size_t warnings = 0;
         while (auto ev = viewer.next()) {
-            if (ev->kind != run_event_kind::warning) continue;
-            auto const& w = std::get<run_event_payload::Warning>(ev->payload);
-            if (w.message.starts_with(agentengine::rt::detail::kStreamRetryWarningPrefix)) ++warnings;
+            if (ev->kind == run_event_kind::model_output_discarded) ++warnings;
         }
         return std::pair{std::move(r), warnings};
     };
@@ -256,9 +254,7 @@ int main() {
         auto r = drive(session.start_run(StartRun{user_message("hi")}));
         std::size_t warnings = 0;
         while (auto ev = viewer.next()) {
-            if (ev->kind != run_event_kind::warning) continue;
-            auto const& w = std::get<run_event_payload::Warning>(ev->payload);
-            if (w.message.starts_with(agentengine::rt::detail::kStreamRetryWarningPrefix)) ++warnings;
+            if (ev->kind == run_event_kind::model_output_discarded) ++warnings;
         }
         return std::pair{std::move(r), warnings};
     };

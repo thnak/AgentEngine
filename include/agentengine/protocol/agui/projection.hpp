@@ -282,6 +282,16 @@ public:
                 auto const& p = std::get<run_event_payload::Warning>(ev.payload);
                 return {CustomEvent{"ae:warning", json::Value::make_string(p.message)}};
             }
+            case run_event_kind::model_output_discarded: {
+                // 013 §2.1: nothing in the AG-UI event list expresses retraction, so it rides CUSTOM.
+                // The dead attempt's own message bracket was already closed by its `model_call_finished`.
+                auto const& p = std::get<run_event_payload::ModelOutputDiscarded>(ev.payload);
+                std::vector<std::pair<std::string, json::Value>> members{
+                    {"attempt", json::Value::make_number(static_cast<double>(p.attempt))},
+                    {"maxAttempts", json::Value::make_number(static_cast<double>(p.max_attempts))},
+                    {"reason", json::Value::make_string(p.reason)}};
+                return {CustomEvent{"ae:model_output_discarded", json::Value::make_object(std::move(members))}};
+            }
             case run_event_kind::policy_decision: {
                 auto const& p = std::get<run_event_payload::PolicyDecision>(ev.payload);
                 return {CustomEvent{"ae:policy_decision", json::Value::make_string(p.description)}};

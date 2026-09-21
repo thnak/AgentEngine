@@ -94,11 +94,6 @@ inline void filter_cross_provider_reasoning(agentengine::ContextContribution& co
 // ADR-177: `failure`, when non-null, receives what the retry decision needs and the flattened
 // `run.stream_incomplete` error below cannot carry -- the stream's OWN error (with its real class and
 // code) and whether ANY update had arrived before it died. Read as data, never from the message text.
-// The `warning` event has a message and nothing else (no code field), so a consumer that wants to
-// recognise a retry -- to show it, never to decide anything -- matches this prefix. One constant, used by
-// the emitter and every reader, so the two cannot drift apart silently.
-inline constexpr std::string_view kStreamRetryWarningPrefix = "model call retry ";
-
 struct StreamFailure {  // ae-naming-lint: allow StreamFailure — ADR-177's own new vocabulary (decisions/ADR-177-stream-retry-in-session.md §2), 027 not yet updated
     agentengine::error inner;
     bool               any_update_seen = false;
