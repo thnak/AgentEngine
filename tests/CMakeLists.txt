@@ -3974,3 +3974,8 @@ if(MSVC)
   target_compile_options(test_rt_agent_session_stream_retry PRIVATE /bigobj)
 endif()
 add_test(NAME test_rt_agent_session_stream_retry COMMAND test_rt_agent_session_stream_retry)
+
+# ADR-178: AgentSession::cancel() -- cooperative, per-run, a canceled run is a state (run_canceled), not an abort.
+add_executable(test_rt_agent_session_cancel test_rt_agent_session_cancel.cpp)
+target_link_libraries(test_rt_agent_session_cancel PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_cancel COMMAND test_rt_agent_session_cancel)
