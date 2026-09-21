@@ -226,13 +226,16 @@ reviewer; each item below was then reproduced and fixed here:
 - **Disclosed, not fixed:** `effect_context_.cancellation` is never assigned anywhere in the session, so
   the stop-token clause in `should_retry_stream` is currently unreachable — harmless defence for a future
   wiring, with `net.cancelled` the live guard. The `err.code != "run.stream_incomplete"` clause is
-  equivalent to the `has_value()` guard beside it. The TLS half of the io-timeout change is untested
-  (the loopback tests are plaintext).
+  equivalent to the `has_value()` guard beside it.
 - **Closed afterwards (2026-09-21):** (1) Anthropic head-then-cut now has its own loopback test, with a
   retries-off control, and is mutant-proven (removing that worker's `!acc` rule fails it). (2) Retry
   state across an approval suspend/resume: P13 -- the bound is per RUN and the budget estimate
   accumulates across the resume (one retry before the suspend leaves none after it; two leave one).
   Mutant-proven: resetting both counters on the resume path fails P13 twice.
+  (3) The TLS half of the io-timeout change: `test_https_egress` C5 runs a real TLS handshake against a
+  loopback server that sends a 200 head and then goes silent; with the timeout at 1 s the read fails
+  (transient, `net.connect_failed`) after ~1.0 s, and the check bounds it under 3 s. Mutant-proven:
+  hard-coding the old 90 s wait in `tls_client.cpp` fails it.
   `ReplayChatClient`'s cursor is never reset, so a second run on one client sees `sequence_exhausted`;
   that is a divergence made loud on purpose, not a bug.
 
