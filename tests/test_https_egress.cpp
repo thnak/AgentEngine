@@ -187,7 +187,10 @@ int bio_recv(void* ctx, unsigned char* buf, std::size_t len) {
 
 class TlsTestServer {
 public:
-    TlsTestServer(GeneratedKeyCert const& kc) {
+    // `silent_after_head`: after the handshake and the request, send a 200 response HEAD and then nothing
+    // -- a provider that went quiet mid-answer (ADR-177). It holds the connection until the client hangs up.
+    explicit TlsTestServer(GeneratedKeyCert const& kc, bool silent_after_head = false)
+        : silent_after_head_(silent_after_head) {
         mbedtls_x509_crt_init(&cert_);
         mbedtls_pk_init(&key_);
         mbedtls_entropy_init(&entropy_);
@@ -272,12 +275,19 @@ private:
 
         // Drain whatever the client sent, then write a fixed 200 OK -- these tests only need to
         // prove the handshake outcome, not exercise real HTTP semantics over the TLS session.
+        // Stop once the request head is in: these requests carry no body, and waiting for more would sit out
+        // this server's own 5 s BIO timeout -- longer than the client's idle timeout this test sets (C5).
         char drain[512];
-        for (int i = 0; i < 20; ++i) {
+        std::string request;
+        for (int i = 0; i < 20 && request.find("\r\n\r\n") == std::string::npos; ++i) {
             int const n = mbedtls_ssl_read(&ssl, reinterpret_cast<unsigned char*>(drain), sizeof(drain));
             if (n <= 0) break;
+            request.append(drain, static_cast<std::size_t>(n));
         }
-        char const* const body = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello";
+        char const* const body =
+            silent_after_head_
+                ? "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n"
+                : "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello";
         std::size_t sent = 0;
         std::size_t const total = std::strlen(body);
         while (sent < total) {
@@ -288,6 +298,11 @@ private:
             }
             sent += static_cast<std::size_t>(n);
         }
+        if (silent_after_head_) {
+            // Say nothing more. Read until the client hangs up (or this side's own 5 s BIO timeout).
+            while (mbedtls_ssl_read(&ssl, reinterpret_cast<unsigned char*>(drain), sizeof(drain)) > 0) {
+            }
+        }
         mbedtls_ssl_close_notify(&ssl);
         mbedtls_ssl_free(&ssl);
         mbedtls_ssl_config_free(&conf);
@@ -297,6 +312,7 @@ private:
     mbedtls_pk_context key_;
     mbedtls_entropy_context entropy_;
     mbedtls_ctr_drbg_context drbg_;
+    bool silent_after_head_ = false;
     bool ok_ = false;
     agentengine::pal::fd_t listen_fd_{};
     std::uint16_t port_ = 0;
@@ -309,6 +325,9 @@ private:
 int main() {
 #if defined(_WIN32)
     agentengine::pal::ensure_winsock();
+    _putenv_s("AGENTENGINE_NET_IO_TIMEOUT_MS", "1000");  // read once, on first use; C5 depends on it
+#else
+    setenv("AGENTENGINE_NET_IO_TIMEOUT_MS", "1000", 1);
 #endif
 
     TestCertAuthority ca;
@@ -415,6 +434,41 @@ int main() {
                 auto session = TlsClientSession::handshake(*connect_r, "test.invalid", root.cert_pem);
                 check(!session.has_value(), "C4: an expired certificate is rejected");
                 if (!session) check(session.error().code == "net.tls_certificate_rejected", "C4: specific diagnostic code");
+                agentengine::pal::close_fd(*connect_r);
+            }
+        }
+    }
+
+    // -- C5: a provider that goes silent mid-answer is cut by the transport's OWN idle timeout ----------
+    // ADR-177 changed the TLS read wait from a hard-coded 90 s to AGENTENGINE_NET_IO_TIMEOUT_MS. The
+    // loopback tests of the retry are plaintext, so this is the only place the TLS half is proven: with
+    // the timeout set to 1 s a silent server must fail the read in about a second, not 90.
+    {
+        TlsTestServer server(valid_leaf, /*silent_after_head=*/true);
+        check(server.ok(), "C5: silent-provider TLS test server started");
+        if (server.ok()) {
+            auto connect_r = agentengine::pal::tcp_connect(kLoopbackHostOrder, server.port());
+            if (connect_r) {
+                auto session = TlsClientSession::handshake(*connect_r, "test.invalid", root.cert_pem);
+                check(session.has_value(), "C5: handshake succeeds");
+                if (session) {
+                    std::string const req = "POST /v1 HTTP/1.1\r\nHost: test.invalid\r\n\r\n";
+                    (void)session->send(req);
+                    char buf[256]{};
+                    auto head = session->recv(buf, sizeof(buf) - 1);  // the 200 head arrives promptly
+                    check(head.has_value() && *head > 0, "C5: the response head is received");
+                    auto const t0 = std::chrono::steady_clock::now();
+                    auto r = session->recv(buf, sizeof(buf) - 1);  // ... and then the provider says nothing
+                    auto const ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        std::chrono::steady_clock::now() - t0)
+                                        .count();
+                    check(!r.has_value() && r.error().code == "net.connect_failed",
+                          "C5: the silent read FAILS (transient), it does not hang or report a clean close");
+                    check(ms >= 800 && ms < 3000,
+                          "C5: and it failed after about the configured 1 s -- the TLS read honours "
+                          "AGENTENGINE_NET_IO_TIMEOUT_MS, neither instantly nor after the old fixed 90 s");
+                    std::fprintf(stderr, "  .. C5: silent read failed after %lld ms\n", static_cast<long long>(ms));
+                }
                 agentengine::pal::close_fd(*connect_r);
             }
         }
