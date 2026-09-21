@@ -223,9 +223,10 @@ reviewer; each item below was then reproduced and fixed here:
   complete for OpenAI.
 - Test gaps the review found and this round closed: nothing ran two consecutive runs that each retry, so
   deleting the per-run reset passed (P3b now catches it); the idempotency-key claim was vacuous (removed).
-- **Disclosed, not fixed:** `effect_context_.cancellation` is never assigned anywhere in the session, so
-  the stop-token clause in `should_retry_stream` is currently unreachable — harmless defence for a future
-  wiring, with `net.cancelled` the live guard. The `err.code != "run.stream_incomplete"` clause is
+- **Disclosed, since fixed by ADR-178:** `effect_context_.cancellation` was never assigned anywhere in the
+  session, so the stop-token clause in `should_retry_stream` was unreachable — harmless defence for a
+  future wiring, with `net.cancelled` the live guard. `AgentSession::cancel()` now wires it, and the clause
+  is proven by a mutant-checked test (ADR-178 §3, K5b). The `err.code != "run.stream_incomplete"` clause is
   equivalent to the `has_value()` guard beside it.
 - **Closed afterwards (2026-09-21):** (1) Anthropic head-then-cut now has its own loopback test, with a
   retries-off control, and is mutant-proven (removing that worker's `!acc` rule fails it). (2) Retry
