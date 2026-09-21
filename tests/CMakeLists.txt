@@ -3967,4 +3967,10 @@ set_tests_properties(test_file_worktree_object_store_race PROPERTIES TIMEOUT 300
 # ADR-177: a session may re-issue a model call whose stream died mid-answer (opt-in, bounded per run).
 add_executable(test_rt_agent_session_stream_retry test_rt_agent_session_stream_retry.cpp)
 target_link_libraries(test_rt_agent_session_stream_retry PRIVATE agentengine::core agentengine_warnings)
+# P13 adds a second AgentSession instantiation (an approval-gated tool table); under the ASan leg's
+# instrumentation that pushed this one object past MSVC's section limit (C1128). A mechanical compiler
+# limit, not a code defect: the same documented, scoped-to-one-target /bigobj as the targets above.
+if(MSVC)
+  target_compile_options(test_rt_agent_session_stream_retry PRIVATE /bigobj)
+endif()
 add_test(NAME test_rt_agent_session_stream_retry COMMAND test_rt_agent_session_stream_retry)
