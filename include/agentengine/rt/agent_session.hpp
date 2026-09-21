@@ -715,6 +715,25 @@ public:
     void set_stream_model_calls(bool stream) noexcept { stream_model_calls_ = stream; }
     [[nodiscard]] bool stream_model_calls() const noexcept { return stream_model_calls_; }
 
+    // ADR-177: how many times, in total over ONE run, a model call whose stream died mid-answer is
+    // re-issued against the same client. Default 0 == today's behaviour exactly. Clamped to
+    // `kMaxStreamRetries` so a caller cannot configure an unbounded loop. Never applies to a
+    // `ModelCallGateway` session (its own commit rule stands) -- see `should_retry_stream()`.
+    static constexpr std::uint32_t kMaxStreamRetries = 3;
+    void set_stream_retries(std::uint32_t n) noexcept {
+        stream_retries_ = n > kMaxStreamRetries ? kMaxStreamRetries : n;
+    }
+    [[nodiscard]] std::uint32_t stream_retries() const noexcept { return stream_retries_; }
+    // How many model calls THIS run discarded and re-issued. The token budget cannot see a dead
+    // attempt's tokens (a failed stream reports no `Usage`, and inventing one would put a fabricated
+    // number into a budget), so the COUNT is what a host has to apply its own estimate to.
+    // docs/research/2026-09-21-billing-of-interrupted-streams.md: whether providers bill such an
+    // attempt is not established.
+    [[nodiscard]] std::uint32_t stream_retries_used() const noexcept { return stream_retries_used_; }
+    // The ESTIMATED tokens this run's token budget was charged for discarded attempts (already inside
+    // `run_tokens_consumed()`, and NOT inside `run_usage()`, which reports only what a provider said).
+    [[nodiscard]] std::uint64_t discarded_tokens_estimate() const noexcept { return discarded_tokens_estimate_; }
+
     void set_scan_response_format_leaks(bool scan) noexcept { scan_response_format_leaks_ = scan; }
     [[nodiscard]] bool scan_response_format_leaks() const noexcept { return scan_response_format_leaks_; }
 
@@ -947,6 +966,8 @@ public:
         }
 
         run_counter_ += 1;
+        stream_retries_used_ = 0;
+        discarded_tokens_estimate_ = 0;
         run_tokens_consumed_ = 0;
         run_usage_ = agentengine::Usage{};
         // ADR-061 §20.3: principal/capabilities are already set by apply_dispatch_authority() above
@@ -1326,6 +1347,8 @@ public:
         metadata_ = source.metadata_;
         history_provider_ = source.history_provider_;
         run_counter_ = 0;
+        stream_retries_used_ = 0;
+        discarded_tokens_estimate_ = 0;
         last_run_id_.clear();
         effect_context_ = EffectContext{};
         open_interactions_.clear();
@@ -1364,6 +1387,8 @@ public:
         state_ = StateT{};
         metadata_.clear();
         run_counter_ = 0;
+        stream_retries_used_ = 0;
+        discarded_tokens_estimate_ = 0;
         last_run_id_.clear();
         effect_context_ = EffectContext{};
         open_interactions_.clear();
@@ -1877,6 +1902,41 @@ private:
     // constructs a thin `[this](k, p){ emit_run_event(k, std::move(p)); }` closure at the point of
     // use.
 
+    // ADR-177: is this failed model call worth re-issuing? A pure function of host-held DATA -- the
+    // stream's own recorded error and a counter -- never of anything the model said (I3) and never of
+    // a clock (I5: a wall-clock read in a control decision would not replay). Every clause exists
+    // because of a specific way a retry would be WRONG:
+    //   - gateway sessions: their own commit rule (004 §4) stands; a retry here could land on a
+    //     different tier than the one that showed the partial answer.
+    //   - not `run.stream_incomplete`: `run.usage_unavailable` is a COMPLETED stream, and re-issuing
+    //     it would bill a finished call twice.
+    //   - inner class must be `transient`: contract/policy/resource failures do not get better.
+    //   - `net.cancelled` is ALSO classed transient by the transport, so the class alone would retry
+    //     a cancellation; excluded by code, and by the run's own stop token.
+    //   - `any_update_seen`: a failure before the first byte (rate limit, refused connect) is not the
+    //     mid-answer death this exists for, and an immediate retry would hammer a provider that just
+    //     said to slow down.
+    [[nodiscard]] bool should_retry_stream(error const& err) const {
+        if constexpr (agentengine::ModelCallGatewayLike<ChatClientT>) {
+            (void)err;
+            return false;
+        } else {
+            if (stream_retries_used_ >= stream_retries_) return false;
+            if (err.code != "run.stream_incomplete") return false;
+            if (!last_stream_failure_.has_value()) return false;
+            if (effect_context_.cancellation.stop_requested()) return false;
+            detail::StreamFailure const& f = *last_stream_failure_;
+            // "Mid-answer" is `any_update_seen` OR a truncation: the provider workers hold updates back
+            // until a block completes, so a stream cut after a 200 head but before the first finished
+            // block has delivered nothing yet -- while `net.stream_truncated` can only be raised AFTER
+            // a successful response head, so it is mid-response by construction, not a rejection.
+            // `net.stream_read_failed` is the same by construction: a read that fails after the head.
+            return (f.any_update_seen || f.inner.code == "net.stream_truncated" ||
+                    f.inner.code == "net.stream_read_failed") &&
+                   f.inner.klass == failure_class::transient && f.inner.code != "net.cancelled";
+        }
+    }
+
     // Same shape as core/agent_session.hpp's own run_model_call(), ported to rt::task<T>, with ONE
     // real consolidation (not a byte-for-byte port): the original had three branches (gateway /
     // buffered-chat() / buffered-drain-when-chat()-is-unavailable / live-streaming-when-opted-in) --
@@ -1903,6 +1963,7 @@ private:
 
         result<ChatResponse> response = std::unexpected(
             error{failure_class::contract, "unreachable: neither call path executed", "run.internal"});
+        last_stream_failure_.reset();  // ADR-177: only THIS call's drain may leave one behind
         detail::EmitFn const emit = [this](run_event_kind k, RunEventPayload p) {
             emit_run_event(k, std::move(p));
         };
@@ -1953,8 +2014,12 @@ private:
                     co_return response;
                 }
             }
+            detail::StreamFailure failure;
             response = detail::drain_streaming_response(chat_client_->chat_stream(request, ctx),
-                                                          stream_model_calls_, emit);
+                                                          stream_model_calls_, emit, &failure);
+            if (!response.has_value() && response.error().code == "run.stream_incomplete") {
+                last_stream_failure_ = std::move(failure);
+            }
         }
 
         if (response.has_value() && scan_response_format_leaks_) {
@@ -2526,9 +2591,48 @@ private:
                 co_return std::unexpected(
                     error{failure_class::contract, "no ChatClientT configured", "run.no_chat_client"});
             }
-            emit_run_event(run_event_kind::model_call_started);
-            result<ChatResponse> response = co_await run_model_call(request, effect_context_);
-            emit_run_event(run_event_kind::model_call_finished);
+            // ADR-177: each attempt is a COMPLETE started..finished bracket, so a consumer's per-call
+            // state (AG-UI's open message, a UI's spinner) closes cleanly before the next one opens.
+            // A failed attempt appended nothing to `history_` (that happens below, only on success),
+            // so the retry re-sends the identical request.
+            result<ChatResponse> response = std::unexpected(
+                error{failure_class::contract, "unreachable: no model call attempted", "run.internal"});
+            for (;;) {
+                emit_run_event(run_event_kind::model_call_started);
+                response = co_await run_model_call(request, effect_context_);
+                emit_run_event(run_event_kind::model_call_finished);
+                if (response || !should_retry_stream(response.error())) break;
+                ++stream_retries_used_;
+                detail::StreamFailure const& f = *last_stream_failure_;
+                // 013 §1: the output streamed since the `model_call_started` above is VOID. Emitted after
+                // that call's `model_call_finished` and before the next `model_call_started`, so a
+                // consumer that keeps per-call state can retract it at a clean boundary.
+                // I8: providers do not say whether they bill a stream that never finished, so it is
+                // treated as billed (project owner, 2026-09-21; docs/research/2026-09-21-billing-of-
+                // interrupted-streams.md). The dead stream reported no `Usage`, so the charge is an
+                // ESTIMATE -- the request as input plus the output it delivered -- and it goes against the
+                // token BUDGET only, never into `run_usage_` (which reports what a provider actually said).
+                std::uint64_t const charged =
+                    detail::estimate_request_tokens(request) + agentengine::estimate_tokens_for_bytes(f.bytes_seen);
+                discarded_tokens_estimate_ += charged;
+                run_tokens_consumed_ += charged;
+                emit_run_event(run_event_kind::model_output_discarded,
+                                run_event_payload::ModelOutputDiscarded{
+                                    stream_retries_used_, stream_retries_ + 1,
+                                    f.inner.message + (f.inner.code.empty() ? "" : " (" + f.inner.code + ")"),
+                                    charged});
+                // The charge can itself break the budget -- and a retry must not go ahead if it has.
+                if (token_budget_.has_value() && run_tokens_consumed_ > *token_budget_) {
+                    emit_run_event(run_event_kind::run_failed,
+                                    run_event_payload::RunFailed{
+                                        "run.token_budget_exceeded",
+                                        "per-run token budget exceeded (including an estimate for a discarded attempt)"});
+                    co_return std::unexpected(error{failure_class::resource,
+                                                     "per-run token budget exceeded (including an estimate for a "
+                                                     "discarded attempt)",
+                                                     "run.token_budget_exceeded"});
+                }
+            }
             if (!response) {
                 emit_run_event(run_event_kind::run_failed,
                                 run_event_payload::RunFailed{"run.chat_failed", response.error().message});
@@ -2997,6 +3101,11 @@ private:
     agentengine::TurnMiddlewareHook                       turn_middleware_hook_{};
     bool                                                  suspend_for_approval_ = false;
     bool                                                  stream_model_calls_ = false;
+    // ADR-177. `stream_retries_used_` is per RUN (reset in start_run), never per round.
+    std::uint32_t                                         stream_retries_ = 0;
+    std::uint32_t                                         stream_retries_used_ = 0;
+    std::uint64_t                                         discarded_tokens_estimate_ = 0;
+    std::optional<detail::StreamFailure>                  last_stream_failure_;
     bool                                                  scan_response_format_leaks_ = false;
     // §9 RC-1 (design doc above) -- see set_background_execution_disabled()'s own comment.
     bool                                                  background_execution_disabled_ = false;

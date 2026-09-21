@@ -70,6 +70,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <charconv>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -1087,6 +1088,12 @@ void print_skills_banner(std::ostream& out,
             auto const& p = std::get<run_event_payload::Warning>(ev.payload);
             return "  [warning] " + p.message;
         }
+        case run_event_kind::model_output_discarded: {
+            auto const& p = std::get<run_event_payload::ModelOutputDiscarded>(ev.payload);
+            return "  [model output discarded] attempt " + std::to_string(p.attempt) + " of " +
+                   std::to_string(p.max_attempts) + " (budget charged ~" + std::to_string(p.estimated_tokens) +
+                   " tokens, estimated): " + p.reason;
+        }
         default: return "  [event]";  // auth_*/policy_decision/artifact_produced/sandbox_exec_*/
                                        // tool_call_delta/model_delta: real kinds, no emitter yet
                                        // (agent_session.hpp) -- kept generic rather than silently
@@ -1133,6 +1140,13 @@ void print_skills_banner(std::ostream& out,
                 return "  * " + name + " -- not run, you denied it";
             }
             return "  ! " + name + " failed -- see the action log";
+        }
+        case run_event_kind::model_output_discarded: {
+            auto const& p = std::get<run_event_payload::ModelOutputDiscarded>(ev.payload);
+            // What they just watched stop is being redone. A terminal cannot un-print streamed text, so
+            // this line is the retraction; the provider's own reason is in the action log.
+            return "  ! the reply stopped part-way; asking again (" + std::to_string(p.attempt) + "/" +
+                   std::to_string(p.max_attempts - 1) + ")";
         }
         default: return std::nullopt;
     }
@@ -1238,6 +1252,19 @@ template <class Inner>
     // run_event_kind::warning fires once per run naming this trade; describe_event() below renders
     // it like any other event.
     actor.set_stream_model_calls(true);
+    // ADR-177: a stream that dies mid-answer (the provider goes silent and the transport's read
+    // timeout fires) is re-issued instead of ending the session. One retry by default, per RUN;
+    // `0` restores the old behaviour. The dead attempt's partial output stays on screen -- it was
+    // real output -- and the retry says so.
+    {
+        // Strict: a value that is not a plain non-negative integer keeps the default rather than being
+        // read as 0 (silently disabling the retry) or wrapping to something enormous.
+        std::string const raw = env_or("AGENTENGINE_CLI_CHAT_STREAM_RETRIES", "1");
+        std::uint32_t retries = 1;
+        auto const [end, ec] = std::from_chars(raw.data(), raw.data() + raw.size(), retries);
+        if (ec != std::errc{} || end != raw.data() + raw.size()) retries = 1;
+        actor.set_stream_retries(retries);
+    }
     // ADR-035 Phase 1: the scan that actually matters for this CLI now that streaming is always on
     // -- runs post-hoc, once per round, on the reconstructed Message (agent_session.hpp's
     // run_model_call()), so reasoning_texts_of() below sees real extracted Reasoning items again.

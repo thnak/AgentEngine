@@ -218,7 +218,9 @@ public:
                 rec.chunks = std::move(chunks);
                 rec.stream_terminal = terminal_wire;
                 if (terminal == stream_terminal::failed) {
-                    rec.stream_error_detail = inner_stream.fail_error().message;
+                    error const failure = inner_stream.fail_error();
+                    rec.stream_error_detail = failure.message;
+                    rec.stream_error = failure;  // ADR-177: class + code, so replay can decide identically
                 }
                 rec.duration = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - start);

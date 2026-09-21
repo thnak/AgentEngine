@@ -1,6 +1,6 @@
 # 013 — UI and Streaming Surfaces
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-04 by ADR-170** (§1 — the `SandboxExec*` producer is named, and its payload carries `backend`/`stage`/`ok`/`error_code`) · **Depends on:** 001, 003, 006, 012, 019 · **Gate:** §6
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-04 by ADR-170** (§1 — the `SandboxExec*` producer is named, and its payload carries `backend`/`stage`/`ok`/`error_code`) · **Amended 2026-09-21 by ADR-177** (§1, §2.1 — `ModelOutputDiscarded`: a consumer is told that model output it already received is void) · **Depends on:** 001, 003, 006, 012, 019 · **Gate:** §6
 
 ## Goal
 
@@ -17,6 +17,7 @@ Every run emits an ordered, typed event sequence. It is the single source for st
 RunStarted · RunFinished · RunFailed · RunCanceled
 TurnStarted · TurnFinished
 ModelCallStarted · ModelDelta · ModelCallFinished       (text, reasoning, tool-call deltas)
+ModelOutputDiscarded                                    (the model output since the last ModelCallStarted is void)
 ToolCallStarted · ToolCallDelta · ToolCallFinished
 SandboxExecStarted · SandboxExecFinished
 StateChanged · ArtifactProduced
@@ -34,6 +35,22 @@ a payload flag because A2A already has a distinct wire state for exactly this ca
 012 §1) — collapsing them internally would force every adapter to re-derive what A2A already tells
 us for free. §2.2 below extends the `interaction_id` mapping to state how each protocol surfaces the
 `auth` reason specifically.
+
+**`ModelOutputDiscarded`** (added 2026-09-21 by `ADR-177`). Fired when the engine throws away a model
+call's output and re-issues the call -- today only when a response stream died mid-answer and the
+session's opt-in stream retry (`set_stream_retries`) re-tries it. It is emitted AFTER the failed call's
+`ModelCallFinished` and BEFORE the next `ModelCallStarted`, and it means exactly this: **every
+`ModelDelta` emitted since the preceding `ModelCallStarted` is void -- a consumer that has already shown
+or stored any of it should retract it.** The run continues; a fresh `ModelCallStarted ... ModelCallFinished`
+bracket follows. Payload: `attempt` (the 1-based attempt that was discarded), `max_attempts` (the most
+attempts a run will make: retries allowed + 1) and `reason` (the failure that ended the dead stream -- host
+text, for display and logs, never a control input) and `estimated_tokens` (what the run's token budget was
+CHARGED for the dead attempt -- an estimate, ~4 bytes/token over the request plus the output delivered,
+never a billed count; a provider's billing of an unfinished stream is not established, so it is treated as
+billed, ADR-177 §4). Nothing was appended to the conversation history and no
+tool ran from a discarded call, so the void is presentation-only. A consumer that ignores the event is
+still correct; it just shows the dead attempt's text followed by the full one, which is what the
+projection did before this event existed.
 
 **`ToolCallDelta`'s producer**, since it is the one event in this list a tool implementation emits
 rather than the engine: a call to `EffectContext.report_progress` during `invoke()` (006 §6a) is the
@@ -126,6 +143,7 @@ Its categories map onto §1 with no structural gaps:
 | `ActivitySnapshot/Delta` | `SandboxExec*`, long-running tool progress |
 | `Reasoning*` (incl. `ReasoningEncryptedValue`) | `ModelDelta` (reasoning); encrypted reasoning passes through opaque (003 §1) |
 | `Raw`, `Custom` | escape hatch, namespaced |
+| `Custom` `ae:model_output_discarded` | `ModelOutputDiscarded` (none of the events listed above expresses retraction, so this rides the escape hatch, like `ae:warning`) |
 
 Exact identifiers, since they are the contract: `RUN_STARTED` · `RUN_FINISHED` · `RUN_ERROR` ·
 `STEP_STARTED` · `STEP_FINISHED` · `TEXT_MESSAGE_{START,CONTENT,END,CHUNK}` ·

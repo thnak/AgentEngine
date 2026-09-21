@@ -22,6 +22,7 @@
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/run_event.hpp"
 #include "agentengine/core/stream.hpp"
+#include "agentengine/core/token_estimate.hpp"
 
 namespace agentengine::rt::detail {
 
@@ -90,13 +91,58 @@ inline void filter_cross_provider_reasoning(agentengine::ContextContribution& co
 // `result<ChatResponse>`, firing live `model_delta` events along the way via `emit` exactly as
 // `AgentSession`'s own drain loop always did. Fail-closed-on-missing-usage (004 §5's
 // TokenBudget<N>) is preserved exactly.
+//
+// ADR-177: `failure`, when non-null, receives what the retry decision needs and the flattened
+// `run.stream_incomplete` error below cannot carry -- the stream's OWN error (with its real class and
+// code) and whether ANY update had arrived before it died. Read as data, never from the message text.
+struct StreamFailure {  // ae-naming-lint: allow StreamFailure — ADR-177's own new vocabulary (decisions/ADR-177-stream-retry-in-session.md §2), 027 not yet updated
+    agentengine::error inner;
+    bool               any_update_seen = false;
+    // Bytes of model output the dead stream delivered (text, reasoning, tool-call arguments). It is what
+    // a budget CHARGE for the discarded attempt is estimated from: a failed stream reports no `Usage`,
+    // and a provider that bills what it generated bills these.
+    std::uint64_t      bytes_seen = 0;
+};
+
+// ADR-177: what a request would cost as INPUT, estimated -- messages' text/reasoning/tool-call arguments
+// plus every offered tool's name, description and schema. Conservative (~4 bytes/token, rounded up, see
+// core/token_estimate.hpp) and deliberately never presented as a billed count. Media is not counted.
+[[nodiscard]] inline std::uint64_t estimate_request_tokens(agentengine::ChatRequest const& request) {
+    std::uint64_t bytes = 0;
+    for (agentengine::Message const& m : request.messages) {
+        for (agentengine::ContentItem const& item : m.content) {
+            if (auto const* t = std::get_if<agentengine::Text>(&item.value)) bytes += t->text.size();
+            else if (auto const* r = std::get_if<agentengine::Reasoning>(&item.value)) bytes += r->text.size();
+            else if (auto const* c = std::get_if<agentengine::ToolCall>(&item.value)) {
+                bytes += c->tool_name.size() + c->arguments_json.size();
+            }
+        }
+    }
+    for (agentengine::ToolDescriptor const& td : request.tools) {
+        bytes += td.name.size() + td.description.size() + td.args_schema_json.size();
+    }
+    return agentengine::estimate_tokens_for_bytes(bytes);
+}
+
 [[nodiscard]] inline agentengine::result<agentengine::ChatResponse> drain_streaming_response(
-    agentengine::stream<agentengine::ChatResponseUpdate> s, bool stream_model_calls, EmitFn const& emit) {
+    agentengine::stream<agentengine::ChatResponseUpdate> s, bool stream_model_calls, EmitFn const& emit,
+    StreamFailure* failure = nullptr) {
+    bool any_update_seen = false;
+    std::uint64_t bytes_seen = 0;
     agentengine::Message accumulated;
     accumulated.role = agentengine::role::assistant;
     std::optional<agentengine::Usage> usage;
     while (!s.done()) {
         while (std::optional<agentengine::ChatResponseUpdate> upd = s.next()) {
+            any_update_seen = true;
+            if (auto const* t = std::get_if<agentengine::Text>(&upd->delta.value)) bytes_seen += t->text.size();
+            else if (auto const* r = std::get_if<agentengine::Reasoning>(&upd->delta.value)) bytes_seen += r->text.size();
+            else if (auto const* c = std::get_if<agentengine::ToolCall>(&upd->delta.value)) {
+                bytes_seen += c->tool_name.size() + c->arguments_json.size();
+            }
+            if (upd->tool_call_argument_chunk.has_value()) {
+                bytes_seen += upd->tool_call_argument_chunk->arguments_fragment.size();
+            }
             if (stream_model_calls) {
                 if (auto const* t = std::get_if<agentengine::Text>(&upd->delta.value);
                     t != nullptr && !t->text.empty()) {
@@ -149,6 +195,7 @@ inline void filter_cross_provider_reasoning(agentengine::ContextContribution& co
         // stream is worth retrying) and promoting the inner error's class would silently change how
         // existing callers treat it. Only the message grows.
         agentengine::error const inner = s.fail_error();
+        if (failure != nullptr) *failure = StreamFailure{inner, any_update_seen, bytes_seen};
         std::string message = "chat_stream() did not reach a clean terminal";
         if (!inner.message.empty()) {
             message += ": " + inner.message;

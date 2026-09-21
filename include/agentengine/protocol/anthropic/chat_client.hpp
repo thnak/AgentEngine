@@ -765,6 +765,20 @@ public:
         return out;
     }
 
+    // ADR-177: true when the body was chunk-framed and the peer went away BEFORE the terminating
+    // 0-chunk. That is an HTTP framing violation, not a short answer -- the transport hands a close
+    // to its caller as an ordinary end-of-body ("the terminal 0-chunk is the CALLER's to notice",
+    // net_egress_proxy.cpp), and until a caller notices, a connection cut mid-answer looks exactly
+    // like a stream that ended. It then surfaces as "completed with no usage", a contract failure
+    // nothing retries, when the truth is a transient one. Only meaningful when chunked: an unchunked
+    // SSE body legitimately ends at connection close and carries no such signal.
+    // A stream that already delivered `message_stop` is COMPLETE whatever the framing did afterwards
+    // (some proxies close without the final 0-chunk after a whole answer); failing it would discard a
+    // finished, billed response and pay for it again.
+    [[nodiscard]] bool truncated() const noexcept {
+        return chunked_ && !chunked_decoder_.complete() && !message_stop_seen_;
+    }
+
     [[nodiscard]] std::vector<ChatResponseUpdate> finish() {
         std::vector<ChatResponseUpdate> out;
         if (std::string tail = framer_.take_remainder(); !tail.empty()) {
@@ -881,6 +895,7 @@ private:
                                                             std::vector<ChatResponseUpdate>* chunk_out) {
         std::vector<BlockItem> out;
         for (SseEvent const& ev : split_sse_named_events(block)) {
+            if (ev.type == "message_stop") message_stop_seen_ = true;
             if (ev.type == "content_block_start") {
                 auto parsed = json::parse(ev.data);
                 if (!parsed) continue;
@@ -1011,6 +1026,7 @@ private:
     }
 
     bool chunked_;
+    bool message_stop_seen_ = false;
     std::string producer_chat_client_id_;
     sandbox::ChunkedBodyDecoder chunked_decoder_;
     sandbox::SseEventFramer framer_;
@@ -1101,6 +1117,21 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
     }
     if (decode_error) {
         producer.fail(*decode_error);
+        return;
+    }
+    if (!acc) {
+        // See protocol/openai/chat_client.hpp's identical check: a 2xx head with no body at all.
+        producer.fail(error{failure_class::transient,
+                             "the response ended before its body began: the connection was cut right "
+                             "after the response head",
+                             "net.stream_truncated"});
+        return;
+    }
+    if (acc->truncated()) {
+        producer.fail(error{failure_class::transient,
+                             "the response stream ended before its final chunk: the connection was cut "
+                             "while the model was still answering",
+                             "net.stream_truncated"});
         return;
     }
     if (acc) {

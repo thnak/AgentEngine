@@ -54,6 +54,9 @@ enum class run_event_kind {  // ae-naming-lint: allow run_event_kind — 013 §1
     // HookDecisionRequested below and rt/agent_session.hpp's hook-stage block for the producer.
     hook_decision_requested,
     warning, policy_decision,
+    // 013 §1 (ADR-177): the model output emitted since the last `model_call_started` is VOID -- the
+    // engine discarded that call and is re-issuing it. APPENDED LAST so no existing kind's value moves.
+    model_output_discarded,
 };
 
 namespace run_event_payload {
@@ -196,6 +199,19 @@ struct Warning {
     std::string message;
 };
 
+// ADR-177 / 013 §1. `attempt` is the 1-based attempt that was discarded; `max_attempts` is the most a run
+// will make (retries allowed + 1). `reason` is the failure that ended the dead stream: host text for
+// display and logs, never an input to any decision.
+struct ModelOutputDiscarded {
+    std::uint32_t attempt = 0;
+    std::uint32_t max_attempts = 0;
+    std::string   reason;
+    // What the run's token budget was CHARGED for this attempt: an ESTIMATE (~4 bytes/token, input plus
+    // the output the dead stream delivered), never a billed count. A failed stream reports no `Usage` and
+    // providers do not say whether they bill it, so the project treats it as billed (ADR-177 §4).
+    std::uint64_t estimated_tokens = 0;
+};
+
 struct PolicyDecision {
     std::string description;
 };
@@ -237,7 +253,8 @@ using RunEventPayload = std::variant<run_event_payload::Empty, run_event_payload
                                       run_event_payload::InteractionRef, run_event_payload::ApprovalRequested,
                                       run_event_payload::ApprovalResolved, run_event_payload::Warning,
                                       run_event_payload::PolicyDecision, run_event_payload::CodeActAskRequested,
-                                      run_event_payload::HookDecisionRequested>;
+                                      run_event_payload::HookDecisionRequested,
+                                      run_event_payload::ModelOutputDiscarded>;
 
 // 013 §1: "Ordered and monotonic per run, with a sequence number." `seq` starts at 1 for the first
 // event a given run emits -- 0 is never a real sequence number, so a default-constructed RunEvent is

@@ -1,6 +1,7 @@
 // Implements tls_client.hpp. See decisions/ADR-013-https-egress-tls-client.md.
 
 #include "agentengine/sandbox/tls_client.hpp"
+#include "agentengine/sandbox/io_timeout.hpp"
 
 #if defined(_WIN32)
 // select()/FD_SET/FD_ZERO already pulled in transitively by pal/windows_x86_64/net.hpp.
@@ -35,7 +36,8 @@ namespace {
 // (there is nothing to read until the model has finished "thinking"). Widened to something that
 // comfortably covers that latency while still bounding a genuinely dead connection, not removed
 // entirely -- this is one `wait_ready` poll's own timeout, not a whole-request budget.
-constexpr int kIoTimeoutMs = 90'000;
+// ADR-177: one shared, env-configurable value now -- see sandbox/io_timeout.hpp.
+inline int kIoTimeoutMsFn() { return ::agentengine::sandbox::io_timeout_ms(); }
 
 // Mirrors net_egress_proxy.cpp's own `wait_ready` exactly (same agentengine::pal primitive, same
 // select()-based readiness wait) -- kept as an independent copy rather than a shared header, since
@@ -72,7 +74,7 @@ std::string mbedtls_error_string(int code) {
 // caller loop below, not treated as a real error.
 int bio_send(void* ctx, unsigned char const* buf, std::size_t len) {
     auto* fd = static_cast<agentengine::pal::fd_t*>(ctx);
-    if (!wait_ready(*fd, /*for_write=*/true, kIoTimeoutMs)) return MBEDTLS_ERR_SSL_TIMEOUT;
+    if (!wait_ready(*fd, /*for_write=*/true, kIoTimeoutMsFn())) return MBEDTLS_ERR_SSL_TIMEOUT;
     auto r = agentengine::pal::send_some(*fd, reinterpret_cast<std::byte const*>(buf), len);
     if (!r) {
         if (r.error() == agentengine::pal::would_block()) return MBEDTLS_ERR_SSL_WANT_WRITE;
@@ -82,7 +84,7 @@ int bio_send(void* ctx, unsigned char const* buf, std::size_t len) {
 }
 int bio_recv(void* ctx, unsigned char* buf, std::size_t len) {
     auto* fd = static_cast<agentengine::pal::fd_t*>(ctx);
-    if (!wait_ready(*fd, /*for_write=*/false, kIoTimeoutMs)) return MBEDTLS_ERR_SSL_TIMEOUT;
+    if (!wait_ready(*fd, /*for_write=*/false, kIoTimeoutMsFn())) return MBEDTLS_ERR_SSL_TIMEOUT;
     auto r = agentengine::pal::recv_some(*fd, reinterpret_cast<std::byte*>(buf), len);
     if (!r) {
         if (r.error() == agentengine::pal::would_block()) return MBEDTLS_ERR_SSL_WANT_READ;

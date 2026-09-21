@@ -1,7 +1,8 @@
 # ADR-177 — A stream that dies mid-answer: retry the model call, and what that costs
 
-- **Status**: **Proposed — design and first-pass red-team only. No code exists.** Every claim in §5 is
-  a claim to be proven, not a result.
+- **Status**: **Judged -- accepted, project-owner sign-off 2026-09-21.** Implemented, proven, and red-teamed
+  in two rounds (§7 by the author; §9 by a fresh adversary, no fatal or serious finding). The owner also
+  accepted the new event kind (§11). What remains open is listed in §10 as residual, not pending work.
 - **Date**: 2026-09-21
 - **Origin**: a real interactive `cli_chat` session (2026-09-18) lost a 93 s model call:
   `chat_stream() did not reach a clean terminal`. The provider streamed 526 reasoning chunks in 3.2 s,
@@ -45,10 +46,8 @@ A **session-level, opt-in, same-client retry of the whole model call**, bounded 
 - **Change the gateway's commit rule.** Rejected: it exists for a real reason (004 §4), and the
   substitution risk is real there. A *same-client* retry does not substitute a backend; a fallback tier
   would.
-- **Add a `model_delta_discard` event so consumers erase the partial.** Rejected for v1: it is a
-  013 §1 vocabulary change (I7 gate: AG-UI mapping, conformance), and the partial output was *real
-  output the user saw*. Two closed brackets is honest; erasing is a UI policy that belongs to a
-  consumer. Named residual (§6).
+- **Add an event so consumers can retract the partial.** Rejected for v1 as a vocabulary change (I7
+  gate), and then ACCEPTED by the project owner (2026-09-21) and built: see §11.
 - **Retry inside `drain_streaming_response`.** Rejected: it has already emitted deltas and owns no
   request to resend.
 - **Just shorten `kIoTimeoutMs`.** Orthogonal, not a fix: it shortens the wait for a dead stream, it
@@ -63,11 +62,15 @@ from a partially streamed `ToolCall`. That proviso is R1 below and is the first 
 
 ## 4. What it costs, stated plainly
 
-- **I8 (budgets).** A failed stream reports no `Usage`; `run_tokens_consumed_` is charged only on
-  success. So today a failed call is already invisible to the token budget, and a retry multiplies
-  that blind spot by up to `1 + n`. The retry cap bounds the *count*, not the tokens. Whether a
-  provider bills a stream it never finished is an **external claim this ADR does not make** — it
-  needs dated, cited research (`docs/research/`) before §6 can be closed.
+- **I8 (budgets).** A failed stream reports no `Usage`, so `run_tokens_consumed_` was charged only on
+  success and a discarded attempt was invisible to the token budget. Whether a provider bills a stream it
+  never finished is not established (`docs/research/2026-09-21-billing-of-interrupted-streams.md`), and the
+  project owner decided (2026-09-21): **treat it as billed.** So a discarded attempt is CHARGED, as an
+  ESTIMATE: the request as input plus the output the dead stream delivered, at the repo's existing
+  conservative ~4 bytes/token (`core/token_estimate.hpp`). The charge goes against the token BUDGET only;
+  `run_usage()` keeps reporting what a provider actually said. A charge that itself breaks the budget fails
+  the run as `run.token_budget_exceeded` and the retry is NOT issued. The estimate is on the event
+  (`estimated_tokens`) and on `AgentSession::discarded_tokens_estimate()`.
 - **Wall clock.** A stalled attempt costs up to 90 s. A retry that stalls again doubles the wait for
   the same failure. The single incident is one data point; it does not show that a second attempt
   succeeds.
@@ -95,7 +98,7 @@ from a partially streamed `ToolCall`. That proviso is R1 below and is the first 
 
 ## 6. Residuals named up front
 
-1. Token cost of a discarded attempt is invisible to the budget (needs provider-billing research).
+1. ~~Token cost of a discarded attempt is invisible to the budget~~ -- decided in §4/§9 (charged as an estimate; the owner's call to assume it is billed).
 2. Consumers cannot erase a discarded partial (no discard event; 013 change deferred).
 3. Gateway sessions still die post-commit; a *tier-aware* answer is separate, larger work.
 4. Pre-first-byte failures (rate limit, refused connect) want backoff; this ADR retries them without
@@ -124,11 +127,157 @@ Read, not run. Each row says what the code showed; none is a passing test.
 are not true as drafted — the replay seam (R11b) and an unverified error class (Q1). Neither is a
 reason to abandon it; both are reasons this ADR must not be Judged until they are proven.
 
-## 8. Next
 
-Round 2 (a fresh adversary, not the author) on §2–§5 and this table; then prove — starting with Q1,
-because if the class does not survive, the predicate has to change before anything else is built;
-then judge. **No implementation is authorised by this draft.**
+## 8. What changed from the draft while building it
 
-Red-team §2–§5 (in particular R1, R6, R8, R11, and the pre-first-byte question) *before* any code;
-then prove; then judge. No implementation is authorised by this draft.
+- **The `warning` event has no code field**, only a message, so §2's "code `run.model_call_retry`" was
+  not expressible. The retry is announced by a message with a fixed prefix
+  (`detail::kStreamRetryWarningPrefix`, one constant shared by the emitter and every reader). It is for
+  DISPLAY only; no decision reads it.
+- **Predicate gained two clauses** the draft missed: `net.cancelled` is classed `transient` by the
+  transport (the class alone would retry a cancellation), and the run's own stop token is checked (Q5).
+- **`ReplayChatClient` grew a sequence constructor** (R11b) and **`ChatCallRecording` grew
+  `stream_error`** (class + code + message). Found while building it: the player rebuilt any recorded
+  failure as `fatal`, so even a two-recording tape would have replayed the failed attempt as
+  non-retryable and diverged from the run that recorded it. Older recordings (message text only) fall
+  back to the old reconstruction rather than a guessed class.
+- **The retry re-sends the identical `ChatRequest` object.** That would keep an `idempotency_key`
+  stable across attempts, but `AgentSession` never sets one today (only `ModelCallGateway` does), so this
+  is not exercised and the round-2 review was right that a test claiming it was vacuous; it was removed.
+
+## 9. Evidence
+
+`tests/test_rt_agent_session_stream_retry.cpp` (P1-P10, every claim with a control) and
+`tests/test_stream_retry_real_transport.cpp` (Q1 on the real client and transport).
+
+**A REAL DEFECT, found by running Q1 rather than reading it.** A connection cut mid-body was not
+reported as a stream failure at all. The transport hands a peer close to its caller as an ordinary
+end-of-body ("the terminal 0-chunk is the CALLER's to notice"), and neither provider worker noticed:
+the stream closed with no usage and the session reported `run.usage_unavailable` — a *contract* failure
+nothing retries — for what was a transient one. `ChunkedBodyDecoder::complete()` existed and nothing
+called it. Both OpenAI and Anthropic workers now fail a chunk-framed body that ended before its final
+chunk with `transient` / `net.stream_truncated`. The run before the fix was red; after, green — that is
+the positive control. Unchunked SSE is untouched (its end IS the connection close).
+
+Mutants planted in the real code, each caught: no bound (4 checks), `net.cancelled` exclusion removed
+(1), first-byte rule removed (1), class check removed (2). **One survived and is disclosed:** removing
+the gateway guard alone changes nothing, because a gateway session never populates the failure detail
+either — two independent mechanisms block it. Removing BOTH is caught by P10 (2 checks). So the
+gateway exclusion is defence in depth, and P10 proves the outcome, not which layer produced it.
+
+Windows MSVC: the full deterministic suite passes (the Docker-dependent tests need the daemon up and
+were run with it). Live, against DeepSeek `deepseek-flash`: OC, reasoning-delta, HITL and session-builder
+live tests pass, so a healthy chunked TLS stream is not misflagged truncated; the CLI answers normally
+with retries on.
+
+**Code-review follow-up (same PR).** A review pointed out that the truncation check as first written
+also failed a COMPLETE answer whose body merely closed without the final chunk (some proxies do), which
+the session would then retry and pay for twice. It now defers to the stream's own terminal event
+(`[DONE]` for OpenAI, `message_stop` for Anthropic). Proven on the OpenAI path with a loopback server
+(mutant: dropping the clause is caught); **the Anthropic clause has no loopback test** and rests on the
+same one-line shape. Also: `AGENTENGINE_CLI_CHAT_STREAM_RETRIES` is now parsed strictly.
+
+**Closing two of the gaps §10 listed (same PR).**
+- **A body shorter than its declared `Content-Length`** was also treated as a clean end. The transport now
+  fails it `transient` / `net.stream_truncated` (only when a length was declared; an unframed body still
+  ends at the close). Loopback-proven with an honest-`Content-Length` control; mutant caught.
+- **The Anthropic path now has its own loopback proof**: a finished answer (`message_stop` seen) with an
+  unterminated body is kept and not retried; a stream cut before `message_stop` is retried; retries off
+  fails it. This exposed a real bug in the predicate as first written: `any_update_seen` measures updates
+  DELIVERED, but the provider workers hold updates back until a block completes, so a stream cut after a
+  200 head and before the first finished block looked pre-first-byte and was not retried. The predicate is
+  now "an update was seen OR the failure is `net.stream_truncated`" (that code can only occur after a
+  successful head, so it is mid-response by construction). Mutant of the new clause caught by 2 checks.
+  A silent provider before its first finished block, with no truncation, is still NOT retried.
+
+**The silent-provider stall (the incident itself), now reproduced and passing.** The read-idle timeout was
+two copies of `constexpr 90'000`; it is now one function (`sandbox/io_timeout.hpp`) read once from
+`AGENTENGINE_NET_IO_TIMEOUT_MS` (default 90 000 ms, clamped to [250 ms, 10 min], a non-integer keeps the
+default). It is host-owned, cannot come from model output (I3), and only changes how long the host waits
+(I2 untouched). With it set to 1 s, a loopback server that sends the head and one event and then says
+nothing is ended by the transport's REAL idle timeout, retried, and the run converges (took ~1 s, not 90).
+Two changes fell out of it:
+- A read that fails AFTER the response head was reported as `net.connect_failed`, the same code as a
+  refused connection, so "the provider went quiet" and "we never got in" were indistinguishable. Such a
+  failure is now `net.stream_read_failed` (only that one transport code is re-coded; a cancellation or a
+  byte cap keeps its own).
+- The retry predicate counts it as mid-response, so a provider that goes silent BEFORE its first finished
+  block (nothing delivered yet) is now retried. Both changes have mutants that are caught.
+
+**I8, researched.** `docs/research/2026-09-21-billing-of-interrupted-streams.md`: no first-party statement
+was found (DeepSeek's pricing page is silent, the OpenAI thread is an unanswered question, the litellm PR
+cites nothing). A discarded attempt is therefore treated as POSSIBLY billed. The budget cannot enforce a
+figure nobody has, so the design bounds the count, announces each retry, and exposes
+`stream_retries_used()` for a host that wants its own estimate.
+
+**Red-team round 2 (a fresh adversary; no FATAL or SERIOUS finding).** Traced, not executed, by the
+reviewer; each item below was then reproduced and fixed here:
+- A 200 head followed by a cut before ANY body byte fell through as a clean close and surfaced as the
+  non-retryable `run.usage_unavailable`: the accumulator is created by the first fragment, so
+  `truncated()` could not even be asked. Both workers now fail it `net.stream_truncated`.
+- The `Content-Length` shortfall check ran before the caller looked at the status, so a 400/401/429 with a
+  cut error body would have been retried as a connection fault (a 429 immediately). It now applies to
+  2xx only.
+- A sloppy gateway that delivered its usage chunk and then closed with neither `[DONE]` nor the final
+  chunk was failed as truncated, throwing away a finished answer. The usage chunk now also counts as
+  complete for OpenAI.
+- Test gaps the review found and this round closed: nothing ran two consecutive runs that each retry, so
+  deleting the per-run reset passed (P3b now catches it); the idempotency-key claim was vacuous (removed).
+- **Disclosed, not fixed:** `effect_context_.cancellation` is never assigned anywhere in the session, so
+  the stop-token clause in `should_retry_stream` is currently unreachable — harmless defence for a future
+  wiring, with `net.cancelled` the live guard. The `err.code != "run.stream_incomplete"` clause is
+  equivalent to the `has_value()` guard beside it. Retry state across an approval suspend/resume is
+  untested. The TLS half of the io-timeout change is untested (the loopback tests are plaintext).
+  The head-then-cut fix is mutant-proven on the OpenAI path only; the Anthropic worker carries the same
+  three lines with no loopback test of its own.
+  `ReplayChatClient`'s cursor is never reset, so a second run on one client sees `sequence_exhausted`;
+  that is a divergence made loud on purpose, not a bug.
+
+## 11. `ModelOutputDiscarded` (project-owner decision 2026-09-21)
+
+The consumer-visible cost of a retry was that a live consumer showed the dead attempt's text and then the
+full answer. The owner accepted a new event kind to let a consumer retract it. **013 was amended first
+(the spec wins): §1's vocabulary, a producer paragraph, and a §2.1 mapping row.**
+
+- **Kind**: `run_event_kind::model_output_discarded`, appended LAST so no existing kind's value moves.
+  Payload `ModelOutputDiscarded{attempt, max_attempts, reason}`.
+- **Meaning**: every `model_delta` since the preceding `model_call_started` is void. Fired after the dead
+  call's `model_call_finished` and before the next `model_call_started`, so a consumer that keeps
+  per-call state retracts at a clean boundary. History was not appended and no tool ran, so the void is
+  presentation-only.
+- **It REPLACES the retry `warning`.** The warning was a free-text message a reader had to prefix-match
+  (the round-1 review flagged exactly that fragility); the structured event carries the same facts. The
+  `kStreamRetryWarningPrefix` constant is gone.
+- **AG-UI**: no event in 013 §2.1's list expresses retraction, so it projects as
+  `CUSTOM ae:model_output_discarded {attempt, maxAttempts, reason}`, the §2.1 escape hatch `ae:warning`
+  already uses. **A2A**: no task-lifecycle slot; the existing `default` returns an empty vector, unchanged.
+  **`cli_chat`**: a terminal cannot un-print streamed text, so it prints
+  `! the reply stopped part-way; asking again (N/M)` and logs the reason.
+- **Ignoring it is safe.** A consumer that does nothing with the event is as correct as before the event
+  existed (P8: both message brackets close), just redundant.
+- **Proof** (`test_rt_agent_session_stream_retry.cpp` P11): ordering, payload, the AG-UI projection, and a
+  control that a clean run emits none. Mutants: emit removed (caught by 3 unit checks and 3 loopback
+  checks), projection dropped (caught).
+- **Not done**: I7 wants a conformance run for any protocol claim. This adds no AG-UI wire claim beyond
+  the existing CUSTOM escape hatch, and no consumer other than `cli_chat` acts on the event yet.
+
+**I8, decided (project owner, 2026-09-21): treat a discarded attempt as billed.** It is now charged to
+the token budget as an estimate (§4), and a charge that breaks the budget stops the retry. Proven by P12
+(charged; budget counter = real + estimate; `run_usage()` unchanged; the event carries the same number;
+a tight budget fails the run and the retry is not issued, with a generous-budget control). Mutants caught:
+charge never reaching the budget, the estimate leaking into `run_usage()`, the budget not re-checked.
+Limits, stated: the figure is an ESTIMATE (~4 bytes/token) and is wrong in both directions for a real
+tokenizer; media in a request is not counted (an undercount); and it assumes providers bill what they
+generated, which nobody has confirmed either way.
+
+## 10. Still open
+
+1. **Provider billing of an unfinished stream is unmeasured.** The project's answer is to ASSUME it is
+   billed (§4, I8 decided above), which makes the estimate an over-count if providers do not bill it.
+   Closing it needs a first-party statement or a killed-stream measurement against a provider dashboard.
+2. ~~Consumers cannot erase a discarded partial~~ -- closed by §11 for any consumer that acts on the
+   event; a consumer that ignores it still sees the dead attempt's text and then the full one.
+3. Gateway sessions still die post-commit; a tier-aware answer is separate, larger work (it has to
+   reckon with 004 §4's no-silent-substitution rule).
+4. ~~Round 2 by a fresh adversary; Judged.~~ Done (§9) and Judged 2026-09-21. The residuals above are
+   accepted, not pending; each would be its own ADR.
