@@ -1119,7 +1119,15 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
         producer.fail(*decode_error);
         return;
     }
-    if (acc && acc->truncated()) {
+    if (!acc) {
+        // See protocol/openai/chat_client.hpp's identical check: a 2xx head with no body at all.
+        producer.fail(error{failure_class::transient,
+                             "the response ended before its body began: the connection was cut right "
+                             "after the response head",
+                             "net.stream_truncated"});
+        return;
+    }
+    if (acc->truncated()) {
         producer.fail(error{failure_class::transient,
                              "the response stream ended before its final chunk: the connection was cut "
                              "while the model was still answering",

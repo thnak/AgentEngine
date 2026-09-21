@@ -288,12 +288,13 @@ int main() {
         if (h.client->seen.size() == 2) {
             auto const& q1 = h.client->seen[0];
             auto const& q2 = h.client->seen[1];
-            bool same = q1.messages.size() == q2.messages.size() && q1.idempotency_key == q2.idempotency_key;
+            bool same = q1.messages.size() == q2.messages.size();
             for (std::size_t i = 0; same && i < q1.messages.size(); ++i) {
                 same = agentengine::text_of(q1.messages[i]) == agentengine::text_of(q2.messages[i]);
             }
-            check(same, "P2 (R2): the retry re-sends the identical request (same messages, same "
-                        "idempotency key), so a failed attempt contributed nothing to what the model sees");
+            check(same, "P2 (R2): the retry re-sends the identical request (same messages), so a failed attempt "
+                        "contributed nothing to what the model sees. (Not asserted: an idempotency key -- the "
+                        "session never sets one, so both sides were empty and the check could not fail.)");
         }
         auto const& hist = h.session.history();
         bool partial_in_history = false;
@@ -325,6 +326,26 @@ int main() {
         check(s.stream_retries() == Session::kMaxStreamRetries,
               "P3: a caller cannot configure an unbounded loop -- the setter clamps");
         check(Session{}.stream_retries() == 0, "P3: the default is 0");
+    }
+
+    // ---- P3b: the bound is per RUN, and a NEW run gets a fresh one ------------------------------------
+    // (red-team round 2: deleting the reset in start_run passed every check, because nothing ran two runs.)
+    {
+        std::vector<Attempt> a(4);
+        a[0].updates = {text_delta("partial")};
+        a[0].fail    = dead_stream();
+        a[1].updates = {text_delta("first", true, kUsage)};
+        a[2].updates = {text_delta("partial")};
+        a[2].fail    = dead_stream();
+        a[3].updates = {text_delta("second", true, kUsage)};
+        Harness h(std::move(a), /*retries=*/1);
+        auto r1 = drive(h.session.start_run(StartRun{user_message("one")}));
+        check(r1.has_value() && h.session.stream_retries_used() == 1, "P3b: run 1 used its one retry");
+        auto r2 = drive(h.session.start_run(StartRun{user_message("two")}));
+        check(r2.has_value() && agentengine::text_of(r2->message) == "second",
+              "P3b: run 2 was ALSO allowed its retry -- the per-run counter is reset at run start, so a "
+              "long-lived session does not run out of retries after its first recovery");
+        check(h.client->calls == 4, "P3b: four model calls in all");
     }
 
     // ---- P4: default 0 == today's behaviour ---------------------------------------------------------

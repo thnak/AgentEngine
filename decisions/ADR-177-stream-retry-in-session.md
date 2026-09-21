@@ -138,8 +138,9 @@ reason to abandon it; both are reasons this ADR must not be Judged until they ar
   failure as `fatal`, so even a two-recording tape would have replayed the failed attempt as
   non-retryable and diverged from the run that recorded it. Older recordings (message text only) fall
   back to the old reconstruction rather than a guessed class.
-- **The retry re-sends the identical `ChatRequest` object**, so a stable `idempotency_key`
-  (`ChatRequest`, F1) is stable across attempts by construction.
+- **The retry re-sends the identical `ChatRequest` object.** That would keep an `idempotency_key`
+  stable across attempts, but `AgentSession` never sets one today (only `ModelCallGateway` does), so this
+  is not exercised and the round-2 review was right that a test claiming it was vacuous; it was removed.
 
 ## 9. Evidence
 
@@ -205,6 +206,29 @@ was found (DeepSeek's pricing page is silent, the OpenAI thread is an unanswered
 cites nothing). A discarded attempt is therefore treated as POSSIBLY billed. The budget cannot enforce a
 figure nobody has, so the design bounds the count, announces each retry, and exposes
 `stream_retries_used()` for a host that wants its own estimate.
+
+**Red-team round 2 (a fresh adversary; no FATAL or SERIOUS finding).** Traced, not executed, by the
+reviewer; each item below was then reproduced and fixed here:
+- A 200 head followed by a cut before ANY body byte fell through as a clean close and surfaced as the
+  non-retryable `run.usage_unavailable`: the accumulator is created by the first fragment, so
+  `truncated()` could not even be asked. Both workers now fail it `net.stream_truncated`.
+- The `Content-Length` shortfall check ran before the caller looked at the status, so a 400/401/429 with a
+  cut error body would have been retried as a connection fault (a 429 immediately). It now applies to
+  2xx only.
+- A sloppy gateway that delivered its usage chunk and then closed with neither `[DONE]` nor the final
+  chunk was failed as truncated, throwing away a finished answer. The usage chunk now also counts as
+  complete for OpenAI.
+- Test gaps the review found and this round closed: nothing ran two consecutive runs that each retry, so
+  deleting the per-run reset passed (P3b now catches it); the idempotency-key claim was vacuous (removed).
+- **Disclosed, not fixed:** `effect_context_.cancellation` is never assigned anywhere in the session, so
+  the stop-token clause in `should_retry_stream` is currently unreachable — harmless defence for a future
+  wiring, with `net.cancelled` the live guard. The `err.code != "run.stream_incomplete"` clause is
+  equivalent to the `has_value()` guard beside it. Retry state across an approval suspend/resume is
+  untested. The TLS half of the io-timeout change is untested (the loopback tests are plaintext).
+  The head-then-cut fix is mutant-proven on the OpenAI path only; the Anthropic worker carries the same
+  three lines with no loopback test of its own.
+  `ReplayChatClient`'s cursor is never reset, so a second run on one client sees `sequence_exhausted`;
+  that is a divergence made loud on purpose, not a bug.
 
 ## 10. Still open
 

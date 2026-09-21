@@ -366,6 +366,50 @@ int main() {
         }
     }
 
+    // ---- red-team round 2 findings, each proven on the real client + transport --------------------------
+    {
+        // (a) 200 head, then the connection is cut before a single body byte. The accumulator is created by
+        // the first fragment, so without one `truncated()` could not even be asked; this used to fall
+        // through as a clean close with no usage -- a contract failure nothing retries.
+        Script head_then_cut;
+        head_then_cut.raw = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
+        Script whole;
+        whole.events = {sse(R"({"choices":[{"delta":{"content":"the whole answer"}}]})"), usage_chunk,
+                        "data: [DONE]\n\n"};
+        ScriptedSseServer a({head_then_cut, whole});
+        if (a.ok()) {
+            auto [r, warnings] = run_against(a, 1);
+            check(r.has_value() && text_of(r->message) == "the whole answer" && a.connections() == 2 &&
+                      warnings == 1,
+                  "a 200 head followed by a cut before ANY body byte is a truncation and is retried");
+        }
+
+        // (b) a NON-2xx whose error body is cut short is still that status: it must not be retried as if the
+        // connection were at fault (a 429 would be re-issued at once).
+        Script bad_request;
+        bad_request.raw = "HTTP/1.1 400 Bad Request\r\nContent-Length: 500\r\n\r\n{\"error\":";
+        ScriptedSseServer b({bad_request, whole});
+        if (b.ok()) {
+            auto [r, warnings] = run_against(b, 1);
+            check(!r.has_value() && b.connections() == 1 && warnings == 0,
+                  "a 400 with a cut error body is NOT retried: one connection, no retry warning");
+            check(!r.has_value() && r.error().message.find("400") != std::string::npos,
+                  "and it fails as the STATUS (400), not as a truncation");
+        }
+
+        // (c) a stream that delivered its usage chunk is whole even if a sloppy gateway closed without
+        // [DONE] or the final chunk -- retrying it would bill a finished answer twice.
+        Script usage_but_no_done;
+        usage_but_no_done.events = {sse(R"({"choices":[{"delta":{"content":"whole"}}]})"), usage_chunk};
+        usage_but_no_done.finish_cleanly = false;
+        ScriptedSseServer c({usage_but_no_done, usage_but_no_done});
+        if (c.ok()) {
+            auto [r, warnings] = run_against(c, 1);
+            check(r.has_value() && text_of(r->message) == "whole" && c.connections() == 1 && warnings == 0,
+                  "usage delivered but no [DONE] and no final chunk: kept, and NOT retried");
+        }
+    }
+
     // ---- a body shorter than its declared Content-Length is a cut connection, not a short answer ---------
     // The chunk-framing check cannot see this shape at all: there is no chunk framing. The transport must.
     {

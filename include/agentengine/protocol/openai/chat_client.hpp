@@ -726,7 +726,10 @@ public:
     // did afterwards: some proxies close without the final 0-chunk after a whole answer, and failing
     // that would throw away a finished, billed response and pay for it again.
     [[nodiscard]] bool truncated() const noexcept {
-        return chunked_ && !chunked_decoder_.complete() && !done_seen_;
+        // `captured_usage_` counts too: with `include_usage` the usage chunk is the LAST thing a provider
+        // sends, so a stream that delivered it is whole even if a sloppy gateway then closed without
+        // `[DONE]` or the final chunk -- and usage is exactly what the session needs to call it complete.
+        return chunked_ && !chunked_decoder_.complete() && !done_seen_ && !captured_usage_.has_value();
     }
 
     // End of stream: flushes the held-back update and every assembled tool call, marking the very
@@ -1033,7 +1036,17 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
         return;
     }
 
-    if (acc && acc->truncated()) {
+    if (!acc) {
+        // A 2xx response whose body never delivered a single byte is not a finished chat stream: the
+        // accumulator is created by the first fragment, so without one `truncated()` cannot even be
+        // asked. Head-then-cut used to fall through to a clean close and read as "no usage" (contract).
+        producer.fail(error{failure_class::transient,
+                             "the response ended before its body began: the connection was cut right "
+                             "after the response head",
+                             "net.stream_truncated"});
+        return;
+    }
+    if (acc->truncated()) {
         producer.fail(error{failure_class::transient,
                              "the response stream ended before its final chunk: the connection was cut "
                              "while the model was still answering",
