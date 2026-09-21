@@ -2343,8 +2343,12 @@ private:
                 failure_class::contract, "hook_decision resume requires hook_dispatch_answers",
                 "session.hook_decision.missing_answers"});
         }
-        PendingHookDecisionRound round = std::move(it->second);
-        pending_hook_decisions_.erase(it);
+        // ADR-179 stage 0: work on a COPY and erase the stored state only once the interaction has actually
+        // been resolved (below). This used to move-and-erase HERE, before the answer check, so a resume
+        // missing one answer returned `session.hook_decision.incomplete` with the interaction still open
+        // and nothing left to resume -- the retry hit `session.hook_decision.unknown` and start_run() stayed
+        // refused for good (`run.approval_pending`). A validation failure must leave the round retryable.
+        PendingHookDecisionRound round = it->second;
 
         // Fold in the external answers. Fails closed on any gap -- no partial-round resolution,
         // since resolve_interaction_record() below closes the WHOLE interaction on this one resume.
@@ -2376,6 +2380,7 @@ private:
 
         result<void> const resolved = resolve_interaction_record(interaction_id);
         if (!resolved) co_return std::unexpected(resolved.error());
+        pending_hook_decisions_.erase(interaction_id);  // resolved: the stored round is no longer resumable
         emit_run_event(run_event_kind::input_resolved, run_event_payload::InteractionRef{interaction_id});
 
         // ADR-061 §20.7: effect_context_.principal, not principal_ -- per-request, not session-level.
