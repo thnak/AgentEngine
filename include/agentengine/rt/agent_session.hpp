@@ -724,6 +724,12 @@ public:
         stream_retries_ = n > kMaxStreamRetries ? kMaxStreamRetries : n;
     }
     [[nodiscard]] std::uint32_t stream_retries() const noexcept { return stream_retries_; }
+    // How many model calls THIS run discarded and re-issued. The token budget cannot see a dead
+    // attempt's tokens (a failed stream reports no `Usage`, and inventing one would put a fabricated
+    // number into a budget), so the COUNT is what a host has to apply its own estimate to.
+    // docs/research/2026-09-21-billing-of-interrupted-streams.md: whether providers bill such an
+    // attempt is not established.
+    [[nodiscard]] std::uint32_t stream_retries_used() const noexcept { return stream_retries_used_; }
 
     void set_scan_response_format_leaks(bool scan) noexcept { scan_response_format_leaks_ = scan; }
     [[nodiscard]] bool scan_response_format_leaks() const noexcept { return scan_response_format_leaks_; }
@@ -1918,7 +1924,9 @@ private:
             // until a block completes, so a stream cut after a 200 head but before the first finished
             // block has delivered nothing yet -- while `net.stream_truncated` can only be raised AFTER
             // a successful response head, so it is mid-response by construction, not a rejection.
-            return (f.any_update_seen || f.inner.code == "net.stream_truncated") &&
+            // `net.stream_read_failed` is the same by construction: a read that fails after the head.
+            return (f.any_update_seen || f.inner.code == "net.stream_truncated" ||
+                    f.inner.code == "net.stream_read_failed") &&
                    f.inner.klass == failure_class::transient && f.inner.code != "net.cancelled";
         }
     }

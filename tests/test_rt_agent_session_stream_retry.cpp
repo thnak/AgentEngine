@@ -316,6 +316,8 @@ int main() {
         check(!r.has_value() && r.error().code == "run.stream_incomplete",
               "P3 (R3): a permanently dying stream fails the run with the stream's own error");
         check(h.client->calls == 3, "P3 (R3): exactly retries+1 == 3 attempts, then it stops");
+        check(h.session.stream_retries_used() == 2,
+              "P3 (I8): the discarded-attempt count is exposed, since the token budget cannot see them");
         check(count_retry_warnings(drain_events(h.viewer)) == 2, "P3: one warning per retry, no more");
 
         Session s;
@@ -372,6 +374,13 @@ int main() {
         check(retried(truncated_early, "p5-trunc") == 2,
               "P5 control: net.stream_truncated with NO update delivered IS retried -- it can only happen "
               "after a successful response head, so it is mid-response, unlike the pre-byte failure above");
+
+        Attempt read_failed;  // the provider went silent after the head, before any block finished
+        read_failed.fail = error{failure_class::transient, "the response stopped while it was being read",
+                                 "net.stream_read_failed"};
+        check(retried(read_failed, "p5-readfail") == 2,
+              "P5 control: net.stream_read_failed with NO update delivered IS retried -- it can only follow "
+              "a successful response head");
 
         Attempt contract = base;
         contract.fail = error{failure_class::contract, "bad request", "net.protocol_error"};

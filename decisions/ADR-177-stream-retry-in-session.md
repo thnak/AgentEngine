@@ -186,13 +186,33 @@ same one-line shape. Also: `AGENTENGINE_CLI_CHAT_STREAM_RETRIES` is now parsed s
   successful head, so it is mid-response by construction). Mutant of the new clause caught by 2 checks.
   A silent provider before its first finished block, with no truncation, is still NOT retried.
 
+**The silent-provider stall (the incident itself), now reproduced and passing.** The read-idle timeout was
+two copies of `constexpr 90'000`; it is now one function (`sandbox/io_timeout.hpp`) read once from
+`AGENTENGINE_NET_IO_TIMEOUT_MS` (default 90 000 ms, clamped to [250 ms, 10 min], a non-integer keeps the
+default). It is host-owned, cannot come from model output (I3), and only changes how long the host waits
+(I2 untouched). With it set to 1 s, a loopback server that sends the head and one event and then says
+nothing is ended by the transport's REAL idle timeout, retried, and the run converges (took ~1 s, not 90).
+Two changes fell out of it:
+- A read that fails AFTER the response head was reported as `net.connect_failed`, the same code as a
+  refused connection, so "the provider went quiet" and "we never got in" were indistinguishable. Such a
+  failure is now `net.stream_read_failed` (only that one transport code is re-coded; a cancellation or a
+  byte cap keeps its own).
+- The retry predicate counts it as mid-response, so a provider that goes silent BEFORE its first finished
+  block (nothing delivered yet) is now retried. Both changes have mutants that are caught.
+
+**I8, researched.** `docs/research/2026-09-21-billing-of-interrupted-streams.md`: no first-party statement
+was found (DeepSeek's pricing page is silent, the OpenAI thread is an unanswered question, the litellm PR
+cites nothing). A discarded attempt is therefore treated as POSSIBLY billed. The budget cannot enforce a
+figure nobody has, so the design bounds the count, announces each retry, and exposes
+`stream_retries_used()` for a host that wants its own estimate.
+
 ## 10. Still open
 
-1. **The 90 s silent-provider path is not exercised** — the incident that started this — only the
-   dropped-connection shape is. Both are `transient` from the same read loop by reading
-   (`net_egress_proxy.cpp`), not by test.
-2. I8: a discarded attempt's tokens are invisible to the budget (§4); provider billing of an unfinished
-   stream is unresearched.
-3. A silent provider before the first finished block is not retried (see the predicate note in §9).
-4. Consumers still cannot erase a discarded partial (§6.2); gateway sessions still die post-commit.
-5. Round 2 by a fresh adversary has not happened; **Judged is the project owner's to give.**
+1. **Provider billing of an unfinished stream is unmeasured** (above). Closing it needs a first-party
+   statement or a killed-stream measurement against a provider dashboard.
+2. Consumers still cannot erase a discarded partial (§6.2): the retry replays the answer from the start,
+   so a live consumer sees the dead attempt's text and then the full one. Erasing needs a new event kind
+   and a 013 change (I7 gate), which is a separate decision.
+3. Gateway sessions still die post-commit; a tier-aware answer is separate, larger work (it has to
+   reckon with 004 §4's no-silent-substitution rule).
+4. Round 2 by a fresh adversary; **Judged is the project owner's to give.**

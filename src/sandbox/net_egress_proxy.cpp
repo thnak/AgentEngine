@@ -2,6 +2,7 @@
 // docs/research/2026-08-05-ssrf-dns-rebinding-defense.md for the design/citations this satisfies.
 
 #include "agentengine/sandbox/net_egress_proxy.hpp"
+#include "agentengine/sandbox/io_timeout.hpp"
 
 #ifdef AGENTENGINE_WITH_HTTPS
 #include "agentengine/sandbox/tls_client.hpp"
@@ -61,12 +62,13 @@ bool equals_ci(std::string_view a, std::string_view b) noexcept {
            });
 }
 
-// See src/sandbox/tls_client.cpp's own kIoTimeoutMs comment -- same live-model evidence, same fix:
+// See src/sandbox/tls_client.cpp's own kIoTimeoutMsFn() comment -- same live-model evidence, same fix:
 // 10s is too short a single wait_ready() poll timeout for a non-streaming LLM completion, which can
 // legitimately produce no bytes at all until the model finishes "thinking." Kept as an independent
 // constant (this file's own top-of-file note on why these two copies aren't shared) but widened to
 // the same value so the plain-HTTP path doesn't retain the bug the TLS path just had fixed.
-constexpr int kIoTimeoutMs = 90'000;
+// ADR-177: one shared, env-configurable value now -- see sandbox/io_timeout.hpp.
+inline int kIoTimeoutMsFn() { return ::agentengine::sandbox::io_timeout_ms(); }
 
 bool wait_ready(agentengine::pal::fd_t fd, bool for_write, int timeout_ms) {
     ::fd_set set;
@@ -101,7 +103,7 @@ result<std::monostate> check_not_cancelled(std::stop_token const& stop) {
 result<std::monostate> send_all(agentengine::pal::fd_t fd, std::string const& data) {
     std::size_t sent = 0;
     while (sent < data.size()) {
-        if (!wait_ready(fd, /*for_write=*/true, kIoTimeoutMs)) {
+        if (!wait_ready(fd, /*for_write=*/true, kIoTimeoutMsFn())) {
             return std::unexpected(error{failure_class::transient, "timed out sending request", "net.connect_failed"});
         }
         auto r = agentengine::pal::send_some(fd, reinterpret_cast<std::byte const*>(data.data() + sent),
@@ -413,7 +415,7 @@ result<NetEgressResponse> perform_http_exchange(VerifiedEndpoint endpoint, std::
     }
     FdGuard const guard{*connect_r};
 
-    if (!wait_ready(guard.fd, /*for_write=*/true, kIoTimeoutMs)) {
+    if (!wait_ready(guard.fd, /*for_write=*/true, kIoTimeoutMsFn())) {
         return std::unexpected(error{failure_class::transient, "connect timed out", "net.connect_failed"});
     }
     if (auto const cr = agentengine::pal::connect_result(guard.fd); !cr) {
@@ -442,7 +444,7 @@ result<NetEgressResponse> perform_http_exchange(VerifiedEndpoint endpoint, std::
             return std::unexpected(error{failure_class::resource, "response exceeded the byte cap", "net.byte_cap_exceeded"});
         }
         if (auto const c = check_not_cancelled(stop); !c) return std::unexpected(c.error());
-        if (!wait_ready(guard.fd, /*for_write=*/false, kIoTimeoutMs)) {
+        if (!wait_ready(guard.fd, /*for_write=*/false, kIoTimeoutMsFn())) {
             return std::unexpected(error{failure_class::transient, "timed out reading response", "net.connect_failed"});
         }
         auto const r = agentengine::pal::recv_some(guard.fd, chunk.data(), chunk.size());
@@ -490,7 +492,7 @@ result<NetEgressResponse> perform_https_exchange(VerifiedEndpoint endpoint, std:
     }
     FdGuard const guard{*connect_r};
 
-    if (!wait_ready(guard.fd, /*for_write=*/true, kIoTimeoutMs)) {
+    if (!wait_ready(guard.fd, /*for_write=*/true, kIoTimeoutMsFn())) {
         return std::unexpected(error{failure_class::transient, "connect timed out", "net.connect_failed"});
     }
     if (auto const cr = agentengine::pal::connect_result(guard.fd); !cr) {
@@ -604,7 +606,19 @@ result<NetEgressResponse> stream_response_body(RecvFn&& recv_more, std::uint64_t
         }
         if (auto const c = check_not_cancelled(stop); !c) return std::unexpected(c.error());
         auto const r = recv_more(chunk.data(), chunk.size());
-        if (!r) return std::unexpected(r.error());
+        if (!r) {
+            // ADR-177: a read that failed AFTER the response head is a response that stopped mid-way --
+            // a silent provider that hit the idle timeout, a reset -- not a failure to reach the server.
+            // Both used to carry the same `net.connect_failed` as a refused connection, which is what
+            // made "the provider went quiet" indistinguishable from "we never got in". Re-coded only
+            // for that one transport code: a cancellation or a byte cap keeps its own.
+            if (r.error().code == "net.connect_failed") {
+                return std::unexpected(error{r.error().klass,
+                                              "the response stopped while it was being read: " + r.error().message,
+                                              "net.stream_read_failed"});
+            }
+            return std::unexpected(r.error());
+        }
         if (*r == 0) {
             // ADR-177: the peer closed. With a declared Content-Length that is only a clean end if
             // the whole body arrived -- a shorter body is a connection cut mid-answer, not a short
@@ -642,7 +656,7 @@ result<NetEgressResponse> perform_http_exchange_streaming(
         return std::unexpected(error{failure_class::transient, "connect failed", "net.connect_failed"});
     }
     FdGuard const guard{*connect_r};
-    if (!wait_ready(guard.fd, /*for_write=*/true, kIoTimeoutMs)) {
+    if (!wait_ready(guard.fd, /*for_write=*/true, kIoTimeoutMsFn())) {
         return std::unexpected(error{failure_class::transient, "connect timed out", "net.connect_failed"});
     }
     if (auto const cr = agentengine::pal::connect_result(guard.fd); !cr) {
@@ -655,7 +669,7 @@ result<NetEgressResponse> perform_http_exchange_streaming(
     auto recv_more = [&](char* buf, std::size_t len) -> result<std::size_t> {
         for (;;) {
             if (auto const c = check_not_cancelled(stop); !c) return std::unexpected(c.error());
-            if (!wait_ready(guard.fd, /*for_write=*/false, kIoTimeoutMs)) {
+            if (!wait_ready(guard.fd, /*for_write=*/false, kIoTimeoutMsFn())) {
                 return std::unexpected(
                     error{failure_class::transient, "timed out reading response", "net.connect_failed"});
             }
@@ -686,7 +700,7 @@ result<NetEgressResponse> perform_https_exchange_streaming(
         return std::unexpected(error{failure_class::transient, "connect failed", "net.connect_failed"});
     }
     FdGuard const guard{*connect_r};
-    if (!wait_ready(guard.fd, /*for_write=*/true, kIoTimeoutMs)) {
+    if (!wait_ready(guard.fd, /*for_write=*/true, kIoTimeoutMsFn())) {
         return std::unexpected(error{failure_class::transient, "connect timed out", "net.connect_failed"});
     }
     if (auto const cr = agentengine::pal::connect_result(guard.fd); !cr) {

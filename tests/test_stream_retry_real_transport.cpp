@@ -60,6 +60,8 @@ struct Script {
     // When non-empty, written verbatim (head and all) instead of the chunked framing above -- for the
     // framings the chunked path cannot express, e.g. a Content-Length the body then fails to honour.
     std::string              raw;
+    // Send `events`, then hold the connection open and say NOTHING: the provider that goes silent.
+    bool                     go_silent = false;
 };
 
 class ScriptedSseServer {
@@ -148,6 +150,17 @@ private:
             if (!write_all(fd, std::string(size_buf) + ev + "\r\n")) return;
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
+        if (script.go_silent) {
+            // Silent, but not deaf: return as soon as the client gives up and hangs up, so this
+            // single-threaded server is free to accept the retry's connection.
+            for (int i = 0; i < 400 && !st.stop_requested(); ++i) {
+                auto r = agentengine::pal::recv_some(fd, chunk, sizeof(chunk));
+                if (r && *r == 0) return;  // client closed
+                if (!r && r.error() != agentengine::pal::would_block()) return;
+                std::this_thread::sleep_for(std::chrono::milliseconds(25));
+            }
+            return;
+        }
         if (script.finish_cleanly) write_all(fd, "0\r\n\r\n");
         // else: fall out and close with the chunked body unterminated -- the stream dies mid-answer.
     }
@@ -193,6 +206,9 @@ T drive(agentengine::rt::task<T> t) {
 int main() {
 #if defined(_WIN32)
     agentengine::pal::ensure_winsock();
+    _putenv_s("AGENTENGINE_NET_IO_TIMEOUT_MS", "1000");
+#else
+    setenv("AGENTENGINE_NET_IO_TIMEOUT_MS", "1000", 1);
 #endif
 
     InMemorySecretStore store;
@@ -309,6 +325,44 @@ int main() {
             check(server.connections() == 1 && warnings == 0,
                   "and it is NOT retried: one connection, no retry warning -- a retry here would bill a "
                   "completed response twice");
+        }
+    }
+
+    // ---- THE INCIDENT: the provider goes SILENT (ADR-177 §10's 90 s gap) ---------------------------------
+    // Connection 1 sends the head and one event, then says nothing and keeps the socket open -- exactly
+    // what the real session hit. The transport's idle timeout (here 1 s, set at the top of main through
+    // AGENTENGINE_NET_IO_TIMEOUT_MS; production default 90 s) is what ends it, through the REAL read loop.
+    // No update has been DELIVERED yet (the provider workers hold one back), so this is also the case the
+    // `any_update_seen` rule alone would have refused to retry.
+    {
+        Script silent;
+        silent.events = {sse(R"({"choices":[{"delta":{"content":"par"}}]})")};
+        silent.go_silent = true;
+        Script whole;
+        whole.events = {sse(R"({"choices":[{"delta":{"content":"the whole answer"}}]})"), usage_chunk,
+                        "data: [DONE]\n\n"};
+        ScriptedSseServer server({silent, whole});
+        if (server.ok()) {
+            auto const t0 = std::chrono::steady_clock::now();
+            auto [r, warnings] = run_against(server, /*retries=*/1);
+            auto const took = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::steady_clock::now() - t0).count();
+            check(r.has_value() && text_of(r->message) == "the whole answer" && server.connections() == 2 &&
+                      warnings == 1,
+                  "a provider that goes silent mid-response hits the idle timeout, is retried, and the run "
+                  "converges");
+            check(took >= 900 && took < 20000,
+                  "and it took about the configured idle timeout -- the wait really was the transport's "
+                  "own read timeout, not an instant failure and not the default 90 s");
+        }
+        // Control: retries off -- the same silence ends the run, naming the read failure.
+        ScriptedSseServer server2({silent, silent});
+        if (server2.ok()) {
+            auto [r, warnings] = run_against(server2, /*retries=*/0);
+            check(!r.has_value() && r.error().message.find("net.stream_read_failed") != std::string::npos &&
+                      server2.connections() == 1 && warnings == 0,
+                  "silence control: with retries off it fails as net.stream_read_failed, not as a refused "
+                  "connection (net.connect_failed)");
         }
     }
 
