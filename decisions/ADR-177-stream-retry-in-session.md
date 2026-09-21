@@ -281,8 +281,9 @@ generated, which nobody has confirmed either way.
 
 1. ~~Provider billing of an unfinished stream is unmeasured.~~ **A note, not an open item** (project owner,
    2026-09-21). No provider states whether a stream that never finished is billed, and none is going to; the
-   project treats it as paid for the tokens generated (§4, I8), so the budget charge is an estimate that
-   over-counts if a provider does not bill it. That is the accepted position, not a question awaiting a
+   project treats it as paid: the request's input tokens plus the tokens the dead stream generated (§4, I8;
+   owner confirmed input stays in the charge). The budget charge is an estimate that over-counts if a
+   provider does not bill it. That is the accepted position, not a question awaiting a
    measurement.
 2. ~~Consumers cannot erase a discarded partial~~ -- closed by §11 for any consumer that acts on the
    event; a consumer that ignores it still sees the dead attempt's text and then the full one.
