@@ -734,6 +734,27 @@ public:
     // `run_tokens_consumed()`, and NOT inside `run_usage()`, which reports only what a provider said).
     [[nodiscard]] std::uint64_t discarded_tokens_estimate() const noexcept { return discarded_tokens_estimate_; }
 
+    // ADR-178: ask the run this session is executing (or is suspended in) to stop. Callable from ANY thread,
+    // and never blocks on the run -- it only requests stop on the current run's `std::stop_source`.
+    // COOPERATIVE at named checkpoints, never preemptive: the top of each round, inside a streaming model
+    // call (it abandons the stream and so reaches the transport's blocking read), and after a model call
+    // returns but BEFORE its tool calls run. A tool sees the same signal as `EffectContext::cancellation`.
+    // The run ends `run.canceled` (`failure_class::fatal`) after a `run_canceled` event; nothing the
+    // canceled round had not yet committed is appended to history. A no-op when no run is in flight: the
+    // next `start_run()` gets a FRESH source, so a stale cancel can never poison it.
+    void cancel() noexcept {
+        std::stop_source source;
+        {
+            std::lock_guard<std::mutex> lock(cancel_mutex_);
+            source = cancel_source_;
+        }
+        source.request_stop();
+    }
+    [[nodiscard]] std::stop_token cancellation_token() const noexcept {
+        std::lock_guard<std::mutex> lock(cancel_mutex_);
+        return cancel_source_.get_token();
+    }
+
     void set_scan_response_format_leaks(bool scan) noexcept { scan_response_format_leaks_ = scan; }
     [[nodiscard]] bool scan_response_format_leaks() const noexcept { return scan_response_format_leaks_; }
 
@@ -976,6 +997,14 @@ public:
         effect_context_.run_id       = session_id_ + ":run:" + std::to_string(run_counter_);
         effect_context_.turn_index   = 0;
         last_run_id_ = effect_context_.run_id;
+        {
+            // ADR-178: one source PER RUN. Replaced (not reset) so a cancel aimed at the previous run,
+            // still holding the old source, cannot reach this one; guarded because `cancel()` may be
+            // running on another thread this instant.
+            std::lock_guard<std::mutex> lock(cancel_mutex_);
+            cancel_source_ = std::stop_source{};
+            effect_context_.cancellation = cancel_source_.get_token();
+        }
 
         emit_run_event(run_event_kind::run_started);
         if constexpr (agentengine::ModelCallGatewayLike<ChatClientT>) {
@@ -1980,7 +2009,8 @@ private:
             if constexpr (agentengine::ModelCallGatewayStreamLike<ChatClientT>) {
                 if (stream_model_calls_) {
                     response = detail::drain_streaming_response(chat_client_->call_stream(request, ctx),
-                                                                  stream_model_calls_, emit);
+                                                                  stream_model_calls_, emit, nullptr,
+                                                                  ctx.cancellation);
                 } else {
                     response = co_await chat_client_->call(request, ctx);
                 }
@@ -2016,7 +2046,7 @@ private:
             }
             detail::StreamFailure failure;
             response = detail::drain_streaming_response(chat_client_->chat_stream(request, ctx),
-                                                          stream_model_calls_, emit, &failure);
+                                                          stream_model_calls_, emit, &failure, ctx.cancellation);
             if (!response.has_value() && response.error().code == "run.stream_incomplete") {
                 last_stream_failure_ = std::move(failure);
             }
@@ -2411,6 +2441,12 @@ private:
     // Same shape as core/agent_session.hpp's own run_rounds() -- ported to rt::task<T>, no longer
     // templated on AskT (there is only one caller shape now, a plain `result<AgentResponse>` return),
     // otherwise byte-for-byte identical logic.
+    // ADR-178: the one way a canceled run ends. `run_canceled` is the terminal event 013 already names.
+    [[nodiscard]] std::unexpected<error> finish_canceled() {
+        emit_run_event(run_event_kind::run_canceled);
+        return std::unexpected(error{failure_class::fatal, "the run was canceled", "run.canceled"});
+    }
+
     task<result<AgentResponse>> run_rounds() {
         CapabilitySet const empty_caps = CapabilitySet::grant_root({});
         // ADR-061 §20.6: per-request, not session-level -- effect_context_.capabilities is freshly
@@ -2420,6 +2456,7 @@ private:
 
         for (; !max_turns_.has_value() || effect_context_.turn_index < *max_turns_;
              ++effect_context_.turn_index) {
+            if (effect_context_.cancellation.stop_requested()) co_return finish_canceled();  // ADR-178
             emit_run_event(run_event_kind::turn_started, run_event_payload::Turn{effect_context_.turn_index});
 
             // ADR-061 §20.7: effect_context_.principal, not principal_ -- per-request, not session-level.
@@ -2633,6 +2670,10 @@ private:
                                                      "run.token_budget_exceeded"});
                 }
             }
+            if (!response && (response.error().code == "run.canceled" ||
+                               effect_context_.cancellation.stop_requested())) {
+                co_return finish_canceled();  // ADR-178: a call the run's own cancel cut short is not a failure
+            }
             if (!response) {
                 emit_run_event(run_event_kind::run_failed,
                                 run_event_payload::RunFailed{"run.chat_failed", response.error().message});
@@ -2655,6 +2696,10 @@ private:
                 co_return std::unexpected(error{failure_class::resource, "per-run token budget exceeded",
                                                  "run.token_budget_exceeded"});
             }
+
+            // ADR-178: the model answered but the run was told to stop while it did. Its usage above is
+            // real and stays charged (attributable); the response is dropped, so no tool it asked for runs.
+            if (effect_context_.cancellation.stop_requested()) co_return finish_canceled();
 
             std::size_t const response_msg_index = history_.size();
             history_.push_back(response->message);
@@ -3134,6 +3179,10 @@ private:
     // `emit_run_event_for()` on the SAME thread would deadlock against this non-recursive mutex; no
     // such call exists in this tree today.
     std::mutex                                             run_event_mutex_;
+    // ADR-178: guards `cancel_source_`'s handle (copy/assign), NOT the stop-state -- `request_stop()` on a
+    // copy is itself thread-safe. `mutable` so `cancellation_token()` can stay const.
+    mutable std::mutex                                     cancel_mutex_;
+    std::stop_source                                       cancel_source_;
     // ADR-152 (issue #29) -- see set_run_event_tap()'s own comment above. Default no-op;
     // run_event_tap_attached_ tracks whether the LAST set_run_event_tap() call passed a real
     // (non-empty) function, independent of what run_event_tap_ itself currently holds (which is

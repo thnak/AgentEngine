@@ -10,6 +10,7 @@
 #include <chrono>
 #include <functional>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <thread>
 #include <variant>
@@ -126,13 +127,22 @@ struct StreamFailure {  // ae-naming-lint: allow StreamFailure — ADR-177's own
 
 [[nodiscard]] inline agentengine::result<agentengine::ChatResponse> drain_streaming_response(
     agentengine::stream<agentengine::ChatResponseUpdate> s, bool stream_model_calls, EmitFn const& emit,
-    StreamFailure* failure = nullptr) {
+    StreamFailure* failure = nullptr, std::stop_token cancel = {}) {
+    // ADR-178: a canceled run must not sit out a silent provider. The drain is a polling loop, so the run's
+    // token is read here; `s.cancel()` is what reaches the transport's blocking read (ADR-017), and the
+    // stream is abandoned, never half-consumed into a response.
+    auto const canceled = [&]() -> agentengine::result<agentengine::ChatResponse> {
+        s.cancel();
+        return std::unexpected(agentengine::error{agentengine::failure_class::fatal, "the run was canceled",
+                                                    "run.canceled"});
+    };
     bool any_update_seen = false;
     std::uint64_t bytes_seen = 0;
     agentengine::Message accumulated;
     accumulated.role = agentengine::role::assistant;
     std::optional<agentengine::Usage> usage;
     while (!s.done()) {
+        if (cancel.stop_requested()) return canceled();
         while (std::optional<agentengine::ChatResponseUpdate> upd = s.next()) {
             any_update_seen = true;
             if (auto const* t = std::get_if<agentengine::Text>(&upd->delta.value)) bytes_seen += t->text.size();
