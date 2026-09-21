@@ -1098,6 +1098,15 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_chat_client_stream_incremental COMMAND test_chat_client_stream_incremental)
   set_tests_properties(test_chat_client_stream_incremental PROPERTIES TIMEOUT 120)
 
+  # ADR-177 Q1: a stream killed mid-body on the REAL OpenAI client + REAL transport reaches AgentSession as
+  # something its retry decision accepts. Loopback server, default suite.
+  add_executable(test_stream_retry_real_transport test_stream_retry_real_transport.cpp)
+  target_link_libraries(test_stream_retry_real_transport PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_stream_retry_real_transport COMMAND test_stream_retry_real_transport)
+  set_tests_properties(test_stream_retry_real_transport PROPERTIES TIMEOUT 120)
+
   # ---- Milestone 6 Phase A: 014 §1/§2, the graph as data and its SHARED validator ----------------
   # Every validator rule is exercised in both directions. A suite that only built correct graphs and
   # watched them pass would be satisfied by a validator that returned success unconditionally, so
@@ -3954,3 +3963,8 @@ target_link_libraries(test_file_worktree_object_store_race PRIVATE agentengine::
 add_test(NAME test_file_worktree_object_store_race COMMAND test_file_worktree_object_store_race)
 # Real threads hammering real filesystem renames -- bounded, but give it room on a loaded CI runner.
 set_tests_properties(test_file_worktree_object_store_race PROPERTIES TIMEOUT 300)
+
+# ADR-177: a session may re-issue a model call whose stream died mid-answer (opt-in, bounded per run).
+add_executable(test_rt_agent_session_stream_retry test_rt_agent_session_stream_retry.cpp)
+target_link_libraries(test_rt_agent_session_stream_retry PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_stream_retry COMMAND test_rt_agent_session_stream_retry)

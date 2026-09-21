@@ -569,6 +569,12 @@ struct ChatCallRecording { // ae-naming-lint: allow ChatCallRecording — 004 §
     std::vector<RecordedChunk> chunks;
     std::string stream_terminal; // "closed" | "cancelled" | "deadline_exceeded" | "failed" | "" (unset)
     std::string stream_error_detail; // meaningful only when stream_terminal == "failed"
+    // ADR-177: the stream's whole `error` (class + code + message), not just its message. A retry
+    // decision reads the class and code, so a recording that kept only the text could not reproduce
+    // the decision on replay (I5) -- a replayed failure would come back as `fatal` and never retry.
+    // Absent in recordings written before this field existed; the replay player then falls back to
+    // its old, class-less reconstruction rather than guessing a class.
+    std::optional<error> stream_error;
 
     std::chrono::milliseconds duration{0};
 };
@@ -596,6 +602,9 @@ struct ChatCallRecording { // ae-naming-lint: allow ChatCallRecording — 004 §
         obj.emplace_back("stream_terminal", json::Value::make_string(rec.stream_terminal));
         if (!rec.stream_error_detail.empty()) {
             obj.emplace_back("stream_error_detail", json::Value::make_string(rec.stream_error_detail));
+        }
+        if (rec.stream_error.has_value()) {
+            obj.emplace_back("stream_error", error_to_json(*rec.stream_error));
         }
     }
     return json::Value::make_object(std::move(obj));
@@ -655,6 +664,11 @@ struct ChatCallRecording { // ae-naming-lint: allow ChatCallRecording — 004 §
         }
         rec.stream_terminal = recording_detail::opt_string(j, "stream_terminal");
         rec.stream_error_detail = recording_detail::opt_string(j, "stream_error_detail");
+        if (auto const* se = j.find("stream_error"); se != nullptr && se->is_object()) {
+            auto err = error_from_json(*se);
+            if (!err) return std::unexpected(err.error());
+            rec.stream_error = std::move(*err);
+        }
     }
 
     return rec;

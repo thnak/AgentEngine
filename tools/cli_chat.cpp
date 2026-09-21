@@ -1134,6 +1134,16 @@ void print_skills_banner(std::ostream& out,
             }
             return "  ! " + name + " failed -- see the action log";
         }
+        case run_event_kind::warning: {
+            auto const& p = std::get<run_event_payload::Warning>(ev.payload);
+            if (!p.message.starts_with(agentengine::rt::detail::kStreamRetryWarningPrefix)) return std::nullopt;
+            // The one warning a person needs at the screen: what they just watched stop is being redone.
+            // The provider's own reason is in the action log (describe_event() writes it there).
+            return "  ! the reply stopped part-way; asking again (" +
+                   p.message.substr(agentengine::rt::detail::kStreamRetryWarningPrefix.size(),
+                                    p.message.find(':') - agentengine::rt::detail::kStreamRetryWarningPrefix.size()) +
+                   ")";
+        }
         default: return std::nullopt;
     }
 }
@@ -1238,6 +1248,12 @@ template <class Inner>
     // run_event_kind::warning fires once per run naming this trade; describe_event() below renders
     // it like any other event.
     actor.set_stream_model_calls(true);
+    // ADR-177: a stream that dies mid-answer (the provider goes silent and the transport's read
+    // timeout fires) is re-issued instead of ending the session. One retry by default, per RUN;
+    // `0` restores the old behaviour. The dead attempt's partial output stays on screen -- it was
+    // real output -- and the retry says so.
+    actor.set_stream_retries(static_cast<std::uint32_t>(
+        std::strtoul(env_or("AGENTENGINE_CLI_CHAT_STREAM_RETRIES", "1").c_str(), nullptr, 10)));
     // ADR-035 Phase 1: the scan that actually matters for this CLI now that streaming is always on
     // -- runs post-hoc, once per round, on the reconstructed Message (agent_session.hpp's
     // run_model_call()), so reasoning_texts_of() below sees real extracted Reasoning items again.

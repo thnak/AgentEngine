@@ -765,6 +765,15 @@ public:
         return out;
     }
 
+    // ADR-177: true when the body was chunk-framed and the peer went away BEFORE the terminating
+    // 0-chunk. That is an HTTP framing violation, not a short answer -- the transport hands a close
+    // to its caller as an ordinary end-of-body ("the terminal 0-chunk is the CALLER's to notice",
+    // net_egress_proxy.cpp), and until a caller notices, a connection cut mid-answer looks exactly
+    // like a stream that ended. It then surfaces as "completed with no usage", a contract failure
+    // nothing retries, when the truth is a transient one. Only meaningful when chunked: an unchunked
+    // SSE body legitimately ends at connection close and carries no such signal.
+    [[nodiscard]] bool truncated() const noexcept { return chunked_ && !chunked_decoder_.complete(); }
+
     [[nodiscard]] std::vector<ChatResponseUpdate> finish() {
         std::vector<ChatResponseUpdate> out;
         if (std::string tail = framer_.take_remainder(); !tail.empty()) {
@@ -1101,6 +1110,13 @@ inline void run_stream_worker(std::string host, std::uint16_t port, std::string 
     }
     if (decode_error) {
         producer.fail(*decode_error);
+        return;
+    }
+    if (acc && acc->truncated()) {
+        producer.fail(error{failure_class::transient,
+                             "the response stream ended before its final chunk: the connection was cut "
+                             "while the model was still answering",
+                             "net.stream_truncated"});
         return;
     }
     if (acc) {

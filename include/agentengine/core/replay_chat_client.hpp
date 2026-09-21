@@ -38,9 +38,13 @@
 // testability-seam SHAPE `ModelCallGateway::JitterSource` already established (core/model_call_gateway.hpp:
 // a real, callable default, overridable in tests for determinism).
 
+#include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <functional>
+#include <memory>
 #include <memory_resource>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -91,7 +95,8 @@ inline void real_sleep(std::chrono::milliseconds d) { std::this_thread::sleep_fo
 // `ReplayChatClient`'s own `recording_` untouched for a possible second `chat_stream()` call against
 // the same instance.
 inline void run_replay_worker(std::vector<RecordedChunk> chunks, std::string stream_terminal,
-                               std::string error_detail, stream_producer<ChatResponseUpdate> producer,
+                               std::string error_detail, std::optional<error> recorded_error,
+                               stream_producer<ChatResponseUpdate> producer,
                                std::function<void(std::chrono::milliseconds)> sleep_fn) {
     std::chrono::milliseconds previous{0};
     for (auto& chunk : chunks) {
@@ -109,7 +114,14 @@ inline void run_replay_worker(std::vector<RecordedChunk> chunks, std::string str
     if (stream_terminal == "closed") {
         producer.close();
     } else {
-        producer.fail(terminal_to_error(stream_terminal, std::move(error_detail)));
+        // ADR-177: a recording that kept the stream's whole error replays it EXACTLY -- class and
+        // code included -- because a session's retry decision reads them. Only an older recording
+        // (message text alone) falls back to the class-less reconstruction above.
+        if (stream_terminal == "failed" && recorded_error.has_value()) {
+            producer.fail(std::move(*recorded_error));
+        } else {
+            producer.fail(terminal_to_error(stream_terminal, std::move(error_detail)));
+        }
     }
 }
 
@@ -130,7 +142,23 @@ public:
 
     explicit ReplayChatClient(ChatCallRecording recording, ChatClientCapabilities caps = {},
                                SleepFn sleep_fn = &replay_chat_client_detail::real_sleep)
-        : recording_(std::move(recording)), capabilities_(caps), sleep_fn_(std::move(sleep_fn)) {}
+        : recordings_(std::make_shared<std::vector<ChatCallRecording>>(1, std::move(recording))),
+          sequence_(false),
+          capabilities_(caps),
+          sleep_fn_(std::move(sleep_fn)) {}
+
+    // ADR-177: replay a run that made SEVERAL calls -- the nth `chat()`/`chat_stream()` plays the nth
+    // recording. Exists because a session that retries a dead stream makes a second call, and the
+    // single-recording constructor above would serve it the SAME failure again: a run that recovered
+    // in life would fail on replay. Past the last recording the call fails `contract`
+    // (`replay_chat_client.sequence_exhausted`) rather than repeating the last one -- a replay that
+    // made MORE calls than the original is a divergence, and a divergence must be loud.
+    explicit ReplayChatClient(std::vector<ChatCallRecording> recordings, ChatClientCapabilities caps = {},
+                               SleepFn sleep_fn = &replay_chat_client_detail::real_sleep)
+        : recordings_(std::make_shared<std::vector<ChatCallRecording>>(std::move(recordings))),
+          sequence_(true),
+          capabilities_(caps),
+          sleep_fn_(std::move(sleep_fn)) {}
 
     // Declared, not inferred from the recording (matches `RecordedChatClient`'s own precedent).
     [[nodiscard]] ChatClientCapabilities capabilities() const { return capabilities_; }
@@ -140,6 +168,11 @@ public:
     // response -- a caller asking for a unary call against a stream-shaped recording is a contract
     // mismatch (task instruction), not something this player quietly papers over.
     [[nodiscard]] task<result<ChatResponse>> chat(ChatRequest const&, EffectContext&) const {
+        ChatCallRecording const* rec_ptr = next_recording();
+        if (rec_ptr == nullptr) {
+            co_return std::unexpected(sequence_exhausted());
+        }
+        ChatCallRecording const& recording_ = *rec_ptr;
         if (recording_.mode == recording_mode::streaming) {
             co_return std::unexpected(error{
                 failure_class::contract,
@@ -169,6 +202,12 @@ public:
     [[nodiscard]] stream<ChatResponseUpdate> chat_stream(ChatRequest const&, EffectContext&) const {
         auto pair = make_stream<ChatResponseUpdate>(std::pmr::get_default_resource());
 
+        ChatCallRecording const* rec_ptr = next_recording();
+        if (rec_ptr == nullptr) {
+            pair.producer.fail(sequence_exhausted());
+            return std::move(pair.consumer);
+        }
+        ChatCallRecording const& recording_ = *rec_ptr;
         if (recording_.mode != recording_mode::streaming) {
             // Contract mismatch: push nothing, fail immediately (task instruction: "it should carry a
             // real failure terminal since it IS a contract mismatch, not merely an unimplemented
@@ -185,14 +224,32 @@ public:
         // is spawned -- the worker thread owns its own independent copy, so `*this` no longer needs to
         // outlive it.
         std::thread(&replay_chat_client_detail::run_replay_worker, recording_.chunks,
-                    recording_.stream_terminal, recording_.stream_error_detail, std::move(pair.producer),
+                    recording_.stream_terminal, recording_.stream_error_detail, recording_.stream_error,
+                    std::move(pair.producer),
                     sleep_fn_)
             .detach();
         return std::move(pair.consumer);
     }
 
 private:
-    ChatCallRecording recording_;
+    // Which recording this call plays. The single-recording constructor always answers with its one
+    // recording (the behaviour every existing caller relies on); the sequence constructor advances a
+    // shared cursor, so `const` methods and copies of this client still agree on "which call is this".
+    [[nodiscard]] ChatCallRecording const* next_recording() const {
+        if (!sequence_) return &recordings_->front();
+        std::size_t const i = cursor_->fetch_add(1);
+        return i < recordings_->size() ? &(*recordings_)[i] : nullptr;
+    }
+    [[nodiscard]] static error sequence_exhausted() {
+        return error{failure_class::contract,
+                      "ReplayChatClient: this replay made more model calls than the recording holds -- "
+                      "the replayed run has diverged from the recorded one",
+                      "replay_chat_client.sequence_exhausted"};
+    }
+
+    std::shared_ptr<std::vector<ChatCallRecording>> recordings_;
+    bool sequence_ = false;
+    std::shared_ptr<std::atomic<std::size_t>> cursor_ = std::make_shared<std::atomic<std::size_t>>(0);
     ChatClientCapabilities capabilities_;
     SleepFn sleep_fn_;
 };

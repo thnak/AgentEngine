@@ -90,13 +90,30 @@ inline void filter_cross_provider_reasoning(agentengine::ContextContribution& co
 // `result<ChatResponse>`, firing live `model_delta` events along the way via `emit` exactly as
 // `AgentSession`'s own drain loop always did. Fail-closed-on-missing-usage (004 §5's
 // TokenBudget<N>) is preserved exactly.
+//
+// ADR-177: `failure`, when non-null, receives what the retry decision needs and the flattened
+// `run.stream_incomplete` error below cannot carry -- the stream's OWN error (with its real class and
+// code) and whether ANY update had arrived before it died. Read as data, never from the message text.
+// The `warning` event has a message and nothing else (no code field), so a consumer that wants to
+// recognise a retry -- to show it, never to decide anything -- matches this prefix. One constant, used by
+// the emitter and every reader, so the two cannot drift apart silently.
+inline constexpr std::string_view kStreamRetryWarningPrefix = "model call retry ";
+
+struct StreamFailure {  // ae-naming-lint: allow StreamFailure — ADR-177's own new vocabulary (decisions/ADR-177-stream-retry-in-session.md §2), 027 not yet updated
+    agentengine::error inner;
+    bool               any_update_seen = false;
+};
+
 [[nodiscard]] inline agentengine::result<agentengine::ChatResponse> drain_streaming_response(
-    agentengine::stream<agentengine::ChatResponseUpdate> s, bool stream_model_calls, EmitFn const& emit) {
+    agentengine::stream<agentengine::ChatResponseUpdate> s, bool stream_model_calls, EmitFn const& emit,
+    StreamFailure* failure = nullptr) {
+    bool any_update_seen = false;
     agentengine::Message accumulated;
     accumulated.role = agentengine::role::assistant;
     std::optional<agentengine::Usage> usage;
     while (!s.done()) {
         while (std::optional<agentengine::ChatResponseUpdate> upd = s.next()) {
+            any_update_seen = true;
             if (stream_model_calls) {
                 if (auto const* t = std::get_if<agentengine::Text>(&upd->delta.value);
                     t != nullptr && !t->text.empty()) {
@@ -149,6 +166,7 @@ inline void filter_cross_provider_reasoning(agentengine::ContextContribution& co
         // stream is worth retrying) and promoting the inner error's class would silently change how
         // existing callers treat it. Only the message grows.
         agentengine::error const inner = s.fail_error();
+        if (failure != nullptr) *failure = StreamFailure{inner, any_update_seen};
         std::string message = "chat_stream() did not reach a clean terminal";
         if (!inner.message.empty()) {
             message += ": " + inner.message;

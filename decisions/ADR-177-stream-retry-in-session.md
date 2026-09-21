@@ -1,7 +1,7 @@
 # ADR-177 — A stream that dies mid-answer: retry the model call, and what that costs
 
-- **Status**: **Proposed — design and first-pass red-team only. No code exists.** Every claim in §5 is
-  a claim to be proven, not a result.
+- **Status**: **Proposed — implemented and proven (§9); awaiting a fresh-adversary red-team round and
+  project-owner sign-off.** Round 1 (§7) was the author's own read of the code; §9 is executed evidence.
 - **Date**: 2026-09-21
 - **Origin**: a real interactive `cli_chat` session (2026-09-18) lost a 93 s model call:
   `chat_stream() did not reach a clean terminal`. The provider streamed 526 reasoning chunks in 3.2 s,
@@ -124,11 +124,55 @@ Read, not run. Each row says what the code showed; none is a passing test.
 are not true as drafted — the replay seam (R11b) and an unverified error class (Q1). Neither is a
 reason to abandon it; both are reasons this ADR must not be Judged until they are proven.
 
-## 8. Next
 
-Round 2 (a fresh adversary, not the author) on §2–§5 and this table; then prove — starting with Q1,
-because if the class does not survive, the predicate has to change before anything else is built;
-then judge. **No implementation is authorised by this draft.**
+## 8. What changed from the draft while building it
 
-Red-team §2–§5 (in particular R1, R6, R8, R11, and the pre-first-byte question) *before* any code;
-then prove; then judge. No implementation is authorised by this draft.
+- **The `warning` event has no code field**, only a message, so §2's "code `run.model_call_retry`" was
+  not expressible. The retry is announced by a message with a fixed prefix
+  (`detail::kStreamRetryWarningPrefix`, one constant shared by the emitter and every reader). It is for
+  DISPLAY only; no decision reads it.
+- **Predicate gained two clauses** the draft missed: `net.cancelled` is classed `transient` by the
+  transport (the class alone would retry a cancellation), and the run's own stop token is checked (Q5).
+- **`ReplayChatClient` grew a sequence constructor** (R11b) and **`ChatCallRecording` grew
+  `stream_error`** (class + code + message). Found while building it: the player rebuilt any recorded
+  failure as `fatal`, so even a two-recording tape would have replayed the failed attempt as
+  non-retryable and diverged from the run that recorded it. Older recordings (message text only) fall
+  back to the old reconstruction rather than a guessed class.
+- **The retry re-sends the identical `ChatRequest` object**, so a stable `idempotency_key`
+  (`ChatRequest`, F1) is stable across attempts by construction.
+
+## 9. Evidence
+
+`tests/test_rt_agent_session_stream_retry.cpp` (P1-P10, every claim with a control) and
+`tests/test_stream_retry_real_transport.cpp` (Q1 on the real client and transport).
+
+**A REAL DEFECT, found by running Q1 rather than reading it.** A connection cut mid-body was not
+reported as a stream failure at all. The transport hands a peer close to its caller as an ordinary
+end-of-body ("the terminal 0-chunk is the CALLER's to notice"), and neither provider worker noticed:
+the stream closed with no usage and the session reported `run.usage_unavailable` — a *contract* failure
+nothing retries — for what was a transient one. `ChunkedBodyDecoder::complete()` existed and nothing
+called it. Both OpenAI and Anthropic workers now fail a chunk-framed body that ended before its final
+chunk with `transient` / `net.stream_truncated`. The run before the fix was red; after, green — that is
+the positive control. Unchunked SSE is untouched (its end IS the connection close).
+
+Mutants planted in the real code, each caught: no bound (4 checks), `net.cancelled` exclusion removed
+(1), first-byte rule removed (1), class check removed (2). **One survived and is disclosed:** removing
+the gateway guard alone changes nothing, because a gateway session never populates the failure detail
+either — two independent mechanisms block it. Removing BOTH is caught by P10 (2 checks). So the
+gateway exclusion is defence in depth, and P10 proves the outcome, not which layer produced it.
+
+Windows MSVC: the full deterministic suite passes (the Docker-dependent tests need the daemon up and
+were run with it). Live, against DeepSeek `deepseek-flash`: OC, reasoning-delta, HITL and session-builder
+live tests pass, so a healthy chunked TLS stream is not misflagged truncated; the CLI answers normally
+with retries on.
+
+## 10. Still open
+
+1. **The 90 s silent-provider path is not exercised** — the incident that started this — only the
+   dropped-connection shape is. Both are `transient` from the same read loop by reading
+   (`net_egress_proxy.cpp`), not by test.
+2. I8: a discarded attempt's tokens are invisible to the budget (§4); provider billing of an unfinished
+   stream is unresearched.
+3. A `Content-Length` body cut short is likewise not detected as truncation (only chunk framing is).
+4. Consumers still cannot erase a discarded partial (§6.2); gateway sessions still die post-commit.
+5. Round 2 by a fresh adversary has not happened; **Judged is the project owner's to give.**
