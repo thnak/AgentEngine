@@ -129,6 +129,71 @@ int main() {
     AE_CHECK(smallest_quoting > 0.2f && smallest_quoting <= 1.0f,
              "R4c: surviving quoting items needs salience above 0.2 (a higher bar than surviving unrelated items)");
 
+    // R5 (round 3): the R4 competitors were zero-salience. A REAL fact has some salience. Three facts of salience
+    // 0.1 that quote the query score (0.05+0.1) x recency x 1 = up to 0.30; a salience-1.0 lesson with no keyword
+    // hit scores 1.05 x ~1 x 0.1 = ~0.105. So even salience 1.0 is evicted by three ordinary quoting facts.
+    {
+        auto run = [&](float lesson_sal, float fact_sal, int facts, std::string const& q) {
+            ae::InMemoryWorktreeObjectStore object_store;
+            ae::rt::InMemoryAppendLogStore ref_store;
+            ae::Principal const principal{"p-recall-r5", ""};
+            (void)ae::ensure_memory_worktree(object_store, ref_store, principal);
+            ae::Mount const mount = ae::memory_mount(principal);
+            ae::cap::FsRead const rc{ae::memory_mount_id(principal), "", std::nullopt};
+            ae::cap::FsWrite const wc{ae::memory_mount_id(principal), "", std::nullopt, std::nullopt};
+            ae::MemoryItem lesson{};
+            lesson.kind = ae::memory_kind::procedural; lesson.content = kLesson; lesson.salience = lesson_sal;
+            lesson.origin = ae::MemoryOrigin{ae::memory_source::model_inferred, "run-l", "0", principal};
+            (void)ae::write_memory_item(object_store, ref_store, mount, wc, lesson);
+            for (int i = 0; i < facts; ++i) {
+                ae::MemoryItem f{};
+                f.kind = ae::memory_kind::semantic;
+                f.content = "Fact " + std::to_string(i) + " about: " + q;
+                f.salience = fact_sal;
+                f.origin = ae::MemoryOrigin{ae::memory_source::user_stated, "run-f", std::to_string(i), principal};
+                (void)ae::write_memory_item(object_store, ref_store, mount, wc, f);
+            }
+            auto ranked = ae::rank_memory_items(object_store, ref_store, mount, rc, q, 3);
+            return ranked && std::any_of(ranked->begin(), ranked->end(),
+                                          [](ae::MemoryItem const& it) { return it.content == kLesson; });
+        };
+        AE_CHECK(!run(1.0f, 0.1f, 3, query),
+                 "R5: three salience-0.1 facts that quote the query evict even a salience-1.0 lesson");
+        AE_CHECK(run(1.0f, 0.1f, 2, query), "R5 control: two such facts do not");
+        // R6: a one-character query is a substring of nearly everything, so the keyword factor is uniform and
+        // salience decides: the salience-1.0 lesson wins.
+        AE_CHECK(run(1.0f, 0.1f, 20, "a"),
+                 "R6: with a one-character query (keyword hit on every item) a salience-1.0 lesson wins on salience");
+    }
+
+    // R7 (round 3): promoted lessons compete with EACH OTHER. All promoted lessons share one salience constant, so
+    // once more than `max_results` exist, recency alone decides and the oldest are evicted.
+    {
+        ae::InMemoryWorktreeObjectStore object_store;
+        ae::rt::InMemoryAppendLogStore ref_store;
+        ae::Principal const principal{"p-recall-r7", ""};
+        (void)ae::ensure_memory_worktree(object_store, ref_store, principal);
+        ae::Mount const mount = ae::memory_mount(principal);
+        ae::cap::FsRead const rc{ae::memory_mount_id(principal), "", std::nullopt};
+        ae::cap::FsWrite const wc{ae::memory_mount_id(principal), "", std::nullopt, std::nullopt};
+        for (int i = 0; i < 5; ++i) {
+            ae::MemoryItem l{};
+            l.kind = ae::memory_kind::procedural; l.content = "Lesson number " + std::to_string(i);
+            l.salience = 1.0f;
+            l.origin = ae::MemoryOrigin{ae::memory_source::model_inferred, "run-l", std::to_string(i), principal};
+            (void)ae::write_memory_item(object_store, ref_store, mount, wc, l);
+        }
+        auto ranked = ae::rank_memory_items(object_store, ref_store, mount, rc, "unrelated question", 3);
+        bool oldest_two_gone = ranked.has_value() && ranked->size() == 3;
+        if (ranked) {
+            for (auto const& it : *ranked) {
+                if (it.content == "Lesson number 0" || it.content == "Lesson number 1") oldest_two_gone = false;
+            }
+        }
+        AE_CHECK(oldest_two_gone,
+                 "R7: with 5 equal-salience promoted lessons and max_results=3 only the 3 NEWEST are recalled");
+    }
+
     if (g_failures != 0) {
         std::cerr << g_failures << " check(s) failed\n";
         return 1;
