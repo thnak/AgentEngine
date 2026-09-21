@@ -173,6 +173,19 @@ the session would then retry and pay for twice. It now defers to the stream's ow
 (mutant: dropping the clause is caught); **the Anthropic clause has no loopback test** and rests on the
 same one-line shape. Also: `AGENTENGINE_CLI_CHAT_STREAM_RETRIES` is now parsed strictly.
 
+**Closing two of the gaps §10 listed (same PR).**
+- **A body shorter than its declared `Content-Length`** was also treated as a clean end. The transport now
+  fails it `transient` / `net.stream_truncated` (only when a length was declared; an unframed body still
+  ends at the close). Loopback-proven with an honest-`Content-Length` control; mutant caught.
+- **The Anthropic path now has its own loopback proof**: a finished answer (`message_stop` seen) with an
+  unterminated body is kept and not retried; a stream cut before `message_stop` is retried; retries off
+  fails it. This exposed a real bug in the predicate as first written: `any_update_seen` measures updates
+  DELIVERED, but the provider workers hold updates back until a block completes, so a stream cut after a
+  200 head and before the first finished block looked pre-first-byte and was not retried. The predicate is
+  now "an update was seen OR the failure is `net.stream_truncated`" (that code can only occur after a
+  successful head, so it is mid-response by construction). Mutant of the new clause caught by 2 checks.
+  A silent provider before its first finished block, with no truncation, is still NOT retried.
+
 ## 10. Still open
 
 1. **The 90 s silent-provider path is not exercised** — the incident that started this — only the
@@ -180,6 +193,6 @@ same one-line shape. Also: `AGENTENGINE_CLI_CHAT_STREAM_RETRIES` is now parsed s
    (`net_egress_proxy.cpp`), not by test.
 2. I8: a discarded attempt's tokens are invisible to the budget (§4); provider billing of an unfinished
    stream is unresearched.
-3. A `Content-Length` body cut short is likewise not detected as truncation (only chunk framing is).
+3. A silent provider before the first finished block is not retried (see the predicate note in §9).
 4. Consumers still cannot erase a discarded partial (§6.2); gateway sessions still die post-commit.
 5. Round 2 by a fresh adversary has not happened; **Judged is the project owner's to give.**

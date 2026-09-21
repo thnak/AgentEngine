@@ -26,6 +26,7 @@
 #include <thread>
 #include <vector>
 
+#include "agentengine/protocol/anthropic/chat_client.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/trust/principal.hpp"
@@ -56,6 +57,9 @@ constexpr std::uint32_t kLoopbackHostOrder = (127u << 24) | 1u;
 struct Script {
     std::vector<std::string> events;
     bool                     finish_cleanly = true;
+    // When non-empty, written verbatim (head and all) instead of the chunked framing above -- for the
+    // framings the chunked path cannot express, e.g. a Content-Length the body then fails to honour.
+    std::string              raw;
 };
 
 class ScriptedSseServer {
@@ -128,6 +132,11 @@ private:
             if (buf.find("\r\n\r\n") != std::string::npos) break;
         }
         if (buf.find("\r\n\r\n") == std::string::npos) return;
+
+        if (!script.raw.empty()) {
+            write_all(fd, script.raw);
+            return;
+        }
 
         if (!write_all(fd, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
                             "Transfer-Encoding: chunked\r\n\r\n")) {
@@ -215,6 +224,29 @@ int main() {
         return std::pair{std::move(r), warnings};
     };
 
+    auto run_anthropic = [&](ScriptedSseServer& server, std::uint32_t retries) {
+        using AnthropicSession =
+            AgentSession<anthropic::AnthropicChatClient<InMemorySecretStore>, NoSessionState, NoToolsHistory>;
+        AnthropicSession session;
+        session.initialize("s-real-a", Principal{"p", ""});
+        session.emplace_chat_client("127.0.0.1", server.port(), "m", SecretRef{"provider-key"},
+                                     ChatClientCapabilities{}, store, "/v1", "2023-06-01",
+                                     sandbox::resolve_host, std::string{}, std::string{}, std::string{},
+                                     std::string{}, std::string{}, ProviderTransport::plaintext_http);
+        session.set_capabilities(&held);
+        session.set_stream_model_calls(true);
+        session.set_stream_retries(retries);
+        auto viewer = session.enable_event_stream(std::pmr::get_default_resource());
+        auto r = drive(session.start_run(StartRun{user_message("hi")}));
+        std::size_t warnings = 0;
+        while (auto ev = viewer.next()) {
+            if (ev->kind != run_event_kind::warning) continue;
+            auto const& w = std::get<run_event_payload::Warning>(ev->payload);
+            if (w.message.starts_with(agentengine::rt::detail::kStreamRetryWarningPrefix)) ++warnings;
+        }
+        return std::pair{std::move(r), warnings};
+    };
+
     // ---- the run that survives: connection 1 dies mid-body, connection 2 is complete --------------------
     {
         Script dying;
@@ -277,6 +309,87 @@ int main() {
             check(server.connections() == 1 && warnings == 0,
                   "and it is NOT retried: one connection, no retry warning -- a retry here would bill a "
                   "completed response twice");
+        }
+    }
+
+    // ---- a body shorter than its declared Content-Length is a cut connection, not a short answer ---------
+    // The chunk-framing check cannot see this shape at all: there is no chunk framing. The transport must.
+    {
+        Script short_body;
+        short_body.raw = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 4000\r\n\r\n" +
+                         sse(R"({"choices":[{"delta":{"content":"par"}}]})");
+        Script whole;
+        whole.events = {sse(R"({"choices":[{"delta":{"content":"the whole answer"}}]})"), usage_chunk,
+                        "data: [DONE]\n\n"};
+        ScriptedSseServer server({short_body, whole});
+        if (server.ok()) {
+            auto [r, warnings] = run_against(server, /*retries=*/1);
+            std::fprintf(stderr, "  .. CL: ok=%d conns=%zu warnings=%zu err=%s\n", r.has_value() ? 1 : 0,
+                         server.connections(), warnings, r.has_value() ? "-" : r.error().message.c_str());
+            check(r.has_value() && text_of(r->message) == "the whole answer" && server.connections() == 2 &&
+                      warnings == 1,
+                  "Content-Length: a body that ends before its declared length is retried, exactly like a "
+                  "cut chunked body");
+        }
+        // Control: the identical response with a TRUE Content-Length is a normal stream.
+        std::string const body = sse(R"({"choices":[{"delta":{"content":"ok"}}]})") + usage_chunk +
+                                 "data: [DONE]\n\n";
+        Script honest;
+        honest.raw = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: " +
+                     std::to_string(body.size()) + "\r\n\r\n" + body;
+        ScriptedSseServer server2({honest});
+        if (server2.ok()) {
+            auto [r, warnings] = run_against(server2, /*retries=*/1);
+            check(r.has_value() && text_of(r->message) == "ok" && server2.connections() == 1 && warnings == 0,
+                  "Content-Length control: an honest Content-Length is NOT flagged, so the check above can fail");
+        }
+    }
+
+    // ---- Anthropic: the same two questions, on its own decoder and its own end marker -------------------
+    {
+        auto const ev = [](std::string const& type, std::string const& data) {
+            return "event: " + type + "\ndata: " + data + "\n\n";
+        };
+        std::vector<std::string> whole_stream = {
+            ev("message_start", R"({"message":{"usage":{"input_tokens":5,"output_tokens":0}}})"),
+            ev("content_block_start", R"({"index":0,"content_block":{"type":"text","text":""}})"),
+            ev("content_block_delta", R"({"index":0,"delta":{"type":"text_delta","text":"whole"}})"),
+            ev("content_block_stop", R"({"index":0})"),
+            ev("message_delta", R"({"usage":{"output_tokens":7}})"),
+            ev("message_stop", "{}")};
+
+        // (a) a COMPLETE answer (message_stop seen) whose body closes without the final chunk: kept.
+        Script complete_unterminated;
+        complete_unterminated.events = whole_stream;
+        complete_unterminated.finish_cleanly = false;
+        ScriptedSseServer a({complete_unterminated, complete_unterminated});
+        if (a.ok()) {
+            auto [r, warnings] = run_anthropic(a, 1);
+            check(r.has_value() && text_of(r->message) == "whole" && a.connections() == 1 && warnings == 0,
+                  "Anthropic: a finished answer (message_stop seen) is kept though the body closed without "
+                  "the final chunk, and is NOT retried");
+        }
+
+        // (b) cut BEFORE message_stop: retried, and the second connection's answer wins.
+        Script cut;
+        cut.events = {whole_stream[0], whole_stream[1], whole_stream[2]};
+        cut.finish_cleanly = false;
+        Script complete_clean;
+        complete_clean.events = whole_stream;
+        ScriptedSseServer b({cut, complete_clean});
+        if (b.ok()) {
+            auto [r, warnings] = run_anthropic(b, 1);
+            std::fprintf(stderr, "  .. ANT-b: ok=%d conns=%zu warnings=%zu err=%s\n", r.has_value() ? 1 : 0,
+                         b.connections(), warnings, r.has_value() ? "-" : r.error().message.c_str());
+            check(r.has_value() && text_of(r->message) == "whole" && b.connections() == 2 && warnings == 1,
+                  "Anthropic: a stream cut before message_stop is retried and the run converges");
+        }
+        // Control: retries off, the same cut ends the run -- so (b)'s success is the retry's doing.
+        ScriptedSseServer c({cut, cut});
+        if (c.ok()) {
+            auto [r, warnings] = run_anthropic(c, 0);
+            check(!r.has_value() && c.connections() == 1 && warnings == 0,
+                  "Anthropic control: with retries off the same cut stream fails the run");
         }
     }
 

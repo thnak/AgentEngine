@@ -605,7 +605,20 @@ result<NetEgressResponse> stream_response_body(RecvFn&& recv_more, std::uint64_t
         if (auto const c = check_not_cancelled(stop); !c) return std::unexpected(c.error());
         auto const r = recv_more(chunk.data(), chunk.size());
         if (!r) return std::unexpected(r.error());
-        if (*r == 0) break;
+        if (*r == 0) {
+            // ADR-177: the peer closed. With a declared Content-Length that is only a clean end if
+            // the whole body arrived -- a shorter body is a connection cut mid-answer, not a short
+            // answer, and reporting it as success hands the caller a truncated stream to mistake for
+            // a finished one. (Chunk framing is the caller's to check -- see above; an unframed body
+            // with no Content-Length legitimately ends at the close and carries no such signal.)
+            if (declared.has_value() && body_bytes < *declared) {
+                return std::unexpected(error{failure_class::transient,
+                                              "the response body ended before its declared Content-Length: "
+                                              "the connection was cut mid-response",
+                                              "net.stream_truncated"});
+            }
+            break;
+        }
         body_bytes += *r;
         if (!on_body(std::string_view(chunk.data(), *r))) break;
     }

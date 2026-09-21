@@ -366,6 +366,13 @@ int main() {
               "P5 (Q4): a failure BEFORE the first byte is not retried here (no backoff exists to keep "
               "from hammering a provider that said to slow down)");
 
+        Attempt truncated_early;  // cut after the head but before ANY update was delivered (updates are held back)
+        truncated_early.fail = error{failure_class::transient, "the response stream ended before its final chunk",
+                                     "net.stream_truncated"};
+        check(retried(truncated_early, "p5-trunc") == 2,
+              "P5 control: net.stream_truncated with NO update delivered IS retried -- it can only happen "
+              "after a successful response head, so it is mid-response, unlike the pre-byte failure above");
+
         Attempt contract = base;
         contract.fail = error{failure_class::contract, "bad request", "net.protocol_error"};
         check(retried(contract, "p5-contract") == 1, "P5: a non-transient inner class is not retried");

@@ -1914,8 +1914,12 @@ private:
             if (!last_stream_failure_.has_value()) return false;
             if (effect_context_.cancellation.stop_requested()) return false;
             detail::StreamFailure const& f = *last_stream_failure_;
-            return f.any_update_seen && f.inner.klass == failure_class::transient &&
-                   f.inner.code != "net.cancelled";
+            // "Mid-answer" is `any_update_seen` OR a truncation: the provider workers hold updates back
+            // until a block completes, so a stream cut after a 200 head but before the first finished
+            // block has delivered nothing yet -- while `net.stream_truncated` can only be raised AFTER
+            // a successful response head, so it is mid-response by construction, not a rejection.
+            return (f.any_update_seen || f.inner.code == "net.stream_truncated") &&
+                   f.inner.klass == failure_class::transient && f.inner.code != "net.cancelled";
         }
     }
 
