@@ -68,3 +68,16 @@ not asserted.
    the event kind; this ADR did not test that mapping.
 4. `WorkflowSupervisor::cancel()` (ADR-159) does not yet reach a nested `AgentSession`'s new `cancel()`;
    wiring the supervisor's token into a session it dispatches is separate work.
+5. **Checked against microsoft/agent-framework's 2026-09-08..09-22 window, not reproduced here.** That
+   project's own approval/cancellation work in the same two weeks surfaced a failure class this ADR's
+   §2 "cancel while suspended for approval is UNTESTED" line is adjacent to but not identical with: a
+   delegated/nested tool call that needs interactive approval but has no resumable seam to hang the
+   approval on (their #8527, fixed by failing closed) still had open, unresolved fallout during that
+   window (#8575: a failed approval-resume permanently corrupts the session; #8601: nested workflow
+   cancellation leaves stale invocation kwargs behind). AgentEngine's shape differs -- one executor per
+   session (I1) and a per-run `std::stop_source` rather than their nested-agent-as-tool composition --
+   so the *specific* trap that produced #8527 does not reproduce structurally here. But §2's untested
+   cell (an approved tool batch still runs once after a resume, before the round-top check sees the
+   cancel) is the same shape of gap: a cancel that arrives during a suspended, approval-pending state.
+   Closing that cell (the test named in §2, plus a check that a cancel-then-resume never leaves a
+   half-applied approval) would make this comparison a proof instead of a note.
