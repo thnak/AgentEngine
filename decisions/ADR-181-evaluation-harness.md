@@ -4,10 +4,12 @@
   components (§3.0 items 1/2/3, part of item 4, and item 5's ack-digest half): `include/agentengine/eval/`
   (`lesson_candidate.hpp`, `eval_principal.hpp`, `promotion_ack.hpp`, `tier1_statistics.hpp`), plus the FIRST SLICE
   of the trial-running harness itself (§3.0 items 2-4, §3.2, §3.4, §3.9's `EvalStore`): `eval_store.hpp`,
-  `eval_stub_tool.hpp`, `eval_trial.hpp` — **150/150 checks green** across 7 test binaries (`test_lesson_candidate`
-  43, `test_eval_principal` 15, `test_promotion_ack` 9, `test_tier1_statistics` 37, `test_eval_store` 9,
-  `test_eval_stub_tool` 11, `test_eval_trial_driver` 26) plus a compile-fail/positive-control TRIPLE (§3.8; round 2
-  added a third file proving the same rejection for `SummarizerT`), clean under MSVC, clang-cl
+  `eval_stub_tool.hpp`, `eval_trial.hpp`, plus the FIRST SLICE of multi-trial orchestration, §3.0 item 2's
+  follow-rate screen (a separate, later PR): `eval_grader.hpp`, `eval_follow_rate_screen.hpp` — **180/180 checks
+  green** across 8 test binaries (`test_lesson_candidate` 43, `test_eval_principal` 15, `test_promotion_ack` 9,
+  `test_tier1_statistics` 37, `test_eval_store` 9, `test_eval_stub_tool` 11, `test_eval_trial_driver` 26,
+  `test_eval_follow_rate_screen` 30) plus a compile-fail/positive-control TRIPLE (§3.8; round 2 added a third file
+  proving the same rejection for `SummarizerT`), clean under MSVC, clang-cl
   `-Wall -Wextra -Werror -fsyntax-only`, and `tools/naming_lint.py`. **Two separate live runs against DeepSeek
   `deepseek-flash`** (`test_eval_trial_driver_live_e2e`, live-network-labelled, observation not a gate — a live
   model is nondeterministic, disclosed and demonstrated: the first run showed the treatment trial's lesson delivered
@@ -53,7 +55,17 @@
   citing a stale pre-round-1-fix check count ("143/143"/"19/19") that round 1's own fix had already moved past in
   this file without updating the sibling doc, and a stale §8 naming-lint line still listing `EvalStore` as
   "needing" resolution after it was already annotated (round 5) — both fixed. **Round 2's own fixes are not yet
-  re-red-teamed.** Round 5 surfaced a real bug review
+  re-red-teamed.** **This draft (a separate, later PR) builds the first piece of multi-trial orchestration**:
+  §3.0 item 2's follow-rate screen, wiring real `run_trial` output into `tier1_statistics.hpp`'s
+  `clopper_pearson_lower_bound`/`follow_rate_screen_passes` for the first time in this codebase. New
+  `eval_grader.hpp` (the structural grading primitive §3.5 requires) and `eval_follow_rate_screen.hpp`
+  (`run_follow_rate_screen`, running `2×n_per_arm` seeded-and-interleaved trials via factory-constructed chat
+  clients so a real, non-copy-safe client works the same as a scripted test one). Ungraded trials are counted
+  intention-to-treat throughout (§3.6's own precedent); invalidity (baseline too easy, or differential missingness
+  between arms) is checked before any statistic is computed, and a malformed spec is rejected before any trial
+  runs. `test_eval_follow_rate_screen.cpp`, 30/30 checks, deterministic only — `run_trial` itself is already
+  proven live elsewhere, so no live test was added for this slice (§8 explains why). **Not yet red-teamed.** The
+  gross-harm regression screen (§3.0 item 3) remains a separate, later slice — see §8. Round 5 surfaced a real bug review
   alone had not: the first `clopper_pearson_lower_bound`
   bisected against the wrong monotonicity direction and silently converged to a plausible-looking wrong answer;
   `test_tier1_statistics`'s own duality/boundary checks caught it before any reviewer looked. Round 5's own
@@ -1123,14 +1135,47 @@ round 1's own review process: confinement completeness (**R-TH2-Sec**), delivery
   `RecordingChatClient` as `Inner` escaping the trial's own confinement, closed with a `static_assert` and a
   compile-fail/positive-control pair (§3.8); a self-contradicting `decisions/README.md` update. The
   lifetime/coroutine reviewer found the actual coroutine-frame/pointer-capture wiring clean under ASan/UBSan — no
-  FATAL or MAJOR there. **Still unbuilt**: the `SlotTable`/steering-manifest arm S and its permutation statistic
-  over real tool-call arguments (§3.7, E29); `EvalSuite`/`EvalRun`/`PromotionEvidence`, the look ledger and
-  family/shard bookkeeping (§3.3, E32); the kill switch and the promotion-write digest re-check's remaining wiring
-  (§3.0 item 5); the `eval.tool_not_stub` refusal gate and the include-graph lint (§3.9); worktree-branch-per-trial
-  (§3.4, deferred until a stub tool with a real effect exists to confine); multi-trial orchestration and wiring
-  `tier1_statistics.hpp` to real trial output — a single trial runs end to end now, but nothing yet runs N of them
-  and computes a follow rate or a gross-harm p-value from real results. **Round 1's own fixes are not yet
-  re-red-teamed.**
+  FATAL or MAJOR there. **Round 2 re-red-teamed round 1's own fixes** (three fresh reviewers) and found and fixed two
+  more real MAJOR bugs (round 1's confinement `static_assert` only ever covered `Inner` — `SummarizerT` had zero
+  enforcement and the identical pre-wrapped-sink escape was reachable through it directly; `delivered_via_recall`
+  used a sticky flag misattributing later, unrelated content as recall-delivered), hardened the trait against a
+  cv/ref blind spot, and disclosed two structural residuals honestly (a hand-written forwarding shim around an
+  already-wrapped client cannot be caught by any C++ type trait; two host-supplied trial identifiers have
+  documented, non-exploitable minor gaps) — see §7's Round 2 table. **This draft (a separate, later slice) builds
+  the FIRST piece of multi-trial orchestration**: §3.0 item 2, the follow-rate screen. New files
+  `eval_grader.hpp` (`grade_outcome`, `GraderFn`, `make_tool_argument_grader` — the structural, programmatic
+  grading primitive §3.5 requires and nothing in the codebase had) and `eval_follow_rate_screen.hpp`
+  (`FollowRateProbeSpec`/`FollowRateTrialDetail`/`FollowRateScreenResult`, `run_follow_rate_screen`) run
+  `2 × n_per_arm` real `run_trial` calls — arms interleaved and shuffled with a seeded `std::mt19937_64` (I5, seed
+  echoed back in the result), each trial graded structurally and classified `ungraded` before the grader ever runs
+  if the trial itself never converged — and wire the resulting counts into `tier1_statistics.hpp`'s
+  `clopper_pearson_lower_bound`/`follow_rate_screen_passes` for real, the first time any code in this repo has done
+  so against genuine trial output. `run_trial`'s own by-value `Inner`/`SummarizerT` contract meant a single chat-
+  client value could not be reused across N+N trials (a real client like `OpenAIChatClient` is not, and should not
+  be forced to be, copy-safe for that); resolved with **factory callables taking the trial's `trial_arm`**
+  (`InnerFactory`/`SummarizerFactory`, invoked as `make_inner(arm)`/`make_summarizer(arm)`) rather than values — a
+  real factory ignores the arm (the same model client either way; what differs is the *context* it reads), while a
+  scripted test factory uses it to script baseline/treatment behaviour differently, something a context-blind
+  scripted client has no other way to do. **Ungraded trials are counted intention-to-treat** (§3.6's own ITT
+  precedent applied here): every count — the baseline-too-easy check and the primary statistic alike — uses
+  `n_per_arm` as its denominator always, since whether a trial gets graded at all is not independent of whether
+  the lesson was followed, so dropping ungraded trials would bias the apparent rate, not just add noise; a
+  disclosed design choice, not left implicit. Invalidity (baseline follow rate above 10%, or the two arms' ungraded
+  rates differing by more than the declared 5pp bound, §3.5) is checked before the statistic is computed at all;
+  when either fires, `pass` stays `std::nullopt` rather than folding "can't be interpreted" into `false`. Spec
+  parameters (`alpha`, `n_per_arm`, the three threshold fields) are validated BEFORE any trial runs, so a malformed
+  spec costs zero model calls. `test_eval_follow_rate_screen.cpp`, 30/30 checks (scripted, deterministic;
+  `run_trial` itself is already proven live by `test_eval_trial_driver_live_e2e.cpp` — a small live run here would
+  mostly re-confirm that, at too small an N for `follow_rate_screen_passes` to mean anything, so none was added
+  this slice). **Still unbuilt**: the §3.0 item 3 gross-harm regression screen (30 dev tasks × K=5, needs task-suite
+  management and `sign_flip_sum_lower_tail_pvalue`/`hypergeometric_min_task_lower_tail_pvalue` wired up — a
+  separate, later slice); the `SlotTable`/steering-manifest arm S and its permutation statistic over real tool-call
+  arguments (§3.7, E29); `EvalSuite`/`EvalRun`/`PromotionEvidence`, the look ledger and family/shard bookkeeping
+  (§3.3, E32); the kill switch and the promotion-write digest re-check's remaining wiring (§3.0 item 5); the
+  `eval.tool_not_stub` refusal gate and the include-graph lint (§3.9); worktree-branch-per-trial (§3.4, deferred
+  until a stub tool with a real effect exists to confine); concurrent trial execution (this slice runs strictly
+  sequentially — a concurrency cap is Tier-1-suite-level machinery one probe's ~40 runs does not need). **This
+  follow-rate-screen slice has not yet been red-teamed.**
 - **The per-trial deadline is unenforceable today** (§3.9): a watchdog and process memory cap stand in.
 - **`PromotionAck`'s attribution is recordable, not enforced** (round 5, R5-Sec3): `approver_id`/`acknowledged_at`
   are plain strings `acknowledge_rendered_lesson` never checks for non-emptiness or for naming a real,

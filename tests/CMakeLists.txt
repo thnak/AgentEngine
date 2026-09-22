@@ -812,6 +812,15 @@ if(WIN32)
   target_link_libraries(test_eval_trial_driver PRIVATE
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_eval_trial_driver COMMAND test_eval_trial_driver)
+
+  # ADR-181 §3.0 item 2, follow-rate screen: the first slice of multi-trial orchestration -- runs
+  # N+N real run_trial calls (seeded arm interleaving), grades each structurally (§3.5), and wires
+  # the aggregate counts into tier1_statistics.hpp's follow_rate_screen_passes/
+  # clopper_pearson_lower_bound for real.
+  add_executable(test_eval_follow_rate_screen test_eval_follow_rate_screen.cpp)
+  target_link_libraries(test_eval_follow_rate_screen PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_eval_follow_rate_screen COMMAND test_eval_follow_rate_screen)
 endif()
 
 # ---- Milestone 4 Phase G5 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
