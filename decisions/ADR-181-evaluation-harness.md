@@ -2,19 +2,30 @@
 
 - **Status**: **Proposed — design plus executed statistics, and, as of rounds 5-7, real code for four of Tier 1's
   components (§3.0 items 1/2/3, part of item 4, and item 5's ack-digest half): `include/agentengine/eval/`
-  (`lesson_candidate.hpp`, `eval_principal.hpp`, `promotion_ack.hpp`, `tier1_statistics.hpp`), plus, as of this
-  draft, the FIRST SLICE of the trial-running harness itself (§3.0 items 2-4, §3.2, §3.4, §3.9's `EvalStore`):
-  `eval_store.hpp`, `eval_stub_tool.hpp`, `eval_trial.hpp` — **143/143 checks green** across 7 test binaries
-  (`test_lesson_candidate` 43, `test_eval_principal` 15, `test_promotion_ack` 9, `test_tier1_statistics` 37,
-  `test_eval_store` 9, `test_eval_stub_tool` 11, `test_eval_trial_driver` 19), clean under MSVC, clang-cl
-  `-Wall -Wextra -Werror -fsyntax-only`, and `tools/naming_lint.py` — **plus one real end-to-end run against a live
-  model** (`test_eval_trial_driver_live_e2e`, DeepSeek `deepseek-flash`, live-network-labelled, skips without a
-  key): a real baseline and a real treatment trial both converged, and the treatment trial's own `recall` tool call
-  correctly surfaced the seeded lesson (`delivered_via_recall=true`), while the baseline trial correctly showed no
-  delivery — proof this slice's delivery-detection logic works against real model behaviour, not just a scripted
-  double. **This slice's own code has not yet been red-teamed** (unlike rounds 5-7's pieces, each of which went
-  through at least one full red-team round before the next slice began) — that is the natural next step, not
-  skipped, just not yet done. Round 5 surfaced a real bug review alone had not: the first `clopper_pearson_lower_bound`
+  (`lesson_candidate.hpp`, `eval_principal.hpp`, `promotion_ack.hpp`, `tier1_statistics.hpp`), plus the FIRST SLICE
+  of the trial-running harness itself (§3.0 items 2-4, §3.2, §3.4, §3.9's `EvalStore`): `eval_store.hpp`,
+  `eval_stub_tool.hpp`, `eval_trial.hpp` — **147/147 checks green** across 7 test binaries (`test_lesson_candidate`
+  43, `test_eval_principal` 15, `test_promotion_ack` 9, `test_tier1_statistics` 37, `test_eval_store` 9,
+  `test_eval_stub_tool` 11, `test_eval_trial_driver` 23) plus a compile-fail/positive-control pair (§3.8), clean
+  under MSVC, clang-cl `-Wall -Wextra -Werror -fsyntax-only`, and `tools/naming_lint.py`. **Two separate live runs
+  against DeepSeek `deepseek-flash`** (`test_eval_trial_driver_live_e2e`, live-network-labelled, observation not a
+  gate — a live model is nondeterministic, disclosed and demonstrated: the first run showed the treatment trial's
+  lesson delivered via a real `recall` tool call, the second showed it delivered via context injection alone, no
+  `recall` call at all — both are correct instances of this slice's own delivery-detection logic working against
+  real model behaviour, not a single reproduced outcome to be read as settled). **Round 1 of red-teaming this new
+  slice (three independent reviewers: security/capability confinement, correctness/coroutine-lifetime, ADR
+  coherence) found and fixed two real MAJOR bugs and one FATAL documentation self-contradiction:** `delivered` was
+  vacuously `true` whenever a trial produced zero recordings (e.g. `max_turns=0`, or any setup failure before the
+  first model call) — the "every request satisfies delivery" fold never got a chance to falsify itself, so a trial
+  that never ran reported the same signal as a real success; fixed by also requiring at least one recording. A
+  caller could pass an ALREADY-WRAPPED `RecordingChatClient<X>` as `Inner`, chaining the caller's own external sink
+  onto every trial call outside the trial's own `EvalStore`/`CapabilitySet` confinement, defeating the doc
+  comment's "there is no way to call it unwrapped" claim in effect if not in type; fixed with a `static_assert`
+  (proven both ways by a compile-fail/positive-control pair, §3.8). `decisions/README.md`'s own ADR-181 row also
+  directly contradicted itself (claiming a live model was called, then closing "No model was called.") — fixed.
+  The lifetime/coroutine-frame reviewer found no FATAL or MAJOR issues in the actual coroutine wiring (verified
+  clean under ASan/UBSan). **Round 1's own fixes are not yet re-red-teamed.** Round 5 surfaced a real bug review
+  alone had not: the first `clopper_pearson_lower_bound`
   bisected against the wrong monotonicity direction and silently converged to a plausible-looking wrong answer;
   `test_tier1_statistics`'s own duality/boundary checks caught it before any reviewer looked. Round 5's own
   red-team (three reviewers) on the new code then found a FATAL two reviewers independently reproduced with a
@@ -964,6 +975,35 @@ still holds; the disclosed §8 residuals (bare hostname/IP:port, ASCII homoglyph
 hypergeometric statistic's cost) were each reproduced live against the current header, not assumed still true from
 round 6's text.
 
+**Round 1 (trial-running harness's first slice, this draft)**: rounds 5-7's red-teaming attacked the pure,
+self-contained statistics/validator headers; this is the first round to attack `eval_store.hpp`, `eval_stub_tool.hpp`
+and `eval_trial.hpp` — the actual `AgentSession`/capability/memory-injection wiring, never reviewed before. Three
+independent reviewers: security/capability confinement (**R-TH-Sec**), correctness/coroutine-lifetime
+(**R-TH-Life**), coherence (**R-TH-Coh**).
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| R-TH-Sec1 | major | `TrialResult::delivered`'s fold initialized `every_request_delivered = !rendered_lesson_content.empty()` and only ever set it `false` INSIDE the loop over `trial_result.recordings` — with zero recordings (e.g. `spec.max_turns=0`, or any setup failure before the first model call), the loop body never runs, so `delivered` stayed `true` for a treatment trial that never actually called the model, identical to a real success. Proven with a compiled proof-of-concept (`max_turns=0` — zero recordings, a `run.max_turns_exceeded` outcome, `delivered==true`) | `every_request_delivered` now also requires `!trial_result.recordings.empty()`. New regression test (Scenario 5, `test_eval_trial_driver.cpp`) pins exactly the proof-of-concept's shape |
+| R-TH-Sec2 | major | `run_trial`'s own doc comment claimed wrapping `Inner` in `RecordingChatClient` "enforces... by type — there is no way to call run_trial with an unwrapped client at all." True of the wrapper TYPE, not of the EFFECT: a caller could pass an ALREADY-WRAPPED `RecordingChatClient<X>` as `Inner`, producing `RecordingChatClient<RecordingChatClient<X>>` — the inner instance's own, externally-configured sink (built with whatever authority/persistence the CALLER gave it) then fires on every trial round, entirely outside this trial's `EvalStore`/`CapabilitySet` confinement. Proven with a compiled proof-of-concept: a pre-wrapped sink observed the seeded lesson text through exactly this path | A `static_assert(!detail::is_recording_chat_client_v<Inner>, ...)` now rejects this at compile time, proven both ways by a compile-fail/positive-control pair (§3.8, `tests/compile_fail/eval_run_trial_{rejects_prewrapped_inner,plain_inner_positive_control}.cpp`) |
+| R-TH-Coh1 | fatal *(documentation, not design/security)* | `decisions/README.md`'s own ADR-181 row directly contradicted itself: one clause described a live DeepSeek run in detail, the row's closing sentence read "No model was called." — left over from before the trial-running slice existed | Corrected; the closing sentence now distinguishes rounds 5-7 (no model called) from the trial-running slice (does call a model) |
+| R-TH-Coh2 | major | The ADR's status header, §8, and `decisions/README.md` all stated the live run's SPECIFIC observed mechanism (`delivered_via_recall=true`, a `recall` call) as settled fact — the same class of overclaim rounds 5-6 were previously caught making. A second live run (after the transcript-dump follow-on commit) showed a DIFFERENT, equally correct mechanism (context injection alone, no `recall` call), never disclosed | All three locations rewritten to state both observed outcomes and make explicit that a live model's specific delivery route is nondeterministic and not to be read as a reproduced, settled fact — matching the "observation, not a gate (I5)" framing this repo's other live tests already use |
+| R-TH-Coh3 | minor | `TrialSpec::extra_capabilities` (real code, added so a live `OpenAIChatClient` can get a `cap::Secret` grant) had no corresponding ADR text | Documented in §8's own trial-running-harness paragraph |
+
+**Checked and held up (R-TH-Life, no FATAL or MAJOR found):** the coroutine-frame lifetime of `&trial_result`,
+`&held`, and the `sink_ptr` captured into `trial_result.tool_calls` — all dereferenced only during `co_await
+session.start_run(...)`, strictly before `run_trial`'s own frame could be destroyed; verified clean under
+`-fsanitize=address,undefined` across all three deterministic test binaries, including the multi-round
+recall-delivery scenario that exercises this exact pattern. `co_return trial_result;`'s move (not copy, confirmed
+by a standalone repro) is irrelevant to correctness since nothing touches `trial_result` afterward.
+Move-then-use across the `spec.stub_tools` loop, `summarizer`, and `primary_client`: each moved from exactly once,
+never reused. Braced-init-list evaluation order in the `engage()` tuple: a hard standard guarantee, and moot here
+since `memory_provider`/`stub_descriptors` don't alias. `EvalStore`'s move safety after `MemoryProvider` takes raw
+pointers into it: proven with a real ASan-clean probe (move an `EvalStore` after taking pointers to its stores,
+write through the pre-move pointers into the post-move handle — no UAF, same addresses). No hidden
+non-determinism (I5) beyond `tier1_statistics.hpp`'s pre-existing, explicitly-seeded RNG, not yet wired to
+`run_trial`. `EvalStubToolProvider::on_context()` copying `ToolDescriptor`s once per round: safe (only trivially-
+copyable captured state), confirmed live over 3 rounds.
+
 ## 8. Residuals
 
 - **External validity.** A suite passing says nothing about production tasks. Task authorship (who writes them, how
@@ -1021,19 +1061,28 @@ round 6's text.
   `AgentSession<RecordingChatClient<Inner>, NoSessionState, ComposedContextProvider<HistoryProvider<Window<0>>,
   MemoryProvider<...>, EvalStubToolProvider>>` now runs one B or T trial end to end, seeds the lesson at the exact
   caller-supplied salience, and reports delivery via both routes (context injection and `recall`) plus every
-  captured stub-tool call. Proven both deterministically (`test_eval_trial_driver.cpp`, a scripted model, 19/19) and
-  against a real model (`test_eval_trial_driver_live_e2e.cpp`, DeepSeek `deepseek-flash`, live-network-labelled) —
-  the live run's own treatment trial genuinely called `recall`, genuinely got the seeded lesson back, and this
-  slice's delivery detection correctly flagged it, while the baseline trial correctly did not. **Still unbuilt**:
-  the `SlotTable`/steering-manifest arm S and its permutation statistic over real tool-call arguments (§3.7, E29);
-  `EvalSuite`/`EvalRun`/`PromotionEvidence`, the look ledger and family/shard bookkeeping (§3.3, E32); the kill
-  switch and the promotion-write digest re-check's remaining wiring (§3.0 item 5); the `eval.tool_not_stub`
-  refusal gate and the include-graph lint (§3.9); worktree-branch-per-trial (§3.4, deferred until a stub tool with
-  a real effect exists to confine); multi-trial orchestration and wiring `tier1_statistics.hpp` to real trial
-  output — a single trial runs end to end now, but nothing yet runs N of them and computes a follow rate or a
-  gross-harm p-value from real results. **This slice's own code has not been red-teamed yet** — every other
-  real-code slice in this ADR (rounds 5-7) went through at least one full red-team round before the next began;
-  this one has not, and should before anything is built on top of it.
+  captured stub-tool call. Proven both deterministically (`test_eval_trial_driver.cpp`, a scripted model, 23/23) and
+  against a real model, twice (`test_eval_trial_driver_live_e2e.cpp`, DeepSeek `deepseek-flash`, live-network-labelled,
+  observation not a gate) — the first live run's treatment trial delivered the lesson via a genuine `recall` tool
+  call, the second delivered it via context injection alone with no `recall` call at all; both are correct
+  instances of this slice's delivery detection working against real, nondeterministic model behaviour, not one
+  reproduced outcome. `TrialSpec::extra_capabilities` (added so a live `ChatClientT` like `OpenAIChatClient` can
+  carry its own `cap::Secret` grant, merged into the trial's `CapabilitySet` alongside the store's read/write
+  caps) is a real capability-surface decision this paragraph is where it is now recorded — round 1's coherence
+  reviewer found it had shipped in code with no corresponding ADR text. **Round 1 red-teamed this slice** (three
+  reviewers: security/capability confinement, correctness/coroutine-lifetime, coherence) and found, real and
+  fixed: `delivered` vacuously `true` with zero recordings (§7 disposition table); a pre-wrapped
+  `RecordingChatClient` as `Inner` escaping the trial's own confinement, closed with a `static_assert` and a
+  compile-fail/positive-control pair (§3.8); a self-contradicting `decisions/README.md` update. The
+  lifetime/coroutine reviewer found the actual coroutine-frame/pointer-capture wiring clean under ASan/UBSan — no
+  FATAL or MAJOR there. **Still unbuilt**: the `SlotTable`/steering-manifest arm S and its permutation statistic
+  over real tool-call arguments (§3.7, E29); `EvalSuite`/`EvalRun`/`PromotionEvidence`, the look ledger and
+  family/shard bookkeeping (§3.3, E32); the kill switch and the promotion-write digest re-check's remaining wiring
+  (§3.0 item 5); the `eval.tool_not_stub` refusal gate and the include-graph lint (§3.9); worktree-branch-per-trial
+  (§3.4, deferred until a stub tool with a real effect exists to confine); multi-trial orchestration and wiring
+  `tier1_statistics.hpp` to real trial output — a single trial runs end to end now, but nothing yet runs N of them
+  and computes a follow rate or a gross-harm p-value from real results. **Round 1's own fixes are not yet
+  re-red-teamed.**
 - **The per-trial deadline is unenforceable today** (§3.9): a watchdog and process memory cap stand in.
 - **`PromotionAck`'s attribution is recordable, not enforced** (round 5, R5-Sec3): `approver_id`/`acknowledged_at`
   are plain strings `acknowledge_rendered_lesson` never checks for non-emptiness or for naming a real,

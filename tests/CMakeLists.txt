@@ -468,6 +468,62 @@ if(WIN32)
     "family; distinct families still compose)")
 endif()
 
+# ---- ADR-181 §3.8 compile-fail proof (trial-running harness round-1 red-team fix) ---------------
+# run_trial's own claim that it "refuses a client not wrapped in RecordingChatClient by type" was
+# true of the wrapper TYPE but not of a caller passing an ALREADY-WRAPPED RecordingChatClient<X> as
+# Inner -- a round-1 reviewer proved that compiled and chained the caller's own external sink onto
+# every trial call. eval_trial.hpp now static_asserts against it; these two files prove the
+# rejection is real and not over-broad (a plain Inner still compiles). The REJECTED file fails at
+# the static_assert during compilation, before any linking is needed; the POSITIVE CONTROL fully
+# instantiates run_trial, which reaches compute_digest() (worktree_digest{,_posix}.cpp) -- the same
+# extra-sources/link-libraries shape ADR-096 C2's compile-fail proof above already uses.
+if(WIN32)
+  set(AE_EVAL_RUN_TRIAL_DEPS "${PROJECT_SOURCE_DIR}/src/core/worktree_digest.cpp")
+  set(AE_EVAL_RUN_TRIAL_LINK_LIBRARIES bcrypt)
+else()
+  set(AE_EVAL_RUN_TRIAL_DEPS "${PROJECT_SOURCE_DIR}/src/core/worktree_digest_posix.cpp")
+  set(AE_EVAL_RUN_TRIAL_LINK_LIBRARIES)
+endif()
+
+try_compile(AE_EVAL_RUN_TRIAL_REJECTS_PREWRAPPED_INNER
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/eval_run_trial_rejects_prewrapped_inner"
+  SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/eval_run_trial_rejects_prewrapped_inner.cpp"
+    ${AE_EVAL_RUN_TRIAL_DEPS}
+  CMAKE_FLAGS
+    "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
+    "-DCMAKE_CXX_STANDARD=23" "-DCMAKE_CXX_STANDARD_REQUIRED=ON"
+  LINK_LIBRARIES ${AE_EVAL_RUN_TRIAL_LINK_LIBRARIES}
+  OUTPUT_VARIABLE AE_EVAL_RUN_TRIAL_REJECTS_PREWRAPPED_INNER_LOG)
+if(AE_EVAL_RUN_TRIAL_REJECTS_PREWRAPPED_INNER)
+  message(FATAL_ERROR
+    "ADR-181 §3.8 VIOLATED: tests/compile_fail/eval_run_trial_rejects_prewrapped_inner.cpp compiled, "
+    "but run_trial must reject an Inner that is already a RecordingChatClient<...> -- a pre-wrapped "
+    "instance's own external sink would observe every trial call outside this trial's confinement. "
+    "Build log:\n${AE_EVAL_RUN_TRIAL_REJECTS_PREWRAPPED_INNER_LOG}")
+endif()
+
+try_compile(AE_EVAL_RUN_TRIAL_PLAIN_INNER_POSITIVE_CONTROL
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/eval_run_trial_plain_inner_positive_control"
+  SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/eval_run_trial_plain_inner_positive_control.cpp"
+    ${AE_EVAL_RUN_TRIAL_DEPS}
+  CMAKE_FLAGS
+    "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
+    "-DCMAKE_CXX_STANDARD=23" "-DCMAKE_CXX_STANDARD_REQUIRED=ON"
+  LINK_LIBRARIES ${AE_EVAL_RUN_TRIAL_LINK_LIBRARIES}
+  OUTPUT_VARIABLE AE_EVAL_RUN_TRIAL_PLAIN_INNER_POSITIVE_CONTROL_LOG)
+if(NOT AE_EVAL_RUN_TRIAL_PLAIN_INNER_POSITIVE_CONTROL)
+  message(FATAL_ERROR
+    "ADR-181 §3.8 positive control FAILED: tests/compile_fail/"
+    "eval_run_trial_plain_inner_positive_control.cpp must compile (a plain, unwrapped Inner is the "
+    "intended, legitimate call shape) but did not. "
+    "Build log:\n${AE_EVAL_RUN_TRIAL_PLAIN_INNER_POSITIVE_CONTROL_LOG}")
+endif()
+message(STATUS
+  "ADR-181 §3.8 compile-fail proof: OK (run_trial rejects a pre-wrapped RecordingChatClient<...> as "
+  "Inner; a plain Inner still compiles)")
+
 # ---- Keep assert() live in every configuration, Release included --------------------------------
 # 13 files here (195 assert() calls) use bare <cassert> rather than the AE_CHECK/g_failures harness:
 # smoke_vocabulary, test_job_object_limits, test_native_jail_runner_stubs, test_python_audit_hook,

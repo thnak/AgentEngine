@@ -128,6 +128,21 @@ namespace detail {
     return false;
 }
 
+// Round-1 red-team fix (MAJOR): the type-level "run_trial always wraps Inner in
+// RecordingChatClient" guarantee is true but not, by itself, an EFFECT guarantee -- nothing stopped
+// a caller from passing an ALREADY-WRAPPED `RecordingChatClient<X>` as `Inner`, producing
+// `RecordingChatClient<RecordingChatClient<X>>`. `RecordingChatClient::chat()` unconditionally
+// forwards to `inner_.chat(...)`, so the caller's own, externally-configured sink (built with
+// whatever authority/persistence IT was given, entirely outside this trial's `EvalStore`/
+// `CapabilitySet` confinement) would fire on every trial round too -- proven with a compiled
+// proof-of-concept that observed the seeded lesson text through exactly this path. Rejected here,
+// structurally, rather than left to a doc comment's "there is no way to..." claim, which was true
+// of the wrapper TYPE but not of this misuse.
+template <class T>
+inline constexpr bool is_recording_chat_client_v = false;
+template <class T>
+inline constexpr bool is_recording_chat_client_v<RecordingChatClient<T>> = true;
+
 }  // namespace detail
 
 // Runs one B (baseline, `spec.candidate == nullopt`) or T (treatment, `spec.candidate` set) trial:
@@ -138,10 +153,17 @@ namespace detail {
 // `Inner` (never `Inner` unwrapped -- `RecordingChatClient<Inner>` is this function's OWN chat
 // client type, not a caller choice) satisfies `LegacyChatClient`; wrapping it here, rather than
 // leaving it to the caller, is how this function enforces ADR-181 §3.8's "refuses to run a trial
-// whose client is not wrapped in RecordingChatClient" BY TYPE -- there is no way to call
-// `run_trial` with an unwrapped client at all.
+// whose client is not wrapped in RecordingChatClient" -- a caller cannot pass an unwrapped `Inner`
+// and get one for free. `Inner` itself must not ALREADY be a `RecordingChatClient<...>` (round-1
+// red-team fix, above): that would chain a caller-supplied external sink onto every trial call,
+// escaping this function's own confinement -- rejected below by a `static_assert`, not just prose.
 template <class Inner, class SummarizerT>
 [[nodiscard]] task<TrialResult> run_trial(Inner primary_client, SummarizerT summarizer, TrialSpec spec) {
+    static_assert(!detail::is_recording_chat_client_v<Inner>,
+                  "run_trial's Inner must not already be a RecordingChatClient<...> -- wrapping it "
+                  "here is what enforces this trial's confinement (ADR-181 §3.8); a pre-wrapped "
+                  "instance carries its own external sink that would observe every trial call "
+                  "outside this trial's own EvalStore/CapabilitySet confinement");
     using ObjectStore = InMemoryWorktreeObjectStore;
     using RefStore = rt::InMemoryAppendLogStore;
     using MemProvider = MemoryProvider<SummarizerT, ObjectStore, RefStore>;
@@ -220,8 +242,14 @@ template <class Inner, class SummarizerT>
     trial_result.outcome = co_await session.start_run(rt::StartRun{spec.task_prompt});
 
     // ---- delivery detection over the recorded requests/responses, structural only (I3) ----------
+    // Round-1 red-team fix (MAJOR, proven with a compiled proof-of-concept): a candidate with a
+    // non-empty rendered lesson but ZERO recordings (e.g. spec.max_turns==0, or any other setup
+    // that makes AgentSession exit before its first model call) left this "every request satisfies
+    // delivery" fold vacuously true -- the for-loop below never runs, so it never gets a chance to
+    // falsify itself, and a trial that never actually called the model reported delivered==true,
+    // identical to a real success. Requiring at least one recording closes it.
     bool recall_seen = false;
-    bool every_request_delivered = !rendered_lesson_content.empty();
+    bool every_request_delivered = !rendered_lesson_content.empty() && !trial_result.recordings.empty();
     for (ChatCallRecording const& rec : trial_result.recordings) {
         bool this_request_carries_memory_attributed_lesson = false;
         for (Message const& msg : rec.request.messages) {

@@ -248,6 +248,31 @@ int main() {
                  "S4b: baseline WITH a candidate is also a setup_error");
     }
 
+    // ---- Scenario 5: round-1 red-team fix -- delivered must not be vacuously true when the trial
+    // never actually produces any recordings (a round-1 reviewer's proof-of-concept: max_turns=0
+    // makes AgentSession exit before its first model call, and the pre-fix delivery fold's
+    // "every request satisfies delivery" initial value never got a chance to be falsified) ---------
+    {
+        ev::TrialSpec spec;
+        spec.arm              = ev::trial_arm::treatment;
+        spec.candidate        = deploy_region_candidate();
+        spec.template_version = "v1";
+        spec.lesson_salience  = 0.3f;
+        spec.task_prompt      = user_message("please set up the deploy region");
+        spec.trial_id         = "t5-zero-turns";
+        spec.max_turns        = 0;  // the model is never called at all
+
+        ScriptedChatClient client({text_step("unused")});
+        auto result = drive(ev::run_trial(client, MockSummarizerClient{}, spec));
+
+        AE_CHECK(!result.setup_error.has_value(), "S5: reaches start_run (not a setup error)");
+        AE_CHECK(!result.outcome.has_value(), "S5: the trial itself fails (max_turns exhausted)");
+        AE_CHECK(result.recordings.empty(), "S5: zero recordings -- the model was never called");
+        AE_CHECK(!result.delivered,
+                 "S5: round-1 fix -- delivered is NOT vacuously true when nothing was ever recorded, "
+                 "even though a candidate was seeded");
+    }
+
     if (g_failures != 0) {
         std::cerr << g_failures << " check(s) failed\n";
         return 1;
