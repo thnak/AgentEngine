@@ -1,7 +1,18 @@
 # ADR-181 — Evaluation harness: a cheap screen now, a rigorous confirmation later (gates ADR-179's reviewer and queue)
 
-- **Status**: **Proposed — DESIGN plus executed statistics only. Sixth draft: four red-team rounds (nine
-  independent reviews). Round 1 forced the task-level analysis and the look accounting; round 2 replaced the scope-
+- **Status**: **Proposed — design plus executed statistics, and, as of round 5, real code for four of Tier 1's
+  components (§3.0 items 1/2/3, part of item 4, and item 5's ack-digest half): `include/agentengine/eval/`
+  (`lesson_candidate.hpp`, `eval_principal.hpp`, `promotion_ack.hpp`, `tier1_statistics.hpp`), 4 new test binaries,
+  56/56 checks green (`test_lesson_candidate`, `test_eval_principal`, `test_promotion_ack`,
+  `test_tier1_statistics`), clean under MSVC, clang-cl `-Wall -Wextra -Werror -fsyntax-only`, and
+  `tools/naming_lint.py`. Building this surfaced a real bug review alone had not: the first
+  `clopper_pearson_lower_bound` bisected against the wrong monotonicity direction and silently converged to a
+  plausible-looking wrong answer; `test_tier1_statistics`'s own duality/boundary checks caught it (§6, E28). The
+  trial-running harness itself (AgentSession wiring, stub sandbox, the containment/divergence detector over real
+  tool calls, the ledger) is still not built — round 5 built the pure, self-contained pieces first, and this new
+  code has not yet been red-teamed (round 5's own red-team pass follows this implementation in the same round).
+  Seventh draft: four completed red-team rounds (nine independent reviews) plus round 5, still in progress. Round
+  1 forced the task-level analysis and the look accounting; round 2 replaced the scope- Round 1 forced the task-level analysis and the look accounting; round 2 replaced the scope-
   tagged safety arm and exposed mechanisms that outran their primitives; round 3 found that the assembled design was
   over-built for the threat (about 2,700 agent runs and 1,000 authored tasks to promote one lesson, and it would almost
   never promote a real one), that the steering detector I had quoted was never the one specified, and that the
@@ -73,6 +84,7 @@ overstating it.
 | Capabilities are a **runtime `held` set checked in `admit_call`** for the `invoke_tool` pipeline; a tool body is ordinary C++ and nothing sandboxes it; the model client has **no `NetOut` check** (ADR-179 §2) | `trust/tool_pipeline.hpp:376-399` |
 | `start_task_branch`/`discard_task_branch` are public host-callable methods; calling them directly **skips `cap::TaskBranch`**; the provider needs a bound `SandboxRuntime`, quotas and, in practice, a Docker surface; `test_task_branch_tools` and `test_mandatory_sandbox_provider` are **excluded from CI** | `mandatory_sandbox_provider.hpp:244,885-900`; `.github/workflows/ci.yml:164,314` |
 | There is **no per-principal spend aggregate**: `AgentSession` has a per-session optional `token_budget`; `SpawnBudget` is a spawn-depth capability, not a ledger | `agent_session.hpp:598-602,1438`; `trust/spawn_budget.hpp` |
+| **Round 5, new code, not the reused-primitives above**: `LessonCandidate`/`render_lesson`/`rendered_lesson_digest`/the ADR-179 §3.3 validator, `mint_eval_trial_principal`/`is_eval_reserved_tenant`, `PromotionAck`/`acknowledge_rendered_lesson`/`verify_and_render_acknowledged_lesson`, and `clopper_pearson_upper_bound`/`_lower_bound`/`follow_rate_screen_passes`/`containment_gate_blocks`/`sign_flip_sum_lower_tail_pvalue`/`hypergeometric_min_task_lower_tail_pvalue` | `include/agentengine/eval/{lesson_candidate,eval_principal,promotion_ack,tier1_statistics}.hpp` |
 
 ## 3. Decision
 
@@ -90,10 +102,15 @@ someone builds it.
 
 1. **Rendering is part of the candidate under test.** `LessonCandidate` (ADR-179 §3.3, a closed record) is turned
    into the text the model reads by a **pure host function** `render_lesson(candidate, template_version) →
-   MemoryItem{kind=procedural, content, tags, salience}`; neither the type nor the function exists yet (ADR-179 is
-   design-only). ADR-180 measured wording changing the effect by an order of magnitude, and the renderer chooses the
-   `content` and `tags` that recall's keyword term sees, so **the rendered bytes and `template_version` are in the
-   candidate digest**. Changing the template invalidates all earlier evidence (E26).
+   MemoryItem{kind=procedural, content, tags, salience}`. ADR-180 measured wording changing the effect by an order
+   of magnitude, and the renderer chooses the `content` and `tags` that recall's keyword term sees, so **the
+   rendered bytes and `template_version` are in the candidate digest**. Changing the template invalidates all
+   earlier evidence (E26). **Round 5: built for real**, `include/agentengine/eval/lesson_candidate.hpp` —
+   `LessonCandidate{subject,key,value,source_span}`, `render_lesson`, `rendered_lesson_digest` (the digest covers
+   the rendered `content`/`tags`/`salience` and `template_version`, never the raw candidate fields alone — the
+   round-4 F1 finding this closes), and ADR-179 §3.3's own candidate-value validator (length floor, common-token
+   reject list, URL/path/shell/imperative shape checks — a real prerequisite ADR-179 named and never built until
+   now). `tests/test_lesson_candidate.cpp`, 18/18 checks.
 2. **Follow-rate screen (do this first; ~40 runs).** **One pre-registered probe task per candidate is the default**
    (round-4 fix — see below); its correct answer depends on the lesson, and its **execution and scoring are host
    code** that checks the parsed answer or tool argument structurally (I3), in the same stub sandbox (§3.9). 20
@@ -145,7 +162,12 @@ someone builds it.
    §3.2) — and **fails closed**: an unreadable flag is treated as "kill" (no injection), the same direction as the
    opt-in default. It does **not** purge episodic copies the summarizer already wrote before the switch was thrown
    (§8; purging needs lineage-tagging the summarizer's own output, which is out of scope here). Opt-in: **unset ⇒
-   nothing is promoted.** All of it is recorded (I4).
+   nothing is promoted.** All of it is recorded (I4). **Round 5: the digest-binding half is built for real**,
+   `include/agentengine/eval/promotion_ack.hpp` — `PromotionAck{digest,template_version,approver_id,
+   acknowledged_at}`, `acknowledge_rendered_lesson`, `verify_and_render_acknowledged_lesson` (re-renders and
+   refuses the write on any digest mismatch — proven against a changed value, a changed salience, and a stale
+   placeholder digest). `tests/test_promotion_ack.cpp`, 9/9 checks. The kill switch itself and the audit trail are
+   not yet built (§8) — they need the trial-running harness this round did not build.
 
 Tier-1 cost ≈ 40×k (k=1 by default) + 300 + 300/delivery_rate = **~640 agent runs ≈ 5,800 model calls at ≥ 90%
 delivery**, rising toward ~940 runs at the 50% `weak_delivery` floor (§6 G1), ~30 regression tasks, one probe by
@@ -519,7 +541,12 @@ returns the old answer and reports a spurious "no effect". Therefore:
   side and, as a matching production-side guard, a `tenant_id` that is literally `eval` or contains `:` is refused
   by the same assertion, so the collision cannot be constructed from either direction); this is new harness code,
   not a change to `Principal`/`memory.hpp`, which accept arbitrary strings today. E25 gains this as a second
-  positive control (colon-collision constructible ⇒ refused).
+  positive control (colon-collision constructible ⇒ refused). **Round 5: built for real**,
+  `include/agentengine/eval/eval_principal.hpp` — `mint_eval_trial_principal`, `is_eval_reserved_tenant`.
+  `tests/test_eval_principal.cpp` **executes the collision against the real `memory_mount_id`/`memory_ref_name`**
+  (not a model of them) before proving the mint function refuses both halves of it and every other colon
+  placement. 15/15 checks. `EvalStore` (the distinct handle type §3.9 also promises) is not yet built — it needs a
+  real trial-running harness to be constructed against.
 - **I2/I3, no model-callable surface — by discipline plus a lint that can fail, not by the type system (R2-M2).**
   `ToolDescriptor` holds a type-erased `std::function`, so a concept cannot see what a tool body captures (§2), and
   the repo's compile-fail gate can only prove "this type has no public constructor". The harness types have
@@ -626,11 +653,11 @@ reported figure is a **Clopper–Pearson 99% upper bound**, not a point estimate
 
 | E25 | G | Trial principals are minted under the reserved `eval:` tenant prefix, asserted at mint; a harness handed a production principal id or store is refused; `EvalStore` does not convert to a production store (compile-fail). **Round-4 positive control:** minting with a `:` in `tenant_id` or `id` — the constructible collision `(tenant "eval:acme", id "run1")` vs `(tenant "eval", id "acme:run1")` — is refused | Prefix unchecked; colon left unescaped |
 | E26 | G | The candidate digest covers the **rendered `MemoryItem` bytes and `template_version`**; changing the template changes the digest and marks earlier evidence stale | Digest over `{subject,key,value}` only |
-| E27 | G | Follow-rate screen: a baseline follow rate above 10% invalidates the probe; pass iff the exact 95% **lower** bound ≥ 0.5; seeded, 2000 runs: passes ≥ 0.90 at a true 0.85 and ≤ 0.05 at a true 0.5. **The probe is one, suite-authored task by default (round 4, §6 G4)**; a suite declaring k probes requires **all k** to pass, never any | Point-estimate pass; any-of-k aggregation |
-| E28 | G | Gross-harm screen: seeded, 2000 runs: false-flag upper bound ≤ 0.10 under no effect; flags ≥ 0.90 at a true −15 pp; **the harm direction is one-sided** (a *benefit* is never flagged as harm). **Round 4 added a min-task, hypergeometric-permutation statistic alongside the sum** (§6 G3): either flagging ⇒ the screen flags; false-flag stays ≤ 0.02 (measured, conservative) and harm concentrated in 3–5 of 30 tasks is now caught 30–56% of the time, against 23–45% for the sum alone | Pooled-trial test; wrong direction; sum-only statistic blind to concentrated harm |
+| E27 | G | Follow-rate screen: a baseline follow rate above 10% invalidates the probe; pass iff the exact 95% **lower** bound ≥ 0.5; seeded, 2000 runs: passes ≥ 0.90 at a true 0.85 and ≤ 0.05 at a true 0.5. **The probe is one, suite-authored task by default (round 4, §6 G4)**; a suite declaring k probes requires **all k** to pass, never any. **Round 5: `clopper_pearson_lower_bound`/`follow_rate_screen_passes` are real code** (`tier1_statistics.hpp`), pinned in `tests/test_tier1_statistics.cpp` against the exact published boundary (15-of-20 passes, 14-of-20 fails) and a closed-form identity (the zero/full-count bound is exactly `1 - alpha^(1/n)` by duality) | Point-estimate pass; any-of-k aggregation |
+| E28 | G | Gross-harm screen: seeded, 2000 runs: false-flag upper bound ≤ 0.10 under no effect; flags ≥ 0.90 at a true −15 pp; **the harm direction is one-sided** (a *benefit* is never flagged as harm). **Round 4 added a min-task, hypergeometric-permutation statistic alongside the sum** (§6 G3): either flagging ⇒ the screen flags; false-flag stays ≤ 0.02 (measured, conservative) and harm concentrated in 3–5 of 30 tasks is now caught 30–56% of the time, against 23–45% for the sum alone. **Round 5: both statistics are real code** (`sign_flip_sum_lower_tail_pvalue`, `hypergeometric_min_task_lower_tail_pvalue`, `tier1_statistics.hpp`), each with contract checks on malformed input and a determinism check (same seed ⇒ bit-identical p-value, I5). **A real bug in the FIRST version of `clopper_pearson_lower_bound`** (the follow-rate screen's own bound, not this row's statistic, but built and tested alongside it) **was caught by these tests, not by review**: a bisection was run against the wrong monotonicity direction and silently converged to a numerically-plausible but wrong root; `tests/test_tier1_statistics.cpp`'s Clopper-Pearson duality check and the published 15-of-20 boundary both failed until it was fixed — direct evidence for round 5's own premise that real code gives red-teaming more surface | Pooled-trial test; wrong direction; sum-only statistic blind to concentrated harm |
 | E29 | G | The `SlotTable` is hashed into the suite digest; a slot absent from it is never gated; a value outside a declared closed domain that cannot be normalised makes the slot `unsuitable` | Table outside the digest |
 | E30 | G | The kill-switch flag stops **new** injection of every promoted lesson within one turn, checked before both context assembly and the `recall` tool's return (round 4: `recall` is a second delivery route, §3.2, and had no stated coverage); an unset or unreadable opt-in ⇒ nothing is injected (fails closed, round 4). **Not claimed:** that the switch purges episodic copies the summarizer already wrote before it was thrown (§8) | Flag ignored; default-on; unreadable flag defaults to injecting; `recall` route uncovered |
-| E31 | G | *(round 4, new)* The approver's acknowledgement is bound to a **digest of the rendered `MemoryItem`** (`content`, `tags`, `salience`) shown to them verbatim; the promotion path re-runs `render_lesson` and refuses the write if the recomputed digest differs from the acknowledged one | Ack recorded without a digest; promotion writes without recomputing |
+| E31 | G | The approver's acknowledgement is bound to a **digest of the rendered `MemoryItem`** (`content`, `tags`, `salience`) shown to them verbatim; the promotion path re-runs `render_lesson` and refuses the write if the recomputed digest differs from the acknowledged one. **Round 5: built for real** (`promotion_ack.hpp`); `tests/test_promotion_ack.cpp` proves refusal on a changed candidate value, a changed salience (round-4 F1's exact TOCTOU shape — `MemoryItem::id` alone does NOT catch this, since it digests `content` only), and a stale/placeholder digest | Ack recorded without a digest; promotion writes without recomputing |
 | E32 | G | *(round 4, new)* Tier 1's pre-registration record (template + version, probe(s), regression tasks, `SlotTable`, arm-S N and margin) is hashed before the screen runs; every started screen for a family is counted, and a `ScreenResult` with more than one attempt for its family names the count and shows every attempt's figures, not only the passing one | Pre-registration after the run; retries silently hidden from the `ScreenResult` |
 
 **Not claimed:** that any lesson improves real-world performance (§1, §8); that acknowledged steering is safe (§3.7); that a Tier-1 pass means the lesson helps (§3.0); that the kill switch purges episodic copies already written before it was thrown (§8); that a lesson cannot be conditioned on detecting the eval itself (§3.9, §8).
@@ -845,8 +872,15 @@ confinement (**R4-Safe**), and coherence/buildability (**R4-Coh**). Their number
   claim exists.
 - **No pilot run**: real discordance, noise floor and required N are unmeasured, and the dev-only power estimate
   is optimistic by construction.
-- **Tier 1 certifies nothing about benefit.** A lesson can pass every screen and still not help; the approver, not the
-  harness, decides. `LessonCandidate` and `render_lesson` do not exist yet, so the whole of Tier 1 is unbuilt.
+- **Tier 1 certifies nothing about benefit.** A lesson can pass every screen and still not help; the approver, not
+  the harness, decides. **Round 5 built `LessonCandidate`/`render_lesson`, the ack-digest binding, the eval-tenant
+  minting guard, and the Clopper-Pearson/permutation statistics** (`include/agentengine/eval/`, §3.0, §3.9, E25/E26/
+  E28/E31) — real code, tested, not simulated. **Still unbuilt: the trial-running harness itself** — `AgentSession`
+  wiring through `ComposedContextProvider<HistoryProvider, MemoryProvider>` (§3.2), the host-authored fixture stubs
+  and `SlotTable` (§3.7, E29), the divergence detector's chi-square/permutation statistic over real tool-call
+  arguments (§3.7's within-task permutation — only the simpler Tier-1 sum/min-task/Clopper-Pearson statistics were
+  built), `EvalStore` and the write-ahead attempt ledger (E32), and the kill switch/audit trail (§3.0 item 5). None
+  of Tier 1 can actually run end to end yet; round 5 built the parts that do not need the rest to exist first.
 - **The per-trial deadline is unenforceable today** (§3.9): a watchdog and process memory cap stand in.
 - **The round-4 fixes are not re-red-teamed.** Round 5, if run, should attack: the min-task concentration statistic
   and the probe's all-of-k rule (both new in round 4, §6 G3/G4), the Tier-1 attempt counter's own tamper-resistance

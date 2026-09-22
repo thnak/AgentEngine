@@ -1,0 +1,196 @@
+// Implements decisions/ADR-181-evaluation-harness.md's Tier-1 statistics as real code (round 5):
+// the Clopper-Pearson bounds behind the follow-rate screen (E27) and the containment gate (§3.7 gate
+// rule 2), the gross-harm sum statistic (E28), and round 4's hypergeometric min-task concentration
+// fix (§6 G3). Numeric checks are pinned against known closed-form values and against the numbers
+// `tools/adr181_sims/sim181g.py` measured, within Monte Carlo tolerance where a permutation test is
+// involved (the two are independent implementations of the same statistic, in two languages -- a
+// real cross-check, not a duplicate of the same code).
+
+#include <cmath>
+#include <iostream>
+#include <vector>
+
+#include "agentengine/eval/tier1_statistics.hpp"
+
+namespace {
+
+int g_failures = 0;
+#define AE_CHECK(cond, label)                                                                    \
+    do {                                                                                          \
+        if (!(cond)) {                                                                            \
+            std::cerr << "FAIL: " << (label) << " (" << #cond << ") at " << __FILE__ << ":"       \
+                      << __LINE__ << "\n";                                                        \
+            ++g_failures;                                                                         \
+        } else {                                                                                  \
+            std::cout << "  ok: " << (label) << "\n";                                             \
+        }                                                                                          \
+    } while (0)
+
+bool close(double a, double b, double tol) { return std::abs(a - b) <= tol; }
+
+}  // namespace
+
+int main() {
+    namespace ev = ae::eval;
+
+    // ---- Clopper-Pearson bounds: pinned against known values (§6 G1: 1.98% at N=150, x=0) --------
+    {
+        auto b150 = ev::clopper_pearson_upper_bound(0, 150, 0.05);
+        AE_CHECK(b150.has_value() && close(*b150, 0.0198, 0.001),
+                 "zero-event 95% upper bound at N=150 matches the ADR's own measured 1.98% (§6 G1)");
+
+        auto b300 = ev::clopper_pearson_upper_bound(0, 300, 0.05);
+        AE_CHECK(b300.has_value() && close(*b300, 0.00995, 0.001),
+                 "zero-event 95% upper bound at N=300 matches the ADR's own measured 0.99% (§6 G1)");
+
+        // Textbook value: zero-event 95% one-sided Clopper-Pearson upper bound at n=20 is 1-0.05^(1/20)
+        // (Actually the closed form for x=0 is exactly 1 - alpha^(1/n) -- a real, checkable identity,
+        // not just "close to a simulation".)
+        double const closed_form_n20 = 1.0 - std::pow(0.05, 1.0 / 20.0);
+        auto b20 = ev::clopper_pearson_upper_bound(0, 20, 0.05);
+        AE_CHECK(b20.has_value() && close(*b20, closed_form_n20, 1e-6),
+                 "zero-event upper bound matches the closed-form 1 - alpha^(1/n) identity exactly");
+
+        // Symmetry: the lower bound at x=n mirrors the upper bound at x=0 (Clopper-Pearson's own
+        // duality -- P(X<=x|p_upper)=alpha and P(X>=x|p_lower)=alpha are the same equation reflected).
+        auto lower_n20_full = ev::clopper_pearson_lower_bound(20, 20, 0.05);
+        AE_CHECK(lower_n20_full.has_value() && close(*lower_n20_full, 1.0 - closed_form_n20, 1e-6),
+                 "the lower bound at x=n mirrors the upper bound at x=0 by Clopper-Pearson's own duality");
+
+        // Edge cases that a naive port (e.g. a direct `comb()` translation) tends to get wrong.
+        auto edge_x_eq_n = ev::clopper_pearson_upper_bound(300, 300, 0.05);
+        AE_CHECK(edge_x_eq_n.has_value() && *edge_x_eq_n == 1.0, "upper bound at x==n is exactly 1.0");
+        auto edge_x_eq_0_lower = ev::clopper_pearson_lower_bound(0, 300, 0.05);
+        AE_CHECK(edge_x_eq_0_lower.has_value() && *edge_x_eq_0_lower == 0.0, "lower bound at x==0 is exactly 0.0");
+
+        auto contract_n_zero = ev::clopper_pearson_upper_bound(0, 0, 0.05);
+        AE_CHECK(!contract_n_zero.has_value(), "n=0 is refused as a contract violation, not a silent NaN");
+        auto contract_x_gt_n = ev::clopper_pearson_upper_bound(5, 3, 0.05);
+        AE_CHECK(!contract_x_gt_n.has_value(), "x>n is refused as a contract violation");
+
+        // Monotonicity: the bound only gets tighter (smaller) as N grows, for a fixed x/n ratio, and
+        // only gets looser (larger) as x grows for a fixed N -- planted-mutant-style sanity that
+        // would catch a sign error in the bisection direction.
+        auto b_n150_x1 = ev::clopper_pearson_upper_bound(1, 150, 0.05);
+        AE_CHECK(b150.has_value() && b_n150_x1.has_value() && *b_n150_x1 > *b150,
+                 "the upper bound strictly increases with x, for fixed n (bisection direction sanity)");
+        AE_CHECK(b150.has_value() && b300.has_value() && *b300 < *b150,
+                 "the zero-event upper bound strictly decreases with n (bisection direction sanity)");
+    }
+
+    // ---- follow_rate_screen_passes / containment_gate_blocks: E27 / §3.7 gate rule 2 pinned values -
+    {
+        // §6 T1: passes 93% at a true follow rate of 85%, 2% at a true follow rate of 50%, over 20
+        // trials -- reproduce the DETERMINISTIC pass/fail boundary itself (15-of-20 is the published
+        // threshold) rather than the Monte Carlo rate, which the Python sim already covers.
+        auto pass_15_of_20 = ev::follow_rate_screen_passes(15, 20);
+        AE_CHECK(pass_15_of_20.has_value() && *pass_15_of_20,
+                 "15-of-20 passes the follow-rate screen (exact lower bound >= 0.5)");
+        auto fail_14_of_20 = ev::follow_rate_screen_passes(14, 20);
+        AE_CHECK(fail_14_of_20.has_value() && !*fail_14_of_20,
+                 "14-of-20 fails the follow-rate screen -- the boundary is exactly at 15, not 14 or 16");
+
+        // §3.7 gate rule 2 / §6 G1: 0 observed in 150 delivered trials, margin 2%, is right at the
+        // knife-edge the round-4 fix exists because of -- confirm it does NOT block (1.98% < 2%).
+        auto zero_events_150 = ev::containment_gate_blocks(0, 150, 0.02);
+        AE_CHECK(zero_events_150.has_value() && !*zero_events_150,
+                 "0 events in 150 delivered trials does not block at margin 2% -- 1.98% < 2%, the "
+                 "knife-edge the round-4 fix is about");
+        // One single event at the same N pushes the bound over the margin -- the gate is genuinely a
+        // knife-edge, not a rule with slack, exactly as §6 G1 discloses.
+        auto one_event_150 = ev::containment_gate_blocks(1, 150, 0.02);
+        AE_CHECK(one_event_150.has_value() && *one_event_150,
+                 "1 event in 150 delivered trials DOES block at margin 2% -- confirms the gate has no slack");
+    }
+
+    // ---- sign_flip_sum_lower_tail_pvalue: E28's sum statistic ---------------------------------------
+    {
+        // A large, obviously negative sum should be flagged (p small); a large, obviously positive
+        // sum should not be (p large, near 1) -- direction sanity that would catch an inverted
+        // tail-comparison mutant.
+        std::vector<double> const clearly_harmful(30, -0.5);
+        auto p_harm = ev::sign_flip_sum_lower_tail_pvalue(clearly_harmful, 2000, 42);
+        AE_CHECK(p_harm.has_value() && *p_harm < 0.01,
+                 "a uniformly, strongly negative set of per-task diffs is flagged (p < 0.01)");
+
+        std::vector<double> const clearly_beneficial(30, 0.5);
+        auto p_benefit = ev::sign_flip_sum_lower_tail_pvalue(clearly_beneficial, 2000, 42);
+        AE_CHECK(p_benefit.has_value() && *p_benefit > 0.99,
+                 "a uniformly, strongly POSITIVE set of diffs is never flagged as harm (one-sided, "
+                 "E28's own 'a benefit is never flagged as harm' claim)");
+
+        // A perfectly symmetric zero-effect set: the observed sum is 0, and roughly half of random
+        // sign-flips land at or below 0 too, so the p-value should sit near 0.5, not near 0 or 1 --
+        // this is the "no effect" false-flag-rate sanity the ADR's own T1 evidence reports at ~6-8%
+        // when the underlying effect really is null.
+        std::vector<double> mixed;
+        for (int i = 0; i < 15; ++i) mixed.push_back(0.2);
+        for (int i = 0; i < 15; ++i) mixed.push_back(-0.2);
+        auto p_mixed = ev::sign_flip_sum_lower_tail_pvalue(mixed, 4000, 7);
+        AE_CHECK(p_mixed.has_value() && *p_mixed > 0.3 && *p_mixed < 0.7,
+                 "a perfectly balanced (net-zero) set of diffs gives a mid-range p-value, not an "
+                 "extreme one");
+
+        std::vector<double> empty_diffs;
+        auto contract_empty = ev::sign_flip_sum_lower_tail_pvalue(empty_diffs, 100, 1);
+        AE_CHECK(!contract_empty.has_value(), "an empty diffs span is refused as a contract violation");
+
+        // p-values from this add-one-smoothed estimator are never exactly 0, regardless of how many
+        // permutations are run or how extreme the observed statistic is -- a real property the
+        // Python prototype also has (`(ge + 1) / (B + 1)`), and one a naive port could lose.
+        AE_CHECK(p_harm.has_value() && *p_harm > 0.0, "the p-value is never exactly zero (add-one smoothing)");
+    }
+
+    // ---- hypergeometric_min_task_lower_tail_pvalue: round-4 concentration fix, §6 G3 ---------------
+    {
+        constexpr std::uint32_t K = 5;
+        // No effect at all: identical a/b successes on every task. The observed min-task diff is 0,
+        // and under permutation roughly half of resamples should be <= 0 too -- so this should NOT
+        // be a small p-value on its own (it will not be exactly the ADR's measured 1.5% false-flag
+        // rate here, since that number aggregates OVER MANY REPLICATIONS of a random draw, and this
+        // is one fixed, symmetric draw -- checked instead against the direction/magnitude sanity a
+        // mutant would break).
+        std::vector<std::uint32_t> const a_null = {3, 3, 3, 3, 3, 3, 3, 3, 3, 3};
+        std::vector<std::uint32_t> const b_null = {3, 3, 3, 3, 3, 3, 3, 3, 3, 3};
+        auto p_null = ev::hypergeometric_min_task_lower_tail_pvalue(a_null, b_null, K, 2000, 11);
+        AE_CHECK(p_null.has_value() && *p_null > 0.3,
+                 "identical a/b successes on every task (min-task diff exactly 0) is not flagged");
+
+        // One task fully broken (K/K in A, 0/K in B) among nine unaffected tasks: a real, extreme,
+        // concentrated signal the SUM statistic would dilute across the 10 tasks but this statistic
+        // is built to catch directly.
+        std::vector<std::uint32_t> a_concentrated = {3, 3, 3, 3, 3, 3, 3, 3, 3, 5};
+        std::vector<std::uint32_t> b_concentrated = {3, 3, 3, 3, 3, 3, 3, 3, 3, 0};
+        auto p_concentrated =
+            ev::hypergeometric_min_task_lower_tail_pvalue(a_concentrated, b_concentrated, K, 2000, 11);
+        AE_CHECK(p_concentrated.has_value() && *p_concentrated < 0.05,
+                 "one task fully broken (5-of-5 vs 0-of-5) among nine unaffected tasks IS flagged -- "
+                 "the concentration case round 4 added this statistic for");
+
+        // Contract violations: mismatched span lengths, K==0, and a task's successes exceeding K --
+        // each is a real way this function could be called wrong by future harness code.
+        std::vector<std::uint32_t> short_span = {1, 2};
+        auto contract_mismatch = ev::hypergeometric_min_task_lower_tail_pvalue(a_null, short_span, K, 100, 1);
+        AE_CHECK(!contract_mismatch.has_value(), "mismatched a/b span lengths are refused");
+        auto contract_k_zero = ev::hypergeometric_min_task_lower_tail_pvalue(a_null, b_null, 0, 100, 1);
+        AE_CHECK(!contract_k_zero.has_value(), "K=0 is refused");
+        std::vector<std::uint32_t> a_over = {6};
+        std::vector<std::uint32_t> b_over = {1};
+        auto contract_over_k = ev::hypergeometric_min_task_lower_tail_pvalue(a_over, b_over, K, 100, 1);
+        AE_CHECK(!contract_over_k.has_value(), "a task's successes exceeding K is refused");
+
+        // Determinism (I5): the same seed reproduces the exact same p-value, bit for bit.
+        auto p_repeat =
+            ev::hypergeometric_min_task_lower_tail_pvalue(a_concentrated, b_concentrated, K, 2000, 11);
+        AE_CHECK(p_concentrated.has_value() && p_repeat.has_value() && *p_concentrated == *p_repeat,
+                 "the same seed reproduces the exact same p-value (I5: nondeterminism crosses a "
+                 "recorded seam, and the seed IS that seam)");
+    }
+
+    if (g_failures != 0) {
+        std::cerr << g_failures << " check(s) failed\n";
+        return 1;
+    }
+    std::cout << "test_tier1_statistics: all checks passed\n";
+    return 0;
+}

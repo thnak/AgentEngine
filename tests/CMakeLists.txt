@@ -676,6 +676,34 @@ if(WIN32)
   target_link_libraries(test_memory_procedural_channel PRIVATE
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_memory_procedural_channel COMMAND test_memory_procedural_channel)
+
+  # ADR-181 round 5: LessonCandidate/render_lesson pulled forward from ADR-179 stage 3 (§3.0 item 1,
+  # E26) as real, pure host code, plus the ADR-179 §3.3 / ADR-181 §3.7 candidate-value validator.
+  add_executable(test_lesson_candidate test_lesson_candidate.cpp)
+  target_link_libraries(test_lesson_candidate PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_lesson_candidate COMMAND test_lesson_candidate)
+
+  # ADR-181 round-4/5 E25 fix: eval: tenant minting refuses the colon-collision round 4 executed
+  # against real memory_mount_id/memory_ref_name.
+  add_executable(test_eval_principal test_eval_principal.cpp)
+  target_link_libraries(test_eval_principal PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_eval_principal COMMAND test_eval_principal)
+
+  # ADR-181 round-4/5 E31 fix: the approval ack is bound to a digest of the verbatim rendered item,
+  # and promotion refuses to write on any mismatch (value, salience, or a stale/placeholder digest).
+  add_executable(test_promotion_ack test_promotion_ack.cpp)
+  target_link_libraries(test_promotion_ack PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_promotion_ack COMMAND test_promotion_ack)
+
+  # ADR-181 round 5: the Tier-1 statistics (E27/E28, §3.7 gate rule 2, and round 4's §6 G3
+  # concentration fix) as real code, pinned against closed-form values and the Python prototype.
+  add_executable(test_tier1_statistics test_tier1_statistics.cpp)
+  target_link_libraries(test_tier1_statistics PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_tier1_statistics COMMAND test_tier1_statistics)
 endif()
 
 # ---- Milestone 4 Phase G5 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
