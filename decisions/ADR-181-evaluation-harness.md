@@ -1,10 +1,10 @@
 # ADR-181 — Evaluation harness: a cheap screen now, a rigorous confirmation later (gates ADR-179's reviewer and queue)
 
-- **Status**: **Proposed — design plus executed statistics, and, as of round 5/6, real code for four of Tier 1's
+- **Status**: **Proposed — design plus executed statistics, and, as of rounds 5-7, real code for four of Tier 1's
   components (§3.0 items 1/2/3, part of item 4, and item 5's ack-digest half): `include/agentengine/eval/`
   (`lesson_candidate.hpp`, `eval_principal.hpp`, `promotion_ack.hpp`, `tier1_statistics.hpp`), 4 test binaries,
-  **94/94 checks green** (`test_lesson_candidate` 36, `test_eval_principal` 15, `test_promotion_ack` 9,
-  `test_tier1_statistics` 34), clean under MSVC, clang-cl `-Wall -Wextra -Werror -fsyntax-only`, and
+  **104/104 checks green** (`test_lesson_candidate` 43, `test_eval_principal` 15, `test_promotion_ack` 9,
+  `test_tier1_statistics` 37), clean under MSVC, clang-cl `-Wall -Wextra -Werror -fsyntax-only`, and
   `tools/naming_lint.py`. Round 5 surfaced a real bug review alone had not: the first `clopper_pearson_lower_bound`
   bisected against the wrong monotonicity direction and silently converged to a plausible-looking wrong answer;
   `test_tier1_statistics`'s own duality/boundary checks caught it before any reviewer looked. Round 5's own
@@ -28,10 +28,23 @@
   substitution forms and URI schemes without `://` were missing from the two needle lists) and one MAJOR ADR
   coherence overclaim (§3.0 item 4 read as if the containment gate's "run extra trials until N delivered" loop
   were built; only the comparison statistic is — the loop itself still needs the unbuilt trial-running harness).
+  **Round 7 re-red-teamed round 6's fixes (three more independent reviewers: numerics, denylist usability,
+  coherence) and found one more FATAL, one MAJOR usability regression, and one MINOR:** the mode-anchored
+  `binomial_cdf_le`'s own `log_binomial_pmf` computed `log(p)`/`log(1-p)` via plain `std::log`, which loses
+  relative precision whenever the bisection-driven `p` is far from 0.5 (measured: a 463% relative error at
+  `alpha=1e-10`) — fixed with `std::log1p`, verified against an independent scipy/mpmath reference; a disclosed,
+  not-fixed residual remains at the most extreme alphas (`bisect_decreasing`'s own fixed 60-iteration budget hits
+  double precision's own resolution limit near either end of `[0,1]`, nowhere near ADR-181's real `alpha=0.05`
+  usage). Separately, round 6's denylist expansion introduced 17 proven false positives on realistic, benign lesson
+  text (`"post mortems are stored in..."`, `"the .net runtime version..."`, `"call center average wait time..."`,
+  `"ssh access to the bastion..."`) — two were clear bugs (`"exec"`/`"sudo"` had no trailing space, matching as a
+  substring of ordinary words like "executive"; `".net"` collided with the .NET framework name) and are fixed;
+  the rest are a genuine precision/recall trade-off inherent to a prefix denylist over natural language (removing
+  those words would reopen real imperative-shaped attack text) and are disclosed in §8 rather than "fixed" away.
   The trial-running harness itself (AgentSession wiring, stub sandbox, the containment/divergence detector over
-  real tool calls, the ledger) is still not built — rounds 5 and 6 built and hardened the pure, self-contained
-  pieces first. Nothing here is wired into production. Round 6's own fixes are **not yet re-red-teamed**. Ninth
-  draft: six red-team rounds (fifteen independent reviews). Round 1 forced the task-level analysis and the look
+  real tool calls, the ledger) is still not built — rounds 5-7 built and hardened the pure, self-contained pieces
+  first. Nothing here is wired into production. Round 7's own fixes are **not yet re-red-teamed**. Tenth draft:
+  seven red-team rounds (eighteen independent reviews). Round 1 forced the task-level analysis and the look
   accounting; round 2 replaced the scope-tagged safety arm and exposed mechanisms that outran their primitives;
   round 3 found that the assembled design was over-built for the threat (about 2,700 agent runs and 1,000 authored
   tasks to promote one lesson, and it would almost never promote a real one), that the steering detector I had
@@ -138,9 +151,11 @@ someone builds it.
    subject/key could make two semantically different candidates render to byte-identical `content` by smuggling
    one field's text across the template's own field boundary (`" ("`/`"): "`), which the identifier validator now
    also rejects, along with any raw control byte (closing the digest's own separator-safety claim for real rather
-   than asserting it unchecked). `tests/test_lesson_candidate.cpp`, 24/24 checks, including regression tests
-   reproducing both reviewers' exact proofs-of-concept and a positive control that short, ordinary identifiers
-   still render fine.
+   than asserting it unchecked). `tests/test_lesson_candidate.cpp`, 43/43 checks (round-7 coherence finding: this
+   count previously read a stale 24/24 left over from round 5, while later rounds had already grown the file to
+   36 and then 43 checks — corrected here), including regression tests reproducing both reviewers' exact
+   proofs-of-concept, a positive control that short, ordinary identifiers still render fine, and round 6/7's own
+   denylist fixes and disclosed trade-offs.
 2. **Follow-rate screen (do this first; ~40 runs).** **One pre-registered probe task per candidate is the default**
    (round-4 fix — see below); its correct answer depends on the lesson, and its **execution and scoring are host
    code** that checks the parsed answer or tool argument structurally (I3), in the same stub sandbox (§3.9). 20
@@ -904,10 +919,36 @@ final fix landed, which is recorded below rather than smoothed over.
 **Checked and held up:** the delimiter-collision fix, the control-byte rejection, the `eval:` colon-collision guard,
 and the ack-digest binding were all independently re-verified sound with no regressions; the hypergeometric
 resampling mechanism itself (as opposed to its `2*K` arithmetic) was empirically checked against the analytic
-hypergeometric PMF over 2M draws with no bug found; `bisect_decreasing`'s own convergence was checked and holds at
-extreme alpha values — the bug was entirely in what it was bisecting, not the bisection itself; every named
-contract-violation path (n=0, x>n, alpha out of range, empty spans, K=0, successes>K, mismatched spans) was
-independently re-verified to still return a refusal rather than fall through to UB.
+hypergeometric PMF over 2M draws with no bug found; every named contract-violation path (n=0, x>n, alpha out of
+range, empty spans, K=0, successes>K, mismatched spans) was independently re-verified to still return a refusal
+rather than fall through to UB. **Correction (round 7 found this claim too strong): `bisect_decreasing`'s
+convergence was checked at round 6's own alpha values (0.05 down to a handful of Monte Carlo-scale figures), not at
+the astronomically small alphas round 7 went looking for — round 7 found the bisection genuinely does have a
+resolution floor near either end of `[0,1]` (below).**
+
+**Round 7** (this draft): three more independent reviews, specifically re-attacking round 6's fixes per its own
+punch list — numerics (**R7-Num**), denylist usability/false-positives (**R7-FP**), and ADR-vs-code coherence
+(**R7-Coh**). One more FATAL, found in the mode-anchored fix round 6 had just landed and believed solid.
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| R7-Num1 | fatal | `log_binomial_pmf` (round 6's own fix) computed `log(p)` and `log(1.0-p)` via plain `std::log`. Forming `1.0-p` (or evaluating `log` of an argument already extremely close to 1) loses relative precision in the RESULT whenever the bisection-driven p is far from 0.5 — exactly the regime a small `alpha` or an extreme x/n ratio drives it into, i.e. the same regime round 6 was fixing. Proven against an independent scipy/mpmath reference: at x=1, n=10,000,000, alpha=1e-10, the old code returned a bound 5.6× too large (463% relative error), degrading smoothly as alpha shrank (0.24% at alpha=1e-6, 5.5% at alpha=1e-8) | `std::log1p(p-1.0)` for `log(p)` and `std::log1p(-p)` for `log(1-p)` — both accurate near their respective singular points without ever forming the lossy intermediate. Verified against the same independent reference; residual ~4% error remains at the most extreme alpha tested (1e-10), traced to `bisect_decreasing`'s own resolution floor (R7-Num2), not this bug |
+| R7-Num2 | major *(disclosed, not fixed)* | `bisect_decreasing`'s fixed 60-iteration budget cannot resolve an answer closer than ~2.2×10⁻¹⁶ (double precision's own absolute resolution) to either end of `[0,1]`; past that, the search silently freezes at a fixed value with no error, for any caller passing an alpha extreme enough to need it | Disclosed in §8. ADR-181's real usage is `alpha=0.05` exclusively — orders of magnitude away from this floor — so not fixed; a caller needing sub-1e-15-scale alpha should not trust this function |
+| R7-FP1 | major | Round 6's denylist expansion introduced real false positives on plausible, legitimate lesson text: `"exec"`/`"sudo"` had no trailing space (unlike every other entry), so they matched as a substring of ordinary words (`"executive approval..."`, `"execution time budgets..."` — this project's own vocabulary); `".net"` (present since round 5) collided with the .NET framework name (`"the .net runtime version..."`). Both proven with compiled proofs-of-concept against the real header | `"exec"`/`"sudo"` given a trailing space, matching every other entry's convention; `.net` dropped from `kUrlOrPathNeedles` (`://` still catches real URLs; `.net` alone was never a strong signal). Regression tests pin both the false-positive fix and that a genuine `"exec "`/`"sudo "` invocation is still caught |
+| R7-FP2 | major *(disclosed, not fixed)* | 15 more proven false positives found on realistic values whose leading word is also an ordinary English noun (`"post mortems are stored in..."`, `"call center average wait time..."`, `"python is the primary language..."`, `"ssh access to the bastion..."`, `"delete markers are automatically cleaned..."`, `"install steps for the CLI..."`, `"kill switches for the ingest pipeline..."`, `"bash scripts in CI..."`, `"download links for release artifacts..."`), plus ordinary punctuation/templating syntax colliding with the shell needles (`;`, backtick-as-markdown, `${username}` as a template placeholder, `$(formula)` describing a spreadsheet cell) | Disclosed in §8, not fixed: removing any of these words/needles would reopen the exact imperative-shaped or shell-shaped attack text they exist to catch (`"post the credentials to..."`, `"call the webhook with..."`) — a genuine precision/recall trade-off inherent to a fixed denylist over natural language, not a bug with a clean fix. Two regression tests pin the current, disclosed behaviour so it can't silently change unnoticed |
+| R7-Coh1 | minor | §3.0 item 1's own citation of `test_lesson_candidate.cpp`'s check count still read "24/24", stale since round 6 grew the file to 36 (the status header had been updated; this one embedded citation had not) | Corrected to 43/43, with a note explaining the drift so a reader knows this specific class of staleness was checked, not just assumed absent |
+
+**Checked and held up:** a live rebuild of all four test binaries reproduced 104/104 independently, not just via the
+files' own claims; `kMaxHypergeometricK`'s value and every needle/prefix array's declared size were counted
+directly from the array literals, not trusted from prose, and matched everywhere they're cited; the round-6
+disposition table's description of the mode-anchoring fix was checked line-for-line against the current code and
+found accurate; the delimiter-collision, control-byte, and `eval:` colon-collision regression tests are live and
+passing; `eval_principal.hpp`/`promotion_ack.hpp` were untouched by round 6 or round 7, consistent with neither
+round's findings naming them; `sign_flip_sum_lower_tail_pvalue`'s `1e-9` tie epsilon was independently re-simulated
+at the ADR's actual scale (K=5, 30 tasks) with no misclassification found, confirming round 6's disposition of it
+still holds; the disclosed §8 residuals (bare hostname/IP:port, ASCII homoglyphs, no I8 budget on the
+hypergeometric statistic's cost) were each reproduced live against the current header, not assumed still true from
+round 6's text.
 
 ## 8. Residuals
 
@@ -978,21 +1019,40 @@ independently re-verified to still return a refusal rather than fall through to 
   the same class of limitation the file's header comment has disclosed since round 5 ("a REDUCTION of the channel,
   not a security boundary"), not a new kind of gap — but round 6 is the first round to have proven them concretely
   rather than asserted them as abstract possibilities.
+- **The same denylist also has a real, proven FALSE-POSITIVE cost, in the opposite direction** (round 7, R7-FP2):
+  15 realistic, benign lesson values are wrongly rejected because their leading word doubles as an ordinary English
+  noun matching an imperative prefix (`"post mortems are stored in..."`, `"call center average wait time..."`,
+  `"python is the primary language..."`, `"ssh access to the bastion..."`, `"delete markers are automatically
+  cleaned..."`, `"install steps for the CLI..."`, `"kill switches for the ingest pipeline..."`, `"bash scripts in
+  CI..."`, `"download links for release artifacts..."`), or because ordinary punctuation/templating syntax
+  collides with a shell needle (`;`, a markdown backtick, `${username}` as a template placeholder, `$(formula)`
+  describing a spreadsheet cell). This is not fixed, and is not a bug in the usual sense: removing any of these
+  words or needles would reopen the exact imperative- or shell-shaped attack text they exist to catch. A rejected
+  benign lesson is a usability cost an author works around (rephrase the value, or the human approver at §3.0 item
+  5 overrides it), not a security failure the way an under-rejection would be — but it is real, and disclosed here
+  rather than left implicit in "not a grammar."
 - **The hypergeometric concentration statistic's cost has no I8 budget of its own** (round 6, R6-Num3): its cost is
   `O(num_permutations × tasks × K)`, and a contractually-valid but adversarial combination of the three (measured:
   K=10,000, 100 tasks, 10,000 permutations) takes on the order of a minute single-threaded. `kMaxHypergeometricK`
   (round 6) bounds K alone against the unsigned-overflow crash (R6-Num2) but does not bound the product's total
   cost — that bound belongs to whatever calls this function with real, adversarial-input-shaped inputs, and no such
   caller exists yet (the trial-running harness, still unbuilt).
-- **The round-6 fixes are not re-red-teamed.** A round 7, if run, should attack: whether the mode-anchored
+- **`bisect_decreasing`'s fixed 60-iteration budget has a resolution floor near either end of `[0,1]`** (round 7,
+  R7-Num2): past roughly double precision's own ~2.2×10⁻¹⁶ absolute resolution, the search silently freezes at a
+  fixed, wrong value with no error. ADR-181's real usage is `alpha=0.05` exclusively, nowhere near this floor, so
+  not fixed — a caller passing a far more extreme alpha (well beyond anything a real multiplicity correction in
+  this domain would plausibly need) should not trust the result.
+- **The round-7 fixes are not re-red-teamed.** A round 8, if run, should attack: whether `log_binomial_pmf`'s
+  `log1p` fix has its own residual precision limits the round-7 numerics reviewer's sweep didn't fully characterise
+  (the ~4% residual error at `alpha=1e-10` was attributed to `bisect_decreasing`'s resolution floor, not
+  re-isolated from the `log1p` fix itself with an independent method); whether the two round-7 denylist fixes
+  (`.net` dropped, `exec `/`sudo ` trailing-spaced) introduced any new false NEGATIVE (e.g. does dropping `.net`
+  reopen any bypass `://`/`.com`/`.org` don't already catch); and whether the mode-anchored
   `binomial_cdf_le` has its own numerical edge cases the round-6 numerics reviewer's specific sweep (n=1 to
-  n=10,000,000, several x/n ratios including near-0.5) didn't probe — e.g. `alpha` very close to 0 or 1 combined
-  with a large n, or `p` computed by the bisection landing exactly on a value where `log_binomial_pmf`'s `lgamma`
-  terms partially cancel with reduced precision; whether `kMaxHypergeometricK`'s bound is itself the right number or
-  just large enough to dodge the one crash that was found; and whether the injection-denylist's now-larger needle
-  lists (10 URL/path needles, 10 shell needles, 21 imperative prefixes) have introduced any new false-positive on a
-  legitimate value (none found in this round's testing, but the round-5/6 test suites test denial, not acceptance,
-  more thoroughly). Round 5's list, still open: whether `rendered_lesson_digest`'s two-tag structure stays
+  n=10,000,000, several x/n ratios including near-0.5) didn't probe — e.g. `p` computed by the bisection landing
+  exactly on a value where `log_binomial_pmf`'s `lgamma` terms partially cancel with reduced precision; whether
+  `kMaxHypergeometricK`'s bound is itself the right number or just large enough to dodge the one crash that was
+  found. Round 5's list, still open: whether `rendered_lesson_digest`'s two-tag structure stays
   collision-free once `LessonCandidate` grows more fields (it is not collision-free by a general argument, only by
   construction for exactly `{subject, key}` today). Round 4's list, still open: the min-task concentration
   statistic's and the probe's all-of-k rule's own real-world calibration (§6 G3/G4 are simulated, not measured

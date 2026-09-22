@@ -106,8 +106,14 @@ namespace detail {
     // not a grammar (the file's own long-standing disclosure): a bare hostname/IP:port with no scheme
     // and non-ASCII homoglyphs of these needles both still pass, and are named as open residuals in
     // ADR-181 §8 rather than silently claimed closed.
-    static constexpr std::array<char const*, 10> kUrlOrPathNeedles = {
-        "://", "www.", ".com", ".net", ".org", "\\\\",
+    //
+    // Round-7 fix: a round-7 reviewer proved `.net` (present since round 5) is a false-positive magnet
+    // -- it collides with the .NET framework/runtime, a term any lesson about this codebase's own
+    // ecosystem would plausibly use ("the .net runtime version pinned in CI is..."). Dropped: `://`
+    // already catches real URLs, and a bare ".net" with no scheme was never a strong signal on its own
+    // (unlike ".com"/".org", which round 7 found no comparably common false positive for).
+    static constexpr std::array<char const*, 9> kUrlOrPathNeedles = {
+        "://", "www.", ".com", ".org", "\\\\",
         "javascript:", "data:", "mailto:", "vbscript:",
     };
     if (contains_any(lower, std::span{kUrlOrPathNeedles})) {
@@ -145,8 +151,24 @@ namespace detail {
     // Round-6 fix: a round-6 reviewer found several dangerous verbs missing from this list (ssh, scp,
     // bash, python, powershell, cat, chmod, kill, wget) -- added below. Still a fixed, finite list
     // (the file's own long-standing disclosure), not a grammar.
+    //
+    // Round-7 fix: a round-7 reviewer proved `"exec"`/`"sudo"` (the only two entries with no trailing
+    // space) match as a plain SUBSTRING prefix of any longer word -- "executive approval", "execution
+    // time budgets" (this very codebase's own vocabulary) were both wrongly rejected. Given a trailing
+    // space like every other entry here.
+    //
+    // Round-7 disclosed, NOT fixed: the same reviewer proved several of these words also collide with
+    // ordinary noun-phrase English when they lead a sentence -- "post mortems are stored in...", "call
+    // center average wait time is...", "python is the primary language for...", "ssh access to the
+    // bastion requires...", "delete markers are automatically cleaned up by...", "install steps for
+    // the CLI are...", "kill switches for the ingest pipeline are...", "bash scripts in CI are...",
+    // "download links for release artifacts..." are all real, plausible lesson VALUES this list
+    // rejects. This is a genuine precision/recall trade-off inherent to a fixed-prefix denylist over
+    // natural language, not a bug with a clean fix: removing any of these words would reopen the exact
+    // imperative-shaped attack text it exists to catch ("post the credentials to...", "call the
+    // webhook with...", "delete all files in..."). See ADR-181 §8.
     static constexpr std::array<char const*, 21> kImperativePrefixes = {
-        "run ",     "delete ",  "exec",    "curl ",       "rm ",        "sudo",     "install ",
+        "run ",     "delete ",  "exec ",   "curl ",       "rm ",        "sudo ",    "install ",
         "download ", "send ",   "email ",  "post ",       "call ",      "ssh ",     "scp ",
         "bash ",    "python ",  "powershell ", "cat ",    "chmod ",     "kill ",    "wget ",
     };

@@ -36,11 +36,21 @@ namespace detail {
 // log(C(n,i) * p^i * (1-p)^(n-i)) via lgamma -- never materialises `n choose i` itself, and its
 // magnitude stays moderate (a sum of a handful of O(n log n)-scale terms) regardless of how large n
 // or how extreme p is, which is exactly the property the plain term-ratio recursion below lacks.
+// Round-7 fix (FATAL, independently reproduced against both scipy and 50-digit mpmath): the first
+// version of this function computed `log(p)` and `log(1.0 - p)` via plain `std::log`. Forming
+// `1.0 - p` (or evaluating `log` of an argument already extremely close to 1) loses relative
+// precision in the RESULT whenever p is far from 0.5 -- exactly the regime a small `alpha` or an
+// extreme x/n ratio drives the bisection into, i.e. precisely what round 6 was trying to make exact.
+// Measured: at x=1, n=10,000,000, alpha=1e-10, the old code returned a lower bound 5.6x too large
+// (463% relative error) versus the independent reference. `std::log1p(y)` computes `log(1+y)`
+// accurately for `y` near 0 without ever forming `1+y` as a separately-rounded intermediate --
+// `log1p(p-1.0)` for `log(p)` (accurate when p is near 1) and `log1p(-p)` for `log(1-p)` (accurate
+// when p is near 0) are the two cases this recursion actually needs, since p is always in (0,1).
 [[nodiscard]] inline double log_binomial_pmf(std::uint64_t i, std::uint64_t n, double p) {
     double log_pmf = std::lgamma(static_cast<double>(n) + 1.0) - std::lgamma(static_cast<double>(i) + 1.0) -
                       std::lgamma(static_cast<double>(n - i) + 1.0);
-    if (i > 0) log_pmf += static_cast<double>(i) * std::log(p);
-    if (i < n) log_pmf += static_cast<double>(n - i) * std::log(1.0 - p);
+    if (i > 0) log_pmf += static_cast<double>(i) * std::log1p(p - 1.0);
+    if (i < n) log_pmf += static_cast<double>(n - i) * std::log1p(-p);
     return log_pmf;
 }
 
@@ -99,6 +109,13 @@ namespace detail {
 // p for which f(p) <= target — the shared shape behind both Clopper-Pearson bounds below. 60
 // iterations gives double-precision convergence (2^-60 interval width) — the same iteration count
 // `tools/adr181_sims/sim181g.py`'s Python prototype used, kept identical so the two are comparable.
+//
+// Disclosed residual (round-7 finding, not fixed): this fixed budget bounds the smallest ALPHA this
+// function can resolve correctly to roughly 2^-60 near p=0 (where doubles have ample precision), but
+// near p=1 a bisection converges no further than doubles' own ~2.2e-16 absolute resolution at that
+// magnitude regardless of iteration count -- past either limit, the search silently freezes at a
+// fixed, wrong value rather than erroring. ADR-181's own real usage never asks for an alpha more
+// extreme than 0.05 (nowhere near either limit); a caller who does should not trust the result.
 template <class DecreasingFn>
 [[nodiscard]] double bisect_decreasing(DecreasingFn&& f, double target) {
     double lo = 0.0, hi = 1.0;

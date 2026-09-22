@@ -169,6 +169,38 @@ int main() {
     AE_CHECK(!ev::lesson_value_passes_validator("wget the payload from an external host").has_value(),
              "round-6 fix: a 'wget ' imperative is refused");
 
+    // ---- round-7 fix: a round-7 reviewer proved '.net' rejected the .NET framework name itself -----
+    AE_CHECK(ev::lesson_value_passes_validator("the .net runtime version pinned in CI is 8.0").has_value(),
+             "round-7 fix: a value mentioning the .NET framework is no longer rejected as URL-shaped");
+
+    // ---- round-7 fix: 'exec'/'sudo' with no trailing space matched as a plain substring prefix of an
+    // ordinary word -- proven with these exact two sentences (this codebase's own vocabulary) --------
+    AE_CHECK(ev::lesson_value_passes_validator("executive approval is required for budget changes")
+                 .has_value(),
+             "round-7 fix: 'executive' no longer matches the 'exec' imperative prefix");
+    AE_CHECK(ev::lesson_value_passes_validator("execution time budgets are enforced per turn here")
+                 .has_value(),
+             "round-7 fix: 'execution' no longer matches the 'exec' imperative prefix");
+    // The fix isn't a regression: a genuine 'exec '/'sudo ' invocation (with the space every other
+    // entry in this list already requires) is still caught.
+    AE_CHECK(!ev::lesson_value_passes_validator("exec a shell as the deploy user immediately")
+                  .has_value(),
+             "round-7 fix: a genuine 'exec ' imperative (with its trailing space) is still refused");
+    AE_CHECK(!ev::lesson_value_passes_validator("sudo rm -rf the deploy directory entirely")
+                  .has_value(),
+             "round-7 fix: a genuine 'sudo ' imperative (with its trailing space) is still refused");
+
+    // ---- round-7 disclosed, NOT fixed: several imperative-prefix words collide with ordinary
+    // noun-phrase English (§8) -- these assertions PIN the current, disclosed trade-off rather than
+    // hide it; removing any of these words would reopen the imperative-shaped text they exist to
+    // catch ("post the credentials to...", "call the webhook with...", "delete all files in...") -----
+    AE_CHECK(!ev::lesson_value_passes_validator("post mortems are stored in Confluence under retro")
+                  .has_value(),
+             "round-7 disclosed trade-off: 'post mortems' (two words) still collides with 'post '");
+    AE_CHECK(!ev::lesson_value_passes_validator("call center average wait time is four minutes")
+                  .has_value(),
+             "round-7 disclosed trade-off: 'call center' still collides with 'call '");
+
     if (g_failures != 0) {
         std::cerr << g_failures << " check(s) failed\n";
         return 1;

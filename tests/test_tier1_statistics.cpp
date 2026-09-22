@@ -27,6 +27,7 @@ int g_failures = 0;
     } while (0)
 
 bool close(double a, double b, double tol) { return std::abs(a - b) <= tol; }
+bool close_rel(double a, double b, double rel_tol) { return std::abs(a - b) <= rel_tol * std::abs(b); }
 
 }  // namespace
 
@@ -125,6 +126,31 @@ int main() {
         AE_CHECK(lower_via_upper_symmetry.has_value() && upper_via_upper_symmetry.has_value() &&
                      close(*lower_via_upper_symmetry, 1.0 - *upper_via_upper_symmetry, 1e-9),
                  "round-6 fix: Clopper-Pearson duality still holds exactly at n=1000, not just n=20");
+
+        // Round-7 fix (FATAL): `log_binomial_pmf` computed `log(p)`/`log(1.0-p)` via plain `std::log`,
+        // which loses relative precision in the RESULT whenever p is far from 0.5 -- exactly the
+        // regime a small alpha combined with an extreme x/n ratio drives the bisection into. These
+        // reference values are an independent scipy/mpmath computation (a round-7 reviewer's, not this
+        // file's own arithmetic), matching this file's established practice of cross-checking against
+        // an outside implementation rather than trusting the fix's own comment.
+        auto lower_tiny_alpha_1e6 = ev::clopper_pearson_lower_bound(1, 10'000'000, 1e-6);
+        AE_CHECK(lower_tiny_alpha_1e6.has_value() && close_rel(*lower_tiny_alpha_1e6, 1.0000005000e-13, 1e-3),
+                 "round-7 fix: x=1,n=10,000,000,alpha=1e-6 matches the independent reference to 0.1% "
+                 "(pre-fix this returned 9.998e-14, a 0.24% error)");
+        auto lower_tiny_alpha_1e8 = ev::clopper_pearson_lower_bound(1, 10'000'000, 1e-8);
+        AE_CHECK(lower_tiny_alpha_1e8.has_value() && close_rel(*lower_tiny_alpha_1e8, 1.0000000050e-15, 1e-3),
+                 "round-7 fix: x=1,n=10,000,000,alpha=1e-8 matches the independent reference to 0.1% "
+                 "(pre-fix this returned 1.055e-15, a 5.5% error)");
+        // At this extreme (alpha=1e-10, an order of magnitude past anything ADR-181 actually asks
+        // for), the log1p fix cuts the error from 463% to ~4% -- much closer, but not exact, since
+        // `bisect_decreasing`'s own fixed 60-iteration budget starts approaching ITS disclosed
+        // resolution limit here too (the comment above `bisect_decreasing` names this residual). The
+        // tolerance below reflects the measured post-fix residual, not the fix's own target precision.
+        auto lower_tiny_alpha_1e10 = ev::clopper_pearson_lower_bound(1, 10'000'000, 1e-10);
+        AE_CHECK(lower_tiny_alpha_1e10.has_value() && close_rel(*lower_tiny_alpha_1e10, 1.0000000001e-17, 0.05),
+                 "round-7 fix: x=1,n=10,000,000,alpha=1e-10 is within 5% of the independent reference "
+                 "(pre-fix this returned 5.638e-17 -- 463% too large; the residual ~4% error here is "
+                 "the disclosed bisection-resolution limit, not the log1p bug)");
     }
 
     // ---- follow_rate_screen_passes / containment_gate_blocks: E27 / §3.7 gate rule 2 pinned values -
