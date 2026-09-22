@@ -324,6 +324,37 @@ int main() {
         AE_CHECK(result_alpha.trials.empty(), "S6b: zero trials were run");
     }
 
+    // ---- Scenario 7: round-3 red-team fix -- each trial gets its OWN derived seed, not spec.seed
+    // forwarded unchanged to all 2*n_per_arm trials (the fix for a disclosed latent design gap: once
+    // something consumes TrialSpec::seed stochastically, forwarding one shared value would silently
+    // correlate every trial in an arm, breaking the independent-Bernoulli-trials assumption the
+    // statistics require). Also re-proves determinism now covers the derived seeds themselves. -----
+    {
+        ev::FollowRateProbeSpec spec = base_probe_spec();
+        auto factory = make_arm_scripted_factory(not_followed_script(), followed_script());
+        auto result = drive(ev::run_follow_rate_screen(factory, make_summarizer_factory(), spec));
+
+        bool any_equals_spec_seed = false;
+        bool all_distinct = true;
+        for (std::size_t i = 0; i < result.trials.size(); ++i) {
+            if (result.trials[i].trial_seed == spec.seed) any_equals_spec_seed = true;
+            for (std::size_t j = i + 1; j < result.trials.size(); ++j) {
+                if (result.trials[i].trial_seed == result.trials[j].trial_seed) all_distinct = false;
+            }
+        }
+        AE_CHECK(!any_equals_spec_seed,
+                 "S7: no trial's derived seed is literally spec.seed forwarded unchanged");
+        AE_CHECK(all_distinct, "S7: every trial in the screen gets its own distinct derived seed");
+
+        auto result_again = drive(ev::run_follow_rate_screen(factory, make_summarizer_factory(), spec));
+        bool seeds_match = result.trials.size() == result_again.trials.size();
+        for (std::size_t i = 0; seeds_match && i < result.trials.size(); ++i) {
+            seeds_match = result.trials[i].trial_seed == result_again.trials[i].trial_seed;
+        }
+        AE_CHECK(seeds_match, "S7: derived per-trial seeds are themselves deterministic given the "
+                               "same spec.seed (I5)");
+    }
+
     if (g_failures != 0) {
         std::cerr << g_failures << " check(s) failed\n";
         return 1;

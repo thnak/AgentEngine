@@ -62,6 +62,7 @@ struct FollowRateProbeSpec {  // ae-naming-lint: allow FollowRateProbeSpec — A
 struct FollowRateTrialDetail {  // ae-naming-lint: allow FollowRateTrialDetail — ADR-181 §3.0 item 2
     trial_arm arm;
     std::string trial_id;
+    std::uint64_t trial_seed;   // this trial's own derived seed (I5) -- see derive_trial_seed below
     grade_outcome grade;
     TrialResult trial_result;   // full detail kept -- §3.5's "ungraded trials are never dropped
                                  // silently" means the evidence must be inspectable, not just
@@ -131,6 +132,32 @@ namespace detail {
     }
 }
 
+// Red-team finding (MINOR, disclosed as a latent design gap): an earlier version of this driver
+// forwarded `spec.seed` UNCHANGED into every single one of the `2*n_per_arm` trials'
+// `TrialSpec::seed`. Nothing consumes `TrialSpec::seed` stochastically today (its own doc comment
+// says so), so this was inert -- but the day something does (a real client's sampling seed,
+// randomized memory-injection ordering, retry jitter), every baseline trial in a screen would
+// become bit-for-bit correlated with every other baseline trial, silently breaking the independent-
+// Bernoulli-trials assumption `clopper_pearson_lower_bound`/`follow_rate_screen_passes` require --
+// and nothing in the test suite would catch it, since a scripted test client never reads the seed.
+// Fixed by deriving a distinct seed per trial from `spec.seed` plus that trial's own arm+index --
+// the same uniqueness ingredients `trial_id` already uses, just mixed into a `uint64_t` instead of
+// a string. A simple, explicit, non-cryptographic mix (no reliance on `std::hash`'s
+// implementation-defined behaviour) -- this only needs to decorrelate sibling trials, not resist an
+// adversary. Recorded per trial in `FollowRateTrialDetail::trial_seed` (I5), not just used and
+// discarded, so the derivation is auditable even before anything consumes it.
+[[nodiscard]] inline std::uint64_t derive_trial_seed(std::uint64_t base_seed, trial_arm arm,
+                                                        std::uint64_t index) {
+    auto mix = [](std::uint64_t h, std::uint64_t v) {
+        h ^= v + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
+        return h;
+    };
+    std::uint64_t h = base_seed;
+    h = mix(h, arm == trial_arm::treatment ? 1u : 0u);
+    h = mix(h, index);
+    return h;
+}
+
 }  // namespace detail
 
 // Runs `2 * spec.n_per_arm` trials (baseline + treatment interleaved, seeded per I5), grades each
@@ -182,8 +209,10 @@ template <class InnerFactory, class SummarizerFactory>
     std::vector<std::uint64_t> arm_index{0, 0};  // [baseline, treatment] running index for trial_id
     for (trial_arm arm : sequence) {
         std::uint64_t& idx = arm_index[arm == trial_arm::treatment ? 1 : 0];
+        std::uint64_t const this_index = idx++;
         std::string trial_id = spec.probe_id + "-" + std::string(trial_arm_name(arm)) + "-" +
-                                std::to_string(idx++);
+                                std::to_string(this_index);
+        std::uint64_t const trial_seed = detail::derive_trial_seed(spec.seed, arm, this_index);
 
         TrialSpec trial_spec;
         trial_spec.arm = arm;
@@ -193,7 +222,7 @@ template <class InnerFactory, class SummarizerFactory>
         trial_spec.task_prompt = spec.task_prompt;
         trial_spec.stub_tools = spec.stub_tools;
         trial_spec.trial_id = trial_id;
-        trial_spec.seed = spec.seed;
+        trial_spec.seed = trial_seed;
         trial_spec.token_budget = spec.token_budget;
         trial_spec.max_turns = spec.max_turns;
         trial_spec.max_injected = spec.max_injected;
@@ -211,8 +240,8 @@ template <class InnerFactory, class SummarizerFactory>
             if (grade == grade_outcome::ungraded) ++result.baseline_ungraded;
         }
 
-        result.trials.push_back(
-            FollowRateTrialDetail{arm, std::move(trial_id), grade, std::move(trial_result)});
+        result.trials.push_back(FollowRateTrialDetail{arm, std::move(trial_id), trial_seed, grade,
+                                                          std::move(trial_result)});
     }
 
     result.baseline_n = spec.n_per_arm;
@@ -232,6 +261,12 @@ template <class InnerFactory, class SummarizerFactory>
     result.invalid = result.invalid_baseline_too_easy || result.invalid_differential_missingness;
 
     if (!result.invalid) {
+        // Red-team finding (MINOR): `follow_rate_screen_passes` is itself just
+        // `clopper_pearson_lower_bound(...) >= target_lower_bound` (tier1_statistics.hpp) -- calling
+        // both back to back bisected the SAME 60-iteration search twice for identical inputs. Compute
+        // the bound once, reuse it for the pass/fail comparison too; `x <= n` and `alpha`'s range are
+        // already guaranteed here (x<=n by construction, alpha validated pre-flight), so this loses no
+        // safety `follow_rate_screen_passes`'s own redundant contract check would have caught.
         auto lower_bound = clopper_pearson_lower_bound(result.treatment_followed, result.treatment_n,
                                                           spec.alpha);
         if (!lower_bound) {
@@ -239,14 +274,7 @@ template <class InnerFactory, class SummarizerFactory>
             co_return result;
         }
         result.treatment_lower_bound = *lower_bound;
-
-        auto passes = follow_rate_screen_passes(result.treatment_followed, result.treatment_n,
-                                                   spec.target_lower_bound, spec.alpha);
-        if (!passes) {
-            result.setup_error = passes.error();
-            co_return result;
-        }
-        result.pass = *passes;
+        result.pass = (*lower_bound >= spec.target_lower_bound);
     }
 
     co_return result;

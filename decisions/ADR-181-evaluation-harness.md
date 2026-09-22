@@ -5,10 +5,10 @@
   (`lesson_candidate.hpp`, `eval_principal.hpp`, `promotion_ack.hpp`, `tier1_statistics.hpp`), plus the FIRST SLICE
   of the trial-running harness itself (§3.0 items 2-4, §3.2, §3.4, §3.9's `EvalStore`): `eval_store.hpp`,
   `eval_stub_tool.hpp`, `eval_trial.hpp`, plus the FIRST SLICE of multi-trial orchestration, §3.0 item 2's
-  follow-rate screen (a separate, later PR): `eval_grader.hpp`, `eval_follow_rate_screen.hpp` — **180/180 checks
+  follow-rate screen (a separate, later PR): `eval_grader.hpp`, `eval_follow_rate_screen.hpp` — **183/183 checks
   green** across 8 test binaries (`test_lesson_candidate` 43, `test_eval_principal` 15, `test_promotion_ack` 9,
   `test_tier1_statistics` 37, `test_eval_store` 9, `test_eval_stub_tool` 11, `test_eval_trial_driver` 26,
-  `test_eval_follow_rate_screen` 30) plus a compile-fail/positive-control TRIPLE (§3.8; round 2 added a third file
+  `test_eval_follow_rate_screen` 33) plus a compile-fail/positive-control TRIPLE (§3.8; round 2 added a third file
   proving the same rejection for `SummarizerT`), clean under MSVC, clang-cl
   `-Wall -Wextra -Werror -fsyntax-only`, and `tools/naming_lint.py`. **Two separate live runs against DeepSeek
   `deepseek-flash`** (`test_eval_trial_driver_live_e2e`, live-network-labelled, observation not a gate — a live
@@ -63,8 +63,24 @@
   clients so a real, non-copy-safe client works the same as a scripted test one). Ungraded trials are counted
   intention-to-treat throughout (§3.6's own precedent); invalidity (baseline too easy, or differential missingness
   between arms) is checked before any statistic is computed, and a malformed spec is rejected before any trial
-  runs. `test_eval_follow_rate_screen.cpp`, 30/30 checks, deterministic only — `run_trial` itself is already
-  proven live elsewhere, so no live test was added for this slice (§8 explains why). **Not yet red-teamed.** The
+  runs. `test_eval_follow_rate_screen.cpp`, 33/33 checks, deterministic only — `run_trial` itself is already
+  proven live elsewhere, so no live test was added for this slice (§8 explains why). **Round 1 of red-teaming
+  this slice (three independent reviewers: confinement/secrets, statistics/logic correctness, doc coherence)
+  found no FATAL or MAJOR defect — genuinely clean, not merely "nothing looked hard enough."** Three real MINOR
+  findings, all fixed: `TrialSpec::seed` was forwarded UNCHANGED into every one of the `2×n_per_arm` trials —
+  inert today (nothing consumes it stochastically yet), but a silent landmine for whoever wires stochastic
+  sampling into `run_trial` next, since every baseline trial in a screen would become bit-for-bit correlated with
+  every other one; fixed by deriving a distinct per-trial seed from `spec.seed` plus the trial's own arm+index
+  (`derive_trial_seed`, recorded per trial as `FollowRateTrialDetail::trial_seed`, I5), pinned by a new regression
+  scenario. `clopper_pearson_lower_bound` was bisected twice for identical inputs (once directly, once again
+  inside `follow_rate_screen_passes`); fixed by computing the bound once and comparing it to `target_lower_bound`
+  directly. §8's hypergeometric-statistic residual carried a stale parenthetical mislabeling the WHOLE
+  trial-running harness as "still unbuilt" when only its narrower claim (no caller of that specific statistic)
+  remained true; corrected. The reviewers separately traced, end to end, whether a `cap::Secret` capability could
+  leak into the aggregated `FollowRateScreenResult::trials[i].trial_result.recordings` (a real concern given this
+  slice retains ~40 trials' full request/response history in one returned value, not just one) — it cannot: a
+  secret resolves to an HTTP header inside a real client's own implementation, strictly below the layer
+  `RecordingChatClient` (and therefore any `ChatCallRecording`) ever sees. The
   gross-harm regression screen (§3.0 item 3) remains a separate, later slice — see §8. Round 5 surfaced a real bug review
   alone had not: the first `clopper_pearson_lower_bound`
   bisected against the wrong monotonicity direction and silently converged to a plausible-looking wrong answer;
@@ -1064,6 +1080,40 @@ round 1's own review process: confinement completeness (**R-TH2-Sec**), delivery
 
 **Round 2's own fixes are not yet re-red-teamed.**
 
+**Round 1 (follow-rate screen slice, multi-trial orchestration's first piece)**: three fresh independent
+reviewers, the first to attack `eval_grader.hpp`/`eval_follow_rate_screen.hpp`: confinement/secrets
+(**R-FR-Sec**), statistics/logic correctness (**R-FR-Logic**), doc coherence (**R-FR-Coh**). No FATAL or MAJOR
+found by any of the three — genuinely clean, confirmed by each reviewer independently compiling and running real
+reproductions rather than reasoning in the abstract.
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| R-FR-Sec1 | minor | `TrialSpec::seed` was forwarded UNCHANGED into every one of the `2×n_per_arm` trials a screen runs. Inert today (`TrialSpec::seed`'s own doc comment: "not consumed by anything stochastic in this slice", confirmed by grep across `eval_trial.hpp`/`agent_session.hpp`/`memory_provider.hpp`), but a real, silent landmine: the day something DOES consume it stochastically (a real client's sampling seed, randomized memory-injection ordering, retry jitter), every baseline trial in a screen becomes bit-for-bit correlated with every other baseline trial, breaking the independent-Bernoulli-trials assumption `clopper_pearson_lower_bound`/`follow_rate_screen_passes` require — and nothing in the test suite would catch it, since a scripted test client never reads the seed at all | Fixed by deriving a distinct per-trial seed from `spec.seed` plus that trial's own arm+index (`detail::derive_trial_seed`, a simple explicit bit-mixer, not `std::hash`'s implementation-defined behaviour) — the same uniqueness ingredients `trial_id` construction already uses. Recorded per trial as `FollowRateTrialDetail::trial_seed` (I5) rather than computed and discarded, so it's auditable even before anything consumes it stochastically. New regression scenario (S7, `test_eval_follow_rate_screen.cpp`) proves every trial's seed is distinct, none equals `spec.seed` verbatim, and the derivation is itself deterministic given the same `spec.seed` |
+| R-FR-Logic1 | minor | `clopper_pearson_lower_bound(...)` was called once directly for `treatment_lower_bound`, then `follow_rate_screen_passes(...)` — itself just that same bound compared to `target_lower_bound` (`tier1_statistics.hpp`) — was called again with IDENTICAL arguments, bisecting the same 60-iteration search twice for one screen result | Compute the bound once, derive `pass` from a direct `>= target_lower_bound` comparison on the already-computed value. Loses no safety: `x<=n` holds by construction (proven independently by the reviewer: `treatment_followed` can never exceed the number of treatment-labeled entries in the sequence, which is exactly `n_per_arm`) and `alpha`'s range is already validated pre-flight, so `follow_rate_screen_passes`'s own redundant contract check would never have caught anything this driver hadn't already guaranteed |
+| R-FR-Coh1 | minor | §8's hypergeometric-statistic residual bullet (a round-6-era line) said "no such caller exists yet (the trial-running harness, still unbuilt)" — by the time this slice landed, the trial-running harness AND its follow-rate screen were both built; the narrower claim (no caller of THIS SPECIFIC statistic) remained true, but the parenthetical read as if the whole harness were still missing | Corrected to name the actual still-missing caller (the gross-harm regression screen, §3.0 item 3) instead of the harness as a whole |
+
+**Checked and held up (R-FR-Sec, no confinement escape found):** whether a `cap::Secret` capability (used so a
+live `OpenAIChatClient` can authenticate) could leak into the now much LARGER aggregated result this slice
+returns — `FollowRateScreenResult::trials[i].trial_result.recordings` holds ~40 trials' full request/response
+history in one long-lived value, versus a single `run_trial` call's one-trial `TrialResult` — traced end to end
+and disproved: a secret resolves to an HTTP `Authorization` header strictly inside a real client's own
+implementation (e.g. `OpenAIChatClient::chat()`'s `detail::build_http_request`), a layer `RecordingChatClient`
+never sees (it captures the `ChatRequest` object passed to it, built one layer above where header construction
+happens); `ChatCallRecording` itself has no field capable of carrying a raw HTTP header or wire bytes at all. The
+"~40x blast radius" framing doesn't apply because the underlying risk doesn't exist in either the one-trial or
+N-trial case. Also checked and clean: factory-supplied client state never outlives its own trial (each
+`make_inner(arm)`/`make_summarizer(arm)` result is consumed by value inside one `co_await run_trial(...)`, never
+retained by the driver); `extra_capabilities` copied verbatim per trial with no aliasing (`Capability` is a
+`std::variant` over plain value types, no shared/reference-counted state); every boundary/floating-point
+threshold case investigated (exactly-at-10%, exactly-at-5pp) compares correctly with no flakiness (no
+`/fp:fast` anywhere in the build); `arm_index`/`trial_id` uniqueness verified with no collisions across a 37-per-
+arm run; `std::shuffle` covers the full sequence and `arm_order` records the REALIZED post-shuffle order, not a
+pre-shuffle copy; per-trial success/ungraded accounting can never double-count or miss-count a trial (`grade_outcome`
+is single-valued); two full runs of the built test binary produced byte-identical output (no hidden
+non-determinism beyond the one seeded `std::mt19937_64`).
+
+**Round 1's own fixes are not yet re-red-teamed.**
+
 ## 8. Residuals
 
 - **External validity.** A suite passing says nothing about production tasks. Task authorship (who writes them, how
@@ -1164,10 +1214,21 @@ round 1's own review process: confinement completeness (**R-TH2-Sec**), delivery
   rates differing by more than the declared 5pp bound, §3.5) is checked before the statistic is computed at all;
   when either fires, `pass` stays `std::nullopt` rather than folding "can't be interpreted" into `false`. Spec
   parameters (`alpha`, `n_per_arm`, the three threshold fields) are validated BEFORE any trial runs, so a malformed
-  spec costs zero model calls. `test_eval_follow_rate_screen.cpp`, 30/30 checks (scripted, deterministic;
+  spec costs zero model calls. `test_eval_follow_rate_screen.cpp`, 33/33 checks (scripted, deterministic;
   `run_trial` itself is already proven live by `test_eval_trial_driver_live_e2e.cpp` — a small live run here would
   mostly re-confirm that, at too small an N for `follow_rate_screen_passes` to mean anything, so none was added
-  this slice). **Still unbuilt**: the §3.0 item 3 gross-harm regression screen (30 dev tasks × K=5, needs task-suite
+  this slice). **Round 1 of red-teaming this slice found no FATAL/MAJOR** (three independent reviewers: confinement/
+  secrets, statistics/logic correctness, doc coherence) — and fixed three real MINOR findings: `TrialSpec::seed`
+  forwarded unchanged into every trial (a latent correlation landmine once anything consumes it stochastically,
+  closed by deriving a distinct per-trial seed, `derive_trial_seed`, recorded per trial for I5); a redundant
+  double-bisection calling both `clopper_pearson_lower_bound` and `follow_rate_screen_passes` on identical inputs
+  (closed by computing the bound once); and a stale §8 parenthetical (this very paragraph's neighbor) mislabeling
+  the trial-running harness as unbuilt. A specific, real-sounding concern the security reviewer chased to ground
+  and disproved: whether aggregating ~40 trials' full request/response `recordings` into one returned
+  `FollowRateScreenResult` widens the blast radius of a `cap::Secret` leak versus a single `run_trial` call — it
+  does not, because a secret never reaches a `ChatRequest`/`ChatCallRecording` at all, in either case (resolved to
+  an HTTP header strictly inside the real client's own implementation). **Still unbuilt**: the §3.0 item 3
+  gross-harm regression screen (30 dev tasks × K=5, needs task-suite
   management and `sign_flip_sum_lower_tail_pvalue`/`hypergeometric_min_task_lower_tail_pvalue` wired up — a
   separate, later slice); the `SlotTable`/steering-manifest arm S and its permutation statistic over real tool-call
   arguments (§3.7, E29); `EvalSuite`/`EvalRun`/`PromotionEvidence`, the look ledger and family/shard bookkeeping
@@ -1175,7 +1236,7 @@ round 1's own review process: confinement completeness (**R-TH2-Sec**), delivery
   `eval.tool_not_stub` refusal gate and the include-graph lint (§3.9); worktree-branch-per-trial (§3.4, deferred
   until a stub tool with a real effect exists to confine); concurrent trial execution (this slice runs strictly
   sequentially — a concurrency cap is Tier-1-suite-level machinery one probe's ~40 runs does not need). **This
-  follow-rate-screen slice has not yet been red-teamed.**
+  follow-rate-screen slice's round-1 fixes are not yet re-red-teamed.**
 - **The per-trial deadline is unenforceable today** (§3.9): a watchdog and process memory cap stand in.
 - **`PromotionAck`'s attribution is recordable, not enforced** (round 5, R5-Sec3): `approver_id`/`acknowledged_at`
   are plain strings `acknowledge_rendered_lesson` never checks for non-emptiness or for naming a real,
@@ -1205,7 +1266,9 @@ round 1's own review process: confinement completeness (**R-TH2-Sec**), delivery
   K=10,000, 100 tasks, 10,000 permutations) takes on the order of a minute single-threaded. `kMaxHypergeometricK`
   (round 6) bounds K alone against the unsigned-overflow crash (R6-Num2) but does not bound the product's total
   cost — that bound belongs to whatever calls this function with real, adversarial-input-shaped inputs, and no such
-  caller exists yet (the trial-running harness, still unbuilt).
+  caller exists yet. (The trial-running harness and its follow-rate screen are both built now, but neither one
+  calls this specific statistic — it's the gross-harm regression screen, §3.0 item 3, still a separate later slice,
+  that would.)
 - **`bisect_decreasing`'s fixed 60-iteration budget has a resolution floor near either end of `[0,1]`** (round 7,
   R7-Num2): past roughly double precision's own ~2.2×10⁻¹⁶ absolute resolution, the search silently freezes at a
   fixed, wrong value with no error. ADR-181's real usage is `alpha=0.05` exclusively, nowhere near this floor, so
