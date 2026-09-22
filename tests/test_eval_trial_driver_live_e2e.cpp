@@ -98,6 +98,81 @@ void print_result(char const* label, eval::TrialResult const& result) {
     }
 }
 
+char const* role_name(role r) {
+    switch (r) {
+        case role::system:    return "system";
+        case role::user:      return "user";
+        case role::assistant: return "assistant";
+        case role::tool:      return "tool";
+    }
+    return "?";
+}
+
+// Recurses into a ToolResult's own content (a tool reply is itself a small list of content items) --
+// this is the SAME shape eval_trial.hpp's own detail::content_item_contains walks for delivery
+// detection, printed here instead of searched.
+std::string describe_content_item(ContentItem const& item) {
+    return std::visit(
+        [&](auto const& v) -> std::string {
+            using T = std::decay_t<decltype(v)>;
+            if constexpr (std::is_same_v<T, Text>) {
+                return "Text: " + v.text;
+            } else if constexpr (std::is_same_v<T, Reasoning>) {
+                return "Reasoning: " + v.text;
+            } else if constexpr (std::is_same_v<T, ToolCall>) {
+                return "ToolCall[" + v.call_id + "] " + v.tool_name + "(" + v.arguments_json + ")";
+            } else if constexpr (std::is_same_v<T, ToolResult>) {
+                std::string out = "ToolResult[" + v.call_id + "]" + (v.is_error ? " ERROR" : "") + " { ";
+                for (auto const& nested : v.content) out += describe_content_item(nested) + " ";
+                out += "}";
+                return out;
+            } else if constexpr (std::is_same_v<T, Data>) {
+                return "Data: " + v.json;
+            } else if constexpr (std::is_same_v<T, Citation>) {
+                return "Citation: " + v.source;
+            } else if constexpr (std::is_same_v<T, agentengine::Error>) {
+                return "Error: " + v.message;
+            } else if constexpr (std::is_same_v<T, Custom>) {
+                return "Custom(" + v.type_id + "): " + v.payload_json;
+            } else {
+                return "Media(...)";
+            }
+        },
+        item.value);
+}
+
+void print_message(Message const& msg, char const* prefix) {
+    std::string attribution = "none";
+    if (msg.attribution.has_value()) {
+        attribution = msg.attribution->contributor_type + "#" + std::to_string(msg.attribution->contributor_index);
+    }
+    std::fprintf(stderr, "%s[%s attribution=%s]\n", prefix, role_name(msg.role), attribution.c_str());
+    for (ContentItem const& item : msg.content) {
+        std::fprintf(stderr, "%s  %s%s\n", prefix, describe_content_item(item).c_str(),
+                     item.tainted ? "  (tainted)" : "");
+    }
+}
+
+// The full conversation dump the user asked for: every recorded round's outbound request (every
+// message actually sent to the model, in order) and the model's own response, for a whole trial --
+// not just the summary booleans/tool-call list print_result() already gives.
+void print_transcript(char const* label, eval::TrialResult const& result) {
+    std::fprintf(stderr, "  ---- [%s] full transcript (%zu round(s)) ----\n", label, result.recordings.size());
+    for (std::size_t round = 0; round < result.recordings.size(); ++round) {
+        ChatCallRecording const& rec = result.recordings[round];
+        std::fprintf(stderr, "  -- round %zu: %zu message(s) sent, %zu tool(s) offered --\n", round,
+                     rec.request.messages.size(), rec.request.tools.size());
+        for (Message const& msg : rec.request.messages) {
+            print_message(msg, "    > ");
+        }
+        if (rec.response.has_value()) {
+            print_message(rec.response->message, "    < ");
+        } else if (rec.chat_error.has_value()) {
+            std::fprintf(stderr, "    < [chat_error] %s\n", rec.chat_error->message.c_str());
+        }
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -157,6 +232,7 @@ int main() {
         check(!result.setup_error.has_value(), "B: no setup error");
         check(result.outcome.has_value(), "B: the baseline trial converges");
         print_result("B", result);
+        print_transcript("B", result);
     }
 
     // ---- treatment (T): the candidate lesson, seeded through the real MemoryProvider path ------------
@@ -180,6 +256,7 @@ int main() {
         check(!result.setup_error.has_value(), "T: no setup error");
         check(result.outcome.has_value(), "T: the treatment trial converges");
         print_result("T", result);
+        print_transcript("T", result);
     }
 
     std::fprintf(stderr, g_failures == 0 ? "test_eval_trial_driver_live_e2e: OK\n"
