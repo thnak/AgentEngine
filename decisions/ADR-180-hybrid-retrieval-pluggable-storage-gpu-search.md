@@ -18,17 +18,25 @@ real Vulkan hardware (a discrete AMD Radeon RX 5300M), found and fixed two genui
 along the way, and it has merged cleanly to `main` (2026-09-22, commit `f085bbd`). Correctness holds
 (GPU/CPU cosine scores agree within ~1e-7). **Claim 7's performance half did NOT hold**: after both
 fixes, GPU search measured ~1.3x SLOWER than CPU brute-force at both n=1000 and n=5000, not faster —
-see §3 claim 7 and §5-6 for the full numbers. **It has now been through its own dedicated red-team
-pass** (2026-09-22, same session, a second `worktree`-isolated agent, no prior context — see §4c below
-for the full findings, one Critical, and §5-6 for the fixes, all fixed and proven the same session
-against the real GPU this backend was already built against). Every piece of this ADR's scope has now
-had at least one red-team pass (steps 1-6: one; `QdrantVectorIndex`: two; `VulkanCosineIndex`: one).
+see §3 claim 7 and §5-6 for the full numbers. **It has now been through TWO independent, dedicated red-team
+passes** (2026-09-22, same session — pass 3: a second `worktree`-isolated agent, no prior context, §4c,
+one Critical and two Real gaps, all fixed; pass 4: a further independent agent, no prior context beyond
+§4c's own account, explicitly run to answer this ADR's own previously-open "is a second pass owed"
+question, §4d, ONE MORE Critical (`vkBindBufferMemory`'s `VkResult` discarded in both buffer-creation
+lambdas — the same gap-class as pass 3's Critical, missed at a call site outside pass 3's narrower
+`search()`-hot-path brief) plus two more Real gaps and one Minor — see §5-6 for every fix, all fixed and
+proven the same session against the real GPU this backend was already built against). Every piece of
+this ADR's scope has now had at least one red-team pass, and the two attack surfaces this ADR itself
+flagged as needing the most scrutiny (a network-writable remote index; raw GPU buffer handling) have
+each now had two independent passes (steps 1-6: one; `QdrantVectorIndex`: two, §4b; `VulkanCosineIndex`:
+two, §4c/§4d) — parity across this ADR's contested surfaces, not just steps 1-6's own single pass.
 Per `CLAUDE.md`'s "contested, hot-path, or security-critical designs go through `design → red-team →
-prove → judge`" rule, this ADR is **still not Judged**: whether `VulkanCosineIndex` is owed a SECOND
-red-team pass before Judged, mirroring `QdrantVectorIndex`'s own two-pass precedent (it remains this
-ADR's newest and least-familiar attack surface — a compute shader, raw GPU buffer handling, a new
-third-party SDK dependency), is an open question this session did not resolve (§7); and the live
-Qdrant run (§3 claim 6) remains blocked on the same persistent local Docker daemon issue, unresolved.
+prove → judge`" rule, this ADR is **still not Judged**: whether `VulkanCosineIndex` is owed a THIRD
+red-team pass is now the live question (§7) — pass 4 found genuine, new issues pass 3 missed, which
+argues for continued scrutiny, but two passes is also where `QdrantVectorIndex` itself stopped before
+Judged review, so this is left as a judgment call for whoever runs the Judge step, not resolved
+unilaterally here; and the live Qdrant run (§3 claim 6) remains blocked on the same persistent local
+Docker daemon issue, unresolved.
 What "real" means for steps 1-6 below: every new type compiles under clang++
 (`-std=c++23`) against this tree, every claim below that is marked CORRECT has a real, executed, passing
 check (a permanent test registered in `tests/CMakeLists.txt`), and the existing ADR-063 test suite
@@ -634,6 +642,140 @@ and under AddressSanitizer.
 new proving assertions closing the coverage gaps named; 4 as a named, honest residual, not fixed) — see
 §5-6 below for the fix details.
 
+## 4d. Red-team pass 4 (2026-09-22, `general-purpose` agent, no prior context) — `VulkanCosineIndex`,
+second pass
+
+Run against the SAME files §4c reviewed (`src/backends/vulkan_vector_index/vulkan_cosine_index.{hpp,cpp}`,
+`cosine_similarity.comp` + its checked-in `.spv`, `tests/test_vulkan_cosine_index.cpp`, and the
+`AGENTENGINE_WITH_VULKAN` CMake wiring), post-§4c-fix — a genuinely SECOND, independent pass, run because
+this ADR's own Status line named it an open question whether `VulkanCosineIndex` was owed one, mirroring
+`QdrantVectorIndex`'s own two-pass precedent (§4b). This pass started from §4c's own account only (the
+same "fresh agent, no prior context, attack the real cited source" discipline as every prior pass), was
+explicitly briefed NOT to re-report anything §4c already found and fixed, and re-verified §4c's own fixes
+directly rather than trusting the prior pass's account. A real Vulkan SDK (1.4.350.0, confirmed via
+`VULKAN_SDK`) and a real discrete GPU were both available and used for every claim below; the
+whole-project `cmake`+Ninja configure was re-attempted (not merely cited from §4c) and a real
+AddressSanitizer run was executed against this pass's own rebuilt binary, including its own new tests —
+no finding here is asserted from code reading alone. One Critical, two Real gaps, one Minor.
+
+### Critical
+
+1. **`vkBindBufferMemory`'s `VkResult` was discarded in BOTH of `search()`'s buffer-creation lambdas
+   (`create_host_visible_buffer()` and `create_device_local_buffer()`)** — meaning EVERY buffer this
+   class ever creates (the persistent, cached vectors device-local buffer; its host-visible staging
+   buffer; the query buffer; the scores buffer) went through an unchecked bind, despite §4c's own
+   account claiming "every Vulkan call in search()'s hot path" was checked. A real, in-spec bind failure
+   (`VK_ERROR_OUT_OF_HOST_MEMORY`/`VK_ERROR_OUT_OF_DEVICE_MEMORY`) would have silently handed back a
+   `(VkBuffer, VkDeviceMemory)` pair that LOOKS fully constructed but has no memory actually bound to
+   it — using such a buffer in `vkMapMemory`, `vkCmdCopyBuffer`, or a shader binding is undefined
+   behavior per the Vulkan spec (a buffer must have bound memory before any use), the identical class of
+   gap §4c's own Critical finding fixed for this file's OTHER calls, just missed at this one, twice-
+   duplicated call site. This is exactly the kind of thing a first pass whose brief was "is every Vulkan
+   call checked" can still miss: §4c's own fix list enumerates every checked call by NAME
+   (`vkMapMemory`, `vkAllocateCommandBuffers`, `vkBeginCommandBuffer`, `vkEndCommandBuffer`,
+   `vkCreateFence`, `vkQueueSubmit`, `vkWaitForFences`, `vkResetCommandBuffer`) and `vkBindBufferMemory`
+   is not on it — a real, not merely theoretical, gap in that pass's own coverage.
+
+### Real gaps
+
+2. **`create()`'s device-enumeration step had the same unchecked-`VkResult` gap §4c's Critical fixed
+   elsewhere, in the one call site §4c's own brief (scoped to `search()`'s hot path) didn't reach.**
+   Both `vkEnumeratePhysicalDevices` calls (the count query and the fill query) discarded their return
+   value. A real failure at the count-query call leaves `device_count` in an implementation-defined
+   state per spec (not guaranteed to stay 0), which the old code would have sized `devices` off of
+   directly; separately, and independent of whether the return value is checked, the fill call can
+   legitimately report FEWER devices than the count query did (a device removed between the two calls,
+   a real if rare case the Vulkan spec explicitly allows via `VK_INCOMPLETE`), and the old code iterated
+   the WHOLE (larger, stale-sized) `devices` vector regardless, including value-initialized
+   (`VK_NULL_HANDLE`) tail entries the second call never actually wrote — calling
+   `vkGetPhysicalDeviceQueueFamilyProperties` on such a handle is invalid API usage. Construction-time
+   only, and requires either an early host/device OOM or a mid-enumeration device removal to reach, so
+   materially less likely than finding 1 above — a Real gap, not Critical.
+3. **A zero-dimensional vector (`add_batch({"a"}, {{}})`) was a second, distinct, and REACHABLE way to
+   set `impl_->dimension == 0` on a non-empty index — contradicting `search()`'s own comment, which
+   claimed that state was "possible only if this index has never been `add_batch()`'d with a real
+   vector, already excluded above by the `order.empty()` early return."** That reasoning was simply
+   wrong: `add_batch()`'s existing dimension logic (`expected_dim = ... vectors.front().size()`) already
+   accepted a 0-sized vector as establishing a 0-dimensional index, identically to how
+   `BruteForceCosineIndex::add_batch()` (`core/vector_index.hpp`) already does — but where
+   `BruteForceCosineIndex::search()` handles that state silently (a 0/0-guarded cosine similarity
+   returning 0.0f for everything, no error at all, an existing, already-Judged ADR-063 quirk out of
+   scope for this pass to touch), `VulkanCosineIndex::search()` instead classified it as
+   `failure_class::fatal` ("internal invariant was violated" — `error.hpp`: "unrecoverable; the run
+   ends") — the wrong severity for reachable, caller-supplied degenerate input, not an actual internal
+   bug, and a behavior DIVERGENCE from the sibling conformer this file's own top comment claims to
+   "mirror... exactly." No memory-safety consequence (the dispatch-size guard and the `dim == 0` check
+   both correctly prevent an invalid zero-byte GPU buffer from ever being created), but a real
+   classification/documentation defect a caller's error-handling logic could act on incorrectly (e.g.
+   treating a normal, correctable input mistake as grounds to abort the whole run, per `error.hpp`'s own
+   stated `fatal` semantics).
+
+### Minor
+
+4. **A fully-empty `add_batch({}, {})` call (a legitimate no-op, distinct from finding 3's zero-
+   DIMENSIONAL-vector case) still unconditionally sets `impl_->cache_dirty = true`**, forcing the next
+   `search()` call to rebuild the GPU vectors buffer even though nothing about the corpus changed. Not a
+   correctness bug (proven by this pass's own new test: a no-op `add_batch()` sandwiched between real
+   ones still produces a correct subsequent `search()`), purely a performance cost, and one this pass did
+   not benchmark — named honestly rather than fixed, matching this file's own established "a hot path
+   without a bench... is not done" bar cutting against optimizing a path with no evidence it is ever hit
+   in practice by a real caller (nothing in this ADR family constructs an intentionally-empty
+   `add_batch()` call site).
+
+### What held up
+
+Every §4c fix was re-verified directly, not merely trusted from that pass's own account. The `CleanupStack`
+introduced by §4c's Critical fix was traced through EVERY early-return path in the vectors-buffer rebuild
+block by hand (`vkAllocateCommandBuffers`/`vkBeginCommandBuffer`/`vkEndCommandBuffer`/`vkCreateFence`/
+`vkQueueSubmit`/`vkWaitForFences` failures) — `dismiss()` is reached only after the copy fully succeeds,
+and every earlier return correctly unwinds whatever was pushed so far in reverse order, confirmed
+consistent for all six failure points, not merely the ones §4c's own account narrated. Every `vkMapMemory`
+check (×3: vectors staging upload, query upload, scores readback) genuinely guards every subsequent use of
+its `mapped` pointer — no branch dereferences it before the check, none after an early return past it.
+`detail::check_gpu_dispatch_size_plausible()` has exactly ONE call site (`search()`, before any GPU
+resource is touched) and push constants are constructed at exactly one place in the whole file — no second
+call site could bypass it even if one existed today. `add_batch()` itself makes no Vulkan calls at all
+(pure host-side bookkeeping), so it carries none of this file's `VkResult`-gap class by construction, and a
+rebuild failure inside `search()` correctly leaves the OLD, still-valid vectors buffer in place (re-traced
+by hand: the old buffer is destroyed only after the new one is fully built AND uploaded, and only on that
+success path — re-confirmed, not merely re-asserted from §4c). `create()`'s own teardown-on-partial-failure
+was traced through every one of its now-eleven checked failure points: every early `return
+std::unexpected(...)` lets the local `std::unique_ptr<Impl>` go out of scope, invoking the
+already-independently-confirmed-correct reverse-order destructor (every handle either real or a documented
+`VK_NULL_HANDLE` no-op) — no leaked instance/device/pipeline on any later step's failure. Thread-safety was
+independently re-verified, not trusted from §4c's claim: every method touching shared `Impl` state takes
+the mutex (`add_batch()`/`search()`: `unique_lock`; `contains()`/`size()`: `shared_lock`) — there is no
+getter, stats accessor, or other method that reads/writes the GPU-buffer-cache fields without it. The
+CMake wiring's default-OFF impact is unaffected by this pass's changes (only the `.cpp`'s own call sites
+changed; no new target/symbol was added outside the existing `if(AGENTENGINE_WITH_VULKAN)` guards). The
+whole-project `cmake`+Ninja configure (`-DAGENTENGINE_WITH_VULKAN=ON`) was RE-ATTEMPTED this pass, against
+an even newer preview MSVC toolset (VS 2026 "18", MSVC 14.51.362xx) than §4c used — and reproduced the
+IDENTICAL `C1083: Cannot open compiler generated file: ''` failure at the IDENTICAL unrelated file
+(`tests/compile_fail/tainted_declassify_positive_control.cpp`), confirming this is a persistent,
+still-unresolved, pre-existing environment/toolchain blocker, not something that has resolved itself or
+that this backend's changes affect. `VulkanCosineIndex` (library + test binary) was again compiled, linked,
+and run directly against the real Vulkan SDK/GPU, cleanly, zero warnings under `/W4 /WX`, in both a plain
+build and under AddressSanitizer (this pass's rebuilt binary, 63 total assertions — 48 from §4c's own file
+plus 15 new ones this pass added — 0 failures, both configurations). **New this pass**: an UndefinedBehavior
+Sanitizer attempt via `clang-cl` (22.1.5) was made — not attempted by §4c — and was blocked by a DIFFERENT,
+unrelated toolchain-interop gap: `clang-cl` failed to recognize C++20/23 STL surface (`std::span`,
+`std::expected`, `unordered_map::contains()`, CTAD for `std::unique_lock`) when compiling against this
+preview MSVC 14.51 STL, even with an explicit `/std:c++23`/`-std=c++23`, diagnosed down to a language-mode/
+feature-macro mismatch between this specific `clang-cl` release and this specific preview MSVC STL — a
+real, distinct, environment-specific gap, not caused by or fixable from this backend's own code, named as
+a residual (§7) rather than chased further, matching the exact same "don't spend the session fixing an
+unrelated toolchain issue" discipline §4c's own C1083 finding already established.
+
+**All 4 findings fixed the same session** (1 and 2 as real code changes — new checked `VkResult`s with
+correct cleanup on failure, no new test possible for either without an actual forced Vulkan/host OOM,
+matching §4c's own identical "not provable via forced-failure test" residual for its own Critical fix; 3
+as a real code change — `add_batch()` now rejects a zero-dimensional vector as an ordinary `contract`
+violation, with `search()`'s own comment corrected to match the now-TRUE invariant — plus 15 new proving
+assertions (zero-dimension rejection, both before and after a real dimensionality is established; a
+genuine empty-batch no-op is NOT confused with it; an n=1/dim=1 corpus with intervening no-op
+`add_batch()` calls; `k` exactly equal to corpus size); 4 as a named, honest residual, not fixed) — see
+§5-6 below for the fix details.
+
 ## 5-6. Implementation and proof
 
 **§8 steps 1-6, real, this session (2026-09-22):**
@@ -903,6 +1045,59 @@ no LeakSanitizer — `ASAN_OPTIONS=detect_leaks=...` is a no-op on this platform
 here means no host-side heap corruption/overflow/use-after-free was detected, not that an automated
 leak detector ran; see §7 for the honest scope of that claim.)
 
+**Red-team pass 4 fixes (2026-09-22, same session — see §4d for the findings):**
+1. (Critical) `vulkan_cosine_index.cpp`: both buffer-creation lambdas
+   (`create_host_visible_buffer()`, `create_device_local_buffer()`) now check `vkBindBufferMemory`'s
+   `VkResult` and clean up (`vkFreeMemory` then `vkDestroyBuffer`) on failure, returning `std::nullopt`
+   like every other failure branch already in those lambdas, instead of handing back an unbound
+   buffer/memory pair. Every one of this class's four buffer allocations (vectors device-local,
+   vectors staging, query, scores) routes through one of these two lambdas, so this single fix closes
+   the gap everywhere it existed. **Not provable via a forced-failure test** — the identical, already-
+   accepted residual §4c's own Critical fix recorded (safely inducing a real Vulkan OOM/device-lost
+   condition without risking this machine's stability is out of this repo's "resource-capped" scope) —
+   proven instead by the full 63-assertion suite staying green, in both a plain build and under
+   AddressSanitizer, confirming the fix introduces no new host-side corruption on the happy path.
+2. (Real gap) `vulkan_cosine_index.cpp`: `create()`'s physical-device enumeration now checks both
+   `vkEnumeratePhysicalDevices` calls' `VkResult` (failing closed with a new
+   `vulkan_vector_index.device_enumeration_failed` error) and calls `devices.resize(device_count)`
+   after the second call, so the physical-device-selection loop never iterates past however many
+   handles the driver actually wrote, closing the latent stale-tail-iteration edge case alongside the
+   unchecked-result gap itself. Proven by the happy path: every `VulkanCosineIndex::create()` call in
+   the test suite (7 across the full run) still succeeds unchanged; not independently forced-failure-
+   tested, for the same reason as finding 1.
+3. (Real gap) `vulkan_cosine_index.cpp`: `add_batch()` now rejects a zero-dimensional vector
+   (`vulkan_vector_index.add_batch_zero_dimension`, `failure_class::contract`) when it would establish
+   the index's dimensionality, BEFORE `search()` could ever reach its `dim == 0` branch — making that
+   branch's own "should be unreachable" comment true rather than aspirational, and giving the caller an
+   immediate, correctly-classified rejection at add_batch() time instead of a later, wrongly-classified
+   `fatal` one at search() time. `search()`'s own comment was corrected to state the (now genuinely
+   true) invariant accurately. `tests/test_vulkan_cosine_index.cpp`: 6 new assertions — the rejection
+   fires when no dimensionality is established yet; the rejected call leaves the index untouched; the
+   SAME zero-sized-vector input, after a real dimensionality is already established, still falls
+   through to the pre-existing (unchanged) `add_batch_dimension_mismatch` rejection, not the new check;
+   and a genuinely empty `add_batch({}, {})` call is NOT confused with a zero-dimensional vector and
+   still succeeds as a no-op, both on a fresh index and after real data exists.
+4. (Minor) The unconditional `cache_dirty = true` on every `add_batch()` call, including a no-op empty
+   one: named, not fixed — see §4d and §7.
+5. (Real gap, test coverage) `tests/test_vulkan_cosine_index.cpp`: 8 new assertions cover the
+   adversarial/boundary shapes named in this pass's own brief that §4c's coverage fix didn't reach — an
+   n=1, dim=1 corpus (the smallest possible non-empty index), `k` exactly equal to corpus size (distinct
+   from both `k == 0` and `k >` corpus size, which §4c's own fix already covered), and two no-op
+   `add_batch()` calls (one before any real data, one interleaved after) on the same instance, proving
+   they neither corrupt state nor spuriously affect a subsequent `search()`'s correctness.
+
+All new assertions (this pass: 15, bringing the running total to 63 — 48 carried over from §4c's own
+file plus these) run against the same real Vulkan SDK (1.4.350.0) and the same real discrete GPU this
+backend has been measured against every prior pass, compiled and linked directly via MSVC 14.51
+(`cl.exe`/`link.exe`) for the identical, re-confirmed reason the whole-project configure remains blocked
+(§4d's own account). Zero failures, in both a plain build and under AddressSanitizer — zero regression to
+every previously-proven correctness/claim-7/red-team-pass-3 behavior. The same Windows-ASan-has-no-
+LeakSanitizer scope caveat §4c already named applies identically here (host-side-corruption check, not an
+automated leak-detector run). A genuine UndefinedBehaviorSanitizer attempt (via `clang-cl` 22.1.5, not
+tried by any prior pass) was made and diagnosed as blocked by a distinct, unrelated `clang-cl`/preview-
+MSVC-14.51-STL language-mode interop gap (§4d's own account, §7) — not fixed, not this backend's defect,
+not chased further.
+
 ## 7. Residuals and open questions (named now, per this repo's own discipline, so none are rediscovered later)
 
 - **Everything ADR-063 §7 already named and left open remains open here too, and several are now sharper:**
@@ -988,40 +1183,76 @@ leak detector ran; see §7 for the honest scope of that claim.)
   open question this pass did not resolve — it remains a Tier 2, opt-in-only
   (`AGENTENGINE_WITH_VULKAN` default OFF) backend, which was already the right default regardless of
   this outcome.
-- **(NARROWED by red-team pass 3, §4c) `VulkanCosineIndex` has now had ONE red-team pass, not zero** —
-  one Critical finding (unchecked Vulkan API return codes across `search()`'s hot path) and two Real
-  gaps (a push-constant integer-overflow gap; a test-coverage gap), all fixed and proven the same
-  session (§5-6). Whether a SECOND pass is owed before Judged, mirroring `QdrantVectorIndex`'s own
-  two-pass precedent (this remains this ADR's newest and least-familiar attack surface: a compute
-  shader, raw GPU buffer handling, a new third-party SDK dependency), is an open question this session
-  did not resolve.
-- **(NARROWED by red-team pass 3, §4c) `VulkanCosineIndex`'s CMake wiring default-OFF impact is now
-  confirmed zero by static inspection** — a `grep` across both `CMakeLists.txt` files found no Vulkan
-  target/symbol reference outside the two `if(AGENTENGINE_WITH_VULKAN)` guards. **Still NOT confirmed
-  by an actual successful whole-project `cmake`+`ninja` configure-and-build** — attempted this pass
-  (real MSVC 14.51 toolchain, `-DAGENTENGINE_WITH_VULKAN=ON` and, separately, the default `OFF`), and
-  BOTH fail identically at an earlier, wholly unrelated `tests/compile_fail/*.cpp` positive-control
-  `try_compile` step (`C1083: Cannot open compiler generated file: ''`, reproduced against a file
-  (`tainted_declassify_positive_control.cpp`) with no connection to Vulkan) — a real, pre-existing,
-  intermittent MSVC/Ninja toolchain issue on this dev box (the same class of issue this ADR's own §8
-  step-7 account already names for a different tool, `mt.exe`), not something the Vulkan wiring causes
-  or could itself fix. `VulkanCosineIndex` was instead compiled, linked, and run directly against the
-  real Vulkan SDK and the real GPU (the same method the original building agent used) — cleanly, zero
-  warnings under `/W4 /WX`, plain build and AddressSanitizer both. The whole-project configure issue
-  itself remains open, unresolved, and out of scope for this backend to fix.
+- **(RESOLVED by red-team pass 4, §4d) `VulkanCosineIndex` has now had TWO independent red-team
+  passes, matching `QdrantVectorIndex`'s own two-pass precedent (§4b) and closing the open question
+  this ADR's Status line previously posed.** Pass 3 (§4c) found one Critical (unchecked Vulkan API
+  return codes across `search()`'s hot path) and two Real gaps (a push-constant integer-overflow gap;
+  a test-coverage gap). Pass 4 (§4d), run independently, with no prior context beyond §4c's own
+  account, and explicitly briefed not to re-report anything §4c already covered, found ONE MORE
+  Critical (`vkBindBufferMemory`'s `VkResult` discarded in both buffer-creation lambdas — the same
+  gap-class as pass 3's own Critical, missed at a call site outside pass 3's `search()`-hot-path-scoped
+  brief, affecting every buffer this class ever creates) plus two more Real gaps (an identical
+  unchecked-`VkResult` gap in `create()`'s device enumeration; a reachable-but-misclassified
+  `failure_class::fatal` error for a zero-dimensional-vector input, plus a factually wrong code comment
+  claiming that state was unreachable) and one Minor (an unconditional `cache_dirty = true` on a no-op
+  `add_batch()` call, a performance-only, unbenched cost). All fixed and proven the same session (§5-6);
+  the Minor is a named, honest, not-fixed residual, matching this ADR's own established posture for
+  low-severity findings elsewhere. **This is a genuine "second pass finds what a first, narrower-scoped
+  pass missed" result** (mirroring `QdrantVectorIndex`'s own §4b, which likewise found real, new issues
+  a first look didn't reach), not a confirmation that nothing was left to find — which is itself the
+  argument for treating two independent passes, not one, as this ADR's real bar for "red-teamed" on a
+  security/memory-safety-relevant seam backend. Whether a THIRD pass is owed is a judgment call, not
+  resolved here: two independent passes each finding genuine, distinct issues on the same ~500-line
+  file is a real signal this surface rewards continued scrutiny, but is also the same cadence
+  `QdrantVectorIndex` stopped at (two passes, then left to Judged review) — recorded as a live open
+  question for whoever runs the Judge step, not decided unilaterally by this pass.
+- **(RE-CONFIRMED by red-team pass 4, §4d) `VulkanCosineIndex`'s CMake wiring default-OFF impact
+  remains confirmed zero by static inspection** — unaffected by pass 4's changes (only `.cpp` call
+  sites changed; no new target/symbol was added outside the existing `if(AGENTENGINE_WITH_VULKAN)`
+  guards). **Still NOT confirmed by an actual successful whole-project `cmake`+`ninja` configure-and-
+  build** — RE-ATTEMPTED by pass 4 (`-DAGENTENGINE_WITH_VULKAN=ON`, an even newer preview MSVC toolset
+  than pass 3 used — VS 2026 "18", MSVC 14.51.362xx), and reproduced the IDENTICAL `C1083: Cannot open
+  compiler generated file: ''` failure at the IDENTICAL unrelated file
+  (`tests/compile_fail/tainted_declassify_positive_control.cpp`) pass 3 already found — a real,
+  persistent, still-unresolved, pre-existing MSVC/Ninja toolchain issue on this dev box (the same class
+  of issue this ADR's own §8 step-7 account already names for a different tool, `mt.exe`), confirmed
+  across two independent passes now to be neither transient nor caused by the Vulkan wiring.
+  `VulkanCosineIndex` was again compiled, linked, and run directly against the real Vulkan SDK and the
+  real GPU (the same method every prior pass used) — cleanly, zero warnings under `/W4 /WX`, plain
+  build and AddressSanitizer both. The whole-project configure issue itself remains open, unresolved,
+  and out of scope for this backend to fix.
 - **`vkCmdDispatch`'s workgroup count is not validated against the physical device's own
-  `maxComputeWorkGroupCount[0]` limit** (red-team pass 3, §4c finding 4) — unreachable at any `n` this
-  backend has actually been measured at (1000, 5000) and, per the Vulkan spec's guaranteed minimum
-  (65535 per dimension), unreachable up to the low millions even on the least-capable conformant
-  device; the new uint32 dispatch-size guard (§5-6) bounds `n` far below where this could plausibly
-  matter in practice. Left as a named, low-likelihood residual, not fixed.
-- **Red-team pass 3's fix for unchecked Vulkan API failures (Critical finding 1, §4c) is proven only on
-  the happy path, not via a forced-failure test** — safely inducing a genuine Vulkan device-lost or
-  out-of-memory condition on real hardware, without risking this machine's stability, was judged out of
-  scope for this pass's own "resource-capped" machine-safety discipline (CLAUDE.md). The fix compiles
-  cleanly under `/W4 /WX` and the full test suite (54 assertions) stays green, in both a plain build and
+  `maxComputeWorkGroupCount[0]` limit** (red-team pass 3, §4c finding 4; re-examined and NOT relitigated
+  by pass 4 per this pass's own explicit brief) — unreachable at any `n` this backend has actually been
+  measured at (1000, 5000) and, per the Vulkan spec's guaranteed minimum (65535 per dimension),
+  unreachable up to the low millions even on the least-capable conformant device; the new uint32
+  dispatch-size guard (§5-6) bounds `n` far below where this could plausibly matter in practice. Left as
+  a named, low-likelihood residual, not fixed.
+- **Neither red-team pass 3's nor red-team pass 4's fixes for unchecked Vulkan API failures (§4c
+  Critical finding 1; §4d Critical finding 1 and Real gap 2) are proven via a forced-failure test, only
+  on the happy path** — safely inducing a genuine Vulkan device-lost or out-of-memory condition on real
+  hardware, without risking this machine's stability, was judged out of scope for both passes' own
+  "resource-capped" machine-safety discipline (CLAUDE.md). Every such fix compiles cleanly under
+  `/W4 /WX` and the full test suite (63 assertions as of pass 4) stays green, in both a plain build and
   under AddressSanitizer, but a reviewer should not read "green" here as "the failure path itself was
-  exercised" — it was reviewed and reasoned about, not executed under a real failure.
+  exercised" for ANY of these checks — every one of them was reviewed and reasoned about, not executed
+  under a real failure. This residual now spans more call sites than pass 3 alone left open (§4d added
+  `vkBindBufferMemory` ×2 and `vkEnumeratePhysicalDevices` ×2 to the same "checked, but only the happy
+  path is proven" set), not fewer — an honest widening, not a narrowing, of what "proven" means here.
+- **A genuine UndefinedBehaviorSanitizer run against `VulkanCosineIndex` was attempted for the first
+  time this ADR (red-team pass 4, §4d) and did NOT succeed** — via `clang-cl` (22.1.5, LLVM's own
+  MSVC-compatible driver), the only UBSan-capable toolchain available on this dev box (`cl.exe` itself
+  has no UBSan). Blocked by a real, reproducible, but unrelated toolchain-interop gap: `clang-cl` failed
+  to recognize C++20/23 standard-library surface (`std::span`, `std::expected`,
+  `std::unordered_map::contains()`, class-template-argument deduction for `std::unique_lock`) when
+  compiling against this dev box's preview MSVC 14.51 STL, even with an explicit `/std:c++23` or
+  `-std=c++23` — diagnosed down to a language-mode/feature-detection-macro mismatch between this
+  specific `clang-cl` release and this specific preview MSVC STL, not something this backend's own code
+  causes or could fix, and not chased further (the same "don't spend the session fixing an unrelated
+  toolchain issue" discipline this ADR's own C1083 finding already established, applied to a second,
+  distinct toolchain gap). `VulkanCosineIndex`'s UBSan coverage remains genuinely absent, not merely
+  unattempted — a real, open gap for whoever next has a working `clang-cl`+preview-MSVC-STL combination,
+  or a stable (non-preview) MSVC toolset, on this dev box.
 - **This pass's AddressSanitizer run found the host side clean, but Windows' MSVC ASan implementation
   has no LeakSanitizer** — `detect_leaks` is a no-op on this platform, so while the repeated-
   `add_batch()`/cache-rebuild test (§5-6) proves CORRECTNESS across multiple rebuild cycles, true
@@ -1029,6 +1260,14 @@ leak detector ran; see §7 for the honest scope of that claim.)
   (confirmed correct: the old buffer is destroyed only after the new one is fully built, right before
   reassignment) rather than an executed, leak-detecting run — named honestly rather than implied by
   "ASan came back clean."
+- **A no-op `add_batch({}, {})` call still unconditionally marks the GPU vectors-buffer cache dirty**
+  (red-team pass 4, §4d finding 4/Minor) — the next `search()` rebuilds the buffer even though nothing
+  about the corpus changed. Proven not to be a correctness bug (a new test interleaves a no-op call
+  between real ones and confirms subsequent `search()` results are unaffected); purely an unbenched
+  performance cost, and one no real call site in this ADR family actually triggers (nothing here
+  constructs an intentionally-empty `add_batch()` call), so left as a named, low-priority residual, not
+  fixed — the same "a hot path without a bench... is not done" bar cutting against speculatively
+  optimizing a path with no evidence a real caller ever hits it.
 - **`BM25Index`'s ASCII whitespace/punctuation tokenizer is a real quality gap**, not just a stated
   simplification — no stemming, no Unicode-aware tokenization, no stop-word list. Named so it is not later
   mistaken for a completed, tuned implementation.

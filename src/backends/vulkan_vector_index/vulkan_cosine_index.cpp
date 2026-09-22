@@ -211,14 +211,43 @@ agentengine::result<VulkanCosineIndex> VulkanCosineIndex::create() {
     // ---- Physical device: the first device exposing a queue family with compute support. Fails
     // closed (a real error, not a crash) when no such device exists -- the whole point of `create()`
     // returning `result<...>` instead of being a plain constructor. -----------------------------------
+    // Red-team pass 4 (2026-09-22), Real gap: both calls below used to be fire-and-forget -- no
+    // VkResult check on either. `vkEnumeratePhysicalDevices` CAN fail in-spec
+    // (VK_ERROR_OUT_OF_HOST_MEMORY / VK_ERROR_OUT_OF_DEVICE_MEMORY / VK_ERROR_INITIALIZATION_FAILED)
+    // even at the count-query call; on failure the spec leaves `device_count` in an
+    // implementation-defined state, not necessarily 0, so the old code could have proceeded to size
+    // `devices` off a bogus count and then, on the second call, iterate past however many handles
+    // were ACTUALLY written (a device removed between the two calls is a real, if rare, case where
+    // the second call legitimately reports fewer than the first) -- calling
+    // `vkGetPhysicalDeviceQueueFamilyProperties` on a stale/VK_NULL_HANDLE tail entry is invalid API
+    // usage. Same "reject-not-coerce on any structural inconsistency" posture as every other checked
+    // call in this file (§4c); `devices.resize(device_count)` after the second call additionally
+    // closes the stale-tail-iteration gap regardless of which enumeration count actually won.
     std::uint32_t device_count = 0;
-    vkEnumeratePhysicalDevices(impl->instance, &device_count, nullptr);
+    if (vkEnumeratePhysicalDevices(impl->instance, &device_count, nullptr) != VK_SUCCESS) {
+        return std::unexpected(
+            vulkan_error("vkEnumeratePhysicalDevices failed while querying the physical device count",
+                         "vulkan_vector_index.device_enumeration_failed"));
+    }
     if (device_count == 0) {
         return std::unexpected(vulkan_error("no Vulkan-capable physical device found on this host",
                                               "vulkan_vector_index.device_not_found"));
     }
     std::vector<VkPhysicalDevice> devices(device_count);
-    vkEnumeratePhysicalDevices(impl->instance, &device_count, devices.data());
+    if (VkResult const enumerate_result =
+            vkEnumeratePhysicalDevices(impl->instance, &device_count, devices.data());
+        enumerate_result != VK_SUCCESS && enumerate_result != VK_INCOMPLETE) {
+        return std::unexpected(
+            vulkan_error("vkEnumeratePhysicalDevices failed while filling the physical device list",
+                         "vulkan_vector_index.device_enumeration_failed"));
+    }
+    devices.resize(device_count);  // the second call may report fewer devices than the first (one
+                                    // removed between the two calls) -- never iterate past what was
+                                    // actually written.
+    if (devices.empty()) {
+        return std::unexpected(vulkan_error("no Vulkan-capable physical device found on this host",
+                                              "vulkan_vector_index.device_not_found"));
+    }
 
     bool found_device = false;
     for (VkPhysicalDevice candidate : devices) {
@@ -377,6 +406,28 @@ agentengine::result<void> VulkanCosineIndex::add_batch(std::vector<std::string> 
     }
     std::size_t const expected_dim =
         impl_->dimension != 0 ? impl_->dimension : (vectors.empty() ? 0 : vectors.front().size());
+    // Red-team pass 4 (2026-09-22), Real gap: without this check, a first-ever `add_batch()` call
+    // carrying a zero-dimensional vector (e.g. `add_batch({"a"}, {{}})`) established `impl_->dimension
+    // == 0` on a NON-EMPTY index -- a state `search()`'s own comment (below) claims is "possible only
+    // if this index has never been add_batch()'d with a real vector, already excluded... by the
+    // order.empty() early return," which was simply wrong: this is a second, distinct way to reach
+    // dimension == 0 with a non-empty order, and it WAS reachable through this class's own public API.
+    // `search()` then classified that state as `failure_class::fatal` ("internal invariant violated" --
+    // error.hpp: "unrecoverable; the run ends"), the wrong severity for a normal, reachable, caller-
+    // supplied-degenerate-input case (a `contract` violation, exactly like every other add_batch()
+    // rejection above and below this one) -- and, separately, a zero-byte GPU buffer is invalid Vulkan
+    // usage (VUID-VkBufferCreateInfo-size-00912: size must be > 0), so accepting this state at all would
+    // have only deferred a real problem to search() instead of rejecting it at its actual origin.
+    // Reject here, structurally, so `search()`'s own "should be unreachable" comment becomes true
+    // rather than aspirational -- matching this codebase's reject-not-coerce posture, and the identical
+    // shape `RemoteVectorIndex<T>`'s red-team-pass-1 fix already used (§4/§5-6): make the invariant
+    // true by construction, not merely asserted after the fact.
+    if (!vectors.empty() && expected_dim == 0) {
+        return std::unexpected(agentengine::error{
+            agentengine::failure_class::contract,
+            "a vector must have at least one dimension -- zero-dimensional vectors cannot be indexed",
+            "vulkan_vector_index.add_batch_zero_dimension"});
+    }
     for (auto const& v : vectors) {
         if (v.size() != expected_dim) {
             return std::unexpected(agentengine::error{
@@ -430,11 +481,18 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
     std::size_t const n = impl_->order.size();
     std::size_t const dim = impl_->dimension;
 
-    // Guard against a zero-sized buffer (VK_WHOLE_SIZE-adjacent edge case) -- dim==0 is possible only
-    // if this index has never been add_batch()'d with a real vector, already excluded above by the
-    // `impl_->order.empty()` early return, so dim is guaranteed > 0 here; kept as a defensive
-    // reject-not-coerce guard anyway, matching this codebase's own posture toward "should be
-    // unreachable" invariants (vector_index.hpp's own cosine_similarity() comment, same stance).
+    // Guard against a zero-sized buffer (VK_WHOLE_SIZE-adjacent edge case). Red-team pass 4
+    // (2026-09-22): this comment previously claimed dim==0 was "possible only if this index has never
+    // been add_batch()'d with a real vector, already excluded above by the order.empty() early
+    // return" -- that was FALSE until this same pass's add_batch() fix: a zero-dimensional vector
+    // (e.g. `add_batch({"a"}, {{}})`) was a second, distinct way to reach dim==0 with a non-empty
+    // order, reachable through this class's own public API, not merely a hypothetical. add_batch()
+    // now rejects that input outright (`vulkan_vector_index.add_batch_zero_dimension`), so this really
+    // is unreachable today -- kept as a defensive reject-not-coerce guard anyway, matching this
+    // codebase's own posture toward "should be unreachable" invariants (vector_index.hpp's own
+    // cosine_similarity() comment, same stance), and `failure_class::fatal` here is now honest: any
+    // future code path that DID reach this despite add_batch()'s guard would be a genuine internal
+    // invariant violation, not reachable caller input.
     if (dim == 0) {
         return std::unexpected(agentengine::error{agentengine::failure_class::fatal,
                                                      "search() reached with a zero-length dimension despite a "
@@ -477,7 +535,21 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
             vkDestroyBuffer(impl_->device, buffer, nullptr);
             return std::nullopt;
         }
-        vkBindBufferMemory(impl_->device, buffer, memory, 0);
+        // Red-team pass 4 (2026-09-22), Critical finding 1: this call's VkResult was previously
+        // discarded, in BOTH buffer-creation lambdas -- meaning EVERY buffer this class ever creates
+        // (the vectors device-local buffer, its staging buffer, the query buffer, the scores buffer)
+        // went through an unchecked bind. A real, in-spec bind failure (VK_ERROR_OUT_OF_HOST_MEMORY /
+        // VK_ERROR_OUT_OF_DEVICE_MEMORY) would silently hand back a buffer/memory pair that looks
+        // valid but has no memory actually bound to it -- using such a buffer in vkMapMemory,
+        // vkCmdCopyBuffer, or a shader binding is undefined behavior per the Vulkan spec (a buffer must
+        // have bound memory before use), the exact class of gap red-team pass 3 (§4c) already fixed
+        // for this file's other Vulkan calls, just missed here. Reject, don't silently hand back an
+        // unbound buffer.
+        if (vkBindBufferMemory(impl_->device, buffer, memory, 0) != VK_SUCCESS) {
+            vkFreeMemory(impl_->device, memory, nullptr);
+            vkDestroyBuffer(impl_->device, buffer, nullptr);
+            return std::nullopt;
+        }
         return std::make_pair(buffer, memory);
     };
 
@@ -529,7 +601,16 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
             vkDestroyBuffer(impl_->device, buffer, nullptr);
             return std::nullopt;
         }
-        vkBindBufferMemory(impl_->device, buffer, memory, 0);
+        // Red-team pass 4 (2026-09-22), Critical finding 1 -- same unchecked-bind gap as
+        // create_host_visible_buffer() above, fixed identically here: this is the lambda that builds
+        // the persistent, cached vectors buffer, the single largest and longest-lived GPU allocation
+        // this class ever makes, so an unbound buffer surviving here would be the most consequential
+        // instance of this gap, not merely a symmetric fix for its own sake.
+        if (vkBindBufferMemory(impl_->device, buffer, memory, 0) != VK_SUCCESS) {
+            vkFreeMemory(impl_->device, memory, nullptr);
+            vkDestroyBuffer(impl_->device, buffer, nullptr);
+            return std::nullopt;
+        }
         return std::make_pair(buffer, memory);
     };
 

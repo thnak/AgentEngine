@@ -172,6 +172,90 @@ int main() {
         }
     }
 
+    // --- Red-team pass 4 (2026-09-22) finding 3 (Real gap): a zero-dimensional vector used to
+    // establish `impl_->dimension == 0` on a non-empty index, which search() then classified as
+    // `failure_class::fatal` ("internal invariant violated") -- the wrong severity for reachable,
+    // caller-supplied degenerate input, and a code path this test file never exercised. add_batch()
+    // now rejects it outright, at its actual origin, as an ordinary `contract` violation. ------------
+    {
+        auto created_zd = VulkanCosineIndex::create();
+        AE_CHECK(created_zd.has_value(), "setup: a fifth index instance is created for the "
+                                          "zero-dimension-vector rejection case");
+        if (created_zd.has_value()) {
+            VulkanCosineIndex idx_zd = std::move(*created_zd);
+            auto zero_dim_first = idx_zd.add_batch({"z0"}, {std::vector<float>{}});
+            AE_CHECK(!zero_dim_first.has_value() &&
+                         zero_dim_first.error().code == "vulkan_vector_index.add_batch_zero_dimension",
+                     "add_batch rejects a zero-dimensional vector when it would establish the index's "
+                     "dimensionality (no prior add_batch call), classified as an ordinary contract "
+                     "violation, not a fatal internal-invariant error");
+            AE_CHECK(idx_zd.size() == 0,
+                     "the rejected zero-dimension add_batch call left the index untouched");
+
+            // The SAME zero-sized-vector input, but AFTER a real dimensionality is already
+            // established, must fall through to the pre-existing, differently-coded dimension-
+            // mismatch rejection instead -- confirms the new check does not shadow or change that
+            // already-covered path.
+            AE_CHECK(idx_zd.add_batch({"real"}, {{1.0f, 2.0f}}).has_value(),
+                     "setup: idx_zd's dimensionality is established at 2 by a real vector");
+            auto zero_dim_after = idx_zd.add_batch({"z1"}, {std::vector<float>{}});
+            AE_CHECK(!zero_dim_after.has_value() &&
+                         zero_dim_after.error().code == "vulkan_vector_index.add_batch_dimension_mismatch",
+                     "a zero-dimensional vector added AFTER dimensionality is already established "
+                     "falls through to the pre-existing dimension-mismatch rejection, not the new "
+                     "zero-dimension-establishing one");
+
+            // A fully empty add_batch() call (ids=[], vectors=[]) is a legitimate no-op, distinct from
+            // the zero-dimensional-VECTOR case above -- must NOT be rejected by the new check.
+            AE_CHECK(idx_zd.add_batch({}, {}).has_value(),
+                     "add_batch with fully empty ids/vectors (a genuine no-op) is still accepted, not "
+                     "confused with a zero-dimensional vector");
+        }
+    }
+
+    // --- Red-team pass 4 (2026-09-22): adversarial/boundary inputs beyond §4c's own coverage -- a
+    // single-vector (n=1), single-dimension (dim=1) corpus, k exactly equal to corpus size, and a
+    // back-to-back no-op add_batch() (empty ids/vectors) sandwiched between two real ones on the same
+    // instance (distinct from the growth-cycle test above, which only ever adds real entries). -------
+    {
+        auto created_edge = VulkanCosineIndex::create();
+        AE_CHECK(created_edge.has_value(), "setup: a sixth index instance is created for n=1/dim=1 "
+                                            "boundary coverage");
+        if (created_edge.has_value()) {
+            VulkanCosineIndex idx_edge = std::move(*created_edge);
+
+            AE_CHECK(idx_edge.add_batch({}, {}).has_value(),
+                     "a no-op add_batch (empty ids/vectors) on a fresh, never-populated index succeeds "
+                     "and establishes nothing");
+            AE_CHECK(idx_edge.size() == 0, "the no-op add_batch left the index empty");
+
+            AE_CHECK(idx_edge.add_batch({"only"}, {{3.0f}}).has_value(),
+                     "add_batch accepts a single dim=1 vector, establishing an n=1 corpus");
+            AE_CHECK(idx_edge.size() == 1, "size() reflects the single n=1 entry");
+
+            // A second no-op add_batch() call AFTER real data exists -- distinct from the
+            // never-populated case above, and distinct from every "real growth" cycle the earlier
+            // three-cycle test already covers: this call changes nothing, but the implementation
+            // still marks the GPU vectors-buffer cache dirty (an accepted, unbenched, performance-only
+            // cost, not a correctness bug -- named here rather than silently exercised and ignored),
+            // and the NEXT search() must still return the single, unchanged, correct entry.
+            AE_CHECK(idx_edge.add_batch({}, {}).has_value(),
+                     "a second no-op add_batch, now with real data already present, also succeeds");
+
+            float const q1[1] = {3.0f};
+            auto r_n1 = idx_edge.search(std::span<float const>(q1, 1), 1);
+            AE_CHECK(r_n1.has_value() && r_n1->size() == 1 && (*r_n1)[0].id == "only" &&
+                         (*r_n1)[0].score > 0.99f,
+                     "search() on an n=1/dim=1 corpus (k=1, exactly equal to corpus size) returns the "
+                     "single entry, unaffected by the intervening no-op add_batch calls");
+
+            auto r_k_over_one = idx_edge.search(std::span<float const>(q1, 1), 5);
+            AE_CHECK(r_k_over_one.has_value() && r_k_over_one->size() == 1,
+                     "search(k > 1) on an n=1 corpus still returns exactly the 1 entry present, not an "
+                     "error and not padded");
+        }
+    }
+
     // --- Red-team pass 3 finding 5 (Real gap): VectorIndex contract behaviors BruteForceCosineIndex's
     // own test suite exercises that this conformer's test never had -- empty-index search, k == 0,
     // and k > corpus size. Implementation already mirrors BruteForceCosineIndex's identical logic for
@@ -201,6 +285,13 @@ int main() {
             AE_CHECK(k_over.has_value() && k_over->size() == 3,
                      "search(k > corpus size) returns every entry, not an error, and does not pad "
                      "with placeholders");
+
+            // Red-team pass 4 (2026-09-22): k exactly equal to corpus size, distinct from both k == 0
+            // and k > corpus size above -- the boundary itself, not just either side of it.
+            auto k_exact = idx3.search(std::span<float const>(any_query, 2), 3);
+            AE_CHECK(k_exact.has_value() && k_exact->size() == 3,
+                     "search(k == corpus size exactly) returns every entry, the same as k > corpus "
+                     "size, not truncated to fewer");
         }
     }
 
