@@ -4,27 +4,56 @@
   components (§3.0 items 1/2/3, part of item 4, and item 5's ack-digest half): `include/agentengine/eval/`
   (`lesson_candidate.hpp`, `eval_principal.hpp`, `promotion_ack.hpp`, `tier1_statistics.hpp`), plus the FIRST SLICE
   of the trial-running harness itself (§3.0 items 2-4, §3.2, §3.4, §3.9's `EvalStore`): `eval_store.hpp`,
-  `eval_stub_tool.hpp`, `eval_trial.hpp` — **147/147 checks green** across 7 test binaries (`test_lesson_candidate`
+  `eval_stub_tool.hpp`, `eval_trial.hpp` — **150/150 checks green** across 7 test binaries (`test_lesson_candidate`
   43, `test_eval_principal` 15, `test_promotion_ack` 9, `test_tier1_statistics` 37, `test_eval_store` 9,
-  `test_eval_stub_tool` 11, `test_eval_trial_driver` 23) plus a compile-fail/positive-control pair (§3.8), clean
-  under MSVC, clang-cl `-Wall -Wextra -Werror -fsyntax-only`, and `tools/naming_lint.py`. **Two separate live runs
-  against DeepSeek `deepseek-flash`** (`test_eval_trial_driver_live_e2e`, live-network-labelled, observation not a
-  gate — a live model is nondeterministic, disclosed and demonstrated: the first run showed the treatment trial's
-  lesson delivered via a real `recall` tool call, the second showed it delivered via context injection alone, no
-  `recall` call at all — both are correct instances of this slice's own delivery-detection logic working against
-  real model behaviour, not a single reproduced outcome to be read as settled). **Round 1 of red-teaming this new
-  slice (three independent reviewers: security/capability confinement, correctness/coroutine-lifetime, ADR
-  coherence) found and fixed two real MAJOR bugs and one FATAL documentation self-contradiction:** `delivered` was
-  vacuously `true` whenever a trial produced zero recordings (e.g. `max_turns=0`, or any setup failure before the
-  first model call) — the "every request satisfies delivery" fold never got a chance to falsify itself, so a trial
-  that never ran reported the same signal as a real success; fixed by also requiring at least one recording. A
-  caller could pass an ALREADY-WRAPPED `RecordingChatClient<X>` as `Inner`, chaining the caller's own external sink
-  onto every trial call outside the trial's own `EvalStore`/`CapabilitySet` confinement, defeating the doc
-  comment's "there is no way to call it unwrapped" claim in effect if not in type; fixed with a `static_assert`
-  (proven both ways by a compile-fail/positive-control pair, §3.8). `decisions/README.md`'s own ADR-181 row also
-  directly contradicted itself (claiming a live model was called, then closing "No model was called.") — fixed.
-  The lifetime/coroutine-frame reviewer found no FATAL or MAJOR issues in the actual coroutine wiring (verified
-  clean under ASan/UBSan). **Round 1's own fixes are not yet re-red-teamed.** Round 5 surfaced a real bug review
+  `test_eval_stub_tool` 11, `test_eval_trial_driver` 26) plus a compile-fail/positive-control TRIPLE (§3.8; round 2
+  added a third file proving the same rejection for `SummarizerT`), clean under MSVC, clang-cl
+  `-Wall -Wextra -Werror -fsyntax-only`, and `tools/naming_lint.py`. **Two separate live runs against DeepSeek
+  `deepseek-flash`** (`test_eval_trial_driver_live_e2e`, live-network-labelled, observation not a gate — a live
+  model is nondeterministic, disclosed and demonstrated: the first run showed the treatment trial's lesson delivered
+  via a real `recall` tool call, the second showed it delivered via context injection alone, no `recall` call at all
+  — both are correct instances of this slice's own delivery-detection logic working against real model behaviour,
+  not a single reproduced outcome to be read as settled). **Round 1 of red-teaming this new slice (three independent
+  reviewers: security/capability confinement, correctness/coroutine-lifetime, ADR coherence) found and fixed two
+  real MAJOR bugs and one FATAL documentation self-contradiction:** `delivered` was vacuously `true` whenever a
+  trial produced zero recordings (e.g. `max_turns=0`, or any setup failure before the first model call) — the
+  "every request satisfies delivery" fold never got a chance to falsify itself, so a trial that never ran reported
+  the same signal as a real success; fixed by also requiring at least one recording. A caller could pass an
+  ALREADY-WRAPPED `RecordingChatClient<X>` as `Inner`, chaining the caller's own external sink onto every trial call
+  outside the trial's own `EvalStore`/`CapabilitySet` confinement, defeating the doc comment's "there is no way to
+  call it unwrapped" claim in effect if not in type; fixed with a `static_assert` (proven both ways by a
+  compile-fail/positive-control pair, §3.8). `decisions/README.md`'s own ADR-181 row also directly contradicted
+  itself (claiming a live model was called, then closing "No model was called.") — fixed. The lifetime/coroutine-
+  frame reviewer found no FATAL or MAJOR issues in the actual coroutine wiring (verified clean under ASan/UBSan).
+  **Round 2 (three fresh independent reviewers: confinement completeness, delivery-detection-logic correctness,
+  doc/code coherence) re-red-teamed round 1's own fixes and found and fixed two more real MAJOR bugs, hardened one
+  more, and disclosed two structural residuals honestly rather than papering over them:** round 1's `static_assert`
+  only ever checked `Inner` — `SummarizerT` had ZERO confinement enforcement, and `MemoryProvider::on_turn_end`
+  calls `summarizer_.chat_stream(...)` every turn over that round's own content, so a caller could pass an
+  already-wrapped `RecordingChatClient<X>` DIRECTLY as `summarizer` (no forwarding shim even needed) and its
+  external sink would observe trial-internal content — the identical escape round 1 fixed for `Inner`, on the
+  parameter round 1 never looked at; fixed the same way (proven by a third compile-fail file). Separately,
+  `delivered_via_recall` used a sticky `bool recall_seen` that, once any recall call happened at all, stayed true
+  for the rest of the trial — so a LATER, unrelated message that happened to contain the lesson text (coincidence,
+  or another stub tool's canned reply) got misreported as "delivered via recall" even when that specific recall
+  call's own result never carried the lesson (proven with a compiled, executed reproduction: seeding at salience
+  0.0, evicting the lesson from `recall`'s own top-10 ranking with unrelated higher-salience writes, confirming
+  recall's own result was lesson-free, and still observing the false positive); fixed by keying the check to the
+  specific `ToolResult::call_id` matching a recorded `recall` `ToolCall::call_id`, not a trial-wide sticky flag —
+  pinned by a new regression scenario exercising the fixed helper directly. The confinement trait was also hardened
+  (MINOR) against cv/ref-qualified spellings via `std::remove_cvref_t`, not reachable through ordinary calls but
+  cheap to close anyway. Two RESIDUALS are disclosed, not fixed: the `is_recording_chat_client_v` trait is a
+  NOMINAL check and cannot see through a hand-written forwarding shim around an already-wrapped client (proven with
+  a compiled proof-of-concept) — there is no general fix for this in C++ without reflection, and it defends against
+  round 1's actual, most-likely-accidental misuse, not against a trial's own trusted caller code deliberately
+  sabotaging its own confinement check; and `TrialSpec::extra_capabilities`/`EvalStore`'s hardcoded `"trial"`
+  tenant-suffix each have a documented, non-exploitable MINOR gap (no defense-in-depth check on host-supplied
+  capabilities; a reused `trial_id` collapses two trials' audit identity without breaking physical isolation) — see
+  the inline comments in `eval_trial.hpp` for both. Round 2's coherence reviewer also caught `decisions/README.md`
+  citing a stale pre-round-1-fix check count ("143/143"/"19/19") that round 1's own fix had already moved past in
+  this file without updating the sibling doc, and a stale §8 naming-lint line still listing `EvalStore` as
+  "needing" resolution after it was already annotated (round 5) — both fixed. **Round 2's own fixes are not yet
+  re-red-teamed.** Round 5 surfaced a real bug review
   alone had not: the first `clopper_pearson_lower_bound`
   bisected against the wrong monotonicity direction and silently converged to a plausible-looking wrong answer;
   `test_tier1_statistics`'s own duality/boundary checks caught it before any reviewer looked. Round 5's own
@@ -1004,6 +1033,25 @@ non-determinism (I5) beyond `tier1_statistics.hpp`'s pre-existing, explicitly-se
 `run_trial`. `EvalStubToolProvider::on_context()` copying `ToolDescriptor`s once per round: safe (only trivially-
 copyable captured state), confirmed live over 3 rounds.
 
+**Round 2 (re-red-teaming round 1's own fixes)**: three fresh independent reviewers, none carrying context from
+round 1's own review process: confinement completeness (**R-TH2-Sec**), delivery-detection-logic correctness
+(**R-TH2-Logic**), doc/code coherence (**R-TH2-Coh**).
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| R-TH2-Sec1 | major | Round 1's `static_assert` only ever checked `Inner`. `SummarizerT` had ZERO confinement enforcement: `MemoryProvider::on_turn_end` unconditionally calls `summarizer_.chat_stream(...)` every turn over that round's own content (including a `recall` reply's lesson text), so a caller could pass an already-wrapped `RecordingChatClient<X>` DIRECTLY as `summarizer` — no forwarding shim even needed — and its external sink would observe trial-internal content, the identical escape round 1 fixed for `Inner`, just on the parameter round 1 never looked at. Proven with a compiled proof-of-concept | A second `static_assert(!detail::is_recording_chat_client_after_decay_v<SummarizerT>, ...)` now rejects this at compile time, proven by a third compile-fail file (§3.8, `eval_run_trial_rejects_prewrapped_summarizer.cpp`); the existing positive-control file already covers a plain `SummarizerT` too |
+| R-TH2-Sec2 | minor (hardening) | The confinement trait, `is_recording_chat_client_v<T>`, is a class-template partial specialization, which does NOT strip a top-level cv/ref qualifier the way by-value parameter deduction does — an explicitly-specified `run_trial<RecordingChatClient<X> const>(...)` read the trait as `false`. Not reachable through ordinary calls (deduction from `Inner primary_client`/`SummarizerT summarizer` always strips top-level cv/ref, and the const case independently fails to compile for an unrelated reason) | Hardened anyway with `std::remove_cvref_t` before the trait lookup (`is_recording_chat_client_after_decay_v`) — a defense-in-depth check should not rely on a caller never trying |
+| R-TH2-Sec3 | *disclosed residual, not fixed* | The trait is a NOMINAL check on the exact template-id `RecordingChatClient<T>`. `LegacyChatClient` is pure structural/duck typing, so a hand-written class that privately holds an already-wrapped `RecordingChatClient<X>` and forwards `capabilities()`/`chat()`/`chat_stream()` to it satisfies `LegacyChatClient`, is a DIFFERENT type, and slips past the `static_assert` — proven with a ~10-line compiled forwarding shim. There is no general fix for this in C++ without reflection | Disclosed in `eval_trial.hpp`'s own comment rather than left implicit: this check catches round 1's actual, most-likely-accidental misuse (passing an already-wrapped client directly), not a trial's own trusted caller code deliberately writing a shim to defeat its own confinement check — a different trust boundary than I2/I3 govern (untrusted model output reaching an effect, not trusted authoring code sabotaging itself) |
+| R-TH2-Sec4 | minor | `TrialSpec::extra_capabilities` is merged into the trial's `CapabilitySet` with no defense-in-depth check that a host didn't accidentally forward a capability scoped to something other than what the trial should touch (e.g. a stray `cap::FsRead` aimed at a production mount). Traced: no path from `spec.candidate` reaches this field (not I3-violating), and merging does not itself widen the trial's own FsRead/FsWrite grants | Disclosed in the field's own comment; no gate added — not exploitable from untrusted input, only a missing caller-mistake guard |
+| R-TH2-Sec5 | minor | `EvalStore::make("trial", spec.trial_id)` hardcodes the tenant_suffix; two `run_trial` calls that reuse the same `trial_id` mint an identical `Principal`. Traced: does NOT cause cross-trial data exposure (every real store access takes the `OS&`/`RS&` instance as an explicit parameter, never a mount_id-keyed global lookup) — the residual is `MemoryOrigin::attribution.principal` uniqueness only (I4-adjacent) | Disclosed in `run_trial`'s own comment; callers minting many trials should pass a genuinely unique `trial_id` per attempt |
+| R-TH2-Logic1 | major | `delivered_via_recall` used a sticky `bool recall_seen` set `true` by ANY recall call and never reset — so a LATER, unrelated non-memory-attributed message that happened to contain the lesson text (coincidence, or another stub tool's canned reply) was misreported as "delivered via recall" even when THAT recall call's own result never carried the lesson. Proven with a compiled, executed reproduction: seeded the lesson at salience 0.0, evicted it from `recall`'s own top-10 ranking with 12 unrelated higher-salience writes, confirmed by inspecting the recording that recall's own `ToolResult` was genuinely lesson-free, and still observed `delivered_via_recall == true` | Replaced the sticky flag with a `std::unordered_set<std::string>` of recall `ToolCall::call_id`s seen so far, and keyed the check to a `ToolResult` whose OWN `call_id` matches one of them (`message_contains_recall_result`) — the pairing `ToolCall`/`ToolResult` already carry in `content.hpp`. New regression scenario (S6, `test_eval_trial_driver.cpp`) exercises the fixed helper directly against exactly this shape (a matching-call_id case, a non-matching-call_id case, and a truly-empty-recall-result case) |
+| R-TH2-Coh1 | major | `decisions/README.md`'s ADR-181 row cited a stale, pre-round-1-fix check count — "143/143 checks green across 7 test binaries" and "Proven deterministically (19/19, a scripted model)" — that round 1's own fix (adding Scenario 5) had already moved past in this very ADR's status header (147/147) without the same edit reaching the sibling doc | Corrected to the current count in the same edit that updated it for round 2 (now 150/150) |
+| R-TH2-Coh2 | minor | §8's naming-lint residual line still listed `EvalStore` as a name "needing" `tools/naming_lint.py` resolution, even though `eval_store.hpp` already carries the `ae-naming-lint: allow` comment (round 5) that is this codebase's own accepted resolution mechanism everywhere else | Removed `EvalStore` from that line |
+
+**Checked and held up (R-TH2-Logic, no other bug found):** string-containment fragility vs. attribution airtightness — confirmed `assemble_context()` stamps `attribution` unconditionally from a fixed, compile-time contributor name, applied only to `ContextContribution.messages`, never to tool-pipeline-appended `ToolResult` messages, so `message_is_memory_attributed` cannot be spoofed by a stub tool's or `recall`'s own reply text (the substring-match fragility is real but correctly firewalled for the primary `delivered` flag). Multiple-candidates/repeated-content: structurally impossible this slice (`TrialSpec::candidate` is a single `optional`, `write_memory_item` called exactly once). The "every round" bar for `delivered`: not a bug, it is §3.2/E21's own explicit spec (catching salience-driven mid-trial eviction), correctly implemented by the per-request AND-fold. Recording order: confirmed synchronous, inline, no concurrency in the only path this slice's clients use. **Noted, not yet acted on:** §3.2 prose describes delivery as "context injection OR recall" but `delivered` and `delivered_via_recall` remain two separate, never-OR'd fields — harmless today (nothing consumes them as a single value yet) but whoever wires `tier1_statistics.hpp` to real trial output next must not naively read `delivered` alone as "the ADR's delivered concept," or it will silently undercount recall-only-delivered trials.
+
+**Round 2's own fixes are not yet re-red-teamed.**
+
 ## 8. Residuals
 
 - **External validity.** A suite passing says nothing about production tasks. Task authorship (who writes them, how
@@ -1142,7 +1190,9 @@ copyable captured state), confirmed live over 3 rounds.
   **multi-slot, multi-step, free-text, between-common-value and single-task steering is weakly or not covered**
   (§3.7) — and whether one-shard-per-family supply is workable in practice.
 - **Names needing `tools/naming_lint.py`:** `EvalSuite`, `EvalRun`, `PromotionEvidence`, `LookLedger`,
-  `ScreenResult`, `SlotTable`, `EvalStore` (round 4: the first list omitted the last three).
+  `ScreenResult`, `SlotTable` (round 4: the first list omitted the last three; round 2 red-team of the
+  trial-running slice removed `EvalStore` from this line — `eval_store.hpp` already carries its own
+  `ae-naming-lint: allow` comment, the same resolution every other type in this slice uses).
   `EvaluationVerdict` is taken by the reflection loop and must not be reused.
 - 022 §4/§7 amendment (a pointer to this ADR) is still to write.
 - **ADR-179 §7 amendment (round 4):** pull `LessonCandidate` and `render_lesson` into stage 2 scope so Tier 1 does

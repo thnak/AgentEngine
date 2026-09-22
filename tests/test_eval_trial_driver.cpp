@@ -10,6 +10,7 @@
 #include <memory>
 #include <memory_resource>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "agentengine/eval/eval_trial.hpp"
@@ -271,6 +272,58 @@ int main() {
         AE_CHECK(!result.delivered,
                  "S5: round-1 fix -- delivered is NOT vacuously true when nothing was ever recorded, "
                  "even though a candidate was seeded");
+    }
+
+    // ---- Scenario 6: round-2 red-team fix -- delivered_via_recall must be tied to the SPECIFIC
+    // recall call's own result, not to "a recall call happened at some earlier point in the trial"
+    // (a round-2 reviewer's proof-of-concept: seeding the lesson at salience 0.0 and pushing it out
+    // of recall's own top-10 ranked results with unrelated higher-salience writes showed the OLD,
+    // sticky-bool version reporting delivered_via_recall==true from a LATER, unrelated tool reply,
+    // even though recall's own result never carried the lesson). This exercises the fixed detail
+    // helpers directly -- the exact call_id-keyed logic run_trial's main loop now uses -- since
+    // reproducing the full ranking-eviction sequence end-to-end would need a much longer scripted
+    // session than this suite's other scenarios; the keying logic itself is what changed, and that
+    // is what this pins. ------------------------------------------------------------------------
+    {
+        std::string const lesson = "the default region is eu-west-1";
+
+        auto tool_result_message = [](std::string call_id, std::string text) {
+            ae::Message m{};
+            m.role = ae::role::tool;
+            ae::ToolResult result{};
+            result.call_id = std::move(call_id);
+            ae::ContentItem nested{};
+            nested.origin = ae::content_origin::tool;
+            nested.value  = ae::Text{std::move(text)};
+            result.content.push_back(nested);
+            ae::ContentItem item{};
+            item.origin = ae::content_origin::tool;
+            item.value  = std::move(result);
+            m.content.push_back(item);
+            return m;
+        };
+
+        ae::Message recall_result_without_lesson = tool_result_message("call-A", "no lesson here");
+        ae::Message later_unrelated_message_with_lesson_text = tool_result_message("call-B", lesson);
+
+        std::unordered_set<std::string> only_call_a = {"call-A"};
+        AE_CHECK(!ev::detail::message_contains_recall_result(later_unrelated_message_with_lesson_text,
+                                                                lesson, only_call_a),
+                 "S6: a ToolResult whose call_id does NOT match any recorded recall call must not "
+                 "count as recall delivery, even though its text coincidentally matches and SOME "
+                 "recall call happened earlier in the trial");
+
+        std::unordered_set<std::string> only_call_b = {"call-B"};
+        AE_CHECK(ev::detail::message_contains_recall_result(later_unrelated_message_with_lesson_text,
+                                                               lesson, only_call_b),
+                 "S6: a ToolResult whose call_id DOES match a recorded recall call, and whose own "
+                 "content carries the lesson, correctly counts as recall delivery");
+
+        AE_CHECK(!ev::detail::message_contains_recall_result(recall_result_without_lesson, lesson,
+                                                                only_call_a),
+                 "S6: recall's OWN result genuinely not containing the lesson correctly does not "
+                 "count as delivery (the pre-fix sticky bool would have let a LATER message fool "
+                 "this check regardless of what recall itself returned)");
     }
 
     if (g_failures != 0) {

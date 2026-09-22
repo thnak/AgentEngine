@@ -524,6 +524,35 @@ message(STATUS
   "ADR-181 §3.8 compile-fail proof: OK (run_trial rejects a pre-wrapped RecordingChatClient<...> as "
   "Inner; a plain Inner still compiles)")
 
+# ---- ADR-181 §3.8 compile-fail proof, round 2: the SAME rejection for SummarizerT --------------
+# Round 1's static_assert only checked Inner; a round-2 reviewer proved a pre-wrapped
+# RecordingChatClient<X> passed DIRECTLY as SummarizerT compiled cleanly and let its external sink
+# observe MemoryProvider::on_turn_end's per-turn content outside the trial's confinement -- the
+# identical escape, on the parameter round 1 never looked at. This proves the round-2 fix is real;
+# eval_run_trial_plain_inner_positive_control.cpp above (a plain Inner AND plain Summarizer) already
+# serves as this fix's positive control -- no separate one needed.
+try_compile(AE_EVAL_RUN_TRIAL_REJECTS_PREWRAPPED_SUMMARIZER
+  "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/eval_run_trial_rejects_prewrapped_summarizer"
+  SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/eval_run_trial_rejects_prewrapped_summarizer.cpp"
+    ${AE_EVAL_RUN_TRIAL_DEPS}
+  CMAKE_FLAGS
+    "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
+    "-DCMAKE_CXX_STANDARD=23" "-DCMAKE_CXX_STANDARD_REQUIRED=ON"
+  LINK_LIBRARIES ${AE_EVAL_RUN_TRIAL_LINK_LIBRARIES}
+  OUTPUT_VARIABLE AE_EVAL_RUN_TRIAL_REJECTS_PREWRAPPED_SUMMARIZER_LOG)
+if(AE_EVAL_RUN_TRIAL_REJECTS_PREWRAPPED_SUMMARIZER)
+  message(FATAL_ERROR
+    "ADR-181 §3.8 VIOLATED: tests/compile_fail/eval_run_trial_rejects_prewrapped_summarizer.cpp "
+    "compiled, but run_trial must reject a SummarizerT that is already a RecordingChatClient<...> -- "
+    "a pre-wrapped instance's own external sink would observe every trial's per-turn summarizer "
+    "traffic outside this trial's confinement. "
+    "Build log:\n${AE_EVAL_RUN_TRIAL_REJECTS_PREWRAPPED_SUMMARIZER_LOG}")
+endif()
+message(STATUS
+  "ADR-181 §3.8 compile-fail proof (round 2): OK (run_trial rejects a pre-wrapped "
+  "RecordingChatClient<...> as SummarizerT too)")
+
 # ---- Keep assert() live in every configuration, Release included --------------------------------
 # 13 files here (195 assert() calls) use bare <cassert> rather than the AE_CHECK/g_failures harness:
 # smoke_vocabulary, test_job_object_limits, test_native_jail_runner_stubs, test_python_audit_hook,

@@ -20,6 +20,8 @@
 #include <optional>
 #include <string>
 #include <tuple>
+#include <type_traits>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -57,7 +59,16 @@ struct TrialSpec {  // ae-naming-lint: allow TrialSpec — ADR-181 §3.0 items 2
     // A real `ChatClientT` may need capabilities of its own beyond memory access -- e.g. a
     // `cap::Secret` grant for an `OpenAIChatClient`'s outbound auth (the live DeepSeek check uses
     // exactly this). Merged into the trial's own FsRead/FsWrite grants; never populated from model
-    // or candidate output (I3) -- host-supplied only.
+    // or candidate output (I3) -- host-supplied only; traced (round-2 red-team) to confirm no path
+    // from `TrialSpec::candidate` reaches this field.
+    //
+    // Round-2 red-team RESIDUAL (MINOR, disclosed): this field is merged in with no defense-in-depth
+    // check that a host didn't accidentally forward a capability scoped to something OTHER than what
+    // this trial should touch (e.g. a stray `cap::FsRead`/`cap::FsWrite` aimed at a production
+    // memory mount, rather than a genuinely trial-external need like `cap::Secret`). Not exploitable
+    // from untrusted input (host-only, see above), and merging into one flat `CapabilitySet` does
+    // not itself widen the trial's own FsRead/FsWrite grants (each capability kind is independently
+    // matched by `CapabilitySet::subsumes()`) -- but a caller-side mistake here would go unflagged.
     std::vector<Capability> extra_capabilities;
 };
 
@@ -119,10 +130,38 @@ namespace detail {
     return message.attribution.has_value() && message.attribution->contributor_type == "memory";
 }
 
-[[nodiscard]] inline bool response_has_recall_call(ChatResponse const& response) {
+// Collects the `call_id` of every `recall` tool call in this response (there is normally at most
+// one per round, but nothing structurally prevents more).
+[[nodiscard]] inline std::vector<std::string> response_recall_call_ids(ChatResponse const& response) {
+    std::vector<std::string> ids;
     for (ContentItem const& item : response.message.content) {
         if (auto const* call = std::get_if<ToolCall>(&item.value); call != nullptr) {
-            if (call->tool_name == "recall") return true;
+            if (call->tool_name == "recall") ids.push_back(call->call_id);
+        }
+    }
+    return ids;
+}
+
+// Round-2 red-team fix (MAJOR): `delivered_via_recall` must be tied to what THAT SPECIFIC recall
+// call's own result carried, not to "a recall call happened at some earlier point in the trial."
+// A prior version used a sticky `bool recall_seen` that, once set by any recall call (even one
+// whose own result never mentioned the lesson -- e.g. it had already been evicted from memory by
+// salience-driven ranking), stayed true for the rest of the trial: any LATER, unrelated
+// non-memory-attributed message that happened to contain the lesson text (a coincidence, or another
+// stub tool's canned reply) was then misreported as "delivered via recall." Proven with a compiled,
+// executed reproduction that seeded the lesson at salience 0.0, pushed it out of `recall`'s own
+// top-10 ranked results with 12 unrelated higher-salience writes, confirmed by inspecting the
+// recording that recall's own `ToolResult` truly did not carry the lesson text, and still observed
+// `delivered_via_recall == true` from a later, unrelated tool reply. Fixed by keying the check to
+// the specific `ToolResult::call_id` that matches a `recall` `ToolCall::call_id` recorded so far --
+// exactly the pairing `ToolCall`/`ToolResult` already carry (content.hpp) -- rather than a
+// trial-wide sticky flag.
+[[nodiscard]] inline bool message_contains_recall_result(Message const& message, std::string_view needle,
+                                                            std::unordered_set<std::string> const& recall_call_ids) {
+    for (ContentItem const& item : message.content) {
+        if (auto const* result = std::get_if<ToolResult>(&item.value); result != nullptr &&
+            recall_call_ids.contains(result->call_id) && content_item_contains(item, needle)) {
+            return true;
         }
     }
     return false;
@@ -138,10 +177,38 @@ namespace detail {
 // proof-of-concept that observed the seeded lesson text through exactly this path. Rejected here,
 // structurally, rather than left to a doc comment's "there is no way to..." claim, which was true
 // of the wrapper TYPE but not of this misuse.
+//
+// Round-2 red-team hardening: `std::remove_cvref_t` before the trait lookup closes a real (if
+// impractical to reach through ordinary argument deduction) blind spot -- a class-template partial
+// specialization does NOT strip a top-level cv/ref qualifier the way by-value parameter deduction
+// does, so an explicitly-specified `run_trial<RecordingChatClient<X> const>(...)` read this trait as
+// `false` before this fix. Ordinary calls were never actually exploitable this way (deduction from
+// `Inner primary_client`/`SummarizerT summarizer` always strips top-level cv/ref, and the const case
+// independently fails to compile the moment `RecordingChatClient<Inner>::chat()` calls its own
+// non-const `inner_.chat(...)` on a const member) -- fixed anyway since the cost is one call to
+// `remove_cvref_t` and a defense-in-depth check should not rely on a caller never trying.
+//
+// Round-2 red-team RESIDUAL, disclosed rather than silently left (decisions/ADR-181-evaluation-
+// harness.md §8): this trait is a NOMINAL check on the exact template-id `RecordingChatClient<T>`.
+// `LegacyChatClient` is pure structural/duck typing (chat_client.hpp), so a hand-written class that
+// privately holds an already-wrapped `RecordingChatClient<X>` and forwards `capabilities()`/
+// `chat()`/`chat_stream()` to it satisfies `LegacyChatClient`, is a DIFFERENT type from
+// `RecordingChatClient<T>`, and slips past this static_assert -- proven with a compiled
+// proof-of-concept (a ~10-line forwarding shim). There is no general fix for this in C++ without
+// reflection: detecting "this type's methods internally forward to some other object with a sink" is
+// not something a type trait can decide. This check catches the OBVIOUS, most-likely-ACCIDENTAL
+// misuse round 1 found (passing an already-wrapped client directly); it is not, and cannot be, a
+// defense against a trial's own trusted, host-authored caller code deliberately writing a shim to
+// defeat its own confinement check -- that is a different trust boundary (I2/I3 defend against
+// untrusted model output reaching an effect, not against trusted authoring code sabotaging itself).
 template <class T>
 inline constexpr bool is_recording_chat_client_v = false;
 template <class T>
 inline constexpr bool is_recording_chat_client_v<RecordingChatClient<T>> = true;
+
+template <class T>
+inline constexpr bool is_recording_chat_client_after_decay_v =
+    is_recording_chat_client_v<std::remove_cvref_t<T>>;
 
 }  // namespace detail
 
@@ -157,13 +224,27 @@ inline constexpr bool is_recording_chat_client_v<RecordingChatClient<T>> = true;
 // and get one for free. `Inner` itself must not ALREADY be a `RecordingChatClient<...>` (round-1
 // red-team fix, above): that would chain a caller-supplied external sink onto every trial call,
 // escaping this function's own confinement -- rejected below by a `static_assert`, not just prose.
+//
+// Round-2 red-team fix (FATAL): round 1 only checked `Inner`. `SummarizerT` had ZERO confinement
+// enforcement -- `MemoryProvider::on_turn_end` unconditionally calls `summarizer_.chat_stream(...)`
+// every turn over that round's own content (including a `recall` reply's lesson text), so a caller
+// could pass an already-wrapped `RecordingChatClient<X>` DIRECTLY as `summarizer` -- no forwarding
+// shim even needed -- and its external sink would observe trial-internal content, exactly the same
+// escape round 1 fixed for `Inner`, just on the parameter round 1 never looked at. Proven with a
+// compiled proof-of-concept. Closed the same way, for the same reason.
 template <class Inner, class SummarizerT>
 [[nodiscard]] task<TrialResult> run_trial(Inner primary_client, SummarizerT summarizer, TrialSpec spec) {
-    static_assert(!detail::is_recording_chat_client_v<Inner>,
+    static_assert(!detail::is_recording_chat_client_after_decay_v<Inner>,
                   "run_trial's Inner must not already be a RecordingChatClient<...> -- wrapping it "
                   "here is what enforces this trial's confinement (ADR-181 §3.8); a pre-wrapped "
                   "instance carries its own external sink that would observe every trial call "
                   "outside this trial's own EvalStore/CapabilitySet confinement");
+    static_assert(!detail::is_recording_chat_client_after_decay_v<SummarizerT>,
+                  "run_trial's SummarizerT must not already be a RecordingChatClient<...> -- "
+                  "MemoryProvider::on_turn_end calls summarizer_.chat_stream(...) every turn over "
+                  "that round's own content, so a pre-wrapped instance's external sink would observe "
+                  "trial-internal content outside this trial's own EvalStore/CapabilitySet "
+                  "confinement, exactly like Inner (round-2 red-team fix)");
     using ObjectStore = InMemoryWorktreeObjectStore;
     using RefStore = rt::InMemoryAppendLogStore;
     using MemProvider = MemoryProvider<SummarizerT, ObjectStore, RefStore>;
@@ -180,6 +261,15 @@ template <class Inner, class SummarizerT>
         co_return trial_result;
     }
 
+    // Round-2 red-team RESIDUAL (MINOR, disclosed): the tenant_suffix is the fixed literal "trial";
+    // only spec.trial_id varies. Two run_trial calls that reuse the same trial_id mint an IDENTICAL
+    // Principal (mount_id is a pure string derivation, memory.hpp) -- traced and confirmed this does
+    // NOT cause cross-trial data exposure (every real store access takes the OS&/RS& instance as an
+    // explicit parameter, never a mount_id-keyed global lookup, so two EvalStore instances can never
+    // physically cross-read regardless of mount_id collision), but it does collapse the two trials'
+    // MemoryOrigin::attribution.principal to the same identity -- an audit/uniqueness residual (I4-
+    // adjacent), not a confinement break. A caller minting many trials should pass a genuinely
+    // unique trial_id per attempt.
     auto store_result = EvalStore::make("trial", spec.trial_id);
     if (!store_result) {
         trial_result.setup_error = store_result.error();
@@ -248,7 +338,10 @@ template <class Inner, class SummarizerT>
     // delivery" fold vacuously true -- the for-loop below never runs, so it never gets a chance to
     // falsify itself, and a trial that never actually called the model reported delivered==true,
     // identical to a real success. Requiring at least one recording closes it.
-    bool recall_seen = false;
+    // Round-2 fix: keyed by the specific recall ToolCall::call_id(s) seen SO FAR, not a sticky
+    // trial-wide bool -- see message_contains_recall_result's comment above for why the sticky
+    // flag was wrong.
+    std::unordered_set<std::string> recall_call_ids;
     bool every_request_delivered = !rendered_lesson_content.empty() && !trial_result.recordings.empty();
     for (ChatCallRecording const& rec : trial_result.recordings) {
         bool this_request_carries_memory_attributed_lesson = false;
@@ -257,17 +350,18 @@ template <class Inner, class SummarizerT>
                 detail::message_contains(msg, rendered_lesson_content)) {
                 this_request_carries_memory_attributed_lesson = true;
             }
-            if (recall_seen && !rendered_lesson_content.empty() &&
-                !detail::message_is_memory_attributed(msg) &&
-                detail::message_contains(msg, rendered_lesson_content)) {
+            if (!rendered_lesson_content.empty() && !recall_call_ids.empty() &&
+                detail::message_contains_recall_result(msg, rendered_lesson_content, recall_call_ids)) {
                 trial_result.delivered_via_recall = true;
             }
         }
         if (!this_request_carries_memory_attributed_lesson) every_request_delivered = false;
 
-        if (rec.response.has_value() && detail::response_has_recall_call(*rec.response)) {
-            trial_result.recall_invoked = true;
-            recall_seen = true;
+        if (rec.response.has_value()) {
+            for (std::string& id : detail::response_recall_call_ids(*rec.response)) {
+                trial_result.recall_invoked = true;
+                recall_call_ids.insert(std::move(id));
+            }
         }
     }
     trial_result.delivered = every_request_delivered;
