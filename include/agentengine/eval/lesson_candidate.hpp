@@ -19,6 +19,19 @@
 // test, so this one function backs both. It REDUCES the injection channel ADR-180 §4b measured
 // (fact-shaped lessons are followed even fenced); it does not close it, and neither ADR claims that
 // it does — a benign-looking value can still pass and still bias behaviour.
+//
+// Round-5 red-team fix (two independent reviewers found the SAME bug the same day, each with a
+// working proof-of-concept): the FIRST version of this file ran the shape checks (URL/path/shell/
+// imperative) on `candidate.value` only. `render_lesson` concatenates `subject`/`key` into `content`
+// and `tags` unmodified, so a hostile `subject` or `key` — plausible, since ADR-179 §3.3 has a
+// reviewer MODEL propose the whole closed record, subject/key included — sailed straight past every
+// check that a value carrying the identical text would have failed. `lesson_identifier_passes_validator`
+// below applies the same shape checks (minus the prose-length floor and common-token check, which
+// assume a sentence-length fact, not a short identifier) to `subject` and `key` too, and additionally
+// rejects the template's own literal join delimiters and any control byte — closing a companion
+// finding (unvalidated subject/key could also make two different candidates render to the identical
+// `content`, since nothing stopped one candidate's subject from containing another's key-and-value
+// boundary text).
 
 #include <algorithm>
 #include <array>
@@ -72,6 +85,74 @@ namespace detail {
     return false;
 }
 
+[[nodiscard]] inline bool has_control_byte(std::string_view s) {
+    for (unsigned char c : s) {
+        if (c < 0x20) return true;  // includes the digest's own 0x1E/0x1F separators
+    }
+    return false;
+}
+
+// The shape checks (URL/hostname/path/shell-fragment/imperative), factored out so `subject`/`key`
+// get the SAME denylist `value` does — round-5's fix for the finding that only `value` was checked.
+// `field_label` names the field in the returned error's message, so a caller can tell which of
+// subject/key/value tripped it.
+[[nodiscard]] inline result<void> reject_injection_shapes(std::string_view text, char const* field_label) {
+    std::string const lower = to_lower_ascii(text);
+
+    static constexpr std::array<char const*, 6> kUrlOrPathNeedles = {
+        "://", "www.", ".com", ".net", ".org", "\\\\",
+    };
+    if (contains_any(lower, std::span{kUrlOrPathNeedles})) {
+        return std::unexpected(error{failure_class::contract,
+                                      std::string("lesson ") + field_label + " looks like a URL or hostname",
+                                      "eval.value_url_shaped"});
+    }
+    if (lower.starts_with('/') || lower.starts_with('.')) {
+        return std::unexpected(error{failure_class::contract,
+                                      std::string("lesson ") + field_label + " looks like a path",
+                                      "eval.value_path_shaped"});
+    }
+
+    static constexpr std::array<char const*, 7> kShellNeedles = {
+        ";", "|", "&&", "`", "$(", "$env:", "%comspec%",
+    };
+    if (contains_any(lower, std::span{kShellNeedles})) {
+        return std::unexpected(error{failure_class::contract,
+                                      std::string("lesson ") + field_label + " looks like a shell fragment",
+                                      "eval.value_shell_shaped"});
+    }
+
+    static constexpr std::array<char const*, 12> kImperativePrefixes = {
+        "run ", "delete ", "exec", "curl ", "rm ", "sudo", "install ", "download ",
+        "send ", "email ", "post ", "call ",
+    };
+    if (starts_with_any(lower, std::span{kImperativePrefixes})) {
+        return std::unexpected(error{failure_class::contract,
+                                      std::string("lesson ") + field_label + " reads as an imperative",
+                                      "eval.value_imperative_shaped"});
+    }
+
+    // Round-5 fix: reject any control byte (this is what actually backs the digest comment's claim
+    // that no adversarial value can inject its 0x1E/0x1F separators — the earlier draft asserted this
+    // without checking it) and the template's own literal join delimiters, so two different
+    // (subject, key) pairs can never render to the same `content` by smuggling one field's text
+    // across the boundary `render_lesson`'s template draws between fields.
+    if (has_control_byte(text)) {
+        return std::unexpected(error{failure_class::contract,
+                                      std::string("lesson ") + field_label + " contains a control byte",
+                                      "eval.value_control_byte"});
+    }
+    static constexpr std::array<char const*, 2> kTemplateDelimiters = {" (", "): "};
+    if (contains_any(text, std::span{kTemplateDelimiters})) {
+        return std::unexpected(error{failure_class::contract,
+                                      std::string("lesson ") + field_label +
+                                          " contains render_lesson's own field delimiter",
+                                      "eval.value_delimiter_collision"});
+    }
+
+    return {};
+}
+
 }  // namespace detail
 
 // ADR-179 §3.3's length cap + validator; ADR-181 §3.7's length-floor/common-token prerequisite for
@@ -79,6 +160,14 @@ namespace detail {
 // unrelated context). Bounds are host constants, not derived from the candidate (I3).
 inline constexpr std::size_t kLessonValueMinLength = 6;
 inline constexpr std::size_t kLessonValueMaxLength = 200;
+
+// `subject`/`key` are short identifiers, not sentence-length facts (examples: "deploy-region",
+// "default-region") — a 6-character prose floor would reject legitimate short identifiers, so this
+// bound is deliberately looser than `lesson_value_passes_validator`'s. The identifier validator below
+// still applies every SHAPE check `value` gets; only the length floor and the common-token check
+// (which assumes prose, not a domain identifier) differ.
+inline constexpr std::size_t kLessonIdentifierMinLength = 1;
+inline constexpr std::size_t kLessonIdentifierMaxLength = 80;
 
 [[nodiscard]] inline result<void> lesson_value_passes_validator(std::string_view value) {
     if (value.size() < kLessonValueMinLength || value.size() > kLessonValueMaxLength) {
@@ -90,10 +179,12 @@ inline constexpr std::size_t kLessonValueMaxLength = 200;
 
     // Common tokens: rejected only as a WHOLE-value match (a common word inside a longer, specific
     // value is fine and is exactly what a real lesson looks like) — this is the spurious-containment
-    // guard ADR-181 §3.7 names, not a content filter.
-    static constexpr std::array<char const*, 16> kCommonWholeValues = {
-        "the", "a", "an", "is", "are", "was", "were", "test", "true", "false",
-        "none", "null", "default", "example", "value", "ok",
+    // guard ADR-181 §3.7 names, not a content filter. Round-5 fix: the first draft's list mixed in
+    // words shorter than `kLessonValueMinLength` (6), which the length check above already catches
+    // first — those entries were unreachable dead code (a round-5 reviewer found this). Every entry
+    // below is >= 6 characters and therefore actually exercised by this check.
+    static constexpr std::array<char const*, 8> kCommonWholeValues = {
+        "default", "example", "unknown", "general", "various", "current", "normal", "typical",
     };
     for (auto const* common : kCommonWholeValues) {
         if (lower == common) {
@@ -102,39 +193,20 @@ inline constexpr std::size_t kLessonValueMaxLength = 200;
         }
     }
 
-    // URL / hostname / path shapes.
-    static constexpr std::array<char const*, 6> kUrlOrPathNeedles = {
-        "://", "www.", ".com", ".net", ".org", "\\\\",
-    };
-    if (detail::contains_any(lower, std::span{kUrlOrPathNeedles})) {
-        return std::unexpected(error{failure_class::contract,
-                                      "lesson value looks like a URL or hostname", "eval.value_url_shaped"});
-    }
-    if (lower.starts_with('/') || lower.starts_with('.') ) {
-        return std::unexpected(error{failure_class::contract,
-                                      "lesson value looks like a path", "eval.value_path_shaped"});
-    }
+    return detail::reject_injection_shapes(value, "value");
+}
 
-    // Shell fragments.
-    static constexpr std::array<char const*, 7> kShellNeedles = {
-        ";", "|", "&&", "`", "$(", "$env:", "%comspec%",
-    };
-    if (detail::contains_any(lower, std::span{kShellNeedles})) {
+// Round-5 fix: applies the same shape denylist `lesson_value_passes_validator` uses to `subject`/
+// `key`, which the first draft of `render_lesson` left completely unvalidated beyond non-emptiness —
+// two independent round-5 reviewers found this and each built a working proof-of-concept (a hostile
+// `subject` containing a URL+shell-pipe payload, rejected outright when placed in `value`, sailed
+// through unmodified when placed in `subject`).
+[[nodiscard]] inline result<void> lesson_identifier_passes_validator(std::string_view text) {
+    if (text.size() < kLessonIdentifierMinLength || text.size() > kLessonIdentifierMaxLength) {
         return std::unexpected(error{failure_class::contract,
-                                      "lesson value looks like a shell fragment", "eval.value_shell_shaped"});
+                                      "lesson identifier length outside [min,max]", "eval.identifier_length"});
     }
-
-    // Imperatives: a small denylist of leading verbs a "fact" should never start with.
-    static constexpr std::array<char const*, 12> kImperativePrefixes = {
-        "run ", "delete ", "exec", "curl ", "rm ", "sudo", "install ", "download ",
-        "send ", "email ", "post ", "call ",
-    };
-    if (detail::starts_with_any(lower, std::span{kImperativePrefixes})) {
-        return std::unexpected(error{failure_class::contract,
-                                      "lesson value reads as an imperative", "eval.value_imperative_shaped"});
-    }
-
-    return {};
+    return detail::reject_injection_shapes(text, "identifier");
 }
 
 // ADR-181 §3.0 item 1: `render_lesson(candidate, template_version) -> MemoryItem{kind=procedural,
@@ -149,10 +221,8 @@ inline constexpr std::size_t kLessonValueMaxLength = 200;
 [[nodiscard]] inline result<MemoryItem> render_lesson(LessonCandidate const& candidate,
                                                         std::string_view template_version,
                                                         float salience) {
-    if (candidate.subject.empty() || candidate.key.empty()) {
-        return std::unexpected(error{failure_class::contract,
-                                      "lesson candidate subject/key must be non-empty", "eval.candidate_malformed"});
-    }
+    if (auto ok = lesson_identifier_passes_validator(candidate.subject); !ok) return std::unexpected(ok.error());
+    if (auto ok = lesson_identifier_passes_validator(candidate.key); !ok) return std::unexpected(ok.error());
     if (auto ok = lesson_value_passes_validator(candidate.value); !ok) return std::unexpected(ok.error());
 
     // Exactly one template exists today ("v1"); an unrecognised version is a contract violation, not
@@ -177,11 +247,11 @@ inline constexpr std::size_t kLessonValueMaxLength = 200;
 // (E31, `promotion_ack.hpp`) and what `write_memory_item`'s own content-only `id` does NOT capture.
 [[nodiscard]] inline result<Digest> rendered_lesson_digest(MemoryItem const& rendered,
                                                              std::string_view template_version) {
-    // Record/unit separators (0x1E/0x1F) keep the fields unambiguous under concatenation — no
-    // adversarial value can inject them (they are non-printable, and the validator above rejects
-    // control characters implicitly by rejecting values outside ordinary printable-token shape in
-    // every path that matters; this digest does not rely on that alone, since it hashes the FULL
-    // structured tuple, not a naive join).
+    // Record/unit separators (0x1E/0x1F) keep the fields unambiguous under concatenation.
+    // `lesson_identifier_passes_validator`/`lesson_value_passes_validator` both explicitly reject any
+    // control byte (round-5 fix — the first draft asserted this without actually checking it, which a
+    // round-5 reviewer flagged), so `content`/`tags` can never carry a literal 0x1E/0x1F this
+    // function's own join would otherwise confuse with a field boundary.
     std::string canonical;
     canonical += template_version;
     canonical += '\x1e';

