@@ -3979,3 +3979,17 @@ add_test(NAME test_rt_agent_session_stream_retry COMMAND test_rt_agent_session_s
 add_executable(test_rt_agent_session_cancel test_rt_agent_session_cancel.cpp)
 target_link_libraries(test_rt_agent_session_cancel PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_agent_session_cancel COMMAND test_rt_agent_session_cancel)
+
+# decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.6/§3 claim 7 -- VulkanCosineIndex
+# (src/backends/vulkan_vector_index/): basic correctness, VectorIndex conformance, and the
+# epsilon-bounded GPU-vs-CPU score comparison at dim=1536, n in {1000, 5000}. Only built when
+# AGENTENGINE_WITH_VULKAN is explicitly turned ON (root CMakeLists.txt) -- the test binary itself
+# fails closed (SKIP, exit 0) at RUN time if no Vulkan-capable device is present on the machine
+# actually running ctest, matching AGENTENGINE_WITH_HTTPS-gated live-network tests' own SKIP-not-FAIL
+# posture for an environment precondition this repo cannot guarantee on every CI/dev machine.
+if(AGENTENGINE_WITH_VULKAN)
+  add_executable(test_vulkan_cosine_index test_vulkan_cosine_index.cpp)
+  target_link_libraries(test_vulkan_cosine_index PRIVATE
+    agentengine::core agentengine::vulkan_vector_index agentengine_warnings)
+  add_test(NAME test_vulkan_cosine_index COMMAND test_vulkan_cosine_index)
+endif()

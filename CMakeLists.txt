@@ -629,6 +629,69 @@ if(AGENTENGINE_WITH_HTTPS)
   add_library(agentengine::provider_http_client ALIAS agentengine_provider_http_client)
 endif()
 
+# ---- decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.6/§2.7 -- VulkanCosineIndex,
+# a GPU-accelerated, exact-brute-force VectorIndex seam backend (CONVENTIONS.md Tier 2: one dependency,
+# the Vulkan LOADER, never linked unless selected). ONE generic, cross-vendor GPU conformer -- not a
+# multi-vendor GPU abstraction layer; a CUDA/Metal/ROCm-specific backend is a separate VectorIndex
+# conformer someone else writes against the same seam (ADR-180 §2.7's own explicit scope decision).
+option(AGENTENGINE_WITH_VULKAN
+  "Build the Vulkan-accelerated VectorIndex seam backend (VulkanCosineIndex, ADR-180 §2.6)"
+  OFF)
+
+if(AGENTENGINE_WITH_VULKAN)
+  # find_package(), not FetchContent: Vulkan is a system driver-level API/loader, not a portable
+  # library archive -- unlike wasmtime/mbedTLS above, there is nothing to usefully vendor here (the
+  # loader dynamically resolves whatever ICD/driver the host's own GPU vendor installed; a vendored
+  # loader would still depend on that same host-side driver to do anything). CMake's own FindVulkan
+  # module locates an installed SDK/runtime via the VULKAN_SDK environment variable or the platform's
+  # standard system paths.
+  find_package(Vulkan REQUIRED)
+
+  # Embeds the checked-in, pre-compiled cosine_similarity.spv into the binary at compile time --
+  # matching this project's own established precedent for AE_CA_BUNDLE_CONTENT above: a run-time file
+  # path would need to keep resolving correctly wherever the build tree or installed binary ends up,
+  # which a compiled-in constant sidesteps entirely. No shader-compiler build-time dependency (glslc)
+  # is introduced -- the .spv is compiled once, by hand, and checked in (see the .comp file's own top
+  # comment for the regen command). `file(READ ... HEX)` (not a plain text read) is required for
+  # correctness here, unlike the CA bundle's own text-mode read: SPIR-V is BINARY data that can
+  # contain embedded NUL bytes, which a text-mode `file(READ)` would silently truncate at.
+  file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/backends/vulkan_vector_index/cosine_similarity.spv"
+    AE_SPIRV_HEX HEX)
+  string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," AE_SPIRV_BYTES "${AE_SPIRV_HEX}")
+  set(AE_SPIRV_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  file(MAKE_DIRECTORY "${AE_SPIRV_GENERATED_DIR}")
+  file(WRITE "${AE_SPIRV_GENERATED_DIR}/vulkan_cosine_similarity_spv.h"
+    "#pragma once\n"
+    "// Generated at CMake configure time from src/backends/vulkan_vector_index/cosine_similarity.spv\n"
+    "// -- do NOT edit by hand; re-run cmake after regenerating the .spv (see that file's own top\n"
+    "// comment for the glslc regen command).\n"
+    "#include <cstddef>\n"
+    "namespace agentengine::backends::vulkan_vector_index {\n"
+    "alignas(4) inline constexpr unsigned char kCosineSimilaritySpirv[] = {${AE_SPIRV_BYTES}};\n"
+    "inline constexpr std::size_t kCosineSimilaritySpirvBytes = sizeof(kCosineSimilaritySpirv);\n"
+    "}  // namespace agentengine::backends::vulkan_vector_index\n")
+
+  add_library(agentengine_vulkan_vector_index STATIC
+    src/backends/vulkan_vector_index/vulkan_cosine_index.cpp)
+  # PUBLIC, matching agentengine_wasm_backend's own identical pattern above -- so a consumer (e.g.
+  # tests/test_vulkan_cosine_index.cpp) can `#include "backends/vulkan_vector_index/
+  # vulkan_cosine_index.hpp"` by merely linking this target, the same convention every other
+  # src/backends/* seam backend in this tree already uses.
+  target_include_directories(agentengine_vulkan_vector_index PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_include_directories(agentengine_vulkan_vector_index PRIVATE "${AE_SPIRV_GENERATED_DIR}")
+  target_link_libraries(agentengine_vulkan_vector_index PUBLIC agentengine::core)
+  target_link_libraries(agentengine_vulkan_vector_index PRIVATE agentengine_warnings Vulkan::Vulkan)
+  # PUBLIC, not PRIVATE: matching AGENTENGINE_WITH_HTTPS's own identical propagation shape above
+  # (agentengine_net_egress_proxy's PUBLIC definition) -- so any test/consumer target that merely
+  # LINKS agentengine::vulkan_vector_index automatically sees AGENTENGINE_WITH_VULKAN defined too,
+  # without needing to redeclare it itself. vulkan_cosine_index.hpp (the pimpl public header) does NOT
+  # itself need this guard to compile (it includes no Vulkan SDK headers), but tests/*.cpp files that
+  # conditionally compile real Vulkan-dependent test bodies (vs. an empty stub when this backend isn't
+  # built) rely on this definition being visible to them.
+  target_compile_definitions(agentengine_vulkan_vector_index PUBLIC AGENTENGINE_WITH_VULKAN)
+  add_library(agentengine::vulkan_vector_index ALIAS agentengine_vulkan_vector_index)
+endif()
+
 # ---- HMAC-SHA256 primitive (src/trust/) -- Windows AND Linux -----------------------------------
 # Implements trust/hmac.hpp: trust/hmac.cpp (Milestone 7, ADR-021) extracted the shared HMAC-SHA256/
 # constant-time-compare primitive out of capability_token.cpp so a SECOND, unrelated component
