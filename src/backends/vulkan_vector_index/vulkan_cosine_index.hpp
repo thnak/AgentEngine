@@ -74,4 +74,24 @@ private:
 static_assert(agentengine::VectorIndex<VulkanCosineIndex>,
               "VulkanCosineIndex must satisfy the real, unmodified VectorIndex concept (ADR-180 §2.6)");
 
+namespace detail {
+
+// Red-team pass 3 (2026-09-22) finding 3 (Real gap): `search()`'s push constants are `uint32_t
+// count`/`uint32_t dimension` (cosine_similarity.comp's own PushConstants block), but `n`
+// (`impl_->order.size()`) and `dim` (`impl_->dimension`) are `std::size_t` (64-bit). A candidate
+// count or dimensionality that fits in `size_t` but exceeds `UINT32_MAX` would silently WRAP at the
+// `static_cast<std::uint32_t>(...)` call sites in `search()` -- the GPU would then dispatch against
+// a wrong, wrapped `count`/`dimension`, either under- or over-reading the flattened vectors buffer
+// relative to what the host actually allocated (`n * dim * sizeof(float)` bytes, computed in
+// `size_t`/`VkDeviceSize`, which does NOT wrap at the same boundary). Reject, don't silently
+// truncate -- the same "reject-not-coerce on any structural inconsistency" posture
+// `BruteForceCosineIndex::restore()`'s own red-team-pass-1 fix already established for this ADR
+// family (§4 finding 1). A pure, Vulkan-free predicate so it is unit-testable with synthetic
+// `size_t` values directly, without needing to actually allocate (or hold) billions of real
+// vectors -- exactly how `ByteReader::check_header_plausible()` is tested against a crafted header
+// rather than a genuinely oversized blob.
+[[nodiscard]] agentengine::result<void> check_gpu_dispatch_size_plausible(std::size_t n, std::size_t dim);
+
+}  // namespace detail
+
 }  // namespace agentengine::backends::vulkan_vector_index

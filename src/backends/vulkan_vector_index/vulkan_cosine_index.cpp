@@ -7,11 +7,14 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <functional>
+#include <limits>
 #include <optional>
 #include <shared_mutex>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 #include <vulkan/vulkan.h>
 
@@ -38,7 +41,55 @@ void sort_and_truncate(std::vector<agentengine::ScoredId>& scored, std::size_t k
     return agentengine::error{agentengine::failure_class::resource, std::move(message), std::move(code)};
 }
 
+// Red-team pass 3 (2026-09-22), Critical finding 1: runs a stack of cleanup actions, in REVERSE
+// (creation) order, unless dismiss() is called first -- so every transient GPU resource created
+// partway through a multi-step build (a copy command buffer, a one-shot fence, a staging buffer) is
+// destroyed on ANY early `return std::unexpected(...)` out of that block, not just the happy path.
+// Matches this class's own destructor discipline (reverse-creation-order teardown) applied to a
+// SHORT-LIVED, mid-function resource set instead of the whole Impl.
+class CleanupStack {
+public:
+    void push(std::function<void()> action) { actions_.push_back(std::move(action)); }
+    void dismiss() { actions_.clear(); }
+    ~CleanupStack() {
+        for (auto it = actions_.rbegin(); it != actions_.rend(); ++it) (*it)();
+    }
+
+private:
+    std::vector<std::function<void()>> actions_;
+};
+
 }  // namespace
+
+namespace detail {
+
+agentengine::result<void> check_gpu_dispatch_size_plausible(std::size_t n, std::size_t dim) {
+    // cosine_similarity.comp's PushConstants block is {uint32 count; uint32 dimension;} --
+    // vulkan_cosine_index.cpp's own search() narrows `n`/`dim` (size_t) into those fields via
+    // static_cast<std::uint32_t>. Reject BEFORE that narrowing can silently wrap.
+    constexpr std::size_t kMaxU32 = (std::numeric_limits<std::uint32_t>::max)();
+    if (n > kMaxU32 || dim > kMaxU32) {
+        return std::unexpected(agentengine::error{
+            agentengine::failure_class::resource,
+            "candidate count or vector dimensionality exceeds this backend's 32-bit GPU dispatch "
+            "limit (cosine_similarity.comp's push constants are uint32)",
+            "vulkan_vector_index.dispatch_size_exceeds_uint32"});
+    }
+    // The flattened vectors buffer is n * dim * sizeof(float) bytes (VkDeviceSize, 64-bit) --
+    // guard the multiplication itself against size_t overflow (division-based check, never
+    // multiplies first) even though the uint32 guard above already makes this astronomically
+    // unlikely to be reachable in practice; named as a second, independent layer rather than
+    // relying on the uint32 check alone to imply it.
+    if (dim != 0 && n > (std::numeric_limits<std::size_t>::max)() / dim) {
+        return std::unexpected(agentengine::error{
+            agentengine::failure_class::resource,
+            "candidate count * dimensionality overflows when computing the GPU vectors buffer size",
+            "vulkan_vector_index.dispatch_size_overflow"});
+    }
+    return {};
+}
+
+}  // namespace detail
 
 struct VulkanCosineIndex::Impl {
     VkInstance instance = VK_NULL_HANDLE;
@@ -391,6 +442,13 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
                                                      "vulkan_vector_index.zero_dimension_invariant"});
     }
 
+    // Red-team pass 3 finding 3: reject (not silently truncate/overflow) a count/dimension this
+    // backend's uint32 push constants or buffer-size arithmetic cannot represent, BEFORE any GPU
+    // resource is touched.
+    if (auto plausible = detail::check_gpu_dispatch_size_plausible(n, dim); !plausible.has_value()) {
+        return std::unexpected(plausible.error());
+    }
+
     auto const create_host_visible_buffer =
         [&](VkDeviceSize size_bytes, VkBufferUsageFlags usage) -> std::optional<std::pair<VkBuffer, VkDeviceMemory>> {
         VkBufferCreateInfo buffer_info{};
@@ -508,9 +566,36 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
                 vulkan_error("failed to allocate the host-visible staging buffer for the vectors upload",
                              "vulkan_vector_index.buffer_allocation_failed"));
         }
+
+        // Red-team pass 3 (2026-09-22), Critical finding 1: EVERY call in this block used to be
+        // fire-and-forget -- no VkResult/mapped-pointer check on vkMapMemory, vkAllocateCommandBuffers,
+        // vkBeginCommandBuffer, vkEndCommandBuffer, vkCreateFence, or vkQueueSubmit. A real,
+        // in-spec failure (host or device out-of-memory, a lost device) at any of those points was
+        // either an unconditional std::memcpy(nullptr, ...) crash (the vkMapMemory case) or an
+        // undefined-behavior vkWaitForFences call on a VK_NULL_HANDLE fence that was never actually
+        // created -- neither is the typed `agentengine::result` error this codebase's fail-closed
+        // posture requires. `cleanup` unwinds every transient resource created below (in reverse
+        // order) on any early return; `dismiss()`d only once the buffer has been fully handed off to
+        // `impl_->vectors_buffer`/`vectors_memory` below.
+        CleanupStack cleanup;
+        cleanup.push([this, device_buf] {
+            vkDestroyBuffer(impl_->device, device_buf->first, nullptr);
+            vkFreeMemory(impl_->device, device_buf->second, nullptr);
+        });
+        cleanup.push([this, staging_buf] {
+            vkDestroyBuffer(impl_->device, staging_buf->first, nullptr);
+            vkFreeMemory(impl_->device, staging_buf->second, nullptr);
+        });
+
         {
             void* mapped = nullptr;
-            vkMapMemory(impl_->device, staging_buf->second, 0, bytes, 0, &mapped);
+            if (vkMapMemory(impl_->device, staging_buf->second, 0, bytes, 0, &mapped) != VK_SUCCESS ||
+                mapped == nullptr) {
+                return std::unexpected(vulkan_error(
+                    "vkMapMemory failed for the vectors staging buffer (host out of memory, or the "
+                    "device was lost)",
+                    "vulkan_vector_index.memory_map_failed"));
+            }
             std::memcpy(mapped, flattened.data(), bytes);
             vkUnmapMemory(impl_->device, staging_buf->second);
         }
@@ -524,12 +609,24 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
         copy_cmd_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         copy_cmd_alloc_info.commandBufferCount = 1;
         VkCommandBuffer copy_cmd = VK_NULL_HANDLE;
-        vkAllocateCommandBuffers(impl_->device, &copy_cmd_alloc_info, &copy_cmd);
+        if (vkAllocateCommandBuffers(impl_->device, &copy_cmd_alloc_info, &copy_cmd) != VK_SUCCESS) {
+            return std::unexpected(vulkan_error("vkAllocateCommandBuffers failed for the vectors-upload "
+                                                 "copy command",
+                                                 "vulkan_vector_index.command_buffer_allocation_failed"));
+        }
+        cleanup.push([this, copy_cmd] {
+            VkCommandBuffer cmd = copy_cmd;
+            vkFreeCommandBuffers(impl_->device, impl_->command_pool, 1, &cmd);
+        });
 
         VkCommandBufferBeginInfo copy_begin_info{};
         copy_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         copy_begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        vkBeginCommandBuffer(copy_cmd, &copy_begin_info);
+        if (vkBeginCommandBuffer(copy_cmd, &copy_begin_info) != VK_SUCCESS) {
+            return std::unexpected(vulkan_error("vkBeginCommandBuffer failed for the vectors-upload copy "
+                                                 "command",
+                                                 "vulkan_vector_index.command_buffer_begin_failed"));
+        }
 
         VkBufferCopy copy_region{};
         copy_region.size = bytes;
@@ -542,20 +639,43 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
         vkCmdPipelineBarrier(copy_cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
                               &copy_barrier, 0, nullptr, 0, nullptr);
 
-        vkEndCommandBuffer(copy_cmd);
+        if (vkEndCommandBuffer(copy_cmd) != VK_SUCCESS) {
+            return std::unexpected(vulkan_error("vkEndCommandBuffer failed for the vectors-upload copy "
+                                                 "command",
+                                                 "vulkan_vector_index.command_buffer_end_failed"));
+        }
 
         VkFenceCreateInfo copy_fence_info{};
         copy_fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         VkFence copy_fence = VK_NULL_HANDLE;
-        vkCreateFence(impl_->device, &copy_fence_info, nullptr, &copy_fence);
+        if (vkCreateFence(impl_->device, &copy_fence_info, nullptr, &copy_fence) != VK_SUCCESS) {
+            return std::unexpected(vulkan_error("vkCreateFence failed for the vectors-upload copy command",
+                                                 "vulkan_vector_index.fence_creation_failed"));
+        }
+        cleanup.push([this, copy_fence] { vkDestroyFence(impl_->device, copy_fence, nullptr); });
 
         VkSubmitInfo copy_submit_info{};
         copy_submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         copy_submit_info.commandBufferCount = 1;
         copy_submit_info.pCommandBuffers = &copy_cmd;
-        vkQueueSubmit(impl_->queue, 1, &copy_submit_info, copy_fence);
-        vkWaitForFences(impl_->device, 1, &copy_fence, VK_TRUE, UINT64_MAX);
+        if (vkQueueSubmit(impl_->queue, 1, &copy_submit_info, copy_fence) != VK_SUCCESS) {
+            return std::unexpected(vulkan_error("vkQueueSubmit failed for the vectors-upload copy command",
+                                                 "vulkan_vector_index.queue_submit_failed"));
+        }
+        if (VkResult const wait_result =
+                vkWaitForFences(impl_->device, 1, &copy_fence, VK_TRUE, UINT64_MAX);
+            wait_result != VK_SUCCESS) {
+            // Only reachable via VK_ERROR_DEVICE_LOST/VK_ERROR_OUT_OF_*_MEMORY at UINT64_MAX timeout
+            // (VK_TIMEOUT cannot occur at an infinite timeout) -- still checked, not assumed
+            // unreachable, matching this file's own "reject-not-coerce on any structural
+            // inconsistency" posture rather than trusting an infinite wait can only ever succeed.
+            return std::unexpected(vulkan_error("vkWaitForFences failed for the vectors-upload copy "
+                                                 "command (the device may have been lost)",
+                                                 "vulkan_vector_index.fence_wait_failed"));
+        }
 
+        cleanup.dismiss();  // handed off below: device_buf -> impl_->vectors_buffer/memory; staging
+                             // buffer, copy command, and copy fence are all genuinely done with now.
         vkDestroyFence(impl_->device, copy_fence, nullptr);
         vkFreeCommandBuffers(impl_->device, impl_->command_pool, 1, &copy_cmd);
         vkDestroyBuffer(impl_->device, staging_buf->first, nullptr);
@@ -585,7 +705,12 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
     }
     {
         void* mapped = nullptr;
-        vkMapMemory(impl_->device, impl_->query_memory, 0, dim * sizeof(float), 0, &mapped);
+        if (vkMapMemory(impl_->device, impl_->query_memory, 0, dim * sizeof(float), 0, &mapped) !=
+                VK_SUCCESS ||
+            mapped == nullptr) {
+            return std::unexpected(vulkan_error("vkMapMemory failed for the GPU query buffer",
+                                                  "vulkan_vector_index.memory_map_failed"));
+        }
         std::memcpy(mapped, query.data(), dim * sizeof(float));
         vkUnmapMemory(impl_->device, impl_->query_memory);
     }
@@ -642,15 +767,24 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
         cmd_alloc_info.commandPool = impl_->command_pool;
         cmd_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         cmd_alloc_info.commandBufferCount = 1;
-        vkAllocateCommandBuffers(impl_->device, &cmd_alloc_info, &impl_->command_buffer);
-    } else {
-        vkResetCommandBuffer(impl_->command_buffer, 0);
+        if (vkAllocateCommandBuffers(impl_->device, &cmd_alloc_info, &impl_->command_buffer) != VK_SUCCESS) {
+            impl_->command_buffer = VK_NULL_HANDLE;  // a failed allocate() may still write a non-null,
+                                                       // invalid handle on some drivers -- never cache one
+            return std::unexpected(vulkan_error("vkAllocateCommandBuffers failed for the dispatch command",
+                                                 "vulkan_vector_index.command_buffer_allocation_failed"));
+        }
+    } else if (vkResetCommandBuffer(impl_->command_buffer, 0) != VK_SUCCESS) {
+        return std::unexpected(vulkan_error("vkResetCommandBuffer failed for the cached dispatch command",
+                                             "vulkan_vector_index.command_buffer_reset_failed"));
     }
 
     VkCommandBufferBeginInfo begin_info{};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(impl_->command_buffer, &begin_info);
+    if (vkBeginCommandBuffer(impl_->command_buffer, &begin_info) != VK_SUCCESS) {
+        return std::unexpected(vulkan_error("vkBeginCommandBuffer failed for the dispatch command",
+                                             "vulkan_vector_index.command_buffer_begin_failed"));
+    }
 
     vkCmdBindPipeline(impl_->command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, impl_->pipeline);
     vkCmdBindDescriptorSets(impl_->command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, impl_->pipeline_layout, 0, 1,
@@ -673,32 +807,55 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
     vkCmdPipelineBarrier(impl_->command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0,
                           1, &barrier, 0, nullptr, 0, nullptr);
 
-    vkEndCommandBuffer(impl_->command_buffer);
+    if (vkEndCommandBuffer(impl_->command_buffer) != VK_SUCCESS) {
+        return std::unexpected(vulkan_error("vkEndCommandBuffer failed for the dispatch command",
+                                             "vulkan_vector_index.command_buffer_end_failed"));
+    }
 
     // Fence: created and destroyed per call (cheap -- unlike buffers, a fence carries no large
     // device-memory allocation, so this was never the bottleneck the vectors buffer was).
     VkFenceCreateInfo fence_info{};
     fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     VkFence fence = VK_NULL_HANDLE;
-    vkCreateFence(impl_->device, &fence_info, nullptr, &fence);
+    if (vkCreateFence(impl_->device, &fence_info, nullptr, &fence) != VK_SUCCESS) {
+        return std::unexpected(vulkan_error("vkCreateFence failed for the dispatch command",
+                                             "vulkan_vector_index.fence_creation_failed"));
+    }
 
     VkSubmitInfo submit_info{};
     submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit_info.commandBufferCount = 1;
     submit_info.pCommandBuffers = &impl_->command_buffer;
-    vkQueueSubmit(impl_->queue, 1, &submit_info, fence);
+    if (vkQueueSubmit(impl_->queue, 1, &submit_info, fence) != VK_SUCCESS) {
+        vkDestroyFence(impl_->device, fence, nullptr);
+        return std::unexpected(vulkan_error("vkQueueSubmit failed for the dispatch command",
+                                             "vulkan_vector_index.queue_submit_failed"));
+    }
 
     // No explicit timeout -- a hung GPU driver is an environment failure this call has no sound way
     // to recover from short of a process-level watchdog, out of scope for this conformer; matches
     // this codebase's own "resource-capped" posture applying to hostile INPUT, not to the host's own
-    // driver misbehaving.
-    vkWaitForFences(impl_->device, 1, &fence, VK_TRUE, UINT64_MAX);
+    // driver misbehaving. Red-team pass 3: the RETURN VALUE is now checked even so -- VK_ERROR_DEVICE_LOST
+    // is a real, in-spec way for this call to stop waiting without the fence ever having signaled, and
+    // that must become a typed error, not a silent fall-through into reading an unwritten scores buffer.
+    if (VkResult const wait_result = vkWaitForFences(impl_->device, 1, &fence, VK_TRUE, UINT64_MAX);
+        wait_result != VK_SUCCESS) {
+        vkDestroyFence(impl_->device, fence, nullptr);
+        return std::unexpected(vulkan_error("vkWaitForFences failed for the dispatch command (the "
+                                             "device may have been lost)",
+                                             "vulkan_vector_index.fence_wait_failed"));
+    }
     vkDestroyFence(impl_->device, fence, nullptr);
 
     std::vector<float> scores(n);
     {
         void* mapped = nullptr;
-        vkMapMemory(impl_->device, impl_->scores_memory, 0, n * sizeof(float), 0, &mapped);
+        if (vkMapMemory(impl_->device, impl_->scores_memory, 0, n * sizeof(float), 0, &mapped) !=
+                VK_SUCCESS ||
+            mapped == nullptr) {
+            return std::unexpected(vulkan_error("vkMapMemory failed for the GPU scores buffer readback",
+                                                  "vulkan_vector_index.memory_map_failed"));
+        }
         std::memcpy(scores.data(), mapped, n * sizeof(float));
         vkUnmapMemory(impl_->device, impl_->scores_memory);
     }

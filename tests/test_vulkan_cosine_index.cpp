@@ -23,7 +23,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <span>
 #include <unordered_map>
@@ -55,6 +57,44 @@ static_assert(VectorIndex<VulkanCosineIndex>,
               "VulkanCosineIndex must satisfy the real, unmodified VectorIndex concept (ADR-180 §2.6)");
 
 int main() {
+    // --- Red-team pass 3 (2026-09-22) finding 3: `detail::check_gpu_dispatch_size_plausible()` is a
+    // pure, Vulkan-free predicate -- runs even on a machine with no Vulkan-capable device at all
+    // (unlike every other block below), since it needs no real GPU resource, only synthetic size_t
+    // values standing in for a candidate count / dimensionality this backend's uint32 push constants
+    // cannot represent without silently wrapping. ---------------------------------------------------
+    {
+        auto ok_small = detail::check_gpu_dispatch_size_plausible(5000, 1536);
+        AE_CHECK(ok_small.has_value(), "dispatch-size guard accepts a realistic n/dim pair");
+
+        auto over_n = detail::check_gpu_dispatch_size_plausible(
+            std::size_t{std::numeric_limits<std::uint32_t>::max()} + 1, 8);
+        AE_CHECK(!over_n.has_value() &&
+                     over_n.error().code == "vulkan_vector_index.dispatch_size_exceeds_uint32",
+                 "dispatch-size guard rejects a candidate count beyond uint32 range");
+
+        auto over_dim = detail::check_gpu_dispatch_size_plausible(
+            8, std::size_t{std::numeric_limits<std::uint32_t>::max()} + 1);
+        AE_CHECK(!over_dim.has_value() &&
+                     over_dim.error().code == "vulkan_vector_index.dispatch_size_exceeds_uint32",
+                 "dispatch-size guard rejects a dimensionality beyond uint32 range");
+
+        // dim == 0 must not divide-by-zero in the second (multiplication-overflow) guard -- reachable
+        // in principle via a not-yet-populated index, even though search() itself never calls this
+        // helper with dim == 0 today (the zero-dimension invariant check above it already excludes
+        // that). Tested here anyway since this is a general-purpose predicate, not a hidden detail
+        // of that one call site.
+        auto zero_dim = detail::check_gpu_dispatch_size_plausible(5000, 0);
+        AE_CHECK(zero_dim.has_value(), "dispatch-size guard does not divide by zero for dim == 0");
+
+        // NOTE: the largest n*dim product representable by two in-range uint32 values
+        // (UINT32_MAX * UINT32_MAX =~ 1.8446744e19) is itself just BELOW SIZE_MAX on a 64-bit
+        // size_t (~1.8446744e19 + a margin) -- so the uint32 ceiling above already makes the
+        // second, independent size_t-multiplication-overflow guard structurally unreachable in
+        // practice from any pair that passes it. It is kept anyway as a second, independent layer
+        // (defense-in-depth, not merely inferred safe from the first check alone) -- named here
+        // honestly rather than claiming a test exercises a path that cannot actually be reached.
+    }
+
     auto created = VulkanCosineIndex::create();
     if (!created.has_value()) {
         // Fails closed, not a crash -- matching this codebase's own docker_execution_surface.hpp/
@@ -118,6 +158,100 @@ int main() {
             AE_CHECK(!bad_search.has_value() &&
                          bad_search.error().code == "vulkan_vector_index.search_dimension_mismatch",
                      "search() rejects a query vector whose width disagrees with the index's dimensionality");
+
+            // Red-team pass 3 finding 5 (Real gap): the CODE already checks
+            // `impl_->entries.contains(id)` for a duplicate ACROSS separate add_batch() calls (not
+            // just within one call), mirroring BruteForceCosineIndex::add_batch() exactly -- but no
+            // test had ever exercised that specific branch for the GPU conformer. "y" was already
+            // committed by idx2's earlier add_batch({"y"}, ...) above.
+            auto cross_call_dup = idx2.add_batch({"y"}, {{9.0f, 9.0f}});
+            AE_CHECK(!cross_call_dup.has_value() &&
+                         cross_call_dup.error().code == "vulkan_vector_index.add_batch_duplicate_id",
+                     "add_batch rejects an id that was already committed by an EARLIER, separate "
+                     "add_batch call (not just a duplicate within one call)");
+        }
+    }
+
+    // --- Red-team pass 3 finding 5 (Real gap): VectorIndex contract behaviors BruteForceCosineIndex's
+    // own test suite exercises that this conformer's test never had -- empty-index search, k == 0,
+    // and k > corpus size. Implementation already mirrors BruteForceCosineIndex's identical logic for
+    // all three (confirmed by code reading); this closes the coverage gap so that claim is proven, not
+    // merely asserted. ------------------------------------------------------------------------------
+    {
+        auto created3 = VulkanCosineIndex::create();
+        AE_CHECK(created3.has_value(), "setup: a third, never-populated index instance is created");
+        if (created3.has_value()) {
+            VulkanCosineIndex idx3 = std::move(*created3);
+
+            float const any_query[2] = {1.0f, 0.0f};
+            auto empty_search = idx3.search(std::span<float const>(any_query, 2), 5);
+            AE_CHECK(empty_search.has_value() && empty_search->empty(),
+                     "search() on a never-populated (empty) index succeeds with an empty result, "
+                     "not an error");
+
+            AE_CHECK(idx3.add_batch({"p", "q", "r"}, {{1.0f, 0.0f}, {0.0f, 1.0f}, {1.0f, 1.0f}})
+                         .has_value(),
+                     "setup: idx3 populated with 3 entries");
+
+            auto k_zero = idx3.search(std::span<float const>(any_query, 2), 0);
+            AE_CHECK(k_zero.has_value() && k_zero->empty(),
+                     "search(k=0) succeeds with an empty result, not an error");
+
+            auto k_over = idx3.search(std::span<float const>(any_query, 2), 100);
+            AE_CHECK(k_over.has_value() && k_over->size() == 3,
+                     "search(k > corpus size) returns every entry, not an error, and does not pad "
+                     "with placeholders");
+        }
+    }
+
+    // --- Red-team pass 3 finding 1 (Critical, partially closed): the persistent GPU vectors-buffer
+    // cache (Impl's own field comment: "rebuilt only when the corpus actually changes") destroys the
+    // OLD device-local buffer/memory only AFTER the new one is fully built and uploaded, right before
+    // reassigning `impl_->vectors_buffer`/`vectors_memory` -- exercised here across THREE separate
+    // add_batch()-then-search() cycles on the SAME instance (the existing test suite only ever
+    // populated an instance once before searching it, so the cache-rebuild-on-GROWTH path, and
+    // specifically the old-buffer-destroy-then-reassign sequence, had never actually run more than
+    // once). Correctness (each search reflects the FULL, current corpus, not a stale snapshot) is the
+    // behavioral proof available here; true leak-freedom across repeated rebuilds is additionally
+    // supported by this file's own AddressSanitizer run (this whole binary, including this block, run
+    // clean under /fsanitize=address -- see the ADR's own account for the caveat that Windows ASan has
+    // no LeakSanitizer, so this is a host-side-corruption check, not an automated leak-detector run).
+    {
+        auto created4 = VulkanCosineIndex::create();
+        AE_CHECK(created4.has_value(), "setup: a fourth index instance is created for repeated-growth "
+                                        "cache-rebuild coverage");
+        if (created4.has_value()) {
+            VulkanCosineIndex idx4 = std::move(*created4);
+            float const q[2] = {1.0f, 0.0f};
+
+            AE_CHECK(idx4.add_batch({"g0"}, {{1.0f, 0.0f}}).has_value(), "growth cycle 1: add_batch");
+            auto r0 = idx4.search(std::span<float const>(q, 2), 10);
+            AE_CHECK(r0.has_value() && r0->size() == 1,
+                     "growth cycle 1: search reflects the 1 entry added so far (first cache build)");
+
+            AE_CHECK(idx4.add_batch({"g1", "g2"}, {{0.0f, 1.0f}, {-1.0f, 0.0f}}).has_value(),
+                     "growth cycle 2: add_batch (triggers cache_dirty, forcing a cache REBUILD)");
+            auto r1 = idx4.search(std::span<float const>(q, 2), 10);
+            AE_CHECK(r1.has_value() && r1->size() == 3,
+                     "growth cycle 2: search reflects all 3 entries -- the rebuilt buffer is NOT a "
+                     "stale snapshot from cycle 1");
+
+            AE_CHECK(idx4.add_batch({"g3"}, {{0.5f, 0.5f}}).has_value(),
+                     "growth cycle 3: add_batch (a SECOND cache rebuild on the same instance)");
+            auto r2 = idx4.search(std::span<float const>(q, 2), 10);
+            AE_CHECK(r2.has_value() && r2->size() == 4,
+                     "growth cycle 3: search reflects all 4 entries after a second consecutive "
+                     "cache-rebuild cycle on the same instance");
+            if (r2.has_value()) {
+                bool has_all = true;
+                for (auto const& id : {"g0", "g1", "g2", "g3"}) {
+                    bool found = false;
+                    for (auto const& s : *r2) found = found || (s.id == id);
+                    has_all = has_all && found;
+                }
+                AE_CHECK(has_all, "growth cycle 3: every id ever added is present, none dropped or "
+                                   "duplicated across repeated cache rebuilds");
+            }
         }
     }
 
