@@ -704,6 +704,29 @@ if(WIN32)
   target_link_libraries(test_tier1_statistics PRIVATE
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_tier1_statistics COMMAND test_tier1_statistics)
+
+  # ADR-181 trial-running harness, first slice: EvalStore (§3.9) -- a fresh in-memory object/ref
+  # store pair, an eval-tenant Principal, and mount-scoped read/write capabilities, proven isolated
+  # by the fresh store object rather than by name.
+  add_executable(test_eval_store test_eval_store.cpp)
+  target_link_libraries(test_eval_store PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_eval_store COMMAND test_eval_store)
+
+  # ADR-181 trial-running harness, first slice: host-authored stub ToolDescriptors (§3.9) that
+  # record arguments and cause no effect, plus EvalStubToolProvider, the trial's third composed
+  # context provider (the only way to add tools to a trial's ToolTable).
+  add_executable(test_eval_stub_tool test_eval_stub_tool.cpp)
+  target_link_libraries(test_eval_stub_tool PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_eval_stub_tool COMMAND test_eval_stub_tool)
+
+  # ADR-181 trial-running harness, first slice: run_trial (§3.0 items 2-4, §3.2, §3.4) -- the first
+  # real end-to-end driver, proving both delivery routes against a real AgentSession.
+  add_executable(test_eval_trial_driver test_eval_trial_driver.cpp)
+  target_link_libraries(test_eval_trial_driver PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_eval_trial_driver COMMAND test_eval_trial_driver)
 endif()
 
 # ---- Milestone 4 Phase G5 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
@@ -1045,6 +1068,16 @@ if(AGENTENGINE_WITH_HTTPS)
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_test(NAME test_memory_lesson_effectiveness_live_e2e COMMAND test_memory_lesson_effectiveness_live_e2e)
   set_tests_properties(test_memory_lesson_effectiveness_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 900)
+
+  # ADR-181 trial-running harness, first slice: one real B trial and one real T trial through
+  # run_trial against a real model -- the end-to-end sanity check the scripted-client driver test
+  # cannot provide on its own. Live, observation only; self-skips without a key.
+  add_executable(test_eval_trial_driver_live_e2e test_eval_trial_driver_live_e2e.cpp)
+  target_link_libraries(test_eval_trial_driver_live_e2e PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine::worktree_store agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_eval_trial_driver_live_e2e COMMAND test_eval_trial_driver_live_e2e)
+  set_tests_properties(test_eval_trial_driver_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
 
   # ADR-180 (wire half): what BOTH real serializers do with the two shapes the routes produce.
   add_executable(test_memory_procedural_wire test_memory_procedural_wire.cpp)

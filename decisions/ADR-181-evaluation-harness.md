@@ -2,10 +2,19 @@
 
 - **Status**: **Proposed — design plus executed statistics, and, as of rounds 5-7, real code for four of Tier 1's
   components (§3.0 items 1/2/3, part of item 4, and item 5's ack-digest half): `include/agentengine/eval/`
-  (`lesson_candidate.hpp`, `eval_principal.hpp`, `promotion_ack.hpp`, `tier1_statistics.hpp`), 4 test binaries,
-  **104/104 checks green** (`test_lesson_candidate` 43, `test_eval_principal` 15, `test_promotion_ack` 9,
-  `test_tier1_statistics` 37), clean under MSVC, clang-cl `-Wall -Wextra -Werror -fsyntax-only`, and
-  `tools/naming_lint.py`. Round 5 surfaced a real bug review alone had not: the first `clopper_pearson_lower_bound`
+  (`lesson_candidate.hpp`, `eval_principal.hpp`, `promotion_ack.hpp`, `tier1_statistics.hpp`), plus, as of this
+  draft, the FIRST SLICE of the trial-running harness itself (§3.0 items 2-4, §3.2, §3.4, §3.9's `EvalStore`):
+  `eval_store.hpp`, `eval_stub_tool.hpp`, `eval_trial.hpp` — **143/143 checks green** across 7 test binaries
+  (`test_lesson_candidate` 43, `test_eval_principal` 15, `test_promotion_ack` 9, `test_tier1_statistics` 37,
+  `test_eval_store` 9, `test_eval_stub_tool` 11, `test_eval_trial_driver` 19), clean under MSVC, clang-cl
+  `-Wall -Wextra -Werror -fsyntax-only`, and `tools/naming_lint.py` — **plus one real end-to-end run against a live
+  model** (`test_eval_trial_driver_live_e2e`, DeepSeek `deepseek-flash`, live-network-labelled, skips without a
+  key): a real baseline and a real treatment trial both converged, and the treatment trial's own `recall` tool call
+  correctly surfaced the seeded lesson (`delivered_via_recall=true`), while the baseline trial correctly showed no
+  delivery — proof this slice's delivery-detection logic works against real model behaviour, not just a scripted
+  double. **This slice's own code has not yet been red-teamed** (unlike rounds 5-7's pieces, each of which went
+  through at least one full red-team round before the next slice began) — that is the natural next step, not
+  skipped, just not yet done. Round 5 surfaced a real bug review alone had not: the first `clopper_pearson_lower_bound`
   bisected against the wrong monotonicity direction and silently converged to a plausible-looking wrong answer;
   `test_tier1_statistics`'s own duality/boundary checks caught it before any reviewer looked. Round 5's own
   red-team (three reviewers) on the new code then found a FATAL two reviewers independently reproduced with a
@@ -596,8 +605,13 @@ returns the old answer and reports a spurious "no effect". Therefore:
   `include/agentengine/eval/eval_principal.hpp` — `mint_eval_trial_principal`, `is_eval_reserved_tenant`.
   `tests/test_eval_principal.cpp` **executes the collision against the real `memory_mount_id`/`memory_ref_name`**
   (not a model of them) before proving the mint function refuses both halves of it and every other colon
-  placement. 15/15 checks. `EvalStore` (the distinct handle type §3.9 also promises) is not yet built — it needs a
-  real trial-running harness to be constructed against.
+  placement. 15/15 checks. **This draft: `EvalStore` is built for real**, `include/agentengine/eval/eval_store.hpp`
+  — a move-only handle bundling a fresh in-memory object/ref store pair, the eval-tenant `Principal`, and
+  mount-scoped read/write capabilities; `tests/test_eval_store.cpp` (9/9) proves isolation is by the fresh store
+  OBJECT, not by name (§3.2's own claim), by minting two stores under the identical identity and showing the
+  second holds zero items from the first. **Not built here**: the compile-fail test that a harness holding only an
+  `EvalStore` cannot ALSO hold a production store handle (E25's other half), and the include-graph lint itself
+  (below) — both repo-wide mechanisms, not something one handle type proves on its own.
 - **I2/I3, no model-callable surface — by discipline plus a lint that can fail, not by the type system (R2-M2).**
   `ToolDescriptor` holds a type-erased `std::function`, so a concept cannot see what a tool body captures (§2), and
   the repo's compile-fail gate can only prove "this type has no public constructor". The harness types have
@@ -1001,12 +1015,25 @@ round 6's text.
 - **Tier 1 certifies nothing about benefit.** A lesson can pass every screen and still not help; the approver, not
   the harness, decides. **Round 5 built `LessonCandidate`/`render_lesson`, the ack-digest binding, the eval-tenant
   minting guard, and the Clopper-Pearson/permutation statistics** (`include/agentengine/eval/`, §3.0, §3.9, E25/E26/
-  E28/E31) — real code, tested, not simulated. **Still unbuilt: the trial-running harness itself** — `AgentSession`
-  wiring through `ComposedContextProvider<HistoryProvider, MemoryProvider>` (§3.2), the host-authored fixture stubs
-  and `SlotTable` (§3.7, E29), the divergence detector's chi-square/permutation statistic over real tool-call
-  arguments (§3.7's within-task permutation — only the simpler Tier-1 sum/min-task/Clopper-Pearson statistics were
-  built), `EvalStore` and the write-ahead attempt ledger (E32), and the kill switch/audit trail (§3.0 item 5). None
-  of Tier 1 can actually run end to end yet; round 5 built the parts that do not need the rest to exist first.
+  E28/E31) — real code, tested, not simulated. **This draft built the trial-running harness's first slice**:
+  `eval_store.hpp` (`EvalStore`), `eval_stub_tool.hpp` (`StubToolFixture`/`make_stub_tool_descriptor`/
+  `EvalStubToolProvider`) and `eval_trial.hpp` (`run_trial`, `TrialSpec`/`TrialResult`) — a real
+  `AgentSession<RecordingChatClient<Inner>, NoSessionState, ComposedContextProvider<HistoryProvider<Window<0>>,
+  MemoryProvider<...>, EvalStubToolProvider>>` now runs one B or T trial end to end, seeds the lesson at the exact
+  caller-supplied salience, and reports delivery via both routes (context injection and `recall`) plus every
+  captured stub-tool call. Proven both deterministically (`test_eval_trial_driver.cpp`, a scripted model, 19/19) and
+  against a real model (`test_eval_trial_driver_live_e2e.cpp`, DeepSeek `deepseek-flash`, live-network-labelled) —
+  the live run's own treatment trial genuinely called `recall`, genuinely got the seeded lesson back, and this
+  slice's delivery detection correctly flagged it, while the baseline trial correctly did not. **Still unbuilt**:
+  the `SlotTable`/steering-manifest arm S and its permutation statistic over real tool-call arguments (§3.7, E29);
+  `EvalSuite`/`EvalRun`/`PromotionEvidence`, the look ledger and family/shard bookkeeping (§3.3, E32); the kill
+  switch and the promotion-write digest re-check's remaining wiring (§3.0 item 5); the `eval.tool_not_stub`
+  refusal gate and the include-graph lint (§3.9); worktree-branch-per-trial (§3.4, deferred until a stub tool with
+  a real effect exists to confine); multi-trial orchestration and wiring `tier1_statistics.hpp` to real trial
+  output — a single trial runs end to end now, but nothing yet runs N of them and computes a follow rate or a
+  gross-harm p-value from real results. **This slice's own code has not been red-teamed yet** — every other
+  real-code slice in this ADR (rounds 5-7) went through at least one full red-team round before the next began;
+  this one has not, and should before anything is built on top of it.
 - **The per-trial deadline is unenforceable today** (§3.9): a watchdog and process memory cap stand in.
 - **`PromotionAck`'s attribution is recordable, not enforced** (round 5, R5-Sec3): `approver_id`/`acknowledged_at`
   are plain strings `acknowledge_rendered_lesson` never checks for non-emptiness or for naming a real,
