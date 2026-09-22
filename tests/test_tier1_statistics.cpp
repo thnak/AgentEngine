@@ -76,6 +76,55 @@ int main() {
                  "the upper bound strictly increases with x, for fixed n (bisection direction sanity)");
         AE_CHECK(b150.has_value() && b300.has_value() && *b300 < *b150,
                  "the zero-event upper bound strictly decreases with n (bisection direction sanity)");
+
+        // Round-6 fix (FATAL): `binomial_cdf_le`'s recursion silently underflowed for a HIGH follow
+        // rate at a realistic N -- exactly the follow-rate screen's own operating regime, and exactly
+        // what the pre-round-6 suite never exercised (it only tested x=0 at large n, and x near n only
+        // at the small n=20 boundary). These values are pinned against an INDEPENDENT reference (a
+        // round-6 reviewer's scipy `beta.ppf`-based Clopper-Pearson computation, not this file's own
+        // arithmetic) -- a real cross-check, the same discipline E27's n=20 closed-form check already
+        // used.
+        auto lower_n300_high = ev::clopper_pearson_lower_bound(285, 300, 0.05);
+        AE_CHECK(lower_n300_high.has_value() && close(*lower_n300_high, 0.924051, 1e-3),
+                 "round-6 fix: 285-of-300 lower bound matches the independent scipy reference "
+                 "(pre-fix this returned 0.916573, already measurably wrong)");
+        auto lower_n500_high = ev::clopper_pearson_lower_bound(475, 500, 0.05);
+        AE_CHECK(lower_n500_high.has_value() && close(*lower_n500_high, 0.930864, 1e-3),
+                 "round-6 fix: 475-of-500 lower bound matches the independent scipy reference "
+                 "(pre-fix this returned 0.774687, badly wrong)");
+        auto lower_n1000_high = ev::clopper_pearson_lower_bound(950, 1000, 0.05);
+        AE_CHECK(lower_n1000_high.has_value() && close(*lower_n1000_high, 0.937137, 1e-3),
+                 "round-6 fix: 950-of-1000 lower bound matches the independent scipy reference "
+                 "(pre-fix this returned 0.524285 -- catastrophically wrong)");
+        auto upper_n1000_high = ev::clopper_pearson_upper_bound(999, 1000, 0.05);
+        AE_CHECK(upper_n1000_high.has_value() && close(*upper_n1000_high, 0.99995, 1e-3),
+                 "round-6 fix: 999-of-1000 upper bound matches the independent reference (pre-fix "
+                 "this returned 0.5253)");
+        auto upper_n10000_high = ev::clopper_pearson_upper_bound(9999, 10000, 0.05);
+        AE_CHECK(upper_n10000_high.has_value() && close(*upper_n10000_high, 0.9999948707, 1e-6),
+                 "round-6 fix: 9999-of-10000 upper bound matches the independent scipy reference to "
+                 "6 decimal places (pre-fix this returned 0.0718; the first round-6 attempt, a "
+                 "p>0.5-only flip, also failed here because bisect_decreasing evaluates p=0.5 itself, "
+                 "where (1-p)^n still underflows regardless of which side of 0.5 the true root is on)");
+
+        // Round-6 fix, second finding: the FIRST round-6 attempt (flip to the complementary tail only
+        // when p>0.5) fixed the two endpoints a caller asks for but not the interior evaluations
+        // `bisect_decreasing` performs during its own search -- p=0.5 exactly still underflowed
+        // `(1-p)^n` for n in the low thousands. The final mode-anchored fix does not have this
+        // failure mode: pin a case where the TRUE bound is near 0.5 (so the search spends real time
+        // evaluating points near, at, and past 0.5) at a large enough n that the old bug would have
+        // corrupted the bisection outright rather than just the reported answer.
+        auto lower_n10000_mid = ev::clopper_pearson_lower_bound(5000, 10000, 0.05);
+        AE_CHECK(lower_n10000_mid.has_value() && close(*lower_n10000_mid, 0.4917265044, 1e-6),
+                 "round-6 fix: a near-0.5 bound at n=10000 matches the independent scipy reference -- "
+                 "the regime where the p>0.5-only flip attempt would NOT have helped, since the "
+                 "bisection must evaluate p=0.5 itself along the way");
+        // Duality still holds post-fix at this larger scale, not just at n=20 (the pre-existing check).
+        auto lower_via_upper_symmetry = ev::clopper_pearson_lower_bound(1000, 1000, 0.05);
+        auto upper_via_upper_symmetry = ev::clopper_pearson_upper_bound(0, 1000, 0.05);
+        AE_CHECK(lower_via_upper_symmetry.has_value() && upper_via_upper_symmetry.has_value() &&
+                     close(*lower_via_upper_symmetry, 1.0 - *upper_via_upper_symmetry, 1e-9),
+                 "round-6 fix: Clopper-Pearson duality still holds exactly at n=1000, not just n=20");
     }
 
     // ---- follow_rate_screen_passes / containment_gate_blocks: E27 / §3.7 gate rule 2 pinned values -
@@ -178,6 +227,24 @@ int main() {
         std::vector<std::uint32_t> b_over = {1};
         auto contract_over_k = ev::hypergeometric_min_task_lower_tail_pvalue(a_over, b_over, K, 100, 1);
         AE_CHECK(!contract_over_k.has_value(), "a task's successes exceeding K is refused");
+
+        // Round-6 fix (FATAL, reproduced under ASan/UBSan as a real crash before this cap existed):
+        // `2 * K` computed in unpromoted 32-bit arithmetic wraps to 0 for K >= 2^31, and an all-zero
+        // successes task trivially satisfies the pre-existing "successes <= K" check for ANY K, so
+        // nothing before this fix stopped a contractually-"valid" K from reaching that wraparound.
+        // `kMaxHypergeometricK` refuses it up front as a contract violation instead.
+        std::vector<std::uint32_t> a_pathological_k = {0};
+        std::vector<std::uint32_t> b_pathological_k = {0};
+        auto contract_k_too_large = ev::hypergeometric_min_task_lower_tail_pvalue(
+            a_pathological_k, b_pathological_k, ev::kMaxHypergeometricK + 1, 10, 1);
+        AE_CHECK(!contract_k_too_large.has_value(),
+                 "round-6 fix: K beyond kMaxHypergeometricK is refused as a contract violation, "
+                 "not left to wrap 2*K and crash");
+        auto ok_at_boundary_k = ev::hypergeometric_min_task_lower_tail_pvalue(
+            a_pathological_k, b_pathological_k, ev::kMaxHypergeometricK, 1, 1);
+        AE_CHECK(ok_at_boundary_k.has_value(),
+                 "round-6 fix: K exactly at kMaxHypergeometricK is still accepted (the cap is a "
+                 "crash guard, not an off-by-one over-restriction)");
 
         // Determinism (I5): the same seed reproduces the exact same p-value, bit for bit.
         auto p_repeat =

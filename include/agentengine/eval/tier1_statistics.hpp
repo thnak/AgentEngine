@@ -33,19 +33,64 @@ namespace agentengine::eval {
 
 namespace detail {
 
-// P(X <= x) for X ~ Binomial(n, p), via the recursive term ratio (never materialises `n choose i`,
-// so it does not overflow for the n this project actually uses, unlike a naive `comb()` port).
+// log(C(n,i) * p^i * (1-p)^(n-i)) via lgamma -- never materialises `n choose i` itself, and its
+// magnitude stays moderate (a sum of a handful of O(n log n)-scale terms) regardless of how large n
+// or how extreme p is, which is exactly the property the plain term-ratio recursion below lacks.
+[[nodiscard]] inline double log_binomial_pmf(std::uint64_t i, std::uint64_t n, double p) {
+    double log_pmf = std::lgamma(static_cast<double>(n) + 1.0) - std::lgamma(static_cast<double>(i) + 1.0) -
+                      std::lgamma(static_cast<double>(n - i) + 1.0);
+    if (i > 0) log_pmf += static_cast<double>(i) * std::log(p);
+    if (i < n) log_pmf += static_cast<double>(n - i) * std::log(1.0 - p);
+    return log_pmf;
+}
+
+// P(X <= x) for X ~ Binomial(n, p). Round-6 fix (FATAL, independently reproduced against scipy): the
+// FIRST version of this function started its term-ratio recursion at i=0 (term=(1-p)^n) and climbed
+// to x; round 6's first attempted fix flipped to the complementary tail when p>0.5, but that only
+// protects the two ENDPOINTS the caller asks for -- `bisect_decreasing` below also evaluates this
+// function at interior points during its search, including p=0.5 exactly, and `(1-p)^n = 0.5^n`
+// underflows to an exact double 0.0 for n in the low thousands regardless of which side of 0.5 p is
+// on. Once the starting term is an exact 0.0, every subsequent multiplication by a finite ratio stays
+// 0.0 -- silently WRONG, not a thrown error -- corrupting the bisection's own view of the function's
+// shape at that point, not just the final answer.
+//
+// Fix: anchor the recursion at the MODE of the distribution (i = floor((n+1)p)), where the
+// probability mass -- and therefore the term magnitude -- is largest and never vanishingly small for
+// any n/p this function is asked to handle (computed via `log_binomial_pmf` above so computing the
+// mode's own term also never underflows), then walk outward toward 0 and toward n via the same
+// term-ratio recursion used before. Every step multiplies an already-representable term by a bounded
+// ratio; terms may legitimately shrink toward 0 far from the mode (a true negligible contribution,
+// not a numerical artefact), but the recursion never has to CLIMB BACK UP from an already-underflowed
+// start the way the old version did.
 [[nodiscard]] inline double binomial_cdf_le(std::uint64_t x, std::uint64_t n, double p) {
     if (x >= n) return 1.0;
     if (p <= 0.0) return 1.0;   // P(X=0)=1 when p=0, and x>=0 always holds here
     if (p >= 1.0) return 0.0;   // P(X=n)=1 when p=1, and x<n was just excluded above
 
-    double term = std::pow(1.0 - p, static_cast<double>(n));  // P(X=0)
-    double sum  = term;
-    double const odds = p / (1.0 - p);
-    for (std::uint64_t i = 1; i <= x; ++i) {
-        term *= (static_cast<double>(n - i + 1) / static_cast<double>(i)) * odds;
-        sum  += term;
+    std::uint64_t const mode =
+        std::min(n, static_cast<std::uint64_t>((static_cast<double>(n) + 1.0) * p));
+    double const term_mode = std::exp(log_binomial_pmf(mode, n, p));
+
+    double sum = 0.0;
+    // Walk from the mode down to 0, adding every term at or below `x` (always true once i<=mode<=x,
+    // or simply every i once mode<=x -- the loop's own `i <= x` guard handles both cases uniformly).
+    {
+        double term = term_mode;
+        for (std::uint64_t i = mode;; --i) {
+            if (i <= x) sum += term;
+            if (i == 0) break;
+            // term_{i-1} = term_i * i/(n-i+1) * (1-p)/p
+            term *= (static_cast<double>(i) / static_cast<double>(n - i + 1)) * ((1.0 - p) / p);
+        }
+    }
+    // Walk from the mode up toward x (only executes, and only as far as x, when x > mode).
+    {
+        double term = term_mode;
+        for (std::uint64_t i = mode; i < x; ++i) {
+            // term_{i+1} = term_i * (n-i)/(i+1) * p/(1-p)
+            term *= (static_cast<double>(n - i) / static_cast<double>(i + 1)) * (p / (1.0 - p));
+            sum += term;
+        }
     }
     return sum;
 }
@@ -162,6 +207,16 @@ template <class DecreasingFn>
 // would get from an unordered draw of K trials out of 2K (a real hypergeometric relabelling), and
 // take the most-negative task diff over all tasks simultaneously — the same simultaneous-comparison
 // structure the sum statistic already gets right, applied to an extreme-value statistic instead.
+// Round-6 fix (FATAL, reproduced under ASan/UBSan as a real crash, not a theoretical concern): `K` is
+// `std::uint32_t`, and `2 * K` computed in 32-bit arithmetic wraps to 0 for `K >= 2^31` -- a value the
+// old contract checks (`K > 0`, each task's successes `<= K`) did nothing to exclude, since an
+// all-zero-successes task trivially satisfies "successes <= K" for any K. The wrapped `2*K` then
+// produced a zero-length `labels` buffer while `std::count(labels.begin(), labels.begin() + K, ...)`
+// still walked `K` (billions of) elements past it. This bound exists solely to keep every `2*K`-shaped
+// computation inside `std::uint64_t` headroom with no realistic Tier-1 use ever approaching it (Tier 1
+// runs K in the tens, not the billions) -- it is a crash guard, not a policy about real usage.
+inline constexpr std::uint32_t kMaxHypergeometricK = 1'000'000;
+
 [[nodiscard]] inline result<double> hypergeometric_min_task_lower_tail_pvalue(
     std::span<std::uint32_t const> a_successes, std::span<std::uint32_t const> b_successes,
     std::uint32_t K, std::uint32_t num_permutations, std::uint64_t seed) {
@@ -172,6 +227,11 @@ template <class DecreasingFn>
     }
     if (K == 0) {
         return std::unexpected(error{failure_class::contract, "K must be > 0", "eval.stat_k_zero"});
+    }
+    if (K > kMaxHypergeometricK) {
+        return std::unexpected(error{failure_class::contract,
+                                      "K exceeds the maximum this implementation supports",
+                                      "eval.stat_k_too_large"});
     }
     std::size_t const tasks = a_successes.size();
     for (std::size_t t = 0; t < tasks; ++t) {
@@ -192,17 +252,31 @@ template <class DecreasingFn>
 
     std::int64_t const obs = min_task_diff(a_successes, b_successes);
 
+    // Round-6 fix: `2 * K` computed unpromoted (as `std::uint32_t`) is exactly the expression that
+    // wrapped to 0 for `K >= 2^31` and crashed. `kMaxHypergeometricK` above already excludes any K
+    // that could wrap a 32-bit product, but every use of it here is written in `std::uint64_t` /
+    // `std::size_t` regardless, so this stays correct even if that cap is ever loosened without
+    // re-auditing this arithmetic.
+    std::uint64_t const two_k = 2ull * static_cast<std::uint64_t>(K);
+
     std::mt19937_64 rng(seed);
     std::vector<std::uint32_t> labels;  // reused scratch buffer across permutations
-    labels.reserve(2 * K);
+    labels.reserve(two_k);
     std::vector<std::uint32_t> perm_a(tasks), perm_b(tasks);
 
+    // Disclosed residual (round-6 finding, not fixed here): this loop's cost is
+    // O(num_permutations * tasks * K) with no I8 budget cap of its own -- a caller passing a large but
+    // individually-valid `K`/`num_permutations`/task-count combination can make a single call run for
+    // tens of seconds or more (measured: ~75s at K=10,000, 100 tasks, 10,000 permutations). Tier 1's
+    // own real usage (K in the tens, ~30 tasks, low thousands of permutations) is nowhere near this,
+    // but nothing in this file enforces that -- the trial-running harness that will actually call this
+    // (not yet built, ADR-181 §8) is where a real I8 budget on this cost belongs.
     std::uint32_t at_or_below = 0;
     for (std::uint32_t r = 0; r < num_permutations; ++r) {
         for (std::size_t t = 0; t < tasks; ++t) {
             std::uint32_t const s = a_successes[t] + b_successes[t];
             labels.assign(s, 1u);
-            labels.resize(2 * K, 0u);
+            labels.resize(two_k, 0u);
             std::shuffle(labels.begin(), labels.end(), rng);
             std::uint32_t const a_prime =
                 static_cast<std::uint32_t>(std::count(labels.begin(), labels.begin() + K, 1u));

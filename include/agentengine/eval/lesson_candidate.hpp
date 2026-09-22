@@ -99,8 +99,16 @@ namespace detail {
 [[nodiscard]] inline result<void> reject_injection_shapes(std::string_view text, char const* field_label) {
     std::string const lower = to_lower_ascii(text);
 
-    static constexpr std::array<char const*, 6> kUrlOrPathNeedles = {
+    // Round-6 fix: two independent round-6 reviewers found real needle gaps here (each proven with a
+    // working proof-of-concept that compiled and rendered against the pre-fix list): URI schemes that
+    // don't contain "://" (`javascript:`, `data:`, `mailto:`, `vbscript:`), and shell substitution
+    // forms that don't use `$(` (`<(...)`, `>(...)`, `${...}`). Added below. This remains a denylist,
+    // not a grammar (the file's own long-standing disclosure): a bare hostname/IP:port with no scheme
+    // and non-ASCII homoglyphs of these needles both still pass, and are named as open residuals in
+    // ADR-181 §8 rather than silently claimed closed.
+    static constexpr std::array<char const*, 10> kUrlOrPathNeedles = {
         "://", "www.", ".com", ".net", ".org", "\\\\",
+        "javascript:", "data:", "mailto:", "vbscript:",
     };
     if (contains_any(lower, std::span{kUrlOrPathNeedles})) {
         return std::unexpected(error{failure_class::contract,
@@ -113,8 +121,8 @@ namespace detail {
                                       "eval.value_path_shaped"});
     }
 
-    static constexpr std::array<char const*, 7> kShellNeedles = {
-        ";", "|", "&&", "`", "$(", "$env:", "%comspec%",
+    static constexpr std::array<char const*, 10> kShellNeedles = {
+        ";", "|", "&&", "`", "$(", "$env:", "%comspec%", "<(", ">(", "${",
     };
     if (contains_any(lower, std::span{kShellNeedles})) {
         return std::unexpected(error{failure_class::contract,
@@ -122,11 +130,27 @@ namespace detail {
                                       "eval.value_shell_shaped"});
     }
 
-    static constexpr std::array<char const*, 12> kImperativePrefixes = {
-        "run ", "delete ", "exec", "curl ", "rm ", "sudo", "install ", "download ",
-        "send ", "email ", "post ", "call ",
+    // Round-6 fix: a round-6 reviewer proved a single leading space or tab defeats every prefix check
+    // below outright (`starts_with_any` on the untrimmed string never matches "  run ..." against
+    // "run "), which is a bypass of a check this file clearly intends to enforce, not a disclosed
+    // scope limit. Strip leading ASCII whitespace before prefix-matching only -- the `contains_any`
+    // checks above already match anywhere in the string, so they are unaffected by leading whitespace
+    // and are left as-is.
+    std::string_view lower_trimmed = lower;
+    while (!lower_trimmed.empty() &&
+           (lower_trimmed.front() == ' ' || lower_trimmed.front() == '\t')) {
+        lower_trimmed.remove_prefix(1);
+    }
+
+    // Round-6 fix: a round-6 reviewer found several dangerous verbs missing from this list (ssh, scp,
+    // bash, python, powershell, cat, chmod, kill, wget) -- added below. Still a fixed, finite list
+    // (the file's own long-standing disclosure), not a grammar.
+    static constexpr std::array<char const*, 21> kImperativePrefixes = {
+        "run ",     "delete ",  "exec",    "curl ",       "rm ",        "sudo",     "install ",
+        "download ", "send ",   "email ",  "post ",       "call ",      "ssh ",     "scp ",
+        "bash ",    "python ",  "powershell ", "cat ",    "chmod ",     "kill ",    "wget ",
     };
-    if (starts_with_any(lower, std::span{kImperativePrefixes})) {
+    if (starts_with_any(lower_trimmed, std::span{kImperativePrefixes})) {
         return std::unexpected(error{failure_class::contract,
                                       std::string("lesson ") + field_label + " reads as an imperative",
                                       "eval.value_imperative_shaped"});

@@ -30,7 +30,9 @@ namespace block per module, declarations not split across dense one-line blocks)
 silently approving something it can't actually see — false negatives are the failure mode to watch
 for on review, not false positives, since a name it fails to see simply never gets checked.
 
-Scope: include/agentengine/{core,trust,sandbox,plugin,workflow}/**/*.hpp. Excluded:
+Scope: include/agentengine/**/*.hpp (the whole tree, not a fixed subdirectory list -- a round-6 ADR-181
+review found this docstring stale against the actual rglob below, which already covers any new
+subdirectory such as eval/ without needing to be told to). Excluded:
   - include/agentengine/detail/  — private internals, not user-facing (CONVENTIONS.md layout table).
   - include/agentengine/protocol/**  — wire types live in agentengine::mcp / ::a2a / ::agui / ::openai
     / ::anthropic, not bare agentengine::: they are exempt from the *core* vocabulary tables by 027 §6's
