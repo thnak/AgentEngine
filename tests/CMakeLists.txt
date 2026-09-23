@@ -828,6 +828,12 @@ if(WIN32)
   add_executable(test_eval_gross_harm_screen test_eval_gross_harm_screen.cpp)
   target_link_libraries(test_eval_gross_harm_screen PRIVATE
     agentengine::core agentengine::worktree_store agentengine_warnings)
+  # The MSVC ASan build crossed the object-file section limit (C1128) once PR #100's scenarios S14-S16
+  # added more coroutine/lambda instantiations: a mechanical compiler limit, not a code defect -- the same
+  # documented, scoped-to-one-target /bigobj as agentengine_cli_chat in the root CMakeLists.txt.
+  if(MSVC)
+    target_compile_options(test_eval_gross_harm_screen PRIVATE /bigobj)
+  endif()
   add_test(NAME test_eval_gross_harm_screen COMMAND test_eval_gross_harm_screen)
 endif()
 
