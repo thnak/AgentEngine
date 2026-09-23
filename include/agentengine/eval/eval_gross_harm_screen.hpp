@@ -19,8 +19,19 @@
 //
 // Closes R6-Num3 (§7/§8): `hypergeometric_min_task_lower_tail_pvalue`'s cost is
 // O(num_permutations x tasks x K) with no I8 budget of its own, and the ADR placed that budget on
-// its caller. `max_permutation_work` is that budget; `max_model_calls` (with `max_turns` now required)
-// bounds the model calls; both are checked before any trial runs.
+// its caller. `max_permutation_work` is that budget (both tests' work: perms x tasks x (2K + 1));
+// `max_model_calls` (with `max_turns` now required) bounds the model calls, agent and summarizer
+// alike; both are checked before any trial runs.
+//
+// The screen FAILS TOWARD FLAGGING (round-2 red-team, MAJOR): a lesson can make treatment trials
+// unmeasurable -- a provider 5xx or read timeout is `transient` whatever caused it, and a grader can
+// throw on a malformed model-chosen argument -- and enough of that used to trip a validity rule and
+// turn a clear harm into `invalid`, i.e. "no verdict, run it again". Now, whenever a validity rule
+// trips, the tests run under HARM-FAVOURING imputation instead (every ungraded treatment trial a
+// failure, every ungraded baseline trial a success); if that flags, the screen reports `flagged`.
+// `invalid` survives only when even that cannot flag, i.e. when the missing data could not have been
+// hiding a harm. Exactly one analysis runs per screen (ITT when valid, harm-favouring when not), so
+// the false-flag bound for valid runs is unchanged; invalid runs can only be flagged MORE often.
 //
 // Explicitly OUT OF SCOPE (named, not silently dropped -- decisions/ADR-181-evaluation-harness.md
 // §8's "Still unbuilt" list is the authoritative one): Tier-1 pre-registration hashing and the
@@ -68,8 +79,8 @@ struct GrossHarmScreenSpec {  // ae-naming-lint: allow GrossHarmScreenSpec — A
     std::uint32_t k_per_arm = 5;                  // ADR default
     double alpha = 0.10;                          // the SCREEN's false-flag bound; each test gets alpha/2
     std::uint32_t num_permutations = 2000;
-    std::uint64_t max_model_calls = 10'000;       // I8: 2 * K * tasks * max_turns must fit
-    std::uint64_t max_permutation_work = 50'000'000;  // I8: num_permutations * tasks * 2K must fit
+    std::uint64_t max_model_calls = 10'000;       // I8: 2K * tasks trials * max_turns * 2 calls/turn must fit
+    std::uint64_t max_permutation_work = 50'000'000;  // I8: num_permutations * tasks * (2K + 1) must fit
     double max_differential_missingness = 0.05;   // §3.5's declared bound
     // Below this graded fraction in EITHER arm the run is `invalid`: too little was measured.
     double min_graded_fraction = 0.9;
@@ -117,51 +128,78 @@ struct GrossHarmScreenResult {  // ae-naming-lint: allow GrossHarmScreenResult �
     // the round-2 note on the trial-running slice).
     std::uint64_t treatment_delivered = 0;
 
-    bool invalid_differential_missingness = false;  // §3.5: arms' ungraded rates diverge
+    // Validity diagnostics. Any of them makes the ITT analysis uninterpretable, so the screen falls
+    // back to harm-favouring imputation (`worst_case_imputation`) -- they do NOT by themselves mean
+    // "no verdict"; `invalid` below does.
+    bool invalid_differential_missingness = false;  // §3.5: arms' ungraded counts diverge
     bool invalid_insufficient_grading = false;      // either arm's graded fraction < min_graded_fraction
     bool invalid_uninformative_baseline = false;    // baseline success rate < min_baseline_success_rate
-    bool invalid = false;                            // OR of the above
+    // True iff a validity rule tripped AND even harm-favouring imputation does not flag: the run can
+    // neither show harm nor rule it out. Exactly when `flagged` is nullopt (without a setup_error).
+    bool invalid = false;
 
     double per_test_alpha = 0.0;                  // alpha / 2, what each p-value was compared against
+    // False: the p-values are the ITT analysis (ungraded = failure in both arms). True: a validity rule
+    // tripped, and they are the harm-favouring analysis (ungraded treatment = failure, ungraded
+    // baseline = success) -- `per_task` still reports the observed ITT counts.
+    bool worst_case_imputation = false;
     std::optional<double> sum_pvalue;
     std::optional<double> min_task_pvalue;
     bool flagged_by_sum = false;
     bool flagged_by_min_task = false;
-    std::optional<bool> flagged;                  // nullopt iff invalid or setup_error is set
+    std::optional<bool> flagged;                  // nullopt iff `invalid` or setup_error is set
     std::optional<error> setup_error;             // spec invalid (checked BEFORE any trial ran), or
                                                   // a statistic itself returned an error
 };
 
 namespace detail {
 
-// The smallest p-value each test can report, on average, at the most extreme data this suite shape
-// allows -- used to refuse a spec in which a test can never flag at its level (red-team finding: 3 or
-// fewer tasks left the sum test unable to reach p < 0.10 at all, K = 1 does the same to the min-task
-// test, and too few permutations disables both, all while the screen still reported "not flagged").
+// Pre-flight reachability: a spec is refused if a test could not reliably flag even the most extreme
+// harm this suite shape allows (round-1 red-team finding: 3 or fewer tasks left the sum test unable to
+// reach p < 0.10 at all, small K does the same to the min-task test, and too few permutations disables
+// both, all while the screen still reported "not flagged").
+//
+// The true p-value at the most extreme data:
 //   sum test: every task at the same extreme diff leaves one sign pattern in 2^tasks at or below it.
 //   min-task: one task at K/K vs 0/K, every other task uninformative, gives 1 / C(2K, K).
-// Both are then passed through the estimator's own add-one smoothing, (1 + perms * p) / (perms + 1).
-[[nodiscard]] inline double smoothed_pvalue(double true_p, std::uint32_t perms) {
-    return (1.0 + static_cast<double>(perms) * true_p) / (static_cast<double>(perms) + 1.0);
+[[nodiscard]] inline double floor_sum_pvalue(std::size_t tasks) {
+    return std::ldexp(1.0, -static_cast<int>(std::min<std::size_t>(tasks, 1100)));  // 0 past 2^-1074
 }
-[[nodiscard]] inline double min_sum_pvalue(std::size_t tasks, std::uint32_t perms) {
-    return smoothed_pvalue(std::ldexp(1.0, -static_cast<int>(std::min<std::size_t>(tasks, 2000))), perms);
-}
-[[nodiscard]] inline double min_min_task_pvalue(std::uint32_t K, std::uint32_t perms) {
+[[nodiscard]] inline double floor_min_task_pvalue(std::uint32_t K) {
     double const k = static_cast<double>(K);
     double const log_c = std::lgamma(2.0 * k + 1.0) - 2.0 * std::lgamma(k + 1.0);  // log C(2K, K)
-    return smoothed_pvalue(std::exp(-log_c), perms);
+    return std::exp(-log_c);
+}
+
+// Required probability that a test flags at that most extreme data.
+inline constexpr double kReachabilityConfidence = 0.95;
+
+// Round-2 red-team finding (MINOR): round 1 compared the Monte-Carlo p-value's MEAN,
+// (1 + perms * p) / (perms + 1), against alpha/2 -- but the verdict uses the REALISED estimate
+// (1 + X) / (perms + 1) with X ~ Binomial(perms, p), so a spec could pass pre-flight while total harm
+// flagged only about half the time (5 tasks, 2000 perms, alpha 0.064: 61%), and a spec could be refused
+// whose test would usually have flagged. Now: the realised p is < alpha/2 iff
+// X <= ceil(alpha/2 * (perms + 1)) - 2, and that must hold with probability >= kReachabilityConfidence.
+[[nodiscard]] inline bool test_reliably_reachable(double floor_p, std::uint32_t perms, double per_test_alpha) {
+    double const bound = per_test_alpha * (static_cast<double>(perms) + 1.0);  // need 1 + X < bound
+    if (!(bound > 1.0)) return false;                                           // even X = 0 misses
+    auto const x_max = static_cast<std::uint64_t>(std::ceil(bound)) - 2;
+    return binomial_cdf_le(x_max, perms, floor_p) >= kReachabilityConfidence;
 }
 
 [[nodiscard]] inline std::optional<error> validate_gross_harm_spec(GrossHarmScreenSpec const& spec) {
     auto contract = [](char const* msg, char const* code) {
         return error{failure_class::contract, msg, code};
     };
-    if (spec.suite_id.empty()) return contract("suite_id must not be empty", "eval.gross_harm_suite_id_empty");
+    if (!usable_trial_id_part(spec.suite_id)) {
+        return contract("suite_id must be non-empty and contain no ':'", "eval.gross_harm_suite_id_invalid");
+    }
     if (spec.tasks.empty()) return contract("tasks must not be empty", "eval.gross_harm_no_tasks");
     std::set<std::string> seen;
     for (RegressionTask const& t : spec.tasks) {
-        if (t.task_id.empty()) return contract("every task_id must be non-empty", "eval.gross_harm_task_id_empty");
+        if (!usable_trial_id_part(t.task_id)) {
+            return contract("every task_id must be non-empty and contain no ':'", "eval.gross_harm_task_id_invalid");
+        }
         if (!seen.insert(t.task_id).second) {
             return contract("task_ids must be unique", "eval.gross_harm_task_id_duplicate");
         }
@@ -201,22 +239,33 @@ namespace detail {
     if (auto budget = validate_call_budget(spec.max_turns, trials, spec.max_model_calls); budget.has_value()) {
         return budget;
     }
-    if (spec.num_permutations > kMax / trials || spec.num_permutations * trials > spec.max_permutation_work) {
+    // Both tests' work: the min-task test does perms x tasks x 2K, the sign-flip sum test perms x tasks
+    // (round-2 NIT: the budget counted only the first). trials + tasks cannot wrap: trials fits the
+    // call budget above, so it is far below kMax / 2.
+    std::uint64_t const per_permutation = trials + tasks;
+    if (spec.num_permutations > kMax / per_permutation ||
+        spec.num_permutations * per_permutation > spec.max_permutation_work) {
         return error{failure_class::resource,
-                     "num_permutations * tasks * 2 * k_per_arm exceeds max_permutation_work",
+                     "num_permutations * tasks * (2 * k_per_arm + 1) exceeds max_permutation_work",
                      "eval.gross_harm_permutation_budget"};
     }
 
     // Each test must be able to flag at its own level, or the screen silently runs a test that can
     // never fire and still reports "not flagged".
     double const per_test_alpha = spec.alpha / 2.0;
-    if (min_sum_pvalue(spec.tasks.size(), spec.num_permutations) >= per_test_alpha) {
-        return contract("too few tasks or permutations for the sum test to ever reach alpha/2",
+    if (!test_reliably_reachable(floor_sum_pvalue(spec.tasks.size()), spec.num_permutations, per_test_alpha)) {
+        return contract("too few tasks or permutations for the sum test to reliably reach alpha/2",
                         "eval.gross_harm_sum_test_unreachable");
     }
-    if (min_min_task_pvalue(spec.k_per_arm, spec.num_permutations) >= per_test_alpha) {
-        return contract("K or num_permutations too small for the min-task test to ever reach alpha/2",
+    if (!test_reliably_reachable(floor_min_task_pvalue(spec.k_per_arm), spec.num_permutations, per_test_alpha)) {
+        return contract("K or num_permutations too small for the min-task test to reliably reach alpha/2",
                         "eval.gross_harm_min_task_test_unreachable");
+    }
+
+    // A candidate the lesson template rejects would fail setup in EVERY treatment trial -- after every
+    // baseline trial had already spent its model calls. Refused here instead (round-2, MINOR).
+    if (auto rendered = render_lesson(spec.candidate, spec.template_version, spec.lesson_salience); !rendered) {
+        return rendered.error();
     }
     return std::nullopt;
 }
@@ -236,9 +285,11 @@ namespace detail {
 // Intention-to-treat, the same one rule as the follow-rate screen: a trial is a success only if its
 // grader says so, an agent that failed to finish is a failure, and only a failed MEASUREMENT is
 // `ungraded` (eval_screen_common.hpp's `grade_trial`) -- and even that never leaves the denominator K.
-// `diff = (treatment_successes - baseline_successes) / K` per task. Before either statistic runs, the
-// run must be interpretable: enough of each arm graded, the arms' ungraded rates within
+// `diff = (treatment_successes - baseline_successes) / K` per task. The ITT analysis decides only when
+// the run is interpretable: enough of each arm graded, the arms' ungraded counts within
 // `max_differential_missingness` (§3.5), and a baseline that succeeds often enough for harm to show.
+// Otherwise the harm-favouring analysis decides (see the file-top comment): flagged if it flags,
+// `invalid` if it does not.
 template <class InnerFactory, class SummarizerFactory>
 [[nodiscard]] task<GrossHarmScreenResult> run_gross_harm_screen(
     InnerFactory make_inner, SummarizerFactory make_summarizer, GrossHarmScreenSpec spec) {
@@ -294,8 +345,18 @@ template <class InnerFactory, class SummarizerFactory>
         trial_spec.max_injected = spec.max_injected;
         trial_spec.extra_capabilities = spec.extra_capabilities;
 
-        TrialResult trial_result =
-            co_await run_trial(make_inner(arm, t), make_summarizer(arm, t), trial_spec);
+        // Round-2 red-team finding (MINOR): a throwing factory or `run_trial` used to escape the whole
+        // screen, losing every trial already paid for. It is now that one trial's setup error
+        // (`ungraded`, a failed measurement) and the screen carries on; in the treatment arm, the
+        // harm-favouring fallback keeps a lesson-induced throw from hiding harm.
+        TrialResult trial_result;
+        try {
+            trial_result = co_await run_trial(make_inner(arm, t), make_summarizer(arm, t), trial_spec);
+        } catch (...) {
+            trial_result = TrialResult{};
+            trial_result.setup_error =
+                error{failure_class::fatal, "the trial threw instead of returning", "eval.screen_trial_threw"};
+        }
         grade_outcome const grade = detail::grade_trial(task_def.grader, trial_result);
         detail::drop_transcripts_unless_retained(trial_result, spec.retain_recordings);
 
@@ -313,40 +374,47 @@ template <class InnerFactory, class SummarizerFactory>
             GrossHarmTrialDetail{t, arm, std::move(trial_id), trial_seed, grade, std::move(trial_result)});
     }
 
-    std::vector<double> diffs;
-    std::vector<std::uint32_t> baseline_successes, treatment_successes;
-    diffs.reserve(n_tasks);
-    baseline_successes.reserve(n_tasks);
-    treatment_successes.reserve(n_tasks);
     std::uint64_t baseline_success_total = 0;
     for (GrossHarmTaskResult& tr : result.per_task) {
         tr.diff = (static_cast<double>(tr.treatment_successes) - static_cast<double>(tr.baseline_successes)) /
                   static_cast<double>(K);
-        diffs.push_back(tr.diff);
-        baseline_successes.push_back(tr.baseline_successes);
-        treatment_successes.push_back(tr.treatment_successes);
         baseline_success_total += tr.baseline_successes;
         result.baseline_ungraded += tr.baseline_ungraded;
         result.treatment_ungraded += tr.treatment_ungraded;
     }
 
-    double const per_arm_n = static_cast<double>(K) * static_cast<double>(n_tasks);
+    std::uint64_t const per_arm = static_cast<std::uint64_t>(K) * n_tasks;
+    double const per_arm_n = static_cast<double>(per_arm);
     double const baseline_ungraded_rate = static_cast<double>(result.baseline_ungraded) / per_arm_n;
     double const treatment_ungraded_rate = static_cast<double>(result.treatment_ungraded) / per_arm_n;
     result.baseline_success_rate = static_cast<double>(baseline_success_total) / per_arm_n;
 
-    result.invalid_differential_missingness =
-        std::abs(treatment_ungraded_rate - baseline_ungraded_rate) > spec.max_differential_missingness;
+    result.invalid_differential_missingness = detail::differential_missingness_exceeds(
+        result.treatment_ungraded, result.baseline_ungraded, per_arm, spec.max_differential_missingness);
     // Red-team finding (MAJOR): with every trial in both arms ungraded, the arms' ungraded rates were
     // EQUAL, so the run counted as valid, every diff was 0, and the screen said "no harm" from zero
     // data. The same happens more quietly at a baseline floor -- a suite the agent fails everywhere has
-    // no success left for a lesson to take away. Both are now `invalid`, not a verdict.
+    // no success left for a lesson to take away. Neither may produce a "no harm" verdict now.
     result.invalid_insufficient_grading = (1.0 - baseline_ungraded_rate) < spec.min_graded_fraction ||
                                           (1.0 - treatment_ungraded_rate) < spec.min_graded_fraction;
     result.invalid_uninformative_baseline = result.baseline_success_rate < spec.min_baseline_success_rate;
-    result.invalid = result.invalid_differential_missingness || result.invalid_insufficient_grading ||
-                     result.invalid_uninformative_baseline;
-    if (result.invalid) co_return result;
+    result.worst_case_imputation = result.invalid_differential_missingness ||
+                                   result.invalid_insufficient_grading || result.invalid_uninformative_baseline;
+
+    // ITT: the observed counts (an ungraded trial is already not a success). Harm-favouring: every
+    // ungraded BASELINE trial counted a success on top; ungraded treatment trials stay failures.
+    std::vector<double> diffs;
+    std::vector<std::uint32_t> baseline_successes, treatment_successes;
+    diffs.reserve(n_tasks);
+    baseline_successes.reserve(n_tasks);
+    treatment_successes.reserve(n_tasks);
+    for (GrossHarmTaskResult const& tr : result.per_task) {
+        std::uint32_t const b = tr.baseline_successes + (result.worst_case_imputation ? tr.baseline_ungraded : 0);
+        baseline_successes.push_back(b);
+        treatment_successes.push_back(tr.treatment_successes);
+        diffs.push_back((static_cast<double>(tr.treatment_successes) - static_cast<double>(b)) /
+                        static_cast<double>(K));
+    }
 
     auto sum_p = sign_flip_sum_lower_tail_pvalue(diffs, spec.num_permutations,
                                                   detail::derive_stream_seed(spec.seed, 1));
@@ -365,7 +433,12 @@ template <class InnerFactory, class SummarizerFactory>
     result.min_task_pvalue = *min_p;
     result.flagged_by_sum = *sum_p < result.per_test_alpha;
     result.flagged_by_min_task = *min_p < result.per_test_alpha;
-    result.flagged = result.flagged_by_sum || result.flagged_by_min_task;
+    bool const any_flag = result.flagged_by_sum || result.flagged_by_min_task;
+    if (result.worst_case_imputation && !any_flag) {
+        result.invalid = true;  // could not show harm, and cannot rule it out either
+    } else {
+        result.flagged = any_flag;
+    }
     co_return result;
 }
 

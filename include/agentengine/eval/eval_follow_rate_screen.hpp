@@ -50,7 +50,7 @@ struct FollowRateProbeSpec {  // ae-naming-lint: allow FollowRateProbeSpec — A
     // Below this graded fraction in EITHER arm the run is `invalid` (too little was measured to claim
     // anything). "Ungraded" now means only a failed MEASUREMENT (eval_screen_common.hpp).
     double min_graded_fraction = 0.9;
-    std::uint64_t max_model_calls = 10'000;       // I8: 2 * n_per_arm * max_turns must fit
+    std::uint64_t max_model_calls = 10'000;       // I8: 2 * n_per_arm trials * max_turns * 2 calls/turn must fit
     bool retain_recordings = false;               // keep full transcripts per trial (memory: trials x turns^2)
     std::uint64_t seed = 0;                       // I5: arm interleave order derives ONLY from this
     std::optional<std::uint64_t> token_budget;
@@ -94,8 +94,9 @@ struct FollowRateScreenResult {  // ae-naming-lint: allow FollowRateScreenResult
 namespace detail {
 
 [[nodiscard]] inline std::optional<error> validate_follow_rate_probe_spec(FollowRateProbeSpec const& spec) {
-    if (spec.probe_id.empty()) {
-        return error{failure_class::contract, "probe_id must not be empty", "eval.follow_rate_probe_id_empty"};
+    if (!usable_trial_id_part(spec.probe_id)) {
+        return error{failure_class::contract, "probe_id must be non-empty and contain no ':'",
+                     "eval.follow_rate_probe_id_invalid"};
     }
     if (spec.n_per_arm == 0) {
         return error{failure_class::contract, "n_per_arm must be > 0", "eval.follow_rate_n_zero"};
@@ -110,8 +111,10 @@ namespace detail {
         return error{failure_class::contract, "baseline_invalid_threshold must be in [0,1]",
                       "eval.follow_rate_baseline_threshold_range"};
     }
-    if (!in_closed_unit_interval(spec.target_lower_bound)) {
-        return error{failure_class::contract, "target_lower_bound must be in [0,1]",
+    // (0,1], not [0,1]: round-2 red-team NIT -- at 0 the lower bound always meets it, so a probe that
+    // was never followed once still reported `pass`.
+    if (!(spec.target_lower_bound > 0.0 && spec.target_lower_bound <= 1.0)) {
+        return error{failure_class::contract, "target_lower_bound must be in (0,1]",
                       "eval.follow_rate_target_lower_bound_range"};
     }
     if (!in_closed_unit_interval(spec.max_differential_missingness)) {
@@ -126,7 +129,16 @@ namespace detail {
     if (spec.n_per_arm > std::numeric_limits<std::uint64_t>::max() / 2) {
         return error{failure_class::resource, "n_per_arm is too large", "eval.screen_model_call_budget"};
     }
-    return validate_call_budget(spec.max_turns, 2 * spec.n_per_arm, spec.max_model_calls);
+    if (auto budget = validate_call_budget(spec.max_turns, 2 * spec.n_per_arm, spec.max_model_calls);
+        budget.has_value()) {
+        return budget;
+    }
+    // A candidate the lesson template rejects would fail setup in every treatment trial, after the
+    // baseline trials had already spent their model calls -- refused before any trial runs instead.
+    if (auto rendered = render_lesson(spec.candidate, spec.template_version, spec.lesson_salience); !rendered) {
+        return rendered.error();
+    }
+    return std::nullopt;
 }
 
 }  // namespace detail
@@ -154,6 +166,11 @@ namespace detail {
 // gets excluded correlates with the outcome) -- whether a trial gets graded at all is not
 // independent of whether the lesson was followed, so dropping ungraded trials from the denominator
 // would bias the apparent follow rate, not just add noise.
+//
+// A lesson CAN make its own trials unmeasurable (a provider timeout or 5xx is `transient` whatever
+// caused it -- eval_screen_common.hpp), but here that only ever costs it: `invalid` means no pass, the
+// conservative direction for a screen a lesson has to PASS. The gross-harm screen, where `invalid`
+// would be the lesson's escape, needs and has a harm-favouring fallback instead.
 template <class InnerFactory, class SummarizerFactory>
 [[nodiscard]] task<FollowRateScreenResult> run_follow_rate_screen(
     InnerFactory make_inner, SummarizerFactory make_summarizer, FollowRateProbeSpec spec) {
@@ -199,8 +216,16 @@ template <class InnerFactory, class SummarizerFactory>
         trial_spec.max_injected = spec.max_injected;
         trial_spec.extra_capabilities = spec.extra_capabilities;
 
-        TrialResult trial_result =
-            co_await run_trial(make_inner(arm), make_summarizer(arm), trial_spec);
+        // A throwing factory or `run_trial` is that one trial's setup error (`ungraded`), not the loss of
+        // every trial already run (round-2 red-team, MINOR; same rule as the gross-harm screen).
+        TrialResult trial_result;
+        try {
+            trial_result = co_await run_trial(make_inner(arm), make_summarizer(arm), trial_spec);
+        } catch (...) {
+            trial_result = TrialResult{};
+            trial_result.setup_error =
+                error{failure_class::fatal, "the trial threw instead of returning", "eval.screen_trial_threw"};
+        }
         grade_outcome grade = detail::grade_trial(spec.grader, trial_result);
         detail::drop_transcripts_unless_retained(trial_result, spec.retain_recordings);
 
@@ -227,8 +252,8 @@ template <class InnerFactory, class SummarizerFactory>
         static_cast<double>(result.baseline_ungraded) / static_cast<double>(spec.n_per_arm);
     double const treatment_ungraded_rate =
         static_cast<double>(result.treatment_ungraded) / static_cast<double>(spec.n_per_arm);
-    result.invalid_differential_missingness =
-        std::abs(treatment_ungraded_rate - baseline_ungraded_rate) > spec.max_differential_missingness;
+    result.invalid_differential_missingness = detail::differential_missingness_exceeds(
+        result.treatment_ungraded, result.baseline_ungraded, spec.n_per_arm, spec.max_differential_missingness);
 
     // A verdict needs data: if either arm was mostly unmeasurable (e.g. the provider was down), no
     // count here means anything, and without this rule an all-ungraded run would read as "never

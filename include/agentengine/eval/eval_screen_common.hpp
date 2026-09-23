@@ -3,6 +3,7 @@
 // screen (eval_follow_rate_screen.hpp, §3.0 item 2) and the gross-harm regression screen
 // (eval_gross_harm_screen.hpp, §3.0 item 3).
 
+#include <cmath>
 #include <cstdint>
 #include <optional>
 #include <string_view>
@@ -26,6 +27,16 @@ namespace detail {
 // it is an outcome, and under intention-to-treat it counts against the arm it happened in. Defaulting
 // unknown errors to "outcome" is deliberate: a lesson-induced crash must not be able to hide as
 // missing data.
+//
+// Round-2 red-team finding (MAJOR): this classification alone does NOT keep the lesson out of the
+// "ungraded" bucket. Every HTTP 429/5xx and the 90 s read timeout are `transient` whatever caused them,
+// so a lesson that makes the model generate for longer, or send content a provider chokes on, reaches
+// this class; so does a grader that throws on a malformed, model-chosen argument. No classification
+// of a single error can tell "the provider failed" from "the lesson made the provider fail". The
+// gross-harm screen therefore stops relying on it where it matters: when missingness makes a run
+// uninterpretable, it re-tests under harm-favouring imputation (eval_gross_harm_screen.hpp), so
+// lesson-induced missingness can only push that screen TOWARD a flag. The follow-rate screen needs no
+// such rule -- there `invalid` means "no pass", already the conservative direction.
 [[nodiscard]] inline bool is_measurement_fault(error const& e) {
     return e.klass == failure_class::transient || e.code == "run.canceled";
 }
@@ -44,7 +55,9 @@ namespace detail {
 // Now, intention-to-treat all the way down: a trial is `ungraded` only when the MEASUREMENT failed --
 // the harness never ran the model (`setup_error`), the run hit a measurement fault (above), or the
 // grader itself threw (§3.5: "a grader error ... is `ungraded`"). Any other failed run is `failure`. The
-// grader is invoked only on converged trials.
+// grader is invoked only on converged trials. A grader should not throw on malformed model-chosen input
+// (it reads model-supplied tool arguments) -- return `failure` instead; see is_measurement_fault above
+// for why the gross-harm screen stays safe even when one does.
 [[nodiscard]] inline grade_outcome grade_trial(GraderFn const& grader, TrialResult const& trial) {
     if (trial.setup_error.has_value()) return grade_outcome::ungraded;
     if (!trial.outcome.has_value()) {
@@ -63,6 +76,12 @@ namespace detail {
 [[nodiscard]] inline bool in_open_unit_interval(double x) { return x > 0.0 && x < 1.0; }
 [[nodiscard]] inline bool in_closed_unit_interval(double x) { return x >= 0.0 && x <= 1.0; }
 
+// Model calls one trial can make per turn: one to the agent's model, and one to the memory summarizer
+// (`MemoryProvider::on_turn_end` summarizes every turn). Round-2 red-team finding (MAJOR): the budget
+// used to count only the first -- a spec at exactly `trials * max_turns == max_model_calls` made
+// TWICE that many real model calls, measured (1,200 agent + 1,200 summarizer).
+inline constexpr std::uint64_t kModelCallsPerTurn = 2;
+
 // Pre-flight check shared by both screens: a screen must bound its own per-trial model calls, or
 // neither its call budget nor its retained memory is bounded at all. `AgentSession` only stops a
 // non-converging loop when `max_turns` is set -- the red team ran a default-spec screen of TWO trials
@@ -74,11 +93,34 @@ namespace detail {
         return error{failure_class::contract, "max_turns must be set and > 0 (it bounds every trial's model calls)",
                      "eval.screen_max_turns_required"};
     }
-    if (*max_turns > max_model_calls / trials || trials * *max_turns > max_model_calls) {
-        return error{failure_class::resource, "trials * max_turns exceeds max_model_calls",
+    // Each guard runs before the product it protects, so no multiplication can wrap.
+    std::uint64_t const per_trial_cap = max_model_calls / trials;
+    if (*max_turns > per_trial_cap / kModelCallsPerTurn ||
+        trials * kModelCallsPerTurn * *max_turns > max_model_calls) {
+        return error{failure_class::resource,
+                     "trials * max_turns * 2 (agent + summarizer call per turn) exceeds max_model_calls",
                      "eval.screen_model_call_budget"};
     }
     return std::nullopt;
+}
+
+// Identifiers a screen builds trial_ids from must survive `mint_eval_trial_principal`, which rejects
+// ':' (eval.id_colon). Round-2 red-team finding (MINOR): a task_id with a ':' passed pre-flight, then
+// every one of that task's trials failed setup -- equally in both arms, so the run stayed "valid" and
+// silently lost exactly the task the lesson broke. Rejected before any trial runs.
+[[nodiscard]] inline bool usable_trial_id_part(std::string_view id) {
+    return !id.empty() && id.find(':') == std::string_view::npos;
+}
+
+// §3.5's differential-missingness rule on COUNTS, not on floating-point rates. Round-2 red-team finding
+// (MINOR): `|t/n - b/n| > bound` gave different verdicts for the same one-trial gap depending on the
+// counts' own rounding (at n = 20, B=3/T=4 was invalid but B=0/T=1 was valid). Both arms have the same
+// n in every screen, so the rule is "the counts differ by more than floor(bound * n) trials".
+[[nodiscard]] inline bool differential_missingness_exceeds(std::uint64_t ungraded_a, std::uint64_t ungraded_b,
+                                                             std::uint64_t n, double bound) {
+    std::uint64_t const gap = ungraded_a > ungraded_b ? ungraded_a - ungraded_b : ungraded_b - ungraded_a;
+    auto const allowed = static_cast<std::uint64_t>(std::floor(bound * static_cast<double>(n) + 1e-9));
+    return gap > allowed;
 }
 
 // Drops a trial's full request/response transcripts once it has been graded, unless the host opted in.
@@ -86,8 +128,15 @@ namespace detail {
 // grow with trials x turns^2 -- measured at 3.2 GB for 1,000 tiny scripted trials at 50 turns. Grading
 // reads `tool_calls`/`outcome`, and delivery was already computed inside `run_trial`, so nothing the
 // screen reports depends on the transcripts.
+//
+// What is kept without transcripts: every trial's id, seed, arm, grade, outcome and captured tool calls
+// -- enough to re-grade a trial (graders read `tool_calls`/`outcome`) and to audit every count behind a
+// verdict (I4). What is lost is replaying the model conversation (§3.8); a host that needs that sets
+// `retain_recordings`.
 inline void drop_transcripts_unless_retained(TrialResult& trial, bool retain) {
-    if (!retain) std::vector<ChatCallRecording>{}.swap(trial.recordings);
+    if (retain) return;
+    std::vector<ChatCallRecording>{}.swap(trial.recordings);
+    std::vector<ChatCallRecording>{}.swap(trial.summarizer_recordings);
 }
 
 // A simple, explicit, non-cryptographic mix (no reliance on `std::hash`'s implementation-defined

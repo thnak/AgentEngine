@@ -17,8 +17,10 @@
 // `ReplayChatClient`'s request-digest check (§3.8, E9). Multi-trial orchestration was built later, on
 // top of this driver: eval_follow_rate_screen.hpp and eval_gross_harm_screen.hpp.
 
+#include <chrono>
 #include <optional>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <type_traits>
 #include <unordered_set>
@@ -32,6 +34,7 @@
 #include "agentengine/core/memory.hpp"
 #include "agentengine/core/memory_provider.hpp"
 #include "agentengine/core/recording_chat_client.hpp"
+#include "agentengine/core/stream.hpp"
 #include "agentengine/eval/eval_store.hpp"
 #include "agentengine/eval/eval_stub_tool.hpp"
 #include "agentengine/eval/lesson_candidate.hpp"
@@ -86,6 +89,12 @@ struct TrialResult {  // ae-naming-lint: allow TrialResult — ADR-181 §3.0 ite
                                             // "seeds at the exact promotion-path salience" claim;
                                             // not read back from the store itself, since the store
                                             // does not outlive this function
+    // Every call `MemoryProvider::on_turn_end` made to the SUMMARIZER, in call order (§3.8, I5).
+    // Gross-harm round-2 red-team finding (MAJOR): the summarizer is a second model, called once per
+    // turn, whose output is written to memory and injected into later turns -- but it was never
+    // recorded, so a trial's own transcript silently omitted model calls that shaped it. Kept apart
+    // from `recordings` so delivery detection (which reads the AGENT's requests) is unchanged.
+    std::vector<ChatCallRecording> summarizer_recordings;
 };
 
 namespace detail {
@@ -210,6 +219,71 @@ template <class T>
 inline constexpr bool is_recording_chat_client_after_decay_v =
     is_recording_chat_client_v<std::remove_cvref_t<T>>;
 
+// Records every summarizer call into the trial's own `TrialResult::summarizer_recordings`. Not
+// `RecordingChatClient`: that wrapper requires `LegacyChatClient` (a `chat()` method), while
+// `MemoryProvider` accepts any `ChatClient`, so reusing it would have narrowed which summarizers a
+// trial accepts. `MemoryProvider::on_turn_end` drains the returned stream synchronously and
+// immediately (`drain_chat_stream`), so draining it HERE first, recording it, and replaying the exact
+// update sequence and terminal into a fresh stream changes nothing that caller observes -- and needs
+// no background thread writing into `TrialResult` concurrently.
+template <class SummarizerT>
+class SummarizerRecorder {
+public:
+    SummarizerRecorder(SummarizerT inner, std::vector<ChatCallRecording>* sink)
+        : inner_(std::move(inner)), sink_(sink) {}
+
+    [[nodiscard]] ChatClientCapabilities capabilities() const { return inner_.capabilities(); }
+
+    stream<ChatResponseUpdate> chat_stream(ChatRequest request, EffectContext& ctx) {
+        auto const start = std::chrono::steady_clock::now();
+        ChatCallRecording rec;
+        rec.request = request;
+        rec.mode = recording_mode::streaming;
+        stream<ChatResponseUpdate> in = inner_.chat_stream(std::move(request), ctx);
+        while (!in.done()) {
+            while (auto update = in.next()) {
+                RecordedChunk chunk;
+                chunk.update = std::move(*update);
+                chunk.elapsed_since_start = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - start);
+                rec.chunks.push_back(std::move(chunk));
+            }
+            if (!in.done()) std::this_thread::yield();
+        }
+        while (auto update = in.next()) {  // anything queued between the last poll and done()
+            RecordedChunk chunk;
+            chunk.update = std::move(*update);
+            rec.chunks.push_back(std::move(chunk));
+        }
+        stream_terminal const terminal = in.terminal();
+        rec.stream_terminal = std::string(recording_chat_client_detail::stream_terminal_to_wire_string(terminal));
+        if (terminal == stream_terminal::failed) {
+            rec.stream_error = in.fail_error();
+            rec.stream_error_detail = rec.stream_error->message;
+        }
+        rec.duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
+
+        stream_config<ChatResponseUpdate> cfg;
+        cfg.capacity = rec.chunks.size() + 1;
+        auto pair = make_stream<ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
+        for (RecordedChunk const& chunk : rec.chunks) (void)pair.producer.push(chunk.update);
+        if (terminal == stream_terminal::closed) {
+            pair.producer.close();
+        } else if (terminal == stream_terminal::failed) {
+            pair.producer.fail(*rec.stream_error);
+        } else {
+            pair.producer.fail(error{failure_class::fatal, "the summarizer's stream was cancelled",
+                                     "eval.summarizer_stream_cancelled"});
+        }
+        sink_->push_back(std::move(rec));
+        return std::move(pair.consumer);
+    }
+
+private:
+    SummarizerT inner_;
+    std::vector<ChatCallRecording>* sink_;
+};
+
 }  // namespace detail
 
 // Runs one B (baseline, `spec.candidate == nullopt`) or T (treatment, `spec.candidate` set) trial:
@@ -247,7 +321,7 @@ template <class Inner, class SummarizerT>
                   "confinement, exactly like Inner (round-2 red-team fix)");
     using ObjectStore = InMemoryWorktreeObjectStore;
     using RefStore = rt::InMemoryAppendLogStore;
-    using MemProvider = MemoryProvider<SummarizerT, ObjectStore, RefStore>;
+    using MemProvider = MemoryProvider<detail::SummarizerRecorder<SummarizerT>, ObjectStore, RefStore>;
     using ComposedProvider = ComposedContextProvider<HistoryProvider<Window<0>>, MemProvider, EvalStubToolProvider>;
 
     TrialResult trial_result;
@@ -314,7 +388,9 @@ template <class Inner, class SummarizerT>
     session.set_capabilities(&held);
 
     MemProvider memory_provider{store.object_store(), store.ref_store(),  store.mount(),
-                                 store.read_cap(),     store.write_cap(), std::move(summarizer),
+                                 store.read_cap(),     store.write_cap(),
+                                 detail::SummarizerRecorder<SummarizerT>{std::move(summarizer),
+                                                                         &trial_result.summarizer_recordings},
                                  spec.max_injected};
     auto engaged = session.history_provider().engage(
         std::tuple{HistoryProvider<Window<0>>{}, std::move(memory_provider),

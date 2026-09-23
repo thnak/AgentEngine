@@ -15,7 +15,8 @@
 namespace agentengine::eval {
 
 // `ungraded` means the MEASUREMENT failed -- the grader could not judge this trial (§3.5: "a grader
-// error or timeout is `ungraded`"). It is not a verdict about the agent. Anything the agent did,
+// error or timeout is `ungraded`" -- no grader timeout exists yet: graders run synchronously). It is
+// not a verdict about the agent. Anything the agent did,
 // including not doing the task at all, is `success` or `failure` (see eval_screen_common.hpp's
 // `grade_trial` for why that distinction decides whether a harm is flagged or hidden).
 enum class grade_outcome { success, failure, ungraded };  // ae-naming-lint: allow grade_outcome — ADR-181 §3.5
