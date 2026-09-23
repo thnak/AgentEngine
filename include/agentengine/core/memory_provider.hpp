@@ -14,6 +14,7 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -22,6 +23,7 @@
 
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/chat_stream_drain.hpp"  // ADR-035 Phase 3: drain_chat_stream, DrainedChatStream
+#include "agentengine/core/summarizer_prompt.hpp"  // ADR-182: the summarizer request and acceptance
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/context_provider.hpp"
 #include "agentengine/core/effect_context.hpp"
@@ -252,6 +254,7 @@ public:
     // this conformer never suspends.
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& session_ctx, EffectContext&) {
         std::string query_text = last_user_text(session_ctx.history);
+        note_user_message(session_ctx.history);
 
         auto ranked =
             rank_memory_items(*object_store_, *ref_store_, mount_, read_cap_, query_text, max_injected_);
@@ -338,23 +341,57 @@ public:
     task<std::monostate> on_turn_end(TurnView turn, EffectContext& ctx) {
         if (turn.turn_messages.empty()) co_return std::monostate{};
 
-        ChatRequest request{std::vector<Message>(turn.turn_messages.begin(), turn.turn_messages.end())};
+        // ADR-182: the summarizer is TOLD what to do -- a fixed extraction instruction, and the turn as a
+        // transcript to read, not messages to answer. Before this it got the turn's raw messages and,
+        // measured live, simply continued the conversation; that reply was stored as memory.
+        //
+        // ADR-182 red team (MAJOR): `AgentSession`'s TurnView starts at the model's response, so the turn
+        // never contains the USER's message -- the extractor saw only the agent's reply and, live, answered
+        // NONE to exactly what a user asked to be remembered. The latest user message this provider saw in
+        // `on_context` is prepended, ONCE (the first round after it arrives), so later rounds of the same
+        // run do not extract it again.
+        std::vector<Message> transcript;
+        if (pending_user_.has_value()) {
+            transcript.push_back(std::move(*pending_user_));
+            pending_user_.reset();
+        }
+        transcript.insert(transcript.end(), turn.turn_messages.begin(), turn.turn_messages.end());
+        ChatRequest request = make_summarization_request(summarization_purpose::memory_extraction, transcript);
         DrainedChatStream drained = drain_chat_stream(summarizer_.chat_stream(request, ctx));
-        if (!drained.ok) co_return std::monostate{};
-        if (drained.accumulated.content.empty()) co_return std::monostate{};
-        auto const* text = std::get_if<Text>(&drained.accumulated.content.front().value);
-        if (text == nullptr || text->text.empty()) co_return std::monostate{};
+        // ADR-182: `NONE`, an actual tool call, an empty or oversized reply -- nothing stored, and why is kept.
+        last_extraction_ = decide_memory_summary(drained);
+        if (last_extraction_.verdict != summary_verdict::stored) co_return std::monostate{};
 
         MemoryItem item{};
         item.kind = memory_kind::episodic;
-        item.content = text->text;
+        item.content = last_extraction_.text;
         item.origin = MemoryOrigin{memory_source::model_inferred, ctx.run_id,
                                     std::to_string(ctx.turn_index), ctx.principal};
         (void)write_memory_item(*object_store_, *ref_store_, mount_, write_cap_, item);
         co_return std::monostate{};
     }
 
+    // What the last `on_turn_end` did with its summarizer's reply (ADR-182): stored, or why not. Extraction is
+    // best-effort and never fails the turn, so without this a dropped summary would be invisible.
+    [[nodiscard]] MemorySummaryDecision const& last_extraction() const noexcept { return last_extraction_; }
+
 private:
+    // Remembers the most recent user message the first time it is seen, for the next extraction.
+    void note_user_message(std::vector<Message> const& history) {
+        for (auto it = history.rbegin(); it != history.rend(); ++it) {
+            if (it->role != role::user) continue;
+            std::string key = it->message_id;
+            for (ContentItem const& item : it->content) {
+                if (auto const* t = std::get_if<Text>(&item.value)) key += "\x1f" + t->text;
+            }
+            if (key != last_user_key_) {
+                last_user_key_ = std::move(key);
+                pending_user_ = *it;
+            }
+            return;
+        }
+    }
+
     // Walks BACKWARD to the most recent `role::user` message, never just `history.back()` —
     // a red-team pass against `VectorRagContextProvider` (ADR-063, 2026-08-19) found the identical
     // pattern here treats `history.back()` as the query source even when `on_context()` runs at a
@@ -403,6 +440,9 @@ private:
     cap::FsWrite    write_cap_;
     SummarizerT     summarizer_;
     std::size_t     max_injected_;
+    std::optional<Message> pending_user_;  // ADR-182: the user message the next extraction includes
+    std::string     last_user_key_;
+    MemorySummaryDecision last_extraction_;
 };
 
 } // namespace agentengine

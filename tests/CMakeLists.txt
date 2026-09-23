@@ -744,6 +744,12 @@ if(WIN32)
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_memory_provider COMMAND test_memory_provider)
 
+  # ADR-182: the request both declared summarizers receive, and what a memory reply must look like to be stored.
+  add_executable(test_summarizer_prompt test_summarizer_prompt.cpp)
+  target_link_libraries(test_summarizer_prompt PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_summarizer_prompt COMMAND test_summarizer_prompt)
+
   # ADR-179 stage 0: concurrent writers to one principal's memory ref must not lose items.
   add_executable(test_memory_write_concurrency test_memory_write_concurrency.cpp)
   target_link_libraries(test_memory_write_concurrency PRIVATE
