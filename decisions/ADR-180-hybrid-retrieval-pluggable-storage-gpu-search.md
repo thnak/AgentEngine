@@ -1,7 +1,8 @@
 # ADR-180 — Hybrid retrieval, pluggable/persistent vector storage, and a generic GPU search backend
 
-**Status:** Proposed (2026-09-22, design pass drafted collaboratively with the project owner in a live
-session). **§8 steps 1-6 are REAL, compiled, and passing, AND have now been through one independent
+**Status:** Judged (2026-09-23, project owner sign-off — see §9 for what was accepted, including the
+named residuals the decision carries). Originally Proposed (2026-09-22, design pass drafted
+collaboratively with the project owner in a live session). **§8 steps 1-6 are REAL, compiled, and passing, AND have now been through one independent
 red-team pass with every finding fixed and proven** (2026-09-22, same session — see §4 below for the
 full findings and §5-6 for the fixes). **§8 step 7 (`QdrantVectorIndex`) is now REAL for its
 offline-provable half, AND has been through its own dedicated red-team pass** (2026-09-22, same
@@ -1880,4 +1881,36 @@ reported none leaked or double-destroyed across 59 instance teardowns.
    (e.g. a Linux CI runner with Mesa's lavapipe), since every result above comes from one AMD driver.
    The live Qdrant run has now landed (2026-09-23), and both conditions are closed. What remains is the
    Judge step itself, then the project owner's Judged sign-off. That is the same sequence `ADR-063`/`ADR-064` both actually
-   followed, not skipped for expedience.
+   followed, not skipped for expedience. **Done — see §9.**
+
+## 9. The decision — Judged (2026-09-23, project owner sign-off)
+
+The project owner signed off on 2026-09-23, after the live Qdrant run landed (§3 claim 6, commit
+`cf6c36c`). As with `ADR-063` and `ADR-064`, the project owner's sign-off is the Judge step. What this
+decision settles:
+
+- **Accepted as built:**
+  - `SparseIndex` and `BM25Index`.
+  - `HybridRagContextProvider`, fusing results with RRF (reciprocal rank fusion).
+  - `PersistentVectorIndex`, with snapshot and restore.
+  - `RemoteVectorIndex`, with `QdrantVectorIndex` as its first conformer.
+  - `VulkanCosineIndex` as the one generic GPU backend, behind `AGENTENGINE_WITH_VULKAN` (default OFF).
+    No vendor-specific backend is planned; anyone who needs another one builds it against the same
+    `VectorIndex` concept (§2.6).
+- **Accepted with an honest negative:**
+  - §3 claim 7(a) stays DISPROVEN. On the one reference GPU, `VulkanCosineIndex` is slower than CPU
+    brute force. The backend ships for correctness and as the extension point, not as a proven speedup.
+  - Claim 7(b), GPU/CPU agreement, is CORRECT.
+- **Rulings folded in:**
+  - `VK_ERROR_DEVICE_LOST` stays `failure_class::resource`.
+  - `BruteForceCosineIndex`'s NaN strict-weak-ordering defect was fixed directly (§7).
+- **Carried as named residuals, not blockers.** Everything else §7 lists stays open, notably:
+  - `QdrantVectorIndex`'s confidentiality residual (§4b finding 1). It has an operational fix, not
+    closure in code.
+  - The free-form `collection_name` versus a `corpus_scope`-derived name.
+  - Stale-chunk GC.
+  - Validation of the tokenizer and of `k_rrf`.
+  - A second-vendor Vulkan driver run (for example Mesa lavapipe). This remains the recommended next
+    assurance step.
+
+  Each of these needs its own follow-on ADR if it is ever to be closed.
