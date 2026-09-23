@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "agentengine/core/json_value.hpp"
+#include "agentengine/core/summarizer_prompt.hpp"
 #include "agentengine/eval/eval_trial.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
@@ -159,6 +160,21 @@ int main() {
         check(result.summarizer_tokens > 0 && result.summarizer_tokens == reported,
               "1: summarizer_tokens is exactly the sum of the final-chunk usage the provider reported");
         check(!result.summarizer_budget_exhausted, "1: no budget, nothing refused");
+        // ADR-182: before the summarizer was given an instruction, a real model continued the conversation
+        // and once wrote raw tool-call markup, which was then stored as memory. Now it is told to extract.
+        bool no_markup = true;
+        for (auto const& rec : result.summarizer_recordings) {
+            std::string text;
+            for (RecordedChunk const& chunk : rec.chunks) {
+                if (auto const* piece = std::get_if<Text>(&chunk.update.delta.value)) text += piece->text;
+            }
+            no_markup = no_markup && !summarizer_prompt_detail::looks_like_tool_call_markup(text);
+        }
+        check(no_markup, "1: no summarizer reply carries tool-call markup (ADR-182)");
+        check(!result.summarizer_recordings.empty() &&
+                  result.summarizer_recordings.front().request.messages.size() == 2u &&
+                  result.summarizer_recordings.front().request.messages.front().role == role::system,
+              "1: the summarizer was sent the ADR-182 instruction + transcript, not the raw turn");
     }
 
     // ---- 2. A 1-token summarizer budget: the first call runs, the rest are refused ---------------------

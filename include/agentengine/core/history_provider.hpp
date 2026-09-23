@@ -20,9 +20,12 @@
 #include <cstddef>
 #include <string_view>
 #include <utility>
+#include <variant>
+#include <vector>
 
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/chat_stream_drain.hpp"  // ADR-035 Phase 3: drain_chat_stream, DrainedChatStream
+#include "agentengine/core/summarizer_prompt.hpp"  // ADR-182: the summarizer request and acceptance
 #include "agentengine/core/context_provider.hpp"
 
 namespace agentengine {
@@ -119,11 +122,23 @@ public:
         std::vector<Message> older(h.begin(), h.begin() + static_cast<std::ptrdiff_t>(split));
         std::vector<Message> recent(h.begin() + static_cast<std::ptrdiff_t>(split), h.end());
 
-        ChatRequest summarize_request{std::move(older)};
+        // ADR-182: an instruction plus the older slice as a delimited transcript -- not the raw messages,
+        // which a real model answers as a conversation instead of summarizing.
+        ChatRequest summarize_request = make_summarization_request(summarization_purpose::history_compaction, older);
         DrainedChatStream drained = drain_chat_stream(summarizer_.chat_stream(summarize_request, ctx));
         if (!drained.ok) {
             co_return std::unexpected(
                 drained_failure_to_agent_error(drained.failure, "history.summarize_failed"));
+        }
+        // ADR-182: a summary is prose. A tool call (or reasoning) item in the reply would otherwise ride
+        // into the conversation inside a `system` message; only the text is kept, and a reply with no text
+        // is a failed summary, not an empty one (dropping the older history silently would be the 005 §4
+        // "compaction that drops content" defect).
+        std::erase_if(drained.accumulated.content,
+                      [](ContentItem const& item) { return !std::holds_alternative<Text>(item.value); });
+        if (drained.accumulated.content.empty()) {
+            co_return std::unexpected(error{failure_class::contract, "the summarizer returned no summary text",
+                                            "history.summarize_failed"});
         }
 
         // 005 §4: "a `system` summary message" — the summarizer's own reply, re-labeled `system`

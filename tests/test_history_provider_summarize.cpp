@@ -134,10 +134,20 @@ int main() {
                  out1->messages[0].role == ae::role::system,
              "B4-R2: the summary message is re-labeled `system` regardless of what role the "
              "summarizer's own reply carried (005 §4)");
-    AE_CHECK(out1.has_value() && out1->messages.size() == 3 &&
-                 text_of(out1->messages[0]) == "SUMMARY(3):one;two;three;",
-             "B4-R3: the summary was produced from exactly the OLDER 3 messages (one/two/three), "
-             "proving the real content reached the summarizer, not a placeholder call");
+    // ADR-182: the summarizer now receives TWO messages -- the fixed compaction instruction, then the
+    // older slice rendered as one delimited transcript -- instead of the older messages themselves (which a
+    // real model answers as a conversation). The mock echoes both, so this still proves the real older
+    // content, and only it, reached the summarizer.
+    {
+        std::string const summary = out1.has_value() && out1->messages.size() == 3 ? text_of(out1->messages[0]) : "";
+        AE_CHECK(summary.starts_with("SUMMARY(2):You compress the earlier part of a conversation") &&
+                     summary.find("<transcript>\n[user] one\n") != std::string::npos &&
+                     summary.find("] two\n") != std::string::npos &&
+                     summary.find("] three\n</transcript>") != std::string::npos &&
+                     summary.find("four") == std::string::npos && summary.find("five") == std::string::npos,
+                 "B4-R3: the summarizer got the compaction instruction plus a transcript of exactly the OLDER 3 "
+                 "messages (one/two/three) -- the real content, not a placeholder, and not the recent two");
+    }
     AE_CHECK(out1.has_value() && out1->messages.size() == 3 && text_of(out1->messages[1]) == "four" &&
                  text_of(out1->messages[2]) == "five",
              "B4-R4: the last 2 messages (four, five) survive verbatim, unmodified by the summarizer");

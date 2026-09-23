@@ -14,6 +14,7 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -22,6 +23,7 @@
 
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/chat_stream_drain.hpp"  // ADR-035 Phase 3: drain_chat_stream, DrainedChatStream
+#include "agentengine/core/summarizer_prompt.hpp"  // ADR-182: the summarizer request and acceptance
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/context_provider.hpp"
 #include "agentengine/core/effect_context.hpp"
@@ -338,16 +340,18 @@ public:
     task<std::monostate> on_turn_end(TurnView turn, EffectContext& ctx) {
         if (turn.turn_messages.empty()) co_return std::monostate{};
 
-        ChatRequest request{std::vector<Message>(turn.turn_messages.begin(), turn.turn_messages.end())};
+        // ADR-182: the summarizer is TOLD what to do -- a fixed extraction instruction, and the turn as a
+        // delimited transcript to read, not messages to answer. Before this it got the turn's raw messages
+        // and, measured live, simply continued the conversation; that reply was stored as memory.
+        ChatRequest request = make_summarization_request(summarization_purpose::memory_extraction, turn.turn_messages);
         DrainedChatStream drained = drain_chat_stream(summarizer_.chat_stream(request, ctx));
-        if (!drained.ok) co_return std::monostate{};
-        if (drained.accumulated.content.empty()) co_return std::monostate{};
-        auto const* text = std::get_if<Text>(&drained.accumulated.content.front().value);
-        if (text == nullptr || text->text.empty()) co_return std::monostate{};
+        // ADR-182: `NONE`, a tool call or tool-call markup, an empty or oversized reply -- nothing stored.
+        std::optional<std::string> summary = accept_memory_summary(drained);
+        if (!summary.has_value()) co_return std::monostate{};
 
         MemoryItem item{};
         item.kind = memory_kind::episodic;
-        item.content = text->text;
+        item.content = std::move(*summary);
         item.origin = MemoryOrigin{memory_source::model_inferred, ctx.run_id,
                                     std::to_string(ctx.turn_index), ctx.principal};
         (void)write_memory_item(*object_store_, *ref_store_, mount_, write_cap_, item);
