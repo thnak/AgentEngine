@@ -5,18 +5,18 @@
 // 5000} (the exact sizes ADR-063 §6 already measured as CPU Goal-tier misses against RFC 023 §3's
 // `<= 500 us` budget).
 //
-// HONEST RESULT, recorded here rather than only in the ADR (a reader of just this test file should
-// not be misled): GPU search does NOT beat CPU brute-force at either size on the reference hardware
-// this was proven against (a discrete AMD Radeon RX 5300M) -- it is consistently ~1.3x SLOWER, not
-// faster, after two real optimization passes (a vectors-buffer upload/caching fix that closed a ~7-8x
-// gap, and a device-local-memory-via-staging-buffer fix that closed a further ~4x gap at n=5000; see
-// this file's own git history / the ADR's §5-6 account for the full, honest before/after numbers).
-// The remaining gap is very likely fixed per-`search()`-call CPU<->GPU synchronization overhead
-// (`vkQueueSubmit`+`vkWaitForFences`, a genuine round-trip cost independent of problem size at these
-// scales) -- named as an open, unresolved residual in ADR-180 §7, not chased further in this pass.
-// What claim 7 DOES hold, proven below: GPU and CPU scores agree within a tight, stated epsilon (the
-// determinism claim §2.6's design makes), and the tie-break/correctness/VectorIndex-conformance
-// claims all hold for real, on real hardware.
+// PERFORMANCE, recorded here rather than only in the ADR: the first shipped version measured GPU
+// search ~1.3x SLOWER than CPU brute force on the reference hardware (a discrete AMD Radeon RX 5300M),
+// and this comment used to guess the cause was fixed per-call submit/wait overhead. That guess was
+// WRONG. A per-phase profile (ADR-180 §10, 2026-09-23) showed the kernel itself was the cost: the
+// row-major vectors layout left adjacent GPU lanes 6 KB apart, so no read was ever coalesced.
+// Switching to a dimension-major layout plus top-k selection instead of a full sort made GPU search
+// ~5x faster than CPU at n=5000 and ~15x at n=20000. A fixed ~1.3-1.6 ms submit/wait floor per call
+// is real, which puts the crossover near n=1000 on this machine. Speed is still printed, not asserted
+// (timing on shared hardware is not a stable pass/fail signal). What IS asserted: GPU and CPU scores
+// agree within a tight, stated epsilon (the determinism claim §2.6's design makes), the layout is
+// correct across batch growth and non-multiple-of-64 sizes, and the tie-break/correctness/
+// VectorIndex-conformance claims all hold for real, on real hardware.
 
 #ifdef AGENTENGINE_WITH_VULKAN
 
@@ -474,9 +474,69 @@ int main() {
         }
     }
 
+    // --- ADR-180 §10: dimension-major layout regression. The vectors buffer's stride is `n`, so a
+    // layout bug (stale stride after growth, wrong index arithmetic, a shader/upload mismatch) would
+    // hand every candidate some OTHER candidate's components. Grows the index across three batches
+    // whose sizes are not multiples of the 64-lane workgroup, with an odd dimension, searching between
+    // batches (so a cached buffer built for the old `n` must be rebuilt), and checks EVERY candidate's
+    // score against BruteForceCosineIndex by id -- not just the top result. Positive control: run
+    // against the pre-§10 row-major shader with this dimension-major upload, it fails. ---------------
+    {
+        constexpr std::size_t kDim = 17;
+        std::mt19937 rng(7);
+        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+        BruteForceCosineIndex cpu_index;
+        auto gpu_created = VulkanCosineIndex::create();
+        AE_CHECK(gpu_created.has_value(), "layout test: GPU index created");
+        if (gpu_created.has_value()) {
+            VulkanCosineIndex gpu_index = std::move(*gpu_created);
+            std::vector<float> query(kDim);
+            for (auto& f : query) f = dist(rng);
+            std::span<float const> query_span(query.data(), kDim);
+            std::size_t total = 0;
+            for (std::size_t batch : {std::size_t{37}, std::size_t{64}, std::size_t{131}}) {
+                std::vector<std::string> ids;
+                std::vector<std::vector<float>> vecs;
+                for (std::size_t i = 0; i < batch; ++i) {
+                    ids.push_back("L" + std::to_string(total + i));
+                    std::vector<float> v(kDim);
+                    for (auto& f : v) f = dist(rng);
+                    vecs.push_back(std::move(v));
+                }
+                total += batch;
+                AE_CHECK(cpu_index.add_batch(ids, vecs).has_value() && gpu_index.add_batch(ids, vecs).has_value(),
+                         "layout test: add_batch succeeds on both, n=" + std::to_string(total));
+                auto cpu_full = cpu_index.search(query_span, total);
+                auto gpu_full = gpu_index.search(query_span, total);
+                bool ok = cpu_full.has_value() && gpu_full.has_value() && gpu_full->size() == total &&
+                          cpu_full->size() == total;
+                float max_abs_diff = 0.0f;
+                if (ok) {
+                    std::unordered_map<std::string, float> cpu_scores;
+                    for (auto const& s : *cpu_full) cpu_scores[s.id] = s.score;
+                    for (auto const& s : *gpu_full) {
+                        auto it = cpu_scores.find(s.id);
+                        if (it == cpu_scores.end()) { ok = false; break; }
+                        max_abs_diff = std::max(max_abs_diff, std::fabs(s.score - it->second));
+                    }
+                }
+                AE_CHECK(ok && max_abs_diff < 1e-5f,
+                         "layout test: every candidate's GPU score matches CPU within 1e-5 after growing to n=" +
+                             std::to_string(total) + " (max diff " + std::to_string(max_abs_diff) + ")");
+                auto gpu_top = gpu_index.search(query_span, 3);
+                auto cpu_top = cpu_index.search(query_span, 3);
+                AE_CHECK(gpu_top.has_value() && cpu_top.has_value() && gpu_top->size() == 3 &&
+                             (*gpu_top)[0].id == (*cpu_top)[0].id,
+                         "layout test: top-k selection returns exactly k, same winner as CPU, n=" +
+                             std::to_string(total));
+            }
+        }
+    }
+
     // --- Claim 7: epsilon-bounded comparison against BruteForceCosineIndex, dim=1536, n in
-    // {1000, 5000} -- the exact sizes ADR-063 §6 measured as CPU Goal-tier misses. -------------------
-    for (std::size_t n : {std::size_t{1000}, std::size_t{5000}}) {
+    // {1000, 5000, 20000} -- the sizes ADR-063 §6 measured as CPU Goal-tier misses, plus one larger
+    // size where the GPU's advantage is unambiguous (ADR-180 §10). --------------------------------
+    for (std::size_t n : {std::size_t{1000}, std::size_t{5000}, std::size_t{20000}}) {
         constexpr std::size_t kDim = 1536;
         std::mt19937 rng(42);
         std::uniform_real_distribution<float> dist(-1.0f, 1.0f);

@@ -93,15 +93,21 @@ namespace vector_index_detail {
 // out-of-order FINITE results (ADR-180 §4e condition 2). add_batch()/search()/restore() reject
 // non-finite input so a NaN score is unreachable; the comparator is total anyway so the sort's own
 // precondition never rests on that.
+//
+// ADR-180 §10 (2026-09-23): std::partial_sort over the first min(k, n), not a full std::sort --
+// search() only ever returns k results, and sorting all n was O(n log n) work thrown away. Same
+// comparator (a strict total order), so the first k are exactly the full sort's first k.
 inline void sort_and_truncate(std::vector<ScoredId>& scored, std::size_t k) {
-    std::sort(scored.begin(), scored.end(), [](ScoredId const& a, ScoredId const& b) {
-        bool const a_nan = std::isnan(a.score);
-        bool const b_nan = std::isnan(b.score);
-        if (a_nan != b_nan) return b_nan;
-        if (!a_nan && a.score != b.score) return a.score > b.score;
-        return a.id < b.id;
-    });
-    if (scored.size() > k) scored.resize(k);
+    std::size_t const keep = std::min(k, scored.size());
+    std::partial_sort(scored.begin(), scored.begin() + static_cast<std::ptrdiff_t>(keep), scored.end(),
+                      [](ScoredId const& a, ScoredId const& b) {
+                          bool const a_nan = std::isnan(a.score);
+                          bool const b_nan = std::isnan(b.score);
+                          if (a_nan != b_nan) return b_nan;
+                          if (!a_nan && a.score != b.score) return a.score > b.score;
+                          return a.id < b.id;
+                      });
+    scored.resize(keep);
 }
 
 // A compact, custom binary format for a `BruteForceCosineIndex` snapshot — deliberately NOT JSON

@@ -40,16 +40,30 @@ namespace {
 // input, so a NaN score should be unreachable; this comparator is ALSO made total over NaN anyway
 // (every NaN orders after every non-NaN score, NaNs among themselves by id) so the sort's own
 // precondition never depends on that upstream reasoning staying true.
-void sort_and_truncate(std::vector<agentengine::ScoredId>& scored, std::size_t k) {
-    std::sort(scored.begin(), scored.end(),
-              [](agentengine::ScoredId const& a, agentengine::ScoredId const& b) {
-                  bool const a_nan = std::isnan(a.score);
-                  bool const b_nan = std::isnan(b.score);
-                  if (a_nan != b_nan) return b_nan;
-                  if (!a_nan && a.score != b.score) return a.score > b.score;
-                  return a.id < b.id;
-              });
-    if (scored.size() > k) scored.resize(k);
+//
+// ADR-180 §10 (2026-09-23): selects over candidate INDICES with std::partial_sort and copies only
+// the k winning ids, instead of building all n ScoredIds (n std::string copies) and fully sorting
+// them. Once the shader's memory-layout fix made the GPU part fast, that full build+sort was the
+// largest remaining cost (~1 ms at n=5000, ~3 ms at n=20000); this takes it to tens of µs. Same
+// comparator, a strict total order, so the result is exactly the full sort's first k.
+std::vector<agentengine::ScoredId> select_top_k(std::vector<float> const& scores,
+                                                std::vector<std::string> const& order, std::size_t k) {
+    std::size_t const n = scores.size();
+    std::vector<std::uint32_t> idx(n);
+    for (std::size_t i = 0; i < n; ++i) idx[i] = static_cast<std::uint32_t>(i);
+    std::size_t const keep = std::min(k, n);
+    std::partial_sort(idx.begin(), idx.begin() + static_cast<std::ptrdiff_t>(keep), idx.end(),
+                      [&](std::uint32_t a, std::uint32_t b) {
+                          bool const a_nan = std::isnan(scores[a]);
+                          bool const b_nan = std::isnan(scores[b]);
+                          if (a_nan != b_nan) return b_nan;
+                          if (!a_nan && scores[a] != scores[b]) return scores[a] > scores[b];
+                          return order[a] < order[b];
+                      });
+    std::vector<agentengine::ScoredId> out;
+    out.reserve(keep);
+    for (std::size_t i = 0; i < keep; ++i) out.push_back({order[idx[i]], scores[idx[i]]});
+    return out;
 }
 
 [[nodiscard]] agentengine::error vulkan_error(std::string message, std::string code) {
@@ -821,14 +835,22 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
         // being reassigned to the newly-built device-local buffer -- not here, so a failure in any
         // of the allocation/upload steps below leaves the OLD (still valid) buffer in place rather
         // than a torn/half-replaced cache.
-        // Flatten the stored vectors row-major, matching cosine_similarity.comp's own layout
-        // contract ("candidate i's own components live at [i*dimension, (i+1)*dimension)").
+        // Flatten the stored vectors DIMENSION-MAJOR, matching cosine_similarity.comp's own layout
+        // contract ("component d of candidate i lives at [d * count + i]"). ADR-180 §10: the
+        // original row-major layout was the reason GPU search measured slower than CPU -- see the
+        // shader's own binding-1 comment. The stride is `n`, so this layout is only valid for the
+        // exact `n` it was built for; that holds because every add_batch() sets cache_dirty and
+        // forces this whole rebuild, and search() pushes the same `n` as the shader's `count`.
         // Red-team pass 5: each row is rescaled by an exact power of two on the way in (see
         // copy_rescaled_by_power_of_two()'s own comment) -- the stored `entries` stay untouched.
         std::vector<float> flattened(n * dim);
-        for (std::size_t i = 0; i < n; ++i) {
-            auto const& v = impl_->entries.at(impl_->order[i]);
-            copy_rescaled_by_power_of_two(v, flattened.data() + i * dim);
+        {
+            std::vector<float> row(dim);
+            for (std::size_t i = 0; i < n; ++i) {
+                auto const& v = impl_->entries.at(impl_->order[i]);
+                copy_rescaled_by_power_of_two(v, row.data());
+                for (std::size_t d = 0; d < dim; ++d) flattened[d * n + i] = row[d];
+            }
         }
 
         VkDeviceSize const bytes = n * dim * sizeof(float);
@@ -1170,11 +1192,7 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
         vkUnmapMemory(impl_->device, impl_->scores_memory);
     }
 
-    std::vector<agentengine::ScoredId> out;
-    out.reserve(n);
-    for (std::size_t i = 0; i < n; ++i) out.push_back({impl_->order[i], scores[i]});
-    sort_and_truncate(out, k);
-    return out;
+    return select_top_k(scores, impl_->order, k);
 }
 
 }  // namespace agentengine::backends::vulkan_vector_index

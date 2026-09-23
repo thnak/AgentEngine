@@ -16,9 +16,12 @@ claim 6. The Docker daemon hang that blocked this run on 2026-09-22 had cleared 
 **§8 step 8 (`VulkanCosineIndex`) is now REAL and built** — a `worktree`-isolated agent built it against
 real Vulkan hardware (a discrete AMD Radeon RX 5300M), found and fixed two genuine performance bugs
 along the way, and it has merged cleanly to `main` (2026-09-22, commit `f085bbd`). Correctness holds
-(GPU/CPU cosine scores agree within ~1e-7). **Claim 7's performance half did NOT hold**: after both
-fixes, GPU search measured ~1.3x SLOWER than CPU brute-force at both n=1000 and n=5000, not faster —
-see §3 claim 7 and §5-6 for the full numbers. **It has now been through TWO independent, dedicated red-team
+(GPU/CPU cosine scores agree within ~1e-7). **Claim 7's performance half did NOT hold at first**: after
+both fixes, GPU search measured ~1.3x SLOWER than CPU brute-force at both n=1000 and n=5000.
+**§10 (2026-09-23, after sign-off) found the real cause and fixed it.** The problem was the shader's
+row-major memory layout (uncoalesced reads), not synchronization overhead. With the layout fixed, GPU
+search is ~3.5x faster than CPU at n=5000 and ~13x at n=20000, and still slower at n=1000. Claim 7(a)
+is now PARTLY proven: see §10. **It has now been through TWO independent, dedicated red-team
 passes** (2026-09-22, same session — pass 3: a second `worktree`-isolated agent, no prior context, §4c,
 one Critical and two Real gaps, all fixed; pass 4: a further independent agent, no prior context beyond
 §4c's own account, explicitly run to answer this ADR's own previously-open "is a second pass owed"
@@ -435,7 +438,16 @@ lockstep. Named explicitly as real, not-yet-written logic — §8's implementati
    GPU memory for repeated shader reads) were found and fixed along the way, closing most but not all of
    the original gap; what remains is very likely fixed per-`search()`-call `vkQueueSubmit`+
    `vkWaitForFences` CPU↔GPU synchronization overhead that doesn't amortize at these corpus sizes — named
-   as an open residual (§7), not chased further this pass. See §5-6 for the full account. (Part (b)'s
+   as an open residual (§7), not chased further this pass. See §5-6 for the full account.
+   **SUPERSEDED 2026-09-23 by §10: part (a) is now PARTLY CORRECT.** The "very likely synchronization
+   overhead" guess above was wrong. A per-phase profile showed the kernel's uncoalesced row-major reads
+   were the cost. After §10's fix, measured by this test's own claim-7 block:
+   - n=5000: 2.2 ms GPU vs 7.8 ms CPU;
+   - n=20000: 2.3 ms GPU vs 30.3 ms CPU;
+   - n=1000: 2.3 ms GPU vs 1.5 ms CPU, so still disproven here — a fixed ~1.3-2 ms per-call
+     submit/wait floor dominates at this size.
+
+   Neither side meets the 500 µs Goal budget at any of these sizes. (Part (b)'s
    correctness was RE-CONFIRMED by red-team pass 3, §4c, on a rebuilt binary that ALSO fixes several
    unrelated fail-closed gaps — see §5-6.)
    **(Red-team pass 5, §4e finding 3) Part (b) was FALSE for finite inputs outside float32's squared
@@ -1592,7 +1604,11 @@ reported none leaked or double-destroyed across 59 instance teardowns.
   run were owed; only the live run remains, blocked on this environment issue being resolved outside
   this session (e.g. restarting Docker Desktop, or running the test from WSL2/Linux per this project's
   own existing note that HTTPS-gated builds need that anyway).
-- **`VulkanCosineIndex` measured SLOWER than CPU brute-force, not faster (§3 claim 7 part (a),
+- **(LARGELY CLOSED 2026-09-23 by §10: the cause was the shader's memory layout, now fixed. GPU is
+  ~3.5x faster than CPU at n=5000 and ~13x at n=20000, and still slower at n=1000 because of a fixed
+  ~1.3-2 ms per-call submit/wait floor. That floor is the residual that remains. The original account
+  follows, kept for the record; its "synchronization overhead" diagnosis turned out to be wrong.)**
+  **`VulkanCosineIndex` measured SLOWER than CPU brute-force, not faster (§3 claim 7 part (a),
   DISPROVEN)** — the whole point of shipping a GPU backend (RFC 023 §3's Goal-tier latency budget,
   ADR-063 §6's own CPU bench establishing brute-force misses that budget at these sizes) is not yet
   delivered; on the one reference GPU measured (AMD Radeon RX 5300M), GPU search is currently the wrong
@@ -1841,8 +1857,9 @@ reported none leaked or double-destroyed across 59 instance teardowns.
 8. **DONE (2026-09-22).** `src/backends/vulkan_vector_index/` (`AGENTENGINE_WITH_VULKAN` CMake option,
    default OFF): `VulkanCosineIndex`, the SPIR-V shader (checked in pre-compiled), fail-closed
    device-selection logic. `tests/test_vulkan_cosine_index.cpp`: claim 7 (bench + epsilon-bounded top-K
-   comparison against `BruteForceCosineIndex`) — part (b) CORRECT, part (a) DISPROVEN (GPU measured
-   slower than CPU on the one reference GPU tested; see §3 claim 7, §5-6, §7). Built in an isolated
+   comparison against `BruteForceCosineIndex`) — part (b) CORRECT, part (a) DISPROVEN at first (GPU measured
+   slower than CPU on the one reference GPU tested; see §3 claim 7, §5-6, §7), then PARTLY CORRECT after
+   §10's layout fix (faster from n=5000 up, still slower at n=1000). Built in an isolated
    `worktree` and merged to `main` (fast-forward, commit `f085bbd`).
 9. **PARTIALLY DONE.** Red-team passes have run against every piece of this ADR, and every finding is
    fixed and proven or named as a residual:
@@ -1897,9 +1914,12 @@ decision settles:
   - `VulkanCosineIndex` as the one generic GPU backend, behind `AGENTENGINE_WITH_VULKAN` (default OFF).
     No vendor-specific backend is planned; anyone who needs another one builds it against the same
     `VectorIndex` concept (§2.6).
-- **Accepted with an honest negative:**
-  - §3 claim 7(a) stays DISPROVEN. On the one reference GPU, `VulkanCosineIndex` is slower than CPU
-    brute force. The backend ships for correctness and as the extension point, not as a proven speedup.
+- **Accepted with an honest negative** (as signed; **amended by §10 the same day**):
+  - As signed: §3 claim 7(a) stays DISPROVEN. On the one reference GPU, `VulkanCosineIndex` is slower
+    than CPU brute force. The backend ships for correctness and as the extension point, not as a
+    proven speedup.
+  - **§10 amendment:** the project owner asked why it was slower. The answer was a fixable layout bug.
+    With it fixed, claim 7(a) is PARTLY CORRECT: faster from n=5000 up, still slower at n=1000.
   - Claim 7(b), GPU/CPU agreement, is CORRECT.
 - **Rulings folded in:**
   - `VK_ERROR_DEVICE_LOST` stays `failure_class::resource`.
@@ -1914,3 +1934,102 @@ decision settles:
     assurance step.
 
   Each of these needs its own follow-on ADR if it is ever to be closed.
+
+## 10. Addendum (2026-09-23, after sign-off): why the GPU was slower, and the fix
+
+After signing off, the project owner asked why the GPU was slower than the CPU. The §3 claim 7 and §7
+diagnosis ("very likely fixed per-call submit/wait overhead") had never been measured. This addendum
+measures it, finds it was mostly wrong, and fixes the real cause.
+
+**Method.** An instrumented copy of `vulkan_cosine_index.cpp` (scratch only, never committed) timed each
+phase of `search()` separately:
+- host preparation;
+- `vkQueueSubmit` through `vkWaitForFences`;
+- the scores readback;
+- result building and sorting.
+
+Setup: MSVC `/O2`, dim=1536, median of 30 warm searches, the reference AMD Radeon RX 5300M. Variants were
+tried one change at a time.
+
+**Findings, largest first:**
+
+1. **The shader's memory layout.** Each invocation owns one candidate and loops over its dimensions,
+   and the vectors were stored row-major (`vectors[i * dim + d]`). So at each loop step, the 64 lanes
+   of a workgroup read addresses 6 KB apart (dim × 4 bytes). No two lanes ever shared a memory
+   transaction. The kernel was memory-latency-bound, and its time grew linearly: submit+wait was
+   ~1.7 ms at n=1000, ~10 ms at n=5000 and ~57 ms at n=20000.
+   - **Fix:** store dimension-major (`vectors[d * n + i]`), so each loop step is one contiguous,
+     coalesced read across the workgroup. Submit+wait at n=20000 fell from ~57 ms to ~1.7 ms.
+   - **Determinism is unaffected.** Each invocation still sums its own dimensions in the same
+     ascending order. Only where the bytes sit changed, not the order they are added in, so §2.6's
+     reduction-order argument holds verbatim.
+2. **Building and fully sorting all n results.** `search()` built n `ScoredId`s (n `std::string`
+   copies) and `std::sort`ed them to return k. Once finding 1 made the kernel fast, this was the
+   largest remaining cost: ~1 ms at n=5000 and ~3 ms at n=20000.
+   - **Fix:** `select_top_k()` runs `std::partial_sort` over candidate indices and copies only the k
+     winning ids, which cost 15-57 µs.
+   - `BruteForceCosineIndex`'s `sort_and_truncate()` now uses `std::partial_sort` too.
+   - Both keep the same strict total comparator (score descending, NaN last, id ascending), so the
+     results are exactly the full sort's first k.
+3. **A fixed per-call floor of ~1.3-2 ms.** This is present even at n=64 (0.8-1.7 ms), so it is
+   submission/wait latency on this laptop GPU under Windows, not kernel work. Which part of the
+   round trip is slow was not isolated. This floor is why the GPU still loses at n=1000. It is the one
+   part of the old diagnosis that was real; it just was not the dominant cost.
+
+**Profiling results** (scratch harness, same machine):
+
+| n | CPU | GPU shipped | + layout fix | + top-k selection |
+|---|---|---|---|---|
+| 64 | 0.08 ms | 0.8-1.6 ms | 1.7 ms | 1.6 ms |
+| 1000 | 1.5 ms | 1.2-1.4 ms | 1.6-1.8 ms | 1.6 ms |
+| 5000 | 7.8 ms | 10.0-14.6 ms | 2.4-3.4 ms | 1.5 ms |
+| 20000 | 32 ms | 57 ms | 5.2-5.4 ms | 2.1 ms |
+
+**What changed in the tree:**
+- `cosine_similarity.comp`: dimension-major indexing, with comments. `cosine_similarity.spv` was
+  regenerated with `glslc` from Vulkan SDK 1.4.350.0 and passes `spirv-val`.
+- `vulkan_cosine_index.cpp`: dimension-major upload, and `select_top_k()` replacing
+  `sort_and_truncate()`.
+- `core/vector_index.hpp`: `std::partial_sort` in `sort_and_truncate()`.
+- `tests/test_vulkan_cosine_index.cpp`:
+  - A new layout-regression block. The index grows across batches of 37, 64 and 131 at an odd
+    dim=17, searching between batches. Every candidate's score is compared with CPU by id.
+  - Claim 7 gains n=20000.
+  - The top comment's wrong diagnosis is corrected.
+
+**Evidence** (Release CMake build, `AGENTENGINE_WITH_VULKAN=ON`, real RX 5300M):
+- **Test runs:**
+  - The affected tests all pass, 9/9: `test_vulkan_cosine_index`,
+    `test_vulkan_cosine_index_fault_injection`, `test_vector_index`, `test_vector_index_benchmark`,
+    `test_vector_rag_context_provider`, `test_hybrid_rag_context_provider`, `test_corpus_source`,
+    `test_remote_vector_index` and `test_sparse_index`.
+  - Claim 7's own printout:
+    - n=1000: 2258 µs GPU vs 1452 µs CPU;
+    - n=5000: 2197 µs vs 7780 µs;
+    - n=20000: 2335 µs vs 30300 µs.
+  - Max |GPU − CPU| score: 1.0e-7, 1.4e-7 and 2.1e-7.
+- **Positive control (the new test can fail).** I built the same test against the PRE-§10 row-major
+  `.spv` with the new dimension-major upload. The layout test fails (max diff 0.789 at n=37), and
+  three older correctness checks fail with it.
+- **Khronos validation layer.** Loading was confirmed via `VK_LOADER_DEBUG`. Both Vulkan tests report
+  0 validation errors.
+  - The fault-injection test reports 410 checks without the layer and 408 with it.
+  - HEAD's pre-§10 build gives the identical 410/408 split, so the 2-check difference is layer-dependent
+    behavior in the test itself, not a regression. (§4e's "410" was recorded without the layer.)
+- **AddressSanitizer.** `test_vulkan_cosine_index` and `test_vector_index` are clean under MSVC
+  `/fsanitize=address`. Runtime linkage was confirmed with `dumpbin`.
+- **g++ (WSL2).** The header change compiles, and `test_qdrant_vector_index` passes.
+  `test_vector_index` itself is `WIN32`-gated in `tests/CMakeLists.txt`.
+
+**Claim 7(a) status, restated.** It is PARTLY CORRECT on the one reference GPU:
+- faster than CPU at n=5000 (~3.5x) and n=20000 (~13x);
+- still slower at n=1000.
+
+Neither CPU nor GPU meets RFC 023 §3's 500 µs Goal budget at any tested size; the GPU's fixed floor
+alone is ~3x that budget. **Remaining residuals:**
+- The per-call floor is unexplained. Candidates are batching several queries per submission, or
+  avoiding a per-call fence create/destroy.
+- There are still no numbers from a second GPU vendor.
+
+This addendum changes implementation and evidence, not the design §2.6 chose. The Judged decision in
+§9 stands, with its claim-7 bullet amended.
