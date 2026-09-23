@@ -288,7 +288,7 @@ public:
         namespace d = append_log_store_detail;
         auto path = path_for(id);
         if (!path) return std::unexpected(path.error());
-        if (bytes.size() > std::numeric_limits<std::uint32_t>::max()) {
+        if (bytes.size() > (std::numeric_limits<std::uint32_t>::max)()) {
             return std::unexpected(error{failure_class::contract, "append log record exceeds 4 GiB",
                                           "rt.append_log_store.record_too_large"});
         }
