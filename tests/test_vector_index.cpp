@@ -3,15 +3,23 @@
 // rejection on malformed batches, and the deterministic tie-break (closes §4 finding 7, "no
 // tie-break defined for top-K on equal/near-equal scores") -- score desc, then id asc, mirroring
 // `rank_memory_items()`'s own score-desc-then-tie-break-field-desc shape (memory_provider.hpp).
+//
+// Also implements decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.4/§3 claims
+// 4-5 -- `BruteForceCosineIndex::snapshot()`/`restore()` (`PersistentVectorIndex`): round-trip
+// fidelity, content-addressed re-snapshot dedup, and reject-not-coerce on a malformed/nonexistent
+// blob.
 
 #include <atomic>
+#include <cmath>
 #include <iostream>
+#include <limits>
 #include <span>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "agentengine/core/vector_index.hpp"
+#include "agentengine/core/worktree.hpp"
 
 namespace {
 
@@ -208,6 +216,221 @@ int main() {
         AE_CHECK(reader_iterations.load() > 0,
                  "setup: readers actually ran concurrently with the writer, not merely sequenced "
                  "entirely before or after it");
+    }
+
+    // --- Persistence (ADR-180 §2.4/§3 claims 4-5): snapshot -> restore round-trip fidelity --------
+    {
+        ae::InMemoryWorktreeObjectStore store;
+        ae::BruteForceCosineIndex index;
+        AE_CHECK(index.add_batch({"a", "b", "c"},
+                                  {{1.0f, 0.0f}, {0.0f, 1.0f}, {0.7071f, 0.7071f}})
+                     .has_value(),
+                 "setup: 3 entries stored");
+
+        float const query[2] = {1.0f, 0.0f};
+        auto before = index.search(std::span<float const>(query, 2), /*k=*/3);
+        AE_CHECK(before.has_value(), "pre-snapshot search succeeds");
+
+        auto digest = index.snapshot(store);
+        AE_CHECK(digest.has_value(), "snapshot() succeeds and returns a digest");
+
+        // Claim 4's own re-snapshot-dedup property: an UNCHANGED index snapshotted twice produces
+        // the identical digest -- content-addressing's own free dedup, not asserted, checked.
+        auto digest_again = index.snapshot(store);
+        AE_CHECK(digest_again.has_value() && *digest_again == *digest,
+                 "an unchanged index re-snapshots to the IDENTICAL digest");
+
+        ae::BruteForceCosineIndex restored;
+        AE_CHECK(restored.size() == 0, "setup: the restore target starts empty");
+        auto restore_result = restored.restore(store, *digest);
+        AE_CHECK(restore_result.has_value(), "restore() succeeds");
+        AE_CHECK(restored.size() == 3, "restore() repopulates every entry the snapshot held");
+
+        auto after = restored.search(std::span<float const>(query, 2), /*k=*/3);
+        AE_CHECK(after.has_value() && before.has_value() && after->size() == before->size(),
+                 "claim 4: post-restore search returns the SAME NUMBER of results as pre-snapshot");
+        if (after.has_value() && before.has_value()) {
+            bool identical = true;
+            for (std::size_t i = 0; i < before->size(); ++i) {
+                if ((*before)[i].id != (*after)[i].id ||
+                    std::fabs((*before)[i].score - (*after)[i].score) > 1e-6f) {
+                    identical = false;
+                }
+            }
+            AE_CHECK(identical,
+                     "claim 4: post-restore search returns the IDENTICAL top-K (same ids, same "
+                     "scores, same order) as the pre-snapshot index for the same query");
+        }
+
+        // Reject-not-coerce: a nonexistent digest fails cleanly rather than restoring garbage.
+        // Freshly-empty targets, deliberately -- `restored` is already populated from the
+        // successful restore() above, and (per M3's fix, tested separately below) restore() on a
+        // non-empty index is now itself rejected; using a fresh index here keeps each assertion
+        // testing exactly the ONE failure mode it names, not incidentally exercising M3's guard
+        // instead of the thing it claims to test.
+        ae::BruteForceCosineIndex missing_target;
+        auto missing = missing_target.restore(store, std::string(64, '0'));
+        AE_CHECK(!missing.has_value() && missing.error().code != "vector_index.restore_requires_empty_index",
+                 "restore() from a digest the store has never seen fails");
+
+        // Reject-not-coerce: a blob that exists but isn't a valid snapshot (wrong magic) is
+        // rejected, not silently misinterpreted as index data.
+        std::string const garbage = "not a snapshot blob";
+        auto garbage_digest = store.put_blob(std::as_bytes(std::span{garbage.data(), garbage.size()}));
+        AE_CHECK(garbage_digest.has_value(), "setup: a non-snapshot blob is stored");
+        ae::BruteForceCosineIndex bad_magic_target;
+        auto bad_magic = bad_magic_target.restore(store, *garbage_digest);
+        AE_CHECK(!bad_magic.has_value() && bad_magic.error().code == "vector_index.snapshot_bad_magic",
+                 "restore() rejects a blob with an unrecognized magic header rather than "
+                 "misinterpreting arbitrary bytes as vector data");
+    }
+
+    // --- ADR-180 §4 red-team finding C1 (2026-09-22): a blob claiming an implausible entry count/
+    // dimension must be rejected BEFORE any allocation is attempted, not crash the process via an
+    // uncaught std::length_error/bad_alloc from reserve() -----------------------------------------
+    {
+        ae::InMemoryWorktreeObjectStore store;
+        std::vector<std::byte> blob;
+        auto push_bytes = [&](std::string_view s) {
+            for (char c : s) blob.push_back(static_cast<std::byte>(c));
+        };
+        auto push_u64 = [&](std::uint64_t v) {
+            for (int i = 0; i < 8; ++i) blob.push_back(static_cast<std::byte>((v >> (8 * i)) & 0xFFu));
+        };
+        push_bytes("AEV1");
+        push_u64(0);                                   // dimension = 0
+        push_u64(0xFFFFFFFFFFFFFFFFull);                // count = UINT64_MAX -- nothing close to that
+                                                          // many bytes actually follows
+        auto digest = store.put_blob(std::span<std::byte const>(blob.data(), blob.size()));
+        AE_CHECK(digest.has_value(), "setup: an implausible-header blob is itself stored successfully "
+                                       "-- put_blob() has no reason to reject arbitrary bytes");
+
+        ae::BruteForceCosineIndex victim;
+        auto restore_result = victim.restore(store, *digest);
+        AE_CHECK(!restore_result.has_value() &&
+                     restore_result.error().code == "vector_index.snapshot_header_implausible",
+                 "restore() rejects a header whose declared count could not possibly fit in the "
+                 "blob's actual remaining bytes, instead of reserve()-ing an unbounded allocation "
+                 "and crashing the process with an uncaught exception");
+
+        // A second, more devious case: a count that IS individually representable but that,
+        // multiplied by a large dimension, would overflow the size computation itself if the
+        // overflow guard were missing.
+        std::vector<std::byte> blob2;
+        auto push_bytes2 = [&](std::string_view s) {
+            for (char c : s) blob2.push_back(static_cast<std::byte>(c));
+        };
+        auto push_u64_2 = [&](std::uint64_t v) {
+            for (int i = 0; i < 8; ++i) blob2.push_back(static_cast<std::byte>((v >> (8 * i)) & 0xFFu));
+        };
+        push_bytes2("AEV1");
+        push_u64_2(0xFFFFFFFFFFFFFFFFull);  // dimension = UINT64_MAX
+        push_u64_2(2);                       // count = 2
+        auto digest2 = store.put_blob(std::span<std::byte const>(blob2.data(), blob2.size()));
+        AE_CHECK(digest2.has_value(), "setup: the overflow-shaped blob is stored");
+        ae::BruteForceCosineIndex victim2;
+        auto restore_result2 = victim2.restore(store, *digest2);
+        AE_CHECK(!restore_result2.has_value() &&
+                     restore_result2.error().code == "vector_index.snapshot_header_implausible",
+                 "restore() rejects an overflow-shaped count*dimension header cleanly, rather than "
+                 "the multiplication itself wrapping around and bypassing the plausibility check");
+    }
+
+    // --- ADR-180 §4 red-team finding M3 (2026-09-22): restore() on an already-populated index is
+    // rejected, not a silent data-loss footgun ------------------------------------------------------
+    {
+        ae::InMemoryWorktreeObjectStore store;
+        ae::BruteForceCosineIndex source_index;
+        AE_CHECK(source_index.add_batch({"x"}, {{1.0f, 0.0f}}).has_value(), "setup: source populated");
+        auto digest = source_index.snapshot(store);
+        AE_CHECK(digest.has_value(), "setup: source snapshotted");
+
+        ae::BruteForceCosineIndex already_populated;
+        AE_CHECK(already_populated.add_batch({"pre-existing"}, {{0.0f, 1.0f}}).has_value(),
+                 "setup: the restore TARGET already holds an unrelated entry");
+        auto restore_result = already_populated.restore(store, *digest);
+        AE_CHECK(!restore_result.has_value() &&
+                     restore_result.error().code == "vector_index.restore_requires_empty_index",
+                 "restore() on a non-empty index is rejected with a typed error, rather than "
+                 "silently discarding the pre-existing entry");
+        AE_CHECK(already_populated.size() == 1 && already_populated.contains("pre-existing"),
+                 "the rejected restore() call left the target's pre-existing state completely "
+                 "untouched -- not even partially overwritten");
+    }
+
+    // --- ADR-180 §4e condition 2 (2026-09-23): non-finite input is rejected at every entry point, and
+    // the ranking comparator is a strict weak ordering even over NaN ------------------------------
+    {
+        float const nan = std::numeric_limits<float>::quiet_NaN();
+        float const inf = std::numeric_limits<float>::infinity();
+
+        ae::BruteForceCosineIndex idx;
+        auto bad_nan = idx.add_batch({"n"}, {{1.0f, nan}});
+        AE_CHECK(!bad_nan.has_value() && bad_nan.error().code == "vector_index.add_batch_non_finite" &&
+                     bad_nan.error().klass == ae::failure_class::contract,
+                 "add_batch() rejects a NaN component as a contract violation");
+        auto bad_inf = idx.add_batch({"i"}, {{-inf, 0.0f}});
+        AE_CHECK(!bad_inf.has_value() && bad_inf.error().code == "vector_index.add_batch_non_finite",
+                 "add_batch() rejects an infinite component");
+        AE_CHECK(idx.size() == 0, "a rejected batch leaves the index untouched");
+        auto mixed = idx.add_batch({"ok", "bad"}, {{1.0f, 0.0f}, {nan, nan}});
+        AE_CHECK(!mixed.has_value() && idx.size() == 0 && !idx.contains("ok"),
+                 "one non-finite vector rejects the WHOLE batch -- no partial commit of the finite ones");
+
+        AE_CHECK(idx.add_batch({"a"}, {{1.0f, 0.0f}}).has_value(), "setup: one finite vector");
+        float const nan_query[2] = {nan, 1.0f};
+        auto q = idx.search(std::span<float const>(nan_query, 2), 1);
+        AE_CHECK(!q.has_value() && q.error().code == "vector_index.search_non_finite",
+                 "search() rejects a non-finite query rather than scoring NaN against every entry");
+
+        // restore(): a hand-built, otherwise well-formed AEV1 blob carrying a NaN component. Nothing
+        // in snapshot() can produce one any more, but a blob is external bytes -- a corrupt or
+        // crafted one must not smuggle NaN past add_batch()'s check.
+        ae::InMemoryWorktreeObjectStore store;
+        std::vector<std::byte> blob;
+        ae::vector_index_detail::append_bytes(blob, "AEV1");
+        ae::vector_index_detail::append_u64(blob, 2);
+        ae::vector_index_detail::append_u64(blob, 1);
+        ae::vector_index_detail::append_u32(blob, 1);
+        ae::vector_index_detail::append_bytes(blob, "z");
+        ae::vector_index_detail::append_f32(blob, nan);
+        ae::vector_index_detail::append_f32(blob, 1.0f);
+        auto digest = store.put_blob(std::span<std::byte const>(blob.data(), blob.size()));
+        AE_CHECK(digest.has_value(), "setup: NaN-bearing snapshot blob stored");
+        ae::BruteForceCosineIndex restored;
+        auto r = restored.restore(store, *digest);
+        AE_CHECK(!r.has_value() && r.error().code == "vector_index.snapshot_non_finite" && restored.size() == 0,
+                 "restore() rejects a snapshot blob carrying a non-finite component, leaving the index empty");
+
+        // The comparator itself, driven directly with NaN scores (defense in depth: the checks above
+        // make a NaN score unreachable through the public API, but the sort's own precondition must
+        // not depend on that). Under the old `a.score != b.score ? a.score > b.score : a.id < b.id`
+        // comparator this input violated strict weak ordering -- undefined behavior in std::sort.
+        std::vector<ae::ScoredId> scored;
+        for (int i = 0; i < 200; ++i) {
+            float const s = (i % 7 == 0) ? nan : static_cast<float>((i * 37) % 101) / 100.0f;
+            scored.push_back({"id" + std::to_string(1000 + i), s});
+        }
+        ae::vector_index_detail::sort_and_truncate(scored, scored.size());
+        bool finite_desc = true;
+        bool nans_last = true;
+        bool seen_nan = false;
+        for (std::size_t i = 0; i < scored.size(); ++i) {
+            bool const is_nan = std::isnan(scored[i].score);
+            if (seen_nan && !is_nan) nans_last = false;
+            seen_nan = seen_nan || is_nan;
+            if (i > 0 && !is_nan && !std::isnan(scored[i - 1].score)) {
+                auto const& p = scored[i - 1];
+                auto const& c = scored[i];
+                if (p.score < c.score || (p.score == c.score && !(p.id < c.id))) finite_desc = false;
+            }
+        }
+        AE_CHECK(finite_desc, "every finite score is in score-desc/id-asc order despite NaNs in the input");
+        AE_CHECK(nans_last, "every NaN score orders after every finite score");
+        std::vector<ae::ScoredId> truncated = scored;
+        ae::vector_index_detail::sort_and_truncate(truncated, 5);
+        AE_CHECK(truncated.size() == 5 && !std::isnan(truncated.back().score),
+                 "truncation to k keeps the top finite scores, never a NaN ahead of them");
     }
 
     std::cout << (g_failures == 0 ? "test_vector_index: OK\n" : "test_vector_index: FAIL\n");

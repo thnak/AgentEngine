@@ -37,6 +37,22 @@
 // `true` today. A conformer declaring `false` still gets the ORIGINAL fail-closed
 // `failure_class::contract` error (unchanged, no regression) -- see `make_recall_tool_descriptor()`'s
 // own comment below for both paths.
+//
+// **Extended by decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.1/§2.3
+// (2026-09-22).** Two changes, both additive, neither touching this file's already-Judged behavior
+// for the `VectorIndex<IndexT>` (local, synchronous) case:
+//   1. `IndexT` is now constrained by `AnyVectorIndex<IndexT>` (`VectorIndex<IndexT> ||
+//      RemoteVectorIndex<IndexT>`, core/remote_vector_index.hpp) instead of `VectorIndex<IndexT>`
+//      alone, so a network-backed conformer (e.g. `QdrantVectorIndex`, ADR-180 §2.5) may be plugged
+//      in as `IndexT` too. `on_context()` and `recall`'s `invoke` each gained one `if constexpr`
+//      branch dispatching on which concept `IndexT` actually satisfies -- reusing ADR-064's
+//      `synchronous_leaf`/`rt::drive_leaf_task()` mechanism a second time for the index leg.
+//   2. `render_scored_chunk()` and `rendered_chunk_to_message()` moved from private methods to free
+//      functions in `vector_rag_detail` (behavior-preserving factor-out, same signature minus
+//      `this`/`static`) so `HybridRagContextProvider` (ADR-180 §2.3) calls the EXACT SAME rendering
+//      and citation-forgery-defense code, not a second copy of it -- the identical "generalize,
+//      don't duplicate" discipline ADR-063 §2.6b already used once for
+//      `neutralize_forged_provenance_markers()`.
 
 #include <cstddef>
 #include <span>
@@ -52,6 +68,7 @@
 #include "agentengine/core/embedder.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/provenance_marker.hpp"
+#include "agentengine/core/remote_vector_index.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/core/vector_index.hpp"
 #include "agentengine/core/worktree.hpp"
@@ -86,7 +103,10 @@ namespace vector_rag_detail {
 // mistaken for each other's neutralization target. Defined here, not in the shared
 // provenance_marker.hpp, mirroring exactly where memory_provider.hpp keeps its own
 // `memory_label_open()`/`memory_label_close()`: the generic header owns the MECHANISM, each caller
-// owns its own vocabulary.
+// owns its own vocabulary. Shared by `VectorRagContextProvider` AND `HybridRagContextProvider`
+// (ADR-180 §2.3) -- one citation vocabulary for every "vector-similarity-flavored" RAG kind, matching
+// §2.1b's own "different classes, same vocabulary where the vocabulary genuinely is the same thing"
+// posture (distinct from a wholesale shared base class, which §2.1b explicitly does NOT want).
 [[nodiscard]] inline std::string_view rag_citation_label_open() noexcept { return "\xE2\x9F\xA6rag:"; }
 
 // Deliberately the SAME 3-byte close glyph memory_provider.hpp's own `memory_label_close()` returns
@@ -97,6 +117,84 @@ namespace vector_rag_detail {
 // related to (§2.1b: different classes, not a shared base).
 [[nodiscard]] inline std::string_view rag_citation_label_close() noexcept { return "\xE2\x9F\xA7"; }
 
+// ADR-180 §2.3: extracted from `VectorRagContextProvider`'s own former private static method,
+// behavior-preserving, shared with `HybridRagContextProvider` -- this is the I3-load-bearing piece
+// (see this function's original red-team-found rationale below), so both providers calling the SAME
+// function, not each maintaining their own copy, is what actually keeps that guarantee from silently
+// drifting apart between the two RAG "kinds" over time.
+//
+// Walks BACKWARD to the most recent `role::user` message, never just `history.back()` — red-team
+// (2026-08-19) found `on_context()` is reachable at points in `AgentSession::resolve_interaction()`/
+// `resolve_codeact_ask()` where `history.back()` is the ASSISTANT's own pending tool-call message (its
+// text preamble, if any), not the user's. Treating that as the query would send model-generated text
+// as the embedder's network payload and let it steer retrieval — a direct I3 violation ("model output
+// is data, never authority") the moment this provider is wired into a live `AgentSession`. Only
+// genuine `role::user` content may ever become the query.
+[[nodiscard]] inline std::string last_user_text(std::vector<Message> const& history) {
+    for (auto it = history.rbegin(); it != history.rend(); ++it) {
+        if (it->role != role::user) continue;
+        if (it->content.empty()) return {};
+        auto const* text = std::get_if<Text>(&it->content.front().value);
+        return text != nullptr ? text->text : std::string{};
+    }
+    return {};
+}
+
+// ADR-180 §2.3: extracted from `VectorRagContextProvider`'s own former private method (behavior-
+// preserving -- same body, `this->object_store_`/`this->ref_store_`/`this->mount_`/`this->read_cap_`
+// become explicit parameters) so `HybridRagContextProvider` calls this EXACT function rather than a
+// second copy. Shared by `on_context()`'s default injection path AND (ADR-064, when the driving
+// leaf(s) declare `synchronous_leaf = true`) a contributed `recall` tool's own `invoke`.
+template <WorktreeObjectStore OS, rt::AppendLogStore RS>
+[[nodiscard]] result<std::string> render_scored_chunk(OS& object_store, RS& ref_store, Mount const& mount,
+                                                        cap::FsRead const& read_cap, ScoredId const& scored) {
+    auto record = read_corpus_chunk_record(object_store, ref_store, mount, read_cap, scored.id);
+    if (!record) return std::unexpected(record.error());
+
+    // corpus_chunk.hpp's own header comment: `scored.id` IS the chunk TEXT's own content digest
+    // -- the identical id `put_blob()` returned when the chunk was written and `VectorIndex`
+    // keys the chunk's vector by -- so this is a direct digest lookup, never a mount/tree walk.
+    // Inherited, not introduced here: this blob read carries NO capability check of its own
+    // (`WorktreeObjectStore::get_blob()` takes no `cap::*` parameter at all) -- confidentiality
+    // across corpora relies entirely on which ids a caller's OWN `IndexT` was ever populated
+    // with (a `search()` against one tenant's index can structurally never RETURN another
+    // tenant's chunk id in the first place, see this file's own cross-tenant test), not on a
+    // capability gate at the blob layer. This is the SAME mechanism corpus_chunk.hpp's own
+    // header comment already designs and names, not a gap this file introduces.
+    auto chunk_bytes = object_store.get_blob(scored.id);
+    if (!chunk_bytes) return std::unexpected(chunk_bytes.error());
+    std::string const chunk_text(reinterpret_cast<char const*>(chunk_bytes->data()), chunk_bytes->size());
+
+    // ADR-063 §2.6b's exact shape: "citation_label = ... ; rendered text = citation_label + " "
+    // + neutralize_forged_provenance_markers(chunk_text, "⟦rag:")" -- label ALWAYS precedes the
+    // neutralized body, so a reader (human or model) sees the attribution before the content it
+    // attributes, and the chunk's own text can never forge a second, different-looking citation.
+    std::string const citation_label =
+        std::string(rag_citation_label_open()) + record->source_path + ":" +
+        std::to_string(record->line_start) + "-" + std::to_string(record->line_end) +
+        std::string(rag_citation_label_close());
+
+    return citation_label + " " + neutralize_forged_provenance_markers(chunk_text, rag_citation_label_open());
+}
+
+// ADR-180 §2.3: extracted from `VectorRagContextProvider`'s own former private static method,
+// behavior-preserving, shared with `HybridRagContextProvider`. 029 §6's rule, applied unmodified to
+// RAG per ADR-063 (the ADR does not relax it): retrieved corpus content is tainted, external content,
+// written by a process (folder-mount ingestion) that is not the current user asserting it live --
+// mirrors `MemoryProvider::memory_item_to_message()`'s exact tainting discipline exactly.
+[[nodiscard]] inline Message rendered_chunk_to_message(std::string const& id, std::string const& rendered) {
+    ContentItem ci{};
+    ci.value   = Text{rendered};
+    ci.origin  = content_origin::external;
+    ci.tainted = true;
+
+    Message m{};
+    m.role       = role::system;
+    m.message_id = "rag:" + id;
+    m.content.push_back(std::move(ci));
+    return m;
+}
+
 }  // namespace vector_rag_detail
 
 // `EmbedderT`/`IndexT` are the two policy parameters ADR-063 §2.1b's own naming uses to distinguish
@@ -104,8 +202,11 @@ namespace vector_rag_detail {
 // parameters (the storage backends chunk records ride) rather than being folded away, matching the
 // real precedent this file mirrors rather than the ADR prose's own two-parameter illustration
 // literally -- see this file's accompanying test for the concrete instantiation.
+//
+// `IndexT` is `AnyVectorIndex` (ADR-180 §2.1), not `VectorIndex` alone -- see this file's top comment
+// for the two additive changes ADR-180 made here.
 template <class EmbedderT, class IndexT, class OS, class RS>
-    requires Embedder<EmbedderT> && VectorIndex<IndexT> && WorktreeObjectStore<OS> && rt::AppendLogStore<RS>
+    requires Embedder<EmbedderT> && AnyVectorIndex<IndexT> && WorktreeObjectStore<OS> && rt::AppendLogStore<RS>
 // ae-naming-lint: allow VectorRagContextProvider
 class VectorRagContextProvider {
 public:
@@ -140,7 +241,7 @@ public:
     // underneath (an embedding call + a vector search, not a pure function of stored fields).
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& session_ctx,
                                                                  EffectContext& ctx) {
-        std::string const query_text = last_user_text(session_ctx.history);
+        std::string const query_text = vector_rag_detail::last_user_text(session_ctx.history);
 
         // ADR-063 §2.2A/§2.2B: `embed_batch()` is the ONLY entry point (batch-only, even for this
         // single query text -- no separate single-item `embed()` exists to reach for instead).
@@ -162,13 +263,24 @@ public:
         }
 
         std::vector<float> const& query_vector = embedded->front();
-        auto scored = index_->search(std::span<float const>(query_vector.data(), query_vector.size()),
-                                      max_injected_);
-        if (!scored) co_return std::unexpected(scored.error());
+        std::span<float const> const query_span(query_vector.data(), query_vector.size());
+
+        // ADR-180 §2.1 Design B: `on_context()` is already a coroutine, so the `RemoteVectorIndex`
+        // branch simply `co_await`s the index's own `task<result<...>>` -- no `synchronous_leaf`
+        // gating is needed HERE (that trait only matters for driving a task synchronously from
+        // `recall`'s synchronous `invoke` closure below, which this method is not).
+        result<std::vector<ScoredId>> scored_result;
+        if constexpr (RemoteVectorIndex<IndexT>) {
+            scored_result = co_await index_->search(query_span, max_injected_, ctx);
+        } else {
+            scored_result = index_->search(query_span, max_injected_);
+        }
+        if (!scored_result) co_return std::unexpected(scored_result.error());
 
         ContextContribution contribution;
-        for (ScoredId const& s : *scored) {
-            auto rendered = render_scored_chunk(s);
+        for (ScoredId const& s : *scored_result) {
+            auto rendered = vector_rag_detail::render_scored_chunk(*object_store_, *ref_store_, mount_,
+                                                                     read_cap_, s);
             if (!rendered) {
                 // Real, currently-undesigned lifecycle edge case (ADR-063 §7 already names the
                 // adjacent "re-mount dedup mechanism is asserted, not designed" residual; this is
@@ -186,7 +298,7 @@ public:
                 // as an unresolved lifecycle gap that `VectorRagContextProvider` alone cannot close.
                 continue;
             }
-            contribution.messages.push_back(rendered_chunk_to_message(s.id, *rendered));
+            contribution.messages.push_back(vector_rag_detail::rendered_chunk_to_message(s.id, *rendered));
         }
         contribution.tools.push_back(make_recall_tool_descriptor());
         co_return contribution;
@@ -200,80 +312,20 @@ public:
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
 
 private:
-    // Walks BACKWARD to the most recent `role::user` message, never just `history.back()` —
-    // red-team (2026-08-19) found `on_context()` is reachable at points in `AgentSession::
-    // resolve_interaction()`/`resolve_codeact_ask()` where `history.back()` is the ASSISTANT's own
-    // pending tool-call message (its text preamble, if any), not the user's. Treating that as the
-    // query would send model-generated text as the embedder's network payload and let it steer
-    // retrieval — a direct I3 violation ("model output is data, never authority") the moment this
-    // provider is wired into a live `AgentSession`. Only genuine `role::user` content may ever
-    // become the query.
-    [[nodiscard]] static std::string last_user_text(std::vector<Message> const& history) {
-        for (auto it = history.rbegin(); it != history.rend(); ++it) {
-            if (it->role != role::user) continue;
-            if (it->content.empty()) return {};
-            auto const* text = std::get_if<Text>(&it->content.front().value);
-            return text != nullptr ? text->text : std::string{};
+    // ADR-180 §2.1: builds the on-demand `recall(query)` reply from an already-scored, already-
+    // ranked result list -- shared by both branches of `make_recall_tool_descriptor()`'s `invoke`
+    // below (local-index and remote-index), so the "skip a stale entry, keep the rest" best-effort
+    // posture (matching `on_context()`'s own identical stance) is expressed exactly once.
+    [[nodiscard]] result<json::Value> reply_from_scored(std::vector<ScoredId> const& scored) const {
+        RagRecallReply reply;
+        reply.results.reserve(scored.size());
+        for (ScoredId const& s : scored) {
+            auto rendered = vector_rag_detail::render_scored_chunk(*object_store_, *ref_store_, mount_,
+                                                                     read_cap_, s);
+            if (!rendered) continue;
+            reply.results.push_back(*rendered);
         }
-        return {};
-    }
-
-    // Shared by `on_context()`'s default injection path AND (ADR-064, when `EmbedderT::
-    // synchronous_leaf` is true) the contributed `recall` tool's own `invoke` -- exactly matching
-    // how `MemoryProvider` shares `memory_item_to_labeled_text`-shaped logic between its two paths.
-    [[nodiscard]] result<std::string> render_scored_chunk(ScoredId const& scored) const {
-        auto record = read_corpus_chunk_record(*object_store_, *ref_store_, mount_, read_cap_, scored.id);
-        if (!record) return std::unexpected(record.error());
-
-        // corpus_chunk.hpp's own header comment: `scored.id` IS the chunk TEXT's own content digest
-        // -- the identical id `put_blob()` returned when the chunk was written and `VectorIndex`
-        // keys the chunk's vector by -- so this is a direct digest lookup, never a mount/tree walk.
-        // Inherited, not introduced here: this blob read carries NO capability check of its own
-        // (`WorktreeObjectStore::get_blob()` takes no `cap::*` parameter at all) -- confidentiality
-        // across corpora relies entirely on which ids a caller's OWN `IndexT` was ever populated
-        // with (a `search()` against one tenant's index can structurally never RETURN another
-        // tenant's chunk id in the first place, see this file's own cross-tenant test), not on a
-        // capability gate at the blob layer. This is the SAME mechanism corpus_chunk.hpp's own
-        // header comment already designs and names, not a gap this file introduces.
-        auto chunk_bytes = object_store_->get_blob(scored.id);
-        if (!chunk_bytes) return std::unexpected(chunk_bytes.error());
-        std::string const chunk_text(reinterpret_cast<char const*>(chunk_bytes->data()), chunk_bytes->size());
-
-        // ADR-063 §2.6b's exact shape: "citation_label = ... ; rendered text = citation_label + " "
-        // + neutralize_forged_provenance_markers(chunk_text, "⟦rag:")" -- label ALWAYS precedes the
-        // neutralized body, so a reader (human or model) sees the attribution before the content it
-        // attributes, and the chunk's own text can never forge a second, different-looking citation.
-        std::string const citation_label =
-            std::string(vector_rag_detail::rag_citation_label_open()) + record->source_path + ":" +
-            std::to_string(record->line_start) + "-" + std::to_string(record->line_end) +
-            std::string(vector_rag_detail::rag_citation_label_close());
-
-        return citation_label + " " +
-               neutralize_forged_provenance_markers(chunk_text, vector_rag_detail::rag_citation_label_open());
-    }
-
-    // 029 §6's rule, applied unmodified to RAG per ADR-063 (the ADR does not relax it): retrieved
-    // corpus content is tainted, external content, written by a process (folder-mount ingestion)
-    // that is not the current user asserting it live -- mirrors
-    // `MemoryProvider::memory_item_to_message()`'s exact tainting discipline exactly.
-    //
-    // Message ordering here is best-match-first (index-search order, descending score) -- the SAME
-    // order `MemoryProvider::on_context()` already emits its own items in. `context_assembly.hpp`'s
-    // oldest-first drop-order under budget pressure (ADR-063 §4 finding 6: "likely drops the BEST
-    // RAG result... not the worst") is a known, pre-existing cross-cutting issue that already exists
-    // for `MemoryProvider`, out of scope for this file to fix -- this provider inherits the SAME
-    // known issue by using the SAME ordering convention, rather than introducing a new one.
-    [[nodiscard]] static Message rendered_chunk_to_message(std::string const& id, std::string const& rendered) {
-        ContentItem ci{};
-        ci.value   = Text{rendered};
-        ci.origin  = content_origin::external;
-        ci.tainted = true;
-
-        Message m{};
-        m.role       = role::system;
-        m.message_id = "rag:" + id;
-        m.content.push_back(std::move(ci));
-        return m;
+        return schema::to_json(reply);
     }
 
     // NOT `const` -- deliberately: the `synchronous_leaf` path below calls `this->embedder_.
@@ -332,24 +384,42 @@ private:
                 }
 
                 std::vector<float> const& query_vector = embedded->front();
+                std::span<float const> const query_span(query_vector.data(), query_vector.size());
                 // 10, matching MemoryProvider::make_recall_tool_descriptor()'s own on-demand
                 // max_results literal -- deliberately independent of max_injected_ (that constructor
                 // parameter sizes DEFAULT injection, a different concern from an on-demand query).
-                auto scored = index_->search(
-                    std::span<float const>(query_vector.data(), query_vector.size()), /*k=*/10);
-                if (!scored) return std::unexpected(scored.error());
 
-                // Same best-effort posture as on_context() (see that method's own comment): a stale
-                // index entry (backing record/blob since removed) skips, rather than failing the
-                // whole on-demand query over one miss.
-                RagRecallReply reply;
-                reply.results.reserve(scored->size());
-                for (ScoredId const& s : *scored) {
-                    auto rendered = render_scored_chunk(s);
-                    if (!rendered) continue;
-                    reply.results.push_back(*rendered);
+                // ADR-180 §2.1: a SECOND `synchronous_leaf` gate, this one on `IndexT` itself --
+                // `recall`'s `invoke` is synchronous-only, so a `RemoteVectorIndex` conformer's own
+                // `search()` task may only be driven via `rt::drive_leaf_task()` when IT ALSO
+                // declares `synchronous_leaf = true` (extending ADR-064's exact rule to a second
+                // leaf). A local (`VectorIndex`) conformer needs no such gate -- its `search()` was
+                // never a coroutine to begin with, unchanged from before ADR-180.
+                if constexpr (RemoteVectorIndex<IndexT>) {
+                    if constexpr (IndexT::synchronous_leaf) {
+                        auto driven_idx = rt::drive_leaf_task(index_->search(query_span, /*k=*/10, ctx));
+                        if (!driven_idx) return std::unexpected(driven_idx.error());
+                        auto& scored = *driven_idx;
+                        if (!scored) return std::unexpected(scored.error());
+                        return reply_from_scored(*scored);
+                    } else {
+                        return std::unexpected(error{
+                            failure_class::contract,
+                            "recall(query) cannot be invoked: this RemoteVectorIndex conformer "
+                            "declares synchronous_leaf = false, so it is unsafe to drive its "
+                            "search() task synchronously from this tool's invoke (decisions/"
+                            "ADR-180 §2.1, extending ADR-064's identical rule to the index leg). "
+                            "Use VectorRagContextProvider::on_context()'s default injection "
+                            "instead, or compose a RemoteVectorIndex whose search() body never "
+                            "awaits anything but nested task<T>/task<void> and declares "
+                            "synchronous_leaf = true.",
+                            "vector_rag_context_provider.recall_tool_requires_synchronous_leaf_index"});
+                    }
+                } else {
+                    auto scored = index_->search(query_span, /*k=*/10);
+                    if (!scored) return std::unexpected(scored.error());
+                    return reply_from_scored(*scored);
                 }
-                return schema::to_json(reply);
             } else {
                 // Unchanged fail-closed path (no regression) for any Embedder conformer that declares
                 // `synchronous_leaf = false` -- see this file's own top-of-file comment.

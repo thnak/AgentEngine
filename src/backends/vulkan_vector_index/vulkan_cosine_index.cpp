@@ -62,8 +62,8 @@ void sort_and_truncate(std::vector<agentengine::ScoredId>& scored, std::size_t k
 // VkDevice is permanently unusable and every later call will fail too (the caller's only recovery is
 // a fresh `create()` or a CPU fallback). The numeric VkResult is now in the message, and device loss
 // gets its own stable code. The class stays `resource` (not reclassified to `fatal`, which error.hpp
-// defines as "the run ends" -- too strong for a condition a caller with a CPU fallback survives);
-// named as a residual for the Judge step rather than decided unilaterally here.
+// defines as "the run ends" -- too strong for a condition a caller with a CPU fallback survives).
+// Project-owner ruling 2026-09-23 (ADR-180 §7): `resource` is the decision, not a placeholder.
 [[nodiscard]] agentengine::error vk_call_error(VkResult vk_result, std::string what, std::string code) {
     if (vk_result == VK_ERROR_DEVICE_LOST) code = "vulkan_vector_index.device_lost";
     return vulkan_error(std::move(what) + " (VkResult " + std::to_string(static_cast<int>(vk_result)) + ")",
@@ -599,10 +599,9 @@ agentengine::result<void> VulkanCosineIndex::add_batch(std::vector<std::string> 
     // Red-team pass 5 (2026-09-23), Real gap: NaN/Inf components used to be accepted, producing NaN
     // scores that then reached std::sort under a comparator that is not a strict weak ordering over
     // NaN -- undefined behavior (reproduced: out-of-order results). Reject at the origin, before any
-    // state changes, exactly like every other add_batch() contract check above. This is a deliberate,
-    // documented DIVERGENCE from BruteForceCosineIndex, which still accepts non-finite input (its own
-    // shared-comparator sort has the identical latent defect -- named in ADR-180 §7, out of this
-    // backend's scope): the CPU behavior being diverged from is itself UB, not a contract to mirror.
+    // state changes, exactly like every other add_batch() contract check above. BruteForceCosineIndex
+    // had the identical latent defect and now rejects non-finite input the same way
+    // (`vector_index.add_batch_non_finite`, ADR-180 §4e condition 2) -- the two conformers agree again.
     for (auto const& v : vectors) {
         if (!all_finite(v)) {
             return std::unexpected(agentengine::error{

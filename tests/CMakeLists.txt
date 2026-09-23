@@ -700,12 +700,20 @@ endif()
 # rejection, and the deterministic score-desc/id-asc tie-break.
 if(WIN32)
   add_executable(test_vector_index test_vector_index.cpp)
-  target_link_libraries(test_vector_index PRIVATE agentengine::core agentengine_warnings)
+  target_link_libraries(test_vector_index PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_vector_index COMMAND test_vector_index)
 
   add_executable(test_vector_index_benchmark test_vector_index_benchmark.cpp)
   target_link_libraries(test_vector_index_benchmark PRIVATE agentengine::core agentengine_warnings)
   add_test(NAME test_vector_index_benchmark COMMAND test_vector_index_benchmark)
+
+  # decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.2/§3 claim 3 --
+  # `BM25Index` (core/sparse_index.hpp): hand-computed formula correctness, contract rejection,
+  # deterministic tie-break.
+  add_executable(test_sparse_index test_sparse_index.cpp)
+  target_link_libraries(test_sparse_index PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_sparse_index COMMAND test_sparse_index)
 endif()
 
 # §2.6a / §3 claim 5: rag_corpus_key()/rag_corpus_mount() (core/corpus_scope.hpp) -- multi-tenant
@@ -742,6 +750,23 @@ if(WIN32)
   target_link_libraries(test_vector_rag_context_provider PRIVATE
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_vector_rag_context_provider COMMAND test_vector_rag_context_provider)
+
+  # decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.3/§3 claims 2, 8 --
+  # `HybridRagContextProvider` (core/hybrid_rag_context_provider.hpp): RRF fusion end-to-end,
+  # citation rendering/forgery-defense reuse, recall tool.
+  add_executable(test_hybrid_rag_context_provider test_hybrid_rag_context_provider.cpp)
+  target_link_libraries(test_hybrid_rag_context_provider PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_hybrid_rag_context_provider COMMAND test_hybrid_rag_context_provider)
+
+  # decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.1, §4 findings R1/R2 --
+  # `RemoteVectorIndex`/`AnyVectorIndex` (core/remote_vector_index.hpp): concept disjointness, and
+  # real (not merely mock-compiles) instantiation of every RemoteVectorIndex dispatch branch in
+  # VectorRagContextProvider, HybridRagContextProvider, and DiskCorpusSource::mount_hybrid().
+  add_executable(test_remote_vector_index test_remote_vector_index.cpp)
+  target_link_libraries(test_remote_vector_index PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_remote_vector_index COMMAND test_remote_vector_index)
 endif()
 
 
@@ -1007,6 +1032,26 @@ if(AGENTENGINE_WITH_HTTPS)
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_test(NAME test_openai_embedder_openrouter_live_e2e COMMAND test_openai_embedder_openrouter_live_e2e)
   set_tests_properties(test_openai_embedder_openrouter_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
+
+  # ---- decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.5/§3 claim 6:
+  # QdrantVectorIndex (protocol/qdrant/vector_index.hpp) -- offline-provable surface: point-id
+  # derivation, request/response construction, error-envelope parsing. No server, runs
+  # unconditionally, mirrors test_openai_embedder.cpp's own offline split. A live-network test
+  # against a real Qdrant instance is still owed (ADR-180 §8 step 7's own implementation plan),
+  # not built in this pass.
+  add_executable(test_qdrant_vector_index test_qdrant_vector_index.cpp)
+  target_link_libraries(test_qdrant_vector_index PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_qdrant_vector_index COMMAND test_qdrant_vector_index)
+
+  # ---- ADR-180 §3 claim 6's live half: QdrantVectorIndex against a REAL Qdrant instance -----------
+  add_executable(test_qdrant_vector_index_live_e2e test_qdrant_vector_index_live_e2e.cpp)
+  target_link_libraries(test_qdrant_vector_index_live_e2e PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_qdrant_vector_index_live_e2e COMMAND test_qdrant_vector_index_live_e2e)
+  set_tests_properties(test_qdrant_vector_index_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
 
   # ---- OpenAIChatClient against REAL OpenRouter, with a CONCRETELY NAMED OpenAI model (not the
   # routing alias test_openrouter_live_e2e.cpp uses) -- see this file's own top comment for why that

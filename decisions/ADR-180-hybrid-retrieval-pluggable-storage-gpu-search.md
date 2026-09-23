@@ -57,8 +57,10 @@ Windows `MAX_PATH`, and with a short build root the real `cmake`+Ninja+`ctest` f
 `CLAUDE.md`'s "contested, hot-path, or security-critical designs go through `design → red-team → prove →
 judge`" rule, this ADR is **still not Judged**. **Pass 5's recommendation: the Vulkan surface is ready
 for the Judge step**, with two named conditions (§8 item 9):
-- a ruling on device-lost's `failure_class`;
-- tracking `BruteForceCosineIndex`'s identical NaN-sort defect as an ADR-063 follow-on.
+- ~~a ruling on device-lost's `failure_class`~~ — **RULED 2026-09-23 by the project owner: stays
+  `resource`** (§7);
+- ~~tracking `BruteForceCosineIndex`'s identical NaN-sort defect as an ADR-063 follow-on~~ — **CLOSED
+  2026-09-23**: fixed directly rather than deferred (§7), so this condition no longer stands.
 
 A fourth eyes-only red-team pass is not recommended. The live Qdrant run (§3 claim 6) remains blocked
 on the same persistent local Docker daemon issue, unresolved.
@@ -1413,9 +1415,9 @@ not chased further.
    - a rejected batch commits NOTHING, not even its finite members;
    - a non-finite query is rejected.
 
-   Re-running the §4e reproduction gives 0 NaN scores and 0 ordering violations on the GPU side. This is a
-   deliberate, documented divergence from `BruteForceCosineIndex`, which still accepts non-finite input:
-   the CPU behavior being diverged from is itself UB (§7).
+   Re-running the §4e reproduction gives 0 NaN scores and 0 ordering violations on the GPU side. At the
+   time this was a deliberate divergence from `BruteForceCosineIndex`, which still accepted non-finite
+   input; that divergence is now CLOSED — the CPU conformer rejects it identically (§7, 2026-09-23).
 
 5. (Real gap) A moved-from instance is now safe to call.
    - `add_batch()`/`search()` return `vulkan_vector_index.moved_from` (`contract`).
@@ -1706,20 +1708,47 @@ reported none leaked or double-destroyed across 59 instance teardowns.
   zero errors across all 59 instance lifetimes of the fault-injection run, including every failure-path
   teardown. So GPU-object leak-freedom is now executed evidence, not code review. Host-heap leaks remain
   unchecked on Windows.
-- **(NEW, red-team pass 5 §4e finding 4) `BruteForceCosineIndex` (the already-Judged ADR-063 CPU
-  conformer) shares the NaN-unsafe comparator and still accepts NaN/Inf input.** That is the same
+- **(CLOSED 2026-09-23 — see the fix note at the end of this bullet) (red-team pass 5 §4e finding 4)
+  `BruteForceCosineIndex` (the already-Judged ADR-063 CPU conformer) shared the NaN-unsafe comparator
+  and accepted NaN/Inf input.** That is the same
   `std::sort` strict-weak-ordering UB `VulkanCosineIndex` was just fixed for. It was reproduced
   identically on the CPU side: 11 ordering violations among finite scores. It was not fixed here: it is
   outside this backend's files, and `core/vector_index.hpp` had uncommitted changes from another session
   in the main checkout at the time. The fix mirrors this pass's two layers (reject non-finite input,
   NaN-total comparator) and belongs in a small ADR-063 follow-on. Until then, the two conformers of the
   same concept DIVERGE on non-finite input, deliberately: GPU rejects, CPU accepts and has UB.
-- **(NEW, red-team pass 5 §4e finding 7) `VK_ERROR_DEVICE_LOST` is still classed `failure_class::resource`.**
+  **Fixed 2026-09-23, directly in `core/vector_index.hpp` rather than as a separate follow-on** (the
+  "uncommitted changes from another session" were this ADR's own step-1 work, so there was no conflict to
+  avoid). Reproduced first through the PUBLIC API, not just the comparator: `add_batch()` accepted 200
+  vectors with every 7th carrying a NaN component, and `search()` returned 29 NaN scores with 17
+  descending-order violations among the finite ones. Fix, mirroring `VulkanCosineIndex`'s two layers:
+  (a) non-finite input is rejected as `contract` at all THREE entry points — `add_batch()`
+  (`vector_index.add_batch_non_finite`, whole batch rejected, nothing committed), `search()`'s query
+  (`vector_index.search_non_finite`), and `restore()` (`vector_index.snapshot_non_finite` — a snapshot blob
+  is external bytes, so a corrupt or crafted one must not smuggle NaN past `add_batch()`'s check; the
+  Vulkan passes had no equivalent path to consider); (b) the sort is factored into
+  `vector_index_detail::sort_and_truncate()` with a NaN-total comparator (§8 item 1's originally planned
+  shared helper). Finite input cannot produce a NaN score on this path (double accumulation, zero-norm
+  already returns 0), so (a) makes NaN scores unreachable and (b) keeps the sort's precondition
+  independent of that. `tests/test_vector_index.cpp`: 10 new assertions, including a hand-built AEV1 blob
+  carrying a NaN and the comparator driven directly with 29 NaNs among 200 scores; 56/56 green in a
+  plain build and under AddressSanitizer. The scratch reproduction now shows NaN rejected at the
+  boundary. Every other test depending on `vector_index.hpp` re-run plain + ASan, all green:
+  `test_corpus_source`, `test_hybrid_rag_context_provider`, `test_remote_vector_index`,
+  `test_sparse_index`, `test_vector_index_benchmark`, `test_vector_rag_context_provider`,
+  `test_qdrant_vector_index` (offline, stub transport), and `test_vulkan_cosine_index` on the real GPU
+  (86/86). This is a behavior change to an already-Judged ADR-063 type: input that was previously
+  accepted (and silently mis-ranked) is now rejected. No in-tree caller passed non-finite vectors.
+- **(RULED 2026-09-23) (red-team pass 5 §4e finding 7) `VK_ERROR_DEVICE_LOST` is classed `failure_class::resource`.**
   It now has its own stable code, `vulkan_vector_index.device_lost`, so a caller CAN distinguish it. But
   whether device loss should be `fatal`, `transient`, or a new class is a genuine policy question, not
   something this pass decided. `error.hpp` defines `fatal` as "the run ends", which is too strong for a
   host with a CPU fallback. `resource` means "budget/quota/limit exceeded", which is not quite what
-  device loss is either. Left for the Judge step.
+  device loss is either. **Project-owner ruling, 2026-09-23: it stays `resource`.** `fatal` would end the
+  whole run for a condition a host with a CPU fallback survives, and the stable
+  `vulkan_vector_index.device_lost` code already lets a caller tell it apart from out-of-memory and
+  choose to rebuild via `create()` or fall back to `BruteForceCosineIndex`. No code change: this records
+  that the existing classification is the decision, not a placeholder.
 - **(NEW, red-team pass 5) Only `maxStorageBufferRange` and `maxComputeWorkGroupCount[0]` are
   enforced.** Two other limits are not: `maxMemoryAllocationSize` (Vulkan 1.1 `maintenance3`) and
   `maxBufferSize` (1.3 `maintenance4`). Both are 2 GiB on the reference device, below its 4 GiB−1
@@ -1813,10 +1842,11 @@ reported none leaked or double-destroyed across 59 instance teardowns.
      The remaining open items are policy or scope questions, not suspected defects.
 
    The two conditions for the Judge:
-   1. **Rule on `VK_ERROR_DEVICE_LOST`'s `failure_class`** (§7).
-   2. **Track `BruteForceCosineIndex`'s identical NaN strict-weak-ordering defect** (§7) as an ADR-063
-      follow-on. It is the same UB in the already-Judged CPU conformer, and pass 5 found it but could not
-      fix it here.
+   1. ~~**Rule on `VK_ERROR_DEVICE_LOST`'s `failure_class`** (§7).~~ **RULED 2026-09-23** by the project
+      owner: stays `resource` (§7).
+   2. ~~**Track `BruteForceCosineIndex`'s identical NaN strict-weak-ordering defect** (§7) as an ADR-063
+      follow-on.~~ **CLOSED 2026-09-23** — fixed directly in `core/vector_index.hpp` and proven (§7).
+      Both conditions are now closed.
 
    If more assurance is wanted before Judged, the highest-value next step is also mechanical, not
    another sampled review: run `test_vulkan_cosine_index_fault_injection` on a second vendor's driver
