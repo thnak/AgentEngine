@@ -7,14 +7,15 @@
   `eval_stub_tool.hpp`, `eval_trial.hpp`, plus the FIRST SLICE of multi-trial orchestration, §3.0 item 2's
   follow-rate screen (a separate, later PR): `eval_grader.hpp`, `eval_follow_rate_screen.hpp`, plus §3.0 item 3's
   gross-harm regression screen (another separate PR): `eval_screen_common.hpp`, `eval_gross_harm_screen.hpp`, plus
-  §3.0's Tier-1 pre-registration and attempt accounting (E32, a further PR, not yet red-teamed):
-  `eval_tier1_screen.hpp` —
-  **382/382 checks green** across 10 test binaries (`test_lesson_candidate` 43, `test_eval_principal` 15,
+  §3.0's Tier-1 pre-registration and attempt accounting (E32, a further PR, red-teamed twice — see §7):
+  `eval_tier1_screen.hpp`, plus that red team's fix to `rt/append_log_store.hpp` —
+  **449/449 checks green** across 10 test binaries (`test_lesson_candidate` 43, `test_eval_principal` 15,
   `test_promotion_ack` 9, `test_tier1_statistics` 40, `test_eval_store` 9, `test_eval_stub_tool` 11,
   `test_eval_trial_driver` 26, `test_eval_follow_rate_screen` 66, `test_eval_gross_harm_screen` 107,
-  `test_eval_tier1_screen` 56 — executed checks;
-  that last file has 84 `AE_CHECK` sites because one pre-flight helper runs its check 24 times, every other file's
-  site and executed counts are equal) plus a compile-fail/positive-control TRIPLE (§3.8; round 2 added a third file
+  `test_eval_tier1_screen` 123 — executed checks; `test_eval_gross_harm_screen` has 84 `AE_CHECK` sites because one
+  pre-flight helper runs its check 24 times, and `test_eval_tier1_screen` has 69 because T5, T6 and T14 loop over
+  cases;
+  every other file's site and executed counts are equal) plus a compile-fail/positive-control TRIPLE (§3.8; round 2 added a third file
   proving the same rejection for `SummarizerT`), clean under MSVC, clang-cl
   `-Wall -Wextra -Werror -fsyntax-only`, and `tools/naming_lint.py`. **Two separate live runs against DeepSeek
   `deepseek-flash`** (`test_eval_trial_driver_live_e2e`, live-network-labelled, observation not a gate — a live
@@ -397,28 +398,36 @@ raises the chance *some* attempt passes from 30% (one try) to 66% (three) to 97%
 sees the last, clean `ScreenResult` has no way to know that. This does not block anything — Tier 1 never promotes —
 but it stops a retried-until-clean screen from *looking like* a clean one.
 
-**Built (E32 PR, not yet red-teamed): `include/agentengine/eval/eval_tier1_screen.hpp`.** `run_tier1_screen` runs one
-counted attempt in this order: (1) validates the whole spec — every probe and the gross-harm spec must render the
-same lesson, and each screen's own pre-flight runs too — so a refused spec is never charged an attempt; (2) hashes the
-design into `tier1_preregistration_digest` (SHA-256 over canonical JSON: the rendered lesson's digest and template
-version, a host-named `suite_version` for the graders, and every probe's and regression task's id, prompt, stub tools
-and statistical parameters; seeds and pure resource caps are excluded, so a re-seeded retry is the same design);
-(3) appends a `started` record naming that digest to the family's log **before any trial runs** — if the append
-fails, nothing runs; (4) runs the probe(s), stopping at the first that does not pass (all must pass, §6 G4), then the
-gross-harm screen only if every probe passed; (5) appends a `completed` record with the figures and seeds;
-(6) reads the family's log back and returns a `Tier1ScreenResult` naming this attempt's ordinal, the attempt count,
-how many distinct designs were tried, and every attempt's figures. The log is a `Tier1AttemptLog` over any
-`rt::AppendLogStore` (`FileAppendLogStore` survives a restart); an attempt is identified by its `started` record's
-sequence number, so concurrent starts cannot collide on a counter. A crashed attempt stays counted as
-started-but-not-completed, and an undecodable record counts as an attempt of its own (over-counting is the safe
-direction). If the history cannot be read after the run, the outcome is withheld rather than shown as if this were the
-only attempt. The family is the candidate's `subject` plus a host-supplied `lineage`, so a re-keyed or re-worded
-candidate stays in its family (proven). `tests/test_eval_tier1_screen.cpp`, 56/56 checks; 14 planted mutants, all
-caught (dropping incomplete or unreadable attempts, showing only the latest attempt, counting after the run instead
-of before, running when the start could not be written, seeds in the digest, a family key without lineage, skipping
-the lesson-match check, running the harm screen after a failed probe, rounding the recorded figures, and others).
-Arm S is not built, so its slot in the pre-registration is `null` and a `cleared` outcome says `steering_manifest_run
-= false`. What it does not do is in §8.
+**Built (E32 PR, red-teamed twice; round-2 fixes not yet re-red-teamed): `include/agentengine/eval/eval_tier1_screen.hpp`.**
+The ADR's `ScreenResult` is `Tier1ScreenResult` in code. `run_tier1_screen` runs one counted attempt in this order:
+(1) validates the whole spec — every probe and the gross-harm spec must render the same lesson at the bit-identical
+salience, each screen's own pre-flight runs, and the screens' `max_model_calls`, summed, must fit the attempt's own —
+so a refused spec is never charged an attempt; (2) renders the design as canonical JSON
+(`tier1_preregistration_json`: the rendered lesson's digest, template version and exact salience, a host-named
+`suite_version` for the graders, and every probe's and regression task's id, prompt, stub tools and statistical
+parameters; seeds and pure resource caps are excluded, so a re-seeded retry is the same design) and hashes it;
+(3) appends a `started` record — the design, its digest, a fresh random `attempt_id`, and a host-supplied
+`operator_id`/`started_at` (I4) — to the family's log and **reads it back before any trial runs**; if the append
+fails or the record does not read back, nothing runs; (4) runs the probe(s), stopping at the first that does not pass
+(all must pass, §6 G4), then the gross-harm screen only if every probe passed; (5) appends a `completed` record
+naming the same `attempt_id`, with the figures, seeds and every invalidity reason; (6) reads the family's log back and
+returns the result: this attempt's ordinal, the attempt count, how many distinct designs were tried, and every
+attempt's stored design and figures. If that history cannot be read, or no longer contains this attempt, the verdict
+is withheld — `outcome` and the per-screen results both. The family key is the candidate's `subject`, normalised to
+its lower-cased ASCII letters and digits (a subject with a non-ASCII byte is refused), plus a host-supplied `lineage`.
+Because the subject is model-chosen, the log is kept per **lineage** and every result also shows every attempt from
+that lineage under any subject (`lineage_attempts`, round 2): a retry that swaps words between subject and key, or
+spells `dep1oy`, opens a new family but cannot hide the earlier attempts. The log is a `Tier1AttemptLog` over any
+`rt::AppendLogStore`; an attempt is its random `attempt_id`, never the
+store's sequence number, so even a store that repeats sequence numbers cannot mix two attempts up (tested). A crashed
+attempt stays counted as started-but-not-completed; a record that cannot be decoded, a completion for an unknown or
+already-completed attempt, a repeated `attempt_id`, and a `started` record whose stored design does not hash to its
+digest each count as an unreadable attempt of their own (over-counting is the safe direction).
+`tests/test_eval_tier1_screen.cpp`: 123/123 executed checks (69 `AE_CHECK` sites; T5, T6 and T14 loop over cases).
+My own 40 planted mutants (14 on the first build, 26 after round 1) are all caught; the red teams' mutation reviews
+found 24 survivors after the first build and 27 eval + 7 store survivors after round 1, and the tests were extended
+until each was caught or recorded as equivalent (§7). Arm S is not built, so its slot in the pre-registration is `null` and
+a `cleared` outcome says `steering_manifest_run = false`. What it does not do is in §8.
 
 **Tier 1's bootstrapping order (round-4 finding, disclosed not fixed here).** Tier 1 needs `LessonCandidate` (a
 closed record) and `render_lesson`, both named in ADR-179 §3.3/§7 as **stage-3** constructs, while ADR-179 §7 gates
@@ -902,7 +911,7 @@ reported figure is a **Clopper–Pearson 99% upper bound**, not a point estimate
 | E29 | G | The `SlotTable` is hashed into the suite digest; a slot absent from it is never gated; a value outside a declared closed domain that cannot be normalised makes the slot `unsuitable` | Table outside the digest |
 | E30 | G | The kill-switch flag stops **new** injection of every promoted lesson within one turn, checked before both context assembly and the `recall` tool's return (round 4: `recall` is a second delivery route, §3.2, and had no stated coverage); an unset or unreadable opt-in ⇒ nothing is injected (fails closed, round 4). **Not claimed:** that the switch purges episodic copies the summarizer already wrote before it was thrown (§8) | Flag ignored; default-on; unreadable flag defaults to injecting; `recall` route uncovered |
 | E31 | G | The approver's acknowledgement is bound to a **digest of the rendered `MemoryItem`** (`content`, `tags`, `salience`) shown to them verbatim; the promotion path re-runs `render_lesson` and refuses the write if the recomputed digest differs from the acknowledged one. **Round 5: built for real** (`promotion_ack.hpp`); `tests/test_promotion_ack.cpp` proves refusal on a changed candidate value, a changed salience (round-4 F1's exact TOCTOU shape — `MemoryItem::id` alone does NOT catch this, since it digests `content` only), and a stale/placeholder digest | Ack recorded without a digest; promotion writes without recomputing |
-| E32 | G | *(round 4, new)* Tier 1's pre-registration record (template + version, probe(s), regression tasks, `SlotTable`, arm-S N and margin) is hashed before the screen runs; every started screen for a family is counted, and a `ScreenResult` with more than one attempt for its family names the count and shows every attempt's figures, not only the passing one. **Built** (`eval_tier1_screen.hpp`, minus the `SlotTable`/arm-S fields, which do not exist yet); `tests/test_eval_tier1_screen.cpp` plants both mutants in this row's last column and more | Pre-registration after the run; retries silently hidden from the `ScreenResult` |
+| E32 | G | *(round 4, new)* Tier 1's pre-registration record (template + version, probe(s), regression tasks, `SlotTable`, arm-S N and margin) is hashed before the screen runs; every started screen for a family is counted, and a `ScreenResult` with more than one attempt for its family names the count and shows every attempt's figures, not only the passing one. **Built** (`eval_tier1_screen.hpp`, minus the `SlotTable`/arm-S fields, which do not exist yet; red-teamed once, §7); `tests/test_eval_tier1_screen.cpp` plants both mutants in this row's last column and more | Pre-registration after the run; retries silently hidden from the `ScreenResult` |
 
 **Not claimed:** that any lesson improves real-world performance (§1, §8); that acknowledged steering is safe (§3.7); that a Tier-1 pass means the lesson helps (§3.0); that the kill switch purges episodic copies already written before it was thrown (§8); that a lesson cannot be conditioned on detecting the eval itself (§3.9, §8).
 
@@ -1317,6 +1326,59 @@ pointer never outlives the trial; the stream rule's "last recording" is the fail
 
 **The PR #100 fixes are not yet re-red-teamed.**
 
+**Round 1 (E32 slice: pre-registration and attempt accounting, PR #102)**: three independent reviewers — the counter
+and digest as attack surface **R-E32-Sec**, correctness/lifetimes/test strength **R-E32-Cor**, ADR coherence
+**R-E32-Coh**. All findings proven with executed probes.
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| R-E32-1 (all three) | fatal | `rt::FileAppendLogStore::append` counted the records, then wrote header and payload as two writes with no lock. 4 threads × 50 appends returned ~51 distinct seqs and only 55–89 of 200 records read back, every append reporting success. End to end: 3 concurrent attempts (2 harmful, 1 clean) all reported attempt 1; the clean one showed "1 of 4" with a harmful attempt's figures replaced and the other hidden. The concurrency claim was tested only against the mutex-guarded in-memory store | Store: an exclusive OS file lock across count + one write; readers take a shared lock (Windows byte-range locks are mandatory — found by the fix's own test). E32: identity is a random `attempt_id`, not the store's seq; the `started` record is read back before any trial. Tests: the store's L8 (200 concurrent appends) and T19 (4 concurrent attempts on the file store) both fail on the old store; T20 (a store that always returns seq 1) |
+| R-E32-2 (Sec, Cor, Coh) | major | A torn record jammed the family for good: appends landed after the torn bytes and were swallowed, each returned the same seq, every later attempt ran ~340 trials then came back `attempt_missing`, and a garbage length allocated ~1.9 GB per read | Store: the next append cuts the file back to its last whole record; `read_from` never allocates past the bytes present (L9). E32: the read-back stops an attempt the store lost before it spends a trial (T18) |
+| R-E32-3 (Sec) | major | The family key was the raw `subject`: `Deploy-Region`, a trailing space, `deploy_region` or a Cyrillic `е` each started a fresh family with no prior attempts | Key = lower-cased ASCII letters and digits; non-ASCII refused (T6, T14) |
+| R-E32-4 (Coh) | major | Only the design's digest was stored, and figures omitted the thresholds, so an approver saw that a retry changed the design but not how | The design JSON is stored and checked against its digest on read; figures gain every invalidity reason, fault counts and which statistic flagged |
+| R-E32-5 (Coh, Cor) | major | A withheld outcome left the verdict readable in `probes[i].pass` / `gross_harm->flagged` | Both cleared when withheld (T8, T21) |
+| R-E32-Cor-Mut | major | 24 of 28 independent mutants survived: no test reached the inconclusive or errored outcomes (an invalid harm screen reported as cleared survived), several recorded fields were never asserted, strict parsing was unchecked, and T5 covered 11 design fields | Outcome mapping factored out and tested for every case, plus two end-to-end inconclusive runs (T15); every figure round-trips (T16); T17 checks each malformed-record kind; T5 now covers every hashed field. 26 new mutants on the fixed code, all caught |
+| R-E32-6 (Cor) | minor | A NaN or infinite figure was written as invalid JSON, erasing that attempt's outcome | Doubles stored as exact round-trip strings (T16) |
+| R-E32-7 (Coh) | minor | Attempt records named no actor or time (I4) | Host-supplied `operator_id` and `started_at`, required and recorded |
+| R-E32-8 (Sec) | minor | Salience entered the digest at six decimals, so two specs a float step apart counted as the same lesson | Compared bit-exactly and recorded exactly in the design; the ack digest's own rounding is disclosed (§8) |
+| R-E32-9 (Coh, Cor) | minor | No single call budget across probes + gross-harm; O(n²) completion matching | `Tier1ScreenSpec::max_model_calls` bounds the sum; matching by id map. Whole-log reads remain, disclosed (§8) |
+| R-E32-10 (Coh) | minor | Status-header parenthetical and README row stale (82 sites/326 checks), `ScreenResult` vs `Tier1ScreenResult` unreconciled, direct screen calls bypass the counter undisclosed | Corrected; §8 discloses the bypass |
+| R-E32-11 (Sec) | nit | `message_to_json` omits `Message::attribution` and tool-call provenance from the hashed prompt | Disclosed (§8) |
+
+**Checked and held up (E32 round 1):** coroutine lifetimes (the factories and `probe` references are frame-local
+and outlive every awaited sub-screen; clean under ASan); the log id cannot collide across families; finite doubles
+round-trip exactly; `max_model_calls` outside the digest cannot change what is measured; the lesson-match check
+catches a different lesson in a probe; a throwing grader or factory stays one trial's `ungraded`; an interrupted
+attempt stays counted.
+
+**Round 2 (E32 slice)**: two fresh reviewers attacked the round-1 fixes — the store and counter **R2-E32-Sec**
+(real child processes on Windows and Linux, header pollution across all 198 headers), test strength and claims
+**R2-E32-Tst** (29 eval + 15 store mutants under a memory cap). The round-1 FATAL did not return: 6 processes × 60
+appends, with 2 reader processes, gave 360 distinct seqs and records on both platforms.
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| R2-E32-1 (Sec) | major | The family key was only the subject, and `render_lesson` writes "For ⟨subject⟩ (⟨key⟩): ⟨value⟩": subject and key swapped, a word moved into the key, words reordered, or `dep1oy`/`regi0n` each came out `cleared`, attempt 1 of 1, with the harmful attempt invisible | The log is per lineage; every result shows `lineage_attempts` under any subject (T22). §8: depends on an honest lineage |
+| R2-E32-2 (Sec) | major | A corrupted length header mid-file was read as a torn tail, and the round-1 repair then truncated there — destroying records readers had been returning; the next attempt read as clean (a count of 3 harmful fell to 1) | Cut bytes are quarantined to a sidecar before truncating, and the append fails if they cannot be (L12). The hiding itself needs checksums — disclosed (§8) |
+| R2-E32-Tst-1 | major | 10 mutants in the result-to-figures mapping survived (dropped `flagged_by_*`, `worst_case_imputation`, error codes, fault counts, swapped ungraded) | T23 maps a synthetic result with every field set, and an all-clear one |
+| R2-E32-Tst-2 | major | T17 did not cover every malformed-record kind: an unknown event or a record with no `attempt_id` could be dropped (under-counting), and eight other parse relaxations survived | T24: ten malformed kinds, each an unreadable attempt |
+| R2-E32-Tst-3 | major | The read-back was tested only on an empty log (matching any record survived) and never with a failing read | T25: an earlier attempt present, this one lost; and a read error at read-back |
+| R2-E32-3 (Sec) | minor | The store header included `<windows.h>` without `WIN32_LEAN_AND_MEAN`, pulling in `<winsock.h>` and breaking a later `<winsock2.h>` for consumers without the project's macros | Defined before the include |
+| R2-E32-Tst-4 | minor | The cross-process lock claim was tested only with threads in one process (a process-global mutex survived); readers without the shared lock were caught only by T19, and only 4 runs in 5 | L10 re-runs the test binary as 4 child processes; L8 adds a reader racing the writers (5/5) |
+| R2-E32-Tst-5 | minor | L9's "no allocation" label could not detect an allocation; a missing file and a zero-length final record were untested | L9 relabelled; L11 |
+| R2-E32-Tst-6 | minor | Site count off by one (the `#define` line counted); T14's loop unmentioned | Corrected |
+| R2-E32-Tst-7 | nit | T6's "Cyrillic e" was double-encoded mojibake, not U+0435; punctuation-only subject and budget overflow untested | Real `\xd0\xb5`; T26 |
+
+The reviewers' mutants were re-run against the fixed code: every eval and store mutant above is now caught, the
+unmutated controls pass, and a started record's `lineage` is now checked on read (a record naming another lineage is
+unreadable), which also catches their E51. Recorded as equivalent, not tested: `template_version` and the explicit
+subject/key/value compare (the rendered digest already covers them), a probe `pass` that is unset only when invalid or
+errored, and store mutants S12/S13 (no rollback after a failed write; header and payload as two writes under the
+lock), S15 (a reader creating an empty file) and S07b (committing the header's claimed size before the torn check),
+which need fault injection inside `WriteFile` or an allocation probe.
+
+**The E32 round-2 fixes are not yet re-red-teamed.**
+
 ## 8. Residuals
 
 - **External validity.** A suite passing says nothing about production tasks. Task authorship (who writes them, how
@@ -1355,11 +1417,34 @@ pointer never outlives the trial; the stream rule's "last recording" is the fail
   lesson lineage so a revoke can find and remove it — out of scope here.
 - **Tier 1's own multiplicity control (E32) is a family-level attempt counter, not a statistical correction.** It
   makes retries visible to the approver; it does not adjust any screen's α for having been tried more than once.
-  As built, it also does not: hash the graders (a `GraderFn` is code; the host names its version in `suite_version`,
-  on trust) or `extra_capabilities` (host capabilities, not design data); protect the log from a host that can write
-  its store (honest bookkeeping, not a ledger); stop a caller from inventing a new `lineage` to start a fresh family
-  (lineage is host-supplied until ADR-179's `source_span` shape exists to derive it from); or cover arm S, which is
-  not built (its pre-registration slot is `null`).
+  As built, it also does not:
+  - hash the graders (a `GraderFn` is code; the host names its version in `suite_version`, on trust), or
+    `extra_capabilities` (host capabilities, not design data);
+  - hash every prompt field: prompts are hashed as `message_to_json` renders them, which omits
+    `Message::attribution` and tool-call provenance (it only drives the informational `delivered` flag today);
+  - protect the log from a host that can write its store (honest bookkeeping, not a ledger — a planted
+    `completed` record can still pre-empt a real one);
+  - stop a host calling `run_follow_rate_screen`/`run_gross_harm_screen` directly — they stay public, and only
+    `run_tier1_screen` counts;
+  - stop a caller inventing a new `lineage` (host-supplied until ADR-179's `source_span` shape exists to derive it
+    from), or a candidate using a genuinely different word for the same subject (the key only folds case, spacing,
+    punctuation and non-ASCII lookalikes, which it refuses);
+  - bound the log it reads: each attempt reads its family's whole log twice (a family is a handful of ~340-run
+    attempts, so this is small in practice, but it is not capped);
+  - cover arm S, which is not built (its pre-registration slot is `null`).
+  `rendered_lesson_digest` (and so `PromotionAck`, E31) writes salience to six decimals; E32 compares and records
+  salience exactly on its own, but the ack digest is unchanged.
+- **`rt::FileAppendLogStore` concurrency (fixed in the E32 red team):** appends now hold an exclusive OS file lock
+  (`LockFileEx`/`flock`) and readers a shared one (tested across real child processes, L10), and a torn tail is cut
+  before the next append — after the cut bytes are copied to a `.quarantine-*` sidecar, never destroyed. Not fsync'd
+  (a power loss can drop records the OS had not flushed); `flock` is advisory and unreliable on some network
+  filesystems, so a log shared across hosts over NFS is not protected. **No per-record checksum**: a corrupted length
+  header in the middle of the file is indistinguishable from a torn tail, so the records after it disappear from
+  readers (they survive in the sidecar once the next append runs). For E32 that means disk corruption can make a
+  family's count drop — the same class as a host that can write the store, and outside what an append log without
+  checksums can detect. A checksummed record format is the follow-on.
+- **E32's lineage view depends on an honest `lineage`.** It closes the reworded-subject dodge only because lineage is
+  host-supplied; a host that mints a fresh lineage per retry defeats it (disclosed above).
 - **Suite and candidate roles** are separated by convention on a single-host deployment; a compromised host
   defeats both. The ledger's tamper-evidence is a hash chain, not authentication.
 - **No process-level network confinement** of the trial process (only host-authored stubs and the pipeline gate);
@@ -1438,7 +1523,7 @@ pointer never outlives the trial; the stream rule's "last recording" is the fail
   an HTTP header strictly inside the real client's own implementation). **The §3.0 item 3 gross-harm regression
   screen is now built too** (`eval_gross_harm_screen.hpp`, a further separate PR; its round 1 found and fixed four
   MAJOR defects, some shared with the follow-rate screen — see the status header and §7). **Tier-1 pre-registration and attempt accounting (E32) is built too** (`eval_tier1_screen.hpp`, a
-  further PR, not yet red-teamed; §3.0). **Still unbuilt**: the baseline canary; per-task variance and the task-level CI
+  further PR, red-teamed once, round-1 fixes not yet re-red-teamed; §3.0, §7). **Still unbuilt**: the baseline canary; per-task variance and the task-level CI
   (Tier 2, §3.6); parametrised task generators; the `SlotTable`/steering-manifest arm S and its permutation statistic over real tool-call
   arguments (§3.7, E29); `EvalSuite`/`EvalRun`/`PromotionEvidence`, the look ledger and family/shard bookkeeping
   (§3.3); the kill switch and the promotion-write digest re-check's remaining wiring (§3.0 item 5); the
@@ -1568,7 +1653,7 @@ pointer never outlives the trial; the stream rule's "last recording" is the fail
   **multi-slot, multi-step, free-text, between-common-value and single-task steering is weakly or not covered**
   (§3.7) — and whether one-shard-per-family supply is workable in practice.
 - **Names needing `tools/naming_lint.py`:** `EvalSuite`, `EvalRun`, `PromotionEvidence`, `LookLedger`,
-  `ScreenResult`, `SlotTable` (round 4: the first list omitted the last three; round 2 red-team of the
+  `ScreenResult` (built as `Tier1ScreenResult`, with its own `ae-naming-lint: allow`), `SlotTable` (round 4: the first list omitted the last three; round 2 red-team of the
   trial-running slice removed `EvalStore` from this line — `eval_store.hpp` already carries its own
   `ae-naming-lint: allow` comment, the same resolution every other type in this slice uses).
   `EvaluationVerdict` is taken by the reflection loop and must not be reused.

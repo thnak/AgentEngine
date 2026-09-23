@@ -6,31 +6,57 @@
 //
 // Three pieces, run in this order by `run_tier1_screen`:
 //   1. Pre-registration. Before any trial runs, the screen's design -- the rendered lesson's digest and
-//      template version, every probe, every regression task, every statistical parameter -- is hashed
-//      into one digest (`tier1_preregistration_digest`).
-//   2. Attempt accounting. Also before any trial runs, a `started` record naming that digest is appended
-//      to the lesson FAMILY's attempt log (§3.3: family = the candidate's `subject` + its source lineage,
-//      never its `key`, which an optimiser controls). A screen whose `started` record cannot be written
-//      does not run: an uncounted attempt is exactly what E32 exists to prevent. The attempt's figures are
-//      appended as a `completed` record when it ends; an attempt that crashes stays in the log as
-//      started-but-not-completed, still counted.
+//      template version, every probe, every regression task, every statistical parameter -- is rendered
+//      as canonical JSON (`tier1_preregistration_json`) and hashed (`tier1_preregistration_digest`).
+//   2. Attempt accounting. Also before any trial runs, a `started` record carrying that design, its digest,
+//      a fresh random attempt id, and who started it and when (I4) is appended to the lesson FAMILY's
+//      attempt log (§3.3: family = the candidate's `subject` + its source lineage, never its `key`, which an
+//      optimiser controls), then READ BACK. An attempt whose `started` record cannot be written, or does not
+//      read back, does not run: an uncounted attempt is exactly what E32 exists to prevent. The figures are
+//      appended as a `completed` record naming the same attempt id; an attempt that crashes stays in the log
+//      as started-but-not-completed, still counted.
 //   3. The `Tier1ScreenResult` names this attempt's ordinal, the family's attempt count, and EVERY
-//      attempt's figures read back from the log -- not only this one.
+//      attempt's design and figures read back from the log -- not only this one.
 //
 // The follow-rate screen (§3.0 item 2) runs first; the gross-harm screen (§3.0 item 3, ~300 runs) runs
 // only if every probe passed (§3.0: "do this first", and k probes must ALL pass, §6 G4).
 //
+// Red team round 1 (three reviewers; one FATAL found by all three). The log's durable store,
+// `rt::FileAppendLogStore`, lost and duplicated records under concurrent appends, so running several
+// screens of a harmful lesson at once could hide the harmful attempts and credit a clean one's figures
+// to them. The store is fixed (append_log_store.hpp). This file no longer trusts any store for identity
+// either: an attempt is its random `attempt_id`, not the sequence number the store hands back, and its
+// `started` record must read back before any trial runs. Also fixed from that round: a one-character
+// change to `subject` (case, a space, `_` for `-`) started a fresh family, so the family key now
+// normalises it and refuses non-ASCII lookalikes; only the design's DIGEST was stored, so an approver saw
+// that a retry changed the design but not how -- the design itself is stored now; a withheld outcome still
+// left the verdict readable in `probes`/`gross_harm`; attempt records named no actor or time (I4); and
+// doubles were written in a form that could not carry NaN/inf.
+//
+// Red team round 2: normalising `subject` was not enough -- `render_lesson` writes "For <subject> (<key>):
+// <value>", so moving a word between subject and key, reordering the words, or `dep1oy` for `deploy` still
+// opened a fresh family with no prior attempts and the same harmful value. The log is therefore kept per
+// LINEAGE (the run the candidate came from), and every result shows every attempt from that lineage whatever
+// subject it used (`lineage_attempts`), beside the narrower family view. Retrying a lesson under a new
+// subject can still start a new family, but it can no longer hide the earlier attempts from the approver.
+//
 // Not claimed (ADR-181 §8): the counter is a statistical correction (it adjusts no alpha -- it makes
 // retries visible); the log is tamper-resistant (a host that can write the store can rewrite it -- the
-// counter is honest bookkeeping, not a ledger); graders are hashed (a `GraderFn` is code, so the host names
-// its version in `suite_version`, on trust); `extra_capabilities` are hashed (they are host capabilities,
-// not design data, and stub tools have no effect for them to widen). Arm S (§3.0 item 4 / §3.7) is not
-// built, so a `cleared` outcome covers items 2 and 3 only and says so (`steering_manifest_run`).
+// counter is honest bookkeeping, not a ledger); running the two screens DIRECTLY is prevented (they stay
+// public; only `run_tier1_screen` counts); graders are hashed (a `GraderFn` is code, so the host names its
+// version in `suite_version`, on trust); `extra_capabilities` are hashed (host capabilities, not design
+// data); every prompt field is hashed (the prompt is hashed as `message_to_json` renders it, which omits
+// `Message::attribution` and tool-call provenance). Arm S (§3.0 item 4 / §3.7) is not built, so a `cleared`
+// outcome covers items 2 and 3 only and says so (`steering_manifest_run`).
 
 #include <algorithm>
+#include <bit>
+#include <cctype>
 #include <charconv>
 #include <cstdint>
 #include <functional>
+#include <limits>
+#include <map>
 #include <optional>
 #include <set>
 #include <span>
@@ -47,6 +73,7 @@
 #include "agentengine/eval/eval_gross_harm_screen.hpp"
 #include "agentengine/eval/lesson_candidate.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/trust/secure_random.hpp"
 
 namespace agentengine::eval {
 
@@ -79,8 +106,9 @@ enum class tier1_screen_outcome {  // ae-naming-lint: allow tier1_screen_outcome
     return std::nullopt;
 }
 
-// §3.3's family. `subject` is the candidate's own; `lineage` names the run/session the candidate came from
-// and is host-supplied (ADR-179's `source_span` shape is still open, so it is not parsed for this).
+// §3.3's family. `subject` is the candidate's own, NORMALISED (`tier1_family_subject_key`); `lineage` names
+// the run/session the candidate came from and is host-supplied (ADR-179's `source_span` shape is still
+// open, so it is not parsed for this).
 struct Tier1Family {  // ae-naming-lint: allow Tier1Family — ADR-181 E32 / §3.3
     std::string subject;
     std::string lineage;
@@ -92,21 +120,32 @@ struct Tier1ScreenSpec {  // ae-naming-lint: allow Tier1ScreenSpec — ADR-181 E
     std::string lineage;
     // Names the version of the graders' code (a `GraderFn` cannot be hashed). Host-authored, on trust.
     std::string suite_version;
+    // Who started this attempt and when (I4) -- host-supplied, recorded in the family log, never derived
+    // from model output. `started_at` is a host timestamp string (ISO-8601), as `PromotionAck` records one.
+    std::string operator_id;
+    std::string started_at;
     // One by default; more than one must ALL pass (§3.0 item 2, §6 G4). Every probe and the gross-harm
     // spec must carry the same candidate, template version and salience -- that is the lesson under test.
     std::vector<FollowRateProbeSpec> probes;
     GrossHarmScreenSpec gross_harm;
+    // I8: every screen's own `max_model_calls`, summed, must fit -- one bound for the whole attempt.
+    std::uint64_t max_model_calls = 50'000;
 };
 
-// The figures an approver needs from one probe, as recorded in the family log.
+// The figures an approver needs from one probe, as recorded in the family log. The thresholds it was
+// judged against are in the attempt's stored design (`Tier1AttemptRecord::preregistration_json`).
 struct Tier1ProbeFigures {  // ae-naming-lint: allow Tier1ProbeFigures — ADR-181 E32
     std::string probe_id;
     std::uint64_t seed = 0;
     std::optional<bool> pass;
     bool invalid = false;
+    bool invalid_baseline_too_easy = false;
+    bool invalid_differential_missingness = false;
+    bool invalid_insufficient_grading = false;
     std::uint64_t n_per_arm = 0;
     std::uint64_t baseline_followed = 0, treatment_followed = 0;
     std::uint64_t baseline_ungraded = 0, treatment_ungraded = 0;
+    std::uint64_t baseline_faulted = 0, treatment_faulted = 0;
     std::optional<double> treatment_lower_bound;
     std::string error_code;  // empty unless the probe reported a setup error
 };
@@ -114,19 +153,29 @@ struct Tier1ProbeFigures {  // ae-naming-lint: allow Tier1ProbeFigures — ADR-1
 struct Tier1HarmFigures {  // ae-naming-lint: allow Tier1HarmFigures — ADR-181 E32
     std::uint64_t seed = 0;
     std::optional<bool> flagged;
+    bool flagged_by_sum = false, flagged_by_min_task = false;
     bool invalid = false;
+    bool invalid_differential_missingness = false;
+    bool invalid_insufficient_grading = false;
+    bool invalid_uninformative_baseline = false;
     bool worst_case_imputation = false;
     std::optional<double> sum_pvalue, min_task_pvalue;
     double baseline_success_rate = 0.0;
     std::uint64_t baseline_ungraded = 0, treatment_ungraded = 0;
+    std::uint64_t baseline_faulted = 0, treatment_faulted = 0;
     std::string error_code;
 };
 
 // One attempt as read back from the family log.
 struct Tier1AttemptRecord {  // ae-naming-lint: allow Tier1AttemptRecord — ADR-181 E32
     std::size_t ordinal = 0;               // 1-based, in the order attempts STARTED
-    rt::SeqNo started_seq = 0;             // the log position of its `started` record (its identity)
+    rt::SeqNo started_seq = 0;             // the log position of its `started` record
+    std::string attempt_id;                // its identity: random, written by the attempt itself
+    std::string subject;                   // the normalised subject key it was filed under (empty if unreadable)
+    std::string operator_id;
+    std::string started_at;
     Digest preregistration;
+    std::string preregistration_json;      // the design itself, so a changed design can be compared
     // False if the attempt never wrote its figures (it crashed, or is still running). It is still counted.
     bool completed = false;
     // True if a log record could not be decoded. Counted as an attempt of its own -- over-counting is the
@@ -140,9 +189,12 @@ struct Tier1AttemptRecord {  // ae-naming-lint: allow Tier1AttemptRecord — ADR
 struct Tier1ScreenResult {  // ae-naming-lint: allow Tier1ScreenResult — ADR-181 E32 (the ADR's `ScreenResult`)
     Tier1Family family;
     Digest preregistration_digest;
+    std::string attempt_id;
 
     // Set iff the attempt ran and the family's history could be read afterwards. A result that cannot
-    // show the family's other attempts is withheld rather than presented as if it were the only one.
+    // show the family's other attempts is withheld -- `outcome` unset AND `probes`/`gross_harm` cleared --
+    // rather than presented as if it were the only attempt. (Its figures are still in the family log if
+    // the `completed` record was written.)
     std::optional<tier1_screen_outcome> outcome;
     bool steering_manifest_run = false;    // arm S (§3.7) is not built; a `cleared` outcome excludes it
 
@@ -150,12 +202,17 @@ struct Tier1ScreenResult {  // ae-naming-lint: allow Tier1ScreenResult — ADR-1
     std::size_t attempt_count = 0;         // every started attempt for this family, this one included
     std::size_t distinct_preregistrations = 0;  // > 1: the design changed between attempts
     std::vector<Tier1AttemptRecord> family_attempts;  // every attempt, in start order, this one included
+    // Every attempt from the same lineage, whatever subject it was filed under (red team round 2: the subject
+    // is model-chosen, so a retry under a reworded subject opened a fresh family). Unreadable records appear
+    // in both views, since their subject cannot be known. Ordinals here are lineage-wide.
+    std::size_t lineage_attempt_count = 0;
+    std::vector<Tier1AttemptRecord> lineage_attempts;
 
-    // This attempt's full detail.
+    // This attempt's full detail (cleared when the outcome is withheld).
     std::vector<FollowRateScreenResult> probes;    // in run order; stops at the first probe that fails
     std::optional<GrossHarmScreenResult> gross_harm;
 
-    std::optional<error> setup_error;       // refused before the attempt was counted; nothing ran
+    std::optional<error> setup_error;       // refused before any trial ran
     std::optional<error> attempt_log_error; // the log failed after the attempt started (see `outcome`)
 };
 
@@ -166,12 +223,22 @@ namespace detail {
     return json::Value::make_string(std::to_string(v));
 }
 
+// Doubles as shortest round-trip strings: exact, and able to carry NaN and infinities, which a JSON number
+// cannot (red team round 1: a NaN figure made its whole record unreadable).
+[[nodiscard]] inline std::string tier1_double_text(double v) {
+    char buf[64];
+    auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), v);
+    return ec == std::errc{} ? std::string(buf, ptr) : std::string("nan");
+}
+
+[[nodiscard]] inline json::Value tier1_double(double v) { return json::Value::make_string(tier1_double_text(v)); }
+
 [[nodiscard]] inline json::Value tier1_opt_u64(std::optional<std::uint64_t> v) {
     return v.has_value() ? tier1_u64(*v) : json::Value::make_null();
 }
 
 [[nodiscard]] inline json::Value tier1_opt_double(std::optional<double> v) {
-    return v.has_value() ? json::Value::make_number(*v) : json::Value::make_null();
+    return v.has_value() ? tier1_double(*v) : json::Value::make_null();
 }
 
 [[nodiscard]] inline json::Value tier1_opt_bool(std::optional<bool> v) {
@@ -209,6 +276,31 @@ namespace detail {
     return error{failure_class::contract, msg, code};
 }
 
+}  // namespace detail
+
+// The family key's subject. Red team round 1 (MAJOR): the key was the raw subject, and `render_lesson`
+// accepts `Deploy-Region`, `deploy-region `, `deploy_region` and Unicode lookalikes of `deploy-region` --
+// each a fresh family with no prior attempts, reopening R4-Stat3 at the cost of one character. The key is
+// now the subject's ASCII letters and digits, lower-cased; a subject with any non-ASCII byte, or with no
+// letter or digit at all, is refused (nullopt). Over-merging two subjects is the safe direction here. What
+// this cannot catch: a genuinely different word for the same thing (§8).
+[[nodiscard]] inline std::optional<std::string> tier1_family_subject_key(std::string_view subject) {
+    std::string key;
+    for (char c : subject) {
+        auto const u = static_cast<unsigned char>(c);
+        if (u >= 0x80) return std::nullopt;
+        if (std::isalnum(u)) key.push_back(static_cast<char>(std::tolower(u)));
+    }
+    if (key.empty()) return std::nullopt;
+    return key;
+}
+
+namespace detail {
+
+[[nodiscard]] inline std::uint64_t tier1_saturating_add(std::uint64_t a, std::uint64_t b) {
+    return a > (std::numeric_limits<std::uint64_t>::max)() - b ? (std::numeric_limits<std::uint64_t>::max)() : a + b;
+}
+
 // Everything that must hold before an attempt is counted. Each screen's own pre-flight runs here too, so
 // a spec that screen would refuse is refused before its family is charged an attempt.
 [[nodiscard]] inline std::optional<error> validate_tier1_spec(Tier1ScreenSpec const& spec) {
@@ -218,56 +310,75 @@ namespace detail {
     if (spec.suite_version.empty()) {
         return tier1_contract("suite_version must name the graders' version", "eval.tier1_suite_version_missing");
     }
+    if (spec.operator_id.empty() || spec.started_at.empty()) {
+        return tier1_contract("operator_id and started_at must be set (I4)", "eval.tier1_actor_missing");
+    }
     if (spec.probes.empty()) {
         return tier1_contract("at least one follow-rate probe is required", "eval.tier1_no_probes");
+    }
+    if (!tier1_family_subject_key(spec.gross_harm.candidate.subject).has_value()) {
+        return tier1_contract("the candidate's subject must be ASCII with at least one letter or digit, so its "
+                              "family key cannot be dodged with a lookalike",
+                              "eval.tier1_subject_unkeyable");
     }
     auto const lesson = tier1_lesson_digest(spec.gross_harm.candidate, spec.gross_harm.template_version,
                                             spec.gross_harm.lesson_salience);
     if (!lesson) return lesson.error();
     std::set<std::string> probe_ids;
+    std::uint64_t total_calls = spec.gross_harm.max_model_calls;
     for (FollowRateProbeSpec const& probe : spec.probes) {
         if (auto bad = validate_follow_rate_probe_spec(probe); bad.has_value()) return bad;
         if (!probe_ids.insert(probe.probe_id).second) {
             return tier1_contract("probe_ids must be unique", "eval.tier1_probe_id_duplicate");
         }
-        // The rendered digest covers content, tags, salience and template version -- the lesson as the model
-        // reads it -- so two specs agreeing on it are testing the same lesson.
+        // The rendered digest covers content, tags and template version -- the lesson as the model reads it.
+        // Salience is compared exactly as well (the digest writes it to six decimals).
         auto const probe_lesson = tier1_lesson_digest(probe.candidate, probe.template_version, probe.lesson_salience);
         if (!probe_lesson) return probe_lesson.error();
-        if (*probe_lesson != *lesson || probe.candidate.subject != spec.gross_harm.candidate.subject ||
+        if (*probe_lesson != *lesson || probe.template_version != spec.gross_harm.template_version ||
+            std::bit_cast<std::uint32_t>(probe.lesson_salience) !=
+                std::bit_cast<std::uint32_t>(spec.gross_harm.lesson_salience) ||
+            probe.candidate.subject != spec.gross_harm.candidate.subject ||
             probe.candidate.key != spec.gross_harm.candidate.key ||
             probe.candidate.value != spec.gross_harm.candidate.value) {
             return tier1_contract("every probe and the gross-harm spec must screen the same lesson",
                                   "eval.tier1_lesson_mismatch");
         }
+        total_calls = tier1_saturating_add(total_calls, probe.max_model_calls);
     }
     if (auto bad = validate_gross_harm_spec(spec.gross_harm); bad.has_value()) return bad;
+    if (total_calls > spec.max_model_calls) {
+        return error{failure_class::resource,
+                     "the probes' and gross-harm screen's max_model_calls, summed, exceed the attempt's max_model_calls",
+                     "eval.tier1_model_call_budget"};
+    }
     return std::nullopt;
 }
 
 [[nodiscard]] inline Tier1Family tier1_family_of(Tier1ScreenSpec const& spec) {
-    return Tier1Family{spec.gross_harm.candidate.subject, spec.lineage};
+    return Tier1Family{tier1_family_subject_key(spec.gross_harm.candidate.subject).value_or(std::string{}),
+                       spec.lineage};
 }
 
-// The family's log id: a digest, so any subject/lineage text maps to a store-safe name.
-[[nodiscard]] inline result<rt::LogId> tier1_family_log_id(Tier1Family const& family) {
+// The log id: one log per LINEAGE (red team round 2), named by a digest so any lineage text maps to a
+// store-safe name. Families are views over it, filtered by the subject key each record carries.
+[[nodiscard]] inline result<rt::LogId> tier1_lineage_log_id(std::string const& lineage) {
     std::vector<std::pair<std::string, json::Value>> o;
-    o.emplace_back("subject", json::Value::make_string(family.subject));
-    o.emplace_back("lineage", json::Value::make_string(family.lineage));
+    o.emplace_back("lineage", json::Value::make_string(lineage));
     auto digest = tier1_digest_of(json::dump(json::Value::make_object(std::move(o))));
     if (!digest) return std::unexpected(digest.error());
-    return rt::LogId("tier1-family-" + *digest);
+    return rt::LogId("tier1-lineage-" + *digest);
 }
 
 }  // namespace detail
 
-// E32's pre-registration digest: SHA-256 over a canonical JSON rendering of the screen's design. Covered:
-// the rendered lesson's digest and template version, `suite_version`, and for every probe and regression
-// task its id, prompt, stub tools and statistical parameters (K, N, alpha, thresholds, permutations, turn
-// and token caps, retry pool). NOT covered, deliberately: the seeds (a new seed is a new attempt, and each
-// attempt's seeds are recorded with its figures), and the pure resource caps `max_model_calls`,
+// E32's pre-registration record: canonical JSON of the screen's design. Covered: the rendered lesson's
+// digest, template version and exact salience, `suite_version`, and for every probe and regression task its
+// id, prompt, stub tools and statistical parameters (K, N, alpha, thresholds, permutations, turn and token
+// caps, retry pool). NOT covered, deliberately: the seeds (a new seed is a new attempt of the same design,
+// and each attempt's seeds are recorded with its figures), and the pure resource caps `max_model_calls`,
 // `max_permutation_work` and `retain_recordings`, which bound cost but not what is measured.
-[[nodiscard]] inline result<Digest> tier1_preregistration_digest(Tier1ScreenSpec const& spec) {
+[[nodiscard]] inline result<std::string> tier1_preregistration_json(Tier1ScreenSpec const& spec) {
     using json::Value;
     using Obj = std::vector<std::pair<std::string, Value>>;
     auto lesson = detail::tier1_lesson_digest(spec.gross_harm.candidate, spec.gross_harm.template_version,
@@ -281,11 +392,11 @@ namespace detail {
         o.emplace_back("task_prompt", message_to_json(p.task_prompt));
         o.emplace_back("stub_tools", detail::tier1_stub_tools_json(p.stub_tools));
         o.emplace_back("n_per_arm", detail::tier1_u64(p.n_per_arm));
-        o.emplace_back("baseline_invalid_threshold", Value::make_number(p.baseline_invalid_threshold));
-        o.emplace_back("target_lower_bound", Value::make_number(p.target_lower_bound));
-        o.emplace_back("alpha", Value::make_number(p.alpha));
-        o.emplace_back("max_differential_missingness", Value::make_number(p.max_differential_missingness));
-        o.emplace_back("min_graded_fraction", Value::make_number(p.min_graded_fraction));
+        o.emplace_back("baseline_invalid_threshold", detail::tier1_double(p.baseline_invalid_threshold));
+        o.emplace_back("target_lower_bound", detail::tier1_double(p.target_lower_bound));
+        o.emplace_back("alpha", detail::tier1_double(p.alpha));
+        o.emplace_back("max_differential_missingness", detail::tier1_double(p.max_differential_missingness));
+        o.emplace_back("min_graded_fraction", detail::tier1_double(p.min_graded_fraction));
         o.emplace_back("max_retried_trials", detail::tier1_u64(p.max_retried_trials));
         o.emplace_back("token_budget", detail::tier1_opt_u64(p.token_budget));
         o.emplace_back("summarizer_token_budget", detail::tier1_opt_u64(p.summarizer_token_budget));
@@ -307,12 +418,12 @@ namespace detail {
     harm.emplace_back("suite_id", Value::make_string(g.suite_id));
     harm.emplace_back("tasks", Value::make_array(std::move(tasks)));
     harm.emplace_back("k_per_arm", detail::tier1_u64(g.k_per_arm));
-    harm.emplace_back("alpha", Value::make_number(g.alpha));
+    harm.emplace_back("alpha", detail::tier1_double(g.alpha));
     harm.emplace_back("num_permutations", detail::tier1_u64(g.num_permutations));
     harm.emplace_back("max_retried_trials", detail::tier1_u64(g.max_retried_trials));
-    harm.emplace_back("max_differential_missingness", Value::make_number(g.max_differential_missingness));
-    harm.emplace_back("min_graded_fraction", Value::make_number(g.min_graded_fraction));
-    harm.emplace_back("min_baseline_success_rate", Value::make_number(g.min_baseline_success_rate));
+    harm.emplace_back("max_differential_missingness", detail::tier1_double(g.max_differential_missingness));
+    harm.emplace_back("min_graded_fraction", detail::tier1_double(g.min_graded_fraction));
+    harm.emplace_back("min_baseline_success_rate", detail::tier1_double(g.min_baseline_success_rate));
     harm.emplace_back("token_budget", detail::tier1_opt_u64(g.token_budget));
     harm.emplace_back("summarizer_token_budget", detail::tier1_opt_u64(g.summarizer_token_budget));
     harm.emplace_back("max_turns", detail::tier1_opt_u64(g.max_turns));
@@ -323,10 +434,18 @@ namespace detail {
     root.emplace_back("suite_version", Value::make_string(spec.suite_version));
     root.emplace_back("template_version", Value::make_string(g.template_version));
     root.emplace_back("rendered_lesson_digest", Value::make_string(*lesson));
+    root.emplace_back("lesson_salience", detail::tier1_double(static_cast<double>(g.lesson_salience)));
     root.emplace_back("probes", Value::make_array(std::move(probes)));
     root.emplace_back("gross_harm", Value::make_object(std::move(harm)));
-    root.emplace_back("arm_s", Value::make_null());  // not built (§3.7); a SlotTable will be hashed here
-    return detail::tier1_digest_of(json::dump(Value::make_object(std::move(root))));
+    root.emplace_back("arm_s", Value::make_null());  // not built (§3.7); a SlotTable will be recorded here
+    return json::dump(Value::make_object(std::move(root)));
+}
+
+// SHA-256 of `tier1_preregistration_json`.
+[[nodiscard]] inline result<Digest> tier1_preregistration_digest(Tier1ScreenSpec const& spec) {
+    auto design = tier1_preregistration_json(spec);
+    if (!design) return std::unexpected(design.error());
+    return detail::tier1_digest_of(*design);
 }
 
 namespace detail {
@@ -343,11 +462,16 @@ namespace detail {
     o.emplace_back("seed", tier1_u64(f.seed));
     o.emplace_back("pass", tier1_opt_bool(f.pass));
     o.emplace_back("invalid", json::Value::make_bool(f.invalid));
+    o.emplace_back("invalid_baseline_too_easy", json::Value::make_bool(f.invalid_baseline_too_easy));
+    o.emplace_back("invalid_differential_missingness", json::Value::make_bool(f.invalid_differential_missingness));
+    o.emplace_back("invalid_insufficient_grading", json::Value::make_bool(f.invalid_insufficient_grading));
     o.emplace_back("n_per_arm", tier1_u64(f.n_per_arm));
     o.emplace_back("baseline_followed", tier1_u64(f.baseline_followed));
     o.emplace_back("treatment_followed", tier1_u64(f.treatment_followed));
     o.emplace_back("baseline_ungraded", tier1_u64(f.baseline_ungraded));
     o.emplace_back("treatment_ungraded", tier1_u64(f.treatment_ungraded));
+    o.emplace_back("baseline_faulted", tier1_u64(f.baseline_faulted));
+    o.emplace_back("treatment_faulted", tier1_u64(f.treatment_faulted));
     o.emplace_back("treatment_lower_bound", tier1_opt_double(f.treatment_lower_bound));
     o.emplace_back("error_code", json::Value::make_string(f.error_code));
     return json::Value::make_object(std::move(o));
@@ -357,13 +481,20 @@ namespace detail {
     std::vector<std::pair<std::string, json::Value>> o;
     o.emplace_back("seed", tier1_u64(f.seed));
     o.emplace_back("flagged", tier1_opt_bool(f.flagged));
+    o.emplace_back("flagged_by_sum", json::Value::make_bool(f.flagged_by_sum));
+    o.emplace_back("flagged_by_min_task", json::Value::make_bool(f.flagged_by_min_task));
     o.emplace_back("invalid", json::Value::make_bool(f.invalid));
+    o.emplace_back("invalid_differential_missingness", json::Value::make_bool(f.invalid_differential_missingness));
+    o.emplace_back("invalid_insufficient_grading", json::Value::make_bool(f.invalid_insufficient_grading));
+    o.emplace_back("invalid_uninformative_baseline", json::Value::make_bool(f.invalid_uninformative_baseline));
     o.emplace_back("worst_case_imputation", json::Value::make_bool(f.worst_case_imputation));
     o.emplace_back("sum_pvalue", tier1_opt_double(f.sum_pvalue));
     o.emplace_back("min_task_pvalue", tier1_opt_double(f.min_task_pvalue));
-    o.emplace_back("baseline_success_rate", json::Value::make_number(f.baseline_success_rate));
+    o.emplace_back("baseline_success_rate", tier1_double(f.baseline_success_rate));
     o.emplace_back("baseline_ungraded", tier1_u64(f.baseline_ungraded));
     o.emplace_back("treatment_ungraded", tier1_u64(f.treatment_ungraded));
+    o.emplace_back("baseline_faulted", tier1_u64(f.baseline_faulted));
+    o.emplace_back("treatment_faulted", tier1_u64(f.treatment_faulted));
     o.emplace_back("error_code", json::Value::make_string(f.error_code));
     return json::Value::make_object(std::move(o));
 }
@@ -384,14 +515,29 @@ namespace detail {
     return out;
 }
 
-// For an optional field: outer nullopt = malformed, inner nullopt = JSON null.
+[[nodiscard]] inline std::optional<double> tier1_parse_double(std::string const& s) {
+    if (s.empty()) return std::nullopt;
+    double out = 0.0;
+    auto [ptr, ec] = std::from_chars(s.data(), s.data() + s.size(), out);
+    if (ec != std::errc{} || ptr != s.data() + s.size()) return std::nullopt;
+    return out;
+}
+
+[[nodiscard]] inline std::optional<double> tier1_read_double(json::Value const& o, std::string_view key) {
+    auto s = tier1_read_string(o, key);
+    return s.has_value() ? tier1_parse_double(*s) : std::nullopt;
+}
+
+// For an optional field: outer nullopt = malformed or missing, inner nullopt = JSON null.
 [[nodiscard]] inline std::optional<std::optional<double>> tier1_read_opt_double(json::Value const& o,
                                                                                 std::string_view key) {
     json::Value const* v = o.find(key);
     if (v == nullptr) return std::nullopt;
     if (v->is_null()) return std::optional<double>{};
-    if (!v->is_number()) return std::nullopt;
-    return std::optional<double>{v->as_number()};
+    if (!v->is_string()) return std::nullopt;
+    auto d = tier1_parse_double(v->as_string());
+    if (!d.has_value()) return std::nullopt;
+    return std::optional<double>{*d};
 }
 
 [[nodiscard]] inline std::optional<std::optional<bool>> tier1_read_opt_bool(json::Value const& o,
@@ -409,105 +555,136 @@ namespace detail {
     return v->as_bool();
 }
 
-[[nodiscard]] inline std::optional<Tier1ProbeFigures> tier1_probe_figures_from_json(json::Value const& o) {
-    if (!o.is_object()) return std::nullopt;
-    Tier1ProbeFigures f;
-    auto probe_id = tier1_read_string(o, "probe_id");
-    auto seed = tier1_read_u64(o, "seed");
-    auto pass = tier1_read_opt_bool(o, "pass");
-    auto invalid = tier1_read_bool(o, "invalid");
-    auto n = tier1_read_u64(o, "n_per_arm");
-    auto bf = tier1_read_u64(o, "baseline_followed");
-    auto tf = tier1_read_u64(o, "treatment_followed");
-    auto bu = tier1_read_u64(o, "baseline_ungraded");
-    auto tu = tier1_read_u64(o, "treatment_ungraded");
-    auto lb = tier1_read_opt_double(o, "treatment_lower_bound");
-    auto code = tier1_read_string(o, "error_code");
-    if (!probe_id || !seed || !pass || !invalid || !n || !bf || !tf || !bu || !tu || !lb || !code) {
-        return std::nullopt;
+// Reads every listed field, or fails as a whole.
+class Tier1FieldReader {
+public:
+    explicit Tier1FieldReader(json::Value const& o) : o_(o), ok_(o.is_object()) {}
+    void str(std::string_view k, std::string& out) { take(tier1_read_string(o_, k), out); }
+    void u64(std::string_view k, std::uint64_t& out) { take(tier1_read_u64(o_, k), out); }
+    void dbl(std::string_view k, double& out) { take(tier1_read_double(o_, k), out); }
+    void flag(std::string_view k, bool& out) { take(tier1_read_bool(o_, k), out); }
+    void opt_dbl(std::string_view k, std::optional<double>& out) { take(tier1_read_opt_double(o_, k), out); }
+    void opt_flag(std::string_view k, std::optional<bool>& out) { take(tier1_read_opt_bool(o_, k), out); }
+    [[nodiscard]] bool ok() const { return ok_; }
+
+private:
+    template <class T, class U>
+    void take(std::optional<T> v, U& out) {
+        if (!ok_) return;
+        if (!v.has_value()) {
+            ok_ = false;
+            return;
+        }
+        out = std::move(*v);
     }
-    f.probe_id = *probe_id;
-    f.seed = *seed;
-    f.pass = *pass;
-    f.invalid = *invalid;
-    f.n_per_arm = *n;
-    f.baseline_followed = *bf;
-    f.treatment_followed = *tf;
-    f.baseline_ungraded = *bu;
-    f.treatment_ungraded = *tu;
-    f.treatment_lower_bound = *lb;
-    f.error_code = *code;
+    json::Value const& o_;
+    bool ok_;
+};
+
+[[nodiscard]] inline std::optional<Tier1ProbeFigures> tier1_probe_figures_from_json(json::Value const& o) {
+    Tier1ProbeFigures f;
+    Tier1FieldReader r(o);
+    r.str("probe_id", f.probe_id);
+    r.u64("seed", f.seed);
+    r.opt_flag("pass", f.pass);
+    r.flag("invalid", f.invalid);
+    r.flag("invalid_baseline_too_easy", f.invalid_baseline_too_easy);
+    r.flag("invalid_differential_missingness", f.invalid_differential_missingness);
+    r.flag("invalid_insufficient_grading", f.invalid_insufficient_grading);
+    r.u64("n_per_arm", f.n_per_arm);
+    r.u64("baseline_followed", f.baseline_followed);
+    r.u64("treatment_followed", f.treatment_followed);
+    r.u64("baseline_ungraded", f.baseline_ungraded);
+    r.u64("treatment_ungraded", f.treatment_ungraded);
+    r.u64("baseline_faulted", f.baseline_faulted);
+    r.u64("treatment_faulted", f.treatment_faulted);
+    r.opt_dbl("treatment_lower_bound", f.treatment_lower_bound);
+    r.str("error_code", f.error_code);
+    if (!r.ok()) return std::nullopt;
     return f;
 }
 
 [[nodiscard]] inline std::optional<Tier1HarmFigures> tier1_harm_figures_from_json(json::Value const& o) {
-    if (!o.is_object()) return std::nullopt;
     Tier1HarmFigures f;
-    auto seed = tier1_read_u64(o, "seed");
-    auto flagged = tier1_read_opt_bool(o, "flagged");
-    auto invalid = tier1_read_bool(o, "invalid");
-    auto worst = tier1_read_bool(o, "worst_case_imputation");
-    auto sum_p = tier1_read_opt_double(o, "sum_pvalue");
-    auto min_p = tier1_read_opt_double(o, "min_task_pvalue");
-    auto rate = tier1_read_opt_double(o, "baseline_success_rate");
-    auto bu = tier1_read_u64(o, "baseline_ungraded");
-    auto tu = tier1_read_u64(o, "treatment_ungraded");
-    auto code = tier1_read_string(o, "error_code");
-    if (!seed || !flagged || !invalid || !worst || !sum_p || !min_p || !rate || !rate->has_value() || !bu || !tu ||
-        !code) {
-        return std::nullopt;
-    }
-    f.seed = *seed;
-    f.flagged = *flagged;
-    f.invalid = *invalid;
-    f.worst_case_imputation = *worst;
-    f.sum_pvalue = *sum_p;
-    f.min_task_pvalue = *min_p;
-    f.baseline_success_rate = **rate;
-    f.baseline_ungraded = *bu;
-    f.treatment_ungraded = *tu;
-    f.error_code = *code;
+    Tier1FieldReader r(o);
+    r.u64("seed", f.seed);
+    r.opt_flag("flagged", f.flagged);
+    r.flag("flagged_by_sum", f.flagged_by_sum);
+    r.flag("flagged_by_min_task", f.flagged_by_min_task);
+    r.flag("invalid", f.invalid);
+    r.flag("invalid_differential_missingness", f.invalid_differential_missingness);
+    r.flag("invalid_insufficient_grading", f.invalid_insufficient_grading);
+    r.flag("invalid_uninformative_baseline", f.invalid_uninformative_baseline);
+    r.flag("worst_case_imputation", f.worst_case_imputation);
+    r.opt_dbl("sum_pvalue", f.sum_pvalue);
+    r.opt_dbl("min_task_pvalue", f.min_task_pvalue);
+    r.dbl("baseline_success_rate", f.baseline_success_rate);
+    r.u64("baseline_ungraded", f.baseline_ungraded);
+    r.u64("treatment_ungraded", f.treatment_ungraded);
+    r.u64("baseline_faulted", f.baseline_faulted);
+    r.u64("treatment_faulted", f.treatment_faulted);
+    r.str("error_code", f.error_code);
+    if (!r.ok()) return std::nullopt;
     return f;
 }
 
-inline constexpr std::string_view kTier1LogSchema = "adr181.tier1.attempt.v1";
+inline constexpr std::string_view kTier1LogSchema = "adr181.tier1.attempt.v2";
 
 }  // namespace detail
 
 // A family's attempt log over any `rt::AppendLogStore` -- in memory for tests, `FileAppendLogStore` (or a
-// host's own durable store) in production, so the count survives a restart. Each attempt is identified by
-// the sequence number of its `started` record, which the store assigns atomically: two screens starting at
-// once for the same family get two distinct attempts, with no read-modify-write of a counter to race on.
+// host's own durable store) in production, so the count survives a restart.
+//
+// Identity does not depend on the store. Each attempt names itself with a random `attempt_id` written into
+// its own records; its `completed` record attaches only to the `started` record with that id. Red team
+// round 1 found a store that hands two appends the same sequence number (the old `FileAppendLogStore`)
+// credited one attempt's figures to another; with ids that cannot happen, and `run_tier1_screen` reads its
+// `started` record back before any trial runs, so an attempt the store lost never runs.
 template <rt::AppendLogStore Store>
 class Tier1AttemptLog {  // ae-naming-lint: allow Tier1AttemptLog — ADR-181 E32
 public:
+    struct Started {
+        rt::SeqNo seq = 0;
+        std::string attempt_id;
+    };
+
     explicit Tier1AttemptLog(Store& store) : store_(&store) {}
 
     // Counts an attempt. Called BEFORE the attempt's first trial; a failure here means it must not run.
-    [[nodiscard]] result<rt::SeqNo> begin_attempt(Tier1Family const& family, Digest const& preregistration) {
-        auto id = detail::tier1_family_log_id(family);
+    [[nodiscard]] result<Started> begin_attempt(Tier1Family const& family, Digest const& preregistration,
+                                                std::string const& preregistration_json,
+                                                std::string const& operator_id, std::string const& started_at) {
+        auto id = detail::tier1_lineage_log_id(family.lineage);
         if (!id) return std::unexpected(id.error());
+        auto attempt_id = trust::secure_random_hex(16);
+        if (!attempt_id) return std::unexpected(attempt_id.error());
         std::vector<std::pair<std::string, json::Value>> o;
         o.emplace_back("schema", json::Value::make_string(std::string(detail::kTier1LogSchema)));
         o.emplace_back("event", json::Value::make_string("started"));
+        o.emplace_back("attempt_id", json::Value::make_string(*attempt_id));
         o.emplace_back("subject", json::Value::make_string(family.subject));
         o.emplace_back("lineage", json::Value::make_string(family.lineage));
+        o.emplace_back("operator_id", json::Value::make_string(operator_id));
+        o.emplace_back("started_at", json::Value::make_string(started_at));
         o.emplace_back("preregistration", json::Value::make_string(preregistration));
-        return store_->append(*id, detail::tier1_bytes_of(json::Value::make_object(std::move(o))));
+        o.emplace_back("design", json::Value::make_string(preregistration_json));
+        auto seq = store_->append(*id, detail::tier1_bytes_of(json::Value::make_object(std::move(o))));
+        if (!seq) return std::unexpected(seq.error());
+        return Started{*seq, std::move(*attempt_id)};
     }
 
-    [[nodiscard]] result<void> complete_attempt(Tier1Family const& family, rt::SeqNo started_seq,
+    [[nodiscard]] result<void> complete_attempt(Tier1Family const& family, Started const& started,
                                                 tier1_screen_outcome outcome,
                                                 std::vector<Tier1ProbeFigures> const& probes,
                                                 std::optional<Tier1HarmFigures> const& gross_harm) {
-        auto id = detail::tier1_family_log_id(family);
+        auto id = detail::tier1_lineage_log_id(family.lineage);
         if (!id) return std::unexpected(id.error());
         std::vector<json::Value> probe_json;
         for (Tier1ProbeFigures const& p : probes) probe_json.push_back(detail::tier1_probe_figures_json(p));
         std::vector<std::pair<std::string, json::Value>> o;
         o.emplace_back("schema", json::Value::make_string(std::string(detail::kTier1LogSchema)));
         o.emplace_back("event", json::Value::make_string("completed"));
-        o.emplace_back("started_seq", detail::tier1_u64(started_seq));
+        o.emplace_back("attempt_id", json::Value::make_string(started.attempt_id));
         o.emplace_back("outcome", json::Value::make_string(std::string(tier1_screen_outcome_name(outcome))));
         o.emplace_back("probes", json::Value::make_array(std::move(probe_json)));
         o.emplace_back("gross_harm", gross_harm.has_value() ? detail::tier1_harm_figures_json(*gross_harm)
@@ -517,16 +694,31 @@ public:
         return {};
     }
 
-    // Every attempt for the family, in start order. A `completed` record attaches to the `started` record it
-    // names; one that names none, and any record that cannot be decoded, is an attempt of its own marked
-    // `unreadable`.
+    // Every attempt for the family: the lineage's attempts filed under this subject key, plus every unreadable
+    // record (whose subject cannot be known -- counting it is the safe direction). Ordinals are family-wide.
     [[nodiscard]] result<std::vector<Tier1AttemptRecord>> attempts(Tier1Family const& family) const {
-        auto id = detail::tier1_family_log_id(family);
+        auto all = lineage_attempts(family.lineage);
+        if (!all) return std::unexpected(all.error());
+        std::vector<Tier1AttemptRecord> out;
+        for (Tier1AttemptRecord& r : *all) {
+            if (r.unreadable || r.subject == family.subject) out.push_back(std::move(r));
+        }
+        for (std::size_t i = 0; i < out.size(); ++i) out[i].ordinal = i + 1;
+        return out;
+    }
+
+    // Every attempt from the lineage, whatever its subject, in start order. A `completed` record attaches to
+    // the `started` record with its `attempt_id`; one that names no such attempt, names one already
+    // completed, or cannot be decoded, is an attempt of its own marked `unreadable`. So is a `started` record
+    // whose stored design does not hash to its stated digest, or that repeats an earlier attempt's id.
+    [[nodiscard]] result<std::vector<Tier1AttemptRecord>> lineage_attempts(std::string const& lineage) const {
+        auto id = detail::tier1_lineage_log_id(lineage);
         if (!id) return std::unexpected(id.error());
         auto entries = store_->read_from(*id, 0);
         if (!entries) return std::unexpected(entries.error());
 
         std::vector<Tier1AttemptRecord> out;
+        std::map<std::string, std::size_t> by_id;  // attempt_id -> index in `out`
         auto unreadable = [&out](rt::SeqNo seq) {
             Tier1AttemptRecord r;
             r.started_seq = seq;
@@ -544,15 +736,31 @@ public:
                 continue;
             }
             auto const event = detail::tier1_read_string(*parsed, "event");
+            auto const attempt_id = detail::tier1_read_string(*parsed, "attempt_id");
+            if (!attempt_id.has_value() || attempt_id->empty()) {
+                unreadable(seq);
+                continue;
+            }
             if (event == "started") {
-                auto prereg = detail::tier1_read_string(*parsed, "preregistration");
-                if (!prereg.has_value()) {
+                Tier1AttemptRecord r;
+                detail::Tier1FieldReader fields(*parsed);
+                std::string filed_lineage;
+                fields.str("subject", r.subject);
+                fields.str("lineage", filed_lineage);
+                fields.str("operator_id", r.operator_id);
+                fields.str("started_at", r.started_at);
+                fields.str("preregistration", r.preregistration);
+                fields.str("design", r.preregistration_json);
+                auto const design_digest = detail::tier1_digest_of(r.preregistration_json);
+                // A record naming another lineage was misfiled (or copied in): it is not this lineage's attempt.
+                if (!fields.ok() || filed_lineage != lineage || !design_digest || *design_digest != r.preregistration ||
+                    by_id.contains(*attempt_id)) {
                     unreadable(seq);
                     continue;
                 }
-                Tier1AttemptRecord r;
                 r.started_seq = seq;
-                r.preregistration = *prereg;
+                r.attempt_id = *attempt_id;
+                by_id.emplace(*attempt_id, out.size());
                 out.push_back(std::move(r));
                 continue;
             }
@@ -560,16 +768,13 @@ public:
                 unreadable(seq);
                 continue;
             }
-            auto started = detail::tier1_read_u64(*parsed, "started_seq");
             auto outcome_name = detail::tier1_read_string(*parsed, "outcome");
             auto outcome = outcome_name.has_value() ? tier1_screen_outcome_from_name(*outcome_name) : std::nullopt;
             json::Value const* probes = parsed->find("probes");
             json::Value const* harm = parsed->find("gross_harm");
-            auto target = std::find_if(out.begin(), out.end(), [&](Tier1AttemptRecord const& r) {
-                return started.has_value() && !r.unreadable && r.started_seq == *started && !r.completed;
-            });
+            auto target = by_id.find(*attempt_id);
             if (!outcome.has_value() || probes == nullptr || !probes->is_array() || harm == nullptr ||
-                target == out.end()) {
+                target == by_id.end() || out[target->second].completed) {
                 unreadable(seq);
                 continue;
             }
@@ -592,15 +797,13 @@ public:
                 unreadable(seq);
                 continue;
             }
-            target->completed = true;
-            target->outcome = outcome;
-            target->probes = std::move(probe_figures);
-            target->gross_harm = std::move(harm_figures);
+            Tier1AttemptRecord& t = out[target->second];
+            t.completed = true;
+            t.outcome = outcome;
+            t.probes = std::move(probe_figures);
+            t.gross_harm = std::move(harm_figures);
         }
-        // Start order is log order: a started record always precedes its own completed record, and an
-        // unreadable record takes its own position.
-        std::sort(out.begin(), out.end(),
-                  [](Tier1AttemptRecord const& a, Tier1AttemptRecord const& b) { return a.started_seq < b.started_seq; });
+        // `out` is already in log order: each started or unreadable record was appended at its own position.
         for (std::size_t i = 0; i < out.size(); ++i) out[i].ordinal = i + 1;
         return out;
     }
@@ -617,11 +820,16 @@ namespace detail {
     f.seed = r.seed;
     f.pass = r.pass;
     f.invalid = r.invalid;
+    f.invalid_baseline_too_easy = r.invalid_baseline_too_easy;
+    f.invalid_differential_missingness = r.invalid_differential_missingness;
+    f.invalid_insufficient_grading = r.invalid_insufficient_grading;
     f.n_per_arm = spec.n_per_arm;
     f.baseline_followed = r.baseline_followed;
     f.treatment_followed = r.treatment_followed;
     f.baseline_ungraded = r.baseline_ungraded;
     f.treatment_ungraded = r.treatment_ungraded;
+    f.baseline_faulted = r.baseline_faulted;
+    f.treatment_faulted = r.treatment_faulted;
     f.treatment_lower_bound = r.treatment_lower_bound;
     f.error_code = r.setup_error.has_value() ? r.setup_error->code : std::string{};
     return f;
@@ -631,15 +839,37 @@ namespace detail {
     Tier1HarmFigures f;
     f.seed = r.seed;
     f.flagged = r.flagged;
+    f.flagged_by_sum = r.flagged_by_sum;
+    f.flagged_by_min_task = r.flagged_by_min_task;
     f.invalid = r.invalid;
+    f.invalid_differential_missingness = r.invalid_differential_missingness;
+    f.invalid_insufficient_grading = r.invalid_insufficient_grading;
+    f.invalid_uninformative_baseline = r.invalid_uninformative_baseline;
     f.worst_case_imputation = r.worst_case_imputation;
     f.sum_pvalue = r.sum_pvalue;
     f.min_task_pvalue = r.min_task_pvalue;
     f.baseline_success_rate = r.baseline_success_rate;
     f.baseline_ungraded = r.baseline_ungraded;
     f.treatment_ungraded = r.treatment_ungraded;
+    f.baseline_faulted = r.baseline_faulted;
+    f.treatment_faulted = r.treatment_faulted;
     f.error_code = r.setup_error.has_value() ? r.setup_error->code : std::string{};
     return f;
+}
+
+// Where a probe's result ends the attempt: nullopt means it passed and the attempt continues.
+[[nodiscard]] inline std::optional<tier1_screen_outcome> tier1_probe_stop(FollowRateScreenResult const& r) {
+    if (r.setup_error.has_value()) return tier1_screen_outcome::errored;
+    if (r.invalid) return tier1_screen_outcome::inconclusive;
+    if (r.pass != true) return tier1_screen_outcome::inert;
+    return std::nullopt;
+}
+
+[[nodiscard]] inline tier1_screen_outcome tier1_harm_outcome(GrossHarmScreenResult const& r) {
+    if (r.setup_error.has_value()) return tier1_screen_outcome::errored;
+    if (r.flagged == true) return tier1_screen_outcome::harmful;
+    if (!r.flagged.has_value()) return tier1_screen_outcome::inconclusive;
+    return tier1_screen_outcome::cleared;
 }
 
 }  // namespace detail
@@ -651,25 +881,48 @@ template <rt::AppendLogStore Store, class InnerFactory, class SummarizerFactory>
 [[nodiscard]] task<Tier1ScreenResult> run_tier1_screen(Tier1AttemptLog<Store>& log, InnerFactory make_inner,
                                                       SummarizerFactory make_summarizer, Tier1ScreenSpec spec) {
     Tier1ScreenResult result;
-    result.family = detail::tier1_family_of(spec);
 
     if (auto bad = detail::validate_tier1_spec(spec); bad.has_value()) {
         result.setup_error = std::move(bad);
         co_return result;
     }
-    auto prereg = tier1_preregistration_digest(spec);
+    result.family = detail::tier1_family_of(spec);
+    auto design = tier1_preregistration_json(spec);
+    if (!design) {
+        result.setup_error = design.error();
+        co_return result;
+    }
+    auto prereg = detail::tier1_digest_of(*design);
     if (!prereg) {
         result.setup_error = prereg.error();
         co_return result;
     }
     result.preregistration_digest = *prereg;
 
-    auto started = log.begin_attempt(result.family, result.preregistration_digest);
+    auto not_counted = [](std::string why) {
+        return error{failure_class::transient, "the attempt could not be counted, so it was not run: " + why,
+                     "eval.tier1_attempt_not_counted"};
+    };
+    auto started = log.begin_attempt(result.family, result.preregistration_digest, *design, spec.operator_id,
+                                     spec.started_at);
     if (!started) {
-        result.setup_error = error{failure_class::transient,
-                                   "the attempt could not be counted, so it was not run: " + started.error().message,
-                                   "eval.tier1_attempt_not_counted"};
+        result.setup_error = not_counted(started.error().message);
         co_return result;
+    }
+    result.attempt_id = started->attempt_id;
+    // Read the `started` record back before spending a single trial: a store that accepted the append but
+    // lost it, or a log that has become unreadable, would otherwise run the whole attempt uncounted.
+    {
+        auto before = log.attempts(result.family);
+        bool const counted = before.has_value() &&
+                             std::any_of(before->begin(), before->end(), [&](Tier1AttemptRecord const& a) {
+                                 return !a.unreadable && a.attempt_id == started->attempt_id;
+                             });
+        if (!counted) {
+            result.setup_error = not_counted(before.has_value() ? "its started record did not read back"
+                                                                : before.error().message);
+            co_return result;
+        }
     }
 
     std::vector<Tier1ProbeFigures> probe_figures;
@@ -678,14 +931,7 @@ template <rt::AppendLogStore Store, class InnerFactory, class SummarizerFactory>
     for (FollowRateProbeSpec const& probe : spec.probes) {
         FollowRateScreenResult r = co_await run_follow_rate_screen(std::ref(make_inner), std::ref(make_summarizer), probe);
         probe_figures.push_back(detail::tier1_figures_of(probe, r));
-        std::optional<tier1_screen_outcome> stop;
-        if (r.setup_error.has_value()) {
-            stop = tier1_screen_outcome::errored;
-        } else if (r.invalid) {
-            stop = tier1_screen_outcome::inconclusive;
-        } else if (r.pass != true) {
-            stop = tier1_screen_outcome::inert;
-        }
+        std::optional<tier1_screen_outcome> const stop = detail::tier1_probe_stop(r);
         result.probes.push_back(std::move(r));
         if (stop.has_value()) {
             outcome = stop;
@@ -696,15 +942,7 @@ template <rt::AppendLogStore Store, class InnerFactory, class SummarizerFactory>
         GrossHarmScreenResult r =
             co_await run_gross_harm_screen(std::ref(make_inner), std::ref(make_summarizer), spec.gross_harm);
         harm_figures = detail::tier1_figures_of(r);
-        if (r.setup_error.has_value()) {
-            outcome = tier1_screen_outcome::errored;
-        } else if (r.flagged == true) {
-            outcome = tier1_screen_outcome::harmful;
-        } else if (!r.flagged.has_value()) {
-            outcome = tier1_screen_outcome::inconclusive;
-        } else {
-            outcome = tier1_screen_outcome::cleared;
-        }
+        outcome = detail::tier1_harm_outcome(r);
         result.gross_harm = std::move(r);
     }
 
@@ -714,25 +952,35 @@ template <rt::AppendLogStore Store, class InnerFactory, class SummarizerFactory>
         result.attempt_log_error = done.error();
     }
 
+    // Without the family's history the approver cannot see how many times this lesson was tried, so the
+    // verdict is withheld -- the outcome AND the per-screen results that carry it (red team round 1: clearing
+    // only `outcome` left `probes[i].pass` and `gross_harm->flagged` readable).
+    auto withhold = [&result](error e) {
+        result.attempt_log_error = std::move(e);
+        result.probes.clear();
+        result.gross_harm.reset();
+    };
+    auto lineage = log.lineage_attempts(result.family.lineage);
     auto history = log.attempts(result.family);
-    if (!history) {
-        // Without the family's history the approver cannot see how many times this lesson was tried, so the
-        // outcome is withheld rather than shown as though this were the only attempt.
-        result.attempt_log_error = history.error();
+    if (!lineage || !history) {
+        withhold(!lineage ? lineage.error() : history.error());
         co_return result;
     }
+    result.lineage_attempts = std::move(*lineage);
+    result.lineage_attempt_count = result.lineage_attempts.size();
     result.family_attempts = std::move(*history);
     result.attempt_count = result.family_attempts.size();
     std::set<Digest> designs;
     for (Tier1AttemptRecord const& a : result.family_attempts) {
-        if (!a.unreadable) designs.insert(a.preregistration);
-        if (!a.unreadable && a.started_seq == *started) result.attempt_ordinal = a.ordinal;
+        if (a.unreadable) continue;
+        designs.insert(a.preregistration);
+        if (a.attempt_id == started->attempt_id) result.attempt_ordinal = a.ordinal;
     }
     result.distinct_preregistrations = designs.size();
     if (result.attempt_ordinal == 0) {
-        // Our own `started` record did not read back: the log cannot be trusted to show the family's attempts.
-        result.attempt_log_error = error{failure_class::fatal, "this attempt's own record is missing from the log",
-                                         "eval.tier1_attempt_missing"};
+        // Our own `started` record no longer reads back: the log cannot be trusted to show the family's attempts.
+        withhold(error{failure_class::fatal, "this attempt's own record is missing from the log",
+                       "eval.tier1_attempt_missing"});
         co_return result;
     }
     result.outcome = outcome;
