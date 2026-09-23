@@ -18,6 +18,7 @@
 // top of this driver: eval_follow_rate_screen.hpp and eval_gross_harm_screen.hpp.
 
 #include <chrono>
+#include <limits>
 #include <optional>
 #include <string>
 #include <thread>
@@ -35,6 +36,7 @@
 #include "agentengine/core/memory_provider.hpp"
 #include "agentengine/core/recording_chat_client.hpp"
 #include "agentengine/core/stream.hpp"
+#include "agentengine/core/token_estimate.hpp"
 #include "agentengine/eval/eval_store.hpp"
 #include "agentengine/eval/eval_stub_tool.hpp"
 #include "agentengine/eval/lesson_candidate.hpp"
@@ -103,6 +105,7 @@ struct TrialResult {  // ae-naming-lint: allow TrialResult — ADR-181 §3.0 ite
     std::vector<ChatCallRecording> summarizer_recordings;
     std::uint64_t summarizer_tokens = 0;        // input + output over every summarizer call made
     bool summarizer_budget_exhausted = false;   // at least one summarizer call was refused for budget
+    bool summarizer_usage_estimated = false;    // some call reported no usage; its tokens were estimated
 };
 
 namespace detail {
@@ -259,28 +262,55 @@ public:
         ChatCallRecording rec;
         rec.request = request;
         rec.mode = recording_mode::streaming;
+        std::uint64_t const request_estimate = rt::detail::estimate_request_tokens(request);
         stream<ChatResponseUpdate> in = inner_.chat_stream(std::move(request), ctx);
-        while (!in.done()) {
-            while (auto update = in.next()) {
-                RecordedChunk chunk;
-                chunk.update = std::move(*update);
-                chunk.elapsed_since_start = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - start);
-                rec.chunks.push_back(std::move(chunk));
-            }
-            if (!in.done()) std::this_thread::yield();
-        }
-        while (auto update = in.next()) {  // anything queued between the last poll and done()
+        auto take = [&](ChatResponseUpdate update) {
             RecordedChunk chunk;
-            chunk.update = std::move(*update);
+            chunk.update = std::move(update);
+            chunk.elapsed_since_start =
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
             rec.chunks.push_back(std::move(chunk));
+        };
+        // Same poll idiom as `drain_chat_stream`: a bounded sleep while the producer is live, never a bare
+        // spin (PR #100 red team: the first version pegged a core for the summarizer's whole latency),
+        // and it gives up when the run is cancelled rather than waiting on a stream that never ends.
+        bool cancelled = false;
+        while (!in.done()) {
+            while (auto update = in.next()) take(std::move(*update));
+            if (in.done()) break;
+            if (ctx.cancellation.stop_requested()) {
+                cancelled = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
+        if (!cancelled) {
+            while (auto update = in.next()) take(std::move(*update));  // queued between the last poll and done()
+        }
+
+        // Usage is read the way the rest of the engine reads it (`drain_chat_stream`, `AgentSession`):
+        // from the FINAL chunk only, last one wins -- summing every chunk double-counted a client that
+        // reports cumulative usage along the way. A call that reports no usage at all is charged an
+        // ESTIMATE (request plus delivered text, ~4 bytes a token, the ADR-177 rule for a dead stream),
+        // never zero: a provider that omits usage must not switch the budget off. Additions saturate.
+        std::optional<Usage> usage;
+        std::uint64_t delivered_bytes = 0;
         for (RecordedChunk const& chunk : rec.chunks) {
-            if (chunk.update.usage.has_value()) {
-                trial_->summarizer_tokens += chunk.update.usage->input_tokens + chunk.update.usage->output_tokens;
+            if (chunk.update.is_final && chunk.update.usage.has_value()) usage = chunk.update.usage;
+            if (auto const* text = std::get_if<Text>(&chunk.update.delta.value); text != nullptr) {
+                delivered_bytes += text->text.size();
             }
         }
-        stream_terminal const terminal = in.terminal();
+        std::uint64_t call_tokens = 0;
+        if (usage.has_value()) {
+            call_tokens = saturating_add(usage->input_tokens, usage->output_tokens);
+        } else {
+            call_tokens = saturating_add(request_estimate, estimate_tokens_for_bytes(delivered_bytes));
+            trial_->summarizer_usage_estimated = true;
+        }
+        trial_->summarizer_tokens = saturating_add(trial_->summarizer_tokens, call_tokens);
+
+        stream_terminal const terminal = cancelled ? stream_terminal::cancelled : in.terminal();
         rec.stream_terminal = std::string(recording_chat_client_detail::stream_terminal_to_wire_string(terminal));
         if (terminal == stream_terminal::failed) {
             rec.stream_error = in.fail_error();
@@ -305,6 +335,10 @@ public:
     }
 
 private:
+    [[nodiscard]] static std::uint64_t saturating_add(std::uint64_t a, std::uint64_t b) {
+        return a > std::numeric_limits<std::uint64_t>::max() - b ? std::numeric_limits<std::uint64_t>::max() : a + b;
+    }
+
     SummarizerT inner_;
     TrialResult* trial_;
     std::optional<std::uint64_t> token_budget_;

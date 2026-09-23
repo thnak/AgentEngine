@@ -71,9 +71,12 @@ struct FollowRateTrialDetail {  // ae-naming-lint: allow FollowRateTrialDetail �
     std::uint64_t trial_seed;   // this trial's own derived seed (I5) -- see derive_trial_seed, eval_screen_common.hpp
     std::uint32_t attempts = 1;               // 2 if it was retried after a transient fault
     std::optional<error> retried_error;       // the first attempt's error, when retried
-    grade_outcome grade;
+    std::string counted_trial_id;             // the id `trial_result` ran under (`<trial_id>-retry1` if retried)
+    grade_outcome grade;                      // of the attempt that counts
+    bool faulted = false;                     // the FIRST attempt failed to measure (ungraded, or retried)
     TrialResult trial_result;   // every trial is kept (§3.5: never dropped silently); its full
                                  // transcripts (`recordings`) only if spec.retain_recordings
+    std::optional<TrialResult> first_attempt;  // when retried; same transcript rule
 };
 
 struct FollowRateScreenResult {  // ae-naming-lint: allow FollowRateScreenResult — ADR-181 §3.0 item 2
@@ -84,6 +87,7 @@ struct FollowRateScreenResult {  // ae-naming-lint: allow FollowRateScreenResult
     std::uint64_t baseline_n = 0, treatment_n = 0;              // == n_per_arm each, always (ITT)
     std::uint64_t baseline_followed = 0, treatment_followed = 0;
     std::uint64_t baseline_ungraded = 0, treatment_ungraded = 0;
+    std::uint64_t baseline_faulted = 0, treatment_faulted = 0;  // first-attempt faults, recovered or not
 
     bool invalid_baseline_too_easy = false;
     bool invalid_differential_missingness = false;
@@ -232,19 +236,26 @@ template <class InnerFactory, class SummarizerFactory>
             co_await detail::run_trial_with_retry(make_inner, make_summarizer, slot, std::move(trial_spec), retries_left);
         TrialResult trial_result = std::move(attempted.result);
         grade_outcome grade = detail::grade_trial(spec.grader, trial_result);
+        bool const faulted = detail::was_faulted(attempted.attempts, grade);
         detail::drop_transcripts_unless_retained(trial_result, spec.retain_recordings);
+        if (attempted.first_attempt.has_value()) {
+            detail::drop_transcripts_unless_retained(*attempted.first_attempt, spec.retain_recordings);
+        }
 
         if (arm == trial_arm::treatment) {
             if (grade == grade_outcome::success) ++result.treatment_followed;
             if (grade == grade_outcome::ungraded) ++result.treatment_ungraded;
+            if (faulted) ++result.treatment_faulted;
         } else {
             if (grade == grade_outcome::success) ++result.baseline_followed;
             if (grade == grade_outcome::ungraded) ++result.baseline_ungraded;
+            if (faulted) ++result.baseline_faulted;
         }
 
-        result.trials.push_back(FollowRateTrialDetail{arm, std::move(trial_id), trial_seed, attempted.attempts,
-                                                          std::move(attempted.retried_error), grade,
-                                                          std::move(trial_result)});
+        FollowRateTrialDetail detail_row{arm, std::move(trial_id), trial_seed, attempted.attempts,
+                                         std::move(attempted.retried_error), std::move(attempted.counted_trial_id),
+                                         grade, faulted, std::move(trial_result), std::move(attempted.first_attempt)};
+        result.trials.push_back(std::move(detail_row));
     }
 
     result.baseline_n = spec.n_per_arm;
@@ -258,8 +269,9 @@ template <class InnerFactory, class SummarizerFactory>
         static_cast<double>(result.baseline_ungraded) / static_cast<double>(spec.n_per_arm);
     double const treatment_ungraded_rate =
         static_cast<double>(result.treatment_ungraded) / static_cast<double>(spec.n_per_arm);
+    // On first-attempt faults, as in the gross-harm screen: a retry must never decide which verdict runs.
     result.invalid_differential_missingness = detail::differential_missingness_exceeds(
-        result.treatment_ungraded, result.baseline_ungraded, spec.n_per_arm, spec.max_differential_missingness);
+        result.treatment_faulted, result.baseline_faulted, spec.n_per_arm, spec.max_differential_missingness);
 
     // A verdict needs data: if either arm was mostly unmeasurable (e.g. the provider was down), no
     // count here means anything, and without this rule an all-ungraded run would read as "never

@@ -52,7 +52,8 @@ namespace detail {
 // of a single error can tell "the provider failed" from "the lesson made the provider fail". The
 // gross-harm screen therefore stops relying on it where it matters: when missingness makes a run
 // uninterpretable, it re-tests under harm-favouring imputation (eval_gross_harm_screen.hpp), so
-// lesson-induced missingness can only push that screen TOWARD a flag. The follow-rate screen needs no
+// lesson-induced missingness can only push that screen TOWARD a flag -- provided the rules see every
+// fault, including one a retry recovered (`was_faulted`; PR #100 red team). The follow-rate screen needs no
 // such rule -- there `invalid` means "no pass", already the conservative direction.
 [[nodiscard]] inline bool is_measurement_fault(error const& e) {
     return e.klass == failure_class::transient || e.code == "run.canceled";
@@ -181,10 +182,17 @@ inline void drop_transcripts_unless_retained(TrialResult& trial, bool retain) {
 
 // Is this trial worth ONE retry? Only a provider/transport fault (`transient`) -- the one measurement
 // failure that re-running can fix. A host cancel means stop; a setup error or a throwing grader would
-// fail the same way again. Gross-harm round-2 residual (closed): nothing retried, so a flaky provider
-// turned straight into ungraded trials -- flags or `invalid`, never a pass, but needless noise. A retry
-// re-runs the same trial (same seed) in both arms alike, and the retry's outcome is the trial's result;
-// if it faults again the trial stays `ungraded`, so a lesson that provokes faults gains nothing.
+// fail the same way again; an agent-caused failure (`resource`: its token budget; `contract`: its turn
+// cap) is an OUTCOME and is never retried. A retry re-runs the same trial (same seed); its outcome is the
+// trial's result, and a fault that recurs stays `ungraded`.
+//
+// PR #100 red team (MAJOR, found independently by two reviewers): retrying ERASED harm a lesson causes
+// as faults. A lesson that makes 8% of its runs time out, nondeterministically, had those faults retried
+// into successes -- the validity rules saw only the few that recurred, the run read as valid, and the
+// screen passed it 92% of the time (9% without retries). A retry is a fresh draw, so it can only ever
+// reduce noise; it must never decide which analysis runs. So a retried trial stays FAULTED for the
+// validity rules and for harm-favouring imputation (`was_faulted` below), and only the ITT counts and the
+// graded fraction use the retry's outcome.
 [[nodiscard]] inline bool worth_a_retry(TrialResult const& trial) {
     return !trial.setup_error.has_value() && !trial.outcome.has_value() &&
            effective_run_error(trial).klass == failure_class::transient;
@@ -207,12 +215,23 @@ template <class InnerFactory, class SummarizerFactory>
 }
 
 // One trial with at most one retry from the screen's shared pool. Returns the attempt that counts and,
-// if it was retried, the first attempt's error (kept for the record, I4).
+// if it was retried, the first attempt itself -- its tool calls, token counts and (if retained)
+// transcripts, not just its error (PR #100 red team: the first version overwrote it, so a retried
+// trial's first model calls, and the summarizer tokens they spent, appeared nowhere; I4, §3.8).
 struct AttemptedTrial {
     TrialResult result;
     std::uint32_t attempts = 1;
-    std::optional<error> retried_error;
+    std::optional<error> retried_error;       // the first attempt's error, when retried
+    std::optional<TrialResult> first_attempt; // the first attempt, when retried
+    std::string counted_trial_id;             // the id `result` actually ran under (`-retry1` if retried)
 };
+
+// Did this trial's FIRST attempt fail to measure? True for a trial still `ungraded`, and for one whose
+// first attempt faulted and was retried. The validity rules and harm-favouring imputation read this,
+// never the post-retry grade (see `worth_a_retry`).
+[[nodiscard]] inline bool was_faulted(std::uint32_t attempts, grade_outcome grade) {
+    return attempts > 1 || grade == grade_outcome::ungraded;
+}
 
 template <class InnerFactory, class SummarizerFactory>
 [[nodiscard]] task<AttemptedTrial> run_trial_with_retry(InnerFactory& make_inner, SummarizerFactory& make_summarizer,
@@ -220,13 +239,16 @@ template <class InnerFactory, class SummarizerFactory>
                                                         std::uint64_t& retries_left) {
     AttemptedTrial out;
     spec.trial_id = slot.trial_id;
+    out.counted_trial_id = slot.trial_id;
     out.result = co_await run_trial_guarded(make_inner, make_summarizer, slot, spec);
     if (retries_left > 0 && worth_a_retry(out.result)) {
         --retries_left;
         out.retried_error = effective_run_error(out.result);
+        out.first_attempt = std::move(out.result);
         slot.attempt = 1;
         slot.trial_id += "-retry1";
         spec.trial_id = slot.trial_id;
+        out.counted_trial_id = slot.trial_id;
         out.result = co_await run_trial_guarded(make_inner, make_summarizer, slot, std::move(spec));
         out.attempts = 2;
     }
