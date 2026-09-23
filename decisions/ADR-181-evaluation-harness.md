@@ -1448,7 +1448,21 @@ pointer never outlives the trial; the stream rule's "last recording" is the fail
   unbudgeted in production sessions — a real I8 gap for a separate ADR. Open concern, not demonstrated: a spent
   summarizer budget stops the episodic writes that can evict the lesson from recall, and production has no such
   budget, so a tight `summarizer_token_budget` could make delivery look better than in production (the reviewer
-  saw no delivery change at salience 0.0 or 0.3 in scripted runs).
+  saw no delivery change at salience 0.0 or 0.3 in scripted runs). **Checked live** (`test_eval_summarizer_live_e2e`, the first test with a
+  REAL summarizer, DeepSeek `deepseek-flash`, 2026-09-23): the provider reports usage on every summarizer stream's
+  final chunk (no estimate needed, `summarizer_tokens` equals the reported sum: 88+197 and 44+188 tokens); one
+  summarizer call per agent call; a 1-token budget admits exactly one real call, refuses the rest before they reach
+  the model, and the trial still converges.
+- **The summarizer is never told to summarize** (found by that live test; production `MemoryProvider`, outside
+  this ADR's code): `on_turn_end` sends the turn's messages with no instruction, so a real model simply CONTINUES
+  the conversation — it answered the user ("Deploy region is now set to eu-west-1. What would you like to do
+  next…") — and in one run emitted DeepSeek's raw tool-call markup (`<｜｜DSML｜｜ invoke name="deploy">…`) as plain
+  text. Whatever comes back is written verbatim as an episodic `MemoryItem` and injected into later turns. Every
+  scripted test hid this, because a mock returns "summary: …" whatever it is sent. Consequences here: the
+  episodic items a trial accumulates are conversation continuations, not summaries, so arm-to-arm memory contents
+  are noisier than §3.2 assumes; in production it is a memory-quality and I3-adjacent concern (model output,
+  including tool-call-shaped text, persisted and re-injected). Not fixed: it needs a summarization prompt
+  contract for `MemoryProvider` (029 §4), a separate decision.
 - **CLOSED ON PAPER — streamed failures are classified by the provider's recorded error**, not the session's
   blanket `transient` (§7). `run_trial` still uses `chat()`, so the rule is unreachable today and proven only
   against hand-built `TrialResult`s. Turning streaming on for trials first needs `RecordingChatClient::chat_stream`'s
