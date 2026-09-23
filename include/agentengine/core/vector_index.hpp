@@ -74,6 +74,7 @@ concept VectorIndex =
 // (corpus_chunk.hpp) is itself templated on `<WorktreeObjectStore OS, rt::AppendLogStore RS>` rather
 // than fixed to one store type.
 template <class T, class OS>
+// ae-naming-lint: allow PersistentVectorIndex — ADR-180 §2.4: new vocabulary, 027 not yet updated
 concept PersistentVectorIndex =
     VectorIndex<T> && WorktreeObjectStore<OS> &&
     requires(T const& idx, T& mutable_idx, OS& store, Digest const& digest) {

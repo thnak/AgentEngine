@@ -69,6 +69,7 @@ concept RemoteVectorIndex =
 // capability-gated ones (`QdrantVectorIndex`) are both valid `IndexT`s; call sites dispatch between
 // them via `if constexpr`, never runtime polymorphism.
 template <class T>
+// ae-naming-lint: allow AnyVectorIndex — ADR-180 §2.1: new vocabulary, 027 not yet updated
 concept AnyVectorIndex = VectorIndex<T> || RemoteVectorIndex<T>;
 
 }  // namespace agentengine
