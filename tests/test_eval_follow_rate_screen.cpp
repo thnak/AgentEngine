@@ -126,7 +126,7 @@ public:
 static_assert(ae::ChatClient<MockSummarizerClient>);
 
 auto make_summarizer_factory() {
-    return [](ae::eval::trial_arm) { return MockSummarizerClient{}; };
+    return [](ae::eval::TrialSlot const&) { return MockSummarizerClient{}; };
 }
 
 // A fixed script for baseline, a fixed script for treatment -- picked by the arm the driver tells
@@ -136,9 +136,9 @@ auto make_summarizer_factory() {
 auto make_arm_scripted_factory(std::vector<ScriptStep> baseline_script,
                                 std::vector<ScriptStep> treatment_script) {
     return [baseline_script = std::move(baseline_script),
-            treatment_script = std::move(treatment_script)](ae::eval::trial_arm arm) {
-        return ScriptedChatClient(arm == ae::eval::trial_arm::treatment ? treatment_script
-                                                                          : baseline_script);
+            treatment_script = std::move(treatment_script)](ae::eval::TrialSlot const& slot) {
+        return ScriptedChatClient(slot.arm == ae::eval::trial_arm::treatment ? treatment_script
+                                                                               : baseline_script);
     };
 }
 
@@ -155,8 +155,8 @@ public:
           baseline_follow_(std::move(baseline_follow_script)), every_nth_(every_nth),
           treatment_(std::move(treatment_script)), baseline_counter_(std::make_shared<int>(0)) {}
 
-    ScriptedChatClient operator()(ae::eval::trial_arm arm) {
-        if (arm == ae::eval::trial_arm::treatment) return ScriptedChatClient(treatment_);
+    ScriptedChatClient operator()(ae::eval::TrialSlot const& slot) {
+        if (slot.arm == ae::eval::trial_arm::treatment) return ScriptedChatClient(treatment_);
         int const idx = (*baseline_counter_)++;
         if (every_nth_ > 0 && idx % every_nth_ == 0) return ScriptedChatClient(baseline_follow_);
         return ScriptedChatClient(baseline_other_);
@@ -207,6 +207,7 @@ ae::eval::FollowRateProbeSpec base_probe_spec() {
     spec.n_per_arm        = 10;
     spec.max_turns        = 4;
     spec.seed             = 42;
+    spec.max_retried_trials = 0;  // retries are exercised in their own scenario (S10)
     return spec;
 }
 
@@ -247,9 +248,9 @@ std::vector<ScriptStep> transient_script() {
 template <class Plan>
 auto make_trial_factory(Plan plan) {
     auto counts = std::make_shared<std::array<int, 2>>();
-    return [plan, counts](ae::eval::trial_arm arm) {
-        int const k = (*counts)[arm == ae::eval::trial_arm::treatment ? 1 : 0]++;
-        return ScriptedChatClient(plan(arm, k));
+    return [plan, counts](ae::eval::TrialSlot const& slot) {
+        int const k = (*counts)[slot.arm == ae::eval::trial_arm::treatment ? 1 : 0]++;
+        return ScriptedChatClient(plan(slot.arm, k));
     };
 }
 
@@ -565,6 +566,38 @@ int main() {
             }
         }
         AE_CHECK(treatment_then_baseline, "S9: run order interleaves the arms, not all baseline then all treatment");
+    }
+
+    // ---- Scenario 10: retries and the seed reach the factory, as in the gross-harm screen -------------
+    {
+        auto seen = std::make_shared<std::vector<std::pair<std::string, std::uint64_t>>>();
+        auto flaky = [seen](ev::TrialSlot const& slot) {
+            seen->emplace_back(slot.trial_id, slot.trial_seed);
+            // Every treatment trial faults on its first attempt and follows on its retry.
+            if (slot.arm == ev::trial_arm::treatment && slot.attempt == 0) return ScriptedChatClient(transient_script());
+            return ScriptedChatClient(slot.arm == ev::trial_arm::treatment ? followed_script() : not_followed_script());
+        };
+        ev::FollowRateProbeSpec spec = base_probe_spec();  // 10 per arm
+        spec.max_retried_trials = 10;
+        auto r = drive(ev::run_follow_rate_screen(flaky, make_summarizer_factory(), spec));
+        std::size_t retried = 0;
+        for (auto const& d : r.trials) retried += d.attempts == 2 ? 1 : 0;
+        AE_CHECK(retried == 10u && r.treatment_ungraded == 0 && r.treatment_followed == 10 && r.pass == true,
+                 "S10: every transient treatment trial is retried once and its retry counts");
+        bool retry_ids = true, seeds_match = true;
+        for (auto const& d : r.trials) {
+            if (d.arm != ev::trial_arm::treatment) continue;
+            bool first = false, second = false;
+            for (auto const& [id, seed] : *seen) {
+                if (id == d.trial_id) first = seed == d.trial_seed;
+                if (id == d.trial_id + "-retry1") second = seed == d.trial_seed;
+            }
+            retry_ids = retry_ids && second;
+            seeds_match = seeds_match && first;
+        }
+        AE_CHECK(seeds_match && retry_ids,
+                 "S10: the factory sees each trial's recorded seed, and a retry re-runs it under its own id "
+                 "with the SAME seed");
     }
 
     if (g_failures != 0) {

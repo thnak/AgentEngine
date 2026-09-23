@@ -58,6 +58,12 @@ struct TrialSpec {  // ae-naming-lint: allow TrialSpec — ADR-181 §3.0 items 2
                                                 // in this slice
     std::optional<std::uint64_t> token_budget;
     std::optional<std::uint64_t> max_turns;
+    // Tokens the memory SUMMARIZER may spend in this trial (input + output, as its own stream reports).
+    // `token_budget` above bounds only the agent's model: `AgentSession` charges what its own chat client
+    // reports, and `MemoryProvider::on_turn_end` never reports the summarizer's usage to anyone. Once
+    // this is spent, further summarizer calls are refused before they reach the model (the turn simply
+    // gets no summary). Unset = unbounded, as before.
+    std::optional<std::uint64_t> summarizer_token_budget;
     std::size_t max_injected = 3;              // forwarded to MemoryProvider's own ctor default
     // A real `ChatClientT` may need capabilities of its own beyond memory access -- e.g. a
     // `cap::Secret` grant for an `OpenAIChatClient`'s outbound auth (the live DeepSeek check uses
@@ -95,6 +101,8 @@ struct TrialResult {  // ae-naming-lint: allow TrialResult — ADR-181 §3.0 ite
     // recorded, so a trial's own transcript silently omitted model calls that shaped it. Kept apart
     // from `recordings` so delivery detection (which reads the AGENT's requests) is unchanged.
     std::vector<ChatCallRecording> summarizer_recordings;
+    std::uint64_t summarizer_tokens = 0;        // input + output over every summarizer call made
+    bool summarizer_budget_exhausted = false;   // at least one summarizer call was refused for budget
 };
 
 namespace detail {
@@ -226,15 +234,27 @@ inline constexpr bool is_recording_chat_client_after_decay_v =
 // immediately (`drain_chat_stream`), so draining it HERE first, recording it, and replaying the exact
 // update sequence and terminal into a fresh stream changes nothing that caller observes -- and needs
 // no background thread writing into `TrialResult` concurrently.
+//
+// It also enforces `TrialSpec::summarizer_token_budget` (gross-harm round-2 residual, closed): a call is
+// refused, without reaching the model, once the summarizer has spent its budget. Like `AgentSession`'s
+// own `token_budget`, the check runs before each call, so the last call admitted can overshoot by at
+// most its own size.
 template <class SummarizerT>
 class SummarizerRecorder {
 public:
-    SummarizerRecorder(SummarizerT inner, std::vector<ChatCallRecording>* sink)
-        : inner_(std::move(inner)), sink_(sink) {}
+    SummarizerRecorder(SummarizerT inner, TrialResult* trial, std::optional<std::uint64_t> token_budget)
+        : inner_(std::move(inner)), trial_(trial), token_budget_(token_budget) {}
 
     [[nodiscard]] ChatClientCapabilities capabilities() const { return inner_.capabilities(); }
 
     stream<ChatResponseUpdate> chat_stream(ChatRequest request, EffectContext& ctx) {
+        if (token_budget_.has_value() && trial_->summarizer_tokens >= *token_budget_) {
+            trial_->summarizer_budget_exhausted = true;
+            auto refused = make_stream<ChatResponseUpdate>(std::pmr::get_default_resource());
+            refused.producer.fail(error{failure_class::resource, "the summarizer's token budget is spent",
+                                        "eval.summarizer_token_budget"});
+            return std::move(refused.consumer);
+        }
         auto const start = std::chrono::steady_clock::now();
         ChatCallRecording rec;
         rec.request = request;
@@ -254,6 +274,11 @@ public:
             RecordedChunk chunk;
             chunk.update = std::move(*update);
             rec.chunks.push_back(std::move(chunk));
+        }
+        for (RecordedChunk const& chunk : rec.chunks) {
+            if (chunk.update.usage.has_value()) {
+                trial_->summarizer_tokens += chunk.update.usage->input_tokens + chunk.update.usage->output_tokens;
+            }
         }
         stream_terminal const terminal = in.terminal();
         rec.stream_terminal = std::string(recording_chat_client_detail::stream_terminal_to_wire_string(terminal));
@@ -275,13 +300,14 @@ public:
             pair.producer.fail(error{failure_class::fatal, "the summarizer's stream was cancelled",
                                      "eval.summarizer_stream_cancelled"});
         }
-        sink_->push_back(std::move(rec));
+        trial_->summarizer_recordings.push_back(std::move(rec));
         return std::move(pair.consumer);
     }
 
 private:
     SummarizerT inner_;
-    std::vector<ChatCallRecording>* sink_;
+    TrialResult* trial_;
+    std::optional<std::uint64_t> token_budget_;
 };
 
 }  // namespace detail
@@ -389,8 +415,8 @@ template <class Inner, class SummarizerT>
 
     MemProvider memory_provider{store.object_store(), store.ref_store(),  store.mount(),
                                  store.read_cap(),     store.write_cap(),
-                                 detail::SummarizerRecorder<SummarizerT>{std::move(summarizer),
-                                                                         &trial_result.summarizer_recordings},
+                                 detail::SummarizerRecorder<SummarizerT>{std::move(summarizer), &trial_result,
+                                                                         spec.summarizer_token_budget},
                                  spec.max_injected};
     auto engaged = session.history_provider().engage(
         std::tuple{HistoryProvider<Window<0>>{}, std::move(memory_provider),

@@ -7,10 +7,10 @@
   `eval_stub_tool.hpp`, `eval_trial.hpp`, plus the FIRST SLICE of multi-trial orchestration, §3.0 item 2's
   follow-rate screen (a separate, later PR): `eval_grader.hpp`, `eval_follow_rate_screen.hpp`, plus §3.0 item 3's
   gross-harm regression screen (another separate PR): `eval_screen_common.hpp`, `eval_gross_harm_screen.hpp` —
-  **293/293 checks green** across 9 test binaries (`test_lesson_candidate` 43, `test_eval_principal` 15,
+  **306/306 checks green** across 9 test binaries (`test_lesson_candidate` 43, `test_eval_principal` 15,
   `test_promotion_ack` 9, `test_tier1_statistics` 40, `test_eval_store` 9, `test_eval_stub_tool` 11,
-  `test_eval_trial_driver` 26, `test_eval_follow_rate_screen` 58, `test_eval_gross_harm_screen` 82 — executed checks;
-  that last file has 59 `AE_CHECK` sites because one pre-flight helper runs its check 24 times, every other file's
+  `test_eval_trial_driver` 26, `test_eval_follow_rate_screen` 60, `test_eval_gross_harm_screen` 93 — executed checks;
+  that last file has 70 `AE_CHECK` sites because one pre-flight helper runs its check 24 times, every other file's
   site and executed counts are equal) plus a compile-fail/positive-control TRIPLE (§3.8; round 2 added a third file
   proving the same rejection for `SummarizerT`), clean under MSVC, clang-cl
   `-Wall -Wextra -Werror -fsyntax-only`, and `tools/naming_lint.py`. **Two separate live runs against DeepSeek
@@ -144,7 +144,12 @@
   harm only about half the time); the missingness rule compares counts, not float rates (the same one-trial gap
   gave different verdicts); a ':' in `suite_id`/`task_id`/`probe_id` and a candidate the template rejects are
   refused before any trial; a throwing factory costs one trial, not the run; the permutation budget counts both
-  tests; the follow-rate screen refuses `target_lower_bound = 0`. 82/82 checks. **Round 2's fixes are not yet
+  tests; the follow-rate screen refuses `target_lower_bound = 0`. **The four residuals round 2 disclosed are then
+  closed** (a follow-up PR, §7 "Round-2 residuals closed"): a transient provider fault gets one retry from a
+  bounded pool charged to the call budget up front; the summarizer has its own per-trial token budget
+  (`summarizer_token_budget`, defaulting to `token_budget`); a streamed failure is classified by the provider's own
+  recorded error rather than the session's blanket `transient`; and the client factories receive a `TrialSlot`
+  carrying the trial's id and seed. 93/93 checks. **Round 2's fixes and the residual closures are not yet
   re-red-teamed.** Round 5 surfaced a real bug review
   alone had not: the first `clopper_pearson_lower_bound`
   bisected against the wrong monotonicity direction and silently converged to a plausible-looking wrong answer;
@@ -478,8 +483,9 @@ whatever salience the promotion path writes (E21). The constant, and a **kind-aw
 move the trial off the production route §3.2 insists on, so the trial runs with a summarizer that is **recorded
 (E19), budgeted (§3.9) and counted in spend**. A summarizer-off variant is a *different, labelled arm*, never a
 silent default. *As built* (gross-harm round 2): every summarizer call is recorded in
-`TrialResult::summarizer_recordings` and counted in both screens' `max_model_calls`; its token usage is recorded
-but not yet charged to `token_budget` (§8).
+`TrialResult::summarizer_recordings` and counted in both screens' `max_model_calls`, and its token spend is capped
+per trial by `TrialSpec::summarizer_token_budget` (the screens default it to `token_budget`) — a budget of its own,
+since `MemoryProvider` reports the summarizer's usage to nobody, so the session cannot charge it.
 
 ### 3.3 Splits, the look ledger, and what counts as a look (Tier 2)
 
@@ -1245,7 +1251,19 @@ randomness in `include/agentengine/eval/` is raw `mt19937_64` output; `run.cance
 stop token; stream retries default to 0, so the agent model makes one call per turn; the model cannot influence
 trial ids, seeds, arm assignment or run order; every budget guard runs before its multiplication.
 
-**Round 2's fixes are not yet re-red-teamed.**
+**Round-2 residuals closed** (a follow-up PR; the four gaps §8 disclosed after round 2). Each new rule was checked
+the same way round 2 checked its fixes: 10 planted mutants of the new code, all killed, each by a named scenario
+(one survived at first — the "defaults to `token_budget`" check could not fail, because a tiny agent budget also
+ended the run early — and the scenario was rebuilt around a summarizer that spends more than the agent).
+
+| Residual | Closure | Scenarios |
+|---|---|---|
+| No retry of transient faults | A trial whose run fails `transient` (after the stream reclassification below) is re-run once, same seed, under `<trial_id>-retry1`, from a pool (`max_retried_trials`: 16 gross-harm, 4 follow-rate) charged in full to `max_model_calls` before any trial runs. A host cancel, a setup error or a throwing grader is never retried. The retry's outcome is the trial's; a fault that recurs stays `ungraded`, so a lesson provoking faults gains nothing. `attempts`/`retried_error` are recorded per trial (I4) | GH S10, FR S10 |
+| Summarizer tokens uncharged | `detail::SummarizerRecorder` sums the usage every summarizer stream reports into `TrialResult::summarizer_tokens` and refuses a call, before it reaches the model, once `summarizer_token_budget` is spent (`summarizer_budget_exhausted`); like the session's own budget, the last admitted call can overshoot by its own size. A per-trial total is therefore bounded by `token_budget` + `summarizer_token_budget` | GH S12 |
+| Streaming would relabel contract errors | `detail::effective_run_error`: for `run.stream_incomplete`, the provider's own error recorded in the trial's last `ChatCallRecording::stream_error` (ADR-177) is what `grade_trial` and the retry rule classify; with none recorded the session's `transient` stands | GH S13 |
+| Per-trial seed never reached the client | Both screens call their factories with a `TrialSlot{arm, task_index, attempt, trial_id, trial_seed}`; a retry carries the SAME seed | GH S11, FR S10 |
+
+**Round 2's fixes and these closures are not yet re-red-teamed.**
 
 ## 8. Residuals
 
@@ -1387,20 +1405,18 @@ trial ids, seeds, arm assignment or run order; every budget guard runs before it
   (`worst_case_imputation = true`), rejecting a lesson that may be harmless. That is the price of closing the I3
   channel: the alternative, `invalid`, is exactly the "no verdict, run it again" a harmful lesson wants. A host can
   tell the two kinds of flag apart by `worst_case_imputation`.
-- **No retry of transient faults** (gross-harm round 2): a flaky provider yields `ungraded` trials, which the
-  fallback turns into flags or `invalid`, never into a pass. Retrying a transient trial (charged to the budget)
-  would cut false alarms from flaky providers; not built.
-- **The summarizer's tokens are not charged to `token_budget`** (gross-harm round 2): its calls are counted in
-  `max_model_calls` and recorded with their usage, but `MemoryProvider::on_turn_end` ignores the usage, so a
-  per-trial token cap bounds only the agent model. Charging it needs a change in `MemoryProvider`, outside this
-  slice.
-- **Streaming would reopen the classification question** (gross-harm round 2, latent): `drain_streaming_response`
-  labels every stream failure `transient`, including a 400-class contract error. `run_trial` uses `chat()` today;
-  if trials ever stream, more lesson-caused failures would become `ungraded`. The gross-harm fallback still bounds
-  the effect (toward flagging); the follow-rate screen's `invalid` stays conservative.
-- **The per-trial seed does not reach the client** (gross-harm round 2, nit): factories receive
-  `(arm, task_index)`, not the trial's seed, so nothing can pass it to a provider's own `seed` parameter yet. It is
-  recorded per trial for when something consumes it.
+- **CLOSED — no retry of transient faults** (gross-harm round 2): one retry per trial from a bounded, pre-budgeted
+  pool (§7, "Round-2 residuals closed"). What remains: a retry runs immediately, so an outage longer than one trial
+  still ends in `ungraded` trials (then flags or `invalid`, never a pass).
+- **CLOSED, with a different shape than first described — summarizer tokens** (gross-harm round 2): not charged to
+  the AGENT's `token_budget` (that needs `MemoryProvider` to report usage, and `AgentSession` a way to receive it —
+  a production-wide change, not an eval one), but capped by a budget of its own, `summarizer_token_budget`, enforced
+  before each call. Outside the eval harness, `MemoryProvider`'s summarizer is still unbudgeted in production
+  sessions — a real I8 gap for a separate ADR.
+- **CLOSED — streamed failures are classified by the provider's recorded error**, not the session's blanket
+  `transient` (§7). `run_trial` still uses `chat()`; this is ready for when it streams.
+- **CLOSED — the per-trial seed reaches the client factory** via `TrialSlot::trial_seed` (§7). Nothing in this
+  repo's own clients consumes a sampling seed yet; that is a provider-side choice.
 - **The regression screen's invalidity floors are declared, not derived**: `min_graded_fraction` (0.9) and
   `min_baseline_success_rate` (0.25) exist to refuse the zero-information case (no data, or a suite the agent fails
   anyway), not to tune power. A suite whose baseline sits just above 0.25 is valid but low-powered, and nothing

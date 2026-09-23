@@ -79,7 +79,10 @@ struct GrossHarmScreenSpec {  // ae-naming-lint: allow GrossHarmScreenSpec — A
     std::uint32_t k_per_arm = 5;                  // ADR default
     double alpha = 0.10;                          // the SCREEN's false-flag bound; each test gets alpha/2
     std::uint32_t num_permutations = 2000;
-    std::uint64_t max_model_calls = 10'000;       // I8: 2K * tasks trials * max_turns * 2 calls/turn must fit
+    std::uint64_t max_model_calls = 10'000;       // I8: (2K * tasks + max_retried_trials) * max_turns * 2 must fit
+    // Retry pool: a trial whose run hits a transient provider fault is re-run once (same seed), until the
+    // pool is spent. Charged in full to max_model_calls up front.
+    std::uint32_t max_retried_trials = 16;
     std::uint64_t max_permutation_work = 50'000'000;  // I8: num_permutations * tasks * (2K + 1) must fit
     double max_differential_missingness = 0.05;   // §3.5's declared bound
     // Below this graded fraction in EITHER arm the run is `invalid`: too little was measured.
@@ -91,6 +94,7 @@ struct GrossHarmScreenSpec {  // ae-naming-lint: allow GrossHarmScreenSpec — A
     bool retain_recordings = false;               // keep full transcripts per trial (memory: trials x turns^2)
     std::uint64_t seed = 0;                       // I5: run order, per-trial and permutation seeds
     std::optional<std::uint64_t> token_budget;
+    std::optional<std::uint64_t> summarizer_token_budget;  // unset = token_budget (see TrialSpec)
     std::optional<std::uint64_t> max_turns;       // REQUIRED -- it bounds each trial's model calls
     std::size_t max_injected = 3;
     // Same role as TrialSpec::extra_capabilities -- host-supplied only, never model/candidate-
@@ -103,6 +107,8 @@ struct GrossHarmTrialDetail {  // ae-naming-lint: allow GrossHarmTrialDetail —
     trial_arm arm;
     std::string trial_id;
     std::uint64_t trial_seed;                     // this trial's own derived seed (I5)
+    std::uint32_t attempts = 1;                   // 2 if it was retried after a transient fault
+    std::optional<error> retried_error;           // the first attempt's error, when retried
     grade_outcome grade;
     TrialResult trial_result;                     // every trial kept (§3.5); full transcripts
                                                   // (`recordings`) only if spec.retain_recordings
@@ -236,7 +242,8 @@ inline constexpr double kReachabilityConfidence = 0.95;
         return error{failure_class::resource, "2 * k_per_arm * tasks overflows", "eval.screen_model_call_budget"};
     }
     std::uint64_t const trials = two_k * tasks;
-    if (auto budget = validate_call_budget(spec.max_turns, trials, spec.max_model_calls); budget.has_value()) {
+    if (auto budget = validate_call_budget(spec.max_turns, trials, spec.max_retried_trials, spec.max_model_calls);
+        budget.has_value()) {
         return budget;
     }
     // Both tests' work: the min-task test does perms x tasks x 2K, the sign-flip sum test perms x tasks
@@ -276,11 +283,11 @@ inline constexpr double kReachabilityConfidence = 0.95;
 // together with one seeded engine so arms AND tasks are interleaved (§3.4) -- grades each with its
 // task's own grader, and reports the screen.
 //
-// `make_inner`/`make_summarizer` are factories called as `f(trial_arm, std::size_t task_index)`, one
+// `make_inner`/`make_summarizer` are factories called as `f(TrialSlot const&)` (eval_screen_common.hpp), one
 // fresh client per trial, for the same reason the follow-rate screen takes factories (run_trial
-// consumes its clients by value, and a real client is not copy-safe for reuse). The extra
-// `task_index` exists for scripted TEST clients, which have no context to read and so must be told
-// which task they are scripting; a real client's factory ignores both arguments.
+// consumes its clients by value, and a real client is not copy-safe for reuse). The slot's `arm`,
+// `task_index` and `attempt` exist for scripted TEST clients, which have no context to read and so must
+// be told what they are scripting; a real client's factory reads only `trial_seed`.
 //
 // Intention-to-treat, the same one rule as the follow-rate screen: a trial is a success only if its
 // grader says so, an agent that failed to finish is a failure, and only a failed MEASUREMENT is
@@ -322,6 +329,7 @@ template <class InnerFactory, class SummarizerFactory>
     result.trials.reserve(slots.size());
     std::vector<std::uint32_t> task_arm_index(2 * n_tasks, 0);  // per (task, arm): 0..K-1, for trial_id
     std::uint64_t arm_index[2] = {0, 0};                        // per arm, across tasks: for the seed
+    std::uint64_t retries_left = spec.max_retried_trials;
     for (auto const& [t, arm] : slots) {
         std::size_t const a = (arm == trial_arm::treatment) ? 1 : 0;
         RegressionTask const& task_def = spec.tasks[t];
@@ -338,25 +346,21 @@ template <class InnerFactory, class SummarizerFactory>
         trial_spec.lesson_salience = spec.lesson_salience;
         trial_spec.task_prompt = task_def.task_prompt;
         trial_spec.stub_tools = task_def.stub_tools;
-        trial_spec.trial_id = trial_id;
         trial_spec.seed = trial_seed;
         trial_spec.token_budget = spec.token_budget;
+        trial_spec.summarizer_token_budget =
+            spec.summarizer_token_budget.has_value() ? spec.summarizer_token_budget : spec.token_budget;
         trial_spec.max_turns = spec.max_turns;
         trial_spec.max_injected = spec.max_injected;
         trial_spec.extra_capabilities = spec.extra_capabilities;
 
-        // Round-2 red-team finding (MINOR): a throwing factory or `run_trial` used to escape the whole
-        // screen, losing every trial already paid for. It is now that one trial's setup error
-        // (`ungraded`, a failed measurement) and the screen carries on; in the treatment arm, the
-        // harm-favouring fallback keeps a lesson-induced throw from hiding harm.
-        TrialResult trial_result;
-        try {
-            trial_result = co_await run_trial(make_inner(arm, t), make_summarizer(arm, t), trial_spec);
-        } catch (...) {
-            trial_result = TrialResult{};
-            trial_result.setup_error =
-                error{failure_class::fatal, "the trial threw instead of returning", "eval.screen_trial_threw"};
-        }
+        // A throwing factory or `run_trial` is that trial's setup error (`ungraded`), and a transient
+        // fault gets one retry from the pool (eval_screen_common.hpp); in the treatment arm, the
+        // harm-favouring fallback keeps any lesson-induced fault from hiding harm.
+        TrialSlot const slot{arm, t, 0, trial_id, trial_seed};
+        detail::AttemptedTrial attempted =
+            co_await detail::run_trial_with_retry(make_inner, make_summarizer, slot, std::move(trial_spec), retries_left);
+        TrialResult trial_result = std::move(attempted.result);
         grade_outcome const grade = detail::grade_trial(task_def.grader, trial_result);
         detail::drop_transcripts_unless_retained(trial_result, spec.retain_recordings);
 
@@ -371,7 +375,8 @@ template <class InnerFactory, class SummarizerFactory>
         }
 
         result.trials.push_back(
-            GrossHarmTrialDetail{t, arm, std::move(trial_id), trial_seed, grade, std::move(trial_result)});
+            GrossHarmTrialDetail{t, arm, std::move(trial_id), trial_seed, attempted.attempts,
+                                 std::move(attempted.retried_error), grade, std::move(trial_result)});
     }
 
     std::uint64_t baseline_success_total = 0;

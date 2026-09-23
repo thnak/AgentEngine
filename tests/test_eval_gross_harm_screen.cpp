@@ -119,16 +119,17 @@ public:
         upd.delta.origin = ae::content_origin::assistant;
         upd.delta.value  = ae::Text{"summary: nothing notable"};
         upd.is_final     = true;
-        upd.usage        = ae::Usage{1, 1, 0, 0, 0.0};
+        upd.usage        = ae::Usage{tokens_each, tokens_each, 0, 0, 0.0};
         (void)pair.producer.push(upd);
         pair.producer.close();
         return std::move(pair.consumer);
     }
+    std::uint64_t tokens_each = 1;  // input and output tokens each summarizer call reports
 };
 static_assert(ae::ChatClient<MockSummarizerClient>);
 
 auto make_summarizer_factory() {
-    return [](ae::eval::trial_arm, std::size_t) { return MockSummarizerClient{}; };
+    return [](ae::eval::TrialSlot const&) { return MockSummarizerClient{}; };
 }
 
 // What one (arm, task) cell's scripted model does:
@@ -173,8 +174,8 @@ ae::eval::GraderFn task_grader() {
 // both -- exactly the reason run_gross_harm_screen's factories take (arm, task_index).
 template <class Plan>
 auto make_cell_factory(Plan plan) {
-    return [plan](ae::eval::trial_arm arm, std::size_t task_index) {
-        return ScriptedChatClient(script_for(plan(arm, task_index)));
+    return [plan](ae::eval::TrialSlot const& slot) {
+        return ScriptedChatClient(script_for(plan(slot.arm, slot.task_index)));
     };
 }
 
@@ -183,9 +184,9 @@ auto make_cell_factory(Plan plan) {
 template <class Plan>
 auto make_trial_factory(Plan plan) {
     auto counts = std::make_shared<std::map<std::pair<int, std::size_t>, int>>();
-    return [plan, counts](ae::eval::trial_arm arm, std::size_t task_index) {
-        int const k = (*counts)[{static_cast<int>(arm), task_index}]++;
-        return ScriptedChatClient(script_for(plan(arm, task_index, k)));
+    return [plan, counts](ae::eval::TrialSlot const& slot) {
+        int const k = (*counts)[{static_cast<int>(slot.arm), slot.task_index}]++;
+        return ScriptedChatClient(script_for(plan(slot.arm, slot.task_index, k)));
     };
 }
 
@@ -227,6 +228,9 @@ ae::eval::GrossHarmScreenSpec base_spec(std::size_t n_tasks) {
     spec.k_per_arm = 5;
     spec.max_turns = 4;
     spec.seed      = 42;
+    // Scenarios about ungraded trials need a transient fault to STAY a fault; retries are exercised in
+    // their own scenario (S10), which sets the pool explicitly.
+    spec.max_retried_trials = 0;
     return spec;
 }
 
@@ -421,8 +425,8 @@ int main() {
         AE_CHECK(r.baseline_ungraded == 5u, "S5g: a run that ends `run.canceled` is ungraded");
 
         // A factory that throws: that trial's setup error, not the loss of the whole screen.
-        auto throws = [](trial_arm arm, std::size_t t) {
-            if (arm == trial_arm::baseline && t == 0) throw std::runtime_error("factory failed");
+        auto throws = [](ev::TrialSlot const& slot) {
+            if (slot.arm == trial_arm::baseline && slot.task_index == 0) throw std::runtime_error("factory failed");
             return ScriptedChatClient(script_for(cell::ok));
         };
         auto r2 = drive(ev::run_gross_harm_screen(throws, make_summarizer_factory(), spec));
@@ -719,6 +723,159 @@ int main() {
                  "S9: retain_recordings keeps them, and the verdict does not depend on them");
         AE_CHECK(dropped.per_test_alpha == 0.05,
                  "S9: each test is compared against alpha/2 (Bonferroni), so `alpha` bounds the screen");
+    }
+
+    // ---- Scenario 10: a transient fault gets one retry, from a bounded pool -------------------------
+    // ADR-181 §8 residual (closed): nothing was retried, so a flaky provider went straight to ungraded.
+    {
+        auto slot_factory = [](auto plan) {
+            return [plan](ev::TrialSlot const& slot) { return ScriptedChatClient(script_for(plan(slot))); };
+        };
+        // Baseline task 0 faults on its first attempt only: every one of its 5 trials is retried and
+        // then succeeds, so nothing is ungraded.
+        auto flaky = slot_factory([](ev::TrialSlot const& s) {
+            return (s.arm == trial_arm::baseline && s.task_index == 0 && s.attempt == 0) ? cell::transient : cell::ok;
+        });
+        auto spec = base_spec(6);
+        spec.max_retried_trials = 16;
+        auto r = drive(ev::run_gross_harm_screen(flaky, make_summarizer_factory(), spec));
+        bool retried_ok = true;
+        std::size_t retried = 0;
+        for (auto const& d : r.trials) {
+            if (d.attempts == 2) {
+                ++retried;
+                retried_ok = retried_ok && d.retried_error.has_value() &&
+                             d.retried_error->klass == ae::failure_class::transient &&
+                             d.grade == ev::grade_outcome::success;
+            }
+        }
+        AE_CHECK(retried == 5u && retried_ok && r.baseline_ungraded == 0u,
+                 "S10: each transient trial is retried once (same slot, first error kept) and the retry counts");
+
+        // A fault that persists: only the pool's worth of trials is retried, the rest stay ungraded.
+        auto down = make_cell_factory([](trial_arm arm, std::size_t t) {
+            return (arm == trial_arm::baseline && t == 0) ? cell::transient : cell::ok;
+        });
+        auto small_pool = base_spec(6);
+        small_pool.max_retried_trials = 2;
+        auto r2 = drive(ev::run_gross_harm_screen(down, make_summarizer_factory(), small_pool));
+        std::size_t twice = 0;
+        for (auto const& d : r2.trials) twice += d.attempts == 2 ? 1 : 0;
+        AE_CHECK(twice == 2u && r2.baseline_ungraded == 5u,
+                 "S10: the pool bounds retries (2 of 5), and a fault that recurs stays ungraded");
+
+        // A host cancel is not retried: it means stop.
+        auto cancel = make_cell_factory([](trial_arm arm, std::size_t t) {
+            return (arm == trial_arm::baseline && t == 0) ? cell::canceled : cell::ok;
+        });
+        auto r3 = drive(ev::run_gross_harm_screen(cancel, make_summarizer_factory(), spec));
+        bool none_retried = true;
+        for (auto const& d : r3.trials) none_retried = none_retried && d.attempts == 1;
+        AE_CHECK(none_retried && r3.baseline_ungraded == 5u, "S10: a canceled run is never retried");
+
+        // The pool is charged to the call budget up front: (60 trials + 16 retries) * 4 turns * 2 = 608.
+        auto over = base_spec(6);
+        over.max_retried_trials = 16;
+        over.max_model_calls = 607;
+        auto r4 = drive(ev::run_gross_harm_screen(flaky, make_summarizer_factory(), over));
+        auto at = over;
+        at.max_model_calls = 608;
+        auto r5 = drive(ev::run_gross_harm_screen(flaky, make_summarizer_factory(), at));
+        AE_CHECK(r4.setup_error.has_value() && r4.setup_error->code == "eval.screen_model_call_budget" &&
+                     !r5.setup_error.has_value(),
+                 "S10: the retry pool counts against max_model_calls before any trial runs (I8)");
+    }
+
+    // ---- Scenario 11: the factories see each trial's own seed ----------------------------------------
+    // ADR-181 §8 residual (closed): factories got only (arm, task), so the per-trial seed could never reach
+    // a provider's own sampling seed.
+    {
+        auto seen = std::make_shared<std::map<std::string, std::uint64_t>>();
+        auto recording = [seen](ev::TrialSlot const& slot) {
+            (*seen)[slot.trial_id] = slot.trial_seed;
+            return ScriptedChatClient(script_for(cell::ok));
+        };
+        auto r = drive(ev::run_gross_harm_screen(recording, make_summarizer_factory(), base_spec(6)));
+        bool match = seen->size() == r.trials.size();
+        for (auto const& d : r.trials) {
+            auto it = seen->find(d.trial_id);
+            match = match && it != seen->end() && it->second == d.trial_seed;
+        }
+        AE_CHECK(match, "S11: every factory call carries that trial's id and its recorded derived seed");
+    }
+
+    // ---- Scenario 12: the summarizer has a token budget of its own -----------------------------------
+    // ADR-181 §8 residual (closed): `token_budget` bounded only the agent's model; `MemoryProvider` never
+    // reports the summarizer's usage. The mock summarizer reports 2 tokens per call; every trial here
+    // makes two turns, so two summarizer calls without a budget.
+    {
+        auto factory = make_cell_factory([](trial_arm, std::size_t) { return cell::ok; });
+        auto spec = base_spec(6);
+        spec.retain_recordings = true;
+        auto free_run = drive(ev::run_gross_harm_screen(factory, make_summarizer_factory(), spec));
+        bool unbounded = true;
+        for (auto const& d : free_run.trials) {
+            unbounded = unbounded && d.trial_result.summarizer_recordings.size() == 2u &&
+                        d.trial_result.summarizer_tokens == 4u && !d.trial_result.summarizer_budget_exhausted;
+        }
+        AE_CHECK(unbounded, "S12: with no budget, every summarizer call runs and its tokens are counted");
+
+        spec.summarizer_token_budget = 1;  // the first call (0 < 1) runs; the second is refused
+        auto capped = drive(ev::run_gross_harm_screen(factory, make_summarizer_factory(), spec));
+        bool refused = true;
+        for (auto const& d : capped.trials) {
+            refused = refused && d.trial_result.summarizer_recordings.size() == 1u &&
+                      d.trial_result.summarizer_tokens == 2u && d.trial_result.summarizer_budget_exhausted &&
+                      d.grade == ev::grade_outcome::success;
+        }
+        AE_CHECK(refused, "S12: once spent, further summarizer calls are refused before reaching the model");
+
+        // A summarizer reporting 100 tokens a call against token_budget = 100: the agent's own 4 tokens fit,
+        // and the summarizer -- inheriting the same 100 -- gets one call, not two.
+        auto heavy = [](ev::TrialSlot const&) {
+            MockSummarizerClient c;
+            c.tokens_each = 50;
+            return c;
+        };
+        auto inherits = base_spec(6);
+        inherits.retain_recordings = true;
+        inherits.token_budget = 100;
+        auto r_inh = drive(ev::run_gross_harm_screen(factory, heavy, inherits));
+        bool inherited = true;
+        for (auto const& d : r_inh.trials) {
+            inherited = inherited && d.grade == ev::grade_outcome::success &&
+                        d.trial_result.summarizer_recordings.size() == 1u && d.trial_result.summarizer_budget_exhausted;
+        }
+        AE_CHECK(inherited, "S12: an unset summarizer budget defaults to the trial's token_budget");
+    }
+
+    // ---- Scenario 13: a streamed failure is classified by the provider's own error ------------------
+    // ADR-181 §8 residual (closed): `AgentSession` labels every unclean stream `transient`
+    // (`run.stream_incomplete`), even a provider's 400. The recording keeps the real error (ADR-177).
+    {
+        auto stream_failed = [](std::optional<ae::error> inner) {
+            ev::TrialResult t;
+            t.outcome = std::unexpected(ae::error{ae::failure_class::transient, "chat_stream() did not reach a clean terminal",
+                                                   "run.stream_incomplete"});
+            ae::ChatCallRecording rec;
+            rec.mode = ae::recording_mode::streaming;
+            rec.stream_terminal = "failed";
+            rec.stream_error = std::move(inner);
+            t.recordings.push_back(std::move(rec));
+            return t;
+        };
+        auto grader = task_grader();
+        auto overflow = stream_failed(ae::error{ae::failure_class::contract, "context length exceeded", "provider.http_400"});
+        auto timeout = stream_failed(ae::error{ae::failure_class::transient, "read timed out", "net.timeout"});
+        auto unknown = stream_failed(std::nullopt);
+        AE_CHECK(ev::detail::grade_trial(grader, overflow) == ev::grade_outcome::failure &&
+                     !ev::detail::worth_a_retry(overflow),
+                 "S13: a stream the provider ended with a contract error is a failure, and is not retried");
+        AE_CHECK(ev::detail::grade_trial(grader, timeout) == ev::grade_outcome::ungraded &&
+                     ev::detail::worth_a_retry(timeout),
+                 "S13: a stream that timed out is a failed measurement, and is retried");
+        AE_CHECK(ev::detail::grade_trial(grader, unknown) == ev::grade_outcome::ungraded,
+                 "S13: with no recorded provider error the session's own label stands");
     }
 
     if (g_failures != 0) {
