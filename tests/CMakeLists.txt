@@ -1863,6 +1863,13 @@ add_executable(test_rt_append_log_store test_rt_append_log_store.cpp)
 target_link_libraries(test_rt_append_log_store PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_append_log_store COMMAND test_rt_append_log_store)
 
+# ---- ADR-181 phase 1 -- rt::BackgroundJobRunner, the in-memory core: per-job cancel, run cascade,
+# Background<N> counting cancel_requested jobs, allowlist EffectContext, progress sink, shutdown.
+add_executable(test_rt_background_job_runner test_rt_background_job_runner.cpp)
+target_link_libraries(test_rt_background_job_runner PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_background_job_runner COMMAND test_rt_background_job_runner)
+set_tests_properties(test_rt_background_job_runner PROPERTIES TIMEOUT 120)
+
 # ---- ADR-037 -- agentengine::rt::WorkflowSupervisor's time-travel surface (014 §5's "rewind to
 # any retained checkpoint"), wiring rt::AppendLogStore into the gap workflow_supervisor.hpp's own
 # Slice 2 banner named as deferred. Additive over Slice 2's existing single-slot

@@ -1,7 +1,8 @@
 # ADR-181 — Durable, cancellable, retryable background jobs
 
 - **Status**: **Proposed — design pass + red-team pass 1 (2026-09-23), revised (§10). Owner decisions
-  Q1–Q3 recorded (§8). Not implemented.** Where §10 and an earlier section disagree, §10 wins.
+  Q1–Q3 recorded (§8). Phase 0 (§11) and phase 1 (§12) implemented and proven; phases 2–6 not
+  started.** Where §10 and an earlier section disagree, §10 wins.
 - **Date**: 2026-09-23
 - **Origin**: `docs/planning/first-class-rag-gap.md` §A2. Indexing a large host folder for RAG is a
   long job that needs to run in the background, report progress, be cancelled, survive an app restart,
@@ -502,6 +503,68 @@ Each finding and its disposition:
 - **Residuals.** Every append still re-reads the whole file, so the total write cost of a log grows
   quadratically (unchanged from before). The directory entry of a newly created log is not synced.
   Cross-process writers are unsupported.
+
+**Follow-up found in phase 1:** the phase 0 commit wrote `std::numeric_limits<std::uint32_t>::max()`,
+which breaks any file that includes `<windows.h>` without `NOMINMAX`, because `max` is a macro there.
+Configure-time check ADR-096 C2 compiles exactly such a file, so the next CMake reconfigure failed. The
+phase 0 full build had passed only because CMake did not reconfigure. Fixed with
+`(std::numeric_limits<std::uint32_t>::max)()`.
+
+## 12. Phase 1 — done (2026-09-23): the in-memory runner
+
+`include/agentengine/rt/background_job_runner.hpp`, `tests/test_rt_background_job_runner.cpp` (R1–R17).
+
+- **What it is.** A bounded pool of worker threads the runner owns. Every job has its own
+  `std::stop_source`. The run cascade (§8 Q1) is a `std::stop_callback` on the submitting run's token.
+  `Background<max_concurrent>` counts every non-terminal job of an owner, including
+  `cancel_requested`. Capabilities and the tool descriptor are copied into the job. The tool's
+  `EffectContext` is built from an allowlist, and `EffectContext` gained `idempotency_key` and
+  `attempt` (C1). Job ids come from the system CSPRNG. `cancel()`/`list()` check principal and tenant.
+  Progress and state changes go to a host sink, never with the runner's lock held, and each event
+  carries a per-job sequence number. `shutdown(deadline)` joins exited workers and detaches the rest,
+  disables the sink, then waits for in-flight sink calls, so the sink is never called after it returns.
+- **Terminal states (§10 gap 5).** A success after a cancel is `succeeded` with `cancel_too_late`. When
+  a stop was requested and the tool failed:
+  - it returned `tool.canceled_no_effect` → `canceled`;
+  - it is `at_most_once` → `indeterminate`;
+  - otherwise → `canceled`.
+- **Approval.** The runner does not run step 5; it belongs to the submitter's admission path (phase 5
+  routes it through `admit_call()`). To fail closed, a tool that is not `never_require` is refused
+  unless the submitter sets `approval_attested`.
+- **Lifetime details handled.**
+  - `std::stop_callback`'s destructor blocks while its callback runs, and the callback takes the
+    runner's lock, so a finished job's callback is always moved out and destroyed after unlocking.
+  - The cascade callback may destroy its own `stop_callback` from inside itself; the standard allows
+    that on the same thread, so the callback copies its captures to locals first.
+  - Code holds its own `shared_ptr` to a job before finishing it, because finishing can evict it
+    from the table.
+- **Proof.**
+  - 67/67 checks pass, and 40 of 40 consecutive runs pass.
+  - Under AddressSanitizer, 10 of 10 runs are clean, with `/W4 /WX`. The phase 0 log store test is also
+    clean under AddressSanitizer.
+  - Seven planted bugs, each caught by the check written for it:
+
+    | Planted bug | Checks that fail |
+    |---|---|
+    | cap ignores `cancel_requested` jobs | 1 (R4) |
+    | tool gets a default token instead of the job's | 9 (R2 …) |
+    | `cancel()` does not request a stop | 10 (R2 …) |
+    | cascade not registered | 2 (R5) |
+    | tenant not compared | 1 (R6) |
+    | bound handles not revoked | 1 (R13) |
+    | sink not disabled at shutdown | 1 (R17) |
+- **Positive control for the cap bypass, against today's `AgentSession`.** A scratch program with
+  `Background<1>` and a tool that ignores cancellation ran `start_background_task()` →
+  `cancel_standing_effect()` five times. Output: `accepted=5 peak_concurrent=5`. The runner's R4
+  refuses the second job while the first is still running. The session itself keeps the bypass until
+  phase 5 moves it onto the runner.
+- **Residuals added by phase 1.**
+  - The foreground `invoke_tool()` path does not set `EffectContext::idempotency_key`/`attempt` yet.
+  - Jobs never promote an oversized result to a blob: there is no `blob_sink` in the allowlist. A large
+    result is inlined; to be revisited with the phase 5 session wiring.
+  - `approval_attested` is a submitter statement, not a check the runner can verify.
+  - `shutdown()` waits for in-flight sink calls without a deadline, so a sink that blocks forever
+    blocks shutdown.
 
 A second red-team pass is owed once phases 0–2 are implemented. The design has changed a lot, and the
 failure paths are where the Vulkan backend's Critical findings were (ADR-180 §4e).
