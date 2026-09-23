@@ -87,7 +87,8 @@ static_assert(ContextProvider<HistoryProvider<Window<8>>>,
 
 // Milestone 4 Phase B4: keeps the last `N` messages verbatim (same rule `Window<N>` uses above)
 // and folds everything OLDER than that into exactly one synthesized `system` summary message,
-// produced by calling `SummarizerT::chat()` once per turn against the older slice. 005 §7 G3's
+// produced by calling `SummarizerT::chat_stream()` once per turn with ADR-182's compaction instruction
+// and the older slice as a transcript. 005 §7 G3's
 // "bounded divergence for `Summarize`" gate holds by construction here: given the SAME older
 // slice and the SAME (mock, in every test this milestone runs, decision 8) summarizer, the
 // summary is byte-identical every time — the only source of "divergence" from the uncompacted
@@ -104,8 +105,7 @@ public:
     // ADR-035 Phase 3: drains `SummarizerT::chat_stream()` (never `chat()`, ahead of that method's
     // eventual removal from the `ChatClient` concept) via the shared `drain_chat_stream()` helper.
     // Unlike `MemoryProvider::on_turn_end`'s best-effort extraction, a summarization failure here
-    // still propagates (`std::unexpected`) -- this call site's own semantics are unchanged from
-    // when it called `chat()` directly, only the underlying method it drains changed.
+    // still propagates (`std::unexpected`); ADR-182 adds one more such failure, a reply with no prose.
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& session_ctx,
                                                                  EffectContext& ctx) {
         auto const& h = session_ctx.history;
@@ -130,16 +130,20 @@ public:
             co_return std::unexpected(
                 drained_failure_to_agent_error(drained.failure, "history.summarize_failed"));
         }
-        // ADR-182: a summary is prose. A tool call (or reasoning) item in the reply would otherwise ride
-        // into the conversation inside a `system` message; only the text is kept, and a reply with no text
-        // is a failed summary, not an empty one (dropping the older history silently would be the 005 §4
-        // "compaction that drops content" defect).
-        std::erase_if(drained.accumulated.content,
-                      [](ContentItem const& item) { return !std::holds_alternative<Text>(item.value); });
-        if (drained.accumulated.content.empty()) {
+        // ADR-182: a summary is prose -- the reply's text items, with any inline reasoning removed. A tool
+        // call, reasoning, data or attachment item would otherwise ride into the conversation inside a
+        // `system` message. A reply with no prose -- including an empty or whitespace-only text item, which
+        // an OpenAI-compatible backend returns for an empty completion -- is a FAILED summary, not an empty
+        // one: dropping the older history silently is the 005 §4 "compaction that drops content" defect.
+        std::string summary_text = compaction_summary_text(drained.accumulated);
+        if (summary_text.empty()) {
             co_return std::unexpected(error{failure_class::contract, "the summarizer returned no summary text",
                                             "history.summarize_failed"});
         }
+        drained.accumulated.content.clear();
+        ContentItem summary_item{};
+        summary_item.value = Text{std::move(summary_text)};
+        drained.accumulated.content.push_back(std::move(summary_item));
 
         // 005 §4: "a `system` summary message" — the summarizer's own reply, re-labeled `system`
         // regardless of what role it came back as, since a summary is never attributable to the

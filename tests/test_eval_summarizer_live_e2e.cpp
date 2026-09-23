@@ -168,9 +168,9 @@ int main() {
             for (RecordedChunk const& chunk : rec.chunks) {
                 if (auto const* piece = std::get_if<Text>(&chunk.update.delta.value)) text += piece->text;
             }
-            no_markup = no_markup && !summarizer_prompt_detail::looks_like_tool_call_markup(text);
+            no_markup = no_markup && !summarizer_prompt_detail::makes_tool_call(text);
         }
-        check(no_markup, "1: no summarizer reply carries tool-call markup (ADR-182)");
+        check(no_markup, "1: no summarizer reply makes a tool call (ADR-182)");
         check(!result.summarizer_recordings.empty() &&
                   result.summarizer_recordings.front().request.messages.size() == 2u &&
                   result.summarizer_recordings.front().request.messages.front().role == role::system,

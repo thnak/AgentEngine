@@ -89,10 +89,12 @@ standing of a `UserStated` one — see §6.
   turn — an ordinary, budgeted, `EffectContext`-carrying model call, recorded exactly like any other
   (004 §6). There is no background thread the trace does not know about.
 - **The extraction call says what it is for** (ADR-182). The summarizer is sent a fixed, host-authored
-  instruction (`system`) and the turn rendered as a delimited, tainted transcript (`user`) — data to
-  read, not turns to answer — with no tools offered; it may answer `NONE`. A reply that is empty, `NONE`,
-  oversized, or carries a tool call or tool-call markup writes nothing. Sending the turn's raw messages,
-  as before ADR-182, made a real model continue the conversation, and that reply was stored as memory.
+  instruction (`system`) and the turn — including the user's message that started it — as a tainted JSON
+  Lines transcript (`user`), one object per item with the speaker as a field, so content cannot pose as
+  someone else; data to read, not turns to answer; no tools offered; it may answer `NONE`. Only the reply's
+  prose is stored, and nothing when it is `NONE`, empty, oversized, or makes a tool call. Sending the
+  turn's raw messages, as before ADR-182, made a real model continue the conversation, and that reply was
+  stored as memory.
 - **Extraction is opt-in policy, not implicit behaviour.** An agent with no memory-writing
   `ContextProvider` configured writes nothing. Whether extraction happens, on what cadence, and
   under what budget is an operator decision, not a default the engine assumes.

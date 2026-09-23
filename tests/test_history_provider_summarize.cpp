@@ -135,15 +135,17 @@ int main() {
              "B4-R2: the summary message is re-labeled `system` regardless of what role the "
              "summarizer's own reply carried (005 §4)");
     // ADR-182: the summarizer now receives TWO messages -- the fixed compaction instruction, then the
-    // older slice rendered as one delimited transcript -- instead of the older messages themselves (which a
+    // older slice rendered as one JSON Lines transcript -- instead of the older messages themselves (which a
     // real model answers as a conversation). The mock echoes both, so this still proves the real older
     // content, and only it, reached the summarizer.
     {
         std::string const summary = out1.has_value() && out1->messages.size() == 3 ? text_of(out1->messages[0]) : "";
         AE_CHECK(summary.starts_with("SUMMARY(2):You compress the earlier part of a conversation") &&
-                     summary.find("<transcript>\n[user] one\n") != std::string::npos &&
-                     summary.find("] two\n") != std::string::npos &&
-                     summary.find("] three\n</transcript>") != std::string::npos &&
+                     summary.find(";<transcript-") != std::string::npos &&
+                     summary.find(R"({"speaker":"user","kind":"text","text":"one"})") != std::string::npos &&
+                     summary.find(R"({"speaker":"user","kind":"text","text":"two"})") != std::string::npos &&
+                     summary.find(R"({"speaker":"user","kind":"text","text":"three"})") != std::string::npos &&
+                     summary.find("</transcript-") != std::string::npos &&
                      summary.find("four") == std::string::npos && summary.find("five") == std::string::npos,
                  "B4-R3: the summarizer got the compaction instruction plus a transcript of exactly the OLDER 3 "
                  "messages (one/two/three) -- the real content, not a placeholder, and not the recent two");

@@ -1453,17 +1453,17 @@ pointer never outlives the trial; the stream rule's "last recording" is the fail
   final chunk (no estimate needed, `summarizer_tokens` equals the reported sum: 88+197 and 44+188 tokens); one
   summarizer call per agent call; a 1-token budget admits exactly one real call, refuses the rest before they reach
   the model, and the trial still converges.
-- **FIXED by ADR-182 — the summarizer was never told to summarize** (found by that live test; production `MemoryProvider`, outside
-  this ADR's code): `on_turn_end` sends the turn's messages with no instruction, so a real model simply CONTINUES
-  the conversation — it answered the user ("Deploy region is now set to eu-west-1. What would you like to do
-  next…") — and in one run emitted DeepSeek's raw tool-call markup (`<｜｜DSML｜｜ invoke name="deploy">…`) as plain
-  text. Whatever comes back is written verbatim as an episodic `MemoryItem` and injected into later turns. Every
-  scripted test hid this, because a mock returns "summary: …" whatever it is sent. Consequences here: the
-  episodic items a trial accumulates are conversation continuations, not summaries, so arm-to-arm memory contents
-  are noisier than §3.2 assumes; in production it is a memory-quality and I3-adjacent concern (model output,
-  including tool-call-shaped text, persisted and re-injected). ADR-182 gives both declared summarizers a fixed
-  instruction and the conversation as a delimited transcript, and drops memory replies that are `NONE`, oversized
-  or carry tool-call markup; re-run live, the summaries became facts ("The deploy region is set to eu-west-1.").
+- **FIXED by ADR-182 — the summarizer was never told to summarize** (found by that live test; production
+  `MemoryProvider`, outside this ADR's code). Before ADR-182, `on_turn_end` sent the turn's messages with no
+  instruction, so a real model CONTINUED the conversation — it answered the user ("Deploy region is now set to
+  eu-west-1. What would you like to do next…") — and in one run emitted DeepSeek's raw tool-call markup
+  (`<｜｜DSML｜｜ invoke name="deploy">…`) as plain text, which was written verbatim as an episodic `MemoryItem`
+  and injected into later turns. Every scripted test hid it, because a mock returns "summary: …" whatever it is
+  sent. Until then, the episodic items a trial accumulated were conversation continuations, not summaries. ADR-182
+  gives both declared summarizers a fixed instruction and the conversation (with the user's message) as a JSON
+  Lines transcript, and stores only a memory reply's prose — never `NONE`, an oversized reply, or an actual tool
+  call; re-run live, the summaries became attributed facts ("The deploy region was set to eu-west-1 (stated by the
+  assistant)").
 - **CLOSED ON PAPER — streamed failures are classified by the provider's recorded error**, not the session's
   blanket `transient` (§7). `run_trial` still uses `chat()`, so the rule is unreachable today and proven only
   against hand-built `TrialResult`s. Turning streaming on for trials first needs `RecordingChatClient::chat_stream`'s
