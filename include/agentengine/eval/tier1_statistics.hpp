@@ -20,11 +20,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <numeric>
 #include <random>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/error.hpp"
@@ -126,6 +128,32 @@ template <class DecreasingFn>
     return hi;
 }
 
+// Gross-harm screen red-team (m2): `std::shuffle`, `std::bernoulli_distribution` and
+// `std::uniform_int_distribution` are implementation-defined -- the same seed produced a different
+// shuffle and a different min-task p-value under MSVC's and libstdc++'s standard libraries, so the
+// "same seed => bit-identical result" replay claim (I5) held only within one standard library, and CI
+// builds with three. `std::mt19937_64`'s own output sequence IS fixed by the standard, so everything
+// below draws only raw engine output: an unbiased bounded draw by rejection sampling, and a
+// hand-written Fisher-Yates shuffle on top of it.
+[[nodiscard]] inline std::uint64_t uniform_below(std::mt19937_64& rng, std::uint64_t n) {
+    // n > 0. Reject the top (2^64 mod n) raw values so every residue is equally likely.
+    constexpr std::uint64_t kMax = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t const rejected_tail = (kMax % n + 1) % n;
+    std::uint64_t x = rng();
+    while (rejected_tail != 0 && x > kMax - rejected_tail) x = rng();
+    return x % n;
+}
+
+template <class RandomIt>
+void portable_shuffle(RandomIt first, RandomIt last, std::mt19937_64& rng) {
+    auto const n = static_cast<std::uint64_t>(last - first);
+    for (std::uint64_t i = n; i > 1; --i) {
+        std::uint64_t const j = uniform_below(rng, i);
+        using std::swap;
+        swap(first[static_cast<std::ptrdiff_t>(i - 1)], first[static_cast<std::ptrdiff_t>(j)]);
+    }
+}
+
 }  // namespace detail
 
 // The one-sided 100(1-alpha)% upper confidence bound on a true rate, given `x` observed events in
@@ -197,11 +225,10 @@ template <class DecreasingFn>
     double const obs = std::accumulate(diffs.begin(), diffs.end(), 0.0);
 
     std::mt19937_64 rng(seed);
-    std::bernoulli_distribution flip(0.5);
     std::uint32_t at_or_below = 0;
     for (std::uint32_t r = 0; r < num_permutations; ++r) {
         double sum = 0.0;
-        for (double d : diffs) sum += flip(rng) ? -d : d;
+        for (double d : diffs) sum += (rng() >> 63) != 0 ? -d : d;  // a fair coin from one raw bit
         if (sum <= obs + 1e-9) ++at_or_below;
     }
     return (static_cast<double>(at_or_below) + 1.0) / (static_cast<double>(num_permutations) + 1.0);
@@ -281,20 +308,19 @@ inline constexpr std::uint32_t kMaxHypergeometricK = 1'000'000;
     labels.reserve(two_k);
     std::vector<std::uint32_t> perm_a(tasks), perm_b(tasks);
 
-    // Disclosed residual (round-6 finding, not fixed here): this loop's cost is
-    // O(num_permutations * tasks * K) with no I8 budget cap of its own -- a caller passing a large but
-    // individually-valid `K`/`num_permutations`/task-count combination can make a single call run for
-    // tens of seconds or more (measured: ~75s at K=10,000, 100 tasks, 10,000 permutations). Tier 1's
-    // own real usage (K in the tens, ~30 tasks, low thousands of permutations) is nowhere near this,
-    // but nothing in this file enforces that -- the trial-running harness that will actually call this
-    // (not yet built, ADR-181 §8) is where a real I8 budget on this cost belongs.
+    // Round-6 finding R6-Num3: this loop's cost is O(num_permutations * tasks * K), and this function
+    // has no I8 budget cap of its own -- a large but individually-valid combination can run for tens of
+    // seconds (measured: ~75s at K=10,000, 100 tasks, 10,000 permutations). The budget lives in the
+    // caller: `run_gross_harm_screen` (eval_gross_harm_screen.hpp) refuses a spec whose
+    // `num_permutations * tasks * 2K` exceeds its `max_permutation_work` before any trial runs. Any
+    // OTHER future caller must bring its own.
     std::uint32_t at_or_below = 0;
     for (std::uint32_t r = 0; r < num_permutations; ++r) {
         for (std::size_t t = 0; t < tasks; ++t) {
             std::uint32_t const s = a_successes[t] + b_successes[t];
             labels.assign(s, 1u);
             labels.resize(two_k, 0u);
-            std::shuffle(labels.begin(), labels.end(), rng);
+            detail::portable_shuffle(labels.begin(), labels.end(), rng);
             std::uint32_t const a_prime =
                 static_cast<std::uint32_t>(std::count(labels.begin(), labels.begin() + K, 1u));
             perm_a[t] = a_prime;

@@ -7,10 +7,10 @@
   `eval_stub_tool.hpp`, `eval_trial.hpp`, plus the FIRST SLICE of multi-trial orchestration, §3.0 item 2's
   follow-rate screen (a separate, later PR): `eval_grader.hpp`, `eval_follow_rate_screen.hpp`, plus §3.0 item 3's
   gross-harm regression screen (another separate PR): `eval_screen_common.hpp`, `eval_gross_harm_screen.hpp` —
-  **219/219 checks green** across 9 test binaries (`test_lesson_candidate` 43, `test_eval_principal` 15,
+  **246/246 checks green** across 9 test binaries (`test_lesson_candidate` 43, `test_eval_principal` 15,
   `test_promotion_ack` 9, `test_tier1_statistics` 37, `test_eval_store` 9, `test_eval_stub_tool` 11,
-  `test_eval_trial_driver` 26, `test_eval_follow_rate_screen` 33, `test_eval_gross_harm_screen` 36 — executed checks;
-  that last file has 30 `AE_CHECK` sites because one pre-flight helper runs its check 7 times, every other file's
+  `test_eval_trial_driver` 26, `test_eval_follow_rate_screen` 43, `test_eval_gross_harm_screen` 53 — executed checks;
+  that last file has 41 `AE_CHECK` sites because one pre-flight helper runs its check 13 times, every other file's
   site and executed counts are equal) plus a compile-fail/positive-control TRIPLE (§3.8; round 2 added a third file
   proving the same rejection for `SummarizerT`), clean under MSVC, clang-cl
   `-Wall -Wextra -Werror -fsyntax-only`, and `tools/naming_lint.py`. **Two separate live runs against DeepSeek
@@ -88,16 +88,41 @@
   real trials, arms AND tasks interleaved by one seeded shuffle (§3.4), each graded for task success by its own
   task's grader, aggregated intention-to-treat into per-task diffs `(T − B)/K`, and fed to `tier1_statistics.hpp`'s
   `sign_flip_sum_lower_tail_pvalue` and `hypergeometric_min_task_lower_tail_pvalue` — the first real caller either
-  statistic has had. Each flags at a strict `p < 0.10` and either one flags the screen, exactly as `sim181g.py`
-  (the simulation behind §6 G3) does; `a` = baseline and `b` = treatment, the convention
-  `test_tier1_statistics.cpp` already fixed. It **closes R6-Num3**: the min-task statistic's
-  `O(num_permutations × tasks × K)` cost never had an I8 budget, and this caller is where the ADR said one belonged
-  — `max_permutation_work` (and `max_trials` for the model calls) are checked, overflow-safely, before any trial
-  runs. The follow-rate screen's shared helpers moved, unchanged, into `eval_screen_common.hpp`. 36/36 executed
-  checks, deterministic only, including the concentration case §6 G3 exists for — one of ten tasks fully broken,
-  where the sum statistic alone misses it and the min-task statistic catches it — and a planted swapped-arms
-  mutant that the suite catches twice (concentrated harm missed; a benefit flagged as harm). **Not yet
-  red-teamed.** Round 5 surfaced a real bug review
+  statistic has had. `a` = baseline and `b` = treatment, the convention `test_tier1_statistics.cpp` already fixed. It
+  **closes R6-Num3**: the min-task statistic's `O(num_permutations × tasks × K)` cost never had an I8 budget, and this
+  caller is where the ADR said one belonged — `max_permutation_work` and a `max_model_calls` budget (with `max_turns`
+  now required) are checked, overflow-safely, before any trial runs. The follow-rate screen's shared helpers moved
+  into `eval_screen_common.hpp` with unchanged behaviour, plus one new seed helper for the permutation tests. As
+  first built, a planted mutant swapping baseline/treatment in the min-task call was caught by two scenarios
+  (concentrated harm missed; a benefit flagged as harm). **Round 1 of red-teaming this slice (three independent
+  reviewers: budgets/confinement, statistics, doc coherence) found four real MAJOR defects, all fixed** (§7, "Round 1
+  (gross-harm screen slice)"). (1) *A lesson could turn its own harm into "no verdict"*: "ungraded" lumped the
+  agent's own failures (never finishing, never calling the tool) with genuine measurement failures, so a lesson
+  that stopped the model calling the tool in 2+ of 30 tasks tripped differential missingness and read `invalid`,
+  never `flagged` — and the lesson is model-derived, so its content chose the outcome (I3). (2) *No data read as
+  "no harm"*: every trial ungraded in both arms gave equal ungraded rates, so the run counted as valid and reported
+  not-flagged. (3) *The screen's real false-flag rate was ~10% at the design point and 12.5–16.6% at larger K*:
+  "either of two tests at α" was never corrected for running two tests. (4) *Neither calls nor memory were bounded
+  by default*: `max_turns` was optional and every transcript was kept — two default-spec trials ran to 3,002 model
+  calls, and retained memory grew with turns squared (1.3 GB at 800 tool rounds per trial). The fixes are one redesign, not four patches: `ungraded` now means only a failed MEASUREMENT (a
+  setup error, an infrastructure fault, a host cancel, or a grader that throws — §3.5's own wording); anything the
+  agent did, including not finishing and not calling the tool, is `success` or `failure`. Two new invalidity rules
+  refuse a verdict from too little graded data or from a baseline too weak to show harm. Each test now runs at α/2
+  (Bonferroni), so `alpha` is the screen's own false-flag bound. `max_turns` is required, a model-call budget
+  replaces `max_trials`, and full transcripts are dropped after grading unless the host opts in. The same fixes
+  apply to the follow-rate screen, which shared the first and last defects. MINOR fixes: NaN-safe parameter checks
+  (a NaN `alpha` used to silence every flag); pre-flight refuses a suite shape where either test can never reach
+  α/2 (≤ 4 tasks for the sum test, K ≤ 3 for the min-task test, too few permutations); and a hand-written
+  Fisher–Yates shuffle on raw `mt19937_64` output replaces `std::shuffle`/`std::bernoulli_distribution`, which are
+  implementation-defined — the same seed now gives byte-identical p-values under MSVC and libstdc++ (verified: both
+  print `0.22838580709645179` / `0.91354322838580715`; before, MSVC gave 0.907546 and g++ 0.909045). **Re-measured
+  with each test at α/2** (the reviewer's calibration harness, 2,000 replications, calling the real header):
+  false-flag 5.7% at 30 tasks × K=5, 7.5% at K=10, 8.8% at K=20 — all within α=10% (were 9.8% / 12.5% / 16.6%).
+  **Power fell**: uniform −5 pp 23%, −10 pp 53%, −15 pp 83% (were 32/65/91%); one of 30 tasks broken 11%, three
+  23%, five 39% (were 17/33/51%). E28's two halves — false flag ≤ 0.10 AND ≥ 0.90 power at −15 pp — cannot both
+  hold at 30 × 5 with this design; they never truly did, since the old ~10% false-flag rate's upper bound was ~0.11.
+  A host that prefers the old trade can set `alpha = 0.20`. 53/53 checks. **Round 1's fixes are not yet
+  re-red-teamed.** Round 5 surfaced a real bug review
   alone had not: the first `clopper_pearson_lower_bound`
   bisected against the wrong monotonicity direction and silently converged to a plausible-looking wrong answer;
   `test_tier1_statistics`'s own duality/boundary checks caught it before any reviewer looked. Round 5's own
@@ -276,7 +301,11 @@ someone builds it.
    §6 G3). Either statistic flags ⇒ the screen flags. **Executed (§6 G3):** false flag 1.5% (conservative, not
    inflated); combined with the sum test, "3 of 30 tasks fully broken" is now caught 30% of the time (was 23%), "5 of
    30" 56% (was 45%). It still cannot reliably see harm below ~10 pp uniform or a single fully-broken task, and says
-   so.
+   so. **As built (`eval_gross_harm_screen.hpp`), each statistic runs at α/2, not α** — the gross-harm slice's
+   round-1 red team measured "either statistic at α" at a ~10% combined false-flag rate at 30 × 5, rising to ~17% at
+   K=20, so `alpha` is now the screen's own bound. The price is power: at 30 × 5 the built screen catches −10 pp
+   uniform harm 53% of the time and "3 of 30 broken" 23% (the figures above are the uncorrected design's). See the
+   status header for the full re-measured table.
 4. **Steering manifest (§3.7).** Two sub-mechanisms share one set of trials, and round 4 found each needed a
    different exposure fix: the **containment** upper-bound check needs its N **pre-registered as delivered T
    trials**, not trials attempted — at anything below ~99% delivery the old "N=150 total" could never clear its own
@@ -288,7 +317,8 @@ someone builds it.
    `include/agentengine/eval/tier1_statistics.hpp`'s `containment_gate_blocks` (round 5) is the *comparison* half
    only: it takes an already-known `delivered_n` as an input parameter and reports whether the bound exceeds the
    margin. Nothing in this codebase yet runs the extra trials or tracks a delivered count toward N — that loop needs
-   the trial-running harness itself (§8), which this ADR has still not built. The **divergence** permutation test
+   arm S's own trial loop (§8, still unbuilt — the trial-running harness and both other Tier-1 screens now exist,
+   arm S does not). The **divergence** permutation test
    switches its primary
    exposure from delivered-only to **intention-to-treat** (§3.7, §6 G2): round 4 found that filtering to delivered
    trials only breaks the test's exchangeability whenever delivery itself correlates with the slot value (a
@@ -311,7 +341,8 @@ someone builds it.
    acknowledged_at}`, `acknowledge_rendered_lesson`, `verify_and_render_acknowledged_lesson` (re-renders and
    refuses the write on any digest mismatch — proven against a changed value, a changed salience, and a stale
    placeholder digest). `tests/test_promotion_ack.cpp`, 9/9 checks. The kill switch itself and the audit trail are
-   not yet built (§8) — they need the trial-running harness this round did not build.
+   not yet built (§8) — the trial-running harness they sit on now exists, but neither the switch nor the audit
+   trail has been wired to it.
 
 Tier-1 cost ≈ 40×k (k=1 by default) + 300 + 300/delivery_rate = **~640 agent runs ≈ 5,800 model calls at ≥ 90%
 delivery**, rising toward ~940 runs at the 50% `weak_delivery` floor (§6 G1), ~30 regression tasks, one probe by
@@ -803,7 +834,7 @@ reported figure is a **Clopper–Pearson 99% upper bound**, not a point estimate
 | E25 | G | Trial principals are minted under the reserved `eval:` tenant prefix, asserted at mint; a harness handed a production principal id or store is refused; `EvalStore` does not convert to a production store (compile-fail). **Round-4 positive control:** minting with a `:` in `tenant_id` or `id` — the constructible collision `(tenant "eval:acme", id "run1")` vs `(tenant "eval", id "acme:run1")` — is refused | Prefix unchecked; colon left unescaped |
 | E26 | G | The candidate digest covers the **rendered `MemoryItem` bytes and `template_version`**; changing the template changes the digest and marks earlier evidence stale | Digest over `{subject,key,value}` only |
 | E27 | G | Follow-rate screen: a baseline follow rate above 10% invalidates the probe; pass iff the exact 95% **lower** bound ≥ 0.5; seeded, 2000 runs: passes ≥ 0.90 at a true 0.85 and ≤ 0.05 at a true 0.5. **The probe is one, suite-authored task by default (round 4, §6 G4)**; a suite declaring k probes requires **all k** to pass, never any. **Round 5: `clopper_pearson_lower_bound`/`follow_rate_screen_passes` are real code** (`tier1_statistics.hpp`), pinned in `tests/test_tier1_statistics.cpp` against the exact published boundary (15-of-20 passes, 14-of-20 fails) and a closed-form identity (the zero/full-count bound is exactly `1 - alpha^(1/n)` by duality) | Point-estimate pass; any-of-k aggregation |
-| E28 | G | Gross-harm screen: seeded, 2000 runs: false-flag upper bound ≤ 0.10 under no effect; flags ≥ 0.90 at a true −15 pp; **the harm direction is one-sided** (a *benefit* is never flagged as harm). **Round 4 added a min-task, hypergeometric-permutation statistic alongside the sum** (§6 G3): either flagging ⇒ the screen flags; false-flag stays ≤ 0.02 (measured, conservative) and harm concentrated in 3–5 of 30 tasks is now caught 30–56% of the time, against 23–45% for the sum alone. **Round 5: both statistics are real code** (`sign_flip_sum_lower_tail_pvalue`, `hypergeometric_min_task_lower_tail_pvalue`, `tier1_statistics.hpp`), each with contract checks on malformed input and a determinism check (same seed ⇒ bit-identical p-value, I5). **A real bug in the FIRST version of `clopper_pearson_lower_bound`** (the follow-rate screen's own bound, not this row's statistic, but built and tested alongside it) **was caught by these tests, not by review**: a bisection was run against the wrong monotonicity direction and silently converged to a numerically-plausible but wrong root; `tests/test_tier1_statistics.cpp`'s Clopper-Pearson duality check and the published 15-of-20 boundary both failed until it was fixed — direct evidence for round 5's own premise that real code gives red-teaming more surface | Pooled-trial test; wrong direction; sum-only statistic blind to concentrated harm |
+| E28 | G | Gross-harm screen: seeded, 2000 runs: false-flag upper bound ≤ 0.10 under no effect; flags ≥ 0.90 at a true −15 pp; **the harm direction is one-sided** (a *benefit* is never flagged as harm). **Round 4 added a min-task, hypergeometric-permutation statistic alongside the sum** (§6 G3): either flagging ⇒ the screen flags; false-flag stays ≤ 0.02 (measured, conservative) and harm concentrated in 3–5 of 30 tasks is now caught 30–56% of the time, against 23–45% for the sum alone. **Round 5: both statistics are real code** (`sign_flip_sum_lower_tail_pvalue`, `hypergeometric_min_task_lower_tail_pvalue`, `tier1_statistics.hpp`), each with contract checks on malformed input and a determinism check (same seed ⇒ bit-identical p-value, I5). **A real bug in the FIRST version of `clopper_pearson_lower_bound`** (the follow-rate screen's own bound, not this row's statistic, but built and tested alongside it) **was caught by these tests, not by review**: a bisection was run against the wrong monotonicity direction and silently converged to a numerically-plausible but wrong root; `tests/test_tier1_statistics.cpp`'s Clopper-Pearson duality check and the published 15-of-20 boundary both failed until it was fixed — direct evidence for round 5's own premise that real code gives red-teaming more surface **As built (gross-harm slice, round 1): each statistic runs at α/2, and the two halves of this claim conflict at 30 × 5 — false flag 5.7% (≤ 0.10, holds) but power 83% at −15 pp (< 0.90, fails); the uncorrected design met the power half only by exceeding the false-flag half (≈ 9.8%, upper bound ≈ 0.11).** | Pooled-trial test; wrong direction; sum-only statistic blind to concentrated harm |
 | E29 | G | The `SlotTable` is hashed into the suite digest; a slot absent from it is never gated; a value outside a declared closed domain that cannot be normalised makes the slot `unsuitable` | Table outside the digest |
 | E30 | G | The kill-switch flag stops **new** injection of every promoted lesson within one turn, checked before both context assembly and the `recall` tool's return (round 4: `recall` is a second delivery route, §3.2, and had no stated coverage); an unset or unreadable opt-in ⇒ nothing is injected (fails closed, round 4). **Not claimed:** that the switch purges episodic copies the summarizer already wrote before it was thrown (§8) | Flag ignored; default-on; unreadable flag defaults to injecting; `recall` route uncovered |
 | E31 | G | The approver's acknowledgement is bound to a **digest of the rendered `MemoryItem`** (`content`, `tags`, `salience`) shown to them verbatim; the promotion path re-runs `render_lesson` and refuses the write if the recomputed digest differs from the acknowledged one. **Round 5: built for real** (`promotion_ack.hpp`); `tests/test_promotion_ack.cpp` proves refusal on a changed candidate value, a changed salience (round-4 F1's exact TOCTOU shape — `MemoryItem::id` alone does NOT catch this, since it digests `content` only), and a stale/placeholder digest | Ack recorded without a digest; promotion writes without recomputing |
@@ -1130,6 +1161,35 @@ non-determinism beyond the one seeded `std::mt19937_64`).
 
 **Round 1's own fixes are not yet re-red-teamed.**
 
+**Round 1 (gross-harm screen slice, §3.0 item 3)**: three independent reviewers, the first to attack
+`eval_gross_harm_screen.hpp`/`eval_screen_common.hpp`: budgets/confinement (**R-GH-Sec**), statistics
+(**R-GH-Stat**), doc coherence (**R-GH-Coh**). Every finding below was proven with a compiled program against the
+real headers, not argued.
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| R-GH-Sec1 | major | "Ungraded" lumped the agent's own failures (a trial that never finished; a grader finding no tool call) with real measurement failures. In the treatment arm those failures are usually the lesson's doing, so they tripped differential missingness and turned a clear harm into `invalid`: a lesson that made the model skip the tool in 2 of 30 tasks, or in all 30, reported no verdict, while the same harm as a wrong argument was flagged. The lesson is model-derived, so its content chose "no verdict" over "flagged" (I3) | One redesign in `eval_screen_common.hpp`'s `grade_trial`, shared by both screens: `ungraded` now means only a failed measurement — setup error, `failure_class::transient` infrastructure fault, host cancel, or a throwing grader (§3.5's wording). Any other failed run, including hitting `max_turns`/the token budget, is `failure`; unknown errors default to `failure` so a lesson-induced crash cannot hide as missing data. `make_tool_argument_grader` returns `failure`, not `ungraded`, when the tool was never called. Regression scenarios: S5 (never finishes → flagged), S5b (skips the tool in 30/30 → flagged), follow-rate S4b |
+| R-GH-Stat1 | major | Every trial ungraded in BOTH arms gave equal ungraded rates, so the run counted as valid, every diff was 0, and the screen said "no harm" from zero data (`sum_p=1, min_p=1, flagged=false` end to end); a baseline at the floor (0/K everywhere) did the same more quietly | Two new invalidity rules: `invalid_insufficient_grading` (either arm's graded fraction below `min_graded_fraction`, 0.9) and `invalid_uninformative_baseline` (baseline success below `min_baseline_success_rate`, 0.25); the first also added to the follow-rate screen. Scenarios S5d, S5e, follow-rate S4c |
+| R-GH-Stat2 | major | "Either statistic at α" had no correction for running two tests: measured under no effect (2,000 reps, and the sim's own Python functions agree at 3,000), ~10% combined false flag at 30 × 5, 12.5% at K=10, 16.6% at K=20. §6 G3's "sum 5.8%" was a 600-rep low draw | Each test at α/2 (Bonferroni); `alpha` documented as the screen's own bound and `per_test_alpha` reported. Re-measured: 5.7% / 7.5% / 8.8%. Power fell (−10 pp: 65% → 53%); E28's two halves now visibly conflict at 30 × 5, recorded on the E28 row and in the status header rather than hidden |
+| R-GH-Sec2 | major | `max_turns`/`token_budget` defaulted to unset and every transcript was kept: two default-spec trials ran to 3,002 model calls; retained memory grew with turns squared (1.3 GB at 800 rounds per trial), and 1,000 trials at 50 turns kept 3.2 GB. `max_trials` bounded neither calls nor memory | `max_turns` is required (both screens); `max_model_calls` (trials × max_turns) replaces `max_trials`; transcripts are dropped after grading unless `retain_recordings` is set (grading and delivery never read them). Scenarios S7d/S7d2/S9, follow-rate S6d/S6e/S8 |
+| R-GH-Sec3 | minor | A NaN `alpha` or `max_differential_missingness` passed validation (`x <= 0 \|\| x >= 1` is false for NaN) and then silenced every flag or disabled the missingness check | NaN-failing range helpers in `eval_screen_common.hpp`, used by both screens. S7i, S7j, follow-rate S6c |
+| R-GH-Stat3 | minor | Pre-flight accepted suite shapes in which a test can never flag: ≤ 3 tasks for the sum test at α=0.10, K=1 for the min-task test, or too few permutations for either — the screen still reported "not flagged" | Pre-flight now computes each test's smallest attainable (add-one-smoothed) p-value and refuses a spec where it cannot go below α/2. S7k, S7l, S7m |
+| R-GH-Stat4 | minor | `std::shuffle` and `std::bernoulli_distribution` are implementation-defined: the same seed gave different run orders and p-values under MSVC and libstdc++, so the "same seed ⇒ bit-identical" replay claim (I5) held within one standard library only, and CI builds with three | A rejection-sampled bounded draw and a hand-written Fisher–Yates shuffle on raw `mt19937_64` output (whose sequence the standard fixes), in `tier1_statistics.hpp`, used by both statistics and both screens. Verified byte-identical p-values under MSVC and g++-14 |
+| R-GH-Sec4 | minor | Missingness concentrated in one task can pass the pooled check yet drive (or mask) the min-task statistic | Disclosed, not fixed (§8): after R-GH-Sec1 only measurement failures are missing, and a per-task rule at K=5 would be mostly noise |
+| R-GH-Coh1 | major | `tier1_statistics.hpp`'s cost comment still said the caller that should enforce the I8 budget was "not yet built"; §3.0 item 4/5 still said the trial-running harness was unbuilt | Both corrected |
+| R-GH-Coh2 | minor | "Moved, unchanged" was loose (a new seed helper was added); the §8 concurrency note spoke only of the follow-rate screen's ~40 runs; the out-of-scope lists disagreed; `eval_trial.hpp`/`eval_grader.hpp` comments called multi-trial orchestration "the next slice"; the planted-mutant claim did not say which swap | All corrected; the new header now points to §8's list as the authoritative one |
+
+**Checked and held up (R-GH-Sec):** the permutation-work budget tracks the real cost (each permutation shuffles and
+counts 2K labels per task; the sign-flip test is cheaper), and the default runs in under a second at every shape
+tried (1 task × K=1 × 25M permutations, 500 × 1 × 50k, 100 × 5 × 50k, 1 × 500 × 50k); the overflow guards are correct
+(no spec found that wraps); confinement across trials and tasks holds (fixtures are plain data, each trial's
+captured calls are its own, `extra_capabilities` is copied by value); trial ids cannot collide. **(R-GH-Stat):** the
+C++ matches `sim181g.py` exactly (1/K scaling cannot change a sign-flip p-value; tie tolerances are far below the
+1/K step; the min-task resample is a correct hypergeometric draw); uncorrected power matched the ADR within Monte
+Carlo noise; degenerate inputs give sane p-values; no seed-stream collisions across 200k base seeds.
+
+**Round 1's fixes are not yet re-red-teamed.**
+
 ## 8. Residuals
 
 - **External validity.** A suite passing says nothing about production tasks. Task authorship (who writes them, how
@@ -1244,16 +1304,29 @@ non-determinism beyond the one seeded `std::mt19937_64`).
   `FollowRateScreenResult` widens the blast radius of a `cap::Secret` leak versus a single `run_trial` call — it
   does not, because a secret never reaches a `ChatRequest`/`ChatCallRecording` at all, in either case (resolved to
   an HTTP header strictly inside the real client's own implementation). **The §3.0 item 3 gross-harm regression
-  screen is now built too** (`eval_gross_harm_screen.hpp`, a further separate PR, not yet red-teamed — see the
-  status header). **Still unbuilt**: Tier-1 pre-registration hashing and the per-family attempt counter (§3.0's
+  screen is now built too** (`eval_gross_harm_screen.hpp`, a further separate PR; its round 1 found and fixed four
+  MAJOR defects, some shared with the follow-rate screen — see the status header and §7). **Still unbuilt**: Tier-1 pre-registration hashing and the per-family attempt counter (§3.0's
   "pre-registration and attempt accounting", E32); the baseline canary; per-task variance and the task-level CI
   (Tier 2, §3.6); parametrised task generators; the `SlotTable`/steering-manifest arm S and its permutation statistic over real tool-call
   arguments (§3.7, E29); `EvalSuite`/`EvalRun`/`PromotionEvidence`, the look ledger and family/shard bookkeeping
   (§3.3, E32); the kill switch and the promotion-write digest re-check's remaining wiring (§3.0 item 5); the
   `eval.tool_not_stub` refusal gate and the include-graph lint (§3.9); worktree-branch-per-trial (§3.4, deferred
-  until a stub tool with a real effect exists to confine); concurrent trial execution (this slice runs strictly
-  sequentially — a concurrency cap is Tier-1-suite-level machinery one probe's ~40 runs does not need). **This
-  follow-rate-screen slice's round-1 fixes are not yet re-red-teamed.**
+  until a stub tool with a real effect exists to confine); concurrent trial execution (both screens run strictly
+  sequentially — the follow-rate screen's ~40 runs and the regression screen's ~300 both finish in order; a
+  concurrency cap is Tier-1-suite-level machinery neither needs yet). **Neither screen's latest fixes are
+  re-red-teamed yet.**
+- **Missingness concentrated in one task is not caught by the pooled check** (gross-harm round 1, disclosed, not
+  fixed): §3.5's differential-missingness rule compares the two arms' POOLED ungraded rates, so a few failed
+  measurements piled into one task pass it while the min-task statistic reacts to exactly that task. Measured before
+  the fix below, 5 extra ungraded treatment trials in one task flagged 27% of null runs (94% if that task's baseline
+  succeeded 90% of the time). Two things bound it now: "ungraded" means only a failed measurement (infrastructure,
+  grader error), which a lesson cannot produce on demand, so this is a robustness limit on flaky graders and
+  providers, not an attack path; and it errs toward flagging, never toward a false "no harm". A per-task rule was
+  not added — at K=5 one missing trial is 20 pp of a task, so any per-task bound would be mostly noise.
+- **The regression screen's invalidity floors are declared, not derived**: `min_graded_fraction` (0.9) and
+  `min_baseline_success_rate` (0.25) exist to refuse the zero-information case (no data, or a suite the agent fails
+  anyway), not to tune power. A suite whose baseline sits just above 0.25 is valid but low-powered, and nothing
+  reports its power before the run (§3.6's pre-run power calculation is Tier 2 machinery).
 - **The per-trial deadline is unenforceable today** (§3.9): a watchdog and process memory cap stand in.
 - **`PromotionAck`'s attribution is recordable, not enforced** (round 5, R5-Sec3): `approver_id`/`acknowledged_at`
   are plain strings `acknowledge_rendered_lesson` never checks for non-emptiness or for naming a real,

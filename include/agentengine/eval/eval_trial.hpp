@@ -14,8 +14,8 @@
 // `MemoryProvider::recall`, so nothing user-supplied can reach it by construction); worktree-
 // branch-per-trial (§3.4) -- deferred because no stub tool in this slice touches the filesystem or
 // any real sandbox surface, so there is nothing yet for `discard()`-on-every-exit-path to confine;
-// `ReplayChatClient`'s request-digest check (§3.8, E9); multi-trial orchestration and wiring
-// `tier1_statistics.hpp` to real trial output (the next slice).
+// `ReplayChatClient`'s request-digest check (§3.8, E9). Multi-trial orchestration was built later, on
+// top of this driver: eval_follow_rate_screen.hpp and eval_gross_harm_screen.hpp.
 
 #include <optional>
 #include <string>

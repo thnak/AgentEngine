@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <iostream>
+#include <limits>
+#include <stdexcept>
 #include <memory>
 #include <memory_resource>
 #include <string>
@@ -124,17 +126,35 @@ auto make_summarizer_factory() {
     return [](ae::eval::trial_arm, std::size_t) { return MockSummarizerClient{}; };
 }
 
-// What one (arm, task) cell's scripted model does: complete the task correctly, complete it wrongly,
-// or never converge (a tool call repeated past max_turns -> the trial fails -> graded `ungraded`).
-enum class cell { ok, wrong, never };
+// What one (arm, task) cell's scripted model does:
+//   ok / wrong    -- do the task right / wrong;
+//   never         -- a tool call repeated past max_turns, so the agent never finishes (an OUTCOME: failure);
+//   skip          -- answer in text without ever calling the tool (an OUTCOME: failure);
+//   unmeasurable  -- a call the grader cannot judge; it throws, so the MEASUREMENT failed (`ungraded`).
+enum class cell { ok, wrong, never, skip, unmeasurable };
 
 std::vector<ScriptStep> script_for(cell c) {
     switch (c) {
-        case cell::ok:    return {tool_step("do_task", R"({"result":"ok"})"), text_step("done")};
-        case cell::wrong: return {tool_step("do_task", R"({"result":"wrong"})"), text_step("done")};
-        case cell::never: return {tool_step("do_task", R"({"result":"ok"})")};
+        case cell::ok:           return {tool_step("do_task", R"({"result":"ok"})"), text_step("done")};
+        case cell::wrong:        return {tool_step("do_task", R"({"result":"wrong"})"), text_step("done")};
+        case cell::never:        return {tool_step("do_task", R"({"result":"ok"})")};
+        case cell::skip:         return {text_step("I'd rather not use the tool for this.")};
+        case cell::unmeasurable: return {tool_step("do_task", R"({"result":"boom"})"), text_step("done")};
     }
     return {};
+}
+
+// The task grader, except that it throws on the "boom" sentinel -- the one remaining way to produce a
+// failed measurement (§3.5: a grader error is `ungraded`).
+ae::eval::GraderFn task_grader() {
+    auto inner = ae::eval::make_tool_argument_grader("do_task", "result", "ok");
+    return [inner](ae::eval::TrialResult const& t) {
+        for (auto const& c : t.tool_calls) {
+            auto const* r = c.arguments.find("result");
+            if (r != nullptr && r->is_string() && r->as_string() == "boom") throw std::runtime_error("unmeasurable");
+        }
+        return inner(t);
+    };
 }
 
 // A context-blind scripted client cannot tell arms or tasks apart on its own, so the factory is told
@@ -178,7 +198,7 @@ ae::eval::GrossHarmScreenSpec base_spec(std::size_t n_tasks) {
         task.task_id     = "task-" + std::to_string(t);
         task.task_prompt = user_message("please do task " + std::to_string(t));
         task.stub_tools  = {do_task_fixture()};
-        task.grader      = ae::eval::make_tool_argument_grader("do_task", "result", "ok");
+        task.grader      = task_grader();
         spec.tasks.push_back(std::move(task));
     }
     spec.k_per_arm = 5;
@@ -255,17 +275,22 @@ int main() {
     // ---- Scenario 4: a benefit is never flagged as harm (one-sided) ---------------------------------
     {
         auto spec = base_spec(6);
-        auto factory = make_cell_factory([](trial_arm arm, std::size_t) {
-            return arm == trial_arm::treatment ? cell::ok : cell::wrong;
+        // Baseline succeeds on even tasks only (50% -- above the uninformative-baseline floor); the
+        // treatment succeeds everywhere, so the odd tasks show a +1 benefit.
+        auto factory = make_cell_factory([](trial_arm arm, std::size_t t) {
+            return (arm == trial_arm::treatment || t % 2 == 0) ? cell::ok : cell::wrong;
         });
         auto r = drive(ev::run_gross_harm_screen(factory, make_summarizer_factory(), spec));
 
         AE_CHECK(!r.setup_error.has_value() && !r.invalid, "S4: valid run");
-        AE_CHECK(r.per_task[0].diff == 1.0, "S4: per-task diff is +1 (benefit)");
+        AE_CHECK(r.per_task[1].diff == 1.0 && r.per_task[0].diff == 0.0, "S4: per-task diff is +1 (benefit) where it differs");
         AE_CHECK(r.flagged.has_value() && !*r.flagged, "S4: a clear benefit is not flagged as harm");
     }
 
-    // ---- Scenario 5: differential missingness -- treatment never converges --------------------------
+    // ---- Scenario 5: a lesson that stops the agent finishing is HARM, not missing data ------------
+    // Red-team finding (MAJOR): this scenario used to assert `invalid` -- a non-converging treatment
+    // arm counted as ungraded, tripped differential missingness, and hid a total harm behind "no
+    // verdict". Not finishing is an outcome (ITT), so it is now flagged.
     {
         auto spec = base_spec(6);
         auto factory = make_cell_factory([](trial_arm arm, std::size_t) {
@@ -273,12 +298,62 @@ int main() {
         });
         auto r = drive(ev::run_gross_harm_screen(factory, make_summarizer_factory(), spec));
 
-        AE_CHECK(!r.setup_error.has_value(), "S5: no setup error");
+        AE_CHECK(!r.setup_error.has_value() && !r.invalid, "S5: a never-finishing treatment arm is a valid run");
+        AE_CHECK(r.treatment_ungraded == 0u, "S5: non-finishing trials are failures, not ungraded");
+        AE_CHECK(r.flagged.has_value() && *r.flagged, "S5: and the screen flags the harm");
+    }
+
+    // ---- Scenario 5b: a lesson that makes the agent skip the tool is harm too ---------------------
+    // The same finding's second shape: the built-in grader used to return `ungraded` when the tool
+    // was never called, so a lesson that suppressed the tool in enough tasks produced `invalid`.
+    {
+        auto spec = base_spec(30);
+        auto factory = make_cell_factory([](trial_arm arm, std::size_t) {
+            return arm == trial_arm::treatment ? cell::skip : cell::ok;
+        });
+        auto r = drive(ev::run_gross_harm_screen(factory, make_summarizer_factory(), spec));
+
+        AE_CHECK(!r.invalid && r.treatment_ungraded == 0u, "S5b: skipping the tool is a failure, not missing data");
+        AE_CHECK(r.flagged.has_value() && *r.flagged, "S5b: 30 of 30 tasks skipped is flagged, not 'invalid'");
+    }
+
+    // ---- Scenario 5c: differential missingness -- the MEASUREMENT fails in one arm only ----------
+    {
+        auto spec = base_spec(6);
+        auto factory = make_cell_factory([](trial_arm arm, std::size_t) {
+            return arm == trial_arm::treatment ? cell::unmeasurable : cell::ok;
+        });
+        auto r = drive(ev::run_gross_harm_screen(factory, make_summarizer_factory(), spec));
+
         AE_CHECK(r.treatment_ungraded == 30u && r.baseline_ungraded == 0u,
-                 "S5: every treatment trial is ungraded, no baseline trial is");
-        AE_CHECK(r.invalid_differential_missingness && r.invalid, "S5: flagged invalid");
+                 "S5c: only a failed measurement is ungraded");
+        AE_CHECK(r.invalid_differential_missingness && r.invalid, "S5c: flagged invalid");
         AE_CHECK(!r.flagged.has_value() && !r.sum_pvalue.has_value() && !r.min_task_pvalue.has_value(),
-                 "S5: no statistic is computed and no verdict is claimed for an invalid run");
+                 "S5c: no statistic is computed and no verdict is claimed for an invalid run");
+    }
+
+    // ---- Scenario 5d: no verdict from no data -------------------------------------------------------
+    // Red-team finding (MAJOR): every trial in BOTH arms ungraded gave equal ungraded rates, so the run
+    // counted as valid and reported "no harm" from zero data.
+    {
+        auto spec = base_spec(6);
+        auto factory = make_cell_factory([](trial_arm, std::size_t) { return cell::unmeasurable; });
+        auto r = drive(ev::run_gross_harm_screen(factory, make_summarizer_factory(), spec));
+
+        AE_CHECK(!r.invalid_differential_missingness && r.invalid_insufficient_grading && r.invalid,
+                 "S5d: both arms unmeasurable -> invalid for insufficient grading, not 'no harm'");
+        AE_CHECK(!r.flagged.has_value(), "S5d: no verdict is claimed");
+    }
+
+    // ---- Scenario 5e: a baseline floor carries no information --------------------------------------
+    {
+        auto spec = base_spec(6);
+        auto factory = make_cell_factory([](trial_arm, std::size_t) { return cell::wrong; });
+        auto r = drive(ev::run_gross_harm_screen(factory, make_summarizer_factory(), spec));
+
+        AE_CHECK(r.baseline_success_rate == 0.0 && r.invalid_uninformative_baseline && r.invalid,
+                 "S5e: a suite the baseline fails everywhere is invalid -- there is no success left to harm");
+        AE_CHECK(!r.flagged.has_value(), "S5e: no verdict is claimed");
     }
 
     // ---- Scenario 6: same-seed determinism (I5) ------------------------------------------------------
@@ -335,10 +410,15 @@ int main() {
         no_grader.tasks[1].grader = nullptr;
         expect_rejected(no_grader, "eval.gross_harm_grader_missing", "S7c: a task without a grader -> rejected");
 
-        auto too_many_trials = base_spec(6);  // 2*5*6 = 60 trials
-        too_many_trials.max_trials = 59;
-        expect_rejected(too_many_trials, "eval.gross_harm_trial_budget",
-                        "S7d: 2*K*tasks over max_trials -> rejected before any model call (I8)");
+        auto too_many_calls = base_spec(6);  // 2*5*6 = 60 trials * max_turns 4 = 240 calls
+        too_many_calls.max_model_calls = 239;
+        expect_rejected(too_many_calls, "eval.screen_model_call_budget",
+                        "S7d: trials * max_turns over max_model_calls -> rejected before any model call (I8)");
+
+        auto no_turns = base_spec(6);
+        no_turns.max_turns = std::nullopt;
+        expect_rejected(no_turns, "eval.screen_max_turns_required",
+                        "S7d2: an unset max_turns is rejected (it left each trial's calls unbounded)");
 
         auto too_much_work = base_spec(6);  // 2000 * 60 = 120,000 permutation units
         too_much_work.max_permutation_work = 119'999;
@@ -346,7 +426,7 @@ int main() {
                         "S7e: permutation work over max_permutation_work -> rejected (closes R6-Num3)");
 
         auto at_budget = base_spec(6);
-        at_budget.max_trials = 60;
+        at_budget.max_model_calls = 240;
         at_budget.max_permutation_work = 120'000;
         auto ok = drive(ev::run_gross_harm_screen(factory, make_summarizer_factory(), at_budget));
         AE_CHECK(!ok.setup_error.has_value() && ok.trials.size() == 60u,
@@ -359,12 +439,35 @@ int main() {
         auto huge_k = base_spec(1);
         huge_k.k_per_arm = ev::kMaxHypergeometricK + 1;
         expect_rejected(huge_k, "eval.gross_harm_k_too_large", "S7h: K beyond kMaxHypergeometricK -> rejected");
+
+        auto nan_alpha = base_spec(6);
+        nan_alpha.alpha = std::numeric_limits<double>::quiet_NaN();
+        expect_rejected(nan_alpha, "eval.gross_harm_alpha_range",
+                        "S7i: a NaN alpha is rejected (it used to pass and silence every flag)");
+
+        auto nan_missing = base_spec(6);
+        nan_missing.max_differential_missingness = std::numeric_limits<double>::quiet_NaN();
+        expect_rejected(nan_missing, "eval.gross_harm_differential_missingness_range",
+                        "S7j: a NaN missingness bound is rejected (it used to disable the check)");
+
+        expect_rejected(base_spec(4), "eval.gross_harm_sum_test_unreachable",
+                        "S7k: 4 tasks -> the sum test can never reach alpha/2 -> rejected, not run blind");
+
+        auto small_k = base_spec(6);
+        small_k.k_per_arm = 3;  // 1 / C(6,3) = 1/20 -> never below alpha/2 = 0.05
+        expect_rejected(small_k, "eval.gross_harm_min_task_test_unreachable",
+                        "S7l: K=3 -> the min-task test can never reach alpha/2 -> rejected");
+
+        auto few_perms = base_spec(6);
+        few_perms.num_permutations = 9;
+        expect_rejected(few_perms, "eval.gross_harm_sum_test_unreachable",
+                        "S7m: too few permutations for either test to reach alpha/2 -> rejected");
     }
 
     // ---- Scenario 8: every trial gets its own derived seed ------------------------------------------
     {
         auto factory = make_cell_factory([](trial_arm, std::size_t) { return cell::ok; });
-        auto spec = base_spec(4);
+        auto spec = base_spec(6);
         auto r = drive(ev::run_gross_harm_screen(factory, make_summarizer_factory(), spec));
         std::vector<std::uint64_t> seeds;
         bool any_equals_spec_seed = false;
@@ -376,6 +479,27 @@ int main() {
         AE_CHECK(!seeds.empty() && std::adjacent_find(seeds.begin(), seeds.end()) == seeds.end(),
                  "S8: every trial's derived seed is distinct (no correlated trials once a seed is consumed)");
         AE_CHECK(!any_equals_spec_seed, "S8: no trial is handed spec.seed verbatim");
+    }
+
+    // ---- Scenario 9: transcripts dropped by default; per-test alpha is alpha/2 ---------------------
+    {
+        auto factory = make_cell_factory([](trial_arm arm, std::size_t) {
+            return arm == trial_arm::treatment ? cell::wrong : cell::ok;
+        });
+        auto dropped = drive(ev::run_gross_harm_screen(factory, make_summarizer_factory(), base_spec(6)));
+        bool none_kept = !dropped.trials.empty();
+        for (auto const& d : dropped.trials) none_kept = none_kept && d.trial_result.recordings.empty();
+        AE_CHECK(none_kept, "S9: by default no trial keeps its full transcripts (memory grows trials x turns^2)");
+
+        auto keep = base_spec(6);
+        keep.retain_recordings = true;
+        auto kept = drive(ev::run_gross_harm_screen(factory, make_summarizer_factory(), keep));
+        bool all_kept = true;
+        for (auto const& d : kept.trials) all_kept = all_kept && !d.trial_result.recordings.empty();
+        AE_CHECK(all_kept && kept.flagged == dropped.flagged && kept.sum_pvalue == dropped.sum_pvalue,
+                 "S9: retain_recordings keeps them, and the verdict does not depend on them");
+        AE_CHECK(dropped.per_test_alpha == 0.05,
+                 "S9: each test is compared against alpha/2 (Bonferroni), so `alpha` bounds the screen");
     }
 
     if (g_failures != 0) {
