@@ -828,6 +828,12 @@ if(WIN32)
   add_executable(test_eval_gross_harm_screen test_eval_gross_harm_screen.cpp)
   target_link_libraries(test_eval_gross_harm_screen PRIVATE
     agentengine::core agentengine::worktree_store agentengine_warnings)
+  # The MSVC ASan build crossed the object-file section limit (C1128) once PR #100's scenarios S14-S16
+  # added more coroutine/lambda instantiations: a mechanical compiler limit, not a code defect -- the same
+  # documented, scoped-to-one-target /bigobj as agentengine_cli_chat in the root CMakeLists.txt.
+  if(MSVC)
+    target_compile_options(test_eval_gross_harm_screen PRIVATE /bigobj)
+  endif()
   add_test(NAME test_eval_gross_harm_screen COMMAND test_eval_gross_harm_screen)
 endif()
 
@@ -1180,6 +1186,15 @@ if(AGENTENGINE_WITH_HTTPS)
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_test(NAME test_eval_trial_driver_live_e2e COMMAND test_eval_trial_driver_live_e2e)
   set_tests_properties(test_eval_trial_driver_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
+
+  # ADR-181 PR #100: the summarizer's recording and token budget against a REAL summarizer model
+  # (every other test drives the summarizer with a scripted mock).
+  add_executable(test_eval_summarizer_live_e2e test_eval_summarizer_live_e2e.cpp)
+  target_link_libraries(test_eval_summarizer_live_e2e PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine::worktree_store agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_eval_summarizer_live_e2e COMMAND test_eval_summarizer_live_e2e)
+  set_tests_properties(test_eval_summarizer_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
 
   # ADR-180 (wire half): what BOTH real serializers do with the two shapes the routes produce.
   add_executable(test_memory_procedural_wire test_memory_procedural_wire.cpp)

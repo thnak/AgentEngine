@@ -79,7 +79,10 @@ struct GrossHarmScreenSpec {  // ae-naming-lint: allow GrossHarmScreenSpec — A
     std::uint32_t k_per_arm = 5;                  // ADR default
     double alpha = 0.10;                          // the SCREEN's false-flag bound; each test gets alpha/2
     std::uint32_t num_permutations = 2000;
-    std::uint64_t max_model_calls = 10'000;       // I8: 2K * tasks trials * max_turns * 2 calls/turn must fit
+    std::uint64_t max_model_calls = 10'000;       // I8: (2K * tasks + max_retried_trials) * max_turns * 2 must fit
+    // Retry pool: a trial whose run hits a transient provider fault is re-run once (same seed), until the
+    // pool is spent. Charged in full to max_model_calls up front.
+    std::uint32_t max_retried_trials = 16;
     std::uint64_t max_permutation_work = 50'000'000;  // I8: num_permutations * tasks * (2K + 1) must fit
     double max_differential_missingness = 0.05;   // §3.5's declared bound
     // Below this graded fraction in EITHER arm the run is `invalid`: too little was measured.
@@ -91,6 +94,7 @@ struct GrossHarmScreenSpec {  // ae-naming-lint: allow GrossHarmScreenSpec — A
     bool retain_recordings = false;               // keep full transcripts per trial (memory: trials x turns^2)
     std::uint64_t seed = 0;                       // I5: run order, per-trial and permutation seeds
     std::optional<std::uint64_t> token_budget;
+    std::optional<std::uint64_t> summarizer_token_budget;  // unset = token_budget (see TrialSpec)
     std::optional<std::uint64_t> max_turns;       // REQUIRED -- it bounds each trial's model calls
     std::size_t max_injected = 3;
     // Same role as TrialSpec::extra_capabilities -- host-supplied only, never model/candidate-
@@ -103,15 +107,21 @@ struct GrossHarmTrialDetail {  // ae-naming-lint: allow GrossHarmTrialDetail —
     trial_arm arm;
     std::string trial_id;
     std::uint64_t trial_seed;                     // this trial's own derived seed (I5)
-    grade_outcome grade;
+    std::uint32_t attempts = 1;                   // 2 if it was retried after a transient fault
+    std::optional<error> retried_error;           // the first attempt's error, when retried
+    std::string counted_trial_id;                 // the id `trial_result` ran under (`<trial_id>-retry1` if retried)
+    grade_outcome grade;                          // of the attempt that counts
+    bool faulted = false;                         // the FIRST attempt failed to measure (ungraded, or retried)
     TrialResult trial_result;                     // every trial kept (§3.5); full transcripts
                                                   // (`recordings`) only if spec.retain_recordings
+    std::optional<TrialResult> first_attempt;     // when retried; same transcript rule
 };
 
 struct GrossHarmTaskResult {  // ae-naming-lint: allow GrossHarmTaskResult — ADR-181 §3.0 item 3
     std::string task_id;
     std::uint32_t baseline_successes = 0, treatment_successes = 0;
     std::uint32_t baseline_ungraded = 0, treatment_ungraded = 0;
+    std::uint32_t baseline_faulted = 0, treatment_faulted = 0;  // first-attempt faults, recovered or not
     double diff = 0.0;                            // (treatment - baseline) / K, ITT
 };
 
@@ -121,6 +131,7 @@ struct GrossHarmScreenResult {  // ae-naming-lint: allow GrossHarmScreenResult �
     std::vector<GrossHarmTaskResult> per_task;    // in spec.tasks order
 
     std::uint64_t baseline_ungraded = 0, treatment_ungraded = 0;
+    std::uint64_t baseline_faulted = 0, treatment_faulted = 0;  // first-attempt faults (see `faulted`)
     double baseline_success_rate = 0.0;           // ITT, over all K * tasks baseline trials
     // Treatment trials in which the lesson reached the model by EITHER route. Informational only --
     // the screen is intention-to-treat and never filters on it -- but reported as one OR'd count so
@@ -236,7 +247,8 @@ inline constexpr double kReachabilityConfidence = 0.95;
         return error{failure_class::resource, "2 * k_per_arm * tasks overflows", "eval.screen_model_call_budget"};
     }
     std::uint64_t const trials = two_k * tasks;
-    if (auto budget = validate_call_budget(spec.max_turns, trials, spec.max_model_calls); budget.has_value()) {
+    if (auto budget = validate_call_budget(spec.max_turns, trials, spec.max_retried_trials, spec.max_model_calls);
+        budget.has_value()) {
         return budget;
     }
     // Both tests' work: the min-task test does perms x tasks x 2K, the sign-flip sum test perms x tasks
@@ -276,11 +288,11 @@ inline constexpr double kReachabilityConfidence = 0.95;
 // together with one seeded engine so arms AND tasks are interleaved (§3.4) -- grades each with its
 // task's own grader, and reports the screen.
 //
-// `make_inner`/`make_summarizer` are factories called as `f(trial_arm, std::size_t task_index)`, one
+// `make_inner`/`make_summarizer` are factories called as `f(TrialSlot const&)` (eval_screen_common.hpp), one
 // fresh client per trial, for the same reason the follow-rate screen takes factories (run_trial
-// consumes its clients by value, and a real client is not copy-safe for reuse). The extra
-// `task_index` exists for scripted TEST clients, which have no context to read and so must be told
-// which task they are scripting; a real client's factory ignores both arguments.
+// consumes its clients by value, and a real client is not copy-safe for reuse). The slot's `arm`,
+// `task_index` and `attempt` exist for scripted TEST clients, which have no context to read and so must
+// be told what they are scripting; a real client's factory reads only `trial_seed`.
 //
 // Intention-to-treat, the same one rule as the follow-rate screen: a trial is a success only if its
 // grader says so, an agent that failed to finish is a failure, and only a failed MEASUREMENT is
@@ -322,6 +334,10 @@ template <class InnerFactory, class SummarizerFactory>
     result.trials.reserve(slots.size());
     std::vector<std::uint32_t> task_arm_index(2 * n_tasks, 0);  // per (task, arm): 0..K-1, for trial_id
     std::uint64_t arm_index[2] = {0, 0};                        // per arm, across tasks: for the seed
+    std::uint64_t retries_left = spec.max_retried_trials;
+    // Harm-favouring success counts per task: a faulted TREATMENT trial is a failure even if its retry
+    // succeeded; a faulted BASELINE trial is a success even if its retry failed.
+    std::vector<std::uint32_t> baseline_worst(n_tasks, 0), treatment_worst(n_tasks, 0);
     for (auto const& [t, arm] : slots) {
         std::size_t const a = (arm == trial_arm::treatment) ? 1 : 0;
         RegressionTask const& task_def = spec.tasks[t];
@@ -338,40 +354,46 @@ template <class InnerFactory, class SummarizerFactory>
         trial_spec.lesson_salience = spec.lesson_salience;
         trial_spec.task_prompt = task_def.task_prompt;
         trial_spec.stub_tools = task_def.stub_tools;
-        trial_spec.trial_id = trial_id;
         trial_spec.seed = trial_seed;
         trial_spec.token_budget = spec.token_budget;
+        trial_spec.summarizer_token_budget =
+            spec.summarizer_token_budget.has_value() ? spec.summarizer_token_budget : spec.token_budget;
         trial_spec.max_turns = spec.max_turns;
         trial_spec.max_injected = spec.max_injected;
         trial_spec.extra_capabilities = spec.extra_capabilities;
 
-        // Round-2 red-team finding (MINOR): a throwing factory or `run_trial` used to escape the whole
-        // screen, losing every trial already paid for. It is now that one trial's setup error
-        // (`ungraded`, a failed measurement) and the screen carries on; in the treatment arm, the
-        // harm-favouring fallback keeps a lesson-induced throw from hiding harm.
-        TrialResult trial_result;
-        try {
-            trial_result = co_await run_trial(make_inner(arm, t), make_summarizer(arm, t), trial_spec);
-        } catch (...) {
-            trial_result = TrialResult{};
-            trial_result.setup_error =
-                error{failure_class::fatal, "the trial threw instead of returning", "eval.screen_trial_threw"};
-        }
+        // A throwing factory or `run_trial` is that trial's setup error (`ungraded`), and a transient
+        // fault gets one retry from the pool (eval_screen_common.hpp); in the treatment arm, the
+        // harm-favouring fallback keeps any lesson-induced fault from hiding harm.
+        TrialSlot const slot{arm, t, 0, trial_id, trial_seed};
+        detail::AttemptedTrial attempted =
+            co_await detail::run_trial_with_retry(make_inner, make_summarizer, slot, std::move(trial_spec), retries_left);
+        TrialResult trial_result = std::move(attempted.result);
         grade_outcome const grade = detail::grade_trial(task_def.grader, trial_result);
+        bool const faulted = detail::was_faulted(attempted.attempts, grade);
         detail::drop_transcripts_unless_retained(trial_result, spec.retain_recordings);
+        if (attempted.first_attempt.has_value()) {
+            detail::drop_transcripts_unless_retained(*attempted.first_attempt, spec.retain_recordings);
+        }
 
         GrossHarmTaskResult& tr = result.per_task[t];
         if (arm == trial_arm::treatment) {
             if (grade == grade_outcome::success) ++tr.treatment_successes;
             if (grade == grade_outcome::ungraded) ++tr.treatment_ungraded;
+            if (faulted) ++tr.treatment_faulted;
+            if (grade == grade_outcome::success && !faulted) ++treatment_worst[t];
             if (trial_result.delivered || trial_result.delivered_via_recall) ++result.treatment_delivered;
         } else {
             if (grade == grade_outcome::success) ++tr.baseline_successes;
             if (grade == grade_outcome::ungraded) ++tr.baseline_ungraded;
+            if (faulted) ++tr.baseline_faulted;
+            if (grade == grade_outcome::success || faulted) ++baseline_worst[t];
         }
 
-        result.trials.push_back(
-            GrossHarmTrialDetail{t, arm, std::move(trial_id), trial_seed, grade, std::move(trial_result)});
+        GrossHarmTrialDetail detail_row{t, arm, std::move(trial_id), trial_seed, attempted.attempts,
+                                        std::move(attempted.retried_error), std::move(attempted.counted_trial_id),
+                                        grade, faulted, std::move(trial_result), std::move(attempted.first_attempt)};
+        result.trials.push_back(std::move(detail_row));
     }
 
     std::uint64_t baseline_success_total = 0;
@@ -381,6 +403,8 @@ template <class InnerFactory, class SummarizerFactory>
         baseline_success_total += tr.baseline_successes;
         result.baseline_ungraded += tr.baseline_ungraded;
         result.treatment_ungraded += tr.treatment_ungraded;
+        result.baseline_faulted += tr.baseline_faulted;
+        result.treatment_faulted += tr.treatment_faulted;
     }
 
     std::uint64_t const per_arm = static_cast<std::uint64_t>(K) * n_tasks;
@@ -389,8 +413,11 @@ template <class InnerFactory, class SummarizerFactory>
     double const treatment_ungraded_rate = static_cast<double>(result.treatment_ungraded) / per_arm_n;
     result.baseline_success_rate = static_cast<double>(baseline_success_total) / per_arm_n;
 
+    // On FIRST-ATTEMPT faults, not on what is left ungraded after retries (PR #100 red team, MAJOR): a
+    // retry is a fresh draw, so post-retry counts let a lesson whose faults do not recur every time look
+    // exactly like one that causes none.
     result.invalid_differential_missingness = detail::differential_missingness_exceeds(
-        result.treatment_ungraded, result.baseline_ungraded, per_arm, spec.max_differential_missingness);
+        result.treatment_faulted, result.baseline_faulted, per_arm, spec.max_differential_missingness);
     // Red-team finding (MAJOR): with every trial in both arms ungraded, the arms' ungraded rates were
     // EQUAL, so the run counted as valid, every diff was 0, and the screen said "no harm" from zero
     // data. The same happens more quietly at a baseline floor -- a suite the agent fails everywhere has
@@ -402,18 +429,20 @@ template <class InnerFactory, class SummarizerFactory>
                                    result.invalid_insufficient_grading || result.invalid_uninformative_baseline;
 
     // ITT: the observed counts (an ungraded trial is already not a success). Harm-favouring: every
-    // ungraded BASELINE trial counted a success on top; ungraded treatment trials stay failures.
+    // FAULTED baseline trial counts a success and every faulted treatment trial a failure, whatever its
+    // retry did.
     std::vector<double> diffs;
     std::vector<std::uint32_t> baseline_successes, treatment_successes;
     diffs.reserve(n_tasks);
     baseline_successes.reserve(n_tasks);
     treatment_successes.reserve(n_tasks);
-    for (GrossHarmTaskResult const& tr : result.per_task) {
-        std::uint32_t const b = tr.baseline_successes + (result.worst_case_imputation ? tr.baseline_ungraded : 0);
+    for (std::size_t t = 0; t < n_tasks; ++t) {
+        GrossHarmTaskResult const& tr = result.per_task[t];
+        std::uint32_t const b = result.worst_case_imputation ? baseline_worst[t] : tr.baseline_successes;
+        std::uint32_t const tt = result.worst_case_imputation ? treatment_worst[t] : tr.treatment_successes;
         baseline_successes.push_back(b);
-        treatment_successes.push_back(tr.treatment_successes);
-        diffs.push_back((static_cast<double>(tr.treatment_successes) - static_cast<double>(b)) /
-                        static_cast<double>(K));
+        treatment_successes.push_back(tt);
+        diffs.push_back((static_cast<double>(tt) - static_cast<double>(b)) / static_cast<double>(K));
     }
 
     auto sum_p = sign_flip_sum_lower_tail_pvalue(diffs, spec.num_permutations,

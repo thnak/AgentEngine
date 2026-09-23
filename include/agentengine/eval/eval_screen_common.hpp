@@ -5,8 +5,11 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <optional>
+#include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "agentengine/eval/eval_grader.hpp"
@@ -17,6 +20,20 @@ namespace agentengine::eval {
 [[nodiscard]] inline std::string_view trial_arm_name(trial_arm arm) {
     return arm == trial_arm::treatment ? "treatment" : "baseline";
 }
+
+// What a screen tells its client factories about the trial they are building a client for. A real
+// client's factory reads `trial_seed` (e.g. to pass as the provider's own sampling seed, so a trial's
+// nondeterminism crosses the recorded seam, I5) and ignores the rest; a scripted TEST client, which has
+// no context to read, uses `arm`/`task_index`/`attempt` to script its behaviour. Gross-harm round-2
+// residual (closed): the factories used to receive only `(arm[, task_index])`, so the per-trial seed
+// the screen derives and records could never reach anything that samples.
+struct TrialSlot {  // ae-naming-lint: allow TrialSlot — ADR-181 §3.0 items 2-3
+    trial_arm arm = trial_arm::baseline;
+    std::size_t task_index = 0;   // always 0 in the follow-rate screen (one task)
+    std::uint32_t attempt = 0;    // 0 for the first run, 1 for a retry after a transient fault
+    std::string trial_id;         // identity only (I3), unique per attempt
+    std::uint64_t trial_seed = 0; // the SAME for a retry: it re-runs the same trial
+};
 
 namespace detail {
 
@@ -35,7 +52,8 @@ namespace detail {
 // of a single error can tell "the provider failed" from "the lesson made the provider fail". The
 // gross-harm screen therefore stops relying on it where it matters: when missingness makes a run
 // uninterpretable, it re-tests under harm-favouring imputation (eval_gross_harm_screen.hpp), so
-// lesson-induced missingness can only push that screen TOWARD a flag. The follow-rate screen needs no
+// lesson-induced missingness can only push that screen TOWARD a flag -- provided the rules see every
+// fault, including one a retry recovered (`was_faulted`; PR #100 red team). The follow-rate screen needs no
 // such rule -- there `invalid` means "no pass", already the conservative direction.
 [[nodiscard]] inline bool is_measurement_fault(error const& e) {
     return e.klass == failure_class::transient || e.code == "run.canceled";
@@ -58,11 +76,27 @@ namespace detail {
 // grader is invoked only on converged trials. A grader should not throw on malformed model-chosen input
 // (it reads model-supplied tool arguments) -- return `failure` instead; see is_measurement_fault above
 // for why the gross-harm screen stays safe even when one does.
+//
+// A streamed call that ends without a clean terminal fails the run as `run.stream_incomplete`, which
+// `AgentSession` deliberately labels `transient` whatever went wrong inside the stream -- including a
+// provider's 400-class contract error such as a context overflow. Gross-harm round-2 residual (closed):
+// were trials ever streamed, that label would turn lesson-caused contract failures into missing data.
+// The provider's own error survives in the trial's recording (`ChatCallRecording::stream_error`,
+// ADR-177), so it is what gets classified here; with no recorded error the session's label stands.
+[[nodiscard]] inline error effective_run_error(TrialResult const& trial) {
+    error const& e = trial.outcome.error();
+    if (e.code == "run.stream_incomplete" && !trial.recordings.empty() &&
+        trial.recordings.back().stream_error.has_value()) {
+        return *trial.recordings.back().stream_error;
+    }
+    return e;
+}
+
 [[nodiscard]] inline grade_outcome grade_trial(GraderFn const& grader, TrialResult const& trial) {
     if (trial.setup_error.has_value()) return grade_outcome::ungraded;
     if (!trial.outcome.has_value()) {
-        return is_measurement_fault(trial.outcome.error()) ? grade_outcome::ungraded
-                                                           : grade_outcome::failure;
+        return is_measurement_fault(effective_run_error(trial)) ? grade_outcome::ungraded
+                                                                : grade_outcome::failure;
     }
     try {
         return grader(trial);
@@ -85,20 +119,27 @@ inline constexpr std::uint64_t kModelCallsPerTurn = 2;
 // Pre-flight check shared by both screens: a screen must bound its own per-trial model calls, or
 // neither its call budget nor its retained memory is bounded at all. `AgentSession` only stops a
 // non-converging loop when `max_turns` is set -- the red team ran a default-spec screen of TWO trials
-// to 3,002 model calls before it ended on its own.
+// to 3,002 model calls before it ended on its own. `retried_trials` is the screen's retry pool: each
+// retry is one more full trial, so the budget covers the worst case of the pool fully spent.
 [[nodiscard]] inline std::optional<error> validate_call_budget(std::optional<std::uint64_t> max_turns,
                                                                   std::uint64_t trials,
+                                                                  std::uint64_t retried_trials,
                                                                   std::uint64_t max_model_calls) {
     if (!max_turns.has_value() || *max_turns == 0) {
         return error{failure_class::contract, "max_turns must be set and > 0 (it bounds every trial's model calls)",
                      "eval.screen_max_turns_required"};
     }
+    if (retried_trials > std::numeric_limits<std::uint64_t>::max() - trials) {
+        return error{failure_class::resource, "trials + retried trials overflows", "eval.screen_model_call_budget"};
+    }
+    trials += retried_trials;
     // Each guard runs before the product it protects, so no multiplication can wrap.
     std::uint64_t const per_trial_cap = max_model_calls / trials;
     if (*max_turns > per_trial_cap / kModelCallsPerTurn ||
         trials * kModelCallsPerTurn * *max_turns > max_model_calls) {
         return error{failure_class::resource,
-                     "trials * max_turns * 2 (agent + summarizer call per turn) exceeds max_model_calls",
+                     "(trials + max_retried_trials) * max_turns * 2 (agent + summarizer call per turn) "
+                     "exceeds max_model_calls",
                      "eval.screen_model_call_budget"};
     }
     return std::nullopt;
@@ -137,6 +178,81 @@ inline void drop_transcripts_unless_retained(TrialResult& trial, bool retain) {
     if (retain) return;
     std::vector<ChatCallRecording>{}.swap(trial.recordings);
     std::vector<ChatCallRecording>{}.swap(trial.summarizer_recordings);
+}
+
+// Is this trial worth ONE retry? Only a provider/transport fault (`transient`) -- the one measurement
+// failure that re-running can fix. A host cancel means stop; a setup error or a throwing grader would
+// fail the same way again; an agent-caused failure (`resource`: its token budget; `contract`: its turn
+// cap) is an OUTCOME and is never retried. A retry re-runs the same trial (same seed); its outcome is the
+// trial's result, and a fault that recurs stays `ungraded`.
+//
+// PR #100 red team (MAJOR, found independently by two reviewers): retrying ERASED harm a lesson causes
+// as faults. A lesson that makes 8% of its runs time out, nondeterministically, had those faults retried
+// into successes -- the validity rules saw only the few that recurred, the run read as valid, and the
+// screen passed it 92% of the time (9% without retries). A retry is a fresh draw, so it can only ever
+// reduce noise; it must never decide which analysis runs. So a retried trial stays FAULTED for the
+// validity rules and for harm-favouring imputation (`was_faulted` below), and only the ITT counts and the
+// graded fraction use the retry's outcome.
+[[nodiscard]] inline bool worth_a_retry(TrialResult const& trial) {
+    return !trial.setup_error.has_value() && !trial.outcome.has_value() &&
+           effective_run_error(trial).klass == failure_class::transient;
+}
+
+// Runs one attempt of a trial through the screen's factories. A throwing factory or `run_trial` becomes
+// that attempt's setup error (`ungraded`), not the loss of every trial already run (round-2, MINOR).
+template <class InnerFactory, class SummarizerFactory>
+[[nodiscard]] task<TrialResult> run_trial_guarded(InnerFactory& make_inner, SummarizerFactory& make_summarizer,
+                                                  TrialSlot const& slot, TrialSpec spec) {
+    TrialResult trial_result;
+    try {
+        trial_result = co_await run_trial(make_inner(slot), make_summarizer(slot), std::move(spec));
+    } catch (...) {
+        trial_result = TrialResult{};
+        trial_result.setup_error =
+            error{failure_class::fatal, "the trial threw instead of returning", "eval.screen_trial_threw"};
+    }
+    co_return trial_result;
+}
+
+// One trial with at most one retry from the screen's shared pool. Returns the attempt that counts and,
+// if it was retried, the first attempt itself -- its tool calls, token counts and (if retained)
+// transcripts, not just its error (PR #100 red team: the first version overwrote it, so a retried
+// trial's first model calls, and the summarizer tokens they spent, appeared nowhere; I4, §3.8).
+struct AttemptedTrial {
+    TrialResult result;
+    std::uint32_t attempts = 1;
+    std::optional<error> retried_error;       // the first attempt's error, when retried
+    std::optional<TrialResult> first_attempt; // the first attempt, when retried
+    std::string counted_trial_id;             // the id `result` actually ran under (`-retry1` if retried)
+};
+
+// Did this trial's FIRST attempt fail to measure? True for a trial still `ungraded`, and for one whose
+// first attempt faulted and was retried. The validity rules and harm-favouring imputation read this,
+// never the post-retry grade (see `worth_a_retry`).
+[[nodiscard]] inline bool was_faulted(std::uint32_t attempts, grade_outcome grade) {
+    return attempts > 1 || grade == grade_outcome::ungraded;
+}
+
+template <class InnerFactory, class SummarizerFactory>
+[[nodiscard]] task<AttemptedTrial> run_trial_with_retry(InnerFactory& make_inner, SummarizerFactory& make_summarizer,
+                                                        TrialSlot slot, TrialSpec spec,
+                                                        std::uint64_t& retries_left) {
+    AttemptedTrial out;
+    spec.trial_id = slot.trial_id;
+    out.counted_trial_id = slot.trial_id;
+    out.result = co_await run_trial_guarded(make_inner, make_summarizer, slot, spec);
+    if (retries_left > 0 && worth_a_retry(out.result)) {
+        --retries_left;
+        out.retried_error = effective_run_error(out.result);
+        out.first_attempt = std::move(out.result);
+        slot.attempt = 1;
+        slot.trial_id += "-retry1";
+        spec.trial_id = slot.trial_id;
+        out.counted_trial_id = slot.trial_id;
+        out.result = co_await run_trial_guarded(make_inner, make_summarizer, slot, std::move(spec));
+        out.attempts = 2;
+    }
+    co_return out;
 }
 
 // A simple, explicit, non-cryptographic mix (no reliance on `std::hash`'s implementation-defined

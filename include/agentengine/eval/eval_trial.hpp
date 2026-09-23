@@ -18,6 +18,7 @@
 // top of this driver: eval_follow_rate_screen.hpp and eval_gross_harm_screen.hpp.
 
 #include <chrono>
+#include <limits>
 #include <optional>
 #include <string>
 #include <thread>
@@ -35,6 +36,7 @@
 #include "agentengine/core/memory_provider.hpp"
 #include "agentengine/core/recording_chat_client.hpp"
 #include "agentengine/core/stream.hpp"
+#include "agentengine/core/token_estimate.hpp"
 #include "agentengine/eval/eval_store.hpp"
 #include "agentengine/eval/eval_stub_tool.hpp"
 #include "agentengine/eval/lesson_candidate.hpp"
@@ -58,6 +60,12 @@ struct TrialSpec {  // ae-naming-lint: allow TrialSpec — ADR-181 §3.0 items 2
                                                 // in this slice
     std::optional<std::uint64_t> token_budget;
     std::optional<std::uint64_t> max_turns;
+    // Tokens the memory SUMMARIZER may spend in this trial (input + output, as its own stream reports).
+    // `token_budget` above bounds only the agent's model: `AgentSession` charges what its own chat client
+    // reports, and `MemoryProvider::on_turn_end` never reports the summarizer's usage to anyone. Once
+    // this is spent, further summarizer calls are refused before they reach the model (the turn simply
+    // gets no summary). Unset = unbounded, as before.
+    std::optional<std::uint64_t> summarizer_token_budget;
     std::size_t max_injected = 3;              // forwarded to MemoryProvider's own ctor default
     // A real `ChatClientT` may need capabilities of its own beyond memory access -- e.g. a
     // `cap::Secret` grant for an `OpenAIChatClient`'s outbound auth (the live DeepSeek check uses
@@ -95,6 +103,9 @@ struct TrialResult {  // ae-naming-lint: allow TrialResult — ADR-181 §3.0 ite
     // recorded, so a trial's own transcript silently omitted model calls that shaped it. Kept apart
     // from `recordings` so delivery detection (which reads the AGENT's requests) is unchanged.
     std::vector<ChatCallRecording> summarizer_recordings;
+    std::uint64_t summarizer_tokens = 0;        // input + output over every summarizer call made
+    bool summarizer_budget_exhausted = false;   // at least one summarizer call was refused for budget
+    bool summarizer_usage_estimated = false;    // some call reported no usage; its tokens were estimated
 };
 
 namespace detail {
@@ -226,36 +237,80 @@ inline constexpr bool is_recording_chat_client_after_decay_v =
 // immediately (`drain_chat_stream`), so draining it HERE first, recording it, and replaying the exact
 // update sequence and terminal into a fresh stream changes nothing that caller observes -- and needs
 // no background thread writing into `TrialResult` concurrently.
+//
+// It also enforces `TrialSpec::summarizer_token_budget` (gross-harm round-2 residual, closed): a call is
+// refused, without reaching the model, once the summarizer has spent its budget. Like `AgentSession`'s
+// own `token_budget`, the check runs before each call, so the last call admitted can overshoot by at
+// most its own size.
 template <class SummarizerT>
 class SummarizerRecorder {
 public:
-    SummarizerRecorder(SummarizerT inner, std::vector<ChatCallRecording>* sink)
-        : inner_(std::move(inner)), sink_(sink) {}
+    SummarizerRecorder(SummarizerT inner, TrialResult* trial, std::optional<std::uint64_t> token_budget)
+        : inner_(std::move(inner)), trial_(trial), token_budget_(token_budget) {}
 
     [[nodiscard]] ChatClientCapabilities capabilities() const { return inner_.capabilities(); }
 
     stream<ChatResponseUpdate> chat_stream(ChatRequest request, EffectContext& ctx) {
+        if (token_budget_.has_value() && trial_->summarizer_tokens >= *token_budget_) {
+            trial_->summarizer_budget_exhausted = true;
+            auto refused = make_stream<ChatResponseUpdate>(std::pmr::get_default_resource());
+            refused.producer.fail(error{failure_class::resource, "the summarizer's token budget is spent",
+                                        "eval.summarizer_token_budget"});
+            return std::move(refused.consumer);
+        }
         auto const start = std::chrono::steady_clock::now();
         ChatCallRecording rec;
         rec.request = request;
         rec.mode = recording_mode::streaming;
+        std::uint64_t const request_estimate = rt::detail::estimate_request_tokens(request);
         stream<ChatResponseUpdate> in = inner_.chat_stream(std::move(request), ctx);
-        while (!in.done()) {
-            while (auto update = in.next()) {
-                RecordedChunk chunk;
-                chunk.update = std::move(*update);
-                chunk.elapsed_since_start = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - start);
-                rec.chunks.push_back(std::move(chunk));
-            }
-            if (!in.done()) std::this_thread::yield();
-        }
-        while (auto update = in.next()) {  // anything queued between the last poll and done()
+        auto take = [&](ChatResponseUpdate update) {
             RecordedChunk chunk;
-            chunk.update = std::move(*update);
+            chunk.update = std::move(update);
+            chunk.elapsed_since_start =
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
             rec.chunks.push_back(std::move(chunk));
+        };
+        // Same poll idiom as `drain_chat_stream`: a bounded sleep while the producer is live, never a bare
+        // spin (PR #100 red team: the first version pegged a core for the summarizer's whole latency),
+        // and it gives up when the run is cancelled rather than waiting on a stream that never ends.
+        bool cancelled = false;
+        while (!in.done()) {
+            while (auto update = in.next()) take(std::move(*update));
+            if (in.done()) break;
+            if (ctx.cancellation.stop_requested()) {
+                cancelled = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
-        stream_terminal const terminal = in.terminal();
+        if (!cancelled) {
+            while (auto update = in.next()) take(std::move(*update));  // queued between the last poll and done()
+        }
+
+        // Usage is read the way the rest of the engine reads it (`drain_chat_stream`, `AgentSession`):
+        // from the FINAL chunk only, last one wins -- summing every chunk double-counted a client that
+        // reports cumulative usage along the way. A call that reports no usage at all is charged an
+        // ESTIMATE (request plus delivered text, ~4 bytes a token, the ADR-177 rule for a dead stream),
+        // never zero: a provider that omits usage must not switch the budget off. Additions saturate.
+        std::optional<Usage> usage;
+        std::uint64_t delivered_bytes = 0;
+        for (RecordedChunk const& chunk : rec.chunks) {
+            if (chunk.update.is_final && chunk.update.usage.has_value()) usage = chunk.update.usage;
+            if (auto const* text = std::get_if<Text>(&chunk.update.delta.value); text != nullptr) {
+                delivered_bytes += text->text.size();
+            }
+        }
+        std::uint64_t call_tokens = 0;
+        if (usage.has_value()) {
+            call_tokens = saturating_add(usage->input_tokens, usage->output_tokens);
+        } else {
+            call_tokens = saturating_add(request_estimate, estimate_tokens_for_bytes(delivered_bytes));
+            trial_->summarizer_usage_estimated = true;
+        }
+        trial_->summarizer_tokens = saturating_add(trial_->summarizer_tokens, call_tokens);
+
+        stream_terminal const terminal = cancelled ? stream_terminal::cancelled : in.terminal();
         rec.stream_terminal = std::string(recording_chat_client_detail::stream_terminal_to_wire_string(terminal));
         if (terminal == stream_terminal::failed) {
             rec.stream_error = in.fail_error();
@@ -275,13 +330,18 @@ public:
             pair.producer.fail(error{failure_class::fatal, "the summarizer's stream was cancelled",
                                      "eval.summarizer_stream_cancelled"});
         }
-        sink_->push_back(std::move(rec));
+        trial_->summarizer_recordings.push_back(std::move(rec));
         return std::move(pair.consumer);
     }
 
 private:
+    [[nodiscard]] static std::uint64_t saturating_add(std::uint64_t a, std::uint64_t b) {
+        return a > std::numeric_limits<std::uint64_t>::max() - b ? std::numeric_limits<std::uint64_t>::max() : a + b;
+    }
+
     SummarizerT inner_;
-    std::vector<ChatCallRecording>* sink_;
+    TrialResult* trial_;
+    std::optional<std::uint64_t> token_budget_;
 };
 
 }  // namespace detail
@@ -389,8 +449,8 @@ template <class Inner, class SummarizerT>
 
     MemProvider memory_provider{store.object_store(), store.ref_store(),  store.mount(),
                                  store.read_cap(),     store.write_cap(),
-                                 detail::SummarizerRecorder<SummarizerT>{std::move(summarizer),
-                                                                         &trial_result.summarizer_recordings},
+                                 detail::SummarizerRecorder<SummarizerT>{std::move(summarizer), &trial_result,
+                                                                         spec.summarizer_token_budget},
                                  spec.max_injected};
     auto engaged = session.history_provider().engage(
         std::tuple{HistoryProvider<Window<0>>{}, std::move(memory_provider),

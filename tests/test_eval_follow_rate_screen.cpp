@@ -117,16 +117,17 @@ public:
         upd.delta.origin = ae::content_origin::assistant;
         upd.delta.value  = ae::Text{"summary: nothing notable"};
         upd.is_final     = true;
-        upd.usage        = ae::Usage{1, 1, 0, 0, 0.0};
+        upd.usage        = ae::Usage{tokens_each, tokens_each, 0, 0, 0.0};
         (void)pair.producer.push(upd);
         pair.producer.close();
         return std::move(pair.consumer);
     }
+    std::uint64_t tokens_each = 1;  // input and output tokens each summarizer call reports
 };
 static_assert(ae::ChatClient<MockSummarizerClient>);
 
 auto make_summarizer_factory() {
-    return [](ae::eval::trial_arm) { return MockSummarizerClient{}; };
+    return [](ae::eval::TrialSlot const&) { return MockSummarizerClient{}; };
 }
 
 // A fixed script for baseline, a fixed script for treatment -- picked by the arm the driver tells
@@ -136,9 +137,9 @@ auto make_summarizer_factory() {
 auto make_arm_scripted_factory(std::vector<ScriptStep> baseline_script,
                                 std::vector<ScriptStep> treatment_script) {
     return [baseline_script = std::move(baseline_script),
-            treatment_script = std::move(treatment_script)](ae::eval::trial_arm arm) {
-        return ScriptedChatClient(arm == ae::eval::trial_arm::treatment ? treatment_script
-                                                                          : baseline_script);
+            treatment_script = std::move(treatment_script)](ae::eval::TrialSlot const& slot) {
+        return ScriptedChatClient(slot.arm == ae::eval::trial_arm::treatment ? treatment_script
+                                                                               : baseline_script);
     };
 }
 
@@ -155,8 +156,8 @@ public:
           baseline_follow_(std::move(baseline_follow_script)), every_nth_(every_nth),
           treatment_(std::move(treatment_script)), baseline_counter_(std::make_shared<int>(0)) {}
 
-    ScriptedChatClient operator()(ae::eval::trial_arm arm) {
-        if (arm == ae::eval::trial_arm::treatment) return ScriptedChatClient(treatment_);
+    ScriptedChatClient operator()(ae::eval::TrialSlot const& slot) {
+        if (slot.arm == ae::eval::trial_arm::treatment) return ScriptedChatClient(treatment_);
         int const idx = (*baseline_counter_)++;
         if (every_nth_ > 0 && idx % every_nth_ == 0) return ScriptedChatClient(baseline_follow_);
         return ScriptedChatClient(baseline_other_);
@@ -207,6 +208,7 @@ ae::eval::FollowRateProbeSpec base_probe_spec() {
     spec.n_per_arm        = 10;
     spec.max_turns        = 4;
     spec.seed             = 42;
+    spec.max_retried_trials = 0;  // retries are exercised in their own scenario (S10)
     return spec;
 }
 
@@ -247,9 +249,9 @@ std::vector<ScriptStep> transient_script() {
 template <class Plan>
 auto make_trial_factory(Plan plan) {
     auto counts = std::make_shared<std::array<int, 2>>();
-    return [plan, counts](ae::eval::trial_arm arm) {
-        int const k = (*counts)[arm == ae::eval::trial_arm::treatment ? 1 : 0]++;
-        return ScriptedChatClient(plan(arm, k));
+    return [plan, counts](ae::eval::TrialSlot const& slot) {
+        int const k = (*counts)[slot.arm == ae::eval::trial_arm::treatment ? 1 : 0]++;
+        return ScriptedChatClient(plan(slot.arm, k));
     };
 }
 
@@ -565,6 +567,118 @@ int main() {
             }
         }
         AE_CHECK(treatment_then_baseline, "S9: run order interleaves the arms, not all baseline then all treatment");
+    }
+
+    // ---- Scenario 10: retries and the seed reach the factory, as in the gross-harm screen -------------
+    {
+        auto seen = std::make_shared<std::vector<std::pair<std::string, std::uint64_t>>>();
+        // Every trial, in BOTH arms, faults on its first attempt and succeeds on its retry: provider noise.
+        auto flaky = [seen](ev::TrialSlot const& slot) {
+            seen->emplace_back(slot.trial_id, slot.trial_seed);
+            if (slot.attempt == 0) return ScriptedChatClient(transient_script());
+            return ScriptedChatClient(slot.arm == ev::trial_arm::treatment ? followed_script() : not_followed_script());
+        };
+        ev::FollowRateProbeSpec spec = base_probe_spec();  // 10 per arm
+        spec.max_retried_trials = 20;
+        auto r = drive(ev::run_follow_rate_screen(flaky, make_summarizer_factory(), spec));
+        std::size_t retried = 0;
+        for (auto const& d : r.trials) retried += d.attempts == 2 ? 1 : 0;
+        AE_CHECK(retried == 20u && r.treatment_ungraded == 0 && r.treatment_faulted == 10 &&
+                     r.baseline_faulted == 10 && r.treatment_followed == 10 && r.pass == true,
+                 "S10: symmetric faults are retried once each, the retries count, and the screen passes");
+        bool retry_ids = true, seeds_match = true;
+        for (auto const& d : r.trials) {
+            bool first = false, second = false;
+            for (auto const& [id, seed] : *seen) {
+                if (id == d.trial_id) first = seed == d.trial_seed;
+                if (id == d.trial_id + "-retry1") second = seed == d.trial_seed;
+            }
+            retry_ids = retry_ids && second && d.counted_trial_id == d.trial_id + "-retry1";
+            seeds_match = seeds_match && first;
+        }
+        AE_CHECK(seeds_match && retry_ids,
+                 "S10: the factory sees each trial's recorded seed, and a retry re-runs it under its own id "
+                 "with the SAME seed");
+
+        // Treatment-only faults are the lesson's doing: retries recover the data, but the first-attempt
+        // counts (10 vs 0) still trip the missingness rule, so no pass (PR #100 red team, MAJOR).
+        auto lesson = [](ev::TrialSlot const& slot) {
+            if (slot.arm == ev::trial_arm::treatment && slot.attempt == 0) return ScriptedChatClient(transient_script());
+            return ScriptedChatClient(slot.arm == ev::trial_arm::treatment ? followed_script() : not_followed_script());
+        };
+        auto r2 = drive(ev::run_follow_rate_screen(lesson, make_summarizer_factory(), spec));
+        AE_CHECK(r2.treatment_ungraded == 0 && r2.treatment_faulted == 10 && r2.invalid_differential_missingness &&
+                     !r2.pass.has_value(),
+                 "S10: lesson-only faults are not retried away -- the run is invalid, never a pass");
+
+        // The pool is shared across the whole screen, not per trial.
+        ev::FollowRateProbeSpec small = base_probe_spec();
+        small.max_retried_trials = 2;
+        auto r3 = drive(ev::run_follow_rate_screen(lesson, make_summarizer_factory(), small));
+        std::size_t retried3 = 0;
+        bool unretried_clean = true;
+        for (auto const& d : r3.trials) {
+            retried3 += d.attempts == 2 ? 1 : 0;
+            if (d.attempts == 1) {
+                unretried_clean = unretried_clean && !d.retried_error.has_value() && !d.first_attempt.has_value();
+            }
+        }
+        AE_CHECK(retried3 == 2u && r3.treatment_ungraded == 8 && unretried_clean,
+                 "S10: a pool of 2 retries exactly 2 trials; the rest record no retry, even when ungraded");
+    }
+
+    // ---- Scenario 11: the retry pool is charged to the call budget, and cannot overflow it ----------
+    {
+        auto factory = make_arm_scripted_factory(not_followed_script(), followed_script());
+        auto budget_run = [&](std::uint64_t calls) {
+            ev::FollowRateProbeSpec spec = base_probe_spec();
+            spec.max_retried_trials = 4;  // (20 trials + 4) * 4 turns * 2 = 192
+            spec.max_model_calls = calls;
+            return drive(ev::run_follow_rate_screen(factory, make_summarizer_factory(), spec));
+        };
+        auto over = budget_run(191);
+        auto at = budget_run(192);
+        AE_CHECK(over.setup_error.has_value() && over.setup_error->code == "eval.screen_model_call_budget" &&
+                     !at.setup_error.has_value(),
+                 "S11: (2n + max_retried_trials) * max_turns * 2 is the budget, exactly");
+
+        ev::FollowRateProbeSpec huge = base_probe_spec();
+        huge.n_per_arm = std::numeric_limits<std::uint64_t>::max() / 2;
+        huge.max_retried_trials = 2;  // 2n + 2 wraps
+        auto r = drive(ev::run_follow_rate_screen(factory, make_summarizer_factory(), huge));
+        AE_CHECK(r.setup_error.has_value() && r.setup_error->code == "eval.screen_model_call_budget" && r.trials.empty(),
+                 "S11: trials + retried trials that would wrap is rejected");
+
+        // The per-trial cap must be taken over trials + retries: with 2 trials and a pool of 2^32 - 1, a
+        // max_turns of 2^31 fits `max_model_calls / 2 trials` easily, but (2 + 2^32 - 1) * 2 * 2^31 wraps
+        // 2^64 to a small number.
+        ev::FollowRateProbeSpec wide = base_probe_spec();
+        wide.n_per_arm = 1;
+        wide.max_retried_trials = std::numeric_limits<std::uint32_t>::max();
+        wide.max_model_calls = std::numeric_limits<std::uint64_t>::max();
+        wide.max_turns = 2147483648ull;
+        auto rw = drive(ev::run_follow_rate_screen(factory, make_summarizer_factory(), wide));
+        AE_CHECK(rw.setup_error.has_value() && rw.setup_error->code == "eval.screen_model_call_budget" && rw.trials.empty(),
+                 "S11: a call product that wraps only once the retry pool is counted is still rejected");
+    }
+
+    // ---- Scenario 12: the summarizer budget defaults to token_budget here too -------------------------
+    {
+        auto factory = make_arm_scripted_factory(not_followed_script(), followed_script());
+        auto heavy = [](ev::TrialSlot const&) {
+            MockSummarizerClient c;
+            c.tokens_each = 50;  // 100 tokens a call
+            return c;
+        };
+        ev::FollowRateProbeSpec spec = base_probe_spec();
+        spec.retain_recordings = true;
+        spec.token_budget = 100;
+        auto r = drive(ev::run_follow_rate_screen(factory, heavy, spec));
+        bool capped = !r.trials.empty();
+        for (auto const& d : r.trials) {
+            capped = capped && d.trial_result.summarizer_recordings.size() == 1u && d.trial_result.summarizer_budget_exhausted;
+        }
+        AE_CHECK(capped, "S12: an unset summarizer budget inherits token_budget (one 100-token call, then refused)");
     }
 
     if (g_failures != 0) {

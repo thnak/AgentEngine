@@ -50,10 +50,14 @@ struct FollowRateProbeSpec {  // ae-naming-lint: allow FollowRateProbeSpec — A
     // Below this graded fraction in EITHER arm the run is `invalid` (too little was measured to claim
     // anything). "Ungraded" now means only a failed MEASUREMENT (eval_screen_common.hpp).
     double min_graded_fraction = 0.9;
-    std::uint64_t max_model_calls = 10'000;       // I8: 2 * n_per_arm trials * max_turns * 2 calls/turn must fit
+    std::uint64_t max_model_calls = 10'000;       // I8: (2 * n_per_arm + max_retried_trials) * max_turns * 2 must fit
+    // Retry pool: a trial whose run hits a transient provider fault is re-run once (same seed), until the
+    // pool is spent. Charged in full to max_model_calls up front.
+    std::uint32_t max_retried_trials = 4;
     bool retain_recordings = false;               // keep full transcripts per trial (memory: trials x turns^2)
     std::uint64_t seed = 0;                       // I5: arm interleave order derives ONLY from this
     std::optional<std::uint64_t> token_budget;
+    std::optional<std::uint64_t> summarizer_token_budget;  // unset = token_budget (see TrialSpec)
     std::optional<std::uint64_t> max_turns;       // REQUIRED -- it bounds each trial's model calls
     std::size_t max_injected = 3;                 // forwarded to MemoryProvider's own ctor default
     // Same role as TrialSpec::extra_capabilities (eval_trial.hpp) -- host-supplied only, merged
@@ -65,9 +69,14 @@ struct FollowRateTrialDetail {  // ae-naming-lint: allow FollowRateTrialDetail �
     trial_arm arm;
     std::string trial_id;
     std::uint64_t trial_seed;   // this trial's own derived seed (I5) -- see derive_trial_seed, eval_screen_common.hpp
-    grade_outcome grade;
+    std::uint32_t attempts = 1;               // 2 if it was retried after a transient fault
+    std::optional<error> retried_error;       // the first attempt's error, when retried
+    std::string counted_trial_id;             // the id `trial_result` ran under (`<trial_id>-retry1` if retried)
+    grade_outcome grade;                      // of the attempt that counts
+    bool faulted = false;                     // the FIRST attempt failed to measure (ungraded, or retried)
     TrialResult trial_result;   // every trial is kept (§3.5: never dropped silently); its full
                                  // transcripts (`recordings`) only if spec.retain_recordings
+    std::optional<TrialResult> first_attempt;  // when retried; same transcript rule
 };
 
 struct FollowRateScreenResult {  // ae-naming-lint: allow FollowRateScreenResult — ADR-181 §3.0 item 2
@@ -78,6 +87,7 @@ struct FollowRateScreenResult {  // ae-naming-lint: allow FollowRateScreenResult
     std::uint64_t baseline_n = 0, treatment_n = 0;              // == n_per_arm each, always (ITT)
     std::uint64_t baseline_followed = 0, treatment_followed = 0;
     std::uint64_t baseline_ungraded = 0, treatment_ungraded = 0;
+    std::uint64_t baseline_faulted = 0, treatment_faulted = 0;  // first-attempt faults, recovered or not
 
     bool invalid_baseline_too_easy = false;
     bool invalid_differential_missingness = false;
@@ -129,7 +139,8 @@ namespace detail {
     if (spec.n_per_arm > std::numeric_limits<std::uint64_t>::max() / 2) {
         return error{failure_class::resource, "n_per_arm is too large", "eval.screen_model_call_budget"};
     }
-    if (auto budget = validate_call_budget(spec.max_turns, 2 * spec.n_per_arm, spec.max_model_calls);
+    if (auto budget = validate_call_budget(spec.max_turns, 2 * spec.n_per_arm, spec.max_retried_trials,
+                                           spec.max_model_calls);
         budget.has_value()) {
         return budget;
     }
@@ -148,16 +159,16 @@ namespace detail {
 // lower bound of the treatment follow rate is >= `target_lower_bound`, unless the run is invalid
 // (baseline too easy, or arms differ too much in how often they could be graded at all).
 //
-// `make_inner`/`make_summarizer` are FACTORIES (any callable `Inner(trial_arm)`/
-// `SummarizerT(trial_arm)` returning a fresh value per call), not values -- `run_trial` consumes
+// `make_inner`/`make_summarizer` are FACTORIES (any callable `Inner(TrialSlot const&)`/
+// `SummarizerT(TrialSlot const&)` returning a fresh value per call, eval_screen_common.hpp), not values -- `run_trial` consumes
 // `Inner`/`SummarizerT` by value once per call, so a single value cannot be reused across
 // `2 * n_per_arm` trials unless the type happens to be copy-safe for reuse, which a real client
 // (e.g. `OpenAIChatClient`) is not and should not be forced into. This keeps `run_trial` itself
 // completely unmodified: both its confinement `static_assert`s fire on the factories' RETURN type,
-// exactly as before. The `trial_arm` argument exists for TESTS with a scripted client: a real model
-// client's factory ignores it (the same model is used for both arms -- what differs is the CONTEXT
-// it reads, not the client), but a `ScriptedChatClient`-style factory has no context to read at all,
-// so it needs the arm told to it directly to script baseline vs. treatment behavior differently.
+// exactly as before. The slot's `arm` exists for TESTS with a scripted client: a real model client's
+// factory ignores it (the same model is used for both arms -- what differs is the CONTEXT it reads, not
+// the client) and reads only `trial_seed`, but a `ScriptedChatClient`-style factory has no context to
+// read at all, so it needs the arm told to it directly to script baseline vs. treatment differently.
 //
 // Ungraded accounting is intention-to-treat, ONE rule throughout: every count below uses
 // `n_per_arm` as its denominator, always -- an ungraded trial counts against `n` but never as a
@@ -195,6 +206,7 @@ template <class InnerFactory, class SummarizerFactory>
 
     result.trials.reserve(sequence.size());
     std::vector<std::uint64_t> arm_index{0, 0};  // [baseline, treatment] running index for trial_id
+    std::uint64_t retries_left = spec.max_retried_trials;
     for (trial_arm arm : sequence) {
         std::uint64_t& idx = arm_index[arm == trial_arm::treatment ? 1 : 0];
         std::uint64_t const this_index = idx++;
@@ -209,36 +221,41 @@ template <class InnerFactory, class SummarizerFactory>
         trial_spec.lesson_salience = spec.lesson_salience;
         trial_spec.task_prompt = spec.task_prompt;
         trial_spec.stub_tools = spec.stub_tools;
-        trial_spec.trial_id = trial_id;
         trial_spec.seed = trial_seed;
         trial_spec.token_budget = spec.token_budget;
+        trial_spec.summarizer_token_budget =
+            spec.summarizer_token_budget.has_value() ? spec.summarizer_token_budget : spec.token_budget;
         trial_spec.max_turns = spec.max_turns;
         trial_spec.max_injected = spec.max_injected;
         trial_spec.extra_capabilities = spec.extra_capabilities;
 
-        // A throwing factory or `run_trial` is that one trial's setup error (`ungraded`), not the loss of
-        // every trial already run (round-2 red-team, MINOR; same rule as the gross-harm screen).
-        TrialResult trial_result;
-        try {
-            trial_result = co_await run_trial(make_inner(arm), make_summarizer(arm), trial_spec);
-        } catch (...) {
-            trial_result = TrialResult{};
-            trial_result.setup_error =
-                error{failure_class::fatal, "the trial threw instead of returning", "eval.screen_trial_threw"};
-        }
+        // A throwing factory or `run_trial` is that one trial's setup error (`ungraded`), and a transient
+        // fault gets one retry from the pool -- the same rules as the gross-harm screen.
+        TrialSlot const slot{arm, 0, 0, trial_id, trial_seed};
+        detail::AttemptedTrial attempted =
+            co_await detail::run_trial_with_retry(make_inner, make_summarizer, slot, std::move(trial_spec), retries_left);
+        TrialResult trial_result = std::move(attempted.result);
         grade_outcome grade = detail::grade_trial(spec.grader, trial_result);
+        bool const faulted = detail::was_faulted(attempted.attempts, grade);
         detail::drop_transcripts_unless_retained(trial_result, spec.retain_recordings);
+        if (attempted.first_attempt.has_value()) {
+            detail::drop_transcripts_unless_retained(*attempted.first_attempt, spec.retain_recordings);
+        }
 
         if (arm == trial_arm::treatment) {
             if (grade == grade_outcome::success) ++result.treatment_followed;
             if (grade == grade_outcome::ungraded) ++result.treatment_ungraded;
+            if (faulted) ++result.treatment_faulted;
         } else {
             if (grade == grade_outcome::success) ++result.baseline_followed;
             if (grade == grade_outcome::ungraded) ++result.baseline_ungraded;
+            if (faulted) ++result.baseline_faulted;
         }
 
-        result.trials.push_back(FollowRateTrialDetail{arm, std::move(trial_id), trial_seed, grade,
-                                                          std::move(trial_result)});
+        FollowRateTrialDetail detail_row{arm, std::move(trial_id), trial_seed, attempted.attempts,
+                                         std::move(attempted.retried_error), std::move(attempted.counted_trial_id),
+                                         grade, faulted, std::move(trial_result), std::move(attempted.first_attempt)};
+        result.trials.push_back(std::move(detail_row));
     }
 
     result.baseline_n = spec.n_per_arm;
@@ -252,8 +269,9 @@ template <class InnerFactory, class SummarizerFactory>
         static_cast<double>(result.baseline_ungraded) / static_cast<double>(spec.n_per_arm);
     double const treatment_ungraded_rate =
         static_cast<double>(result.treatment_ungraded) / static_cast<double>(spec.n_per_arm);
+    // On first-attempt faults, as in the gross-harm screen: a retry must never decide which verdict runs.
     result.invalid_differential_missingness = detail::differential_missingness_exceeds(
-        result.treatment_ungraded, result.baseline_ungraded, spec.n_per_arm, spec.max_differential_missingness);
+        result.treatment_faulted, result.baseline_faulted, spec.n_per_arm, spec.max_differential_missingness);
 
     // A verdict needs data: if either arm was mostly unmeasurable (e.g. the provider was down), no
     // count here means anything, and without this rule an all-ungraded run would read as "never
