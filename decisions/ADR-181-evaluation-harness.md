@@ -6,10 +6,13 @@
   of the trial-running harness itself (§3.0 items 2-4, §3.2, §3.4, §3.9's `EvalStore`): `eval_store.hpp`,
   `eval_stub_tool.hpp`, `eval_trial.hpp`, plus the FIRST SLICE of multi-trial orchestration, §3.0 item 2's
   follow-rate screen (a separate, later PR): `eval_grader.hpp`, `eval_follow_rate_screen.hpp`, plus §3.0 item 3's
-  gross-harm regression screen (another separate PR): `eval_screen_common.hpp`, `eval_gross_harm_screen.hpp` —
-  **326/326 checks green** across 9 test binaries (`test_lesson_candidate` 43, `test_eval_principal` 15,
+  gross-harm regression screen (another separate PR): `eval_screen_common.hpp`, `eval_gross_harm_screen.hpp`, plus
+  §3.0's Tier-1 pre-registration and attempt accounting (E32, a further PR, not yet red-teamed):
+  `eval_tier1_screen.hpp` —
+  **382/382 checks green** across 10 test binaries (`test_lesson_candidate` 43, `test_eval_principal` 15,
   `test_promotion_ack` 9, `test_tier1_statistics` 40, `test_eval_store` 9, `test_eval_stub_tool` 11,
-  `test_eval_trial_driver` 26, `test_eval_follow_rate_screen` 66, `test_eval_gross_harm_screen` 107 — executed checks;
+  `test_eval_trial_driver` 26, `test_eval_follow_rate_screen` 66, `test_eval_gross_harm_screen` 107,
+  `test_eval_tier1_screen` 56 — executed checks;
   that last file has 84 `AE_CHECK` sites because one pre-flight helper runs its check 24 times, every other file's
   site and executed counts are equal) plus a compile-fail/positive-control TRIPLE (§3.8; round 2 added a third file
   proving the same rejection for `SummarizerT`), clean under MSVC, clang-cl
@@ -393,6 +396,29 @@ a round-4 reviewer computed from T1's own flag rates): retrying a screen that a 
 raises the chance *some* attempt passes from 30% (one try) to 66% (three) to 97% (ten); a human approver who only
 sees the last, clean `ScreenResult` has no way to know that. This does not block anything — Tier 1 never promotes —
 but it stops a retried-until-clean screen from *looking like* a clean one.
+
+**Built (E32 PR, not yet red-teamed): `include/agentengine/eval/eval_tier1_screen.hpp`.** `run_tier1_screen` runs one
+counted attempt in this order: (1) validates the whole spec — every probe and the gross-harm spec must render the
+same lesson, and each screen's own pre-flight runs too — so a refused spec is never charged an attempt; (2) hashes the
+design into `tier1_preregistration_digest` (SHA-256 over canonical JSON: the rendered lesson's digest and template
+version, a host-named `suite_version` for the graders, and every probe's and regression task's id, prompt, stub tools
+and statistical parameters; seeds and pure resource caps are excluded, so a re-seeded retry is the same design);
+(3) appends a `started` record naming that digest to the family's log **before any trial runs** — if the append
+fails, nothing runs; (4) runs the probe(s), stopping at the first that does not pass (all must pass, §6 G4), then the
+gross-harm screen only if every probe passed; (5) appends a `completed` record with the figures and seeds;
+(6) reads the family's log back and returns a `Tier1ScreenResult` naming this attempt's ordinal, the attempt count,
+how many distinct designs were tried, and every attempt's figures. The log is a `Tier1AttemptLog` over any
+`rt::AppendLogStore` (`FileAppendLogStore` survives a restart); an attempt is identified by its `started` record's
+sequence number, so concurrent starts cannot collide on a counter. A crashed attempt stays counted as
+started-but-not-completed, and an undecodable record counts as an attempt of its own (over-counting is the safe
+direction). If the history cannot be read after the run, the outcome is withheld rather than shown as if this were the
+only attempt. The family is the candidate's `subject` plus a host-supplied `lineage`, so a re-keyed or re-worded
+candidate stays in its family (proven). `tests/test_eval_tier1_screen.cpp`, 56/56 checks; 14 planted mutants, all
+caught (dropping incomplete or unreadable attempts, showing only the latest attempt, counting after the run instead
+of before, running when the start could not be written, seeds in the digest, a family key without lineage, skipping
+the lesson-match check, running the harm screen after a failed probe, rounding the recorded figures, and others).
+Arm S is not built, so its slot in the pre-registration is `null` and a `cleared` outcome says `steering_manifest_run
+= false`. What it does not do is in §8.
 
 **Tier 1's bootstrapping order (round-4 finding, disclosed not fixed here).** Tier 1 needs `LessonCandidate` (a
 closed record) and `render_lesson`, both named in ADR-179 §3.3/§7 as **stage-3** constructs, while ADR-179 §7 gates
@@ -876,7 +902,7 @@ reported figure is a **Clopper–Pearson 99% upper bound**, not a point estimate
 | E29 | G | The `SlotTable` is hashed into the suite digest; a slot absent from it is never gated; a value outside a declared closed domain that cannot be normalised makes the slot `unsuitable` | Table outside the digest |
 | E30 | G | The kill-switch flag stops **new** injection of every promoted lesson within one turn, checked before both context assembly and the `recall` tool's return (round 4: `recall` is a second delivery route, §3.2, and had no stated coverage); an unset or unreadable opt-in ⇒ nothing is injected (fails closed, round 4). **Not claimed:** that the switch purges episodic copies the summarizer already wrote before it was thrown (§8) | Flag ignored; default-on; unreadable flag defaults to injecting; `recall` route uncovered |
 | E31 | G | The approver's acknowledgement is bound to a **digest of the rendered `MemoryItem`** (`content`, `tags`, `salience`) shown to them verbatim; the promotion path re-runs `render_lesson` and refuses the write if the recomputed digest differs from the acknowledged one. **Round 5: built for real** (`promotion_ack.hpp`); `tests/test_promotion_ack.cpp` proves refusal on a changed candidate value, a changed salience (round-4 F1's exact TOCTOU shape — `MemoryItem::id` alone does NOT catch this, since it digests `content` only), and a stale/placeholder digest | Ack recorded without a digest; promotion writes without recomputing |
-| E32 | G | *(round 4, new)* Tier 1's pre-registration record (template + version, probe(s), regression tasks, `SlotTable`, arm-S N and margin) is hashed before the screen runs; every started screen for a family is counted, and a `ScreenResult` with more than one attempt for its family names the count and shows every attempt's figures, not only the passing one | Pre-registration after the run; retries silently hidden from the `ScreenResult` |
+| E32 | G | *(round 4, new)* Tier 1's pre-registration record (template + version, probe(s), regression tasks, `SlotTable`, arm-S N and margin) is hashed before the screen runs; every started screen for a family is counted, and a `ScreenResult` with more than one attempt for its family names the count and shows every attempt's figures, not only the passing one. **Built** (`eval_tier1_screen.hpp`, minus the `SlotTable`/arm-S fields, which do not exist yet); `tests/test_eval_tier1_screen.cpp` plants both mutants in this row's last column and more | Pre-registration after the run; retries silently hidden from the `ScreenResult` |
 
 **Not claimed:** that any lesson improves real-world performance (§1, §8); that acknowledged steering is safe (§3.7); that a Tier-1 pass means the lesson helps (§3.0); that the kill switch purges episodic copies already written before it was thrown (§8); that a lesson cannot be conditioned on detecting the eval itself (§3.9, §8).
 
@@ -1329,6 +1355,11 @@ pointer never outlives the trial; the stream rule's "last recording" is the fail
   lesson lineage so a revoke can find and remove it — out of scope here.
 - **Tier 1's own multiplicity control (E32) is a family-level attempt counter, not a statistical correction.** It
   makes retries visible to the approver; it does not adjust any screen's α for having been tried more than once.
+  As built, it also does not: hash the graders (a `GraderFn` is code; the host names its version in `suite_version`,
+  on trust) or `extra_capabilities` (host capabilities, not design data); protect the log from a host that can write
+  its store (honest bookkeeping, not a ledger); stop a caller from inventing a new `lineage` to start a fresh family
+  (lineage is host-supplied until ADR-179's `source_span` shape exists to derive it from); or cover arm S, which is
+  not built (its pre-registration slot is `null`).
 - **Suite and candidate roles** are separated by convention on a single-host deployment; a compromised host
   defeats both. The ledger's tamper-evidence is a hash chain, not authentication.
 - **No process-level network confinement** of the trial process (only host-authored stubs and the pipeline gate);
@@ -1406,11 +1437,11 @@ pointer never outlives the trial; the stream rule's "last recording" is the fail
   does not, because a secret never reaches a `ChatRequest`/`ChatCallRecording` at all, in either case (resolved to
   an HTTP header strictly inside the real client's own implementation). **The §3.0 item 3 gross-harm regression
   screen is now built too** (`eval_gross_harm_screen.hpp`, a further separate PR; its round 1 found and fixed four
-  MAJOR defects, some shared with the follow-rate screen — see the status header and §7). **Still unbuilt**: Tier-1 pre-registration hashing and the per-family attempt counter (§3.0's
-  "pre-registration and attempt accounting", E32); the baseline canary; per-task variance and the task-level CI
+  MAJOR defects, some shared with the follow-rate screen — see the status header and §7). **Tier-1 pre-registration and attempt accounting (E32) is built too** (`eval_tier1_screen.hpp`, a
+  further PR, not yet red-teamed; §3.0). **Still unbuilt**: the baseline canary; per-task variance and the task-level CI
   (Tier 2, §3.6); parametrised task generators; the `SlotTable`/steering-manifest arm S and its permutation statistic over real tool-call
   arguments (§3.7, E29); `EvalSuite`/`EvalRun`/`PromotionEvidence`, the look ledger and family/shard bookkeeping
-  (§3.3, E32); the kill switch and the promotion-write digest re-check's remaining wiring (§3.0 item 5); the
+  (§3.3); the kill switch and the promotion-write digest re-check's remaining wiring (§3.0 item 5); the
   `eval.tool_not_stub` refusal gate and the include-graph lint (§3.9); worktree-branch-per-trial (§3.4, deferred
   until a stub tool with a real effect exists to confine); concurrent trial execution (both screens run strictly
   sequentially — the follow-rate screen's ~40 runs and the regression screen's ~300 both finish in order; a

@@ -841,6 +841,17 @@ if(WIN32)
     target_compile_options(test_eval_gross_harm_screen PRIVATE /bigobj)
   endif()
   add_test(NAME test_eval_gross_harm_screen COMMAND test_eval_gross_harm_screen)
+
+  # ADR-181 §3.0 "Tier-1 pre-registration and attempt accounting" (E32): the pre-registration digest is
+  # recorded before any trial runs, every started attempt for a lesson family is counted in an append-only
+  # log, and the Tier1ScreenResult shows every attempt's figures, not only the passing one.
+  add_executable(test_eval_tier1_screen test_eval_tier1_screen.cpp)
+  target_link_libraries(test_eval_tier1_screen PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  if(MSVC)
+    target_compile_options(test_eval_tier1_screen PRIVATE /bigobj)
+  endif()
+  add_test(NAME test_eval_tier1_screen COMMAND test_eval_tier1_screen)
 endif()
 
 # ---- Milestone 4 Phase G5 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
