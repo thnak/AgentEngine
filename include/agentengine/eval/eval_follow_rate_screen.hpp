@@ -8,7 +8,7 @@
 //
 // Explicitly OUT OF SCOPE for this slice (named, not silently dropped -- see
 // decisions/ADR-181-evaluation-harness.md §8): the gross-harm regression screen (§3.0 item 3 --
-// 30 dev tasks x K=5, needs task-suite management and two more statistics, a separate slice); arm
+// built separately, in eval_gross_harm_screen.hpp); arm
 // S / SlotTable / the steering manifest (§3.7); the kill switch and promotion-write digest
 // re-check (§3.0 item 5); EvalSuite/EvalRun/PromotionEvidence, the look ledger, family/shard
 // bookkeeping (§3.3); worktree-branch-per-trial (§3.4) -- still valid to defer, since a follow-rate
@@ -22,19 +22,15 @@
 #include <optional>
 #include <random>
 #include <string>
-#include <string_view>
 #include <vector>
 
 #include "agentengine/eval/eval_grader.hpp"
+#include "agentengine/eval/eval_screen_common.hpp"
 #include "agentengine/eval/eval_trial.hpp"
 #include "agentengine/eval/lesson_candidate.hpp"
 #include "agentengine/eval/tier1_statistics.hpp"
 
 namespace agentengine::eval {
-
-[[nodiscard]] inline std::string_view trial_arm_name(trial_arm arm) {
-    return arm == trial_arm::treatment ? "treatment" : "baseline";
-}
 
 struct FollowRateProbeSpec {  // ae-naming-lint: allow FollowRateProbeSpec — ADR-181 §3.0 item 2
     std::string probe_id;                        // identity only, never model/candidate-derived
@@ -62,7 +58,7 @@ struct FollowRateProbeSpec {  // ae-naming-lint: allow FollowRateProbeSpec — A
 struct FollowRateTrialDetail {  // ae-naming-lint: allow FollowRateTrialDetail — ADR-181 §3.0 item 2
     trial_arm arm;
     std::string trial_id;
-    std::uint64_t trial_seed;   // this trial's own derived seed (I5) -- see derive_trial_seed below
+    std::uint64_t trial_seed;   // this trial's own derived seed (I5) -- see derive_trial_seed, eval_screen_common.hpp
     grade_outcome grade;
     TrialResult trial_result;   // full detail kept -- §3.5's "ungraded trials are never dropped
                                  // silently" means the evidence must be inspectable, not just
@@ -118,44 +114,6 @@ namespace detail {
                       "eval.follow_rate_differential_missingness_range"};
     }
     return std::nullopt;
-}
-
-// Classifies a converged trial via the caller's grader, and a non-converged one as `ungraded`
-// without ever invoking the grader (see eval_grader.hpp's own doc comment for why) -- and maps a
-// throwing grader to `ungraded` too (§3.5: "a grader error... is `ungraded`").
-[[nodiscard]] inline grade_outcome grade_trial(GraderFn const& grader, TrialResult const& trial) {
-    if (trial.setup_error.has_value() || !trial.outcome.has_value()) return grade_outcome::ungraded;
-    try {
-        return grader(trial);
-    } catch (...) {
-        return grade_outcome::ungraded;
-    }
-}
-
-// Red-team finding (MINOR, disclosed as a latent design gap): an earlier version of this driver
-// forwarded `spec.seed` UNCHANGED into every single one of the `2*n_per_arm` trials'
-// `TrialSpec::seed`. Nothing consumes `TrialSpec::seed` stochastically today (its own doc comment
-// says so), so this was inert -- but the day something does (a real client's sampling seed,
-// randomized memory-injection ordering, retry jitter), every baseline trial in a screen would
-// become bit-for-bit correlated with every other baseline trial, silently breaking the independent-
-// Bernoulli-trials assumption `clopper_pearson_lower_bound`/`follow_rate_screen_passes` require --
-// and nothing in the test suite would catch it, since a scripted test client never reads the seed.
-// Fixed by deriving a distinct seed per trial from `spec.seed` plus that trial's own arm+index --
-// the same uniqueness ingredients `trial_id` already uses, just mixed into a `uint64_t` instead of
-// a string. A simple, explicit, non-cryptographic mix (no reliance on `std::hash`'s
-// implementation-defined behaviour) -- this only needs to decorrelate sibling trials, not resist an
-// adversary. Recorded per trial in `FollowRateTrialDetail::trial_seed` (I5), not just used and
-// discarded, so the derivation is auditable even before anything consumes it.
-[[nodiscard]] inline std::uint64_t derive_trial_seed(std::uint64_t base_seed, trial_arm arm,
-                                                        std::uint64_t index) {
-    auto mix = [](std::uint64_t h, std::uint64_t v) {
-        h ^= v + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
-        return h;
-    };
-    std::uint64_t h = base_seed;
-    h = mix(h, arm == trial_arm::treatment ? 1u : 0u);
-    h = mix(h, index);
-    return h;
 }
 
 }  // namespace detail

@@ -5,10 +5,13 @@
   (`lesson_candidate.hpp`, `eval_principal.hpp`, `promotion_ack.hpp`, `tier1_statistics.hpp`), plus the FIRST SLICE
   of the trial-running harness itself (§3.0 items 2-4, §3.2, §3.4, §3.9's `EvalStore`): `eval_store.hpp`,
   `eval_stub_tool.hpp`, `eval_trial.hpp`, plus the FIRST SLICE of multi-trial orchestration, §3.0 item 2's
-  follow-rate screen (a separate, later PR): `eval_grader.hpp`, `eval_follow_rate_screen.hpp` — **183/183 checks
-  green** across 8 test binaries (`test_lesson_candidate` 43, `test_eval_principal` 15, `test_promotion_ack` 9,
-  `test_tier1_statistics` 37, `test_eval_store` 9, `test_eval_stub_tool` 11, `test_eval_trial_driver` 26,
-  `test_eval_follow_rate_screen` 33) plus a compile-fail/positive-control TRIPLE (§3.8; round 2 added a third file
+  follow-rate screen (a separate, later PR): `eval_grader.hpp`, `eval_follow_rate_screen.hpp`, plus §3.0 item 3's
+  gross-harm regression screen (another separate PR): `eval_screen_common.hpp`, `eval_gross_harm_screen.hpp` —
+  **219/219 checks green** across 9 test binaries (`test_lesson_candidate` 43, `test_eval_principal` 15,
+  `test_promotion_ack` 9, `test_tier1_statistics` 37, `test_eval_store` 9, `test_eval_stub_tool` 11,
+  `test_eval_trial_driver` 26, `test_eval_follow_rate_screen` 33, `test_eval_gross_harm_screen` 36 — executed checks;
+  that last file has 30 `AE_CHECK` sites because one pre-flight helper runs its check 7 times, every other file's
+  site and executed counts are equal) plus a compile-fail/positive-control TRIPLE (§3.8; round 2 added a third file
   proving the same rejection for `SummarizerT`), clean under MSVC, clang-cl
   `-Wall -Wextra -Werror -fsyntax-only`, and `tools/naming_lint.py`. **Two separate live runs against DeepSeek
   `deepseek-flash`** (`test_eval_trial_driver_live_e2e`, live-network-labelled, observation not a gate — a live
@@ -80,8 +83,21 @@
   leak into the aggregated `FollowRateScreenResult::trials[i].trial_result.recordings` (a real concern given this
   slice retains ~40 trials' full request/response history in one returned value, not just one) — it cannot: a
   secret resolves to an HTTP header inside a real client's own implementation, strictly below the layer
-  `RecordingChatClient` (and therefore any `ChatCallRecording`) ever sees. The
-  gross-harm regression screen (§3.0 item 3) remains a separate, later slice — see §8. Round 5 surfaced a real bug review
+  `RecordingChatClient` (and therefore any `ChatCallRecording`) ever sees. **A further separate PR builds §3.0
+  item 3, the gross-harm regression screen** (`eval_gross_harm_screen.hpp`, `run_gross_harm_screen`): `2×K×tasks`
+  real trials, arms AND tasks interleaved by one seeded shuffle (§3.4), each graded for task success by its own
+  task's grader, aggregated intention-to-treat into per-task diffs `(T − B)/K`, and fed to `tier1_statistics.hpp`'s
+  `sign_flip_sum_lower_tail_pvalue` and `hypergeometric_min_task_lower_tail_pvalue` — the first real caller either
+  statistic has had. Each flags at a strict `p < 0.10` and either one flags the screen, exactly as `sim181g.py`
+  (the simulation behind §6 G3) does; `a` = baseline and `b` = treatment, the convention
+  `test_tier1_statistics.cpp` already fixed. It **closes R6-Num3**: the min-task statistic's
+  `O(num_permutations × tasks × K)` cost never had an I8 budget, and this caller is where the ADR said one belonged
+  — `max_permutation_work` (and `max_trials` for the model calls) are checked, overflow-safely, before any trial
+  runs. The follow-rate screen's shared helpers moved, unchanged, into `eval_screen_common.hpp`. 36/36 executed
+  checks, deterministic only, including the concentration case §6 G3 exists for — one of ten tasks fully broken,
+  where the sum statistic alone misses it and the min-task statistic catches it — and a planted swapped-arms
+  mutant that the suite catches twice (concentrated harm missed; a benefit flagged as harm). **Not yet
+  red-teamed.** Round 5 surfaced a real bug review
   alone had not: the first `clopper_pearson_lower_bound`
   bisected against the wrong monotonicity direction and silently converged to a plausible-looking wrong answer;
   `test_tier1_statistics`'s own duality/boundary checks caught it before any reviewer looked. Round 5's own
@@ -1227,10 +1243,11 @@ non-determinism beyond the one seeded `std::mt19937_64`).
   and disproved: whether aggregating ~40 trials' full request/response `recordings` into one returned
   `FollowRateScreenResult` widens the blast radius of a `cap::Secret` leak versus a single `run_trial` call — it
   does not, because a secret never reaches a `ChatRequest`/`ChatCallRecording` at all, in either case (resolved to
-  an HTTP header strictly inside the real client's own implementation). **Still unbuilt**: the §3.0 item 3
-  gross-harm regression screen (30 dev tasks × K=5, needs task-suite
-  management and `sign_flip_sum_lower_tail_pvalue`/`hypergeometric_min_task_lower_tail_pvalue` wired up — a
-  separate, later slice); the `SlotTable`/steering-manifest arm S and its permutation statistic over real tool-call
+  an HTTP header strictly inside the real client's own implementation). **The §3.0 item 3 gross-harm regression
+  screen is now built too** (`eval_gross_harm_screen.hpp`, a further separate PR, not yet red-teamed — see the
+  status header). **Still unbuilt**: Tier-1 pre-registration hashing and the per-family attempt counter (§3.0's
+  "pre-registration and attempt accounting", E32); the baseline canary; per-task variance and the task-level CI
+  (Tier 2, §3.6); parametrised task generators; the `SlotTable`/steering-manifest arm S and its permutation statistic over real tool-call
   arguments (§3.7, E29); `EvalSuite`/`EvalRun`/`PromotionEvidence`, the look ledger and family/shard bookkeeping
   (§3.3, E32); the kill switch and the promotion-write digest re-check's remaining wiring (§3.0 item 5); the
   `eval.tool_not_stub` refusal gate and the include-graph lint (§3.9); worktree-branch-per-trial (§3.4, deferred
@@ -1261,14 +1278,16 @@ non-determinism beyond the one seeded `std::mt19937_64`).
   benign lesson is a usability cost an author works around (rephrase the value, or the human approver at §3.0 item
   5 overrides it), not a security failure the way an under-rejection would be — but it is real, and disclosed here
   rather than left implicit in "not a grammar."
-- **The hypergeometric concentration statistic's cost has no I8 budget of its own** (round 6, R6-Num3): its cost is
+- **The hypergeometric concentration statistic's cost has no I8 budget of its own — CLOSED for its caller**
+  (round 6, R6-Num3; closed by the gross-harm regression screen): its cost is
   `O(num_permutations × tasks × K)`, and a contractually-valid but adversarial combination of the three (measured:
   K=10,000, 100 tasks, 10,000 permutations) takes on the order of a minute single-threaded. `kMaxHypergeometricK`
   (round 6) bounds K alone against the unsigned-overflow crash (R6-Num2) but does not bound the product's total
-  cost — that bound belongs to whatever calls this function with real, adversarial-input-shaped inputs, and no such
-  caller exists yet. (The trial-running harness and its follow-rate screen are both built now, but neither one
-  calls this specific statistic — it's the gross-harm regression screen, §3.0 item 3, still a separate later slice,
-  that would.)
+  cost — that bound belongs to whatever calls this function with real, adversarial-input-shaped inputs. Its
+  first real caller, `run_gross_harm_screen` (§3.0 item 3), now enforces it: `max_permutation_work` (default
+  50,000,000 units of `num_permutations × tasks × 2K`) and `max_trials` are checked before any trial runs, with
+  overflow-safe arithmetic, and a spec over either budget is refused with zero model calls spent. The function
+  itself still has no cap of its own, so a future, different caller must bring its own.
 - **`bisect_decreasing`'s fixed 60-iteration budget has a resolution floor near either end of `[0,1]`** (round 7,
   R7-Num2): past roughly double precision's own ~2.2×10⁻¹⁶ absolute resolution, the search silently freezes at a
   fixed, wrong value with no error. ADR-181's real usage is `alpha=0.05` exclusively, nowhere near this floor, so

@@ -821,6 +821,14 @@ if(WIN32)
   target_link_libraries(test_eval_follow_rate_screen PRIVATE
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_eval_follow_rate_screen COMMAND test_eval_follow_rate_screen)
+
+  # ADR-181 §3.0 item 3, gross-harm regression screen: 2*K*tasks real run_trial calls (arms and tasks
+  # interleaved by one seeded shuffle), each graded for task success, wired into
+  # tier1_statistics.hpp's sign-flip sum and hypergeometric min-task statistics for real.
+  add_executable(test_eval_gross_harm_screen test_eval_gross_harm_screen.cpp)
+  target_link_libraries(test_eval_gross_harm_screen PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_eval_gross_harm_screen COMMAND test_eval_gross_harm_screen)
 endif()
 
 # ---- Milestone 4 Phase G5 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md) ----
