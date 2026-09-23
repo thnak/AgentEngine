@@ -8,7 +8,7 @@
 //
 // Explicitly OUT OF SCOPE for this slice (named, not silently dropped -- see
 // decisions/ADR-181-evaluation-harness.md §8): the gross-harm regression screen (§3.0 item 3 --
-// 30 dev tasks x K=5, needs task-suite management and two more statistics, a separate slice); arm
+// built separately, in eval_gross_harm_screen.hpp); arm
 // S / SlotTable / the steering manifest (§3.7); the kill switch and promotion-write digest
 // re-check (§3.0 item 5); EvalSuite/EvalRun/PromotionEvidence, the look ledger, family/shard
 // bookkeeping (§3.3); worktree-branch-per-trial (§3.4) -- still valid to defer, since a follow-rate
@@ -19,22 +19,19 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <random>
 #include <string>
-#include <string_view>
 #include <vector>
 
 #include "agentengine/eval/eval_grader.hpp"
+#include "agentengine/eval/eval_screen_common.hpp"
 #include "agentengine/eval/eval_trial.hpp"
 #include "agentengine/eval/lesson_candidate.hpp"
 #include "agentengine/eval/tier1_statistics.hpp"
 
 namespace agentengine::eval {
-
-[[nodiscard]] inline std::string_view trial_arm_name(trial_arm arm) {
-    return arm == trial_arm::treatment ? "treatment" : "baseline";
-}
 
 struct FollowRateProbeSpec {  // ae-naming-lint: allow FollowRateProbeSpec — ADR-181 §3.0 item 2
     std::string probe_id;                        // identity only, never model/candidate-derived
@@ -50,9 +47,14 @@ struct FollowRateProbeSpec {  // ae-naming-lint: allow FollowRateProbeSpec — A
     double target_lower_bound = 0.5;              // follow_rate_screen_passes's own default, explicit
     double alpha = 0.05;
     double max_differential_missingness = 0.05;   // §3.5's declared bound, default 5pp
+    // Below this graded fraction in EITHER arm the run is `invalid` (too little was measured to claim
+    // anything). "Ungraded" now means only a failed MEASUREMENT (eval_screen_common.hpp).
+    double min_graded_fraction = 0.9;
+    std::uint64_t max_model_calls = 10'000;       // I8: 2 * n_per_arm trials * max_turns * 2 calls/turn must fit
+    bool retain_recordings = false;               // keep full transcripts per trial (memory: trials x turns^2)
     std::uint64_t seed = 0;                       // I5: arm interleave order derives ONLY from this
     std::optional<std::uint64_t> token_budget;
-    std::optional<std::uint64_t> max_turns;
+    std::optional<std::uint64_t> max_turns;       // REQUIRED -- it bounds each trial's model calls
     std::size_t max_injected = 3;                 // forwarded to MemoryProvider's own ctor default
     // Same role as TrialSpec::extra_capabilities (eval_trial.hpp) -- host-supplied only, merged
     // into every trial this screen runs, never populated from model or candidate output (I3).
@@ -62,12 +64,10 @@ struct FollowRateProbeSpec {  // ae-naming-lint: allow FollowRateProbeSpec — A
 struct FollowRateTrialDetail {  // ae-naming-lint: allow FollowRateTrialDetail — ADR-181 §3.0 item 2
     trial_arm arm;
     std::string trial_id;
-    std::uint64_t trial_seed;   // this trial's own derived seed (I5) -- see derive_trial_seed below
+    std::uint64_t trial_seed;   // this trial's own derived seed (I5) -- see derive_trial_seed, eval_screen_common.hpp
     grade_outcome grade;
-    TrialResult trial_result;   // full detail kept -- §3.5's "ungraded trials are never dropped
-                                 // silently" means the evidence must be inspectable, not just
-                                 // counted; a deliberate memory/verbosity trade-off at this scale
-                                 // (tens of trials), not something to do at Tier-2 scale unchanged
+    TrialResult trial_result;   // every trial is kept (§3.5: never dropped silently); its full
+                                 // transcripts (`recordings`) only if spec.retain_recordings
 };
 
 struct FollowRateScreenResult {  // ae-naming-lint: allow FollowRateScreenResult — ADR-181 §3.0 item 2
@@ -81,6 +81,7 @@ struct FollowRateScreenResult {  // ae-naming-lint: allow FollowRateScreenResult
 
     bool invalid_baseline_too_easy = false;
     bool invalid_differential_missingness = false;
+    bool invalid_insufficient_grading = false;     // either arm's graded fraction < min_graded_fraction
     bool invalid = false;                          // OR of the above
 
     std::optional<bool> pass;                      // nullopt iff invalid or setup_error is set
@@ -93,8 +94,9 @@ struct FollowRateScreenResult {  // ae-naming-lint: allow FollowRateScreenResult
 namespace detail {
 
 [[nodiscard]] inline std::optional<error> validate_follow_rate_probe_spec(FollowRateProbeSpec const& spec) {
-    if (spec.probe_id.empty()) {
-        return error{failure_class::contract, "probe_id must not be empty", "eval.follow_rate_probe_id_empty"};
+    if (!usable_trial_id_part(spec.probe_id)) {
+        return error{failure_class::contract, "probe_id must be non-empty and contain no ':'",
+                     "eval.follow_rate_probe_id_invalid"};
     }
     if (spec.n_per_arm == 0) {
         return error{failure_class::contract, "n_per_arm must be > 0", "eval.follow_rate_n_zero"};
@@ -102,60 +104,41 @@ namespace detail {
     if (!spec.grader) {
         return error{failure_class::contract, "grader must be set", "eval.follow_rate_grader_missing"};
     }
-    if (spec.alpha <= 0.0 || spec.alpha >= 1.0) {
+    if (!in_open_unit_interval(spec.alpha)) {
         return error{failure_class::contract, "alpha must be in (0,1)", "eval.follow_rate_alpha_range"};
     }
-    if (spec.baseline_invalid_threshold < 0.0 || spec.baseline_invalid_threshold > 1.0) {
+    if (!in_closed_unit_interval(spec.baseline_invalid_threshold)) {
         return error{failure_class::contract, "baseline_invalid_threshold must be in [0,1]",
                       "eval.follow_rate_baseline_threshold_range"};
     }
-    if (spec.target_lower_bound < 0.0 || spec.target_lower_bound > 1.0) {
-        return error{failure_class::contract, "target_lower_bound must be in [0,1]",
+    // (0,1], not [0,1]: round-2 red-team NIT -- at 0 the lower bound always meets it, so a probe that
+    // was never followed once still reported `pass`.
+    if (!(spec.target_lower_bound > 0.0 && spec.target_lower_bound <= 1.0)) {
+        return error{failure_class::contract, "target_lower_bound must be in (0,1]",
                       "eval.follow_rate_target_lower_bound_range"};
     }
-    if (spec.max_differential_missingness < 0.0 || spec.max_differential_missingness > 1.0) {
+    if (!in_closed_unit_interval(spec.max_differential_missingness)) {
         return error{failure_class::contract, "max_differential_missingness must be in [0,1]",
                       "eval.follow_rate_differential_missingness_range"};
     }
-    return std::nullopt;
-}
-
-// Classifies a converged trial via the caller's grader, and a non-converged one as `ungraded`
-// without ever invoking the grader (see eval_grader.hpp's own doc comment for why) -- and maps a
-// throwing grader to `ungraded` too (§3.5: "a grader error... is `ungraded`").
-[[nodiscard]] inline grade_outcome grade_trial(GraderFn const& grader, TrialResult const& trial) {
-    if (trial.setup_error.has_value() || !trial.outcome.has_value()) return grade_outcome::ungraded;
-    try {
-        return grader(trial);
-    } catch (...) {
-        return grade_outcome::ungraded;
+    if (!in_closed_unit_interval(spec.min_graded_fraction)) {
+        return error{failure_class::contract, "min_graded_fraction must be in [0,1]",
+                      "eval.follow_rate_min_graded_fraction_range"};
     }
-}
-
-// Red-team finding (MINOR, disclosed as a latent design gap): an earlier version of this driver
-// forwarded `spec.seed` UNCHANGED into every single one of the `2*n_per_arm` trials'
-// `TrialSpec::seed`. Nothing consumes `TrialSpec::seed` stochastically today (its own doc comment
-// says so), so this was inert -- but the day something does (a real client's sampling seed,
-// randomized memory-injection ordering, retry jitter), every baseline trial in a screen would
-// become bit-for-bit correlated with every other baseline trial, silently breaking the independent-
-// Bernoulli-trials assumption `clopper_pearson_lower_bound`/`follow_rate_screen_passes` require --
-// and nothing in the test suite would catch it, since a scripted test client never reads the seed.
-// Fixed by deriving a distinct seed per trial from `spec.seed` plus that trial's own arm+index --
-// the same uniqueness ingredients `trial_id` already uses, just mixed into a `uint64_t` instead of
-// a string. A simple, explicit, non-cryptographic mix (no reliance on `std::hash`'s
-// implementation-defined behaviour) -- this only needs to decorrelate sibling trials, not resist an
-// adversary. Recorded per trial in `FollowRateTrialDetail::trial_seed` (I5), not just used and
-// discarded, so the derivation is auditable even before anything consumes it.
-[[nodiscard]] inline std::uint64_t derive_trial_seed(std::uint64_t base_seed, trial_arm arm,
-                                                        std::uint64_t index) {
-    auto mix = [](std::uint64_t h, std::uint64_t v) {
-        h ^= v + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
-        return h;
-    };
-    std::uint64_t h = base_seed;
-    h = mix(h, arm == trial_arm::treatment ? 1u : 0u);
-    h = mix(h, index);
-    return h;
+    // n_per_arm is non-zero here; a count so large that 2 * n_per_arm wraps is also over any budget.
+    if (spec.n_per_arm > std::numeric_limits<std::uint64_t>::max() / 2) {
+        return error{failure_class::resource, "n_per_arm is too large", "eval.screen_model_call_budget"};
+    }
+    if (auto budget = validate_call_budget(spec.max_turns, 2 * spec.n_per_arm, spec.max_model_calls);
+        budget.has_value()) {
+        return budget;
+    }
+    // A candidate the lesson template rejects would fail setup in every treatment trial, after the
+    // baseline trials had already spent their model calls -- refused before any trial runs instead.
+    if (auto rendered = render_lesson(spec.candidate, spec.template_version, spec.lesson_salience); !rendered) {
+        return rendered.error();
+    }
+    return std::nullopt;
 }
 
 }  // namespace detail
@@ -183,6 +166,11 @@ namespace detail {
 // gets excluded correlates with the outcome) -- whether a trial gets graded at all is not
 // independent of whether the lesson was followed, so dropping ungraded trials from the denominator
 // would bias the apparent follow rate, not just add noise.
+//
+// A lesson CAN make its own trials unmeasurable (a provider timeout or 5xx is `transient` whatever
+// caused it -- eval_screen_common.hpp), but here that only ever costs it: `invalid` means no pass, the
+// conservative direction for a screen a lesson has to PASS. The gross-harm screen, where `invalid`
+// would be the lesson's escape, needs and has a harm-favouring fallback instead.
 template <class InnerFactory, class SummarizerFactory>
 [[nodiscard]] task<FollowRateScreenResult> run_follow_rate_screen(
     InnerFactory make_inner, SummarizerFactory make_summarizer, FollowRateProbeSpec spec) {
@@ -202,7 +190,7 @@ template <class InnerFactory, class SummarizerFactory>
     for (std::uint64_t i = 0; i < spec.n_per_arm; ++i) sequence.push_back(trial_arm::baseline);
     for (std::uint64_t i = 0; i < spec.n_per_arm; ++i) sequence.push_back(trial_arm::treatment);
     std::mt19937_64 rng(spec.seed);
-    std::shuffle(sequence.begin(), sequence.end(), rng);
+    detail::portable_shuffle(sequence.begin(), sequence.end(), rng);  // same order on every std lib (I5)
     result.arm_order = sequence;
 
     result.trials.reserve(sequence.size());
@@ -228,9 +216,18 @@ template <class InnerFactory, class SummarizerFactory>
         trial_spec.max_injected = spec.max_injected;
         trial_spec.extra_capabilities = spec.extra_capabilities;
 
-        TrialResult trial_result =
-            co_await run_trial(make_inner(arm), make_summarizer(arm), trial_spec);
+        // A throwing factory or `run_trial` is that one trial's setup error (`ungraded`), not the loss of
+        // every trial already run (round-2 red-team, MINOR; same rule as the gross-harm screen).
+        TrialResult trial_result;
+        try {
+            trial_result = co_await run_trial(make_inner(arm), make_summarizer(arm), trial_spec);
+        } catch (...) {
+            trial_result = TrialResult{};
+            trial_result.setup_error =
+                error{failure_class::fatal, "the trial threw instead of returning", "eval.screen_trial_threw"};
+        }
         grade_outcome grade = detail::grade_trial(spec.grader, trial_result);
+        detail::drop_transcripts_unless_retained(trial_result, spec.retain_recordings);
 
         if (arm == trial_arm::treatment) {
             if (grade == grade_outcome::success) ++result.treatment_followed;
@@ -255,10 +252,17 @@ template <class InnerFactory, class SummarizerFactory>
         static_cast<double>(result.baseline_ungraded) / static_cast<double>(spec.n_per_arm);
     double const treatment_ungraded_rate =
         static_cast<double>(result.treatment_ungraded) / static_cast<double>(spec.n_per_arm);
-    result.invalid_differential_missingness =
-        std::abs(treatment_ungraded_rate - baseline_ungraded_rate) > spec.max_differential_missingness;
+    result.invalid_differential_missingness = detail::differential_missingness_exceeds(
+        result.treatment_ungraded, result.baseline_ungraded, spec.n_per_arm, spec.max_differential_missingness);
 
-    result.invalid = result.invalid_baseline_too_easy || result.invalid_differential_missingness;
+    // A verdict needs data: if either arm was mostly unmeasurable (e.g. the provider was down), no
+    // count here means anything, and without this rule an all-ungraded run would read as "never
+    // followed" -- a claim about the lesson made from no evidence.
+    result.invalid_insufficient_grading = (1.0 - baseline_ungraded_rate) < spec.min_graded_fraction ||
+                                          (1.0 - treatment_ungraded_rate) < spec.min_graded_fraction;
+
+    result.invalid = result.invalid_baseline_too_easy || result.invalid_differential_missingness ||
+                     result.invalid_insufficient_grading;
 
     if (!result.invalid) {
         // Red-team finding (MINOR): `follow_rate_screen_passes` is itself just

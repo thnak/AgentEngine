@@ -6,8 +6,11 @@
 // involved (the two are independent implementations of the same statistic, in two languages -- a
 // real cross-check, not a duplicate of the same code).
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <random>
 #include <vector>
 
 #include "agentengine/eval/tier1_statistics.hpp"
@@ -278,6 +281,33 @@ int main() {
         AE_CHECK(p_concentrated.has_value() && p_repeat.has_value() && *p_concentrated == *p_repeat,
                  "the same seed reproduces the exact same p-value (I5: nondeterminism crosses a "
                  "recorded seam, and the seed IS that seam)");
+    }
+
+    // ---- Golden values: replay is identical on every standard library (I5) ------------------------
+    // Gross-harm round-2 red-team finding (MAJOR): the "byte-identical under MSVC and g++-14" claim was
+    // checked once by hand and pinned nowhere -- a Sattolo-style shuffle (`uniform_below(i)` instead of
+    // `uniform_below(i + 1)`) passed every test while moving min-task p-values from 0.0040 to 0.0005.
+    // std::mt19937_64's output is fixed by the standard, so these values are the same everywhere; they
+    // were produced identically by MSVC and g++-14.
+    {
+        std::vector<int> v(20);
+        for (int i = 0; i < 20; ++i) v[i] = i;
+        std::mt19937_64 rng(0);
+        ev::detail::portable_shuffle(v.begin(), v.end(), rng);
+        std::vector<int> const golden{15, 1, 17, 9, 5, 4, 3, 6, 16, 7, 10, 2, 19, 11, 8, 12, 0, 18, 13, 14};
+        AE_CHECK(v == golden, "golden: portable_shuffle(0..19, seed 0) gives the pinned order");
+
+        std::vector<double> d;
+        std::vector<std::uint32_t> a, b;
+        for (int i = 0; i < 30; ++i) {
+            d.push_back((i % 7 - 3) / 5.0 - 0.02 * (i % 3));
+            a.push_back(static_cast<std::uint32_t>(std::min((i * 3) % 6, 5)));
+            b.push_back(static_cast<std::uint32_t>(std::min((i * 5 + 1) % 6, 5)));
+        }
+        auto sum_p = ev::sign_flip_sum_lower_tail_pvalue(d, 2000, 123);
+        auto min_p = ev::hypergeometric_min_task_lower_tail_pvalue(a, b, 5, 2000, 456);
+        AE_CHECK(sum_p.has_value() && *sum_p == 0.22838580709645179, "golden: the sign-flip p-value, exactly");
+        AE_CHECK(min_p.has_value() && *min_p == 0.91354322838580715, "golden: the min-task p-value, exactly");
     }
 
     if (g_failures != 0) {

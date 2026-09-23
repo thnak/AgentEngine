@@ -8,6 +8,10 @@
 #include <iostream>
 #include <memory>
 #include <memory_resource>
+#include <array>
+#include <limits>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -40,12 +44,14 @@ struct ScriptStep {
     std::string tool_name;
     std::string arguments_json;
     std::string text;
+    std::optional<ae::error> fail;  // the provider call itself fails with this error
 };
 
 ScriptStep tool_step(std::string name, std::string args_json) {
-    return ScriptStep{true, std::move(name), std::move(args_json), ""};
+    return ScriptStep{true, std::move(name), std::move(args_json), "", std::nullopt};
 }
-ScriptStep text_step(std::string text) { return ScriptStep{false, "", "", std::move(text)}; }
+ScriptStep text_step(std::string text) { return ScriptStep{false, "", "", std::move(text), std::nullopt}; }
+ScriptStep fail_step(ae::error e) { return ScriptStep{false, "", "", "", std::move(e)}; }
 
 class ScriptedChatClient {
 public:
@@ -61,12 +67,13 @@ public:
 
     ae::task<ae::result<ae::ChatResponse>> chat(ae::ChatRequest, ae::EffectContext&) {
         // Repeating the LAST step forever (rather than throwing std::out_of_range once the script
-        // is exhausted) is deliberate: Scenario 4 (differential missingness) needs a client that
+        // is exhausted) is deliberate: Scenario 4b (a lesson that stops the agent finishing) needs a client that
         // keeps producing tool calls past `max_turns` -- a real, structural non-convergence
         // (AgentSession's own budget cuts it off), not a test-harness crash.
         std::size_t const i = std::min(state_->next, state_->script.size() - 1);
         ScriptStep const& step = state_->script[i];
         ++state_->next;
+        if (step.fail.has_value()) co_return std::unexpected(*step.fail);
         ae::Message m{};
         m.role = ae::role::assistant;
         ae::ContentItem item{};
@@ -209,10 +216,41 @@ std::vector<ScriptStep> followed_script() {
 std::vector<ScriptStep> not_followed_script() {
     return {tool_step("set_deploy_region", R"({"region":"us-east-1"})"), text_step("done")};
 }
+// The grader cannot judge a trial whose tool call carried the sentinel "boom" -- it throws, which the
+// screen maps to `ungraded` (a failed MEASUREMENT, §3.5), the one way left to produce missing data.
+std::vector<ScriptStep> unmeasurable_script() {
+    return {tool_step("set_deploy_region", R"({"region":"boom"})"), text_step("done")};
+}
+ae::eval::GraderFn throwing_on_boom_grader() {
+    auto inner = ae::eval::make_tool_argument_grader("set_deploy_region", "region", "eu-west-1");
+    return [inner](ae::eval::TrialResult const& t) {
+        for (auto const& c : t.tool_calls) {
+            auto const* r = c.arguments.find("region");
+            if (r != nullptr && r->is_string() && r->as_string() == "boom") throw std::runtime_error("unmeasurable");
+        }
+        return inner(t);
+    };
+}
+
 // Repeats a tool call forever -- with spec.max_turns == 4 (base_probe_spec), this never reaches a
-// final text answer, so `outcome` fails (max_turns exhausted) and the trial grades `ungraded`.
+// final text answer, so `outcome` fails (max_turns exhausted): an OUTCOME, graded `failure`.
 std::vector<ScriptStep> never_converges_script() {
     return {tool_step("set_deploy_region", R"({"region":"eu-west-1"})")};
+}
+
+// A provider fault -- `failure_class::transient`, a failed measurement (`ungraded`).
+std::vector<ScriptStep> transient_script() {
+    return {fail_step(ae::error{ae::failure_class::transient, "HTTP 503", "provider.http_503"})};
+}
+
+// Per-trial control: `plan(arm, k)` where k counts that arm's trials so far.
+template <class Plan>
+auto make_trial_factory(Plan plan) {
+    auto counts = std::make_shared<std::array<int, 2>>();
+    return [plan, counts](ae::eval::trial_arm arm) {
+        int const k = (*counts)[arm == ae::eval::trial_arm::treatment ? 1 : 0]++;
+        return ScriptedChatClient(plan(arm, k));
+    };
 }
 
 }  // namespace
@@ -268,21 +306,103 @@ int main() {
         AE_CHECK(!result.pass.has_value(), "S3: no pass/fail claim is made for an invalid screen");
     }
 
-    // ---- Scenario 4: differential missingness (one arm structurally fails to converge) ------------
+    // ---- Scenario 4: differential missingness -- the MEASUREMENT fails in one arm only -------------
     {
         ev::FollowRateProbeSpec spec = base_probe_spec();
-        // Treatment's script never reaches a final answer within max_turns=4 -> every treatment
-        // trial is ungraded; baseline converges normally every time.
+        spec.grader = throwing_on_boom_grader();
         auto factory = make_arm_scripted_factory(/*baseline=*/not_followed_script(),
-                                                   /*treatment=*/never_converges_script());
+                                                   /*treatment=*/unmeasurable_script());
         auto result = drive(ev::run_follow_rate_screen(factory, make_summarizer_factory(), spec));
 
         AE_CHECK(!result.setup_error.has_value(), "S4: no setup error");
         AE_CHECK(result.treatment_ungraded == spec.n_per_arm, "S4: every treatment trial is ungraded");
-        AE_CHECK(result.baseline_ungraded == 0, "S4: baseline converges every time");
+        AE_CHECK(result.baseline_ungraded == 0, "S4: no baseline trial is ungraded");
         AE_CHECK(result.invalid_differential_missingness, "S4: flagged as differential missingness");
         AE_CHECK(result.invalid, "S4: the overall screen is invalid");
         AE_CHECK(!result.pass.has_value(), "S4: no pass/fail claim is made for an invalid screen");
+    }
+
+    // ---- Scenario 4b: gross-harm red-team fix -- an agent that never finishes did not follow ------
+    // Before the fix this was Scenario 4: a treatment arm that never converged counted as MISSING, and
+    // the screen reported `invalid` instead of a verdict. Not finishing is an outcome (ITT): it is
+    // "not followed", so the screen runs and fails.
+    {
+        ev::FollowRateProbeSpec spec = base_probe_spec();
+        auto factory = make_arm_scripted_factory(/*baseline=*/not_followed_script(),
+                                                   /*treatment=*/never_converges_script());
+        auto result = drive(ev::run_follow_rate_screen(factory, make_summarizer_factory(), spec));
+
+        AE_CHECK(!result.setup_error.has_value() && !result.invalid,
+                 "S4b: a never-finishing treatment arm is a valid run, not missing data");
+        AE_CHECK(result.treatment_ungraded == 0 && result.treatment_followed == 0,
+                 "S4b: every non-finishing trial counts as not followed");
+        AE_CHECK(result.pass.has_value() && !*result.pass, "S4b: the screen fails");
+    }
+
+    // ---- Scenario 4c: gross-harm red-team fix -- no verdict from no data --------------------------
+    {
+        ev::FollowRateProbeSpec spec = base_probe_spec();
+        spec.grader = throwing_on_boom_grader();
+        auto factory = make_arm_scripted_factory(unmeasurable_script(), unmeasurable_script());
+        auto result = drive(ev::run_follow_rate_screen(factory, make_summarizer_factory(), spec));
+
+        AE_CHECK(result.invalid_insufficient_grading && !result.invalid_differential_missingness,
+                 "S4c: both arms unmeasurable -> invalid for insufficient grading (the arms' EQUAL "
+                 "ungraded rates no longer let it pass as valid)");
+        AE_CHECK(!result.pass.has_value(), "S4c: no pass/fail claim is made from zero data");
+    }
+
+    // ---- Scenario 4d: missingness on counts, at its boundary --------------------------------------
+    // Round-2 red-team finding (MINOR): the rule compared floating-point RATES, so at n = 20 a one-trial
+    // gap was valid for B=0/T=1 but invalid for B=3/T=4. It now compares counts: at most
+    // floor(0.05 * 20) = 1 trial apart. Also proves a transient provider fault is `ungraded`.
+    {
+        auto run_gap = [&](int b_ungraded, int t_ungraded) {
+            auto f = make_trial_factory([=](ev::trial_arm arm, int k) {
+                int const limit = arm == ev::trial_arm::treatment ? t_ungraded : b_ungraded;
+                return k < limit ? transient_script() : not_followed_script();
+            });
+            ev::FollowRateProbeSpec spec = base_probe_spec();
+            spec.n_per_arm = 20;
+            spec.min_graded_fraction = 0.0;  // isolate the missingness rule
+            return drive(ev::run_follow_rate_screen(f, make_summarizer_factory(), spec));
+        };
+        auto r34 = run_gap(3, 4);
+        AE_CHECK(r34.baseline_ungraded == 3 && r34.treatment_ungraded == 4,
+                 "S4d: transient provider faults are ungraded (failed measurements)");
+        AE_CHECK(!r34.invalid_differential_missingness, "S4d: B=3, T=4 -- a one-trial gap is within the bound");
+        AE_CHECK(!run_gap(0, 1).invalid_differential_missingness, "S4d: B=0, T=1 -- the same gap, the same verdict");
+        AE_CHECK(run_gap(0, 2).invalid_differential_missingness, "S4d: a two-trial gap trips the rule");
+    }
+
+    // ---- Scenario 4e: insufficient grading at its boundary, in each arm alone ---------------------
+    {
+        auto run_grading = [&](ev::trial_arm which, int ungraded) {
+            auto f = make_trial_factory([=](ev::trial_arm arm, int k) {
+                return (arm == which && k < ungraded) ? transient_script() : not_followed_script();
+            });
+            ev::FollowRateProbeSpec spec = base_probe_spec();  // n = 10, floor 0.9
+            spec.max_differential_missingness = 1.0;          // isolate the grading rule
+            return drive(ev::run_follow_rate_screen(f, make_summarizer_factory(), spec));
+        };
+        AE_CHECK(!run_grading(ev::trial_arm::baseline, 1).invalid_insufficient_grading,
+                 "S4e: exactly the minimum graded fraction (9 of 10) is enough");
+        AE_CHECK(run_grading(ev::trial_arm::baseline, 2).invalid_insufficient_grading,
+                 "S4e: below it in the BASELINE arm alone is insufficient");
+        AE_CHECK(run_grading(ev::trial_arm::treatment, 2).invalid_insufficient_grading,
+                 "S4e: below it in the TREATMENT arm alone is insufficient");
+    }
+
+    // ---- Scenario 3b: baseline-too-easy at its boundary -------------------------------------------
+    {
+        ev::FollowRateProbeSpec spec = base_probe_spec();  // n = 10, threshold 0.10
+        PeriodicBaselineScriptFactory one(not_followed_script(), followed_script(), 10, followed_script());
+        auto r1 = drive(ev::run_follow_rate_screen(one, make_summarizer_factory(), spec));
+        AE_CHECK(r1.baseline_followed == 1 && !r1.invalid_baseline_too_easy,
+                 "S3b: a baseline following exactly at the threshold (1 of 10) is not too easy");
+        PeriodicBaselineScriptFactory two(not_followed_script(), followed_script(), 5, followed_script());
+        auto r2 = drive(ev::run_follow_rate_screen(two, make_summarizer_factory(), spec));
+        AE_CHECK(r2.baseline_followed == 2 && r2.invalid_baseline_too_easy, "S3b: 2 of 10 is too easy");
     }
 
     // ---- Scenario 5: same-seed determinism (I5) ---------------------------------------------------
@@ -322,6 +442,64 @@ int main() {
             drive(ev::run_follow_rate_screen(factory, make_summarizer_factory(), bad_alpha));
         AE_CHECK(result_alpha.setup_error.has_value(), "S6b: an out-of-range alpha is rejected");
         AE_CHECK(result_alpha.trials.empty(), "S6b: zero trials were run");
+
+        ev::FollowRateProbeSpec nan_alpha = base_probe_spec();
+        nan_alpha.alpha = std::numeric_limits<double>::quiet_NaN();
+        auto r_nan = drive(ev::run_follow_rate_screen(factory, make_summarizer_factory(), nan_alpha));
+        AE_CHECK(r_nan.setup_error.has_value() && r_nan.trials.empty(),
+                 "S6c: a NaN alpha is rejected (it used to pass validation)");
+
+        ev::FollowRateProbeSpec no_turns = base_probe_spec();
+        no_turns.max_turns = std::nullopt;
+        auto r_turns = drive(ev::run_follow_rate_screen(factory, make_summarizer_factory(), no_turns));
+        AE_CHECK(r_turns.setup_error.has_value() && r_turns.setup_error->code == "eval.screen_max_turns_required",
+                 "S6d: an unset max_turns is rejected (it left every trial's model calls unbounded)");
+
+        // 2 * 10 trials * 4 turns * 2 calls per turn (agent + summarizer) = 160
+        ev::FollowRateProbeSpec over_budget = base_probe_spec();
+        over_budget.max_model_calls = 159;
+        auto r_budget = drive(ev::run_follow_rate_screen(factory, make_summarizer_factory(), over_budget));
+        AE_CHECK(r_budget.setup_error.has_value() && r_budget.setup_error->code == "eval.screen_model_call_budget",
+                 "S6e: trials * max_turns * 2 over max_model_calls is rejected before any model call (I8)");
+        ev::FollowRateProbeSpec at_budget = base_probe_spec();
+        at_budget.max_model_calls = 160;
+        auto r_at = drive(ev::run_follow_rate_screen(factory, make_summarizer_factory(), at_budget));
+        AE_CHECK(!r_at.setup_error.has_value() && r_at.trials.size() == 20u,
+                 "S6e: positive control -- exactly at the budget still runs");
+
+        auto rejected = [&](ev::FollowRateProbeSpec bad, char const* code) {
+            auto r = drive(ev::run_follow_rate_screen(factory, make_summarizer_factory(), std::move(bad)));
+            return r.setup_error.has_value() && r.setup_error->code == code && r.trials.empty();
+        };
+        double const nan = std::numeric_limits<double>::quiet_NaN();
+        ev::FollowRateProbeSpec s1 = base_probe_spec();
+        s1.min_graded_fraction = nan;
+        ev::FollowRateProbeSpec s2 = base_probe_spec();
+        s2.baseline_invalid_threshold = nan;
+        ev::FollowRateProbeSpec s3 = base_probe_spec();
+        s3.target_lower_bound = nan;
+        ev::FollowRateProbeSpec s4 = base_probe_spec();
+        s4.max_differential_missingness = nan;
+        AE_CHECK(rejected(s1, "eval.follow_rate_min_graded_fraction_range") &&
+                     rejected(s2, "eval.follow_rate_baseline_threshold_range") &&
+                     rejected(s3, "eval.follow_rate_target_lower_bound_range") &&
+                     rejected(s4, "eval.follow_rate_differential_missingness_range"),
+                 "S6f: a NaN in any threshold is rejected, not left to silently disable its rule");
+
+        ev::FollowRateProbeSpec zero_target = base_probe_spec();
+        zero_target.target_lower_bound = 0.0;
+        AE_CHECK(rejected(zero_target, "eval.follow_rate_target_lower_bound_range"),
+                 "S6g: target_lower_bound = 0 is rejected (a never-followed probe would pass)");
+
+        ev::FollowRateProbeSpec colon = base_probe_spec();
+        colon.probe_id = "deploy:region";
+        AE_CHECK(rejected(colon, "eval.follow_rate_probe_id_invalid"),
+                 "S6h: a ':' in probe_id is rejected (trial_ids could not mint a principal)");
+
+        ev::FollowRateProbeSpec bad_lesson = base_probe_spec();
+        bad_lesson.candidate.value = "";
+        AE_CHECK(rejected(bad_lesson, "eval.value_length"),
+                 "S6i: a candidate the lesson template rejects is refused before any baseline trial runs");
     }
 
     // ---- Scenario 7: round-3 red-team fix -- each trial gets its OWN derived seed, not spec.seed
@@ -353,6 +531,40 @@ int main() {
         }
         AE_CHECK(seeds_match, "S7: derived per-trial seeds are themselves deterministic given the "
                                "same spec.seed (I5)");
+    }
+
+    // ---- Scenario 8: transcripts are dropped after grading unless the host opts in ----------------
+    {
+        auto factory = make_arm_scripted_factory(not_followed_script(), followed_script());
+        auto dropped = drive(ev::run_follow_rate_screen(factory, make_summarizer_factory(), base_probe_spec()));
+        bool none_kept = true;
+        for (auto const& d : dropped.trials) {
+            none_kept = none_kept && d.trial_result.recordings.empty() && d.trial_result.summarizer_recordings.empty();
+        }
+        AE_CHECK(none_kept && !dropped.trials.empty(), "S8: by default no trial keeps its full transcripts");
+
+        ev::FollowRateProbeSpec keep = base_probe_spec();
+        keep.retain_recordings = true;
+        auto kept = drive(ev::run_follow_rate_screen(factory, make_summarizer_factory(), keep));
+        bool all_kept = true;
+        for (auto const& d : kept.trials) {
+            all_kept = all_kept && !d.trial_result.recordings.empty() && !d.trial_result.summarizer_recordings.empty();
+        }
+        AE_CHECK(all_kept && kept.pass == dropped.pass,
+                 "S8: retain_recordings keeps them, and the verdict does not depend on them");
+    }
+
+    // ---- Scenario 9: the arms really are interleaved -------------------------------------------------
+    {
+        auto factory = make_arm_scripted_factory(not_followed_script(), followed_script());
+        auto r = drive(ev::run_follow_rate_screen(factory, make_summarizer_factory(), base_probe_spec()));
+        bool treatment_then_baseline = false;
+        for (std::size_t i = 0; i + 1 < r.arm_order.size(); ++i) {
+            if (r.arm_order[i] == ev::trial_arm::treatment && r.arm_order[i + 1] == ev::trial_arm::baseline) {
+                treatment_then_baseline = true;
+            }
+        }
+        AE_CHECK(treatment_then_baseline, "S9: run order interleaves the arms, not all baseline then all treatment");
     }
 
     if (g_failures != 0) {
