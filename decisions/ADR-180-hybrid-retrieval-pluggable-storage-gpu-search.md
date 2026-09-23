@@ -29,14 +29,39 @@ proven the same session against the real GPU this backend was already built agai
 this ADR's scope has now had at least one red-team pass, and the two attack surfaces this ADR itself
 flagged as needing the most scrutiny (a network-writable remote index; raw GPU buffer handling) have
 each now had two independent passes (steps 1-6: one; `QdrantVectorIndex`: two, §4b; `VulkanCosineIndex`:
-two, §4c/§4d) — parity across this ADR's contested surfaces, not just steps 1-6's own single pass.
-Per `CLAUDE.md`'s "contested, hot-path, or security-critical designs go through `design → red-team →
-prove → judge`" rule, this ADR is **still not Judged**: whether `VulkanCosineIndex` is owed a THIRD
-red-team pass is now the live question (§7) — pass 4 found genuine, new issues pass 3 missed, which
-argues for continued scrutiny, but two passes is also where `QdrantVectorIndex` itself stopped before
-Judged review, so this is left as a judgment call for whoever runs the Judge step, not resolved
-unilaterally here; and the live Qdrant run (§3 claim 6) remains blocked on the same persistent local
-Docker daemon issue, unresolved.
+two, §4c/§4d, then a third, §4e, below) — parity across this ADR's contested surfaces, not just steps 1-6's own single pass.
+**A THIRD `VulkanCosineIndex` pass has now run: red-team pass 5 (2026-09-23, a further independent
+agent with no prior context, §4e). It resolves the previously open "is a third pass owed" question:
+yes, it was owed.** It found:
+- **one more Critical**: a scores-buffer double-destroy on an allocation-failure path that corrupted the
+  process heap (`0xC0000374`) on the next call. This was NOT a discarded `VkResult`; every `VkResult`
+  there was checked. It sat on a failure branch no pass had ever executed.
+- **five Real gaps**:
+  - the device's `maxStorageBufferRange` was never enforced, which is invalid usage at a realistic
+    21,846 × 1536 corpus on a spec-floor device;
+  - finite out-of-range inputs broke §3 claim 7(b) by a full 1.0;
+  - NaN input led to `std::sort` UB;
+  - a moved-from instance crashed on any call;
+  - no failure branch had ever run.
+- **two Minor issues**.
+
+All eight are fixed with executed proof. Pass 5 was systematic by construction, not by eye:
+- an exhaustive 47-entry-point Vulkan-call table;
+- the Khronos validation and profiles layers;
+- a permanent fault-injection test that executes 21 of 21 failure-capable entry points under the
+  validation layer;
+- UBSan, for the first time.
+
+It also resolved two long-carried environment residuals: the "C1083" whole-project configure blocker is
+Windows `MAX_PATH`, and with a short build root the real `cmake`+Ninja+`ctest` flow passes. Per
+`CLAUDE.md`'s "contested, hot-path, or security-critical designs go through `design → red-team → prove →
+judge`" rule, this ADR is **still not Judged**. **Pass 5's recommendation: the Vulkan surface is ready
+for the Judge step**, with two named conditions (§8 item 9):
+- a ruling on device-lost's `failure_class`;
+- tracking `BruteForceCosineIndex`'s identical NaN-sort defect as an ADR-063 follow-on.
+
+A fourth eyes-only red-team pass is not recommended. The live Qdrant run (§3 claim 6) remains blocked
+on the same persistent local Docker daemon issue, unresolved.
 What "real" means for steps 1-6 below: every new type compiles under clang++
 (`-std=c++23`) against this tree, every claim below that is marked CORRECT has a real, executed, passing
 check (a permanent test registered in `tests/CMakeLists.txt`), and the existing ADR-063 test suite
@@ -387,6 +412,14 @@ lockstep. Named explicitly as real, not-yet-written logic — §8's implementati
    as an open residual (§7), not chased further this pass. See §5-6 for the full account. (Part (b)'s
    correctness was RE-CONFIRMED by red-team pass 3, §4c, on a rebuilt binary that ALSO fixes several
    unrelated fail-closed gaps — see §5-6.)
+   **(Red-team pass 5, §4e finding 3) Part (b) was FALSE for finite inputs outside float32's squared
+   range, and is now restored.** Components above ~1.8e19 or below ~1e-19 overflowed or underflowed in
+   the shader's float32 squares. An exact match then scored 0 or NaN on the GPU against 1.0 on the CPU: a
+   divergence of 1.0, not a near-tie. Every row and query is now rescaled by an exact power of two before
+   upload, and the GPU now matches the CPU within 1e-5 at magnitudes 1e20, 1, 1e-25 and 0. The rescale is
+   exact, so the measured in-range max divergence is bit-identical to before (1.04308e-07 / 1.37836e-07).
+   Non-finite inputs are outside the claim's domain: `VulkanCosineIndex` now rejects them as a contract
+   violation.
 8. **Claim (§2.3a, carried forward from ADR-063 claim 6):** the existing citation-forgery defense
    (`neutralize_forged_provenance_markers`) applies identically to chunks surfaced through
    `HybridRagContextProvider` as through `VectorRagContextProvider` — because §2.3 reuses
@@ -776,6 +809,238 @@ genuine empty-batch no-op is NOT confused with it; an n=1/dim=1 corpus with inte
 `add_batch()` calls; `k` exactly equal to corpus size); 4 as a named, honest residual, not fixed) — see
 §5-6 below for the fix details.
 
+## 4e. Red-team pass 5 (2026-09-23, general-purpose agent, no prior context) — VulkanCosineIndex, third pass
+
+Run against the same files §4c/§4d reviewed (`src/backends/vulkan_vector_index/vulkan_cosine_index.{hpp,cpp}`,
+`cosine_similarity.comp` + its checked-in `.spv`, `tests/test_vulkan_cosine_index.cpp`, and the
+`AGENTENGINE_WITH_VULKAN` CMake wiring), post-§4d-fix, at `main`'s tip (`11f774f`). The project owner asked
+for this pass specifically because §4d found a new Critical that §4c missed. It was the same bug class (a
+discarded `VkResult`), at a call site outside §4c's narrower brief. So this pass's brief was to be
+**systematic rather than sampled**. It started from §4c/§4d's own accounts only, re-reported nothing either
+of them already found and fixed, and did not relitigate their named residuals. A real Vulkan SDK
+(1.4.350.0) and the real discrete GPU (AMD Radeon RX 5300M, AMD proprietary driver, confirmed via
+`vulkaninfo`) were used for every claim below. Every finding has an executed pre-fix reproduction and an
+executed post-fix proof. None rests on code reading alone. **One Critical, five Real gaps, two Minor.**
+
+Method, stated so the next reader can see coverage was complete rather than sampled. The prior passes
+searched by eye. This pass used four mechanical instruments none of them had:
+
+1. **An exhaustive Vulkan-entry-point inventory** (the table below): all 47 distinct `vk*` entry points in
+   the file, each classified as `VkResult`-returning or void. Each `VkResult`-returning call was checked for
+   whether its failure is handled. Each void call was checked for the precondition it relies on.
+2. **The Khronos validation layer** (`VK_LAYER_KHRONOS_validation`, SDK 1.4.350.0) over the full suite,
+   with synchronization validation and best-practices enabled.
+3. **The Khronos profiles layer** (`VK_LAYER_KHRONOS_profiles`), emulating the SDK's own
+   `VP_ANDROID_vulkan_profile_2021` baseline profile. This tests against a spec-floor device, not just the
+   one GPU on this desk.
+4. **A test-only fault-injection seam.** It made every checked-`VkResult` failure branch actually execute
+   for the first time. §4c and §4d both recorded, as an accepted residual, that none of those branches had
+   ever run.
+
+That fourth instrument is what found the Critical. It is not a discarded `VkResult`. Every `VkResult` on
+that path WAS checked. The bug was the cleanup ordering after a correctly detected failure, so a brief
+framed as "is every `VkResult` checked" could not have found it.
+
+### Critical
+
+1. **The scores-buffer regrow destroyed the OLD buffer before creating the new one. So a failed creation
+   left destroyed handles cached, and they were then destroyed a second time.** In `search()`, when `n`
+   outgrew `scores_buffer_capacity`, the block called `vkDestroyBuffer`/`vkFreeMemory` on
+   `impl_->scores_buffer`/`scores_memory` FIRST, then called `create_host_visible_buffer()`. If that
+   creation failed (any of its three checked calls: `vkCreateBuffer`, `vkAllocateMemory`,
+   `vkBindBufferMemory`), `search()` correctly returned a typed error. But `impl_` still held the
+   just-destroyed handles, and the old, now-too-small capacity. The next `search()` on the same instance
+   re-entered the block, because `n` still exceeded that capacity, and destroyed/freed those handles
+   AGAIN. `~Impl()` would have done so once more. The result is a double-destroy/double-free of driver
+   objects, which is undefined behavior per the Vulkan spec.
+   **Executed on the real GPU.** A scratch build of the fixed `.cpp` had ONLY this block reverted to its
+   pre-fix ordering, and was driven by this pass's fault-injection test:
+   - With no layer loaded, the process died with **`0xC0000374` (STATUS_HEAP_CORRUPTION)**. The AMD driver
+     corrupted the process heap on the second free.
+   - Under the validation layer it reported **18 validation errors**, led by
+     `VUID-vkDestroyBuffer-buffer-parameter` ("Invalid VkBuffer Object").
+
+   The fixed build shows 0 validation errors and no crash. This is the "vectors-buffer rebuild ordering"
+   lesson §4c's "What held up" praised in one block, never applied to its sibling block a few dozen lines further
+   down. Reachable only after an allocation failure, like every failure-path finding in §4c/§4d. But
+   unlike theirs, this one turns a correctly reported, recoverable out-of-memory into heap corruption on
+   the NEXT call.
+
+### Real gaps
+
+2. **The device's own `maxStorageBufferRange` was never enforced, and the realistic corpus size where it
+   bites is 21,846 vectors.** The whole flattened vectors buffer is bound as ONE storage-buffer descriptor
+   with `VK_WHOLE_SIZE`. The spec requires that effective range to be `<=
+   VkPhysicalDeviceLimits::maxStorageBufferRange` (`VUID-VkWriteDescriptorSet-descriptorType-00333`).
+   §4c's uint32 guard checks only that `n`/`dim` fit the push constants, which is necessary but far from
+   sufficient.
+   - The spec's required minimum for that limit is 2^27 bytes (128 MiB). That is exactly the value the SDK's
+     `VP_ANDROID_vulkan_profile_2021` baseline profile declares (`Config/VK_LAYER_KHRONOS_profiles/`, read
+     from the SDK, not from memory).
+   - At dim=1536, a 21,846-vector corpus crosses it. That is a realistic RAG corpus, not an adversarial one.
+   - **Reproduced** under the profiles layer emulating that baseline, plus the validation layer. `search()`
+     at n=21,846 produced `VUID-VkWriteDescriptorSet-descriptorType-00333` ("effective range [134221824] is
+     greater than maxStorageBufferRange (134217728)").
+
+   It was not reachable on the reference AMD device, whose own limit is 4 GiB−1 (`vulkaninfo`). That is why
+   no prior pass saw it, and why this is rated a Real gap rather than Critical. The same missing bound also
+   left the shader's own 32-bit index arithmetic unguarded: `uint base = i * pc.dimension` wraps once
+   `n*dim >= 2^32`. Enforcing `n*dim*4 <= maxStorageBufferRange`, itself a uint32, caps `n*dim` below 2^30,
+   so it closes that too. Fixed alongside it: §4c's named-but-unfixed `maxComputeWorkGroupCount[0]`
+   residual (finding 4). It needed the same `VkPhysicalDeviceLimits` query this fix introduces, so it was
+   closed here rather than left open.
+
+3. **Finite inputs outside float32's squared range made GPU scores diverge from CPU scores by up to the
+   full `[-1, 1]` range. That falsifies §3 claim 7(b) as stated, for finite input.** The shader squares RAW
+   components in float32. `BruteForceCosineIndex` accumulates in double. Any component with `|x| > ~1.8e19`
+   overflows to `+inf` when squared, and any with `|x| < ~1e-19` underflows to 0.
+   **Reproduced** with stored vectors `{1e20, 1e20}` (exact match), `{1e-25, 1e-25}` (exact match), and
+   `{1, 0.2}`, against query `{1, 1}`:
+   - CPU scored the two exact matches `1, 1` and the third `0.832`.
+   - GPU scored them `0, 0, 0.832`, so both exact matches ranked **last**.
+   - A `{1e20, 1e20}` query gave GPU **NaN** scores.
+
+   Claim 7(b) bounds GPU/CPU divergence to "near-tied scores" (epsilon 1e-3). This was a divergence of 1.0,
+   from ordinary finite floats. Not realistic embedding magnitudes, but reachable through the public API,
+   and outside the residual §2.6 claims to bound.
+
+4. **NaN/Inf components were accepted, and the resulting NaN scores reached `std::sort` under a
+   comparator that is not a strict weak ordering over NaN. That is undefined behavior, not just a wrong
+   answer.** The comparator `a.score != b.score ? a.score > b.score : a.id < b.id` makes NaN "equivalent"
+   to every score, so equivalence is not transitive. That violates `std::sort`'s precondition.
+   **Reproduced**: 200 vectors, 29 of them with a NaN component. The GPU `search()` output had **11
+   descending-order violations among the FINITE scores**, so the non-NaN results themselves came back
+   mis-ranked. `BruteForceCosineIndex` produced the identical 11 violations. It shares the comparator and
+   also accepts NaN, which is **a latent defect in the already-Judged ADR-063 CPU conformer, named in §7,
+   not fixed here** (out of this backend's scope). `QdrantVectorIndex`'s §4b Minor 5 had already noticed
+   the non-finite-input gap on the remote side.
+
+5. **A moved-from `VulkanCosineIndex` crashed on any method call.** Move operations are `= default` on a
+   `unique_ptr<Impl>`, so a moved-from instance holds a null pimpl. Every method then dereferenced it
+   (`impl_->mutex`). The natural `VulkanCosineIndex idx = std::move(*created);` idiom, which this test file
+   itself used 6 times before this pass, leaves exactly such an object inside `created`.
+   **Reproduced**: `size()` on a moved-from instance gave **`0xC0000005` (access violation)**. That falls
+   short of the standard library's "valid but unspecified" moved-from convention, and of this codebase's
+   "typed error, never a crash" posture.
+   Copy is correctly `= delete`d, so there is no double-own. What held up there is recorded below.
+
+6. **Test-methodology gap: no checked-`VkResult` failure branch in this file had EVER executed.** §4c and
+   §4d both accepted this as a residual, since a real OOM or device-lost cannot be induced safely.
+   Finding 1 is the direct proof of what that cost. A cleanup-ordering bug sat on exactly such a branch
+   through two prior passes, each of which reviewed that code by hand.
+
+### Minor
+
+7. **Every runtime Vulkan failure collapsed into one `failure_class::resource` error, with no trace of
+   WHICH `VkResult` occurred.** A caller could not tell a possibly transient OOM from `VK_ERROR_DEVICE_LOST`.
+   After device loss, this instance's `VkDevice` is permanently unusable and every later call fails too.
+   Checked against `error.hpp`'s definitions:
+   - `contract` is used for caller input: correct.
+   - `resource` is used for limits and allocation failure: correct.
+   - `fatal` survives only on the genuinely unreachable `dim == 0` invariant: correct since §4d.
+
+   So no class is outright wrong, but device-lost is poorly served by `resource` ("budget, quota, or limit
+   exceeded").
+
+8. **The header's top comment still described the ORIGINAL design** ("the stored vectors are re-uploaded
+   to a GPU buffer on every `search()` call"). §5-6's step-8 account replaced that with a persistent cache
+   before any red-team pass ran. The header was stale documentation that three prior reviews read past.
+
+### Vulkan-call coverage table
+
+Every distinct `vk*` entry point in `vulkan_cosine_index.cpp`: 47 in total, 22 of them `VkResult`-returning.
+"Fault point" means this pass's injection seam makes that call's failure branch execute. The branch is
+proven by `tests/test_vulkan_cosine_index_fault_injection.cpp`: the typed error, the same-instance recovery,
+and zero validation errors.
+
+| Entry point | Sites | Returns `VkResult`? | Failure handling / void-call precondition | Failure branch executed? |
+|---|---|---|---|---|
+| `vkCreateInstance` | 1 | yes | checked (original) | yes, `create_instance` |
+| `vkEnumeratePhysicalDevices` | 2 | yes | checked, `VK_INCOMPLETE` accepted on fill, `resize` to written count (§4d) | yes, `enumerate_physical_devices` #1 (count) and #2 (fill) |
+| `vkGetPhysicalDeviceQueueFamilyProperties` | 2 | void | handles come only from a successful enumeration, list resized to the count actually written (§4d) | n/a |
+| `vkGetPhysicalDeviceProperties` | 1 | void | NEW (pass 5): same handle guarantee; feeds finding 2's limits | n/a |
+| `vkCreateDevice` | 1 | yes | checked | yes, `create_device` |
+| `vkGetDeviceQueue` | 1 | void | family index + queue 0 are exactly what `VkDeviceQueueCreateInfo` requested | n/a |
+| `vkCreateCommandPool` | 1 | yes | checked | yes, `create_command_pool` |
+| `vkCreateDescriptorSetLayout` | 1 | yes | checked; bindings 0/1/2 match the shader (see "What held up") | yes, `create_descriptor_set_layout` |
+| `vkCreateDescriptorPool` | 1 | yes | checked | yes, `create_descriptor_pool` |
+| `vkCreatePipelineLayout` | 1 | yes | checked; 8-byte push range matches the shader | yes, `create_pipeline_layout` |
+| `vkCreateShaderModule` | 1 | yes | checked; `pCode` 4-byte aligned (`alignas(4)` in the generated header) | yes, `create_shader_module` |
+| `vkCreateComputePipelines` | 1 | yes | checked | yes, `create_compute_pipeline` |
+| `vkGetPhysicalDeviceMemoryProperties` | 1 | void | valid physical device; `1u << i` safe (`memoryTypeCount <= 32`) | n/a |
+| `vkCreateBuffer` | 2 (4 buffers) | yes | checked | yes, `create_buffer` #1-#4 |
+| `vkGetBufferMemoryRequirements` | 2 | void | only after a successful `vkCreateBuffer` | n/a |
+| `vkAllocateMemory` | 2 | yes | checked; buffer destroyed on failure | yes, `allocate_memory` #1-#4 |
+| `vkBindBufferMemory` | 2 | yes | checked, memory + buffer released on failure (§4d) | yes, `bind_buffer_memory` #1-#4 (first execution ever of §4d's own Critical fix) |
+| `vkMapMemory` | 3 | yes | checked + null-pointer checked (§4c) | yes, `map_memory` #1 (staging), #2 (query), #3 (scores) |
+| `vkUnmapMemory` | 3 | void | only after a successful map | n/a |
+| `vkAllocateCommandBuffers` | 2 | yes | checked; cached handle nulled on failure | yes, `allocate_command_buffers` #1 (copy), #2 (dispatch) |
+| `vkBeginCommandBuffer` | 2 | yes | checked | yes, `begin_command_buffer` |
+| `vkCmdCopyBuffer`, `vkCmdPipelineBarrier` (×2), `vkCmdBindPipeline`, `vkCmdBindDescriptorSets`, `vkCmdPushConstants`, `vkCmdDispatch` | 7 | void | recorded only between a successful begin and end; push size 8 == declared range; dispatch count now `<= maxComputeWorkGroupCount[0]` (pass 5, finding 2) | n/a |
+| `vkEndCommandBuffer` | 2 | yes | checked | yes, `end_command_buffer` |
+| `vkCreateFence` | 2 | yes | checked | yes, `create_fence` |
+| `vkQueueSubmit` | 2 | yes | checked; `VkResult` now in the message (finding 7) | yes, `queue_submit` |
+| `vkWaitForFences` | 2 | yes | checked; `VK_ERROR_DEVICE_LOST` now gets its own code (finding 7) | yes, `wait_for_fences` (as `DEVICE_LOST`, after the real wait completed) |
+| `vkResetCommandBuffer` | 1 | yes | checked (§4c) | yes, `reset_command_buffer` |
+| `vkAllocateDescriptorSets` | 1 | yes | checked; cached handle now nulled on failure (pass 5) | yes, `allocate_descriptor_sets` |
+| `vkUpdateDescriptorSets` | 1 | void | set allocated; all three buffers non-null; **effective range `<= maxStorageBufferRange` was NOT guaranteed (finding 2, fixed)** | n/a |
+| `vkDestroyBuffer` / `vkFreeMemory` | lambda error paths, `CleanupStack`, rebuild swap, scores regrow, `~Impl` | void | **"valid handle" violated on the scores-regrow failure path (finding 1, Critical, fixed)**; every other site validated clean across all 59 injected-failure teardowns | n/a (every site exercised via the fault points above) |
+| `vkDestroyFence` | per-call + `CleanupStack` | void | valid, created handle only | n/a |
+| `vkFreeCommandBuffers` | 3 | void | not pending: after a successful wait, or never submitted. See §7 for the genuine-device-lost case | n/a |
+| `vkFreeDescriptorSets` | 1 (`~Impl`) | yes | result ignored: correct, since the spec's only return code for it is `VK_SUCCESS` | n/a (no failure mode exists) |
+| `vkDestroyPipeline`, `vkDestroyShaderModule`, `vkDestroyPipelineLayout`, `vkDestroyDescriptorPool`, `vkDestroyDescriptorSetLayout`, `vkDestroyCommandPool`, `vkDestroyDevice`, `vkDestroyInstance` | 1 each (`~Impl`) | void | reverse creation order, every one NULL-guarded; validated clean after every one of the 9 `create()`-step failures | n/a |
+
+Result: 21 of the 22 `VkResult`-returning entry points now have an executed failure branch. The 22nd,
+`vkFreeDescriptorSets`, has no failure code in the spec.
+
+### What held up
+
+- **The checked-in `.spv` is exactly its source.** `glslc` (SDK 1.4.350.0) recompiled `cosine_similarity.comp`
+  **byte-identical** to the checked-in 3100-byte `.spv` (`cmp`), and `spirv-dis` diffs are empty.
+  `spirv-val` passes. It is SPIR-V 1.0, so any Vulkan 1.0+ device accepts it. The disassembly confirms
+  what the host declares:
+  - three `BufferBlock` storage buffers at set 0, bindings 0/1/2, matching the descriptor-set layout's
+    three `STORAGE_BUFFER` bindings exactly;
+  - a `PushConstants` block of two `uint`s at offsets 0/4, matching the 8-byte push range at offset 0.
+  (`glslangValidator -V` output differs only because it is a different generator, not a staleness
+  signal.)
+- **Memory-type selection is sound.**
+  - The spec guarantees a `HOST_VISIBLE|HOST_COHERENT` type exists, so no flush/invalidate is missing on
+    the three host-visible buffers.
+  - The device-local path's "any type" fallback is safe, because that buffer is only ever written by
+    `vkCmdCopyBuffer`.
+  - The `UINT32_MAX` no-match sentinel is checked at both call sites before use as an index.
+- **Copy is deleted, so the pimpl is never double-owned.** Moving is sound: a moved-from object was always
+  safe to DESTROY, since `unique_ptr` is null. Only calling methods on it crashed (finding 5).
+- **Zero-norm handling agrees between GPU and CPU.** The shader's `denom == 0` guard and the CPU's
+  `na == 0 || nb == 0` guard both score a zero vector 0, which this pass's own test re-confirms end to end.
+- **Clean under the validation layer on every happy path.** Both the pre-fix 63-assertion suite and
+  the post-fix 86-assertion suite ran under the validation layer, with synchronization validation and
+  best-practices, and each reported **zero** errors or warnings. In the post-fix run, each of the 11
+  instances printed the layer's "Khronos Validation Layer Active" banner, listing both enables, as a
+  positive control that it actually ran. No finding above is a happy-path API misuse. Every one sits on
+  a failure path, an input edge, or a device limit the reference GPU does not hit.
+- **The exact power-of-two rescale changed no in-range result at all.** Claim 7(b)'s measured max
+  |GPU−CPU| is **bit-identical before and after** this pass's rescale fix: 1.04308e-07 at n=1000 and
+  1.37836e-07 at n=5000.
+
+Two environment residuals §4c and §4d carried were also resolved this pass. Neither was a code finding:
+
+- **The "C1083" whole-project configure blocker is Windows `MAX_PATH`, not an intermittent MSVC/Ninja
+  bug.** The failing `try_compile` object paths reach about 248 characters from a worktree build
+  directory. Moving the build directory shortened the path and moved the failure to a later, longer-named
+  `try_compile`. A short root, `subst Q:` onto the scratchpad, made the **whole-project `cmake`+Ninja
+  configure succeed with `AGENTENGINE_WITH_VULKAN=ON`**. Both Vulkan test targets, including this pass's
+  new one, then built through the REAL CMake targets (with `agentengine_warnings`), and `ctest -R vulkan`
+  passed 2/2.
+- **UBSan now runs.** §4d's `clang-cl` attempt used LLVM 22.1.5 with `/std:c++23`. The Visual Studio-bundled
+  `clang-cl` 22.1.3 (`VC\Tools\Llvm`) with `/std:c++latest /MT -fsanitize=undefined
+  -fno-sanitize-recover=all` compiles against the same preview STL. With a signed-overflow canary as a
+  positive control (it trapped), both test binaries ran **clean under UBSan**.
+
+**Eight findings: one Critical, five Real gaps, two Minor. All fixed the same session** with executed proof.
+See §5-6.
+
 ## 5-6. Implementation and proof
 
 **§8 steps 1-6, real, this session (2026-09-22):**
@@ -1098,6 +1363,134 @@ tried by any prior pass) was made and diagnosed as blocked by a distinct, unrela
 MSVC-14.51-STL language-mode interop gap (§4d's own account, §7) — not fixed, not this backend's defect,
 not chased further.
 
+**Red-team pass 5 fixes (2026-09-23 — see §4e for the findings):**
+
+1. (Critical) `vulkan_cosine_index.cpp`: the scores-buffer regrow is now **build-then-swap**. The new
+   buffer is created first, and the old one is destroyed only after its replacement exists: the same
+   ordering the vectors-buffer rebuild already used. A failed creation now leaves the old, still-valid
+   buffer and its capacity untouched.
+   **Proven both ways by executing it.**
+   - The new fault-injection test (fix 6) drives `create_buffer`/`allocate_memory`/`bind_buffer_memory`
+     failures into exactly this block during a growth-phase `search()`. It then asserts the same instance's
+     next `search()` returns the exact expected ranking, under the validation layer, with zero errors.
+   - A scratch build with ONLY this block reverted fails that same test: 18 validation errors
+     (`VUID-vkDestroyBuffer-buffer-parameter`) under the layer, and `0xC0000374` heap corruption without it.
+
+2. (Real gap) `create()` now records the selected device's `maxStorageBufferRange` and
+   `maxComputeWorkGroupCount[0]` (`vkGetPhysicalDeviceProperties`). A new pure predicate,
+   `detail::check_gpu_device_limits(n, dim, range, groups)`, rejects a corpus whose flattened vectors
+   buffer exceeds that range, or whose dispatch exceeds that workgroup count. It returns
+   `vulkan_vector_index.exceeds_device_storage_buffer_range` / `.exceeds_device_workgroup_count`,
+   `failure_class::resource`, before any GPU resource is touched. This also closes the shader's own
+   uint32 index-wrap (`n*dim < 2^30` once the range holds), and §4c's named workgroup-count residual.
+   **Proven:**
+   - 5 new synthetic-limit assertions in `test_vulkan_cosine_index.cpp`:
+     - n=21,845 × 1536 accepted, n=21,846 rejected, at the 2^27 floor;
+     - 65,535 workgroups accepted, 65,536 rejected;
+     - `n*dim = 2^30` rejected even against the largest representable range.
+   - Re-running the §4e reproduction under the profiles layer emulating `VP_ANDROID_vulkan_profile_2021`
+     now returns the typed error, with **no** validation error. Before the fix it gave `VUID-...-00333`.
+
+3. (Real gap) Every stored row, at cache-build time, and every query, at upload time, is now copied into
+   the GPU buffer **rescaled by the exact power of two** that brings its largest |component| into
+   [0.5, 1): `copy_rescaled_by_power_of_two()`. The host-side `entries` stay untouched.
+   - Every squared component is then below 1, so no sum of squares can overflow float32.
+   - Cosine similarity is scale-invariant, and power-of-two scaling is exact in IEEE arithmetic, so no
+     in-range result changes by even one ULP. Proven: claim 7(b)'s max |GPU−CPU| is bit-identical before
+     and after (1.04308e-07 / 1.37836e-07).
+
+   **Proven:** 3 new assertions (plus 2 setup checks) query the §4e reproduction's corpus at three
+   magnitudes (1, 1e20, 1e-25). Stored vectors are at 1e20, 1, 1e-25 and 0. The GPU must match `BruteForceCosineIndex` within 1e-5,
+   with every score finite and the same ranking.
+
+4. (Real gap) `add_batch()` rejects any non-finite component (`vulkan_vector_index.add_batch_non_finite`,
+   `contract`) before any state changes, and `search()` rejects a non-finite query
+   (`.search_non_finite`). The sort comparator is also made total over NaN: every NaN orders after every
+   non-NaN, and NaNs among themselves order by id. So `std::sort`'s precondition no longer depends on that
+   upstream rejection staying correct.
+   **Proven:** 5 new assertions (plus 2 setup checks):
+   - NaN, +Inf and −Inf each rejected as `contract`;
+   - a rejected batch commits NOTHING, not even its finite members;
+   - a non-finite query is rejected.
+
+   Re-running the §4e reproduction gives 0 NaN scores and 0 ordering violations on the GPU side. This is a
+   deliberate, documented divergence from `BruteForceCosineIndex`, which still accepts non-finite input:
+   the CPU behavior being diverged from is itself UB (§7).
+
+5. (Real gap) A moved-from instance is now safe to call.
+   - `add_batch()`/`search()` return `vulkan_vector_index.moved_from` (`contract`).
+   - `contains()` returns false and `size()` returns 0.
+
+   **Proven:** 4 new assertions (plus 2 setup checks). The moved-from getters and both typed errors are
+   checked, and the object is then used as a move-assignment TARGET and works again afterwards. The §4e reproduction's
+   `0xC0000005` becomes `size=0`.
+
+6. (Real gap, test methodology) **A test-only fault-injection seam, and a new test that executes every
+   checked-`VkResult` failure branch.**
+   - **The seam.** `vulkan_cosine_index.hpp` declares `detail::fault_point` (21 points) and
+     `detail::arm_fault_injection(point, nth)` / `disarm_fault_injection()` / `fault_injection_hits()`,
+     only under `#ifdef AGENTENGINE_VULKAN_FAULT_INJECTION`. In a production build, `AE_VK_FAULT(...)` is
+     a `constexpr` `false` the optimizer removes, and none of the seam's declarations exist. The seam makes
+     the Nth call of a named Vulkan entry point report failure:
+     - creation-style calls are SKIPPED, so nothing leaks;
+     - `vkWaitForFences` is called for real and its result then overridden to `VK_ERROR_DEVICE_LOST`, so
+       nothing is torn down while pending.
+   - **The build.** `tests/CMakeLists.txt` builds a separate library variant from the same `.cpp` with that
+     macro defined (`agentengine_vulkan_vector_index_fault_injection`), plus
+     `tests/test_vulkan_cosine_index_fault_injection.cpp`.
+   - **The test, `create()`.** For each of the 9 `create()` points it asserts a typed, fail-closed error.
+   - **The test, `search()`.** For each of the 12 `search()` points and every N at which the point is
+     reached, it runs three phases on one instance:
+     - first search (full cache build);
+     - growth (rebuild, scores regrow, command-buffer reset);
+     - steady state.
+
+     In each phase it asserts that the faulted `search()` returns a typed error and that the SAME instance's
+     next `search()` returns the exact expected ranking.
+   - **Positive controls.**
+     - Every one of the 21 points must actually fire at least once.
+     - When the SDK's validation layer is present, the whole run executes under it and must log zero
+       errors, with one "Layer Active" banner per `VkInstance` created.
+   - **A harness defect found and fixed during this pass, recorded because it is the kind of mistake a
+     positive control exists to catch.** The first version used ONE log file. The layer truncates its log
+     at every `vkCreateInstance`, so errors from all but the last instance were silently lost. That version
+     PASSED against the reverted-Critical build. The per-instance banner count exposed it: 1 banner for
+     59 instances. Every `create()` now gets its own log file.
+   - **Result: 410 checks, 0 failures, 59 banners for 59 instances, 0 validation errors.** The same result
+     holds in a plain build, under AddressSanitizer, and under UBSan.
+
+7. (Minor) `vk_call_error()`: every `vkQueueSubmit`/`vkWaitForFences` failure now carries its numeric
+   `VkResult` in the message, and `VK_ERROR_DEVICE_LOST` gets its own stable code,
+   `vulkan_vector_index.device_lost`. The fault-injection test exercises that code path. The class is left
+   `resource`, not moved to `fatal`: `error.hpp` defines `fatal` as "the run ends", which is too strong for
+   a condition a caller with a CPU fallback survives. This is flagged for the Judge step (§7), not decided
+   here.
+
+8. (Minor) `vulkan_cosine_index.hpp`'s stale top comment now describes the real persistent-cache design,
+   and a new input-domain paragraph documents fixes 3/4.
+
+**Test totals.**
+
+- `test_vulkan_cosine_index`: 86 assertions, up from 63, so 23 new.
+- New `test_vulkan_cosine_index_fault_injection`: 410 checks.
+- Both pass in every configuration below, all against the real Vulkan SDK (1.4.350.0) and the real
+  discrete GPU:
+  - a plain MSVC 14.51 build, `/W4 /WX /permissive-`, zero warnings;
+  - AddressSanitizer (`/fsanitize=address`, `clang_rt.asan_dynamic` confirmed linked via `dumpbin`);
+  - **UBSan, for the first time on this backend** (VS-bundled `clang-cl` 22.1.3, `/std:c++latest /MT
+    -fsanitize=undefined -fno-sanitize-recover=all`, with a signed-overflow canary proving it traps);
+  - the Khronos validation layer: the main suite with sync validation and best-practices gave 0 errors and
+    0 warnings; the fault-injection suite under core validation gave 0 errors, with 59/59 banners;
+  - **the real whole-project `cmake`+Ninja build with `-DAGENTENGINE_WITH_VULKAN=ON`**, `ctest -R vulkan`
+    2/2 passed. This became possible once §4e diagnosed the C1083 blocker as `MAX_PATH`.
+  - a whole-project configure with the option at its default (OFF) also succeeds, and its generated
+    `build.ninja` contains no Vulkan reference at all. That confirms the default-OFF zero-impact claim
+    empirically for the first time; §4c/§4d could only confirm it by inspection.
+
+The same Windows-ASan-has-no-LeakSanitizer caveat as §4c/§4d applies. Leak-freedom of the failure paths
+rests instead on the validation layer, which DOES track every Vulkan object's lifetime per instance and
+reported none leaked or double-destroyed across 59 instance teardowns.
+
 ## 7. Residuals and open questions (named now, per this repo's own discipline, so none are rediscovered later)
 
 - **Everything ADR-063 §7 already named and left open remains open here too, and several are now sharper:**
@@ -1206,6 +1599,18 @@ not chased further.
   file is a real signal this surface rewards continued scrutiny, but is also the same cadence
   `QdrantVectorIndex` stopped at (two passes, then left to Judged review) — recorded as a live open
   question for whoever runs the Judge step, not decided unilaterally by this pass.
+  **(RESOLVED by red-team pass 5, §4e) Yes, a third pass was owed. It found one more Critical, five more
+  Real gaps, and two Minor issues.** Its Critical, a scores-buffer double-destroy on a failure path that
+  corrupted the heap, sat on a branch no pass had ever executed, in code both prior passes reviewed by
+  hand. That is the strongest evidence yet that this surface's remaining risk lived in the
+  never-executed failure paths, not in any single call site. Pass 5 therefore changed the method, not just
+  the scope:
+  - an exhaustive 47-entry-point inventory (§4e's table);
+  - the Khronos validation and profiles layers;
+  - a fault-injection seam that now executes 21 of the 22 `VkResult`-returning entry points' failure
+    branches (the 22nd has no failure code), under the validation layer, in a permanent registered test.
+
+  See §8 item 9 for the Judge-readiness recommendation this leads to.
 - **(RE-CONFIRMED by red-team pass 4, §4d) `VulkanCosineIndex`'s CMake wiring default-OFF impact
   remains confirmed zero by static inspection** — unaffected by pass 4's changes (only `.cpp` call
   sites changed; no new target/symbol was added outside the existing `if(AGENTENGINE_WITH_VULKAN)`
@@ -1221,6 +1626,18 @@ not chased further.
   real GPU (the same method every prior pass used) — cleanly, zero warnings under `/W4 /WX`, plain
   build and AddressSanitizer both. The whole-project configure issue itself remains open, unresolved,
   and out of scope for this backend to fix.
+  **(RESOLVED by red-team pass 5, §4e) The "C1083" blocker is Windows `MAX_PATH`, not a toolchain bug.**
+  Every failing `try_compile` object path is about 248 characters long when built from a worktree
+  directory. A shorter build root moved the failure to a later, longer-named `try_compile`, and a
+  `subst`-ed drive root (`Q:\b`) made it disappear. With that root:
+  - the whole-project `cmake`+Ninja configure succeeds with `AGENTENGINE_WITH_VULKAN=ON`, and both Vulkan
+    test targets build through their REAL CMake targets and pass under `ctest`;
+  - it also succeeds at the default OFF, and the generated `build.ninja` contains no Vulkan reference.
+
+  So default-OFF zero impact is now confirmed by an actual configure, not just inspection. The practical
+  fix for anyone on this dev box: build from a short root, or enable Windows long paths. No code change is
+  needed. This likely also explains the unrelated `mt.exe` HTTPS-configure failure §8 step 7 names; that
+  was not verified here.
 - **`vkCmdDispatch`'s workgroup count is not validated against the physical device's own
   `maxComputeWorkGroupCount[0]` limit** (red-team pass 3, §4c finding 4; re-examined and NOT relitigated
   by pass 4 per this pass's own explicit brief) — unreachable at any `n` this backend has actually been
@@ -1228,6 +1645,10 @@ not chased further.
   unreachable up to the low millions even on the least-capable conformant device; the new uint32
   dispatch-size guard (§5-6) bounds `n` far below where this could plausibly matter in practice. Left as
   a named, low-likelihood residual, not fixed.
+  **(CLOSED by red-team pass 5, §4e finding 2)** `create()` now records `maxComputeWorkGroupCount[0]`,
+  and `detail::check_gpu_device_limits()` rejects an over-limit dispatch before any GPU work. Proven at
+  the 65,535/65,536 boundary. It was closed alongside the more consequential `maxStorageBufferRange` gap,
+  which needed the same limits query.
 - **Neither red-team pass 3's nor red-team pass 4's fixes for unchecked Vulkan API failures (§4c
   Critical finding 1; §4d Critical finding 1 and Real gap 2) are proven via a forced-failure test, only
   on the happy path** — safely inducing a genuine Vulkan device-lost or out-of-memory condition on real
@@ -1239,6 +1660,21 @@ not chased further.
   under a real failure. This residual now spans more call sites than pass 3 alone left open (§4d added
   `vkBindBufferMemory` ×2 and `vkEnumeratePhysicalDevices` ×2 to the same "checked, but only the happy
   path is proven" set), not fewer — an honest widening, not a narrowing, of what "proven" means here.
+  **(LARGELY CLOSED by red-team pass 5, §4e finding 6)** A test-only fault-injection seam now makes each
+  of the 21 checked entry points' failure branches execute:
+  - under the validation layer, with zero errors across 59 instance lifetimes;
+  - with same-instance recovery asserted after every injected failure;
+  - in a permanent registered test, `test_vulkan_cosine_index_fault_injection`.
+
+  Doing so found a real Critical (§4e finding 1) on exactly such a branch, which justifies the method
+  after the fact. **What remains open, named honestly:**
+  - **An injected failure is not a driver's real failure.** Creation-style calls are skipped rather than
+    failed by the driver, and `vkWaitForFences` reports `VK_ERROR_DEVICE_LOST` only AFTER a real,
+    successful wait. So the case where a GENUINELY lost device leaves a command buffer still pending when
+    the cleanup path frees it (`vkFreeCommandBuffers`/`vkDestroyFence` after a failed wait) is not
+    modeled, and its conformance to the spec's lost-device rules was not verified.
+  - **The seam is a separate compile of the same source** (`AGENTENGINE_VULKAN_FAULT_INJECTION`). The
+    failure paths proven are the production SOURCE's, not the production BINARY's.
 - **A genuine UndefinedBehaviorSanitizer run against `VulkanCosineIndex` was attempted for the first
   time this ADR (red-team pass 4, §4d) and did NOT succeed** — via `clang-cl` (22.1.5, LLVM's own
   MSVC-compatible driver), the only UBSan-capable toolchain available on this dev box (`cl.exe` itself
@@ -1253,6 +1689,11 @@ not chased further.
   distinct toolchain gap). `VulkanCosineIndex`'s UBSan coverage remains genuinely absent, not merely
   unattempted — a real, open gap for whoever next has a working `clang-cl`+preview-MSVC-STL combination,
   or a stable (non-preview) MSVC toolset, on this dev box.
+  **(RESOLVED by red-team pass 5, §4e)** Visual Studio's own bundled `clang-cl` (22.1.3, `VC\Tools\Llvm`)
+  with `/std:c++latest` (not `/std:c++23`) and `/MT` compiles against the same preview STL. That setup
+  ran `test_vulkan_cosine_index` (86/86) and `test_vulkan_cosine_index_fault_injection` (410/410) clean
+  under `-fsanitize=undefined -fno-sanitize-recover=all`. A signed-overflow canary built with the same
+  flags trapped, as a positive control.
 - **This pass's AddressSanitizer run found the host side clean, but Windows' MSVC ASan implementation
   has no LeakSanitizer** — `detect_leaks` is a no-op on this platform, so while the repeated-
   `add_batch()`/cache-rebuild test (§5-6) proves CORRECTNESS across multiple rebuild cycles, true
@@ -1260,6 +1701,43 @@ not chased further.
   (confirmed correct: the old buffer is destroyed only after the new one is fully built, right before
   reassignment) rather than an executed, leak-detecting run — named honestly rather than implied by
   "ASan came back clean."
+  **(NARROWED by red-team pass 5)** The Khronos validation layer tracks every Vulkan object per device
+  and instance, and reports any object still alive at `vkDestroyDevice`/`vkDestroyInstance`. It reported
+  zero errors across all 59 instance lifetimes of the fault-injection run, including every failure-path
+  teardown. So GPU-object leak-freedom is now executed evidence, not code review. Host-heap leaks remain
+  unchecked on Windows.
+- **(NEW, red-team pass 5 §4e finding 4) `BruteForceCosineIndex` (the already-Judged ADR-063 CPU
+  conformer) shares the NaN-unsafe comparator and still accepts NaN/Inf input.** That is the same
+  `std::sort` strict-weak-ordering UB `VulkanCosineIndex` was just fixed for. It was reproduced
+  identically on the CPU side: 11 ordering violations among finite scores. It was not fixed here: it is
+  outside this backend's files, and `core/vector_index.hpp` had uncommitted changes from another session
+  in the main checkout at the time. The fix mirrors this pass's two layers (reject non-finite input,
+  NaN-total comparator) and belongs in a small ADR-063 follow-on. Until then, the two conformers of the
+  same concept DIVERGE on non-finite input, deliberately: GPU rejects, CPU accepts and has UB.
+- **(NEW, red-team pass 5 §4e finding 7) `VK_ERROR_DEVICE_LOST` is still classed `failure_class::resource`.**
+  It now has its own stable code, `vulkan_vector_index.device_lost`, so a caller CAN distinguish it. But
+  whether device loss should be `fatal`, `transient`, or a new class is a genuine policy question, not
+  something this pass decided. `error.hpp` defines `fatal` as "the run ends", which is too strong for a
+  host with a CPU fallback. `resource` means "budget/quota/limit exceeded", which is not quite what
+  device loss is either. Left for the Judge step.
+- **(NEW, red-team pass 5) Only `maxStorageBufferRange` and `maxComputeWorkGroupCount[0]` are
+  enforced.** Two other limits are not: `maxMemoryAllocationSize` (Vulkan 1.1 `maintenance3`) and
+  `maxBufferSize` (1.3 `maintenance4`). Both are 2 GiB on the reference device, below its 4 GiB−1
+  storage range. A 2-4 GiB vectors buffer (roughly 350k-700k vectors at dim=1536) therefore passes the new
+  guard. It then relies on `vkCreateBuffer`/`vkAllocateMemory` reporting failure, which they do through
+  now-executed, checked branches. The spec says oversized allocations "may fail", so this is not a
+  guaranteed failure. Querying those two limits needs `vkGetPhysicalDeviceProperties2`, which this
+  backend's Vulkan 1.1 baseline does support. Not done this pass.
+- **(NEW, red-team pass 5) The spec-floor reproduction is not itself a permanent test.** The
+  `maxStorageBufferRange` finding was reproduced under the profiles layer emulating
+  `VP_ANDROID_vulkan_profile_2021`. The permanent regression proof is the pure synthetic-limit predicate
+  test, which pins the exact 21,845/21,846 boundary. The emulated-device run needs env-configured layers
+  and is recorded in §4e, not registered with `ctest`.
+- **(NEW, red-team pass 5, observed, not a defect) `create()` picks the FIRST compute-capable physical
+  device, with no preference for a discrete GPU.** This dev box enumerates three devices: the RX 5300M
+  twice (two ICD entries) and an integrated AMD GPU. The discrete one happens to come first. On a
+  machine where the integrated GPU enumerates first, `VulkanCosineIndex` would silently run there. That
+  is a performance residual, not a correctness one; §3 claim 7(b) holds on any conformant device.
 - **A no-op `add_batch({}, {})` call still unconditionally marks the GPU vectors-buffer cache dirty**
   (red-team pass 4, §4d finding 4/Minor) — the next `search()` rebuilds the buffer even though nothing
   about the corpus changed. Proven not to be a correctness bug (a new test interleaves a no-op call
@@ -1309,10 +1787,40 @@ not chased further.
    comparison against `BruteForceCosineIndex`) — part (b) CORRECT, part (a) DISPROVEN (GPU measured
    slower than CPU on the one reference GPU tested; see §3 claim 7, §5-6, §7). Built in an isolated
    `worktree` and merged to `main` (fast-forward, commit `f085bbd`).
-9. **PARTIALLY DONE.** Red-team pass 1 (§4, steps 1-6), pass 2 (§4b, `QdrantVectorIndex`), and pass 3
-   (§4c, `VulkanCosineIndex`) have all now run, every finding fixed and proven. **Still owed**: the live
-   Qdrant run (§3 claim 6, blocked on a persistent local Docker daemon issue — §7), and an open question
-   (not yet resolved either way) of whether `VulkanCosineIndex` is owed a SECOND red-team pass before
-   Judged, mirroring `QdrantVectorIndex`'s own two-pass precedent (§7). Only once the live run lands and
-   that question is settled does this ADR go to the project owner for Judged sign-off — the same
-   sequence `ADR-063`/`ADR-064` both actually followed, not skipped for expedience.
+9. **PARTIALLY DONE.** Red-team passes have run against every piece of this ADR, and every finding is
+   fixed and proven or named as a residual:
+   - pass 1 (§4, steps 1-6);
+   - pass 2 (§4b, `QdrantVectorIndex`);
+   - passes 3, 4 and 5 (§4c/§4d/§4e, `VulkanCosineIndex`).
+
+   **Still owed**: the live Qdrant run (§3 claim 6, blocked on a persistent local Docker daemon issue —
+   §7). The earlier open question, whether `VulkanCosineIndex` needed more red-teaming, is now settled by
+   pass 5's outcome and recommendation.
+   **Pass 5's recommendation (2026-09-23): the Vulkan surface is ready for the Judge step, with two named
+   conditions, and a fourth eyes-only red-team pass is NOT the right next step.** The honest case, both
+   sides:
+   - **Against.** Every one of passes 3, 4 and 5 found a Critical. That pattern, taken alone, argues for
+     more scrutiny.
+   - **For.** What pass 5 changed is the method, not just the scope. The Criticals of passes 3 and 4
+     (unchecked `VkResult`s) and of pass 5 (wrong cleanup after a checked `VkResult`) are exactly the
+     classes that pass 5's permanent, mechanical instruments now catch on every run, rather than a
+     reviewer catching them by reading:
+     - the exhaustive entry-point table;
+     - a fault-injection test executing 21 of 21 failure-capable entry points under the validation layer,
+       with same-instance recovery asserted;
+     - validation-layer, ASan and UBSan runs, each with a positive control.
+
+     The remaining open items are policy or scope questions, not suspected defects.
+
+   The two conditions for the Judge:
+   1. **Rule on `VK_ERROR_DEVICE_LOST`'s `failure_class`** (§7).
+   2. **Track `BruteForceCosineIndex`'s identical NaN strict-weak-ordering defect** (§7) as an ADR-063
+      follow-on. It is the same UB in the already-Judged CPU conformer, and pass 5 found it but could not
+      fix it here.
+
+   If more assurance is wanted before Judged, the highest-value next step is also mechanical, not
+   another sampled review: run `test_vulkan_cosine_index_fault_injection` on a second vendor's driver
+   (e.g. a Linux CI runner with Mesa's lavapipe), since every result above comes from one AMD driver.
+   Only once the live Qdrant run lands, and the Judge has ruled on those two items, does this ADR go to
+   the project owner for Judged sign-off. That is the same sequence `ADR-063`/`ADR-064` both actually
+   followed, not skipped for expedience.

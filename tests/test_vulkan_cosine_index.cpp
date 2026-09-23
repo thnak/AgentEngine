@@ -95,6 +95,43 @@ int main() {
         // honestly rather than claiming a test exercises a path that cannot actually be reached.
     }
 
+    // --- Red-team pass 5 (2026-09-23), Real gap: the DEVICE's own limits, not just uint32
+    // representability. Pure predicate, synthetic limits -- runs with or without a GPU. The 2^27
+    // figure is the Vulkan spec's required minimum maxStorageBufferRange, and the exact value the
+    // Vulkan SDK's own VP_ANDROID_vulkan_profile_2021 baseline profile declares.
+    {
+        constexpr std::uint64_t kSpecMinStorageRange = std::uint64_t{1} << 27;
+        constexpr std::uint32_t kSpecMinWorkgroups = 65535;
+        std::size_t const dim = 1536;
+        std::size_t const n_fits = kSpecMinStorageRange / (dim * sizeof(float));  // 21845
+        AE_CHECK(detail::check_gpu_device_limits(n_fits, dim, kSpecMinStorageRange, kSpecMinWorkgroups).has_value(),
+                 "device-limit guard accepts the largest corpus whose vectors buffer fits a 2^27-byte "
+                 "maxStorageBufferRange exactly (n=21845, dim=1536)");
+        auto over = detail::check_gpu_device_limits(n_fits + 1, dim, kSpecMinStorageRange, kSpecMinWorkgroups);
+        AE_CHECK(!over.has_value() && over.error().code == "vulkan_vector_index.exceeds_device_storage_buffer_range" &&
+                     over.error().klass == failure_class::resource,
+                 "device-limit guard rejects n=21846 x dim=1536 (one vector over a 2^27-byte "
+                 "maxStorageBufferRange) as a resource limit, before any descriptor write -- previously an "
+                 "invalid descriptor range (VUID-VkWriteDescriptorSet-descriptorType-00333) on such a device");
+        auto groups = detail::check_gpu_device_limits(std::size_t{64} * 65536, 1, std::uint64_t{1} << 40,
+                                                      kSpecMinWorkgroups);
+        AE_CHECK(!groups.has_value() && groups.error().code == "vulkan_vector_index.exceeds_device_workgroup_count",
+                 "device-limit guard rejects a dispatch needing 65536 workgroups on a device offering the "
+                 "spec-minimum 65535 (closes red-team pass 3's named maxComputeWorkGroupCount residual)");
+        AE_CHECK(detail::check_gpu_device_limits(std::size_t{64} * 65535, 1, std::uint64_t{1} << 40,
+                                                 kSpecMinWorkgroups)
+                     .has_value(),
+                 "device-limit guard accepts exactly 65535 workgroups");
+        // The shader's own `uint base = i * pc.dimension` cannot wrap once the range bound holds:
+        // maxStorageBufferRange is itself a uint32, so the largest accepted n*dim is < 2^30.
+        std::uint64_t const max_u32_range = (std::numeric_limits<std::uint32_t>::max)();
+        AE_CHECK(!detail::check_gpu_device_limits(std::size_t{1} << 20, std::size_t{1} << 10, max_u32_range,
+                                                  (std::numeric_limits<std::uint32_t>::max)())
+                      .has_value(),
+                 "n*dim = 2^30 (4 GiB of floats) is rejected even against the largest representable "
+                 "maxStorageBufferRange -- so the shader's uint32 index arithmetic can never wrap");
+    }
+
     auto created = VulkanCosineIndex::create();
     if (!created.has_value()) {
         // Fails closed, not a crash -- matching this codebase's own docker_execution_surface.hpp/
@@ -343,6 +380,97 @@ int main() {
                 AE_CHECK(has_all, "growth cycle 3: every id ever added is present, none dropped or "
                                    "duplicated across repeated cache rebuilds");
             }
+        }
+    }
+
+    // --- Red-team pass 5 (2026-09-23), Real gap: finite inputs outside float32's squared range. The
+    // shader used to square RAW components in float32: {1e20, 1e20} (|x|^2 = 1e40 > FLT_MAX) scored 0
+    // against query {1, 1} (CPU, in double: 1.0) and ranked LAST; {1e-25, 1e-25} underflowed and
+    // scored 0 too; a {1e20, 1e20} query produced NaN. Now every row and the query are rescaled by an
+    // exact power of two before upload, so the GPU agrees with BruteForceCosineIndex. -------------------
+    {
+        auto created_r = VulkanCosineIndex::create();
+        AE_CHECK(created_r.has_value(), "setup: an index instance for the magnitude-range case");
+        if (created_r.has_value()) {
+            VulkanCosineIndex gpu = std::move(*created_r);
+            BruteForceCosineIndex cpu;
+            std::vector<std::string> const ids{"big-exact", "ordinary", "tiny-exact", "zero"};
+            std::vector<std::vector<float>> const vecs{
+                {1e20f, 1e20f}, {1.0f, 0.2f}, {1e-25f, 1e-25f}, {0.0f, 0.0f}};
+            AE_CHECK(gpu.add_batch(ids, vecs).has_value() && cpu.add_batch(ids, vecs).has_value(),
+                     "setup: both indices accept finite large/tiny/zero-norm components");
+            for (float const scale : {1.0f, 1e20f, 1e-25f}) {
+                float const q[2] = {scale, scale};
+                auto g = gpu.search(std::span<float const>(q, 2), 4);
+                auto c = cpu.search(std::span<float const>(q, 2), 4);
+                bool agree = g.has_value() && c.has_value() && g->size() == 4 && c->size() == 4;
+                if (agree) {
+                    std::unordered_map<std::string, float> cpu_scores;
+                    for (auto const& s : *c) cpu_scores[s.id] = s.score;
+                    for (auto const& s : *g) {
+                        agree = agree && std::isfinite(s.score) && std::fabs(s.score - cpu_scores.at(s.id)) < 1e-5f;
+                    }
+                    // Exact matches (score 1) rank above "ordinary" (0.83); the zero vector scores 0 on
+                    // both sides (shared zero-norm guard) and ranks last.
+                    agree = agree && (*g)[3].id == "zero" && (*g)[3].score == 0.0f && (*g)[2].id == "ordinary";
+                }
+                AE_CHECK(agree, "GPU matches CPU (within 1e-5, all finite, same ranking) for a query of "
+                                "magnitude " + std::to_string(scale) +
+                                " against stored vectors of magnitude 1e20, 1, 1e-25, and 0");
+            }
+        }
+    }
+
+    // --- Red-team pass 5 (2026-09-23), Real gap: non-finite components used to be accepted, and the
+    // resulting NaN scores reached std::sort under a comparator that is not a strict weak ordering over
+    // NaN (undefined behavior; observed as out-of-order results). Rejected at the origin now. ----------
+    {
+        auto created_nf = VulkanCosineIndex::create();
+        AE_CHECK(created_nf.has_value(), "setup: an index instance for the non-finite case");
+        if (created_nf.has_value()) {
+            VulkanCosineIndex idx = std::move(*created_nf);
+            float const nan = std::numeric_limits<float>::quiet_NaN();
+            float const inf = std::numeric_limits<float>::infinity();
+            for (float const bad : {nan, inf, -inf}) {
+                auto r = idx.add_batch({"ok", "bad"}, {{1.0f, 0.0f}, {bad, 1.0f}});
+                AE_CHECK(!r.has_value() && r.error().code == "vulkan_vector_index.add_batch_non_finite" &&
+                             r.error().klass == failure_class::contract,
+                         "add_batch rejects a vector with a non-finite component (" + std::to_string(bad) +
+                             ") as a contract violation");
+            }
+            AE_CHECK(idx.size() == 0 && !idx.contains("ok"),
+                     "a rejected non-finite batch commits NOTHING -- not even its finite members");
+            AE_CHECK(idx.add_batch({"ok"}, {{1.0f, 0.0f}}).has_value(), "setup: one finite vector");
+            float const bad_query[2] = {nan, 1.0f};
+            auto s = idx.search(std::span<float const>(bad_query, 2), 1);
+            AE_CHECK(!s.has_value() && s.error().code == "vulkan_vector_index.search_non_finite",
+                     "search rejects a query with a non-finite component");
+        }
+    }
+
+    // --- Red-team pass 5 (2026-09-23), Real gap: a moved-from instance used to dereference its null
+    // pimpl on every method call (an access violation, reproduced). Now safe and typed. ---------------
+    {
+        auto created_mv = VulkanCosineIndex::create();
+        AE_CHECK(created_mv.has_value(), "setup: an index instance for the moved-from case");
+        if (created_mv.has_value()) {
+            VulkanCosineIndex source = std::move(*created_mv);
+            AE_CHECK(source.add_batch({"x"}, {{1.0f, 0.0f}}).has_value(), "setup: populate before moving");
+            VulkanCosineIndex target = std::move(source);
+            float const q[2] = {1.0f, 0.0f};
+            // NOLINTBEGIN(bugprone-use-after-move) -- the moved-from contract IS the thing under test.
+            AE_CHECK(source.size() == 0 && !source.contains("x"), "moved-from size()/contains() are 0/false");
+            auto s = source.search(std::span<float const>(q, 2), 1);
+            AE_CHECK(!s.has_value() && s.error().code == "vulkan_vector_index.moved_from",
+                     "moved-from search() returns a typed error, not a crash");
+            auto a = source.add_batch({"y"}, {{1.0f, 0.0f}});
+            AE_CHECK(!a.has_value() && a.error().code == "vulkan_vector_index.moved_from",
+                     "moved-from add_batch() returns a typed error, not a crash");
+            source = std::move(target);  // move-assign back INTO the moved-from object
+            // NOLINTEND(bugprone-use-after-move)
+            auto back = source.search(std::span<float const>(q, 2), 1);
+            AE_CHECK(back.has_value() && back->size() == 1 && (*back)[0].id == "x",
+                     "a moved-from object is a valid move-assignment target and works again afterwards");
         }
     }
 

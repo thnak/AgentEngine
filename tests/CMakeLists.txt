@@ -3992,4 +3992,21 @@ if(AGENTENGINE_WITH_VULKAN)
   target_link_libraries(test_vulkan_cosine_index PRIVATE
     agentengine::core agentengine::vulkan_vector_index agentengine_warnings)
   add_test(NAME test_vulkan_cosine_index COMMAND test_vulkan_cosine_index)
+
+  # ADR-180 §4e (red-team pass 5): executes every checked-VkResult failure branch through a TEST-ONLY
+  # fault-injection seam. The seam exists only when vulkan_cosine_index.cpp is compiled with
+  # AGENTENGINE_VULKAN_FAULT_INJECTION, so this is a SEPARATE library variant built from the same
+  # source -- the production agentengine::vulkan_vector_index target above never defines it.
+  add_library(agentengine_vulkan_vector_index_fault_injection STATIC
+    "${PROJECT_SOURCE_DIR}/src/backends/vulkan_vector_index/vulkan_cosine_index.cpp")
+  target_include_directories(agentengine_vulkan_vector_index_fault_injection
+    PUBLIC "${PROJECT_SOURCE_DIR}/src" PRIVATE "${AE_SPIRV_GENERATED_DIR}")
+  target_link_libraries(agentengine_vulkan_vector_index_fault_injection PUBLIC agentengine::core)
+  target_link_libraries(agentengine_vulkan_vector_index_fault_injection PRIVATE agentengine_warnings Vulkan::Vulkan)
+  target_compile_definitions(agentengine_vulkan_vector_index_fault_injection
+    PUBLIC AGENTENGINE_WITH_VULKAN AGENTENGINE_VULKAN_FAULT_INJECTION)
+  add_executable(test_vulkan_cosine_index_fault_injection test_vulkan_cosine_index_fault_injection.cpp)
+  target_link_libraries(test_vulkan_cosine_index_fault_injection PRIVATE
+    agentengine::core agentengine_vulkan_vector_index_fault_injection agentengine_warnings)
+  add_test(NAME test_vulkan_cosine_index_fault_injection COMMAND test_vulkan_cosine_index_fault_injection)
 endif()

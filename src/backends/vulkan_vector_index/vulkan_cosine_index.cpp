@@ -4,6 +4,8 @@
 #include "vulkan_cosine_index.hpp"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -28,10 +30,23 @@ namespace {
 // score desc, then id asc -- a genuine deterministic total order, reused here verbatim rather than
 // re-derived, so a caller mixing VulkanCosineIndex and BruteForceCosineIndex never observes a
 // DIFFERENT tie-break rule between the two.
+//
+// Red-team pass 5 (2026-09-23), Real gap: the comparator used to be exactly
+// BruteForceCosineIndex's (`a.score != b.score ? a.score > b.score : a.id < b.id`), which is NOT a
+// strict weak ordering once any score is NaN (NaN compares "equivalent" to every score, so
+// equivalence is not transitive) -- violating std::sort's precondition, i.e. undefined behavior, not
+// merely a wrong answer. Reproduced on the real GPU before the fix: 29 NaN scores among 200 produced
+// 11 descending-order violations among the FINITE scores. add_batch()/search() now reject non-finite
+// input, so a NaN score should be unreachable; this comparator is ALSO made total over NaN anyway
+// (every NaN orders after every non-NaN score, NaNs among themselves by id) so the sort's own
+// precondition never depends on that upstream reasoning staying true.
 void sort_and_truncate(std::vector<agentengine::ScoredId>& scored, std::size_t k) {
     std::sort(scored.begin(), scored.end(),
               [](agentengine::ScoredId const& a, agentengine::ScoredId const& b) {
-                  if (a.score != b.score) return a.score > b.score;
+                  bool const a_nan = std::isnan(a.score);
+                  bool const b_nan = std::isnan(b.score);
+                  if (a_nan != b_nan) return b_nan;
+                  if (!a_nan && a.score != b.score) return a.score > b.score;
                   return a.id < b.id;
               });
     if (scored.size() > k) scored.resize(k);
@@ -40,6 +55,98 @@ void sort_and_truncate(std::vector<agentengine::ScoredId>& scored, std::size_t k
 [[nodiscard]] agentengine::error vulkan_error(std::string message, std::string code) {
     return agentengine::error{agentengine::failure_class::resource, std::move(message), std::move(code)};
 }
+
+// Red-team pass 5 (2026-09-23), Minor: every runtime Vulkan failure used to collapse into one
+// `failure_class::resource` error with no trace of WHICH VkResult occurred -- so a caller could not
+// tell a (possibly transient) out-of-memory from VK_ERROR_DEVICE_LOST, after which this instance's
+// VkDevice is permanently unusable and every later call will fail too (the caller's only recovery is
+// a fresh `create()` or a CPU fallback). The numeric VkResult is now in the message, and device loss
+// gets its own stable code. The class stays `resource` (not reclassified to `fatal`, which error.hpp
+// defines as "the run ends" -- too strong for a condition a caller with a CPU fallback survives);
+// named as a residual for the Judge step rather than decided unilaterally here.
+[[nodiscard]] agentengine::error vk_call_error(VkResult vk_result, std::string what, std::string code) {
+    if (vk_result == VK_ERROR_DEVICE_LOST) code = "vulkan_vector_index.device_lost";
+    return vulkan_error(std::move(what) + " (VkResult " + std::to_string(static_cast<int>(vk_result)) + ")",
+                        std::move(code));
+}
+
+[[nodiscard]] agentengine::error moved_from_error() {
+    return agentengine::error{agentengine::failure_class::contract,
+                              "this VulkanCosineIndex was moved from -- it no longer owns a GPU device",
+                              "vulkan_vector_index.moved_from"};
+}
+
+[[nodiscard]] bool all_finite(std::span<float const> values) {
+    return std::all_of(values.begin(), values.end(), [](float x) { return std::isfinite(x); });
+}
+
+// Red-team pass 5 (2026-09-23), Real gap: copies `src` into `dst` scaled by the exact power of two
+// that brings its largest |component| into [0.5, 1). Before this, the shader squared RAW components in
+// float32: a finite component above ~1.8e19 overflowed to +inf (an exact match then scored 0 or NaN)
+// and one below ~1e-19 underflowed to 0 (an exact match scored 0) -- while BruteForceCosineIndex,
+// accumulating in double, scored both correctly as 1.0. Reproduced on the real GPU: {1e20, 1e20} vs
+// query {1, 1} scored 0 on GPU, 1 on CPU, and ranked LAST -- a wrong-by-a-wide-margin divergence
+// ADR-180 §3 claim 7(b) says cannot happen. After scaling, every component is < 1, so each sum of
+// squares is < dim <= UINT32_MAX, far below FLT_MAX. Cosine similarity is scale-invariant, and
+// multiplying by 2^k is exact in IEEE arithmetic (barring subnormal results, which only affect
+// components ~2^-126 below the vector's own maximum -- contributions already negligible at that
+// ratio), so for inputs that were ALREADY in range this reproduces the pre-fix shader result exactly.
+void copy_rescaled_by_power_of_two(std::span<float const> src, float* dst) {
+    float max_abs = 0.0f;
+    for (float x : src) max_abs = (std::max)(max_abs, std::fabs(x));
+    if (max_abs == 0.0f) {  // a zero vector: leave it zero, the shader's own zero-norm guard scores it 0
+        std::copy(src.begin(), src.end(), dst);
+        return;
+    }
+    int exponent = 0;
+    (void)std::frexp(max_abs, &exponent);  // max_abs == f * 2^exponent, f in [0.5, 1)
+    for (std::size_t i = 0; i < src.size(); ++i) dst[i] = std::ldexp(src[i], -exponent);
+}
+
+}  // namespace
+
+namespace detail {
+
+#ifdef AGENTENGINE_VULKAN_FAULT_INJECTION
+namespace {
+constexpr std::size_t kFaultPointCount = static_cast<std::size_t>(fault_point::count_);
+std::atomic<int> g_armed_point{-1};
+std::atomic<unsigned> g_armed_nth{0};
+std::array<std::atomic<unsigned>, kFaultPointCount> g_fault_hits{};
+void reset_fault_hits() {
+    for (auto& h : g_fault_hits) h.store(0);
+}
+}  // namespace
+
+void arm_fault_injection(fault_point point, unsigned nth) {
+    reset_fault_hits();
+    g_armed_nth.store(nth);
+    g_armed_point.store(static_cast<int>(point));
+}
+void disarm_fault_injection() {
+    g_armed_point.store(-1);
+    reset_fault_hits();
+}
+unsigned fault_injection_hits(fault_point point) {
+    return g_fault_hits[static_cast<std::size_t>(point)].load();
+}
+namespace {
+[[nodiscard]] bool fault_fires(fault_point point) {
+    unsigned const hit = ++g_fault_hits[static_cast<std::size_t>(point)];
+    return g_armed_point.load() == static_cast<int>(point) && hit == g_armed_nth.load();
+}
+}  // namespace
+#define AE_VK_FAULT(point) ::agentengine::backends::vulkan_vector_index::detail::fault_fires( \
+    ::agentengine::backends::vulkan_vector_index::detail::fault_point::point)
+#else
+// Production build: the seam does not exist -- a constant `false` the optimizer removes entirely.
+#define AE_VK_FAULT(point) ::agentengine::backends::vulkan_vector_index::detail::fault_never_fires()
+[[nodiscard]] constexpr bool fault_never_fires() noexcept { return false; }
+#endif
+
+}  // namespace detail
+
+namespace {
 
 // Red-team pass 3 (2026-09-22), Critical finding 1: runs a stack of cleanup actions, in REVERSE
 // (creation) order, unless dismiss() is called first -- so every transient GPU resource created
@@ -89,6 +196,34 @@ agentengine::result<void> check_gpu_dispatch_size_plausible(std::size_t n, std::
     return {};
 }
 
+agentengine::result<void> check_gpu_device_limits(std::size_t n, std::size_t dim,
+                                                  std::uint64_t max_storage_buffer_range,
+                                                  std::uint32_t max_workgroup_count_x) {
+    // Division-based, never multiplies first (n * dim * sizeof(float) could itself overflow for
+    // pathological inputs, though check_gpu_dispatch_size_plausible() runs first at the call site).
+    std::uint64_t const bytes_per_vector = std::uint64_t{dim} * sizeof(float);
+    if (bytes_per_vector != 0 && (bytes_per_vector > max_storage_buffer_range ||
+                                  std::uint64_t{n} > max_storage_buffer_range / bytes_per_vector)) {
+        return std::unexpected(agentengine::error{
+            agentengine::failure_class::resource,
+            "the index's vectors buffer (" + std::to_string(n) + " x " + std::to_string(dim) +
+                " floats) exceeds this device's maxStorageBufferRange (" +
+                std::to_string(max_storage_buffer_range) +
+                " bytes) -- use a CPU index (BruteForceCosineIndex) or a smaller corpus on this device",
+            "vulkan_vector_index.exceeds_device_storage_buffer_range"});
+    }
+    std::uint64_t const group_count = (std::uint64_t{n} + 63) / 64;  // local_size_x = 64
+    if (group_count > max_workgroup_count_x) {
+        return std::unexpected(agentengine::error{
+            agentengine::failure_class::resource,
+            "the dispatch needs " + std::to_string(group_count) +
+                " workgroups, above this device's maxComputeWorkGroupCount[0] (" +
+                std::to_string(max_workgroup_count_x) + ")",
+            "vulkan_vector_index.exceeds_device_workgroup_count"});
+    }
+    return {};
+}
+
 }  // namespace detail
 
 struct VulkanCosineIndex::Impl {
@@ -97,6 +232,10 @@ struct VulkanCosineIndex::Impl {
     VkDevice device = VK_NULL_HANDLE;
     VkQueue queue = VK_NULL_HANDLE;
     std::uint32_t queue_family_index = 0;
+    // Red-team pass 5 (2026-09-23): the selected device's own limits, queried once in create() and
+    // enforced by detail::check_gpu_device_limits() before every dispatch.
+    std::uint64_t max_storage_buffer_range = 0;
+    std::uint32_t max_workgroup_count_x = 0;
     VkCommandPool command_pool = VK_NULL_HANDLE;
     VkDescriptorSetLayout descriptor_set_layout = VK_NULL_HANDLE;
     VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
@@ -202,7 +341,7 @@ agentengine::result<VulkanCosineIndex> VulkanCosineIndex::create() {
     instance_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     instance_info.pApplicationInfo = &app_info;
 
-    if (vkCreateInstance(&instance_info, nullptr, &impl->instance) != VK_SUCCESS) {
+    if (AE_VK_FAULT(create_instance) || vkCreateInstance(&instance_info, nullptr, &impl->instance) != VK_SUCCESS) {
         return std::unexpected(
             vulkan_error("vkCreateInstance failed -- no usable Vulkan loader/runtime on this host",
                          "vulkan_vector_index.instance_creation_failed"));
@@ -224,7 +363,8 @@ agentengine::result<VulkanCosineIndex> VulkanCosineIndex::create() {
     // call in this file (§4c); `devices.resize(device_count)` after the second call additionally
     // closes the stale-tail-iteration gap regardless of which enumeration count actually won.
     std::uint32_t device_count = 0;
-    if (vkEnumeratePhysicalDevices(impl->instance, &device_count, nullptr) != VK_SUCCESS) {
+    if (AE_VK_FAULT(enumerate_physical_devices) ||
+        vkEnumeratePhysicalDevices(impl->instance, &device_count, nullptr) != VK_SUCCESS) {
         return std::unexpected(
             vulkan_error("vkEnumeratePhysicalDevices failed while querying the physical device count",
                          "vulkan_vector_index.device_enumeration_failed"));
@@ -235,7 +375,9 @@ agentengine::result<VulkanCosineIndex> VulkanCosineIndex::create() {
     }
     std::vector<VkPhysicalDevice> devices(device_count);
     if (VkResult const enumerate_result =
-            vkEnumeratePhysicalDevices(impl->instance, &device_count, devices.data());
+            AE_VK_FAULT(enumerate_physical_devices)
+                ? VK_ERROR_OUT_OF_HOST_MEMORY
+                : vkEnumeratePhysicalDevices(impl->instance, &device_count, devices.data());
         enumerate_result != VK_SUCCESS && enumerate_result != VK_INCOMPLETE) {
         return std::unexpected(
             vulkan_error("vkEnumeratePhysicalDevices failed while filling the physical device list",
@@ -270,6 +412,15 @@ agentengine::result<VulkanCosineIndex> VulkanCosineIndex::create() {
             vulkan_error("no physical device with a compute-capable queue family found",
                          "vulkan_vector_index.feature_unsupported"));
     }
+    {
+        // Red-team pass 5 (2026-09-23): record the limits search() must respect (see
+        // detail::check_gpu_device_limits()'s own comment in the header). Void-returning call on a
+        // handle the enumeration above just returned -- no failure mode to check.
+        VkPhysicalDeviceProperties device_props{};
+        vkGetPhysicalDeviceProperties(impl->physical_device, &device_props);
+        impl->max_storage_buffer_range = device_props.limits.maxStorageBufferRange;
+        impl->max_workgroup_count_x = device_props.limits.maxComputeWorkGroupCount[0];
+    }
 
     // ---- Logical device + one compute queue --------------------------------------------------------
     float const queue_priority = 1.0f;
@@ -284,7 +435,8 @@ agentengine::result<VulkanCosineIndex> VulkanCosineIndex::create() {
     device_info.queueCreateInfoCount = 1;
     device_info.pQueueCreateInfos = &queue_info;
 
-    if (vkCreateDevice(impl->physical_device, &device_info, nullptr, &impl->device) != VK_SUCCESS) {
+    if (AE_VK_FAULT(create_device) ||
+        vkCreateDevice(impl->physical_device, &device_info, nullptr, &impl->device) != VK_SUCCESS) {
         return std::unexpected(vulkan_error("vkCreateDevice failed", "vulkan_vector_index.device_creation_failed"));
     }
     vkGetDeviceQueue(impl->device, impl->queue_family_index, 0, &impl->queue);
@@ -295,7 +447,8 @@ agentengine::result<VulkanCosineIndex> VulkanCosineIndex::create() {
     pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     pool_info.queueFamilyIndex = impl->queue_family_index;
-    if (vkCreateCommandPool(impl->device, &pool_info, nullptr, &impl->command_pool) != VK_SUCCESS) {
+    if (AE_VK_FAULT(create_command_pool) ||
+        vkCreateCommandPool(impl->device, &pool_info, nullptr, &impl->command_pool) != VK_SUCCESS) {
         return std::unexpected(
             vulkan_error("vkCreateCommandPool failed", "vulkan_vector_index.command_pool_creation_failed"));
     }
@@ -313,8 +466,9 @@ agentengine::result<VulkanCosineIndex> VulkanCosineIndex::create() {
     layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     layout_info.bindingCount = 3;
     layout_info.pBindings = bindings;
-    if (vkCreateDescriptorSetLayout(impl->device, &layout_info, nullptr, &impl->descriptor_set_layout) !=
-        VK_SUCCESS) {
+    if (AE_VK_FAULT(create_descriptor_set_layout) ||
+        vkCreateDescriptorSetLayout(impl->device, &layout_info, nullptr, &impl->descriptor_set_layout) !=
+            VK_SUCCESS) {
         return std::unexpected(vulkan_error("vkCreateDescriptorSetLayout failed",
                                               "vulkan_vector_index.descriptor_set_layout_creation_failed"));
     }
@@ -329,7 +483,8 @@ agentengine::result<VulkanCosineIndex> VulkanCosineIndex::create() {
     desc_pool_info.maxSets = 1;
     desc_pool_info.poolSizeCount = 1;
     desc_pool_info.pPoolSizes = &pool_size;
-    if (vkCreateDescriptorPool(impl->device, &desc_pool_info, nullptr, &impl->descriptor_pool) != VK_SUCCESS) {
+    if (AE_VK_FAULT(create_descriptor_pool) ||
+        vkCreateDescriptorPool(impl->device, &desc_pool_info, nullptr, &impl->descriptor_pool) != VK_SUCCESS) {
         return std::unexpected(
             vulkan_error("vkCreateDescriptorPool failed", "vulkan_vector_index.descriptor_pool_creation_failed"));
     }
@@ -347,8 +502,9 @@ agentengine::result<VulkanCosineIndex> VulkanCosineIndex::create() {
     pipeline_layout_info.pSetLayouts = &impl->descriptor_set_layout;
     pipeline_layout_info.pushConstantRangeCount = 1;
     pipeline_layout_info.pPushConstantRanges = &push_constant_range;
-    if (vkCreatePipelineLayout(impl->device, &pipeline_layout_info, nullptr, &impl->pipeline_layout) !=
-        VK_SUCCESS) {
+    if (AE_VK_FAULT(create_pipeline_layout) ||
+        vkCreatePipelineLayout(impl->device, &pipeline_layout_info, nullptr, &impl->pipeline_layout) !=
+            VK_SUCCESS) {
         return std::unexpected(
             vulkan_error("vkCreatePipelineLayout failed", "vulkan_vector_index.pipeline_layout_creation_failed"));
     }
@@ -359,7 +515,8 @@ agentengine::result<VulkanCosineIndex> VulkanCosineIndex::create() {
     shader_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     shader_info.codeSize = kCosineSimilaritySpirvBytes;
     shader_info.pCode = reinterpret_cast<std::uint32_t const*>(kCosineSimilaritySpirv);
-    if (vkCreateShaderModule(impl->device, &shader_info, nullptr, &impl->shader_module) != VK_SUCCESS) {
+    if (AE_VK_FAULT(create_shader_module) ||
+        vkCreateShaderModule(impl->device, &shader_info, nullptr, &impl->shader_module) != VK_SUCCESS) {
         return std::unexpected(
             vulkan_error("vkCreateShaderModule failed -- the embedded SPIR-V is malformed or "
                          "incompatible with this device",
@@ -376,8 +533,9 @@ agentengine::result<VulkanCosineIndex> VulkanCosineIndex::create() {
     compute_pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     compute_pipeline_info.stage = stage_info;
     compute_pipeline_info.layout = impl->pipeline_layout;
-    if (vkCreateComputePipelines(impl->device, VK_NULL_HANDLE, 1, &compute_pipeline_info, nullptr,
-                                   &impl->pipeline) != VK_SUCCESS) {
+    if (AE_VK_FAULT(create_compute_pipeline) ||
+        vkCreateComputePipelines(impl->device, VK_NULL_HANDLE, 1, &compute_pipeline_info, nullptr,
+                                 &impl->pipeline) != VK_SUCCESS) {
         return std::unexpected(
             vulkan_error("vkCreateComputePipelines failed", "vulkan_vector_index.pipeline_creation_failed"));
     }
@@ -390,6 +548,7 @@ agentengine::result<VulkanCosineIndex> VulkanCosineIndex::create() {
 
 agentengine::result<void> VulkanCosineIndex::add_batch(std::vector<std::string> const& ids,
                                                           std::vector<std::vector<float>> const& vectors) {
+    if (!impl_) return std::unexpected(moved_from_error());
     std::unique_lock lock(impl_->mutex);
     if (ids.size() != vectors.size()) {
         return std::unexpected(agentengine::error{agentengine::failure_class::contract,
@@ -437,6 +596,21 @@ agentengine::result<void> VulkanCosineIndex::add_batch(std::vector<std::string> 
                 "vulkan_vector_index.add_batch_dimension_mismatch"});
         }
     }
+    // Red-team pass 5 (2026-09-23), Real gap: NaN/Inf components used to be accepted, producing NaN
+    // scores that then reached std::sort under a comparator that is not a strict weak ordering over
+    // NaN -- undefined behavior (reproduced: out-of-order results). Reject at the origin, before any
+    // state changes, exactly like every other add_batch() contract check above. This is a deliberate,
+    // documented DIVERGENCE from BruteForceCosineIndex, which still accepts non-finite input (its own
+    // shared-comparator sort has the identical latent defect -- named in ADR-180 §7, out of this
+    // backend's scope): the CPU behavior being diverged from is itself UB, not a contract to mirror.
+    for (auto const& v : vectors) {
+        if (!all_finite(v)) {
+            return std::unexpected(agentengine::error{
+                agentengine::failure_class::contract,
+                "vector components must be finite -- NaN or infinity cannot be scored",
+                "vulkan_vector_index.add_batch_non_finite"});
+        }
+    }
     for (std::size_t i = 0; i < ids.size(); ++i) {
         impl_->entries.emplace(ids[i], vectors[i]);
         impl_->order.push_back(ids[i]);
@@ -447,11 +621,13 @@ agentengine::result<void> VulkanCosineIndex::add_batch(std::vector<std::string> 
 }
 
 bool VulkanCosineIndex::contains(std::string const& id) const {
+    if (!impl_) return false;  // moved-from: owns nothing, contains nothing
     std::shared_lock lock(impl_->mutex);
     return impl_->entries.contains(id);
 }
 
 std::size_t VulkanCosineIndex::size() const {
+    if (!impl_) return 0;  // moved-from: owns nothing
     std::shared_lock lock(impl_->mutex);
     return impl_->entries.size();
 }
@@ -467,6 +643,7 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
     // (there is exactly one `impl_->queue`), so concurrent callers would serialize at the driver level
     // regardless; this lock makes that already-real serialization explicit at the C++ level too,
     // rather than leaving concurrent callers to race on the shared cache fields above.
+    if (!impl_) return std::unexpected(moved_from_error());
     std::unique_lock lock(impl_->mutex);
 
     if (impl_->dimension != 0 && query.size() != impl_->dimension) {
@@ -475,6 +652,13 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
             "query vector dimensionality (" + std::to_string(query.size()) +
                 ") does not match index dimensionality (" + std::to_string(impl_->dimension) + ")",
             "vulkan_vector_index.search_dimension_mismatch"});
+    }
+    // Red-team pass 5: same non-finite rejection add_batch() applies, on the query side.
+    if (!all_finite(query)) {
+        return std::unexpected(agentengine::error{agentengine::failure_class::contract,
+                                                  "query components must be finite -- NaN or infinity "
+                                                  "cannot be scored",
+                                                  "vulkan_vector_index.search_non_finite"});
     }
     if (impl_->order.empty()) return std::vector<agentengine::ScoredId>{};
 
@@ -506,6 +690,13 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
     if (auto plausible = detail::check_gpu_dispatch_size_plausible(n, dim); !plausible.has_value()) {
         return std::unexpected(plausible.error());
     }
+    // Red-team pass 5: the device's OWN limits, not just the uint32 representability bound above --
+    // see detail::check_gpu_device_limits()'s header comment. Also before any GPU resource is touched.
+    if (auto within = detail::check_gpu_device_limits(n, dim, impl_->max_storage_buffer_range,
+                                                      impl_->max_workgroup_count_x);
+        !within.has_value()) {
+        return std::unexpected(within.error());
+    }
 
     auto const create_host_visible_buffer =
         [&](VkDeviceSize size_bytes, VkBufferUsageFlags usage) -> std::optional<std::pair<VkBuffer, VkDeviceMemory>> {
@@ -515,7 +706,10 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
         buffer_info.usage = usage;
         buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         VkBuffer buffer = VK_NULL_HANDLE;
-        if (vkCreateBuffer(impl_->device, &buffer_info, nullptr, &buffer) != VK_SUCCESS) return std::nullopt;
+        if (AE_VK_FAULT(create_buffer) ||
+            vkCreateBuffer(impl_->device, &buffer_info, nullptr, &buffer) != VK_SUCCESS) {
+            return std::nullopt;
+        }
 
         VkMemoryRequirements mem_reqs;
         vkGetBufferMemoryRequirements(impl_->device, buffer, &mem_reqs);
@@ -531,7 +725,8 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
         alloc_info.allocationSize = mem_reqs.size;
         alloc_info.memoryTypeIndex = mem_type;
         VkDeviceMemory memory = VK_NULL_HANDLE;
-        if (vkAllocateMemory(impl_->device, &alloc_info, nullptr, &memory) != VK_SUCCESS) {
+        if (AE_VK_FAULT(allocate_memory) ||
+            vkAllocateMemory(impl_->device, &alloc_info, nullptr, &memory) != VK_SUCCESS) {
             vkDestroyBuffer(impl_->device, buffer, nullptr);
             return std::nullopt;
         }
@@ -545,7 +740,7 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
         // have bound memory before use), the exact class of gap red-team pass 3 (§4c) already fixed
         // for this file's other Vulkan calls, just missed here. Reject, don't silently hand back an
         // unbound buffer.
-        if (vkBindBufferMemory(impl_->device, buffer, memory, 0) != VK_SUCCESS) {
+        if (AE_VK_FAULT(bind_buffer_memory) || vkBindBufferMemory(impl_->device, buffer, memory, 0) != VK_SUCCESS) {
             vkFreeMemory(impl_->device, memory, nullptr);
             vkDestroyBuffer(impl_->device, buffer, nullptr);
             return std::nullopt;
@@ -573,7 +768,10 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
         buffer_info.usage = usage;
         buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         VkBuffer buffer = VK_NULL_HANDLE;
-        if (vkCreateBuffer(impl_->device, &buffer_info, nullptr, &buffer) != VK_SUCCESS) return std::nullopt;
+        if (AE_VK_FAULT(create_buffer) ||
+            vkCreateBuffer(impl_->device, &buffer_info, nullptr, &buffer) != VK_SUCCESS) {
+            return std::nullopt;
+        }
 
         VkMemoryRequirements mem_reqs;
         vkGetBufferMemoryRequirements(impl_->device, buffer, &mem_reqs);
@@ -597,7 +795,8 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
         alloc_info.allocationSize = mem_reqs.size;
         alloc_info.memoryTypeIndex = mem_type;
         VkDeviceMemory memory = VK_NULL_HANDLE;
-        if (vkAllocateMemory(impl_->device, &alloc_info, nullptr, &memory) != VK_SUCCESS) {
+        if (AE_VK_FAULT(allocate_memory) ||
+            vkAllocateMemory(impl_->device, &alloc_info, nullptr, &memory) != VK_SUCCESS) {
             vkDestroyBuffer(impl_->device, buffer, nullptr);
             return std::nullopt;
         }
@@ -606,7 +805,7 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
         // the persistent, cached vectors buffer, the single largest and longest-lived GPU allocation
         // this class ever makes, so an unbound buffer surviving here would be the most consequential
         // instance of this gap, not merely a symmetric fix for its own sake.
-        if (vkBindBufferMemory(impl_->device, buffer, memory, 0) != VK_SUCCESS) {
+        if (AE_VK_FAULT(bind_buffer_memory) || vkBindBufferMemory(impl_->device, buffer, memory, 0) != VK_SUCCESS) {
             vkFreeMemory(impl_->device, memory, nullptr);
             vkDestroyBuffer(impl_->device, buffer, nullptr);
             return std::nullopt;
@@ -625,10 +824,12 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
         // than a torn/half-replaced cache.
         // Flatten the stored vectors row-major, matching cosine_similarity.comp's own layout
         // contract ("candidate i's own components live at [i*dimension, (i+1)*dimension)").
+        // Red-team pass 5: each row is rescaled by an exact power of two on the way in (see
+        // copy_rescaled_by_power_of_two()'s own comment) -- the stored `entries` stay untouched.
         std::vector<float> flattened(n * dim);
         for (std::size_t i = 0; i < n; ++i) {
             auto const& v = impl_->entries.at(impl_->order[i]);
-            std::memcpy(flattened.data() + i * dim, v.data(), dim * sizeof(float));
+            copy_rescaled_by_power_of_two(v, flattened.data() + i * dim);
         }
 
         VkDeviceSize const bytes = n * dim * sizeof(float);
@@ -670,7 +871,8 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
 
         {
             void* mapped = nullptr;
-            if (vkMapMemory(impl_->device, staging_buf->second, 0, bytes, 0, &mapped) != VK_SUCCESS ||
+            if (AE_VK_FAULT(map_memory) ||
+                vkMapMemory(impl_->device, staging_buf->second, 0, bytes, 0, &mapped) != VK_SUCCESS ||
                 mapped == nullptr) {
                 return std::unexpected(vulkan_error(
                     "vkMapMemory failed for the vectors staging buffer (host out of memory, or the "
@@ -690,7 +892,8 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
         copy_cmd_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         copy_cmd_alloc_info.commandBufferCount = 1;
         VkCommandBuffer copy_cmd = VK_NULL_HANDLE;
-        if (vkAllocateCommandBuffers(impl_->device, &copy_cmd_alloc_info, &copy_cmd) != VK_SUCCESS) {
+        if (AE_VK_FAULT(allocate_command_buffers) ||
+            vkAllocateCommandBuffers(impl_->device, &copy_cmd_alloc_info, &copy_cmd) != VK_SUCCESS) {
             return std::unexpected(vulkan_error("vkAllocateCommandBuffers failed for the vectors-upload "
                                                  "copy command",
                                                  "vulkan_vector_index.command_buffer_allocation_failed"));
@@ -703,7 +906,7 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
         VkCommandBufferBeginInfo copy_begin_info{};
         copy_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         copy_begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        if (vkBeginCommandBuffer(copy_cmd, &copy_begin_info) != VK_SUCCESS) {
+        if (AE_VK_FAULT(begin_command_buffer) || vkBeginCommandBuffer(copy_cmd, &copy_begin_info) != VK_SUCCESS) {
             return std::unexpected(vulkan_error("vkBeginCommandBuffer failed for the vectors-upload copy "
                                                  "command",
                                                  "vulkan_vector_index.command_buffer_begin_failed"));
@@ -720,7 +923,7 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
         vkCmdPipelineBarrier(copy_cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
                               &copy_barrier, 0, nullptr, 0, nullptr);
 
-        if (vkEndCommandBuffer(copy_cmd) != VK_SUCCESS) {
+        if (AE_VK_FAULT(end_command_buffer) || vkEndCommandBuffer(copy_cmd) != VK_SUCCESS) {
             return std::unexpected(vulkan_error("vkEndCommandBuffer failed for the vectors-upload copy "
                                                  "command",
                                                  "vulkan_vector_index.command_buffer_end_failed"));
@@ -729,7 +932,8 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
         VkFenceCreateInfo copy_fence_info{};
         copy_fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         VkFence copy_fence = VK_NULL_HANDLE;
-        if (vkCreateFence(impl_->device, &copy_fence_info, nullptr, &copy_fence) != VK_SUCCESS) {
+        if (AE_VK_FAULT(create_fence) ||
+            vkCreateFence(impl_->device, &copy_fence_info, nullptr, &copy_fence) != VK_SUCCESS) {
             return std::unexpected(vulkan_error("vkCreateFence failed for the vectors-upload copy command",
                                                  "vulkan_vector_index.fence_creation_failed"));
         }
@@ -739,18 +943,23 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
         copy_submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         copy_submit_info.commandBufferCount = 1;
         copy_submit_info.pCommandBuffers = &copy_cmd;
-        if (vkQueueSubmit(impl_->queue, 1, &copy_submit_info, copy_fence) != VK_SUCCESS) {
-            return std::unexpected(vulkan_error("vkQueueSubmit failed for the vectors-upload copy command",
+        if (VkResult const submit_result = AE_VK_FAULT(queue_submit)
+                                               ? VK_ERROR_OUT_OF_DEVICE_MEMORY
+                                               : vkQueueSubmit(impl_->queue, 1, &copy_submit_info, copy_fence);
+            submit_result != VK_SUCCESS) {
+            return std::unexpected(vk_call_error(submit_result,
+                                                 "vkQueueSubmit failed for the vectors-upload copy command",
                                                  "vulkan_vector_index.queue_submit_failed"));
         }
-        if (VkResult const wait_result =
-                vkWaitForFences(impl_->device, 1, &copy_fence, VK_TRUE, UINT64_MAX);
-            wait_result != VK_SUCCESS) {
+        VkResult wait_result = vkWaitForFences(impl_->device, 1, &copy_fence, VK_TRUE, UINT64_MAX);
+        if (AE_VK_FAULT(wait_for_fences)) wait_result = VK_ERROR_DEVICE_LOST;  // test seam: the real wait already ran
+        if (wait_result != VK_SUCCESS) {
             // Only reachable via VK_ERROR_DEVICE_LOST/VK_ERROR_OUT_OF_*_MEMORY at UINT64_MAX timeout
             // (VK_TIMEOUT cannot occur at an infinite timeout) -- still checked, not assumed
             // unreachable, matching this file's own "reject-not-coerce on any structural
             // inconsistency" posture rather than trusting an infinite wait can only ever succeed.
-            return std::unexpected(vulkan_error("vkWaitForFences failed for the vectors-upload copy "
+            return std::unexpected(vk_call_error(wait_result,
+                                                 "vkWaitForFences failed for the vectors-upload copy "
                                                  "command (the device may have been lost)",
                                                  "vulkan_vector_index.fence_wait_failed"));
         }
@@ -786,26 +995,38 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
     }
     {
         void* mapped = nullptr;
-        if (vkMapMemory(impl_->device, impl_->query_memory, 0, dim * sizeof(float), 0, &mapped) !=
+        if (AE_VK_FAULT(map_memory) ||
+            vkMapMemory(impl_->device, impl_->query_memory, 0, dim * sizeof(float), 0, &mapped) !=
                 VK_SUCCESS ||
             mapped == nullptr) {
             return std::unexpected(vulkan_error("vkMapMemory failed for the GPU query buffer",
                                                   "vulkan_vector_index.memory_map_failed"));
         }
-        std::memcpy(mapped, query.data(), dim * sizeof(float));
+        // Red-team pass 5: the query gets the same exact power-of-two rescale every stored row gets.
+        copy_rescaled_by_power_of_two(query, static_cast<float*>(mapped));
         vkUnmapMemory(impl_->device, impl_->query_memory);
     }
 
     // ---- Scores buffer: grow-only capacity, tracking the vectors buffer's own `n`. -----------------
+    // Red-team pass 5 (2026-09-23), Critical: this block used to destroy the OLD scores buffer FIRST
+    // and only then try to create the new one -- so a failed creation returned an error while
+    // `impl_->scores_buffer`/`scores_memory` still held the just-DESTROYED handles (and the old, now
+    // too-small capacity). The next search() on the same instance re-entered this block (n still
+    // exceeds that capacity) and called vkDestroyBuffer/vkFreeMemory on those handles a SECOND time,
+    // and ~Impl() would have done it again: a double-destroy/double-free of driver objects, undefined
+    // behavior per the Vulkan spec. Reproduced by this pass's fault-injection test under the Khronos
+    // validation layer. Now build-then-swap, the same ordering the vectors-buffer rebuild above
+    // already used: the old buffer is released only after its replacement exists, so a failure
+    // leaves the old, still-valid buffer (and its capacity) exactly as they were.
     if (impl_->scores_buffer == VK_NULL_HANDLE || n > impl_->scores_buffer_capacity) {
-        if (impl_->scores_buffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(impl_->device, impl_->scores_buffer, nullptr);
-            vkFreeMemory(impl_->device, impl_->scores_memory, nullptr);
-        }
         auto buf = create_host_visible_buffer(n * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         if (!buf) {
             return std::unexpected(vulkan_error("failed to allocate the GPU scores buffer",
                                                   "vulkan_vector_index.buffer_allocation_failed"));
+        }
+        if (impl_->scores_buffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(impl_->device, impl_->scores_buffer, nullptr);
+            vkFreeMemory(impl_->device, impl_->scores_memory, nullptr);
         }
         impl_->scores_buffer = buf->first;
         impl_->scores_memory = buf->second;
@@ -820,7 +1041,9 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
         ds_alloc_info.descriptorPool = impl_->descriptor_pool;
         ds_alloc_info.descriptorSetCount = 1;
         ds_alloc_info.pSetLayouts = &impl_->descriptor_set_layout;
-        if (vkAllocateDescriptorSets(impl_->device, &ds_alloc_info, &impl_->descriptor_set) != VK_SUCCESS) {
+        if (AE_VK_FAULT(allocate_descriptor_sets) ||
+            vkAllocateDescriptorSets(impl_->device, &ds_alloc_info, &impl_->descriptor_set) != VK_SUCCESS) {
+            impl_->descriptor_set = VK_NULL_HANDLE;  // never cache a handle from a failed allocation
             return std::unexpected(vulkan_error("vkAllocateDescriptorSets failed",
                                                   "vulkan_vector_index.descriptor_set_allocation_failed"));
         }
@@ -848,13 +1071,14 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
         cmd_alloc_info.commandPool = impl_->command_pool;
         cmd_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         cmd_alloc_info.commandBufferCount = 1;
-        if (vkAllocateCommandBuffers(impl_->device, &cmd_alloc_info, &impl_->command_buffer) != VK_SUCCESS) {
+        if (AE_VK_FAULT(allocate_command_buffers) ||
+            vkAllocateCommandBuffers(impl_->device, &cmd_alloc_info, &impl_->command_buffer) != VK_SUCCESS) {
             impl_->command_buffer = VK_NULL_HANDLE;  // a failed allocate() may still write a non-null,
                                                        // invalid handle on some drivers -- never cache one
             return std::unexpected(vulkan_error("vkAllocateCommandBuffers failed for the dispatch command",
                                                  "vulkan_vector_index.command_buffer_allocation_failed"));
         }
-    } else if (vkResetCommandBuffer(impl_->command_buffer, 0) != VK_SUCCESS) {
+    } else if (AE_VK_FAULT(reset_command_buffer) || vkResetCommandBuffer(impl_->command_buffer, 0) != VK_SUCCESS) {
         return std::unexpected(vulkan_error("vkResetCommandBuffer failed for the cached dispatch command",
                                              "vulkan_vector_index.command_buffer_reset_failed"));
     }
@@ -862,7 +1086,7 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
     VkCommandBufferBeginInfo begin_info{};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (vkBeginCommandBuffer(impl_->command_buffer, &begin_info) != VK_SUCCESS) {
+    if (AE_VK_FAULT(begin_command_buffer) || vkBeginCommandBuffer(impl_->command_buffer, &begin_info) != VK_SUCCESS) {
         return std::unexpected(vulkan_error("vkBeginCommandBuffer failed for the dispatch command",
                                              "vulkan_vector_index.command_buffer_begin_failed"));
     }
@@ -888,7 +1112,7 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
     vkCmdPipelineBarrier(impl_->command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0,
                           1, &barrier, 0, nullptr, 0, nullptr);
 
-    if (vkEndCommandBuffer(impl_->command_buffer) != VK_SUCCESS) {
+    if (AE_VK_FAULT(end_command_buffer) || vkEndCommandBuffer(impl_->command_buffer) != VK_SUCCESS) {
         return std::unexpected(vulkan_error("vkEndCommandBuffer failed for the dispatch command",
                                              "vulkan_vector_index.command_buffer_end_failed"));
     }
@@ -898,7 +1122,7 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
     VkFenceCreateInfo fence_info{};
     fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     VkFence fence = VK_NULL_HANDLE;
-    if (vkCreateFence(impl_->device, &fence_info, nullptr, &fence) != VK_SUCCESS) {
+    if (AE_VK_FAULT(create_fence) || vkCreateFence(impl_->device, &fence_info, nullptr, &fence) != VK_SUCCESS) {
         return std::unexpected(vulkan_error("vkCreateFence failed for the dispatch command",
                                              "vulkan_vector_index.fence_creation_failed"));
     }
@@ -907,9 +1131,12 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
     submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit_info.commandBufferCount = 1;
     submit_info.pCommandBuffers = &impl_->command_buffer;
-    if (vkQueueSubmit(impl_->queue, 1, &submit_info, fence) != VK_SUCCESS) {
+    if (VkResult const submit_result = AE_VK_FAULT(queue_submit)
+                                           ? VK_ERROR_OUT_OF_DEVICE_MEMORY
+                                           : vkQueueSubmit(impl_->queue, 1, &submit_info, fence);
+        submit_result != VK_SUCCESS) {
         vkDestroyFence(impl_->device, fence, nullptr);
-        return std::unexpected(vulkan_error("vkQueueSubmit failed for the dispatch command",
+        return std::unexpected(vk_call_error(submit_result, "vkQueueSubmit failed for the dispatch command",
                                              "vulkan_vector_index.queue_submit_failed"));
     }
 
@@ -919,10 +1146,12 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
     // driver misbehaving. Red-team pass 3: the RETURN VALUE is now checked even so -- VK_ERROR_DEVICE_LOST
     // is a real, in-spec way for this call to stop waiting without the fence ever having signaled, and
     // that must become a typed error, not a silent fall-through into reading an unwritten scores buffer.
-    if (VkResult const wait_result = vkWaitForFences(impl_->device, 1, &fence, VK_TRUE, UINT64_MAX);
-        wait_result != VK_SUCCESS) {
+    VkResult wait_result = vkWaitForFences(impl_->device, 1, &fence, VK_TRUE, UINT64_MAX);
+    if (AE_VK_FAULT(wait_for_fences)) wait_result = VK_ERROR_DEVICE_LOST;  // test seam: the real wait already ran
+    if (wait_result != VK_SUCCESS) {
         vkDestroyFence(impl_->device, fence, nullptr);
-        return std::unexpected(vulkan_error("vkWaitForFences failed for the dispatch command (the "
+        return std::unexpected(vk_call_error(wait_result,
+                                             "vkWaitForFences failed for the dispatch command (the "
                                              "device may have been lost)",
                                              "vulkan_vector_index.fence_wait_failed"));
     }
@@ -931,7 +1160,8 @@ agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::searc
     std::vector<float> scores(n);
     {
         void* mapped = nullptr;
-        if (vkMapMemory(impl_->device, impl_->scores_memory, 0, n * sizeof(float), 0, &mapped) !=
+        if (AE_VK_FAULT(map_memory) ||
+            vkMapMemory(impl_->device, impl_->scores_memory, 0, n * sizeof(float), 0, &mapped) !=
                 VK_SUCCESS ||
             mapped == nullptr) {
             return std::unexpected(vulkan_error("vkMapMemory failed for the GPU scores buffer readback",

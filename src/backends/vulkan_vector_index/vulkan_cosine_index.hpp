@@ -14,9 +14,18 @@
 // named, bounded, accepted residual, the identical I5 posture `Embedder` already carries per ADR-063
 // §2.2A). Storage (`add_batch`/`contains`/`size`) is pure host-side bookkeeping, mirroring
 // `BruteForceCosineIndex` exactly -- only `search()` actually dispatches to the GPU; the stored
-// vectors are re-uploaded to a GPU buffer on every `search()` call (simplicity over incremental-
-// buffer-management performance, an accepted, named residual for this first pass -- see this file's
-// own §5-6 account in the ADR for the real bench numbers this tradeoff costs).
+// vectors live in a persistent, device-local GPU buffer rebuilt only after `add_batch()` changes the
+// corpus (red-team pass 5, 2026-09-23: this comment previously still described the ORIGINAL
+// "re-upload on every search() call" design, which ADR-180 §5-6's step-8 account replaced with a
+// cache before any red-team pass ran -- stale documentation, corrected here).
+//
+// Input domain (red-team pass 5, 2026-09-23): every vector/query component must be FINITE -- NaN/Inf
+// is rejected as a `contract` violation, never scored (a NaN score reaching the score-desc sort
+// violates std::sort's strict-weak-ordering precondition). Finite inputs of ANY magnitude are scored
+// correctly: each vector is rescaled by an exact power of two before upload so float32 accumulation
+// in the shader can neither overflow (|x| > ~1.8e19 squared) nor underflow (|x| < ~1e-19 squared) --
+// cosine similarity is scale-invariant, and power-of-two scaling is exact in IEEE arithmetic, so
+// this changes no in-range result by even one ULP.
 //
 // Satisfies the EXISTING, UNMODIFIED `VectorIndex` concept (core/vector_index.hpp) -- no
 // `EffectContext`, no capability gating, no async: GPU dispatch is local compute, not a network
@@ -34,6 +43,7 @@
 // merely to NAME this type; only the one translation unit that actually links `Vulkan::Vulkan` does.
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <span>
 #include <string>
@@ -58,6 +68,11 @@ public:
     VulkanCosineIndex& operator=(VulkanCosineIndex const&) = delete;
     ~VulkanCosineIndex();
 
+    // Red-team pass 5 (2026-09-23): a MOVED-FROM instance (e.g. the `result<VulkanCosineIndex>` a
+    // caller `std::move(*created)`-ed out of) is safe to destroy, to move-assign into, and to call
+    // every method on -- `add_batch()`/`search()` return a typed `contract` error
+    // (`vulkan_vector_index.moved_from`), `contains()` returns false, `size()` returns 0. Previously
+    // every method dereferenced the null pimpl (an access violation, reproduced on the real GPU).
     [[nodiscard]] agentengine::result<void> add_batch(std::vector<std::string> const& ids,
                                                         std::vector<std::vector<float>> const& vectors);
     [[nodiscard]] agentengine::result<std::vector<agentengine::ScoredId>> search(
@@ -91,6 +106,50 @@ namespace detail {
 // vectors -- exactly how `ByteReader::check_header_plausible()` is tested against a crafted header
 // rather than a genuinely oversized blob.
 [[nodiscard]] agentengine::result<void> check_gpu_dispatch_size_plausible(std::size_t n, std::size_t dim);
+
+// Red-team pass 5 (2026-09-23), Real gap: the uint32 guard above is necessary but NOT sufficient.
+// The flattened vectors buffer is bound as ONE storage-buffer descriptor with `VK_WHOLE_SIZE`, and the
+// Vulkan spec requires that effective range to be <= `VkPhysicalDeviceLimits::maxStorageBufferRange`
+// (VUID-VkWriteDescriptorSet-descriptorType-00333) -- whose spec-guaranteed minimum is only 2^27 bytes
+// (128 MiB), the exact value the Vulkan SDK's own `VP_ANDROID_vulkan_profile_2021` baseline profile
+// declares. At dim=1536 that is exceeded at n=21,846 -- a realistic corpus, not an adversarial one;
+// reproduced under the Khronos validation layer + profiles layer emulating that baseline. Enforcing
+// this bound ALSO closes the shader's own 32-bit index arithmetic (`uint base = i * pc.dimension`,
+// cosine_similarity.comp): `maxStorageBufferRange` is itself a uint32, so n*dim*4 <= UINT32_MAX
+// implies n*dim < 2^30 and that product can never wrap. The second bound closes red-team pass 3's
+// (§4c finding 4) named-but-unfixed residual: the dispatch's workgroup count ((n + 63) / 64) must be
+// <= `maxComputeWorkGroupCount[0]` (VUID-vkCmdDispatch-groupCountX-00386). Pure and Vulkan-free so it
+// is unit-testable with synthetic limits, the same shape as the guard above.
+[[nodiscard]] agentengine::result<void> check_gpu_device_limits(std::size_t n, std::size_t dim,
+                                                                std::uint64_t max_storage_buffer_range,
+                                                                std::uint32_t max_workgroup_count_x);
+
+#ifdef AGENTENGINE_VULKAN_FAULT_INJECTION
+// Red-team pass 5 (2026-09-23): a TEST-ONLY fault-injection seam, compiled in ONLY when the
+// translation unit is built with AGENTENGINE_VULKAN_FAULT_INJECTION (tests/CMakeLists.txt builds a
+// separate library variant for tests/test_vulkan_cosine_index_fault_injection.cpp; the production
+// `agentengine::vulkan_vector_index` target never defines it, so none of this exists there). Every
+// prior red-team pass (§4c/§4d) recorded that NONE of this file's checked-VkResult failure branches
+// had ever been executed -- only reasoned about -- because a real device-lost/OOM cannot be induced
+// safely on a dev box. This seam makes the Nth call of a named Vulkan entry point report failure
+// (creation-style calls are SKIPPED, so nothing leaks; `vkWaitForFences` is called for real and its
+// result then overridden to VK_ERROR_DEVICE_LOST, so no resource is ever torn down while pending).
+enum class fault_point : std::uint8_t {
+    create_instance, enumerate_physical_devices, create_device, create_command_pool,
+    create_descriptor_set_layout, create_descriptor_pool, create_pipeline_layout, create_shader_module,
+    create_compute_pipeline,
+    create_buffer, allocate_memory, bind_buffer_memory, map_memory, allocate_command_buffers,
+    begin_command_buffer, end_command_buffer, create_fence, queue_submit, wait_for_fences,
+    reset_command_buffer, allocate_descriptor_sets,
+    count_  // sentinel, not a real point
+};
+// Arms `point` to fail on its `nth` (1-based) hit after this call; resets every hit counter.
+void arm_fault_injection(fault_point point, unsigned nth);
+// Disarms any armed fault and resets every hit counter.
+void disarm_fault_injection();
+// How many times `point` was reached since the last arm/disarm call.
+[[nodiscard]] unsigned fault_injection_hits(fault_point point);
+#endif
 
 }  // namespace detail
 
