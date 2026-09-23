@@ -8,11 +8,10 @@ offline-provable half, AND has been through its own dedicated red-team pass** (2
 session — see §5-6 for the full account, including a real heap-buffer-overflow this pass's OWN offline
 test caught via AddressSanitizer, and §4b for a second pass finding one genuine Critical confidentiality
 residual — fixed with defense-in-depth plus an honest operational-fix disclosure, not fully closed by
-code alone; see §7). The live half (a real Qdrant instance) is written but not yet run — this session
-made roughly eight separate attempts to bring up a local Qdrant via Docker on this machine, and
-confirmed the blocker is not transient: even a bare `docker rm -f`/`docker start` now hangs past a 15s
-timeout, while read-only commands (`docker ps`, `docker info`) answer fine, pointing at the daemon's
-container-lifecycle path specifically, not at this session's code.
+code alone; see §7). **The live half now passes against a real Qdrant instance (2026-09-23)**: 12/12
+checks against Qdrant 1.19.1 in a local Docker container with API-key auth enabled, built under WSL2 g++
+with `AGENTENGINE_WITH_HTTPS=ON`. A deliberate wrong-key re-run fails as it should (exit 1). See §3
+claim 6. The Docker daemon hang that blocked this run on 2026-09-22 had cleared by the next day.
 **§8 step 8 (`VulkanCosineIndex`) is now REAL and built** — a `worktree`-isolated agent built it against
 real Vulkan hardware (a discrete AMD Radeon RX 5300M), found and fixed two genuine performance bugs
 along the way, and it has merged cleanly to `main` (2026-09-22, commit `f085bbd`). Correctness holds
@@ -62,8 +61,8 @@ for the Judge step**, with two named conditions (§8 item 9):
 - ~~tracking `BruteForceCosineIndex`'s identical NaN-sort defect as an ADR-063 follow-on~~ — **CLOSED
   2026-09-23**: fixed directly rather than deferred (§7), so this condition no longer stands.
 
-A fourth eyes-only red-team pass is not recommended. The live Qdrant run (§3 claim 6) remains blocked
-on the same persistent local Docker daemon issue, unresolved.
+A fourth eyes-only red-team pass is not recommended. The live Qdrant run (§3 claim 6) **passed
+2026-09-23** (§3 claim 6).
 What "real" means for steps 1-6 below: every new type compiles under clang++
 (`-std=c++23`) against this tree, every claim below that is marked CORRECT has a real, executed, passing
 check (a permanent test registered in `tests/CMakeLists.txt`), and the existing ADR-063 test suite
@@ -389,9 +388,33 @@ lockstep. Named explicitly as real, not-yet-written logic — §8's implementati
    shape, point-id derivation and its documented (128-bit) collision surface, the `payload.chunk_id`
    round-trip that recovers the real chunk digest from a search result, and the Qdrant-specific error
    envelope (`status.error`, not OpenAI's `error.message`) — 27 assertions, green under both a plain
-   build and AddressSanitizer. **The live half (a real Qdrant instance) is NOT executed** — still
-   PENDING, not claimed. See §5-6 below for the real finding this offline pass caught (a heap-buffer-
+   build and AddressSanitizer. See §5-6 below for the real finding this offline pass caught (a heap-buffer-
    overflow, found via ASan) before any live test could have made it worse.
+   **STATUS (2026-09-23): the live HALF is CORRECT, executed.** Setup and results:
+   - **Target:** `qdrant/qdrant:latest` (reports version 1.19.1, commit `6ab21ca`) in local Docker
+     Desktop, started with a random per-run `QDRANT__SERVICE__API_KEY`. The key was generated into a
+     scratch file and never committed.
+   - **Collection:** `ae_qdrant_live_e2e_test`, created with `{"size":3,"distance":"Cosine"}`. An
+     unauthenticated `GET /collections` returned 401, confirming auth was actually on.
+   - **Build:** WSL2 Ubuntu, g++ 15.2, Ninja, Debug, `-DAGENTENGINE_WITH_HTTPS:BOOL=ON`, with
+     `AGENTENGINE_QDRANT_TRANSPORT=plaintext_http`. This goes through the real
+     `ProviderHttpClient` transport, not the Windows-side stub used for the offline k=0 case.
+   - **`test_qdrant_vector_index_live_e2e`: ALL PASS, 12/12, exit 0.** It covers:
+     - QD-1: a real upsert of 2 points.
+     - QD-2: search returns both. The exact-match point ranks first with score 1.000000, and its id
+       is the real chunk digest recovered from `payload.chunk_id`, not Qdrant's internal UUID.
+     - QD-3: `contains()` is true for an added digest and false, not an error, on Qdrant's real 404.
+     - QD-4: live `k=0` returns empty.
+     - QD-5 positive control: a wrong key is rejected with `http_401`, classified `policy`.
+     - QD-6 (I2): without a `cap::Secret` grant, the call is denied before reaching the network,
+       classified `policy`.
+   - **Independent confirmation:** `POST .../points/count {"exact":true}` returned `count: 2`, so
+     Qdrant really stored the points; the test did not merely report success.
+   - **Negative run (the test can fail):** the same binary with
+     `AGENTENGINE_QDRANT_API_KEY=deliberately-wrong-key` fails QD-1/2/3 and exits 1, while QD-5 still
+     passes.
+   - **Offline suite:** `test_qdrant_vector_index` also passes under this Linux build, 36 `ok` lines,
+     exit 0.
 7. **Claim (§2.6):** for a fixed, realistic corpus (dim 1536, n ∈ {1000, 5000} — precisely the sizes ADR-063
    §6 already measured as CPU Goal-tier misses), `VulkanCosineIndex::search(k=5)` both (a) stays within the
    RFC 023 §3 `≤ 500 µs` Goal budget where `BruteForceCosineIndex` did not, and (b) produces a top-K set
@@ -1162,7 +1185,8 @@ See §5-6.
      only way to prove "the network call never happens" for real rather than merely by code inspection.
   4, 5, 6: named as honest residuals / fixed as minor code changes — see §4b above.
   All new assertions green under both a plain build and AddressSanitizer.
-- **What is still owed, explicitly not claimed done**: a live-network test against a real Qdrant
+- **What was still owed at the time (since CLOSED 2026-09-23, §3 claim 6: 12/12 live, wrong-key
+  negative run fails)**: a live-network test against a real Qdrant
   instance. The test itself is written (`tests/test_qdrant_vector_index_live_e2e.cpp`, registered in
   `tests/CMakeLists.txt`, `live-network`-labeled, mirroring `test_openai_embedder_openrouter_live_
   e2e.cpp`'s exact shape — real add_batch/search/contains round-trip, a `k=0` live counterpart, an
@@ -1552,7 +1576,10 @@ reported none leaked or double-destroyed across 59 instance teardowns.
   revision should take a `corpus_scope`-derived name automatically (closing this gap structurally, the
   same way `rag_corpus_mount()` already does for `Mount`) rather than an arbitrary string is a real,
   open follow-on question this pass did not resolve.
-- **`QdrantVectorIndex`'s live half (§3 claim 6) is unexecuted** — the live test is written
+- ~~**`QdrantVectorIndex`'s live half (§3 claim 6) is unexecuted**~~ **CLOSED 2026-09-23**: the Docker
+  daemon hang below had cleared by the next day. The live test ran from WSL2 against a real,
+  auth-enabled Qdrant 1.19.1 and passed 12/12, and a wrong-key negative run failed as it should
+  (§3 claim 6). The original account follows, kept for the record: the live test is written
   (`tests/test_qdrant_vector_index_live_e2e.cpp`) but has not been run against a real instance. This
   session made roughly eight separate attempts (`docker run`, `docker start`, cleanup-and-retry cycles)
   over more than half an hour to bring up a local Qdrant, all either hanging or leaving the container
@@ -1822,8 +1849,8 @@ reported none leaked or double-destroyed across 59 instance teardowns.
    - pass 2 (§4b, `QdrantVectorIndex`);
    - passes 3, 4 and 5 (§4c/§4d/§4e, `VulkanCosineIndex`).
 
-   **Still owed**: the live Qdrant run (§3 claim 6, blocked on a persistent local Docker daemon issue —
-   §7). The earlier open question, whether `VulkanCosineIndex` needed more red-teaming, is now settled by
+   ~~**Still owed**: the live Qdrant run~~ — **DONE 2026-09-23**, 12/12 against real Qdrant 1.19.1
+   (§3 claim 6). The earlier open question, whether `VulkanCosineIndex` needed more red-teaming, is now settled by
    pass 5's outcome and recommendation.
    **Pass 5's recommendation (2026-09-23): the Vulkan surface is ready for the Judge step, with two named
    conditions, and a fourth eyes-only red-team pass is NOT the right next step.** The honest case, both
@@ -1851,6 +1878,6 @@ reported none leaked or double-destroyed across 59 instance teardowns.
    If more assurance is wanted before Judged, the highest-value next step is also mechanical, not
    another sampled review: run `test_vulkan_cosine_index_fault_injection` on a second vendor's driver
    (e.g. a Linux CI runner with Mesa's lavapipe), since every result above comes from one AMD driver.
-   Only once the live Qdrant run lands, and the Judge has ruled on those two items, does this ADR go to
-   the project owner for Judged sign-off. That is the same sequence `ADR-063`/`ADR-064` both actually
+   The live Qdrant run has now landed (2026-09-23), and both conditions are closed. What remains is the
+   Judge step itself, then the project owner's Judged sign-off. That is the same sequence `ADR-063`/`ADR-064` both actually
    followed, not skipped for expedience.

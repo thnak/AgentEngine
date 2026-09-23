@@ -1036,9 +1036,8 @@ if(AGENTENGINE_WITH_HTTPS)
   # ---- decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.5/§3 claim 6:
   # QdrantVectorIndex (protocol/qdrant/vector_index.hpp) -- offline-provable surface: point-id
   # derivation, request/response construction, error-envelope parsing. No server, runs
-  # unconditionally, mirrors test_openai_embedder.cpp's own offline split. A live-network test
-  # against a real Qdrant instance is still owed (ADR-180 §8 step 7's own implementation plan),
-  # not built in this pass.
+  # unconditionally, mirrors test_openai_embedder.cpp's own offline split. The live-network half
+  # is test_qdrant_vector_index_live_e2e below (passed against real Qdrant 1.19.1, 2026-09-23).
   add_executable(test_qdrant_vector_index test_qdrant_vector_index.cpp)
   target_link_libraries(test_qdrant_vector_index PRIVATE
     agentengine::core agentengine::provider_http_client agentengine_warnings
