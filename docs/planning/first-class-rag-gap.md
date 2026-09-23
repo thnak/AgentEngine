@@ -116,9 +116,11 @@ running in the background.
 **Background-task support exists, but does not fit this job as-is.** Milestone 7 Phase B built
 006 §6b: the `Backgroundable` tool policy, `AgentSession::start_background_task()`, `StandingEffect`
 handles with list and cancel (`core/standing_effect.hpp`, `rt/standing_effect_registry.hpp`, extracted
-by ADR-097), and progress through ADR-060's `report_progress()`. (The older
-`backgroundable-standingeffect-gap.md` still says "never built"; that note is stale.) Gaps for a
-long indexing job, found by reading that code:
+by ADR-097). It does **not** report progress: `background_task()` deliberately resets
+`report_progress` to a no-op (ADR-060 §4). (The older `backgroundable-standingeffect-gap.md` still
+says "never built"; that note is stale.) The full audit, and the fix, is
+**`decisions/ADR-181-durable-cancellable-background-jobs.md`**. Gaps for a long indexing job, found
+by reading that code:
 
 - **Session-scoped.** A background task belongs to one `AgentSession`, and its completion is silently
   dropped if that session is gone. A corpus index is shared by many sessions and should outlive any
