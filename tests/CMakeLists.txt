@@ -2055,6 +2055,11 @@ add_test(NAME test_rt_project_supervisor COMMAND test_rt_project_supervisor)
 add_executable(test_rt_append_log_store test_rt_append_log_store.cpp)
 target_link_libraries(test_rt_append_log_store PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_append_log_store COMMAND test_rt_append_log_store)
+# ADR-181 E32 red team round 3: the store's headers must not leak <windows.h> into an includer. The
+# check is the compile itself (see the file's own top comment).
+add_executable(test_rt_append_log_store_header_hygiene test_rt_append_log_store_header_hygiene.cpp)
+target_link_libraries(test_rt_append_log_store_header_hygiene PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_append_log_store_header_hygiene COMMAND test_rt_append_log_store_header_hygiene)
 
 # ---- ADR-037 -- agentengine::rt::WorkflowSupervisor's time-travel surface (014 §5's "rewind to
 # any retained checkpoint"), wiring rt::AppendLogStore into the gap workflow_supervisor.hpp's own

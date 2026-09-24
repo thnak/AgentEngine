@@ -579,7 +579,9 @@ already-"resolved" answers quietly conflict once put together. Four found, none 
    `write_memory_item()` calls from their own `on_turn_end()` hooks — this is a genuinely different
    access pattern than `MemoryProvider`'s existing, presumably single-session-at-a-time usage. Whether
    `rt::AppendLogStore`'s write path is safe under concurrent writers from independent sessions is **not
-   verified one way or the other in this pass** — named as an unverified assumption, not asserted broken,
+   verified one way or the other in this pass** (*later, 2026-09: `FileAppendLogStore` is now verified under
+   concurrent threads and processes — ADR-181 E32's red team found it was NOT safe and fixed it with OS file
+   locks; a host's own `AppendLogStore` conformer still has to make the same guarantee*) — named as an unverified assumption, not asserted broken,
    because round 2's `Budget` finding shows exactly this kind of gap (a mechanism proven fine under its
    original single-caller usage, unchecked under this design's genuinely new concurrent-multi-session
    usage) is a real, recurring pattern in this exact design, not a one-off.

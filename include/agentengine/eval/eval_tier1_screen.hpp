@@ -9,13 +9,12 @@
 //      template version, every probe, every regression task, every statistical parameter -- is rendered
 //      as canonical JSON (`tier1_preregistration_json`) and hashed (`tier1_preregistration_digest`).
 //   2. Attempt accounting. Also before any trial runs, a `started` record carrying that design, its digest,
-//      a fresh random attempt id, and who started it and when (I4) is appended to the lesson FAMILY's
-//      attempt log (§3.3: family = the candidate's `subject` + its source lineage, never its `key`, which an
-//      optimiser controls), then READ BACK. An attempt whose `started` record cannot be written, or does not
+//      a fresh random attempt id, and who started it and when (I4) is appended to the attempt log of the
+//      candidate's LINEAGE (the run it came from; host-supplied), then READ BACK. An attempt whose `started` record cannot be written, or does not
 //      read back, does not run: an uncounted attempt is exactly what E32 exists to prevent. The figures are
 //      appended as a `completed` record naming the same attempt id; an attempt that crashes stays in the log
 //      as started-but-not-completed, still counted.
-//   3. The `Tier1ScreenResult` names this attempt's ordinal, the family's attempt count, and EVERY
+//   3. The `Tier1ScreenResult` names this attempt's ordinal, the lineage's attempt count, and EVERY
 //      attempt's design and figures read back from the log -- not only this one.
 //
 // The follow-rate screen (§3.0 item 2) runs first; the gross-harm screen (§3.0 item 3, ~300 runs) runs
@@ -39,6 +38,14 @@
 // LINEAGE (the run the candidate came from), and every result shows every attempt from that lineage whatever
 // subject it used (`lineage_attempts`), beside the narrower family view. Retrying a lesson under a new
 // subject can still start a new family, but it can no longer hide the earlier attempts from the approver.
+//
+// Red team round 3: the HEADLINE counts (`attempt_ordinal`, `attempt_count`, `distinct_preregistrations`) were
+// still the family's, so a reworded retry read "attempt 1 of 1, 1 design" and only a field beside them showed
+// otherwise. They now count the whole lineage -- the unit a model cannot choose. That over-counts when one
+// run produced several lessons (every lesson's attempts are in it), which is the safe direction; the
+// family view (`family_attempts`, `family_attempt_count`) narrows it to one subject, and says it can be
+// dodged. Both views now come from ONE read of the log, so the family view can never list an attempt its
+// superset does not (round 3 made a concurrent attempt land between two reads).
 //
 // Not claimed (ADR-181 §8): the counter is a statistical correction (it adjusts no alpha -- it makes
 // retries visible); the log is tamper-resistant (a host that can write the store can rewrite it -- the
@@ -120,7 +127,7 @@ struct Tier1ScreenSpec {  // ae-naming-lint: allow Tier1ScreenSpec — ADR-181 E
     std::string lineage;
     // Names the version of the graders' code (a `GraderFn` cannot be hashed). Host-authored, on trust.
     std::string suite_version;
-    // Who started this attempt and when (I4) -- host-supplied, recorded in the family log, never derived
+    // Who started this attempt and when (I4) -- host-supplied, recorded in the attempt log, never derived
     // from model output. `started_at` is a host timestamp string (ISO-8601), as `PromotionAck` records one.
     std::string operator_id;
     std::string started_at;
@@ -132,7 +139,7 @@ struct Tier1ScreenSpec {  // ae-naming-lint: allow Tier1ScreenSpec — ADR-181 E
     std::uint64_t max_model_calls = 50'000;
 };
 
-// The figures an approver needs from one probe, as recorded in the family log. The thresholds it was
+// The figures an approver needs from one probe, as recorded in the attempt log. The thresholds it was
 // judged against are in the attempt's stored design (`Tier1AttemptRecord::preregistration_json`).
 struct Tier1ProbeFigures {  // ae-naming-lint: allow Tier1ProbeFigures — ADR-181 E32
     std::string probe_id;
@@ -166,7 +173,7 @@ struct Tier1HarmFigures {  // ae-naming-lint: allow Tier1HarmFigures — ADR-181
     std::string error_code;
 };
 
-// One attempt as read back from the family log.
+// One attempt as read back from the lineage's attempt log.
 struct Tier1AttemptRecord {  // ae-naming-lint: allow Tier1AttemptRecord — ADR-181 E32
     std::size_t ordinal = 0;               // 1-based, in the order attempts STARTED
     rt::SeqNo started_seq = 0;             // the log position of its `started` record
@@ -191,22 +198,25 @@ struct Tier1ScreenResult {  // ae-naming-lint: allow Tier1ScreenResult — ADR-1
     Digest preregistration_digest;
     std::string attempt_id;
 
-    // Set iff the attempt ran and the family's history could be read afterwards. A result that cannot
-    // show the family's other attempts is withheld -- `outcome` unset AND `probes`/`gross_harm` cleared --
-    // rather than presented as if it were the only attempt. (Its figures are still in the family log if
-    // the `completed` record was written.)
+    // Set iff the attempt ran and the lineage's history could be read afterwards. A result that cannot
+    // show the other attempts is withheld -- `outcome` unset AND `probes`/`gross_harm` cleared -- rather
+    // than presented as if it were the only attempt. (Its figures are still in the log if the `completed`
+    // record was written.)
     std::optional<tier1_screen_outcome> outcome;
     bool steering_manifest_run = false;    // arm S (§3.7) is not built; a `cleared` outcome excludes it
 
-    std::size_t attempt_ordinal = 0;       // this attempt's position among the family's attempts
-    std::size_t attempt_count = 0;         // every started attempt for this family, this one included
-    std::size_t distinct_preregistrations = 0;  // > 1: the design changed between attempts
-    std::vector<Tier1AttemptRecord> family_attempts;  // every attempt, in start order, this one included
-    // Every attempt from the same lineage, whatever subject it was filed under (red team round 2: the subject
-    // is model-chosen, so a retry under a reworded subject opened a fresh family). Unreadable records appear
-    // in both views, since their subject cannot be known. Ordinals here are lineage-wide.
-    std::size_t lineage_attempt_count = 0;
-    std::vector<Tier1AttemptRecord> lineage_attempts;
+    // The headline counts are over the whole LINEAGE, whatever subject each attempt was filed under (red team
+    // rounds 2-3: the subject is model-chosen, so a retry under a reworded subject opens a fresh family, and
+    // a family-only count read "1 of 1"). With several lessons from one run they over-count -- the safe way.
+    std::size_t attempt_ordinal = 0;       // this attempt's position among the lineage's attempts
+    std::size_t attempt_count = 0;         // every started attempt in this lineage, this one included
+    std::size_t distinct_preregistrations = 0;  // > 1: more than one design was tried in this lineage
+    std::vector<Tier1AttemptRecord> lineage_attempts;  // every attempt, in start order, this one included
+    // The narrower view: attempts filed under this candidate's subject key, plus every unreadable record
+    // (its subject cannot be known). Ordinals here are family-wide. A reworded subject escapes this view --
+    // never the lineage's.
+    std::size_t family_attempt_count = 0;
+    std::vector<Tier1AttemptRecord> family_attempts;
 
     // This attempt's full detail (cleared when the outcome is withheld).
     std::vector<FollowRateScreenResult> probes;    // in run order; stops at the first probe that fails
@@ -632,7 +642,7 @@ inline constexpr std::string_view kTier1LogSchema = "adr181.tier1.attempt.v2";
 
 }  // namespace detail
 
-// A family's attempt log over any `rt::AppendLogStore` -- in memory for tests, `FileAppendLogStore` (or a
+// A lineage's attempt log over any `rt::AppendLogStore` -- in memory for tests, `FileAppendLogStore` (or a
 // host's own durable store) in production, so the count survives a restart.
 //
 // Identity does not depend on the store. Each attempt names itself with a random `attempt_id` written into
@@ -699,9 +709,15 @@ public:
     [[nodiscard]] result<std::vector<Tier1AttemptRecord>> attempts(Tier1Family const& family) const {
         auto all = lineage_attempts(family.lineage);
         if (!all) return std::unexpected(all.error());
+        return family_view(*all, family.subject);
+    }
+
+    // The family view of an already-read lineage history -- so both views can come from one read.
+    [[nodiscard]] static std::vector<Tier1AttemptRecord> family_view(std::vector<Tier1AttemptRecord> const& lineage,
+                                                                     std::string const& subject) {
         std::vector<Tier1AttemptRecord> out;
-        for (Tier1AttemptRecord& r : *all) {
-            if (r.unreadable || r.subject == family.subject) out.push_back(std::move(r));
+        for (Tier1AttemptRecord const& r : lineage) {
+            if (r.unreadable || r.subject == subject) out.push_back(r);
         }
         for (std::size_t i = 0; i < out.size(); ++i) out[i].ordinal = i + 1;
         return out;
@@ -913,7 +929,7 @@ template <rt::AppendLogStore Store, class InnerFactory, class SummarizerFactory>
     // Read the `started` record back before spending a single trial: a store that accepted the append but
     // lost it, or a log that has become unreadable, would otherwise run the whole attempt uncounted.
     {
-        auto before = log.attempts(result.family);
+        auto before = log.lineage_attempts(result.family.lineage);
         bool const counted = before.has_value() &&
                              std::any_of(before->begin(), before->end(), [&](Tier1AttemptRecord const& a) {
                                  return !a.unreadable && a.attempt_id == started->attempt_id;
@@ -952,7 +968,7 @@ template <rt::AppendLogStore Store, class InnerFactory, class SummarizerFactory>
         result.attempt_log_error = done.error();
     }
 
-    // Without the family's history the approver cannot see how many times this lesson was tried, so the
+    // Without the lineage's history the approver cannot see how many times this lesson was tried, so the
     // verdict is withheld -- the outcome AND the per-screen results that carry it (red team round 1: clearing
     // only `outcome` left `probes[i].pass` and `gross_harm->flagged` readable).
     auto withhold = [&result](error e) {
@@ -961,24 +977,23 @@ template <rt::AppendLogStore Store, class InnerFactory, class SummarizerFactory>
         result.gross_harm.reset();
     };
     auto lineage = log.lineage_attempts(result.family.lineage);
-    auto history = log.attempts(result.family);
-    if (!lineage || !history) {
-        withhold(!lineage ? lineage.error() : history.error());
+    if (!lineage) {
+        withhold(lineage.error());
         co_return result;
     }
     result.lineage_attempts = std::move(*lineage);
-    result.lineage_attempt_count = result.lineage_attempts.size();
-    result.family_attempts = std::move(*history);
-    result.attempt_count = result.family_attempts.size();
+    result.attempt_count = result.lineage_attempts.size();
+    result.family_attempts = Tier1AttemptLog<Store>::family_view(result.lineage_attempts, result.family.subject);
+    result.family_attempt_count = result.family_attempts.size();
     std::set<Digest> designs;
-    for (Tier1AttemptRecord const& a : result.family_attempts) {
+    for (Tier1AttemptRecord const& a : result.lineage_attempts) {
         if (a.unreadable) continue;
         designs.insert(a.preregistration);
         if (a.attempt_id == started->attempt_id) result.attempt_ordinal = a.ordinal;
     }
     result.distinct_preregistrations = designs.size();
     if (result.attempt_ordinal == 0) {
-        // Our own `started` record no longer reads back: the log cannot be trusted to show the family's attempts.
+        // Our own `started` record no longer reads back: the log cannot be trusted to show the other attempts.
         withhold(error{failure_class::fatal, "this attempt's own record is missing from the log",
                        "eval.tier1_attempt_missing"});
         co_return result;

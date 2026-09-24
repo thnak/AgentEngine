@@ -406,7 +406,7 @@ int main() {
             c->value = "the primary region is eu-west-1";
         }
         auto r = drive(ev::run_tier1_screen(log, make_factory<Store>(Behaviour{}, calls), summarizer_factory(), rekeyed));
-        AE_CHECK(r.attempt_ordinal == 2 && r.attempt_count == 2,
+        AE_CHECK(r.attempt_ordinal == 2 && r.attempt_count == 2 && r.family_attempt_count == 2,
                  "T4 (§3.3): a re-keyed, re-worded candidate with the same subject and lineage is attempt 2 of its family");
         AE_CHECK(r.distinct_preregistrations == 2,
                  "T4: and the approver sees the design changed between attempts (a different rendered lesson)");
@@ -1007,12 +1007,15 @@ int main() {
             c->key = "deploy-region";
         }
         auto r = drive(ev::run_tier1_screen(log, make_factory<Store>(Behaviour{}, calls), summarizer_factory(), swapped));
-        AE_CHECK(r.outcome == ev::tier1_screen_outcome::cleared && r.attempt_count == 1 && r.lineage_attempt_count == 2 &&
-                     r.lineage_attempts.size() == 2 &&
+        AE_CHECK(r.outcome == ev::tier1_screen_outcome::cleared && r.family_attempt_count == 1 &&
+                     r.family_attempts.size() == 1 && r.lineage_attempts.size() == 2 &&
                      r.lineage_attempts[0].outcome == ev::tier1_screen_outcome::harmful &&
                      r.lineage_attempts[0].subject == "deployregion" && r.lineage_attempts[1].subject == "default",
                  "T22: subject and key swapped is a new family, but the result still shows the lineage's earlier "
                  "HARMFUL attempt under its old subject");
+        AE_CHECK(r.attempt_count == 2 && r.attempt_ordinal == 2 && r.distinct_preregistrations == 2,
+                 "T22: the HEADLINE counts are the lineage's -- a reworded retry reads 'attempt 2 of 2, 2 designs', "
+                 "not '1 of 1' (round 3)");
     }
 
     // ---- T23: every screen field reaches the recorded figures --------------------------------------------

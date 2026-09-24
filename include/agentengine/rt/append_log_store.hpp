@@ -46,30 +46,12 @@
 #include <vector>
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <iterator>
 #include <limits>
 #include <optional>
 #include <utility>
-
-#if defined(_WIN32)
-// This header is widely included; keep windows.h's min/max macros out of every includer.
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-// Without this, <windows.h> pulls in the old <winsock.h>, and any later <winsock2.h> (pal/net.hpp,
-// tls_client.hpp) fails to compile (E32 red team round 2).
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#else
-#include <cerrno>
-#include <fcntl.h>
-#include <sys/file.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#endif
 
 #include "agentengine/core/error.hpp"
 
@@ -78,7 +60,9 @@ namespace agentengine::rt {
 // ae-naming-lint: allow LogId — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using LogId = std::string;
 // Matches quark::SeqNo's own convention: 0 means "this log has no entries yet"; the first appended
-// entry gets seq 1, strictly increasing thereafter, never reused even across a store restart.
+// entry gets seq 1, strictly increasing thereafter, never reused even across a store restart -- with one
+// exception in FileAppendLogStore: a repair that cuts records hidden behind a corrupted length header hands
+// their seqs out again (they are kept in a quarantine sidecar; see its banner). E32 red team round 3.
 // ae-naming-lint: allow SeqNo — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using SeqNo = std::uint64_t;
 
@@ -170,6 +154,21 @@ static_assert(AppendLogStore<InMemoryAppendLogStore>,
 // (the same as before any repair existed) -- the store has no way to know they are there -- but nothing is
 // lost, and the sidecar is evidence. A checksummed record format would let it refuse instead; not done here.
 //
+// THE SIDECAR IS CREATED, NEVER OPENED (E32 red team round 3, MAJOR). The round-2 sidecar was written with
+// `ofstream(trunc)` after an `exists()` check: a symlink planted at the next sidecar name made the host create
+// or overwrite any file it could write, with bytes the planter chose (the torn tail). Now the sidecar is
+// created exclusively (`O_CREAT|O_EXCL|O_NOFOLLOW` / `CREATE_NEW`), so an existing name -- file, dangling
+// symlink or not -- is never written through, under a random suffix, so no fixed set of names can run out
+// and brick the log (round 2 tried 1000 names, then refused every append). If the truncate that follows it
+// fails, the sidecar is removed again, so a log that cannot be cut does not grow a full copy per retry.
+// Windows paths are opened in their `\\?\` form, so the longer sidecar name cannot exceed MAX_PATH.
+//
+// THE OS CALLS LIVE IN src/rt/append_log_file.cpp (same round, MAJOR). Including <windows.h> here reached
+// every includer of memory.hpp and the worktree headers and broke consumer code (its `ERROR`, `GetMessage`
+// macros; a leaked WIN32_LEAN_AND_MEAN stripped a consumer's own <shellapi.h>). The header now declares an
+// opaque handle; the static library `agentengine_rt_file_log`, linked through `agentengine::core`, holds
+// the platform code.
+//
 // Readers take a shared lock (see LockedAppendLogFile), so a read never sees a record half-written.
 // Not fsync'd -- a power loss can
 // lose records the OS had not written yet (the same durability class FileSessionStore's banner names).
@@ -205,162 +204,45 @@ struct ParsedAppendLog {
 // An open log file held under an OS lock for as long as this object lives: exclusive for a writer, shared
 // for a reader. Readers must lock too -- Windows byte-range locks are mandatory, so an unlocked read of a
 // file another process holds exclusively FAILS rather than blocking (found by this fix's own concurrency
-// test: readers saw a writer's lock as an empty or torn log).
+// test: readers saw a writer's lock as an empty or torn log). Defined in src/rt/append_log_file.cpp.
 class LockedAppendLogFile {
 public:
     LockedAppendLogFile(LockedAppendLogFile const&) = delete;
     LockedAppendLogFile& operator=(LockedAppendLogFile const&) = delete;
+    LockedAppendLogFile& operator=(LockedAppendLogFile&&) = delete;
+    LockedAppendLogFile(LockedAppendLogFile&& o) noexcept
+        : handle_(std::exchange(o.handle_, kNoHandle)), locked_(std::exchange(o.locked_, false)) {}
+    ~LockedAppendLogFile() { close(); }
 
     // A writer creates the file if it is missing; a reader does not, and gets `std::nullopt` for "no log yet".
     [[nodiscard]] static result<std::optional<LockedAppendLogFile>> open(std::filesystem::path const& path,
-                                                                         bool writer) {
-        LockedAppendLogFile f;
-#if defined(_WIN32)
-        f.handle_ = ::CreateFileW(path.c_str(), writer ? (GENERIC_READ | GENERIC_WRITE) : GENERIC_READ,
-                                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-                                  writer ? OPEN_ALWAYS : OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (f.handle_ == INVALID_HANDLE_VALUE) {
-            DWORD const why = ::GetLastError();
-            if (!writer && (why == ERROR_FILE_NOT_FOUND || why == ERROR_PATH_NOT_FOUND)) return std::nullopt;
-            return fail("could not open append log", path);
-        }
-        OVERLAPPED whole{};
-        if (!::LockFileEx(f.handle_, writer ? LOCKFILE_EXCLUSIVE_LOCK : 0, 0, MAXDWORD, MAXDWORD, &whole)) {
-            return fail("could not lock append log", path);
-        }
-#else
-        f.fd_ = ::open(path.c_str(), writer ? (O_RDWR | O_CREAT | O_CLOEXEC) : (O_RDONLY | O_CLOEXEC), 0644);
-        if (f.fd_ < 0) {
-            if (!writer && errno == ENOENT) return std::nullopt;
-            return fail("could not open append log", path);
-        }
-        while (::flock(f.fd_, writer ? LOCK_EX : LOCK_SH) != 0) {
-            if (errno != EINTR) return fail("could not lock append log", path);
-        }
-#endif
-        f.locked_ = true;
-        return std::optional<LockedAppendLogFile>(std::move(f));
-    }
-
-    LockedAppendLogFile(LockedAppendLogFile&& o) noexcept { swap(o); }
-    ~LockedAppendLogFile() { close(); }
-
-    [[nodiscard]] result<std::vector<std::byte>> read_all() {
-        std::vector<std::byte> out;
-#if defined(_WIN32)
-        LARGE_INTEGER size{};
-        if (!::GetFileSizeEx(handle_, &size)) return fail_io("could not size append log");
-        out.resize(static_cast<std::size_t>(size.QuadPart));
-        LARGE_INTEGER zero{};
-        if (!::SetFilePointerEx(handle_, zero, nullptr, FILE_BEGIN)) return fail_io("could not seek append log");
-        std::size_t got = 0;
-        while (got < out.size()) {
-            DWORD const want = static_cast<DWORD>((std::min<std::size_t>)(out.size() - got, 1u << 30));
-            DWORD n = 0;
-            if (!::ReadFile(handle_, out.data() + got, want, &n, nullptr)) return fail_io("could not read append log");
-            if (n == 0) break;
-            got += n;
-        }
-        out.resize(got);
-#else
-        struct stat st{};
-        if (::fstat(fd_, &st) != 0) return fail_io("could not size append log");
-        out.resize(static_cast<std::size_t>(st.st_size));
-        std::size_t got = 0;
-        while (got < out.size()) {
-            ssize_t const n = ::pread(fd_, out.data() + got, out.size() - got, static_cast<off_t>(got));
-            if (n < 0 && errno == EINTR) continue;
-            if (n < 0) return fail_io("could not read append log");
-            if (n == 0) break;
-            got += static_cast<std::size_t>(n);
-        }
-        out.resize(got);
-#endif
-        return out;
-    }
-
+                                                                         bool writer);
+    [[nodiscard]] result<std::vector<std::byte>> read_all();
     // Cuts the file back to `length` bytes and positions the next write there.
-    [[nodiscard]] result<void> truncate_and_seek(std::size_t length) {
-#if defined(_WIN32)
-        LARGE_INTEGER at{};
-        at.QuadPart = static_cast<LONGLONG>(length);
-        if (!::SetFilePointerEx(handle_, at, nullptr, FILE_BEGIN) || !::SetEndOfFile(handle_)) {
-            return fail_io("could not truncate append log");
-        }
-#else
-        if (::ftruncate(fd_, static_cast<off_t>(length)) != 0) return fail_io("could not truncate append log");
-        if (::lseek(fd_, static_cast<off_t>(length), SEEK_SET) < 0) return fail_io("could not seek append log");
-#endif
-        return {};
-    }
-
-    [[nodiscard]] result<void> write_all(std::vector<std::byte> const& bytes) {
-        std::size_t done = 0;
-        while (done < bytes.size()) {
-#if defined(_WIN32)
-            DWORD const want = static_cast<DWORD>((std::min<std::size_t>)(bytes.size() - done, 1u << 30));
-            DWORD n = 0;
-            if (!::WriteFile(handle_, bytes.data() + done, want, &n, nullptr) || n == 0) {
-                return fail_io("failed appending record");
-            }
-            done += n;
-#else
-            ssize_t const n = ::write(fd_, bytes.data() + done, bytes.size() - done);
-            if (n < 0 && errno == EINTR) continue;
-            if (n <= 0) return fail_io("failed appending record");
-            done += static_cast<std::size_t>(n);
-#endif
-        }
-        return {};
-    }
+    [[nodiscard]] result<void> truncate_and_seek(std::size_t length);
+    [[nodiscard]] result<void> write_all(std::vector<std::byte> const& bytes);
 
 private:
+    static constexpr std::intptr_t kNoHandle = -1;  // INVALID_HANDLE_VALUE on Windows, -1 as a POSIX fd
     LockedAppendLogFile() = default;
+    void close() noexcept;
 
-    [[nodiscard]] static std::unexpected<error> fail(char const* what, std::filesystem::path const& path) {
-        return std::unexpected(error{failure_class::transient, std::string(what) + ": " + path.string(),
-                                     "rt.append_log_store.file_open_failed"});
-    }
-    [[nodiscard]] static std::unexpected<error> fail_io(char const* what) {
-        return std::unexpected(error{failure_class::transient, what, "rt.append_log_store.file_write_failed"});
-    }
-
-    void swap(LockedAppendLogFile& o) noexcept {
-#if defined(_WIN32)
-        std::swap(handle_, o.handle_);
-#else
-        std::swap(fd_, o.fd_);
-#endif
-        std::swap(locked_, o.locked_);
-    }
-
-    void close() noexcept {
-#if defined(_WIN32)
-        if (handle_ != INVALID_HANDLE_VALUE) {
-            if (locked_) {
-                OVERLAPPED whole{};
-                ::UnlockFileEx(handle_, 0, MAXDWORD, MAXDWORD, &whole);
-            }
-            ::CloseHandle(handle_);
-            handle_ = INVALID_HANDLE_VALUE;
-        }
-#else
-        if (fd_ >= 0) {
-            if (locked_) ::flock(fd_, LOCK_UN);
-            ::close(fd_);
-            fd_ = -1;
-        }
-#endif
-        locked_ = false;
-    }
-
-#if defined(_WIN32)
-    HANDLE handle_ = INVALID_HANDLE_VALUE;
-#else
-    int fd_ = -1;
-#endif
+    std::intptr_t handle_ = kNoHandle;
     bool locked_ = false;
 };
+
+// Creates `path` and writes `size` bytes to it -- only if nothing exists at that name: an existing file or
+// symlink (dangling or not) is refused with `rt.append_log_store.file_exists` and never written through.
+// Returns the path it wrote (on Windows, its `\\?\` form). Defined in src/rt/append_log_file.cpp.
+[[nodiscard]] result<std::filesystem::path> create_new_file(std::filesystem::path const& path, std::byte const* data,
+                                                            std::size_t size);
+
+// Copies bytes [from, end) of `bytes` to a NEW sidecar `<log>.quarantine-<from>-<random>`, created
+// exclusively and never through an existing name or link. Returns the sidecar's path. Called under the
+// log's exclusive lock. Defined in src/rt/append_log_file.cpp.
+[[nodiscard]] result<std::filesystem::path> quarantine_append_log_tail(std::filesystem::path const& log,
+                                                                       std::vector<std::byte> const& bytes,
+                                                                       std::size_t from);
 
 }  // namespace detail
 
@@ -388,10 +270,21 @@ public:
         if (!existing) return std::unexpected(existing.error());
         detail::ParsedAppendLog const parsed = detail::parse_append_log(*existing);
         // Cut a torn tail (or whatever follows a corrupted header) -- after copying it aside, never destroying it.
+        std::optional<std::filesystem::path> sidecar;
         if (parsed.valid_end < existing->size()) {
-            if (auto kept = quarantine(*path, *existing, parsed.valid_end); !kept) return std::unexpected(kept.error());
+            auto kept = detail::quarantine_append_log_tail(*path, *existing, parsed.valid_end);
+            if (!kept) return std::unexpected(kept.error());
+            sidecar = std::move(*kept);
         }
-        if (auto cut = file->truncate_and_seek(parsed.valid_end); !cut) return std::unexpected(cut.error());
+        if (auto cut = file->truncate_and_seek(parsed.valid_end); !cut) {
+            // The tail is still in the log, so the copy is not needed; without this, every retry against a
+            // log that cannot be cut left another full copy of the tail (round 3).
+            if (sidecar) {
+                std::error_code ec;
+                std::filesystem::remove(*sidecar, ec);
+            }
+            return std::unexpected(cut.error());
+        }
 
         std::uint32_t const len = static_cast<std::uint32_t>(bytes.size());
         std::vector<std::byte> record(sizeof(len) + bytes.size());
@@ -435,26 +328,6 @@ public:
     }
 
 private:
-    // Writes bytes [from, end) of the log to a new sidecar file. Called under the log's exclusive lock.
-    [[nodiscard]] static result<void> quarantine(std::filesystem::path const& log, std::vector<std::byte> const& bytes,
-                                                 std::size_t from) {
-        for (int n = 0; n < 1000; ++n) {
-            std::filesystem::path side = log;
-            side += ".quarantine-" + std::to_string(from) + "-" + std::to_string(n);
-            std::error_code ec;
-            if (std::filesystem::exists(side, ec)) continue;
-            std::ofstream out(side, std::ios::binary | std::ios::trunc);
-            out.write(reinterpret_cast<char const*>(bytes.data() + from),
-                      static_cast<std::streamsize>(bytes.size() - from));
-            out.close();
-            if (!out) break;
-            return {};
-        }
-        return std::unexpected(error{failure_class::transient,
-                                      "could not quarantine the unreadable tail of: " + log.string(),
-                                      "rt.append_log_store.quarantine_failed"});
-    }
-
     [[nodiscard]] result<std::filesystem::path> path_for(LogId const& id) const {
         if (id.empty()) {
             return std::unexpected(error{failure_class::contract, "log id must not be empty",

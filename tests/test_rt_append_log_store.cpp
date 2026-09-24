@@ -22,15 +22,27 @@
 //          lock is claimed to hold across processes, which threads in one process cannot show.
 //   L11 -- a missing log file reads as empty; a zero-length record at the end of the file reads back.
 //   L12 -- a corrupted length header mid-file: the next append quarantines the bytes it cuts to a sidecar
-//          file (E32 red team round 2) instead of destroying records readers had been returning.
+//          file (E32 red team round 2) instead of destroying records readers had been returning; the
+//          sidecar holds exactly the cut bytes.
+//   L13 -- two cuts at the same offset keep two sidecars, each with its own bytes (round 3: the old naming
+//          could run out, and a fixed name would overwrite the first cut's evidence).
+//   L14 -- the sidecar primitive never writes through an existing name: an existing file is left as it
+//          was, and a planted symlink (round 3, MAJOR) neither creates nor overwrites its target.
+//   L15 -- (POSIX) if the sidecar cannot be created, the append fails and the log is left byte-for-byte.
+//   L16 -- (Windows) if the truncate after a quarantine fails (a read-only mapping of the log), the append
+//          fails and removes its sidecar, so retries do not pile up copies of the tail (round 3).
+//   L17 -- (Windows) a log path just under MAX_PATH keeps working after a crash, although its sidecar's
+//          name is longer than MAX_PATH (round 3).
 
 #include <cstdio>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <set>
 #include <string>
 #include <thread>
@@ -38,7 +50,15 @@
 
 #if defined(_WIN32)
 #include <process.h>
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 #else
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -74,6 +94,11 @@ std::string string_from(std::vector<std::byte> const& b) {
     return out;
 }
 
+std::string read_file(std::filesystem::path const& p) {
+    std::ifstream in(p, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
 [[nodiscard]] int current_pid() noexcept {
 #if defined(_WIN32)
     return ::_getpid();
@@ -85,9 +110,23 @@ std::string string_from(std::vector<std::byte> const& b) {
 std::filesystem::path make_temp_root() {
     std::filesystem::path root =
         std::filesystem::temp_directory_path() /
-        ("ae_rt_append_log_store_test_" + std::to_string(current_pid()));
+        ("ae_rt_append_log_store_test_" + std::to_string(current_pid()) + "_" +
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));  // pids are reused
     std::error_code ec;
     std::filesystem::remove_all(root, ec);  // clean slate if a previous crashed run left it behind
+    // A killed run leaves its per-pid directory, and no later run has the same pid: sweep ones over a day old.
+    auto const stale = std::filesystem::file_time_type::clock::now() - std::chrono::hours(24);
+    // Non-throwing iteration throughout: other processes change %TEMP% while this walks it, and a range-for's
+    // operator++ throws on that (it crashed this test under ctest).
+    std::filesystem::directory_iterator it(std::filesystem::temp_directory_path(), ec);
+    for (; !ec && it != std::filesystem::directory_iterator(); it.increment(ec)) {
+        std::error_code tec;
+        std::filesystem::path const p = it->path();
+        if (p.filename().u8string().starts_with(u8"ae_rt_append_log_store_test_") && it->last_write_time(tec) < stale &&
+            !tec) {
+            std::filesystem::remove_all(p, tec);
+        }
+    }
     std::filesystem::create_directories(root);
     return root;
 }
@@ -371,6 +410,8 @@ int main(int argc, char** argv) {
         auto none = store.read_from("never-written", 0);
         check(none.has_value() && none->empty() && store.last_seq("never-written") == 0,
               "L11: a log that was never written reads as empty, not an error");
+        check(!std::filesystem::exists(root / "never-written"),
+              "L11: reading a log that was never written does not create its file");
         (void)store.append("empty-tail", bytes_from("x"));
         auto s2 = store.append("empty-tail", {});
         auto all = store.read_from("empty-tail", 0);
@@ -392,6 +433,7 @@ int main(int argc, char** argv) {
             char const big = static_cast<char>(0x7F);
             f.write(&big, 1);
         }
+        std::string const corrupted = read_file(path);
         auto hidden = store.read_from("corrupt-log", 0);
         auto s4 = store.append("corrupt-log", bytes_from("fourth"));
         std::vector<std::filesystem::path> sidecars;
@@ -403,7 +445,144 @@ int main(int argc, char** argv) {
               "L12: records after a corrupted header are hidden from readers, and the next append follows the last whole record");
         check(sidecars.size() == 1 && std::filesystem::file_size(sidecars[0]) == cut,
               "L12: every byte the repair cut -- records 2 and 3 included -- is kept in one quarantine sidecar");
+        check(sidecars.size() == 1 && read_file(sidecars[0]) == corrupted.substr(4 + 5) &&
+                  sidecars[0].filename().string().starts_with("corrupt-log.quarantine-9-"),
+              "L12: the sidecar holds exactly the cut bytes, byte for byte, and is named for the offset of the cut");
     }
+
+    // L13: two cuts at the same offset.
+    {
+        FileAppendLogStore store(root);
+        std::filesystem::path const path = root / "twice";
+        (void)store.append("twice", bytes_from("a"));
+        auto torn = [&path](std::string const& tail) {
+            std::filesystem::resize_file(path, 4 + 1);
+            std::ofstream(path, std::ios::binary | std::ios::app) << tail;
+        };
+        torn(std::string("\x09\x00\x00\x00tail-one", 12));
+        auto s2 = store.append("twice", bytes_from("b"));
+        torn(std::string("\x0a\x00\x00\x00tail-two!", 13));
+        auto s3 = store.append("twice", bytes_from("c"));
+        std::set<std::string> kept;
+        for (auto const& e : std::filesystem::directory_iterator(root)) {
+            if (e.path().filename().string().starts_with("twice.quarantine-5-")) kept.insert(read_file(e.path()));
+        }
+        check(s2.has_value() && s3.has_value() && kept.size() == 2 &&
+                  kept.contains(std::string("\x09\x00\x00\x00tail-one", 12)) &&
+                  kept.contains(std::string("\x0a\x00\x00\x00tail-two!", 13)),
+              "L13: two cuts at the same offset leave two sidecars, each holding its own cut bytes");
+    }
+
+    // L14: the sidecar primitive never writes through an existing name.
+    {
+        namespace d = agentengine::rt::detail;
+        std::vector<std::byte> const pb = bytes_from("attacker-chosen");
+        std::filesystem::path const existing = root / "l14-existing";
+        std::ofstream(existing, std::ios::binary) << "original";
+        auto over = d::create_new_file(existing, pb.data(), pb.size());
+        check(!over.has_value() && over.error().code == "rt.append_log_store.file_exists" &&
+                  read_file(existing) == "original",
+              "L14: an existing file at the sidecar's name is refused and left exactly as it was");
+
+        std::filesystem::path const outside = root / "l14-outside";  // stands in for a path outside the store
+        std::filesystem::path const link = root / "l14-link";
+        std::error_code lec;
+        std::filesystem::create_symlink(outside, link, lec);
+        if (lec) {
+            std::fprintf(stderr, "  skipped: L14 symlink cases (this account cannot create symlinks: %s)\n",
+                         lec.message().c_str());
+        } else {
+            auto dangling = d::create_new_file(link, pb.data(), pb.size());
+            check(!dangling.has_value() && !std::filesystem::exists(outside),
+                  "L14: a dangling symlink at the sidecar's name is refused -- its target is never created");
+            std::ofstream(outside, std::ios::binary) << "victim";
+            auto live = d::create_new_file(link, pb.data(), pb.size());
+            check(!live.has_value() && read_file(outside) == "victim",
+                  "L14: a symlink to an existing file is refused -- the file is never overwritten");
+        }
+    }
+
+#if !defined(_WIN32)
+    // L15: the sidecar cannot be created -> the append fails and the log is untouched.
+    if (::geteuid() != 0) {
+        std::filesystem::path const dir = root / "l15";
+        std::filesystem::create_directories(dir);
+        FileAppendLogStore store(dir);
+        (void)store.append("locked", bytes_from("a"));
+        std::ofstream(dir / "locked", std::ios::binary | std::ios::app) << std::string("\x09\x00\x00\x00" "ab", 6);
+        std::string const before = read_file(dir / "locked");
+        ::chmod(dir.c_str(), 0555);  // the log is still writable; a new file in the directory is not
+        auto s = store.append("locked", bytes_from("b"));
+        ::chmod(dir.c_str(), 0755);
+        check(!s.has_value() && s.error().code == "rt.append_log_store.quarantine_failed" &&
+                  read_file(dir / "locked") == before,
+              "L15: a tail that cannot be quarantined is never cut -- the append fails and the log is unchanged");
+    } else {
+        std::fprintf(stderr, "  skipped: L15 (running as root, which ignores directory permissions)\n");
+    }
+#endif
+
+#if defined(_WIN32)
+    // L16: the truncate after a quarantine fails -> no sidecar is left behind.
+    {
+        FileAppendLogStore store(root);
+        std::filesystem::path const path = root / "mapped";
+        (void)store.append("mapped", bytes_from("a"));
+        std::ofstream(path, std::ios::binary | std::ios::app) << std::string("\x09\x00\x00\x00" "ab", 6);
+        HANDLE const f = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        HANDLE const m =
+            f == INVALID_HANDLE_VALUE ? nullptr : ::CreateFileMappingW(f, nullptr, PAGE_READONLY, 0, 0, nullptr);
+        void const* view = m == nullptr ? nullptr : ::MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0);
+        int failed = 0;
+        for (int i = 0; i < 3; ++i) failed += store.append("mapped", bytes_from("b")).has_value() ? 0 : 1;
+        auto count_sidecars = [&root] {
+            int n = 0;
+            for (auto const& e : std::filesystem::directory_iterator(root)) {
+                n += e.path().filename().string().starts_with("mapped.quarantine-") ? 1 : 0;
+            }
+            return n;
+        };
+        int const left_while_mapped = count_sidecars();
+        if (view != nullptr) ::UnmapViewOfFile(view);
+        if (m != nullptr) ::CloseHandle(m);
+        if (f != INVALID_HANDLE_VALUE) ::CloseHandle(f);
+        auto after = store.append("mapped", bytes_from("b"));
+        check(view != nullptr && failed == 3 && left_while_mapped == 0,
+              "L16: while the log cannot be truncated, 3 appends fail and leave no sidecar behind");
+        check(after.has_value() && *after == 2 && count_sidecars() == 1,
+              "L16: once it can, the append quarantines the tail once and lands as seq 2");
+    }
+
+    // L17: a log path just under MAX_PATH, whose sidecar name is over it (round 3: every append after one
+    // crash failed with quarantine_failed).
+    {
+        std::filesystem::path deep = root / "l17";
+        while (deep.native().size() < 200) deep /= "dddddddddddddddddddd";
+        std::filesystem::create_directories(deep);
+        std::string const id(252 - deep.native().size() - 1, 'g');
+        FileAppendLogStore store(deep);
+        (void)store.append(id, bytes_from("a"));
+        std::ofstream(deep / id, std::ios::binary | std::ios::app) << std::string("\x09\x00\x00\x00" "ab", 6);
+        auto s2 = store.append(id, bytes_from("b"));
+        auto s3 = store.append(id, bytes_from("c"));
+        int sidecars = 0;
+        std::vector<std::filesystem::path> made;
+        for (auto const& e : std::filesystem::directory_iterator(deep)) {
+            if (e.path().filename().string().starts_with(id + ".quarantine-")) {
+                ++sidecars;
+                made.push_back(e.path());
+            }
+        }
+        for (auto const& m : made) {  // too long for remove_all below; delete it through its long form
+            std::error_code rec;
+            std::filesystem::remove(std::filesystem::path(LR"(\\?\)" + std::filesystem::absolute(m).wstring()), rec);
+        }
+        check((deep / id).native().size() == 252 && s2.has_value() && *s2 == 2 && s3.has_value() && *s3 == 3 &&
+                  sidecars == 1,
+              "L17: a 252-character log path keeps working after a crash -- its longer sidecar name is created");
+    }
+#endif
 
     // Cleanup.
     std::error_code ec;
