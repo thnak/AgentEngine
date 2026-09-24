@@ -463,7 +463,10 @@ harness **never promotes anything**; ADR-179's approval queue remains the second
 - **T (treatment):** the candidate lesson, delivered **only through the production route** — a
   `procedural`/`model_inferred` memory item reaching the model as a tainted, fenced `role::system` message
   (ADR-180). ADR-180 §4b showed the channel changes the effect by an order of magnitude (F 8/8 vs A 1/8), so any
-  other route would measure a channel that does not ship.
+  other route would measure a channel that does not ship. *Amended 2026-09-24 (ADR-183):* a host may opt in to
+  approved-lesson delivery, and then the screen must measure that route: `lesson_delivery::approved` (a simulated
+  approval; hashed into the pre-registration, E32). Live, the fenced route left every lesson inert (the preamble
+  says never to follow fenced text); through the approved route the helpful lesson cleared 20/20.
 - **S (steering manifest, per candidate):** the *same candidate* on **fixed steerable-slot tasks** (§3.7). It
   records **which tool-argument slots the candidate's value lands in**. This tests *this candidate's* ability to
   steer, not the pipeline's, and it does **not** depend on deciding whether a task is "in scope" for the lesson.

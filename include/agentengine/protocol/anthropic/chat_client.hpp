@@ -160,7 +160,7 @@ struct SplitMessages {
                 // is checked by `needs_system_channel_fence` itself, so an empty tainted item still
                 // contributes nothing at all rather than a content-free marker pair.
                 if (needs_system_channel_fence(m.role, item)) {
-                    append_fragment(fence_untrusted_text(t->text, item.origin, !item.approval.empty()));
+                    append_fragment(fence_untrusted_text(t->text, item.origin, item.approval));
                 } else {
                     append_fragment(neutralize_outbound_text(t->text));  // ADR-183: no marker outside a real fence
                 }

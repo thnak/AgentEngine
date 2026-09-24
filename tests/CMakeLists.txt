@@ -1214,6 +1214,16 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_memory_lesson_label_live_e2e COMMAND test_memory_lesson_label_live_e2e)
   set_tests_properties(test_memory_lesson_label_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 3600)
 
+  # ADR-183: a multi-turn chat with a real agent, driven by ANOTHER agent playing the user through a file mailbox
+  # (--serve / --say / --analyze). Not a ctest test -- it needs a second agent to talk to it.
+  add_executable(lesson_chat_live lesson_chat_live.cpp)
+  target_link_libraries(lesson_chat_live PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine::worktree_store agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  if(MSVC)
+    target_compile_options(lesson_chat_live PRIVATE /bigobj)
+  endif()
+
   # ADR-181 trial-running harness, first slice: one real B trial and one real T trial through
   # run_trial against a real model -- the end-to-end sanity check the scripted-client driver test
   # cannot provide on its own. Live, observation only; self-skips without a key.

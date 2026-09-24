@@ -107,7 +107,7 @@ namespace detail {
             // ADR-183: every text the fence does not wrap is neutralized, so a fence marker -- an approved-lesson
             // one above all -- appears on the wire only where this serializer opened or closed a real fence.
             text += needs_system_channel_fence(m.role, item)
-                        ? fence_untrusted_text(t->text, item.origin, !item.approval.empty())
+                        ? fence_untrusted_text(t->text, item.origin, item.approval)
                         : neutralize_outbound_text(t->text);
         } else if (auto const* tc = std::get_if<ToolCall>(&item.value)) {
             std::vector<std::pair<std::string, json::Value>> fn{

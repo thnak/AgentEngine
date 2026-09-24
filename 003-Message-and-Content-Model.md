@@ -98,13 +98,15 @@ flag**.
   text a model produced, however trusted the provider relaying it. `HistoryProvider`'s summary was
   the one place in the tree that crossed this line.
 - **An approved lesson carries an `approval`, not a different origin or taint** (amended 2026-09-24,
-  `decisions/ADR-183-approved-lesson-delivery.md`). `ContentItem::approval` is empty, or the digest of the exact
-  text a human approved (ADR-181 E31). It is granted per request, only by `AgentSession`, only to a tainted
+  `decisions/ADR-183-approved-lesson-delivery.md`). `ContentItem::approval` is empty, or the id of the approval under
+  which a human approved that exact text (ADR-181 E31). It is granted per request, only by `AgentSession`, only to a tainted
   `role::system` text the host's `ApprovedLessonRegistry` holds for the session's principal; the session clears it
-  on every other item. The item stays tainted and `external`; the fence names it an approved lesson and the
-  reading rule says it may be followed as guidance. This is the one sanctioned relaxation of the reading rule and
-  it is logged per delivery (a `policy_decision` event). **Fence markers must appear on the wire only where a
-  serializer opened or closed a real fence** — both conformers neutralize them in every other text they emit.
+  on every other item. The item stays tainted and `external`; the fence names it an approved lesson with a code content cannot
+  know, and the reading rule says it may be followed as guidance. This is the one sanctioned relaxation of the
+  reading rule and it is logged per delivery (a `policy_decision` event). **Fence markers must appear on the wire
+  only where a serializer opened or closed a real fence** — both conformers remove any spelled marker, visibly, from
+  every other text they emit. Breaking a marker invisibly is not enough: measured live, a model reads a marker
+  broken by a zero-width space as a real one (ADR-183 §7, L1).
 
 **This section's extension of the taint trigger to assistant-origin content is security-critical
 and invariant-touching (I3).** Closing the textual contradiction here is not the same as this being
