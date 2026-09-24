@@ -397,17 +397,17 @@ the model that wrote the lesson, and `render_lesson` writes "For ⟨subject⟩ (
 between subject and key, or spelling `dep1oy`, opened a fresh family whose count read "attempt 1 of 1". The counted
 unit is therefore the **lineage** (host-supplied): the headline attempt count, this attempt's ordinal and the number
 of distinct designs are the lineage's, and every attempt from the lineage is shown. With several lessons from one
-run, that over-counts — the safe direction. The per-family count and list are still reported, as a narrower view an
-approver can use to see which attempts were this subject, and which a reworded subject escapes. Executed (§6, applying the multiplicity numbers
+run, that over-counts — the safe direction. (A narrower per-family view once reported beside it was removed in the
+ADR-183 proportionality review, below.) Executed (§6, applying the multiplicity numbers
 a round-4 reviewer computed from T1's own flag rates): retrying a screen that a truly harmful lesson (−10 pp) failed
 raises the chance *some* attempt passes from 30% (one try) to 66% (three) to 97% (ten); a human approver who only
 sees the last, clean `ScreenResult` has no way to know that. This does not block anything — Tier 1 never promotes —
 but it stops a retried-until-clean screen from *looking like* a clean one.
 
-**Built (E32 PR, red-teamed twice; round-2 fixes not yet re-red-teamed): `include/agentengine/eval/eval_tier1_screen.hpp`.**
+**Built (E32 PR, red-teamed three times, the third with ADR-183 round 3; its fixes not yet re-red-teamed): `include/agentengine/eval/eval_tier1_screen.hpp`.**
 The ADR's `ScreenResult` is `Tier1ScreenResult` in code. `run_tier1_screen` runs one counted attempt in this order:
-(1) validates the whole spec — every probe and the gross-harm spec must render the same lesson at the bit-identical
-salience, each screen's own pre-flight runs, and the screens' `max_model_calls`, summed, must fit the attempt's own —
+(1) validates the whole spec — the lesson, declared once on `Tier1ScreenSpec`, must be set
+(`eval.tier1_lesson_unset`) and render, each screen's own pre-flight runs, and the screens' `max_model_calls`, summed, must fit the attempt's own —
 so a refused spec is never charged an attempt; (2) renders the design as canonical JSON
 (`tier1_preregistration_json`: the rendered lesson's digest, template version and exact salience, a host-named
 `suite_version` for the graders, and every probe's and regression task's id, prompt, stub tools and statistical
@@ -432,7 +432,9 @@ store's sequence number, so even a store that repeats sequence numbers cannot mi
 attempt stays counted as started-but-not-completed; a record that cannot be decoded, a completion for an unknown or
 already-completed attempt, a repeated `attempt_id`, and a `started` record whose stored design does not hash to its
 digest each count as an unreadable attempt of their own (over-counting is the safe direction).
-`tests/test_eval_tier1_screen.cpp`: 123/123 executed checks (69 `AE_CHECK` sites; T5, T6 and T14 loop over cases).
+`tests/test_eval_tier1_screen.cpp`: 133/133 executed checks (82 `AE_CHECK` sites; T5, T6 and T14 loop over cases;
+T30-T32 added by ADR-183 round 3: every probe trial of an approved screen carries the approval, the first log failure
+is the one reported, and a lost attempt record reports no counts).
 My own 40 planted mutants (14 on the first build, 26 after round 1) are all caught; the red teams' mutation reviews
 found 24 survivors after the first build and 27 eval + 7 store survivors after round 1, and the tests were extended
 until each was caught or recorded as equivalent (§7). Arm S is not built, so its slot in the pre-registration is `null` and
@@ -1350,7 +1352,7 @@ and digest as attack surface **R-E32-Sec**, correctness/lifetimes/test strength 
 |---|---|---|---|
 | R-E32-1 (all three) | fatal | `rt::FileAppendLogStore::append` counted the records, then wrote header and payload as two writes with no lock. 4 threads × 50 appends returned ~51 distinct seqs and only 55–89 of 200 records read back, every append reporting success. End to end: 3 concurrent attempts (2 harmful, 1 clean) all reported attempt 1; the clean one showed "1 of 4" with a harmful attempt's figures replaced and the other hidden. The concurrency claim was tested only against the mutex-guarded in-memory store | Store: an exclusive OS file lock across count + one write; readers take a shared lock (Windows byte-range locks are mandatory — found by the fix's own test). E32: identity is a random `attempt_id`, not the store's seq; the `started` record is read back before any trial. Tests: the store's L8 (200 concurrent appends) and T19 (4 concurrent attempts on the file store) both fail on the old store; T20 (a store that always returns seq 1) |
 | R-E32-2 (Sec, Cor, Coh) | major | A torn record jammed the family for good: appends landed after the torn bytes and were swallowed, each returned the same seq, every later attempt ran ~340 trials then came back `attempt_missing`, and a garbage length allocated ~1.9 GB per read | Store: the next append cuts the file back to its last whole record; `read_from` never allocates past the bytes present (L9). E32: the read-back stops an attempt the store lost before it spends a trial (T18) |
-| R-E32-3 (Sec) | major | The family key was the raw `subject`: `Deploy-Region`, a trailing space, `deploy_region` or a Cyrillic `е` each started a fresh family with no prior attempts | Key = lower-cased ASCII letters and digits; non-ASCII refused (T6, T14) |
+| R-E32-3 (Sec) | major | The family key was the raw `subject`: `Deploy-Region`, a trailing space, `deploy_region` or a Cyrillic `е` each started a fresh family with no prior attempts | Key = lower-cased ASCII letters and digits; non-ASCII refused (T6, T14). *Superseded (ADR-183 proportionality review): the family view is gone; the lineage count (R2-E32-1) covers it* |
 | R-E32-4 (Coh) | major | Only the design's digest was stored, and figures omitted the thresholds, so an approver saw that a retry changed the design but not how | The design JSON is stored and checked against its digest on read; figures gain every invalidity reason, fault counts and which statistic flagged |
 | R-E32-5 (Coh, Cor) | major | A withheld outcome left the verdict readable in `probes[i].pass` / `gross_harm->flagged` | Both cleared when withheld (T8, T21) |
 | R-E32-Cor-Mut | major | 24 of 28 independent mutants survived: no test reached the inconclusive or errored outcomes (an invalid harm screen reported as cleared survived), several recorded fields were never asserted, strict parsing was unchecked, and T5 covered 11 design fields | Outcome mapping factored out and tested for every case, plus two end-to-end inconclusive runs (T15); every figure round-trips (T16); T17 checks each malformed-record kind; T5 now covers every hashed field. 26 new mutants on the fixed code, all caught |
@@ -1407,12 +1409,12 @@ read-only-mapping and long-path probes on Windows and real Linux, 7 quarantine m
 | R3-E32-3 (Cl) | major | Round 2 disproved §3.3's "re-keying is not a new family" but amended neither §3.3 nor §3.0(b)/(c); the headline `attempt_count`/`attempt_ordinal`/`distinct_preregistrations` were still per family, so a reworded retry read "attempt 1 of 1, 1 design" | §3.0 and §3.3 amended; the headline counts are the lineage's (T22); Tier 2's per-family rules flagged as needing a lineage bound (§3.3, §8) |
 | R3-E32-4 (Sec) | minor | Sidecar names ran `-0` to `-999` and were never reclaimed: after 1000 cuts at one offset every append failed for good, with a `transient` error (a whole lineage's attempts refused) | Random names; no fixed set to exhaust (L13 cuts twice at one offset and keeps both) |
 | R3-E32-5 (Sec) | minor | When the truncate after a quarantine failed (a read-only mapping of the log, as an indexer or AV scanner holds), every retry left another full copy of the tail — 5 retries, 20 MB for a 4 MB tail (I8) | The sidecar is removed when the cut fails (L16: 3 failing appends leave none; after unmapping, one) |
-| R3-E32-6 (Sec) | minor | A log path near `MAX_PATH` made one crash brick the log: the longer sidecar name failed (a regression from round 2) | Windows paths are opened in their `\\?\` form. L17 (a 252-character log path survives a crash) passes, but it also passes with the prefix removed on this machine, so it does not isolate the fix; the reviewer's probe failed without it, and the difference is not understood |
-| R3-E32-7 (Sec) | minor | `family_attempts` and `lineage_attempts` came from two reads, so a concurrent attempt could appear in the family view but not in its superset | Both views come from one read; the read-back uses the lineage read too (3 whole-log reads per attempt become 2) |
+| R3-E32-6 (Sec) | minor | A log path near `MAX_PATH` made one crash brick the log: the longer sidecar name failed (a regression from round 2) | Windows paths are opened in their `\\?\` form. L17 (a 252-character log path survives a crash) passes, but it also passes with the prefix removed on this machine, so it does not isolate the fix; the reviewer's probe failed without it, and the difference is not understood. *Superseded: the sidecar and the `\\?\` form were removed (ADR-183 proportionality review), which also brings back `MAX_PATH` for the log file itself* |
+| R3-E32-7 (Sec) | minor | `family_attempts` and `lineage_attempts` came from two reads, so a concurrent attempt could appear in the family view but not in its superset | Both views come from one read; the read-back uses the lineage read too (3 whole-log reads per attempt become 2). *Superseded: the family view is gone* |
 | R3-E32-8 (Cl) | minor | The store's `SeqNo` banner promised seqs are "never reused", but L12 asserts a quarantine hands seq 2 out again | Banner states the exception |
 | R3-E32-9 (Cl) | minor | A quarantine that hides earlier attempts is silent to the caller (I4): no error, no event | Disclosed (§8); the sidecar is the only evidence |
 | R3-E32-10 (Cl) | minor | Stale text: "family's log", "red-teamed once", "family-level attempt counter", the §8 read cost ("its family's whole log twice") and the README row | Corrected |
-| R3-E32-Tst | minor | 7 of 7 quarantine mutants survived: L12 checked the sidecar's size, never its bytes; no test cut twice at one offset; a failed quarantine, a failed write's rollback and a fixed sidecar name were untested | L12 compares bytes and name; L13; L14; L15 (POSIX: a sidecar that cannot be created fails the append and leaves the log byte-for-byte); L16; L17; L11 now catches S15 (a reader creating the file). Of 9 new planted store mutants, 8 are caught (exclusive create; the reparse-point flag, without which `CREATE_NEW` follows a dangling symlink on Windows; fixed names; wrong offset; zero bytes; no quarantine; a kept sidecar; S15), and the `\\?\` prefix mutant survives (R3-E32-6); 6 eval mutants on the lineage counts are all caught. The rollback after a failed write is still untested (needs fault injection) |
+| R3-E32-Tst | minor | 7 of 7 quarantine mutants survived: L12 checked the sidecar's size, never its bytes; no test cut twice at one offset; a failed quarantine, a failed write's rollback and a fixed sidecar name were untested | L12 compares bytes and name; L13; L14; L15 (POSIX: a sidecar that cannot be created fails the append and leaves the log byte-for-byte); L16; L17; L11 now catches S15 (a reader creating the file). Of 9 new planted store mutants, 8 are caught (exclusive create; the reparse-point flag, without which `CREATE_NEW` follows a dangling symlink on Windows; fixed names; wrong offset; zero bytes; no quarantine; a kept sidecar; S15), and the `\\?\` prefix mutant survives (R3-E32-6); 6 eval mutants on the lineage counts are all caught. The rollback after a failed write is still untested (needs fault injection). *Superseded: the quarantine and L13-L15/L17 were removed (ADR-183 proportionality review)* |
 | R3-E32-11 (Cl) | nit | A stale planning note called concurrent `AppendLogStore` writers unverified; per-pid test directories from killed runs were never reclaimed | Note updated; the store test sweeps its own directories over a day old |
 
 Not fixed, disclosed: every append still reads the whole log file (measured 0.76 ms at 9 B, 89 ms at 64 MB, 173 ms at
@@ -1492,8 +1494,8 @@ read-back before any trial runs, unreadable records counted as attempts, the OS 
     history), each append reads the whole file under its lock, and every read re-hashes every stored design — a
     lineage is a handful of lessons' ~340-run attempts, so this is small in practice, but it is not capped;
   - cover arm S, which is not built (its pre-registration slot is `null`).
-  `rendered_lesson_digest` (and so `PromotionAck`, E31) writes salience to six decimals; E32 compares and records
-  salience exactly on its own, but the ack digest is unchanged.
+  `rendered_lesson_digest` (and so `PromotionAck`, E31) writes salience to six decimals; E32's pre-registration records
+  salience exactly, but the ack digest is unchanged.
 - **`rt::FileAppendLogStore` concurrency (fixed in the E32 red team):** appends now hold an exclusive OS file lock
   (`LockFileEx`/`flock`) and readers a shared one (tested across real child processes, L10), and a torn tail is cut
   before the next append. Not fsync'd (a power loss can drop records the OS had not flushed). `flock` is advisory

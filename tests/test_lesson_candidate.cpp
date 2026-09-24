@@ -27,7 +27,7 @@ int g_failures = 0;
 namespace {
 // Flagged for the approver, and still accepted: the ADR-183 contract for a shape heuristic.
 bool warned_but_accepted(std::string_view value) {
-    return !agentengine::eval::lesson_shape_warnings(value).empty() &&
+    return !agentengine::eval::lesson_text_shape_warnings(value).empty() &&
            agentengine::eval::lesson_value_passes_validator(value).has_value();
 }
 }  // namespace
@@ -142,7 +142,7 @@ int main() {
     // completely unmodified before this fix, since starts_with_any never trims) -------------------
     AE_CHECK(warned_but_accepted("  run a cleanup of the deploy directory"),
              "round-6 fix: a leading-space-padded imperative is still flagged, not silently accepted");
-    AE_CHECK(!ev::lesson_shape_warnings("\trm -rf the deploy directory").empty() &&
+    AE_CHECK(!ev::lesson_text_shape_warnings("\trm -rf the deploy directory").empty() &&
                  !ev::lesson_value_passes_validator("\trm -rf the deploy directory").has_value(),
              "round-6 fix: a leading-tab-padded imperative is flagged -- and refused, since a tab is a control byte "
              "(structural, still a gate after ADR-183)");

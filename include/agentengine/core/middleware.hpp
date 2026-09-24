@@ -45,6 +45,7 @@
 // downgrades EVERY `ToolCall` in its fabricated response -- there is no "raw" response to compare
 // against, so nothing in it can claim vendor trust.
 
+#include <algorithm>
 #include <concepts>
 #include <cstddef>
 #include <exception>
@@ -53,6 +54,8 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <utility>
+#include <vector>
 #include <variant>
 
 #include "agentengine/core/chat_client.hpp"
@@ -223,6 +226,35 @@ task<std::monostate> run_after(Tuple& mws, ModelCallContext& ctx, std::size_t st
 
 [[nodiscard]] inline bool same_tool_call_ignoring_provenance(ToolCall const& a, ToolCall const& b) noexcept {
     return a.call_id == b.call_id && a.tool_name == b.tool_name && a.arguments_json == b.arguments_json;
+}
+
+// ADR-183 round 3 (MAJOR): `AgentSession` grants `ContentItem::approval` before the model call, and a `before_model`
+// hook gets a writable request afterwards. Without this, a middleware could set an approval on any item, or rewrite an
+// approved item's text and keep its approval -- model-written text shipped under the approved fence (the same shape as
+// ADR-033's content-rewrite finding). So the (text, approval) pairs granted before the hooks are the only ones that
+// survive them: any other item's approval is cleared.
+[[nodiscard]] inline std::vector<std::pair<std::string, std::string>> approved_pairs(ChatRequest const& request) {
+    std::vector<std::pair<std::string, std::string>> out;
+    for (Message const& m : request.messages) {
+        for (ContentItem const& item : m.content) {
+            if (item.approval.empty()) continue;
+            auto const* t = std::get_if<Text>(&item.value);
+            out.emplace_back(t != nullptr ? t->text : std::string{}, item.approval);
+        }
+    }
+    return out;
+}
+
+inline void keep_only_granted_approvals(ChatRequest& request,
+                                        std::vector<std::pair<std::string, std::string>> const& granted) {
+    for (Message& m : request.messages) {
+        for (ContentItem& item : m.content) {
+            if (item.approval.empty()) continue;
+            auto const* t = std::get_if<Text>(&item.value);
+            std::pair<std::string, std::string> const now{t != nullptr ? t->text : std::string{}, item.approval};
+            if (std::find(granted.begin(), granted.end(), now) == granted.end()) item.approval.clear();
+        }
+    }
 }
 
 // The fatal-finding fix -- see this file's top comment for the full rationale. Called exactly once,

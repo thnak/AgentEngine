@@ -357,7 +357,7 @@ json::Value attempt_end_line(LiveAttempt const& a, ev::Tier1ScreenResult const& 
     return obj({{"ev", str("attempt_end")},
                 {"label", str(a.label)},
                 {"attempt_id", str(r.attempt_id)},
-                {"outcome", str(r.outcome ? std::string(ev::tier1_screen_outcome_name(*r.outcome)) : "withheld")},
+                {"outcome", str(r.outcome ? std::string(ev::tier1_screen_outcome_name(*r.outcome)) : "not-run")},
                 {"attempt_count", num(static_cast<double>(r.attempt_count))},
                 {"attempt_ordinal", num(static_cast<double>(r.attempt_ordinal))},
                 {"history_complete", json::Value::make_bool(r.history_complete)},
@@ -724,7 +724,7 @@ int main(int argc, char** argv) {
             std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - t0).count();
         actions->write(attempt_end_line(a, r, sizes));
         std::fprintf(stderr, "  [%s] outcome=%s attempt %zu of %zu (history complete %d), %lld s%s%s\n", a.label.c_str(),
-                     r.outcome ? std::string(ev::tier1_screen_outcome_name(*r.outcome)).c_str() : "withheld",
+                     r.outcome ? std::string(ev::tier1_screen_outcome_name(*r.outcome)).c_str() : "not-run",
                      r.attempt_ordinal, r.attempt_count, r.history_complete ? 1 : 0, static_cast<long long>(secs),
                      r.setup_error ? (" setup_error=" + r.setup_error->code).c_str() : "",
                      r.attempt_log_error ? (" log_error=" + r.attempt_log_error->code).c_str() : "");

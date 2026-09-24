@@ -12,26 +12,18 @@
 // visible as a digest change over every candidate rendered with the old version — `template_version`
 // is threaded through `rendered_lesson_digest` for exactly that reason.
 //
-// `lesson_value_passes_validator` is ADR-179 §3.3's own validator ("reject imperatives, URLs,
-// hostnames, paths, shell fragments, and anything whose value exceeds a small length"), named there
-// as a prerequisite and never built until now; ADR-181 §3.7 separately names the same validator (a
-// length floor plus a common-token reject list) as a prerequisite for its containment-provenance
-// test, so this one function backs both. It REDUCES the injection channel ADR-180 §4b measured
-// (fact-shaped lessons are followed even fenced); it does not close it, and neither ADR claims that
-// it does — a benign-looking value can still pass and still bias behaviour.
+// `lesson_value_passes_validator` is ADR-179 §3.3's validator. Since the ADR-183 proportionality review (2026-09-24)
+// it REFUSES only what is structural -- a length outside the bounds, a whole-value common token, a reserved bracket
+// glyph, a control byte, the template's own join delimiters -- and `lesson_shape_warnings` reports the old shape
+// heuristics (URL, path, shell, imperative) as advisory warnings for the human approving the exact bytes (E31). It
+// never closed the injection channel ADR-180 §4b measured (fact-shaped lessons are followed even fenced), and a
+// benign-looking value can still bias behaviour; approval by a human reading the text is the control.
 //
-// Round-5 red-team fix (two independent reviewers found the SAME bug the same day, each with a
-// working proof-of-concept): the FIRST version of this file ran the shape checks (URL/path/shell/
-// imperative) on `candidate.value` only. `render_lesson` concatenates `subject`/`key` into `content`
-// and `tags` unmodified, so a hostile `subject` or `key` — plausible, since ADR-179 §3.3 has a
-// reviewer MODEL propose the whole closed record, subject/key included — sailed straight past every
-// check that a value carrying the identical text would have failed. `lesson_identifier_passes_validator`
-// below applies the same shape checks (minus the prose-length floor and common-token check, which
-// assume a sentence-length fact, not a short identifier) to `subject` and `key` too, and additionally
-// rejects the template's own literal join delimiters and any control byte — closing a companion
-// finding (unvalidated subject/key could also make two different candidates render to the identical
-// `content`, since nothing stopped one candidate's subject from containing another's key-and-value
-// boundary text).
+// Round-5 red-team fix (two independent reviewers found the SAME bug the same day): the first version checked
+// `candidate.value` only, while `render_lesson` concatenates `subject`/`key` into `content` and `tags` unmodified.
+// `lesson_identifier_passes_validator` applies the same structural checks to `subject` and `key` (with a looser length
+// bound for short identifiers), so no field can inject the digest's separators or make two different candidates
+// render to the identical `content`.
 
 #include <algorithm>
 #include <array>
@@ -101,9 +93,9 @@ namespace detail {
 
 // Refused: things that break the rendering itself.
 [[nodiscard]] inline result<void> reject_structural_hazards(std::string_view text, char const* field_label) {
-    // The provenance brackets (U+27E6/U+27E7 and lookalikes) are reserved for the engine and stripped from any text
+    // The provenance brackets (U+27E6/U+27E7) are reserved for the engine and stripped from any text
     // on the wire (ADR-183), so a lesson containing one would reach the model as bytes the approver never saw.
-    for (std::string_view glyph : {"\xE2\x9F\xA6", "\xE2\x9F\xA7", "\xE3\x80\x9A", "\xE3\x80\x9B"}) {
+    for (std::string_view glyph : {"\xE2\x9F\xA6", "\xE2\x9F\xA7"}) {
         if (text.find(glyph) != std::string_view::npos) {
             return std::unexpected(error{failure_class::contract,
                                          std::string("lesson ") + field_label + " contains a reserved bracket glyph",
@@ -166,7 +158,7 @@ inline constexpr std::size_t kLessonValueMaxLength = 200;
 // `subject`/`key` are short identifiers, not sentence-length facts (examples: "deploy-region",
 // "default-region") — a 6-character prose floor would reject legitimate short identifiers, so this
 // bound is deliberately looser than `lesson_value_passes_validator`'s. The identifier validator below
-// still applies every SHAPE check `value` gets; only the length floor and the common-token check
+// applies every structural check `value` gets; only the length floor and the common-token check
 // (which assumes prose, not a domain identifier) differ.
 inline constexpr std::size_t kLessonIdentifierMinLength = 1;
 inline constexpr std::size_t kLessonIdentifierMaxLength = 80;
@@ -198,11 +190,9 @@ inline constexpr std::size_t kLessonIdentifierMaxLength = 80;
     return detail::reject_structural_hazards(value, "value");
 }
 
-// Round-5 fix: applies the same shape denylist `lesson_value_passes_validator` uses to `subject`/
-// `key`, which the first draft of `render_lesson` left completely unvalidated beyond non-emptiness —
-// two independent round-5 reviewers found this and each built a working proof-of-concept (a hostile
-// `subject` containing a URL+shell-pipe payload, rejected outright when placed in `value`, sailed
-// through unmodified when placed in `subject`).
+// Round-5 fix: applies the same structural checks `lesson_value_passes_validator` uses to `subject`/`key`, which the
+// first draft of `render_lesson` left unvalidated beyond non-emptiness (a field that skipped the checks `value` got was
+// the round-5 finding). The shape heuristics are warnings for all three fields alike (`lesson_shape_warnings`).
 [[nodiscard]] inline result<void> lesson_identifier_passes_validator(std::string_view text) {
     if (text.size() < kLessonIdentifierMinLength || text.size() > kLessonIdentifierMaxLength) {
         return std::unexpected(error{failure_class::contract,
@@ -223,8 +213,9 @@ inline constexpr std::size_t kLessonIdentifierMaxLength = 80;
     return out;
 }
 
-// The same, for one text (a value or an identifier on its own).
-[[nodiscard]] inline std::vector<std::string> lesson_shape_warnings(std::string_view text) {
+// The same, for one text (a value or an identifier on its own). Named apart from the candidate overload: a braced
+// initializer would otherwise be ambiguous between the two.
+[[nodiscard]] inline std::vector<std::string> lesson_text_shape_warnings(std::string_view text) {
     return detail::shape_warnings(text);
 }
 

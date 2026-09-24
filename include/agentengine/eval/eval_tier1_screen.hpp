@@ -26,8 +26,8 @@
 // to them. The store is fixed (append_log_store.hpp). This file no longer trusts any store for identity
 // either: an attempt is its random `attempt_id`, not the sequence number the store hands back, and its
 // `started` record must read back before any trial runs. Also fixed from that round: a one-character
-// change to `subject` (case, a space, `_` for `-`) started a fresh family, so the family key now
-// normalises it and refuses non-ASCII lookalikes; only the design's DIGEST was stored, so an approver saw
+// change to `subject` (case, a space, `_` for `-`) started a fresh family, so the family key was made to
+// normalise it (removed in the proportionality review below, with the family view); only the design's DIGEST was stored, so an approver saw
 // that a retry changed the design but not how -- the design itself is stored now; a withheld outcome still
 // left the verdict readable in `probes`/`gross_harm`; attempt records named no actor or time (I4); and
 // doubles were written in a form that could not carry NaN/inf.
@@ -36,7 +36,7 @@
 // <value>", so moving a word between subject and key, reordering the words, or `dep1oy` for `deploy` still
 // opened a fresh family with no prior attempts and the same harmful value. The log is therefore kept per
 // LINEAGE (the run the candidate came from), and every result shows every attempt from that lineage whatever
-// subject it used (`lineage_attempts`), beside the narrower family view. Retrying a lesson under a new
+// subject it used (`lineage_attempts`), beside the narrower family view (since removed). Retrying a lesson under a new
 // subject can still start a new family, but it can no longer hide the earlier attempts from the approver.
 //
 // Red team round 3: the HEADLINE counts (`attempt_ordinal`, `attempt_count`, `distinct_preregistrations`) were
@@ -64,8 +64,6 @@
 // withholds the verdict -- the outcome is returned with `history_complete = false` and the error beside it.
 
 #include <algorithm>
-#include <bit>
-#include <cctype>
 #include <charconv>
 #include <cstdint>
 #include <functional>
@@ -331,6 +329,11 @@ namespace detail {
     }
     if (spec.probes.empty()) {
         return tier1_contract("at least one follow-rate probe is required", "eval.tier1_no_probes");
+    }
+    if (spec.candidate.subject.empty() && spec.candidate.key.empty() && spec.candidate.value.empty()) {
+        // The lesson is declared once, on the spec, and copied over every screen's: a lesson set only on a probe
+        // would be overwritten by this empty one, so say so rather than fail later on an empty render.
+        return tier1_contract("the lesson must be set on Tier1ScreenSpec::candidate", "eval.tier1_lesson_unset");
     }
     auto const lesson = tier1_lesson_digest(spec.candidate, spec.template_version, spec.lesson_salience);
     if (!lesson) return lesson.error();
@@ -944,7 +947,7 @@ template <rt::AppendLogStore Store, class InnerFactory, class SummarizerFactory>
     result.outcome = outcome;
     auto lineage = log.lineage_attempts(result.family.lineage);
     if (!lineage) {
-        result.attempt_log_error = lineage.error();
+        if (!result.attempt_log_error) result.attempt_log_error = lineage.error();  // the first failure is the cause
         co_return result;
     }
     result.lineage_attempts = std::move(*lineage);
@@ -957,9 +960,15 @@ template <rt::AppendLogStore Store, class InnerFactory, class SummarizerFactory>
     }
     result.distinct_preregistrations = designs.size();
     if (result.attempt_ordinal == 0) {
-        // Our own `started` record no longer reads back: the log cannot be trusted to show the other attempts.
-        result.attempt_log_error = error{failure_class::fatal, "this attempt's own record is missing from the log",
-                                         "eval.tier1_attempt_missing"};
+        // Our own `started` record no longer reads back: the log cannot be trusted to show the other attempts, so
+        // no count read from it is reported either (a truncated read would otherwise show a low count).
+        if (!result.attempt_log_error) {
+            result.attempt_log_error = error{failure_class::fatal, "this attempt's own record is missing from the log",
+                                             "eval.tier1_attempt_missing"};
+        }
+        result.lineage_attempts.clear();
+        result.attempt_count = 0;
+        result.distinct_preregistrations = 0;
         co_return result;
     }
     result.history_complete = true;

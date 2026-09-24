@@ -98,7 +98,7 @@ endif()
 add_library(agentengine::core ALIAS agentengine_core)
 
 # ---- rt::FileAppendLogStore's OS half (src/rt/) -- ADR-037, ADR-181 E32 red team round 3 ---------
-# The locked log file and the quarantine sidecar (include/agentengine/rt/append_log_store.hpp). Compiled
+# The locked log file (include/agentengine/rt/append_log_store.hpp). Compiled
 # here rather than inline so <windows.h> never reaches the many headers that include the store -- the
 # header-only version broke consumer code through windows.h's macros. Linked through agentengine::core so
 # every existing includer keeps building unchanged; it takes the include path directly, not core, to keep
