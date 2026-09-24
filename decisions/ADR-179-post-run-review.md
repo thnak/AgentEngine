@@ -106,9 +106,11 @@ defence — it is the attack shape. A poisoned tool result can yield "deploys fo
 `deploy.evil.example`", which reads as a convention and steers a tool argument no policy decider sees.
 
 So a `LessonCandidate` is a **closed record** (`subject`, `key`, `value`, `source_span`), not prose. The host
-validates before it reaches an approver: reject imperatives, URLs, hostnames, paths, shell fragments, and
-anything whose `value` exceeds a small length; show the approver the **source excerpt** from the tainted run,
-not only the summary. This reduces the channel, it does not close it — a benign-looking value can still bias
+validates before it reaches an approver: anything whose `value` exceeds a small length, control bytes and the
+template's own delimiters are refused; imperatives, URLs, hostnames, paths and shell fragments are **flagged** to
+the approver (`lesson_shape_warnings`) rather than refused — *amended 2026-09-24 (ADR-183 proportionality review):*
+a fixed denylist over natural language refused sentences a human had read word for word, and a host could skip it
+anyway. Show the approver the **source excerpt** from the tainted run, not only the summary. This reduces the channel, it does not close it — a benign-looking value can still bias
 behaviour — and that is disclosed (§6 T5).
 
 ### 3.4 The queue and promotion

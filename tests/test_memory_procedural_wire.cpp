@@ -108,8 +108,8 @@ int main() {
         // ADR-183: a spelled fence marker is removed from EVERY outbound text, untainted system text included (a
         // model cannot see the zero-width space that used to "neutralize" it -- measured live). The rest of the
         // unfenced lesson still reaches the wire unwrapped.
-        check(count_of(b, forged_close) == 0 && b.find(std::string(ae::defused_fence_marker_text())) != std::string::npos,
-              "openai/unfenced: the lesson reaches the wire unwrapped, its spelled close marker removed (ADR-183)");
+        check(count_of(b, forged_close) == 0 && b.find("[/untrusted]") != std::string::npos,
+              "openai/unfenced: the lesson reaches the wire unwrapped, its reserved bracket glyphs stripped (ADR-183)");
     }
 
     // ---- Anthropic serializer -------------------------------------------------------------------
@@ -123,8 +123,8 @@ int main() {
               "anthropic/fenced: the forged close marker is neutralized -- the fence closes exactly once");
         check(b.system_text.find(preamble) == std::string::npos, "anthropic/unfenced: NO preamble");
         check(b.system_text.find("untrusted:") == std::string::npos, "anthropic/unfenced: NO fence markers");
-        check(b.system_text == ae::defuse_fence_markers(lesson) && b.system_text != lesson,
-              "anthropic/unfenced: the system blob is the lesson with its spelled close marker removed (ADR-183)");
+        check(b.system_text == ae::strip_reserved_glyphs(lesson) && b.system_text != lesson,
+              "anthropic/unfenced: the system blob is the lesson with its reserved bracket glyphs stripped (ADR-183)");
     }
 
     if (g_failures != 0) {

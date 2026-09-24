@@ -10,9 +10,11 @@
 // a provider, a plugin or a stored item says about itself counts. (No digest: that would make every `AgentSession`
 // user link the worktree digest library -- found by the full build, where three examples stopped linking.)
 //
-// Host code only (I3): nothing here accepts model output as a decision. A real approval must name its approver and
-// the E31 acknowledgement it rests on (`eval::approve_lesson` is the path that checks that acknowledgement first);
-// an evaluation's stand-in approval is a separate call and is marked `simulated` wherever it is reported. The
+// Host code only (I3): nothing here accepts model output as a decision. An approval must name its approver -- that is
+// what the audit event names (I4). The E31 acknowledgement it rests on is recorded when there is one
+// (`eval::approve_lesson` checks it first), but not required: the engine cannot verify a host-supplied string, so
+// demanding one only added friction (ADR-183 proportionality review). An evaluation's stand-in approval is a
+// separate call and is marked `simulated` wherever it is reported. The
 // engine does not persist the registry: a host loads it from its own storage, and a session without one delivers
 // every lesson fenced as before (ADR-070 §4 property 2).
 
@@ -30,12 +32,12 @@ namespace agentengine {
 struct LessonApproval {  // ae-naming-lint: allow LessonApproval — ADR-183
     std::string approver_id;
     std::string approved_at;      // host timestamp (ISO-8601)
-    std::string acknowledgement;  // the E31 digest the approver acknowledged (the rendered item's)
+    std::string acknowledgement;  // the E31 digest the approver acknowledged, when there is one (optional)
     bool simulated = false;       // an evaluation's stand-in for an approval (a Tier-1 screen's treatment arm)
 };
 
 struct ApprovedLessonMatch {  // ae-naming-lint: allow ApprovedLessonMatch — ADR-183
-    std::string approval_id;      // what `ContentItem::approval` records: the acknowledgement, or `simulated:<trial>`
+    std::string approval_id;      // what `ContentItem::approval` records: the acknowledgement, else the approver
     LessonApproval approval;
 };
 
@@ -44,9 +46,8 @@ public:
     // Records that a human approved exactly `content` for `scope` (the principal it may reach -- an approval for
     // one tenant never reaches another). Replaces an earlier approval of the same text in the same scope.
     [[nodiscard]] result<void> approve(std::string_view scope, std::string_view content, LessonApproval approval) {
-        if (approval.approver_id.empty() || approval.acknowledgement.empty()) {
-            return std::unexpected(error{failure_class::contract,
-                                         "an approval must name its approver and the acknowledgement it rests on (I4)",
+        if (approval.approver_id.empty()) {
+            return std::unexpected(error{failure_class::contract, "an approval must name its approver (I4)",
                                          "memory.approval_unattributed"});
         }
         approval.simulated = false;
@@ -73,7 +74,7 @@ public:
         auto it = approved_.find(key(scope, content));
         if (it == approved_.end()) return std::nullopt;
         LessonApproval const& a = it->second;
-        return ApprovedLessonMatch{a.simulated ? a.approver_id : a.acknowledgement, a};
+        return ApprovedLessonMatch{(a.simulated || a.acknowledgement.empty()) ? a.approver_id : a.acknowledgement, a};
     }
 
     [[nodiscard]] std::size_t size() const {

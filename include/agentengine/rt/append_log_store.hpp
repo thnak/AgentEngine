@@ -62,7 +62,7 @@ using LogId = std::string;
 // Matches quark::SeqNo's own convention: 0 means "this log has no entries yet"; the first appended
 // entry gets seq 1, strictly increasing thereafter, never reused even across a store restart -- with one
 // exception in FileAppendLogStore: a repair that cuts records hidden behind a corrupted length header hands
-// their seqs out again (they are kept in a quarantine sidecar; see its banner). E32 red team round 3.
+// their seqs out again (and those records are lost; see its banner). E32 red team round 3.
 // ae-naming-lint: allow SeqNo — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using SeqNo = std::uint64_t;
 
@@ -145,23 +145,14 @@ static_assert(AppendLogStore<InMemoryAppendLogStore>,
 // truncates the file back to the end of its last whole record, and `read_from` never sizes a buffer
 // from a header larger than the bytes actually left in the file.
 //
-// CUT BYTES ARE QUARANTINED, NEVER DELETED (E32 red team round 2, MAJOR). Without a per-record checksum the
-// store cannot tell a torn tail from a corrupted length header in the MIDDLE of the file: both are "a header
-// promising more than follows". The first repair truncated at that point, so one flipped byte in record 2's
-// header permanently destroyed every later record, which readers had been returning until then. Now the cut
-// bytes are first copied, whole, to a sidecar file `<id>.quarantine-<offset>-<n>` beside the log, and the
-// append fails if that copy cannot be made. A corrupted header still hides the records after it from readers
-// (the same as before any repair existed) -- the store has no way to know they are there -- but nothing is
-// lost, and the sidecar is evidence. A checksummed record format would let it refuse instead; not done here.
-//
-// THE SIDECAR IS CREATED, NEVER OPENED (E32 red team round 3, MAJOR). The round-2 sidecar was written with
-// `ofstream(trunc)` after an `exists()` check: a symlink planted at the next sidecar name made the host create
-// or overwrite any file it could write, with bytes the planter chose (the torn tail). Now the sidecar is
-// created exclusively (`O_CREAT|O_EXCL|O_NOFOLLOW` / `CREATE_NEW`), so an existing name -- file, dangling
-// symlink or not -- is never written through, under a random suffix, so no fixed set of names can run out
-// and brick the log (round 2 tried 1000 names, then refused every append). If the truncate that follows it
-// fails, the sidecar is removed again, so a log that cannot be cut does not grow a full copy per retry.
-// Windows paths are opened in their `\\?\` form, so the longer sidecar name cannot exceed MAX_PATH.
+// A CORRUPTED HEADER MID-FILE IS CUT LIKE A TORN TAIL -- AND WHAT FOLLOWS IT IS LOST (disclosed). Without a
+// per-record checksum the store cannot tell a torn tail from a corrupted length header in the middle of the file:
+// both are "a header promising more than follows", so one flipped byte in record 2's header hides every later record
+// from readers, and the next append cuts them for good. E32 red team round 2 added a quarantine sidecar that kept
+// the cut bytes, and round 3 hardened it (exclusive create, random names, long paths); the ADR-183 proportionality
+// review removed all of it again: the threat is disk corruption or someone who can already rewrite the log file,
+// the sidecar was ~150 lines of platform code with its own attack surface, and nothing read it. A checksummed record
+// format is the real fix; not done here.
 //
 // THE OS CALLS LIVE IN src/rt/append_log_file.cpp (same round, MAJOR). Including <windows.h> here reached
 // every includer of memory.hpp and the worktree headers and broke consumer code (its `ERROR`, `GetMessage`
@@ -231,19 +222,6 @@ private:
     bool locked_ = false;
 };
 
-// Creates `path` and writes `size` bytes to it -- only if nothing exists at that name: an existing file or
-// symlink (dangling or not) is refused with `rt.append_log_store.file_exists` and never written through.
-// Returns the path it wrote (on Windows, its `\\?\` form). Defined in src/rt/append_log_file.cpp.
-[[nodiscard]] result<std::filesystem::path> create_new_file(std::filesystem::path const& path, std::byte const* data,
-                                                            std::size_t size);
-
-// Copies bytes [from, end) of `bytes` to a NEW sidecar `<log>.quarantine-<from>-<random>`, created
-// exclusively and never through an existing name or link. Returns the sidecar's path. Called under the
-// log's exclusive lock. Defined in src/rt/append_log_file.cpp.
-[[nodiscard]] result<std::filesystem::path> quarantine_append_log_tail(std::filesystem::path const& log,
-                                                                       std::vector<std::byte> const& bytes,
-                                                                       std::size_t from);
-
 }  // namespace detail
 
 // ae-naming-lint: allow FileAppendLogStore — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
@@ -269,22 +247,8 @@ public:
         auto existing = file->read_all();
         if (!existing) return std::unexpected(existing.error());
         detail::ParsedAppendLog const parsed = detail::parse_append_log(*existing);
-        // Cut a torn tail (or whatever follows a corrupted header) -- after copying it aside, never destroying it.
-        std::optional<std::filesystem::path> sidecar;
-        if (parsed.valid_end < existing->size()) {
-            auto kept = detail::quarantine_append_log_tail(*path, *existing, parsed.valid_end);
-            if (!kept) return std::unexpected(kept.error());
-            sidecar = std::move(*kept);
-        }
-        if (auto cut = file->truncate_and_seek(parsed.valid_end); !cut) {
-            // The tail is still in the log, so the copy is not needed; without this, every retry against a
-            // log that cannot be cut left another full copy of the tail (round 3).
-            if (sidecar) {
-                std::error_code ec;
-                std::filesystem::remove(*sidecar, ec);
-            }
-            return std::unexpected(cut.error());
-        }
+        // Cut a torn tail (or whatever follows a corrupted header -- see the banner) before appending.
+        if (auto cut = file->truncate_and_seek(parsed.valid_end); !cut) return std::unexpected(cut.error());
 
         std::uint32_t const len = static_cast<std::uint32_t>(bytes.size());
         std::vector<std::byte> record(sizeof(len) + bytes.size());

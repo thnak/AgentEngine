@@ -92,7 +92,8 @@ namespace detail {
 // comes from its `ToolResult` content item -- the only place a call id lives in the content model, and
 // the shape `core/tool_pipeline.hpp`'s own step-9 "normalize" produces (a `Data` item wrapping the
 // tool's JSON reply, tagged `content_origin::tool`).
-[[nodiscard]] inline json::Value translate_message(Message const& m) {
+// `approval_code` (ADR-183): this request's code for approved-lesson fences; empty means none is approved here.
+[[nodiscard]] inline json::Value translate_message(Message const& m, std::string_view approval_code = {}) {
     std::string text;
     std::vector<json::Value> tool_calls;
     std::optional<std::string> tool_call_id;
@@ -104,11 +105,14 @@ namespace detail {
             // but it dropped `tainted`/`origin` at exactly the same point, leaving a
             // `{"role":"system"}` message carrying tool/document/model-derived text
             // indistinguishable from a host-authored one. Same fence, same bytes, same predicate.
-            // ADR-183: every text the fence does not wrap is neutralized, so a fence marker -- an approved-lesson
-            // one above all -- appears on the wire only where this serializer opened or closed a real fence.
-            text += needs_system_channel_fence(m.role, item)
-                        ? fence_untrusted_text(t->text, item.origin, item.approval)
-                        : neutralize_outbound_text(t->text);
+            // ADR-183: the bracket glyphs appear on the wire only where this serializer wrote a real fence. A system
+            // message's texts are cleaned one by one (its fences are written in between); every other message's text
+            // is cleaned once, after its parts are joined (a marker split across parts reassembled otherwise).
+            if (needs_system_channel_fence(m.role, item)) {
+                text += fence_untrusted_text(t->text, item.origin, item.approval.empty() ? std::string_view{} : approval_code);
+            } else {
+                text += m.role == role::system ? neutralize_outbound_text(t->text) : t->text;
+            }
         } else if (auto const* tc = std::get_if<ToolCall>(&item.value)) {
             std::vector<std::pair<std::string, json::Value>> fn{
                 {"name", json::Value::make_string(tc->tool_name)},
@@ -124,15 +128,16 @@ namespace detail {
             tool_call_id = tr->call_id;
             for (ContentItem const& inner : tr->content) {
                 if (auto const* it = std::get_if<Text>(&inner.value)) {
-                    text += neutralize_outbound_text(it->text);
+                    text += it->text;
                 } else if (auto const* d = std::get_if<Data>(&inner.value)) {
-                    text += neutralize_outbound_text(d->json);
+                    text += d->json;
                 } else if (auto const* e = std::get_if<Error>(&inner.value)) {
-                    text += neutralize_outbound_text(e->message);
+                    text += e->message;
                 }
             }
         }
     }
+    if (m.role != role::system) text = neutralize_outbound_text(text);  // ADR-183: after the parts are joined
 
     std::vector<std::pair<std::string, json::Value>> obj;
     obj.emplace_back("role", json::Value::make_string(std::string(role_to_wire(m.role))));
@@ -163,7 +168,8 @@ namespace detail {
 // entries are left with no matching reply message at all). Every other message shape (user/assistant/
 // system, or a role::tool message with 0-1 ToolResult items) is unaffected -- still exactly one wire
 // message via `translate_message` unchanged.
-[[nodiscard]] inline std::vector<json::Value> translate_message_to_wire(Message const& m) {
+[[nodiscard]] inline std::vector<json::Value> translate_message_to_wire(Message const& m,
+                                                                     std::string_view approval_code = {}) {
     if (m.role == role::tool) {
         std::size_t tool_result_count = 0;
         for (ContentItem const& item : m.content) {
@@ -180,14 +186,14 @@ namespace detail {
                     wrapped.origin = item.origin;
                     wrapped.value = *tr;
                     single.content.push_back(std::move(wrapped));
-                    out.push_back(translate_message(single));
+                    out.push_back(translate_message(single, approval_code));
                 }
             }
             return out;
         }
     }
     std::vector<json::Value> out;
-    out.push_back(translate_message(m));
+    out.push_back(translate_message(m, approval_code));
     return out;
 }
 
@@ -358,15 +364,18 @@ namespace detail {
     // AE Message and has no single concatenated system blob to prepend to. Same predicate as the
     // fences themselves (`has_fenced_system_content`), so preamble and fences cannot disagree; a
     // request with no tainted system content produces a byte-identical body to before this fix.
+    // ADR-183: one fresh code per request, shared by the preamble and every approved fence it explains.
+    std::string const approval_code =
+        has_fenced_approved_lesson(request.messages) ? new_request_approval_code() : std::string{};
     if (has_fenced_system_content(request.messages)) {
         std::vector<std::pair<std::string, json::Value>> preamble;
         preamble.emplace_back("role", json::Value::make_string("system"));
         preamble.emplace_back("content",
-                              json::Value::make_string(untrusted_fence_preamble_for(request.messages)));
+                              json::Value::make_string(untrusted_fence_preamble_for(request.messages, approval_code)));
         messages.push_back(json::Value::make_object(std::move(preamble)));
     }
     for (auto const& m : request.messages) {
-        for (auto& wire : translate_message_to_wire(m)) messages.push_back(std::move(wire));
+        for (auto& wire : translate_message_to_wire(m, approval_code)) messages.push_back(std::move(wire));
     }
     obj.emplace_back("messages", json::Value::make_array(std::move(messages)));
 

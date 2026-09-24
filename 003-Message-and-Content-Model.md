@@ -104,9 +104,10 @@ flag**.
   on every other item. The item stays tainted and `external`; the fence names it an approved lesson with a code content cannot
   know, and the reading rule says it may be followed as guidance. This is the one sanctioned relaxation of the
   reading rule and it is logged per delivery (a `policy_decision` event). **Fence markers must appear on the wire
-  only where a serializer opened or closed a real fence** — both conformers remove any spelled marker, visibly, from
-  every other text they emit. Breaking a marker invisibly is not enough: measured live, a model reads a marker
-  broken by a zero-width space as a real one (ADR-183 §7, L1).
+  only where a serializer opened or closed a real fence** — the bracket glyphs the markers use are reserved: both
+  conformers strip them (raw, escaped, or as lookalikes) from every other text they emit, so no marker can form
+  there however it is split. Breaking a marker invisibly is not enough: measured live, a model reads a marker broken
+  by a zero-width space as a real one (ADR-183 §7, L1).
 
 **This section's extension of the taint trigger to assistant-origin content is security-critical
 and invariant-touching (I3).** Closing the textual contradiction here is not the same as this being

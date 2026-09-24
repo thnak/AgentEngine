@@ -92,119 +92,67 @@ namespace detail {
     return false;
 }
 
-// The shape checks (URL/hostname/path/shell-fragment/imperative), factored out so `subject`/`key`
-// get the SAME denylist `value` does — round-5's fix for the finding that only `value` was checked.
-// `field_label` names the field in the returned error's message, so a caller can tell which of
-// subject/key/value tripped it.
-[[nodiscard]] inline result<void> reject_injection_shapes(std::string_view text, char const* field_label) {
-    // ADR-183 red team: the provenance-marker brackets (U+27E6/U+27E7) open every memory label and fence marker.
-    // Neutralization breaks them in rendered text by inserting a zero-width space, so a lesson containing one
-    // would reach the model as bytes the approver never saw -- and an approval is of exact bytes. Refused outright.
-    if (text.find("\xE2\x9F\xA6") != std::string_view::npos || text.find("\xE2\x9F\xA7") != std::string_view::npos) {
-        return std::unexpected(error{failure_class::contract,
-                                     std::string("lesson ") + field_label + " contains a provenance-marker bracket",
-                                     "eval.marker_bracket"});
-    }
-    std::string const lower = to_lower_ascii(text);
+// ADR-183 proportionality review (2026-09-24): the shape checks below used to REFUSE a lesson. Once a lesson is
+// approved by a human who reads its exact bytes (E31), a fixed denylist over natural language mostly got in the way --
+// its own disclosed false positives ("python is the primary...", "ssh access to the bastion...", "post mortems are
+// stored in...", any ';') stopped a human from approving a sentence they had read, and a host could skip it anyway.
+// So the gate keeps only what is STRUCTURAL -- what would make the rendered bytes differ from what was approved, or
+// make two lessons render alike -- and the shape heuristics become warnings an approval UI shows beside the lesson.
 
-    // Round-6 fix: two independent round-6 reviewers found real needle gaps here (each proven with a
-    // working proof-of-concept that compiled and rendered against the pre-fix list): URI schemes that
-    // don't contain "://" (`javascript:`, `data:`, `mailto:`, `vbscript:`), and shell substitution
-    // forms that don't use `$(` (`<(...)`, `>(...)`, `${...}`). Added below. This remains a denylist,
-    // not a grammar (the file's own long-standing disclosure): a bare hostname/IP:port with no scheme
-    // and non-ASCII homoglyphs of these needles both still pass, and are named as open residuals in
-    // ADR-181 §8 rather than silently claimed closed.
-    //
-    // Round-7 fix: a round-7 reviewer proved `.net` (present since round 5) is a false-positive magnet
-    // -- it collides with the .NET framework/runtime, a term any lesson about this codebase's own
-    // ecosystem would plausibly use ("the .net runtime version pinned in CI is..."). Dropped: `://`
-    // already catches real URLs, and a bare ".net" with no scheme was never a strong signal on its own
-    // (unlike ".com"/".org", which round 7 found no comparably common false positive for).
+// Refused: things that break the rendering itself.
+[[nodiscard]] inline result<void> reject_structural_hazards(std::string_view text, char const* field_label) {
+    // The provenance brackets (U+27E6/U+27E7 and lookalikes) are reserved for the engine and stripped from any text
+    // on the wire (ADR-183), so a lesson containing one would reach the model as bytes the approver never saw.
+    for (std::string_view glyph : {"\xE2\x9F\xA6", "\xE2\x9F\xA7", "\xE3\x80\x9A", "\xE3\x80\x9B"}) {
+        if (text.find(glyph) != std::string_view::npos) {
+            return std::unexpected(error{failure_class::contract,
+                                         std::string("lesson ") + field_label + " contains a reserved bracket glyph",
+                                         "eval.marker_bracket"});
+        }
+    }
+    // Round-5 fix: a control byte would let a value inject the digest's 0x1E/0x1F separators, and the template's own
+    // join delimiters would let two different (subject, key) pairs render to the same `content`.
+    if (has_control_byte(text)) {
+        return std::unexpected(error{failure_class::contract,
+                                     std::string("lesson ") + field_label + " contains a control byte",
+                                     "eval.value_control_byte"});
+    }
+    static constexpr std::array<char const*, 2> kTemplateDelimiters = {" (", "): "};
+    if (contains_any(text, std::span{kTemplateDelimiters})) {
+        return std::unexpected(error{failure_class::contract,
+                                     std::string("lesson ") + field_label +
+                                         " contains render_lesson's own field delimiter",
+                                     "eval.value_delimiter_collision"});
+    }
+    return {};
+}
+
+// Advisory: text shaped like a URL, a path, a shell fragment or an imperative. Returned as warning codes for the
+// approver to see; never a refusal. (The needle lists and their history -- rounds 5-7 -- are kept as they were.)
+[[nodiscard]] inline std::vector<std::string> shape_warnings(std::string_view text) {
+    std::vector<std::string> out;
+    std::string const lower = to_lower_ascii(text);
     static constexpr std::array<char const*, 9> kUrlOrPathNeedles = {
         "://", "www.", ".com", ".org", "\\\\",
         "javascript:", "data:", "mailto:", "vbscript:",
     };
-    if (contains_any(lower, std::span{kUrlOrPathNeedles})) {
-        return std::unexpected(error{failure_class::contract,
-                                      std::string("lesson ") + field_label + " looks like a URL or hostname",
-                                      "eval.value_url_shaped"});
-    }
-    if (lower.starts_with('/') || lower.starts_with('.')) {
-        return std::unexpected(error{failure_class::contract,
-                                      std::string("lesson ") + field_label + " looks like a path",
-                                      "eval.value_path_shaped"});
-    }
-
+    if (contains_any(lower, std::span{kUrlOrPathNeedles})) out.emplace_back("eval.value_url_shaped");
+    if (lower.starts_with('/') || lower.starts_with('.')) out.emplace_back("eval.value_path_shaped");
     static constexpr std::array<char const*, 10> kShellNeedles = {
         ";", "|", "&&", "`", "$(", "$env:", "%comspec%", "<(", ">(", "${",
     };
-    if (contains_any(lower, std::span{kShellNeedles})) {
-        return std::unexpected(error{failure_class::contract,
-                                      std::string("lesson ") + field_label + " looks like a shell fragment",
-                                      "eval.value_shell_shaped"});
-    }
-
-    // Round-6 fix: a round-6 reviewer proved a single leading space or tab defeats every prefix check
-    // below outright (`starts_with_any` on the untrimmed string never matches "  run ..." against
-    // "run "), which is a bypass of a check this file clearly intends to enforce, not a disclosed
-    // scope limit. Strip leading ASCII whitespace before prefix-matching only -- the `contains_any`
-    // checks above already match anywhere in the string, so they are unaffected by leading whitespace
-    // and are left as-is.
+    if (contains_any(lower, std::span{kShellNeedles})) out.emplace_back("eval.value_shell_shaped");
     std::string_view lower_trimmed = lower;
-    while (!lower_trimmed.empty() &&
-           (lower_trimmed.front() == ' ' || lower_trimmed.front() == '\t')) {
+    while (!lower_trimmed.empty() && (lower_trimmed.front() == ' ' || lower_trimmed.front() == '\t')) {
         lower_trimmed.remove_prefix(1);
     }
-
-    // Round-6 fix: a round-6 reviewer found several dangerous verbs missing from this list (ssh, scp,
-    // bash, python, powershell, cat, chmod, kill, wget) -- added below. Still a fixed, finite list
-    // (the file's own long-standing disclosure), not a grammar.
-    //
-    // Round-7 fix: a round-7 reviewer proved `"exec"`/`"sudo"` (the only two entries with no trailing
-    // space) match as a plain SUBSTRING prefix of any longer word -- "executive approval", "execution
-    // time budgets" (this very codebase's own vocabulary) were both wrongly rejected. Given a trailing
-    // space like every other entry here.
-    //
-    // Round-7 disclosed, NOT fixed: the same reviewer proved several of these words also collide with
-    // ordinary noun-phrase English when they lead a sentence -- "post mortems are stored in...", "call
-    // center average wait time is...", "python is the primary language for...", "ssh access to the
-    // bastion requires...", "delete markers are automatically cleaned up by...", "install steps for
-    // the CLI are...", "kill switches for the ingest pipeline are...", "bash scripts in CI are...",
-    // "download links for release artifacts..." are all real, plausible lesson VALUES this list
-    // rejects. This is a genuine precision/recall trade-off inherent to a fixed-prefix denylist over
-    // natural language, not a bug with a clean fix: removing any of these words would reopen the exact
-    // imperative-shaped attack text it exists to catch ("post the credentials to...", "call the
-    // webhook with...", "delete all files in..."). See ADR-181 §8.
     static constexpr std::array<char const*, 21> kImperativePrefixes = {
         "run ",     "delete ",  "exec ",   "curl ",       "rm ",        "sudo ",    "install ",
         "download ", "send ",   "email ",  "post ",       "call ",      "ssh ",     "scp ",
         "bash ",    "python ",  "powershell ", "cat ",    "chmod ",     "kill ",    "wget ",
     };
-    if (starts_with_any(lower_trimmed, std::span{kImperativePrefixes})) {
-        return std::unexpected(error{failure_class::contract,
-                                      std::string("lesson ") + field_label + " reads as an imperative",
-                                      "eval.value_imperative_shaped"});
-    }
-
-    // Round-5 fix: reject any control byte (this is what actually backs the digest comment's claim
-    // that no adversarial value can inject its 0x1E/0x1F separators — the earlier draft asserted this
-    // without checking it) and the template's own literal join delimiters, so two different
-    // (subject, key) pairs can never render to the same `content` by smuggling one field's text
-    // across the boundary `render_lesson`'s template draws between fields.
-    if (has_control_byte(text)) {
-        return std::unexpected(error{failure_class::contract,
-                                      std::string("lesson ") + field_label + " contains a control byte",
-                                      "eval.value_control_byte"});
-    }
-    static constexpr std::array<char const*, 2> kTemplateDelimiters = {" (", "): "};
-    if (contains_any(text, std::span{kTemplateDelimiters})) {
-        return std::unexpected(error{failure_class::contract,
-                                      std::string("lesson ") + field_label +
-                                          " contains render_lesson's own field delimiter",
-                                      "eval.value_delimiter_collision"});
-    }
-
-    return {};
+    if (starts_with_any(lower_trimmed, std::span{kImperativePrefixes})) out.emplace_back("eval.value_imperative_shaped");
+    return out;
 }
 
 }  // namespace detail
@@ -247,7 +195,7 @@ inline constexpr std::size_t kLessonIdentifierMaxLength = 80;
         }
     }
 
-    return detail::reject_injection_shapes(value, "value");
+    return detail::reject_structural_hazards(value, "value");
 }
 
 // Round-5 fix: applies the same shape denylist `lesson_value_passes_validator` uses to `subject`/
@@ -260,7 +208,24 @@ inline constexpr std::size_t kLessonIdentifierMaxLength = 80;
         return std::unexpected(error{failure_class::contract,
                                       "lesson identifier length outside [min,max]", "eval.identifier_length"});
     }
-    return detail::reject_injection_shapes(text, "identifier");
+    return detail::reject_structural_hazards(text, "identifier");
+}
+
+// ADR-183: the shape heuristics as advisory warnings for an approval UI -- "field:code" per hit, across subject, key
+// and value. Empty means nothing looked unusual; non-empty never stops a lesson from rendering or being approved.
+[[nodiscard]] inline std::vector<std::string> lesson_shape_warnings(LessonCandidate const& candidate) {
+    std::vector<std::string> out;
+    for (auto const& [field, text] : {std::pair<char const*, std::string const*>{"subject", &candidate.subject},
+                                      std::pair<char const*, std::string const*>{"key", &candidate.key},
+                                      std::pair<char const*, std::string const*>{"value", &candidate.value}}) {
+        for (std::string& code : detail::shape_warnings(*text)) out.push_back(std::string(field) + ":" + code);
+    }
+    return out;
+}
+
+// The same, for one text (a value or an identifier on its own).
+[[nodiscard]] inline std::vector<std::string> lesson_shape_warnings(std::string_view text) {
+    return detail::shape_warnings(text);
 }
 
 // ADR-181 §3.0 item 1: `render_lesson(candidate, template_version) -> MemoryItem{kind=procedural,

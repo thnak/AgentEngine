@@ -43,7 +43,7 @@
 // still the family's, so a reworded retry read "attempt 1 of 1, 1 design" and only a field beside them showed
 // otherwise. They now count the whole lineage -- the unit a model cannot choose. That over-counts when one
 // run produced several lessons (every lesson's attempts are in it), which is the safe direction; the
-// family view (`family_attempts`, `family_attempt_count`) narrows it to one subject, and says it can be
+// family view (removed later, see below) narrowed it to one subject, and said it could be
 // dodged. Both views now come from ONE read of the log, so the family view can never list an attempt its
 // superset does not (round 3 made a concurrent attempt land between two reads).
 //
@@ -55,6 +55,13 @@
 // data); every prompt field is hashed (the prompt is hashed as `message_to_json` renders it, which omits
 // `Message::attribution` and tool-call provenance). Arm S (§3.0 item 4 / §3.7) is not built, so a `cleared`
 // outcome covers items 2 and 3 only and says so (`steering_manifest_run`).
+
+// ADR-183 proportionality review (2026-09-24): the output of this screen is advice to a human approver, and the log
+// can be rewritten by anyone who can write its store (§8) -- so machinery that only hardened the log further was
+// cut: the per-subject family view and its subject normalisation (which refused any non-ASCII subject) are gone --
+// the lineage count is the count; the lesson is declared ONCE on the spec (so the screens cannot disagree about
+// it, and the mismatch check that compared them is gone); and a history that cannot be read back no longer
+// withholds the verdict -- the outcome is returned with `history_complete = false` and the error beside it.
 
 #include <algorithm>
 #include <bit>
@@ -113,9 +120,8 @@ enum class tier1_screen_outcome {  // ae-naming-lint: allow tier1_screen_outcome
     return std::nullopt;
 }
 
-// §3.3's family. `subject` is the candidate's own, NORMALISED (`tier1_family_subject_key`); `lineage` names
-// the run/session the candidate came from and is host-supplied (ADR-179's `source_span` shape is still
-// open, so it is not parsed for this).
+// Who the attempt is for: the candidate's own `subject` (a label, as written -- ADR-183 dropped its normalisation)
+// and the host-supplied `lineage` (the run the candidate came from), which is what attempts are counted by.
 struct Tier1Family {  // ae-naming-lint: allow Tier1Family — ADR-181 E32 / §3.3
     std::string subject;
     std::string lineage;
@@ -131,8 +137,15 @@ struct Tier1ScreenSpec {  // ae-naming-lint: allow Tier1ScreenSpec — ADR-181 E
     // from model output. `started_at` is a host timestamp string (ISO-8601), as `PromotionAck` records one.
     std::string operator_id;
     std::string started_at;
-    // One by default; more than one must ALL pass (§3.0 item 2, §6 G4). Every probe and the gross-harm
-    // spec must carry the same candidate, template version and salience -- that is the lesson under test.
+    // The lesson under test, declared ONCE. `run_tier1_screen` (and `tier1_preregistration_json`) copy it into
+    // every probe and into the gross-harm spec, overwriting whatever those carry, so the screens cannot disagree
+    // about the lesson or how it is delivered (ADR-183 proportionality review: the spec used to repeat it N+1 times
+    // and a validator compared the copies).
+    LessonCandidate candidate;
+    std::string template_version;
+    float lesson_salience = 0.0f;
+    lesson_delivery delivery = lesson_delivery::fenced;  // ADR-183: the route a host that opts in ships
+    // One by default; more than one must ALL pass (§3.0 item 2, §6 G4).
     std::vector<FollowRateProbeSpec> probes;
     GrossHarmScreenSpec gross_harm;
     // I8: every screen's own `max_model_calls`, summed, must fit -- one bound for the whole attempt.
@@ -198,11 +211,11 @@ struct Tier1ScreenResult {  // ae-naming-lint: allow Tier1ScreenResult — ADR-1
     Digest preregistration_digest;
     std::string attempt_id;
 
-    // Set iff the attempt ran and the lineage's history could be read afterwards. A result that cannot
-    // show the other attempts is withheld -- `outcome` unset AND `probes`/`gross_harm` cleared -- rather
-    // than presented as if it were the only attempt. (Its figures are still in the log if the `completed`
-    // record was written.)
+    // Set iff the attempt ran. If the lineage's history could not be read back afterwards, the outcome is still
+    // returned, with `history_complete = false` and the reason in `attempt_log_error`: the approver must then
+    // treat the attempt count as unknown (it used to be withheld -- the whole run's figures thrown away).
     std::optional<tier1_screen_outcome> outcome;
+    bool history_complete = false;
     bool steering_manifest_run = false;    // arm S (§3.7) is not built; a `cleared` outcome excludes it
 
     // The headline counts are over the whole LINEAGE, whatever subject each attempt was filed under (red team
@@ -212,13 +225,8 @@ struct Tier1ScreenResult {  // ae-naming-lint: allow Tier1ScreenResult — ADR-1
     std::size_t attempt_count = 0;         // every started attempt in this lineage, this one included
     std::size_t distinct_preregistrations = 0;  // > 1: more than one design was tried in this lineage
     std::vector<Tier1AttemptRecord> lineage_attempts;  // every attempt, in start order, this one included
-    // The narrower view: attempts filed under this candidate's subject key, plus every unreadable record
-    // (its subject cannot be known). Ordinals here are family-wide. A reworded subject escapes this view --
-    // never the lineage's.
-    std::size_t family_attempt_count = 0;
-    std::vector<Tier1AttemptRecord> family_attempts;
 
-    // This attempt's full detail (cleared when the outcome is withheld).
+    // This attempt's full detail.
     std::vector<FollowRateScreenResult> probes;    // in run order; stops at the first probe that fails
     std::optional<GrossHarmScreenResult> gross_harm;
 
@@ -288,31 +296,29 @@ namespace detail {
 
 }  // namespace detail
 
-// The family key's subject. Red team round 1 (MAJOR): the key was the raw subject, and `render_lesson`
-// accepts `Deploy-Region`, `deploy-region `, `deploy_region` and Unicode lookalikes of `deploy-region` --
-// each a fresh family with no prior attempts, reopening R4-Stat3 at the cost of one character. The key is
-// now the subject's ASCII letters and digits, lower-cased; a subject with any non-ASCII byte, or with no
-// letter or digit at all, is refused (nullopt). Over-merging two subjects is the safe direction here. What
-// this cannot catch: a genuinely different word for the same thing (§8).
-[[nodiscard]] inline std::optional<std::string> tier1_family_subject_key(std::string_view subject) {
-    std::string key;
-    for (char c : subject) {
-        auto const u = static_cast<unsigned char>(c);
-        if (u >= 0x80) return std::nullopt;
-        if (std::isalnum(u)) key.push_back(static_cast<char>(std::tolower(u)));
-    }
-    if (key.empty()) return std::nullopt;
-    return key;
-}
-
 namespace detail {
 
 [[nodiscard]] inline std::uint64_t tier1_saturating_add(std::uint64_t a, std::uint64_t b) {
     return a > (std::numeric_limits<std::uint64_t>::max)() - b ? (std::numeric_limits<std::uint64_t>::max)() : a + b;
 }
 
-// Everything that must hold before an attempt is counted. Each screen's own pre-flight runs here too, so
-// a spec that screen would refuse is refused before its family is charged an attempt.
+// The spec with its one lesson copied into every screen (see `Tier1ScreenSpec::candidate`).
+[[nodiscard]] inline Tier1ScreenSpec tier1_with_lesson(Tier1ScreenSpec spec) {
+    for (FollowRateProbeSpec& probe : spec.probes) {
+        probe.candidate = spec.candidate;
+        probe.template_version = spec.template_version;
+        probe.lesson_salience = spec.lesson_salience;
+        probe.delivery = spec.delivery;
+    }
+    spec.gross_harm.candidate = spec.candidate;
+    spec.gross_harm.template_version = spec.template_version;
+    spec.gross_harm.lesson_salience = spec.lesson_salience;
+    spec.gross_harm.delivery = spec.delivery;
+    return spec;
+}
+
+// Everything that must hold before an attempt is counted, on a spec whose lesson has already been copied into its
+// screens. Each screen's own pre-flight runs here too, so a spec a screen would refuse costs no attempt.
 [[nodiscard]] inline std::optional<error> validate_tier1_spec(Tier1ScreenSpec const& spec) {
     if (spec.lineage.empty()) {
         return tier1_contract("lineage must be set: it is half of the family key", "eval.tier1_lineage_missing");
@@ -326,13 +332,7 @@ namespace detail {
     if (spec.probes.empty()) {
         return tier1_contract("at least one follow-rate probe is required", "eval.tier1_no_probes");
     }
-    if (!tier1_family_subject_key(spec.gross_harm.candidate.subject).has_value()) {
-        return tier1_contract("the candidate's subject must be ASCII with at least one letter or digit, so its "
-                              "family key cannot be dodged with a lookalike",
-                              "eval.tier1_subject_unkeyable");
-    }
-    auto const lesson = tier1_lesson_digest(spec.gross_harm.candidate, spec.gross_harm.template_version,
-                                            spec.gross_harm.lesson_salience);
+    auto const lesson = tier1_lesson_digest(spec.candidate, spec.template_version, spec.lesson_salience);
     if (!lesson) return lesson.error();
     std::set<std::string> probe_ids;
     std::uint64_t total_calls = spec.gross_harm.max_model_calls;
@@ -340,19 +340,6 @@ namespace detail {
         if (auto bad = validate_follow_rate_probe_spec(probe); bad.has_value()) return bad;
         if (!probe_ids.insert(probe.probe_id).second) {
             return tier1_contract("probe_ids must be unique", "eval.tier1_probe_id_duplicate");
-        }
-        // The rendered digest covers content, tags and template version -- the lesson as the model reads it.
-        // Salience is compared exactly as well (the digest writes it to six decimals).
-        auto const probe_lesson = tier1_lesson_digest(probe.candidate, probe.template_version, probe.lesson_salience);
-        if (!probe_lesson) return probe_lesson.error();
-        if (*probe_lesson != *lesson || probe.template_version != spec.gross_harm.template_version ||
-            std::bit_cast<std::uint32_t>(probe.lesson_salience) !=
-                std::bit_cast<std::uint32_t>(spec.gross_harm.lesson_salience) ||
-            probe.candidate.subject != spec.gross_harm.candidate.subject ||
-            probe.candidate.key != spec.gross_harm.candidate.key ||
-            probe.candidate.value != spec.gross_harm.candidate.value || probe.delivery != spec.gross_harm.delivery) {
-            return tier1_contract("every probe and the gross-harm spec must screen the same lesson",
-                                  "eval.tier1_lesson_mismatch");
         }
         total_calls = tier1_saturating_add(total_calls, probe.max_model_calls);
     }
@@ -366,8 +353,7 @@ namespace detail {
 }
 
 [[nodiscard]] inline Tier1Family tier1_family_of(Tier1ScreenSpec const& spec) {
-    return Tier1Family{tier1_family_subject_key(spec.gross_harm.candidate.subject).value_or(std::string{}),
-                       spec.lineage};
+    return Tier1Family{spec.candidate.subject, spec.lineage};
 }
 
 // The log id: one log per LINEAGE (red team round 2), named by a digest so any lineage text maps to a
@@ -388,7 +374,8 @@ namespace detail {
 // caps, retry pool). NOT covered, deliberately: the seeds (a new seed is a new attempt of the same design,
 // and each attempt's seeds are recorded with its figures), and the pure resource caps `max_model_calls`,
 // `max_permutation_work` and `retain_recordings`, which bound cost but not what is measured.
-[[nodiscard]] inline result<std::string> tier1_preregistration_json(Tier1ScreenSpec const& spec) {
+[[nodiscard]] inline result<std::string> tier1_preregistration_json(Tier1ScreenSpec const& declared) {
+    Tier1ScreenSpec const spec = detail::tier1_with_lesson(declared);
     using json::Value;
     using Obj = std::vector<std::pair<std::string, Value>>;
     auto lesson = detail::tier1_lesson_digest(spec.gross_harm.candidate, spec.gross_harm.template_version,
@@ -706,25 +693,6 @@ public:
         return {};
     }
 
-    // Every attempt for the family: the lineage's attempts filed under this subject key, plus every unreadable
-    // record (whose subject cannot be known -- counting it is the safe direction). Ordinals are family-wide.
-    [[nodiscard]] result<std::vector<Tier1AttemptRecord>> attempts(Tier1Family const& family) const {
-        auto all = lineage_attempts(family.lineage);
-        if (!all) return std::unexpected(all.error());
-        return family_view(*all, family.subject);
-    }
-
-    // The family view of an already-read lineage history -- so both views can come from one read.
-    [[nodiscard]] static std::vector<Tier1AttemptRecord> family_view(std::vector<Tier1AttemptRecord> const& lineage,
-                                                                     std::string const& subject) {
-        std::vector<Tier1AttemptRecord> out;
-        for (Tier1AttemptRecord const& r : lineage) {
-            if (r.unreadable || r.subject == subject) out.push_back(r);
-        }
-        for (std::size_t i = 0; i < out.size(); ++i) out[i].ordinal = i + 1;
-        return out;
-    }
-
     // Every attempt from the lineage, whatever its subject, in start order. A `completed` record attaches to
     // the `started` record with its `attempt_id`; one that names no such attempt, names one already
     // completed, or cannot be decoded, is an attempt of its own marked `unreadable`. So is a `started` record
@@ -897,8 +865,9 @@ namespace detail {
 // `TrialSlot::trial_id`, which each screen namespaces with its own probe or suite id).
 template <rt::AppendLogStore Store, class InnerFactory, class SummarizerFactory>
 [[nodiscard]] task<Tier1ScreenResult> run_tier1_screen(Tier1AttemptLog<Store>& log, InnerFactory make_inner,
-                                                      SummarizerFactory make_summarizer, Tier1ScreenSpec spec) {
+                                                      SummarizerFactory make_summarizer, Tier1ScreenSpec declared) {
     Tier1ScreenResult result;
+    Tier1ScreenSpec const spec = detail::tier1_with_lesson(std::move(declared));
 
     if (auto bad = detail::validate_tier1_spec(spec); bad.has_value()) {
         result.setup_error = std::move(bad);
@@ -970,23 +939,16 @@ template <rt::AppendLogStore Store, class InnerFactory, class SummarizerFactory>
         result.attempt_log_error = done.error();
     }
 
-    // Without the lineage's history the approver cannot see how many times this lesson was tried, so the
-    // verdict is withheld -- the outcome AND the per-screen results that carry it (red team round 1: clearing
-    // only `outcome` left `probes[i].pass` and `gross_harm->flagged` readable).
-    auto withhold = [&result](error e) {
-        result.attempt_log_error = std::move(e);
-        result.probes.clear();
-        result.gross_harm.reset();
-    };
+    // The verdict is returned either way; if the lineage's history cannot be read back, `history_complete` stays
+    // false and the reason is reported, so the approver knows the attempt count is unknown.
+    result.outcome = outcome;
     auto lineage = log.lineage_attempts(result.family.lineage);
     if (!lineage) {
-        withhold(lineage.error());
+        result.attempt_log_error = lineage.error();
         co_return result;
     }
     result.lineage_attempts = std::move(*lineage);
     result.attempt_count = result.lineage_attempts.size();
-    result.family_attempts = Tier1AttemptLog<Store>::family_view(result.lineage_attempts, result.family.subject);
-    result.family_attempt_count = result.family_attempts.size();
     std::set<Digest> designs;
     for (Tier1AttemptRecord const& a : result.lineage_attempts) {
         if (a.unreadable) continue;
@@ -996,11 +958,11 @@ template <rt::AppendLogStore Store, class InnerFactory, class SummarizerFactory>
     result.distinct_preregistrations = designs.size();
     if (result.attempt_ordinal == 0) {
         // Our own `started` record no longer reads back: the log cannot be trusted to show the other attempts.
-        withhold(error{failure_class::fatal, "this attempt's own record is missing from the log",
-                       "eval.tier1_attempt_missing"});
+        result.attempt_log_error = error{failure_class::fatal, "this attempt's own record is missing from the log",
+                                         "eval.tier1_attempt_missing"};
         co_return result;
     }
-    result.outcome = outcome;
+    result.history_complete = true;
     co_return result;
 }
 

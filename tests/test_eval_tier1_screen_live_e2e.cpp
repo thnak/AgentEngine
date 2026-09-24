@@ -276,13 +276,13 @@ ev::Tier1ScreenSpec build_spec(LiveAttempt const& a, std::string const& lineage,
     s.operator_id   = "test_eval_tier1_screen_live_e2e";
     s.started_at    = started_at;
     s.max_model_calls = 200'000;
+    s.candidate        = a.candidate;  // the lesson, declared once (the screens get copies)
+    s.template_version = "v1";
+    s.lesson_salience  = 0.5f;
+    s.delivery         = a.delivery;
 
     ev::FollowRateProbeSpec p;
     p.probe_id           = "probe";
-    p.candidate          = a.candidate;
-    p.template_version   = "v1";
-    p.lesson_salience    = 0.5f;
-    p.delivery           = a.delivery;
     p.task_prompt        = user_message(a.probe_prompt);
     p.stub_tools         = {fixture(a.probe.tool, a.probe.description, a.probe.arg)};
     p.grader             = ev::make_tool_argument_grader(a.probe.tool, a.probe.arg, a.probe.value);
@@ -296,10 +296,6 @@ ev::Tier1ScreenSpec build_spec(LiveAttempt const& a, std::string const& lineage,
 
     ev::GrossHarmScreenSpec& g = s.gross_harm;
     g.suite_id         = "tier1-live-suite";
-    g.candidate        = a.candidate;
-    g.template_version = "v1";
-    g.lesson_salience  = 0.5f;
-    g.delivery         = a.delivery;
     for (std::uint64_t t = 0; t < sizes.tasks; ++t) {
         ev::RegressionTask task;
         task.task_id     = "ticket-" + std::to_string(t);
@@ -364,7 +360,7 @@ json::Value attempt_end_line(LiveAttempt const& a, ev::Tier1ScreenResult const& 
                 {"outcome", str(r.outcome ? std::string(ev::tier1_screen_outcome_name(*r.outcome)) : "withheld")},
                 {"attempt_count", num(static_cast<double>(r.attempt_count))},
                 {"attempt_ordinal", num(static_cast<double>(r.attempt_ordinal))},
-                {"family_attempt_count", num(static_cast<double>(r.family_attempt_count))},
+                {"history_complete", json::Value::make_bool(r.history_complete)},
                 {"distinct_preregistrations", num(static_cast<double>(r.distinct_preregistrations))},
                 {"n_per_arm", num(static_cast<double>(sizes.n_per_arm))},
                 {"tasks", num(static_cast<double>(sizes.tasks))},
@@ -494,9 +490,8 @@ int analyze(fs::path const& dir) {
               std::format("H2 [{}]: headline reads attempt {} of {} (expected {} of {})", label, ordinal, count, i + 1,
                           i + 1));
         if (label == "reworded-retry") {
-            check(get_num(end, "family_attempt_count") == 1,
-                  "H2 [reworded-retry]: the swapped subject is a new family (its own view has 1 attempt), "
-                  "yet the headline above counts the lineage");
+            check(count == i + 1,
+                  "H2 [reworded-retry]: the swapped subject does not reset the count -- the headline is the lineage's");
         }
 
         // H3 + H4: re-grade every counted trial from the model's own logged calls.
@@ -728,9 +723,9 @@ int main(int argc, char** argv) {
         auto const secs =
             std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - t0).count();
         actions->write(attempt_end_line(a, r, sizes));
-        std::fprintf(stderr, "  [%s] outcome=%s attempt %zu of %zu (family %zu), %lld s%s%s\n", a.label.c_str(),
+        std::fprintf(stderr, "  [%s] outcome=%s attempt %zu of %zu (history complete %d), %lld s%s%s\n", a.label.c_str(),
                      r.outcome ? std::string(ev::tier1_screen_outcome_name(*r.outcome)).c_str() : "withheld",
-                     r.attempt_ordinal, r.attempt_count, r.family_attempt_count, static_cast<long long>(secs),
+                     r.attempt_ordinal, r.attempt_count, r.history_complete ? 1 : 0, static_cast<long long>(secs),
                      r.setup_error ? (" setup_error=" + r.setup_error->code).c_str() : "",
                      r.attempt_log_error ? (" log_error=" + r.attempt_log_error->code).c_str() : "");
         if (!r.probes.empty()) {

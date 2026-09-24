@@ -144,7 +144,11 @@ struct SplitMessages {
     std::vector<Message const*> rest;
 };
 
-[[nodiscard]] inline SplitMessages split_system_messages(std::vector<Message> const& messages) {
+// `approval_code` (ADR-183): the request's code for approved-lesson fences; if empty and an approved lesson is fenced,
+// one is drawn here, so the preamble and the fences always agree.
+[[nodiscard]] inline SplitMessages split_system_messages(std::vector<Message> const& messages,
+                                                         std::string approval_code = {}) {
+    if (approval_code.empty() && has_fenced_approved_lesson(messages)) approval_code = new_request_approval_code();
     SplitMessages out;
     auto append_fragment = [&out](std::string const& text) {
         if (text.empty()) return;
@@ -160,7 +164,8 @@ struct SplitMessages {
                 // is checked by `needs_system_channel_fence` itself, so an empty tainted item still
                 // contributes nothing at all rather than a content-free marker pair.
                 if (needs_system_channel_fence(m.role, item)) {
-                    append_fragment(fence_untrusted_text(t->text, item.origin, item.approval));
+                    append_fragment(fence_untrusted_text(t->text, item.origin,
+                                                         item.approval.empty() ? std::string_view{} : approval_code));
                 } else {
                     append_fragment(neutralize_outbound_text(t->text));  // ADR-183: no marker outside a real fence
                 }
@@ -175,7 +180,7 @@ struct SplitMessages {
     // there is something to explain, so a request with no tainted system content is byte-identical
     // to before this fix.
     if (!out.system_text.empty() && has_fenced_system_content(messages)) {
-        std::string prefixed = untrusted_fence_preamble_for(messages);  // ADR-183: plus its sentence when needed
+        std::string prefixed = untrusted_fence_preamble_for(messages, approval_code);  // ADR-183: + its sentence
         prefixed += "\n\n";
         prefixed += out.system_text;
         out.system_text = std::move(prefixed);
@@ -210,6 +215,7 @@ struct SplitMessages {
                 {"type", json::Value::make_string("tool_use")},
                 {"id", json::Value::make_string(tc->call_id)},
                 {"name", json::Value::make_string(tc->tool_name)},
+                // ADR-183: cleaned BEFORE parsing, escapes included -- parsing turns an escaped glyph into a real one.
                 {"input", translate_tool_use_input(neutralize_outbound_text(tc->arguments_json))},
             };
             blocks.push_back(json::Value::make_object(std::move(block)));
@@ -217,13 +223,14 @@ struct SplitMessages {
             std::string content_text;
             for (ContentItem const& inner : tr->content) {
                 if (auto const* it = std::get_if<Text>(&inner.value)) {
-                    content_text += neutralize_outbound_text(it->text);
+                    content_text += it->text;
                 } else if (auto const* d = std::get_if<Data>(&inner.value)) {
-                    content_text += neutralize_outbound_text(d->json);
+                    content_text += d->json;
                 } else if (auto const* e = std::get_if<Error>(&inner.value)) {
-                    content_text += neutralize_outbound_text(e->message);
+                    content_text += e->message;
                 }
             }
+            content_text = neutralize_outbound_text(content_text);  // ADR-183: after the parts are joined
             std::vector<std::pair<std::string, json::Value>> block{
                 {"type", json::Value::make_string("tool_result")},
                 {"tool_use_id", json::Value::make_string(tr->call_id)},

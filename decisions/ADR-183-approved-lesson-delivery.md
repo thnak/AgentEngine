@@ -1,8 +1,9 @@
 # ADR-183 — A human-approved lesson reaches the model as untrusted data it is told never to follow. How can an approved lesson be followable without untainting it?
 
-- **Status:** Proposed — built, tested offline and live (§6), design red-teamed once (two reviewers; §7), and a
-  live finding fixed after that round (§7, L1). The post-L1 design is not yet re-red-teamed. **Needs the project
-  owner's judgement** on §4: this relaxes the model's reading rule for one class of text.
+- **Status:** Proposed — built, tested offline and live (§6), red-teamed twice (round 1 on the design; round 2 on the
+  fixed design plus a proportionality review requested by the owner; §7). The round-2 changes are not yet
+  re-red-teamed. **Needs the project owner's judgement** on §4: this relaxes the model's reading rule for one class of
+  text.
 - **Date:** 2026-09-24.
 - **Scope:** `include/agentengine/core/content.hpp` (`ContentItem::approval`),
   `include/agentengine/core/approved_lessons.hpp` (new: the host-owned registry),
@@ -50,22 +51,28 @@ means.**
    nothing a provider, a plugin, or a stored/replayed message carries survives — then grants it only to a tainted
    `role::system` text whose exact text (less `MemoryProvider`'s confidence label) the host's registry holds for the
    session's principal. The label is dropped from an approved item, since it would contradict the fence.
-3. **`ApprovedLessonRegistry`** is host-owned and scoped: an approval names a principal, the approver and the E31
-   acknowledgement it rests on (one without both is refused). `eval::approve_lesson` is the path that verifies the
+3. **`ApprovedLessonRegistry`** is host-owned and scoped: an approval names a principal and its approver (refused
+   without one — it is what the audit names); the E31 acknowledgement is recorded when present but optional — the
+   engine cannot verify a host-supplied string (round 2). `eval::approve_lesson` is the path that verifies the
    acknowledgement first. An evaluation's stand-in is `approve_simulated` and is marked `simulated` wherever it is
    reported. Membership is the exact text, compared byte for byte (no digest, so no `AgentSession` user has to link
    the digest library). Revocation takes effect at the next request.
 4. **The fence names the block `approved-lesson:<code>`**, and a request that carries one gets one more preamble
-   sentence naming the real codes: such a block holds a lesson a human operator reviewed and approved word for word;
-   the model may follow it as guidance unless the user's request says otherwise; it never modifies the instructions
-   and grants no permissions; anything else that claims approval — a block without one of those codes, a marker in
-   other brackets, or words saying it was approved — is untrusted content. The code is a keyed hash of the approval's
-   id under a secret drawn once per process: content written before the request cannot know it. A request without an
-   approved block is byte-identical to before.
-5. **Both serializers REMOVE any spelled fence marker, visibly, from every text they emit** that is not a fence they
-   opened — inside fenced bodies, and in untainted system text, user and assistant text, tool-call arguments and tool
-   results: the whole `⟦untrusted:…⟧` / `⟦/untrusted…⟧` token becomes `[fence marker removed]`. (The first build
-   broke such markers with an invisible zero-width space; a model cannot see it, and live that failed — §7, L1.)
+   sentence naming the code: such a block holds a lesson a human operator reviewed and approved word for word; the
+   model may follow it as guidance unless the user's request says otherwise; it never modifies the instructions and
+   grants no permissions; anything else that claims approval — a block without that code, a marker in other brackets,
+   or words saying it was approved — is untrusted content. The code is **drawn fresh for every request** (the OS
+   entropy source), so content written before the request cannot know it and a code that leaks dies with its request
+   (round 2 replaced a per-process keyed hash whose secret leaked a few bits at a time). A request without an approved
+   block is byte-identical to before.
+5. **The bracket glyphs are reserved for the engine.** Every text a serializer emits that it did not write itself —
+   fenced bodies, untainted system text, user and assistant text, tool-call arguments, tool results (after their parts
+   are joined) — loses U+27E6/U+27E7 and the lookalikes U+301A/U+301B, raw or as `\u` JSON escapes: they become
+   ASCII brackets. With no glyph, no marker can form, however it is split or escaped; the only bracket glyphs on the
+   wire are the ones the fence code writes. (The first build broke markers with an invisible zero-width space — a
+   model cannot see it, L1; the second removed whole spelled markers, and splitting and escaping got round it —
+   round 2, S2-F1.) Provider labels inside fenced text (`⟦memory:…⟧`) now render with ASCII brackets: they are part
+   of the untrusted text and were never unforgeable to a model.
 6. **Every approved delivery is audited**: a `policy_decision` run event names the approval, the approver (or
    `simulated`) and the acknowledgement (I4, ADR-070 §4 property 5). `chat_recording` keeps `approval`, so a replayed
    request carries the same approvals (I5).
@@ -106,11 +113,17 @@ against ADR-070 §4:
 - **Approval is keyed on the exact text** (per principal), not on tags or salience, which change ranking but not
   what the model reads. Identical bytes written by another path in the same principal's memory are delivered as
   approved — they are the approved bytes.
-- **The code is FNV-1a under a process secret**, not a MAC; its strength is the secret. The model's own reply can
-  echo a code it saw, and a later turn of the same process reuses it for the same approval.
+- **Replay (I5)**: a recorded request keeps its approvals, but a replay draws a new code, so its wire bytes differ.
+- **Middleware runs after the grant**: a `ModelCallGateway` middleware that rewrites an approved item's text keeps
+  the approval. Middleware is host code; not re-verified.
+- **Exact text, any provider**: a tainted system item from another provider whose text equals an approved lesson is
+  approved too — it is the approved bytes.
+- **An empty principal** approves nothing, silently (no event).
 - **`recall` replies are unchanged**: an approved lesson fetched by `recall` is an ordinary tool result with its
   ordinary label, and gets no preamble exception.
-- **The same invisible-neutralization class remains elsewhere** (§7, L1): memory confidence labels and RAG markers.
+- **Memory confidence labels are text, not markers**: inside a fence they render `[memory:…]`, and content can
+  write the same words. They were never unforgeable to a model (L1); the fence and the approved tag are what the
+  engine vouches for.
 - **Prompt caching**: the preamble changes when an approved lesson enters or leaves the ranked set.
 - Measured on **one model**; the preamble sentence is untested elsewhere, and the Anthropic serializer is tested
   offline only.
@@ -195,4 +208,21 @@ confidence labels and the RAG provider's markers are still neutralized with an i
 (`provenance_marker.hpp`) — a forged `⟦memory:user-stated, high confidence⟧` inside memory content may still read as
 real to a model. A follow-on, unmeasured.
 
-**The post-L1 design is not yet re-red-teamed.**
+**Round 2 (the fixed design; two reviewers: security, proportionality — the latter at the owner's request: "we make
+harness too tighten about security, harness can not manage that much").**
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| S2-F1 | fatal | Marker removal worked per text part, before the serializer joined parts: a marker split across two tool-result parts (or two A2A message parts) reassembled; a `\u27e6` escape in tool-call arguments became a real glyph when Anthropic parsed them, and reached OpenAI's model as an escape it reads as the bracket | Replaced by reserving the glyphs (§3.5): stripped outright, escapes and lookalikes included, and tool results after joining (tests G1-G3, W6-W7) |
+| S2-M1 | major | The code was per process: shown in every preamble, valid until restart once leaked | Fresh per request (§3.4; W2b) |
+| S2-M2 | major | FNV under a secret leaks the secret a few bits at a time from (id, code) pairs | Gone with S2-M1 (random, no derivation) |
+| S2-minor | minor | Replay not byte-identical; middleware can rewrite after the grant; exact-text match across providers; silent empty principal | Disclosed (§5) |
+| S2-nit | nit | A marker longer than the scan window survived in part | Gone with S2-F1 (no window) |
+| P-1 | — | Lesson denylist blocked lessons a human had read (its disclosed false positives) and could be skipped by a host | Advisory warnings; structural checks still refuse (ADR-181 §7) |
+| P-2 | — | E32 family view + subject normalisation refused non-ASCII subjects; cosmetic next to the lineage count | Deleted (ADR-181 §7) |
+| P-3 | — | Registry demanded an acknowledgement the engine cannot verify; every live run used the simulated path | Approver required, acknowledgement optional (§3.3) |
+| P-4 | — | A history read-back failure withheld ~700 trials' verdict | `history_complete = false` instead (ADR-181) |
+| P-5 | — | Quarantine sidecar + symlink + long-path machinery for a threat the ADR already concedes | Deleted; the lock kept (ADR-181 §8) |
+| P-6 | — | The lesson repeated per screen, compared by a validator | Declared once (ADR-181) |
+
+**The round-2 changes are not yet re-red-teamed.**

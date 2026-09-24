@@ -418,14 +418,15 @@ fails or the record does not read back, nothing runs; (4) runs the probe(s), sto
 (all must pass, §6 G4), then the gross-harm screen only if every probe passed; (5) appends a `completed` record
 naming the same `attempt_id`, with the figures, seeds and every invalidity reason; (6) reads the lineage's log back once
 and returns the result: this attempt's ordinal, the attempt count, how many distinct designs were tried (all three
-over the lineage, round 3), every attempt's stored design and figures, and the narrower family view filtered from
-the same read. If that history cannot be read, or no longer contains this attempt, the verdict
-is withheld — `outcome` and the per-screen results both. The family key is the candidate's `subject`, normalised to
-its lower-cased ASCII letters and digits (a subject with a non-ASCII byte is refused), plus a host-supplied `lineage`.
-Because the subject is model-chosen, the log is kept per **lineage** and every result shows every attempt from
-that lineage under any subject (`lineage_attempts`, round 2), and counts them in its headline figures (round 3): a
-retry that swaps words between subject and key, or spells `dep1oy`, opens a new family but neither hides the earlier
-attempts nor resets the count. The log is a `Tier1AttemptLog` over any
+over the lineage, round 3), and every attempt's stored design and figures. If that history cannot be read back,
+or no longer contains this attempt, the verdict is still returned but marked `history_complete = false` with the
+reason (it used to be withheld — ADR-183 proportionality review, below). Attempts are counted per host-supplied
+**lineage**; the candidate's `subject` is recorded as written, as a label. A retry that swaps words between subject
+and key, or spells `dep1oy`, is still attempt N+1 of its lineage. *Simplified by the ADR-183 proportionality review
+(2026-09-24):* the per-subject family view and its subject normalisation (which refused any non-ASCII subject) are
+gone — the lineage count already covered what they tried to; the lesson and its delivery are declared once on
+`Tier1ScreenSpec` and copied into every screen (the validator that compared N+1 copies, and bit-exact salience, are
+gone with the copies); a torn-tail repair no longer keeps a quarantine sidecar (below). The log is a `Tier1AttemptLog` over any
 `rt::AppendLogStore`; an attempt is its random `attempt_id`, never the
 store's sequence number, so even a store that repeats sequence numbers cannot mix two attempts up (tested). A crashed
 attempt stays counted as started-but-not-completed; a record that cannot be decoded, a completion for an unknown or
@@ -1422,6 +1423,22 @@ against a 180 ms bound), unrelated to this slice; the push-triggered run on the 
 
 **The E32 round-3 fixes are not yet re-red-teamed.**
 
+**Proportionality review (2026-09-24, during ADR-183's round 2; the project owner: "we make harness too tighten
+about security, harness can not manage that much").** A reviewer ranked the E32 and lesson machinery KEEP /
+SIMPLIFY / DELETE / MOVE TO HOST for an output that is advisory to a human and a log the host can rewrite. Applied:
+
+| Item | Decision | What comes back |
+|---|---|---|
+| Lesson shape denylist (URL, path, shell, imperative prefixes) | **Advisory**: `lesson_shape_warnings()` for the approver; only structural hazards (control bytes, template delimiters, reserved brackets, length, common tokens) still refuse | A shape-flagged lesson reaches the approver, who reads its exact bytes (E31); the denylist's own disclosed false positives no longer block ("python is the primary...") |
+| Family view + subject normalisation (refused non-ASCII subjects) | **Deleted** | A per-subject count; cosmetic, since the lineage count stays the headline. Non-ASCII subjects are screened |
+| Withholding the verdict when the history cannot be read | **`history_complete = false`** instead | A caller that ignores the flag shows a verdict without its retry history |
+| The lesson repeated per screen + the mismatch validator + bit-exact salience | **Declared once** on `Tier1ScreenSpec` | Nothing: the screens cannot disagree |
+| Quarantine sidecar, exclusive create, random names, long paths | **Deleted** (lock and torn-tail cut kept) | A corrupted header mid-file loses the records after it (disclosed above) |
+| Registry: E31 acknowledgement required | **Optional** (approver still required) | Nothing the engine could verify |
+
+Kept as proportionate: pre-registration and the stored design, the lineage count and every attempt's figures, the
+read-back before any trial runs, unreadable records counted as attempts, the OS file lock (a real data-loss bug).
+
 ## 8. Residuals
 
 - **External validity.** A suite passing says nothing about production tasks. Task authorship (who writes them, how
@@ -1470,8 +1487,7 @@ against a 180 ms bound), unrelated to this slice; the push-triggered run on the 
   - stop a host calling `run_follow_rate_screen`/`run_gross_harm_screen` directly — they stay public, and only
     `run_tier1_screen` counts;
   - stop a caller inventing a new `lineage` (host-supplied until ADR-179's `source_span` shape exists to derive it
-    from), or a candidate using a genuinely different word for the same subject (the key only folds case, spacing,
-    punctuation and non-ASCII lookalikes, which it refuses);
+    from) — the lineage is the counted unit, so a host that mints a fresh lineage per retry defeats the count;
   - bound the log it reads: each attempt reads its lineage's whole log twice (the read-back and the final
     history), each append reads the whole file under its lock, and every read re-hashes every stored design — a
     lineage is a handful of lessons' ~340-run attempts, so this is small in practice, but it is not capped;
@@ -1480,12 +1496,12 @@ against a 180 ms bound), unrelated to this slice; the push-triggered run on the 
   salience exactly on its own, but the ack digest is unchanged.
 - **`rt::FileAppendLogStore` concurrency (fixed in the E32 red team):** appends now hold an exclusive OS file lock
   (`LockFileEx`/`flock`) and readers a shared one (tested across real child processes, L10), and a torn tail is cut
-  before the next append — after the cut bytes are copied to a `.quarantine-*` sidecar, never destroyed. Not fsync'd
-  (a power loss can drop records the OS had not flushed). The sidecar is created exclusively under a random name
-  and never through an existing name or link (round 3). `flock` is advisory and unreliable on some network
-  filesystems, so a log shared across hosts over NFS is not protected. **No per-record checksum**: a corrupted length
-  header in the middle of the file is indistinguishable from a torn tail, so the records after it disappear from
-  readers (they survive in the sidecar once the next append runs). For E32 that means disk corruption can make a
+  before the next append. Not fsync'd (a power loss can drop records the OS had not flushed). `flock` is advisory
+  and unreliable on some network filesystems, so a log shared across hosts over NFS is not protected. **No per-record
+  checksum**: a corrupted length header in the middle of the file is indistinguishable from a torn tail, so the
+  records after it disappear from readers, and the next append cuts them for good (the round-2/3 quarantine sidecar
+  that kept them was removed by the ADR-183 proportionality review: ~150 lines of platform code with an attack surface
+  of its own, guarding against disk corruption or a writer who could already rewrite the log). For E32 that means disk corruption can make a
   lineage's count drop — the same class as a host that can write the store, and outside what an append log without
   checksums can detect — and the drop is **silent** to the caller: the append that cuts returns an ordinary seq, and
   the seqs it cuts are handed out again (I4; round 3). A checksummed record format is the follow-on. Every append

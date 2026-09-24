@@ -145,7 +145,7 @@ auto make_factory(Behaviour b, std::shared_ptr<CallLog> calls, ae::eval::Tier1At
                   ae::eval::Tier1Family family = {}, ae::Digest expected_prereg = {}) {
     return [b, calls, log, family, expected_prereg](ae::eval::TrialSlot const& slot) {
         if (!calls->counted_before_first_trial.has_value() && log != nullptr) {
-            auto attempts = log->attempts(family);
+            auto attempts = log->lineage_attempts(family.lineage);
             calls->counted_before_first_trial = attempts.has_value() && !attempts->empty() &&
                                                 attempts->back().preregistration == expected_prereg &&
                                                 !attempts->back().completed;
@@ -211,6 +211,9 @@ ae::eval::Tier1ScreenSpec spec() {
     s.suite_version = "graders-2026-09-23";
     s.operator_id   = "host-operator-1";
     s.started_at    = "2026-09-23T10:00:00Z";
+    s.candidate        = candidate();
+    s.template_version = "v1";
+    s.lesson_salience  = 0.3f;
     s.probes        = {probe()};
     ae::eval::GrossHarmScreenSpec& g = s.gross_harm;
     g.suite_id         = "dev-suite";
@@ -312,29 +315,30 @@ int main() {
         AE_CHECK(r.preregistration_digest == *expected, "T1: the result names the pre-registration digest");
         AE_CHECK(r.attempt_ordinal == 1 && r.attempt_count == 1 && r.distinct_preregistrations == 1,
                  "T1: attempt 1 of 1");
-        AE_CHECK(r.family.subject == "deployregion" && r.family.lineage == "session-7",
-                 "T1: the family is the candidate's normalised subject plus the host's lineage");
-        AE_CHECK(r.attempt_id.size() == 32 && r.family_attempts.size() == 1 &&
-                     r.family_attempts[0].attempt_id == r.attempt_id &&
-                     r.family_attempts[0].operator_id == "host-operator-1" &&
-                     r.family_attempts[0].started_at == "2026-09-23T10:00:00Z",
+        AE_CHECK(r.family.subject == "deploy-region" && r.family.lineage == "session-7" && r.history_complete,
+                 "T1: the attempt is filed under the host's lineage (the subject is a label, as written), with its "
+                 "history complete");
+        AE_CHECK(r.attempt_id.size() == 32 && r.lineage_attempts.size() == 1 &&
+                     r.lineage_attempts[0].attempt_id == r.attempt_id &&
+                     r.lineage_attempts[0].operator_id == "host-operator-1" &&
+                     r.lineage_attempts[0].started_at == "2026-09-23T10:00:00Z",
                  "T1 (I4): the attempt is recorded with its own random id, who started it and when");
         auto const design = ev::tier1_preregistration_json(spec());
-        AE_CHECK(design.has_value() && r.family_attempts.size() == 1 &&
-                     r.family_attempts[0].preregistration_json == *design &&
-                     r.family_attempts[0].preregistration == *expected,
+        AE_CHECK(design.has_value() && r.lineage_attempts.size() == 1 &&
+                     r.lineage_attempts[0].preregistration_json == *design &&
+                     r.lineage_attempts[0].preregistration == *expected,
                  "T1: the design itself is stored with its digest, so a changed design can be compared, not just noticed");
         AE_CHECK(!r.steering_manifest_run, "T1: says arm S did not run -- 'cleared' excludes it");
         AE_CHECK(r.probes.size() == 1 && r.probes[0].pass == true && r.gross_harm.has_value() &&
                      r.gross_harm->flagged == false,
                  "T1: this attempt's full detail from both screens");
         AE_CHECK(calls->probe_calls == 20 && calls->harm_calls == 60, "T1: 2x10 probe trials, then 2x5x6 harm trials");
-        bool figures_match = r.family_attempts.size() == 1 && r.family_attempts[0].completed &&
-                             r.family_attempts[0].outcome == ev::tier1_screen_outcome::cleared &&
-                             r.family_attempts[0].probes.size() == 1 && r.family_attempts[0].gross_harm.has_value();
+        bool figures_match = r.lineage_attempts.size() == 1 && r.lineage_attempts[0].completed &&
+                             r.lineage_attempts[0].outcome == ev::tier1_screen_outcome::cleared &&
+                             r.lineage_attempts[0].probes.size() == 1 && r.lineage_attempts[0].gross_harm.has_value();
         if (figures_match) {
-            auto const& p = r.family_attempts[0].probes[0];
-            auto const& h = *r.family_attempts[0].gross_harm;
+            auto const& p = r.lineage_attempts[0].probes[0];
+            auto const& h = *r.lineage_attempts[0].gross_harm;
             figures_match = p.probe_id == "deploy-region-probe" && p.seed == 42 && p.pass == true &&
                             p.treatment_followed == 10 && p.baseline_followed == 0 && p.n_per_arm == 10 &&
                             p.treatment_lower_bound == r.probes[0].treatment_lower_bound &&
@@ -357,9 +361,9 @@ int main() {
         AE_CHECK(r.outcome == ev::tier1_screen_outcome::inert, "T2: never followed -> inert");
         AE_CHECK(!r.gross_harm.has_value() && calls->harm_calls == 0,
                  "T2: the ~300-run gross-harm screen is not spent on an inert lesson");
-        AE_CHECK(r.family_attempts.size() == 1 && r.family_attempts[0].outcome == ev::tier1_screen_outcome::inert &&
-                     !r.family_attempts[0].gross_harm.has_value() && r.family_attempts[0].probes.size() == 1 &&
-                     r.family_attempts[0].probes[0].pass == false,
+        AE_CHECK(r.lineage_attempts.size() == 1 && r.lineage_attempts[0].outcome == ev::tier1_screen_outcome::inert &&
+                     !r.lineage_attempts[0].gross_harm.has_value() && r.lineage_attempts[0].probes.size() == 1 &&
+                     r.lineage_attempts[0].probes[0].pass == false,
                  "T2: the log records the failed probe and no harm figures");
     }
 
@@ -380,17 +384,17 @@ int main() {
         AE_CHECK(second.outcome == ev::tier1_screen_outcome::cleared, "T3: the retry comes out clean");
         AE_CHECK(second.attempt_ordinal == 2 && second.attempt_count == 2,
                  "T3 (E32): the clean result names itself attempt 2 of 2");
-        AE_CHECK(second.family_attempts.size() == 2 &&
-                     second.family_attempts[0].outcome == ev::tier1_screen_outcome::harmful &&
-                     second.family_attempts[0].gross_harm.has_value() &&
-                     second.family_attempts[0].gross_harm->flagged == true &&
-                     second.family_attempts[1].outcome == ev::tier1_screen_outcome::cleared,
+        AE_CHECK(second.lineage_attempts.size() == 2 &&
+                     second.lineage_attempts[0].outcome == ev::tier1_screen_outcome::harmful &&
+                     second.lineage_attempts[0].gross_harm.has_value() &&
+                     second.lineage_attempts[0].gross_harm->flagged == true &&
+                     second.lineage_attempts[1].outcome == ev::tier1_screen_outcome::cleared,
                  "T3 (E32): and shows the earlier HARMFUL attempt's figures, not only the passing one");
         AE_CHECK(second.distinct_preregistrations == 1 && second.preregistration_digest == first.preregistration_digest,
                  "T3: a changed seed is the same pre-registered design (the seed is recorded with the figures)");
-        AE_CHECK(second.family_attempts[1].probes.size() == 1 && second.family_attempts[1].probes[0].seed == 7 &&
-                     second.family_attempts[1].gross_harm.has_value() && second.family_attempts[1].gross_harm->seed == 7 &&
-                     second.family_attempts[0].gross_harm->seed == 42,
+        AE_CHECK(second.lineage_attempts[1].probes.size() == 1 && second.lineage_attempts[1].probes[0].seed == 7 &&
+                     second.lineage_attempts[1].gross_harm.has_value() && second.lineage_attempts[1].gross_harm->seed == 7 &&
+                     second.lineage_attempts[0].gross_harm->seed == 42,
                  "T3: each attempt's seeds are recorded with its own figures (I5)");
     }
 
@@ -402,12 +406,12 @@ int main() {
         (void)drive(ev::run_tier1_screen(log, make_factory<Store>(Behaviour{}, calls), summarizer_factory(), spec()));
 
         auto rekeyed = spec();
-        for (auto* c : {&rekeyed.probes[0].candidate, &rekeyed.gross_harm.candidate}) {
+        for (auto* c : {&rekeyed.candidate}) {
             c->key = "primary";
             c->value = "the primary region is eu-west-1";
         }
         auto r = drive(ev::run_tier1_screen(log, make_factory<Store>(Behaviour{}, calls), summarizer_factory(), rekeyed));
-        AE_CHECK(r.attempt_ordinal == 2 && r.attempt_count == 2 && r.family_attempt_count == 2,
+        AE_CHECK(r.attempt_ordinal == 2 && r.attempt_count == 2,
                  "T4 (§3.3): a re-keyed, re-worded candidate with the same subject and lineage is attempt 2 of its family");
         AE_CHECK(r.distinct_preregistrations == 2,
                  "T4: and the approver sees the design changed between attempts (a different rendered lesson)");
@@ -432,11 +436,10 @@ int main() {
             {"suite_version", [](ev::Tier1ScreenSpec& s) { s.suite_version = "graders-2"; }},
             {"exact salience", [](ev::Tier1ScreenSpec& s) {
                  float const v = std::nextafter(0.3f, 1.0f);  // the rendered digest writes six decimals only
-                 s.probes[0].lesson_salience = v;
-                 s.gross_harm.lesson_salience = v;
+                 s.lesson_salience = v;
              }},
             {"lesson value", [](ev::Tier1ScreenSpec& s) {
-                 s.probes[0].candidate.value = s.gross_harm.candidate.value = "the default region is eu-west-2";
+                 s.candidate.value = "the default region is eu-west-2";
              }},
             {"probe_id", [](ev::Tier1ScreenSpec& s) { s.probes[0].probe_id = "other-probe"; }},
             {"probe prompt", [](ev::Tier1ScreenSpec& s) { s.probes[0].task_prompt = user_message("other"); }},
@@ -511,25 +514,16 @@ int main() {
             {"T6: no probes", "eval.tier1_no_probes", [](ev::Tier1ScreenSpec& s) { s.probes.clear(); }},
             {"T6: duplicate probe ids", "eval.tier1_probe_id_duplicate",
              [](ev::Tier1ScreenSpec& s) { s.probes.push_back(s.probes[0]); }},
-            {"T6: the probe screens a different lesson value", "eval.tier1_lesson_mismatch",
+            {"T6: a probe carrying some other lesson is overwritten by the spec's one lesson -- it runs", "",
              [](ev::Tier1ScreenSpec& s) { s.probes[0].candidate.value = "the default region is us-east-1"; }},
-            {"T6: the probe renders at a different salience", "eval.tier1_lesson_mismatch",
-             [](ev::Tier1ScreenSpec& s) { s.probes[0].lesson_salience = 0.9f; }},
-            {"T6: the probe's salience differs in the last bit (the rendered digest cannot see it)",
-             "eval.tier1_lesson_mismatch",
-             [](ev::Tier1ScreenSpec& s) { s.probes[0].lesson_salience = std::nextafter(0.3f, 1.0f); }},
-            {"T6: the probe's candidate has another source span only", "",  // same lesson: allowed
-             [](ev::Tier1ScreenSpec& s) { s.probes[0].candidate.source_span = "run-7/turn-3"; }},
             {"T6: a gross-harm spec its own screen would refuse", "eval.gross_harm_no_tasks",
              [](ev::Tier1ScreenSpec& s) { s.gross_harm.tasks.clear(); }},
             {"T6: a probe spec its own screen would refuse", "eval.follow_rate_n_zero",
              [](ev::Tier1ScreenSpec& s) { s.probes[0].n_per_arm = 0; }},
             {"T6: no operator_id (I4)", "eval.tier1_actor_missing", [](ev::Tier1ScreenSpec& s) { s.operator_id.clear(); }},
             {"T6: no started_at (I4)", "eval.tier1_actor_missing", [](ev::Tier1ScreenSpec& s) { s.started_at.clear(); }},
-            {"T6: a subject with a non-ASCII lookalike letter", "eval.tier1_subject_unkeyable",
-             [](ev::Tier1ScreenSpec& s) {
-                 s.probes[0].candidate.subject = s.gross_harm.candidate.subject = "d\xd0\xb5ploy-region";  // Cyrillic e (U+0435)
-             }},
+            {"T6: a non-ASCII subject is screened like any other (ADR-183: no subject normalisation)", "",
+             [](ev::Tier1ScreenSpec& s) { s.candidate.subject = "tri\xe1\xbb\x83n-khai-vung"; }},
             {"T6: the screens' call budgets, summed, exceed the attempt's", "eval.tier1_model_call_budget",
              [](ev::Tier1ScreenSpec& s) { s.max_model_calls = s.gross_harm.max_model_calls; }},
             {"T6: the summed budget exactly fits", "",
@@ -542,8 +536,7 @@ int main() {
             auto s = spec();
             c.mutate(s);
             auto r = drive(ev::run_tier1_screen(log, make_factory<Store>(Behaviour{}, calls), summarizer_factory(), s));
-            auto const attempts = log.attempts(
-                ev::Tier1Family{ev::tier1_family_subject_key(s.gross_harm.candidate.subject).value_or(""), s.lineage});
+            auto const attempts = log.lineage_attempts(s.lineage);
             if (std::string_view(c.code).empty()) {
                 AE_CHECK(!r.setup_error.has_value() && r.outcome.has_value(), c.label);
             } else {
@@ -577,12 +570,14 @@ int main() {
             return inner(slot);
         };
         auto r = drive(ev::run_tier1_screen(log, factory, summarizer_factory(), spec()));
-        AE_CHECK(!r.outcome.has_value() && r.attempt_log_error.has_value() && r.attempt_log_error->code == "test.read",
-                 "T8: the history read failed -> no outcome, rather than a result that looks like the only attempt");
-        AE_CHECK(r.probes.empty() && !r.gross_harm.has_value(),
-                 "T8: and the per-screen verdicts are withheld too, not left readable in probes/gross_harm");
+        AE_CHECK(r.outcome.has_value() && !r.history_complete && r.attempt_log_error.has_value() &&
+                     r.attempt_log_error->code == "test.read",
+                 "T8: the history read failed -> the verdict is returned but marked history_complete = false, with "
+                 "the reason (ADR-183 proportionality: it used to be withheld and the run's figures thrown away)");
+        AE_CHECK(!r.probes.empty() && r.gross_harm.has_value() && r.attempt_count == 0,
+                 "T8: the per-screen results are kept; the attempt count is unknown (0), not claimed");
         store.fail_read = false;
-        auto a = log.attempts(family);
+        auto a = log.lineage_attempts(family.lineage);
         AE_CHECK(a.has_value() && a->size() == 1 && (*a)[0].completed && (*a)[0].outcome == ev::tier1_screen_outcome::cleared,
                  "T8: the attempt itself was still counted and completed in the log");
     }
@@ -599,7 +594,7 @@ int main() {
         auto r = drive(ev::run_tier1_screen(log, factory, summarizer_factory(), spec()));
         AE_CHECK(r.attempt_log_error.has_value() && r.attempt_log_error->code == "test.append" &&
                      r.outcome == ev::tier1_screen_outcome::cleared && r.attempt_count == 1 &&
-                     r.family_attempts.size() == 1 && !r.family_attempts[0].completed,
+                     r.lineage_attempts.size() == 1 && !r.lineage_attempts[0].completed,
                  "T9: the outcome stands, the error is reported, and the log shows a started, uncompleted attempt");
     }
 
@@ -620,11 +615,11 @@ int main() {
         auto r = drive(ev::run_tier1_screen(log, make_factory<Store>(Behaviour{}, calls), summarizer_factory(), spec()));
         AE_CHECK(r.outcome == ev::tier1_screen_outcome::cleared && r.attempt_count == 4 && r.attempt_ordinal == 4,
                  "T10: a crashed attempt, a corrupt record and an orphan completion each count -> this is attempt 4 of 4");
-        AE_CHECK(r.family_attempts.size() == 4 && !r.family_attempts[0].completed &&
-                     !r.family_attempts[0].unreadable && r.family_attempts[0].preregistration == *old_digest &&
-                     r.family_attempts[0].preregistration_json == old_design &&
-                     r.family_attempts[1].unreadable && r.family_attempts[2].unreadable &&
-                     r.family_attempts[3].completed,
+        AE_CHECK(r.lineage_attempts.size() == 4 && !r.lineage_attempts[0].completed &&
+                     !r.lineage_attempts[0].unreadable && r.lineage_attempts[0].preregistration == *old_digest &&
+                     r.lineage_attempts[0].preregistration_json == old_design &&
+                     r.lineage_attempts[1].unreadable && r.lineage_attempts[2].unreadable &&
+                     r.lineage_attempts[3].completed,
                  "T10: each is shown for what it is (incomplete / unreadable / unreadable / completed)");
         AE_CHECK(r.distinct_preregistrations == 2, "T10: the crashed attempt ran a different design");
     }
@@ -645,7 +640,7 @@ int main() {
             });
         }
         for (auto& th : threads) th.join();
-        auto a = log.attempts(family);
+        auto a = log.lineage_attempts(family.lineage);
         std::set<std::string> ids;
         if (a.has_value()) {
             for (auto const& r : *a) ids.insert(r.attempt_id);
@@ -663,7 +658,7 @@ int main() {
         two.probes.push_back(probe("second-probe"));
         auto r = drive(ev::run_tier1_screen(log, make_factory<Store>(Behaviour{}, calls), summarizer_factory(), two));
         AE_CHECK(r.outcome == ev::tier1_screen_outcome::cleared && r.probes.size() == 2 &&
-                     r.family_attempts.back().probes.size() == 2,
+                     r.lineage_attempts.back().probes.size() == 2,
                  "T12: two probes that both pass -> both run and both are recorded");
 
         auto calls2 = std::make_shared<CallLog>();
@@ -700,8 +695,8 @@ int main() {
         auto calls = std::make_shared<CallLog>();
         auto r = drive(ev::run_tier1_screen(log, make_factory<ae::rt::FileAppendLogStore>(Behaviour{}, calls),
                                             summarizer_factory(), spec()));
-        AE_CHECK(r.attempt_ordinal == 2 && r.family_attempts.size() == 2 &&
-                     r.family_attempts[0].outcome == ev::tier1_screen_outcome::harmful,
+        AE_CHECK(r.attempt_ordinal == 2 && r.lineage_attempts.size() == 2 &&
+                     r.lineage_attempts[0].outcome == ev::tier1_screen_outcome::harmful,
                  "T13: after a restart the earlier harmful attempt is still counted and shown");
         (void)std::filesystem::remove_all(root, ec);
     }
@@ -716,11 +711,11 @@ int main() {
         std::size_t ordinal = 1;
         for (char const* variant : {"Deploy-Region", "deploy-region ", " deploy_region", "DEPLOY REGION"}) {
             auto s = spec();
-            s.probes[0].candidate.subject = s.gross_harm.candidate.subject = variant;
+            s.candidate.subject = variant;
             auto r = drive(ev::run_tier1_screen(log, make_factory<Store>(Behaviour{}, calls), summarizer_factory(), s));
             ++ordinal;
-            AE_CHECK(r.attempt_ordinal == ordinal && !r.family_attempts.empty() &&
-                         r.family_attempts[0].outcome == ev::tier1_screen_outcome::harmful,
+            AE_CHECK(r.attempt_ordinal == ordinal && !r.lineage_attempts.empty() &&
+                         r.lineage_attempts[0].outcome == ev::tier1_screen_outcome::harmful,
                      std::string("T14: subject '") + variant +
                          "' is the same family -- the earlier harmful attempt is shown, not a fresh 1-of-1");
         }
@@ -765,9 +760,9 @@ int main() {
         };
         auto r = drive(ev::run_tier1_screen(log, guessable, summarizer_factory(), spec()));
         AE_CHECK(r.outcome == ev::tier1_screen_outcome::inconclusive && !r.gross_harm.has_value() &&
-                     !r.family_attempts.empty() && r.family_attempts.back().probes.size() == 1 &&
-                     r.family_attempts.back().probes[0].invalid &&
-                     r.family_attempts.back().probes[0].invalid_baseline_too_easy,
+                     !r.lineage_attempts.empty() && r.lineage_attempts.back().probes.size() == 1 &&
+                     r.lineage_attempts.back().probes[0].invalid &&
+                     r.lineage_attempts.back().probes[0].invalid_baseline_too_easy,
                  "T15: a guessable probe -> inconclusive, recorded with its reason");
         auto all_fail = [inner = make_factory<Store>(Behaviour{}, calls)](ev::TrialSlot const& slot) {
             if (slot.trial_id.starts_with("dev-suite-")) {
@@ -777,9 +772,9 @@ int main() {
         };
         auto r2 = drive(ev::run_tier1_screen(log, all_fail, summarizer_factory(), spec()));
         AE_CHECK(r2.outcome == ev::tier1_screen_outcome::inconclusive && r2.gross_harm.has_value() &&
-                     r2.gross_harm->invalid && !r2.family_attempts.empty() &&
-                     r2.family_attempts.back().gross_harm.has_value() &&
-                     r2.family_attempts.back().gross_harm->invalid_uninformative_baseline,
+                     r2.gross_harm->invalid && !r2.lineage_attempts.empty() &&
+                     r2.lineage_attempts.back().gross_harm.has_value() &&
+                     r2.lineage_attempts.back().gross_harm->invalid_uninformative_baseline,
                  "T15: a suite failed in both arms -> inconclusive, never cleared, recorded with its reason");
     }
 
@@ -825,7 +820,7 @@ int main() {
         h.treatment_faulted = 11;
         h.error_code = "eval.y";
         auto done = log.complete_attempt(family, *started, ev::tier1_screen_outcome::harmful, {p}, h);
-        auto a = log.attempts(family);
+        auto a = log.lineage_attempts(family.lineage);
         bool same = done.has_value() && a.has_value() && a->size() == 1 && (*a)[0].completed &&
                     (*a)[0].probes.size() == 1 && (*a)[0].gross_harm.has_value();
         if (same) {
@@ -894,7 +889,7 @@ int main() {
         (void)store.append(*id, bytes_of(reused));                            // repeats a1's attempt id
         (void)store.append(*id, bytes_of(completed(harm("1"))));              // the one good completion
         (void)store.append(*id, bytes_of(completed(harm("5"))));              // a second completion
-        auto a = log.attempts(family);
+        auto a = log.lineage_attempts(family.lineage);
         bool shape = a.has_value() && a->size() == 8 && (*a)[0].completed && !(*a)[0].unreadable;
         for (std::size_t i = 1; shape && i < 8; ++i) shape = (*a)[i].unreadable;
         AE_CHECK(shape && (*a)[0].gross_harm.has_value() && (*a)[0].gross_harm->seed == 1,
@@ -938,7 +933,7 @@ int main() {
         for (auto& th : threads) th.join();
         ae::rt::FileAppendLogStore store(root);
         ev::Tier1AttemptLog<ae::rt::FileAppendLogStore> log(store);
-        auto a = log.attempts(family);
+        auto a = log.lineage_attempts(family.lineage);
         std::map<std::string, ev::tier1_screen_outcome> logged;
         std::size_t unreadable = 0;
         if (a.has_value()) {
@@ -972,9 +967,9 @@ int main() {
                                                 summarizer_factory(), spec()));
         auto second = drive(ev::run_tier1_screen(log, make_factory<SameSeqStore>(Behaviour{}, calls),
                                                  summarizer_factory(), spec()));
-        AE_CHECK(first.attempt_ordinal == 1 && second.attempt_ordinal == 2 && second.family_attempts.size() == 2 &&
-                     second.family_attempts[0].outcome == ev::tier1_screen_outcome::harmful &&
-                     second.family_attempts[1].outcome == ev::tier1_screen_outcome::cleared,
+        AE_CHECK(first.attempt_ordinal == 1 && second.attempt_ordinal == 2 && second.lineage_attempts.size() == 2 &&
+                     second.lineage_attempts[0].outcome == ev::tier1_screen_outcome::harmful &&
+                     second.lineage_attempts[1].outcome == ev::tier1_screen_outcome::cleared,
                  "T20: both attempts got seq 1 from the store, yet each is identified by its own id -- the clean "
                  "retry is attempt 2, and the harmful attempt keeps its own figures");
     }
@@ -989,10 +984,10 @@ int main() {
             return inner(slot);
         };
         auto r = drive(ev::run_tier1_screen(log, factory, summarizer_factory(), spec()));
-        AE_CHECK(!r.outcome.has_value() && r.attempt_log_error.has_value() &&
-                     r.attempt_log_error->code == "eval.tier1_attempt_missing" && r.probes.empty() &&
-                     !r.gross_harm.has_value(),
-                 "T21: the history reads back without this attempt -> the verdict is withheld, not reported as attempt 0");
+        AE_CHECK(r.outcome.has_value() && !r.history_complete && r.attempt_log_error.has_value() &&
+                     r.attempt_log_error->code == "eval.tier1_attempt_missing" && r.attempt_ordinal == 0,
+                 "T21: the history reads back without this attempt -> the verdict comes marked history_complete = "
+                 "false, with the reason; no ordinal is claimed");
     }
 
 
@@ -1003,17 +998,16 @@ int main() {
         auto calls = std::make_shared<CallLog>();
         (void)drive(ev::run_tier1_screen(log, make_factory<Store>(Behaviour{true, true}, calls), summarizer_factory(), spec()));
         auto swapped = spec();
-        for (auto* c : {&swapped.probes[0].candidate, &swapped.gross_harm.candidate}) {
+        for (auto* c : {&swapped.candidate}) {
             c->subject = "default";         // subject and key swapped: the same words, a new subject key
             c->key = "deploy-region";
         }
         auto r = drive(ev::run_tier1_screen(log, make_factory<Store>(Behaviour{}, calls), summarizer_factory(), swapped));
-        AE_CHECK(r.outcome == ev::tier1_screen_outcome::cleared && r.family_attempt_count == 1 &&
-                     r.family_attempts.size() == 1 && r.lineage_attempts.size() == 2 &&
+        AE_CHECK(r.outcome == ev::tier1_screen_outcome::cleared && r.lineage_attempts.size() == 2 &&
                      r.lineage_attempts[0].outcome == ev::tier1_screen_outcome::harmful &&
-                     r.lineage_attempts[0].subject == "deployregion" && r.lineage_attempts[1].subject == "default",
-                 "T22: subject and key swapped is a new family, but the result still shows the lineage's earlier "
-                 "HARMFUL attempt under its old subject");
+                     r.lineage_attempts[0].subject == "deploy-region" && r.lineage_attempts[1].subject == "default",
+                 "T22: subject and key swapped -- the result still shows the lineage's earlier HARMFUL attempt, "
+                 "under the subject it was written with");
         AE_CHECK(r.attempt_count == 2 && r.attempt_ordinal == 2 && r.distinct_preregistrations == 2,
                  "T22: the HEADLINE counts are the lineage's -- a reworded retry reads 'attempt 2 of 2, 2 designs', "
                  "not '1 of 1' (round 3)");
@@ -1131,7 +1125,7 @@ int main() {
         };
         for (auto const& [name, text] : bad) (void)store.append(*id, bytes_of(text));
         (void)store.append(*id, bytes_of(record("completed", aid, "harmful", "[" + probe_ok + "]", with_gross(harm("1")))));
-        auto a = log.attempts(family);
+        auto a = log.lineage_attempts(family.lineage);
         bool ok = a.has_value() && a->size() == 1 + bad.size() && (*a)[0].completed && (*a)[0].gross_harm.has_value() &&
                   (*a)[0].gross_harm->seed == 1 && (*a)[0].probes.size() == 1;
         for (std::size_t i = 1; ok && i < a->size(); ++i) ok = (*a)[i].unreadable;
@@ -1164,10 +1158,8 @@ int main() {
                  "T25: the read-back itself fails -> this attempt does not run");
     }
 
-    // ---- T26: edge cases of the family key and the call budget -------------------------------------------
+    // ---- T26: an edge case of the call budget -------------------------------------------
     {
-        AE_CHECK(!ev::tier1_family_subject_key("--- __").has_value() && ev::tier1_family_subject_key("A-b_1") == "ab1",
-                 "T26: a subject with no letter or digit has no key; otherwise the key is its lower-cased letters and digits");
         auto s = spec();
         s.probes[0].max_model_calls = std::numeric_limits<std::uint64_t>::max();
         Store store;
@@ -1181,20 +1173,17 @@ int main() {
     // ---- T27: ADR-183 -- how the lesson is delivered is part of the design ------------------------------------
     {
         auto approved = spec();
-        approved.probes[0].delivery = ev::lesson_delivery::approved;
-        approved.gross_harm.delivery = ev::lesson_delivery::approved;
+        approved.delivery = ev::lesson_delivery::approved;
         auto const a = ev::tier1_preregistration_digest(spec());
         auto const b = ev::tier1_preregistration_digest(approved);
         AE_CHECK(a.has_value() && b.has_value() && *a != *b,
                  "T27: delivering the lesson as approved is a different pre-registered design (a different digest)");
         auto mixed = spec();
-        mixed.probes[0].delivery = ev::lesson_delivery::approved;  // the gross-harm screen stays fenced
-        Store store;
-        ev::Tier1AttemptLog<Store> log(store);
-        auto calls = std::make_shared<CallLog>();
-        auto r = drive(ev::run_tier1_screen(log, make_factory<Store>(Behaviour{}, calls), summarizer_factory(), mixed));
-        AE_CHECK(r.setup_error.has_value() && r.setup_error->code == "eval.tier1_lesson_mismatch" && calls->probe_calls == 0,
-                 "T27: a probe and a gross-harm screen delivering the lesson differently are not one lesson -- refused");
+        mixed.probes[0].delivery = ev::lesson_delivery::approved;  // a screen-level setting the spec overrides
+        auto const c = ev::tier1_preregistration_digest(mixed);
+        AE_CHECK(c.has_value() && *c == *a,
+                 "T27: the lesson and its delivery are declared once on the spec -- a screen-level setting is "
+                 "overwritten, so the screens cannot disagree (the design hashes as the spec's)");
     }
 
     // ---- T28: ADR-183 -- the evaluation side's way into the registry goes through E31 -------------------------

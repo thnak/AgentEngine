@@ -2,7 +2,7 @@
 
 - **Status:** Proposed — implemented, proven (31 checks, new `tests/test_system_channel_taint_fence.cpp`),
   the affected pre-existing suites re-run green, pending project-owner sign-off.
-- **Amended by ADR-183 (2026-09-24):** a fenced block the session approved is tagged `approved-lesson:<code>` and the preamble gains one sentence naming the codes. Both serializers now REMOVE any spelled fence marker, visibly (`[fence marker removed]`), from every text they emit that is not a fence they opened — fenced bodies, tool results, user/assistant text, tool-call arguments, untainted system text. This ADR's zero-width-space neutralization was measured insufficient live: a model cannot see the zero-width space, and a hostile fenced block that spelled a close marker was read as if the fence had ended (ADR-183 §7, L1).
+- **Amended by ADR-183 (2026-09-24):** a fenced block the session approved is tagged `approved-lesson:<code>` (a code drawn fresh per request) and the preamble gains one sentence naming it. The bracket glyphs are now reserved for the fence code: both serializers strip U+27E6/U+27E7 (and lookalikes, raw or JSON-escaped) from every text they emit that is not a fence they opened — fenced bodies, tool results after their parts are joined, user/assistant text, tool-call arguments, untainted system text — so no marker can form, split or not. This ADR's zero-width-space neutralization was measured insufficient live: a model cannot see the zero-width space, and a hostile fenced block that spelled a close marker was read as if the fence had ended (ADR-183 §7, L1).
 - **Date:** 2026-09-04.
 - **Scope:** `include/agentengine/core/system_channel_fence.hpp` (new — the one shared mechanism),
   `include/agentengine/protocol/anthropic/chat_client.hpp` and
