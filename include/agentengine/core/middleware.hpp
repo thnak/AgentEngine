@@ -1,4 +1,5 @@
 #pragma once
+// Also: ADR-183/184's delivery-mark guard (`granted_deliveries`, `keep_only_granted_deliveries`).
 // Implements 002-Agent-Model-and-Authoring.md §5's `Middleware<Ms...>` -- an ordered chain wrapping
 // the model call, one of the four declared interception points ("run", "turn", "model call", "tool
 // call"). This file moves the MODEL-CALL point from "declared CRTP policy tag with no
@@ -231,28 +232,40 @@ task<std::monostate> run_after(Tuple& mws, ModelCallContext& ctx, std::size_t st
 // ADR-183 round 3 (MAJOR): `AgentSession` grants `ContentItem::approval` before the model call, and a `before_model`
 // hook gets a writable request afterwards. Without this, a middleware could set an approval on any item, or rewrite an
 // approved item's text and keep its approval -- model-written text shipped under the approved fence (the same shape as
-// ADR-033's content-rewrite finding). So the (text, approval) pairs granted before the hooks are the only ones that
-// survive them: any other item's approval is cleared.
-[[nodiscard]] inline std::vector<std::pair<std::string, std::string>> approved_pairs(ChatRequest const& request) {
-    std::vector<std::pair<std::string, std::string>> out;
+// ADR-033's content-rewrite finding). So the delivery marks granted before the hooks are the only ones that survive
+// them: an item whose (text, approval, deliver_as_instructions) is not one of those loses both marks. ADR-184 added
+// `deliver_as_instructions` to the same rule, so a hook cannot use the MARK to unfence text. This guards the marks
+// only: a hook can still change `tainted`, `origin` or `role` (as before ADR-184) -- middleware is host code.
+struct GrantedDelivery {
+    std::string text;
+    std::string approval;
+    bool deliver_as_instructions = false;
+    friend bool operator==(GrantedDelivery const&, GrantedDelivery const&) = default;
+};
+
+[[nodiscard]] inline GrantedDelivery delivery_of(ContentItem const& item) {
+    auto const* t = std::get_if<Text>(&item.value);
+    return GrantedDelivery{t != nullptr ? t->text : std::string{}, item.approval, item.deliver_as_instructions};
+}
+
+[[nodiscard]] inline std::vector<GrantedDelivery> granted_deliveries(ChatRequest const& request) {
+    std::vector<GrantedDelivery> out;
     for (Message const& m : request.messages) {
         for (ContentItem const& item : m.content) {
-            if (item.approval.empty()) continue;
-            auto const* t = std::get_if<Text>(&item.value);
-            out.emplace_back(t != nullptr ? t->text : std::string{}, item.approval);
+            if (item.approval.empty() && !item.deliver_as_instructions) continue;
+            out.push_back(delivery_of(item));
         }
     }
     return out;
 }
 
-inline void keep_only_granted_approvals(ChatRequest& request,
-                                        std::vector<std::pair<std::string, std::string>> const& granted) {
+inline void keep_only_granted_deliveries(ChatRequest& request, std::vector<GrantedDelivery> const& granted) {
     for (Message& m : request.messages) {
         for (ContentItem& item : m.content) {
-            if (item.approval.empty()) continue;
-            auto const* t = std::get_if<Text>(&item.value);
-            std::pair<std::string, std::string> const now{t != nullptr ? t->text : std::string{}, item.approval};
-            if (std::find(granted.begin(), granted.end(), now) == granted.end()) item.approval.clear();
+            if (item.approval.empty() && !item.deliver_as_instructions) continue;
+            if (std::find(granted.begin(), granted.end(), delivery_of(item)) != granted.end()) continue;
+            item.approval.clear();
+            item.deliver_as_instructions = false;
         }
     }
 }

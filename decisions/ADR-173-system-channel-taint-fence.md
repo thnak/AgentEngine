@@ -236,7 +236,8 @@ The figures quoted above are from a tree with #67's fix applied.
 
 ## 7. Promotion gate
 
-**G1 (met).** Every tainted byte admitted to the model's system channel is inside a delimiter pair
+**G1 (met; since ADR-184, unless the host opted out).** Every tainted byte admitted to the model's system channel
+— except an item the host told `AgentSession` to deliver as instructions (ADR-184) — is inside a delimiter pair
 the content itself cannot forge, on both wire formats, with the reading rule stated once. Falsifiable
 and it does fail: reverting the fence call in either serializer fails W1/O3; reverting the
 double-neutralization fails F3; reverting `history_provider.hpp`'s stamping fails P1/P2; quoting the

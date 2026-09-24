@@ -163,10 +163,11 @@ using ApprovalDecider = std::function<bool(Principal const& caller, std::string_
 // `ApprovalDecider`, exactly like `always_require`) -- this seam only ever makes a call MORE resolved
 // (auto_approve/auto_deny) than today, never less, and never widens past the tool's own declared
 // `capability_ceiling` (it decides among already-possessed authority, it does not grant any).
-// Never consulted for `never_require`, `always_require`, or a `text_derived` call: 007 §4's closed
-// declassifier list stays closed (ADR-023's own red-team already found a laxer version of THAT gate
-// unsafe) -- this is a deliberately narrower, different question, and `resolve_approval_outcome`
-// below enforces the distinction structurally, not just by convention.
+// Never consulted for `never_require` or `always_require`. For a `text_derived` call its `auto_approve`
+// is never an approval: 007 §4's closed declassifier list stays closed (ADR-023's own red-team already
+// found a laxer version of THAT gate unsafe). Its `auto_deny` IS honoured there since ADR-184 (denying
+// only narrows; before, a denied text_derived call skipped the deny and reached the ApprovalDecider).
+// `resolve_approval_outcome` below enforces the distinction structurally, not just by convention.
 enum class policy_decision { auto_approve, auto_deny, require_approval };  // ae-naming-lint: allow policy_decision — ADR-070, same idiom as approval_mode/call_provenance
 // ae-naming-lint: allow PolicyDecider — ADR-070, same idiom as ApprovalDecider above
 using PolicyDecider = std::function<policy_decision(Principal const& caller, ToolDescriptor const& tool,
@@ -315,13 +316,17 @@ enum class approval_outcome { proceed, deny, needs_decider };  // ae-naming-lint
                                                                  Principal const& caller,
                                                                  bool arguments_tainted,
                                                                  PolicyDecider const& policy) {
-    // `text_derived` never consults `policy` -- 007 §4's closed declassifier list is untouched by
-    // this ADR; `is_auto_declassifiable_text_derived_call` (via `tool_call_requires_approval` below)
-    // stays the sole, unconditional gate for that provenance.
-    if (tool.approval == approval_mode::policy_driven &&
-        provenance != call_provenance::text_derived && policy) {
+    // `text_derived` never takes the policy's `auto_approve` -- 007 §4's closed declassifier list is
+    // untouched by this ADR; `is_auto_declassifiable_text_derived_call` (via
+    // `tool_call_requires_approval` below) stays the sole gate that can let that provenance through.
+    // ADR-184 red team (MAJOR): its `auto_deny` IS honoured for `text_derived` too. Denying only
+    // narrows (ADR-070 §4a forbids approving, not denying), and without it a host's explicit deny --
+    // a plan-mode gate, say -- was skipped for exactly the call class most exposed to injection, and
+    // reached the ApprovalDecider instead (which in unattended mode says yes).
+    if (tool.approval == approval_mode::policy_driven && policy) {
         switch (policy(caller, tool, arguments_tainted)) {
             case policy_decision::auto_approve:
+                if (provenance == call_provenance::text_derived) break;  // never an approval for this class
                 return approval_outcome::proceed;
             case policy_decision::auto_deny:
                 return approval_outcome::deny;

@@ -1,4 +1,6 @@
 #pragma once
+// (Also implements ADR-183's approved-lesson grant and ADR-184's unattended-mode opt-ins: see `set_approved_lessons`,
+// `disable_system_channel_fence`, `set_unattended_approvals`, `apply_approved_lessons`, `effective_approval_decider`.)
 // ADR-037 Phase 2, Slice 1: `agentengine::rt::AgentSession<ChatClientT, StateT, HistoryProviderT>`,
 // the Quark-free replacement for `agentengine::AgentSession` (core/agent_session.hpp). Lives under
 // `agentengine::rt`, a NEW namespace, deliberately NOT wired into any live call site yet -- nothing
@@ -798,9 +800,69 @@ public:
     // fence's preamble says it may be followed. Unset (the default) or null: every request is built exactly as
     // before. `registry` must outlive the session. Every approved delivery emits a `policy_decision` event naming
     // the approval it rests on (I4).
-    void set_approved_lessons(agentengine::ApprovedLessonRegistry const* registry) noexcept {
+    //
+    // ADR-184: `level` is how an approved lesson is delivered -- `guidance` (ADR-183's fenced, tagged route, the
+    // default) or `instructions` (plain, unfenced system text, as the host's own instructions). The item stays tainted
+    // either way; only how the model is told to read it changes.
+    void set_approved_lessons(agentengine::ApprovedLessonRegistry const* registry,
+                              agentengine::approved_lesson_level level =
+                                  agentengine::approved_lesson_level::guidance) noexcept {
         approved_lessons_ = registry;
+        approved_lesson_level_ = level;
     }
+
+    // ADR-184, host opt-in (unattended mode): every tainted system text -- memory, retrieved documents, summaries,
+    // lessons -- goes to the model as plain system text, with no ADR-173 fence and no preamble. For a full-automation
+    // deployment that trusts its own stores. The cost is the fence's whole point: text a tool, a document or an
+    // earlier model turn wrote can then steer the model like the host's instructions. The text stays tainted (tool
+    // calls from it are still `arguments_tainted`, and recordings keep the taint). `operator_id` names who turned it
+    // off (required, I4; refused if empty); every request it affects emits one `policy_decision` event saying so. The
+    // event reaches the host only through a run-event tap or stream it attached. Off by default.
+    [[nodiscard]] result<void> disable_system_channel_fence(std::string operator_id) {
+        if (operator_id.empty()) return unattended_detail_refuse("disable_system_channel_fence");
+        system_fence_disabled_by_ = std::move(operator_id);
+        return {};
+    }
+    void enable_system_channel_fence() noexcept { system_fence_disabled_by_.reset(); }
+    [[nodiscard]] bool system_channel_fence_enabled() const noexcept { return !system_fence_disabled_by_; }
+
+    // ADR-184, host opt-in (unattended mode): every tool call that would wait for an approval is approved without
+    // a human -- `approval_mode::always_require` tools and `text_derived` calls included -- and the session never
+    // suspends for approval. It is the `ApprovalDecider` answering yes, so it decides only among authority the host
+    // already granted (I2: no capability or grant changes; a `PolicyDecider`'s `auto_deny` -- for `text_derived` calls
+    // too -- and every capability check and hook-stage denial still apply). Overrides any `set_approval_decider` while
+    // set, except as a veto: a `veto` decider, when given, is asked first and a `false` from it denies the call (for
+    // "approve everything except X"). Every approval it gives emits a `policy_decision` event naming the tool, the
+    // caller, a hash of the arguments and `operator_id` (required, I4; refused if empty). Off by default.
+    //
+    // What it does not cover: `agent.ask` and hook-decision suspensions still wait for host code; `agent.spawn`
+    // children and other sessions have their own settings (a spawned child takes only the decider its
+    // `SpawnTargetDescriptor` names). The setters are session-thread-only, like every other session setting: a kill
+    // switch on another thread must post to the session's thread. `approval_decider()` keeps returning the host's own
+    // decider while this is set.
+    [[nodiscard]] result<void> set_unattended_approvals(std::string operator_id,
+                                                        agentengine::ApprovalDecider veto = {}) {
+        if (operator_id.empty()) return unattended_detail_refuse("set_unattended_approvals");
+        unattended_by_ = std::move(operator_id);
+        unattended_veto_ = std::move(veto);
+        return {};
+    }
+    void clear_unattended_approvals() noexcept {
+        unattended_by_.reset();
+        unattended_veto_ = {};
+    }
+
+    // ADR-184: the whole full-automation setup in one call -- approved lessons (if `registry` is given) delivered as
+    // instructions, the system-channel fence off, and unattended approvals. Each part is the separate call above,
+    // audited as such; capabilities are still whatever `set_capabilities` granted.
+    [[nodiscard]] result<void> enable_unattended_mode(std::string const& operator_id,
+                                                      agentengine::ApprovedLessonRegistry const* registry = nullptr) {
+        if (operator_id.empty()) return unattended_detail_refuse("enable_unattended_mode");
+        if (registry != nullptr) set_approved_lessons(registry, agentengine::approved_lesson_level::instructions);
+        (void)disable_system_channel_fence(operator_id);
+        return set_unattended_approvals(operator_id);
+    }
+    [[nodiscard]] bool unattended_approvals() const noexcept { return unattended_by_.has_value(); }
     [[nodiscard]] std::string const& static_instructions() const noexcept { return static_instructions_; }
 
     // ADR-058 §8 (Design B) -- additive opt-in, same shape as set_suspend_for_approval/
@@ -2413,7 +2475,7 @@ private:
         // invoke_tool() consults `approval_decider_` directly (denying if unset), it never cascades
         // into a suspend that could not otherwise have happened for this session's configuration.
         bool any_still_needs_approval = false;
-        if (suspend_for_approval_ && !approval_decider_) {
+        if (approval_waits_for_human()) {
             for (HookProcessedCall const& hc : round.calls) {
                 if (hc.outcome != hook_call_outcome::pass_through) continue;
                 ToolDescriptor const* td = tool_table.find(hc.request.tool_name);
@@ -2449,7 +2511,7 @@ private:
         // own invoke loop, folding results and continuing the turn. `policy_decider_` IS passed here
         // (unlike resolve_interaction()'s approved-branch call below) -- see finish_hook_processed_
         // round()'s own comment for exactly why this caller must thread it through.
-        co_return co_await finish_hook_processed_round(std::move(round), tool_table, approval_decider_,
+        co_return co_await finish_hook_processed_round(std::move(round), tool_table, effective_approval_decider(),
                                                           policy_decider_);
     }
 
@@ -2623,10 +2685,10 @@ private:
             // after this line, and `tool_table` above already took the copy of the tools it keeps.
             // This used to deep-copy the whole assembled history into the request once per turn.
             ChatRequest request{std::move(contribution->messages), std::move(contribution->tools)};
-            // ADR-183: the ONE place `ContentItem::approval` is granted -- after every provider has contributed and
-            // history is in, just before the request leaves. Cleared on every item first, so nothing a provider,
-            // a plugin or a stored message carries survives; granted only to a tainted system text whose exact
-            // text (less MemoryProvider's confidence label) the registry holds for this principal.
+            // ADR-183/184: the ONE place `ContentItem::approval` and `deliver_as_instructions` are granted -- after
+            // every provider has contributed and history is in, just before the request leaves. Both are cleared on
+            // every item first, so nothing a provider, a plugin or a stored message carries survives; then granted only
+            // by the host's settings (see the method).
             apply_approved_lessons(request);
             // ADR-058 §8 (Design B) -- scoped to `native` ONLY, deliberately. Both real backends'
             // own translation code (protocol/openai/chat_client.hpp:289-293,
@@ -2830,7 +2892,7 @@ private:
                 });
 
             bool any_needs_approval = false;
-            if (suspend_for_approval_ && !approval_decider_) {
+            if (approval_waits_for_human()) {
                 for (std::size_t i = 0; i < calls.size(); ++i) {
                     // A call the hook stage already denied is finished -- its outcome is already
                     // decided, never re-litigated by approval.
@@ -2952,7 +3014,7 @@ private:
             }
 
             std::vector<DispatchedCall> dispatched =
-                dispatch_tool_calls(reqs, tool_table, held, approval_decider_, policy_decider_);
+                dispatch_tool_calls(reqs, tool_table, held, effective_approval_decider(), policy_decider_);
 
             for (std::size_t j = 0; j < dispatched.size(); ++j) {
                 std::size_t const i = req_positions[j];
@@ -3097,29 +3159,106 @@ private:
     agentengine::Principal                             principal_;
     agentengine::ApprovedLessonRegistry const*         approved_lessons_ = nullptr;  // ADR-183 opt-in
 
+    agentengine::approved_lesson_level                 approved_lesson_level_ =
+        agentengine::approved_lesson_level::guidance;                                    // ADR-184
+    std::optional<std::string>                         system_fence_disabled_by_;         // ADR-184 opt-in
+    std::optional<std::string>                         unattended_by_;                    // ADR-184 opt-in
+    agentengine::ApprovalDecider                       unattended_veto_{};                // ADR-184, optional
+
+    [[nodiscard]] static result<void> unattended_detail_refuse(char const* what) {
+        return std::unexpected(error{failure_class::contract,
+                                     std::string(what) + ": an operator id is required -- the audit names it (I4)",
+                                     "session.unattended_operator_missing"});
+    }
+
+    // The one place a request's delivery marks are set (ADR-183/184). Both are cleared on every item first, so
+    // nothing a provider, a plugin or stored history carries survives; then each is granted only by a host setting.
     void apply_approved_lessons(ChatRequest& request) {
+        std::size_t unfenced = 0;
         for (Message& m : request.messages) {
             for (ContentItem& item : m.content) {
                 item.approval.clear();
-                if (approved_lessons_ == nullptr || m.role != role::system || !item.tainted) continue;
+                item.deliver_as_instructions = false;
+                if (m.role != role::system || !item.tainted) continue;
                 auto* text = std::get_if<Text>(&item.value);
                 if (text == nullptr) continue;
-                std::string_view const candidate = agentengine::approved_lesson_candidate_text(text->text);
-                auto const match = approved_lessons_->find(principal_.id, candidate);
-                if (!match) continue;
-                // The confidence label ("model-inferred, unverified") is dropped: the fence now says what the
-                // block is, and a label that says the opposite would contradict it.
-                text->text = std::string(candidate);
-                item.approval = match->approval_id;
-                emit_run_event(run_event_kind::policy_decision,
-                               run_event_payload::PolicyDecision{
-                                   "approved lesson delivered: approval " + match->approval_id + ", approved by " +
-                                   match->approval.approver_id +
-                                   (match->approval.simulated ? " (simulated)" : "") + ", acknowledgement " +
-                                   (match->approval.acknowledgement.empty() ? std::string("none")
-                                                                            : match->approval.acknowledgement)});
+                if (approved_lessons_ != nullptr) {
+                    std::string_view const candidate = agentengine::approved_lesson_candidate_text(text->text);
+                    if (auto const match = approved_lessons_->find(principal_.id, candidate)) {
+                        // The confidence label ("model-inferred, unverified") is dropped: the fence now says what
+                        // the block is, and a label that says the opposite would contradict it.
+                        text->text = std::string(candidate);
+                        item.approval = match->approval_id;
+                        // Red team (MINOR): with the fence off an approved lesson goes out unfenced whatever its
+                        // level, so the event names what is actually sent.
+                        bool const as_instructions =
+                            approved_lesson_level_ == agentengine::approved_lesson_level::instructions;
+                        item.deliver_as_instructions = as_instructions || system_fence_disabled_by_.has_value();
+                        std::string const delivered =
+                            as_instructions ? "instructions"
+                                            : (system_fence_disabled_by_ ? "instructions (fence off)" : "guidance");
+                        LessonApproval const& a = match->approval;
+                        emit_run_event(run_event_kind::policy_decision,
+                                       run_event_payload::PolicyDecision{
+                                           "approved lesson delivered as " + delivered +
+                                           ": approval " + match->approval_id + ", approved by " + a.approver_id +
+                                           (a.simulated ? " (simulated)" : "") + (a.automatic ? " (automatic)" : "") +
+                                           ", acknowledgement " +
+                                           (a.acknowledgement.empty() ? std::string("none") : a.acknowledgement)});
+                    }
+                }
+                // ADR-184: with the fence off, every remaining tainted system text goes out as instructions too.
+                if (system_fence_disabled_by_ && !item.deliver_as_instructions && !text->text.empty()) {
+                    item.deliver_as_instructions = true;
+                    ++unfenced;
+                }
             }
         }
+        if (unfenced != 0) {
+            emit_run_event(run_event_kind::policy_decision,
+                           run_event_payload::PolicyDecision{
+                               "system-channel fence off (host setting, operator " + *system_fence_disabled_by_ +
+                               "): " + std::to_string(unfenced) + " tainted system item(s) delivered as instructions"});
+        }
+    }
+
+    // ADR-184: the decider a round actually uses. In unattended mode it approves every call that reaches it and
+    // audits each approval; otherwise it is the host's own (unset = deny, as before). Built per round, never stored,
+    // so it never outlives the session it points at; approvals are admitted on this thread (ADR-160 §5).
+    //
+    // Red team: (MAJOR) the host's decider is passed by reference, never copied -- a copy reset any state a mutable
+    // decider kept (an approval budget) every round; (MINOR) the operator id is captured by value and the setting is
+    // re-read at each call, so clearing it mid-round stops the next approval instead of reading an emptied optional.
+    [[nodiscard]] agentengine::ApprovalDecider effective_approval_decider() {
+        if (!unattended_by_) {
+            return approval_decider_ ? agentengine::ApprovalDecider{std::ref(approval_decider_)}
+                                     : agentengine::ApprovalDecider{};
+        }
+        return [this, op = *unattended_by_](Principal const& caller, std::string_view tool_name,
+                                            std::string const& canonical_args) {
+            if (!unattended_by_) return approval_decider_ ? approval_decider_(caller, tool_name, canonical_args) : false;
+            // The call id is not known here; a short hash of the exact arguments tells two calls to one tool apart
+            // (correlation only, not a digest).
+            char args_id[17];
+            std::snprintf(args_id, sizeof(args_id), "%016llx",
+                          static_cast<unsigned long long>(std::hash<std::string>{}(canonical_args)));
+            if (unattended_veto_ && !unattended_veto_(caller, tool_name, canonical_args)) {
+                emit_run_event(run_event_kind::policy_decision,
+                               run_event_payload::PolicyDecision{
+                                   "unattended mode (operator " + op + "): tool " + std::string(tool_name) +
+                                   " vetoed by the host, caller " + caller.id + ", arguments #" + args_id});
+                return false;
+            }
+            emit_run_event(run_event_kind::policy_decision,
+                           run_event_payload::PolicyDecision{
+                               "unattended approval (host setting, operator " + op + "): tool " +
+                               std::string(tool_name) + " approved with no human, caller " + caller.id +
+                               ", arguments #" + args_id});
+            return true;
+        };
+    }
+    [[nodiscard]] bool approval_waits_for_human() const noexcept {
+        return suspend_for_approval_ && !approval_decider_ && !unattended_by_;
     }
     std::vector<Message>                               history_;
     StateT                                             state_{};

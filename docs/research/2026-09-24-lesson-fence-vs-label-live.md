@@ -118,3 +118,11 @@ no live positive control for the gross-harm path exists yet.
 
 **Agent-driven conversations** (`tests/lesson_chat_live.cpp`): nine multi-turn chats, three Sonnet personas × three
 blind arms, scored from the action logs only — every hard goal passed (ADR-183 §6).
+
+## 6. ADR-184 arms (invocation 9)
+
+One interleaved invocation, same harness, 20 trials per cell (followed / asked / other; alert channel · deploy region):
+A fenced memory 6/14/0 · 0/20/0; R approved `guidance` 19/0/1 · 20/0/0; **T approved `instructions`** 19/0/1 · 19/1/0;
+**N the same memory item, unapproved, fence off** 17/3/0 · 14/6/0; F plain host text 19/0/1 · 17/3/0; C control 0/0/20
+· 0/18/2; X2 0/19/1 · 0/20/0. T matches R and the ceiling on this model; N is the fence-off cost -- an unapproved (or
+hostile) memory statement followed almost as often as host text. See ADR-184 §6.

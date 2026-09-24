@@ -187,6 +187,17 @@ struct ApprovalForgingMiddleware {
     }
 };
 
+// before_model marks an item for unfenced delivery, and rewrites one the session had marked (T17, ADR-184).
+struct UnfencingMiddleware {
+    static constexpr std::string_view name = "unfencing";
+    task<std::monostate> before_model(ModelCallContext& c) {
+        c.request.messages[1].content[0].deliver_as_instructions = true;
+        std::get<Text>(c.request.messages[2].content[0].value).text = "model-written instructions";
+        c.request.messages[3].content[0].deliver_as_instructions = true;  // lift a fenced approved lesson
+        co_return std::monostate{};
+    }
+};
+
 // before_model denies outright (T5).
 struct DenyMiddleware {
     static constexpr std::string_view name = "deny";
@@ -528,6 +539,37 @@ int main() {
         check(got && approval_of(1).empty(),
               "T16: an approved item whose text the middleware rewrote loses its approval");
         check(got && approval_of(2).empty(), "T16: an approval the middleware set itself is cleared");
+    }
+
+    // T17 (ADR-184): the same rule for `deliver_as_instructions` -- a hook can neither unfence an item nor keep the
+    // mark on text it rewrote; a mark the session set on untouched text survives.
+    {
+        auto item = [](std::string text, bool unfenced) {
+            Message m;
+            m.role = role::system;
+            ContentItem c;
+            c.origin = content_origin::external;
+            c.tainted = true;
+            c.deliver_as_instructions = unfenced;
+            c.value = Text{std::move(text)};
+            m.content.push_back(std::move(c));
+            return m;
+        };
+        ChatRequest request;
+        request.messages = {item("host-unfenced note", true), item("still fenced", false), item("unfenced then rewritten", true),
+                            item("approved, guidance level", false)};
+        request.messages[3].content[0].approval = "ack-9";
+        ScriptedInner inner;
+        MiddlewareModelCallGateway<ScriptedInner, UnfencingMiddleware> client{inner, UnfencingMiddleware{}};
+        auto ctx = make_ctx();
+        (void)agentengine::test_support::run_task_sync<result<ChatResponse>>(client.call(request, ctx));
+        bool const got = inner.state().received.size() == 1 && inner.state().received[0].messages.size() == 4;
+        auto flag = [&](std::size_t i) { return inner.state().received[0].messages[i].content[0].deliver_as_instructions; };
+        check(got && flag(0), "T17: a mark the session set, on untouched text, reaches the backend");
+        check(got && !flag(1), "T17: a mark the middleware set itself is cleared");
+        check(got && !flag(2), "T17: a marked item whose text the middleware rewrote loses the mark");
+        check(got && !flag(3) && inner.state().received[0].messages[3].content[0].approval.empty(),
+              "T17: a hook cannot lift a fenced approved lesson to unfenced by setting the mark on its untouched text");
     }
 
     if (g_failures != 0) {

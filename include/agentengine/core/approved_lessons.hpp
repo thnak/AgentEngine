@@ -17,6 +17,10 @@
 // separate call and is marked `simulated` wherever it is reported. The
 // engine does not persist the registry: a host loads it from its own storage, and a session without one delivers
 // every lesson fenced as before (ADR-070 §4 property 2).
+//
+// ADR-184 (unattended mode) adds two host opt-ins: an approval with no human in the loop (`approve_automatic`, marked
+// `automatic` wherever it is reported), and the level a session delivers approved lessons at
+// (`approved_lesson_level`, set on `AgentSession::set_approved_lessons`).
 
 #include <map>
 #include <optional>
@@ -34,7 +38,21 @@ struct LessonApproval {  // ae-naming-lint: allow LessonApproval — ADR-183
     std::string approved_at;      // host timestamp (ISO-8601)
     std::string acknowledgement;  // the E31 digest the approver acknowledged, when there is one (optional)
     bool simulated = false;       // an evaluation's stand-in for an approval (a Tier-1 screen's treatment arm)
+    bool automatic = false;       // ADR-184: approved with no human -- by a host-named automated reviewer
 };
+
+// ADR-184: how a session delivers an approved lesson. `guidance` is ADR-183's route: fenced, tagged
+// `approved-lesson:<code>`, and the preamble says it may be followed unless the user says otherwise. `instructions`
+// sends it as plain system text, unfenced -- as the host's own instructions. Either way the item stays tainted and
+// grants nothing; only how the model is told to read it changes.
+enum class approved_lesson_level {  // ae-naming-lint: allow approved_lesson_level — ADR-184
+    guidance,
+    instructions,
+};
+
+[[nodiscard]] constexpr std::string_view approved_lesson_level_name(approved_lesson_level level) noexcept {
+    return level == approved_lesson_level::instructions ? "instructions" : "guidance";
+}
 
 struct ApprovedLessonMatch {  // ae-naming-lint: allow ApprovedLessonMatch — ADR-183
     std::string approval_id;      // what `ContentItem::approval` records: the acknowledgement, else the approver
@@ -50,8 +68,29 @@ public:
             return std::unexpected(error{failure_class::contract, "an approval must name its approver (I4)",
                                          "memory.approval_unattributed"});
         }
+        // ADR-184 red team: the id prefixes the engine writes for non-human approvals are reserved, so a recording's
+        // approval id always tells a human approval from an automatic or simulated one.
+        if (approval.approver_id.starts_with("automatic:") || approval.approver_id.starts_with("simulated:")) {
+            return std::unexpected(error{failure_class::contract,
+                                         "a human approver id may not use the reserved automatic:/simulated: prefix",
+                                         "memory.approval_reserved_id"});
+        }
         approval.simulated = false;
+        approval.automatic = false;
         return put(scope, content, std::move(approval));
+    }
+
+    // ADR-184: an approval with no human in the loop -- a host that runs a full-automation system lets its own
+    // automated reviewer (the post-run review, a rule, a script) promote lessons. The host names the reviewer, which
+    // is what the audit names; it is recorded as `automatic` and its id reads `automatic:<reviewer>`. Calling this IS
+    // the opt-in: a host that never calls it has only human (or simulated) approvals.
+    [[nodiscard]] result<void> approve_automatic(std::string_view scope, std::string_view content,
+                                                 std::string const& reviewer_id, std::string approved_at = {}) {
+        if (reviewer_id.empty()) {
+            return std::unexpected(error{failure_class::contract, "an automatic approval must name its reviewer (I4)",
+                                         "memory.approval_unattributed"});
+        }
+        return put(scope, content, LessonApproval{"automatic:" + reviewer_id, std::move(approved_at), "", false, true});
     }
 
     // An evaluation's stand-in approval: the screen measures a lesson delivered as if approved (ADR-183 §3.8). It is
@@ -74,7 +113,8 @@ public:
         auto it = approved_.find(key(scope, content));
         if (it == approved_.end()) return std::nullopt;
         LessonApproval const& a = it->second;
-        return ApprovedLessonMatch{(a.simulated || a.acknowledgement.empty()) ? a.approver_id : a.acknowledgement, a};
+        bool const by_id = a.simulated || a.automatic || a.acknowledgement.empty();
+        return ApprovedLessonMatch{by_id ? a.approver_id : a.acknowledgement, a};
     }
 
     [[nodiscard]] std::size_t size() const {

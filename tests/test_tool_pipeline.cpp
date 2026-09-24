@@ -487,8 +487,9 @@ int main() {
               "ADR-070: the denial is the ordinary capability-not-held one, not a policy path");
     }
 
-    // -- text_derived provenance: the PolicyDecider is NEVER consulted, even for a policy_driven tool
-    // -- 007 §4's closed declassifier list stays closed (ADR-070's own must-not-loosen list).
+    // -- text_derived provenance: the PolicyDecider's auto_approve is NEVER an approval, even for a
+    // policy_driven tool -- 007 §4's closed declassifier list stays closed (ADR-070's own must-not-loosen
+    // list). ADR-184: it IS consulted (its auto_deny narrows), but auto_approve changes nothing.
     {
         using agentengine::call_provenance;
         CapabilitySet held = CapabilitySet::grant_root({agentengine::cap::Entropy{}});
@@ -507,9 +508,30 @@ int main() {
         check(result.is_error,
               "ADR-070: a text_derived call to a policy_driven, capability-bearing tool is still "
               "refused with no ApprovalDecider -- PolicyDecider does not reach this path");
-        check(!policy_called,
-              "ADR-070: the PolicyDecider is structurally never consulted for a text_derived call -- "
-              "007 §4's closed declassifier list is untouched by this ADR");
+        check(policy_called && result.is_error,
+              "ADR-070/184: the PolicyDecider is consulted for a text_derived call, and its auto_approve "
+              "still approves nothing -- 007 §4's closed declassifier list is untouched");
+    }
+    {
+        using agentengine::call_provenance;
+        CapabilitySet held = CapabilitySet::grant_root({agentengine::cap::Entropy{}});
+        auto ctx = make_ctx();
+        ToolCallRequest req{.call_id = "call-18",
+                              .tool_name = "policy_action",
+                              .arguments = *json::parse(R"({"action":"go"})"),
+                              .provenance = call_provenance::text_derived};
+        bool decider_called = false;
+        agentengine::ApprovalDecider yes = [&](agentengine::Principal const&, std::string_view,
+                                               std::string const&) {
+            decider_called = true;
+            return true;
+        };
+        agentengine::PolicyDecider deny = [](agentengine::Principal const&, agentengine::ToolDescriptor const&,
+                                             bool) { return agentengine::policy_decision::auto_deny; };
+        auto result = invoke_tool(table, held, req, ctx, yes, nullptr, deny);
+        check(result.is_error && !decider_called,
+              "ADR-184: a PolicyDecider's auto_deny denies a text_derived call before any ApprovalDecider is asked "
+              "(it used to skip the deny, so an always-yes decider ran a call the host had denied)");
     }
 
     if (g_failures == 0) {

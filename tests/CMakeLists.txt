@@ -1164,6 +1164,16 @@ if(AGENTENGINE_WITH_HTTPS)
   endif()
   add_test(NAME test_approved_lesson_delivery COMMAND test_approved_lesson_delivery)
 
+  # ADR-184: unattended mode, the delivery half -- approved lessons as instructions, the system-channel fence off,
+  # automatic approvals. The approval half is test_unattended_approvals (no HTTPS needed).
+  add_executable(test_unattended_mode test_unattended_mode.cpp)
+  target_link_libraries(test_unattended_mode PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine::worktree_store agentengine_warnings)
+  if(MSVC)
+    target_compile_options(test_unattended_mode PRIVATE /bigobj)
+  endif()
+  add_test(NAME test_unattended_mode COMMAND test_unattended_mode)
+
   add_executable(test_anthropic_chat_client_live test_anthropic_chat_client_live.cpp)
   target_link_libraries(test_anthropic_chat_client_live PRIVATE
     agentengine::core agentengine::provider_http_client agentengine_warnings
@@ -2003,6 +2013,12 @@ add_test(NAME test_rt_workflow_supervisor_scheduling_shuffle COMMAND test_rt_wor
 add_executable(test_rt_agent_session_suspend_approval test_rt_agent_session_suspend_approval.cpp)
 target_link_libraries(test_rt_agent_session_suspend_approval PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_agent_session_suspend_approval COMMAND test_rt_agent_session_suspend_approval)
+
+# ADR-184: unattended approvals (the approval half of unattended mode; the delivery half needs HTTPS and is
+# test_unattended_mode). Off by default, audited, narrowed by auto_deny and a veto; a stateful decider keeps its state.
+add_executable(test_unattended_approvals test_unattended_approvals.cpp)
+target_link_libraries(test_unattended_approvals PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_unattended_approvals COMMAND test_unattended_approvals)
 
 # ---- OQ-21 (core/tool_call_hook.hpp) prove phase -- the tool-call hook stage wired into a real
 # rt::AgentSession round: deny-before-approval, rewrite-reaches-dispatch-and-downgrades-provenance,

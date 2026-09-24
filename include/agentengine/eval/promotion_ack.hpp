@@ -1,4 +1,5 @@
 #pragma once
+// Also: ADR-183 `approve_lesson` and ADR-184 `promote_lesson_automatically` (no acknowledgement, by design).
 // Implements ADR-181 E31 (round-4 fix for the FATAL "the approver acknowledges an excerpt, never
 // the bytes the model reads" finding, §3.0 item 5 / §3.9): the approver's acknowledgement is bound
 // to a digest of the VERBATIM rendered `MemoryItem`, and the promotion path re-renders and refuses
@@ -77,6 +78,23 @@ struct PromotionAck {  // ae-naming-lint: allow PromotionAck — ADR-181 §3.0 i
     if (!rendered) return std::unexpected(rendered.error());
     auto approved =
         registry.approve(scope, rendered->content, LessonApproval{ack.approver_id, ack.acknowledged_at, ack.digest});
+    if (!approved) return std::unexpected(approved.error());
+    return rendered;
+}
+
+// ADR-184 (unattended mode): the same promotion with no human -- for a full-automation host whose own automated
+// reviewer decides. The lesson is still rendered by the fixed templates (and so still passes the structural checks
+// `render_lesson` applies), and registered as `automatic:<reviewer_id>`. There is no acknowledgement to verify; the
+// host calling this is the decision, and the audit names the reviewer. Returns the rendered item to write to memory.
+[[nodiscard]] inline result<MemoryItem> promote_lesson_automatically(ApprovedLessonRegistry& registry,
+                                                                     std::string_view scope,
+                                                                     LessonCandidate const& candidate,
+                                                                     std::string_view template_version, float salience,
+                                                                     std::string const& reviewer_id,
+                                                                     std::string approved_at = {}) {
+    auto rendered = render_lesson(candidate, template_version, salience);
+    if (!rendered) return std::unexpected(rendered.error());
+    auto approved = registry.approve_automatic(scope, rendered->content, reviewer_id, std::move(approved_at));
     if (!approved) return std::unexpected(approved.error());
     return rendered;
 }

@@ -48,7 +48,9 @@ means.**
 1. **`ContentItem::approval`** (003 §2 amended): empty, or the id of the approval the exact text was granted under
    (the E31 acknowledgement digest, or `simulated:<trial>`). It is not an origin (the origin stays `external`) and
    not an untainting (the item stays `tainted`, so it is fenced, recorded and summarized as untrusted, and a tool
-   call is still `arguments_tainted`).
+   call is still `arguments_tainted`). *ADR-184:* a host may instead deliver approved lessons unfenced
+   (`approved_lesson_level::instructions`), and may approve automatically (`automatic:<reviewer>`); this ADR's route
+   stays the default.
 2. **One place grants it: `AgentSession`, when it builds a request.** It first clears `approval` on every item — so
    nothing a provider, a plugin, or a stored/replayed message carries survives — then grants it only to a tainted
    `role::system` text whose exact text (less `MemoryProvider`'s confidence label) the host's registry holds for the

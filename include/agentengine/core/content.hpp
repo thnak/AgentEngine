@@ -1,4 +1,5 @@
 #pragma once
+// ContentItem also carries ADR-183's `approval` and ADR-184's `deliver_as_instructions` delivery marks.
 // Implements 003-Message-and-Content-Model.md — one content model shared by the agent core, every
 // ChatClient, and every protocol surface. Terminology (027 §7): this is `Content`, not `Part` —
 // `Part` is A2A's word and stays only in `agentengine::a2a` mapping code.
@@ -153,12 +154,20 @@ struct ContentItem {  // ae-naming-lint: allow ContentItem — pre-existing M0 s
     std::variant<Text, Reasoning, Media, Data, ToolCall, ToolResult, Citation, Error, Custom> value;
     content_origin origin = content_origin::assistant;
     bool           tainted = false;
-    // ADR-183: non-empty only on a tainted `role::system` text item whose exact text a human approved -- the id
-    // of that approval (the E31 acknowledgement digest, or `simulated:<trial>` for an evaluation's stand-in). Set ONLY by `AgentSession` when it builds a request, after re-verifying the
-    // text against its host-owned `ApprovedLessonRegistry`; the session clears it on every other item, so no
-    // provider, plugin or stored history can grant it. It changes nothing about taint or authority: the item is
-    // still fenced; the fence names it an approved lesson and its preamble says such a block may be followed.
+    // ADR-183: non-empty only on a tainted `role::system` text item whose exact text was approved -- the id of
+    // that approval (the E31 acknowledgement digest, the approver, `simulated:<trial>` or `automatic:<reviewer>`).
+    // Set ONLY by `AgentSession` when it builds a request, after re-verifying the text against its host-owned
+    // `ApprovedLessonRegistry`; the session clears it on every other item, so no provider, plugin or stored history
+    // can grant it. It changes nothing about taint or authority: at ADR-183's default level the item is still fenced
+    // (the fence names it an approved lesson and its preamble says such a block may be followed); at ADR-184's
+    // `instructions` level it is also marked `deliver_as_instructions` below.
     std::string    approval;
+    // ADR-184: true only on a tainted `role::system` text item the host told the session to deliver as plain
+    // instructions -- an approved lesson at `approved_lesson_level::instructions`, or any such item when the host
+    // turned the system-channel fence off. The serializers then send it unfenced. Set ONLY by `AgentSession`
+    // (cleared on every item first, like `approval`); a `before_model` middleware cannot add it. The item stays
+    // `tainted`: this changes how the model is told to read the text, not any taint, capability or approval.
+    bool           deliver_as_instructions = false;
 
     friend bool operator==(ContentItem const&, ContentItem const&) = default;
 };

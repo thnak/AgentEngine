@@ -212,7 +212,7 @@ authority, digest-dedupe overwriting provenance — addressed in §3; the rest a
 | T1 | fatal | Provenance blob in the memory mount breaks retrieval for that principal (**verified**, `memory.hpp:388`) | §3.4 separate ref; R8. **Not** a standalone bug — an accepted design constraint the project already handles the same way (§2) |
 | T2 | fatal | Reviewer with an empty ceiling cannot call the model (needs `cap::Secret`) | §3.2 exact ceiling `{Secret<key>}`; R2 |
 | T3 | fatal | Taint rule fails open; no reporting interface exists | §3.1 fail-closed; C11 |
-| T4 | serious | Auto-promotion population ≈ empty | §3.4 **deleted** |
+| T4 | serious | Auto-promotion population ≈ empty | §3.4 **deleted** (*ADR-184 reintroduces an automatic approval as an explicit host opt-in for full-automation hosts, never a default; see its §5*) |
 | T5 | serious | The approval queue is an attack surface; fact-shaped lessons are followed; no validator; `on_turn_end` ungated | §3.3 closed schema + validator + source excerpt; R5, R7; **partly open** (a benign-looking value can still bias) |
 | T6 | serious | Per-session lock doesn't protect a per-principal ref; "between runs" not computable | §3.4 per-ref write lock; R9 |
 | T7 | serious | `run_id` collision on session re-creation; path injection | §3.4; R10 |

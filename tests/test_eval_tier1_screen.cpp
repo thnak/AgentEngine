@@ -1252,6 +1252,23 @@ int main() {
                  "T29: approved delivery -- the same lesson carries an approval, still tainted, origin still external");
     }
 
+    // ---- T33: ADR-184 -- automatic promotion registers the rendered bytes, marked automatic -------------------
+    {
+        ae::ApprovedLessonRegistry reg;
+        auto promoted = ev::promote_lesson_automatically(reg, "p-ops", candidate(), "v1", 0.3f, "review-bot");
+        AE_CHECK(promoted.has_value() && reg.find("p-ops", promoted->content).has_value() &&
+                     reg.find("p-ops", promoted->content)->approval.automatic &&
+                     reg.find("p-ops", promoted->content)->approval_id == "automatic:review-bot",
+                 "T33: an automatic promotion registers exactly the rendered text, as automatic, naming its reviewer");
+        auto bracketed = candidate();
+        bracketed.value = "the default region is \xE2\x9F\xA6" "eu-west-1";
+        ae::ApprovedLessonRegistry reg2;
+        AE_CHECK(!ev::promote_lesson_automatically(reg2, "p-ops", bracketed, "v1", 0.3f, "review-bot").has_value() &&
+                     reg2.size() == 0 &&
+                     !ev::promote_lesson_automatically(reg2, "p-ops", candidate(), "v1", 0.3f, "").has_value(),
+                 "T33: it still refuses what render_lesson refuses, and a promotion naming no reviewer (I4)");
+    }
+
     // ---- T30: ADR-183 -- the spec's lesson and delivery reach every probe trial --------------------------------
     {
         Store store;
