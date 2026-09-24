@@ -140,6 +140,13 @@ rely on its shape being benign.
 
 ## 5. Residuals
 
+- **Amended by ADR-183 (2026-09-24).** Measured live on tool-argument lessons, the fence route this ADR kept made an
+  approved lesson close to inert: the preamble's "never as instructions" is what the model acts on. ADR-183 keeps
+  every lesson fenced and tainted but lets a host opt in to approved-lesson blocks — the session grants an
+  `approval` only to text a human approved, the fence names the block, and the preamble says it may be followed.
+  This ADR's §4b warning about a persistent injection channel now applies in full to any lesson that gets past the
+  human; ADR-183 §5 names the defences.
+
 - **No gate on the new rule** (red-team 6). Options: a CI grep that no memory/RAG provider assigns
   `.instructions`; or a provenance check where `agent_session.hpp:2560` refuses provenance-tainted material.
   Not built.

@@ -350,7 +350,7 @@ namespace detail {
                 std::bit_cast<std::uint32_t>(spec.gross_harm.lesson_salience) ||
             probe.candidate.subject != spec.gross_harm.candidate.subject ||
             probe.candidate.key != spec.gross_harm.candidate.key ||
-            probe.candidate.value != spec.gross_harm.candidate.value) {
+            probe.candidate.value != spec.gross_harm.candidate.value || probe.delivery != spec.gross_harm.delivery) {
             return tier1_contract("every probe and the gross-harm spec must screen the same lesson",
                                   "eval.tier1_lesson_mismatch");
         }
@@ -440,11 +440,13 @@ namespace detail {
     harm.emplace_back("max_injected", detail::tier1_u64(g.max_injected));
 
     Obj root;
-    root.emplace_back("schema", Value::make_string("adr181.tier1.preregistration.v1"));
+    root.emplace_back("schema", Value::make_string("adr181.tier1.preregistration.v2"));  // v2: lesson_delivery
     root.emplace_back("suite_version", Value::make_string(spec.suite_version));
     root.emplace_back("template_version", Value::make_string(g.template_version));
     root.emplace_back("rendered_lesson_digest", Value::make_string(*lesson));
     root.emplace_back("lesson_salience", detail::tier1_double(static_cast<double>(g.lesson_salience)));
+    // ADR-183: how the lesson reaches the model changes what the screen measures, so it is part of the design.
+    root.emplace_back("lesson_delivery", Value::make_string(std::string(lesson_delivery_name(g.delivery))));
     root.emplace_back("probes", Value::make_array(std::move(probes)));
     root.emplace_back("gross_harm", Value::make_object(std::move(harm)));
     root.emplace_back("arm_s", Value::make_null());  // not built (§3.7); a SlotTable will be recorded here

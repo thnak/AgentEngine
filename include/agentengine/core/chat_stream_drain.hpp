@@ -69,7 +69,7 @@ namespace agentengine {
 inline void append_stream_delta(Message& accumulated, ContentItem delta, bool continues_previous) {
     if (continues_previous && !accumulated.content.empty()) {
         ContentItem& back = accumulated.content.back();
-        if (back.origin == delta.origin && back.tainted == delta.tainted) {
+        if (back.origin == delta.origin && back.tainted == delta.tainted && back.approval == delta.approval) {
             if (auto* into = std::get_if<Text>(&back.value)) {
                 if (auto* from = std::get_if<Text>(&delta.value)) {
                     into->text += from->text;
@@ -95,7 +95,7 @@ namespace chat_stream_drain_detail {
 // the member count changes -- whoever adds the field is sent here to decide whether it must match
 // for a join, instead of finding out from a lost value.
 inline void join_compares_every_field(ContentItem const& c, Text const& t, Reasoning const& r) {
-    [[maybe_unused]] auto const& [c_value, c_origin, c_tainted] = c;
+    [[maybe_unused]] auto const& [c_value, c_origin, c_tainted, c_approval] = c;  // approval: ADR-183, must match
     [[maybe_unused]] auto const& [t_text] = t;
     [[maybe_unused]] auto const& [r_text, r_encrypted, r_producer_chat_client_id] = r;
 }

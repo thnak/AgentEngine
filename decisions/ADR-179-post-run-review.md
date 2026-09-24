@@ -120,7 +120,7 @@ only mode. The queue is bounded, deduped by digest, and has a TTL; a rate limit 
 targeted-DoS lever (an attacker burns the budget so the legitimate run's lessons are dropped), so drops are
 per-run-fair rather than first-come.
 
-A promotion writes a `procedural` / `model_inferred` item. **Provenance goes to a separate ref**, never the
+A promotion writes a `procedural` / `model_inferred` item (the item itself stays `model_inferred`; a host that opts in also records the human's approval of its exact text in an `ApprovedLessonRegistry`, and the session then delivers it as an approved-lesson block — ADR-183). **Provenance goes to a separate ref**, never the
 memory mount (a non-`MemoryItem` blob there fails retrieval for that principal, and would be parsed as, or
 injected as, a lesson). Records are keyed by `digest` + a **monotonic sequence**, `run_id` segments are
 allow-listed (a re-created session reuses `:run:1`, and a `/` in a session id is a path), and the write goes

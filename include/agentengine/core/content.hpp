@@ -153,6 +153,12 @@ struct ContentItem {  // ae-naming-lint: allow ContentItem — pre-existing M0 s
     std::variant<Text, Reasoning, Media, Data, ToolCall, ToolResult, Citation, Error, Custom> value;
     content_origin origin = content_origin::assistant;
     bool           tainted = false;
+    // ADR-183: non-empty only on a tainted `role::system` text item whose exact text a human approved -- the id
+    // of that approval (the E31 acknowledgement digest, or `simulated:<trial>` for an evaluation's stand-in). Set ONLY by `AgentSession` when it builds a request, after re-verifying the
+    // text against its host-owned `ApprovedLessonRegistry`; the session clears it on every other item, so no
+    // provider, plugin or stored history can grant it. It changes nothing about taint or authority: the item is
+    // still fenced; the fence names it an approved lesson and its preamble says such a block may be followed.
+    std::string    approval;
 
     friend bool operator==(ContentItem const&, ContentItem const&) = default;
 };

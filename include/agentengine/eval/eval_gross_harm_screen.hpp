@@ -74,6 +74,7 @@ struct GrossHarmScreenSpec {  // ae-naming-lint: allow GrossHarmScreenSpec — A
     LessonCandidate candidate;
     std::string template_version;
     float lesson_salience = 0.0f;
+    lesson_delivery delivery = lesson_delivery::fenced;  // ADR-183: the treatment arm's route, as the host ships it
     std::vector<RegressionTask> tasks;            // ADR default: 30
     std::uint32_t k_per_arm = 5;                  // ADR default
     double alpha = 0.10;                          // the SCREEN's false-flag bound; each test gets alpha/2
@@ -351,6 +352,7 @@ template <class InnerFactory, class SummarizerFactory>
         trial_spec.candidate = (arm == trial_arm::treatment) ? std::optional(spec.candidate) : std::nullopt;
         trial_spec.template_version = spec.template_version;
         trial_spec.lesson_salience = spec.lesson_salience;
+        trial_spec.delivery = spec.delivery;
         trial_spec.task_prompt = task_def.task_prompt;
         trial_spec.stub_tools = task_def.stub_tools;
         trial_spec.seed = trial_seed;

@@ -104,12 +104,15 @@ namespace detail {
             // but it dropped `tainted`/`origin` at exactly the same point, leaving a
             // `{"role":"system"}` message carrying tool/document/model-derived text
             // indistinguishable from a host-authored one. Same fence, same bytes, same predicate.
-            text += needs_system_channel_fence(m.role, item) ? fence_untrusted_text(t->text, item.origin)
-                                                             : t->text;
+            // ADR-183: every text the fence does not wrap is neutralized, so a fence marker -- an approved-lesson
+            // one above all -- appears on the wire only where this serializer opened or closed a real fence.
+            text += needs_system_channel_fence(m.role, item)
+                        ? fence_untrusted_text(t->text, item.origin, !item.approval.empty())
+                        : neutralize_outbound_text(t->text);
         } else if (auto const* tc = std::get_if<ToolCall>(&item.value)) {
             std::vector<std::pair<std::string, json::Value>> fn{
                 {"name", json::Value::make_string(tc->tool_name)},
-                {"arguments", json::Value::make_string(tc->arguments_json)},
+                {"arguments", json::Value::make_string(neutralize_outbound_text(tc->arguments_json))},
             };
             std::vector<std::pair<std::string, json::Value>> call{
                 {"id", json::Value::make_string(tc->call_id)},
@@ -121,11 +124,11 @@ namespace detail {
             tool_call_id = tr->call_id;
             for (ContentItem const& inner : tr->content) {
                 if (auto const* it = std::get_if<Text>(&inner.value)) {
-                    text += it->text;
+                    text += neutralize_outbound_text(it->text);
                 } else if (auto const* d = std::get_if<Data>(&inner.value)) {
-                    text += d->json;
+                    text += neutralize_outbound_text(d->json);
                 } else if (auto const* e = std::get_if<Error>(&inner.value)) {
-                    text += e->message;
+                    text += neutralize_outbound_text(e->message);
                 }
             }
         }
@@ -359,7 +362,7 @@ namespace detail {
         std::vector<std::pair<std::string, json::Value>> preamble;
         preamble.emplace_back("role", json::Value::make_string("system"));
         preamble.emplace_back("content",
-                              json::Value::make_string(std::string(untrusted_fence_preamble())));
+                              json::Value::make_string(untrusted_fence_preamble_for(request.messages)));
         messages.push_back(json::Value::make_object(std::move(preamble)));
     }
     for (auto const& m : request.messages) {

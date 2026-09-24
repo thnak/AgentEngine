@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "agentengine/eval/eval_tier1_screen.hpp"
+#include "agentengine/eval/promotion_ack.hpp"
 
 namespace {
 
@@ -1175,6 +1176,87 @@ int main() {
         auto r = drive(ev::run_tier1_screen(log, make_factory<Store>(Behaviour{}, calls), summarizer_factory(), s));
         AE_CHECK(r.setup_error.has_value() && r.setup_error->code == "eval.tier1_model_call_budget" && calls->probe_calls == 0,
                  "T26: summed budgets that would overflow saturate and are refused, not wrapped to a small number");
+    }
+
+    // ---- T27: ADR-183 -- how the lesson is delivered is part of the design ------------------------------------
+    {
+        auto approved = spec();
+        approved.probes[0].delivery = ev::lesson_delivery::approved;
+        approved.gross_harm.delivery = ev::lesson_delivery::approved;
+        auto const a = ev::tier1_preregistration_digest(spec());
+        auto const b = ev::tier1_preregistration_digest(approved);
+        AE_CHECK(a.has_value() && b.has_value() && *a != *b,
+                 "T27: delivering the lesson as approved is a different pre-registered design (a different digest)");
+        auto mixed = spec();
+        mixed.probes[0].delivery = ev::lesson_delivery::approved;  // the gross-harm screen stays fenced
+        Store store;
+        ev::Tier1AttemptLog<Store> log(store);
+        auto calls = std::make_shared<CallLog>();
+        auto r = drive(ev::run_tier1_screen(log, make_factory<Store>(Behaviour{}, calls), summarizer_factory(), mixed));
+        AE_CHECK(r.setup_error.has_value() && r.setup_error->code == "eval.tier1_lesson_mismatch" && calls->probe_calls == 0,
+                 "T27: a probe and a gross-harm screen delivering the lesson differently are not one lesson -- refused");
+    }
+
+    // ---- T28: ADR-183 -- the evaluation side's way into the registry goes through E31 -------------------------
+    {
+        ae::ApprovedLessonRegistry reg;
+        auto const cand = candidate();
+        auto rendered = ev::render_lesson(cand, "v1", 0.3f);
+        AE_CHECK(rendered.has_value(), "T28: setup -- the lesson renders");
+        auto ack = ev::acknowledge_rendered_lesson(*rendered, "v1", "alice", "2026-09-24T10:00:00Z");
+        AE_CHECK(ack.has_value(), "T28: setup -- the approver's acknowledgement is computed");
+        auto ok = ev::approve_lesson(reg, "p-ops", cand, *ack, 0.3f);
+        AE_CHECK(ok.has_value() && reg.find("p-ops", ok->content).has_value() &&
+                     reg.find("p-ops", ok->content)->approval.approver_id == "alice" &&
+                     !reg.find("p-ops", ok->content)->approval.simulated,
+                 "T28: an E31-verified acknowledgement registers the exact rendered text, attributed to its approver");
+        auto tampered = cand;
+        tampered.value = "the default region is us-east-1";
+        ae::ApprovedLessonRegistry reg2;
+        auto refused = ev::approve_lesson(reg2, "p-ops", tampered, *ack, 0.3f);
+        AE_CHECK(!refused.has_value() && refused.error().code == "eval.ack_digest_mismatch" && reg2.size() == 0,
+                 "T28: a lesson that no longer matches what was acknowledged registers nothing");
+        auto bracketed = cand;
+        bracketed.value = "the default region is \xE2\x9F\xA6" "eu-west-1";
+        AE_CHECK(!ev::render_lesson(bracketed, "v1", 0.3f).has_value(),
+                 "T28: a lesson containing a provenance-marker bracket is refused -- approved bytes must be the bytes "
+                 "the model reads");
+    }
+
+    // ---- T29: ADR-183 -- a trial delivers the lesson the way the spec says ------------------------------------
+    {
+        auto run = [](ev::lesson_delivery d) {
+            ev::TrialSpec t;
+            t.arm = ev::trial_arm::treatment;
+            t.candidate = candidate();
+            t.template_version = "v1";
+            t.lesson_salience = 0.3f;
+            t.delivery = d;
+            t.task_prompt = user_message("please set up the deploy region");
+            t.stub_tools = {fixture("set_deploy_region", "region")};
+            t.trial_id = std::string("t29-") + std::string(ev::lesson_delivery_name(d));
+            t.max_turns = 4;
+            return drive(ev::run_trial(ScriptedChatClient({text_step("done")}), MockSummarizerClient{}, std::move(t)));
+        };
+        auto lesson_item = [](ev::TrialResult const& r) -> std::optional<ae::ContentItem> {
+            if (r.recordings.empty()) return std::nullopt;
+            for (ae::Message const& m : r.recordings.front().request.messages) {
+                for (ae::ContentItem const& item : m.content) {
+                    auto const* t = std::get_if<ae::Text>(&item.value);
+                    if (m.role == ae::role::system && item.tainted && t != nullptr &&
+                        t->text.find("eu-west-1") != std::string::npos) {
+                        return item;
+                    }
+                }
+            }
+            return std::nullopt;
+        };
+        auto const f = lesson_item(run(ev::lesson_delivery::fenced));
+        auto const a = lesson_item(run(ev::lesson_delivery::approved));
+        AE_CHECK(f.has_value() && f->approval.empty(),
+                 "T29: fenced delivery (the default) -- the lesson reaches the model with no approval, as before");
+        AE_CHECK(a.has_value() && !a->approval.empty() && a->tainted && a->origin == ae::content_origin::external,
+                 "T29: approved delivery -- the same lesson carries an approval, still tainted, origin still external");
     }
 
     std::cout << (g_failures == 0 ? "test_eval_tier1_screen: OK\n" : "test_eval_tier1_screen: FAIL\n");

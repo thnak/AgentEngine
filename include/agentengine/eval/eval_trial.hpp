@@ -48,11 +48,25 @@ namespace agentengine::eval {
 
 enum class trial_arm { baseline, treatment };  // ae-naming-lint: allow trial_arm — ADR-181 §3.2; arm S is out of scope this slice
 
+// ADR-183: how the treatment arm delivers its lesson -- the way the host will deliver a promoted one. `fenced`
+// (the default, and the only route before ADR-183) is plain retrieved memory: tainted, fenced, "model-inferred,
+// unverified". `approved` is the route a host opts into with `AgentSession::set_approved_lessons`: the lesson is
+// registered in the trial's own `ApprovedLessonRegistry` as a SIMULATED approval (the screen runs before any human
+// has approved anything) and reaches the model as an approved-lesson block (still tainted and fenced; the preamble
+// says it may be followed). A screen must measure the route that ships, or its verdict is about a lesson delivered
+// some other way.
+enum class lesson_delivery { fenced, approved };  // ae-naming-lint: allow lesson_delivery — ADR-183
+
+[[nodiscard]] inline std::string_view lesson_delivery_name(lesson_delivery d) noexcept {
+    return d == lesson_delivery::approved ? "approved" : "fenced";
+}
+
 struct TrialSpec {  // ae-naming-lint: allow TrialSpec — ADR-181 §3.0 items 2-4
     trial_arm arm;
     std::optional<LessonCandidate> candidate;  // required iff arm==treatment
     std::string template_version;
     float lesson_salience = 0.0f;              // host constant -- the promotion path's own value
+    lesson_delivery delivery = lesson_delivery::fenced;  // ADR-183; host-set, never candidate-derived (I3)
     Message task_prompt;
     std::vector<StubToolFixture> stub_tools;
     std::string trial_id;                      // identity only, never model/candidate-derived (I3)
@@ -412,6 +426,7 @@ template <class Inner, class SummarizerT>
     EvalStore store = std::move(*store_result);
 
     std::string rendered_lesson_content;  // the exact text `delivered`/`delivered_via_recall` search for
+    ApprovedLessonRegistry approved_lessons;  // ADR-183: used only when spec.delivery == approved
     if (spec.candidate.has_value()) {
         auto rendered = render_lesson(*spec.candidate, spec.template_version, spec.lesson_salience);
         if (!rendered) {
@@ -452,6 +467,18 @@ template <class Inner, class SummarizerT>
                                  detail::SummarizerRecorder<SummarizerT>{std::move(summarizer), &trial_result,
                                                                          spec.summarizer_token_budget},
                                  spec.max_injected};
+    // ADR-183: the approved route. The trial's own registry (declared above, so it outlives the session) holds the
+    // rendered lesson as a simulated approval for this trial's principal; an unset `delivery` leaves the session
+    // exactly as before.
+    if (spec.delivery == lesson_delivery::approved && !rendered_lesson_content.empty()) {
+        if (auto registered =
+                approved_lessons.approve_simulated(store.principal().id, rendered_lesson_content, spec.trial_id);
+            !registered) {
+            trial_result.setup_error = registered.error();
+            co_return trial_result;
+        }
+        session.set_approved_lessons(&approved_lessons);
+    }
     auto engaged = session.history_provider().engage(
         std::tuple{HistoryProvider<Window<0>>{}, std::move(memory_provider),
                    EvalStubToolProvider{std::move(stub_descriptors)}});

@@ -7,6 +7,7 @@
 
 #include <string>
 
+#include "agentengine/core/approved_lessons.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/eval/lesson_candidate.hpp"
 
@@ -62,6 +63,22 @@ struct PromotionAck {  // ae-naming-lint: allow PromotionAck — ADR-181 §3.0 i
                                       "eval.ack_digest_mismatch"});
     }
     return *rendered;
+}
+
+// ADR-183: registers a lesson a human approved, for `scope` (the principal whose sessions may receive it), so a
+// session given `registry` delivers it as an approved lesson (still tainted and fenced; the fence's preamble says
+// it may be followed). It goes through E31 first: the candidate is re-rendered and its digest must equal what the
+// approver acknowledged, or nothing is registered. Returns the rendered item -- the exact bytes that were approved,
+// to be written to memory by the promotion.
+[[nodiscard]] inline result<MemoryItem> approve_lesson(ApprovedLessonRegistry& registry, std::string_view scope,
+                                                       LessonCandidate const& candidate, PromotionAck const& ack,
+                                                       float salience) {
+    auto rendered = verify_and_render_acknowledged_lesson(candidate, ack, salience);
+    if (!rendered) return std::unexpected(rendered.error());
+    auto approved =
+        registry.approve(scope, rendered->content, LessonApproval{ack.approver_id, ack.acknowledged_at, ack.digest});
+    if (!approved) return std::unexpected(approved.error());
+    return rendered;
 }
 
 }  // namespace agentengine::eval

@@ -160,9 +160,9 @@ struct SplitMessages {
                 // is checked by `needs_system_channel_fence` itself, so an empty tainted item still
                 // contributes nothing at all rather than a content-free marker pair.
                 if (needs_system_channel_fence(m.role, item)) {
-                    append_fragment(fence_untrusted_text(t->text, item.origin));
+                    append_fragment(fence_untrusted_text(t->text, item.origin, !item.approval.empty()));
                 } else {
-                    append_fragment(t->text);
+                    append_fragment(neutralize_outbound_text(t->text));  // ADR-183: no marker outside a real fence
                 }
             }
         } else {
@@ -175,7 +175,7 @@ struct SplitMessages {
     // there is something to explain, so a request with no tainted system content is byte-identical
     // to before this fix.
     if (!out.system_text.empty() && has_fenced_system_content(messages)) {
-        std::string prefixed(untrusted_fence_preamble());
+        std::string prefixed = untrusted_fence_preamble_for(messages);  // ADR-183: plus its sentence when needed
         prefixed += "\n\n";
         prefixed += out.system_text;
         out.system_text = std::move(prefixed);
@@ -202,7 +202,7 @@ struct SplitMessages {
         if (auto const* t = std::get_if<Text>(&item.value)) {
             std::vector<std::pair<std::string, json::Value>> block{
                 {"type", json::Value::make_string("text")},
-                {"text", json::Value::make_string(t->text)},
+                {"text", json::Value::make_string(neutralize_outbound_text(t->text))},
             };
             blocks.push_back(json::Value::make_object(std::move(block)));
         } else if (auto const* tc = std::get_if<ToolCall>(&item.value)) {
@@ -210,18 +210,18 @@ struct SplitMessages {
                 {"type", json::Value::make_string("tool_use")},
                 {"id", json::Value::make_string(tc->call_id)},
                 {"name", json::Value::make_string(tc->tool_name)},
-                {"input", translate_tool_use_input(tc->arguments_json)},
+                {"input", translate_tool_use_input(neutralize_outbound_text(tc->arguments_json))},
             };
             blocks.push_back(json::Value::make_object(std::move(block)));
         } else if (auto const* tr = std::get_if<ToolResult>(&item.value)) {
             std::string content_text;
             for (ContentItem const& inner : tr->content) {
                 if (auto const* it = std::get_if<Text>(&inner.value)) {
-                    content_text += it->text;
+                    content_text += neutralize_outbound_text(it->text);
                 } else if (auto const* d = std::get_if<Data>(&inner.value)) {
-                    content_text += d->json;
+                    content_text += neutralize_outbound_text(d->json);
                 } else if (auto const* e = std::get_if<Error>(&inner.value)) {
-                    content_text += e->message;
+                    content_text += neutralize_outbound_text(e->message);
                 }
             }
             std::vector<std::pair<std::string, json::Value>> block{

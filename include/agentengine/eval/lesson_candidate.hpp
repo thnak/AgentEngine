@@ -97,6 +97,14 @@ namespace detail {
 // `field_label` names the field in the returned error's message, so a caller can tell which of
 // subject/key/value tripped it.
 [[nodiscard]] inline result<void> reject_injection_shapes(std::string_view text, char const* field_label) {
+    // ADR-183 red team: the provenance-marker brackets (U+27E6/U+27E7) open every memory label and fence marker.
+    // Neutralization breaks them in rendered text by inserting a zero-width space, so a lesson containing one
+    // would reach the model as bytes the approver never saw -- and an approval is of exact bytes. Refused outright.
+    if (text.find("\xE2\x9F\xA6") != std::string_view::npos || text.find("\xE2\x9F\xA7") != std::string_view::npos) {
+        return std::unexpected(error{failure_class::contract,
+                                     std::string("lesson ") + field_label + " contains a provenance-marker bracket",
+                                     "eval.marker_bracket"});
+    }
     std::string const lower = to_lower_ascii(text);
 
     // Round-6 fix: two independent round-6 reviewers found real needle gaps here (each proven with a

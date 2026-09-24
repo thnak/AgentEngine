@@ -1,6 +1,8 @@
 # 003 — Message and Content Model
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-04** (§2, `decisions/ADR-173-system-channel-taint-fence.md` / GitHub issue #61: taint had no obligation at the serializer, so every conformer legitimately dropped it on the way to the wire) · **Depends on:** (historical: originally also depended on Quark 003/016 — ADR-037 removed that dependency) · **Used by:** 004, 005, 011, 012, 013 · **Gate:** §7
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-24** (§2,
+`decisions/ADR-183-approved-lesson-delivery.md`: `ContentItem::approval` and outbound marker neutralization) ·
+**Amended 2026-09-04** (§2, `decisions/ADR-173-system-channel-taint-fence.md` / GitHub issue #61: taint had no obligation at the serializer, so every conformer legitimately dropped it on the way to the wire) · **Depends on:** (historical: originally also depended on Quark 003/016 — ADR-037 removed that dependency) · **Used by:** 004, 005, 011, 012, 013 · **Gate:** §7
 
 ## Goal
 
@@ -95,6 +97,14 @@ flag**.
   so is entitled to claim `::system` for text *it* composes; that entitlement does not extend to
   text a model produced, however trusted the provider relaying it. `HistoryProvider`'s summary was
   the one place in the tree that crossed this line.
+- **An approved lesson carries an `approval`, not a different origin or taint** (amended 2026-09-24,
+  `decisions/ADR-183-approved-lesson-delivery.md`). `ContentItem::approval` is empty, or the digest of the exact
+  text a human approved (ADR-181 E31). It is granted per request, only by `AgentSession`, only to a tainted
+  `role::system` text the host's `ApprovedLessonRegistry` holds for the session's principal; the session clears it
+  on every other item. The item stays tainted and `external`; the fence names it an approved lesson and the
+  reading rule says it may be followed as guidance. This is the one sanctioned relaxation of the reading rule and
+  it is logged per delivery (a `policy_decision` event). **Fence markers must appear on the wire only where a
+  serializer opened or closed a real fence** — both conformers neutralize them in every other text they emit.
 
 **This section's extension of the taint trigger to assistant-origin content is security-critical
 and invariant-touching (I3).** Closing the textual contradiction here is not the same as this being

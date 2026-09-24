@@ -307,6 +307,9 @@ namespace recording_detail {
 
     obj.emplace_back("origin", json::Value::make_string(std::string(origin_to_wire_string(item.origin))));
     obj.emplace_back("tainted", json::Value::make_bool(item.tainted));
+    // ADR-183: recorded so a replayed request carries the same fence bytes (I5) and the audit shows which
+    // approval reached the model (I4). Omitted when empty, so older recordings are unchanged.
+    if (!item.approval.empty()) obj.emplace_back("approval", json::Value::make_string(item.approval));
     return json::Value::make_object(std::move(obj));
 }
 
@@ -396,6 +399,7 @@ namespace recording_detail {
         item.origin = *origin;
     }
     item.tainted = recording_detail::opt_bool(j, "tainted");
+    if (auto const* a = j.find("approval"); a != nullptr && a->is_string()) item.approval = a->as_string();
     return item;
 }
 

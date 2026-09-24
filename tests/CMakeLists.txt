@@ -1154,6 +1154,16 @@ if(AGENTENGINE_WITH_HTTPS)
     agentengine::core agentengine::provider_http_client agentengine_warnings)
   add_test(NAME test_system_channel_taint_fence COMMAND test_system_channel_taint_fence)
 
+  # ADR-183: an approved lesson stays tainted and fenced; the session is the one place its approval is granted,
+  # after re-verifying the exact text; both serializers neutralize every fence marker they did not emit.
+  add_executable(test_approved_lesson_delivery test_approved_lesson_delivery.cpp)
+  target_link_libraries(test_approved_lesson_delivery PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine::worktree_store agentengine_warnings)
+  if(MSVC)
+    target_compile_options(test_approved_lesson_delivery PRIVATE /bigobj)
+  endif()
+  add_test(NAME test_approved_lesson_delivery COMMAND test_approved_lesson_delivery)
+
   add_executable(test_anthropic_chat_client_live test_anthropic_chat_client_live.cpp)
   target_link_libraries(test_anthropic_chat_client_live PRIVATE
     agentengine::core agentengine::provider_http_client agentengine_warnings
@@ -1194,6 +1204,16 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_memory_lesson_effectiveness_live_e2e COMMAND test_memory_lesson_effectiveness_live_e2e)
   set_tests_properties(test_memory_lesson_effectiveness_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 900)
 
+  # Why a real model does not act on a promoted lesson when it must choose a TOOL ARGUMENT: separates the
+  # memory label from the ADR-173 fence (ADR-180's design), for the lessons test_eval_tier1_screen_live_e2e
+  # found inert. Every call is logged to a JSONL file and the table is computed from the file. Observation only.
+  add_executable(test_memory_lesson_label_live_e2e test_memory_lesson_label_live_e2e.cpp)
+  target_link_libraries(test_memory_lesson_label_live_e2e PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine::worktree_store agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_memory_lesson_label_live_e2e COMMAND test_memory_lesson_label_live_e2e)
+  set_tests_properties(test_memory_lesson_label_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 3600)
+
   # ADR-181 trial-running harness, first slice: one real B trial and one real T trial through
   # run_trial against a real model -- the end-to-end sanity check the scripted-client driver test
   # cannot provide on its own. Live, observation only; self-skips without a key.
@@ -1212,6 +1232,20 @@ if(AGENTENGINE_WITH_HTTPS)
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_test(NAME test_eval_summarizer_live_e2e COMMAND test_eval_summarizer_live_e2e)
   set_tests_properties(test_eval_summarizer_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
+
+  # ADR-181 E32 against a real model, with HARD goals: three counted Tier-1 attempts (full screens, the ADR's
+  # default sizes) log every model turn to a file as it happens, and an analysis that reads only the files --
+  # that action log and the on-disk attempt log -- decides pass/fail. Artifacts are kept for a human.
+  # Self-skips without a key; `--analyze <dir>` re-runs the analysis on a kept run.
+  add_executable(test_eval_tier1_screen_live_e2e test_eval_tier1_screen_live_e2e.cpp)
+  target_link_libraries(test_eval_tier1_screen_live_e2e PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine::worktree_store agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  if(MSVC)
+    target_compile_options(test_eval_tier1_screen_live_e2e PRIVATE /bigobj)
+  endif()
+  add_test(NAME test_eval_tier1_screen_live_e2e COMMAND test_eval_tier1_screen_live_e2e)
+  set_tests_properties(test_eval_tier1_screen_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 7200)
 
   # ADR-180 (wire half): what BOTH real serializers do with the two shapes the routes produce.
   add_executable(test_memory_procedural_wire test_memory_procedural_wire.cpp)

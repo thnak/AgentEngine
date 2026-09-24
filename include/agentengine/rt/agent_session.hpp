@@ -228,6 +228,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "agentengine/core/approved_lessons.hpp"
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/context_provider.hpp"
@@ -791,6 +792,15 @@ public:
     // derivation). Empty by default -- `run_rounds()`'s materialization step below is a no-op until
     // this is set.
     void set_static_instructions(std::string text) noexcept { static_instructions_ = std::move(text); }
+
+    // ADR-183, host opt-in: a lesson a human approved (the host's `ApprovedLessonRegistry`, scoped to this
+    // session's principal) reaches the model as an approved-lesson block -- still tainted and fenced, but the
+    // fence's preamble says it may be followed. Unset (the default) or null: every request is built exactly as
+    // before. `registry` must outlive the session. Every approved delivery emits a `policy_decision` event naming
+    // the approval it rests on (I4).
+    void set_approved_lessons(agentengine::ApprovedLessonRegistry const* registry) noexcept {
+        approved_lessons_ = registry;
+    }
     [[nodiscard]] std::string const& static_instructions() const noexcept { return static_instructions_; }
 
     // ADR-058 §8 (Design B) -- additive opt-in, same shape as set_suspend_for_approval/
@@ -2613,6 +2623,11 @@ private:
             // after this line, and `tool_table` above already took the copy of the tools it keeps.
             // This used to deep-copy the whole assembled history into the request once per turn.
             ChatRequest request{std::move(contribution->messages), std::move(contribution->tools)};
+            // ADR-183: the ONE place `ContentItem::approval` is granted -- after every provider has contributed and
+            // history is in, just before the request leaves. Cleared on every item first, so nothing a provider,
+            // a plugin or a stored message carries survives; granted only to a tainted system text whose exact
+            // text (less MemoryProvider's confidence label) the registry holds for this principal.
+            apply_approved_lessons(request);
             // ADR-058 §8 (Design B) -- scoped to `native` ONLY, deliberately. Both real backends'
             // own translation code (protocol/openai/chat_client.hpp:289-293,
             // protocol/anthropic/chat_client.hpp:409-413) serialize `request.output_schema_json`
@@ -3080,6 +3095,32 @@ public:
 private:
     std::string                                       session_id_;
     agentengine::Principal                             principal_;
+    agentengine::ApprovedLessonRegistry const*         approved_lessons_ = nullptr;  // ADR-183 opt-in
+
+    void apply_approved_lessons(ChatRequest& request) {
+        for (Message& m : request.messages) {
+            for (ContentItem& item : m.content) {
+                item.approval.clear();
+                if (approved_lessons_ == nullptr || m.role != role::system || !item.tainted) continue;
+                auto* text = std::get_if<Text>(&item.value);
+                if (text == nullptr) continue;
+                std::string_view const candidate = agentengine::approved_lesson_candidate_text(text->text);
+                auto const match = approved_lessons_->find(principal_.id, candidate);
+                if (!match) continue;
+                // The confidence label ("model-inferred, unverified") is dropped: the fence now says what the
+                // block is, and a label that says the opposite would contradict it.
+                text->text = std::string(candidate);
+                item.approval = match->approval_id;
+                emit_run_event(run_event_kind::policy_decision,
+                               run_event_payload::PolicyDecision{
+                                   "approved lesson delivered: approval " + match->approval_id + ", approved by " +
+                                   match->approval.approver_id +
+                                   (match->approval.simulated ? " (simulated)" : "") + ", acknowledgement " +
+                                   (match->approval.acknowledgement.empty() ? std::string("none")
+                                                                            : match->approval.acknowledgement)});
+            }
+        }
+    }
     std::vector<Message>                               history_;
     StateT                                             state_{};
     std::unordered_map<std::string, std::string>       metadata_;
