@@ -31,9 +31,10 @@ differs, with expected and actual side by side. To run one file directly:
 build/agentengine_scenario_runner tests/scenarios/live_gated_approve.json
 ```
 
-A scenario records today's behaviour, including known bugs it happens to cross (ADR-182 §16 lists
-the two that deliberately lock in the current `approval_resolved` order). When an engine change moves
-an event on purpose, re-export the affected scenarios as part of that change.
+A scenario records today's behaviour, including known bugs it happens to cross. When an engine
+change moves an event on purpose, update the affected scenarios as part of that change: ADR-183 did
+this when it moved `approval_resolved` ahead of dispatch, and exactly the two scenarios that cross an
+approve failed, at exactly the moved event.
 
 ## 2. Scripted exploration (Claude tester, engine model scripted)
 

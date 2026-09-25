@@ -1776,6 +1776,12 @@ add_executable(test_rt_agent_session_tool_call_hook test_rt_agent_session_tool_c
 target_link_libraries(test_rt_agent_session_tool_call_hook PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_agent_session_tool_call_hook COMMAND test_rt_agent_session_tool_call_hook)
 
+# ---- ADR-183: approval_resolved pairs with approval_requested and precedes tool_call_started, on
+# the plain, hook-touched and cascade approval paths.
+add_executable(test_rt_agent_session_approval_resolved_order test_rt_agent_session_approval_resolved_order.cpp)
+target_link_libraries(test_rt_agent_session_approval_resolved_order PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_agent_session_approval_resolved_order COMMAND test_rt_agent_session_approval_resolved_order)
+
 # ---- ADR-044 prove phase -- EffectContext::report_progress(), a real call-scoped reverse channel
 # into emit_run_event()/enable_event_stream() (run_event_kind::tool_call_delta), bracketed at all
 # three real invoke_tool() call sites in rt/agent_session.hpp, plus a direct regression test against

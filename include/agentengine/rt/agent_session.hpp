@@ -1149,6 +1149,24 @@ public:
         emit_run_event(run_event_kind::input_resolved,
                         run_event_payload::InteractionRef{request.interaction_id});
 
+        // ADR-183: the decision is announced before anything acts on it -- one approval_resolved per
+        // approval_requested this interaction emitted, in the same order, before on_context() and
+        // before any tool_call_started. A hook-touched round kept the exact list it asked about; a
+        // plain round asked about every call in the suspended assistant message.
+        if (auto hit = pending_hook_decisions_.find(request.interaction_id); hit != pending_hook_decisions_.end()) {
+            for (std::string const& call_id : hit->second.approval_requested_call_ids) {
+                emit_run_event(run_event_kind::approval_resolved,
+                                run_event_payload::ApprovalResolved{call_id, request.approved,
+                                                                      request.interaction_id});
+            }
+        } else {
+            for (ToolCall const& call : pending_calls) {
+                emit_run_event(run_event_kind::approval_resolved,
+                                run_event_payload::ApprovalResolved{call.call_id, request.approved,
+                                                                      request.interaction_id});
+            }
+        }
+
         std::size_t const response_msg_index = history_.size() - 1;
 
         if (!request.approved) {
@@ -1163,9 +1181,6 @@ public:
                 std::vector<ToolResult> results;
                 results.reserve(round.calls.size());
                 for (HookProcessedCall& hc : round.calls) {
-                    emit_run_event(run_event_kind::approval_resolved,
-                                    run_event_payload::ApprovalResolved{hc.request.call_id, false,
-                                                                          request.interaction_id});
                     if (hc.outcome == hook_call_outcome::denied) {
                         // Already decided by the hook stage (or a prior external-dispatch answer) --
                         // reuse the SAME ToolResult verbatim rather than deriving a second one.
@@ -1189,9 +1204,6 @@ public:
             std::vector<ToolResult> results;
             results.reserve(pending_calls.size());
             for (ToolCall const& call : pending_calls) {
-                emit_run_event(run_event_kind::approval_resolved,
-                                run_event_payload::ApprovalResolved{call.call_id, false,
-                                                                      request.interaction_id});
                 results.push_back(
                     make_denial_result(call.call_id, "denied by operator", "tool.approval_denied"));
             }
@@ -1253,18 +1265,13 @@ public:
         for (std::size_t i = 0; i < pending_calls.size(); ++i) {
             reqs.push_back(tool_call_request_of(pending_calls[i], i));
         }
-        // ADR-160 §5: tool_call_started/delta/finished all fire from inside dispatch_tool_calls();
-        // approval_resolved is THIS call site's own extra, per-call event, emitted afterward in
-        // `reqs`' own order -- dispatch_tool_calls() always returns in that order regardless of
-        // which concurrency class (or completion order) actually produced each result.
+        // ADR-160 §5: tool_call_started/delta/finished all fire from inside dispatch_tool_calls().
+        // approval_resolved was already emitted above (ADR-183), before any of them.
         std::vector<DispatchedCall> dispatched =
             dispatch_tool_calls(reqs, tool_table, held, one_shot_approve, PolicyDecider{});
         std::vector<ToolResult> results;
         results.reserve(dispatched.size());
         for (std::size_t i = 0; i < dispatched.size(); ++i) {
-            emit_run_event(run_event_kind::approval_resolved,
-                            run_event_payload::ApprovalResolved{reqs[i].call_id, true,
-                                                                  request.interaction_id});
             results.push_back(std::move(dispatched[i].result));
         }
         history_.push_back(tool_results_message(std::move(results)));
@@ -2432,6 +2439,8 @@ private:
                                     run_event_payload::ApprovalRequested{
                                         hc.request.call_id, next.interaction_id, hc.request.tool_name,
                                         json::dump(hc.request.arguments), needs});
+                    pending_hook_decisions_[next.interaction_id].approval_requested_call_ids.push_back(
+                        hc.request.call_id);  // ADR-183
                 }
             }
             co_return std::unexpected(error{failure_class::contract,
@@ -2897,10 +2906,19 @@ private:
                 for (std::size_t i = 0; i < calls.size(); ++i) {
                     // ADR-182 P1: the arguments the approval check actually judged -- the post-hook
                     // request's when the hook stage ran (it may have rewritten them), else the
-                    // model's own text.
-                    std::string arguments_json = hook_touched_round
-                                                     ? json::dump(processed[i].request.arguments)
-                                                     : calls[i].arguments_json;
+                    // model's own text. `processed` was moved into pending_hook_decisions_ above,
+                    // so a hook-touched round reads it back from there.
+                    std::string arguments_json =
+                        hook_touched_round
+                            ? json::dump(pending_hook_decisions_[interaction.interaction_id].calls[i].request.arguments)
+                            : calls[i].arguments_json;
+                    // ADR-183: record what was asked, so resolution pairs with it exactly. A plain
+                    // round needs no record: every call in the suspended message is asked, and
+                    // resolve_interaction() rebuilds that list from history.
+                    if (hook_touched_round) {
+                        pending_hook_decisions_[interaction.interaction_id].approval_requested_call_ids.push_back(
+                            calls[i].call_id);
+                    }
                     emit_run_event(run_event_kind::approval_requested,
                                     run_event_payload::ApprovalRequested{
                                         calls[i].call_id, interaction.interaction_id, calls[i].tool_name,

@@ -10,7 +10,8 @@
 //            path-shaped fixture name is refused, the session's model sees exactly the fixture's tools.
 //   C3b  -- a fixture that is not compiled in is refused.
 //   C4   -- (restated, §12) one gated call: interaction_list shows name, arguments, needs_approval;
-//            deny -> no tool_call_started for it; approve -> exactly one, after its approval_requested.
+//            deny -> no tool_call_started for it; approve -> exactly one, after its approval_requested
+//            and (ADR-183, §8's original form) after its approval_resolved.
 //   MIX  -- a mixed round lists the gated call needs_approval=true, the free one false.
 //   C10  -- session_cancel on a suspended session: no open interaction afterwards, the gated tool
 //            never ran, and a following send is accepted.
@@ -259,6 +260,10 @@ int main() {
         bool ordered = started.size() == 1 && requested.size() == 1 &&
                        td::get_u64(requested[0], "seq").value_or(0) < td::get_u64(started[0], "seq").value_or(0);
         check(ordered, "C4 approve: tool_call_started comes after its approval_requested");
+        auto resolved = events_of_kind(d, id, "approval_resolved");
+        check(resolved.size() == 1 && started.size() == 1 &&
+                  td::get_u64(resolved[0], "seq").value_or(0) < td::get_u64(started[0], "seq").value_or(0),
+              "C4 approve (ADR-183): approval_resolved comes strictly before tool_call_started");
         auto finished = events_of_kind(d, id, "tool_call_finished");
         bool echoed = finished.size() == 1 && finished[0].find("payload") &&
                       td::get_string(*finished[0].find("payload"), "result").value_or("").find("ship it") !=
@@ -468,14 +473,25 @@ int main() {
             check(deny_fails, "SCN control: a changed step (approve -> deny) fails the replay with a diff");
         }
 
-        // A cancel that lands while a run is in flight is timing-dependent: not exportable.
-        std::string const id2 = start(d, "basic");
-        push(d, id2, td::arr({text_turn("x")}));
-        (void)call(d, "session_send", sid(id2, {{"text", td::str("go")}}));
-        (void)call(d, "session_cancel", sid(id2));  // state is `running` from the send, synchronously
-        (void)wait(d, id2, "settled");
-        CallResult nd = call(d, "scenario_export", sid(id2, {{"name", td::str("cancel_race")}}));
-        check(nd.is_error && nd.error_code == "test.nondeterministic", "SCN: a cancel-while-running session is refused");
+        // A cancel that lands while a run is in flight is timing-dependent: not exportable. The run is
+        // one text turn, so under load it can finish before the cancel arrives (session_cancel then
+        // reports was=idle and nothing is marked). Retry in fresh sessions until one lands mid-run.
+        bool landed_running = false;
+        bool refused = false;
+        for (int attempt = 0; attempt < 50 && !landed_running; ++attempt) {
+            std::string const id2 = start(d, "basic");
+            push(d, id2, td::arr({text_turn("x")}));
+            (void)call(d, "session_send", sid(id2, {{"text", td::str("go")}}));
+            CallResult cr = call(d, "session_cancel", sid(id2));
+            landed_running = td::get_string(cr.body, "was") == "running";
+            (void)wait(d, id2, "settled");
+            if (landed_running) {
+                CallResult nd = call(d, "scenario_export", sid(id2, {{"name", td::str("cancel_race")}}));
+                refused = nd.is_error && nd.error_code == "test.nondeterministic";
+            }
+            (void)call(d, "session_close", sid(id2));
+        }
+        check(landed_running && refused, "SCN: a cancel-while-running session is refused");
 
         // A live session exports as a scripted scenario: the model's observed answers become the script.
         agentengine::testing::ScriptedChatClient fake;

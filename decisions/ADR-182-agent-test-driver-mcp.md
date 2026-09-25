@@ -861,3 +861,14 @@ run into a scenario, and the C9 check.
 2. Next: P4 file fixtures (git-tracked check), P5 tool doubles, sandboxed real tools, `session_fork`.
 3. Workflows; P1b (BUG-1/BUG-2) and P1c (event order), each its own ADR. The two-error-code and
    malformed-arguments findings are candidates for the same kind of small ADR.
+
+## 18. P1c — done as ADR-183 (2026-09-25)
+
+`approval_resolved` now pairs with `approval_requested` and precedes the resumed round's
+`tool_call_started` (`decisions/ADR-183-approval-resolved-before-dispatch.md`; 013 §1 amended). C4
+holds in its original §8 form ("resolved strictly before started"), checked through the driver.
+Exactly the two scenarios §16 predicted failed, at exactly the moved event, and were updated. The
+change also fixed a crash that this ADR's own P1 introduced (ADR-183 §2), and it recorded an approval
+bypass for text-derived calls to pure, capability-free `always_require` tools (ADR-183 §5).
+Remaining engine items: P1b (BUG-1/BUG-2), the two-error-code finding, the malformed-arguments
+finding, and ADR-183 §5.

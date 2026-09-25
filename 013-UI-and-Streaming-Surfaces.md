@@ -1,6 +1,6 @@
 # 013 — UI and Streaming Surfaces
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-04 by ADR-170** (§1 — the `SandboxExec*` producer is named, and its payload carries `backend`/`stage`/`ok`/`error_code`) · **Amended 2026-09-21 by ADR-177** (§1, §2.1 — `ModelOutputDiscarded`: a consumer is told that model output it already received is void) · **Depends on:** 001, 003, 006, 012, 019 · **Gate:** §6
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-04 by ADR-170** (§1 — the `SandboxExec*` producer is named, and its payload carries `backend`/`stage`/`ok`/`error_code`) · **Amended 2026-09-21 by ADR-177** (§1, §2.1 — `ModelOutputDiscarded`: a consumer is told that model output it already received is void) · **Amended 2026-09-25 by ADR-183** (§1 — `ApprovalResolved` pairs with `ApprovalRequested` and precedes the resumed round's `ToolCallStarted`) · **Depends on:** 001, 003, 006, 012, 019 · **Gate:** §6
 
 ## Goal
 
@@ -51,6 +51,14 @@ billed, ADR-177 §4). Nothing was appended to the conversation history and no
 tool ran from a discarded call, so the void is presentation-only. A consumer that ignores the event is
 still correct; it just shows the dead attempt's text followed by the full one, which is what the
 projection did before this event existed.
+
+**`ApprovalRequested`/`ApprovalResolved` ordering** (added 2026-09-25 by `ADR-183`). When a round
+suspends for approval, one `ApprovalRequested` fires per call named in that interaction. When the
+interaction is resolved, the engine emits `InputResolved`, then exactly one `ApprovalResolved` for
+each of those calls, in the same order and carrying the operator's decision, and only then acts on
+the decision: no `ToolCallStarted` of the resumed round precedes the last of them. A consumer can
+therefore read "resolved, then executed" straight off the stream, and pair each `ApprovalResolved`
+with its `ApprovalRequested` by `call_id` and `interaction_id`.
 
 **`ToolCallDelta`'s producer**, since it is the one event in this list a tool implementation emits
 rather than the engine: a call to `EffectContext.report_progress` during `invoke()` (006 §6a) is the

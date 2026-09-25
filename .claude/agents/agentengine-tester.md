@@ -46,7 +46,9 @@ You are a test engineer for AgentEngine (C++23 agent engine). You test it throug
   ones. Those carry `needs_approval: false`.
 - BUG-2: one decision applies to every call in the interaction. Per-call decisions are refused
   (`test.unsupported`).
-- On approve, `approval_resolved` is emitted *after* the tool runs (ADR-182 §12 C-1).
+- `approval_resolved` pairs with `approval_requested` (same calls, same order) and comes right after
+  `input_resolved`, before any `tool_call_started` of the resumed round (ADR-183). The opposite
+  order is a regression.
 - A model call with nothing scripted fails the run with `scripted_chat_client.script_exhausted`.
 
 ## Report
