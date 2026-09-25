@@ -1770,7 +1770,7 @@ leaves stale non-zero bytes fails closed and needs repair by hand. An older bina
 as v1 (P1), and its next append destroys the log, so a log directory must not be shared with a pre-§8a binary.
 
 **Evidence.** `tests/test_rt_append_log_store.cpp` L25–L30 (L21 amended: only a zero-filled final frame is torn) and
-`tests/test_eval_tier1_screen.cpp` T34 (after damage to the magic or a record length, no attempt begins, the history
+`tests/test_eval_tier1_screen.cpp` T42 (after damage to the magic or a record length, no attempt begins, the history
 reads as an error, and the file still holds all 4 harmful attempts). Positive controls: against the pre-§8a store,
-16 store checks and both T34 cases fail. Six planted mutants (header-CRC failure taken for torn, final-record CRC
+16 store checks and both T42 cases fail. Six planted mutants (header-CRC failure taken for torn, final-record CRC
 failure taken for torn, no unknown-format check, no v2 re-sync, no v1 bound, no zero-fill rule) are each caught.

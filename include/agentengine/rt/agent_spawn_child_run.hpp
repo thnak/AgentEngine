@@ -38,8 +38,11 @@
 // `agent_executor_detail::drive<T>()` already documents for the identical pattern -- actually true
 // here, not merely assumed.
 
+#include <atomic>
 #include <functional>
+#include <memory>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <utility>
 #include <vector>
@@ -117,6 +120,10 @@ struct ChildSpawnRequest {
     // outcome, success or failure (red team round 1: a failing child charged nothing, so a model could spend
     // quota x child budget uncharged). `perform_agent_spawn` sets it to the caller's `charge_delegated_usage`.
     std::function<void(agentengine::Usage const&, std::uint64_t)> charge_usage{};
+    // ADR-193 round 2 (ADR-178): the caller's `EffectContext::cancellation`. Cancelling the caller's run cancels
+    // the child's (red team round 2: the child got only its own fresh stop source, so a canceled root kept paying
+    // for a running child). Default: never stops.
+    std::stop_token cancellation{};
 };
 
 namespace agent_spawn_detail {
@@ -187,7 +194,21 @@ template <class ChatClientT, class StateT = agentengine::rt::NoSessionState,
     child.set_policy_decider(std::move(req.policy_decider));
     // ADR-193: only what the target named (see `ChildSpawnRequest`). Each setter audits as it does for any session,
     // and the audit reaches the caller through `event_sink`.
-    if (req.event_sink) child.set_run_event_tap(std::move(req.event_sink));
+    // ADR-193 round 2: the caller's cancellation reaches the child. `start_run()` replaces the child's stop source
+    // (ADR-178, one per run), so a cancel that lands before that would hit the old source and be lost; the flag is
+    // re-applied from the tap, whose first event (`run_started`) is emitted right after the new source exists.
+    auto parent_canceled = std::make_shared<std::atomic<bool>>(false);
+    if (req.event_sink || req.cancellation.stop_possible()) {
+        child.set_run_event_tap(
+            [&child, parent_canceled, sink = std::move(req.event_sink)](agentengine::RunEvent const& ev) {
+                if (parent_canceled->load(std::memory_order_acquire)) child.cancel();
+                if (sink) sink(ev);
+            });
+    }
+    std::stop_callback const cancel_bridge(req.cancellation, [&child, parent_canceled] {
+        parent_canceled->store(true, std::memory_order_release);
+        child.cancel();
+    });
     if (req.unattended_operator) {
         if (auto set = child.set_unattended_approvals(*req.unattended_operator, std::move(req.unattended_veto)); !set) {
             return std::unexpected(set.error());
@@ -215,12 +236,24 @@ template <class ChatClientT, class StateT = agentengine::rt::NoSessionState,
     // returns and `child` is destroyed -- `req.capabilities` (pointed to by `child`'s own
     // `capabilities_`) stays alive for the whole call, since function parameters outlive every local
     // variable declared after them.
-    agentengine::result<agentengine::rt::AgentResponse> response =
-        agent_spawn_detail::drive(child.start_run(agentengine::rt::StartRun{std::move(req.input)}));
     // ADR-193: the whole run's usage (every model call, and everything the child's own delegates charged to it),
-    // not only the final call's -- charged to the caller whether the child succeeded or failed.
-    agentengine::Usage const spent = child.run_usage();
-    if (req.charge_usage) req.charge_usage(spent, child.discarded_tokens_estimate());
+    // not only the final call's -- charged to the caller whether the child succeeded, failed or was canceled, and
+    // (round 2) also when something inside the run threw: CONVENTIONS.md keeps exceptions off control flow, but a
+    // host's chat client may still throw, and what the child spent before that is still spent.
+    auto const charge = [&child, &req]() -> agentengine::Usage {
+        agentengine::Usage const spent = child.run_usage();
+        if (req.charge_usage) req.charge_usage(spent, child.discarded_tokens_estimate());
+        return spent;
+    };
+    agentengine::result<agentengine::rt::AgentResponse> response = [&] {
+        try {
+            return agent_spawn_detail::drive(child.start_run(agentengine::rt::StartRun{std::move(req.input)}));
+        } catch (...) {
+            (void)charge();
+            throw;
+        }
+    }();
+    agentengine::Usage const spent = charge();
     if (response) response->usage = spent;
     return response;
 }

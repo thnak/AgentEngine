@@ -409,7 +409,18 @@ template <agentengine::rt::AppendLogStore StoreT>
     // ADR-193: keyed on the chain's ROOT principal (and its tenant), so a tree shares one quota -- keyed on the
     // caller's own id, every child (a fresh principal) started with a full quota of its own. The tracker is
     // lifetime-of-process, so one runaway tree spends its root's quota for good (disclosed, ADR-193 §4).
-    if (!quota_tracker.try_consume(ctx.principal.tenant_id + '\x1f' + ctx.principal.root_id(),
+    // ADR-193 round 2: refused BEFORE anything is spent -- this check used to run after the quota slot, the
+    // non-refundable SpawnCostBudget token and the worktree were already taken, so a caller with nothing left
+    // still burned all three on every refused spawn.
+    if (ctx.remaining_token_budget.has_value() && *ctx.remaining_token_budget == 0) {
+        return std::unexpected(agentengine::error{agentengine::failure_class::resource,
+                                                    "agent.spawn: the caller's token budget is spent",
+                                                    "agent_spawn.caller_budget_exhausted"});
+    }
+    // Round 2: the key is length-prefixed, not joined on a separator a host-assigned id could itself contain
+    // (tenant "a\x1fb" + root "c" collided with tenant "a" + root "b\x1fc").
+    if (!quota_tracker.try_consume(std::to_string(ctx.principal.tenant_id.size()) + ':' + ctx.principal.tenant_id +
+                                       ctx.principal.root_id(),
                                    quota.max_spawns_per_principal)) {
         return std::unexpected(agentengine::error{agentengine::failure_class::resource,
                                                     "per-principal agent.spawn quota exhausted",
@@ -492,12 +503,9 @@ template <agentengine::rt::AppendLogStore StoreT>
     child_request.token_budget  = target->child_token_budget;
     // ADR-193 (red team round 1): never more than the caller has left -- every child had its own full budget, so a
     // tree could spend (children x child budget) past the root's.
+    // A spawn with nothing left was refused at [0], before anything was spent. `remaining_token_budget` is
+    // recomputed before every sequential call (round 2), so it already reflects every earlier sibling's charge.
     if (ctx.remaining_token_budget.has_value()) {
-        if (*ctx.remaining_token_budget == 0) {
-            return std::unexpected(agentengine::error{agentengine::failure_class::resource,
-                                                        "agent.spawn: the caller's token budget is spent",
-                                                        "agent_spawn.caller_budget_exhausted"});
-        }
         child_request.token_budget = std::min(target->child_token_budget, *ctx.remaining_token_budget);
     }
     // §4.6 (item 6, OQ-16, landed 2026-08-23): the child's OWN manifest, computed from its OWN
@@ -513,6 +521,7 @@ template <agentengine::rt::AppendLogStore StoreT>
     // ADR-193: the child's events reach the caller's tap; its settings are only what this target names.
     child_request.event_sink          = ctx.delegated_event_sink;
     child_request.charge_usage        = ctx.charge_delegated_usage;
+    child_request.cancellation        = ctx.cancellation;  // round 2: cancelling the caller cancels the child
     child_request.unattended_operator = target->unattended_operator;
     child_request.unattended_veto     = target->unattended_veto;
     child_request.fence_disabled_by   = target->fence_disabled_by;
