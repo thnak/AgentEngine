@@ -118,6 +118,11 @@ flag**.
   system text: the one exception to the delimiting obligation above. Each such request is logged. Combined with
   unattended approvals this lets model-derived text drive granted tools with no human — an owner-sanctioned
   exception for full-automation hosts, recorded in ADR-184 §4, not a relaxation of I2.
+- **A handoff between agents never untaints** (amended 2026-09-25, `decisions/ADR-185-delegation-provenance.md`).
+  Text one agent's model wrote reaches another agent — `agent.spawn`'s input, a workflow agent node's input — as a
+  delegated task: a host-authored line saying which agent delegated it and that no human wrote it, then the text
+  itself, `content_origin::external`, `tainted = true` (`make_delegated_message`, `delegate_foreign_items`). It was
+  previously delivered as an untainted `role::user` message — an implicit, unlogged untainting this section forbids.
 
 **This section's extension of the taint trigger to assistant-origin content is security-critical
 and invariant-touching (I3).** Closing the textual contradiction here is not the same as this being

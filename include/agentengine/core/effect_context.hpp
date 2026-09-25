@@ -175,6 +175,17 @@ struct EffectContext {
     // enforcement that any body actually does this (I3: a body that stays non-streaming is simply
     // coarser-grained observability for that node, never a violation).
     std::function<void(std::string const&)> moderator_delta_sink = [](std::string const&) {};
+    // ADR-185 (delegation): set by `rt::AgentSession` for its own tool calls, so a tool that runs another agent
+    // (`agent.spawn`) can hand the child's RunEvents to the parent's event tap/stream (the child's events keep their
+    // own run id) and charge the child's whole usage -- its descendants' included -- to the parent's run, where the
+    // parent's token budget sees it (I4, I8). Defaults are no-ops: a context no session set up drops both.
+    std::function<void(RunEvent const&)> delegated_event_sink = [](RunEvent const&) {};
+    // `extra_budget_tokens`: budget-only tokens (a delegated run's discarded-stream estimates), never usage.
+    std::function<void(Usage const&, std::uint64_t extra_budget_tokens)> charge_delegated_usage =
+        [](Usage const&, std::uint64_t) {};
+    // ADR-185: what the calling run may still spend (nullopt = no budget), set by `rt::AgentSession` before it
+    // dispatches tool calls; a tool that runs another agent caps the child's budget by it.
+    std::optional<std::uint64_t> remaining_token_budget;
 
     // docs/planning/workflow-mid-run-cancellation-design-draft.md (GitHub issue #37, red-teamed):
     // `WorkflowSupervisor`'s own cooperative mid-call cancellation signal (`rt/workflow_supervisor.

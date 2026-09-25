@@ -27,6 +27,7 @@
 #include <shared_mutex>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "agentengine/core/error.hpp"
 
@@ -121,6 +122,19 @@ public:
         LessonApproval const& a = it->second;
         bool const by_id = a.simulated || a.automatic || a.acknowledgement.empty();
         return ApprovedLessonMatch{by_id ? a.approver_id : a.acknowledgement, a};
+    }
+
+    // ADR-185: every lesson text approved for `scope`, in key order -- what a delegation chain shares with a child
+    // (`SpawnTargetDescriptor::share_lessons`). The session still re-verifies each one when it builds a request.
+    [[nodiscard]] std::vector<std::string> texts(std::string_view scope) const {
+        std::vector<std::string> out;
+        if (scope.empty()) return out;
+        std::string const prefix = std::string(scope) + '\x1f';
+        std::shared_lock lock(mutex_);
+        for (auto it = approved_.lower_bound(prefix); it != approved_.end() && it->first.starts_with(prefix); ++it) {
+            out.push_back(it->first.substr(prefix.size()));
+        }
+        return out;
     }
 
     [[nodiscard]] std::size_t size() const {

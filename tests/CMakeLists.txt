@@ -1061,6 +1061,16 @@ if(WIN32)
   target_link_libraries(test_rt_agent_spawn PRIVATE
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_rt_agent_spawn COMMAND test_rt_agent_spawn)
+
+  # ADR-185: a hop never changes who wrote the text -- A -> B -> C through the real agent.spawn path, plus a
+  # workflow agent node. Same WIN32-only compute_digest dependency as test_rt_agent_spawn.
+  add_executable(test_delegation_provenance test_delegation_provenance.cpp)
+  target_link_libraries(test_delegation_provenance PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  if(MSVC)
+    target_compile_options(test_delegation_provenance PRIVATE /bigobj)
+  endif()
+  add_test(NAME test_delegation_provenance COMMAND test_delegation_provenance)
 endif()
 
 # ---- CodeAct discoverability manifest (resolves OQ-16, OpenQuestions.md) -----------------------

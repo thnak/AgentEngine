@@ -114,7 +114,9 @@ events nobody listens to, and the tool pipeline's own audit record does not say 
   registry has no list/export: a host keeps its own record and reloads it with `approve_automatic`.
 - **Not everything unattended.** `agent.ask` and hook-decision suspensions still wait for host code. `agent.spawn`
   children cannot be put in unattended mode — the child session is built internally and takes only the decider its
-  `SpawnTargetDescriptor` names (a hand-written always-yes decider works there, without this ADR's audit). Workflow
+  `SpawnTargetDescriptor` names (a hand-written always-yes decider works there, without this ADR's audit). *Resolved
+  by ADR-185:* a spawn target may name `unattended_operator` (and a veto), `fence_disabled_by` and lesson settings;
+  the stock child runner applies them through this ADR's setters, and their audit reaches the root's tap. Workflow
   executors and other sessions have their own settings.
 - **Only `AgentSession`.** `invoke_tool` called directly uses the caller's decider, as before.
 - **The middleware guard covers the marks only**: a `before_model` hook can still change `tainted`, `origin` or a

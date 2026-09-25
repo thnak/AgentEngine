@@ -818,6 +818,12 @@ public:
     // calls from it are still `arguments_tainted`, and recordings keep the taint). `operator_id` names who turned it
     // off (required, I4; refused if empty); every request it affects emits one `policy_decision` event saying so. The
     // event reaches the host only through a run-event tap or stream it attached. Off by default.
+    // ADR-185: host-supplied messages placed ahead of every request this session builds (after its providers'
+    // contributions are assembled, before the delivery marks are granted) -- how a spawned child receives the
+    // chain's shared lessons. Host code only; a tainted item stays tainted and is granted nothing it would not
+    // otherwise get. Empty by default.
+    void set_pinned_context(std::vector<Message> messages) { pinned_context_ = std::move(messages); }
+
     [[nodiscard]] result<void> disable_system_channel_fence(std::string operator_id) {
         if (operator_id.empty()) return unattended_detail_refuse("disable_system_channel_fence");
         system_fence_disabled_by_ = std::move(operator_id);
@@ -930,10 +936,26 @@ public:
     }
     [[nodiscard]] std::string const& last_run_id() const noexcept { return last_run_id_; }
     [[nodiscard]] std::uint64_t last_turn_index() const noexcept { return effect_context_.turn_index; }
-    [[nodiscard]] std::uint64_t run_tokens_consumed() const noexcept { return run_tokens_consumed_; }
+    // ADR-185: both include what delegated agents charged that has not been folded in yet -- a run that ended
+    // without another model call (suspended, canceled, or its last round delegated) still reports it.
+    [[nodiscard]] std::uint64_t run_tokens_consumed() const {
+        std::lock_guard<std::mutex> lock(delegated_usage_mutex_);
+        return run_tokens_consumed_ + pending_delegated_usage_.input_tokens + pending_delegated_usage_.output_tokens +
+               pending_delegated_extra_tokens_;
+    }
     // ADR-163: the full-`Usage` sibling of the accessor above -- see `run_usage_`'s own comment for
     // why this is a separate, parallel field rather than a re-derivation of `run_tokens_consumed_`.
-    [[nodiscard]] agentengine::Usage run_usage() const noexcept { return run_usage_; }
+    [[nodiscard]] agentengine::Usage run_usage() const {
+        agentengine::Usage u = run_usage_;
+        std::lock_guard<std::mutex> lock(delegated_usage_mutex_);
+        u.input_tokens += pending_delegated_usage_.input_tokens;
+        u.output_tokens += pending_delegated_usage_.output_tokens;
+        u.cached_input_tokens += pending_delegated_usage_.cached_input_tokens;
+        u.reasoning_tokens += pending_delegated_usage_.reasoning_tokens;
+        u.cost_estimate += pending_delegated_usage_.cost_estimate;
+        u.cache_write_tokens += pending_delegated_usage_.cache_write_tokens;
+        return u;
+    }
 
     [[nodiscard]] std::vector<Interaction> const& open_interactions() const noexcept {
         return open_interactions_;
@@ -1073,6 +1095,24 @@ public:
         effect_context_.run_id       = session_id_ + ":run:" + std::to_string(run_counter_);
         effect_context_.turn_index   = 0;
         last_run_id_ = effect_context_.run_id;
+        // ADR-185: a tool that runs another agent reports the child's events and usage back through these. Both
+        // capture `this`: every tool call of this run finishes before the run does, and the session outlives it.
+        effect_context_.delegated_event_sink = [this](RunEvent const& ev) { forward_run_event(ev); };
+        effect_context_.charge_delegated_usage = [this](agentengine::Usage const& u, std::uint64_t extra_budget_tokens) {
+            std::lock_guard<std::mutex> lock(delegated_usage_mutex_);
+            pending_delegated_extra_tokens_ += extra_budget_tokens;
+            pending_delegated_usage_.input_tokens += u.input_tokens;
+            pending_delegated_usage_.output_tokens += u.output_tokens;
+            pending_delegated_usage_.cached_input_tokens += u.cached_input_tokens;
+            pending_delegated_usage_.reasoning_tokens += u.reasoning_tokens;
+            pending_delegated_usage_.cost_estimate += u.cost_estimate;
+            pending_delegated_usage_.cache_write_tokens += u.cache_write_tokens;
+        };
+        {
+            std::lock_guard<std::mutex> lock(delegated_usage_mutex_);
+            pending_delegated_usage_ = agentengine::Usage{};
+            pending_delegated_extra_tokens_ = 0;
+        }
         {
             // ADR-178: one source PER RUN. Replaced (not reset) so a cancel aimed at the previous run,
             // still holding the old source, cannot reach this one; guarded because `cancel()` may be
@@ -1855,6 +1895,14 @@ private:
                                                       PolicyDecider const& policy) {
         std::vector<DispatchedCall> out(reqs.size());
         if (reqs.empty()) return out;
+        // ADR-185: what this run may still spend, so a tool that runs another agent caps the child's budget by it
+        // (red team round 1: each child got its own full `child_token_budget` whatever the parent had left).
+        if (token_budget_.has_value()) {
+            std::uint64_t const used = run_tokens_consumed();
+            effect_context_.remaining_token_budget = used >= *token_budget_ ? 0 : *token_budget_ - used;
+        } else {
+            effect_context_.remaining_token_budget.reset();
+        }
 
         for (auto const& req : reqs) {
             emit_run_event(run_event_kind::tool_call_started,
@@ -1957,6 +2005,7 @@ private:
                     audit.principal_id = ctx.principal.id;
                     audit.principal_tenant_id = ctx.principal.tenant_id;
                     audit.principal_on_behalf_of = ctx.principal.on_behalf_of;
+                    audit.principal_delegation_root = ctx.principal.delegation_root;  // ADR-185
                     emit_run_event_for(ctx.run_id, run_event_kind::tool_call_finished,
                                          run_event_payload::ToolCallFinished{audit.call_id, result});
                     out[i] = DispatchedCall{std::move(result), std::move(audit)};
@@ -2693,6 +2742,9 @@ private:
             // every provider has contributed and history is in, just before the request leaves. Both are cleared on
             // every item first, so nothing a provider, a plugin or a stored message carries survives; then granted only
             // by the host's settings (see the method).
+            if (!pinned_context_.empty()) {  // ADR-185
+                request.messages.insert(request.messages.begin(), pinned_context_.begin(), pinned_context_.end());
+            }
             apply_approved_lessons(request);
             // ADR-058 §8 (Design B) -- scoped to `native` ONLY, deliberately. Both real backends'
             // own translation code (protocol/openai/chat_client.hpp:289-293,
@@ -2720,6 +2772,16 @@ private:
             // so the retry re-sends the identical request.
             result<ChatResponse> response = std::unexpected(
                 error{failure_class::contract, "unreachable: no model call attempted", "run.internal"});
+            // ADR-185: what delegated agents spent since the last model call is this run's spending too -- folded
+            // in, and the budget checked, before another call is made (I8 across a delegation tree).
+            if (fold_delegated_usage() && token_budget_.has_value() && run_tokens_consumed_ > *token_budget_) {
+                emit_run_event(run_event_kind::run_failed,
+                               run_event_payload::RunFailed{"run.token_budget_exceeded",
+                                                            "token budget exceeded (delegated agents included)"});
+                co_return std::unexpected(error{failure_class::resource,
+                                                "token budget exceeded (delegated agents included)",
+                                                "run.token_budget_exceeded"});
+            }
             for (;;) {
                 emit_run_event(run_event_kind::model_call_started);
                 response = co_await run_model_call(request, effect_context_);
@@ -3167,6 +3229,7 @@ private:
         agentengine::approved_lesson_level::guidance;                                    // ADR-184
     std::optional<std::string>                         system_fence_disabled_by_;         // ADR-184 opt-in
     std::optional<std::string>                         unattended_by_;                    // ADR-184 opt-in
+    std::vector<Message>                               pinned_context_;                   // ADR-185
     // Shared, so a veto that clears unattended mode from inside itself does not destroy itself while running.
     std::shared_ptr<agentengine::ApprovalDecider const> unattended_veto_;                // ADR-184, optional
 
@@ -3189,7 +3252,13 @@ private:
                 if (text == nullptr) continue;
                 if (approved_lessons_ != nullptr) {
                     std::string_view const candidate = agentengine::approved_lesson_candidate_text(text->text);
-                    if (auto const match = approved_lessons_->find(principal_.id, candidate)) {
+                    // ADR-185: a delegated principal (a spawned child, a fresh id nobody could approve for) is
+                    // matched against its chain's root -- the owner the approval was actually given to.
+                    auto match = approved_lessons_->find(principal_.id, candidate);
+                    if (!match && !principal_.delegation_root.empty()) {
+                        match = approved_lessons_->find(principal_.delegation_root, candidate);
+                    }
+                    if (match) {
                         // The confidence label ("model-inferred, unverified") is dropped: the fence now says what
                         // the block is, and a label that says the opposite would contradict it.
                         text->text = std::string(candidate);
@@ -3386,6 +3455,55 @@ private:
     // `emit_run_event_for()` on the SAME thread would deadlock against this non-recursive mutex; no
     // such call exists in this tree today.
     std::mutex                                             run_event_mutex_;
+    // ADR-185: usage a delegated agent reported through `charge_delegated_usage`, not yet folded into this run's.
+    // Guarded because a tool may run on a worker thread (ADR-160); folded on the session's thread.
+    mutable std::mutex                                     delegated_usage_mutex_;
+    agentengine::Usage                                     pending_delegated_usage_{};
+    // Budget-only tokens a delegated agent reported (its discarded-stream estimates, ADR-177): they count against
+    // this run's token budget, never into `run_usage_`, the same split this session keeps for its own.
+    std::uint64_t                                          pending_delegated_extra_tokens_ = 0;
+
+    // Folds pending delegated usage into this run's usage and token count; true if there was any.
+    bool fold_delegated_usage() {
+        agentengine::Usage u;
+        std::uint64_t extra = 0;
+        {
+            std::lock_guard<std::mutex> lock(delegated_usage_mutex_);
+            u = pending_delegated_usage_;
+            extra = pending_delegated_extra_tokens_;
+            pending_delegated_usage_ = agentengine::Usage{};
+            pending_delegated_extra_tokens_ = 0;
+        }
+        std::uint64_t const tokens = u.input_tokens + u.output_tokens;
+        if (tokens == 0 && extra == 0 && u.cost_estimate == 0.0) return false;
+        run_tokens_consumed_ += tokens + extra;
+        discarded_tokens_estimate_ += extra;
+        run_usage_.input_tokens += u.input_tokens;
+        run_usage_.output_tokens += u.output_tokens;
+        run_usage_.cached_input_tokens += u.cached_input_tokens;
+        run_usage_.reasoning_tokens += u.reasoning_tokens;
+        run_usage_.cost_estimate += u.cost_estimate;
+        run_usage_.cache_write_tokens += u.cache_write_tokens;
+        return true;
+    }
+
+    // ADR-185: a delegated agent's RunEvent, wrapped as this run's `delegated_event` (the child's own event inside,
+    // unchanged) -- so a host watching the root sees every hop, while protocol projectors never mistake a child's
+    // run_started/run_finished for this run's (red team round 1: the A2A task went `completed` mid-run).
+    void forward_run_event(RunEvent const& ev) {
+        if (!run_event_producer_.valid() && !run_event_tap_attached_) return;
+        run_event_payload::DelegatedEvent wrapped;
+        wrapped.child_run_id = ev.run_id;
+        if (ev.kind == run_event_kind::delegated_event) {
+            if (auto const* inner = std::get_if<run_event_payload::DelegatedEvent>(&ev.payload)) {
+                wrapped.child_run_id = inner->child_run_id;
+                wrapped.depth = inner->depth + 1;
+                wrapped.inner = inner->inner;
+            }
+        }
+        if (!wrapped.inner) wrapped.inner = std::make_shared<RunEvent const>(ev);
+        emit_run_event_for(effect_context_.run_id, run_event_kind::delegated_event, std::move(wrapped));
+    }
     // ADR-178: guards `cancel_source_`'s handle (copy/assign), NOT the stop-state -- `request_stop()` on a
     // copy is itself thread-safe. `mutable` so `cancellation_token()` can stay const.
     mutable std::mutex                                     cancel_mutex_;

@@ -201,6 +201,7 @@ struct ToolInvocationAudit {
     std::string principal_id;
     std::string principal_tenant_id;
     std::string principal_on_behalf_of;
+    std::string principal_delegation_root;  // ADR-185: the chain's root principal; empty when not delegated
 };
 
 namespace tool_pipeline_detail {
@@ -514,6 +515,7 @@ struct AdmittedCallOutcome {
     audit.principal_id           = ctx.principal.id;
     audit.principal_tenant_id    = ctx.principal.tenant_id;
     audit.principal_on_behalf_of = ctx.principal.on_behalf_of;
+    audit.principal_delegation_root = ctx.principal.delegation_root;  // ADR-185
     return audit;
 }
 
@@ -555,6 +557,7 @@ struct AdmittedCallOutcome {
             audit_out->principal_id            = ctx.principal.id;
             audit_out->principal_tenant_id     = ctx.principal.tenant_id;
             audit_out->principal_on_behalf_of  = ctx.principal.on_behalf_of;
+            audit_out->principal_delegation_root = ctx.principal.delegation_root;  // ADR-185
         }
         return result;
     };
@@ -751,6 +754,10 @@ using BackgroundTaskCompletion = std::function<void(ToolResult, ToolInvocationAu
     // merely reads `ctx.sandbox_fs` directly, so that guard does not cover this pointer. Reset
     // unconditionally, on this function's own local copy, before step 8 ever runs a tool against it.
     ctx.sandbox_fs = nullptr;
+    // ADR-185 (red team round 1): both capture the session that dispatched this call, which a backgrounded call may
+    // outlive -- the same class ADR-060/ADR-170 closed for the sinks above.
+    ctx.delegated_event_sink = [](RunEvent const&) {};
+    ctx.charge_delegated_usage = [](Usage const&, std::uint64_t) {};
 
     // -- step 4/7: authorize + bind (the tool's own capability ceiling) -----------------------------
     std::vector<BoundCapability> bound;
@@ -810,6 +817,7 @@ using BackgroundTaskCompletion = std::function<void(ToolResult, ToolInvocationAu
         audit.principal_id       = ctx.principal.id;
         audit.principal_tenant_id = ctx.principal.tenant_id;
         audit.principal_on_behalf_of = ctx.principal.on_behalf_of;
+        audit.principal_delegation_root = ctx.principal.delegation_root;  // ADR-185
 
         if (!invoke_result) {
             error const& e = invoke_result.error();

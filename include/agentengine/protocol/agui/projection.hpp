@@ -282,6 +282,18 @@ public:
                 auto const& p = std::get<run_event_payload::Warning>(ev.payload);
                 return {CustomEvent{"ae:warning", json::Value::make_string(p.message)}};
             }
+            case run_event_kind::delegated_event: {
+                // ADR-185: a delegated agent's event, carried in this run. Never projected as this run's own
+                // lifecycle (a child's RUN_FINISHED/RUN_ERROR is not this run's); labelled for a client that wants it.
+                auto const& p = std::get<run_event_payload::DelegatedEvent>(ev.payload);
+                std::vector<std::pair<std::string, json::Value>> members;
+                members.emplace_back("child_run_id", json::Value::make_string(p.child_run_id));
+                members.emplace_back("depth", json::Value::make_number(static_cast<double>(p.depth)));
+                if (p.inner) {
+                    members.emplace_back("kind", json::Value::make_number(static_cast<double>(p.inner->kind)));
+                }
+                return {CustomEvent{"ae:delegated_event", json::Value::make_object(std::move(members))}};
+            }
             case run_event_kind::model_output_discarded: {
                 // 013 §2.1: nothing in the AG-UI event list expresses retraction, so it rides CUSTOM.
                 // The dead attempt's own message bracket was already closed by its `model_call_finished`.
