@@ -44,9 +44,11 @@ the model turns it had consumed, the steps it had taken and the turn it was fork
 each ancestor, forks it, and then compares the final session's events.
 `tests/scenarios/scripted_fork_branch.json` is an example.
 
-A scenario exported before request digests existed can be given them with
-`build/agentengine_scenario_runner --stamp-requests <file>...`. This replays the scenario and writes the
-observed digests only if the replay passes with one model call per recorded turn.
+Every recorded turn must carry a `request_digest`, and a scenario without one fails. To add digests to
+an older scenario, run `build/agentengine_scenario_runner --stamp-requests <file>...`. After a change to
+the digest itself, run `--restamp-requests` instead. Both write digests only if the rest of the replay
+passes with one model call per recorded turn. They don't apply to a forked scenario, which you
+re-export instead.
 
 ## 2. Scripted exploration (Claude tester, engine model scripted)
 

@@ -944,8 +944,9 @@ Built to §12 R4's specification.
 - **Exportable.** Each session records its ancestry as `segments`: for each ancestor, the model turns
   it had consumed, the steps it had taken and the turn it was forked at. A fork exports as `format: 2`.
   Replay rebuilds each ancestor, forks it at the recorded turn, and then plays the final session and
-  compares its events. The ancestors' streams are not compared. A divergence there changes the history
-  the fork inherits, which the fork's own C8 request digest catches (FORK control).
+  compares its events. *(Superseded by §22: each ancestor's own events and end state are now recorded
+  and compared too. The earlier claim that "a divergence there changes the history the fork inherits"
+  held only for divergence that reaches the history.)*
   - A fork inherits the source's non-determinism mark. A fork of a session whose exchanges were not all
     captured is marked too.
   - The target continues the source's scripted call-id counter, so its call ids never repeat one in its
@@ -1009,3 +1010,87 @@ authority than a compiled-in fixture has, and only a committed file is used.
   accepted, and modified is refused.
 - **Residual.** The check trusts the working tree's git. A tester that could run `git commit` could
   launder a fixture, but the tester agent has no shell.
+
+## 22. Red-team pass on §19–§21, and the fixes (2026-09-25)
+
+A `general-purpose` agent with no prior context red-teamed §19–§21. It could build and run the code
+and could not edit it.
+
+**No Critical findings.** Nothing it tried widened a session's tools or grant: file fixtures pick only
+among the in-process test tools, and every grant is still `grant_root({})`.
+
+Five Real gaps, all fixed:
+
+1. **A fork job that timed out could use freed memory.**
+   - Before: `run_on_worker` gave up after 10 s, and the fork then closed the target while the job
+     could still write to it and to the caller's stack frame. The snapshot read job had the same
+     pattern.
+   - Fix: the fork now waits for its job with no timeout (`run_on_worker_to_completion`). The source is
+     idle, so nothing is queued ahead of it. The snapshot job owns its output through a `shared_ptr`.
+2. **The git check did not check the bytes that were parsed.**
+   - Before: `git update-index --assume-unchanged` (or `--skip-worktree`) hid an edit from
+     `git diff --quiet`, a committed symlink passed while its target was read, and the file could
+     change between the check and the read.
+   - Fix: the reader is now `git_committed_fixture`, which returns the committed blob
+     (`git show HEAD:./<name>`) and never the working file. It refuses symlinks, and refuses a root
+     path containing characters the shell would interpret.
+   - `DriverConfig::fixture_reader` replaces `fixture_trust_check`; with no reader, the working file
+     is read, but symlinks are still refused.
+3. **After a digest mismatch, the digest queue and the script fell out of step.**
+   - Before: the mismatched turn was not consumed but its digest was popped, so a later call was
+     answered by that turn with nothing checked.
+   - Fix: a mismatch is now terminal. Every later model call in that session fails with
+     `test.replay_mismatch`.
+4. **Ancestors' events were never compared.**
+   - Before: a divergence in an ancestor that never reached the fork's history passed. Examples: a
+     tool result's recorded text, an event order, an outcome code, or a turn left unconsumed.
+   - Fix: each segment now records the ancestor's normalized events, state and outcome at fork time.
+     Replay compares them, including `script_pending == 0`, before it forks.
+   - The red team's specific example, appending `{"op":"cancel"}` to an idle ancestor, is a no-op in
+     the engine, so it is not a divergence. The controls use a changed recorded event and a changed
+     end state instead.
+5. **C8 switched off silently when digests were missing.**
+   - Fix: every recorded turn, in every segment, must carry a `request_digest`, otherwise the replay
+     fails and names the count.
+   - `--restamp-requests` re-derives the digests when the digest itself changes, as it did here (next
+     list). It applies only when everything else in the replay passes.
+
+Minor findings, fixed:
+- **A test check that could not fail.** The `max_turns` check read a bool through `get_string`. It
+  now asserts `run.max_turns_exceeded`.
+- **An undertested claim.** The fork-digest property is now tested directly: with the ancestor's
+  digests stripped, a changed ancestor message still fails, at the fork's own step 0.
+- **A lossy digest.** Tool-result content is now summarized item by item, recursively, and Data,
+  Error and Custom items are named with their content. Text "error: x" and `Error{x}`, or `["a","b"]`
+  and `["ab"]`, no longer digest the same. All scenarios were restamped. A comparison showed only
+  `request_digest` values changed, and the fork scenario was re-recorded to carry its segment's
+  expected block.
+- **015 fields silently ignored.** `spec` keys other than `instructions`, `tools`, `limits` and
+  `capabilities` are refused, as are a non-list `tools` and non-text `instructions`.
+- **Loose replay input.** A missing `fork_at_turn` or segment `expected` fails the replay, and so
+  does a mismatch between `format` and `segments`.
+- **No cap on fork depth.** Fork chains are capped at 8 (`test.fork_too_deep`).
+
+Minor findings, recorded as residuals:
+- A fork of a live session gets a fresh live-call budget. This is the same as close and start, so
+  total live spend is bounded only per session.
+- On Windows, `std::system` goes through `cmd.exe`. If `NoDefaultCurrentDirectoryInExePath` is unset,
+  a `git.bat` in the working directory would run. An argv-based spawn needs a process API that
+  `pal/` does not have.
+- Media and Citation items are digested by kind only. No driver tool or scripted turn produces them.
+- `normalize_ids` rewrites any string that starts with the session prefix, user text included. It is
+  harmless while session ids are `sN`.
+- **§12 C-3 drift:** the `permissions.deny` rules §12 promised were never written. The tester agent's
+  tool allowlist (MCP, Read, Grep, Glob, with no Write, Edit or shell) is what enforces it.
+
+**Proof:** `tests/test_agentengine_test_driver.cpp`, every check marked (§22).
+- A mismatch is terminal: after it, two turns stay unconsumed.
+- An ancestor event that differs, and an ancestor end state that differs, each fail as `segment 0`.
+- A fork chain stops at 8.
+- `spec.approval` and a scalar `spec.tools` are refused.
+- With the edit hidden by `--assume-unchanged`, the scratch-repo check returns only the committed
+  bytes.
+- Without digests, the events alone miss a changed user message, and the missing digests now fail
+  the replay.
+
+All 9 scenarios pass, with every model request checked.

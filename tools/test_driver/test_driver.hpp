@@ -70,6 +70,7 @@ inline constexpr std::uint64_t kMaxWaitMs = 60000;
 inline constexpr std::uint64_t kDefaultWaitMs = 10000;
 inline constexpr std::size_t kMaxEventsPerResult = 200;
 inline constexpr std::uint64_t kMaxTurnsPerRun = 32;
+inline constexpr std::size_t kMaxForkDepth = 8;
 inline constexpr auto kJobTimeout = std::chrono::seconds(10);
 
 // ---- JSON helpers ----------------------------------------------------------------------------------
@@ -206,9 +207,8 @@ struct FixtureLoad {
 
 [[nodiscard]] inline ToolRegistry const& test_tool_registry();  // defined after the test tools' table
 
-[[nodiscard]] inline FixtureLoad load_file_fixture(
-    std::filesystem::path const& root, std::string const& name,
-    std::function<std::optional<std::string>(std::filesystem::path const&)> const& trust_check) {
+[[nodiscard]] inline FixtureLoad load_file_fixture(std::filesystem::path const& root, std::string const& name,
+                                                  std::function<result<std::string>(std::filesystem::path const&)> const& reader) {
     auto fail = [&](std::string code, std::string message) {
         return FixtureLoad{std::nullopt, std::move(code), std::move(message)};
     };
@@ -217,21 +217,43 @@ struct FixtureLoad {
     std::filesystem::path const path = root / (name + ".yaml");
     std::error_code ec;
     if (!std::filesystem::is_regular_file(path, ec)) return fail("test.unknown_fixture", "no fixture named " + name);
-    if (trust_check) {
-        if (std::optional<std::string> why = trust_check(path)) {
+    std::string bytes;
+    if (reader) {
+        result<std::string> got = reader(path);
+        if (!got) {
             return fail("test.fixture_untrusted",
-                        "fixture file " + name + ".yaml is refused: " + *why +
+                        "fixture file " + name + ".yaml is refused: " + got.error().message +
                             " (a fixture decides a session's tools and instructions, so only a committed file is used)");
         }
+        bytes = std::move(*got);
+    } else {
+        if (std::filesystem::is_symlink(std::filesystem::symlink_status(path, ec))) {
+            return fail("test.fixture_untrusted", "fixture file " + name + ".yaml is a symbolic link");
+        }
+        std::ifstream in(path, std::ios::binary);
+        std::stringstream buf;
+        buf << in.rdbuf();
+        bytes = buf.str();
     }
-    std::ifstream in(path, std::ios::binary);
-    std::stringstream buf;
-    buf << in.rdbuf();
-    auto doc = yaml::parse(buf.str());
+    auto doc = yaml::parse(bytes);
     if (!doc) return fail("test.bad_fixture", name + ".yaml is not valid YAML: " + doc.error().message);
     if (get_string(*doc, "kind") != "Agent") return fail("test.bad_fixture", name + ".yaml must be kind: Agent");
     Value const* spec = doc->find("spec");
+    if (spec != nullptr && !spec->is_object()) return fail("test.bad_fixture", name + ".yaml: spec must be a mapping");
     if (spec != nullptr) {
+        // §22: a 015 field the driver does not apply is refused, not silently ignored (I6: the same
+        // document must mean the same thing here as in the engine).
+        for (auto const& [k, v] : spec->as_object()) {
+            if (k != "instructions" && k != "tools" && k != "limits" && k != "capabilities") {
+                return fail("test.bad_fixture", name + ".yaml: spec." + k + " is not supported by the test driver");
+            }
+        }
+        if (Value const* ins = spec->find("instructions"); ins != nullptr && !ins->is_string()) {
+            return fail("test.bad_fixture", name + ".yaml: spec.instructions must be text");
+        }
+        if (Value const* tools = spec->find("tools"); tools != nullptr && !tools->is_array()) {
+            return fail("test.bad_fixture", name + ".yaml: spec.tools must be a list of tool names");
+        }
         if (Value const* caps = spec->find("capabilities");
             caps != nullptr && !(caps->is_null() || (caps->is_object() && caps->as_object().empty()) ||
                                  (caps->is_array() && caps->as_array().empty()))) {
@@ -367,28 +389,41 @@ private:
 [[nodiscard]] inline Value normalize_ids(Value const& v, std::string const& session_id);  // defined below
 [[nodiscard]] inline std::string content_text(std::vector<ContentItem> const& items);  // defined below
 
+// One content list, item by item (a tool result's own content recursively), so "error: x" as text and an
+// Error item, or ["a","b"] and ["ab"], digest differently (§22).
+[[nodiscard]] inline Value summary_items(std::vector<ContentItem> const& content) {
+    std::vector<Value> items;
+    for (ContentItem const& c : content) {
+        if (auto const* t = std::get_if<Text>(&c.value)) {
+            items.push_back(obj({{"text", str(t->text)}}));
+        } else if (auto const* rs = std::get_if<Reasoning>(&c.value)) {
+            items.push_back(obj({{"reasoning", str(rs->text)}}));
+        } else if (auto const* call = std::get_if<ToolCall>(&c.value)) {
+            items.push_back(obj({{"tool_call", obj({{"call_id", str(call->call_id)},
+                                                    {"name", str(call->tool_name)},
+                                                    {"arguments", str(call->arguments_json)}})}}));
+        } else if (auto const* res = std::get_if<ToolResult>(&c.value)) {
+            items.push_back(obj({{"tool_result", obj({{"call_id", str(res->call_id)},
+                                                      {"is_error", boolean(res->is_error)},
+                                                      {"content", summary_items(res->content)}})}}));
+        } else if (auto const* data = std::get_if<Data>(&c.value)) {
+            items.push_back(obj({{"data", str(data->json)}, {"schema_id", str(data->schema_id.value_or(""))}}));
+        } else if (auto const* e = std::get_if<Error>(&c.value)) {
+            items.push_back(obj({{"error", str(e->message)}}));
+        } else if (auto const* cu = std::get_if<Custom>(&c.value)) {
+            items.push_back(obj({{"custom", str(cu->type_id)}, {"payload", str(cu->payload_json)}}));
+        } else {
+            // Media and Citation: named by kind only. No driver tool or scripted turn produces them (§22).
+            items.push_back(obj({{"other", num(static_cast<double>(c.value.index()))}}));
+        }
+    }
+    return arr(std::move(items));
+}
+
 [[nodiscard]] inline Value request_summary(ChatRequest const& r, std::string const& session_id) {
     std::vector<Value> messages;
     for (Message const& m : r.messages) {
-        std::vector<Value> items;
-        for (ContentItem const& c : m.content) {
-            if (auto const* t = std::get_if<Text>(&c.value)) {
-                items.push_back(obj({{"text", str(t->text)}}));
-            } else if (auto const* rs = std::get_if<Reasoning>(&c.value)) {
-                items.push_back(obj({{"reasoning", str(rs->text)}}));
-            } else if (auto const* call = std::get_if<ToolCall>(&c.value)) {
-                items.push_back(obj({{"tool_call", obj({{"call_id", str(call->call_id)},
-                                                        {"name", str(call->tool_name)},
-                                                        {"arguments", str(call->arguments_json)}})}}));
-            } else if (auto const* res = std::get_if<ToolResult>(&c.value)) {
-                items.push_back(obj({{"tool_result", obj({{"call_id", str(res->call_id)},
-                                                          {"is_error", boolean(res->is_error)},
-                                                          {"text", str(content_text(res->content))}})}}));
-            } else {
-                items.push_back(obj({{"other", num(static_cast<double>(c.value.index()))}}));
-            }
-        }
-        messages.push_back(obj({{"role", str(std::string(rt::role_to_wire_string(m.role)))}, {"items", arr(std::move(items))}}));
+        messages.push_back(obj({{"role", str(std::string(rt::role_to_wire_string(m.role)))}, {"items", summary_items(m.content)}}));
     }
     std::vector<Value> tools;
     for (ToolDescriptor const& t : r.tools) {
@@ -435,6 +470,14 @@ public:
     [[nodiscard]] std::optional<error> check(ChatRequest const& r, std::string const& session_id) {
         std::lock_guard lock(mutex_);
         std::size_t const index = calls_++;
+        // §22: once diverged, every later call fails too. The mismatched turn was not consumed, so the
+        // digest queue and the script would otherwise fall out of step and later calls go unchecked.
+        if (mismatch_) {
+            return error{failure_class::contract,
+                         "model call " + std::to_string(index) + ": this session already diverged from the recording at call " +
+                             std::to_string(mismatch_->call_index),
+                         "test.replay_mismatch"};
+        }
         if (expected_.empty()) return std::nullopt;
         std::optional<std::string> want = std::move(expected_.front());
         expected_.pop_front();
@@ -580,10 +623,10 @@ struct DriverConfig {
     std::filesystem::path scenarios_root;
     // Where file fixtures live, `<name>.yaml` (§21). Empty = compiled-in fixtures only.
     std::filesystem::path fixtures_root;
-    // The host's check on a fixture file before it is used: returns why it is refused, or nothing.
-    // agentengine_test_driver wires git_fixture_trust_check (fixture_trust.hpp). Empty = no check,
-    // which only the scenario runner and tests use.
-    std::function<std::optional<std::string>(std::filesystem::path const&)> fixture_trust_check;
+    // How a fixture file's bytes are obtained: returns them, or why the file is refused. The driver binary
+    // wires git_committed_fixture (fixture_trust.hpp), which returns the COMMITTED blob, never the working
+    // file (§22). Empty = read the working file (no symlinks), which only the scenario runner and tests use.
+    std::function<result<std::string>(std::filesystem::path const&)> fixture_reader;
 };
 
 // ---- Event → JSON ----------------------------------------------------------------------------------
@@ -1451,10 +1494,18 @@ private:
     }
 
     // Runs `fn` on the session's worker and waits for it. Only ever called when no run is in flight,
-    // so the job does not queue behind a long run.
+    // so the job does not queue behind a long run. §22: on a timeout the job may still run later, so
+    // `fn` must own everything it writes (a shared_ptr), never refer to the caller's frame.
     [[nodiscard]] static bool run_on_worker(DriverSession& s, std::function<void()> fn) {
         std::future<rt::JobOutcome> f = s.pool->submit(read_job(std::move(fn)));
         if (f.wait_for(kJobTimeout) != std::future_status::ready) return false;
+        return !f.get().faulted;
+    }
+    // The same, with no timeout: for a job that must finish before the caller may continue (a fork
+    // writes into a session the caller then hands out). Only on an idle session, so nothing is queued
+    // ahead of it and it is bounded by the job's own work.
+    static bool run_on_worker_to_completion(DriverSession& s, std::function<void()> fn) {
+        std::future<rt::JobOutcome> f = s.pool->submit(read_job(std::move(fn)));
         return !f.get().faulted;
     }
 
@@ -1518,18 +1569,21 @@ private:
             m.emplace_back("partial", boolean(true));
             return obj(std::move(m));
         }
-        std::size_t history_len = 0;
-        std::vector<Value> history;
+        struct Read {
+            std::size_t        history_len = 0;
+            std::vector<Value> history;
+        };
+        auto out = std::make_shared<Read>();  // owned by the job too: it may outlive this frame on a timeout
         Session* session = s.session.get();
-        bool const ran = run_on_worker(s, [&] {
-            history_len = session->history().size();
+        bool const ran = run_on_worker(s, [out, session, include_history] {
+            out->history_len = session->history().size();
             if (include_history) {
-                for (Message const& msg : session->history()) history.push_back(rt::message_to_json(msg));
+                for (Message const& msg : session->history()) out->history.push_back(rt::message_to_json(msg));
             }
         });
         m.emplace_back("partial", boolean(!ran));
-        m.emplace_back("history_length", num(static_cast<double>(history_len)));
-        if (include_history && ran) m.emplace_back("history", arr(std::move(history)));
+        m.emplace_back("history_length", num(static_cast<double>(ran ? out->history_len : 0)));
+        if (include_history && ran) m.emplace_back("history", arr(std::move(out->history)));
         return obj(std::move(m));
     }
 
@@ -1560,7 +1614,7 @@ private:
         }
         std::sort(names.begin(), names.end());  // directory order is not stable (tools/list-style determinism)
         for (std::string const& n : names) {
-            FixtureLoad const load = load_file_fixture(config_.fixtures_root, n, config_.fixture_trust_check);
+            FixtureLoad const load = load_file_fixture(config_.fixtures_root, n, config_.fixture_reader);
             Members m{{"name", str(n)}, {"source", str("file")}, {"live", boolean(false)}};
             if (load.fixture) {
                 std::vector<Value> tools;
@@ -1587,7 +1641,7 @@ private:
         std::optional<Fixture> loaded;
         Fixture const* fixture = find_fixture(*name);
         if (fixture == nullptr) {
-            FixtureLoad load = load_file_fixture(config_.fixtures_root, *name, config_.fixture_trust_check);
+            FixtureLoad load = load_file_fixture(config_.fixtures_root, *name, config_.fixture_reader);
             if (!load.fixture) return err(load.code, load.message);
             loaded = std::move(load.fixture);
             fixture = &*loaded;
@@ -1650,7 +1704,8 @@ private:
     // build it (its own model, grant, tools and tap; a scripted target starts with an empty script). Then
     // `fork_from` copies the history prefix. That runs as a job on the SOURCE's worker, the only thread
     // allowed to read the source (I1). The target has run nothing yet, so writing it there is safe, and
-    // waiting for the job orders that write before the target's first job.
+    // waiting for the job orders that write before the target's first job. The wait has no timeout (§22):
+    // the job writes into the target and this frame, so neither may be released until it has finished.
     ToolResultJson t_session_fork(Value const& args) {
         ToolError e;
         DriverSession* src = find_session(args, e);
@@ -1661,6 +1716,9 @@ private:
             return err("test.session_suspended",
                        "fork only an idle session: fork_from drops open interactions, so a fork of a suspended "
                        "session could never be resumed (resolve or cancel first, or fork before the send)");
+        }
+        if (src->segments.size() >= kMaxForkDepth) {
+            return err("test.fork_too_deep", "a fork chain is capped at " + std::to_string(kMaxForkDepth) + " forks");
         }
         std::optional<std::uint64_t> at_turn;
         if (args.find("at_turn") != nullptr) {
@@ -1677,7 +1735,7 @@ private:
         std::size_t turns = 0;
         std::size_t kept = 0;
         bool in_range = false;
-        bool const ran = run_on_worker(*src, [&] {
+        bool const ran = run_on_worker_to_completion(*src, [&] {
             // A turn starts at a user message. The source is idle, so every turn in its history is complete.
             std::vector<Message> const& h = from->history();
             std::optional<std::size_t> cut;
@@ -1703,9 +1761,22 @@ private:
         dst->segments = src->segments;
         std::vector<Value> src_turns;
         for (ModelExchange const& x : src->exchanges->exchanges()) src_turns.push_back(exchange_to_turn(x));
+        // The source's own events and end state too, so a replay checks the ancestor, not only what its
+        // history hands the fork (§22: a divergence that shows only in events would otherwise pass).
+        std::vector<Value> src_events;
+        for (LoggedEvent const& ev : src->monitor->events_since(0, kEventRingCapacity)) {
+            src_events.push_back(normalize_ids(event_json(ev), src->id));
+        }
+        if (src->monitor->dropped() != 0 && dst->nondeterministic_reason.empty()) {
+            dst->nondeterministic_reason = "forked from a session whose event ring overflowed";
+        }
         dst->segments.push_back(obj({{"model_turns", arr(std::move(src_turns))},
                                      {"steps", arr(src->steps)},
-                                     {"fork_at_turn", num(static_cast<double>(fork_turn))}}));
+                                     {"fork_at_turn", num(static_cast<double>(fork_turn))},
+                                     {"expected", normalize_ids(obj({{"state", str(std::string(run_state_name(st)))},
+                                                                     {"outcome", outcome_json(src->monitor->last_outcome())},
+                                                                     {"events", arr(std::move(src_events))}}),
+                                                                src->id)}}));
         dst->nondeterministic_reason = src->nondeterministic_reason;
         if (dst->nondeterministic_reason.empty() && (src->exchanges->overflow() || src->exchanges->unrecordable())) {
             dst->nondeterministic_reason = "forked from a session whose model exchanges were not all captured";
@@ -2059,6 +2130,7 @@ struct ReplayReport {
     // The digest of every request the replay sent the model, in call order: what
     // `agentengine_scenario_runner --stamp-requests` writes into a scenario that predates C8.
     std::vector<std::string> observed_request_digests;
+    std::size_t              turns_without_digest = 0;  // §22: any is a failure (C8 would be silently off)
 };
 
 namespace replay_detail {
@@ -2097,8 +2169,8 @@ inline std::string clip(std::string s, std::size_t n = 400) {
 // Where a replay finds file fixtures (§21). The runner passes the root with no trust check; the
 // driver's scenario_replay passes its own root and check.
 struct ReplayFixtures {
-    std::filesystem::path                                                    root;
-    std::function<std::optional<std::string>(std::filesystem::path const&)> trust_check;
+    std::filesystem::path                                          root;
+    std::function<result<std::string>(std::filesystem::path const&)> reader;
 };
 
 [[nodiscard]] inline ReplayReport replay_scenario(Value const& scenario, ReplayFixtures const& fixtures = {}) {
@@ -2117,7 +2189,7 @@ struct ReplayFixtures {
 
     DriverConfig replay_config;
     replay_config.fixtures_root = fixtures.root;
-    replay_config.fixture_trust_check = fixtures.trust_check;
+    replay_config.fixture_reader = fixtures.reader;
     Driver d(std::move(replay_config));
     std::uint64_t id = 1;
     Call started = call(d, "session_start", obj({{"fixture", str(*fixture)}}), id);
@@ -2180,20 +2252,94 @@ struct ReplayFixtures {
         return std::nullopt;
     };
 
-    // A forked session's ancestry (§20): replay each ancestor, then fork where it was forked. The
-    // ancestors' own event streams are not compared; any divergence there shows up as a request
-    // mismatch or a diff in the final session.
-    std::size_t checked_before = 0;
-    if (Value const* segs = scenario.find("segments"); segs != nullptr && segs->is_array()) {
+    // Compares the current session with an `expected` block ({state, outcome, events}): the whole
+    // normalized event stream, the end state and outcome, and that every pushed turn was requested.
+    // `where` prefixes each problem. Returns the snapshot it compared against.
+    auto compare = [&](Value const& expected, std::string const& where) -> Value {
+        std::vector<Value> actual;
+        std::uint64_t since = 0;
+        for (;;) {
+            Call page = call(d, "session_events", with_sid({{"since_seq", num(static_cast<double>(since))}}), id);
+            Value const* evs = page.body.find("events");
+            if (evs == nullptr || !evs->is_array() || evs->as_array().empty()) break;
+            for (Value const& e : evs->as_array()) {
+                actual.push_back(normalize_ids(e, sid));
+                since = get_u64(e, "seq").value_or(since);
+            }
+        }
+        Call snap = call(d, "session_snapshot", with_sid({}), id);
+        std::vector<Value> expected_events;
+        if (Value const* ev = expected.find("events"); ev != nullptr && ev->is_array()) expected_events = ev->as_array();
+        std::size_t const before = report.problems.size();
+        std::size_t const n = std::min(expected_events.size(), actual.size());
+        for (std::size_t i = 0; i < n; ++i) {
+            std::string const want = json::dump(expected_events[i]);
+            std::string const got = json::dump(actual[i]);
+            if (want != got) {
+                report.problems.push_back(where + "event " + std::to_string(i) + " differs\n  expected: " + clip(want) +
+                                          "\n  actual:   " + clip(got));
+                break;
+            }
+        }
+        if (report.problems.size() == before && expected_events.size() != actual.size()) {
+            report.problems.push_back(where + "event count differs: expected " + std::to_string(expected_events.size()) +
+                                      ", actual " + std::to_string(actual.size()) +
+                                      (actual.size() > n ? "; first extra: " + clip(json::dump(actual[n]))
+                                                         : "; first missing: " + clip(json::dump(expected_events[n]))));
+        }
+        report.events_compared += n;
+        std::string const want_state = get_string(expected, "state").value_or("");
+        std::string const got_state = get_string(snap.body, "state").value_or("");
+        if (want_state != got_state) {
+            report.problems.push_back(where + "final state differs: expected " + want_state + ", actual " + got_state);
+        }
+        Value const* want_outcome = expected.find("outcome");
+        Value const* got_outcome = snap.body.find("last_outcome");
+        std::string const wo = want_outcome ? json::dump(*want_outcome) : "null";
+        std::string const go = got_outcome ? json::dump(normalize_ids(*got_outcome, sid)) : "null";
+        if (wo != go) {
+            report.problems.push_back(where + "final outcome differs\n  expected: " + clip(wo) + "\n  actual:   " + clip(go));
+        }
+        if (auto left = get_u64(snap.body, "script_pending"); left && *left != 0) {
+            report.problems.push_back(where + std::to_string(*left) +
+                                      " recorded model turn(s) were never requested: the replay made fewer model calls");
+        }
+        report.requests_checked += static_cast<std::size_t>(get_u64(snap.body, "requests_checked").value_or(0));
+        return snap.body;
+    };
+
+    // Every recorded turn must carry its request digest (§22): a scenario without them would replay with
+    // C8 silently off. `--stamp-requests` adds them to an older scenario.
+    std::size_t turns_total = 0;
+    std::size_t turns_undigested = 0;
+    auto count_turns = [&](Value const* turns) {
+        if (turns == nullptr || !turns->is_array()) return;
+        for (Value const& t : turns->as_array()) {
+            ++turns_total;
+            if (get_string(t, "request_digest").value_or("").empty()) ++turns_undigested;
+        }
+    };
+
+    // A forked session's ancestry (§20): replay each ancestor, compare it with what it recorded (§22),
+    // then fork where it was forked.
+    Value const* segs = scenario.find("segments");
+    bool const has_segments = segs != nullptr && segs->is_array() && !segs->as_array().empty();
+    if (has_segments && format != 2u) return fail("a scenario with segments must be format 2");
+    if (!has_segments && format == 2u) return fail("a format 2 scenario must have segments");
+    if (has_segments) {
+        if (segs->as_array().size() > kMaxForkDepth) return fail("more segments than the fork depth cap");
         std::size_t k = 0;
         for (Value const& seg : segs->as_array()) {
             std::string const where = "segment " + std::to_string(k) + " ";
+            auto const at_turn = get_u64(seg, "fork_at_turn");
+            Value const* seg_expected = seg.find("expected");
+            if (!at_turn) return fail(where + "has no fork_at_turn");
+            if (seg_expected == nullptr) return fail(where + "has no expected block");
+            count_turns(seg.find("model_turns"));
             if (auto problem = play(seg.find("model_turns"), seg.find("steps"), where)) return fail(*problem);
-            Call snap = call(d, "session_snapshot", with_sid({}), id);
-            checked_before += static_cast<std::size_t>(get_u64(snap.body, "requests_checked").value_or(0));
-            Call forked = call(d, "session_fork",
-                               with_sid({{"at_turn", num(static_cast<double>(get_u64(seg, "fork_at_turn").value_or(0)))}}),
-                               id);
+            (void)compare(*seg_expected, where);
+            if (!report.problems.empty()) return report;  // the fork would inherit a divergence
+            Call forked = call(d, "session_fork", with_sid({{"at_turn", num(static_cast<double>(*at_turn))}}), id);
             if (forked.is_error) return fail(where + "fork was refused: " + clip(json::dump(forked.body)));
             std::string const next = get_string(forked.body, "session_id").value_or("");
             (void)call(d, "session_close", with_sid({}), id);
@@ -2201,23 +2347,12 @@ struct ReplayFixtures {
             ++k;
         }
     }
+    count_turns(scenario.find("model_turns"));
     if (auto problem = play(scenario.find("model_turns"), scenario.find("steps"), "")) return fail(*problem);
 
-    // Actual stream, paged, normalized.
-    std::vector<Value> actual;
-    std::uint64_t since = 0;
-    for (;;) {
-        Call page = call(d, "session_events", with_sid({{"since_seq", num(static_cast<double>(since))}}), id);
-        Value const* evs = page.body.find("events");
-        if (evs == nullptr || !evs->is_array() || evs->as_array().empty()) break;
-        for (Value const& e : evs->as_array()) {
-            actual.push_back(normalize_ids(e, sid));
-            since = get_u64(e, "seq").value_or(since);
-        }
-    }
-    Call snap = call(d, "session_snapshot", with_sid({}), id);
-    report.requests_checked =
-        checked_before + static_cast<std::size_t>(get_u64(snap.body, "requests_checked").value_or(0));
+    Value const* expected = scenario.find("expected");
+    if (expected == nullptr) return fail("scenario has no expected block");
+    (void)compare(*expected, "");
     for (std::size_t since_index = 0;;) {
         Call page = call(d, "model_requests", with_sid({{"since_index", num(static_cast<double>(since_index))}}), id);
         Value const* reqs = page.body.find("requests");
@@ -2228,45 +2363,11 @@ struct ReplayFixtures {
         }
     }
     (void)call(d, "session_close", with_sid({}), id);
-
-    Value const* expected = scenario.find("expected");
-    if (expected == nullptr) return fail("scenario has no expected block");
-    std::vector<Value> expected_events;
-    if (Value const* ev = expected->find("events"); ev != nullptr && ev->is_array()) expected_events = ev->as_array();
-
-    std::size_t const n = std::min(expected_events.size(), actual.size());
-    for (std::size_t i = 0; i < n; ++i) {
-        std::string const want = json::dump(expected_events[i]);
-        std::string const got = json::dump(actual[i]);
-        if (want != got) {
-            report.problems.push_back("event " + std::to_string(i) + " differs\n  expected: " + clip(want) +
-                                      "\n  actual:   " + clip(got));
-            break;
-        }
-    }
-    if (report.problems.empty() && expected_events.size() != actual.size()) {
-        report.problems.push_back("event count differs: expected " + std::to_string(expected_events.size()) +
-                                  ", actual " + std::to_string(actual.size()) +
-                                  (actual.size() > n ? "; first extra: " + clip(json::dump(actual[n]))
-                                                     : "; first missing: " + clip(json::dump(expected_events[n]))));
-    }
-    report.events_compared = n;
-
-    std::string const want_state = get_string(*expected, "state").value_or("");
-    std::string const got_state = get_string(snap.body, "state").value_or("");
-    if (want_state != got_state) {
-        report.problems.push_back("final state differs: expected " + want_state + ", actual " + got_state);
-    }
-    Value const* want_outcome = expected->find("outcome");
-    Value const* got_outcome = snap.body.find("last_outcome");
-    std::string const wo = want_outcome ? json::dump(*want_outcome) : "null";
-    std::string const go = got_outcome ? json::dump(normalize_ids(*got_outcome, sid)) : "null";
-    if (wo != go) {
-        report.problems.push_back("final outcome differs\n  expected: " + clip(wo) + "\n  actual:   " + clip(go));
-    }
-    if (auto left = get_u64(snap.body, "script_pending"); left && *left != 0) {
-        report.problems.push_back(std::to_string(*left) +
-                                  " recorded model turn(s) were never requested: the replay made fewer model calls");
+    report.turns_without_digest = turns_undigested;
+    if (turns_undigested != 0) {
+        report.problems.push_back(std::to_string(turns_undigested) + " of " + std::to_string(turns_total) +
+                                  " recorded model turn(s) carry no request_digest, so their requests were not checked "
+                                  "(agentengine_scenario_runner --stamp-requests adds them)");
     }
     report.passed = report.problems.empty();
     return report;
@@ -2301,7 +2402,7 @@ inline ToolResultJson Driver::t_scenario_replay(Value const& args) {
     if (!valid_scenario_name(name)) return err("test.bad_name", "name must match [a-z0-9_-]{1,64}");
     auto scenario = read_scenario_file(config_.scenarios_root / (name + ".json"));
     if (!scenario) return err(scenario.error().code, scenario.error().message);
-    return report_json(replay_scenario(*scenario, ReplayFixtures{config_.fixtures_root, config_.fixture_trust_check}));
+    return report_json(replay_scenario(*scenario, ReplayFixtures{config_.fixtures_root, config_.fixture_reader}));
 }
 
 }  // namespace agentengine::test_driver

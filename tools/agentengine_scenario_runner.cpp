@@ -3,15 +3,18 @@
 // no Claude: this is what turns a test agent's exploration -- including a live-model run -- into a
 // deterministic ctest (022 §3 golden traces).
 //
-// Usage: agentengine_scenario_runner [--fixtures-root <dir>] [--stamp-requests] <scenario.json>...
+// Usage: agentengine_scenario_runner [--fixtures-root <dir>] [--stamp-requests | --restamp-requests]
+//                                    <scenario.json>...
 // --fixtures-root: where a scenario's file fixture (ADR-182 §21) is found. No git check here: the
 // runner is run by a person or CI, not by the tester.
-// Exit code: 0 if every scenario passes, 1 otherwise.
+// Exit code: 0 if every scenario passes, 1 otherwise. A scenario whose turns carry no request digest
+// fails (§22): its model requests would go unchecked.
 //
 // --stamp-requests (ADR-182 §19, C8) is maintenance for a scenario exported before request digests
-// existed: it replays the scenario and, only if the replay passes and made exactly one model call per
-// recorded turn, writes each call's request digest into its turn. From then on the scenario also fails
-// when the engine asks the model something different. It never changes a turn that already has a digest.
+// existed: it replays the scenario and, only if everything else in the replay passes and it made exactly
+// one model call per recorded turn, writes each call's request digest into its turn. It never changes a
+// turn that already has a digest. --restamp-requests first removes every digest, for when the digest
+// itself changes (§22). Neither applies to a forked scenario (format 2): re-export it instead.
 
 #include <cstdio>
 #include <fstream>
@@ -25,9 +28,34 @@ namespace {
 namespace td = agentengine::test_driver;
 using agentengine::json::Value;
 
+// The scenario with every model turn's request_digest removed.
+Value without_digests(Value const& scenario) {
+    td::Members top;
+    for (auto const& [k, v] : scenario.as_object()) {
+        if (k != "model_turns" || !v.is_array()) {
+            top.emplace_back(k, v);
+            continue;
+        }
+        std::vector<Value> turns;
+        for (Value const& t : v.as_array()) {
+            td::Members m;
+            for (auto const& [tk, tv] : t.as_object())
+                if (tk != "request_digest") m.emplace_back(tk, tv);
+            turns.push_back(td::obj(std::move(m)));
+        }
+        top.emplace_back(k, td::arr(std::move(turns)));
+    }
+    return td::obj(std::move(top));
+}
+
 // Returns an explanation when the scenario was not stamped, empty when it was (or had nothing to do).
 std::string stamp(Value& scenario, td::ReplayReport const& report) {
-    if (!report.passed) return "the replay failed, so its requests are not trusted";
+    if (Value const* segs = scenario.find("segments"); segs != nullptr && segs->is_array() && !segs->as_array().empty()) {
+        return "a forked scenario is not stamped; re-export it";
+    }
+    // The only acceptable problem is the missing digests themselves.
+    bool const only_missing = report.problems.size() == 1 && report.turns_without_digest != 0;
+    if (!report.passed && !only_missing) return "the replay failed, so its requests are not trusted";
     Value const* turns = scenario.find("model_turns");
     if (turns == nullptr || !turns->is_array()) return {};
     std::vector<Value> const& old_turns = turns->as_array();
@@ -60,10 +88,12 @@ int main(int argc, char** argv) {
     int first = 1;
     td::ReplayFixtures fixtures;
     bool stamping = false;
+    bool restamping = false;
     while (first < argc) {
         std::string_view const f = argv[first];
-        if (f == "--stamp-requests") {
+        if (f == "--stamp-requests" || f == "--restamp-requests") {
             stamping = true;
+            restamping = f == "--restamp-requests";
             ++first;
         } else if (f == "--fixtures-root" && first + 1 < argc) {
             fixtures.root = argv[first + 1];
@@ -74,7 +104,8 @@ int main(int argc, char** argv) {
     }
     if (argc <= first) {
         std::fprintf(stderr,
-                     "usage: agentengine_scenario_runner [--fixtures-root <dir>] [--stamp-requests] <scenario.json>...\n");
+                     "usage: agentengine_scenario_runner [--fixtures-root <dir>] [--stamp-requests | "
+                     "--restamp-requests] <scenario.json>...\n");
         return 2;
     }
     int failed = 0;
@@ -86,13 +117,16 @@ int main(int argc, char** argv) {
             ++failed;
             continue;
         }
-        td::ReplayReport const report = td::replay_scenario(*scenario, fixtures);
+        Value const input = restamping ? without_digests(*scenario) : *scenario;
+        td::ReplayReport const report = td::replay_scenario(input, fixtures);
         std::printf("%s %s (%zu events compared, %zu model requests checked)\n", report.passed ? "PASS" : "FAIL",
                     path.c_str(), report.events_compared, report.requests_checked);
         for (std::string const& p : report.problems) std::printf("  %s\n", p.c_str());
-        if (!report.passed) ++failed;
-        if (!stamping) continue;
-        Value stamped = *scenario;
+        if (!stamping) {
+            if (!report.passed) ++failed;
+            continue;
+        }
+        Value stamped = input;
         if (std::string const why = stamp(stamped, report); !why.empty()) {
             std::printf("  not stamped: %s\n", why.c_str());
             ++failed;

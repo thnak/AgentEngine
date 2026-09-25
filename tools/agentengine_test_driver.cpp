@@ -128,7 +128,7 @@ int main(int argc, char** argv) {
     agentengine::test_driver::DriverConfig config;
     config.scenarios_root = args.scenarios_root;
     config.fixtures_root = args.fixtures_root;
-    config.fixture_trust_check = agentengine::test_driver::git_fixture_trust_check;
+    config.fixture_reader = agentengine::test_driver::git_committed_fixture;
     if (args.allow_live) {
 #ifdef AGENTENGINE_WITH_HTTPS
         std::string key = args.key_file.empty() ? std::string{} : read_key_file(args.key_file);
