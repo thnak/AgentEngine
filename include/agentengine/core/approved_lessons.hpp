@@ -69,10 +69,12 @@ public:
                                          "memory.approval_unattributed"});
         }
         // ADR-184 red team: the id prefixes the engine writes for non-human approvals are reserved, so a recording's
-        // approval id always tells a human approval from an automatic or simulated one.
-        if (approval.approver_id.starts_with("automatic:") || approval.approver_id.starts_with("simulated:")) {
+        // approval id always tells a human approval from an automatic or simulated one. Round 2: checked on both
+        // fields that can become the id (`find` uses the acknowledgement when there is one), ignoring case and
+        // leading whitespace.
+        if (uses_reserved_prefix(approval.approver_id) || uses_reserved_prefix(approval.acknowledgement)) {
             return std::unexpected(error{failure_class::contract,
-                                         "a human approver id may not use the reserved automatic:/simulated: prefix",
+                                         "a human approval may not use the reserved automatic:/simulated: prefix",
                                          "memory.approval_reserved_id"});
         }
         approval.simulated = false;
@@ -97,6 +99,10 @@ public:
     // recorded as simulated and names the trial, never a person.
     [[nodiscard]] result<void> approve_simulated(std::string_view scope, std::string_view content,
                                                  std::string const& trial_id) {
+        if (trial_id.empty()) {
+            return std::unexpected(error{failure_class::contract, "a simulated approval must name its trial (I4)",
+                                         "memory.approval_unattributed"});
+        }
         return put(scope, content, LessonApproval{"simulated:" + trial_id, "", "", true});
     }
 
@@ -123,6 +129,20 @@ public:
     }
 
 private:
+    [[nodiscard]] static bool uses_reserved_prefix(std::string_view id) noexcept {
+        while (!id.empty() && (id.front() == ' ' || id.front() == '\t')) id.remove_prefix(1);
+        auto starts_ci = [id](std::string_view prefix) {
+            if (id.size() < prefix.size()) return false;
+            for (std::size_t i = 0; i < prefix.size(); ++i) {
+                char c = id[i];
+                if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+                if (c != prefix[i]) return false;
+            }
+            return true;
+        };
+        return starts_ci("automatic:") || starts_ci("simulated:");
+    }
+
     [[nodiscard]] result<void> put(std::string_view scope, std::string_view content, LessonApproval approval) {
         if (scope.empty()) {
             return std::unexpected(error{failure_class::contract, "an approval must name the principal it applies to",

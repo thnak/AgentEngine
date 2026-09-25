@@ -829,10 +829,13 @@ public:
     // ADR-184, host opt-in (unattended mode): every tool call that would wait for an approval is approved without
     // a human -- `approval_mode::always_require` tools and `text_derived` calls included -- and the session never
     // suspends for approval. It is the `ApprovalDecider` answering yes, so it decides only among authority the host
-    // already granted (I2: no capability or grant changes; a `PolicyDecider`'s `auto_deny` -- for `text_derived` calls
-    // too -- and every capability check and hook-stage denial still apply). Overrides any `set_approval_decider` while
-    // set, except as a veto: a `veto` decider, when given, is asked first and a `false` from it denies the call (for
-    // "approve everything except X"). Every approval it gives emits a `policy_decision` event naming the tool, the
+    // already granted (I2: no capability or grant changes; every capability check and hook-stage denial still apply).
+    // A `PolicyDecider`'s `auto_deny` still denies -- and in this mode it is asked about EVERY call that reaches the
+    // decider, whatever the tool's approval mode, so a host deny list keeps working (red team round 2: before, only
+    // `policy_driven` tools asked it). Overrides any `set_approval_decider` while set, except as a veto: a `veto`
+    // decider, when given, is asked about every call that would need approval, and a `false` from it denies the call
+    // ("approve everything that needs approval, except X"). A later call without a veto keeps the one already set;
+    // `clear_unattended_approvals` drops it. Every approval emits a `policy_decision` event naming the tool, the
     // caller, a hash of the arguments and `operator_id` (required, I4; refused if empty). Off by default.
     //
     // What it does not cover: `agent.ask` and hook-decision suspensions still wait for host code; `agent.spawn`
@@ -844,23 +847,24 @@ public:
                                                         agentengine::ApprovalDecider veto = {}) {
         if (operator_id.empty()) return unattended_detail_refuse("set_unattended_approvals");
         unattended_by_ = std::move(operator_id);
-        unattended_veto_ = std::move(veto);
+        if (veto) unattended_veto_ = std::make_shared<agentengine::ApprovalDecider const>(std::move(veto));
         return {};
     }
     void clear_unattended_approvals() noexcept {
         unattended_by_.reset();
-        unattended_veto_ = {};
+        unattended_veto_.reset();
     }
 
     // ADR-184: the whole full-automation setup in one call -- approved lessons (if `registry` is given) delivered as
     // instructions, the system-channel fence off, and unattended approvals. Each part is the separate call above,
     // audited as such; capabilities are still whatever `set_capabilities` granted.
     [[nodiscard]] result<void> enable_unattended_mode(std::string const& operator_id,
-                                                      agentengine::ApprovedLessonRegistry const* registry = nullptr) {
+                                                      agentengine::ApprovedLessonRegistry const* registry = nullptr,
+                                                      agentengine::ApprovalDecider veto = {}) {
         if (operator_id.empty()) return unattended_detail_refuse("enable_unattended_mode");
         if (registry != nullptr) set_approved_lessons(registry, agentengine::approved_lesson_level::instructions);
         (void)disable_system_channel_fence(operator_id);
-        return set_unattended_approvals(operator_id);
+        return set_unattended_approvals(operator_id, std::move(veto));  // an existing veto is kept if none is given
     }
     [[nodiscard]] bool unattended_approvals() const noexcept { return unattended_by_.has_value(); }
     [[nodiscard]] std::string const& static_instructions() const noexcept { return static_instructions_; }
@@ -2511,7 +2515,7 @@ private:
         // own invoke loop, folding results and continuing the turn. `policy_decider_` IS passed here
         // (unlike resolve_interaction()'s approved-branch call below) -- see finish_hook_processed_
         // round()'s own comment for exactly why this caller must thread it through.
-        co_return co_await finish_hook_processed_round(std::move(round), tool_table, effective_approval_decider(),
+        co_return co_await finish_hook_processed_round(std::move(round), tool_table, effective_approval_decider(tool_table),
                                                           policy_decider_);
     }
 
@@ -3014,7 +3018,7 @@ private:
             }
 
             std::vector<DispatchedCall> dispatched =
-                dispatch_tool_calls(reqs, tool_table, held, effective_approval_decider(), policy_decider_);
+                dispatch_tool_calls(reqs, tool_table, held, effective_approval_decider(tool_table), policy_decider_);
 
             for (std::size_t j = 0; j < dispatched.size(); ++j) {
                 std::size_t const i = req_positions[j];
@@ -3163,7 +3167,8 @@ private:
         agentengine::approved_lesson_level::guidance;                                    // ADR-184
     std::optional<std::string>                         system_fence_disabled_by_;         // ADR-184 opt-in
     std::optional<std::string>                         unattended_by_;                    // ADR-184 opt-in
-    agentengine::ApprovalDecider                       unattended_veto_{};                // ADR-184, optional
+    // Shared, so a veto that clears unattended mode from inside itself does not destroy itself while running.
+    std::shared_ptr<agentengine::ApprovalDecider const> unattended_veto_;                // ADR-184, optional
 
     [[nodiscard]] static result<void> unattended_detail_refuse(char const* what) {
         return std::unexpected(error{failure_class::contract,
@@ -3229,26 +3234,43 @@ private:
     // Red team: (MAJOR) the host's decider is passed by reference, never copied -- a copy reset any state a mutable
     // decider kept (an approval budget) every round; (MINOR) the operator id is captured by value and the setting is
     // re-read at each call, so clearing it mid-round stops the next approval instead of reading an emptied optional.
-    [[nodiscard]] agentengine::ApprovalDecider effective_approval_decider() {
+    // Round 2: (MAJOR) the host's `PolicyDecider` is asked about every call here and its `auto_deny` honoured, so a
+    // deny list covers `always_require` and `never_require`+`text_derived` calls too; (MINOR) the veto is held through
+    // a local shared_ptr while it runs.
+    [[nodiscard]] agentengine::ApprovalDecider effective_approval_decider(ToolTable const& tool_table) {
         if (!unattended_by_) {
             return approval_decider_ ? agentengine::ApprovalDecider{std::ref(approval_decider_)}
                                      : agentengine::ApprovalDecider{};
         }
-        return [this, op = *unattended_by_](Principal const& caller, std::string_view tool_name,
-                                            std::string const& canonical_args) {
+        return [this, op = *unattended_by_, tools = &tool_table](Principal const& caller, std::string_view tool_name,
+                                                                 std::string const& canonical_args) {
             if (!unattended_by_) return approval_decider_ ? approval_decider_(caller, tool_name, canonical_args) : false;
             // The call id is not known here; a short hash of the exact arguments tells two calls to one tool apart
             // (correlation only, not a digest).
             char args_id[17];
             std::snprintf(args_id, sizeof(args_id), "%016llx",
                           static_cast<unsigned long long>(std::hash<std::string>{}(canonical_args)));
-            if (unattended_veto_ && !unattended_veto_(caller, tool_name, canonical_args)) {
+            if (policy_decider_) {
+                ToolDescriptor const* td = tools->find(std::string(tool_name));
+                if (td != nullptr &&
+                    policy_decider_(caller, *td, /*arguments_tainted=*/true) == policy_decision::auto_deny) {
+                    emit_run_event(run_event_kind::policy_decision,
+                                   run_event_payload::PolicyDecision{
+                                       "unattended mode (operator " + op + "): tool " + std::string(tool_name) +
+                                       " denied by the host's policy, caller " + caller.id + ", arguments #" + args_id});
+                    return false;
+                }
+            }
+            if (std::shared_ptr<agentengine::ApprovalDecider const> const veto = unattended_veto_;
+                veto && !(*veto)(caller, tool_name, canonical_args)) {
                 emit_run_event(run_event_kind::policy_decision,
                                run_event_payload::PolicyDecision{
                                    "unattended mode (operator " + op + "): tool " + std::string(tool_name) +
                                    " vetoed by the host, caller " + caller.id + ", arguments #" + args_id});
                 return false;
             }
+            // The veto switched unattended mode off while it ran: the default is back for this call too.
+            if (!unattended_by_) return approval_decider_ ? approval_decider_(caller, tool_name, canonical_args) : false;
             emit_run_event(run_event_kind::policy_decision,
                            run_event_payload::PolicyDecision{
                                "unattended approval (host setting, operator " + op + "): tool " +

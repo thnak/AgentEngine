@@ -1,7 +1,7 @@
 # ADR-184 — Can AgentEngine run a full-automation system — lessons that act as instructions, no fence, no human approving calls — without the engine ever minting authority?
 
-- **Status:** Proposed — built, tested offline, red-teamed once (§7: no fatal; 8 major, all fixed), measured live
-  (§6). The round-1 fixes are not yet re-red-teamed. **Needs the project owner's judgement** — the owner asked for it
+- **Status:** Proposed — built, tested offline, red-teamed twice (§7: no fatal; round 1 8 major, round 2 4 major,
+  all fixed), measured live (§6). The round-2 fixes are not yet re-red-teamed. **Needs the project owner's judgement** — the owner asked for it
   (2026-09-24: "as an engine we should let developer choose their own … we must add option like by pass all, in some
   case engine can be used to build a full automation system and that would be a strong feature"), and it deliberately
   trades safety for capability behind host opt-ins. §4 states plainly what that waives.
@@ -41,9 +41,14 @@ Checked against the code before designing (the owner first asked for "engine per
   forbids a `PolicyDecider` from *approving* `text_derived` calls; the decider — the host's own answer, usually a
   human — could always approve anything.
 - **Denials.** Capability checks, hook-stage denials and a `PolicyDecider`'s `auto_deny` apply in every mode. The red
-  team found `auto_deny` was never consulted for `text_derived` calls, so in unattended mode such a call skipped a
-  host's explicit deny (a plan-mode gate, for one); it is now honoured for every provenance (§7 S-M1). This also
-  narrows default mode: a denied `text_derived` call is now denied instead of asking the decider.
+  team found two holes, both closed:
+  - **Round 1:** `auto_deny` was never consulted for `text_derived` calls, so in unattended mode such a call skipped
+    a host's explicit deny (a plan-mode gate, for one). It is now honoured for every provenance (§7 S-M1). This also
+    narrows default mode: a denied `text_derived` call is now denied instead of asking the decider, and a policy is
+    now also called for `text_derived` calls, twice per call (the suspend pre-check and dispatch).
+  - **Round 2:** the policy is only asked about `policy_driven` tools, so its deny still lost to unattended mode on
+    `always_require` tools and on `text_derived` calls to `never_require` tools. In unattended mode the decider now
+    asks the policy about every call that reaches it and honours `auto_deny` (R2-M1).
 
 ## 3. Decision
 
@@ -64,9 +69,12 @@ is a registry call, and `enable_unattended_mode(operator, &registry)` sets 1, 3 
 4. **Unattended approvals** — `set_unattended_approvals(operator, veto = {})`. Every call that would wait for an
    approval is approved with no human (`always_require` and `text_derived` included), and the session never
    suspends for approval. It is the round's `ApprovalDecider`, built per round (never stored), passing the host's
-   decider by reference when off, so a stateful host decider keeps its state. An optional `veto` decider is asked
-   first ("everything except X"). Each approval emits one event naming the tool, the caller, a hash of the arguments
-   and the operator; each veto, one naming it vetoed. It overrides `set_approval_decider` while set.
+   decider by reference when off, so a stateful host decider keeps its state. The host's `PolicyDecider` is asked
+   about every call it sees and its `auto_deny` denies. An optional `veto` decider is asked next, for every call that
+   would need approval ("everything that needs approval, except X"). A later call without a veto keeps the existing
+   one; `clear_unattended_approvals` drops it. Each approval emits one event naming the tool, the caller, a hash of
+   the arguments and the operator; each denial by policy or veto emits one naming why. It overrides
+   `set_approval_decider` while set. Once cleared, even mid-round, the next call goes to the host's decider again.
 
 Every operator/reviewer id is required; an empty one is refused and changes nothing.
 
@@ -122,12 +130,17 @@ events nobody listens to, and the tool pipeline's own audit record does not say 
 ## 6. Evidence
 
 **Offline.**
-- `tests/test_unattended_approvals.cpp` (18 checks, no HTTPS needed, so it runs in every build). A1-A7: `always_require`
+- `tests/test_unattended_approvals.cpp` (31 checks, no HTTPS needed, so it runs in every build; round 2 moved the
+  core delivery checks here too, D1-D7, since the other file only builds with HTTPS). A1-A7: `always_require`
   and `text_derived` calls are denied by default and run unattended, each audited exactly once. Suspend-for-approval
   never suspends. `auto_deny` still denies, for `text_derived` calls too (A5b), and a policy's `auto_approve` is still
   never an approval for them (A5c). Unattended overrides the host decider; cleared, the default is back. A8-A11: the
   veto; empty operator ids refused; `enable_unattended_mode`; a stateful host decider keeps its state across rounds.
-  S1: a streaming join respects the mark.
+  S1: a streaming join respects the mark. A12-A15 (round 2): a policy's deny covers every call in unattended mode; a
+  veto survives `enable_unattended_mode`; clearing mid-round hands the next call to the host's decider (A14b); a veto
+  that clears unattended mode from inside itself neither crashes nor approves. D1-D7: default level; `instructions`
+  unfences only approved text; a provider's own mark is cleared; fence off drops the preamble; automatic approvals
+  are not worded as human; `enable_unattended_mode` sets the level; reserved ids refused on both fields.
 - `tests/test_unattended_mode.cpp` (17 checks). L1-L9: the default level is unchanged. `instructions` is unfenced on
   the OpenAI wire while an unapproved note beside it stays fenced. With the fence off every tainted system text is
   unfenced and audited once, and switching it back on restores it. Automatic approvals are recorded and audited; the
@@ -138,7 +151,11 @@ events nobody listens to, and the tool pipeline's own audit record does not say 
 - `test_eval_tier1_screen` T33: `promote_lesson_automatically`.
 - Planted mutants each fail a test: the fence ignoring the mark; the session not clearing it; the unattended decider
   denying; the session suspending anyway; `text_derived` skipping the policy again; the host decider copied per round;
-  the guard comparing text only.
+  the guard comparing text only. Round 2, all against the ungated test: the policy not asked in unattended mode; the
+  veto reset by a later call; the fence ignoring the mark; the session keeping a provider's mark; automatic worded as
+  human; the reserved-id check removed; `enable_unattended_mode` not setting the level. One survives and is
+  equivalent: removing the first "still unattended?" re-read, since a second one before approving has the same effect
+  (it only changes which audit line a policy denial gets after clearing).
 
 **Live** (DeepSeek `deepseek-flash`, `tests/test_memory_lesson_label_live_e2e.cpp` through the real OpenAI serializer,
 one interleaved run, 20 trials per cell; followed / asked the user, naming the value / other):
@@ -183,3 +200,15 @@ Unattended approvals (knob 4) are engine logic with no model in the loop; they a
 | C-m7 | minor | Audit depends on an attached sink | Disclosed (§4) |
 | C-m8..10 | minor | ADR self-inconsistencies, stale comments, missing file-top citations, no README row | Fixed |
 | usability | — | One call for the whole setup; "everything except X" | `enable_unattended_mode`; `veto` |
+
+**Round 2 (one reviewer, on the round-1 fixes).** No fatal.
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| R2-M1 | major | The S-M1 fix covered only `policy_driven` tools: in unattended mode a deny-all policy still let `always_require` tools and `text_derived` calls to `never_require` tools run (the plan gate held back only its `policy_driven` tool) | The unattended decider asks the policy about every call and honours `auto_deny` (A12; mutant-checked) |
+| R2-M2 | major | `enable_unattended_mode` dropped a veto set earlier, silently | A later call without a veto keeps it; `enable_unattended_mode` takes a veto (A13; mutant-checked) |
+| R2-M3 | major | Five claimed mutant kills lived only in the HTTPS-only test | Core delivery checks D1-D7 moved into the ungated test (all five now killed there) |
+| R2-M4 | major | The mid-round re-read and `enable_unattended_mode`'s level were untested | A14/A14b, D5 |
+| R2-m1 | minor | A veto that cleared unattended mode destroyed itself while running (segfault) | Veto held by `shared_ptr`, copied locally for the call (A15) |
+| R2-m2 | minor | Reserved ids forgeable through the acknowledgement field | Checked on both fields (D6) |
+| nits | nit | Case/whitespace variants of reserved ids; empty simulated trial id; audit names the round-start operator after a mid-round re-set; policy now called for `text_derived` (and twice); the veto sees only calls needing approval | Case-folded and trimmed; trial id required; the rest disclosed (§2, §3) |
