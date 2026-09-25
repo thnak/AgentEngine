@@ -72,7 +72,22 @@ struct ToolCallRequest {
     // every existing positional/aggregate `ToolCallRequest{...}` call site is unaffected. Read by
     // `invoke_tool`'s step 5 below -- see that function's own comment for the full rule.
     call_provenance provenance = call_provenance::vendor_structured;
+    // ADR-197: the parser's message when the model's argument text was not valid JSON; empty iff it
+    // parsed. `arguments` is then only a placeholder: `admit_call()`/`background_task()` refuse the
+    // call at step 2 (006 §3, "reject; do not coerce") before any capability is bound or any
+    // approval asked. Appended last, like `provenance`, so existing aggregate call sites are unaffected.
+    // (The explicit `{}` initializer keeps clang's -Wmissing-field-initializers quiet at those sites.)
+    std::string arguments_parse_error{};
 };
+
+// ADR-197: step 2's refusal for a call whose argument text did not parse -- one definition, shared
+// by `admit_call()` and `background_task()`. The model sees the message and can resend the call.
+[[nodiscard]] inline error malformed_arguments_error(ToolCallRequest const& request) {
+    return error{failure_class::contract,
+                 "tool arguments are not valid JSON (" + request.arguments_parse_error +
+                     "); the tool was not run -- resend the call with a JSON object",
+                 "tool.malformed_arguments"};
+}
 
 // Milestone 4 Phase F1 (019 §3): "Every effect carries an idempotency key derived
 // deterministically from {run_id, turn_index, call_index, argument_digest}. Deterministic
@@ -404,9 +419,12 @@ struct AdmittedCall {
     }
 
     // -- step 2: validate (+ step 3: taint, recorded not deeply propagated) ----------------------
-    // Deferred to `tool->invoke`'s call into schema::from_json<Args> below -- a single point of
-    // truth for "does this JSON match the declared shape", never a second, hand-rolled check here
-    // that could drift from what actually gets parsed.
+    // ADR-197: argument text that did not parse is refused here, never coerced to `{}` -- a tool
+    // whose arguments are all optional would otherwise run on garbage. Nothing is bound yet.
+    if (!request.arguments_parse_error.empty()) return std::unexpected(malformed_arguments_error(request));
+    // Shape checking is deferred to `tool->invoke`'s call into schema::from_json<Args> below -- a
+    // single point of truth for "does this JSON match the declared shape", never a second,
+    // hand-rolled check here that could drift from what actually gets parsed.
 
     // -- step 4/7: authorize + bind --------------------------------------------------------------
     // ADR-009's CapabilitySet::bind() performs both atomically (contains-check, then mint a fresh
@@ -710,6 +728,8 @@ using BackgroundTaskCompletion = std::function<void(ToolResult, ToolInvocationAu
         return std::unexpected(
             error{failure_class::contract, "unknown tool: " + request.tool_name, "tool.unknown_name"});
     }
+    // -- step 2: validate -- ADR-197, the same refusal `admit_call()` makes ----------------------
+    if (!request.arguments_parse_error.empty()) return std::unexpected(malformed_arguments_error(request));
 
     // 006 §6b: an undeclared tool may never be backgrounded -- Tool::declared_backgroundable()'s own
     // fail-closed default.

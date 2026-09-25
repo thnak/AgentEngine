@@ -55,11 +55,25 @@ namespace agentengine {
 // round (019 §3's idempotency-key derivation; the pipeline does not track this itself).
 // `arguments_tainted` is always `true` here: every `ToolCall` this function ever sees originates
 // from a model response, by construction (003 §2).
+//
+// ADR-197 (006 §3 step 2, "reject; do not coerce"): argument text that does not parse is NOT turned
+// into `{}` any more. The request carries the parser's message in `arguments_parse_error`, and the
+// pipeline refuses the call as `tool.malformed_arguments` before the tool runs. `arguments` stays an
+// empty object only as a placeholder (hooks and approval prompts still need a value to show).
+// Empty or all-whitespace text is the one exception, and it is deliberate: providers send "" for a
+// call with no arguments, and "no text" carries nothing that could be misread, so it means `{}`.
 [[nodiscard]] inline ToolCallRequest tool_call_request_of(ToolCall const& call, std::uint64_t call_index) {
+    ToolCallRequest req{call.call_id, call.tool_name, json::Value::make_object({}),
+                        /*arguments_tainted=*/true, call_index, call.provenance};
+    if (call.arguments_json.find_first_not_of(" \t\r\n") == std::string::npos) return req;
     auto parsed = json::parse(call.arguments_json);
-    return ToolCallRequest{call.call_id, call.tool_name,
-                            parsed ? *parsed : json::Value::make_object({}),
-                            /*arguments_tainted=*/true, call_index, call.provenance};
+    if (parsed) {
+        req.arguments = std::move(*parsed);
+    } else {
+        req.arguments_parse_error = parsed.error().message.empty() ? std::string{"parse failed"}
+                                                                   : parsed.error().message;
+    }
+    return req;
 }
 
 // Folds every result from one round into a single `role::tool` message — the shape a `StartRun`'s
