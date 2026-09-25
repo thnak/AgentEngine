@@ -618,7 +618,7 @@ public:
     [[nodiscard]] ChatClientCapabilities capabilities() const { return inner_.capabilities(); }
 
     task<result<ChatResponse>> call(ChatRequest request, EffectContext& ctx) {
-        auto const granted = middleware_detail::granted_deliveries(request);  // ADR-183/184: see keep_only_granted_deliveries
+        auto const granted = middleware_detail::granted_deliveries(request);  // ADR-191/192: see keep_only_granted_deliveries
         ModelCallContext mctx{std::move(request), std::nullopt, std::nullopt};
         std::size_t stopped_at = 0;
 

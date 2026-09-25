@@ -1,8 +1,8 @@
-// Implements decisions/ADR-186-procedural-memory-channel.md -- the WIRE half.
+// Implements decisions/ADR-194-procedural-memory-channel.md -- the WIRE half.
 //
 // test_memory_procedural_channel.cpp proves which SHAPE each route produces (tainted external vs
 // untainted system). This proves what each REAL wire serializer then does with those two shapes, so
-// "on the wire" in ADR-186 rests on the serializers themselves and not on calling a helper directly.
+// "on the wire" in ADR-194 rests on the serializers themselves and not on calling a helper directly.
 // The two shapes are built here to match what that test showed the real MemoryProvider and the real
 // AgentSession produce; the seam between the two tests is that match.
 //
@@ -105,11 +105,11 @@ int main() {
               "openai/fenced: the forged close marker is neutralized -- the fence closes exactly once");
         check(b.find(preamble) == std::string::npos, "openai/unfenced: NO preamble");
         check(b.find("untrusted:") == std::string::npos, "openai/unfenced: NO fence markers");
-        // ADR-183: a spelled fence marker is removed from EVERY outbound text, untainted system text included (a
+        // ADR-191: a spelled fence marker is removed from EVERY outbound text, untainted system text included (a
         // model cannot see the zero-width space that used to "neutralize" it -- measured live). The rest of the
         // unfenced lesson still reaches the wire unwrapped.
         check(count_of(b, forged_close) == 0 && b.find("[/untrusted]") != std::string::npos,
-              "openai/unfenced: the lesson reaches the wire unwrapped, its reserved bracket glyphs stripped (ADR-183)");
+              "openai/unfenced: the lesson reaches the wire unwrapped, its reserved bracket glyphs stripped (ADR-191)");
     }
 
     // ---- Anthropic serializer -------------------------------------------------------------------
@@ -124,7 +124,7 @@ int main() {
         check(b.system_text.find(preamble) == std::string::npos, "anthropic/unfenced: NO preamble");
         check(b.system_text.find("untrusted:") == std::string::npos, "anthropic/unfenced: NO fence markers");
         check(b.system_text == ae::strip_reserved_glyphs(lesson) && b.system_text != lesson,
-              "anthropic/unfenced: the system blob is the lesson with its reserved bracket glyphs stripped (ADR-183)");
+              "anthropic/unfenced: the system blob is the lesson with its reserved bracket glyphs stripped (ADR-191)");
     }
 
     if (g_failures != 0) {

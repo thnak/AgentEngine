@@ -1,6 +1,7 @@
-# ADR-187 — Evaluation harness: a cheap screen now, a rigorous confirmation later (gates ADR-179's reviewer and queue)
+# ADR-195 — Evaluation harness: a cheap screen now, a rigorous confirmation later (gates ADR-179's reviewer and queue)
 
-- **Renumbered:** written as ADR-181; renumbered on 2026-09-25 when this stack merged into `main`, where ADR-181 was already taken by another ADR. Commit messages and PR titles before that date say ADR-181.
+- **Renumbered:** written as ADR-181 (briefly ADR-187); renumbered to ADR-195 on 2026-09-25 when this stack merged into `main`, where those numbers had been taken by other ADRs in the meantime. Commit messages, PR titles and ADR cross-references written before then use the old number.
+
 
 - **Status**: **Proposed — design plus executed statistics, and, as of rounds 5-7, real code for four of Tier 1's
   components (§3.0 items 1/2/3, part of item 4, and item 5's ack-digest half): `include/agentengine/eval/`
@@ -33,7 +34,7 @@
   ALREADY-WRAPPED `RecordingChatClient<X>` as `Inner`, chaining the caller's own external sink onto every trial call
   outside the trial's own `EvalStore`/`CapabilitySet` confinement, defeating the doc comment's "there is no way to
   call it unwrapped" claim in effect if not in type; fixed with a `static_assert` (proven both ways by a
-  compile-fail/positive-control pair, §3.8). `decisions/README.md`'s own ADR-187 row also directly contradicted
+  compile-fail/positive-control pair, §3.8). `decisions/README.md`'s own ADR-195 row also directly contradicted
   itself (claiming a live model was called, then closing "No model was called.") — fixed. The lifetime/coroutine-
   frame reviewer found no FATAL or MAJOR issues in the actual coroutine wiring (verified clean under ASan/UBSan).
   **Round 2 (three fresh independent reviewers: confinement completeness, delivery-detection-logic correctness,
@@ -190,7 +191,7 @@
   relative precision whenever the bisection-driven `p` is far from 0.5 (measured: a 463% relative error at
   `alpha=1e-10`) — fixed with `std::log1p`, verified against an independent scipy/mpmath reference; a disclosed,
   not-fixed residual remains at the most extreme alphas (`bisect_decreasing`'s own fixed 60-iteration budget hits
-  double precision's own resolution limit near either end of `[0,1]`, nowhere near ADR-187's real `alpha=0.05`
+  double precision's own resolution limit near either end of `[0,1]`, nowhere near ADR-195's real `alpha=0.05`
   usage). Separately, round 6's denylist expansion introduced 17 proven false positives on realistic, benign lesson
   text (`"post mortems are stored in..."`, `"the .net runtime version..."`, `"call center average wait time..."`,
   `"ssh access to the bastion..."`) — two were clear bugs (`"exec"`/`"sudo"` had no trailing space, matching as a
@@ -222,13 +223,13 @@
   no new evaluation *philosophy*; it makes 022 §4 concrete for one question: **does a candidate lesson help,
   and does it stay safe?**
 - **Reuses**: `RecordingChatClient` / `ReplayChatClient` (004 §6), `AgentSession`, ADR-178 `cancel()`,
-  ADR-186's memory channel, ADR-179's `LessonCandidate` and hostile corpus, `MandatorySandboxProvider`'s
+  ADR-194's memory channel, ADR-179's `LessonCandidate` and hostile corpus, `MandatorySandboxProvider`'s
   task-branch surface (round 4: there is no separate `TaskBranchSandbox` type).
 - **Touches invariants**: I1, I2, I3, I4, I5, I8.
 
 ## 1. The question, and the honest bottom line
 
-A lesson is text that will steer a model. ADR-186 §4b measured one model following some lessons and ignoring
+A lesson is text that will steer a model. ADR-194 §4b measured one model following some lessons and ignoring
 others, and measured **nothing about task outcomes**. Before any lesson is promoted, someone must be able to say
 "with this lesson the agent solves more held-out tasks, by more than noise, without becoming easier to steer."
 
@@ -265,9 +266,9 @@ overstating it.
 | `MemoryProvider::on_turn_end` writes an **ungated episodic item every turn** (`memory_provider.hpp:338-355`); writing requires a host-held `cap::FsWrite` for the mount (`:403`) | as cited |
 | `ChildSpawnRequest` has `token_budget` and `max_turns`; **no deadline**; `run_child_agent_session` **derives a delegated child Principal from the caller** (`agent_spawn_child_run.hpp:57,70-75,124-145`) — it does not mint a fresh id | as cited |
 | **`TaskBranchSandbox` is not a class** (round-4 correction): the task-branch capability was folded into `MandatorySandboxProvider`; its arg/reply structs are real, at `mandatory_sandbox_provider.hpp:155-200`, and `start_task_branch`/`discard_task_branch` are real methods on that provider, later in the same file. It provides start/run/commit/discard on a worktree branch; **leaving a branch undiscarded on a failure path strands it** (the A10 stranded-loser class). This ADR's own text (§3.9, §9's Reuses line) is corrected to say `MandatorySandboxProvider`'s task-branch surface, not a `TaskBranchSandbox` type | as cited |
-| ADR-186 §4b is the **only** behavioural data: 8 trials per cell, one model, binary "applied the lesson" — **not task success** | ADR-186 |
+| ADR-194 §4b is the **only** behavioural data: 8 trials per cell, one model, binary "applied the lesson" — **not task success** | ADR-194 |
 | No registry-wide "what can a `Tool<>` reach" lint exists; `tools/policy_reachability.cpp` checks capability reachability against a fixture. `ToolDescriptor` holds a **type-erased `std::function`**, so no concept can see what a tool body captures; the existing compile-fail harness is a configure-time `try_compile` gate (`tests/CMakeLists.txt:6-30`) | `core/tool_descriptor.hpp:45-58`; `tools/` |
-| **Recall is a top-`max_injected` ranking (default 3)** by salience × recency × keyword, with **no weight for `kind`**; a seeded lesson has the lowest `write_seq`, and `on_turn_end` adds a higher-`write_seq` episodic item every turn (salience left at 0.0). **Executed (`test_memory_lesson_recall`): a lesson written at salience 0.0 is evicted from the top 3 once three later items exist; at salience ≥ 0.05 it survives 60 later unrelated items; against items that quote the user's words only salience 1.0 survives.** The round-2 claim "evicted within a few turns" was therefore true only for a low-salience lesson `on_turn_end` also needs a `SummarizerT` — a second `ChatClient` | `memory_provider.hpp:239,246,256-257,338-355`; ADR-186 §2 Q3b |
+| **Recall is a top-`max_injected` ranking (default 3)** by salience × recency × keyword, with **no weight for `kind`**; a seeded lesson has the lowest `write_seq`, and `on_turn_end` adds a higher-`write_seq` episodic item every turn (salience left at 0.0). **Executed (`test_memory_lesson_recall`): a lesson written at salience 0.0 is evicted from the top 3 once three later items exist; at salience ≥ 0.05 it survives 60 later unrelated items; against items that quote the user's words only salience 1.0 survives.** The round-2 claim "evicted within a few turns" was therefore true only for a low-salience lesson `on_turn_end` also needs a `SummarizerT` — a second `ChatClient` | `memory_provider.hpp:239,246,256-257,338-355`; ADR-194 §2 Q3b |
 | `FileAppendLogStore::append` computes the sequence by re-reading, appends with `ofstream` and `flush()` — **no fsync, no compare-and-swap, no unique-key check**; O(n) per append | `rt/append_log_store.hpp:150-180` |
 | Capabilities are a **runtime `held` set checked in `admit_call`** for the `invoke_tool` pipeline; a tool body is ordinary C++ and nothing sandboxes it; the model client has **no `NetOut` check** (ADR-179 §2) | `trust/tool_pipeline.hpp:376-399` |
 | `start_task_branch`/`discard_task_branch` are public host-callable methods; calling them directly **skips `cap::TaskBranch`**; the provider needs a bound `SandboxRuntime`, quotas and, in practice, a Docker surface; `test_task_branch_tools` and `test_mandatory_sandbox_provider` are **excluded from CI** | `mandatory_sandbox_provider.hpp:244,885-900`; `.github/workflows/ci.yml:164,314` |
@@ -290,7 +291,7 @@ someone builds it.
 
 1. **Rendering is part of the candidate under test.** `LessonCandidate` (ADR-179 §3.3, a closed record) is turned
    into the text the model reads by a **pure host function** `render_lesson(candidate, template_version) →
-   MemoryItem{kind=procedural, content, tags, salience}`. ADR-186 measured wording changing the effect by an order
+   MemoryItem{kind=procedural, content, tags, salience}`. ADR-194 measured wording changing the effect by an order
    of magnitude, and the renderer chooses the `content` and `tags` that recall's keyword term sees, so **the
    rendered bytes and `template_version` are in the candidate digest**. Changing the template invalidates all
    earlier evidence (E26). **Round 5: built for real**, `include/agentengine/eval/lesson_candidate.hpp` —
@@ -318,7 +319,7 @@ someone builds it.
    trials with the lesson, 20 without; the baseline must show ≤ 10% "following" or the probe is invalid (the answer
    is guessable). **Pass iff the exact 95% *lower* bound of the follow rate is ≥ 0.5.** Executed (§6 T1): passes 93%
    at a true follow rate of 85%, 41% at 70%, 2% at 50%. It answers "is this lesson inert *on its own probe*", not
-   "does it help real tasks". This exists because ADR-186's fenced route measured 0/12 for some lessons: without it,
+   "does it help real tasks". This exists because ADR-194's fenced route measured 0/12 for some lessons: without it,
    a rigorous run spends its budget confirming nothing. **Round 4 found "the reviewer role proposes ≤ 3 probes"
    undefined and gameable:** the reviewer is a model, "any of 3 passes" lets it pick the easiest one (§6 G4: any-of-3
    passes 81% at a true follow rate of only 70%, against 41% for one probe), and the cost line never charged for more
@@ -400,13 +401,13 @@ between subject and key, or spelling `dep1oy`, opened a fresh family whose count
 unit is therefore the **lineage** (host-supplied): the headline attempt count, this attempt's ordinal and the number
 of distinct designs are the lineage's, and every attempt from the lineage is shown. With several lessons from one
 run, that over-counts — the safe direction. (A narrower per-family view once reported beside it was removed in the
-ADR-183 proportionality review, below.) Executed (§6, applying the multiplicity numbers
+ADR-191 proportionality review, below.) Executed (§6, applying the multiplicity numbers
 a round-4 reviewer computed from T1's own flag rates): retrying a screen that a truly harmful lesson (−10 pp) failed
 raises the chance *some* attempt passes from 30% (one try) to 66% (three) to 97% (ten); a human approver who only
 sees the last, clean `ScreenResult` has no way to know that. This does not block anything — Tier 1 never promotes —
 but it stops a retried-until-clean screen from *looking like* a clean one.
 
-**Built (E32 PR, red-teamed three times, the third with ADR-183 round 3; its fixes not yet re-red-teamed): `include/agentengine/eval/eval_tier1_screen.hpp`.**
+**Built (E32 PR, red-teamed three times, the third with ADR-191 round 3; its fixes not yet re-red-teamed): `include/agentengine/eval/eval_tier1_screen.hpp`.**
 The ADR's `ScreenResult` is `Tier1ScreenResult` in code. `run_tier1_screen` runs one counted attempt in this order:
 (1) validates the whole spec — the lesson, declared once on `Tier1ScreenSpec`, must be set
 (`eval.tier1_lesson_unset`) and render, each screen's own pre-flight runs, and the screens' `max_model_calls`, summed, must fit the attempt's own —
@@ -422,9 +423,9 @@ naming the same `attempt_id`, with the figures, seeds and every invalidity reaso
 and returns the result: this attempt's ordinal, the attempt count, how many distinct designs were tried (all three
 over the lineage, round 3), and every attempt's stored design and figures. If that history cannot be read back,
 or no longer contains this attempt, the verdict is still returned but marked `history_complete = false` with the
-reason (it used to be withheld — ADR-183 proportionality review, below). Attempts are counted per host-supplied
+reason (it used to be withheld — ADR-191 proportionality review, below). Attempts are counted per host-supplied
 **lineage**; the candidate's `subject` is recorded as written, as a label. A retry that swaps words between subject
-and key, or spells `dep1oy`, is still attempt N+1 of its lineage. *Simplified by the ADR-183 proportionality review
+and key, or spells `dep1oy`, is still attempt N+1 of its lineage. *Simplified by the ADR-191 proportionality review
 (2026-09-24):* the per-subject family view and its subject normalisation (which refused any non-ASCII subject) are
 gone — the lineage count already covered what they tried to; the lesson and its delivery are declared once on
 `Tier1ScreenSpec` and copied into every screen (the validator that compared N+1 copies, and bit-exact salience, are
@@ -435,7 +436,7 @@ attempt stays counted as started-but-not-completed; a record that cannot be deco
 already-completed attempt, a repeated `attempt_id`, and a `started` record whose stored design does not hash to its
 digest each count as an unreadable attempt of their own (over-counting is the safe direction).
 `tests/test_eval_tier1_screen.cpp`: 133/133 executed checks (82 `AE_CHECK` sites; T5, T6 and T14 loop over cases;
-T30-T32 added by ADR-183 round 3: every probe trial of an approved screen carries the approval, the first log failure
+T30-T32 added by ADR-191 round 3: every probe trial of an approved screen carries the approval, the first log failure
 is the one reported, and a lost attempt record reports no counts).
 My own 40 planted mutants (14 on the first build, 26 after round 1) are all caught; the red teams' mutation reviews
 found 24 survivors after the first build and 27 eval + 7 store survivors after round 1, and the tests were extended
@@ -467,15 +468,15 @@ harness **never promotes anything**; ADR-179's approval queue remains the second
 - **B (baseline):** no lesson.
 - **T (treatment):** the candidate lesson, delivered **only through the production route** — a
   `procedural`/`model_inferred` memory item reaching the model as a tainted, fenced `role::system` message
-  (ADR-186). ADR-186 §4b showed the channel changes the effect by an order of magnitude (F 8/8 vs A 1/8), so any
-  other route would measure a channel that does not ship. *Amended 2026-09-24 (ADR-183):* a host may opt in to
+  (ADR-194). ADR-194 §4b showed the channel changes the effect by an order of magnitude (F 8/8 vs A 1/8), so any
+  other route would measure a channel that does not ship. *Amended 2026-09-24 (ADR-191):* a host may opt in to
   approved-lesson delivery, and then the screen must measure that route: `lesson_delivery::approved` (a simulated
   approval; hashed into the pre-registration, E32). Live, the fenced route left every lesson inert (the preamble
   says never to follow fenced text); through the approved route the helpful lesson cleared 20/20.
 - **S (steering manifest, per candidate):** the *same candidate* on **fixed steerable-slot tasks** (§3.7). It
   records **which tool-argument slots the candidate's value lands in**. This tests *this candidate's* ability to
   steer, not the pipeline's, and it does **not** depend on deciding whether a task is "in scope" for the lesson.
-- Hostile-derived lessons (the ADR-179 R5 corpus, ADR-186's probes) are **not a per-candidate arm**. They are the
+- Hostile-derived lessons (the ADR-179 R5 corpus, ADR-194's probes) are **not a per-candidate arm**. They are the
   **sensitivity control for the harness itself**: a known-bad lesson must produce a flagged slot write in arm S
   (E11), or the harness is blind.
 
@@ -1055,7 +1056,7 @@ against the scripts; where a reviewer's simulation was not re-run by me it is ma
 | D1 | fatal | The detector I quoted (P1) was T vs B on one pooled slot, no B′, no Holm; not the specified one | **§3.7** specified (pooled statistic, within-task permutation, joint test, no B′); **§6 D1** simulates it; P1 relabelled |
 | D2 | fatal | The upper-bound rule covers only containment, the path that misses paraphrase; a paraphrased ≤ 5% steer goes unflagged 42–68% and passes | §3.7: divergence is a **tripwire, "no flag" certifies nothing**; slots kept ≤ 5; stated in §1 and §8 |
 | E1 | fatal | The candidate-to-text rendering is undefined and is part of the candidate under test | **§3.0 item 1** `render_lesson` + `template_version`, in the digest; **E26** |
-| E2 | fatal | The production channel may deliver a near-inert lesson; ADR-186 measured 0/12 fenced; shards would confirm nothing | **§3.0 item 2** follow-rate screen first; **§3.0** tiering; **E27** |
+| E2 | fatal | The production channel may deliver a near-inert lesson; ADR-194 measured 0/12 fenced; shards would confirm nothing | **§3.0 item 2** follow-rate screen first; **§3.0** tiering; **E27** |
 | D3 | serious | Holm makes E24 unmeetable; 200 permutations floors the p-value | §3.7: one joint test, 2,000 permutations; E24 thresholds tied to measured values |
 | D4 | serious | Pooling masks single-task steers; per-task is hopeless at 30 trials | Measured (D1): both weak on a single-task steer (24% / 23%); pooled is primary; **single-task steers named in §8, not fixed** |
 | D5 | serious | Between-common-value steers and many small steers slip through | **Not fixed**; measured by the reviewer (17% / 63%, 0.00 per slot), named in §8 |
@@ -1155,7 +1156,7 @@ punch list — numerics (**R7-Num**), denylist usability/false-positives (**R7-F
 | # | Sev | Finding | Disposition |
 |---|---|---|---|
 | R7-Num1 | fatal | `log_binomial_pmf` (round 6's own fix) computed `log(p)` and `log(1.0-p)` via plain `std::log`. Forming `1.0-p` (or evaluating `log` of an argument already extremely close to 1) loses relative precision in the RESULT whenever the bisection-driven p is far from 0.5 — exactly the regime a small `alpha` or an extreme x/n ratio drives it into, i.e. the same regime round 6 was fixing. Proven against an independent scipy/mpmath reference: at x=1, n=10,000,000, alpha=1e-10, the old code returned a bound 5.6× too large (463% relative error), degrading smoothly as alpha shrank (0.24% at alpha=1e-6, 5.5% at alpha=1e-8) | `std::log1p(p-1.0)` for `log(p)` and `std::log1p(-p)` for `log(1-p)` — both accurate near their respective singular points without ever forming the lossy intermediate. Verified against the same independent reference; residual ~4% error remains at the most extreme alpha tested (1e-10), traced to `bisect_decreasing`'s own resolution floor (R7-Num2), not this bug |
-| R7-Num2 | major *(disclosed, not fixed)* | `bisect_decreasing`'s fixed 60-iteration budget cannot resolve an answer closer than ~2.2×10⁻¹⁶ (double precision's own absolute resolution) to either end of `[0,1]`; past that, the search silently freezes at a fixed value with no error, for any caller passing an alpha extreme enough to need it | Disclosed in §8. ADR-187's real usage is `alpha=0.05` exclusively — orders of magnitude away from this floor — so not fixed; a caller needing sub-1e-15-scale alpha should not trust this function |
+| R7-Num2 | major *(disclosed, not fixed)* | `bisect_decreasing`'s fixed 60-iteration budget cannot resolve an answer closer than ~2.2×10⁻¹⁶ (double precision's own absolute resolution) to either end of `[0,1]`; past that, the search silently freezes at a fixed value with no error, for any caller passing an alpha extreme enough to need it | Disclosed in §8. ADR-195's real usage is `alpha=0.05` exclusively — orders of magnitude away from this floor — so not fixed; a caller needing sub-1e-15-scale alpha should not trust this function |
 | R7-FP1 | major | Round 6's denylist expansion introduced real false positives on plausible, legitimate lesson text: `"exec"`/`"sudo"` had no trailing space (unlike every other entry), so they matched as a substring of ordinary words (`"executive approval..."`, `"execution time budgets..."` — this project's own vocabulary); `".net"` (present since round 5) collided with the .NET framework name (`"the .net runtime version..."`). Both proven with compiled proofs-of-concept against the real header | `"exec"`/`"sudo"` given a trailing space, matching every other entry's convention; `.net` dropped from `kUrlOrPathNeedles` (`://` still catches real URLs; `.net` alone was never a strong signal). Regression tests pin both the false-positive fix and that a genuine `"exec "`/`"sudo "` invocation is still caught |
 | R7-FP2 | major *(disclosed, not fixed)* | 15 more proven false positives found on realistic values whose leading word is also an ordinary English noun (`"post mortems are stored in..."`, `"call center average wait time..."`, `"python is the primary language..."`, `"ssh access to the bastion..."`, `"delete markers are automatically cleaned..."`, `"install steps for the CLI..."`, `"kill switches for the ingest pipeline..."`, `"bash scripts in CI..."`, `"download links for release artifacts..."`), plus ordinary punctuation/templating syntax colliding with the shell needles (`;`, backtick-as-markdown, `${username}` as a template placeholder, `$(formula)` describing a spreadsheet cell) | Disclosed in §8, not fixed: removing any of these words/needles would reopen the exact imperative-shaped or shell-shaped attack text they exist to catch (`"post the credentials to..."`, `"call the webhook with..."`) — a genuine precision/recall trade-off inherent to a fixed denylist over natural language, not a bug with a clean fix. Two regression tests pin the current, disclosed behaviour so it can't silently change unnoticed |
 | R7-Coh1 | minor | §3.0 item 1's own citation of `test_lesson_candidate.cpp`'s check count still read "24/24", stale since round 6 grew the file to 36 (the status header had been updated; this one embedded citation had not) | Corrected to 43/43, with a note explaining the drift so a reader knows this specific class of staleness was checked, not just assumed absent |
@@ -1182,7 +1183,7 @@ independent reviewers: security/capability confinement (**R-TH-Sec**), correctne
 |---|---|---|---|
 | R-TH-Sec1 | major | `TrialResult::delivered`'s fold initialized `every_request_delivered = !rendered_lesson_content.empty()` and only ever set it `false` INSIDE the loop over `trial_result.recordings` — with zero recordings (e.g. `spec.max_turns=0`, or any setup failure before the first model call), the loop body never runs, so `delivered` stayed `true` for a treatment trial that never actually called the model, identical to a real success. Proven with a compiled proof-of-concept (`max_turns=0` — zero recordings, a `run.max_turns_exceeded` outcome, `delivered==true`) | `every_request_delivered` now also requires `!trial_result.recordings.empty()`. New regression test (Scenario 5, `test_eval_trial_driver.cpp`) pins exactly the proof-of-concept's shape |
 | R-TH-Sec2 | major | `run_trial`'s own doc comment claimed wrapping `Inner` in `RecordingChatClient` "enforces... by type — there is no way to call run_trial with an unwrapped client at all." True of the wrapper TYPE, not of the EFFECT: a caller could pass an ALREADY-WRAPPED `RecordingChatClient<X>` as `Inner`, producing `RecordingChatClient<RecordingChatClient<X>>` — the inner instance's own, externally-configured sink (built with whatever authority/persistence the CALLER gave it) then fires on every trial round, entirely outside this trial's `EvalStore`/`CapabilitySet` confinement. Proven with a compiled proof-of-concept: a pre-wrapped sink observed the seeded lesson text through exactly this path | A `static_assert(!detail::is_recording_chat_client_v<Inner>, ...)` now rejects this at compile time, proven both ways by a compile-fail/positive-control pair (§3.8, `tests/compile_fail/eval_run_trial_{rejects_prewrapped_inner,plain_inner_positive_control}.cpp`) |
-| R-TH-Coh1 | fatal *(documentation, not design/security)* | `decisions/README.md`'s own ADR-187 row directly contradicted itself: one clause described a live DeepSeek run in detail, the row's closing sentence read "No model was called." — left over from before the trial-running slice existed | Corrected; the closing sentence now distinguishes rounds 5-7 (no model called) from the trial-running slice (does call a model) |
+| R-TH-Coh1 | fatal *(documentation, not design/security)* | `decisions/README.md`'s own ADR-195 row directly contradicted itself: one clause described a live DeepSeek run in detail, the row's closing sentence read "No model was called." — left over from before the trial-running slice existed | Corrected; the closing sentence now distinguishes rounds 5-7 (no model called) from the trial-running slice (does call a model) |
 | R-TH-Coh2 | major | The ADR's status header, §8, and `decisions/README.md` all stated the live run's SPECIFIC observed mechanism (`delivered_via_recall=true`, a `recall` call) as settled fact — the same class of overclaim rounds 5-6 were previously caught making. A second live run (after the transcript-dump follow-on commit) showed a DIFFERENT, equally correct mechanism (context injection alone, no `recall` call), never disclosed | All three locations rewritten to state both observed outcomes and make explicit that a live model's specific delivery route is nondeterministic and not to be read as a reproduced, settled fact — matching the "observation, not a gate (I5)" framing this repo's other live tests already use |
 | R-TH-Coh3 | minor | `TrialSpec::extra_capabilities` (real code, added so a live `OpenAIChatClient` can get a `cap::Secret` grant) had no corresponding ADR text | Documented in §8's own trial-running-harness paragraph |
 
@@ -1213,7 +1214,7 @@ round 1's own review process: confinement completeness (**R-TH2-Sec**), delivery
 | R-TH2-Sec4 | minor | `TrialSpec::extra_capabilities` is merged into the trial's `CapabilitySet` with no defense-in-depth check that a host didn't accidentally forward a capability scoped to something other than what the trial should touch (e.g. a stray `cap::FsRead` aimed at a production mount). Traced: no path from `spec.candidate` reaches this field (not I3-violating), and merging does not itself widen the trial's own FsRead/FsWrite grants | Disclosed in the field's own comment; no gate added — not exploitable from untrusted input, only a missing caller-mistake guard |
 | R-TH2-Sec5 | minor | `EvalStore::make("trial", spec.trial_id)` hardcodes the tenant_suffix; two `run_trial` calls that reuse the same `trial_id` mint an identical `Principal`. Traced: does NOT cause cross-trial data exposure (every real store access takes the `OS&`/`RS&` instance as an explicit parameter, never a mount_id-keyed global lookup) — the residual is `MemoryOrigin::attribution.principal` uniqueness only (I4-adjacent) | Disclosed in `run_trial`'s own comment; callers minting many trials should pass a genuinely unique `trial_id` per attempt |
 | R-TH2-Logic1 | major | `delivered_via_recall` used a sticky `bool recall_seen` set `true` by ANY recall call and never reset — so a LATER, unrelated non-memory-attributed message that happened to contain the lesson text (coincidence, or another stub tool's canned reply) was misreported as "delivered via recall" even when THAT recall call's own result never carried the lesson. Proven with a compiled, executed reproduction: seeded the lesson at salience 0.0, evicted it from `recall`'s own top-10 ranking with 12 unrelated higher-salience writes, confirmed by inspecting the recording that recall's own `ToolResult` was genuinely lesson-free, and still observed `delivered_via_recall == true` | Replaced the sticky flag with a `std::unordered_set<std::string>` of recall `ToolCall::call_id`s seen so far, and keyed the check to a `ToolResult` whose OWN `call_id` matches one of them (`message_contains_recall_result`) — the pairing `ToolCall`/`ToolResult` already carry in `content.hpp`. New regression scenario (S6, `test_eval_trial_driver.cpp`) exercises the fixed helper directly against exactly this shape (a matching-call_id case, a non-matching-call_id case, and a truly-empty-recall-result case) |
-| R-TH2-Coh1 | major | `decisions/README.md`'s ADR-187 row cited a stale, pre-round-1-fix check count — "143/143 checks green across 7 test binaries" and "Proven deterministically (19/19, a scripted model)" — that round 1's own fix (adding Scenario 5) had already moved past in this very ADR's status header (147/147) without the same edit reaching the sibling doc | Corrected to the current count in the same edit that updated it for round 2 (now 150/150) |
+| R-TH2-Coh1 | major | `decisions/README.md`'s ADR-195 row cited a stale, pre-round-1-fix check count — "143/143 checks green across 7 test binaries" and "Proven deterministically (19/19, a scripted model)" — that round 1's own fix (adding Scenario 5) had already moved past in this very ADR's status header (147/147) without the same edit reaching the sibling doc | Corrected to the current count in the same edit that updated it for round 2 (now 150/150) |
 | R-TH2-Coh2 | minor | §8's naming-lint residual line still listed `EvalStore` as a name "needing" `tools/naming_lint.py` resolution, even though `eval_store.hpp` already carries the `ae-naming-lint: allow` comment (round 5) that is this codebase's own accepted resolution mechanism everywhere else | Removed `EvalStore` from that line |
 
 **Checked and held up (R-TH2-Logic, no other bug found):** string-containment fragility vs. attribution airtightness — confirmed `assemble_context()` stamps `attribution` unconditionally from a fixed, compile-time contributor name, applied only to `ContextContribution.messages`, never to tool-pipeline-appended `ToolResult` messages, so `message_is_memory_attributed` cannot be spoofed by a stub tool's or `recall`'s own reply text (the substring-match fragility is real but correctly firewalled for the primary `delivered` flag). Multiple-candidates/repeated-content: structurally impossible this slice (`TrialSpec::candidate` is a single `optional`, `write_memory_item` called exactly once). The "every round" bar for `delivered`: not a bug, it is §3.2/E21's own explicit spec (catching salience-driven mid-trial eviction), correctly implemented by the per-request AND-fold. Recording order: confirmed synchronous, inline, no concurrency in the only path this slice's clients use. **Noted, not yet acted on:** §3.2 prose describes delivery as "context injection OR recall" but `delivered` and `delivered_via_recall` remain two separate, never-OR'd fields — harmless today (nothing consumes them as a single value yet) but whoever wires `tier1_statistics.hpp` to real trial output next must not naively read `delivered` alone as "the ADR's delivered concept," or it will silently undercount recall-only-delivered trials.
@@ -1354,7 +1355,7 @@ and digest as attack surface **R-E32-Sec**, correctness/lifetimes/test strength 
 |---|---|---|---|
 | R-E32-1 (all three) | fatal | `rt::FileAppendLogStore::append` counted the records, then wrote header and payload as two writes with no lock. 4 threads × 50 appends returned ~51 distinct seqs and only 55–89 of 200 records read back, every append reporting success. End to end: 3 concurrent attempts (2 harmful, 1 clean) all reported attempt 1; the clean one showed "1 of 4" with a harmful attempt's figures replaced and the other hidden. The concurrency claim was tested only against the mutex-guarded in-memory store | Store: an exclusive OS file lock across count + one write; readers take a shared lock (Windows byte-range locks are mandatory — found by the fix's own test). E32: identity is a random `attempt_id`, not the store's seq; the `started` record is read back before any trial. Tests: the store's L8 (200 concurrent appends) and T19 (4 concurrent attempts on the file store) both fail on the old store; T20 (a store that always returns seq 1) |
 | R-E32-2 (Sec, Cor, Coh) | major | A torn record jammed the family for good: appends landed after the torn bytes and were swallowed, each returned the same seq, every later attempt ran ~340 trials then came back `attempt_missing`, and a garbage length allocated ~1.9 GB per read | Store: the next append cuts the file back to its last whole record; `read_from` never allocates past the bytes present (L9). E32: the read-back stops an attempt the store lost before it spends a trial (T18) |
-| R-E32-3 (Sec) | major | The family key was the raw `subject`: `Deploy-Region`, a trailing space, `deploy_region` or a Cyrillic `е` each started a fresh family with no prior attempts | Key = lower-cased ASCII letters and digits; non-ASCII refused (T6, T14). *Superseded (ADR-183 proportionality review): the family view is gone; the lineage count (R2-E32-1) covers it* |
+| R-E32-3 (Sec) | major | The family key was the raw `subject`: `Deploy-Region`, a trailing space, `deploy_region` or a Cyrillic `е` each started a fresh family with no prior attempts | Key = lower-cased ASCII letters and digits; non-ASCII refused (T6, T14). *Superseded (ADR-191 proportionality review): the family view is gone; the lineage count (R2-E32-1) covers it* |
 | R-E32-4 (Coh) | major | Only the design's digest was stored, and figures omitted the thresholds, so an approver saw that a retry changed the design but not how | The design JSON is stored and checked against its digest on read; figures gain every invalidity reason, fault counts and which statistic flagged |
 | R-E32-5 (Coh, Cor) | major | A withheld outcome left the verdict readable in `probes[i].pass` / `gross_harm->flagged` | Both cleared when withheld (T8, T21) |
 | R-E32-Cor-Mut | major | 24 of 28 independent mutants survived: no test reached the inconclusive or errored outcomes (an invalid harm screen reported as cleared survived), several recorded fields were never asserted, strict parsing was unchecked, and T5 covered 11 design fields | Outcome mapping factored out and tested for every case, plus two end-to-end inconclusive runs (T15); every figure round-trips (T16); T17 checks each malformed-record kind; T5 now covers every hashed field. 26 new mutants on the fixed code, all caught |
@@ -1411,12 +1412,12 @@ read-only-mapping and long-path probes on Windows and real Linux, 7 quarantine m
 | R3-E32-3 (Cl) | major | Round 2 disproved §3.3's "re-keying is not a new family" but amended neither §3.3 nor §3.0(b)/(c); the headline `attempt_count`/`attempt_ordinal`/`distinct_preregistrations` were still per family, so a reworded retry read "attempt 1 of 1, 1 design" | §3.0 and §3.3 amended; the headline counts are the lineage's (T22); Tier 2's per-family rules flagged as needing a lineage bound (§3.3, §8) |
 | R3-E32-4 (Sec) | minor | Sidecar names ran `-0` to `-999` and were never reclaimed: after 1000 cuts at one offset every append failed for good, with a `transient` error (a whole lineage's attempts refused) | Random names; no fixed set to exhaust (L13 cuts twice at one offset and keeps both) |
 | R3-E32-5 (Sec) | minor | When the truncate after a quarantine failed (a read-only mapping of the log, as an indexer or AV scanner holds), every retry left another full copy of the tail — 5 retries, 20 MB for a 4 MB tail (I8) | The sidecar is removed when the cut fails (L16: 3 failing appends leave none; after unmapping, one) |
-| R3-E32-6 (Sec) | minor | A log path near `MAX_PATH` made one crash brick the log: the longer sidecar name failed (a regression from round 2) | Windows paths are opened in their `\\?\` form. L17 (a 252-character log path survives a crash) passes, but it also passes with the prefix removed on this machine, so it does not isolate the fix; the reviewer's probe failed without it, and the difference is not understood. *Superseded: the sidecar and the `\\?\` form were removed (ADR-183 proportionality review), which also brings back `MAX_PATH` for the log file itself* |
+| R3-E32-6 (Sec) | minor | A log path near `MAX_PATH` made one crash brick the log: the longer sidecar name failed (a regression from round 2) | Windows paths are opened in their `\\?\` form. L17 (a 252-character log path survives a crash) passes, but it also passes with the prefix removed on this machine, so it does not isolate the fix; the reviewer's probe failed without it, and the difference is not understood. *Superseded: the sidecar and the `\\?\` form were removed (ADR-191 proportionality review), which also brings back `MAX_PATH` for the log file itself* |
 | R3-E32-7 (Sec) | minor | `family_attempts` and `lineage_attempts` came from two reads, so a concurrent attempt could appear in the family view but not in its superset | Both views come from one read; the read-back uses the lineage read too (3 whole-log reads per attempt become 2). *Superseded: the family view is gone* |
 | R3-E32-8 (Cl) | minor | The store's `SeqNo` banner promised seqs are "never reused", but L12 asserts a quarantine hands seq 2 out again | Banner states the exception |
 | R3-E32-9 (Cl) | minor | A quarantine that hides earlier attempts is silent to the caller (I4): no error, no event | Disclosed (§8); the sidecar is the only evidence |
 | R3-E32-10 (Cl) | minor | Stale text: "family's log", "red-teamed once", "family-level attempt counter", the §8 read cost ("its family's whole log twice") and the README row | Corrected |
-| R3-E32-Tst | minor | 7 of 7 quarantine mutants survived: L12 checked the sidecar's size, never its bytes; no test cut twice at one offset; a failed quarantine, a failed write's rollback and a fixed sidecar name were untested | L12 compares bytes and name; L13; L14; L15 (POSIX: a sidecar that cannot be created fails the append and leaves the log byte-for-byte); L16; L17; L11 now catches S15 (a reader creating the file). Of 9 new planted store mutants, 8 are caught (exclusive create; the reparse-point flag, without which `CREATE_NEW` follows a dangling symlink on Windows; fixed names; wrong offset; zero bytes; no quarantine; a kept sidecar; S15), and the `\\?\` prefix mutant survives (R3-E32-6); 6 eval mutants on the lineage counts are all caught. The rollback after a failed write is still untested (needs fault injection). *Superseded: the quarantine and L13-L15/L17 were removed (ADR-183 proportionality review)* |
+| R3-E32-Tst | minor | 7 of 7 quarantine mutants survived: L12 checked the sidecar's size, never its bytes; no test cut twice at one offset; a failed quarantine, a failed write's rollback and a fixed sidecar name were untested | L12 compares bytes and name; L13; L14; L15 (POSIX: a sidecar that cannot be created fails the append and leaves the log byte-for-byte); L16; L17; L11 now catches S15 (a reader creating the file). Of 9 new planted store mutants, 8 are caught (exclusive create; the reparse-point flag, without which `CREATE_NEW` follows a dangling symlink on Windows; fixed names; wrong offset; zero bytes; no quarantine; a kept sidecar; S15), and the `\\?\` prefix mutant survives (R3-E32-6); 6 eval mutants on the lineage counts are all caught. The rollback after a failed write is still untested (needs fault injection). *Superseded: the quarantine and L13-L15/L17 were removed (ADR-191 proportionality review)* |
 | R3-E32-11 (Cl) | nit | A stale planning note called concurrent `AppendLogStore` writers unverified; per-pid test directories from killed runs were never reclaimed | Note updated; the store test sweeps its own directories over a day old |
 
 Not fixed, disclosed: every append still reads the whole log file (measured 0.76 ms at 9 B, 89 ms at 64 MB, 173 ms at
@@ -1427,7 +1428,7 @@ against a 180 ms bound), unrelated to this slice; the push-triggered run on the 
 
 **The E32 round-3 fixes are not yet re-red-teamed.**
 
-**Proportionality review (2026-09-24, during ADR-183's round 2; the project owner: "we make harness too tighten
+**Proportionality review (2026-09-24, during ADR-191's round 2; the project owner: "we make harness too tighten
 about security, harness can not manage that much").** A reviewer ranked the E32 and lesson machinery KEEP /
 SIMPLIFY / DELETE / MOVE TO HOST for an output that is advisory to a human and a log the host can rewrite. Applied:
 
@@ -1504,7 +1505,7 @@ read-back before any trial runs, unreadable records counted as attempts, the OS 
   and unreliable on some network filesystems, so a log shared across hosts over NFS is not protected. **No per-record
   checksum**: a corrupted length header in the middle of the file is indistinguishable from a torn tail, so the
   records after it disappear from readers, and the next append cuts them for good (the round-2/3 quarantine sidecar
-  that kept them was removed by the ADR-183 proportionality review: ~150 lines of platform code with an attack surface
+  that kept them was removed by the ADR-191 proportionality review: ~150 lines of platform code with an attack surface
   of its own, guarding against disk corruption or a writer who could already rewrite the log). For E32 that means disk corruption can make a
   lineage's count drop — the same class as a host that can write the store, and outside what an append log without
   checksums can detect — and the drop is **silent** to the caller: the append that cuts returns an ordinary seq, and
@@ -1520,7 +1521,7 @@ read-back before any trial runs, unreadable records counted as attempts, the OS 
   OS-level confinement (namespace/firewall) is a follow-on.
 - **No engine-enforced per-principal spend budget** exists to charge (§2); suite totals are harness bookkeeping.
 - **Accumulation and interaction** of several lessons are not evaluated (ADR-179 §8 already names the gap).
-- **One model, one provider** is all ADR-186 measured; the harness is parameterised by model but no cross-model
+- **One model, one provider** is all ADR-194 measured; the harness is parameterised by model but no cross-model
   claim exists.
 - **No pilot run**: real discordance, noise floor and required N are unmeasured, and the dev-only power estimate
   is optimistic by construction.
@@ -1638,13 +1639,13 @@ read-back before any trial runs, unreadable records counted as attempts, the OS 
   final chunk (no estimate needed, `summarizer_tokens` equals the reported sum: 88+197 and 44+188 tokens); one
   summarizer call per agent call; a 1-token budget admits exactly one real call, refuses the rest before they reach
   the model, and the trial still converges.
-- **FIXED by ADR-182 — the summarizer was never told to summarize** (found by that live test; production
-  `MemoryProvider`, outside this ADR's code). Before ADR-182, `on_turn_end` sent the turn's messages with no
+- **FIXED by ADR-190 — the summarizer was never told to summarize** (found by that live test; production
+  `MemoryProvider`, outside this ADR's code). Before ADR-190, `on_turn_end` sent the turn's messages with no
   instruction, so a real model CONTINUED the conversation — it answered the user ("Deploy region is now set to
   eu-west-1. What would you like to do next…") — and in one run emitted DeepSeek's raw tool-call markup
   (`<｜｜DSML｜｜ invoke name="deploy">…`) as plain text, which was written verbatim as an episodic `MemoryItem`
   and injected into later turns. Every scripted test hid it, because a mock returns "summary: …" whatever it is
-  sent. Until then, the episodic items a trial accumulated were conversation continuations, not summaries. ADR-182
+  sent. Until then, the episodic items a trial accumulated were conversation continuations, not summaries. ADR-190
   gives both declared summarizers a fixed instruction and the conversation (with the user's message) as a JSON
   Lines transcript, and stores only a memory reply's prose — never `NONE`, an oversized reply, or an actual tool
   call; re-run live, the summaries became attributed facts ("The deploy region was set to eu-west-1 (stated by the
@@ -1695,7 +1696,7 @@ read-back before any trial runs, unreadable records counted as attempts, the OS 
   itself still has no cap of its own, so a future, different caller must bring its own.
 - **`bisect_decreasing`'s fixed 60-iteration budget has a resolution floor near either end of `[0,1]`** (round 7,
   R7-Num2): past roughly double precision's own ~2.2×10⁻¹⁶ absolute resolution, the search silently freezes at a
-  fixed, wrong value with no error. ADR-187's real usage is `alpha=0.05` exclusively, nowhere near this floor, so
+  fixed, wrong value with no error. ADR-195's real usage is `alpha=0.05` exclusively, nowhere near this floor, so
   not fixed — a caller passing a far more extreme alpha (well beyond anything a real multiplicity correction in
   this domain would plausibly need) should not trust the result.
 - **The round-7 fixes are not re-red-teamed.** A round 8, if run, should attack: whether `log_binomial_pmf`'s

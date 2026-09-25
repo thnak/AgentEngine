@@ -1,5 +1,5 @@
 #pragma once
-// Implements ADR-187 §3.0's "Tier-1 pre-registration and attempt accounting" (E32, the round-4 fix for
+// Implements ADR-195 §3.0's "Tier-1 pre-registration and attempt accounting" (E32, the round-4 fix for
 // R4-Stat3): a harmful lesson that fails a screen, retried until one run comes out clean, used to reach
 // the approver as that one clean `ScreenResult` -- retrying lifts the chance some attempt passes a -10 pp
 // lesson from 30% (one try) to 66% (three) to 97% (ten), and nothing showed the approver the retries.
@@ -47,7 +47,7 @@
 // dodged. Both views now come from ONE read of the log, so the family view can never list an attempt its
 // superset does not (round 3 made a concurrent attempt land between two reads).
 //
-// Not claimed (ADR-187 §8): the counter is a statistical correction (it adjusts no alpha -- it makes
+// Not claimed (ADR-195 §8): the counter is a statistical correction (it adjusts no alpha -- it makes
 // retries visible); the log is tamper-resistant (a host that can write the store can rewrite it -- the
 // counter is honest bookkeeping, not a ledger); running the two screens DIRECTLY is prevented (they stay
 // public; only `run_tier1_screen` counts); graders are hashed (a `GraderFn` is code, so the host names its
@@ -56,7 +56,7 @@
 // `Message::attribution` and tool-call provenance). Arm S (§3.0 item 4 / §3.7) is not built, so a `cleared`
 // outcome covers items 2 and 3 only and says so (`steering_manifest_run`).
 
-// ADR-183 proportionality review (2026-09-24): the output of this screen is advice to a human approver, and the log
+// ADR-191 proportionality review (2026-09-24): the output of this screen is advice to a human approver, and the log
 // can be rewritten by anyone who can write its store (§8) -- so machinery that only hardened the log further was
 // cut: the per-subject family view and its subject normalisation (which refused any non-ASCII subject) are gone --
 // the lineage count is the count; the lesson is declared ONCE on the spec (so the screens cannot disagree about
@@ -91,7 +91,7 @@ namespace agentengine::eval {
 
 // What one Tier-1 attempt concluded. Arm S is not built, so `cleared` means "not inert on its probe(s)
 // and not flagged for gross harm" -- never "safe to promote", and never "helps" (§3.0).
-enum class tier1_screen_outcome {  // ae-naming-lint: allow tier1_screen_outcome — ADR-187 E32
+enum class tier1_screen_outcome {  // ae-naming-lint: allow tier1_screen_outcome — ADR-195 E32
     cleared,       // every probe passed and the gross-harm screen did not flag
     inert,         // a probe did not pass (the gross-harm screen did not run)
     harmful,       // the gross-harm screen flagged
@@ -118,14 +118,14 @@ enum class tier1_screen_outcome {  // ae-naming-lint: allow tier1_screen_outcome
     return std::nullopt;
 }
 
-// Who the attempt is for: the candidate's own `subject` (a label, as written -- ADR-183 dropped its normalisation)
+// Who the attempt is for: the candidate's own `subject` (a label, as written -- ADR-191 dropped its normalisation)
 // and the host-supplied `lineage` (the run the candidate came from), which is what attempts are counted by.
-struct Tier1Family {  // ae-naming-lint: allow Tier1Family — ADR-187 E32 / §3.3
+struct Tier1Family {  // ae-naming-lint: allow Tier1Family — ADR-195 E32 / §3.3
     std::string subject;
     std::string lineage;
 };
 
-struct Tier1ScreenSpec {  // ae-naming-lint: allow Tier1ScreenSpec — ADR-187 E32
+struct Tier1ScreenSpec {  // ae-naming-lint: allow Tier1ScreenSpec — ADR-195 E32
     // The candidate's source lineage (§3.3). The family's `subject` is taken from the candidate itself,
     // so a caller cannot file an attempt under some other lesson's family.
     std::string lineage;
@@ -137,12 +137,12 @@ struct Tier1ScreenSpec {  // ae-naming-lint: allow Tier1ScreenSpec — ADR-187 E
     std::string started_at;
     // The lesson under test, declared ONCE. `run_tier1_screen` (and `tier1_preregistration_json`) copy it into
     // every probe and into the gross-harm spec, overwriting whatever those carry, so the screens cannot disagree
-    // about the lesson or how it is delivered (ADR-183 proportionality review: the spec used to repeat it N+1 times
+    // about the lesson or how it is delivered (ADR-191 proportionality review: the spec used to repeat it N+1 times
     // and a validator compared the copies).
     LessonCandidate candidate;
     std::string template_version;
     float lesson_salience = 0.0f;
-    lesson_delivery delivery = lesson_delivery::fenced;  // ADR-183: the route a host that opts in ships
+    lesson_delivery delivery = lesson_delivery::fenced;  // ADR-191: the route a host that opts in ships
     // One by default; more than one must ALL pass (§3.0 item 2, §6 G4).
     std::vector<FollowRateProbeSpec> probes;
     GrossHarmScreenSpec gross_harm;
@@ -152,7 +152,7 @@ struct Tier1ScreenSpec {  // ae-naming-lint: allow Tier1ScreenSpec — ADR-187 E
 
 // The figures an approver needs from one probe, as recorded in the attempt log. The thresholds it was
 // judged against are in the attempt's stored design (`Tier1AttemptRecord::preregistration_json`).
-struct Tier1ProbeFigures {  // ae-naming-lint: allow Tier1ProbeFigures — ADR-187 E32
+struct Tier1ProbeFigures {  // ae-naming-lint: allow Tier1ProbeFigures — ADR-195 E32
     std::string probe_id;
     std::uint64_t seed = 0;
     std::optional<bool> pass;
@@ -168,7 +168,7 @@ struct Tier1ProbeFigures {  // ae-naming-lint: allow Tier1ProbeFigures — ADR-1
     std::string error_code;  // empty unless the probe reported a setup error
 };
 
-struct Tier1HarmFigures {  // ae-naming-lint: allow Tier1HarmFigures — ADR-187 E32
+struct Tier1HarmFigures {  // ae-naming-lint: allow Tier1HarmFigures — ADR-195 E32
     std::uint64_t seed = 0;
     std::optional<bool> flagged;
     bool flagged_by_sum = false, flagged_by_min_task = false;
@@ -185,7 +185,7 @@ struct Tier1HarmFigures {  // ae-naming-lint: allow Tier1HarmFigures — ADR-187
 };
 
 // One attempt as read back from the lineage's attempt log.
-struct Tier1AttemptRecord {  // ae-naming-lint: allow Tier1AttemptRecord — ADR-187 E32
+struct Tier1AttemptRecord {  // ae-naming-lint: allow Tier1AttemptRecord — ADR-195 E32
     std::size_t ordinal = 0;               // 1-based, in the order attempts STARTED
     rt::SeqNo started_seq = 0;             // the log position of its `started` record
     std::string attempt_id;                // its identity: random, written by the attempt itself
@@ -204,7 +204,7 @@ struct Tier1AttemptRecord {  // ae-naming-lint: allow Tier1AttemptRecord — ADR
     std::optional<Tier1HarmFigures> gross_harm;  // nullopt when the gross-harm screen did not run
 };
 
-struct Tier1ScreenResult {  // ae-naming-lint: allow Tier1ScreenResult — ADR-187 E32 (the ADR's `ScreenResult`)
+struct Tier1ScreenResult {  // ae-naming-lint: allow Tier1ScreenResult — ADR-195 E32 (the ADR's `ScreenResult`)
     Tier1Family family;
     Digest preregistration_digest;
     std::string attempt_id;
@@ -435,7 +435,7 @@ namespace detail {
     root.emplace_back("template_version", Value::make_string(g.template_version));
     root.emplace_back("rendered_lesson_digest", Value::make_string(*lesson));
     root.emplace_back("lesson_salience", detail::tier1_double(static_cast<double>(g.lesson_salience)));
-    // ADR-183: how the lesson reaches the model changes what the screen measures, so it is part of the design.
+    // ADR-191: how the lesson reaches the model changes what the screen measures, so it is part of the design.
     root.emplace_back("lesson_delivery", Value::make_string(std::string(lesson_delivery_name(g.delivery))));
     root.emplace_back("probes", Value::make_array(std::move(probes)));
     root.emplace_back("gross_harm", Value::make_object(std::move(harm)));
@@ -643,7 +643,7 @@ inline constexpr std::string_view kTier1LogSchema = "adr181.tier1.attempt.v2";
 // credited one attempt's figures to another; with ids that cannot happen, and `run_tier1_screen` reads its
 // `started` record back before any trial runs, so an attempt the store lost never runs.
 template <rt::AppendLogStore Store>
-class Tier1AttemptLog {  // ae-naming-lint: allow Tier1AttemptLog — ADR-187 E32
+class Tier1AttemptLog {  // ae-naming-lint: allow Tier1AttemptLog — ADR-195 E32
 public:
     struct Started {
         rt::SeqNo seq = 0;
@@ -863,7 +863,7 @@ namespace detail {
 
 }  // namespace detail
 
-// Runs one counted Tier-1 attempt (ADR-187 §3.0, E32) -- see the file-top comment for the order. The
+// Runs one counted Tier-1 attempt (ADR-195 §3.0, E32) -- see the file-top comment for the order. The
 // factories are shared by every screen the attempt runs (a scripted test factory can tell them apart by
 // `TrialSlot::trial_id`, which each screen namespaces with its own probe or suite id).
 template <rt::AppendLogStore Store, class InnerFactory, class SummarizerFactory>

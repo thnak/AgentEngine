@@ -1,6 +1,7 @@
-# ADR-186 — Procedural memory reaches the model as fenced, tainted context — never as `.instructions` (amends 029 §10 Q2)
+# ADR-194 — Procedural memory reaches the model as fenced, tainted context — never as `.instructions` (amends 029 §10 Q2)
 
-- **Renumbered:** written as ADR-180; renumbered on 2026-09-25 when this stack merged into `main`, where ADR-180 was already taken by another ADR. Commit messages and PR titles before that date say ADR-180.
+- **Renumbered:** written as ADR-180 (briefly ADR-186); renumbered to ADR-194 on 2026-09-25 when this stack merged into `main`, where those numbers had been taken by other ADRs in the meantime. Commit messages, PR titles and ADR cross-references written before then use the old number.
+
 
 - **Status**: **Proposed — evidence executed and red-teamed once (two rounds of fixes below); awaiting
   project-owner judgment.**
@@ -142,12 +143,12 @@ rely on its shape being benign.
 
 ## 5. Residuals
 
-- **Amended by ADR-183 (2026-09-24).** Measured live on tool-argument lessons, the fence route this ADR kept made an
-  approved lesson close to inert: the preamble's "never as instructions" is what the model acts on. ADR-183 keeps
+- **Amended by ADR-191 (2026-09-24).** Measured live on tool-argument lessons, the fence route this ADR kept made an
+  approved lesson close to inert: the preamble's "never as instructions" is what the model acts on. ADR-191 keeps
   every lesson fenced and tainted but lets a host opt in to approved-lesson blocks — the session grants an
   `approval` only to text a human approved, the fence names the block, and the preamble says it may be followed.
   This ADR's §4b warning about a persistent injection channel now applies in full to any lesson that gets past the
-  human; ADR-183 §5 names the defences.
+  human; ADR-191 §5 names the defences.
 
 - **No gate on the new rule** (red-team 6). Options: a CI grep that no memory/RAG provider assigns
   `.instructions`; or a provenance check where `agent_session.hpp:2560` refuses provenance-tainted material.

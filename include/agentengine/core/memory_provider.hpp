@@ -23,7 +23,7 @@
 
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/chat_stream_drain.hpp"  // ADR-035 Phase 3: drain_chat_stream, DrainedChatStream
-#include "agentengine/core/summarizer_prompt.hpp"  // ADR-182: the summarizer request and acceptance
+#include "agentengine/core/summarizer_prompt.hpp"  // ADR-190: the summarizer request and acceptance
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/context_provider.hpp"
 #include "agentengine/core/effect_context.hpp"
@@ -341,11 +341,11 @@ public:
     task<std::monostate> on_turn_end(TurnView turn, EffectContext& ctx) {
         if (turn.turn_messages.empty()) co_return std::monostate{};
 
-        // ADR-182: the summarizer is TOLD what to do -- a fixed extraction instruction, and the turn as a
+        // ADR-190: the summarizer is TOLD what to do -- a fixed extraction instruction, and the turn as a
         // transcript to read, not messages to answer. Before this it got the turn's raw messages and,
         // measured live, simply continued the conversation; that reply was stored as memory.
         //
-        // ADR-182 red team (MAJOR): `AgentSession`'s TurnView starts at the model's response, so the turn
+        // ADR-190 red team (MAJOR): `AgentSession`'s TurnView starts at the model's response, so the turn
         // never contains the USER's message -- the extractor saw only the agent's reply and, live, answered
         // NONE to exactly what a user asked to be remembered. The latest user message this provider saw in
         // `on_context` is prepended, ONCE (the first round after it arrives), so later rounds of the same
@@ -358,7 +358,7 @@ public:
         transcript.insert(transcript.end(), turn.turn_messages.begin(), turn.turn_messages.end());
         ChatRequest request = make_summarization_request(summarization_purpose::memory_extraction, transcript);
         DrainedChatStream drained = drain_chat_stream(summarizer_.chat_stream(request, ctx));
-        // ADR-182: `NONE`, an actual tool call, an empty or oversized reply -- nothing stored, and why is kept.
+        // ADR-190: `NONE`, an actual tool call, an empty or oversized reply -- nothing stored, and why is kept.
         last_extraction_ = decide_memory_summary(drained);
         if (last_extraction_.verdict != summary_verdict::stored) co_return std::monostate{};
 
@@ -371,7 +371,7 @@ public:
         co_return std::monostate{};
     }
 
-    // What the last `on_turn_end` did with its summarizer's reply (ADR-182): stored, or why not. Extraction is
+    // What the last `on_turn_end` did with its summarizer's reply (ADR-190): stored, or why not. Extraction is
     // best-effort and never fails the turn, so without this a dropped summary would be invisible.
     [[nodiscard]] MemorySummaryDecision const& last_extraction() const noexcept { return last_extraction_; }
 
@@ -440,7 +440,7 @@ private:
     cap::FsWrite    write_cap_;
     SummarizerT     summarizer_;
     std::size_t     max_injected_;
-    std::optional<Message> pending_user_;  // ADR-182: the user message the next extraction includes
+    std::optional<Message> pending_user_;  // ADR-190: the user message the next extraction includes
     std::string     last_user_key_;
     MemorySummaryDecision last_extraction_;
 };

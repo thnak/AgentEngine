@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-184-unattended-mode.md, the approval half (no HTTPS needed, so it runs in every build):
+// Proof for decisions/ADR-192-unattended-mode.md, the approval half (no HTTPS needed, so it runs in every build):
 //   A1-A7    Unattended approvals: off by default (an `always_require` call and a `text_derived` call are denied, a
 //            suspend-for-approval session suspends); on, both run with no human, each approval audited exactly once;
 //            a `PolicyDecider`'s auto_deny still denies -- for a `text_derived` call too (A5b, red team MAJOR);
@@ -574,7 +574,7 @@ int main() {
     {
         Captured const c = capture([&](LessonSession& s) { s.set_approved_lessons(&reg); });
         check(!c.messages.at(0).content.front().approval.empty() && fenced(c, 0) && fenced(c, 1) && fenced(c, 2),
-              "D1: the default level is ADR-183's -- the approved lesson is still fenced, and a mark a provider set "
+              "D1: the default level is ADR-191's -- the approved lesson is still fenced, and a mark a provider set "
               "itself is cleared");
     }
     {

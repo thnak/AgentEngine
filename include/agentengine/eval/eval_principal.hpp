@@ -1,5 +1,5 @@
 #pragma once
-// Implements ADR-187 §3.9 (round-4 fix, E25's second positive control): trial principals are minted
+// Implements ADR-195 §3.9 (round-4 fix, E25's second positive control): trial principals are minted
 // under a reserved `eval:` tenant prefix so a harness-held grant can never satisfy a check against a
 // production mount (`memory_mount_id`/`memory_ref_name`, memory.hpp:82-84,133-135, compared as bare
 // strings at memory.hpp:395 and worktree_mount.hpp:267,362).
@@ -57,7 +57,7 @@ inline constexpr std::string_view kEvalTenantPrefix = "eval:";
     return p;
 }
 
-// A production-side guard (ADR-187 §3.9): a principal-construction path outside this file's own
+// A production-side guard (ADR-195 §3.9): a principal-construction path outside this file's own
 // minting function can call this to refuse a `tenant_id` that collides with the reserved namespace —
 // literally `"eval"`, starting with the reserved prefix, or containing `:` at all (the general form
 // of the specific collision round 4 found; refusing any colon closes every reordering of it, not

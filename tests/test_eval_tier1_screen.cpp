@@ -1,4 +1,4 @@
-// Implements decisions/ADR-187-evaluation-harness.md §3.0's "Tier-1 pre-registration and attempt
+// Implements decisions/ADR-195-evaluation-harness.md §3.0's "Tier-1 pre-registration and attempt
 // accounting" (E32): the pre-registration digest is recorded before any trial runs; every started attempt
 // for a lesson family is counted; the `Tier1ScreenResult` names the count and shows every attempt's figures,
 // not only the latest. The model is scripted throughout; the two screens themselves are proven by
@@ -526,7 +526,7 @@ int main() {
              [](ev::Tier1ScreenSpec& s) { s.probes[0].n_per_arm = 0; }},
             {"T6: no operator_id (I4)", "eval.tier1_actor_missing", [](ev::Tier1ScreenSpec& s) { s.operator_id.clear(); }},
             {"T6: no started_at (I4)", "eval.tier1_actor_missing", [](ev::Tier1ScreenSpec& s) { s.started_at.clear(); }},
-            {"T6: a non-ASCII subject is screened like any other (ADR-183: no subject normalisation)", "",
+            {"T6: a non-ASCII subject is screened like any other (ADR-191: no subject normalisation)", "",
              [](ev::Tier1ScreenSpec& s) { s.candidate.subject = "tri\xe1\xbb\x83n-khai-vung"; }},
             {"T6: the screens' call budgets, summed, exceed the attempt's", "eval.tier1_model_call_budget",
              [](ev::Tier1ScreenSpec& s) { s.max_model_calls = s.gross_harm.max_model_calls; }},
@@ -577,7 +577,7 @@ int main() {
         AE_CHECK(r.outcome.has_value() && !r.history_complete && r.attempt_log_error.has_value() &&
                      r.attempt_log_error->code == "test.read",
                  "T8: the history read failed -> the verdict is returned but marked history_complete = false, with "
-                 "the reason (ADR-183 proportionality: it used to be withheld and the run's figures thrown away)");
+                 "the reason (ADR-191 proportionality: it used to be withheld and the run's figures thrown away)");
         AE_CHECK(!r.probes.empty() && r.gross_harm.has_value() && r.attempt_count == 0,
                  "T8: the per-screen results are kept; the attempt count is unknown (0), not claimed");
         store.fail_read = false;
@@ -1174,7 +1174,7 @@ int main() {
                  "T26: summed budgets that would overflow saturate and are refused, not wrapped to a small number");
     }
 
-    // ---- T27: ADR-183 -- how the lesson is delivered is part of the design ------------------------------------
+    // ---- T27: ADR-191 -- how the lesson is delivered is part of the design ------------------------------------
     {
         auto approved = spec();
         approved.delivery = ev::lesson_delivery::approved;
@@ -1190,7 +1190,7 @@ int main() {
                  "overwritten, so the screens cannot disagree (the design hashes as the spec's)");
     }
 
-    // ---- T28: ADR-183 -- the evaluation side's way into the registry goes through E31 -------------------------
+    // ---- T28: ADR-191 -- the evaluation side's way into the registry goes through E31 -------------------------
     {
         ae::ApprovedLessonRegistry reg;
         auto const cand = candidate();
@@ -1216,7 +1216,7 @@ int main() {
                  "the model reads");
     }
 
-    // ---- T29: ADR-183 -- a trial delivers the lesson the way the spec says ------------------------------------
+    // ---- T29: ADR-191 -- a trial delivers the lesson the way the spec says ------------------------------------
     {
         auto run = [](ev::lesson_delivery d) {
             ev::TrialSpec t;
@@ -1252,7 +1252,7 @@ int main() {
                  "T29: approved delivery -- the same lesson carries an approval, still tainted, origin still external");
     }
 
-    // ---- T33: ADR-184 -- automatic promotion registers the rendered bytes, marked automatic -------------------
+    // ---- T33: ADR-192 -- automatic promotion registers the rendered bytes, marked automatic -------------------
     {
         ae::ApprovedLessonRegistry reg;
         auto promoted = ev::promote_lesson_automatically(reg, "p-ops", candidate(), "v1", 0.3f, "review-bot");
@@ -1269,7 +1269,7 @@ int main() {
                  "T33: it still refuses what render_lesson refuses, and a promotion naming no reviewer (I4)");
     }
 
-    // ---- T30: ADR-183 -- the spec's lesson and delivery reach every probe trial --------------------------------
+    // ---- T30: ADR-191 -- the spec's lesson and delivery reach every probe trial --------------------------------
     {
         Store store;
         ev::Tier1AttemptLog<Store> log(store);

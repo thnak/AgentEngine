@@ -1,4 +1,4 @@
-// Implements decisions/ADR-187-evaluation-harness.md §3.9 / E25's round-4 positive control: the
+// Implements decisions/ADR-195-evaluation-harness.md §3.9 / E25's round-4 positive control: the
 // reserved `eval:` tenant prefix is only a real barrier if the delimiter it is anchored to is also
 // reserved. Round 4 found `memory_mount_id`/`memory_ref_name` join tenant_id and id with a bare,
 // unescaped ':', so (tenant "eval:acme", id "run1") and (tenant "eval", id "acme:run1") collide on

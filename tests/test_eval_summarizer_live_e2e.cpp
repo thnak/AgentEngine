@@ -1,4 +1,4 @@
-// Live check for decisions/ADR-187-evaluation-harness.md's summarizer accounting (PR #100: §3.8's
+// Live check for decisions/ADR-195-evaluation-harness.md's summarizer accounting (PR #100: §3.8's
 // "recorded (E19), budgeted (§3.9)", and the R3-GH-3 fix): runs real `run_trial` calls in which BOTH the
 // agent's model and the memory SUMMARIZER are a real OpenAI-compatible endpoint. Every earlier test drove
 // the summarizer with a scripted mock, so none could show what the budget actually depends on:
@@ -160,7 +160,7 @@ int main() {
         check(result.summarizer_tokens > 0 && result.summarizer_tokens == reported,
               "1: summarizer_tokens is exactly the sum of the final-chunk usage the provider reported");
         check(!result.summarizer_budget_exhausted, "1: no budget, nothing refused");
-        // ADR-182: before the summarizer was given an instruction, a real model continued the conversation
+        // ADR-190: before the summarizer was given an instruction, a real model continued the conversation
         // and once wrote raw tool-call markup, which was then stored as memory. Now it is told to extract.
         bool no_markup = true;
         for (auto const& rec : result.summarizer_recordings) {
@@ -170,11 +170,11 @@ int main() {
             }
             no_markup = no_markup && !summarizer_prompt_detail::makes_tool_call(text);
         }
-        check(no_markup, "1: no summarizer reply makes a tool call (ADR-182)");
+        check(no_markup, "1: no summarizer reply makes a tool call (ADR-190)");
         check(!result.summarizer_recordings.empty() &&
                   result.summarizer_recordings.front().request.messages.size() == 2u &&
                   result.summarizer_recordings.front().request.messages.front().role == role::system,
-              "1: the summarizer was sent the ADR-182 instruction + transcript, not the raw turn");
+              "1: the summarizer was sent the ADR-190 instruction + transcript, not the raw turn");
     }
 
     // ---- 2. A 1-token summarizer budget: the first call runs, the rest are refused ---------------------

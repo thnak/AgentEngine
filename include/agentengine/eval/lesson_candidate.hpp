@@ -1,22 +1,22 @@
 #pragma once
-// Implements ADR-179 §3.3 (`LessonCandidate` is a closed record, not prose) and ADR-187 §3.0 item 1
+// Implements ADR-179 §3.3 (`LessonCandidate` is a closed record, not prose) and ADR-195 §3.0 item 1
 // (round-4 fix: `LessonCandidate`/`render_lesson` pulled forward so Tier 1 does not depend on
 // ADR-179 stage 3's queue/reviewer wiring — this file is exactly that pull-forward, nothing more).
 //
-// `render_lesson` is the PURE host function ADR-187 §3.0 item 1 requires: `LessonCandidate` +
-// `template_version` -> the exact `MemoryItem` bytes the production channel (ADR-186) will deliver.
+// `render_lesson` is the PURE host function ADR-195 §3.0 item 1 requires: `LessonCandidate` +
+// `template_version` -> the exact `MemoryItem` bytes the production channel (ADR-194) will deliver.
 // It never calls a model and never derives anything from model output beyond the closed record's
 // own fields (I3): wording is chosen entirely by this file's fixed templates, keyed by
 // `template_version`, never by the candidate's own text. Changing a template's own C++ source is
-// therefore the only way rendering changes, and ADR-187 E26 requires that any such change be
+// therefore the only way rendering changes, and ADR-195 E26 requires that any such change be
 // visible as a digest change over every candidate rendered with the old version — `template_version`
 // is threaded through `rendered_lesson_digest` for exactly that reason.
 //
-// `lesson_value_passes_validator` is ADR-179 §3.3's validator. Since the ADR-183 proportionality review (2026-09-24)
+// `lesson_value_passes_validator` is ADR-179 §3.3's validator. Since the ADR-191 proportionality review (2026-09-24)
 // it REFUSES only what is structural -- a length outside the bounds, a whole-value common token, a reserved bracket
 // glyph, a control byte, the template's own join delimiters -- and `lesson_shape_warnings` reports the old shape
 // heuristics (URL, path, shell, imperative) as advisory warnings for the human approving the exact bytes (E31). It
-// never closed the injection channel ADR-186 §4b measured (fact-shaped lessons are followed even fenced), and a
+// never closed the injection channel ADR-194 §4b measured (fact-shaped lessons are followed even fenced), and a
 // benign-looking value can still bias behaviour; approval by a human reading the text is the control.
 //
 // Round-5 red-team fix (two independent reviewers found the SAME bug the same day): the first version checked
@@ -43,7 +43,7 @@ namespace agentengine::eval {
 // names WHERE in the tainted run capture this candidate came from (ADR-179 §3.1's `RunCapture`);
 // its own concrete shape is still ADR-179 stage-1 work, so it is carried here as an opaque,
 // host-produced string (never model output, I3) rather than guessed at.
-struct LessonCandidate {  // ae-naming-lint: allow LessonCandidate — ADR-179 §3.3 / ADR-187 §3.0 item 1
+struct LessonCandidate {  // ae-naming-lint: allow LessonCandidate — ADR-179 §3.3 / ADR-195 §3.0 item 1
     std::string subject;
     std::string key;
     std::string value;
@@ -84,7 +84,7 @@ namespace detail {
     return false;
 }
 
-// ADR-183 proportionality review (2026-09-24): the shape checks below used to REFUSE a lesson. Once a lesson is
+// ADR-191 proportionality review (2026-09-24): the shape checks below used to REFUSE a lesson. Once a lesson is
 // approved by a human who reads its exact bytes (E31), a fixed denylist over natural language mostly got in the way --
 // its own disclosed false positives ("python is the primary...", "ssh access to the bastion...", "post mortems are
 // stored in...", any ';') stopped a human from approving a sentence they had read, and a host could skip it anyway.
@@ -94,7 +94,7 @@ namespace detail {
 // Refused: things that break the rendering itself.
 [[nodiscard]] inline result<void> reject_structural_hazards(std::string_view text, char const* field_label) {
     // The provenance brackets (U+27E6/U+27E7) are reserved for the engine and stripped from any text
-    // on the wire (ADR-183), so a lesson containing one would reach the model as bytes the approver never saw.
+    // on the wire (ADR-191), so a lesson containing one would reach the model as bytes the approver never saw.
     for (std::string_view glyph : {"\xE2\x9F\xA6", "\xE2\x9F\xA7"}) {
         if (text.find(glyph) != std::string_view::npos) {
             return std::unexpected(error{failure_class::contract,
@@ -149,7 +149,7 @@ namespace detail {
 
 }  // namespace detail
 
-// ADR-179 §3.3's length cap + validator; ADR-187 §3.7's length-floor/common-token prerequisite for
+// ADR-179 §3.3's length cap + validator; ADR-195 §3.7's length-floor/common-token prerequisite for
 // containment provenance (a too-short or too-common `value` would match spuriously against
 // unrelated context). Bounds are host constants, not derived from the candidate (I3).
 inline constexpr std::size_t kLessonValueMinLength = 6;
@@ -173,7 +173,7 @@ inline constexpr std::size_t kLessonIdentifierMaxLength = 80;
 
     // Common tokens: rejected only as a WHOLE-value match (a common word inside a longer, specific
     // value is fine and is exactly what a real lesson looks like) — this is the spurious-containment
-    // guard ADR-187 §3.7 names, not a content filter. Round-5 fix: the first draft's list mixed in
+    // guard ADR-195 §3.7 names, not a content filter. Round-5 fix: the first draft's list mixed in
     // words shorter than `kLessonValueMinLength` (6), which the length check above already catches
     // first — those entries were unreachable dead code (a round-5 reviewer found this). Every entry
     // below is >= 6 characters and therefore actually exercised by this check.
@@ -201,7 +201,7 @@ inline constexpr std::size_t kLessonIdentifierMaxLength = 80;
     return detail::reject_structural_hazards(text, "identifier");
 }
 
-// ADR-183: the shape heuristics as advisory warnings for an approval UI -- "field:code" per hit, across subject, key
+// ADR-191: the shape heuristics as advisory warnings for an approval UI -- "field:code" per hit, across subject, key
 // and value. Empty means nothing looked unusual; non-empty never stops a lesson from rendering or being approved.
 [[nodiscard]] inline std::vector<std::string> lesson_shape_warnings(LessonCandidate const& candidate) {
     std::vector<std::string> out;
@@ -219,8 +219,8 @@ inline constexpr std::size_t kLessonIdentifierMaxLength = 80;
     return detail::shape_warnings(text);
 }
 
-// ADR-187 §3.0 item 1: `render_lesson(candidate, template_version) -> MemoryItem{kind=procedural,
-// content, tags, salience}`. `salience` is NOT computed here — ADR-187 §3.2 is explicit that it is a
+// ADR-195 §3.0 item 1: `render_lesson(candidate, template_version) -> MemoryItem{kind=procedural,
+// content, tags, salience}`. `salience` is NOT computed here — ADR-195 §3.2 is explicit that it is a
 // host constant "the promotion path will write", a decision left to ADR-179 stage 3 — so it is a
 // caller-supplied parameter, never invented inside this pure function.
 //
@@ -236,7 +236,7 @@ inline constexpr std::size_t kLessonIdentifierMaxLength = 80;
     if (auto ok = lesson_value_passes_validator(candidate.value); !ok) return std::unexpected(ok.error());
 
     // Exactly one template exists today ("v1"); an unrecognised version is a contract violation, not
-    // a silent fallback — ADR-187 E26 needs "the template changed" to be a detectable, refused-else
+    // a silent fallback — ADR-195 E26 needs "the template changed" to be a detectable, refused-else
     // event, not something that quietly renders differently.
     if (template_version != "v1") {
         return std::unexpected(error{failure_class::contract,
@@ -251,7 +251,7 @@ inline constexpr std::size_t kLessonIdentifierMaxLength = 80;
     return item;
 }
 
-// ADR-187 E26/E31's digest: over the RENDERED bytes and `template_version`, never over the
+// ADR-195 E26/E31's digest: over the RENDERED bytes and `template_version`, never over the
 // candidate's raw fields alone (a first-draft mutant "digest over {subject,key,value} only" is
 // exactly what E26 plants and expects caught) — this is what an approver's acknowledgement binds to
 // (E31, `promotion_ack.hpp`) and what `write_memory_item`'s own content-only `id` does NOT capture.

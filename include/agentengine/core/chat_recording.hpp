@@ -1,5 +1,5 @@
 #pragma once
-// Also: ADR-183/184 -- records `ContentItem::approval` and `deliver_as_instructions`.
+// Also: ADR-191/192 -- records `ContentItem::approval` and `deliver_as_instructions`.
 // Implements 004-Model-Provider-Plane.md §6 ("Recording and replay") — Milestone 5 Phase G1's shared
 // codec: the JSON envelope both `RecordingChatClient<Inner>` (core/recording_chat_client.hpp, the
 // recorder) and `ReplayChatClient` (core/replay_chat_client.hpp, the player) read and write. Promotes
@@ -308,11 +308,11 @@ namespace recording_detail {
 
     obj.emplace_back("origin", json::Value::make_string(std::string(origin_to_wire_string(item.origin))));
     obj.emplace_back("tainted", json::Value::make_bool(item.tainted));
-    // ADR-183: recorded so a replayed request renders the same fences and preamble (I5 -- the per-request code in an
+    // ADR-191: recorded so a replayed request renders the same fences and preamble (I5 -- the per-request code in an
     // approved request's markers is drawn fresh at serialization and is not part of the request) and the audit shows
     // which approval reached the model (I4). Omitted when empty, so older recordings are unchanged.
     if (!item.approval.empty()) obj.emplace_back("approval", json::Value::make_string(item.approval));
-    // ADR-184: the same, for text the host told the session to deliver unfenced. Omitted when false.
+    // ADR-192: the same, for text the host told the session to deliver unfenced. Omitted when false.
     if (item.deliver_as_instructions) obj.emplace_back("deliver_as_instructions", json::Value::make_bool(true));
     return json::Value::make_object(std::move(obj));
 }

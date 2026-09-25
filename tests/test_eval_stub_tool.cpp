@@ -1,4 +1,4 @@
-// Implements decisions/ADR-187-evaluation-harness.md §3.9's stub-tool requirement: a host-authored
+// Implements decisions/ADR-195-evaluation-harness.md §3.9's stub-tool requirement: a host-authored
 // tool descriptor that records arguments and causes no effect, following
 // MemoryProvider::make_recall_tool_descriptor's own pattern.
 

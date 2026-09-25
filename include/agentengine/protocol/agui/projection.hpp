@@ -283,7 +283,7 @@ public:
                 return {CustomEvent{"ae:warning", json::Value::make_string(p.message)}};
             }
             case run_event_kind::delegated_event: {
-                // ADR-185: a delegated agent's event, carried in this run. Never projected as this run's own
+                // ADR-193: a delegated agent's event, carried in this run. Never projected as this run's own
                 // lifecycle (a child's RUN_FINISHED/RUN_ERROR is not this run's); labelled for a client that wants it.
                 auto const& p = std::get<run_event_payload::DelegatedEvent>(ev.payload);
                 std::vector<std::pair<std::string, json::Value>> members;

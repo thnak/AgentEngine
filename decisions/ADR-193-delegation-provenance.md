@@ -1,4 +1,6 @@
-# ADR-185 — When agent A hands work to B and B to C, does the text keep its author, the effects their owner, and the chain its budget?
+# ADR-193 — When agent A hands work to B and B to C, does the text keep its author, the effects their owner, and the chain its budget?
+
+- **Renumbered:** written as ADR-185; renumbered to ADR-193 on 2026-09-25 when this stack merged into `main`, where those numbers had been taken by other ADRs in the meantime. Commit messages, PR titles and ADR cross-references written before then use the old number.
 
 - **Status:** Proposed — built, tested offline (§6), red-teamed once (§7: no fatal; 4 major, all fixed; the fixes are
   not yet re-red-teamed). **Needs the project owner's judgement** (it touches I3's untainting rule, 003 §2, for every
@@ -11,7 +13,7 @@
   usage, per-target settings, shared lessons), `rt/agent_workflow_executor.hpp` (delegated input for agent nodes),
   `core/approved_lessons.hpp` (`texts(scope)`), `core/tool_pipeline.hpp` (audit names the root), tests (§6).
 - **Related:** 003 §2 (taint; untainting is explicit and logged) · 007 §2 / 018 §2 (delegation via `on_behalf_of`) ·
-  ADR-163 (whole-run usage for workflow nodes) · ADR-173 (the fence) · ADR-183 (approved lessons) · ADR-184
+  ADR-163 (whole-run usage for workflow nodes) · ADR-173 (the fence) · ADR-191 (approved lessons) · ADR-192
   (unattended mode; its §5 residual on spawned children) · the investigation behind this ADR (a 3-hop offline probe;
   findings reproduced in `tests/test_delegation_provenance.cpp`).
 
@@ -33,7 +35,7 @@ belong to A's chain, and has the chain stayed within A's budget and quota?
 - Budgets: the reply reported only the child's final model call. The child's tokens never reached A's budget, and the
   per-principal spawn quota restarted at every hop (each child is a fresh principal).
 - Settings were never inherited, which is correct, but a child could not be given them either except through a
-  hand-written always-yes decider, with no ADR-184 audit.
+  hand-written always-yes decider, with no ADR-192 audit.
 
 ## 2. The rule
 
@@ -44,7 +46,7 @@ it the same way:
    `role::user` message of two parts: a host-authored line (untainted, `content_origin::system`) naming the kind of
    handoff, the delegator and the depth, and saying a model wrote it, not a human; then the text itself,
    `content_origin::external`, `tainted = true`. It is **not fenced**: the next agent is meant to carry it out, and a
-   fenced task would be inert (ADR-183's measurement). The receiving agent's authority is unchanged (its grant is
+   fenced task would be inert (ADR-191's measurement). The receiving agent's authority is unchanged (its grant is
    attenuated; its calls are already `arguments_tainted`). What changes is that recordings, summarizers, memory
    capture and every taint-aware consumer see it for what it is, and the next agent is told.
    - `agent.spawn`: from the caller's principal id, depth = the child's delegation depth.
@@ -60,7 +62,7 @@ it the same way:
 3. **Events flow up, wrapped.** `AgentSession` gives each tool call an `EffectContext::delegated_event_sink`, and a
    spawned child's run-event tap is set to it. The parent re-emits each child event as its own `delegated_event`
    (a new kind, appended last). The payload names the child run and the depth and carries the child's event
-   unchanged. Recursively, the root's host sees every hop, including C's tool calls and ADR-184 audit lines. Protocol
+   unchanged. Recursively, the root's host sees every hop, including C's tool calls and ADR-192 audit lines. Protocol
    projectors never mistake a child's lifecycle for the parent's: A2A ignores the kind, and AG-UI labels it
    `ae:delegated_event`.
 4. **Spending flows up.**
@@ -83,7 +85,7 @@ it the same way:
    - `approved_lessons` with a `lesson_level`;
    - `share_lessons`.
 
-   Each setting is applied through the child session's ordinary ADR-183/184 setters, so it is audited, and the audit
+   Each setting is applied through the child session's ordinary ADR-191/192 setters, so it is audited, and the audit
    reaches the root through (3). A target naming an empty operator is refused at registration.
 6. **A chain can share knowledge, explicitly.** A delegated principal's approved lessons are matched against its
    chain's root (a child's own id is a fresh hash nobody could approve for). With `share_lessons`, every lesson the
@@ -98,7 +100,7 @@ it the same way:
   a model, and every consumer sees the taint. Telling it did **not** change how readily it follows, measured live
   (§6): 20/20 and 20/20 as a delegated task, the same as the old plain form.
 - (5) and (6) are host opt-ins under ADR-070's seam (explicit, off by default, audited, host code only). Sharing
-  lessons down a chain extends ADR-183's approval scope from a principal to its delegation tree, which is the owner's
+  lessons down a chain extends ADR-191's approval scope from a principal to its delegation tree, which is the owner's
   call.
 
 ## 4. What this does NOT claim (residuals)

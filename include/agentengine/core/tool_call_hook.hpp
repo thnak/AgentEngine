@@ -97,6 +97,10 @@ struct HookProcessedCall {
 // ae-naming-lint: allow PendingHookDecisionRound — OQ-21; 027 has not been updated to list this new vocabulary
 struct PendingHookDecisionRound {
     std::vector<HookProcessedCall> calls;  // whole round, original order, one entry per ToolCall
+    // ADR-183: the call ids that got `approval_requested` when this round suspended for approval,
+    // in emission order. Resolving the interaction emits `approval_resolved` for exactly these, so
+    // the two events always pair. Empty while the round waits on a hook decision.
+    std::vector<std::string> approval_requested_call_ids{};
 };
 
 // One external process's answer for one call that was left `needs_external_dispatch`. Interpreted

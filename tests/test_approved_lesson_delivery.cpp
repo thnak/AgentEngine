@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-183-approved-lesson-delivery.md: a lesson a human approved reaches the model as an
+// Proof for decisions/ADR-191-approved-lesson-delivery.md: a lesson a human approved reaches the model as an
 // approved-lesson block -- still tainted, still fenced, origin unchanged -- only when the session re-verifies its
 // exact text against the host's registry; every other path is refused, and every approved delivery is audited.
 //   A1-A6  ApprovedLessonRegistry: an approver required (acknowledgement optional), per-principal scope, exact bytes, simulated approvals

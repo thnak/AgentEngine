@@ -1,4 +1,4 @@
-// ADR-037 / ADR-187 E32 (+ ADR-181 phase 0's format, merged 2026-09-25): the OS half of `rt::FileAppendLogStore` (include/agentengine/rt/append_log_store.hpp)
+// ADR-037 / ADR-195 E32 (+ ADR-181 phase 0's format, merged 2026-09-25): the OS half of `rt::FileAppendLogStore` (include/agentengine/rt/append_log_store.hpp)
 // -- the locked log file. It lives in a .cpp so <windows.h> and the POSIX file
 // headers never reach the many headers that include append_log_store.hpp (E32 red team round 3, MAJOR: the
 // header-only version broke consumer code through windows.h's macros). See that header's banner for the

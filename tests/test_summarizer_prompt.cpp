@@ -1,8 +1,8 @@
-// Implements decisions/ADR-182-summarizer-prompt-contract.md's tests: the request both declared
+// Implements decisions/ADR-190-summarizer-prompt-contract.md's tests: the request both declared
 // summarizers receive (a fixed instruction plus a JSON Lines transcript, no tools), what a memory
 // extraction reply must look like to be stored, what a compaction reply must contain, and both providers end
 // to end with a mock summarizer that CAPTURES what it is sent -- the thing every earlier mock ignored, which
-// is how a summarizer that was never told to summarize went unnoticed until a live run (ADR-187 §8).
+// is how a summarizer that was never told to summarize went unnoticed until a live run (ADR-195 §8).
 
 #include <chrono>
 #include <iostream>
@@ -234,7 +234,7 @@ int main() {
                  "request: history compaction gets its own instruction over the same transcript");
     }
 
-    // ---- Content cannot forge a speaker, a line, or the closing tag (ADR-182 red team, MAJOR) ----------
+    // ---- Content cannot forge a speaker, a line, or the closing tag (ADR-190 red team, MAJOR) ----------
     {
         // The live attack: a fetched page whose text starts a fake user line.
         ae::Message tool{};
@@ -276,7 +276,7 @@ int main() {
                  "forgery: no field can add a line or close the transcript -- 5 items, 5 JSON lines, the real tag last");
     }
 
-    // ---- Rendering cost is linear (ADR-182 red team, I8: the first version was quadratic) -------------
+    // ---- Rendering cost is linear (ADR-190 red team, I8: the first version was quadratic) -------------
     {
         std::string big;
         while (big.size() < 1'000'000) big += "<transcript></transcript>";
@@ -311,14 +311,14 @@ int main() {
         call.value = ae::ToolCall{"c1", "deploy", "{}"};
         AE_CHECK(decide_memory_summary(reply_of({text_item("The region is eu-west-1."), call})).verdict == summary_verdict::tool_call,
                  "accept: a reply carrying a structured tool call stores nothing");
-        // The exact markup DeepSeek produced live (ADR-187 §8), and a decodable Hermes call.
+        // The exact markup DeepSeek produced live (ADR-195 §8), and a decodable Hermes call.
         AE_CHECK(decide_memory_summary(reply_of({text_item(
                      "<\xef\xbd\x9c\xef\xbd\x9c" "DSML\xef\xbd\x9c\xef\xbd\x9c calls>\n<\xef\xbd\x9c\xef\xbd\x9c" "DSML\xef\xbd\x9c\xef\xbd\x9c "
                      "invoke name=\"deploy\">")})).verdict == summary_verdict::tool_call &&
                      decide_memory_summary(reply_of({text_item(R"(<tool_call>{"name":"deploy","arguments":{}}</tool_call>)")}))
                              .verdict == summary_verdict::tool_call,
                  "accept: an actual tool call in the text (DeepSeek DSML, Hermes) stores nothing");
-        // ADR-182 red team (MAJOR): facts ABOUT markup used to be dropped silently.
+        // ADR-190 red team (MAJOR): facts ABOUT markup used to be dropped silently.
         for (char const* fact : {"The parser must strip DeepSeek's <think> blocks; it lives in src/strip_think.cpp.",
                                  "The user's project is the DSML directory-services gateway.",
                                  "The adapter handles Hermes <tool_call> blocks.",
@@ -380,7 +380,7 @@ int main() {
         ctx.principal = principal;
         ctx.run_id = "run-1";
 
-        // The PRODUCTION turn shape (ADR-182 red team, MAJOR): AgentSession's TurnView holds only the model's
+        // The PRODUCTION turn shape (ADR-190 red team, MAJOR): AgentSession's TurnView holds only the model's
         // response (and tool results), never the user's message -- the provider must add it from on_context.
         CapturingSummarizer summarizer;
         summarizer.reply = "The user likes tea.";

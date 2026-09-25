@@ -1,5 +1,5 @@
 #pragma once
-// Also: ADR-183/184's delivery-mark guard (`granted_deliveries`, `keep_only_granted_deliveries`).
+// Also: ADR-191/192's delivery-mark guard (`granted_deliveries`, `keep_only_granted_deliveries`).
 // Implements 002-Agent-Model-and-Authoring.md §5's `Middleware<Ms...>` -- an ordered chain wrapping
 // the model call, one of the four declared interception points ("run", "turn", "model call", "tool
 // call"). This file moves the MODEL-CALL point from "declared CRTP policy tag with no
@@ -229,13 +229,13 @@ task<std::monostate> run_after(Tuple& mws, ModelCallContext& ctx, std::size_t st
     return a.call_id == b.call_id && a.tool_name == b.tool_name && a.arguments_json == b.arguments_json;
 }
 
-// ADR-183 round 3 (MAJOR): `AgentSession` grants `ContentItem::approval` before the model call, and a `before_model`
+// ADR-191 round 3 (MAJOR): `AgentSession` grants `ContentItem::approval` before the model call, and a `before_model`
 // hook gets a writable request afterwards. Without this, a middleware could set an approval on any item, or rewrite an
 // approved item's text and keep its approval -- model-written text shipped under the approved fence (the same shape as
 // ADR-033's content-rewrite finding). So the delivery marks granted before the hooks are the only ones that survive
-// them: an item whose (text, approval, deliver_as_instructions) is not one of those loses both marks. ADR-184 added
+// them: an item whose (text, approval, deliver_as_instructions) is not one of those loses both marks. ADR-192 added
 // `deliver_as_instructions` to the same rule, so a hook cannot use the MARK to unfence text. This guards the marks
-// only: a hook can still change `tainted`, `origin` or `role` (as before ADR-184) -- middleware is host code.
+// only: a hook can still change `tainted`, `origin` or `role` (as before ADR-192) -- middleware is host code.
 struct GrantedDelivery {
     std::string text{};
     std::string approval{};

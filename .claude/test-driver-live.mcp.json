@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "agentengine-test": {
+      "type": "stdio",
+      "command": "build-https-driver/agentengine_test_driver",
+      "args": [
+        "--allow-live",
+        "--live-key-file", "deep-seek.txt",
+        "--live-model", "deepseek-flash",
+        "--live-max-calls", "12",
+        "--record-dir", "build-https-driver/test-driver-recordings"
+      ]
+    }
+  }
+}

@@ -1,5 +1,5 @@
 #pragma once
-// Helpers shared by every ADR-187 Tier-1 screen that runs many `run_trial` calls: the follow-rate
+// Helpers shared by every ADR-195 Tier-1 screen that runs many `run_trial` calls: the follow-rate
 // screen (eval_follow_rate_screen.hpp, §3.0 item 2) and the gross-harm regression screen
 // (eval_gross_harm_screen.hpp, §3.0 item 3).
 
@@ -27,7 +27,7 @@ namespace agentengine::eval {
 // no context to read, uses `arm`/`task_index`/`attempt` to script its behaviour. Gross-harm round-2
 // residual (closed): the factories used to receive only `(arm[, task_index])`, so the per-trial seed
 // the screen derives and records could never reach anything that samples.
-struct TrialSlot {  // ae-naming-lint: allow TrialSlot — ADR-187 §3.0 items 2-3
+struct TrialSlot {  // ae-naming-lint: allow TrialSlot — ADR-195 §3.0 items 2-3
     trial_arm arm = trial_arm::baseline;
     std::size_t task_index = 0;   // always 0 in the follow-rate screen (one task)
     std::uint32_t attempt = 0;    // 0 for the first run, 1 for a retry after a transient fault

@@ -1,4 +1,6 @@
-# ADR-184 — Can AgentEngine run a full-automation system — lessons that act as instructions, no fence, no human approving calls — without the engine ever minting authority?
+# ADR-192 — Can AgentEngine run a full-automation system — lessons that act as instructions, no fence, no human approving calls — without the engine ever minting authority?
+
+- **Renumbered:** written as ADR-184; renumbered to ADR-192 on 2026-09-25 when this stack merged into `main`, where those numbers had been taken by other ADRs in the meantime. Commit messages, PR titles and ADR cross-references written before then use the old number.
 
 - **Status:** Proposed — built, tested offline, red-teamed twice (§7: no fatal; round 1 8 major, round 2 4 major,
   all fixed), measured live (§6). The round-2 fixes are not yet re-red-teamed. **Needs the project owner's judgement** — the owner asked for it
@@ -13,8 +15,8 @@
   `core/system_channel_fence.hpp` (the predicate; the automatic-approval sentence), `core/middleware.hpp` (the guard
   covers the new mark), `core/chat_recording.hpp`, `core/chat_stream_drain.hpp`, `eval/promotion_ack.hpp`
   (`promote_lesson_automatically`); amendments to `003` §2, ADR-070 §5a (the `text_derived` policy row), ADR-173,
-  ADR-183, ADR-179; tests (§6), including `test_tool_pipeline`'s ADR-070 check, rewritten for the `auto_deny` change.
-- **Related:** ADR-183 (approved lessons; this extends its route) · ADR-173 (the fence) · ADR-070 (the Delegated
+  ADR-191, ADR-179; tests (§6), including `test_tool_pipeline`'s ADR-070 check, rewritten for the `auto_deny` change.
+- **Related:** ADR-191 (approved lessons; this extends its route) · ADR-173 (the fence) · ADR-070 (the Delegated
   Decision Seam, §4a) · ADR-023 (text-derived calls) · ADR-029 (suspend for approval) · ADR-033 (middleware) ·
   ADR-179 §215 T4 (auto-promotion, deleted there; reintroduced here as a host opt-in, §5).
 
@@ -25,7 +27,7 @@ lessons followed as instructions, retrieved text read without a fence, every too
 human — using only host-side switches, each off by default and audited, without the engine ever granting a
 capability?
 
-Before this ADR a host could not: an approved lesson was always fenced (ADR-183); every tainted system text was
+Before this ADR a host could not: an approved lesson was always fenced (ADR-191); every tainted system text was
 always fenced (ADR-173, 003 §2); a lesson needed a human approver; and unattended calls needed a hand-written
 always-yes `ApprovalDecider`, with nothing in the audit saying no human was involved.
 
@@ -56,8 +58,8 @@ Four host opt-ins, all off by default and all audited (I4). Knobs 1, 3 and 4 are
 is a registry call, and `enable_unattended_mode(operator, &registry)` sets 1, 3 and 4 at once.
 
 1. **Approved lessons as instructions** — `set_approved_lessons(&registry, approved_lesson_level::instructions)`.
-   An approved lesson (ADR-183's exact-text match) goes to the model as plain, unfenced system text. The default
-   level, `guidance`, is ADR-183's fenced route. The item keeps `tainted = true` and `content_origin::external`.
+   An approved lesson (ADR-191's exact-text match) goes to the model as plain, unfenced system text. The default
+   level, `guidance`, is ADR-191's fenced route. The item keeps `tainted = true` and `content_origin::external`.
 2. **Automatic approval** — `ApprovedLessonRegistry::approve_automatic(scope, text, reviewer)` and
    `eval::promote_lesson_automatically(...)`: a lesson approved by the host's own automated reviewer, no human. Its
    id is `automatic:<reviewer>` (a human approval may not use that prefix, nor `simulated:`), the audit says
@@ -87,7 +89,7 @@ Recordings keep the mark (I5); a streamed delta with a different mark is never j
 ## 4. What this waives, stated plainly
 
 - **Knobs 1 and 3 relax how the model is told to read tainted text** — the reading rule of 003 §2 and ADR-173, the
-  same kind of relaxation ADR-183 made for one class, now for any class the host chooses. No engine declassifier
+  same kind of relaxation ADR-191 made for one class, now for any class the host chooses. No engine declassifier
   (`unsafe_view`, ADR-070 §4a's list) is touched and the taint bit is kept, but ADR-070 §4 property 3 is **not met**
   for them.
 - **Knobs 3 and 4 together waive I3 in practice for granted tools.** With the fence off, text a tool, a document or
@@ -115,7 +117,7 @@ events nobody listens to, and the tool pipeline's own audit record does not say 
 - **Not everything unattended.** `agent.ask` and hook-decision suspensions still wait for host code. `agent.spawn`
   children cannot be put in unattended mode — the child session is built internally and takes only the decider its
   `SpawnTargetDescriptor` names (a hand-written always-yes decider works there, without this ADR's audit). *Resolved
-  by ADR-185:* a spawn target may name `unattended_operator` (and a veto), `fence_disabled_by` and lesson settings;
+  by ADR-193:* a spawn target may name `unattended_operator` (and a veto), `fence_disabled_by` and lesson settings;
   the stock child runner applies them through this ADR's setters, and their audit reaches the root's tap. Workflow
   executors and other sessions have their own settings.
 - **Only `AgentSession`.** `invoke_tool` called directly uses the caller's decider, as before.
@@ -165,7 +167,7 @@ one interleaved run, 20 trials per cell; followed / asked the user, naming the v
 | Arm | alert channel | deploy region |
 |---|---|---|
 | A a lesson as fenced memory, today's default | 6/14/0 | 0/20/0 |
-| R approved, `guidance` (ADR-183) | 19/0/1 | 20/0/0 |
+| R approved, `guidance` (ADR-191) | 19/0/1 | 20/0/0 |
 | **T approved, `instructions` (knob 1)** | **19/0/1** | **19/1/0** |
 | **N the same memory item, unapproved, fence off (knob 3)** | **17/3/0** | **14/6/0** |
 | F plain host text (the ceiling) | 19/0/1 | 17/3/0 |
@@ -173,7 +175,7 @@ one interleaved run, 20 trials per cell; followed / asked the user, naming the v
 | X2 hostile fenced block beside an approved lesson | 0/19/1 | 0/20/0 |
 
 Knob 1 does what it says: an approved lesson delivered as instructions is followed at the ceiling — no better than
-ADR-183's fenced `guidance` route, which already reached it on this model, so `instructions` matters for models that
+ADR-191's fenced `guidance` route, which already reached it on this model, so `instructions` matters for models that
 weigh the fence more. Knob 3's cost is measured, not assumed: with the fence off, an ordinary unapproved memory
 statement — which is exactly what a hostile one looks like — is followed 17/20 and 14/20 instead of 6/20 and 0/20.
 Unattended approvals (knob 4) are engine logic with no model in the loop; they are proven offline only.
@@ -187,7 +189,7 @@ Unattended approvals (knob 4) are engine logic with no model in the loop; they a
 | S-M1 / C-M1 | major | `auto_deny` skipped for `text_derived` calls, so unattended mode ran a call the host had denied (plan-mode gate) | `resolve_approval_outcome` honours `auto_deny` for every provenance; `auto_approve` still never approves `text_derived` (A5b, A5c; mutant-checked) |
 | S-M2 | major | Default mode changed: the host decider was copied per round, resetting a stateful decider | Passed by reference (A11; mutant-checked) |
 | C-M2 | major | An automatic approval at `guidance` level told the model a human approved it | Separate wording when any approved block is automatic (L8) |
-| C-M3 | major | 003 §2, ADR-173 G1, ADR-183 §3.1, ADR-179 T4 contradicted by the code, unamended | Amended (see Scope); T4 addressed in §5 |
+| C-M3 | major | 003 §2, ADR-173 G1, ADR-191 §3.1, ADR-179 T4 contradicted by the code, unamended | Amended (see Scope); T4 addressed in §5 |
 | C-M4 | major | The ADR said nothing relaxes I3 while knobs 3+4 waive it in practice | §4 rewritten: an owner-sanctioned exception outside ADR-070's seam |
 | C-M5 | major | "Children must opt in separately" is impossible for `agent.spawn` | §5 says so plainly |
 | C-M6 | major | The approval proofs sat behind the HTTPS build flag, so CI never ran them | Split into the ungated `test_unattended_approvals` |

@@ -1,5 +1,5 @@
 #pragma once
-// (Also implements ADR-185: the child applies only its target's named settings; events and whole-run usage go back.)
+// (Also implements ADR-193: the child applies only its target's named settings; events and whole-run usage go back.)
 // Implements docs/planning/agent-spawn-runtime-design-draft.md item 2 / §4.2 (the nested-agent-run
 // invocation mechanism) for 026-Agent-Facing-Runtime-Surface.md §5's `agent.spawn` --
 // OpenQuestions.md OQ-14, named the project's own "sharpest case". THIS FILE IS ITEM 2 ONLY:
@@ -103,7 +103,7 @@ struct ChildSpawnRequest {
     agentengine::ApprovalDecider approval_decider{};
     agentengine::PolicyDecider   policy_decider{};
 
-    // ADR-185: the caller's `EffectContext::delegated_event_sink` (the child's RunEvents go to the caller's tap),
+    // ADR-193: the caller's `EffectContext::delegated_event_sink` (the child's RunEvents go to the caller's tap),
     // and the target's explicitly-named settings (`SpawnTargetDescriptor`) -- never the caller's own.
     std::function<void(agentengine::RunEvent const&)> event_sink{};
     std::optional<std::string>          unattended_operator{};
@@ -112,7 +112,7 @@ struct ChildSpawnRequest {
     agentengine::ApprovedLessonRegistry const* approved_lessons = nullptr;
     agentengine::approved_lesson_level  lesson_level = agentengine::approved_lesson_level::guidance;
     std::vector<agentengine::Message>   context{};  // pinned into every request (shared lessons), tainted
-    // ADR-185: where the child's WHOLE spend goes -- usage plus budget-only discarded-stream estimates -- on EVERY
+    // ADR-193: where the child's WHOLE spend goes -- usage plus budget-only discarded-stream estimates -- on EVERY
     // outcome, success or failure (red team round 1: a failing child charged nothing, so a model could spend
     // quota x child budget uncharged). `perform_agent_spawn` sets it to the caller's `charge_delegated_usage`.
     std::function<void(agentengine::Usage const&, std::uint64_t)> charge_usage{};
@@ -184,7 +184,7 @@ template <class ChatClientT, class StateT = agentengine::rt::NoSessionState,
     // auto-approve to fail, not defer.
     child.set_approval_decider(std::move(req.approval_decider));
     child.set_policy_decider(std::move(req.policy_decider));
-    // ADR-185: only what the target named (see `ChildSpawnRequest`). Each setter audits as it does for any session,
+    // ADR-193: only what the target named (see `ChildSpawnRequest`). Each setter audits as it does for any session,
     // and the audit reaches the caller through `event_sink`.
     if (req.event_sink) child.set_run_event_tap(std::move(req.event_sink));
     if (req.unattended_operator) {
@@ -210,7 +210,7 @@ template <class ChatClientT, class StateT = agentengine::rt::NoSessionState,
     // variable declared after them.
     agentengine::result<agentengine::rt::AgentResponse> response =
         agent_spawn_detail::drive(child.start_run(agentengine::rt::StartRun{std::move(req.input)}));
-    // ADR-185: the whole run's usage (every model call, and everything the child's own delegates charged to it),
+    // ADR-193: the whole run's usage (every model call, and everything the child's own delegates charged to it),
     // not only the final call's -- charged to the caller whether the child succeeded or failed.
     agentengine::Usage const spent = child.run_usage();
     if (req.charge_usage) req.charge_usage(spent, child.discarded_tokens_estimate());

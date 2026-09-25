@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-185-delegation-provenance.md: a hop never changes who wrote the text, who is accountable,
+// Proof for decisions/ADR-193-delegation-provenance.md: a hop never changes who wrote the text, who is accountable,
 // or what the chain may spend. A -> agent.spawn(B) -> agent.spawn(C), scripted, offline.
 //   P1-P2  The model-written `input` reaches B, and B's reaches C, as a delegated task: a host line naming the caller
 //          and depth, then the text tainted and external -- never an untainted human `user` message.

@@ -1,4 +1,6 @@
-# ADR-182 — Both declared summarizers were sent the conversation with no instruction. What must the engine say to a summarizer, and what may it keep?
+# ADR-190 — Both declared summarizers were sent the conversation with no instruction. What must the engine say to a summarizer, and what may it keep?
+
+- **Renumbered:** written as ADR-182; renumbered to ADR-190 on 2026-09-25 when this stack merged into `main`, where those numbers had been taken by other ADRs in the meantime. Commit messages, PR titles and ADR cross-references written before then use the old number.
 
 - **Status:** Proposed — implemented, proven (new `tests/test_summarizer_prompt.cpp`, 47 checks;
   `test_history_provider_summarize` B4-R3 restated; the full suite minus the Docker and live-network tests, 354
@@ -12,7 +14,7 @@
   (new), `tests/test_history_provider_summarize.cpp` (B4-R3), `tests/test_eval_summarizer_live_e2e.cpp` (two live
   checks), `tests/CMakeLists.txt` (additive).
 - **Related specs:** `029-Memory-System.md` §4 (memory extraction), §6 (retrieved memory is tainted, labelled) ·
-  `005-Sessions-State-and-Memory.md` §4 (`Summarize<N>`) · `decisions/ADR-187-evaluation-harness.md` §8 (where the
+  `005-Sessions-State-and-Memory.md` §4 (`Summarize<N>`) · `decisions/ADR-195-evaluation-harness.md` §8 (where the
   defect was found) · `decisions/ADR-173-system-channel-taint-fence.md` (why the history summary is already tainted).
 
 ## 1. The question
@@ -21,7 +23,7 @@
 (005 §4) calls its declared summarizer, does the model receive anything that tells it to summarize?
 
 **Before this ADR: no, in both.** Each built its request from the conversation's own messages and nothing else. A real
-model does the one thing such a request asks: it continues the conversation. Measured live (ADR-187's
+model does the one thing such a request asks: it continues the conversation. Measured live (ADR-195's
 `test_eval_summarizer_live_e2e`, the first test ever to use a real summarizer): the "summary" of a turn that set a deploy
 region was a reply to the user — *"Deploy region is now set to eu-west-1 (Ireland). What would you like to do next —
 deploy something, check status, or switch regions again?"* — and in one run it was DeepSeek's raw tool-call markup,
@@ -117,7 +119,7 @@ or repeating it (§5).
 - **Memory label forgery is case-sensitive** (pre-existing, found by this red team, not introduced here): a summary
   holding a lookalike of a provenance marker with different letter case passes `neutralize_forged_provenance_markers`
   (`provenance_marker.hpp`) unbroken. It predates
-  ADR-182; recorded for a follow-up.
+  ADR-190; recorded for a follow-up.
 
 ## 6. Red team (round 1)
 
@@ -131,7 +133,7 @@ all killed.
 |---|---|---|---|
 | R1-1 (Sec F1 = Beh 1 = Mut 3) | major | Found by all three. `[speaker] text` lines let content forge a speaker: a tool result's `\n[user] …` rendered exactly like a real user line, and two different conversations rendered identically. Live: a fetched page's forged line was stored as a durable user preference, 2 of 2 runs | JSON Lines (§2.1): speaker is a field, content is escaped. Tests: forgery, "renders differently". Live: 0 of 4 after |
 | R1-2 (Beh 2) | major | The markup check dropped real memories that merely MENTION markup (`<think>`, `<tool_call>`, `<invoke>`, `<\|`, "DSML"), silently; live, a correct summary about stripping `<think>` blocks was dropped | Only actual calls are rejected: a `ToolCall` item, a codec-decodable call, or DSML with its fullwidth bars; `last_extraction()` reports every rejection. Six keep-side tests |
-| R1-3 (Beh 3) | major | Pre-existing, but ADR-182 depended on it: `TurnView` never contains the user's message, so live the extractor answered `NONE` to exactly what a user asked to be remembered; the first test fed the user message, which production never does | `MemoryProvider` prepends the latest user message from `on_context`, once. Test in the production turn shape |
+| R1-3 (Beh 3) | major | Pre-existing, but ADR-190 depended on it: `TurnView` never contains the user's message, so live the extractor answered `NONE` to exactly what a user asked to be remembered; the first test fed the user message, which production never does | `MemoryProvider` prepends the latest user message from `on_context`, once. Test in the production turn shape |
 | R1-4 (Mut 2 = Beh 4) | major | `neutralize_delimiters` was quadratic: 440 KB of tag repeats took ~57 s on the session's executor, re-paid every turn by history compaction | Removed: JSON Lines needs no neutralization pass; rendering is linear. 1 MB test under 2 s |
 | R1-5 (Mut 1) | major | An empty or whitespace-only text reply passed the "no text" check and silently replaced the older history with an empty summary | Prose-based check (§2.3); empty and blank tested |
 | R1-6 (Sec F2) | minor | Closing-tag lookalikes (fullwidth, spaced, homoglyph, entity-encoded) passed the ASCII-only neutralization | Body-hash tag; lookalikes in every field tested |
@@ -141,7 +143,7 @@ all killed.
 | R1-10 (Beh 6) | minor | The 2,000-byte cap was ~550–700 CJK/Vietnamese characters, and a drop was invisible | 4,000 bytes; `oversized` reported |
 | R1-11 (Sec F5 = Beh 7 = Mut 5) | nit | `NONE` matched exactly only; decorated `NONE`s were stored | Decoration stripped; "None of …" facts kept |
 | R1-12 (Mut) | minor | Survivors: history rules untested; delimiter tests only on Text; `is_error`, cap-after-trim, keep-side NONE untested; the test indexed `messages[1]` unchecked | All tested |
-| R1-13 (Mut) | minor | Stale docs: 005 §4 unamended; ADR-187 §8 "FIXED" bullet still in present tense; stale `history_provider.hpp` comments; "354 non-Docker" omitted the live exclusion | All corrected |
+| R1-13 (Mut) | minor | Stale docs: 005 §4 unamended; ADR-195 §8 "FIXED" bullet still in present tense; stale `history_provider.hpp` comments; "354 non-Docker" omitted the live exclusion | All corrected |
 | R1-14 (Beh nits) | nit | Text items glued without a space; `Custom` shown as an attachment; the compaction reply's non-text items dropped undocumented | Joined with a space; documented (§2.3) |
 
 **Checked and held up:** on both serializers the host instruction is the only `system` content (no fence preamble, no

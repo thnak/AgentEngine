@@ -1,4 +1,4 @@
-// Live sanity check for decisions/ADR-187-evaluation-harness.md's trial-running harness (§3.0
+// Live sanity check for decisions/ADR-195-evaluation-harness.md's trial-running harness (§3.0
 // items 2-4, §3.2): runs one real B (baseline) trial and one real T (treatment) trial through
 // `run_trial` against a real model, rather than a scripted client. This is the end-to-end
 // verification test_eval_trial_driver.cpp cannot provide on its own -- a scripted client proves

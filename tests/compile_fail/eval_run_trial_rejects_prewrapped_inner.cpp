@@ -1,4 +1,4 @@
-// This file MUST NOT compile (decisions/ADR-187-evaluation-harness.md §3.8, round-1 red-team fix on
+// This file MUST NOT compile (decisions/ADR-195-evaluation-harness.md §3.8, round-1 red-team fix on
 // the trial-running harness's first slice) -- see tests/CMakeLists.txt's try_compile() gate.
 // `run_trial`'s own top comment claims wrapping `Inner` in `RecordingChatClient` inside its
 // signature "enforces refuses to run a trial whose client is not wrapped... by type." A round-1

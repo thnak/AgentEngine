@@ -1,5 +1,5 @@
 #pragma once
-// (Also implements ADR-185: an upstream agent's reply reaches the next agent node as a delegated task.)
+// (Also implements ADR-193: an upstream agent's reply reaches the next agent node as a delegated task.)
 // OQ-19 (OpenQuestions.md; docs/planning/agent-as-workflow-executor-design-draft.md, red-teamed
 // twice before any code existed, per CLAUDE.md's design -> red-team -> prove -> judge discipline for
 // contested/security-adjacent changes): the runtime bridge wrapping a real rt::AgentSession as an
@@ -122,7 +122,7 @@ template <class ChatClientT, class StateT, class HistoryProviderT>
             // a closure captured by reference into this since-returned EffectContext.
             session.set_run_event_tap([&ctx](agentengine::RunEvent const& ev) { ctx.agent_turn_sink(ev); });
 
-            // ADR-185: every part of the input another agent wrote (an upstream node's reply, or its items merged in
+            // ADR-193: every part of the input another agent wrote (an upstream node's reply, or its items merged in
             // by a fan-in) reaches this agent as DELEGATED content -- tainted and external, with a host line when it
             // arrives as a request -- never as this agent's own assistant turn or as host-authored text. Decided per
             // item, not by the message's role (red team round 1). Host-authored input goes through unchanged.

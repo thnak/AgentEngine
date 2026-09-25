@@ -1,7 +1,7 @@
 # 003 — Message and Content Model
 
 **Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-24** (§2,
-`decisions/ADR-183-approved-lesson-delivery.md`: `ContentItem::approval` and outbound marker neutralization) ·
+`decisions/ADR-191-approved-lesson-delivery.md`: `ContentItem::approval` and outbound marker neutralization) ·
 **Amended 2026-09-04** (§2, `decisions/ADR-173-system-channel-taint-fence.md` / GitHub issue #61: taint had no obligation at the serializer, so every conformer legitimately dropped it on the way to the wire) · **Depends on:** (historical: originally also depended on Quark 003/016 — ADR-037 removed that dependency) · **Used by:** 004, 005, 011, 012, 013 · **Gate:** §7
 
 ## Goal
@@ -89,7 +89,7 @@ flag**.
   indistinguishable from host-authored instructions. **A conformer that emits tainted content on the
   `role::system` channel must delimit it on the wire, with markers the content itself cannot
   produce, and must state the reading rule once per request** — except an item `AgentSession` marked
-  `deliver_as_instructions` because the host opted in (ADR-184, below). This is a marking obligation, not a
+  `deliver_as_instructions` because the host opted in (ADR-192, below). This is a marking obligation, not a
   claim that a model cannot be persuaded by fenced text — see the ADR's §5 for what is and is not
   claimed. Conformers: `protocol/anthropic/chat_client.hpp`, `protocol/openai/chat_client.hpp`;
   shared mechanism: `core/system_channel_fence.hpp`.
@@ -99,9 +99,9 @@ flag**.
   text a model produced, however trusted the provider relaying it. `HistoryProvider`'s summary was
   the one place in the tree that crossed this line.
 - **An approved lesson carries an `approval`, not a different origin or taint** (amended 2026-09-24,
-  `decisions/ADR-183-approved-lesson-delivery.md`). `ContentItem::approval` is empty, or the id of the approval under
-  which that exact text was approved — by a human (ADR-187 E31), or, if the host opted in, by its automated reviewer
-  (`automatic:<reviewer>`, ADR-184). It is granted per request, only by `AgentSession`, only to a tainted
+  `decisions/ADR-191-approved-lesson-delivery.md`). `ContentItem::approval` is empty, or the id of the approval under
+  which that exact text was approved — by a human (ADR-195 E31), or, if the host opted in, by its automated reviewer
+  (`automatic:<reviewer>`, ADR-192). It is granted per request, only by `AgentSession`, only to a tainted
   `role::system` text the host's `ApprovedLessonRegistry` holds for the session's principal; the session clears it
   on every other item. The item stays tainted and `external`; the fence names it an approved lesson with a code content cannot
   know, and the reading rule says it may be followed as guidance. This relaxation of the reading rule is logged per
@@ -109,16 +109,16 @@ flag**.
   only where a serializer opened or closed a real fence** — the bracket glyphs the markers use are reserved: both
   conformers turn the raw glyphs into ASCII brackets in every other text they emit, after joining its parts, so no
   marker can form there from the real glyphs however it is split (escapes and look-alikes are not rewritten — see
-  ADR-183 §3.5 and its residuals). Breaking a marker invisibly is not enough: measured live, a model reads a marker broken
-  by a zero-width space as a real one (ADR-183 §7, L1).
-- **The host may choose unfenced delivery** (amended 2026-09-24, `decisions/ADR-184-unattended-mode.md`).
+  ADR-191 §3.5 and its residuals). Breaking a marker invisibly is not enough: measured live, a model reads a marker broken
+  by a zero-width space as a real one (ADR-191 §7, L1).
+- **The host may choose unfenced delivery** (amended 2026-09-24, `decisions/ADR-192-unattended-mode.md`).
   `ContentItem::deliver_as_instructions` is set only by `AgentSession`, only when the host opted in — an approved
   lesson at `approved_lesson_level::instructions`, or every tainted system text with the system-channel fence
   switched off — and cleared on every other item. Such an item keeps `tainted` and its origin, and is sent as plain
   system text: the one exception to the delimiting obligation above. Each such request is logged. Combined with
   unattended approvals this lets model-derived text drive granted tools with no human — an owner-sanctioned
-  exception for full-automation hosts, recorded in ADR-184 §4, not a relaxation of I2.
-- **A handoff between agents never untaints** (amended 2026-09-25, `decisions/ADR-185-delegation-provenance.md`).
+  exception for full-automation hosts, recorded in ADR-192 §4, not a relaxation of I2.
+- **A handoff between agents never untaints** (amended 2026-09-25, `decisions/ADR-193-delegation-provenance.md`).
   Text one agent's model wrote reaches another agent — `agent.spawn`'s input, a workflow agent node's input — as a
   delegated task: a host-authored line saying which agent delegated it and that no human wrote it, then the text
   itself, `content_origin::external`, `tainted = true` (`make_delegated_message`, `delegate_foreign_items`). It was

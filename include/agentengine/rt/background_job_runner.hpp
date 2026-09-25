@@ -379,7 +379,9 @@ public:
                                           "a session-state-capturing tool may never be backgrounded",
                                           "tool.state_capturing_not_backgroundable"});
         }
-        if (tool.approval != approval_mode::never_require && !spec.approval_attested) {
+        // ADR-184: the shared predicate, so a text_derived request gets the same gate as everywhere
+        // else (ADR-023's override included), never the tool's bare approval mode alone.
+        if (tool_call_requires_approval(tool, spec.request.provenance) && !spec.approval_attested) {
             return std::unexpected(error{failure_class::policy,
                                           "tool requires approval and the submitter did not attest it",
                                           "background_job.approval_not_attested"});

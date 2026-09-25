@@ -1,5 +1,5 @@
 #pragma once
-// Implements ADR-187 §3.9's stub-tool requirement ("trial tools are host-authored recording stubs
+// Implements ADR-195 §3.9's stub-tool requirement ("trial tools are host-authored recording stubs
 // over the fixture that capture arguments and cause no effect... safe because we write them").
 // Follows `MemoryProvider::make_recall_tool_descriptor`'s own pattern
 // (core/memory_provider.hpp:280-325) exactly: a `ToolDescriptor` whose `invoke` closure captures
@@ -11,7 +11,7 @@
 // the arguments (I3): a stub's whole point is that its behaviour is chosen entirely by the suite
 // author at fixture-authoring time, never by what the model sends it.
 //
-// What this file does NOT attempt (ADR-187 §8 residual, named not hidden): the `eval.tool_not_stub`
+// What this file does NOT attempt (ADR-195 §8 residual, named not hidden): the `eval.tool_not_stub`
 // refusal gate for a real, user-supplied tool -- not needed yet, since this slice's `ToolTable` is
 // built exclusively from this provider plus `MemoryProvider::recall`, so nothing user-supplied can
 // reach a trial's tool table by construction; and the source include-graph lint that fails if a
@@ -30,7 +30,7 @@
 namespace agentengine::eval {
 
 // Host-authored at suite-fixture-authoring time (never derived from model or candidate output).
-struct StubToolFixture {  // ae-naming-lint: allow StubToolFixture — ADR-187 §3.9
+struct StubToolFixture {  // ae-naming-lint: allow StubToolFixture — ADR-195 §3.9
     std::string name;
     std::string description;
     std::string args_schema_json;
@@ -39,7 +39,7 @@ struct StubToolFixture {  // ae-naming-lint: allow StubToolFixture — ADR-187 �
 };
 
 // One recorded invocation, in call order.
-struct CapturedCall {  // ae-naming-lint: allow CapturedCall — ADR-187 §3.9
+struct CapturedCall {  // ae-naming-lint: allow CapturedCall — ADR-195 §3.9
     std::string tool_name;
     json::Value arguments;
 };
@@ -76,8 +76,8 @@ struct CapturedCall {  // ae-naming-lint: allow CapturedCall — ADR-187 §3.9
 // A real `ContextProvider` conformer (ADR-066) that contributes a fixed set of stub tools every
 // round -- the ONLY way to add more tools to a trial's `ToolTable`, since `AgentSession` builds it
 // exclusively from what each composed provider's `on_context()` returns. This is the trial's third
-// composed provider, alongside `HistoryProvider` and `MemoryProvider` (ADR-187 §3.2).
-class EvalStubToolProvider {  // ae-naming-lint: allow EvalStubToolProvider — ADR-187 §3.9
+// composed provider, alongside `HistoryProvider` and `MemoryProvider` (ADR-195 §3.2).
+class EvalStubToolProvider {  // ae-naming-lint: allow EvalStubToolProvider — ADR-195 §3.9
 public:
     static constexpr std::string_view name = "eval-stub-tools";  // ae-naming-lint: allow name — ADR-066 contributor identity
 

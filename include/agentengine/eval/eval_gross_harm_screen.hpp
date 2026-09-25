@@ -1,5 +1,5 @@
 #pragma once
-// Implements ADR-187 §3.0 item 3, the gross-harm regression screen: `tasks.size()` dev tasks x K
+// Implements ADR-195 §3.0 item 3, the gross-harm regression screen: `tasks.size()` dev tasks x K
 // trials x {baseline, treatment}, intention-to-treat, flagged if EITHER a one-sided sign-flip test on
 // the SUM of per-task differences OR the round-4 hypergeometric MIN-TASK statistic (harm concentrated
 // in a few tasks, §6 G3) comes in under its share of `alpha`. Both statistics already existed as pure
@@ -33,7 +33,7 @@
 // hiding a harm. Exactly one analysis runs per screen (ITT when valid, harm-favouring when not), so
 // the false-flag bound for valid runs is unchanged; invalid runs can only be flagged MORE often.
 //
-// Explicitly OUT OF SCOPE (named, not silently dropped -- decisions/ADR-187-evaluation-harness.md
+// Explicitly OUT OF SCOPE (named, not silently dropped -- decisions/ADR-195-evaluation-harness.md
 // §8's "Still unbuilt" list is the authoritative one): the baseline canary; per-task variance and the task-level CI (Tier 2,
 // §3.6); task generators; arm S / SlotTable (§3.7); the kill switch and promotion-write digest
 // re-check (§3.0 item 5); EvalSuite/EvalRun/PromotionEvidence, the look ledger, family/shard
@@ -62,19 +62,19 @@ namespace agentengine::eval {
 // One dev task. Its grader scores TASK SUCCESS (did the agent do the task right), not whether the
 // lesson was followed -- this screen asks whether the lesson HURTS ordinary work, not whether it is
 // obeyed (that is the follow-rate screen's job).
-struct RegressionTask {  // ae-naming-lint: allow RegressionTask — ADR-187 §3.0 item 3
+struct RegressionTask {  // ae-naming-lint: allow RegressionTask — ADR-195 §3.0 item 3
     std::string task_id;                          // identity only, never model/candidate-derived (I3)
     Message task_prompt;
     std::vector<StubToolFixture> stub_tools;
     GraderFn grader;
 };
 
-struct GrossHarmScreenSpec {  // ae-naming-lint: allow GrossHarmScreenSpec — ADR-187 §3.0 item 3
+struct GrossHarmScreenSpec {  // ae-naming-lint: allow GrossHarmScreenSpec — ADR-195 §3.0 item 3
     std::string suite_id;                         // namespaces trial_ids (identity only, I3)
     LessonCandidate candidate;
     std::string template_version;
     float lesson_salience = 0.0f;
-    lesson_delivery delivery = lesson_delivery::fenced;  // ADR-183: the treatment arm's route, as the host ships it
+    lesson_delivery delivery = lesson_delivery::fenced;  // ADR-191: the treatment arm's route, as the host ships it
     std::vector<RegressionTask> tasks;            // ADR default: 30
     std::uint32_t k_per_arm = 5;                  // ADR default
     double alpha = 0.10;                          // the SCREEN's false-flag bound; each test gets alpha/2
@@ -102,7 +102,7 @@ struct GrossHarmScreenSpec {  // ae-naming-lint: allow GrossHarmScreenSpec — A
     std::vector<Capability> extra_capabilities;
 };
 
-struct GrossHarmTrialDetail {  // ae-naming-lint: allow GrossHarmTrialDetail — ADR-187 §3.0 item 3
+struct GrossHarmTrialDetail {  // ae-naming-lint: allow GrossHarmTrialDetail — ADR-195 §3.0 item 3
     std::size_t task_index;
     trial_arm arm;
     std::string trial_id;
@@ -117,7 +117,7 @@ struct GrossHarmTrialDetail {  // ae-naming-lint: allow GrossHarmTrialDetail —
     std::optional<TrialResult> first_attempt;     // when retried; same transcript rule
 };
 
-struct GrossHarmTaskResult {  // ae-naming-lint: allow GrossHarmTaskResult — ADR-187 §3.0 item 3
+struct GrossHarmTaskResult {  // ae-naming-lint: allow GrossHarmTaskResult — ADR-195 §3.0 item 3
     std::string task_id;
     std::uint32_t baseline_successes = 0, treatment_successes = 0;
     std::uint32_t baseline_ungraded = 0, treatment_ungraded = 0;
@@ -125,7 +125,7 @@ struct GrossHarmTaskResult {  // ae-naming-lint: allow GrossHarmTaskResult — A
     double diff = 0.0;                            // (treatment - baseline) / K, ITT
 };
 
-struct GrossHarmScreenResult {  // ae-naming-lint: allow GrossHarmScreenResult — ADR-187 §3.0 item 3
+struct GrossHarmScreenResult {  // ae-naming-lint: allow GrossHarmScreenResult — ADR-195 §3.0 item 3
     std::uint64_t seed = 0;                       // echoed back (I5)
     std::vector<GrossHarmTrialDetail> trials;     // every trial, in RUN order, never dropped
     std::vector<GrossHarmTaskResult> per_task;    // in spec.tasks order

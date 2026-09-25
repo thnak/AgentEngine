@@ -92,11 +92,11 @@ namespace detail {
 // comes from its `ToolResult` content item -- the only place a call id lives in the content model, and
 // the shape `core/tool_pipeline.hpp`'s own step-9 "normalize" produces (a `Data` item wrapping the
 // tool's JSON reply, tagged `content_origin::tool`).
-// `request_code` (ADR-183): this request's code, which an approved block's open marker carries; empty unless the
+// `request_code` (ADR-191): this request's code, which an approved block's open marker carries; empty unless the
 // request carries an approved lesson.
 [[nodiscard]] inline json::Value translate_message(Message const& m, std::string_view request_code = {}) {
     std::string text;
-    std::string unfenced;  // a run of consecutive unfenced system text, cleaned as one (ADR-183 round 3)
+    std::string unfenced;  // a run of consecutive unfenced system text, cleaned as one (ADR-191 round 3)
     std::vector<json::Value> tool_calls;
     std::optional<std::string> tool_call_id;
 
@@ -107,7 +107,7 @@ namespace detail {
             // but it dropped `tainted`/`origin` at exactly the same point, leaving a
             // `{"role":"system"}` message carrying tool/document/model-derived text
             // indistinguishable from a host-authored one. Same fence, same bytes, same predicate.
-            // ADR-183: the bracket glyphs appear on the wire only where this serializer wrote a real fence. Text is
+            // ADR-191: the bracket glyphs appear on the wire only where this serializer wrote a real fence. Text is
             // cleaned after its adjacent parts are joined (a glyph split across parts reassembled otherwise): in a
             // system message each run of unfenced text between two fences, in every other message the whole text.
             if (needs_system_channel_fence(m.role, item)) {
@@ -146,7 +146,7 @@ namespace detail {
     if (m.role == role::system) {
         text += neutralize_outbound_text(unfenced);
     } else {
-        text = neutralize_outbound_text(text);  // ADR-183: after the parts are joined
+        text = neutralize_outbound_text(text);  // ADR-191: after the parts are joined
     }
 
     std::vector<std::pair<std::string, json::Value>> obj;
@@ -227,7 +227,7 @@ namespace detail {
     }
     std::vector<std::pair<std::string, json::Value>> fn{
         {"name", json::Value::make_string(t.name)},
-        {"description", json::Value::make_string(neutralize_outbound_text(t.description))},  // ADR-183
+        {"description", json::Value::make_string(neutralize_outbound_text(t.description))},  // ADR-191
         {"parameters", std::move(params)},
     };
     std::vector<std::pair<std::string, json::Value>> tool{
@@ -374,8 +374,8 @@ namespace detail {
     // AE Message and has no single concatenated system blob to prepend to. Same predicate as the
     // fences themselves (`has_fenced_system_content`), so preamble and fences cannot disagree; a
     // request with no tainted system content gets no preamble and no fence (its text still loses the
-    // raw bracket glyphs, ADR-183 §3.5).
-    // ADR-183: a request that carries an approved lesson gets one fresh code, shared by the preamble and that block.
+    // raw bracket glyphs, ADR-191 §3.5).
+    // ADR-191: a request that carries an approved lesson gets one fresh code, shared by the preamble and that block.
     std::string const request_code =
         has_fenced_approved_lesson(request.messages) ? new_request_approval_code() : std::string{};
     if (has_fenced_system_content(request.messages)) {

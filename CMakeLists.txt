@@ -97,7 +97,7 @@ if(WIN32)
 endif()
 add_library(agentengine::core ALIAS agentengine_core)
 
-# ---- rt::FileAppendLogStore's OS half (src/rt/) -- ADR-037, ADR-187 E32 red team round 3 ---------
+# ---- rt::FileAppendLogStore's OS half (src/rt/) -- ADR-037, ADR-195 E32 red team round 3 ---------
 # The locked log file (include/agentengine/rt/append_log_store.hpp). Compiled
 # here rather than inline so <windows.h> never reaches the many headers that include the store -- the
 # header-only version broke consumer code through windows.h's macros. Linked through agentengine::core so
@@ -141,6 +141,30 @@ target_link_libraries(agentengine_policy_reachability PRIVATE agentengine::core 
 add_executable(agentengine_mcp_conformance_client tools/mcp_conformance_client.cpp)
 target_link_libraries(agentengine_mcp_conformance_client
   PRIVATE agentengine::core agentengine::net_egress_proxy agentengine_warnings)
+
+# ---- ADR-182 test driver (tools/) -- an MCP server over stdio that drives in-process sessions with
+# a scripted model, for a Claude Code test agent. A host executable like cli_chat: the engine library
+# binds nothing. Built by default (ADR-182 §12 R11) -- it needs only agentengine::core, and it is
+# never installed or linked by anything else.
+add_executable(agentengine_test_driver tools/agentengine_test_driver.cpp)
+target_include_directories(agentengine_test_driver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+target_link_libraries(agentengine_test_driver PRIVATE agentengine::core agentengine_warnings)
+# ADR-182 §16: replays checked-in scenarios with the scripted model (no network); tests/CMakeLists.txt
+# registers one ctest per tests/scenarios/*.json.
+add_executable(agentengine_scenario_runner tools/agentengine_scenario_runner.cpp)
+target_include_directories(agentengine_scenario_runner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+target_link_libraries(agentengine_scenario_runner PRIVATE agentengine::core agentengine_warnings)
+if(MSVC)
+  # Both include the whole AgentSession surface and exceed MSVC's default section limit (C1128).
+  target_compile_options(agentengine_test_driver PRIVATE /bigobj)
+  target_compile_options(agentengine_scenario_runner PRIVATE /bigobj)
+endif()
+# Live mode (--allow-live: a real OpenAI-compatible model, DeepSeek by default) needs the TLS client.
+if(AGENTENGINE_WITH_HTTPS)
+  target_link_libraries(agentengine_test_driver PRIVATE
+    agentengine::provider_http_client MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  target_compile_definitions(agentengine_test_driver PRIVATE AGENTENGINE_WITH_HTTPS)
+endif()
 
 # ---- native_jail ShellRunner backend (src/backends/native_jail/) --------------
 # Implements decisions/ADR-001-shellrunner-grammar-and-dispatch.md — Design A: the

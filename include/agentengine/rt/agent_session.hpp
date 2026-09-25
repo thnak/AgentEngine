@@ -1,5 +1,5 @@
 #pragma once
-// (Also implements ADR-183's approved-lesson grant and ADR-184's unattended-mode opt-ins: see `set_approved_lessons`,
+// (Also implements ADR-191's approved-lesson grant and ADR-192's unattended-mode opt-ins: see `set_approved_lessons`,
 // `disable_system_channel_fence`, `set_unattended_approvals`, `apply_approved_lessons`, `effective_approval_decider`.)
 // ADR-037 Phase 2, Slice 1: `agentengine::rt::AgentSession<ChatClientT, StateT, HistoryProviderT>`,
 // the Quark-free replacement for `agentengine::AgentSession` (core/agent_session.hpp). Lives under
@@ -795,13 +795,13 @@ public:
     // this is set.
     void set_static_instructions(std::string text) noexcept { static_instructions_ = std::move(text); }
 
-    // ADR-183, host opt-in: a lesson a human approved (the host's `ApprovedLessonRegistry`, scoped to this
+    // ADR-191, host opt-in: a lesson a human approved (the host's `ApprovedLessonRegistry`, scoped to this
     // session's principal) reaches the model as an approved-lesson block -- still tainted and fenced, but the
     // fence's preamble says it may be followed. Unset (the default) or null: every request is built exactly as
     // before. `registry` must outlive the session. Every approved delivery emits a `policy_decision` event naming
     // the approval it rests on (I4).
     //
-    // ADR-184: `level` is how an approved lesson is delivered -- `guidance` (ADR-183's fenced, tagged route, the
+    // ADR-192: `level` is how an approved lesson is delivered -- `guidance` (ADR-191's fenced, tagged route, the
     // default) or `instructions` (plain, unfenced system text, as the host's own instructions). The item stays tainted
     // either way; only how the model is told to read it changes.
     void set_approved_lessons(agentengine::ApprovedLessonRegistry const* registry,
@@ -811,14 +811,14 @@ public:
         approved_lesson_level_ = level;
     }
 
-    // ADR-184, host opt-in (unattended mode): every tainted system text -- memory, retrieved documents, summaries,
+    // ADR-192, host opt-in (unattended mode): every tainted system text -- memory, retrieved documents, summaries,
     // lessons -- goes to the model as plain system text, with no ADR-173 fence and no preamble. For a full-automation
     // deployment that trusts its own stores. The cost is the fence's whole point: text a tool, a document or an
     // earlier model turn wrote can then steer the model like the host's instructions. The text stays tainted (tool
     // calls from it are still `arguments_tainted`, and recordings keep the taint). `operator_id` names who turned it
     // off (required, I4; refused if empty); every request it affects emits one `policy_decision` event saying so. The
     // event reaches the host only through a run-event tap or stream it attached. Off by default.
-    // ADR-185: host-supplied messages placed ahead of every request this session builds (after its providers'
+    // ADR-193: host-supplied messages placed ahead of every request this session builds (after its providers'
     // contributions are assembled, before the delivery marks are granted) -- how a spawned child receives the
     // chain's shared lessons. Host code only; a tainted item stays tainted and is granted nothing it would not
     // otherwise get. Empty by default.
@@ -832,7 +832,7 @@ public:
     void enable_system_channel_fence() noexcept { system_fence_disabled_by_.reset(); }
     [[nodiscard]] bool system_channel_fence_enabled() const noexcept { return !system_fence_disabled_by_; }
 
-    // ADR-184, host opt-in (unattended mode): every tool call that would wait for an approval is approved without
+    // ADR-192, host opt-in (unattended mode): every tool call that would wait for an approval is approved without
     // a human -- `approval_mode::always_require` tools and `text_derived` calls included -- and the session never
     // suspends for approval. It is the `ApprovalDecider` answering yes, so it decides only among authority the host
     // already granted (I2: no capability or grant changes; every capability check and hook-stage denial still apply).
@@ -861,7 +861,7 @@ public:
         unattended_veto_.reset();
     }
 
-    // ADR-184: the whole full-automation setup in one call -- approved lessons (if `registry` is given) delivered as
+    // ADR-192: the whole full-automation setup in one call -- approved lessons (if `registry` is given) delivered as
     // instructions, the system-channel fence off, and unattended approvals. Each part is the separate call above,
     // audited as such; capabilities are still whatever `set_capabilities` granted.
     [[nodiscard]] result<void> enable_unattended_mode(std::string const& operator_id,
@@ -936,7 +936,7 @@ public:
     }
     [[nodiscard]] std::string const& last_run_id() const noexcept { return last_run_id_; }
     [[nodiscard]] std::uint64_t last_turn_index() const noexcept { return effect_context_.turn_index; }
-    // ADR-185: both include what delegated agents charged that has not been folded in yet -- a run that ended
+    // ADR-193: both include what delegated agents charged that has not been folded in yet -- a run that ended
     // without another model call (suspended, canceled, or its last round delegated) still reports it.
     [[nodiscard]] std::uint64_t run_tokens_consumed() const {
         std::lock_guard<std::mutex> lock(delegated_usage_mutex_);
@@ -1095,7 +1095,7 @@ public:
         effect_context_.run_id       = session_id_ + ":run:" + std::to_string(run_counter_);
         effect_context_.turn_index   = 0;
         last_run_id_ = effect_context_.run_id;
-        // ADR-185: a tool that runs another agent reports the child's events and usage back through these. Both
+        // ADR-193: a tool that runs another agent reports the child's events and usage back through these. Both
         // capture `this`: every tool call of this run finishes before the run does, and the session outlives it.
         effect_context_.delegated_event_sink = [this](RunEvent const& ev) { forward_run_event(ev); };
         effect_context_.charge_delegated_usage = [this](agentengine::Usage const& u, std::uint64_t extra_budget_tokens) {
@@ -1265,6 +1265,24 @@ public:
         emit_run_event(run_event_kind::input_resolved,
                         run_event_payload::InteractionRef{request.interaction_id});
 
+        // ADR-183: the decision is announced before anything acts on it -- one approval_resolved per
+        // approval_requested this interaction emitted, in the same order, before on_context() and
+        // before any tool_call_started. A hook-touched round kept the exact list it asked about; a
+        // plain round asked about every call in the suspended assistant message.
+        if (auto hit = pending_hook_decisions_.find(request.interaction_id); hit != pending_hook_decisions_.end()) {
+            for (std::string const& call_id : hit->second.approval_requested_call_ids) {
+                emit_run_event(run_event_kind::approval_resolved,
+                                run_event_payload::ApprovalResolved{call_id, request.approved,
+                                                                      request.interaction_id});
+            }
+        } else {
+            for (ToolCall const& call : pending_calls) {
+                emit_run_event(run_event_kind::approval_resolved,
+                                run_event_payload::ApprovalResolved{call.call_id, request.approved,
+                                                                      request.interaction_id});
+            }
+        }
+
         std::size_t const response_msg_index = history_.size() - 1;
 
         if (!request.approved) {
@@ -1279,9 +1297,6 @@ public:
                 std::vector<ToolResult> results;
                 results.reserve(round.calls.size());
                 for (HookProcessedCall& hc : round.calls) {
-                    emit_run_event(run_event_kind::approval_resolved,
-                                    run_event_payload::ApprovalResolved{hc.request.call_id, false,
-                                                                          request.interaction_id});
                     if (hc.outcome == hook_call_outcome::denied) {
                         // Already decided by the hook stage (or a prior external-dispatch answer) --
                         // reuse the SAME ToolResult verbatim rather than deriving a second one.
@@ -1305,9 +1320,6 @@ public:
             std::vector<ToolResult> results;
             results.reserve(pending_calls.size());
             for (ToolCall const& call : pending_calls) {
-                emit_run_event(run_event_kind::approval_resolved,
-                                run_event_payload::ApprovalResolved{call.call_id, false,
-                                                                      request.interaction_id});
                 results.push_back(
                     make_denial_result(call.call_id, "denied by operator", "tool.approval_denied"));
             }
@@ -1369,18 +1381,13 @@ public:
         for (std::size_t i = 0; i < pending_calls.size(); ++i) {
             reqs.push_back(tool_call_request_of(pending_calls[i], i));
         }
-        // ADR-160 §5: tool_call_started/delta/finished all fire from inside dispatch_tool_calls();
-        // approval_resolved is THIS call site's own extra, per-call event, emitted afterward in
-        // `reqs`' own order -- dispatch_tool_calls() always returns in that order regardless of
-        // which concurrency class (or completion order) actually produced each result.
+        // ADR-160 §5: tool_call_started/delta/finished all fire from inside dispatch_tool_calls().
+        // approval_resolved was already emitted above (ADR-183), before any of them.
         std::vector<DispatchedCall> dispatched =
             dispatch_tool_calls(reqs, tool_table, held, one_shot_approve, PolicyDecider{});
         std::vector<ToolResult> results;
         results.reserve(dispatched.size());
         for (std::size_t i = 0; i < dispatched.size(); ++i) {
-            emit_run_event(run_event_kind::approval_resolved,
-                            run_event_payload::ApprovalResolved{reqs[i].call_id, true,
-                                                                  request.interaction_id});
             results.push_back(std::move(dispatched[i].result));
         }
         history_.push_back(tool_results_message(std::move(results)));
@@ -1895,7 +1902,7 @@ private:
                                                       PolicyDecider const& policy) {
         std::vector<DispatchedCall> out(reqs.size());
         if (reqs.empty()) return out;
-        // ADR-185: what this run may still spend, so a tool that runs another agent caps the child's budget by it
+        // ADR-193: what this run may still spend, so a tool that runs another agent caps the child's budget by it
         // (red team round 1: each child got its own full `child_token_budget` whatever the parent had left).
         if (token_budget_.has_value()) {
             std::uint64_t const used = run_tokens_consumed();
@@ -2005,7 +2012,7 @@ private:
                     audit.principal_id = ctx.principal.id;
                     audit.principal_tenant_id = ctx.principal.tenant_id;
                     audit.principal_on_behalf_of = ctx.principal.on_behalf_of;
-                    audit.principal_delegation_root = ctx.principal.delegation_root;  // ADR-185
+                    audit.principal_delegation_root = ctx.principal.delegation_root;  // ADR-193
                     emit_run_event_for(ctx.run_id, run_event_kind::tool_call_finished,
                                          run_event_payload::ToolCallFinished{audit.call_id, result});
                     out[i] = DispatchedCall{std::move(result), std::move(audit)};
@@ -2550,9 +2557,20 @@ private:
                             run_event_payload::InteractionRef{next.interaction_id});
             for (HookProcessedCall const& hc : pending_hook_decisions_[next.interaction_id].calls) {
                 if (hc.outcome == hook_call_outcome::pass_through) {
+                    // ADR-182 P1: same payload fields as run_rounds()'s own emit site. Every call
+                    // reaching this loop is pass_through, but only some of them needed a decider.
+                    ToolDescriptor const* td = tool_table.find(hc.request.tool_name);
+                    bool const needs = td != nullptr &&
+                                       resolve_approval_outcome(*td, hc.request.provenance,
+                                                                effect_context_.principal,
+                                                                /*arguments_tainted=*/true, policy_decider_) ==
+                                           approval_outcome::needs_decider;
                     emit_run_event(run_event_kind::approval_requested,
-                                    run_event_payload::ApprovalRequested{hc.request.call_id,
-                                                                          next.interaction_id});
+                                    run_event_payload::ApprovalRequested{
+                                        hc.request.call_id, next.interaction_id, hc.request.tool_name,
+                                        json::dump(hc.request.arguments), needs});
+                    pending_hook_decisions_[next.interaction_id].approval_requested_call_ids.push_back(
+                        hc.request.call_id);  // ADR-183
                 }
             }
             co_return std::unexpected(error{failure_class::contract,
@@ -2738,11 +2756,11 @@ private:
             // after this line, and `tool_table` above already took the copy of the tools it keeps.
             // This used to deep-copy the whole assembled history into the request once per turn.
             ChatRequest request{std::move(contribution->messages), std::move(contribution->tools)};
-            // ADR-183/184: the ONE place `ContentItem::approval` and `deliver_as_instructions` are granted -- after
+            // ADR-191/192: the ONE place `ContentItem::approval` and `deliver_as_instructions` are granted -- after
             // every provider has contributed and history is in, just before the request leaves. Both are cleared on
             // every item first, so nothing a provider, a plugin or a stored message carries survives; then granted only
             // by the host's settings (see the method).
-            if (!pinned_context_.empty()) {  // ADR-185
+            if (!pinned_context_.empty()) {  // ADR-193
                 request.messages.insert(request.messages.begin(), pinned_context_.begin(), pinned_context_.end());
             }
             apply_approved_lessons(request);
@@ -2772,7 +2790,7 @@ private:
             // so the retry re-sends the identical request.
             result<ChatResponse> response = std::unexpected(
                 error{failure_class::contract, "unreachable: no model call attempted", "run.internal"});
-            // ADR-185: what delegated agents spent since the last model call is this run's spending too -- folded
+            // ADR-193: what delegated agents spent since the last model call is this run's spending too -- folded
             // in, and the budget checked, before another call is made (I8 across a delegation tree).
             if (fold_delegated_usage() && token_budget_.has_value() && run_tokens_consumed_ > *token_budget_) {
                 emit_run_event(run_event_kind::run_failed,
@@ -2958,7 +2976,11 @@ private:
                 });
 
             bool any_needs_approval = false;
-            if (approval_waits_for_human()) {
+            // ADR-182 P1: which calls needed a decider, per call, for the approval_requested
+            // payload's `needs_approval` field. Filled by the loop below, which therefore no longer
+            // stops at the first gated call.
+            std::vector<bool> call_needs_approval(calls.size(), false);
+            if (approval_waits_for_human()) {  // ADR-192: unattended mode never suspends
                 for (std::size_t i = 0; i < calls.size(); ++i) {
                     // A call the hook stage already denied is finished -- its outcome is already
                     // decided, never re-litigated by approval.
@@ -2987,7 +3009,7 @@ private:
                                                   /*arguments_tainted=*/true, policy_decider_) ==
                             approval_outcome::needs_decider) {
                         any_needs_approval = true;
-                        break;
+                        call_needs_approval[i] = true;
                     }
                 }
             }
@@ -3029,10 +3051,26 @@ private:
                         "round suspended awaiting an external tool-call hook decision",
                         kSuspendedForHookDecision});
                 }
-                for (ToolCall const& call : calls) {
+                for (std::size_t i = 0; i < calls.size(); ++i) {
+                    // ADR-182 P1: the arguments the approval check actually judged -- the post-hook
+                    // request's when the hook stage ran (it may have rewritten them), else the
+                    // model's own text. `processed` was moved into pending_hook_decisions_ above,
+                    // so a hook-touched round reads it back from there.
+                    std::string arguments_json =
+                        hook_touched_round
+                            ? json::dump(pending_hook_decisions_[interaction.interaction_id].calls[i].request.arguments)
+                            : calls[i].arguments_json;
+                    // ADR-183: record what was asked, so resolution pairs with it exactly. A plain
+                    // round needs no record: every call in the suspended message is asked, and
+                    // resolve_interaction() rebuilds that list from history.
+                    if (hook_touched_round) {
+                        pending_hook_decisions_[interaction.interaction_id].approval_requested_call_ids.push_back(
+                            calls[i].call_id);
+                    }
                     emit_run_event(run_event_kind::approval_requested,
-                                    run_event_payload::ApprovalRequested{call.call_id,
-                                                                          interaction.interaction_id});
+                                    run_event_payload::ApprovalRequested{
+                                        calls[i].call_id, interaction.interaction_id, calls[i].tool_name,
+                                        std::move(arguments_json), call_needs_approval[i]});
                 }
                 // Suspended -- no real response yet. Unlike the Quark original (an unanswered Ask,
                 // left to resolve later via a completely separate ResolveInteraction message with
@@ -3223,15 +3261,15 @@ public:
 private:
     std::string                                       session_id_;
     agentengine::Principal                             principal_;
-    agentengine::ApprovedLessonRegistry const*         approved_lessons_ = nullptr;  // ADR-183 opt-in
+    agentengine::ApprovedLessonRegistry const*         approved_lessons_ = nullptr;  // ADR-191 opt-in
 
     agentengine::approved_lesson_level                 approved_lesson_level_ =
-        agentengine::approved_lesson_level::guidance;                                    // ADR-184
-    std::optional<std::string>                         system_fence_disabled_by_;         // ADR-184 opt-in
-    std::optional<std::string>                         unattended_by_;                    // ADR-184 opt-in
-    std::vector<Message>                               pinned_context_;                   // ADR-185
+        agentengine::approved_lesson_level::guidance;                                    // ADR-192
+    std::optional<std::string>                         system_fence_disabled_by_;         // ADR-192 opt-in
+    std::optional<std::string>                         unattended_by_;                    // ADR-192 opt-in
+    std::vector<Message>                               pinned_context_;                   // ADR-193
     // Shared, so a veto that clears unattended mode from inside itself does not destroy itself while running.
-    std::shared_ptr<agentengine::ApprovalDecider const> unattended_veto_;                // ADR-184, optional
+    std::shared_ptr<agentengine::ApprovalDecider const> unattended_veto_;                // ADR-192, optional
 
     [[nodiscard]] static result<void> unattended_detail_refuse(char const* what) {
         return std::unexpected(error{failure_class::contract,
@@ -3239,7 +3277,7 @@ private:
                                      "session.unattended_operator_missing"});
     }
 
-    // The one place a request's delivery marks are set (ADR-183/184). Both are cleared on every item first, so
+    // The one place a request's delivery marks are set (ADR-191/192). Both are cleared on every item first, so
     // nothing a provider, a plugin or stored history carries survives; then each is granted only by a host setting.
     void apply_approved_lessons(ChatRequest& request) {
         std::size_t unfenced = 0;
@@ -3252,7 +3290,7 @@ private:
                 if (text == nullptr) continue;
                 if (approved_lessons_ != nullptr) {
                     std::string_view const candidate = agentengine::approved_lesson_candidate_text(text->text);
-                    // ADR-185: a delegated principal (a spawned child, a fresh id nobody could approve for) is
+                    // ADR-193: a delegated principal (a spawned child, a fresh id nobody could approve for) is
                     // matched against its chain's root -- the owner the approval was actually given to.
                     auto match = approved_lessons_->find(principal_.id, candidate);
                     if (!match && !principal_.delegation_root.empty()) {
@@ -3281,7 +3319,7 @@ private:
                                            (a.acknowledgement.empty() ? std::string("none") : a.acknowledgement)});
                     }
                 }
-                // ADR-184: with the fence off, every remaining tainted system text goes out as instructions too.
+                // ADR-192: with the fence off, every remaining tainted system text goes out as instructions too.
                 if (system_fence_disabled_by_ && !item.deliver_as_instructions && !text->text.empty()) {
                     item.deliver_as_instructions = true;
                     ++unfenced;
@@ -3296,7 +3334,7 @@ private:
         }
     }
 
-    // ADR-184: the decider a round actually uses. In unattended mode it approves every call that reaches it and
+    // ADR-192: the decider a round actually uses. In unattended mode it approves every call that reaches it and
     // audits each approval; otherwise it is the host's own (unset = deny, as before). Built per round, never stored,
     // so it never outlives the session it points at; approvals are admitted on this thread (ADR-160 §5).
     //
@@ -3455,7 +3493,7 @@ private:
     // `emit_run_event_for()` on the SAME thread would deadlock against this non-recursive mutex; no
     // such call exists in this tree today.
     std::mutex                                             run_event_mutex_;
-    // ADR-185: usage a delegated agent reported through `charge_delegated_usage`, not yet folded into this run's.
+    // ADR-193: usage a delegated agent reported through `charge_delegated_usage`, not yet folded into this run's.
     // Guarded because a tool may run on a worker thread (ADR-160); folded on the session's thread.
     mutable std::mutex                                     delegated_usage_mutex_;
     agentengine::Usage                                     pending_delegated_usage_{};
@@ -3487,7 +3525,7 @@ private:
         return true;
     }
 
-    // ADR-185: a delegated agent's RunEvent, wrapped as this run's `delegated_event` (the child's own event inside,
+    // ADR-193: a delegated agent's RunEvent, wrapped as this run's `delegated_event` (the child's own event inside,
     // unchanged) -- so a host watching the root sees every hop, while protocol projectors never mistake a child's
     // run_started/run_finished for this run's (red team round 1: the A2A task went `completed` mid-run).
     void forward_run_event(RunEvent const& ev) {

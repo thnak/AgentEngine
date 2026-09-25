@@ -127,7 +127,7 @@ using Resolver = std::function<result<sandbox::VerifiedEndpoint>(std::string_vie
 [[nodiscard]] inline json::Value translate_tool_use_input(std::string const& arguments_json) {
     auto parsed = json::parse(arguments_json);
     if (!parsed) return json::Value::make_object({});  // malformed input -- send an empty object
-    // ADR-183: parsing turns a JSON escape of a reserved bracket glyph into the real glyph, which this block then sends
+    // ADR-191: parsing turns a JSON escape of a reserved bracket glyph into the real glyph, which this block then sends
     // raw. Only then is the parsed value re-dumped (json::dump writes non-ASCII raw), cleaned and parsed again -- an
     // input without the glyphs is sent exactly as parsed (round 3: rewriting the escapes in the text corrupted it).
     std::string const dumped = json::dump(*parsed);
@@ -153,7 +153,7 @@ struct SplitMessages {
     std::vector<Message const*> rest;
 };
 
-// `request_code` (ADR-183): the request's code, which an approved lesson's open marker carries; if empty
+// `request_code` (ADR-191): the request's code, which an approved lesson's open marker carries; if empty
 // and one is, a code is drawn here, so the preamble and the fences always agree.
 [[nodiscard]] inline SplitMessages split_system_messages(std::vector<Message> const& messages,
                                                          std::string request_code = {}) {
@@ -175,7 +175,7 @@ struct SplitMessages {
                 if (needs_system_channel_fence(m.role, item)) {
                     append_fragment(fence_untrusted_text(t->text, item.origin, request_code, !item.approval.empty()));
                 } else {
-                    append_fragment(neutralize_outbound_text(t->text));  // ADR-183: no marker outside a real fence
+                    append_fragment(neutralize_outbound_text(t->text));  // ADR-191: no marker outside a real fence
                 }
             }
         } else {
@@ -186,9 +186,9 @@ struct SplitMessages {
     // else — it explains markers that appear later, and nothing tainted can get above it (fenced
     // content is, by construction, inside a fence emitted after this point). Only emitted when
     // there is something to explain, so a request with no tainted system content gets no preamble and
-    // no fence (its text still loses the raw bracket glyphs, ADR-183 §3.5).
+    // no fence (its text still loses the raw bracket glyphs, ADR-191 §3.5).
     if (!out.system_text.empty() && has_fenced_system_content(messages)) {
-        std::string prefixed = untrusted_fence_preamble_for(messages, request_code);  // ADR-183: + its sentence
+        std::string prefixed = untrusted_fence_preamble_for(messages, request_code);  // ADR-191: + its sentence
         prefixed += "\n\n";
         prefixed += out.system_text;
         out.system_text = std::move(prefixed);
@@ -223,7 +223,7 @@ struct SplitMessages {
                 {"type", json::Value::make_string("tool_use")},
                 {"id", json::Value::make_string(tc->call_id)},
                 {"name", json::Value::make_string(tc->tool_name)},
-                {"input", translate_tool_use_input(tc->arguments_json)},  // ADR-183: cleaned after parsing
+                {"input", translate_tool_use_input(tc->arguments_json)},  // ADR-191: cleaned after parsing
             };
             blocks.push_back(json::Value::make_object(std::move(block)));
         } else if (auto const* tr = std::get_if<ToolResult>(&item.value)) {
@@ -237,7 +237,7 @@ struct SplitMessages {
                     content_text += e->message;
                 }
             }
-            content_text = neutralize_outbound_text(content_text);  // ADR-183: after the parts are joined
+            content_text = neutralize_outbound_text(content_text);  // ADR-191: after the parts are joined
             std::vector<std::pair<std::string, json::Value>> block{
                 {"type", json::Value::make_string("tool_result")},
                 {"tool_use_id", json::Value::make_string(tr->call_id)},
@@ -294,7 +294,7 @@ struct SplitMessages {
     }
     std::vector<std::pair<std::string, json::Value>> obj{
         {"name", json::Value::make_string(t.name)},
-        {"description", json::Value::make_string(neutralize_outbound_text(t.description))},  // ADR-183
+        {"description", json::Value::make_string(neutralize_outbound_text(t.description))},  // ADR-191
         {"input_schema", std::move(schema)},
     };
     if (cache_this_one) {

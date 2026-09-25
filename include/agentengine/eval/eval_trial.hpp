@@ -1,5 +1,5 @@
 #pragma once
-// Implements ADR-187's trial-running harness, first slice (§3.0 items 2-4, §3.2, §3.4): the actual
+// Implements ADR-195's trial-running harness, first slice (§3.0 items 2-4, §3.2, §3.4): the actual
 // "run one trial" driver that was still entirely missing after rounds 5-7 built only the pure,
 // self-contained pieces (lesson_candidate.hpp, eval_principal.hpp, promotion_ack.hpp,
 // tier1_statistics.hpp). This file drives one real `AgentSession` through one task, with (arm
@@ -7,7 +7,7 @@
 // store, and reports whether the lesson was delivered and what the trial's stub tools captured.
 //
 // Explicitly OUT OF SCOPE for this slice (named, not silently dropped -- see
-// decisions/ADR-187-evaluation-harness.md §8): the SlotTable/steering-manifest arm S (§3.7); the
+// decisions/ADR-195-evaluation-harness.md §8): the SlotTable/steering-manifest arm S (§3.7); the
 // look ledger, EvalSuite/EvalRun/PromotionEvidence (§3.3); the kill switch and promotion-write
 // digest re-check (§3.0 item 5's remaining half); the `eval.tool_not_stub` refusal gate (not
 // needed yet -- this slice's ToolTable is built exclusively from `EvalStubToolProvider` plus
@@ -46,27 +46,27 @@
 
 namespace agentengine::eval {
 
-enum class trial_arm { baseline, treatment };  // ae-naming-lint: allow trial_arm — ADR-187 §3.2; arm S is out of scope this slice
+enum class trial_arm { baseline, treatment };  // ae-naming-lint: allow trial_arm — ADR-195 §3.2; arm S is out of scope this slice
 
-// ADR-183: how the treatment arm delivers its lesson -- the way the host will deliver a promoted one. `fenced`
-// (the default, and the only route before ADR-183) is plain retrieved memory: tainted, fenced, "model-inferred,
+// ADR-191: how the treatment arm delivers its lesson -- the way the host will deliver a promoted one. `fenced`
+// (the default, and the only route before ADR-191) is plain retrieved memory: tainted, fenced, "model-inferred,
 // unverified". `approved` is the route a host opts into with `AgentSession::set_approved_lessons`: the lesson is
 // registered in the trial's own `ApprovedLessonRegistry` as a SIMULATED approval (the screen runs before any human
 // has approved anything) and reaches the model as an approved-lesson block (still tainted and fenced; the preamble
 // says it may be followed). A screen must measure the route that ships, or its verdict is about a lesson delivered
 // some other way.
-enum class lesson_delivery { fenced, approved };  // ae-naming-lint: allow lesson_delivery — ADR-183
+enum class lesson_delivery { fenced, approved };  // ae-naming-lint: allow lesson_delivery — ADR-191
 
 [[nodiscard]] inline std::string_view lesson_delivery_name(lesson_delivery d) noexcept {
     return d == lesson_delivery::approved ? "approved" : "fenced";
 }
 
-struct TrialSpec {  // ae-naming-lint: allow TrialSpec — ADR-187 §3.0 items 2-4
+struct TrialSpec {  // ae-naming-lint: allow TrialSpec — ADR-195 §3.0 items 2-4
     trial_arm arm;
     std::optional<LessonCandidate> candidate;  // required iff arm==treatment
     std::string template_version;
     float lesson_salience = 0.0f;              // host constant -- the promotion path's own value
-    lesson_delivery delivery = lesson_delivery::fenced;  // ADR-183; host-set, never candidate-derived (I3)
+    lesson_delivery delivery = lesson_delivery::fenced;  // ADR-191; host-set, never candidate-derived (I3)
     Message task_prompt;
     std::vector<StubToolFixture> stub_tools;
     std::string trial_id;                      // identity only, never model/candidate-derived (I3)
@@ -97,7 +97,7 @@ struct TrialSpec {  // ae-naming-lint: allow TrialSpec — ADR-187 §3.0 items 2
     std::vector<Capability> extra_capabilities;
 };
 
-struct TrialResult {  // ae-naming-lint: allow TrialResult — ADR-187 §3.0 items 2-4
+struct TrialResult {  // ae-naming-lint: allow TrialResult — ADR-195 §3.0 items 2-4
     result<rt::AgentResponse> outcome = std::unexpected(error{failure_class::fatal, "run_trial never reached start_run", "eval.trial_not_run"});
     bool delivered = false;               // lesson text present in a memory-attributed message, in
                                            // EVERY recorded request (arm treatment only)
@@ -222,7 +222,7 @@ namespace detail {
 // non-const `inner_.chat(...)` on a const member) -- fixed anyway since the cost is one call to
 // `remove_cvref_t` and a defense-in-depth check should not rely on a caller never trying.
 //
-// Round-2 red-team RESIDUAL, disclosed rather than silently left (decisions/ADR-187-evaluation-
+// Round-2 red-team RESIDUAL, disclosed rather than silently left (decisions/ADR-195-evaluation-
 // harness.md §8): this trait is a NOMINAL check on the exact template-id `RecordingChatClient<T>`.
 // `LegacyChatClient` is pure structural/duck typing (chat_client.hpp), so a hand-written class that
 // privately holds an already-wrapped `RecordingChatClient<X>` and forwards `capabilities()`/
@@ -367,7 +367,7 @@ private:
 //
 // `Inner` (never `Inner` unwrapped -- `RecordingChatClient<Inner>` is this function's OWN chat
 // client type, not a caller choice) satisfies `LegacyChatClient`; wrapping it here, rather than
-// leaving it to the caller, is how this function enforces ADR-187 §3.8's "refuses to run a trial
+// leaving it to the caller, is how this function enforces ADR-195 §3.8's "refuses to run a trial
 // whose client is not wrapped in RecordingChatClient" -- a caller cannot pass an unwrapped `Inner`
 // and get one for free. `Inner` itself must not ALREADY be a `RecordingChatClient<...>` (round-1
 // red-team fix, above): that would chain a caller-supplied external sink onto every trial call,
@@ -384,7 +384,7 @@ template <class Inner, class SummarizerT>
 [[nodiscard]] task<TrialResult> run_trial(Inner primary_client, SummarizerT summarizer, TrialSpec spec) {
     static_assert(!detail::is_recording_chat_client_after_decay_v<Inner>,
                   "run_trial's Inner must not already be a RecordingChatClient<...> -- wrapping it "
-                  "here is what enforces this trial's confinement (ADR-187 §3.8); a pre-wrapped "
+                  "here is what enforces this trial's confinement (ADR-195 §3.8); a pre-wrapped "
                   "instance carries its own external sink that would observe every trial call "
                   "outside this trial's own EvalStore/CapabilitySet confinement");
     static_assert(!detail::is_recording_chat_client_after_decay_v<SummarizerT>,
@@ -426,7 +426,7 @@ template <class Inner, class SummarizerT>
     EvalStore store = std::move(*store_result);
 
     std::string rendered_lesson_content;  // the exact text `delivered`/`delivered_via_recall` search for
-    ApprovedLessonRegistry approved_lessons;  // ADR-183: used only when spec.delivery == approved
+    ApprovedLessonRegistry approved_lessons;  // ADR-191: used only when spec.delivery == approved
     if (spec.candidate.has_value()) {
         auto rendered = render_lesson(*spec.candidate, spec.template_version, spec.lesson_salience);
         if (!rendered) {
@@ -435,7 +435,7 @@ template <class Inner, class SummarizerT>
         }
         MemoryItem item = std::move(*rendered);
         // render_lesson is a PURE function over the candidate's own fields (lesson_candidate.hpp) --
-        // it never decides provenance. ADR-187 §3.2: the candidate is delivered as a
+        // it never decides provenance. ADR-195 §3.2: the candidate is delivered as a
         // procedural/model_inferred item; that decision is made HERE, by the harness, not inferred.
         item.origin = MemoryOrigin{memory_source::model_inferred, spec.trial_id, "0", store.principal()};
         rendered_lesson_content = item.content;
@@ -467,7 +467,7 @@ template <class Inner, class SummarizerT>
                                  detail::SummarizerRecorder<SummarizerT>{std::move(summarizer), &trial_result,
                                                                          spec.summarizer_token_budget},
                                  spec.max_injected};
-    // ADR-183: the approved route. The trial's own registry (declared above, so it outlives the session) holds the
+    // ADR-191: the approved route. The trial's own registry (declared above, so it outlives the session) holds the
     // rendered lesson as a simulated approval for this trial's principal; an unset `delivery` leaves the session
     // exactly as before.
     if (spec.delivery == lesson_delivery::approved && !rendered_lesson_content.empty()) {

@@ -25,7 +25,7 @@
 
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/chat_stream_drain.hpp"  // ADR-035 Phase 3: drain_chat_stream, DrainedChatStream
-#include "agentengine/core/summarizer_prompt.hpp"  // ADR-182: the summarizer request and acceptance
+#include "agentengine/core/summarizer_prompt.hpp"  // ADR-190: the summarizer request and acceptance
 #include "agentengine/core/context_provider.hpp"
 
 namespace agentengine {
@@ -87,7 +87,7 @@ static_assert(ContextProvider<HistoryProvider<Window<8>>>,
 
 // Milestone 4 Phase B4: keeps the last `N` messages verbatim (same rule `Window<N>` uses above)
 // and folds everything OLDER than that into exactly one synthesized `system` summary message,
-// produced by calling `SummarizerT::chat_stream()` once per turn with ADR-182's compaction instruction
+// produced by calling `SummarizerT::chat_stream()` once per turn with ADR-190's compaction instruction
 // and the older slice as a transcript. 005 §7 G3's
 // "bounded divergence for `Summarize`" gate holds by construction here: given the SAME older
 // slice and the SAME (mock, in every test this milestone runs, decision 8) summarizer, the
@@ -105,7 +105,7 @@ public:
     // ADR-035 Phase 3: drains `SummarizerT::chat_stream()` (never `chat()`, ahead of that method's
     // eventual removal from the `ChatClient` concept) via the shared `drain_chat_stream()` helper.
     // Unlike `MemoryProvider::on_turn_end`'s best-effort extraction, a summarization failure here
-    // still propagates (`std::unexpected`); ADR-182 adds one more such failure, a reply with no prose.
+    // still propagates (`std::unexpected`); ADR-190 adds one more such failure, a reply with no prose.
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& session_ctx,
                                                                  EffectContext& ctx) {
         auto const& h = session_ctx.history;
@@ -122,7 +122,7 @@ public:
         std::vector<Message> older(h.begin(), h.begin() + static_cast<std::ptrdiff_t>(split));
         std::vector<Message> recent(h.begin() + static_cast<std::ptrdiff_t>(split), h.end());
 
-        // ADR-182: an instruction plus the older slice as a delimited transcript -- not the raw messages,
+        // ADR-190: an instruction plus the older slice as a delimited transcript -- not the raw messages,
         // which a real model answers as a conversation instead of summarizing.
         ChatRequest summarize_request = make_summarization_request(summarization_purpose::history_compaction, older);
         DrainedChatStream drained = drain_chat_stream(summarizer_.chat_stream(summarize_request, ctx));
@@ -130,7 +130,7 @@ public:
             co_return std::unexpected(
                 drained_failure_to_agent_error(drained.failure, "history.summarize_failed"));
         }
-        // ADR-182: a summary is prose -- the reply's text items, with any inline reasoning removed. A tool
+        // ADR-190: a summary is prose -- the reply's text items, with any inline reasoning removed. A tool
         // call, reasoning, data or attachment item would otherwise ride into the conversation inside a
         // `system` message. A reply with no prose -- including an empty or whitespace-only text item, which
         // an OpenAI-compatible backend returns for an empty completion -- is a FAILED summary, not an empty

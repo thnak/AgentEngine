@@ -212,6 +212,20 @@ int main() {
         r = runner.submit(s);
         check(r.has_value(), "R1: ... and accepted once attested");
 
+        // ADR-184: the gate is the shared predicate, so provenance counts. A text_derived request to a
+        // never_require tool that is not declassifiable (not pure) needs attestation too; the same
+        // request vendor_structured does not.
+        s = spec(tool("t", [](auto const&, auto&) { return ok_value(); }));
+        s.tool.effect_class = ae::effect_class::at_most_once;
+        s.request.provenance = ae::call_provenance::text_derived;
+        r = runner.submit(s);
+        check(!r && r.error().code == "background_job.approval_not_attested",
+              "R1 (ADR-184): a text_derived request to a non-declassifiable never_require tool needs attestation");
+        s = spec(tool("t", [](auto const&, auto&) { return ok_value(); }));
+        s.tool.effect_class = ae::effect_class::at_most_once;
+        r = runner.submit(s);
+        check(r.has_value(), "R1 (ADR-184): ... while the same request vendor_structured does not");
+
         s = spec(tool("t", [](auto const&, auto&) { return ok_value(); }));
         s.request.tool_name = "other";
         r = runner.submit(s);

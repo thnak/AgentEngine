@@ -1,4 +1,4 @@
-// Implements decisions/ADR-187-evaluation-harness.md §3.0 item 2: the first real end-to-end proof
+// Implements decisions/ADR-195-evaluation-harness.md §3.0 item 2: the first real end-to-end proof
 // that multi-trial orchestration is wired to tier1_statistics.hpp for real -- N+N real run_trial
 // calls, structurally graded, aggregated into follow_rate_screen_passes/clopper_pearson_lower_bound.
 // The model is scripted (deterministic) throughout; this file proves the SCREEN's own new logic

@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-183-approved-lesson-delivery.md: the host-owned record of which lesson texts a human
+// Implements decisions/ADR-191-approved-lesson-delivery.md: the host-owned record of which lesson texts a human
 // operator approved, verbatim, for which principal.
 //
 // A lesson is model-derived text and stays so: tainted, fenced, `content_origin::external`. What this registry adds
@@ -13,12 +13,12 @@
 // Host code only (I3): nothing here accepts model output as a decision. An approval must name its approver -- that is
 // what the audit event names (I4). The E31 acknowledgement it rests on is recorded when there is one
 // (`eval::approve_lesson` checks it first), but not required: the engine cannot verify a host-supplied string, so
-// demanding one only added friction (ADR-183 proportionality review). An evaluation's stand-in approval is a
+// demanding one only added friction (ADR-191 proportionality review). An evaluation's stand-in approval is a
 // separate call and is marked `simulated` wherever it is reported. The
 // engine does not persist the registry: a host loads it from its own storage, and a session without one delivers
 // every lesson fenced as before (ADR-070 §4 property 2).
 //
-// ADR-184 (unattended mode) adds two host opt-ins: an approval with no human in the loop (`approve_automatic`, marked
+// ADR-192 (unattended mode) adds two host opt-ins: an approval with no human in the loop (`approve_automatic`, marked
 // `automatic` wherever it is reported), and the level a session delivers approved lessons at
 // (`approved_lesson_level`, set on `AgentSession::set_approved_lessons`).
 
@@ -35,19 +35,19 @@
 namespace agentengine {
 
 // Who approved a lesson text, and on the strength of what (I4).
-struct LessonApproval {  // ae-naming-lint: allow LessonApproval — ADR-183
+struct LessonApproval {  // ae-naming-lint: allow LessonApproval — ADR-191
     std::string approver_id;
     std::string approved_at;      // host timestamp (ISO-8601)
     std::string acknowledgement;  // the E31 digest the approver acknowledged, when there is one (optional)
     bool simulated = false;       // an evaluation's stand-in for an approval (a Tier-1 screen's treatment arm)
-    bool automatic = false;       // ADR-184: approved with no human -- by a host-named automated reviewer
+    bool automatic = false;       // ADR-192: approved with no human -- by a host-named automated reviewer
 };
 
-// ADR-184: how a session delivers an approved lesson. `guidance` is ADR-183's route: fenced, tagged
+// ADR-192: how a session delivers an approved lesson. `guidance` is ADR-191's route: fenced, tagged
 // `approved-lesson:<code>`, and the preamble says it may be followed unless the user says otherwise. `instructions`
 // sends it as plain system text, unfenced -- as the host's own instructions. Either way the item stays tainted and
 // grants nothing; only how the model is told to read it changes.
-enum class approved_lesson_level {  // ae-naming-lint: allow approved_lesson_level — ADR-184
+enum class approved_lesson_level {  // ae-naming-lint: allow approved_lesson_level — ADR-192
     guidance,
     instructions,
 };
@@ -56,12 +56,12 @@ enum class approved_lesson_level {  // ae-naming-lint: allow approved_lesson_lev
     return level == approved_lesson_level::instructions ? "instructions" : "guidance";
 }
 
-struct ApprovedLessonMatch {  // ae-naming-lint: allow ApprovedLessonMatch — ADR-183
+struct ApprovedLessonMatch {  // ae-naming-lint: allow ApprovedLessonMatch — ADR-191
     std::string approval_id;      // what `ContentItem::approval` records: the acknowledgement, else the approver
     LessonApproval approval;
 };
 
-class ApprovedLessonRegistry {  // ae-naming-lint: allow ApprovedLessonRegistry — ADR-183
+class ApprovedLessonRegistry {  // ae-naming-lint: allow ApprovedLessonRegistry — ADR-191
 public:
     // Records that a human approved exactly `content` for `scope` (the principal it may reach -- an approval for
     // one tenant never reaches another). Replaces an earlier approval of the same text in the same scope.
@@ -70,7 +70,7 @@ public:
             return std::unexpected(error{failure_class::contract, "an approval must name its approver (I4)",
                                          "memory.approval_unattributed"});
         }
-        // ADR-184 red team: the id prefixes the engine writes for non-human approvals are reserved, so a recording's
+        // ADR-192 red team: the id prefixes the engine writes for non-human approvals are reserved, so a recording's
         // approval id always tells a human approval from an automatic or simulated one. Round 2: checked on both
         // fields that can become the id (`find` uses the acknowledgement when there is one), ignoring case and
         // leading whitespace.
@@ -84,7 +84,7 @@ public:
         return put(scope, content, std::move(approval));
     }
 
-    // ADR-184: an approval with no human in the loop -- a host that runs a full-automation system lets its own
+    // ADR-192: an approval with no human in the loop -- a host that runs a full-automation system lets its own
     // automated reviewer (the post-run review, a rule, a script) promote lessons. The host names the reviewer, which
     // is what the audit names; it is recorded as `automatic` and its id reads `automatic:<reviewer>`. Calling this IS
     // the opt-in: a host that never calls it has only human (or simulated) approvals.
@@ -97,7 +97,7 @@ public:
         return put(scope, content, LessonApproval{"automatic:" + reviewer_id, std::move(approved_at), "", false, true});
     }
 
-    // An evaluation's stand-in approval: the screen measures a lesson delivered as if approved (ADR-183 §3.8). It is
+    // An evaluation's stand-in approval: the screen measures a lesson delivered as if approved (ADR-191 §3.8). It is
     // recorded as simulated and names the trial, never a person.
     [[nodiscard]] result<void> approve_simulated(std::string_view scope, std::string_view content,
                                                  std::string const& trial_id) {
@@ -108,7 +108,7 @@ public:
         return put(scope, content, LessonApproval{"simulated:" + trial_id, "", "", true});
     }
 
-    // Revokes an approval. It takes effect at the next request any session builds (ADR-183 §3.3).
+    // Revokes an approval. It takes effect at the next request any session builds (ADR-191 §3.3).
     void revoke(std::string_view scope, std::string_view content) {
         std::unique_lock lock(mutex_);
         approved_.erase(key(scope, content));
@@ -125,7 +125,7 @@ public:
         return ApprovedLessonMatch{by_id ? a.approver_id : a.acknowledgement, a};
     }
 
-    // ADR-185: every lesson text approved for `scope`, in key order -- what a delegation chain shares with a child
+    // ADR-193: every lesson text approved for `scope`, in key order -- what a delegation chain shares with a child
     // (`SpawnTargetDescriptor::share_lessons`). The session still re-verifies each one when it builds a request.
     [[nodiscard]] std::vector<std::string> texts(std::string_view scope) const {
         std::vector<std::string> out;
@@ -188,7 +188,7 @@ private:
 // The text an approval is checked against, for an item `MemoryProvider` rendered: its confidence label (029 §6,
 // `⟦memory:...⟧ `) is dropped, since that label is the provider's rendering, not the approved lesson. Any other
 // text is checked as is. A lesson value can never itself begin with the label: `lesson_value_passes_validator`
-// refuses the bracket glyphs (ADR-183).
+// refuses the bracket glyphs (ADR-191).
 [[nodiscard]] inline std::string_view approved_lesson_candidate_text(std::string_view text) noexcept {
     constexpr std::string_view open = "\xE2\x9F\xA6memory:";  // memory_detail::memory_label_open()
     constexpr std::string_view close = "\xE2\x9F\xA7";        // memory_detail::memory_label_close()

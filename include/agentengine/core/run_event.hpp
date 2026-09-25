@@ -58,13 +58,13 @@ enum class run_event_kind {  // ae-naming-lint: allow run_event_kind — 013 §1
     // 013 §1 (ADR-177): the model output emitted since the last `model_call_started` is VOID -- the
     // engine discarded that call and is re-issuing it. APPENDED LAST so no existing kind's value moves.
     model_output_discarded,
-    // ADR-185: an event from a DELEGATED agent's run (a spawned child, or its own children), carried in the
+    // ADR-193: an event from a DELEGATED agent's run (a spawned child, or its own children), carried in the
     // parent's run so the root's host sees every hop -- wrapped, never re-emitted as the parent's own lifecycle
     // (a child's run_finished is not the parent's; protocol projectors ignore or label this kind). APPENDED LAST.
     delegated_event,
 };
 
-// ae-naming-lint: allow RunEvent — forward declaration for ADR-185's DelegatedEvent; see the definition below
+// ae-naming-lint: allow RunEvent — forward declaration for ADR-193's DelegatedEvent; see the definition below
 struct RunEvent;
 
 namespace run_event_payload {
@@ -192,9 +192,22 @@ struct InteractionRef {
 // resume call. Appended... except these two payloads shipped with only `call_id` before ADR-029
 // and had zero real producers (run_event.hpp's own prior top comment), so widening the struct here
 // is a genuine field addition, not a break of any real wire contract yet exercised.
+//
+// ADR-182 P1 (BUG-3 in tests/test_rt_agent_session_hitl_live_e2e.cpp): the three fields below are
+// appended last, so every existing `ApprovalRequested{call_id}`/`{call_id, interaction_id}` site is
+// unaffected. Before them, a consumer asked to approve had no way to learn WHAT it was approving
+// except re-deriving it from `history().back()`. `arguments_json` is the call's arguments as the
+// approval check saw them (after any tool-call-hook rewrite); it is model output already recorded in
+// history, so carrying it here exposes nothing new. `needs_approval` is false for a call that shares
+// the suspended round but would never itself have needed a decider (BUG-1): the event still fires for
+// it -- changing that is a semantics change left to BUG-1's own fix -- but a consumer can now tell the
+// two apart instead of asking a human about a call nobody gated.
 struct ApprovalRequested {
     std::string call_id;
     std::string interaction_id{};
+    std::string tool_name{};
+    std::string arguments_json{};
+    bool        needs_approval = true;
 };
 
 struct ApprovalResolved {
@@ -253,7 +266,7 @@ struct HookDecisionRequested {
 }  // namespace run_event_payload
 
 namespace run_event_payload {
-// ADR-185: `inner` is the delegated run's own event, unchanged (its run id and sequence); `depth` counts the hops
+// ADR-193: `inner` is the delegated run's own event, unchanged (its run id and sequence); `depth` counts the hops
 // between this run and that one (1 = this run's direct child).
 struct DelegatedEvent {
     std::string child_run_id{};

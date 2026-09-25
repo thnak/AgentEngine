@@ -165,7 +165,7 @@ using ApprovalDecider = std::function<bool(Principal const& caller, std::string_
 // `capability_ceiling` (it decides among already-possessed authority, it does not grant any).
 // Never consulted for `never_require` or `always_require`. For a `text_derived` call its `auto_approve`
 // is never an approval: 007 §4's closed declassifier list stays closed (ADR-023's own red-team already
-// found a laxer version of THAT gate unsafe). Its `auto_deny` IS honoured there since ADR-184 (denying
+// found a laxer version of THAT gate unsafe). Its `auto_deny` IS honoured there since ADR-192 (denying
 // only narrows; before, a denied text_derived call skipped the deny and reached the ApprovalDecider).
 // `resolve_approval_outcome` below enforces the distinction structurally, not just by convention.
 enum class policy_decision { auto_approve, auto_deny, require_approval };  // ae-naming-lint: allow policy_decision — ADR-070, same idiom as approval_mode/call_provenance
@@ -201,7 +201,7 @@ struct ToolInvocationAudit {
     std::string principal_id;
     std::string principal_tenant_id;
     std::string principal_on_behalf_of;
-    std::string principal_delegation_root{};  // ADR-185: the chain's root principal; empty when not delegated
+    std::string principal_delegation_root{};  // ADR-193: the chain's root principal; empty when not delegated
 };
 
 namespace tool_pipeline_detail {
@@ -295,12 +295,21 @@ namespace tool_pipeline_detail {
 // whether a round's pending calls need real human approval (`AgentSession::handle()`'s
 // suspend-for-approval path). Public re-export, single source of truth: `invoke_tool()`'s own step
 // 5 below calls this exact function too, so the two can never drift apart.
+//
+// ADR-184: a `text_derived` call is never less gated than the same call `vendor_structured`. The
+// declassifier lifts only the approval that text-derived provenance itself imposes; it never lifts
+// one the tool's own declaration imposes. So it needs approval when the tool's own mode would
+// require it for a trusted call (`always_require`, `policy_driven`) OR the tool is not
+// declassifiable. Before ADR-184 the first half was missing, and a text-derived call to a pure,
+// capability-free `always_require` tool ran with no approval at all.
 [[nodiscard]] inline bool tool_call_requires_approval(ToolDescriptor const& tool,
                                                         call_provenance provenance) noexcept {
     using namespace tool_pipeline_detail;
-    return (provenance == call_provenance::text_derived)
-               ? !is_auto_declassifiable_text_derived_call(tool)
-               : (tool.approval != approval_mode::never_require);
+    bool const tool_requires = tool.approval != approval_mode::never_require;
+    if (provenance == call_provenance::text_derived) {
+        return tool_requires || !is_auto_declassifiable_text_derived_call(tool);
+    }
+    return tool_requires;
 }
 
 // ADR-070: single source of truth for step 5's THREE-way outcome once a `PolicyDecider` may be in
@@ -317,17 +326,20 @@ enum class approval_outcome { proceed, deny, needs_decider };  // ae-naming-lint
                                                                  Principal const& caller,
                                                                  bool arguments_tainted,
                                                                  PolicyDecider const& policy) {
-    // `text_derived` never takes the policy's `auto_approve` -- 007 §4's closed declassifier list is
-    // untouched by this ADR; `is_auto_declassifiable_text_derived_call` (via
-    // `tool_call_requires_approval` below) stays the sole gate that can let that provenance through.
-    // ADR-184 red team (MAJOR): its `auto_deny` IS honoured for `text_derived` too. Denying only
-    // narrows (ADR-070 §4a forbids approving, not denying), and without it a host's explicit deny --
-    // a plan-mode gate, say -- was skipped for exactly the call class most exposed to injection, and
-    // reached the ApprovalDecider instead (which in unattended mode says yes).
-    if (tool.approval == approval_mode::policy_driven && policy) {
+    // `text_derived` never gets a policy APPROVAL -- 007 §4's closed declassifier list is untouched
+    // by ADR-070; `is_auto_declassifiable_text_derived_call` (via `tool_call_requires_approval`
+    // below) stays the sole gate that can lift approval for that provenance. ADR-184: the policy IS
+    // consulted for a text_derived call, but only its `auto_deny` is honoured. A deny only narrows,
+    // and without it a call the host's policy refuses outright as vendor_structured would instead
+    // reach the ApprovalDecider as text_derived -- lower trust, laxer gate.
+    if (tool.approval == approval_mode::policy_driven && provenance == call_provenance::text_derived &&
+        policy && policy(caller, tool, arguments_tainted) == policy_decision::auto_deny) {
+        return approval_outcome::deny;
+    }
+    if (tool.approval == approval_mode::policy_driven &&
+        provenance != call_provenance::text_derived && policy) {
         switch (policy(caller, tool, arguments_tainted)) {
             case policy_decision::auto_approve:
-                if (provenance == call_provenance::text_derived) break;  // never an approval for this class
                 return approval_outcome::proceed;
             case policy_decision::auto_deny:
                 return approval_outcome::deny;
@@ -413,14 +425,14 @@ struct AdmittedCall {
     }
 
     // -- step 5: approve ---------------------------------------------------------------------------
-    // ADR-023 §6 point 4 / 007 §4 amendment: a `text_derived` call NEVER consults `tool->approval`
-    // at all -- that setting was authored by the tool's declarer for VENDOR-STRUCTURED calls (a
-    // real, trusted wire-format field). A call reconstructed from raw model text is a different,
-    // weaker trust class by construction (007 §4: model-supplied text is never itself an
-    // authorization decision), so it gets its OWN gate (`is_auto_declassifiable_text_derived_call`)
-    // that can only ever be MORE restrictive than the tool's own setting, including overriding a
-    // tool's own `approval_mode::never_require` for anything with a real capability ceiling -- the
-    // exact override the confused-deputy scenario (ADR-023 §4b Finding 1) forced. A
+    // ADR-023 §6 point 4 / 007 §4 amendment: a tool's `approval_mode::never_require` was authored by
+    // its declarer for VENDOR-STRUCTURED calls (a real, trusted wire-format field). A call
+    // reconstructed from raw model text is a different, weaker trust class by construction (007 §4:
+    // model-supplied text is never itself an authorization decision), so it gets an ADDITIONAL gate
+    // (`is_auto_declassifiable_text_derived_call`) that overrides `never_require` for anything with a
+    // real capability ceiling -- the exact override the confused-deputy scenario (ADR-023 §4b
+    // Finding 1) forced. ADR-184: the extra gate is only ever added on top of the tool's own
+    // setting, never substituted for it, so `always_require`/`policy_driven` still apply. A
     // `vendor_structured` call (every caller before this amendment, and every caller that never sets
     // `provenance`) takes the ORIGINAL branch, byte-for-byte unchanged.
     // ADR-070 (decisions/ADR-070-host-configurable-responsibility-boundary.md): `policy` only ever
@@ -515,7 +527,7 @@ struct AdmittedCallOutcome {
     audit.principal_id           = ctx.principal.id;
     audit.principal_tenant_id    = ctx.principal.tenant_id;
     audit.principal_on_behalf_of = ctx.principal.on_behalf_of;
-    audit.principal_delegation_root = ctx.principal.delegation_root;  // ADR-185
+    audit.principal_delegation_root = ctx.principal.delegation_root;  // ADR-193
     return audit;
 }
 
@@ -557,7 +569,7 @@ struct AdmittedCallOutcome {
             audit_out->principal_id            = ctx.principal.id;
             audit_out->principal_tenant_id     = ctx.principal.tenant_id;
             audit_out->principal_on_behalf_of  = ctx.principal.on_behalf_of;
-            audit_out->principal_delegation_root = ctx.principal.delegation_root;  // ADR-185
+            audit_out->principal_delegation_root = ctx.principal.delegation_root;  // ADR-193
         }
         return result;
     };
@@ -754,7 +766,7 @@ using BackgroundTaskCompletion = std::function<void(ToolResult, ToolInvocationAu
     // merely reads `ctx.sandbox_fs` directly, so that guard does not cover this pointer. Reset
     // unconditionally, on this function's own local copy, before step 8 ever runs a tool against it.
     ctx.sandbox_fs = nullptr;
-    // ADR-185 (red team round 1): both capture the session that dispatched this call, which a backgrounded call may
+    // ADR-193 (red team round 1): both capture the session that dispatched this call, which a backgrounded call may
     // outlive -- the same class ADR-060/ADR-170 closed for the sinks above.
     ctx.delegated_event_sink = [](RunEvent const&) {};
     ctx.charge_delegated_usage = [](Usage const&, std::uint64_t) {};
@@ -783,7 +795,10 @@ using BackgroundTaskCompletion = std::function<void(ToolResult, ToolInvocationAu
     }
 
     // -- step 5: approve ------------------------------------------------------------------------------
-    if (tool->approval != approval_mode::never_require) {
+    // ADR-184: the shared predicate, not `tool->approval` alone -- before, a text_derived call to a
+    // never_require tool with a real capability ceiling was backgrounded with no approval, skipping
+    // ADR-023's override on this path only.
+    if (tool_call_requires_approval(*tool, request.provenance)) {
         std::string canonical_args = json::dump(request.arguments);
         bool approved = approve && approve(ctx.principal, request.tool_name, canonical_args);
         if (!approved) {
@@ -817,7 +832,7 @@ using BackgroundTaskCompletion = std::function<void(ToolResult, ToolInvocationAu
         audit.principal_id       = ctx.principal.id;
         audit.principal_tenant_id = ctx.principal.tenant_id;
         audit.principal_on_behalf_of = ctx.principal.on_behalf_of;
-        audit.principal_delegation_root = ctx.principal.delegation_root;  // ADR-185
+        audit.principal_delegation_root = ctx.principal.delegation_root;  // ADR-193
 
         if (!invoke_result) {
             error const& e = invoke_result.error();

@@ -1,6 +1,6 @@
 #pragma once
-// Also: ADR-183 `approve_lesson` and ADR-184 `promote_lesson_automatically` (no acknowledgement, by design).
-// Implements ADR-187 E31 (round-4 fix for the FATAL "the approver acknowledges an excerpt, never
+// Also: ADR-191 `approve_lesson` and ADR-192 `promote_lesson_automatically` (no acknowledgement, by design).
+// Implements ADR-195 E31 (round-4 fix for the FATAL "the approver acknowledges an excerpt, never
 // the bytes the model reads" finding, §3.0 item 5 / §3.9): the approver's acknowledgement is bound
 // to a digest of the VERBATIM rendered `MemoryItem`, and the promotion path re-renders and refuses
 // the write if the recomputed digest differs from the acknowledged one. An ack that names no digest,
@@ -15,9 +15,9 @@
 namespace agentengine::eval {
 
 // `digest`/`template_version` are what the approver actually saw and acknowledged (the verbatim
-// rendered `content`/`tags`/`salience`, per ADR-187 §3.0 item 5); `approver_id`/`acknowledged_at`
-// are the I4 attribution ADR-187 requires recorded alongside it.
-struct PromotionAck {  // ae-naming-lint: allow PromotionAck — ADR-187 §3.0 item 5 / E31
+// rendered `content`/`tags`/`salience`, per ADR-195 §3.0 item 5); `approver_id`/`acknowledged_at`
+// are the I4 attribution ADR-195 requires recorded alongside it.
+struct PromotionAck {  // ae-naming-lint: allow PromotionAck — ADR-195 §3.0 item 5 / E31
     Digest      digest;
     std::string template_version;
     std::string approver_id;
@@ -66,7 +66,7 @@ struct PromotionAck {  // ae-naming-lint: allow PromotionAck — ADR-187 §3.0 i
     return *rendered;
 }
 
-// ADR-183: registers a lesson a human approved, for `scope` (the principal whose sessions may receive it), so a
+// ADR-191: registers a lesson a human approved, for `scope` (the principal whose sessions may receive it), so a
 // session given `registry` delivers it as an approved lesson (still tainted and fenced; the fence's preamble says
 // it may be followed). It goes through E31 first: the candidate is re-rendered and its digest must equal what the
 // approver acknowledged, or nothing is registered. Returns the rendered item -- the exact bytes that were approved,
@@ -82,7 +82,7 @@ struct PromotionAck {  // ae-naming-lint: allow PromotionAck — ADR-187 §3.0 i
     return rendered;
 }
 
-// ADR-184 (unattended mode): the same promotion with no human -- for a full-automation host whose own automated
+// ADR-192 (unattended mode): the same promotion with no human -- for a full-automation host whose own automated
 // reviewer decides. The lesson is still rendered by the fixed templates (and so still passes the structural checks
 // `render_lesson` applies), and registered as `automatic:<reviewer_id>`. There is no acknowledgement to verify; the
 // host calling this is the decision, and the audit names the reviewer. Returns the rendered item to write to memory.

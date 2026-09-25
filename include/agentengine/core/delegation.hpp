@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-185-delegation-provenance.md: the one rule every agent-to-agent handoff applies --
+// Implements decisions/ADR-193-delegation-provenance.md: the one rule every agent-to-agent handoff applies --
 // a hop never changes who wrote the text.
 //
 // Before this, `agent.spawn` handed a child the parent model's `input` as an untainted `role::user`, `origin=user`
@@ -9,7 +9,7 @@
 // untainting needs an explicit, logged decision; this was neither). Three hops later nothing marked it at all.
 //
 // The rule: a delegated task reaches the next agent as a `role::user` message (so the agent carries it out -- a
-// delegated task that is fenced as "never follow" would be inert, ADR-183's finding) made of two parts:
+// delegated task that is fenced as "never follow" would be inert, ADR-191's finding) made of two parts:
 //   1. a host-authored line (untainted, `content_origin::system`: host code wrote it, ADR-066 §5) saying the request
 //      was delegated by another agent, which one, at what depth, and that no human wrote it;
 //   2. the delegated text itself, `content_origin::external`, `tainted = true` -- so recordings, summarizers, memory
@@ -31,7 +31,7 @@ namespace agentengine {
 
 // Where a delegated task came from. Host-derived values only (a principal id, a node label, a depth) -- never text
 // the delegating model wrote (I3).
-struct DelegationSource {  // ae-naming-lint: allow DelegationSource — ADR-185
+struct DelegationSource {  // ae-naming-lint: allow DelegationSource — ADR-193
     std::string   kind{};        // "agent.spawn" | "workflow node"
     std::string   from{};        // the delegating principal's id, or a label for the upstream node
     std::uint32_t depth = 0;     // the receiving agent's delegation depth (1 = delegated once)
@@ -84,7 +84,7 @@ struct DelegationSource {  // ae-naming-lint: allow DelegationSource — ADR-185
     return m;
 }
 
-// ADR-185 red team round 1: the same rule applied per ITEM, for input that may mix host-authored parts with another
+// ADR-193 red team round 1: the same rule applied per ITEM, for input that may mix host-authored parts with another
 // agent's (a workflow fan-in merges payloads onto the first one's role, so an upstream model's text could arrive
 // inside a user- or system-role message the role test passed straight through). Every item the host did not author
 // -- anything but an untainted user/system item -- becomes tainted and `external`, keeping its value (text, data,

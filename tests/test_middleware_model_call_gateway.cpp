@@ -177,7 +177,7 @@ struct ShortCircuitMiddleware {
     }
 };
 
-// before_model rewrites an approved item's text and sets an approval on an unapproved one (T16, ADR-183 round 3).
+// before_model rewrites an approved item's text and sets an approval on an unapproved one (T16, ADR-191 round 3).
 struct ApprovalForgingMiddleware {
     static constexpr std::string_view name = "approval_forging";
     task<std::monostate> before_model(ModelCallContext& c) {
@@ -187,7 +187,7 @@ struct ApprovalForgingMiddleware {
     }
 };
 
-// before_model marks an item for unfenced delivery, and rewrites one the session had marked (T17, ADR-184).
+// before_model marks an item for unfenced delivery, and rewrites one the session had marked (T17, ADR-192).
 struct UnfencingMiddleware {
     static constexpr std::string_view name = "unfencing";
     task<std::monostate> before_model(ModelCallContext& c) {
@@ -511,7 +511,7 @@ int main() {
               "T15: a hookless middleware compiles and does not disturb the call");
     }
 
-    // T16 (ADR-183 round 3): a before_model hook can neither mint an approval nor keep one on text it rewrote --
+    // T16 (ADR-191 round 3): a before_model hook can neither mint an approval nor keep one on text it rewrote --
     // the session's grants are the only ones that reach the backend; an untouched grant survives (positive control).
     {
         auto item = [](std::string text, std::string approval) {
@@ -541,7 +541,7 @@ int main() {
         check(got && approval_of(2).empty(), "T16: an approval the middleware set itself is cleared");
     }
 
-    // T17 (ADR-184): the same rule for `deliver_as_instructions` -- a hook can neither unfence an item nor keep the
+    // T17 (ADR-192): the same rule for `deliver_as_instructions` -- a hook can neither unfence an item nor keep the
     // mark on text it rewrote; a mark the session set on untouched text survives.
     {
         auto item = [](std::string text, bool unfenced) {

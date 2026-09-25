@@ -1,4 +1,4 @@
-// Implements decisions/ADR-187-evaluation-harness.md §3.9's `EvalStore`: a fresh in-memory
+// Implements decisions/ADR-195-evaluation-harness.md §3.9's `EvalStore`: a fresh in-memory
 // object/ref store pair, an eval-tenant Principal, and read/write capabilities scoped to that
 // mount alone. Proves the colon-collision guard round-trips through this call site (not just
 // eval_principal.hpp's own test), and that isolation is by the FRESH STORE, not by name -- §3.2's

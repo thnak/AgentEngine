@@ -148,7 +148,7 @@ static_assert(AppendLogStore<InMemoryAppendLogStore>,
 // DIRECTORY entry of a newly created log file, which POSIX needs for the file itself to survive a power
 // loss right after creation -- a named residual, not claimed.
 //
-// WRITERS: AN OS FILE LOCK, ACROSS THREADS, INSTANCES AND PROCESSES (merged 2026-09-25 from the ADR-187
+// WRITERS: AN OS FILE LOCK, ACROSS THREADS, INSTANCES AND PROCESSES (merged 2026-09-25 from the ADR-195
 // E32 work, which built it independently of the format above). Every append holds an exclusive lock on
 // the log file (`LockFileEx` / `flock`, released by the OS if the process dies) across the scan, any
 // torn-tail truncation and the one write; every read holds a shared one (Windows byte-range locks are

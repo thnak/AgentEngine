@@ -159,8 +159,8 @@ template <class T>
     ctx.capabilities = nullptr;
     ctx.sandbox_fs = nullptr;
     ctx.report_progress = [](agentengine::ContentItem) {};
-    ctx.delegated_event_sink = [](agentengine::RunEvent const&) {};                 // ADR-185
-    ctx.charge_delegated_usage = [](agentengine::Usage const&, std::uint64_t) {};  // ADR-185
+    ctx.delegated_event_sink = [](agentengine::RunEvent const&) {};                 // ADR-193
+    ctx.charge_delegated_usage = [](agentengine::Usage const&, std::uint64_t) {};  // ADR-193
     ctx.agent_turn_sink = [](agentengine::RunEvent const&) {};
     ctx.moderator_delta_sink = [](std::string const&) {};
     return ctx;

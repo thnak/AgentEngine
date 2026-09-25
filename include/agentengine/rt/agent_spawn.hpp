@@ -1,5 +1,5 @@
 #pragma once
-// (Also implements ADR-185: delegated input provenance, lineage, usage charged upward, per-target settings.)
+// (Also implements ADR-193: delegated input provenance, lineage, usage charged upward, per-target settings.)
 // Implements docs/planning/agent-spawn-runtime-design-draft.md item 1 (§2, §4.1) --
 // 026-Agent-Facing-Runtime-Surface.md §5's `agent.spawn` -- OpenQuestions.md OQ-14, named the
 // project's own "sharpest case". This is the REAL, wired, end-to-end call path: a real
@@ -66,7 +66,7 @@
                                                        // check_child_id, mint_spawn_worktree
 #include "agentengine/core/content.hpp"               // Message, ContentItem, Text, role, content_origin
 #include "agentengine/core/context_provider.hpp"      // ContextProvider, ContextContribution, SessionContext
-#include "agentengine/core/delegation.hpp"            // ADR-185: make_delegated_message
+#include "agentengine/core/delegation.hpp"            // ADR-193: make_delegated_message
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_schema.hpp"
@@ -106,11 +106,11 @@ AE_JSON_SCHEMA(AgentSpawnArgs, agent_id, input)
 
 struct AgentSpawnReply {
     std::string   output;
-    // ADR-185: the child's WHOLE run -- every model call it made and everything its own delegates spent -- not only
+    // ADR-193: the child's WHOLE run -- every model call it made and everything its own delegates spent -- not only
     // its final call (the ADR-163 bug, repeated here). The same total is charged to the caller's run.
     std::uint64_t input_tokens  = 0;
     std::uint64_t output_tokens = 0;
-    std::string   child_id{};  // ADR-185 (I4): which child ran, so the caller's audit can name it
+    std::string   child_id{};  // ADR-193 (I4): which child ran, so the caller's audit can name it
 };
 AE_JSON_SCHEMA(AgentSpawnReply, output, input_tokens, output_tokens, child_id)
 
@@ -171,10 +171,10 @@ struct SpawnTargetDescriptor {
     agentengine::ApprovalDecider approval_decider{};
     agentengine::PolicyDecider   policy_decider{};
 
-    // ADR-185: what this target's children get of ADR-183/184's host settings -- nothing unless named here. A
+    // ADR-193: what this target's children get of ADR-191/192's host settings -- nothing unless named here. A
     // parent's own settings are never inherited: a child is attended, fenced and lesson-free unless the host
     // chose otherwise for this target, per target, at registry-build time (never from `AgentSpawnArgs`, I3).
-    //   - `unattended_operator`/`unattended_veto`: the child runs ADR-184's unattended approvals, audited under
+    //   - `unattended_operator`/`unattended_veto`: the child runs ADR-192's unattended approvals, audited under
     //     this operator id; its approval events reach the caller's tap (`EffectContext::delegated_event_sink`).
     //   - `fence_disabled_by`: the child's system-channel fence is off, audited under this operator id.
     //   - `approved_lessons`/`lesson_level`: the child's approved-lesson registry, matched against the CHAIN's
@@ -228,7 +228,7 @@ public:
                 "a spawn target is already registered under this agent_id",
                 "agent_spawn.target_already_registered"});
         }
-        // ADR-185: refused here, not after a spawn has already spent quota, cost and a worktree (red team round 1).
+        // ADR-193: refused here, not after a spawn has already spent quota, cost and a worktree (red team round 1).
         if ((descriptor.unattended_operator && descriptor.unattended_operator->empty()) ||
             (descriptor.fence_disabled_by && descriptor.fence_disabled_by->empty())) {
             return std::unexpected(agentengine::error{
@@ -398,9 +398,9 @@ template <agentengine::rt::AppendLogStore StoreT>
     }
     // Per-session/per-principal spawn quota -- a cheap, local, pre-pool gate, checked BEFORE the
     // shared cost pool is ever touched (§4.1, §9 RC-3).
-    // ADR-185: keyed on the chain's ROOT principal (and its tenant), so a tree shares one quota -- keyed on the
+    // ADR-193: keyed on the chain's ROOT principal (and its tenant), so a tree shares one quota -- keyed on the
     // caller's own id, every child (a fresh principal) started with a full quota of its own. The tracker is
-    // lifetime-of-process, so one runaway tree spends its root's quota for good (disclosed, ADR-185 §4).
+    // lifetime-of-process, so one runaway tree spends its root's quota for good (disclosed, ADR-193 §4).
     if (!quota_tracker.try_consume(ctx.principal.tenant_id + '\x1f' + ctx.principal.root_id(),
                                    quota.max_spawns_per_principal)) {
         return std::unexpected(agentengine::error{agentengine::failure_class::resource,
@@ -474,7 +474,7 @@ template <agentengine::rt::AppendLogStore StoreT>
     // (derive_on_behalf_of, 018 §2) -- this function never re-derives or reuses the caller's raw
     // Principal directly (§5 item 4).
     ChildSpawnRequest child_request;
-    // ADR-185: the model-written `input` reaches the child as a DELEGATED task -- a host line naming the caller and
+    // ADR-193: the model-written `input` reaches the child as a DELEGATED task -- a host line naming the caller and
     // the depth, then the text itself, tainted and external -- never as an untainted human `user` message.
     child_request.input = agentengine::make_delegated_message(
         agentengine::DelegationSource{"agent.spawn", ctx.principal.id, ctx.principal.delegation_depth + 1},
@@ -482,7 +482,7 @@ template <agentengine::rt::AppendLogStore StoreT>
     child_request.capabilities  = child_grant->capabilities;
     child_request.principal     = ctx.principal;
     child_request.token_budget  = target->child_token_budget;
-    // ADR-185 (red team round 1): never more than the caller has left -- every child had its own full budget, so a
+    // ADR-193 (red team round 1): never more than the caller has left -- every child had its own full budget, so a
     // tree could spend (children x child budget) past the root's.
     if (ctx.remaining_token_budget.has_value()) {
         if (*ctx.remaining_token_budget == 0) {
@@ -502,7 +502,7 @@ template <agentengine::rt::AppendLogStore StoreT>
     // `SpawnTargetDescriptor`'s own comment above.
     child_request.approval_decider = target->approval_decider;
     child_request.policy_decider   = target->policy_decider;
-    // ADR-185: the child's events reach the caller's tap; its settings are only what this target names.
+    // ADR-193: the child's events reach the caller's tap; its settings are only what this target names.
     child_request.event_sink          = ctx.delegated_event_sink;
     child_request.charge_usage        = ctx.charge_delegated_usage;
     child_request.unattended_operator = target->unattended_operator;
@@ -530,7 +530,7 @@ template <agentengine::rt::AppendLogStore StoreT>
     }
 
     // -- [9] REPLY --------------------------------------------------------------------------------
-    // ADR-185: `usage` is the child's whole run (the stock runner reports `run_usage()`, descendants included); the
+    // ADR-193: `usage` is the child's whole run (the stock runner reports `run_usage()`, descendants included); the
     // runner already charged it to the caller's run through `charge_usage`, on success and failure alike.
     return AgentSpawnReply{agentengine::text_of(child_response->message), child_response->usage.input_tokens,
                            child_response->usage.output_tokens, minted_pump->child_id};

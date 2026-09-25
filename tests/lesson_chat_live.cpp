@@ -1,4 +1,4 @@
-// A live, multi-turn chat with a real agent, driven by ANOTHER agent playing the user -- for ADR-183's
+// A live, multi-turn chat with a real agent, driven by ANOTHER agent playing the user -- for ADR-191's
 // approved-lesson route, tested the way it will be used: in a conversation, not one scripted prompt.
 //
 // One process holds one real `AgentSession` (DeepSeek by default) for the whole conversation: unbounded history,

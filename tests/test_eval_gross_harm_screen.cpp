@@ -1,4 +1,4 @@
-// Implements decisions/ADR-187-evaluation-harness.md §3.0 item 3: the gross-harm regression screen,
+// Implements decisions/ADR-195-evaluation-harness.md §3.0 item 3: the gross-harm regression screen,
 // end to end -- 2*K*tasks real run_trial calls (arms and tasks interleaved by one seeded shuffle),
 // each graded for TASK SUCCESS by its own task's grader, aggregated intention-to-treat into
 // per-task diffs, and fed to tier1_statistics.hpp's sign_flip_sum_lower_tail_pvalue and
@@ -775,7 +775,7 @@ int main() {
     }
 
     // ---- Scenario 10: a transient fault gets one retry, from a bounded pool -------------------------
-    // ADR-187 §8 residual (closed): nothing was retried, so a flaky provider went straight to ungraded.
+    // ADR-195 §8 residual (closed): nothing was retried, so a flaky provider went straight to ungraded.
     {
         auto slot_factory = [](auto plan) {
             return [plan](ev::TrialSlot const& slot) { return ScriptedChatClient(script_for(plan(slot))); };
@@ -837,7 +837,7 @@ int main() {
     }
 
     // ---- Scenario 11: the factories see each trial's own seed ----------------------------------------
-    // ADR-187 §8 residual (closed): factories got only (arm, task), so the per-trial seed could never reach
+    // ADR-195 §8 residual (closed): factories got only (arm, task), so the per-trial seed could never reach
     // a provider's own sampling seed.
     {
         auto seen = std::make_shared<std::map<std::string, std::uint64_t>>();
@@ -855,7 +855,7 @@ int main() {
     }
 
     // ---- Scenario 12: the summarizer has a token budget of its own -----------------------------------
-    // ADR-187 §8 residual (closed): `token_budget` bounded only the agent's model; `MemoryProvider` never
+    // ADR-195 §8 residual (closed): `token_budget` bounded only the agent's model; `MemoryProvider` never
     // reports the summarizer's usage. The mock summarizer reports 2 tokens per call; every trial here
     // makes two turns, so two summarizer calls without a budget.
     {
@@ -910,7 +910,7 @@ int main() {
     }
 
     // ---- Scenario 13: a streamed failure is classified by the provider's own error ------------------
-    // ADR-187 §8 residual (closed): `AgentSession` labels every unclean stream `transient`
+    // ADR-195 §8 residual (closed): `AgentSession` labels every unclean stream `transient`
     // (`run.stream_incomplete`), even a provider's 400. The recording keeps the real error (ADR-177).
     {
         auto stream_failed = [](std::optional<ae::error> inner) {

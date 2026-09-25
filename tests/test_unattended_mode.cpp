@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-184-unattended-mode.md, the delivery half (what the model is sent; the approval half is
+// Proof for decisions/ADR-192-unattended-mode.md, the delivery half (what the model is sent; the approval half is
 // test_unattended_approvals.cpp, which needs no HTTPS):
 //   L1-L6  Approved lessons delivered as `instructions` (plain, unfenced system text, still tainted); the
 //          system-channel fence switched off for every tainted system text; a provider cannot set the delivery mark
@@ -140,7 +140,7 @@ int main() {
         check(!item_at(c, 0).approval.empty() && !item_at(c, 0).deliver_as_instructions &&
                   !item_at(c, 1).deliver_as_instructions && !item_at(c, 2).deliver_as_instructions &&
                   contains(wire, fence_open + "approved-lesson:"),
-              "L1: the default level is ADR-183's -- the approved lesson is fenced and tagged, nothing is delivered as "
+              "L1: the default level is ADR-191's -- the approved lesson is fenced and tagged, nothing is delivered as "
               "instructions, and a provider's own mark on an item is cleared");
     }
     {
@@ -232,7 +232,7 @@ int main() {
         Captured const h = capture([&](LessonSession& s) { s.set_approved_lessons(&reg); });
         check(contains(openai_wire(h.request), "a human operator of this deployment reviewed") &&
                   !contains(openai_wire(h.request), "automated reviewer"),
-              "L8 control: a human approval keeps ADR-183's measured wording");
+              "L8 control: a human approval keeps ADR-191's measured wording");
     }
     {
         ae::ApprovedLessonRegistry r;

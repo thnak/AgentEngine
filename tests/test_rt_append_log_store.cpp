@@ -14,7 +14,7 @@
 //   L7 -- FileAppendLogStore tolerates a torn trailing record (a crash mid-write): read_from() stops
 //         cleanly before the torn record rather than erroring, and every prior, fully-written record
 //         is still returned intact.
-//   L8 -- concurrent appends to one FileAppendLogStore log (ADR-187 E32 red team, FATAL): every
+//   L8 -- concurrent appends to one FileAppendLogStore log (ADR-195 E32 red team, FATAL): every
 //         append lands, seqs are distinct and consecutive, and seq N is the N-th record read back.
 //   L9 -- a torn tail is repaired by the next append instead of swallowing every later record; a header
 //         claiming ~4 GiB is read as a torn tail.

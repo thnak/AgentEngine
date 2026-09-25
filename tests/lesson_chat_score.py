@@ -1,4 +1,4 @@
-"""Scores a set of lesson_chat_live conversations (ADR-183) from their files only.
+"""Scores a set of lesson_chat_live conversations (ADR-191) from their files only.
 
 Each conversation directory holds actions.jsonl, written by `lesson_chat_live --serve` while a user agent chatted
 with it. The arm map (one "<dir-name> <arm>" per line) was written by whoever started the servers and was never
