@@ -113,7 +113,10 @@ not read it.
 - **Existing suites**: `ctest -R "approval|tool_call_hook|suspend|hitl|scripted_chat|agui|test_driver|interaction|hook"`,
   12/12. Full-suite result in §7.
 
-## 5. Finding, not fixed here: a text-derived call skips its tool's own `always_require`
+## 5. Finding, fixed by ADR-184: a text-derived call skips its tool's own `always_require`
+
+**Fixed by ADR-184** (2026-09-25, on project-owner direction): a `text_derived` call is now
+never gated less than the same `vendor_structured` call. The text below is the original finding.
 
 While building O4, a hook that only rewrote a gated call's arguments let the call **run with no
 approval at all**: no suspend, no decider consulted. The cause is `tool_call_requires_approval()`

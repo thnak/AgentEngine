@@ -1,6 +1,6 @@
 # 007 — Capability and Trust Model
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 003, 006, 008, 018 · **Gate:** §9
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-25 by ADR-184** (§4 — a `text_derived` call is never gated less than the same `vendor_structured` call) · **Depends on:** 003, 006, 008, 018 · **Gate:** §9
 
 ## Goal
 
@@ -123,6 +123,18 @@ authored for the trusted, vendor-structured path, not for text reconstructed fro
 Enforced at exactly one point, `core/tool_pipeline.hpp`'s `invoke_tool` step 5 — see that function's
 own comment for the mechanism, and `tests/test_tool_pipeline.cpp`'s `ADR-023 P2-T2` case for the
 regression test encoding the confused-deputy scenario this amendment exists to close.
+
+**Amendment (2026-09-25, ADR-184 — the declassifier only ever removes provenance's own gate).**
+Auto-declassification lifts only the approval that `text_derived` provenance itself imposes. It never
+lifts an approval the tool's own declaration imposes. A `text_derived` call is therefore **never gated
+less than the same call `vendor_structured`**: it needs a decider when the tool is not
+declassifiable (above) **or** when the tool's own mode would need one for a trusted call
+(`always_require`, and `policy_driven`). A host `PolicyDecider` can still never *approve* a
+`text_derived` call, but its `auto_deny` binds one exactly as it binds the vendor-structured call,
+because a deny only narrows. The override above only ever adds a gate; it never substitutes for one.
+Every approval decision, background paths included, goes through `tool_call_requires_approval`. The earlier implementation read
+"auto-declassifies" as "needs no approval", so a `text_derived` call to a pure, capability-free
+`always_require` tool ran with no human at all.
 
 **Amendment (`decisions/ADR-070-host-configurable-responsibility-boundary.md`).** That ADR names a
 formal, bounded pattern — the "Delegated Decision Seam" — for shifting part of AgentEngine's own

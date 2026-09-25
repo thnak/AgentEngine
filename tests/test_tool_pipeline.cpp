@@ -143,6 +143,58 @@ struct PolicyDrivenTool
     static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
 };
 
+// -- decisions/ADR-184-text-derived-never-laxer-than-vendor-structured.md: two tools that ARE
+// declassifiable (pure, no capabilities) but whose authors declared that every call needs a human.
+// A text_derived call must not be gated less than the same vendor_structured call.
+struct PureAlwaysTool
+    : agentengine::Tool<PureAlwaysTool, agentengine::EffectClass<agentengine::effect_class::pure>,
+                          agentengine::Approval<agentengine::approval_mode::always_require>> {
+    static constexpr std::string_view name = "pure_always";
+    static constexpr std::string_view description = "Pure and capability-free, but always needs approval.";
+    using Args = PureArgs;
+    using Reply = PureReply;
+
+    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+};
+
+struct PurePolicyTool
+    : agentengine::Tool<PurePolicyTool, agentengine::EffectClass<agentengine::effect_class::pure>,
+                          agentengine::Approval<agentengine::approval_mode::policy_driven>> {
+    static constexpr std::string_view name = "pure_policy";
+    static constexpr std::string_view description = "Pure and capability-free, gated by policy_driven.";
+    using Args = PureArgs;
+    using Reply = PureReply;
+
+    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+};
+
+// ADR-184 red-team: an inert-but-real ceiling (FsRead is read-only, so still declassifiable) on a
+// pure tool whose author asked for approval on every call.
+struct PureReadAlwaysTool
+    : agentengine::Tool<PureReadAlwaysTool, agentengine::Capabilities<agentengine::cap::decl::FsRead<"workspace">>,
+                          agentengine::EffectClass<agentengine::effect_class::pure>,
+                          agentengine::Approval<agentengine::approval_mode::always_require>> {
+    static constexpr std::string_view name = "pure_read_always";
+    static constexpr std::string_view description = "Pure, reads files, always needs approval.";
+    using Args = PureArgs;
+    using Reply = PureReply;
+
+    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+};
+
+// ADR-184 red-team: a Backgroundable never_require tool with a real (non-inert) ceiling, for
+// background_task()'s own step 5, which used to read `tool->approval` alone.
+struct BackgroundNetTool
+    : agentengine::Tool<BackgroundNetTool, agentengine::Capabilities<agentengine::cap::decl::NetOut<"api.example.com">>,
+                          agentengine::Backgroundable> {
+    static constexpr std::string_view name = "background_net";
+    static constexpr std::string_view description = "Backgroundable, real egress, never_require.";
+    using Args = PureArgs;
+    using Reply = PureReply;
+
+    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+};
+
 agentengine::EffectContext make_ctx() {
     agentengine::EffectContext ctx;
     ctx.principal = agentengine::Principal{"test-principal", ""};
@@ -159,7 +211,8 @@ int main() {
     using agentengine::invoke_tool;
 
     auto const table = ToolTable::from_tools<EchoTool, GatedTool, PureNoCapTool, DangerousNeverRequireTool,
-                                              PolicyDrivenTool>();
+                                              PolicyDrivenTool, PureAlwaysTool, PurePolicyTool, PureReadAlwaysTool,
+                                              BackgroundNetTool>();
 
     // -- G2 positive case: capability held, tool succeeds ----------------------------------------
     {
@@ -487,8 +540,9 @@ int main() {
               "ADR-070: the denial is the ordinary capability-not-held one, not a policy path");
     }
 
-    // -- text_derived provenance: the PolicyDecider is NEVER consulted, even for a policy_driven tool
-    // -- 007 §4's closed declassifier list stays closed (ADR-070's own must-not-loosen list).
+    // -- text_derived provenance: the PolicyDecider can NEVER approve, even for a policy_driven tool
+    // -- 007 §4's closed declassifier list stays closed (ADR-070's own must-not-loosen list). ADR-184
+    // lets it be consulted for a text_derived call, but only its auto_deny is honoured.
     {
         using agentengine::call_provenance;
         CapabilitySet held = CapabilitySet::grant_root({agentengine::cap::Entropy{}});
@@ -503,13 +557,161 @@ int main() {
                 policy_called = true;
                 return agentengine::policy_decision::auto_approve;
             };
-        auto result = invoke_tool(table, held, req, ctx, nullptr, nullptr, tripwire);
-        check(result.is_error,
-              "ADR-070: a text_derived call to a policy_driven, capability-bearing tool is still "
-              "refused with no ApprovalDecider -- PolicyDecider does not reach this path");
-        check(!policy_called,
-              "ADR-070: the PolicyDecider is structurally never consulted for a text_derived call -- "
-              "007 §4's closed declassifier list is untouched by this ADR");
+        agentengine::ToolInvocationAudit audit;
+        auto result = invoke_tool(table, held, req, ctx, nullptr, &audit, tripwire);
+        (void)policy_called;  // ADR-184: consulting is allowed; approving is not
+        check(result.is_error && audit.error_code == "tool.approval_denied",
+              "ADR-070 (as narrowed by ADR-184): an auto_approve PolicyDecider never lets a text_derived "
+              "call to a policy_driven tool through -- refused as approval_denied with no ApprovalDecider");
+    }
+
+    // ==============================================================================================
+    // ADR-184: a text_derived call is never gated less than the same call vendor_structured. The
+    // declassifier lifts only the approval text-derived provenance itself imposes, never one the
+    // tool's own declaration imposes.
+    // ==============================================================================================
+    {
+        using agentengine::call_provenance;
+        CapabilitySet held;  // pure_always / pure_policy declare no capabilities
+        auto req_for = [](std::string tool, call_provenance prov) {
+            return ToolCallRequest{.call_id = "call-184",
+                                   .tool_name = std::move(tool),
+                                   .arguments = *json::parse(R"({"note":"x"})"),
+                                   .provenance = prov};
+        };
+
+        // T1: the bypass itself. Before ADR-184 this succeeded with no decider at all.
+        {
+            auto ctx = make_ctx();
+            agentengine::ToolInvocationAudit audit;
+            auto r = invoke_tool(table, held, req_for("pure_always", call_provenance::text_derived), ctx, nullptr,
+                                 &audit);
+            check(r.is_error && audit.error_code == "tool.approval_denied",
+                  "ADR-184 T1: a text_derived call to a pure, capability-free always_require tool is refused "
+                  "with no decider -- the tool's own always_require is not declassified away");
+        }
+        // T2: it routes through the real approval step: consulted, and its answer is honoured.
+        {
+            auto ctx = make_ctx();
+            bool consulted = false;
+            agentengine::ApprovalDecider deny = [&](agentengine::Principal const&, std::string_view,
+                                                      std::string const&) {
+                consulted = true;
+                return false;
+            };
+            auto denied = invoke_tool(table, held, req_for("pure_always", call_provenance::text_derived), ctx, deny);
+            check(denied.is_error && consulted,
+                  "ADR-184 T2: the decider IS consulted for it, and a 'no' blocks the call");
+            agentengine::ApprovalDecider allow = [](agentengine::Principal const&, std::string_view,
+                                                      std::string const&) { return true; };
+            auto ctx2 = make_ctx();
+            auto approved = invoke_tool(table, held, req_for("pure_always", call_provenance::text_derived), ctx2, allow);
+            check(!approved.is_error, "ADR-184 T2: an explicit approval lets it through -- a gate, not a block");
+        }
+        // T3: parity with the vendor_structured form of the same call.
+        {
+            auto ctx = make_ctx();
+            auto r = invoke_tool(table, held, req_for("pure_always", call_provenance::vendor_structured), ctx, nullptr);
+            check(r.is_error, "ADR-184 T3: the same call vendor_structured is refused with no decider (unchanged)");
+        }
+        // T4: policy_driven, text_derived, declassifiable: needs a decider. A PolicyDecider's
+        // auto_approve is never honoured for text_derived (ADR-070's closed list), so there is no laxer
+        // route; with an ApprovalDecider that says yes, it runs.
+        {
+            auto ctx = make_ctx();
+            agentengine::PolicyDecider approve_all =
+                [](agentengine::Principal const&, agentengine::ToolDescriptor const&, bool) {
+                    return agentengine::policy_decision::auto_approve;
+                };
+            agentengine::ToolInvocationAudit audit;
+            auto r = invoke_tool(table, held, req_for("pure_policy", call_provenance::text_derived), ctx, nullptr,
+                                 &audit, approve_all);
+            check(r.is_error && audit.error_code == "tool.approval_denied",
+                  "ADR-184 T4: a text_derived call to a pure, capability-free policy_driven tool is refused "
+                  "with no ApprovalDecider, even though the PolicyDecider says auto_approve");
+            agentengine::ApprovalDecider allow = [](agentengine::Principal const&, std::string_view,
+                                                      std::string const&) { return true; };
+            auto ctx2 = make_ctx();
+            auto ok = invoke_tool(table, held, req_for("pure_policy", call_provenance::text_derived), ctx2, allow,
+                                  nullptr, approve_all);
+            check(!ok.is_error, "ADR-184 T4: with an approving ApprovalDecider it runs (the refusal was the gate)");
+        }
+        // T5: the declassifier still does its job for a tool that asks for no approval (ADR-023 P2-T1's
+        // shape, restated here next to the cases it must not be confused with).
+        {
+            auto ctx = make_ctx();
+            auto r = invoke_tool(table, held, req_for("pure_no_cap", call_provenance::text_derived), ctx, nullptr);
+            check(!r.is_error,
+                  "ADR-184 T5: a text_derived call to a pure, capability-free never_require tool still "
+                  "auto-declassifies");
+        }
+        // T6: the exported predicate agrees, for every mode x provenance on a declassifiable tool.
+        {
+            using agentengine::approval_mode;
+            auto desc = [&](std::string_view name) { return *table.find(name); };
+            bool ok = true;
+            for (auto [name, mode] : {std::pair{std::string_view{"pure_no_cap"}, approval_mode::never_require},
+                                      std::pair{std::string_view{"pure_always"}, approval_mode::always_require},
+                                      std::pair{std::string_view{"pure_policy"}, approval_mode::policy_driven}}) {
+                agentengine::ToolDescriptor const d = desc(name);
+                bool const vendor = agentengine::tool_call_requires_approval(d, call_provenance::vendor_structured);
+                bool const text = agentengine::tool_call_requires_approval(d, call_provenance::text_derived);
+                ok = ok && (d.approval == mode) && (!vendor || text);  // text never laxer than vendor
+            }
+            check(ok, "ADR-184 T6: for every approval mode, text_derived requires approval whenever "
+                      "vendor_structured does");
+        }
+        // T7 (red-team): the host policy's auto_deny binds a text_derived call too. Before, a
+        // text_derived call skipped the PolicyDecider entirely and an allow-all ApprovalDecider
+        // approved what the policy refuses outright for the vendor_structured twin.
+        {
+            agentengine::PolicyDecider deny_all =
+                [](agentengine::Principal const&, agentengine::ToolDescriptor const&, bool) {
+                    return agentengine::policy_decision::auto_deny;
+                };
+            bool approver_called = false;
+            agentengine::ApprovalDecider allow_all = [&](agentengine::Principal const&, std::string_view,
+                                                           std::string const&) {
+                approver_called = true;
+                return true;
+            };
+            for (call_provenance const prov : {call_provenance::vendor_structured, call_provenance::text_derived}) {
+                auto ctx = make_ctx();
+                approver_called = false;
+                agentengine::ToolInvocationAudit audit;
+                auto r = invoke_tool(table, held, req_for("pure_policy", prov), ctx, allow_all, &audit, deny_all);
+                check(r.is_error && audit.error_code == "tool.policy_denied" && !approver_called,
+                      prov == call_provenance::text_derived
+                          ? "ADR-184 T7: auto_deny refuses the text_derived call before an allow-all "
+                            "ApprovalDecider is consulted"
+                          : "ADR-184 T7: auto_deny refuses the vendor_structured call before an allow-all "
+                            "ApprovalDecider is consulted (unchanged)");
+            }
+        }
+        // T8 (red-team): an inert-but-real ceiling. FsRead keeps the tool declassifiable, so before
+        // ADR-184 a text_derived call to it skipped its always_require: a confidentiality bypass, not
+        // only a capability-free one.
+        {
+            agentengine::ToolDescriptor const d = *table.find("pure_read_always");
+            check(agentengine::tool_pipeline_detail::is_auto_declassifiable_text_derived_call(d) &&
+                      agentengine::tool_call_requires_approval(d, call_provenance::text_derived),
+                  "ADR-184 T8: a declassifiable, FsRead-only, always_require tool still requires approval "
+                  "for a text_derived call");
+        }
+        // T9 (red-team): background_task()'s own step 5 uses the shared predicate. A text_derived call
+        // to a Backgroundable never_require tool with NetOut needs approval (ADR-023's override), and is
+        // refused synchronously, before any thread starts.
+        {
+            CapabilitySet bg_held = CapabilitySet::grant_root(
+                {agentengine::cap::NetOut{{"api.example.com"}, std::nullopt, {}}, agentengine::cap::Background{1}});
+            bool completed = false;
+            auto r = agentengine::background_task(
+                table, bg_held, req_for("background_net", call_provenance::text_derived), make_ctx(), nullptr, 0,
+                [&](agentengine::ToolResult, agentengine::ToolInvocationAudit) { completed = true; });
+            check(!r.has_value() && r.error().code == "tool.approval_denied" && !completed,
+                  "ADR-184 T9: background_task refuses a text_derived call to a never_require NetOut tool "
+                  "with no decider");
+        }
     }
 
     if (g_failures == 0) {

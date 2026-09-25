@@ -92,11 +92,10 @@ AE_JSON_SCHEMA(ValueArgs, value)
 struct ValueReply { int value = 0; };
 AE_JSON_SCHEMA(ValueReply, value)
 
-// `idempotent`, not `pure`: a hook rewrite downgrades a call to text_derived, and a text_derived call
-// to a pure, capability-free tool is auto-declassified past its own always_require (ADR-183 §5, a
-// separate finding). A non-pure tool keeps the hook cases (O4-O6) genuinely approval-gated.
+// `pure` and capability-free on purpose: O4's hook rewrite downgrades c1 to text_derived, which is the
+// shape ADR-183 §5 found skipping approval. Since ADR-184 it stays approval-gated.
 struct GatedTool : agentengine::Tool<GatedTool, agentengine::Capabilities<>,
-                                       agentengine::EffectClass<agentengine::effect_class::idempotent>,
+                                       agentengine::EffectClass<agentengine::effect_class::pure>,
                                        agentengine::Approval<agentengine::approval_mode::always_require>> {
     static constexpr std::string_view name = "gated_tool";
     static constexpr std::string_view description = "Needs approval before every call.";

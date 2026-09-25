@@ -293,12 +293,21 @@ namespace tool_pipeline_detail {
 // whether a round's pending calls need real human approval (`AgentSession::handle()`'s
 // suspend-for-approval path). Public re-export, single source of truth: `invoke_tool()`'s own step
 // 5 below calls this exact function too, so the two can never drift apart.
+//
+// ADR-184: a `text_derived` call is never less gated than the same call `vendor_structured`. The
+// declassifier lifts only the approval that text-derived provenance itself imposes; it never lifts
+// one the tool's own declaration imposes. So it needs approval when the tool's own mode would
+// require it for a trusted call (`always_require`, `policy_driven`) OR the tool is not
+// declassifiable. Before ADR-184 the first half was missing, and a text-derived call to a pure,
+// capability-free `always_require` tool ran with no approval at all.
 [[nodiscard]] inline bool tool_call_requires_approval(ToolDescriptor const& tool,
                                                         call_provenance provenance) noexcept {
     using namespace tool_pipeline_detail;
-    return (provenance == call_provenance::text_derived)
-               ? !is_auto_declassifiable_text_derived_call(tool)
-               : (tool.approval != approval_mode::never_require);
+    bool const tool_requires = tool.approval != approval_mode::never_require;
+    if (provenance == call_provenance::text_derived) {
+        return tool_requires || !is_auto_declassifiable_text_derived_call(tool);
+    }
+    return tool_requires;
 }
 
 // ADR-070: single source of truth for step 5's THREE-way outcome once a `PolicyDecider` may be in
@@ -315,9 +324,16 @@ enum class approval_outcome { proceed, deny, needs_decider };  // ae-naming-lint
                                                                  Principal const& caller,
                                                                  bool arguments_tainted,
                                                                  PolicyDecider const& policy) {
-    // `text_derived` never consults `policy` -- 007 §4's closed declassifier list is untouched by
-    // this ADR; `is_auto_declassifiable_text_derived_call` (via `tool_call_requires_approval` below)
-    // stays the sole, unconditional gate for that provenance.
+    // `text_derived` never gets a policy APPROVAL -- 007 §4's closed declassifier list is untouched
+    // by ADR-070; `is_auto_declassifiable_text_derived_call` (via `tool_call_requires_approval`
+    // below) stays the sole gate that can lift approval for that provenance. ADR-184: the policy IS
+    // consulted for a text_derived call, but only its `auto_deny` is honoured. A deny only narrows,
+    // and without it a call the host's policy refuses outright as vendor_structured would instead
+    // reach the ApprovalDecider as text_derived -- lower trust, laxer gate.
+    if (tool.approval == approval_mode::policy_driven && provenance == call_provenance::text_derived &&
+        policy && policy(caller, tool, arguments_tainted) == policy_decision::auto_deny) {
+        return approval_outcome::deny;
+    }
     if (tool.approval == approval_mode::policy_driven &&
         provenance != call_provenance::text_derived && policy) {
         switch (policy(caller, tool, arguments_tainted)) {
@@ -407,14 +423,14 @@ struct AdmittedCall {
     }
 
     // -- step 5: approve ---------------------------------------------------------------------------
-    // ADR-023 §6 point 4 / 007 §4 amendment: a `text_derived` call NEVER consults `tool->approval`
-    // at all -- that setting was authored by the tool's declarer for VENDOR-STRUCTURED calls (a
-    // real, trusted wire-format field). A call reconstructed from raw model text is a different,
-    // weaker trust class by construction (007 §4: model-supplied text is never itself an
-    // authorization decision), so it gets its OWN gate (`is_auto_declassifiable_text_derived_call`)
-    // that can only ever be MORE restrictive than the tool's own setting, including overriding a
-    // tool's own `approval_mode::never_require` for anything with a real capability ceiling -- the
-    // exact override the confused-deputy scenario (ADR-023 §4b Finding 1) forced. A
+    // ADR-023 §6 point 4 / 007 §4 amendment: a tool's `approval_mode::never_require` was authored by
+    // its declarer for VENDOR-STRUCTURED calls (a real, trusted wire-format field). A call
+    // reconstructed from raw model text is a different, weaker trust class by construction (007 §4:
+    // model-supplied text is never itself an authorization decision), so it gets an ADDITIONAL gate
+    // (`is_auto_declassifiable_text_derived_call`) that overrides `never_require` for anything with a
+    // real capability ceiling -- the exact override the confused-deputy scenario (ADR-023 §4b
+    // Finding 1) forced. ADR-184: the extra gate is only ever added on top of the tool's own
+    // setting, never substituted for it, so `always_require`/`policy_driven` still apply. A
     // `vendor_structured` call (every caller before this amendment, and every caller that never sets
     // `provenance`) takes the ORIGINAL branch, byte-for-byte unchanged.
     // ADR-070 (decisions/ADR-070-host-configurable-responsibility-boundary.md): `policy` only ever
@@ -771,7 +787,10 @@ using BackgroundTaskCompletion = std::function<void(ToolResult, ToolInvocationAu
     }
 
     // -- step 5: approve ------------------------------------------------------------------------------
-    if (tool->approval != approval_mode::never_require) {
+    // ADR-184: the shared predicate, not `tool->approval` alone -- before, a text_derived call to a
+    // never_require tool with a real capability ceiling was backgrounded with no approval, skipping
+    // ADR-023's override on this path only.
+    if (tool_call_requires_approval(*tool, request.provenance)) {
         std::string canonical_args = json::dump(request.arguments);
         bool approved = approve && approve(ctx.principal, request.tool_name, canonical_args);
         if (!approved) {

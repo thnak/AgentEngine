@@ -723,6 +723,42 @@ int main() {
         check(client.call_count() == 2, "H4c: the ChatClientT was called twice -- suspend then resume");
     }
 
+    // H5 (ADR-184 regression): a hook that only REWRITES a pure, capability-free always_require
+    // call's arguments downgrades it to text_derived. Before ADR-184 that declassified the call past
+    // the tool's own always_require: the round never suspended and the tool ran with no approval.
+    // It must suspend for approval exactly as the un-rewritten call does, then run only once approved.
+    {
+        gated_tool_invoked_log() = false;
+
+        Session session;
+        session.initialize("h5", Principal{"p", ""});
+        ScriptedChatClient& client = session.emplace_chat_client();
+        client.set_script({
+            {tool_call_response("c1", "gated_tool", R"({"value":1})"), Usage{1, 1, 0, 0, 0.0}},
+            {text_response("done"), Usage{1, 1, 0, 0, 0.0}},
+        });
+        CapabilitySet const held = CapabilitySet::grant_root({});
+        session.set_capabilities(&held);
+        session.set_suspend_for_approval(true);
+        session.set_tool_call_hook([](ToolCallHookContext& hctx) -> task<agentengine::result<std::monostate>> {
+            if (hctx.tool_name == "gated_tool") hctx.rewritten_arguments = *agentengine::json::parse(R"({"value":77})");
+            co_return agentengine::result<std::monostate>{};
+        });
+
+        auto r1 = drive(session.start_run(StartRun{user_message("go")}));
+        check(!r1.has_value() && r1.error().code == Session::kSuspendedForApproval,
+              "H5 (ADR-184): a hook-rewritten always_require call still suspends for approval");
+        check(!gated_tool_invoked_log(), "H5 (ADR-184): the tool did not run before approval");
+        if (session.has_open_interactions()) {
+            std::string const interaction_id = session.open_interactions().front().interaction_id;
+            auto r2 = drive(session.resolve_interaction(
+                ResolveInteraction{interaction_id, /*approved=*/true, std::nullopt}));
+            check(r2.has_value() && gated_tool_invoked_log(),
+                  "H5 (ADR-184): once approved, the rewritten call runs");
+        }
+        check(client.call_count() == 2, "H5 (ADR-184): the model was called twice -- suspend, then resume");
+    }
+
     if (g_failures != 0) {
         std::fprintf(stderr, "%d check(s) failed.\n", g_failures);
         return 1;
