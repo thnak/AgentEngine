@@ -615,12 +615,15 @@ if(AGENTENGINE_WITH_HTTPS)
   # header line: "Certificate data from Mozilla as of: Thu Aug 13 03:12:01 2026 GMT"), re-fetched and
   # hand-verified (downloaded independently, content inspected, hash computed locally before pinning)
   # after the prior 2026-07-16 pin went stale from ordinary upstream CA-bundle rotation.
+  # The URL is curl.se's DATED snapshot, not the rolling cacert.pem: the rolling file changes every
+  # upstream refresh (2026-09-25 broke every HTTPS configure), while a dated file never changes, so
+  # the pin only moves when someone deliberately re-verifies and bumps it.
   option(AGENTENGINE_VENDOR_CA_BUNDLE
     "Fetch a pinned, checksummed CA root bundle instead of using a local PEM file"
     ON)
   if(AGENTENGINE_VENDOR_CA_BUNDLE)
     set(AE_CA_BUNDLE_PATH "${CMAKE_CURRENT_BINARY_DIR}/vendored_ca_bundle/cacert.pem")
-    file(DOWNLOAD "https://curl.se/ca/cacert.pem" "${AE_CA_BUNDLE_PATH}"
+    file(DOWNLOAD "https://curl.se/ca/cacert-2026-08-13.pem" "${AE_CA_BUNDLE_PATH}"
       EXPECTED_HASH SHA256=f66dff1bdf8f96060b8177976f8b7d9254bc89bc4db933d769f7384d28480bc9)
   else()
     set(AE_CA_BUNDLE_PATH "${AGENTENGINE_CA_BUNDLE_PATH}" CACHE FILEPATH
