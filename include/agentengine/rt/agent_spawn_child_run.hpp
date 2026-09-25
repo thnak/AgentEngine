@@ -39,6 +39,7 @@
 // here, not merely assumed.
 
 #include <atomic>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -245,13 +246,22 @@ template <class ChatClientT, class StateT = agentengine::rt::NoSessionState,
         if (req.charge_usage) req.charge_usage(spent, child.discarded_tokens_estimate());
         return spent;
     };
-    agentengine::result<agentengine::rt::AgentResponse> response = [&] {
-        try {
-            return agent_spawn_detail::drive(child.start_run(agentengine::rt::StartRun{std::move(req.input)}));
-        } catch (...) {
-            (void)charge();
-            throw;
+    // Charged by a guard during unwinding, not by catch-and-rethrow: clang-cl's ASan build crashes in the Windows
+    // unwinder on a `throw;` from this frame (CI, PR #110).
+    struct ChargeOnUnwind {
+        decltype(charge) const& fn;
+        int const entry_exceptions = std::uncaught_exceptions();
+        ~ChargeOnUnwind() {
+            if (std::uncaught_exceptions() <= entry_exceptions) return;
+            try {
+                (void)fn();
+            } catch (...) {  // NOLINT(bugprone-empty-catch): a second throw while unwinding would terminate
+            }
         }
+    };
+    agentengine::result<agentengine::rt::AgentResponse> response = [&] {
+        ChargeOnUnwind const guard{charge};
+        return agent_spawn_detail::drive(child.start_run(agentengine::rt::StartRun{std::move(req.input)}));
     }();
     agentengine::Usage const spent = charge();
     if (response) response->usage = spent;
