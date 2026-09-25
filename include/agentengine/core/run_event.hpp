@@ -74,8 +74,14 @@ namespace run_event_payload {
 struct Empty {};
 
 struct RunFailed {
+    // ADR-198 (issue #106): the failure's own code -- the same one the run's result carries, so every surface reports
+    // one failure with one code.
     std::string error_code;
     std::string message;
+    // ADR-198: where the run failed, when that differs from the code itself -- "run.chat_failed" (the model call),
+    // "run.context_unavailable" (a context provider), "run.turn_denied" (the turn middleware). It used to be what
+    // `error_code` carried, which hid the real cause from every event consumer. Empty when the code says it all.
+    std::string stage{};
 };
 
 // TurnStarted/TurnFinished share this shape (001 §2's turn_index).
@@ -214,6 +220,9 @@ struct ApprovalResolved {
     std::string call_id;
     bool        approved = false;
     std::string interaction_id{};
+    // ADR-196 (issue #108): who decided -- the host-supplied `ResolveInteraction::approver_id`. Empty means the host
+    // resolved it anonymously (I4: recorded as such, never guessed).
+    std::string approver_id{};
 };
 
 struct Warning {

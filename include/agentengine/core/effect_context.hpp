@@ -181,6 +181,10 @@ struct EffectContext {
     // parent's token budget sees it (I4, I8). Defaults are no-ops: a context no session set up drops both.
     std::function<void(RunEvent const&)> delegated_event_sink = [](RunEvent const&) {};
     // `extra_budget_tokens`: budget-only tokens (a delegated run's discarded-stream estimates), never usage.
+    // ADR-193 round 2: a charge may arrive after the tool call that received this closure returned (a detached
+    // `WorkflowChatClient` worker charges a failed inner run on its way out), so a host that sets it must keep it
+    // safe to call for as long as any copy lives -- `rt::AgentSession`'s closure holds shared state, not the session,
+    // and drops a charge that arrives after a newer run has started.
     std::function<void(Usage const&, std::uint64_t extra_budget_tokens)> charge_delegated_usage =
         [](Usage const&, std::uint64_t) {};
     // ADR-193: what the calling run may still spend (nullopt = no budget), set by `rt::AgentSession` before it

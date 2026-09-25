@@ -4,7 +4,9 @@
 
 - **Status:** Proposed — built, tested offline and live (§6), red-teamed three times (round 1 on the design; round 2
   on the fixed design plus a proportionality review requested by the owner; round 3 on the round-2 changes; §7). The
-  round-3 changes are not yet re-red-teamed. **Needs the project owner's judgement** on §4: this relaxes the model's
+  round-3 changes are not yet re-red-teamed. A fourth review (2026-09-25, the stack-wide red team of this ADR with
+  ADR-192/195) found the screen did not measure what ADR-192 ships and that no approval checked the screen; fixed in
+  §3.8, §3.10 and §7 round 4, not yet re-red-teamed. **Needs the project owner's judgement** on §4: this relaxes the model's
   reading rule for one class of text.
 - **Date:** 2026-09-24.
 - **Scope:** `include/agentengine/core/content.hpp` (`ContentItem::approval`),
@@ -62,7 +64,14 @@ means.**
    engine cannot verify a host-supplied string (round 2). `eval::approve_lesson` is the path that verifies the
    acknowledgement first. An evaluation's stand-in is `approve_simulated` and is marked `simulated` wherever it is
    reported. Membership is the exact text, compared byte for byte (no digest, so no `AgentSession` user has to link
-   the digest library). Revocation takes effect at the next request.
+   the digest library). Revocation takes effect at the next request. *Amended 2026-09-25 (stack-wide red team):* the
+   scope is the **tenant and** the principal (`LessonScope`) — it was the principal id alone, so an approval for
+   "alice" in one tenant reached "alice" in another, and ADR-193's `share_lessons` injected its text there. A bare id
+   is the single-tenant scope, which a principal carrying a tenant never matches (fails safe: fenced). The key is a
+   structured (tenant, principal, text) tuple — it was one string joined by a unit separator, so a scope containing
+   the separator reached another scope's prefix scan and lookup. An automatic or simulated approval never replaces a
+   human's approval of the same text; approver, reviewer and acknowledgement ids must be non-blank with no control
+   characters; the reserved `automatic:`/`simulated:` prefix is refused anywhere in a human approver id.
 4. **The fence names the block `approved-lesson:<code>`** in its open marker (the close marker, and every other
    fence, keep ADR-173's fixed form), and a request that carries one gets one more preamble sentence naming the code:
    such a block holds a lesson a human operator reviewed and approved word for word; the model may follow it as
@@ -91,14 +100,46 @@ means.**
    request carries the same approvals (I5).
 7. **A lesson may not contain the raw provenance-marker brackets** (U+27E6/U+27E7): the serializer would change them,
    and an approval is of exact bytes. Nothing else a lesson may contain is rewritten on the wire.
-8. **The Tier-1 screen measures what ships**: `lesson_delivery::approved` makes the treatment arm deliver the lesson
-   through this route (a simulated approval); it is part of the hashed pre-registration (E32). The lesson and its
+8. **The Tier-1 screen measures the delivery form it names — and only that one.** *Corrected 2026-09-25 (round 4):*
+   this item used to say "the Tier-1 screen measures what ships", which was false once ADR-192 landed: `lesson_delivery`
+   had only `fenced` and `approved` (this route, `guidance`, human wording), while a host can ship an approved lesson
+   unfenced (`approved_lesson_level::instructions`, or the fence switched off) or at `guidance` with the
+   automated-reviewer sentence — and §6's harmful controls were declined "as the preamble allows", a clause an unfenced
+   lesson does not get. `lesson_delivery` (`eval/lesson_screen_record.hpp`) now has one value per wire form: `fenced`,
+   `approved`, `approved_automatic`, `approved_instructions`, `approved_fence_off`, `unfenced`
+   (`shipped_lesson_delivery` maps a session's settings to one). The trial delivers the lesson exactly so (a simulated
+   approval; `approve_automatic` under `tier1-screen:<trial>` for the automatic wording, which is chosen by the id's
+   prefix; the fence-off forms switch the fence off in both arms, as a deployment setting). The form is part of the
+   hashed pre-registration (E32), so a screen at one form cannot be passed off as another. The lesson and its
    delivery are declared once, on `Tier1ScreenSpec`, and copied over every screen's (a screen-level setting is
    overwritten; a spec with no lesson is refused, `eval.tier1_lesson_unset`).
 9. **Middleware cannot mint or keep an approval** (round 3, S3-M1). `MiddlewareModelCallGateway` records each
    approved item's (text, approval) before the `before_model` hooks run and clears any approval afterwards that is
    not one of those pairs — an approval a hook added, or one on text a hook rewrote. The same shape as ADR-033's
    finding: a content rewrite is not a grant.
+10. **An approval rests on a screen** (round 4). `PromotionAck` carries the `Tier1ScreenRecord` the approver was shown
+   (`tier1_screen_record_from_log`: attempt id, outcome, lineage counts, history completeness, and the lesson digest,
+   template version and delivery form read from the attempt's own hashed design). `approve_lesson(…, ships_as,
+   override)` and `promote_lesson_automatically(…, screen, ships_as)` refuse (`policy`) on any
+   `tier1_screen_objections`: no screen (`eval.screen_missing`), an incomplete history, a screen of other bytes, an
+   outcome other than `cleared` (`eval.screen_harmful` for `harmful`), another attempt in the lineage that was harmful,
+   unfinished or unreadable, or a screen at another form than `ships_as` (`eval.screen_delivery_mismatch`). A human
+   approval may proceed only with a `ScreenOverride` naming who set the screen aside (not an `automatic:`/`simulated:`
+   id); it is returned and written into the registered approver id (`<approver> [screen override by <who>: <codes>]`),
+   so the session's `policy_decision` event names it on every delivery. Automatic promotion has no override
+   parameter at all (checked at compile time): no human, no override. **Not yet done at delivery time:** the session
+   does not know the screened form, so a host that approves at one form and configures its sessions for another is
+   caught only when it states `ships_as` honestly. Closing that needs `LessonApproval` to carry the screened form and
+   `AgentSession::apply_approved_lessons` to compare it with `shipped_lesson_delivery(...)` (a follow-on). **The session enforces the form** (2026-09-25):
+   `LessonApproval::screened_delivery` records the form the screen measured (`approve_lesson` and
+   `promote_lesson_automatically` set it), and `AgentSession::apply_approved_lessons` delivers such an approval as
+   approved only when the session would ship it in that form (`approved_lesson_delivery_name`, equal to
+   `eval::shipped_lesson_delivery` for every setting). In any other form the lesson goes out as the ordinary memory it
+   is, and a `policy_decision` event says "withheld: screened as X, would ship as Y". Because the guidance wording is
+   request-wide, automatic approvals are settled first (a delivered one always ships with the automated-reviewer
+   wording), then human ones against whether any automatic one was delivered. (A first "re-check until stable" version
+   oscillated for a lone automatic approval; L6 caught it.) An approval with no recorded form (a host's own `registry.approve`) is delivered as before
+   (`test_approval_resume` L6).
 
 ## 4. What this is, stated plainly (ADR-070)
 
@@ -125,9 +166,15 @@ against ADR-070 §4:
 
 - **An approved lesson is now followed** — that is the point, and it is ADR-194 §4b's concern: a poisoned lesson
   that gets past the human is obeyed. The defences are upstream (E31's verbatim-bytes acknowledgement; the Tier-1
-  screen's figures and attempt history shown to the approver) and revocation (§3.3). The kill switch (ADR-195 §3.0
+  screen's figures and attempt history, which since round 4 an approval must rest on, §3.10) and revocation (§3.3). The kill switch (ADR-195 §3.0
   item 5) is still unbuilt; revoking an approval is the route-level switch this ADR provides. Measured live, the
   model still put the user's request and a tool's documentation ahead of an approved lesson (§6).
+- **The screen record is bookkeeping, not proof** (round 4): like the attempt log it is read from (ADR-195 §8), a host
+  that writes the store, or hands `approve_lesson` a fabricated `Tier1ScreenRecord`, fools only itself. The lineage
+  rule over-counts (one run's several lessons share a lineage, so one harmful lesson blocks its siblings until a human
+  overrides, and automatic promotion of them is refused outright) — the safe direction. The guidance wording is
+  request-wide: a human-approved lesson sent beside an automatic one gets the automatic sentence, a form it was not
+  screened at; `shipped_lesson_delivery` takes `automatic` per request for that reason, but nothing enforces it yet.
 - **The registry is not persisted by the engine.** A host that reloads a stale registry can bring back a revoked
   approval; its integrity is the host's.
 - **Approval is keyed on the exact text** (per principal), not on tags or salience, which change ranking but not
@@ -292,4 +339,27 @@ harness too tighten about security, harness can not manage that much").**
 | C3-m8 | minor | A failed history read overwrote the earlier completion-write error | The first failure is kept (T31, mutant-checked) |
 | nits | nit | `random_device` on old MinGW; stale `chat_recording` comment; `lesson_shape_warnings` overload ambiguous; unused includes; stale T14 label and "withheld" print | Disclosed / fixed; the text overload is `lesson_text_shape_warnings` |
 
-**The round-3 changes are not yet re-red-teamed.**
+**Round 4 (2026-09-25; the stack-wide red team of ADR-191/192/195).**
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| A | major | The screen did not measure what ADR-192 ships: `lesson_delivery` had `fenced`/`approved` only, while a host can ship an approved lesson unfenced (knob 1 or 3) or with the automated-reviewer sentence; §6's harmful controls were declined under a preamble clause an unfenced lesson lacks. §3.8's "measures what ships" was false | Six delivery forms, each hashed into the pre-registration (§3.8; T34), delivered by the trial as a session so configured sends them (T35) |
+| B | major | Neither approval path looked at the screen: `approve_lesson` and `promote_lesson_automatically` bound only the rendered digest, so a lineage with harmful attempts, or none, approved identically | The ack carries the screen record; both paths refuse on any objection; a human override must be named and is recorded on the approval; automatic promotion takes no override and needs a clean screen at its own form (§3.10; T36-T41) |
+
+Offline evidence: `test_eval_tier1_screen` T34-T41 (every form a distinct digest; the trial's wire marks per form; a
+real cleared screen approves only at its own form; harmful refused, a named override recorded, an unnamed or reserved
+one refused; a clean retry after a harmful attempt refused on both paths; no screen, an incomplete history, an
+unreadable log and an unfinished earlier attempt refused; automatic promotion has no override overload). Planted
+mutants, each seen to fail its checks and then removed: names collapsed to "approved" (T34); the trial ignoring the new
+forms (T35); objections always empty (T36b-T41); an unnamed override accepted (T37); other harmful attempts not counted
+(T38); an override overload added to automatic promotion (T41 fails to compile). No live run at the new forms yet: the
+unfenced forms' harmful-control behaviour (whether the model still declines without the preamble clause) is unmeasured.
+
+Also from the same red team (the cross-feature reviewer), fixed in `approved_lessons.hpp` (item 3 above): approvals
+scoped by tenant (MAJOR: probe granted tenant-A's lesson in tenant-B's session and injected its text into tenant-B's
+spawned children); the joined-string key (MAJOR: an approval for scope `victim<US>X` read as victim's approval of
+`X<US>C`); an automatic approval silently replacing a human one; blank and control-character ids; the reserved prefix
+defeated by a leading newline, NBSP or zero-width space. Evidence: `test_approval_resume` L1-L6, `test_delegation_provenance`
+R2-T1.
+
+**The round-3 and round-4 changes are not yet re-red-teamed.**

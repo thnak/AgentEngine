@@ -1823,6 +1823,14 @@ add_executable(test_rt_agent_session_quarantine_tool test_rt_agent_session_quara
 target_link_libraries(test_rt_agent_session_quarantine_tool PRIVATE agentengine::core agentengine::hmac agentengine_warnings)
 add_test(NAME test_rt_agent_session_quarantine_tool COMMAND test_rt_agent_session_quarantine_tool)
 
+# ---- decisions/ADR-197-reject-malformed-tool-arguments.md (issue #105): argument text that is not
+# valid JSON is refused at 006 §3 step 2 as tool.malformed_arguments, never coerced to {} -- proven
+# with an all-optional-arguments tool through invoke_tool, admit_call, background_task and a real
+# AgentSession round.
+add_executable(test_tool_call_malformed_arguments test_tool_call_malformed_arguments.cpp)
+target_link_libraries(test_tool_call_malformed_arguments PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_tool_call_malformed_arguments COMMAND test_tool_call_malformed_arguments)
+
 # ---- decisions/ADR-069-content-triggered-model-response-replay.md §7's own open question, answered
 # with real evidence: ADR-067's turn/pre_model hook and ADR-069's ContentReplayGateway, both wired
 # into ONE real AgentSession simultaneously -- proves they compose correctly, not merely independently.
@@ -2080,6 +2088,12 @@ add_test(NAME test_rt_agent_session_suspend_approval COMMAND test_rt_agent_sessi
 add_executable(test_unattended_approvals test_unattended_approvals.cpp)
 target_link_libraries(test_unattended_approvals PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_unattended_approvals COMMAND test_unattended_approvals)
+
+# ADR-196 (issues #104/#107/#108), ADR-198 (issue #106) and the round-3 red-team fixes to ADR-191/192: the session's
+# resume paths (tool surface, per-call decisions, approver, stale per-interaction state) and the lesson registry.
+add_executable(test_approval_resume test_approval_resume.cpp)
+target_link_libraries(test_approval_resume PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_approval_resume COMMAND test_approval_resume)
 
 # ---- OQ-21 (core/tool_call_hook.hpp) prove phase -- the tool-call hook stage wired into a real
 # rt::AgentSession round: deny-before-approval, rewrite-reaches-dispatch-and-downgrades-provenance,

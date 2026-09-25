@@ -1,4 +1,5 @@
 #pragma once
+// (Also implements ADR-193 round 2: a failed executor's spend is counted in usage().)
 // ADR-037 Phase 3, Slice 1: `agentengine::rt::WorkflowSupervisor`, the Quark-actor-free replacement
 // for `agentengine::workflow::WorkflowSupervisor` (workflow/supervisor.hpp)'s core superstep loop.
 // Lives under `agentengine::rt`, a NEW namespace, deliberately NOT wired into any live call site yet
@@ -1227,12 +1228,26 @@ private:
                                  false, std::nullopt, agentengine::Usage{}};
             co_return;
         }
+        // ADR-193 round 2: what the body spent that its outcome will not carry -- above all a FAILED agent node's
+        // whole run (`agent_session_as_executor_body` charges it here, since an error has no usage field). Summed
+        // into `out->usage` as it arrives, so a body that throws still leaves it behind for the collector.
+        auto const charge_mutex = std::make_shared<std::mutex>();
+        ctx.charge_delegated_usage = [out, charge_mutex](agentengine::Usage const& u, std::uint64_t) {
+            std::lock_guard<std::mutex> lock(*charge_mutex);
+            add_usage(out->usage, u);
+        };
         agentengine::result<ExecutorOutcome> outcome = body(payload, ctx);
+        agentengine::Usage charged;
+        {
+            std::lock_guard<std::mutex> lock(*charge_mutex);
+            charged = out->usage;
+        }
         if (!outcome) {
             *out = ExecuteReply{agentengine::Message{}, {}, false, outcome.error().klass, false, std::nullopt,
-                                 agentengine::Usage{}};
+                                 charged};
             co_return;
         }
+        add_usage(outcome->usage, charged);
         // GitHub issue #35 follow-up (ADR-163) -- the one real link this class's own positional
         // ExecuteReply{...} construction was silently dropping: ExecutorOutcome::usage never survived
         // into the ExecuteReply the per-round fold loop later accumulates from, so
@@ -1357,8 +1372,9 @@ private:
             *out = std::move(reply);
             co_return;
         }
+        // ADR-193 round 2: a failed nested run still spent what it spent.
         *out = ExecuteReply{agentengine::Message{}, {}, false, agentengine::failure_class::fatal, false,
-                             std::nullopt, agentengine::Usage{}};
+                             std::nullopt, inner->usage()};
         co_return;
     }
 
@@ -1545,11 +1561,15 @@ private:
                         // transient rather than needing a restart-budget mechanism of its own.
                         replies[i] = ExecuteReply{agentengine::Message{}, {}, false,
                                                    agentengine::failure_class::transient, false, std::nullopt,
-                                                   agentengine::Usage{}};
+                                                   slots[k]->usage};  // ADR-193 round 2: charged before it threw
                     } else {
                         replies[i] = std::move(*slots[k]);
                     }
                     if (replies[i].ok) continue;
+                    // ADR-193 round 2: a failed attempt's spend is counted HERE, per attempt -- a retry overwrites
+                    // replies[i], and the fold below skips failed replies (it used to be the only place usage was
+                    // counted, so a failing agent node's whole run vanished from `usage()`).
+                    accumulate_usage(replies[i].usage);
 
                     EdgeFailurePolicy const pol = policy_for(exec_deliveries[i].executor_index);
                     if (pol.kind == agentengine::workflow::edge_failure_policy::retry &&
@@ -1644,6 +1664,7 @@ private:
                             sub_workflow_replies[i].pending_sub_workflow_inner_interaction_id) {
                             continue;
                         }
+                        accumulate_usage(sub_workflow_replies[i].usage);  // ADR-193 round 2, as for exec_deliveries
                         EdgeFailurePolicy const pol = policy_for(sub_workflow_deliveries[i].executor_index);
                         if (pol.kind == agentengine::workflow::edge_failure_policy::retry &&
                             attempt < pol.attempts && is_retryable(sub_workflow_replies[i].klass)) {
@@ -2251,13 +2272,14 @@ private:
     // GitHub issue #35 follow-up -- the one place `total_usage_` is ever mutated. `agentengine::Usage`
     // (core/content.hpp) is a plain aggregate with no `operator+=` of its own, so this is
     // field-by-field, over every real field that struct declares.
-    void accumulate_usage(agentengine::Usage const& delta) noexcept {
-        total_usage_.input_tokens += delta.input_tokens;
-        total_usage_.output_tokens += delta.output_tokens;
-        total_usage_.cached_input_tokens += delta.cached_input_tokens;
-        total_usage_.reasoning_tokens += delta.reasoning_tokens;
-        total_usage_.cost_estimate += delta.cost_estimate;
-        total_usage_.cache_write_tokens += delta.cache_write_tokens;
+    void accumulate_usage(agentengine::Usage const& delta) noexcept { add_usage(total_usage_, delta); }
+    static void add_usage(agentengine::Usage& to, agentengine::Usage const& delta) noexcept {
+        to.input_tokens += delta.input_tokens;
+        to.output_tokens += delta.output_tokens;
+        to.cached_input_tokens += delta.cached_input_tokens;
+        to.reasoning_tokens += delta.reasoning_tokens;
+        to.cost_estimate += delta.cost_estimate;
+        to.cache_write_tokens += delta.cache_write_tokens;
     }
 
     using EdgeFailurePolicy = agentengine::workflow::EdgeFailurePolicy;

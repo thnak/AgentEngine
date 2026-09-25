@@ -1502,15 +1502,16 @@ read-back before any trial runs, unreadable records counted as attempts, the OS 
 - **`rt::FileAppendLogStore` concurrency (fixed in the E32 red team):** appends now hold an exclusive OS file lock
   (`LockFileEx`/`flock`) and readers a shared one (tested across real child processes, L10), and a torn tail is cut
   before the next append. Not fsync'd (a power loss can drop records the OS had not flushed). `flock` is advisory
-  and unreliable on some network filesystems, so a log shared across hosts over NFS is not protected. **No per-record
-  checksum**: a corrupted length header in the middle of the file is indistinguishable from a torn tail, so the
-  records after it disappear from readers, and the next append cuts them for good (the round-2/3 quarantine sidecar
-  that kept them was removed by the ADR-191 proportionality review: ~150 lines of platform code with an attack surface
-  of its own, guarding against disk corruption or a writer who could already rewrite the log). For E32 that means disk corruption can make a
-  lineage's count drop — the same class as a host that can write the store, and outside what an append log without
-  checksums can detect — and the drop is **silent** to the caller: the append that cuts returns an ordinary seq, and
-  the seqs it cuts are handed out again (I4; round 3). A checksummed record format is the follow-on. Every append
-  also reads the whole file, so its cost grows with the log (§7 round 3).
+  and unreliable on some network filesystems, so a log shared across hosts over NFS is not protected. *(Amended
+  2026-09-25 by §8a: this bullet said "no per-record checksum — a corrupted length header mid-file is
+  indistinguishable from a torn tail"; the v2 format had a payload CRC but none over the record header.)* New
+  logs are format v3 (a CRC over each record header too); damage — a bad magic, a damaged length, a bit flip in any
+  record including the last — is now an error that `append()` refuses to write past, never a torn tail it cuts (§8a).
+  What still makes a lineage's count drop **silently**: truncation at a record boundary or deleting the file (an
+  append log with no external anchor cannot tell cut records from never-written ones — the host-that-can-write-the-
+  store class), and damage to a log still in the v1 format; §8a lists the v2 limits. (The round-2/3 quarantine
+  sidecar was removed by the ADR-191 proportionality review: ~150 lines of platform code with an attack surface of
+  its own.) Every append also reads the whole file, so its cost grows with the log (§7 round 3).
 - **E32's lineage count depends on an honest `lineage`.** It closes the reworded-subject dodge only because lineage
   is host-supplied; a host that mints a fresh lineage per retry defeats it (disclosed above). The same dodge applies
   to Tier 2's unbuilt families-per-subject cap and one-family-per-shard rule (§3.3), which must bound per lineage when
@@ -1730,3 +1731,46 @@ read-back before any trial runs, unreadable records counted as attempts, the OS 
 - 022 §4/§7 amendment (a pointer to this ADR) is still to write.
 - **ADR-179 §7 amendment (round 4):** pull `LessonCandidate` and `render_lesson` into stage 2 scope so Tier 1 does
   not depend on stage 3 (§3.0); still to write.
+
+## 8a. Amendment (2026-09-25): damage to the attempt log is an error, not a torn tail
+
+**Finding (E32 red team round 3 re-run, MAJOR).** `rt::FileAppendLogStore` classed damage as a torn tail, and the
+next append truncated it, taking intact records with it. Reproduced by probe: (P1) one changed byte in the
+`AELOGv2\n` magic, or a future `AELOGv3\n`, made the file parse as v1; `AELO` read as a ~1.3 GB length made the whole
+file a "torn tail" at offset 0; `read_from` returned 0 records with no error, and the next append truncated the file
+from 88 bytes to 19. (P2) A damaged length on a non-final record overran the file and was classed torn, because the
+v2 CRC covered only the payload: readers stopped silently and the next append cut every later record. (P3) End to
+end, 4 recorded harmful attempts became "attempt 1 of 1" with `history_complete = true`. A bit flip in the last
+record was also dropped silently as torn.
+
+**Fix (`include/agentengine/rt/append_log_store.hpp`; its banner states the full rule).**
+- **Format v3 for every new log:** magic `AELOGv3\n`; each record `[u32 length][u32 payload CRC][u32 CRC of those 8
+  bytes][payload]`. A header whose CRC fails cannot pass for a torn tail, so a damaged length is corruption.
+- **Torn vs corrupt, v3:** torn only if the bytes are a prefix of a frame (a process crash: fewer than 12 bytes
+  left, or a verified length the file ends inside) or end in zeros starting at the frame or at a 512-byte-aligned
+  offset inside it (a power loss: the file size reached the disk, the block did not). Anything else, including a
+  bit flip in the last record, is `rt.append_log_store.corrupt_record` (`fatal`). So `append()` only ever truncates
+  bytes that cannot hold an intact record, and refuses, without truncating, to write past corruption.
+- **Magic:** a file agreeing with `AELOGv?\n` in at least 5 of its 7 fixed positions without being a known magic is
+  `rt.append_log_store.unknown_format` (`fatal`), never parsed as v1. A file holding only a prefix of a known magic
+  is a torn creation: empty, and the next append writes v3.
+- **v1 and v2 logs are still read, and appended in their own framing**, not upgraded: an in-place rewrite would
+  replace the file the OS lock is held on, and mixed framings would be unreadable to every version. v2 gains a
+  re-sync check (a length overrun, or a zero-filled final record, is torn only if no CRC-valid non-empty v2 record
+  starts in the bytes it would cut; bounded to 64 MiB of checksumming, failing closed past it) and the same
+  last-record rule. v1 gains a bound: an overrun is torn only if the cut is no longer than the largest earlier
+  record plus its header.
+
+**Still not detected (also in the store banner).** Truncation at a record boundary, or deleting the log: the store
+has no external anchor, and its CRCs are integrity checks a writer can recompute, not authentication. For E32 this
+stays in the host-that-can-write-the-store class (§8). v1: nothing is checksummed, so a damaged payload reads back as
+data and a damaged length that fits misframes silently. v2: an empty hidden record escapes the re-sync scan. v3: a
+damaged final record whose payload happens to end in an aligned zero run is taken for torn, and a power loss that
+leaves stale non-zero bytes fails closed and needs repair by hand. An older binary reading a v3 log still parses it
+as v1 (P1), and its next append destroys the log, so a log directory must not be shared with a pre-§8a binary.
+
+**Evidence.** `tests/test_rt_append_log_store.cpp` L25–L30 (L21 amended: only a zero-filled final frame is torn) and
+`tests/test_eval_tier1_screen.cpp` T42 (after damage to the magic or a record length, no attempt begins, the history
+reads as an error, and the file still holds all 4 harmful attempts). Positive controls: against the pre-§8a store,
+16 store checks and both T42 cases fail. Six planted mutants (header-CRC failure taken for torn, final-record CRC
+failure taken for torn, no unknown-format check, no v2 re-sync, no v1 bound, no zero-fill rule) are each caught.

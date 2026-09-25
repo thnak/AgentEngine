@@ -3,7 +3,8 @@
 - **Renumbered:** written as ADR-184; renumbered to ADR-192 on 2026-09-25 when this stack merged into `main`, where those numbers had been taken by other ADRs in the meantime. Commit messages, PR titles and ADR cross-references written before then use the old number.
 
 - **Status:** Proposed — built, tested offline, red-teamed twice (§7: no fatal; round 1 8 major, round 2 4 major,
-  all fixed), measured live (§6). The round-2 fixes are not yet re-red-teamed. **Needs the project owner's judgement** — the owner asked for it
+  all fixed), measured live (§6). Round 3 (2026-09-25, §7) found 2 major and 4 minor, all fixed; the round-3 fixes are
+  not yet re-red-teamed. **Needs the project owner's judgement** — the owner asked for it
   (2026-09-24: "as an engine we should let developer choose their own … we must add option like by pass all, in some
   case engine can be used to build a full automation system and that would be a strong feature"), and it deliberately
   trades safety for capability behind host opt-ins. §4 states plainly what that waives.
@@ -216,3 +217,19 @@ Unattended approvals (knob 4) are engine logic with no model in the loop; they a
 | R2-m1 | minor | A veto that cleared unattended mode destroyed itself while running (segfault) | Veto held by `shared_ptr`, copied locally for the call (A15) |
 | R2-m2 | minor | Reserved ids forgeable through the acknowledgement field | Checked on both fields (D6) |
 | nits | nit | Case/whitespace variants of reserved ids; empty simulated trial id; audit names the round-start operator after a mid-round re-set; policy now called for `text_derived` (and twice); the veto sees only calls needing approval | Case-folded and trimmed; trial id required; the rest disclosed (§2, §3) |
+
+**Round 3 (2026-09-25, one reviewer, on the round-2 fixes; probe executed).** No fatal. The round-1/2 fixes held.
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| R3-M1 | major | A tool the host's turn middleware removed from a round ran on a hook-decision resume, approved with no human: every resume path rebuilt its tool table from the raw provider, skipping the middleware (probe: `hidden_tool ran 1`) | Resume dispatches against the round's own tool list, recorded at suspension; without a record the turn middleware decides it again (ADR-196 §2; `test_approval_resume` U1, mutant-checked) |
+| R3-M2 | major | Clearing unattended mode (or adding a veto or deny policy) while a CodeAct script waited on `agent.ask` did not stop the replay: it re-ran the whole script with an always-yes approver and no audit | A replay whose original approval came from unattended mode is re-checked against the current policy and effective decider (ADR-196 §2; U2, mutant-checked) |
+| R3-m1 | minor | Knob 1 (`instructions` level) took no operator id and wrote no audit of who set it, while §3/§4 said all four knobs are audited and need ids | `set_approved_lessons(registry, level, operator_id)` refuses `instructions` without an id; each delivery names the operator; spawn targets need `lesson_level_set_by` (L5) |
+| R3-m2 | minor | Whitespace-only operator and reviewer ids accepted | Ids must be non-blank with no control characters, for every opt-in (L4) |
+| R3-m3 | minor | An automatic approval silently replaced a human's approval of the same text (and its attribution) | Refused (`memory.approval_would_replace_human`); a human approval may replace an automatic one (L3) |
+| R3-m4 | minor | Reserved-prefix check stripped only space/tab (newline, NBSP, ZWSP defeated it); ids with newlines could forge audit lines | The reserved prefix is refused anywhere in a human approver id; control characters are refused in every id (L4) |
+| doc | — | A12's test header overclaimed "EVERY call"; §7's "case-folded and trimmed" nit | Noted: the policy covers calls that reach the approver; ids are now checked as above |
+
+Also changed since round 2, outside this ADR's own findings: ADR-191 round 4 requires `promote_lesson_automatically`
+(knob 2) to rest on a `cleared` Tier-1 screen at the form it ships, with no override, and a session delivers an approval
+that records its screened form only in that form (ADR-191 §3.10).

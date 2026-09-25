@@ -786,8 +786,8 @@ holds whether the session was scripted or live.
   expect today's order: `approval_resolved` after the tool ran (§12 C-1). When P1c fixes the order,
   those two scenarios will fail with an "event N differs" pointing at the move, which is the intended
   signal. They are then re-exported, or edited to the new order, as part of P1c's own change.
-- **Still open (§14):** `tool_call_request_of()` coerces malformed arguments to `{}`. Not exported
-  as a scenario, because a golden would lock in the bug.
+- **Closed by ADR-197 (§14):** `tool_call_request_of()` coerced malformed arguments to `{}`. Now
+  refused as `tool.malformed_arguments`; exported as scenario `scripted_malformed_arguments`.
 
 ### Revised build phases (replaces §12's list)
 
@@ -1094,3 +1094,14 @@ Minor findings, recorded as residuals:
   the replay.
 
 All 9 scenarios pass, with every model request checked.
+
+## 23. Remaining engine items — closed (2026-09-25)
+
+- **P1b (BUG-1/BUG-2) and R6 (approver identity):** ADR-196. `approval_requested` names only gated calls;
+  `ResolveInteraction::call_decisions` decides per call; `approver_id` is carried on `approval_resolved`. The driver's
+  `interaction_resolve` takes `call_decisions` and `approver_id` (the `call_ids`/`test.unsupported` refusal is gone),
+  and **C7 is met**: `test_agentengine_test_driver` PC denies a round except one approved call and fails if BUG-2
+  returns. `live_mixed_round.json` now expects only the gated call's events.
+- **The two-error-code finding:** ADR-198. `run_failed.error_code` is the run's own code; `stage` carries
+  `run.chat_failed`. `scripted_model_failure.json` updated.
+- **The malformed-arguments finding:** ADR-197, with its scenario `scripted_malformed_arguments.json`.

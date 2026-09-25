@@ -83,6 +83,12 @@ using Members = std::vector<std::pair<std::string, Value>>;
 [[nodiscard]] inline Value boolean(bool b) { return Value::make_bool(b); }
 [[nodiscard]] inline Value obj(Members m) { return Value::make_object(std::move(m)); }
 [[nodiscard]] inline Value arr(std::vector<Value> a) { return Value::make_array(std::move(a)); }
+// `o` (an object) with one more member appended.
+[[nodiscard]] inline Value with_field(Value const& o, std::string key, Value v) {
+    Members m = o.as_object();
+    m.emplace_back(std::move(key), std::move(v));
+    return obj(std::move(m));
+}
 
 [[nodiscard]] inline std::optional<std::string> get_string(Value const& o, std::string_view key) {
     Value const* v = o.find(key);
@@ -692,7 +698,9 @@ overloaded(Fs...) -> overloaded<Fs...>;
         overloaded{
             [](rp::Empty const&) { return obj({}); },
             [](rp::RunFailed const& x) {
-                return obj({{"error_code", str(x.error_code)}, {"message", str(x.message)}});
+                // ADR-198: `stage` only when set, so a failure whose code says it all keeps its old shape.
+                if (x.stage.empty()) return obj({{"error_code", str(x.error_code)}, {"message", str(x.message)}});
+                return obj({{"error_code", str(x.error_code)}, {"message", str(x.message)}, {"stage", str(x.stage)}});
             },
             [](rp::Turn const& x) { return obj({{"turn_index", num(static_cast<double>(x.turn_index))}}); },
             [](rp::ModelDelta const& x) {
@@ -733,8 +741,13 @@ overloaded(Fs...) -> overloaded<Fs...>;
                             {"needs_approval", boolean(x.needs_approval)}});
             },
             [](rp::ApprovalResolved const& x) {
+                // ADR-196: `approver_id` only when the host named one (an anonymous decision keeps the old shape).
+                if (x.approver_id.empty()) {
+                    return obj({{"call_id", str(x.call_id)}, {"approved", boolean(x.approved)},
+                                {"interaction_id", str(x.interaction_id)}});
+                }
                 return obj({{"call_id", str(x.call_id)}, {"approved", boolean(x.approved)},
-                            {"interaction_id", str(x.interaction_id)}});
+                            {"interaction_id", str(x.interaction_id)}, {"approver_id", str(x.approver_id)}});
             },
             [](rp::Warning const& x) { return obj({{"message", str(x.message)}}); },
             [](rp::PolicyDecision const& x) { return obj({{"description", str(x.description)}}); },
@@ -975,9 +988,13 @@ inline void record_run_result(DriverSession& s, result<rt::AgentResponse> const&
     co_return;
 }
 
-[[nodiscard]] inline rt::task<void> resolve_job(DriverSession* s, std::string interaction_id, bool approve) {
-    result<rt::AgentResponse> r =
-        co_await s->session->resolve_interaction(rt::ResolveInteraction{interaction_id, approve});
+[[nodiscard]] inline rt::task<void> resolve_job(DriverSession* s, std::string interaction_id, bool approve,
+                                                std::optional<std::vector<rt::ApprovalCallDecision>> call_decisions = {},
+                                                std::optional<std::string> approver_id = {}) {
+    rt::ResolveInteraction request{interaction_id, approve};
+    request.call_decisions = std::move(call_decisions);
+    request.approver_id    = std::move(approver_id);
+    result<rt::AgentResponse> r = co_await s->session->resolve_interaction(request);
     s->monitor->clear_interaction(interaction_id);
     record_run_result(*s, r);
     co_return;
@@ -1408,15 +1425,19 @@ private:
                              {"kinds", obj({{"type", str("array")}, {"items", obj({{"type", str("string")}})}})}},
                             {"session_id"})),
             tool_def("interaction_list",
-                     "Pending approval requests, one entry per tool call, with tool name, arguments and "
-                     "needs_approval (false = the call shares the round but was not itself gated).",
+                     "Pending approval requests, one entry per tool call that waits on the decision, with "
+                     "tool name and arguments (ADR-196: a call that does not need approval is not listed).",
                      schema({{"session_id", sid}}, {"session_id"})),
             tool_def("interaction_resolve",
-                     "Approve or deny an open interaction. The decision applies to every call in it "
-                     "(per-call decisions are not supported yet).",
+                     "Approve or deny an open interaction. `decision` applies to every listed call that "
+                     "`call_decisions` does not name (ADR-196).",
                      schema({{"session_id", sid},
                              {"interaction_id", prop("string", "From interaction_list.")},
-                             {"decision", prop("string", "approve | deny")}},
+                             {"decision", prop("string", "approve | deny")},
+                             {"call_decisions",
+                              prop("array", "Optional per-call decisions: [{\"call_id\": ..., \"decision\": "
+                                            "\"approve\" | \"deny\"}], each a call interaction_list shows.")},
+                             {"approver_id", prop("string", "Optional: who decided, recorded on approval_resolved.")}},
                             {"session_id", "interaction_id", "decision"})),
             tool_def("session_cancel",
                      "Cancel the current run. On a suspended session this also denies every open "
@@ -1923,11 +1944,27 @@ private:
         if (*decision != "approve" && *decision != "deny") {
             return err("test.bad_arguments", "decision must be approve or deny");
         }
-        if (args.find("call_ids") != nullptr) {
-            return err("test.unsupported",
-                       "per-call decisions need BUG-2's fix (ADR-182 §6 P1b); the decision applies to every "
-                       "call in the interaction");
+        // ADR-196 (issues #104/#108): per-call decisions and the approver. The session validates them (a call the
+        // interaction did not ask about is refused there); here only the shape is checked.
+        std::optional<std::vector<rt::ApprovalCallDecision>> call_decisions;
+        Value recorded_decisions = Value::make_array({});
+        if (Value const* cd = args.find("call_decisions"); cd != nullptr) {
+            if (!cd->is_array()) return err("test.bad_arguments", "call_decisions must be an array");
+            call_decisions.emplace();
+            std::vector<Value> recorded;
+            for (Value const& item : cd->as_array()) {
+                auto call_id = get_string(item, "call_id");
+                auto call_decision = get_string(item, "decision");
+                if (!call_id || !call_decision || (*call_decision != "approve" && *call_decision != "deny")) {
+                    return err("test.bad_arguments",
+                               "each call_decisions entry needs call_id and decision (approve | deny)");
+                }
+                call_decisions->push_back(rt::ApprovalCallDecision{*call_id, *call_decision == "approve"});
+                recorded.push_back(obj({{"call_id", str(*call_id)}, {"decision", str(*call_decision)}}));
+            }
+            recorded_decisions = Value::make_array(std::move(recorded));
         }
+        std::optional<std::string> approver_id = get_string(args, "approver_id");
         if (s->monitor->state() != run_state::suspended) {
             return err("test.not_suspended", "the session has no open interaction to resolve");
         }
@@ -1935,12 +1972,31 @@ private:
         for (PendingCall const& c : s->monitor->pending())
             if (c.interaction_id == *interaction_id) known = true;
         if (!known) return err("test.unknown_interaction", "no open interaction " + *interaction_id);
-        s->steps.push_back(obj({{"op", str("resolve")},
-                                {"interaction_id", normalize_ids(str(*interaction_id), s->id)},
-                                {"decision", str(*decision)}}));
+        // Checked here too, not only by the session: a resolve the session refuses would leave the driver's
+        // view of the run out of step with the session's (it resolves asynchronously).
+        if (call_decisions) {
+            std::vector<std::string> seen;
+            for (rt::ApprovalCallDecision const& cd : *call_decisions) {
+                bool listed = false;
+                for (PendingCall const& c : s->monitor->pending())
+                    if (c.interaction_id == *interaction_id && c.call_id == cd.call_id) listed = true;
+                if (!listed || std::find(seen.begin(), seen.end(), cd.call_id) != seen.end()) {
+                    return err("test.bad_arguments", "call_decisions may name each call interaction_list shows for "
+                                                     "this interaction once; " + cd.call_id + " is not one");
+                }
+                seen.push_back(cd.call_id);
+            }
+        }
+        Value step = obj({{"op", str("resolve")},
+                          {"interaction_id", normalize_ids(str(*interaction_id), s->id)},
+                          {"decision", str(*decision)}});
+        if (call_decisions) step = with_field(std::move(step), "call_decisions", std::move(recorded_decisions));
+        if (approver_id) step = with_field(std::move(step), "approver_id", str(*approver_id));
+        s->steps.push_back(std::move(step));
         s->action_mark = s->monitor->last_seq();
         s->monitor->set_state(run_state::running);
-        (void)s->pool->submit(resolve_job(s, *interaction_id, *decision == "approve"));
+        (void)s->pool->submit(resolve_job(s, *interaction_id, *decision == "approve", std::move(call_decisions),
+                                          std::move(approver_id)));
         return obj({{"resumed", boolean(true)}, {"since_seq", num(static_cast<double>(s->action_mark))}});
     }
 
@@ -2218,9 +2274,15 @@ struct ReplayFixtures {
                 r = call(d, "session_send", with_sid({{"text", str(get_string(step, "text").value_or(""))}}), id);
             } else if (op == "resolve") {
                 std::string const ix = denormalize_id(get_string(step, "interaction_id").value_or(""), sid);
-                r = call(d, "interaction_resolve",
-                         with_sid({{"interaction_id", str(ix)}, {"decision", str(get_string(step, "decision").value_or(""))}}),
-                         id);
+                Value resolve_args =
+                    with_sid({{"interaction_id", str(ix)}, {"decision", str(get_string(step, "decision").value_or(""))}});
+                if (Value const* cd = step.find("call_decisions"); cd != nullptr) {
+                    resolve_args = with_field(std::move(resolve_args), "call_decisions", *cd);
+                }
+                if (auto approver = get_string(step, "approver_id")) {
+                    resolve_args = with_field(std::move(resolve_args), "approver_id", str(*approver));
+                }
+                r = call(d, "interaction_resolve", std::move(resolve_args), id);
             } else if (op == "cancel") {
                 r = call(d, "session_cancel", with_sid({}), id);
             } else {

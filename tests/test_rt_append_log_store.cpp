@@ -29,6 +29,22 @@
 //   L22 -- a bad CRC on a NON-final record is corruption: read and append both refuse it.
 //   L23 -- a v1 (pre-ADR-181, no magic, no CRC) log is still read and appended in v1 framing.
 //   L24 -- append_log_sync::disk appends and persists.
+//   L25-L30 -- ADR-195 §8a (E32 red team round 3: damage passed for a torn tail, and the next append cut the
+//         intact records after it; the store is now format v3, with a CRC over each record header):
+//   L25 -- a damaged or unknown magic is refused by read and append, file untouched; a torn magic is empty.
+//   L26 -- a damaged length on a non-final record (overrunning, or smaller and fitting) is corruption.
+//   L27 -- a bit flip in the FINAL record is corruption, as are trailing zeros that do not start a lost block.
+//   L28 -- genuine torn tails still recover: a process-crash prefix (mid-payload, mid-header) and a power-loss
+//         zero fill from a 512-byte-aligned offset (inside the payload, inside the header).
+//   L29 -- v2 logs are read and appended in exact v2 framing; a v2 torn tail recovers; a damaged v2 length
+//         with records after it and a v2 final-record bit flip are corruption.
+//   L30 -- a damaged v1 length that would hide later records is corruption.
+//   L21 was amended by §8a: only a zero-filled final frame is torn now, not any final record with a bad CRC.
+// Positive controls (2026-09-25): against the pre-§8a store, 16 checks fail (L21, L25 x4, L26 overrun,
+// L27 x2, L28 x4 -- that store cannot read v3 -- L29 x2, L30). Planted mutants on the §8a store, each caught:
+// a bad v3 header CRC taken for torn (L26 x2); a complete final record with a bad CRC taken for torn (L27 x2,
+// L29); no unknown-format check (L25 x3); v2 re-sync disabled (L29); v1 bound disabled (L30); zero-fill rule
+// disabled (L21 x2, L28 x2).
 // Positive controls (2026-09-23): L20a-c fail against the pre-fix store (4 failures); a mutant that
 // skips the torn-tail truncation fails L20a-c/L21/L23 (6); a mutant that treats mid-file corruption as a
 // torn tail fails L22 (3).
@@ -36,6 +52,7 @@
 // lock, so both suites apply to one store; the old L12 (a corrupt header mid-file is silently cut) is
 // superseded by L22 (a CRC mismatch before the end is refused as corruption).
 
+#include <algorithm>
 #include <cstdio>
 #include <cstddef>
 #include <cstdint>
@@ -96,13 +113,51 @@ std::string string_from(std::vector<std::byte> const& b) {
     return out;
 }
 
-#if defined(_WIN32)
-// Only the Windows-only L16 reads a file whole (gcc -Werror=unused-function otherwise).
 std::string read_file(std::filesystem::path const& p) {
     std::ifstream in(p, std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
-#endif
+
+void write_file(std::filesystem::path const& p, std::string const& bytes) {
+    std::ofstream out(p, std::ios::binary | std::ios::trunc);
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+}
+
+// The test builds frames with its OWN CRC-32 and framing rather than the store's helpers, so it compiles and
+// runs unchanged against the store before ADR-195 §8a (its positive controls ran it there).
+std::uint32_t test_crc32(std::string const& data) {
+    std::uint32_t crc = 0xFFFFFFFFu;
+    for (char ch : data) {
+        crc ^= static_cast<std::uint32_t>(static_cast<unsigned char>(ch));
+        for (int k = 0; k < 8; ++k) crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+    }
+    return ~crc;
+}
+
+std::string le32(std::uint32_t v) {
+    std::string out;
+    for (int shift = 0; shift < 32; shift += 8) out.push_back(static_cast<char>((v >> shift) & 0xFFu));
+    return out;
+}
+
+// A v3 record frame; a `claimed_len` other than the payload's own length models a torn frame.
+std::string v3_frame(std::string const& payload, std::uint32_t claimed_len) {
+    std::string const head = le32(claimed_len) + le32(test_crc32(payload));
+    return head + le32(test_crc32(head)) + payload;
+}
+std::string v3_frame(std::string const& payload) {
+    return v3_frame(payload, static_cast<std::uint32_t>(payload.size()));
+}
+
+std::string v2_frame(std::string const& payload) {
+    return le32(static_cast<std::uint32_t>(payload.size())) + le32(test_crc32(payload)) + payload;
+}
+
+// The record header size of a log file the store wrote (v3: 12, v2: 8), read from its magic's version byte.
+std::size_t header_size_of(std::string const& file) { return file.size() > 6 && file[6] == '2' ? 8 : 12; }
+
+std::string const kMagicV3 = std::string("AELOGv3\n", 8);
+std::string const kMagicV2 = std::string("AELOGv2\n", 8);
 
 [[nodiscard]] int current_pid() noexcept {
 #if defined(_WIN32)
@@ -480,15 +535,12 @@ int main(int argc, char** argv) {
         FileAppendLogStore store(root);
         (void)store.append("torn-misframe", bytes_from("intact-one"));
         {
-            // A FULL v2 header (length + CRC) claiming 9 bytes, then only 3: the claimed length is
-            // SHORTER than the next append's frame, so without truncation the reader would take the
-            // next record's first 6 bytes as this one's payload and misframe everything after it.
+            // A FULL v3 header (length, payload CRC, valid header CRC) claiming 9 bytes, then only 3: the
+            // claimed length is SHORTER than the next append's frame, so without truncation the reader would
+            // take the next record's first 6 bytes as this one's payload and misframe everything after it.
             std::ofstream out(root / "torn-misframe", std::ios::binary | std::ios::app);
-            std::uint32_t const claimed_len = 9;
-            std::uint32_t const bogus_crc   = 0;
-            out.write(reinterpret_cast<char const*>(&claimed_len), sizeof(claimed_len));
-            out.write(reinterpret_cast<char const*>(&bogus_crc), sizeof(bogus_crc));
-            out.write("bad", 3);
+            std::string const torn = v3_frame("bad", 9);
+            out.write(torn.data(), static_cast<std::streamsize>(torn.size()));
         }
         (void)store.append("torn-misframe", bytes_from("after-crash-1"));
         (void)store.append("torn-misframe", bytes_from("after-crash-2"));
@@ -513,26 +565,25 @@ int main(int argc, char** argv) {
               "L20c: an append after a torn 2-byte header is readable and correctly framed");
     }
 
-    // L21: a final record with a full header and full-length payload but a WRONG CRC is a torn write (a
-    // partially flushed sector), not corruption: read stops before it, and the next append replaces it.
+    // L21 (amended by ADR-195 §8a): a final frame that never reached the disk after a power loss reads as
+    // ZEROS from where it began (the file's size landed, its block did not): torn, skipped, then replaced.
+    // Before §8a any full-length final record with a bad CRC was taken for torn; that also hid a bit flip in
+    // the last record, which L27 now refuses.
     {
         FileAppendLogStore store(root);
         (void)store.append("bad-crc-tail", bytes_from("intact-one"));
+        std::size_t const header = header_size_of(read_file(root / "bad-crc-tail"));
         {
             std::ofstream out(root / "bad-crc-tail", std::ios::binary | std::ios::app);
-            std::uint32_t const len       = 5;
-            std::uint32_t const wrong_crc = 0xDEADBEEFu;
-            out.write(reinterpret_cast<char const*>(&len), sizeof(len));
-            out.write(reinterpret_cast<char const*>(&wrong_crc), sizeof(wrong_crc));
-            out.write("\0\0\0\0\0", 5);  // e.g. a zero-filled block after power loss
+            out.write(std::string(header + 5, '\0').data(), static_cast<std::streamsize>(header + 5));
         }
         auto before = store.read_from("bad-crc-tail", 0);
         check(before.has_value() && before->size() == 1,
-              "L21: a full-length final record with a bad CRC is treated as torn, not returned as data");
+              "L21: a zero-filled final frame is treated as torn, not returned as data");
         (void)store.append("bad-crc-tail", bytes_from("after-crash"));
         auto after = store.read_from("bad-crc-tail", 0);
         check(after.has_value() && after->size() == 2 && string_from((*after)[1]) == "after-crash",
-              "L21: the next append replaces the bad-CRC tail and reads back intact");
+              "L21: the next append replaces the zero-filled tail and reads back intact");
     }
 
     // L22: corruption BEFORE the end is not a torn write. It must not be silently hidden (the records
@@ -542,9 +593,10 @@ int main(int argc, char** argv) {
         (void)store.append("corrupt-mid", bytes_from("record-one"));
         (void)store.append("corrupt-mid", bytes_from("record-two"));
         (void)store.append("corrupt-mid", bytes_from("record-three"));
+        std::size_t const header = header_size_of(read_file(root / "corrupt-mid"));
         {
             std::fstream f(root / "corrupt-mid", std::ios::binary | std::ios::in | std::ios::out);
-            f.seekp(8 + 8 + 2);  // magic, record one's header, then 2 bytes into its payload
+            f.seekp(static_cast<std::streamoff>(8 + header + 2));  // magic, record one's header, 2 bytes in
             f.put('X');
         }
         auto read = store.read_from("corrupt-mid", 0);
@@ -597,6 +649,138 @@ int main(int argc, char** argv) {
         }
         FileAppendLogStore fresh(root);
         check(fresh.last_seq("synced") == 2, "L24: records written with disk sync persist");
+    }
+
+    // ---- ADR-195 §8a (E32 red team round 3): damage must never pass for a torn tail --------------------------
+    auto five_records = [&root](char const* id) {
+        FileAppendLogStore store(root);
+        for (int i = 0; i < 5; ++i) (void)store.append(id, bytes_from("record-" + std::to_string(i)));
+        return read_file(root / id);
+    };
+    // Every damage case below must fail read_from() AND append() with `code`, report last_seq() 0, and leave
+    // the file byte-for-byte as it was (the pre-fix append truncated it).
+    auto refused = [&root](char const* id, std::string const& damaged, char const* code) {
+        write_file(root / id, damaged);
+        FileAppendLogStore store(root);
+        auto read = store.read_from(id, 0);
+        auto appended = store.append(id, bytes_from("new"));
+        return !read.has_value() && read.error().code == code && !appended.has_value() &&
+               appended.error().code == code && store.last_seq(id) == 0 && read_file(root / id) == damaged;
+    };
+
+    // L25 (P1): a damaged or unknown magic. Before §8a it was parsed as v1: `AELO` as a ~1.3 GB length made
+    // the whole file a "torn tail" -- 0 records, no error -- and the next append cut the file to nothing.
+    {
+        std::string future = five_records("magic-future");
+        future[6] = '4';  // `AELOGv4\n`: bit rot, or a later format this version cannot read
+        check(refused("magic-future", future, "rt.append_log_store.unknown_format"),
+              "L25: an unknown magic version is refused by read and append, and the file is left intact");
+        std::string damaged = five_records("magic-damaged");
+        damaged[3] = 'X';  // the byte the red team's P3 damaged
+        check(refused("magic-damaged", damaged, "rt.append_log_store.unknown_format"),
+              "L25: one damaged magic byte is refused by read and append, and the file is left intact");
+        check(refused("magic-short", "AELXGv", "rt.append_log_store.unknown_format"),
+              "L25: a file shorter than the magic that is a damaged magic is refused too");
+        write_file(root / "magic-torn", "AELOG");  // a torn creation: a prefix of the magic, nothing recorded
+        FileAppendLogStore store(root);
+        auto empty = store.read_from("magic-torn", 0);
+        auto s1 = store.append("magic-torn", bytes_from("first"));
+        auto all = store.read_from("magic-torn", 0);
+        check(empty.has_value() && empty->empty() && s1.has_value() && *s1 == 1 && all.has_value() &&
+                  all->size() == 1 && read_file(root / "magic-torn").starts_with(kMagicV3),
+              "L25: a file holding only part of the magic reads as empty, and the next append writes a v3 log");
+    }
+
+    // L26 (P2): a damaged LENGTH on a record that is not the last. Before §8a the v2 header had no CRC of its
+    // own, so the overrunning length was taken for a torn tail: readers stopped silently after record 1
+    // and the next append truncated the four intact records after it.
+    {
+        std::string grown = five_records("length-grown");
+        std::size_t const rec1 = 8 + header_size_of(grown) + 8;  // magic, record 0 ("record-0" is 8 bytes)
+        grown[rec1 + 3] = '\x7f';                                 // the length's high byte: ~2 GiB
+        check(refused("length-grown", grown, "rt.append_log_store.corrupt_record"),
+              "L26: a length damaged to overrun the file, with intact records after it, is corruption");
+        std::string shrunk = five_records("length-shrunk");
+        shrunk[rec1] = '\x03';  // 8 -> 3: fits in the file, would misframe everything after it
+        check(refused("length-shrunk", shrunk, "rt.append_log_store.corrupt_record"),
+              "L26: a length damaged to a smaller value that still fits is corruption too");
+    }
+
+    // L27: a bit flip in the LAST record's payload. Its bytes are all present, so it is not a torn write.
+    {
+        std::string flipped = five_records("last-flipped");
+        flipped.back() = static_cast<char>(flipped.back() ^ 0x01);
+        check(refused("last-flipped", flipped, "rt.append_log_store.corrupt_record"),
+              "L27: a bit flip in the final record is corruption -- not dropped as a torn tail and overwritten");
+        std::string zero_in_place = five_records("last-zeroed-in-block");
+        zero_in_place.replace(zero_in_place.size() - 3, 3, std::string(3, '\0'));  // zeros, not block-aligned
+        check(refused("last-zeroed-in-block", zero_in_place, "rt.append_log_store.corrupt_record"),
+              "L27: trailing zeros that do not start a lost block are corruption, not a power-loss tail");
+    }
+
+    // L28: GENUINE torn tails are still recovered -- the process-crash prefix and the power-loss zero fill.
+    auto recovers = [&root](char const* id, std::string const& file, std::size_t intact) {
+        write_file(root / id, file);
+        FileAppendLogStore store(root);
+        auto before = store.read_from(id, 0);
+        auto seq = store.append(id, bytes_from("after-crash"));
+        auto after = store.read_from(id, 0);
+        return before.has_value() && before->size() == intact && seq.has_value() && *seq == intact + 1 &&
+               after.has_value() && after->size() == intact + 1 && string_from(after->back()) == "after-crash";
+    };
+    {
+        std::string const a = std::string(100, 'a');
+        std::string const whole = kMagicV3 + v3_frame(a) + v3_frame(std::string(600, 'b'));  // b spans offset 512
+        check(recovers("torn-prefix", whole.substr(0, whole.size() - 250), 1),
+              "L28: a process crash mid-payload (a prefix of the frame) is torn and repaired");
+        check(recovers("torn-prefix-header", whole.substr(0, 8 + 12 + 100 + 7), 1),
+              "L28: a process crash mid-header (7 of 12 bytes) is torn and repaired");
+        std::string lost_block = whole;
+        std::fill(lost_block.begin() + 512, lost_block.end(), '\0');
+        check(recovers("torn-lost-block", lost_block, 1),
+              "L28: a power loss that zero-filled the frame from an aligned block onward is torn and repaired");
+        // The next frame's header straddles offset 512: its first 6 bytes landed, the rest is a lost block.
+        std::string straddle = kMagicV3 + v3_frame(std::string(486, 'a')) + v3_frame(std::string(40, 'b'));
+        std::fill(straddle.begin() + 512, straddle.end(), '\0');
+        check(recovers("torn-header-straddle", straddle, 1),
+              "L28: a header that reached the disk only up to a block boundary is torn and repaired");
+    }
+
+    // L29: v2 logs (written 2026-09-23..25) are still read and appended in v2 framing; the re-sync scan makes
+    // a damaged v2 length with intact records after it corruption, while a real v2 torn tail still recovers.
+    {
+        std::string const v2 = kMagicV2 + v2_frame("old-one") + v2_frame("old-two");
+        write_file(root / "v2-log", v2);
+        FileAppendLogStore store(root);
+        auto old = store.read_from("v2-log", 0);
+        auto s3 = store.append("v2-log", bytes_from("new-three"));
+        check(old.has_value() && old->size() == 2 && string_from((*old)[1]) == "old-two" && s3.has_value() &&
+                  *s3 == 3 && read_file(root / "v2-log") == v2 + v2_frame("new-three"),
+              "L29: a v2 log is read, and appended to in exact v2 framing (not upgraded, not mixed)");
+        check(recovers("v2-torn", v2 + v2_frame("never-finished").substr(0, 12), 2),
+              "L29: a v2 torn tail still recovers");
+        std::string grown = kMagicV2 + v2_frame("record-0") + v2_frame("record-1") + v2_frame("record-2");
+        grown[8 + 3] = '\x7f';
+        check(refused("v2-length-grown", grown, "rt.append_log_store.corrupt_record"),
+              "L29: a v2 length damaged to overrun the file, with intact records after it, is corruption");
+        std::string flipped = kMagicV2 + v2_frame("record-0") + v2_frame("record-1");
+        flipped.back() = static_cast<char>(flipped.back() ^ 0x01);
+        check(refused("v2-last-flipped", flipped, "rt.append_log_store.corrupt_record"),
+              "L29: a bit flip in a v2 log's final record is corruption");
+    }
+
+    // L30: a v1 log (no checksums at all): a length that overruns the file by more than any record ever
+    // written in it is not taken for a torn tail.
+    {
+        std::string v1;
+        for (std::string const payload : {"old-one", "old-two", "old-three"}) {
+            auto const len = static_cast<std::uint32_t>(payload.size());
+            v1.append(reinterpret_cast<char const*>(&len), sizeof(len));
+            v1 += payload;
+        }
+        v1[3] = '\x7f';  // record one's length (native order; every supported target is little-endian)
+        check(refused("v1-length-grown", v1, "rt.append_log_store.corrupt_record"),
+              "L30: a v1 length damaged to hide the records after it is corruption, not a torn tail");
     }
 
     // Cleanup.
