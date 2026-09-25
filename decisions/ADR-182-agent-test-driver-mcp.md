@@ -872,3 +872,57 @@ change also fixed a crash that this ADR's own P1 introduced (ADR-183 §2), and i
 bypass for text-derived calls to pure, capability-free `always_require` tools (ADR-183 §5).
 Remaining engine items: P1b (BUG-1/BUG-2), the two-error-code finding, the malformed-arguments
 finding, and ADR-183 §5.
+
+## 19. C8, second half — request matching, done (2026-09-25; GitHub #109)
+
+**In plain terms:** a replay used to check only what the engine *did* (the event stream), not what it
+*asked the model*. A change that alters the prompt without changing any event, such as a different user
+message, a changed tool result text, a new tool description or a reordered history, passed silently.
+Now every recorded model turn carries a digest of the request it answered, and a replayed request that
+differs fails that model call with `test.replay_mismatch`.
+
+- **What the digest covers** (`request_summary()`, `tools/test_driver/test_driver.hpp`):
+  - every message's role and items: text, reasoning, tool calls (id, name, raw arguments) and tool
+    results (id, error flag, text);
+  - every offered tool's name, description and argument schema;
+  - the output schema.
+
+  Session-prefixed ids are normalized. The digest is FNV-1a 64 over the summary's JSON, which is
+  portable and deterministic.
+- **What it leaves out, on purpose:**
+  - the client's options (sampling, output-token limit, idempotency key), which differ by construction
+    between a live session and its scripted replay;
+  - content flags the model never sees (origin, taint).
+
+  So this check does not catch a taint-flag regression; that stays with the engine's own unit tests.
+- **Where it is checked:** `DriverChatClient` on every call, against a FIFO kept in step with the script.
+  - A turn with no `request_digest` checks nothing, so older scenarios and hand-pushed turns still work.
+  - On a mismatch the turn is not consumed, and the session becomes unexportable.
+  - The snapshot carries `replay_mismatch`, with the call index and the actual request summary.
+  - `replay_scenario` stops at the first mismatch and reports it before any event diff.
+  - `model_requests` shows each request's digest, so a tester can pin one by hand.
+- **Export** writes `request_digest` on every turn, for scripted and live sessions alike. For a live
+  session, the digest is of the request the engine actually sent the live model, so a live-derived
+  scenario now also proves that the replay asks the same questions the live run asked.
+- **The 7 checked-in scenarios** predate this. `agentengine_scenario_runner --stamp-requests` replayed
+  each one and, only because it passed with exactly one model call per recorded turn, wrote the observed
+  digests in. Each scenario's diff is a single line: only `request_digest` was added. All 7 now report
+  "N model requests checked". For the 4 live-derived ones, the stamped digests come from the replay, not
+  the live run. That is sound only because the replay also reproduced every recorded event.
+- **Proof** (`tests/test_agentengine_test_driver.cpp`, C8):
+  - export stamps every turn;
+  - the untouched scenario passes with 2 requests checked;
+  - **positive control:** changing only the user message ("please echo a" to "b") passes when the
+    digests are stripped (the old blind spot, 0 requests checked) and fails with them, as
+    `test.replay_mismatch at model call 0`, showing the actual request;
+  - a hand-pushed turn with a wrong digest fails the run with `test.replay_mismatch`, is not consumed,
+    blocks export and is named in the snapshot;
+  - a live-derived export checks both of its requests.
+
+  The existing approve-to-deny tampering control now reports the mismatch at model call 1 (the denial
+  text in the tool result differs) instead of an event diff at event 7.
+- **Not built, and no longer needed for C8:** P3's multi-recording `ReplayChatClient` sequencer.
+  Scenarios replay the observed answers through the scripted client and now match requests by digest,
+  which is P3's request matching. Recordings under `--record-dir` remain diagnostic artifacts only.
+- **Residual:** `RequestLog` keeps the last 64 requests. So `--stamp-requests` refuses a scenario with
+  more than 64 model calls; export and checking are unaffected.

@@ -24,8 +24,11 @@ ctest --test-dir build -L scenario
 
 Every `tests/scenarios/*.json` becomes one ctest (`scenario_<name>`). A replay starts the scenario's
 fixture, feeds the recorded model answers as the script, repeats the recorded steps (send, approve or
-deny, cancel), and compares the whole normalized event stream. A failure names the first event that
-differs, with expected and actual side by side. To run one file directly:
+deny, cancel), and compares the whole normalized event stream. Before that, every model call is
+checked against the recorded turn's `request_digest`. If the engine asks the model something different
+(another prompt, tool result text or tool description), the replay stops with
+`test.replay_mismatch at model call N` and prints the actual request. Otherwise a failure names the
+first event that differs, with expected and actual side by side. To run one file directly:
 
 ```
 build/agentengine_scenario_runner tests/scenarios/live_gated_approve.json
@@ -35,6 +38,10 @@ A scenario records today's behaviour, including known bugs it happens to cross. 
 change moves an event on purpose, update the affected scenarios as part of that change: ADR-183 did
 this when it moved `approval_resolved` ahead of dispatch, and exactly the two scenarios that cross an
 approve failed, at exactly the moved event.
+
+A scenario exported before request digests existed can be given them with
+`build/agentengine_scenario_runner --stamp-requests <file>...`. This replays the scenario and writes the
+observed digests only if the replay passes with one model call per recorded turn.
 
 ## 2. Scripted exploration (Claude tester, engine model scripted)
 

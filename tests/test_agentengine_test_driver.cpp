@@ -17,6 +17,9 @@
 //            never ran, and a following send is accepted.
 //   MISC -- send while suspended refused; per-call decisions refused (BUG-2 not fixed); a wait that
 //            cannot match times out; max sessions enforced; close discards the session.
+//   C8   -- (§19) export stamps each turn's request digest; a replay whose request diverges fails with
+//            test.replay_mismatch at that model call. Positive control: a changed user message, which no
+//            event shows, passes without digests and fails with them.
 //   C2   -- (Windows form) 200 send/observe cycles polling snapshot and events from the MCP thread
 //            while the worker runs; every run settles with the expected text. TSan on Linux is the
 //            stronger form (named in ADR-182 §13).
@@ -512,11 +515,93 @@ int main() {
         check(!lex.is_error && lsc && td::get_string(*lsc, "fixture") == "basic",
               "SCN: a live session exports against the scripted twin fixture");
         check(lsc && td::replay_scenario(*lsc).passed, "SCN: the live-derived scenario replays offline and passes");
+        check(lsc && td::replay_scenario(*lsc).requests_checked == 2,
+              "C8: the live-derived scenario's replay checks both model requests against the live recording");
 
         td::Driver no_root;
         std::string const id3 = start(no_root, "basic");
         CallResult dis = call(no_root, "scenario_export", sid(id3, {{"name", td::str("x")}}));
         check(dis.is_error && dis.error_code == "test.export_disabled", "SCN: export is disabled without a scenarios root");
+        fs::remove_all(root, ec);
+    }
+
+    // ---- C8: a replay whose model REQUEST diverges fails with test.replay_mismatch (ADR-182 §19) -----------
+    {
+        namespace fs = std::filesystem;
+        fs::path const root = fs::temp_directory_path() / "ae_test_driver_c8";
+        std::error_code ec;
+        fs::remove_all(root, ec);
+        td::DriverConfig cfg;
+        cfg.scenarios_root = root;
+        td::Driver d(std::move(cfg));
+        std::string const id = start(d, "basic");
+        push(d, id, td::arr({call_turn({{"echo", "a"}}), text_turn("done")}));
+        (void)call(d, "session_send", sid(id, {{"text", td::str("please echo a")}}));
+        (void)wait(d, id, "idle");
+        CallResult ex = call(d, "scenario_export", sid(id, {{"name", td::str("c8_flow")}}));
+        auto sc = td::read_scenario_file(root / "c8_flow.json");
+        bool stamped = sc.has_value() && !ex.is_error;
+        if (sc) {
+            Value const* turns = sc->find("model_turns");
+            stamped = stamped && turns != nullptr && turns->as_array().size() == 2;
+            if (stamped) {
+                for (Value const& t : turns->as_array()) {
+                    stamped = stamped && td::get_string(t, "request_digest").value_or("").starts_with("fnv1a64:");
+                }
+            }
+        }
+        check(stamped, "C8: export records the request digest of every model turn");
+        if (sc) {
+            td::ReplayReport const clean = td::replay_scenario(*sc);
+            check(clean.passed && clean.requests_checked == 2, "C8: the untouched scenario replays and checks 2 requests");
+
+            // The user's text is in no event, so an events-only replay cannot see it change. Change it.
+            std::string text = agentengine::json::dump(*sc);
+            std::string const from = "please echo a";
+            auto const pos = text.find(from);
+            text.replace(pos, from.size(), "please echo b");
+            auto changed = agentengine::json::parse(text);
+
+            // Control: the same change with the digests stripped still passes (the pre-C8 blind spot).
+            std::string stripped_text = text;
+            for (std::size_t p; (p = stripped_text.find(",\"request_digest\":\"")) != std::string::npos;) {
+                std::size_t const end = stripped_text.find('"', p + 19);
+                stripped_text.erase(p, end + 1 - p);
+            }
+            auto stripped = agentengine::json::parse(stripped_text);
+            td::ReplayReport const blind = stripped ? td::replay_scenario(*stripped) : td::ReplayReport{};
+            check(stripped && blind.passed && blind.requests_checked == 0,
+                  "C8 control: without digests, a changed user message goes unnoticed");
+
+            td::ReplayReport const r = changed ? td::replay_scenario(*changed) : td::ReplayReport{};
+            bool const named = !r.problems.empty() &&
+                               r.problems[0].find("test.replay_mismatch at model call 0") != std::string::npos &&
+                               r.problems[0].find("please echo b") != std::string::npos;
+            if (!r.problems.empty()) std::fprintf(stderr, "  .. C8 reports: %.200s\n", r.problems[0].c_str());
+            check(changed && !r.passed && named,
+                  "C8: with digests, the changed request fails as test.replay_mismatch at call 0, showing the request");
+        }
+
+        // Directly: a scripted turn that expects another request fails the model call and is not consumed.
+        std::string const id2 = start(d, "basic");
+        push(d, id2, td::arr({td::obj({{"text", td::str("never said")},
+                                       {"request_digest", td::str("fnv1a64:0000000000000000")}})}));
+        (void)call(d, "session_send", sid(id2, {{"text", td::str("hi")}}));
+        Value w = wait(d, id2, "idle");
+        Value const* snap = w.find("snapshot");
+        check(snap != nullptr && outcome_field(*snap, "error_code") == "test.replay_mismatch",
+              "C8: a request that does not match the turn's digest fails the run with test.replay_mismatch");
+        check(snap != nullptr && snap->find("replay_mismatch") != nullptr &&
+                  td::get_u64(*snap->find("replay_mismatch"), "call_index") == 0u,
+              "C8: the snapshot names the diverging call");
+        check(snap != nullptr && td::get_u64(*snap, "script_pending") == 1u, "C8: the turn was not consumed");
+        CallResult ex2 = call(d, "scenario_export", sid(id2, {{"name", td::str("c8_diverged")}}));
+        check(ex2.is_error && ex2.error_code == "test.not_recordable", "C8: a diverged session cannot be exported");
+        CallResult reqs = call(d, "model_requests", sid(id2));
+        Value const* list = reqs.body.find("requests");
+        check(list != nullptr && list->is_array() && list->as_array().size() == 1 &&
+                  td::get_string(list->as_array()[0], "digest").value_or("").starts_with("fnv1a64:"),
+              "C8: model_requests shows each request's digest");
         fs::remove_all(root, ec);
     }
 
