@@ -21,6 +21,7 @@
 // snapshot is built from the monitor alone (`partial: true`).
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -980,9 +981,19 @@ private:
                     {"error", obj({{"code", num(code)}, {"message", str(std::move(message))}})}});
     }
     [[nodiscard]] static Value server_info(Value const& params) {
-        std::string version = get_string(params, "protocolVersion").value_or(std::string(kProtocolVersion));
+        // Echo the client's version only when it is one we serve; otherwise answer with ours
+        // (MCP lifecycle negotiation). The driver uses only tools/list and tools/call, which are
+        // the same shape in every listed version. The MCP Inspector CLI sends 2025-11-25 (ADR-182 §17).
+        constexpr std::array<std::string_view, 3> kSupported{kProtocolVersion, "2025-11-25", "2025-06-18"};
+        std::string version(kProtocolVersion);
+        if (auto asked = get_string(params, "protocolVersion");
+            asked && std::ranges::find(kSupported, std::string_view(*asked)) != kSupported.end()) {
+            version = *asked;
+        }
+        std::vector<Value> supported;
+        for (auto v : kSupported) supported.push_back(str(std::string(v)));
         return obj({{"protocolVersion", str(version)},
-                    {"supportedVersions", arr({str(std::string(kProtocolVersion)), str("2025-06-18")})},
+                    {"supportedVersions", arr(std::move(supported))},
                     {"capabilities", obj({{"tools", obj({})}})},
                     {"serverInfo", obj({{"name", str(std::string(kServerName))},
                                         {"version", str(std::string(kServerVersion))}})},
@@ -1215,6 +1226,12 @@ private:
             {"events_dropped", num(static_cast<double>(s.monitor->dropped()))},
         };
         if (st == run_state::running) {
+#ifdef AGENTENGINE_TEST_DRIVER_C2_RACE
+            // C2 positive control only (ADR-182 §8): reads the session's history from the MCP thread
+            // while the worker owns it, which is the I1 violation TSan must report. Never defined in
+            // a normal build.
+            m.emplace_back("history_length", num(static_cast<double>(s.session->history().size())));
+#endif
             m.emplace_back("partial", boolean(true));
             return obj(std::move(m));
         }

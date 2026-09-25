@@ -21,11 +21,13 @@
 //            stronger form (named in ADR-182 §13).
 
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "agentengine/pal/env.hpp"
 #include "test_driver/test_driver.hpp"
 
 namespace td = agentengine::test_driver;
@@ -144,6 +146,12 @@ int main() {
         Value const* res = init.find("result");
         check(res != nullptr && td::get_string(*res, "protocolVersion") == "2025-06-18",
               "P1: initialize answers, echoing the client's protocol version");
+        Value inspector = rpc(d, "initialize", td::obj({{"protocolVersion", td::str("2025-11-25")}}));
+        check(td::get_string(*inspector.find("result"), "protocolVersion") == "2025-11-25",
+              "P1: the MCP Inspector's 2025-11-25 is served (C9)");
+        Value unknown = rpc(d, "initialize", td::obj({{"protocolVersion", td::str("1999-01-01")}}));
+        check(td::get_string(*unknown.find("result"), "protocolVersion") == std::string(td::kProtocolVersion),
+              "P1: an unknown protocol version is answered with the driver's own, not echoed");
         Value disc = rpc(d, "server/discover", td::obj({}));
         check(disc.find("result") != nullptr && disc.find("result")->find("serverInfo") != nullptr,
               "P1: server/discover answers with serverInfo");
@@ -501,7 +509,12 @@ int main() {
         td::Driver d;
         std::string const id = start(d, "basic");
         int good = 0;
-        constexpr int kIterations = 200;
+        // 200 in the default suite; the TSan run (ADR-182 C2) sets AE_C2_ITERATIONS=1000.
+        int const kIterations = [] {
+            auto const v = agentengine::pal::env_var("AE_C2_ITERATIONS");
+            int const n = v ? std::atoi(v->c_str()) : 0;
+            return n > 0 ? n : 200;
+        }();
         for (int i = 0; i < kIterations; ++i) {
             std::string const expect = "reply " + std::to_string(i);
             push(d, id, td::arr({call_turn({{"echo", "x"}}), text_turn(expect)}));
@@ -514,7 +527,7 @@ int main() {
             Value w = wait(d, id, "idle");
             if (w.find("snapshot") && outcome_field(*w.find("snapshot"), "text") == expect) ++good;
         }
-        check(good == kIterations, "C2: 200 runs observed concurrently all settle with their own scripted text (" +
+        check(good == kIterations, "C2: " + std::to_string(kIterations) + " runs observed concurrently all settle with their own scripted text (" +
                                        std::to_string(good) + ")");
     }
 

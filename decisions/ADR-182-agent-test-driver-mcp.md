@@ -2,7 +2,7 @@
 
 - **Status**: **Proposed — design pass + red-team pass 1 (2026-09-25), revised (§12). Owner
   delegated Q1–Q4 (§11). P1 and P2 (§13) and driver phase 1 (§14) implemented and proven,
-  including an end-to-end run by a headless Claude tester. Live mode (§15) built early: a Claude tester drove the engine's agent running on live DeepSeek, 4/4. Scenario export/replay (§16) done: 7 checked-in scenarios (4 recorded from live DeepSeek) replay offline as ctests, 100/100 each.** Where §12
+  including an end-to-end run by a headless Claude tester. Live mode (§15) built early: a Claude tester drove the engine's agent running on live DeepSeek, 4/4. Scenario export/replay (§16) done: 7 checked-in scenarios (4 recorded from live DeepSeek) replay offline as ctests, 100/100 each. C9 (Inspector CLI) and C2 under TSan (§17) proven with controls; headless recipe written.** Where §12
   and an earlier section disagree, §12 wins.
 - **Date**: 2026-09-25
 - **Origin**: live-provider tests drive a real `rt::AgentSession` by sending a free-form prompt and
@@ -798,3 +798,66 @@ holds whether the session was scripted or live.
 3. P4 file fixtures (git-tracked check), P5 tool doubles, sandboxed real tools, `session_fork`.
 4. Workflows; P1b (BUG-1/BUG-2) and P1c (event order), each its own ADR. The two-error-code finding
    and the malformed-arguments finding are candidates for the same kind of small ADR.
+
+## 17. C9, C2 under TSan, and the headless recipe — done (2026-09-25)
+
+### C9 — the MCP contract, via the Inspector CLI
+
+- `tools/test_driver/c9_inspector_contract.py` runs `@modelcontextprotocol/inspector --cli` against
+  the driver:
+  - `tools/list` twice, identical (14 tools);
+  - `tools/call fixtures_list`;
+  - an approve round trip: `scenario_replay live_gated_approve` (suspend, approve, tool runs, final
+    text; 16 events compared).
+  Result: PASS, exit 0. *Negative control:* pointing the driver at an empty scenarios root makes the
+  round trip fail and the script exit 1.
+- **Deviation from §8's wording.** Each Inspector CLI command starts a fresh server process, so an
+  approve round trip cannot span several `tools/call`s. It runs inside one call through
+  `scenario_replay`. The multi-call round trip over MCP is already covered by the headless Claude
+  tester runs (§14, §15).
+- **The script found two things.**
+  - The Inspector CLI parses any `--flag` after the server command as its own option, so
+    `driver --scenarios-root X` silently lost the flag and the driver fell back to its default root.
+    The script's first negative control passed when it should have failed, which exposed this. Server
+    args now go through a generated `--config` file.
+  - **Driver bug, fixed.** `initialize` echoed any `protocolVersion` the client asked for while
+    `supportedVersions` listed others. It now echoes only a version it serves (2026-07-28,
+    2025-11-25, 2025-06-18) and otherwise answers with its own. Test: P1 in
+    `tests/test_agentengine_test_driver.cpp` (the Inspector's version is served, `1999-01-01` is not
+    echoed).
+- **Which handshake clients send (closes §14's open question).** Captured with a stdio tee: both the
+  MCP Inspector CLI and Claude Code (`claude -p`, 2026-09-25) send `initialize` with
+  `protocolVersion: 2025-11-25`, then `notifications/initialized` and `tools/list`. Neither sends
+  `server/discover`. Keep answering both.
+
+### C2 — I1 under TSan (Linux)
+
+- `tools/test_driver/c2_tsan.sh` builds `test_agentengine_test_driver` twice with
+  `-fsanitize=thread` (GCC 15, WSL2 Ubuntu, RelWithDebInfo) and runs the C2 stress at 1,000
+  iterations (`AE_C2_ITERATIONS`; the default suite keeps 200):
+  - normal tree: 1,000/1,000 runs settle with their own scripted text, **0 TSan reports**;
+  - positive control (`-DAGENTENGINE_TEST_DRIVER_C2_RACE`, which makes `session_snapshot` read
+    `history()` from the MCP thread while a run is in flight): **3 TSan data-race reports**, on
+    `std::vector<Message>::push_back` in `run_rounds` against the MCP thread's read.
+  Result: `C2: PASS`. The control needed no latch tool (§12): 1,000 overlapping iterations were
+  enough for TSan to see the unsynchronized pair.
+- The control flag appears only in `test_driver.hpp`'s snapshot path and is never defined by the
+  build.
+
+### Headless recipe
+
+`docs/guides/testing-with-the-mcp-test-driver.md`: replay in CI (`ctest -L scenario`), scripted
+exploration, live exploration on DeepSeek (the Windows HTTPS build recipe and the bounds), turning a
+run into a scenario, and the C9 check.
+
+### Revised build phases (replaces §16's list)
+
+1. **Done:** P1, P2 (§13); driver phase 1 (§14); live mode and P6 (§15); scenario export and replay
+   (§16); C9, C2 under TSan, and the recipe (§17). Every §8/§12 claim is now proven, except C7
+   (waits for P1b) and C8. C8 is half met by §16's route: a live-derived scenario replays with no
+   network. Its second half, where a request that diverges from the recording fails with
+   `test.replay_mismatch`, is not built. A diverging replay shows up as an event-stream diff, not a
+   request mismatch. Recordings under `--record-dir` are kept but nothing replays them as cassettes.
+2. Next: P4 file fixtures (git-tracked check), P5 tool doubles, sandboxed real tools, `session_fork`.
+3. Workflows; P1b (BUG-1/BUG-2) and P1c (event order), each its own ADR. The two-error-code and
+   malformed-arguments findings are candidates for the same kind of small ADR.
