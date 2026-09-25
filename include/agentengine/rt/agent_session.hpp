@@ -231,6 +231,7 @@
 #include <vector>
 
 #include "agentengine/core/approved_lessons.hpp"
+#include "agentengine/core/system_channel_fence.hpp"  // is_automatic_approval_id (ADR-191 round 4)
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/context_provider.hpp"
@@ -315,13 +316,13 @@ struct StartRun {
     std::optional<RequestAuthority> authority = std::nullopt;
 };
 
-// ae-naming-lint: allow ResolveInteraction — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 // ADR-196 (issue #104): one call's decision within an `approval` interaction.
 struct ApprovalCallDecision {  // ae-naming-lint: allow ApprovalCallDecision — ADR-196
     std::string call_id;
     bool        approved = false;
 };
 
+// ae-naming-lint: allow ResolveInteraction — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ResolveInteraction {
     std::string interaction_id;
     bool        approved = false;
@@ -2701,6 +2702,7 @@ private:
         if (approval_waits_for_human()) {
             for (HookProcessedCall const& hc : round.calls) {
                 if (hc.outcome != hook_call_outcome::pass_through) continue;
+                if (!hc.request.arguments_parse_error.empty()) continue;  // ADR-197: refused at dispatch anyway
                 ToolDescriptor const* td = tool_table.find(hc.request.tool_name);
                 if (td != nullptr &&
                     resolve_approval_outcome(*td, hc.request.provenance, effect_context_.principal,
@@ -2724,7 +2726,7 @@ private:
                     // ADR-182 P1: same payload fields as run_rounds()'s own emit site. ADR-196 (issue #104
                     // BUG-1): only a call that actually needs a decider is named.
                     ToolDescriptor const* td = tool_table.find(hc.request.tool_name);
-                    bool const needs = td != nullptr &&
+                    bool const needs = td != nullptr && hc.request.arguments_parse_error.empty() &&
                                        resolve_approval_outcome(*td, hc.request.provenance,
                                                                 effect_context_.principal,
                                                                 /*arguments_tainted=*/true, policy_decider_) ==
@@ -3135,6 +3137,9 @@ private:
                     ToolCallRequest const& req_i = hook_touched_round
                                                        ? processed[i].request
                                                        : parsed_i.emplace(tool_call_request_of(calls[i], i));
+                    // ADR-197: a call whose arguments are not valid JSON is refused at dispatch whatever anyone
+                    // decides, so it never waits on a human (the approver would only be shown unparseable text).
+                    if (!req_i.arguments_parse_error.empty()) continue;
                     ToolDescriptor const* td = tool_table.find(req_i.tool_name);
                     // ADR-070: a `policy_decider_`-resolved policy_driven call (auto_approve/
                     // auto_deny) never needs a real human -- only `needs_decider` should count
@@ -3445,52 +3450,101 @@ private:
     // The one place a request's delivery marks are set (ADR-191/192). Both are cleared on every item first, so
     // nothing a provider, a plugin or stored history carries survives; then each is granted only by a host setting.
     void apply_approved_lessons(ChatRequest& request) {
-        std::size_t unfenced = 0;
+        // Pass 1: clear every mark, and find the approval each tainted system text rests on.
+        struct Candidate {
+            ContentItem*        item;
+            Text*               text;
+            std::string         lesson;
+            ApprovedLessonMatch match;
+            bool                deliver = true;
+        };
+        std::vector<Candidate> candidates;
         for (Message& m : request.messages) {
             for (ContentItem& item : m.content) {
                 item.approval.clear();
                 item.deliver_as_instructions = false;
-                if (m.role != role::system || !item.tainted) continue;
+                if (m.role != role::system || !item.tainted || approved_lessons_ == nullptr) continue;
                 auto* text = std::get_if<Text>(&item.value);
                 if (text == nullptr) continue;
-                if (approved_lessons_ != nullptr) {
-                    std::string_view const candidate = agentengine::approved_lesson_candidate_text(text->text);
-                    // ADR-193: a delegated principal (a spawned child, a fresh id nobody could approve for) is
-                    // matched against its chain's root -- the owner the approval was actually given to.
-                    // Round 3: scoped by tenant too -- an approval never reaches a same-named principal of another
-                    // tenant. A chain stays inside its root's tenant (derive_on_behalf_of copies it).
-                    auto match = approved_lessons_->find({principal_.tenant_id, principal_.id}, candidate);
-                    if (!match && !principal_.delegation_root.empty()) {
-                        match = approved_lessons_->find({principal_.tenant_id, principal_.delegation_root}, candidate);
-                    }
-                    if (match) {
-                        // The confidence label ("model-inferred, unverified") is dropped: the fence now says what
-                        // the block is, and a label that says the opposite would contradict it.
-                        text->text = std::string(candidate);
-                        item.approval = match->approval_id;
-                        // Red team (MINOR): with the fence off an approved lesson goes out unfenced whatever its
-                        // level, so the event names what is actually sent.
-                        bool const as_instructions =
-                            approved_lesson_level_ == agentengine::approved_lesson_level::instructions;
-                        item.deliver_as_instructions = as_instructions || system_fence_disabled_by_.has_value();
-                        std::string const delivered =
-                            as_instructions
-                                ? "instructions (level set by operator " + lesson_level_set_by_.value_or("?") + ")"
-                                : (system_fence_disabled_by_ ? "instructions (fence off by operator " +
-                                                                   *system_fence_disabled_by_ + ")"
-                                                             : std::string("guidance"));
-                        LessonApproval const& a = match->approval;
-                        emit_run_event(run_event_kind::policy_decision,
-                                       run_event_payload::PolicyDecision{
-                                           "approved lesson delivered as " + delivered +
-                                           ": approval " + match->approval_id + ", approved by " + a.approver_id +
-                                           (a.simulated ? " (simulated)" : "") + (a.automatic ? " (automatic)" : "") +
-                                           ", acknowledgement " +
-                                           (a.acknowledgement.empty() ? std::string("none") : a.acknowledgement)});
-                    }
+                std::string_view const candidate = agentengine::approved_lesson_candidate_text(text->text);
+                // ADR-193: a delegated principal (a spawned child, a fresh id nobody could approve for) is matched
+                // against its chain's root -- the owner the approval was actually given to. Round 3: scoped by tenant
+                // too -- an approval never reaches a same-named principal of another tenant. A chain stays inside its
+                // root's tenant (derive_on_behalf_of copies it).
+                auto match = approved_lessons_->find({principal_.tenant_id, principal_.id}, candidate);
+                if (!match && !principal_.delegation_root.empty()) {
+                    match = approved_lessons_->find({principal_.tenant_id, principal_.delegation_root}, candidate);
                 }
-                // ADR-192: with the fence off, every remaining tainted system text goes out as instructions too.
-                if (system_fence_disabled_by_ && !item.deliver_as_instructions && !text->text.empty()) {
+                if (match) candidates.push_back(Candidate{&item, text, std::string(candidate), std::move(*match)});
+            }
+        }
+
+        // Pass 2 (ADR-191 round 4): an approval that names the form its Tier-1 screen measured is delivered only in
+        // that form -- a lesson screened fenced with the human wording is never shipped unfenced, or with the
+        // automated-reviewer wording, on the strength of that screen. The guidance wording is request-wide: it names
+        // the automated reviewer when any automatic approval is delivered. So automatic approvals are settled first
+        // (a delivered one always ships with that wording, its own form), then human ones against the result.
+        bool const fence_off = system_fence_disabled_by_.has_value();
+        auto const fits = [this, fence_off](Candidate const& c, bool any_automatic) {
+            std::string const& screened = c.match.approval.screened_delivery;
+            return screened.empty() || screened == agentengine::approved_lesson_delivery_name(
+                                                       any_automatic, approved_lesson_level_, fence_off);
+        };
+        bool any_automatic = false;
+        for (Candidate& c : candidates) {
+            if (!agentengine::is_automatic_approval_id(c.match.approval_id)) continue;
+            c.deliver = fits(c, /*any_automatic=*/true);
+            any_automatic = any_automatic || c.deliver;
+        }
+        for (Candidate& c : candidates) {
+            if (agentengine::is_automatic_approval_id(c.match.approval_id)) continue;
+            c.deliver = fits(c, any_automatic);
+        }
+        for (Candidate& c : candidates) {
+            LessonApproval const& a = c.match.approval;
+            if (!c.deliver) {
+                // Delivered as the ordinary memory it is (fenced, label kept) -- the approval is not used.
+                emit_run_event(run_event_kind::policy_decision,
+                               run_event_payload::PolicyDecision{
+                                   "approved lesson withheld: approval " + c.match.approval_id +
+                                   " was screened as " + a.screened_delivery + " but would ship as " +
+                                   std::string(agentengine::approved_lesson_delivery_name(
+                                       any_automatic || agentengine::is_automatic_approval_id(c.match.approval_id),
+                                       approved_lesson_level_, fence_off)) +
+                                   "; delivered as ordinary memory"});
+                continue;
+            }
+            // The confidence label ("model-inferred, unverified") is dropped: the fence now says what the block is,
+            // and a label that says the opposite would contradict it.
+            c.text->text = std::move(c.lesson);
+            c.item->approval = c.match.approval_id;
+            // Red team (MINOR): with the fence off an approved lesson goes out unfenced whatever its level, so the
+            // event names what is actually sent.
+            bool const as_instructions = approved_lesson_level_ == agentengine::approved_lesson_level::instructions;
+            c.item->deliver_as_instructions = as_instructions || fence_off;
+            std::string const delivered =
+                as_instructions ? "instructions (level set by operator " + lesson_level_set_by_.value_or("?") + ")"
+                                : (fence_off ? "instructions (fence off by operator " + *system_fence_disabled_by_ + ")"
+                                             : std::string("guidance"));
+            emit_run_event(run_event_kind::policy_decision,
+                           run_event_payload::PolicyDecision{
+                               "approved lesson delivered as " + delivered + ": approval " + c.match.approval_id +
+                               ", approved by " + a.approver_id + (a.simulated ? " (simulated)" : "") +
+                               (a.automatic ? " (automatic)" : "") + ", acknowledgement " +
+                               (a.acknowledgement.empty() ? std::string("none") : a.acknowledgement) +
+                               (a.screened_delivery.empty() ? std::string{}
+                                                            : ", screened as " + a.screened_delivery)});
+        }
+
+        // ADR-192: with the fence off, every remaining tainted system text goes out as instructions too.
+        std::size_t unfenced = 0;
+        if (fence_off) {
+            for (Message& m : request.messages) {
+                if (m.role != role::system) continue;
+                for (ContentItem& item : m.content) {
+                    if (!item.tainted || item.deliver_as_instructions) continue;
+                    auto const* text = std::get_if<Text>(&item.value);
+                    if (text == nullptr || text->text.empty()) continue;
                     item.deliver_as_instructions = true;
                     ++unfenced;
                 }

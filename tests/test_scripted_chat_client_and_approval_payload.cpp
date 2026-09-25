@@ -13,7 +13,7 @@
 //   P1 -- approval_requested carries tool name, arguments and needs_approval (BUG-3, BUG-1 info)
 //     AP1 -- a round with one gated call: the event names the tool, carries the model's arguments,
 //            and needs_approval == true.
-//     AP2 -- a mixed round (gated + ungated): both events fire (BUG-1's semantics unchanged), the
+//     AP2 -- a mixed round (gated + ungated): only the gated call's event fires (ADR-196 fixed BUG-1), the
 //            gated one says needs_approval == true, the ungated one false, each with its own name
 //            and arguments.
 
@@ -236,7 +236,7 @@ int main() {
         std::vector<agentengine::RunEvent> events;
         while (auto ev = viewer.next()) events.push_back(std::move(*ev));
         auto approvals = approval_events(events);
-        check(approvals.size() == 2, "AP2: both calls in the round get an event (BUG-1 semantics unchanged)");
+        check(approvals.size() == 1, "AP2: only the gated call gets an event (ADR-196, BUG-1 fixed)");
         bool gated_ok = false;
         bool free_ok = false;
         for (auto const& a : approvals) {
@@ -246,7 +246,7 @@ int main() {
                 free_ok = a.tool_name == "free_tool" && a.arguments_json == R"({"value":2})" && !a.needs_approval;
         }
         check(gated_ok, "AP2: the gated call's event says needs_approval == true");
-        check(free_ok, "AP2: the ungated call's event says needs_approval == false");
+        check(!free_ok, "AP2: the ungated call gets no approval_requested at all");
     }
 
     if (g_failures != 0) {

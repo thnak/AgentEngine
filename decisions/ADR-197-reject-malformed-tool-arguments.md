@@ -103,12 +103,10 @@ golden would have locked the bug in.
 
 ## 4. Residuals
 
-- **A malformed call to an approval-gated tool still suspends for approval first.** Verified with
-  the driver: `gated_echo` with `{not json` suspends, and `interaction_list` shows the raw text
-  `{not json` to the human. An approval authorizes nothing here — the resumed call is refused at
-  step 2 like any other — but the human is asked a question whose answer cannot matter. Skipping the
-  suspend needs a change in `rt/agent_session.hpp`'s suspend-for-approval pre-check, which this fix
-  was scoped not to touch. Follow-up.
+- ~~**A malformed call to an approval-gated tool still suspends for approval first.**~~ **Closed the same day**
+  (same PR): `run_rounds`' suspend check and `resolve_hook_decision`'s cascade skip a call whose
+  `arguments_parse_error` is set, since it is refused at step 2 whatever anyone decides
+  (`test_approval_resume` M1).
 - `tool_call_started` is still emitted for the refused call (the session emits it before
   `invoke_tool`), paired with an error `tool_call_finished`. That is the existing shape for every
   step-1..5 refusal (unknown tool, capability not held, denial), not new behavior.

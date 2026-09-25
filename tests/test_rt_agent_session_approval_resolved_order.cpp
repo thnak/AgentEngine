@@ -6,7 +6,7 @@
 //
 //   O1 -- plain round, one gated call, approve: resolved(c1, true) precedes tool_call_started(c1).
 //   O2 -- plain round, one gated call, deny: resolved(c1, false); no tool_call_started.
-//   O3 -- plain mixed round (gated + ungated): both calls were asked (BUG-1, unchanged), both are
+//   O3 -- plain mixed round (gated + ungated): only the gated call is asked (ADR-196 fixed BUG-1), it is
 //         resolved, and both resolutions precede the first tool_call_started.
 //   O4 -- hook-touched round that suspends directly for approval (the hook rewrites c1's arguments
 //         and denies c2): approval_requested carries the REWRITTEN arguments (regression for a
@@ -326,7 +326,7 @@ int main() {
         auto viewer = s.enable_event_stream(std::pmr::get_default_resource());
         Suspended sus = start_suspended(s, viewer, "O3");
         auto asked = requested_ids(sus.events, sus.interaction_id);
-        check(asked == std::vector<std::string>{"c1", "c2"}, "O3: both calls asked (BUG-1, unchanged)");
+        check(asked == std::vector<std::string>{"c1"}, "O3: only the gated call is asked (ADR-196, BUG-1 fixed)");
         auto r = drive(s.resolve_interaction(ResolveInteraction{sus.interaction_id, true, std::nullopt}));
         check(r.has_value(), "O3: the run converges");
         ResumeView v = view_resume(drain(viewer), sus.interaction_id);
@@ -413,8 +413,8 @@ int main() {
         std::string const approval_id = s.open_interactions().front().interaction_id;
         std::vector<RunEvent> const cascade_events = drain(viewer);
         auto asked = requested_ids(cascade_events, approval_id);
-        check(asked == std::vector<std::string>({"c1", "c2"}),
-              tag + ": the cascade asked about the pass-through calls only: " + join(asked));
+        check(asked == std::vector<std::string>({"c1"}),
+              tag + ": the cascade asked about the gated pass-through call only (ADR-196): " + join(asked));
         check(view_resume(cascade_events, hook_id).resolved_ids.empty(),
               tag + ": the hook_decision interaction itself gets no approval_resolved");
         auto r3 = drive(s.resolve_interaction(ResolveInteraction{approval_id, approve, std::nullopt}));
@@ -429,7 +429,9 @@ int main() {
         if (approve) {
             check(gated_runs() == 1 && plain_runs() == 1, "O6: c1 and c2 ran once each, c3 never");
         } else {
-            check(v.started_ids.empty() && gated_runs() == 0 && plain_runs() == 0, "O7: nothing started");
+            // ADR-196 (BUG-2 fixed): the deny covers the call it was asked about; c2 never needed approval and runs.
+            check(v.started_ids.size() == 1 && gated_runs() == 0 && plain_runs() == 1,
+                  "O7: the denied gated call never started; the ungated call ran once");
         }
     }
 

@@ -27,6 +27,10 @@
 //   L4   Ids: blank / control-character approver, reviewer and operator ids are refused; the reserved automatic:/
 //        simulated: prefix is refused anywhere in a human approver id.
 //   L5   Knob 1: the instructions level names its operator (refused without one) and the delivery event says who.
+//   L6   ADR-191 round 4: an approval that records the form its screen measured is delivered as approved only in that
+//        form; in another it goes out as ordinary memory and the event says why. An approval with no recorded form
+//        is delivered as before. The session's form names match eval::shipped_lesson_delivery for every setting.
+//   M1   ADR-197: a call whose arguments are not valid JSON never suspends the round for approval.
 //
 // Positive controls: each MAJOR fix was reverted by hand and the matching check was seen to fail (recorded in
 // ADR-196 §6 / ADR-192 §9).
@@ -42,6 +46,7 @@
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/tool_call_hook.hpp"
 #include "agentengine/core/turn_middleware.hpp"
+#include "agentengine/eval/lesson_screen_record.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/trust/capability.hpp"
 
@@ -317,6 +322,74 @@ int a1_policy_tool_runs(ae::policy_decision verdict) {
     return runs()["gated_tool"] == 1 ? runs()["policy_tool"] : -2;
 }
 
+// ---- L6 ---------------------------------------------------------------------------------------------------------
+constexpr std::string_view kLessonText = "When exporting, write to the staging bucket first.";
+class LessonProvider {
+public:
+    [[nodiscard]] ae::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext& sc,
+                                                                            ae::EffectContext&) {
+        ae::ContextContribution c;
+        ae::Message lesson;
+        lesson.role = ae::role::system;
+        ae::ContentItem item;
+        item.origin  = ae::content_origin::external;
+        item.tainted = true;
+        item.value   = ae::Text{std::string(kLessonText)};
+        lesson.content.push_back(item);
+        c.messages.push_back(std::move(lesson));
+        c.messages.insert(c.messages.end(), sc.history.begin(), sc.history.end());
+        co_return c;
+    }
+    ae::task<std::monostate> on_turn_end(ae::TurnView, ae::EffectContext&) { co_return std::monostate{}; }
+};
+class CaptureClient {
+public:
+    CaptureClient() : state_(std::make_shared<State>()) {}
+    struct State {
+        std::vector<std::string> approvals;  // every non-empty ContentItem::approval of the last request
+    };
+    [[nodiscard]] ae::ChatClientCapabilities capabilities() const { return {}; }
+    ae::task<ae::result<ae::ChatResponse>> chat(ae::ChatRequest req, ae::EffectContext&) {
+        state_->approvals.clear();
+        for (ae::Message const& m : req.messages) {
+            for (ae::ContentItem const& i : m.content) {
+                if (!i.approval.empty()) state_->approvals.push_back(i.approval);
+            }
+        }
+        co_return ae::ChatResponse{text_msg(ae::role::assistant, "ok"), ae::Usage{1, 1, 0, 0, 0.0}};
+    }
+    [[nodiscard]] ae::stream<ae::ChatResponseUpdate> chat_stream(ae::ChatRequest, ae::EffectContext&) { return {}; }
+    std::shared_ptr<State> state_;
+};
+using LessonSession = AgentSession<CaptureClient, NoSessionState, LessonProvider>;
+
+// Returns (approved-lesson deliveries in the request, whether a "withheld" event was emitted).
+std::pair<std::size_t, bool> l6_deliver(std::string screened, bool automatic, bool instructions) {
+    ae::ApprovedLessonRegistry reg;
+    if (automatic) {
+        (void)reg.approve_automatic("p1", kLessonText, "bot", "t", std::move(screened));
+    } else {
+        (void)reg.approve("p1", kLessonText, ae::LessonApproval{"alice", "t", "", false, false, std::move(screened)});
+    }
+    LessonSession s;
+    s.initialize("s-l6", ae::Principal{"p1", ""});
+    CaptureClient& client = s.emplace_chat_client();
+    s.set_capabilities(&no_caps());
+    if (instructions) {
+        (void)s.set_approved_lessons(&reg, ae::approved_lesson_level::instructions, "ops");
+    } else {
+        s.set_approved_lessons(&reg);
+    }
+    bool withheld = false;
+    s.set_run_event_tap([&withheld](ae::RunEvent const& e) {
+        if (auto const* p = std::get_if<ae::run_event_payload::PolicyDecision>(&e.payload)) {
+            if (p->description.find("approved lesson withheld") != std::string::npos) withheld = true;
+        }
+    });
+    (void)drive(s.start_run(StartRun{text_msg(ae::role::user, "go")}));
+    return {client.state_->approvals.size(), withheld};
+}
+
 }  // namespace
 
 int main() {
@@ -524,6 +597,55 @@ int main() {
         check(!s.set_approved_lessons(&reg, ae::approved_lesson_level::instructions, "") &&
                   s.set_approved_lessons(&reg, ae::approved_lesson_level::instructions, "ops").has_value(),
               "L5: the instructions level is refused without an operator id and accepted with one");
+    }
+
+    // ---- L6 ----------------------------------------------------------------------------------------------------
+    {
+        namespace ev = ae::eval;
+        bool same = true;
+        for (bool automatic : {false, true}) {
+            for (auto level : {ae::approved_lesson_level::guidance, ae::approved_lesson_level::instructions}) {
+                for (bool fence_off : {false, true}) {
+                    same = same && ae::approved_lesson_delivery_name(automatic, level, fence_off) ==
+                                       ev::lesson_delivery_name(
+                                           ev::shipped_lesson_delivery(true, automatic, level, fence_off));
+                }
+            }
+        }
+        check(same, "L6: the session's form names match eval::shipped_lesson_delivery for every setting");
+        auto const human_at_guidance = l6_deliver("approved", false, false);
+        check(human_at_guidance.first == 1 && !human_at_guidance.second,
+              "L6 control: a lesson screened as `approved` is delivered as approved at the guidance level");
+        auto const human_at_instructions = l6_deliver("approved", false, true);
+        check(human_at_instructions.first == 0 && human_at_instructions.second,
+              "L6: the same lesson is NOT delivered as approved at the instructions level (screened fenced, would ship "
+              "unfenced) -- withheld, and the event says so");
+        auto const screened_instructions = l6_deliver("approved_instructions", false, true);
+        check(screened_instructions.first == 1 && !screened_instructions.second,
+              "L6: a lesson screened as `approved_instructions` is delivered at the instructions level");
+        auto const automatic_as_human = l6_deliver("approved", true, false);
+        check(automatic_as_human.first == 0 && automatic_as_human.second,
+              "L6: an automatic approval screened with the human wording is withheld (it would carry the automated-"
+              "reviewer wording)");
+        auto const unscreened = l6_deliver("", false, true);
+        check(unscreened.first == 1 && !unscreened.second,
+              "L6: an approval with no recorded screened form is delivered as the session is set (as before)");
+    }
+
+    // ---- M1 ----------------------------------------------------------------------------------------------------
+    {
+        runs().clear();
+        Session s;
+        s.initialize("s-m1", ae::Principal{"p1", ""});
+        ae::Message bad = calls_msg({{"c1", "gated_tool"}});
+        std::get<ae::ToolCall>(bad.content[0].value).arguments_json = "{not json";
+        s.emplace_chat_client().set_script({bad, text_msg(ae::role::assistant, "done")});
+        s.set_capabilities(&no_caps());
+        s.set_suspend_for_approval(true);
+        auto r = drive(s.start_run(StartRun{text_msg(ae::role::user, "go")}));
+        check(r.has_value() && !s.has_open_interactions() && runs()["gated_tool"] == 0,
+              "M1: a gated call with unparseable arguments does not suspend for approval; it is refused and the run "
+              "goes on");
     }
 
     std::fprintf(stderr, "%s (%d failure(s))\n", g_failures == 0 ? "ALL PASSED" : "FAILURES", g_failures);

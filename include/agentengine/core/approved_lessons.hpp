@@ -42,6 +42,11 @@ struct LessonApproval {  // ae-naming-lint: allow LessonApproval — ADR-191
     std::string acknowledgement;  // the E31 digest the approver acknowledged, when there is one (optional)
     bool simulated = false;       // an evaluation's stand-in for an approval (a Tier-1 screen's treatment arm)
     bool automatic = false;       // ADR-192: approved with no human -- by a host-named automated reviewer
+    // ADR-191 round 4: the delivery form the Tier-1 screen this approval rests on measured (an `eval::lesson_delivery`
+    // name, e.g. "approved_instructions"). A session delivers the lesson as approved only in that form; in any other
+    // it goes out as ordinary memory and the event says why. Empty: no screened form recorded (a host's own
+    // registration) -- delivered in whatever form the session is set to.
+    std::string screened_delivery{};
 };
 
 // ADR-192: how a session delivers an approved lesson. `guidance` is ADR-191's route: fenced, tagged
@@ -55,6 +60,17 @@ enum class approved_lesson_level {  // ae-naming-lint: allow approved_lesson_lev
 
 [[nodiscard]] constexpr std::string_view approved_lesson_level_name(approved_lesson_level level) noexcept {
     return level == approved_lesson_level::instructions ? "instructions" : "guidance";
+}
+
+// ADR-191 round 4: the form (its `eval::lesson_delivery` name) a session ships an approved lesson in, from the host's
+// settings -- the value `LessonApproval::screened_delivery` is compared with. `automatic` is request-wide: the guidance
+// wording names the automated reviewer when ANY approval delivered in the request is automatic. Kept equal to
+// `eval::shipped_lesson_delivery` (test_approval_resume L6 checks every combination).
+[[nodiscard]] constexpr std::string_view approved_lesson_delivery_name(bool automatic, approved_lesson_level level,
+                                                                       bool fence_disabled) noexcept {
+    if (fence_disabled) return "approved_fence_off";
+    if (level == approved_lesson_level::instructions) return "approved_instructions";
+    return automatic ? "approved_automatic" : "approved";
 }
 
 // Round-3 red team: who an approval may reach -- the tenant AND the principal. It was the principal id alone, so a
@@ -132,14 +148,17 @@ public:
     // the opt-in: a host that never calls it has only human (or simulated) approvals. Round 3: it never replaces a
     // human's approval of the same text -- that silently erased the human's attribution from every later delivery.
     [[nodiscard]] result<void> approve_automatic(LessonScope const& scope, std::string_view content,
-                                                 std::string const& reviewer_id, std::string approved_at = {}) {
+                                                 std::string const& reviewer_id, std::string approved_at = {},
+                                                 std::string screened_delivery = {}) {
         if (!is_attributable_id(reviewer_id)) {
             return std::unexpected(error{failure_class::contract,
                                          "an automatic approval must name its reviewer: non-blank, no control "
                                          "characters (I4)",
                                          "memory.approval_unattributed"});
         }
-        return put(scope, content, LessonApproval{"automatic:" + reviewer_id, std::move(approved_at), "", false, true},
+        return put(scope, content,
+                   LessonApproval{"automatic:" + reviewer_id, std::move(approved_at), "", false, true,
+                                  std::move(screened_delivery)},
                    /*may_replace_human=*/false);
     }
 

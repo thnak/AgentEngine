@@ -872,3 +872,14 @@ change also fixed a crash that this ADR's own P1 introduced (ADR-183 §2), and i
 bypass for text-derived calls to pure, capability-free `always_require` tools (ADR-183 §5).
 Remaining engine items: P1b (BUG-1/BUG-2), the two-error-code finding, the malformed-arguments
 finding, and ADR-183 §5.
+
+## 18. Remaining engine items — closed (2026-09-25)
+
+- **P1b (BUG-1/BUG-2) and R6 (approver identity):** ADR-196. `approval_requested` names only gated calls;
+  `ResolveInteraction::call_decisions` decides per call; `approver_id` is carried on `approval_resolved`. The driver's
+  `interaction_resolve` takes `call_decisions` and `approver_id` (the `call_ids`/`test.unsupported` refusal is gone),
+  and **C7 is met**: `test_agentengine_test_driver` PC denies a round except one approved call and fails if BUG-2
+  returns. `live_mixed_round.json` now expects only the gated call's events.
+- **The two-error-code finding:** ADR-198. `run_failed.error_code` is the run's own code; `stage` carries
+  `run.chat_failed`. `scripted_model_failure.json` updated.
+- **The malformed-arguments finding:** ADR-197, with its scenario `scripted_malformed_arguments.json`.

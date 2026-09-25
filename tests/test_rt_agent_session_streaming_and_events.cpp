@@ -802,8 +802,10 @@ int main() {
         if (!events.empty()) {
             auto const* payload =
                 std::get_if<agentengine::run_event_payload::RunFailed>(&events.back().payload);
-            check(payload != nullptr && payload->error_code == "run.chat_failed",
-                  "A4a: RunFailed carries the real error_code for a chat-call failure");
+            // ADR-198: the event carries the run's own code (the same one `r` carries); the stage is beside it.
+            check(payload != nullptr && !r.has_value() && payload->error_code == r.error().code &&
+                      payload->stage == "run.chat_failed",
+                  "A4a: RunFailed carries the real error_code for a chat-call failure, stage run.chat_failed");
         }
         bool saw_run_finished = false;
         for (auto const& ev : events) saw_run_finished |= (ev.kind == run_event_kind::run_finished);

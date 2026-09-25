@@ -64,7 +64,14 @@ means.**
    engine cannot verify a host-supplied string (round 2). `eval::approve_lesson` is the path that verifies the
    acknowledgement first. An evaluation's stand-in is `approve_simulated` and is marked `simulated` wherever it is
    reported. Membership is the exact text, compared byte for byte (no digest, so no `AgentSession` user has to link
-   the digest library). Revocation takes effect at the next request.
+   the digest library). Revocation takes effect at the next request. *Amended 2026-09-25 (stack-wide red team):* the
+   scope is the **tenant and** the principal (`LessonScope`) — it was the principal id alone, so an approval for
+   "alice" in one tenant reached "alice" in another, and ADR-193's `share_lessons` injected its text there. A bare id
+   is the single-tenant scope, which a principal carrying a tenant never matches (fails safe: fenced). The key is a
+   structured (tenant, principal, text) tuple — it was one string joined by a unit separator, so a scope containing
+   the separator reached another scope's prefix scan and lookup. An automatic or simulated approval never replaces a
+   human's approval of the same text; approver, reviewer and acknowledgement ids must be non-blank with no control
+   characters; the reserved `automatic:`/`simulated:` prefix is refused anywhere in a human approver id.
 4. **The fence names the block `approved-lesson:<code>`** in its open marker (the close marker, and every other
    fence, keep ADR-173's fixed form), and a request that carries one gets one more preamble sentence naming the code:
    such a block holds a lesson a human operator reviewed and approved word for word; the model may follow it as
@@ -123,7 +130,16 @@ means.**
    parameter at all (checked at compile time): no human, no override. **Not yet done at delivery time:** the session
    does not know the screened form, so a host that approves at one form and configures its sessions for another is
    caught only when it states `ships_as` honestly. Closing that needs `LessonApproval` to carry the screened form and
-   `AgentSession::apply_approved_lessons` to compare it with `shipped_lesson_delivery(...)` (a follow-on).
+   `AgentSession::apply_approved_lessons` to compare it with `shipped_lesson_delivery(...)` (a follow-on). **The session enforces the form** (2026-09-25):
+   `LessonApproval::screened_delivery` records the form the screen measured (`approve_lesson` and
+   `promote_lesson_automatically` set it), and `AgentSession::apply_approved_lessons` delivers such an approval as
+   approved only when the session would ship it in that form (`approved_lesson_delivery_name`, equal to
+   `eval::shipped_lesson_delivery` for every setting). In any other form the lesson goes out as the ordinary memory it
+   is, and a `policy_decision` event says "withheld: screened as X, would ship as Y". Because the guidance wording is
+   request-wide, automatic approvals are settled first (a delivered one always ships with the automated-reviewer
+   wording), then human ones against whether any automatic one was delivered. (A first "re-check until stable" version
+   oscillated for a lone automatic approval; L6 caught it.) An approval with no recorded form (a host's own `registry.approve`) is delivered as before
+   (`test_approval_resume` L6).
 
 ## 4. What this is, stated plainly (ADR-070)
 
@@ -338,5 +354,12 @@ mutants, each seen to fail its checks and then removed: names collapsed to "appr
 forms (T35); objections always empty (T36b-T41); an unnamed override accepted (T37); other harmful attempts not counted
 (T38); an override overload added to automatic promotion (T41 fails to compile). No live run at the new forms yet: the
 unfenced forms' harmful-control behaviour (whether the model still declines without the preamble clause) is unmeasured.
+
+Also from the same red team (the cross-feature reviewer), fixed in `approved_lessons.hpp` (item 3 above): approvals
+scoped by tenant (MAJOR: probe granted tenant-A's lesson in tenant-B's session and injected its text into tenant-B's
+spawned children); the joined-string key (MAJOR: an approval for scope `victim<US>X` read as victim's approval of
+`X<US>C`); an automatic approval silently replacing a human one; blank and control-character ids; the reserved prefix
+defeated by a leading newline, NBSP or zero-width space. Evidence: `test_approval_resume` L1-L6, `test_delegation_provenance`
+R2-T1.
 
 **The round-3 and round-4 changes are not yet re-red-teamed.**

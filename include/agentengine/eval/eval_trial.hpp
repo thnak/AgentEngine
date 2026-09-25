@@ -476,15 +476,24 @@ template <class Inner, class SummarizerT>
     if (lesson_delivery_is_approved(spec.delivery) && !rendered_lesson_content.empty()) {
         auto registered =
             spec.delivery == lesson_delivery::approved_automatic
-                ? approved_lessons.approve_automatic(store.principal().id, rendered_lesson_content, screen_operator)
-                : approved_lessons.approve_simulated(store.principal().id, rendered_lesson_content, spec.trial_id);
+                ? approved_lessons.approve_automatic({store.principal().tenant_id, store.principal().id},
+                                                    rendered_lesson_content, screen_operator)
+                : approved_lessons.approve_simulated({store.principal().tenant_id, store.principal().id},
+                                                    rendered_lesson_content, spec.trial_id);
         if (!registered) {
             trial_result.setup_error = registered.error();
             co_return trial_result;
         }
-        session.set_approved_lessons(&approved_lessons, spec.delivery == lesson_delivery::approved_instructions
-                                                            ? approved_lesson_level::instructions
-                                                            : approved_lesson_level::guidance);
+        // The instructions level names its operator (ADR-192 round 3): the screen's own id.
+        if (auto set = session.set_approved_lessons(&approved_lessons,
+                                                    spec.delivery == lesson_delivery::approved_instructions
+                                                        ? approved_lesson_level::instructions
+                                                        : approved_lesson_level::guidance,
+                                                    screen_operator);
+            !set) {
+            trial_result.setup_error = set.error();
+            co_return trial_result;
+        }
     }
     auto engaged = session.history_provider().engage(
         std::tuple{HistoryProvider<Window<0>>{}, std::move(memory_provider),

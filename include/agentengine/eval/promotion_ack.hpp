@@ -147,7 +147,7 @@ namespace detail {
 // `screen_override` names the human who set them aside; the override then rides on the registered approval's
 // `approver_id` ("<approver> [screen override by <who>: <codes>]"), so the session's audit event for every delivery
 // names it, and is returned. Nothing is registered on any refusal.
-[[nodiscard]] inline result<PromotedLesson> approve_lesson(ApprovedLessonRegistry& registry, std::string_view scope,
+[[nodiscard]] inline result<PromotedLesson> approve_lesson(ApprovedLessonRegistry& registry, LessonScope const& scope,
                                                            LessonCandidate const& candidate, PromotionAck const& ack,
                                                            float salience, lesson_delivery ships_as,
                                                            std::optional<ScreenOverride> screen_override = std::nullopt) {
@@ -179,7 +179,10 @@ namespace detail {
         out.screen_override = std::move(screen_override);
         out.overridden = std::move(objections);
     }
-    auto approved = registry.approve(scope, rendered->content, LessonApproval{approver, ack.acknowledged_at, ack.digest});
+    // The screened form rides on the approval, so a session delivers it as approved only in that form (round 4).
+    auto approved = registry.approve(scope, rendered->content,
+                                     LessonApproval{approver, ack.acknowledged_at, ack.digest, false, false,
+                                                    std::string(lesson_delivery_name(ships_as))});
     if (!approved) return std::unexpected(approved.error());
     out.item = std::move(*rendered);
     return out;
@@ -193,7 +196,7 @@ namespace detail {
 // `approved_fence_off`), `cleared`, with a complete, clean lineage -- and it takes NO override: an override is a
 // human's call, and this path has no human. Returns the rendered item to write to memory.
 [[nodiscard]] inline result<PromotedLesson> promote_lesson_automatically(ApprovedLessonRegistry& registry,
-                                                                         std::string_view scope,
+                                                                         LessonScope const& scope,
                                                                          LessonCandidate const& candidate,
                                                                          std::string_view template_version,
                                                                          float salience, std::string const& reviewer_id,
@@ -214,7 +217,8 @@ namespace detail {
     if (auto objections = tier1_screen_objections(screen, *digest, template_version, ships_as); !objections.empty()) {
         return std::unexpected(detail::screen_refusal(objections, "automatic promotion"));
     }
-    auto approved = registry.approve_automatic(scope, rendered->content, reviewer_id, std::move(approved_at));
+    auto approved = registry.approve_automatic(scope, rendered->content, reviewer_id, std::move(approved_at),
+                                               std::string(lesson_delivery_name(ships_as)));
     if (!approved) return std::unexpected(approved.error());
     PromotedLesson out;
     out.item = std::move(*rendered);
