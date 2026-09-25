@@ -801,14 +801,29 @@ public:
     // before. `registry` must outlive the session. Every approved delivery emits a `policy_decision` event naming
     // the approval it rests on (I4).
     //
+    void set_approved_lessons(agentengine::ApprovedLessonRegistry const* registry) noexcept {
+        approved_lessons_ = registry;
+        approved_lesson_level_ = agentengine::approved_lesson_level::guidance;
+        lesson_level_set_by_.reset();
+    }
+
     // ADR-192: `level` is how an approved lesson is delivered -- `guidance` (ADR-191's fenced, tagged route, the
     // default) or `instructions` (plain, unfenced system text, as the host's own instructions). The item stays tainted
-    // either way; only how the model is told to read it changes.
-    void set_approved_lessons(agentengine::ApprovedLessonRegistry const* registry,
-                              agentengine::approved_lesson_level level =
-                                  agentengine::approved_lesson_level::guidance) noexcept {
+    // either way; only how the model is told to read it changes. Round-3 red team: `instructions` is one of the four
+    // unattended opt-ins, so, like the other three, it names who set it (required, I4) and every delivery it affects
+    // says so; before, it took no id and the audit named only the lesson's approver.
+    [[nodiscard]] result<void> set_approved_lessons(agentengine::ApprovedLessonRegistry const* registry,
+                                                    agentengine::approved_lesson_level level,
+                                                    std::string operator_id) {
+        if (level == agentengine::approved_lesson_level::instructions &&
+            !agentengine::is_attributable_id(operator_id)) {
+            return unattended_detail_refuse("set_approved_lessons(instructions)");
+        }
         approved_lessons_ = registry;
         approved_lesson_level_ = level;
+        if (operator_id.empty()) lesson_level_set_by_.reset();
+        else lesson_level_set_by_ = std::move(operator_id);
+        return {};
     }
 
     // ADR-192, host opt-in (unattended mode): every tainted system text -- memory, retrieved documents, summaries,
@@ -825,7 +840,7 @@ public:
     void set_pinned_context(std::vector<Message> messages) { pinned_context_ = std::move(messages); }
 
     [[nodiscard]] result<void> disable_system_channel_fence(std::string operator_id) {
-        if (operator_id.empty()) return unattended_detail_refuse("disable_system_channel_fence");
+        if (!agentengine::is_attributable_id(operator_id)) return unattended_detail_refuse("disable_system_channel_fence");
         system_fence_disabled_by_ = std::move(operator_id);
         return {};
     }
@@ -851,7 +866,7 @@ public:
     // decider while this is set.
     [[nodiscard]] result<void> set_unattended_approvals(std::string operator_id,
                                                         agentengine::ApprovalDecider veto = {}) {
-        if (operator_id.empty()) return unattended_detail_refuse("set_unattended_approvals");
+        if (!agentengine::is_attributable_id(operator_id)) return unattended_detail_refuse("set_unattended_approvals");
         unattended_by_ = std::move(operator_id);
         if (veto) unattended_veto_ = std::make_shared<agentengine::ApprovalDecider const>(std::move(veto));
         return {};
@@ -867,8 +882,10 @@ public:
     [[nodiscard]] result<void> enable_unattended_mode(std::string const& operator_id,
                                                       agentengine::ApprovedLessonRegistry const* registry = nullptr,
                                                       agentengine::ApprovalDecider veto = {}) {
-        if (operator_id.empty()) return unattended_detail_refuse("enable_unattended_mode");
-        if (registry != nullptr) set_approved_lessons(registry, agentengine::approved_lesson_level::instructions);
+        if (!agentengine::is_attributable_id(operator_id)) return unattended_detail_refuse("enable_unattended_mode");
+        if (registry != nullptr) {
+            (void)set_approved_lessons(registry, agentengine::approved_lesson_level::instructions, operator_id);
+        }
         (void)disable_system_channel_fence(operator_id);
         return set_unattended_approvals(operator_id, std::move(veto));  // an existing veto is kept if none is given
     }
@@ -3265,6 +3282,7 @@ private:
 
     agentengine::approved_lesson_level                 approved_lesson_level_ =
         agentengine::approved_lesson_level::guidance;                                    // ADR-192
+    std::optional<std::string>                         lesson_level_set_by_;              // ADR-192 round 3
     std::optional<std::string>                         system_fence_disabled_by_;         // ADR-192 opt-in
     std::optional<std::string>                         unattended_by_;                    // ADR-192 opt-in
     std::vector<Message>                               pinned_context_;                   // ADR-193
@@ -3273,7 +3291,9 @@ private:
 
     [[nodiscard]] static result<void> unattended_detail_refuse(char const* what) {
         return std::unexpected(error{failure_class::contract,
-                                     std::string(what) + ": an operator id is required -- the audit names it (I4)",
+                                     std::string(what) +
+                                         ": an operator id is required (non-blank, no control characters) -- the audit "
+                                         "names it (I4)",
                                      "session.unattended_operator_missing"});
     }
 
@@ -3292,9 +3312,11 @@ private:
                     std::string_view const candidate = agentengine::approved_lesson_candidate_text(text->text);
                     // ADR-193: a delegated principal (a spawned child, a fresh id nobody could approve for) is
                     // matched against its chain's root -- the owner the approval was actually given to.
-                    auto match = approved_lessons_->find(principal_.id, candidate);
+                    // Round 3: scoped by tenant too -- an approval never reaches a same-named principal of another
+                    // tenant. A chain stays inside its root's tenant (derive_on_behalf_of copies it).
+                    auto match = approved_lessons_->find({principal_.tenant_id, principal_.id}, candidate);
                     if (!match && !principal_.delegation_root.empty()) {
-                        match = approved_lessons_->find(principal_.delegation_root, candidate);
+                        match = approved_lessons_->find({principal_.tenant_id, principal_.delegation_root}, candidate);
                     }
                     if (match) {
                         // The confidence label ("model-inferred, unverified") is dropped: the fence now says what
@@ -3307,8 +3329,11 @@ private:
                             approved_lesson_level_ == agentengine::approved_lesson_level::instructions;
                         item.deliver_as_instructions = as_instructions || system_fence_disabled_by_.has_value();
                         std::string const delivered =
-                            as_instructions ? "instructions"
-                                            : (system_fence_disabled_by_ ? "instructions (fence off)" : "guidance");
+                            as_instructions
+                                ? "instructions (level set by operator " + lesson_level_set_by_.value_or("?") + ")"
+                                : (system_fence_disabled_by_ ? "instructions (fence off by operator " +
+                                                                   *system_fence_disabled_by_ + ")"
+                                                             : std::string("guidance"));
                         LessonApproval const& a = match->approval;
                         emit_run_event(run_event_kind::policy_decision,
                                        run_event_payload::PolicyDecision{

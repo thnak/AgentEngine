@@ -178,14 +178,16 @@ struct SpawnTargetDescriptor {
     //     this operator id; its approval events reach the caller's tap (`EffectContext::delegated_event_sink`).
     //   - `fence_disabled_by`: the child's system-channel fence is off, audited under this operator id.
     //   - `approved_lessons`/`lesson_level`: the child's approved-lesson registry, matched against the CHAIN's
-    //     root principal (a child's own id is a fresh hash nobody could approve for). With `share_lessons`, every
-    //     lesson the root has approved is also placed in the child's context (the chain's knowledge), where the
+    //     root principal within the caller's tenant (a child's own id is a fresh hash nobody could approve for);
+    //     `lesson_level_set_by` names who chose `instructions` (required for it, round-3 red team, I4). With
+    //     `share_lessons`, every lesson the root has approved is also placed in the child's context (the chain's knowledge), where the
     //     session's ordinary grant re-verifies each one.
     std::optional<std::string>          unattended_operator{};
     agentengine::ApprovalDecider        unattended_veto{};
     std::optional<std::string>          fence_disabled_by{};
     agentengine::ApprovedLessonRegistry const* approved_lessons = nullptr;
     agentengine::approved_lesson_level  lesson_level = agentengine::approved_lesson_level::guidance;
+    std::optional<std::string>          lesson_level_set_by{};
     bool                                share_lessons = false;
 };
 
@@ -229,11 +231,17 @@ public:
                 "agent_spawn.target_already_registered"});
         }
         // ADR-193: refused here, not after a spawn has already spent quota, cost and a worktree (red team round 1).
-        if ((descriptor.unattended_operator && descriptor.unattended_operator->empty()) ||
-            (descriptor.fence_disabled_by && descriptor.fence_disabled_by->empty())) {
+        auto const unnamed = [](std::optional<std::string> const& id) {
+            return id.has_value() && !agentengine::is_attributable_id(*id);
+        };
+        if (unnamed(descriptor.unattended_operator) || unnamed(descriptor.fence_disabled_by) ||
+            unnamed(descriptor.lesson_level_set_by) ||
+            (descriptor.lesson_level == agentengine::approved_lesson_level::instructions &&
+             !descriptor.lesson_level_set_by)) {
             return std::unexpected(agentengine::error{
                 agentengine::failure_class::contract,
-                "a spawn target's unattended_operator / fence_disabled_by must name an operator (I4)",
+                "a spawn target's unattended_operator / fence_disabled_by / lesson_level_set_by must name an operator "
+                "(non-blank, no control characters), and an instructions lesson_level needs lesson_level_set_by (I4)",
                 "agent_spawn.target_operator_missing"});
         }
         targets_.emplace(std::move(agent_id), std::move(descriptor));
@@ -510,8 +518,9 @@ template <agentengine::rt::AppendLogStore StoreT>
     child_request.fence_disabled_by   = target->fence_disabled_by;
     child_request.approved_lessons    = target->approved_lessons;
     child_request.lesson_level        = target->lesson_level;
+    child_request.lesson_level_set_by = target->lesson_level_set_by;
     if (target->share_lessons && target->approved_lessons != nullptr) {
-        for (std::string const& lesson : target->approved_lessons->texts(ctx.principal.root_id())) {
+        for (std::string const& lesson : target->approved_lessons->texts({ctx.principal.tenant_id, ctx.principal.root_id()})) {
             agentengine::Message m;
             m.role = agentengine::role::system;
             agentengine::ContentItem item{};

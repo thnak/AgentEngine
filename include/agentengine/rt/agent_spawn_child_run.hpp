@@ -111,6 +111,7 @@ struct ChildSpawnRequest {
     std::optional<std::string>          fence_disabled_by{};
     agentengine::ApprovedLessonRegistry const* approved_lessons = nullptr;
     agentengine::approved_lesson_level  lesson_level = agentengine::approved_lesson_level::guidance;
+    std::optional<std::string>          lesson_level_set_by{};
     std::vector<agentengine::Message>   context{};  // pinned into every request (shared lessons), tainted
     // ADR-193: where the child's WHOLE spend goes -- usage plus budget-only discarded-stream estimates -- on EVERY
     // outcome, success or failure (red team round 1: a failing child charged nothing, so a model could spend
@@ -197,7 +198,13 @@ template <class ChatClientT, class StateT = agentengine::rt::NoSessionState,
             return std::unexpected(set.error());
         }
     }
-    if (req.approved_lessons != nullptr) child.set_approved_lessons(req.approved_lessons, req.lesson_level);
+    if (req.approved_lessons != nullptr) {
+        if (auto set = child.set_approved_lessons(req.approved_lessons, req.lesson_level,
+                                                  req.lesson_level_set_by.value_or(std::string{}));
+            !set) {
+            return std::unexpected(set.error());
+        }
+    }
     if (!req.context.empty()) child.set_pinned_context(std::move(req.context));
     // RC-1 (this file's own top comment) -- unconditional, not opt-in: every child this mechanism
     // constructs is background-execution-disabled, full stop, before start_run() is ever called.
