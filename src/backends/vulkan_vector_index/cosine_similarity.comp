@@ -1,0 +1,73 @@
+#version 450
+// Implements decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.6 --
+// VulkanCosineIndex's one compute shader. Exact brute-force cosine similarity, GPU-PARALLEL ACROSS
+// CANDIDATES, SEQUENTIAL WITHIN each candidate's own dot product: each invocation owns exactly one
+// stored vector (gl_GlobalInvocationID.x indexes candidates, never dimensions), and accumulates its
+// dot product / norms with the query in a plain ascending-dimension `for` loop -- there is no
+// cross-dimension tree reduction anywhere in this shader, by construction. This is the specific
+// design choice that resolves ADR-180 §3.5/§2.3B's determinism concern for the REDUCTION-ORDER half:
+// the accumulation order here is identical to `BruteForceCosineIndex::cosine_similarity()`'s own
+// (core/vector_index.hpp) sequential loop. What is NOT eliminated (named honestly, not hidden): this
+// shader accumulates in `float` (32-bit), not `double` like the CPU path -- VK_KHR_shader_float64 is
+// not baseline-guaranteed across the Vulkan-conformant device range this backend targets (mobile/
+// integrated GPUs commonly lack it, and requiring it would contradict the "generic, cross-vendor"
+// goal ADR-180 §2.7 names), so GPU and CPU results can diverge by a few ULPs from accumulated
+// single- vs. double-precision rounding alone -- a real, bounded, accepted residual, not claimed away.
+//
+// Regenerate the checked-in cosine_similarity.spv after editing this file:
+//   "C:\VulkanSDK\<version>\Bin\glslc.exe" cosine_similarity.comp -o cosine_similarity.spv
+// (or the Linux/macOS glslc equivalent from the same Vulkan SDK release -- SPIR-V is portable across
+// platforms once compiled, so ONE .spv, checked in, serves every target this backend builds for; no
+// shader-compiler build-time dependency is introduced, matching ADR-180 §2.6's own stated design).
+
+layout(local_size_x = 64) in;
+
+// Binding 0: the query vector, `dimension` floats.
+layout(set = 0, binding = 0) readonly buffer QueryBuffer {
+    float query[];
+};
+
+// Binding 1: every stored vector, flattened DIMENSION-MAJOR (transposed) -- component d of candidate
+// i lives at `[d * count + i]`. ADR-180 §10 (2026-09-23): the original row-major layout
+// (`[i * dimension + d]`) put adjacent invocations 6 KB apart at dim=1536, so no two lanes of a
+// workgroup ever shared a memory transaction; the kernel was memory-latency-bound and measured SLOWER
+// than CPU brute force (57 ms vs 32 ms at n=20000 on the reference RX 5300M). Dimension-major makes
+// every loop iteration a contiguous, coalesced read across the workgroup (~1.7 ms at the same n).
+// Each invocation still walks its OWN dimensions in the same ascending order, so the determinism
+// argument above is unchanged -- only where the bytes sit moved, not the order they are summed in.
+layout(set = 0, binding = 1) readonly buffer VectorsBuffer {
+    float vectors[];
+};
+
+// Binding 2: one output cosine-similarity score per candidate, `count` floats.
+layout(set = 0, binding = 2) writeonly buffer ScoresBuffer {
+    float scores[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint count;      // number of stored candidate vectors
+    uint dimension;  // shared dimensionality of every vector (query included)
+} pc;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.count) return;  // last workgroup may run past `count` -- discard the excess lanes
+
+    float dot = 0.0;
+    float na = 0.0;
+    float nb = 0.0;
+    // Sequential, ascending-dimension accumulation -- deliberately NOT unrolled/tree-reduced, matching
+    // this file's own top comment. Identical operation order to the CPU path's own loop.
+    for (uint d = 0u; d < pc.dimension; ++d) {
+        float a = query[d];
+        float b = vectors[d * pc.count + i];  // dimension-major: coalesced across the workgroup
+        dot += a * b;
+        na += a * a;
+        nb += b * b;
+    }
+
+    float denom = sqrt(na) * sqrt(nb);
+    // Same zero-norm guard BruteForceCosineIndex::cosine_similarity() applies (core/vector_index.hpp):
+    // a zero vector's cosine similarity against anything is defined as 0, not NaN from a 0/0 divide.
+    scores[i] = (denom == 0.0) ? 0.0 : (dot / denom);
+}

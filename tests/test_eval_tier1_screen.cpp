@@ -1,4 +1,4 @@
-// Implements decisions/ADR-181-evaluation-harness.md §3.0's "Tier-1 pre-registration and attempt
+// Implements decisions/ADR-187-evaluation-harness.md §3.0's "Tier-1 pre-registration and attempt
 // accounting" (E32): the pre-registration digest is recorded before any trial runs; every started attempt
 // for a lesson family is counted; the `Tier1ScreenResult` names the count and shows every attempt's figures,
 // not only the latest. The model is scripted throughout; the two screens themselves are proven by

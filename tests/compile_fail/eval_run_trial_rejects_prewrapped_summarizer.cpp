@@ -1,4 +1,4 @@
-// This file MUST NOT compile (decisions/ADR-181-evaluation-harness.md §3.8, round-2 red-team fix on
+// This file MUST NOT compile (decisions/ADR-187-evaluation-harness.md §3.8, round-2 red-team fix on
 // the trial-running harness's round-1 fixes) -- see tests/CMakeLists.txt's try_compile() gate.
 // Round 1 added a static_assert rejecting an already-wrapped RecordingChatClient<X> as `Inner`, but
 // left `SummarizerT` completely unchecked. A round-2 reviewer proved that compiled cleanly and let a

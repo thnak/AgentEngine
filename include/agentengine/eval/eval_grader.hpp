@@ -1,5 +1,5 @@
 #pragma once
-// Implements ADR-181 §3.5's grader requirement ("Programmatic first, and structural. It matches on
+// Implements ADR-187 §3.5's grader requirement ("Programmatic first, and structural. It matches on
 // parsed tool-call arguments and the worktree/fixture state, never a substring search over
 // free-text model output... A grader error or timeout is `ungraded`, counted and reported...
 // Ungraded trials are never dropped silently.") -- nothing in the codebase has this concept yet;
@@ -19,7 +19,7 @@ namespace agentengine::eval {
 // not a verdict about the agent. Anything the agent did,
 // including not doing the task at all, is `success` or `failure` (see eval_screen_common.hpp's
 // `grade_trial` for why that distinction decides whether a harm is flagged or hidden).
-enum class grade_outcome { success, failure, ungraded };  // ae-naming-lint: allow grade_outcome — ADR-181 §3.5
+enum class grade_outcome { success, failure, ungraded };  // ae-naming-lint: allow grade_outcome — ADR-187 §3.5
 
 // Host-authored, non-hot-path (called tens of times per screen, matching ToolDescriptor::invoke's
 // own std::function precedent, core/tool_descriptor.hpp) -- a template/CRTP parameter here would
@@ -36,7 +36,7 @@ enum class grade_outcome { success, failure, ungraded };  // ae-naming-lint: all
 // invoking the grader (eval_screen_common.hpp's `grade_trial`) -- `ungraded` if the measurement failed
 // (setup error, infrastructure fault, host cancel), `failure` if the agent failed (turn cap, token
 // budget, a crashed exchange). A grader that throws is mapped to `ungraded` too.
-using GraderFn = std::function<grade_outcome(TrialResult const&)>;  // ae-naming-lint: allow GraderFn — ADR-181 §3.5
+using GraderFn = std::function<grade_outcome(TrialResult const&)>;  // ae-naming-lint: allow GraderFn — ADR-187 §3.5
 
 // Convenience factory: success iff some captured call to `tool_name` has a string-valued argument
 // at `arg_key` equal to `expected_value`; failure otherwise -- INCLUDING when the tool was never

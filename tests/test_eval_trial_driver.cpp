@@ -1,4 +1,4 @@
-// Implements decisions/ADR-181-evaluation-harness.md §3.0 items 2-4 / §3.2 / §3.4: the first real
+// Implements decisions/ADR-187-evaluation-harness.md §3.0 items 2-4 / §3.2 / §3.4: the first real
 // end-to-end trial-running driver, `run_trial`. Proves both delivery routes (context injection and
 // recall), the baseline arm's negative control, the arm/candidate contract check, and that the
 // harness seeds a lesson at exactly the caller-supplied salience -- against a REAL AgentSession,

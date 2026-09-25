@@ -20,10 +20,12 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "agentengine/core/corpus_scope.hpp"
 #include "agentengine/core/corpus_source.hpp"
+#include "agentengine/core/sparse_index.hpp"
 #include "agentengine/rt/append_log_store.hpp"
 #include "support/run_task_sync.hpp"
 
@@ -326,6 +328,168 @@ int main() {
                  "(e) max_atom_bytes=0 disables the backstop entirely -- the same pathological line "
                  "again produces one unsplit, unbounded chunk, confirming the default (16384) is what "
                  "protects real callers, not some other code path");
+    }
+
+    // ============================================================================================
+    // decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.3a --
+    // `DiskCorpusSource::mount_hybrid()`: chunks once, ingests into BOTH a dense and a sparse index,
+    // and independently backfills a leg that was newly added to an already-mounted corpus WITHOUT
+    // re-embedding -- found, by this exact check, to require passing EMPTY previous_file_hashes for
+    // the one backfill call (the unchanged-file fast path otherwise skips chunking before the
+    // per-leg dedup ever runs -- now documented explicitly at mount_hybrid()'s own call site).
+    // ============================================================================================
+    {
+        std::filesystem::path const root = std::filesystem::temp_directory_path() / "ae_test_corpus_source_hybrid";
+        std::filesystem::remove_all(root);
+        std::filesystem::create_directories(root);
+        write_file(root / "doc.txt", "hello world this is a small hybrid test file");
+
+        ae::InMemoryWorktreeObjectStore object_store;
+        ae::rt::InMemoryAppendLogStore  ref_store;
+        ae::BruteForceCosineIndex dense_index;
+        ae::BM25Index sparse_index;
+        MockEmbedder embedder;
+
+        ae::Principal const principal{"p-hybrid-mount", "tenant-hybrid"};
+        ae::Mount const mount =
+            ae::rag_corpus_mount(ae::corpus_scope::per_principal, principal, "hybrid-corpus");
+        ae::cap::FsWrite const write_cap{mount.mount_id, "", std::nullopt, std::nullopt};
+
+        ae::DiskCorpusSource source{root};
+        ae::EffectContext ctx{};
+        ctx.principal = principal;
+
+        auto first = ae::test_support::run_task_sync<
+            ae::result<ae::DiskCorpusSource::DiskCorpusHybridMountResult>>(
+            source.mount_hybrid<MockEmbedder, ae::BruteForceCosineIndex, ae::BM25Index,
+                                 ae::InMemoryWorktreeObjectStore, ae::rt::InMemoryAppendLogStore>(
+                object_store, ref_store, mount, write_cap, embedder, dense_index, sparse_index, ctx,
+                {}));
+        AE_CHECK(first.has_value(), "M1: first mount_hybrid() succeeds");
+        AE_CHECK(first.has_value() && first->chunks_embedded > 0 && first->chunks_sparse_indexed > 0,
+                 "M2: the first pass populates BOTH the dense and sparse index");
+        AE_CHECK(dense_index.size() == sparse_index.size(),
+                 "M3: dense and sparse indices hold the identical chunk set after a fresh mount");
+
+        // Re-mount unchanged, SAME hashes -- both legs already caught up, so the fast path should
+        // skip everything (mirrors mount()'s own claim 2 disproof, now for both legs at once).
+        auto steady = ae::test_support::run_task_sync<
+            ae::result<ae::DiskCorpusSource::DiskCorpusHybridMountResult>>(
+            source.mount_hybrid<MockEmbedder, ae::BruteForceCosineIndex, ae::BM25Index,
+                                 ae::InMemoryWorktreeObjectStore, ae::rt::InMemoryAppendLogStore>(
+                object_store, ref_store, mount, write_cap, embedder, dense_index, sparse_index, ctx,
+                first->file_hashes));
+        AE_CHECK(steady.has_value() && steady->chunks_embedded == 0 && steady->chunks_sparse_indexed == 0,
+                 "M4: a steady-state re-mount with unchanged hashes touches neither index");
+
+        // Backfill: a FRESH sparse index (simulating hybrid search just enabled on this corpus),
+        // called with EMPTY previous_file_hashes per mount_hybrid()'s own documented contract.
+        ae::BM25Index fresh_sparse;
+        auto backfill = ae::test_support::run_task_sync<
+            ae::result<ae::DiskCorpusSource::DiskCorpusHybridMountResult>>(
+            source.mount_hybrid<MockEmbedder, ae::BruteForceCosineIndex, ae::BM25Index,
+                                 ae::InMemoryWorktreeObjectStore, ae::rt::InMemoryAppendLogStore>(
+                object_store, ref_store, mount, write_cap, embedder, dense_index, fresh_sparse, ctx, {}));
+        AE_CHECK(backfill.has_value(), "M5: backfill mount_hybrid() succeeds");
+        AE_CHECK(backfill.has_value() && backfill->chunks_embedded == 0,
+                 "M6: backfilling the sparse leg does NOT re-embed -- dense_index already had every "
+                 "chunk, so the embedder is never called again");
+        AE_CHECK(backfill.has_value() && backfill->chunks_sparse_indexed > 0 && fresh_sparse.size() > 0,
+                 "M7: the fresh sparse index is genuinely populated by the backfill pass");
+
+        std::filesystem::remove_all(root);
+    }
+
+    // ============================================================================================
+    // decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §4 red-team finding R3
+    // (2026-09-22): a dense-leg add_batch() failure must NOT block committing chunks that only need
+    // the SPARSE leg in the same pass (and vice versa) -- the two legs commit independently.
+    // ============================================================================================
+    {
+        // A VectorIndex conformer whose add_batch() can be scripted to fail ON DEMAND, after
+        // already being used (successfully) to pre-seed one entry -- lets this test distinguish
+        // "chunk already in the dense index" (needs_dense == false) from "chunk needs a dense
+        // add_batch() call that then fails" (needs_dense == true, and that call fails).
+        struct FailAfterSeedDenseIndex {
+            ae::result<void> add_batch(std::vector<std::string> const& ids,
+                                        std::vector<std::vector<float>> const&) {
+                if (fail_now) {
+                    return std::unexpected(
+                        ae::error{ae::failure_class::transient, "scripted dense add_batch failure",
+                                  "test.scripted_dense_failure"});
+                }
+                for (auto const& id : ids) seeded.insert(id);
+                return {};
+            }
+            ae::result<std::vector<ae::ScoredId>> search(std::span<float const>, std::size_t) const {
+                return std::vector<ae::ScoredId>{};
+            }
+            [[nodiscard]] bool contains(std::string const& id) const { return seeded.contains(id); }
+
+            std::unordered_set<std::string> seeded;
+            bool fail_now = false;
+        };
+        static_assert(ae::VectorIndex<FailAfterSeedDenseIndex>);
+
+        std::filesystem::path const root = std::filesystem::temp_directory_path() / "ae_test_corpus_source_r3";
+        std::filesystem::remove_all(root);
+        std::filesystem::create_directories(root);
+        std::string const chunk_a_text = "chunk one content";
+        std::string const chunk_b_text = "chunk two content";
+        write_file(root / "a.txt", chunk_a_text);
+        write_file(root / "b.txt", chunk_b_text);
+
+        auto chunk_a_digest =
+            ae::compute_digest(std::as_bytes(std::span{chunk_a_text.data(), chunk_a_text.size()}));
+        AE_CHECK(chunk_a_digest.has_value(), "R3 setup: chunk A's digest computes cleanly");
+
+        FailAfterSeedDenseIndex dense_index;
+        ae::BM25Index sparse_index;
+        // Pre-seed the dense index with chunk A's own id -- chunk A is now "already in dense" (so
+        // mount_hybrid() will mark it needs_dense == false, needs_sparse == true, a sparse-only
+        // commit), WITHOUT going through the (about-to-be-scripted-to-fail) add_batch() path.
+        AE_CHECK(dense_index.add_batch({*chunk_a_digest}, {{0.0f}}).has_value(),
+                 "R3 setup: chunk A pre-seeded into the dense index directly");
+        dense_index.fail_now = true;  // any FURTHER dense add_batch() call (chunk B's) now fails
+
+        MockEmbedder embedder;
+        ae::Principal const principal{"p-r3", "tenant-r3"};
+        ae::Mount const mount = ae::rag_corpus_mount(ae::corpus_scope::per_principal, principal, "r3-corpus");
+        ae::cap::FsWrite const write_cap{mount.mount_id, "", std::nullopt, std::nullopt};
+        ae::InMemoryWorktreeObjectStore object_store;
+        ae::rt::InMemoryAppendLogStore ref_store;
+        ae::DiskCorpusSource source{root};
+        ae::EffectContext ctx{};
+        ctx.principal = principal;
+
+        auto result = ae::test_support::run_task_sync<
+            ae::result<ae::DiskCorpusSource::DiskCorpusHybridMountResult>>(
+            source.mount_hybrid<MockEmbedder, FailAfterSeedDenseIndex, ae::BM25Index,
+                                 ae::InMemoryWorktreeObjectStore, ae::rt::InMemoryAppendLogStore>(
+                object_store, ref_store, mount, write_cap, embedder, dense_index, sparse_index, ctx, {}));
+        AE_CHECK(!result.has_value(),
+                 "R3-1: mount_hybrid() DOES report an error overall -- chunk B's dense add_batch() "
+                 "genuinely failed, and that failure is not swallowed");
+        AE_CHECK(!result.has_value() && result.error().code == "test.scripted_dense_failure",
+                 "R3-2: the reported error is genuinely the scripted dense failure, not something else");
+
+        AE_CHECK(sparse_index.contains(*chunk_a_digest),
+                 "R3-3: chunk A (sparse-only, needs_dense==false) WAS committed to the sparse index "
+                 "despite chunk B's dense-leg failure happening in the SAME pass -- the two legs "
+                 "commit independently, proving the fix for finding R3");
+
+        auto chunk_b_digest =
+            ae::compute_digest(std::as_bytes(std::span{chunk_b_text.data(), chunk_b_text.size()}));
+        AE_CHECK(chunk_b_digest.has_value(), "R3 setup: chunk B's digest computes cleanly");
+        AE_CHECK(sparse_index.contains(*chunk_b_digest),
+                 "R3-4: chunk B (needed BOTH legs) was ALSO committed to sparse, even though its OWN "
+                 "dense leg failed -- the sparse commit for chunk B ran regardless of the dense "
+                 "outcome, since sparse_ids/sparse_texts are collected and committed independently");
+        AE_CHECK(!dense_index.contains(*chunk_b_digest),
+                 "R3-5: chunk B correctly did NOT land in the dense index -- its add_batch() call "
+                 "genuinely failed, this isn't a case of the error being spurious");
+
+        std::filesystem::remove_all(root);
     }
 
     std::cout << (g_failures == 0 ? "test_corpus_source: OK\n" : "test_corpus_source: FAIL\n");

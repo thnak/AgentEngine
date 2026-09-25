@@ -36,22 +36,21 @@
 // file only proves the primitive itself is sound, the same way `session_store.hpp` was built and
 // tested standalone before `agent_session.hpp`'s Slice 2 wired it in.
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <limits>
 #include <mutex>
+#include <optional>
+#include <utility>
 #include <string>
 #include <unordered_map>
 #include <vector>
-
-#include <algorithm>
-#include <cstdint>
-#include <cstring>
-#include <iterator>
-#include <limits>
-#include <optional>
-#include <utility>
 
 #include "agentengine/core/error.hpp"
 
@@ -60,9 +59,7 @@ namespace agentengine::rt {
 // ae-naming-lint: allow LogId — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using LogId = std::string;
 // Matches quark::SeqNo's own convention: 0 means "this log has no entries yet"; the first appended
-// entry gets seq 1, strictly increasing thereafter, never reused even across a store restart -- with one
-// exception in FileAppendLogStore: a repair that cuts records hidden behind a corrupted length header hands
-// their seqs out again (and those records are lost; see its banner). E32 red team round 3.
+// entry gets seq 1, strictly increasing thereafter, never reused even across a store restart.
 // ae-naming-lint: allow SeqNo — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using SeqNo = std::uint64_t;
 
@@ -122,75 +119,162 @@ static_assert(AppendLogStore<InMemoryAppendLogStore>,
               "InMemoryAppendLogStore must model the AppendLogStore concept");
 
 // ------------------------------------------------------------------------------------------------
-// FileAppendLogStore -- one file per log id under a configured root directory, length-prefixed
-// records (a 4-byte little-endian byte count, then the payload) appended in order. Proves the
-// interface is usable for real durable storage, matching FileSessionStore's own role.
+// FileAppendLogStore -- one file per log id under a configured root directory, records appended in
+// order. Proves the interface is usable for real durable storage, matching FileSessionStore's own role.
 //
-// APPENDS ARE SERIALIZED BY AN OS FILE LOCK (ADR-181 E32 red team, round 1, FATAL -- found by all three
-// reviewers independently). The first version counted the existing records, then wrote the header and
-// the payload as two separate writes through `std::ios::app`, with nothing held in between. Measured on
-// Windows: 4 threads x 50 appends to one log returned only ~51 distinct seqs, and only 55-89 of the 200
-// records could be read back -- whole records were overwritten, and every append reported success. Its
-// own comment claimed `ios::app` made each write atomic; on this platform it did not, and the
-// read-then-write count was a race regardless. Now each append holds an exclusive lock on the log file
-// (`LockFileEx` / `flock`, released by the OS if the process dies) across the count, any repair, and one
-// single write of header + payload. Two appends to the same log -- from threads, instances or processes
-// -- therefore get distinct, consecutive seqs, and seq N is always the N-th record `read_from` returns.
+// ON-DISK FORMAT (ADR-181 phase 0, 2026-09-23). A file starts with the 8-byte magic `AELOGv2\n`, then
+// records of `[u32 LE payload length][u32 LE CRC-32 of the payload][payload]`. A file WITHOUT the magic
+// is the original (v1) format -- `[u32 native length][payload]`, no checksum -- written by every
+// version before this one; it is still read, and appended to in its own v1 framing, so no existing
+// log is rewritten or orphaned. A v1 file cannot be mistaken for v2: its first four bytes are a record
+// length, and `AELO` read as one is ~1.3 GB.
 //
-// A TORN TAIL IS REPAIRED BEFORE THE NEXT APPEND (same red team, MAJOR). A crash mid-write can leave a
-// trailing record whose header promises more bytes than follow. `read_from` stops before it (the durable
-// records before it are intact), but the first version then appended AFTER the torn bytes, so every later
-// record was swallowed into the torn one's length: each append returned the same seq, nothing new ever
-// read back, and a garbage length made `read_from` allocate ~1.9 GB per read. Now an append first
-// truncates the file back to the end of its last whole record, and `read_from` never sizes a buffer
-// from a header larger than the bytes actually left in the file.
+// TORN WRITES. A crash mid-append leaves an incomplete record at the end of the file (a short length
+// header, a payload shorter than its header claims, or -- v2 only -- a full-length final record whose
+// CRC does not match, e.g. a partially flushed sector). `read_from()` stops cleanly before such a TORN
+// TAIL and returns every intact record before it, not an error: an append log's "recover everything
+// durable, drop only the tail that never finished" contract. `append()` TRUNCATES a torn tail before
+// writing. Before ADR-181 it did not: it opened the file in append mode and wrote after the torn
+// bytes, so the next read took the torn header's length and swallowed the new record -- `append()`
+// reported success and the record was then unreadable, or read back as garbage with every later record
+// misframed (`test_rt_append_log_store` L8 reproduces all three shapes). A CRC mismatch on a record
+// that is NOT the last one is not a torn write but real corruption: `read_from()` returns
+// `rt.append_log_store.corrupt_record` (`fatal`) rather than silently hiding the records after it, and
+// `append()` refuses to write past it.
 //
-// A CORRUPTED HEADER MID-FILE IS CUT LIKE A TORN TAIL -- AND WHAT FOLLOWS IT IS LOST (disclosed). Without a
-// per-record checksum the store cannot tell a torn tail from a corrupted length header in the middle of the file:
-// both are "a header promising more than follows", so one flipped byte in record 2's header hides every later record
-// from readers, and the next append cuts them for good. E32 red team round 2 added a quarantine sidecar that kept
-// the cut bytes, and round 3 hardened it (exclusive create, random names, long paths); the ADR-183 proportionality
-// review removed all of it again: the threat is disk corruption or someone who can already rewrite the log file,
-// the sidecar was ~150 lines of platform code with its own attack surface, and nothing read it. A checksummed record
-// format is the real fix; not done here.
+// DURABILITY. `append_log_sync::os_buffer` (the default) hands every append to the OS: it survives a
+// process crash, not a power loss. `append_log_sync::disk` additionally forces the bytes to stable
+// storage on every append (`FlushFileBuffers` on Windows, `fsync` elsewhere). Neither syncs the
+// DIRECTORY entry of a newly created log file, which POSIX needs for the file itself to survive a power
+// loss right after creation -- a named residual, not claimed.
 //
-// THE OS CALLS LIVE IN src/rt/append_log_file.cpp (same round, MAJOR). Including <windows.h> here reached
-// every includer of memory.hpp and the worktree headers and broke consumer code (its `ERROR`, `GetMessage`
-// macros; a leaked WIN32_LEAN_AND_MEAN stripped a consumer's own <shellapi.h>). The header now declares an
-// opaque handle; the static library `agentengine_rt_file_log`, linked through `agentengine::core`, holds
-// the platform code.
+// WRITERS: AN OS FILE LOCK, ACROSS THREADS, INSTANCES AND PROCESSES (merged 2026-09-25 from the ADR-187
+// E32 work, which built it independently of the format above). Every append holds an exclusive lock on
+// the log file (`LockFileEx` / `flock`, released by the OS if the process dies) across the scan, any
+// torn-tail truncation and the one write; every read holds a shared one (Windows byte-range locks are
+// mandatory, so an unlocked read of a file another process holds exclusively FAILS rather than
+// blocking). Two appends to the same log -- from threads, instances or processes -- therefore get
+// distinct, consecutive seqs, and truncating a torn tail can never cut another writer's in-flight
+// record. (The E32 red team measured the first unlocked version: 4 threads x 50 appends returned ~51
+// distinct seqs and lost most records.) This replaces the phase-0 process-wide mutex and its
+// "single writer process per root" limit. Every `append()` still re-reads the whole file (to find the
+// end and count records), so a log's total write cost grows quadratically with its length -- a named
+// performance residual.
 //
-// Readers take a shared lock (see LockedAppendLogFile), so a read never sees a record half-written.
-// Not fsync'd -- a power loss can
-// lose records the OS had not written yet (the same durability class FileSessionStore's banner names).
+// THE OS CALLS LIVE IN src/rt/append_log_file.cpp. Including <windows.h> here reached every includer of
+// memory.hpp and the worktree headers and broke consumer code (its `ERROR`, `GetMessage` macros; a
+// leaked WIN32_LEAN_AND_MEAN stripped a consumer's own <shellapi.h>). The header declares an opaque
+// handle; the static library `agentengine_rt_file_log`, linked through `agentengine::core`, holds the
+// platform code.
 //
 // NO PATH-TRAVERSAL PROTECTION BEYOND A BASIC REJECT: same rule and same reasoning as
 // FileSessionStore's own `path_for()` -- a LogId is assumed host-controlled (I2/I3), this is a cheap
 // defense against an accidental bug, not the only line of defense against a hostile id.
 // ------------------------------------------------------------------------------------------------
-namespace detail {
 
-// Walks the length-prefixed records in `bytes`. Returns every whole record's payload span and the
-// offset just past the last whole record (everything after it is a torn tail).
-struct ParsedAppendLog {
-    std::vector<std::pair<std::size_t, std::size_t>> records;  // (offset, length) of each payload
-    std::size_t valid_end = 0;
+// ae-naming-lint: allow append_log_sync — ADR-181 phase 0: new vocabulary, 027 not yet updated
+enum class append_log_sync {
+    os_buffer,  // flush to the OS on every append (survives a process crash, not a power loss)
+    disk,       // also force the bytes to stable storage on every append
 };
 
-[[nodiscard]] inline ParsedAppendLog parse_append_log(std::vector<std::byte> const& bytes) {
-    ParsedAppendLog out;
-    std::size_t pos = 0;
-    while (bytes.size() - pos >= sizeof(std::uint32_t)) {
-        std::uint32_t len = 0;
-        std::memcpy(&len, bytes.data() + pos, sizeof(len));
-        std::size_t const body = pos + sizeof(len);
-        if (len > bytes.size() - body) break;  // torn: the header promises more than the file holds
-        out.records.emplace_back(body, len);
-        pos = body + len;
+namespace append_log_store_detail {
+
+inline constexpr std::array<char, 8> file_magic = {'A', 'E', 'L', 'O', 'G', 'v', '2', '\n'};
+inline constexpr std::size_t v2_header_size     = 8;  // u32 length + u32 crc
+inline constexpr std::size_t v1_header_size     = 4;  // u32 length
+
+// CRC-32 (IEEE 802.3, reflected, polynomial 0xEDB88320) -- the zlib/PNG checksum. Bitwise, no table:
+// a record is checksummed once per append and once per read, and the payloads here are small.
+[[nodiscard]] inline std::uint32_t crc32(std::byte const* data, std::size_t size) noexcept {
+    std::uint32_t crc = 0xFFFFFFFFu;
+    for (std::size_t i = 0; i < size; ++i) {
+        crc ^= static_cast<std::uint32_t>(data[i]);
+        for (int k = 0; k < 8; ++k) crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
     }
-    out.valid_end = pos;
-    return out;
+    return ~crc;
 }
+
+[[nodiscard]] inline std::uint32_t load_le32(std::byte const* p) noexcept {
+    return static_cast<std::uint32_t>(p[0]) | (static_cast<std::uint32_t>(p[1]) << 8) |
+           (static_cast<std::uint32_t>(p[2]) << 16) | (static_cast<std::uint32_t>(p[3]) << 24);
+}
+
+inline void store_le32(std::vector<std::byte>& out, std::uint32_t v) {
+    for (int shift = 0; shift < 32; shift += 8) out.push_back(static_cast<std::byte>((v >> shift) & 0xFFu));
+}
+
+// ae-naming-lint: allow log_tail — ADR-181 phase 0: internal detail vocabulary
+enum class log_tail { clean, torn, corrupt };
+
+// ae-naming-lint: allow LogScan — ADR-181 phase 0: internal detail vocabulary
+struct LogScan {
+    bool legacy                = false;  // v1 file: no magic, no per-record CRC
+    std::uint64_t record_count = 0;
+    std::uint64_t valid_end    = 0;  // offset just past the last intact record (or past the magic)
+    log_tail tail              = log_tail::clean;
+    std::vector<std::vector<std::byte>> records;  // records with seq > keep_from, when collecting
+};
+
+// The ONE framing parser both read_from() and append() use, so the two can never disagree about
+// where the valid log ends -- that disagreement is exactly the bug this format revision fixes.
+[[nodiscard]] inline LogScan scan_log(std::vector<std::byte> const& bytes, SeqNo keep_from, bool collect) {
+    LogScan s;
+    std::size_t const size = bytes.size();
+    std::size_t pos        = 0;
+    if (size == 0) return s;  // fresh log: v2, nothing yet
+
+    std::size_t const magic_cmp = size < file_magic.size() ? size : file_magic.size();
+    bool magic_prefix           = true;
+    for (std::size_t i = 0; i < magic_cmp; ++i) {
+        if (static_cast<char>(bytes[i]) != file_magic[i]) magic_prefix = false;
+    }
+    if (magic_prefix && size < file_magic.size()) {  // the magic itself was torn
+        s.tail = log_tail::torn;
+        return s;
+    }
+    if (magic_prefix) {
+        pos         = file_magic.size();
+        s.valid_end = pos;
+    } else {
+        s.legacy = true;
+    }
+
+    for (;;) {
+        std::size_t const remaining = size - pos;
+        if (remaining == 0) return s;
+        std::size_t const header = s.legacy ? v1_header_size : v2_header_size;
+        if (remaining < header) {
+            s.tail = log_tail::torn;
+            return s;
+        }
+        std::uint32_t len = 0;
+        if (s.legacy) {
+            std::memcpy(&len, bytes.data() + pos, sizeof(len));  // v1 wrote the length in native order
+        } else {
+            len = load_le32(bytes.data() + pos);
+        }
+        if (remaining - header < len) {
+            s.tail = log_tail::torn;
+            return s;
+        }
+        std::byte const* payload = bytes.data() + pos + header;
+        if (!s.legacy && crc32(payload, len) != load_le32(bytes.data() + pos + 4)) {
+            // A bad final record is a torn write (a partially flushed sector); a bad record with more
+            // bytes after it cannot be, and is real corruption.
+            s.tail = (pos + header + len == size) ? log_tail::torn : log_tail::corrupt;
+            return s;
+        }
+        ++s.record_count;
+        if (collect && s.record_count > keep_from) s.records.emplace_back(payload, payload + len);
+        pos += header + len;
+        s.valid_end = pos;
+    }
+}
+
+}  // namespace append_log_store_detail
+
+namespace detail {
 
 // An open log file held under an OS lock for as long as this object lives: exclusive for a writer, shared
 // for a reader. Readers must lock too -- Windows byte-range locks are mandatory, so an unlocked read of a
@@ -212,6 +296,8 @@ public:
     // Cuts the file back to `length` bytes and positions the next write there.
     [[nodiscard]] result<void> truncate_and_seek(std::size_t length);
     [[nodiscard]] result<void> write_all(std::vector<std::byte> const& bytes);
+    // Forces what was written to stable storage (`append_log_sync::disk`).
+    [[nodiscard]] result<void> sync_to_disk();
 
 private:
     static constexpr std::intptr_t kNoHandle = -1;  // INVALID_HANDLE_VALUE on Windows, -1 as a POSIX fd
@@ -227,13 +313,15 @@ private:
 // ae-naming-lint: allow FileAppendLogStore — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class FileAppendLogStore {
 public:
-    explicit FileAppendLogStore(std::filesystem::path root) : root_(std::move(root)) {
+    explicit FileAppendLogStore(std::filesystem::path root, append_log_sync sync = append_log_sync::os_buffer)
+        : root_(std::move(root)), sync_(sync) {
         std::error_code ec;
         std::filesystem::create_directories(root_, ec);  // best-effort, see FileSessionStore's
                                                             // own constructor comment for why
     }
 
     [[nodiscard]] result<SeqNo> append(LogId const& id, std::vector<std::byte> bytes) const {
+        namespace d = append_log_store_detail;
         auto path = path_for(id);
         if (!path) return std::unexpected(path.error());
         if (bytes.size() > (std::numeric_limits<std::uint32_t>::max)()) {
@@ -241,57 +329,82 @@ public:
                                           "rt.append_log_store.record_too_large"});
         }
 
-        auto opened = detail::LockedAppendLogFile::open(*path, /*writer=*/true);
+        auto opened = detail::LockedAppendLogFile::open(*path, /*writer=*/true);  // see WRITERS above
         if (!opened) return std::unexpected(opened.error());
         detail::LockedAppendLogFile* file = &**opened;
         auto existing = file->read_all();
         if (!existing) return std::unexpected(existing.error());
-        detail::ParsedAppendLog const parsed = detail::parse_append_log(*existing);
-        // Cut a torn tail (or whatever follows a corrupted header -- see the banner) before appending.
-        if (auto cut = file->truncate_and_seek(parsed.valid_end); !cut) return std::unexpected(cut.error());
+        d::LogScan const scan = d::scan_log(*existing, 0, /*collect=*/false);
+        if (scan.tail == d::log_tail::corrupt) return std::unexpected(corrupt_error(*path));
+        // A torn tail from an earlier crash is dropped first; the next write lands where it began.
+        if (auto cut = file->truncate_and_seek(static_cast<std::size_t>(scan.valid_end)); !cut) {
+            return std::unexpected(cut.error());
+        }
 
-        std::uint32_t const len = static_cast<std::uint32_t>(bytes.size());
-        std::vector<std::byte> record(sizeof(len) + bytes.size());
-        std::memcpy(record.data(), &len, sizeof(len));
-        if (!bytes.empty()) std::memcpy(record.data() + sizeof(len), bytes.data(), bytes.size());
-        if (auto wrote = file->write_all(record); !wrote) {
+        // An empty log (fresh, or a v1 log whose only record was torn) is written as v2.
+        bool const legacy = scan.legacy && scan.valid_end > 0;
+        std::vector<std::byte> frame;
+        frame.reserve(d::file_magic.size() + d::v2_header_size + bytes.size());
+        if (scan.valid_end == 0) {
+            for (char c : d::file_magic) frame.push_back(static_cast<std::byte>(c));
+        }
+        auto const len = static_cast<std::uint32_t>(bytes.size());
+        if (legacy) {
+            std::byte raw[sizeof(len)];
+            std::memcpy(raw, &len, sizeof(len));
+            frame.insert(frame.end(), raw, raw + sizeof(len));
+        } else {
+            d::store_le32(frame, len);
+            d::store_le32(frame, d::crc32(bytes.data(), bytes.size()));
+        }
+        frame.insert(frame.end(), bytes.begin(), bytes.end());
+
+        if (auto wrote = file->write_all(frame); !wrote) {
             // Leave the file as it was, so a failed append cannot become a torn record (best effort).
-            (void)file->truncate_and_seek(parsed.valid_end);
+            (void)file->truncate_and_seek(static_cast<std::size_t>(scan.valid_end));
             return std::unexpected(wrote.error());
         }
-        return static_cast<SeqNo>(parsed.records.size()) + 1;
+        if (sync_ == append_log_sync::disk) {
+            if (auto synced = file->sync_to_disk(); !synced) return std::unexpected(synced.error());
+        }
+        return static_cast<SeqNo>(scan.record_count) + 1;
     }
 
     [[nodiscard]] result<std::vector<std::vector<std::byte>>> read_from(LogId const& id,
                                                                           SeqNo from) const {
-        auto path = path_for(id);
-        if (!path) return std::unexpected(path.error());
-
-        std::vector<std::vector<std::byte>> out;
-        auto opened = detail::LockedAppendLogFile::open(*path, /*writer=*/false);
-        if (!opened) return std::unexpected(opened.error());
-        if (!opened->has_value()) return out;  // no file yet == empty log
-        auto read = (*opened)->read_all();
-        if (!read) return std::unexpected(read.error());
-        std::vector<std::byte> const& bytes = *read;
-
-        // A torn trailing record is skipped, not an error (see the banner); a header can never make
-        // this allocate more than the file holds.
-        detail::ParsedAppendLog const parsed = detail::parse_append_log(bytes);
-        for (std::size_t i = from; i < parsed.records.size(); ++i) {
-            auto const [offset, length] = parsed.records[i];
-            out.emplace_back(bytes.begin() + static_cast<std::ptrdiff_t>(offset),
-                             bytes.begin() + static_cast<std::ptrdiff_t>(offset + length));
-        }
-        return out;
+        namespace d = append_log_store_detail;
+        auto existing = read_locked(id);
+        if (!existing) return std::unexpected(existing.error());
+        d::LogScan scan = d::scan_log(*existing, from, /*collect=*/true);
+        if (scan.tail == d::log_tail::corrupt) return std::unexpected(corrupt_error(root_ / id));
+        return std::move(scan.records);
     }
 
     [[nodiscard]] SeqNo last_seq(LogId const& id) const {
-        auto all = read_from(id, 0);
-        return all.has_value() ? static_cast<SeqNo>(all->size()) : SeqNo{0};
+        auto existing = read_locked(id);
+        if (!existing) return SeqNo{0};
+        auto const scan = append_log_store_detail::scan_log(*existing, 0, /*collect=*/false);
+        if (scan.tail == append_log_store_detail::log_tail::corrupt) return SeqNo{0};
+        return static_cast<SeqNo>(scan.record_count);
     }
 
 private:
+    // The whole file under a shared lock; a missing file is an empty log.
+    [[nodiscard]] result<std::vector<std::byte>> read_locked(LogId const& id) const {
+        auto path = path_for(id);
+        if (!path) return std::unexpected(path.error());
+        auto opened = detail::LockedAppendLogFile::open(*path, /*writer=*/false);
+        if (!opened) return std::unexpected(opened.error());
+        if (!opened->has_value()) return std::vector<std::byte>{};
+        return (*opened)->read_all();
+    }
+
+    [[nodiscard]] static error corrupt_error(std::filesystem::path const& path) {
+        return error{failure_class::fatal,
+                     "append log has a corrupt record before its end (not a torn write): " + path.string(),
+                     "rt.append_log_store.corrupt_record"};
+    }
+
     [[nodiscard]] result<std::filesystem::path> path_for(LogId const& id) const {
         if (id.empty()) {
             return std::unexpected(error{failure_class::contract, "log id must not be empty",
@@ -309,6 +422,7 @@ private:
     }
 
     std::filesystem::path root_;
+    append_log_sync sync_;
 };
 static_assert(AppendLogStore<FileAppendLogStore>,
               "FileAppendLogStore must model the AppendLogStore concept");

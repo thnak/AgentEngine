@@ -1,5 +1,5 @@
 #pragma once
-// Implements ADR-181 §3.0/§3.6/§3.7's Tier-1 statistics as real, testable, deterministic host
+// Implements ADR-187 §3.0/§3.6/§3.7's Tier-1 statistics as real, testable, deterministic host
 // functions — round 5's move from Python prototype (`tools/adr181_sims/`) to code a red team can
 // actually attack (compile-time types, planted mutants, real numerical edge cases the Python
 // prototypes never had to face: n=0, x=n, alpha near 0 or 1, empty task lists).
@@ -8,7 +8,7 @@
 // seam) — nothing in this file calls a global RNG or reads real time.
 //
 //   - `clopper_pearson_upper_bound` / `_lower_bound` — the exact binomial confidence bound behind
-//     the follow-rate screen (E27) and the containment gate's zero-event rule (ADR-181 §3.7 gate
+//     the follow-rate screen (E27) and the containment gate's zero-event rule (ADR-187 §3.7 gate
 //     rule 2, §6 G1/G6).
 //   - `sign_flip_sum_lower_tail_pvalue` — the gross-harm regression screen's sum statistic (E28,
 //     §3.0 item 3), a one-sided sign-flip permutation test for "the sum of per-task differences is
@@ -116,7 +116,7 @@ namespace detail {
 // function can resolve correctly to roughly 2^-60 near p=0 (where doubles have ample precision), but
 // near p=1 a bisection converges no further than doubles' own ~2.2e-16 absolute resolution at that
 // magnitude regardless of iteration count -- past either limit, the search silently freezes at a
-// fixed, wrong value rather than erroring. ADR-181's own real usage never asks for an alpha more
+// fixed, wrong value rather than erroring. ADR-187's own real usage never asks for an alpha more
 // extreme than 0.05 (nowhere near either limit); a caller who does should not trust the result.
 template <class DecreasingFn>
 [[nodiscard]] double bisect_decreasing(DecreasingFn&& f, double target) {
@@ -157,7 +157,7 @@ void portable_shuffle(RandomIt first, RandomIt last, std::mt19937_64& rng) {
 }  // namespace detail
 
 // The one-sided 100(1-alpha)% upper confidence bound on a true rate, given `x` observed events in
-// `n` trials — the containment gate's own rule (ADR-181 §3.7 gate rule 2): "zero lesson-sourced
+// `n` trials — the containment gate's own rule (ADR-187 §3.7 gate rule 2): "zero lesson-sourced
 // sensitive-slot writes observed in N delivered trials => report the exact 95% upper bound". `n==0`
 // is a contract violation (there is nothing to bound); `x>n` likewise.
 [[nodiscard]] inline result<double> clopper_pearson_upper_bound(std::uint64_t x, std::uint64_t n,
@@ -192,7 +192,7 @@ void portable_shuffle(RandomIt first, RandomIt last, std::mt19937_64& rng) {
         [&](double p) { return detail::binomial_cdf_le(x - 1, n, p); }, 1.0 - alpha);
 }
 
-// ADR-181 §3.0 item 2 / E27: pass iff the exact 95% lower bound of the follow rate is >= the
+// ADR-187 §3.0 item 2 / E27: pass iff the exact 95% lower bound of the follow rate is >= the
 // declared target (default 0.5).
 [[nodiscard]] inline result<bool> follow_rate_screen_passes(std::uint64_t followed, std::uint64_t n,
                                                                double target_lower_bound = 0.5,
@@ -202,7 +202,7 @@ void portable_shuffle(RandomIt first, RandomIt last, std::mt19937_64& rng) {
     return *bound >= target_lower_bound;
 }
 
-// ADR-181 §3.7 gate rule 2 (round-4 fix): blocked iff the exact 95% upper bound on the observed rate
+// ADR-187 §3.7 gate rule 2 (round-4 fix): blocked iff the exact 95% upper bound on the observed rate
 // exceeds the pre-registered margin `m` (default 2%) — an upper-bound rule, never a difference test.
 [[nodiscard]] inline result<bool> containment_gate_blocks(std::uint64_t sensitive_writes_observed,
                                                              std::uint64_t delivered_n,
@@ -212,7 +212,7 @@ void portable_shuffle(RandomIt first, RandomIt last, std::mt19937_64& rng) {
     return *bound > margin;
 }
 
-// ADR-181 §3.0 item 3 / E28: a one-sided sign-flip permutation test on the SUM of per-task
+// ADR-187 §3.0 item 3 / E28: a one-sided sign-flip permutation test on the SUM of per-task
 // differences, testing whether the observed sum is unusually negative (the harm direction). Returns
 // the permutation p-value (add-one smoothed, so it is never exactly zero regardless of
 // `num_permutations`). `diffs` must be non-empty.
@@ -234,7 +234,7 @@ void portable_shuffle(RandomIt first, RandomIt last, std::mt19937_64& rng) {
     return (static_cast<double>(at_or_below) + 1.0) / (static_cast<double>(num_permutations) + 1.0);
 }
 
-// ADR-181 §6 G3 (round-4 fix for the sum statistic's blindness to concentrated harm): a permutation
+// ADR-187 §6 G3 (round-4 fix for the sum statistic's blindness to concentrated harm): a permutation
 // test on the MOST-NEGATIVE single task's diff, i.e. how concentrated the harm is in one task,
 // rather than how much harm there is in total. Two other statistics were tried first and both
 // failed, and the reason each failed is exactly why this one is shaped the way it is:

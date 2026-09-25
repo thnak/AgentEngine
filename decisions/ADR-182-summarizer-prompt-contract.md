@@ -12,7 +12,7 @@
   (new), `tests/test_history_provider_summarize.cpp` (B4-R3), `tests/test_eval_summarizer_live_e2e.cpp` (two live
   checks), `tests/CMakeLists.txt` (additive).
 - **Related specs:** `029-Memory-System.md` §4 (memory extraction), §6 (retrieved memory is tainted, labelled) ·
-  `005-Sessions-State-and-Memory.md` §4 (`Summarize<N>`) · `decisions/ADR-181-evaluation-harness.md` §8 (where the
+  `005-Sessions-State-and-Memory.md` §4 (`Summarize<N>`) · `decisions/ADR-187-evaluation-harness.md` §8 (where the
   defect was found) · `decisions/ADR-173-system-channel-taint-fence.md` (why the history summary is already tainted).
 
 ## 1. The question
@@ -21,7 +21,7 @@
 (005 §4) calls its declared summarizer, does the model receive anything that tells it to summarize?
 
 **Before this ADR: no, in both.** Each built its request from the conversation's own messages and nothing else. A real
-model does the one thing such a request asks: it continues the conversation. Measured live (ADR-181's
+model does the one thing such a request asks: it continues the conversation. Measured live (ADR-187's
 `test_eval_summarizer_live_e2e`, the first test ever to use a real summarizer): the "summary" of a turn that set a deploy
 region was a reply to the user — *"Deploy region is now set to eu-west-1 (Ireland). What would you like to do next —
 deploy something, check status, or switch regions again?"* — and in one run it was DeepSeek's raw tool-call markup,
@@ -141,7 +141,7 @@ all killed.
 | R1-10 (Beh 6) | minor | The 2,000-byte cap was ~550–700 CJK/Vietnamese characters, and a drop was invisible | 4,000 bytes; `oversized` reported |
 | R1-11 (Sec F5 = Beh 7 = Mut 5) | nit | `NONE` matched exactly only; decorated `NONE`s were stored | Decoration stripped; "None of …" facts kept |
 | R1-12 (Mut) | minor | Survivors: history rules untested; delimiter tests only on Text; `is_error`, cap-after-trim, keep-side NONE untested; the test indexed `messages[1]` unchecked | All tested |
-| R1-13 (Mut) | minor | Stale docs: 005 §4 unamended; ADR-181 §8 "FIXED" bullet still in present tense; stale `history_provider.hpp` comments; "354 non-Docker" omitted the live exclusion | All corrected |
+| R1-13 (Mut) | minor | Stale docs: 005 §4 unamended; ADR-187 §8 "FIXED" bullet still in present tense; stale `history_provider.hpp` comments; "354 non-Docker" omitted the live exclusion | All corrected |
 | R1-14 (Beh nits) | nit | Text items glued without a space; `Custom` shown as an attachment; the compaction reply's non-text items dropped undocumented | Joined with a space; documented (§2.3) |
 
 **Checked and held up:** on both serializers the host instruction is the only `system` content (no fence preamble, no

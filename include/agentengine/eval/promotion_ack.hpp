@@ -1,6 +1,6 @@
 #pragma once
 // Also: ADR-183 `approve_lesson` and ADR-184 `promote_lesson_automatically` (no acknowledgement, by design).
-// Implements ADR-181 E31 (round-4 fix for the FATAL "the approver acknowledges an excerpt, never
+// Implements ADR-187 E31 (round-4 fix for the FATAL "the approver acknowledges an excerpt, never
 // the bytes the model reads" finding, §3.0 item 5 / §3.9): the approver's acknowledgement is bound
 // to a digest of the VERBATIM rendered `MemoryItem`, and the promotion path re-renders and refuses
 // the write if the recomputed digest differs from the acknowledged one. An ack that names no digest,
@@ -15,9 +15,9 @@
 namespace agentengine::eval {
 
 // `digest`/`template_version` are what the approver actually saw and acknowledged (the verbatim
-// rendered `content`/`tags`/`salience`, per ADR-181 §3.0 item 5); `approver_id`/`acknowledged_at`
-// are the I4 attribution ADR-181 requires recorded alongside it.
-struct PromotionAck {  // ae-naming-lint: allow PromotionAck — ADR-181 §3.0 item 5 / E31
+// rendered `content`/`tags`/`salience`, per ADR-187 §3.0 item 5); `approver_id`/`acknowledged_at`
+// are the I4 attribution ADR-187 requires recorded alongside it.
+struct PromotionAck {  // ae-naming-lint: allow PromotionAck — ADR-187 §3.0 item 5 / E31
     Digest      digest;
     std::string template_version;
     std::string approver_id;

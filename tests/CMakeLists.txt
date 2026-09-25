@@ -468,7 +468,7 @@ if(WIN32)
     "family; distinct families still compose)")
 endif()
 
-# ---- ADR-181 §3.8 compile-fail proof (trial-running harness round-1 red-team fix) ---------------
+# ---- ADR-187 §3.8 compile-fail proof (trial-running harness round-1 red-team fix) ---------------
 # run_trial's own claim that it "refuses a client not wrapped in RecordingChatClient by type" was
 # true of the wrapper TYPE but not of a caller passing an ALREADY-WRAPPED RecordingChatClient<X> as
 # Inner -- a round-1 reviewer proved that compiled and chained the caller's own external sink onto
@@ -497,7 +497,7 @@ try_compile(AE_EVAL_RUN_TRIAL_REJECTS_PREWRAPPED_INNER
   OUTPUT_VARIABLE AE_EVAL_RUN_TRIAL_REJECTS_PREWRAPPED_INNER_LOG)
 if(AE_EVAL_RUN_TRIAL_REJECTS_PREWRAPPED_INNER)
   message(FATAL_ERROR
-    "ADR-181 §3.8 VIOLATED: tests/compile_fail/eval_run_trial_rejects_prewrapped_inner.cpp compiled, "
+    "ADR-187 §3.8 VIOLATED: tests/compile_fail/eval_run_trial_rejects_prewrapped_inner.cpp compiled, "
     "but run_trial must reject an Inner that is already a RecordingChatClient<...> -- a pre-wrapped "
     "instance's own external sink would observe every trial call outside this trial's confinement. "
     "Build log:\n${AE_EVAL_RUN_TRIAL_REJECTS_PREWRAPPED_INNER_LOG}")
@@ -515,16 +515,16 @@ try_compile(AE_EVAL_RUN_TRIAL_PLAIN_INNER_POSITIVE_CONTROL
   OUTPUT_VARIABLE AE_EVAL_RUN_TRIAL_PLAIN_INNER_POSITIVE_CONTROL_LOG)
 if(NOT AE_EVAL_RUN_TRIAL_PLAIN_INNER_POSITIVE_CONTROL)
   message(FATAL_ERROR
-    "ADR-181 §3.8 positive control FAILED: tests/compile_fail/"
+    "ADR-187 §3.8 positive control FAILED: tests/compile_fail/"
     "eval_run_trial_plain_inner_positive_control.cpp must compile (a plain, unwrapped Inner is the "
     "intended, legitimate call shape) but did not. "
     "Build log:\n${AE_EVAL_RUN_TRIAL_PLAIN_INNER_POSITIVE_CONTROL_LOG}")
 endif()
 message(STATUS
-  "ADR-181 §3.8 compile-fail proof: OK (run_trial rejects a pre-wrapped RecordingChatClient<...> as "
+  "ADR-187 §3.8 compile-fail proof: OK (run_trial rejects a pre-wrapped RecordingChatClient<...> as "
   "Inner; a plain Inner still compiles)")
 
-# ---- ADR-181 §3.8 compile-fail proof, round 2: the SAME rejection for SummarizerT --------------
+# ---- ADR-187 §3.8 compile-fail proof, round 2: the SAME rejection for SummarizerT --------------
 # Round 1's static_assert only checked Inner; a round-2 reviewer proved a pre-wrapped
 # RecordingChatClient<X> passed DIRECTLY as SummarizerT compiled cleanly and let its external sink
 # observe MemoryProvider::on_turn_end's per-turn content outside the trial's confinement -- the
@@ -543,14 +543,14 @@ try_compile(AE_EVAL_RUN_TRIAL_REJECTS_PREWRAPPED_SUMMARIZER
   OUTPUT_VARIABLE AE_EVAL_RUN_TRIAL_REJECTS_PREWRAPPED_SUMMARIZER_LOG)
 if(AE_EVAL_RUN_TRIAL_REJECTS_PREWRAPPED_SUMMARIZER)
   message(FATAL_ERROR
-    "ADR-181 §3.8 VIOLATED: tests/compile_fail/eval_run_trial_rejects_prewrapped_summarizer.cpp "
+    "ADR-187 §3.8 VIOLATED: tests/compile_fail/eval_run_trial_rejects_prewrapped_summarizer.cpp "
     "compiled, but run_trial must reject a SummarizerT that is already a RecordingChatClient<...> -- "
     "a pre-wrapped instance's own external sink would observe every trial's per-turn summarizer "
     "traffic outside this trial's confinement. "
     "Build log:\n${AE_EVAL_RUN_TRIAL_REJECTS_PREWRAPPED_SUMMARIZER_LOG}")
 endif()
 message(STATUS
-  "ADR-181 §3.8 compile-fail proof (round 2): OK (run_trial rejects a pre-wrapped "
+  "ADR-187 §3.8 compile-fail proof (round 2): OK (run_trial rejects a pre-wrapped "
   "RecordingChatClient<...> as SummarizerT too)")
 
 # ---- Keep assert() live in every configuration, Release included --------------------------------
@@ -756,47 +756,47 @@ if(WIN32)
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_memory_write_concurrency COMMAND test_memory_write_concurrency)
 
-  # ADR-181 E21 precondition: does a seeded lesson stay in the recalled top-N as episodic items accrue?
+  # ADR-187 E21 precondition: does a seeded lesson stay in the recalled top-N as episodic items accrue?
   add_executable(test_memory_lesson_recall test_memory_lesson_recall.cpp)
   target_link_libraries(test_memory_lesson_recall PRIVATE
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_memory_lesson_recall COMMAND test_memory_lesson_recall)
 
-  # ADR-180: which channel a procedural memory item reaches the model by (029 §10 Q2's route).
+  # ADR-186: which channel a procedural memory item reaches the model by (029 §10 Q2's route).
   add_executable(test_memory_procedural_channel test_memory_procedural_channel.cpp)
   target_link_libraries(test_memory_procedural_channel PRIVATE
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_memory_procedural_channel COMMAND test_memory_procedural_channel)
 
-  # ADR-181 round 5: LessonCandidate/render_lesson pulled forward from ADR-179 stage 3 (§3.0 item 1,
-  # E26) as real, pure host code, plus the ADR-179 §3.3 / ADR-181 §3.7 candidate-value validator.
+  # ADR-187 round 5: LessonCandidate/render_lesson pulled forward from ADR-179 stage 3 (§3.0 item 1,
+  # E26) as real, pure host code, plus the ADR-179 §3.3 / ADR-187 §3.7 candidate-value validator.
   add_executable(test_lesson_candidate test_lesson_candidate.cpp)
   target_link_libraries(test_lesson_candidate PRIVATE
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_lesson_candidate COMMAND test_lesson_candidate)
 
-  # ADR-181 round-4/5 E25 fix: eval: tenant minting refuses the colon-collision round 4 executed
+  # ADR-187 round-4/5 E25 fix: eval: tenant minting refuses the colon-collision round 4 executed
   # against real memory_mount_id/memory_ref_name.
   add_executable(test_eval_principal test_eval_principal.cpp)
   target_link_libraries(test_eval_principal PRIVATE
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_eval_principal COMMAND test_eval_principal)
 
-  # ADR-181 round-4/5 E31 fix: the approval ack is bound to a digest of the verbatim rendered item,
+  # ADR-187 round-4/5 E31 fix: the approval ack is bound to a digest of the verbatim rendered item,
   # and promotion refuses to write on any mismatch (value, salience, or a stale/placeholder digest).
   add_executable(test_promotion_ack test_promotion_ack.cpp)
   target_link_libraries(test_promotion_ack PRIVATE
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_promotion_ack COMMAND test_promotion_ack)
 
-  # ADR-181 round 5: the Tier-1 statistics (E27/E28, §3.7 gate rule 2, and round 4's §6 G3
+  # ADR-187 round 5: the Tier-1 statistics (E27/E28, §3.7 gate rule 2, and round 4's §6 G3
   # concentration fix) as real code, pinned against closed-form values and the Python prototype.
   add_executable(test_tier1_statistics test_tier1_statistics.cpp)
   target_link_libraries(test_tier1_statistics PRIVATE
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_tier1_statistics COMMAND test_tier1_statistics)
 
-  # ADR-181 trial-running harness, first slice: EvalStore (§3.9) -- a fresh in-memory object/ref
+  # ADR-187 trial-running harness, first slice: EvalStore (§3.9) -- a fresh in-memory object/ref
   # store pair, an eval-tenant Principal, and mount-scoped read/write capabilities, proven isolated
   # by the fresh store object rather than by name.
   add_executable(test_eval_store test_eval_store.cpp)
@@ -804,7 +804,7 @@ if(WIN32)
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_eval_store COMMAND test_eval_store)
 
-  # ADR-181 trial-running harness, first slice: host-authored stub ToolDescriptors (§3.9) that
+  # ADR-187 trial-running harness, first slice: host-authored stub ToolDescriptors (§3.9) that
   # record arguments and cause no effect, plus EvalStubToolProvider, the trial's third composed
   # context provider (the only way to add tools to a trial's ToolTable).
   add_executable(test_eval_stub_tool test_eval_stub_tool.cpp)
@@ -812,14 +812,14 @@ if(WIN32)
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_eval_stub_tool COMMAND test_eval_stub_tool)
 
-  # ADR-181 trial-running harness, first slice: run_trial (§3.0 items 2-4, §3.2, §3.4) -- the first
+  # ADR-187 trial-running harness, first slice: run_trial (§3.0 items 2-4, §3.2, §3.4) -- the first
   # real end-to-end driver, proving both delivery routes against a real AgentSession.
   add_executable(test_eval_trial_driver test_eval_trial_driver.cpp)
   target_link_libraries(test_eval_trial_driver PRIVATE
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_eval_trial_driver COMMAND test_eval_trial_driver)
 
-  # ADR-181 §3.0 item 2, follow-rate screen: the first slice of multi-trial orchestration -- runs
+  # ADR-187 §3.0 item 2, follow-rate screen: the first slice of multi-trial orchestration -- runs
   # N+N real run_trial calls (seeded arm interleaving), grades each structurally (§3.5), and wires
   # the aggregate counts into tier1_statistics.hpp's follow_rate_screen_passes/
   # clopper_pearson_lower_bound for real.
@@ -828,7 +828,7 @@ if(WIN32)
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_eval_follow_rate_screen COMMAND test_eval_follow_rate_screen)
 
-  # ADR-181 §3.0 item 3, gross-harm regression screen: 2*K*tasks real run_trial calls (arms and tasks
+  # ADR-187 §3.0 item 3, gross-harm regression screen: 2*K*tasks real run_trial calls (arms and tasks
   # interleaved by one seeded shuffle), each graded for task success, wired into
   # tier1_statistics.hpp's sign-flip sum and hypergeometric min-task statistics for real.
   add_executable(test_eval_gross_harm_screen test_eval_gross_harm_screen.cpp)
@@ -842,7 +842,7 @@ if(WIN32)
   endif()
   add_test(NAME test_eval_gross_harm_screen COMMAND test_eval_gross_harm_screen)
 
-  # ADR-181 §3.0 "Tier-1 pre-registration and attempt accounting" (E32): the pre-registration digest is
+  # ADR-187 §3.0 "Tier-1 pre-registration and attempt accounting" (E32): the pre-registration digest is
   # recorded before any trial runs, every started attempt for a lesson family is counted in an append-only
   # log, and the Tier1ScreenResult shows every attempt's figures, not only the passing one.
   add_executable(test_eval_tier1_screen test_eval_tier1_screen.cpp)
@@ -894,12 +894,20 @@ endif()
 # rejection, and the deterministic score-desc/id-asc tie-break.
 if(WIN32)
   add_executable(test_vector_index test_vector_index.cpp)
-  target_link_libraries(test_vector_index PRIVATE agentengine::core agentengine_warnings)
+  target_link_libraries(test_vector_index PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_vector_index COMMAND test_vector_index)
 
   add_executable(test_vector_index_benchmark test_vector_index_benchmark.cpp)
   target_link_libraries(test_vector_index_benchmark PRIVATE agentengine::core agentengine_warnings)
   add_test(NAME test_vector_index_benchmark COMMAND test_vector_index_benchmark)
+
+  # decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.2/§3 claim 3 --
+  # `BM25Index` (core/sparse_index.hpp): hand-computed formula correctness, contract rejection,
+  # deterministic tie-break.
+  add_executable(test_sparse_index test_sparse_index.cpp)
+  target_link_libraries(test_sparse_index PRIVATE agentengine::core agentengine_warnings)
+  add_test(NAME test_sparse_index COMMAND test_sparse_index)
 endif()
 
 # §2.6a / §3 claim 5: rag_corpus_key()/rag_corpus_mount() (core/corpus_scope.hpp) -- multi-tenant
@@ -936,6 +944,23 @@ if(WIN32)
   target_link_libraries(test_vector_rag_context_provider PRIVATE
     agentengine::core agentengine::worktree_store agentengine_warnings)
   add_test(NAME test_vector_rag_context_provider COMMAND test_vector_rag_context_provider)
+
+  # decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.3/§3 claims 2, 8 --
+  # `HybridRagContextProvider` (core/hybrid_rag_context_provider.hpp): RRF fusion end-to-end,
+  # citation rendering/forgery-defense reuse, recall tool.
+  add_executable(test_hybrid_rag_context_provider test_hybrid_rag_context_provider.cpp)
+  target_link_libraries(test_hybrid_rag_context_provider PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_hybrid_rag_context_provider COMMAND test_hybrid_rag_context_provider)
+
+  # decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.1, §4 findings R1/R2 --
+  # `RemoteVectorIndex`/`AnyVectorIndex` (core/remote_vector_index.hpp): concept disjointness, and
+  # real (not merely mock-compiles) instantiation of every RemoteVectorIndex dispatch branch in
+  # VectorRagContextProvider, HybridRagContextProvider, and DiskCorpusSource::mount_hybrid().
+  add_executable(test_remote_vector_index test_remote_vector_index.cpp)
+  target_link_libraries(test_remote_vector_index PRIVATE
+    agentengine::core agentengine::worktree_store agentengine_warnings)
+  add_test(NAME test_remote_vector_index COMMAND test_remote_vector_index)
 endif()
 
 
@@ -1215,7 +1240,7 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_openrouter_live_e2e COMMAND test_openrouter_live_e2e)
   set_tests_properties(test_openrouter_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
 
-  # ADR-179 §1 / ADR-181 precondition: is a PLAUSIBLE learned lesson still followed by the safe route?
+  # ADR-179 §1 / ADR-187 precondition: is a PLAUSIBLE learned lesson still followed by the safe route?
   # Live, observation only (see the file's own top comment); self-skips without a key.
   add_executable(test_memory_lesson_effectiveness_live_e2e test_memory_lesson_effectiveness_live_e2e.cpp)
   target_link_libraries(test_memory_lesson_effectiveness_live_e2e PRIVATE
@@ -1225,7 +1250,7 @@ if(AGENTENGINE_WITH_HTTPS)
   set_tests_properties(test_memory_lesson_effectiveness_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 900)
 
   # Why a real model does not act on a promoted lesson when it must choose a TOOL ARGUMENT: separates the
-  # memory label from the ADR-173 fence (ADR-180's design), for the lessons test_eval_tier1_screen_live_e2e
+  # memory label from the ADR-173 fence (ADR-186's design), for the lessons test_eval_tier1_screen_live_e2e
   # found inert. Every call is logged to a JSONL file and the table is computed from the file. Observation only.
   add_executable(test_memory_lesson_label_live_e2e test_memory_lesson_label_live_e2e.cpp)
   target_link_libraries(test_memory_lesson_label_live_e2e PRIVATE
@@ -1244,7 +1269,7 @@ if(AGENTENGINE_WITH_HTTPS)
     target_compile_options(lesson_chat_live PRIVATE /bigobj)
   endif()
 
-  # ADR-181 trial-running harness, first slice: one real B trial and one real T trial through
+  # ADR-187 trial-running harness, first slice: one real B trial and one real T trial through
   # run_trial against a real model -- the end-to-end sanity check the scripted-client driver test
   # cannot provide on its own. Live, observation only; self-skips without a key.
   add_executable(test_eval_trial_driver_live_e2e test_eval_trial_driver_live_e2e.cpp)
@@ -1254,7 +1279,7 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_eval_trial_driver_live_e2e COMMAND test_eval_trial_driver_live_e2e)
   set_tests_properties(test_eval_trial_driver_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
 
-  # ADR-181 PR #100: the summarizer's recording and token budget against a REAL summarizer model
+  # ADR-187 PR #100: the summarizer's recording and token budget against a REAL summarizer model
   # (every other test drives the summarizer with a scripted mock).
   add_executable(test_eval_summarizer_live_e2e test_eval_summarizer_live_e2e.cpp)
   target_link_libraries(test_eval_summarizer_live_e2e PRIVATE
@@ -1263,7 +1288,7 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_eval_summarizer_live_e2e COMMAND test_eval_summarizer_live_e2e)
   set_tests_properties(test_eval_summarizer_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
 
-  # ADR-181 E32 against a real model, with HARD goals: three counted Tier-1 attempts (full screens, the ADR's
+  # ADR-187 E32 against a real model, with HARD goals: three counted Tier-1 attempts (full screens, the ADR's
   # default sizes) log every model turn to a file as it happens, and an analysis that reads only the files --
   # that action log and the on-disk attempt log -- decides pass/fail. Artifacts are kept for a human.
   # Self-skips without a key; `--analyze <dir>` re-runs the analysis on a kept run.
@@ -1277,13 +1302,13 @@ if(AGENTENGINE_WITH_HTTPS)
   add_test(NAME test_eval_tier1_screen_live_e2e COMMAND test_eval_tier1_screen_live_e2e)
   set_tests_properties(test_eval_tier1_screen_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 7200)
 
-  # ADR-180 (wire half): what BOTH real serializers do with the two shapes the routes produce.
+  # ADR-186 (wire half): what BOTH real serializers do with the two shapes the routes produce.
   add_executable(test_memory_procedural_wire test_memory_procedural_wire.cpp)
   target_link_libraries(test_memory_procedural_wire PRIVATE
     agentengine::core agentengine::provider_http_client agentengine_warnings)
   add_test(NAME test_memory_procedural_wire COMMAND test_memory_procedural_wire)
 
-  # ADR-180: a live measurement of what a real model does with a hostile learned instruction
+  # ADR-186: a live measurement of what a real model does with a hostile learned instruction
   # delivered by each route (observation only; see the file's own top comment).
   add_executable(test_memory_procedural_channel_live_e2e test_memory_procedural_channel_live_e2e.cpp)
   target_link_libraries(test_memory_procedural_channel_live_e2e PRIVATE
@@ -1308,6 +1333,25 @@ if(AGENTENGINE_WITH_HTTPS)
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_test(NAME test_openai_embedder_openrouter_live_e2e COMMAND test_openai_embedder_openrouter_live_e2e)
   set_tests_properties(test_openai_embedder_openrouter_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
+
+  # ---- decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.5/§3 claim 6:
+  # QdrantVectorIndex (protocol/qdrant/vector_index.hpp) -- offline-provable surface: point-id
+  # derivation, request/response construction, error-envelope parsing. No server, runs
+  # unconditionally, mirrors test_openai_embedder.cpp's own offline split. The live-network half
+  # is test_qdrant_vector_index_live_e2e below (passed against real Qdrant 1.19.1, 2026-09-23).
+  add_executable(test_qdrant_vector_index test_qdrant_vector_index.cpp)
+  target_link_libraries(test_qdrant_vector_index PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_qdrant_vector_index COMMAND test_qdrant_vector_index)
+
+  # ---- ADR-180 §3 claim 6's live half: QdrantVectorIndex against a REAL Qdrant instance -----------
+  add_executable(test_qdrant_vector_index_live_e2e test_qdrant_vector_index_live_e2e.cpp)
+  target_link_libraries(test_qdrant_vector_index_live_e2e PRIVATE
+    agentengine::core agentengine::provider_http_client agentengine_warnings
+    MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  add_test(NAME test_qdrant_vector_index_live_e2e COMMAND test_qdrant_vector_index_live_e2e)
+  set_tests_properties(test_qdrant_vector_index_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
 
   # ---- OpenAIChatClient against REAL OpenRouter, with a CONCRETELY NAMED OpenAI model (not the
   # routing alias test_openrouter_live_e2e.cpp uses) -- see this file's own top comment for why that
@@ -2125,11 +2169,18 @@ add_test(NAME test_rt_project_supervisor COMMAND test_rt_project_supervisor)
 add_executable(test_rt_append_log_store test_rt_append_log_store.cpp)
 target_link_libraries(test_rt_append_log_store PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_append_log_store COMMAND test_rt_append_log_store)
-# ADR-181 E32 red team round 3: the store's headers must not leak <windows.h> into an includer. The
+# ADR-187 E32 red team round 3: the store's headers must not leak <windows.h> into an includer. The
 # check is the compile itself (see the file's own top comment).
 add_executable(test_rt_append_log_store_header_hygiene test_rt_append_log_store_header_hygiene.cpp)
 target_link_libraries(test_rt_append_log_store_header_hygiene PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_append_log_store_header_hygiene COMMAND test_rt_append_log_store_header_hygiene)
+
+# ---- ADR-181 phase 1 -- rt::BackgroundJobRunner, the in-memory core: per-job cancel, run cascade,
+# Background<N> counting cancel_requested jobs, allowlist EffectContext, progress sink, shutdown.
+add_executable(test_rt_background_job_runner test_rt_background_job_runner.cpp)
+target_link_libraries(test_rt_background_job_runner PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_rt_background_job_runner COMMAND test_rt_background_job_runner)
+set_tests_properties(test_rt_background_job_runner PROPERTIES TIMEOUT 120)
 
 # ---- ADR-037 -- agentengine::rt::WorkflowSupervisor's time-travel surface (014 §5's "rewind to
 # any retained checkpoint"), wiring rt::AppendLogStore into the gap workflow_supervisor.hpp's own
@@ -4291,3 +4342,34 @@ add_test(NAME test_rt_agent_session_stream_retry COMMAND test_rt_agent_session_s
 add_executable(test_rt_agent_session_cancel test_rt_agent_session_cancel.cpp)
 target_link_libraries(test_rt_agent_session_cancel PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_rt_agent_session_cancel COMMAND test_rt_agent_session_cancel)
+
+# decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.6/§3 claim 7 -- VulkanCosineIndex
+# (src/backends/vulkan_vector_index/): basic correctness, VectorIndex conformance, and the
+# epsilon-bounded GPU-vs-CPU score comparison at dim=1536, n in {1000, 5000}. Only built when
+# AGENTENGINE_WITH_VULKAN is explicitly turned ON (root CMakeLists.txt) -- the test binary itself
+# fails closed (SKIP, exit 0) at RUN time if no Vulkan-capable device is present on the machine
+# actually running ctest, matching AGENTENGINE_WITH_HTTPS-gated live-network tests' own SKIP-not-FAIL
+# posture for an environment precondition this repo cannot guarantee on every CI/dev machine.
+if(AGENTENGINE_WITH_VULKAN)
+  add_executable(test_vulkan_cosine_index test_vulkan_cosine_index.cpp)
+  target_link_libraries(test_vulkan_cosine_index PRIVATE
+    agentengine::core agentengine::vulkan_vector_index agentengine_warnings)
+  add_test(NAME test_vulkan_cosine_index COMMAND test_vulkan_cosine_index)
+
+  # ADR-180 §4e (red-team pass 5): executes every checked-VkResult failure branch through a TEST-ONLY
+  # fault-injection seam. The seam exists only when vulkan_cosine_index.cpp is compiled with
+  # AGENTENGINE_VULKAN_FAULT_INJECTION, so this is a SEPARATE library variant built from the same
+  # source -- the production agentengine::vulkan_vector_index target above never defines it.
+  add_library(agentengine_vulkan_vector_index_fault_injection STATIC
+    "${PROJECT_SOURCE_DIR}/src/backends/vulkan_vector_index/vulkan_cosine_index.cpp")
+  target_include_directories(agentengine_vulkan_vector_index_fault_injection
+    PUBLIC "${PROJECT_SOURCE_DIR}/src" PRIVATE "${AE_SPIRV_GENERATED_DIR}")
+  target_link_libraries(agentengine_vulkan_vector_index_fault_injection PUBLIC agentengine::core)
+  target_link_libraries(agentengine_vulkan_vector_index_fault_injection PRIVATE agentengine_warnings Vulkan::Vulkan)
+  target_compile_definitions(agentengine_vulkan_vector_index_fault_injection
+    PUBLIC AGENTENGINE_WITH_VULKAN AGENTENGINE_VULKAN_FAULT_INJECTION)
+  add_executable(test_vulkan_cosine_index_fault_injection test_vulkan_cosine_index_fault_injection.cpp)
+  target_link_libraries(test_vulkan_cosine_index_fault_injection PRIVATE
+    agentengine::core agentengine_vulkan_vector_index_fault_injection agentengine_warnings)
+  add_test(NAME test_vulkan_cosine_index_fault_injection COMMAND test_vulkan_cosine_index_fault_injection)
+endif()

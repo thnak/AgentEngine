@@ -1,4 +1,6 @@
-# ADR-180 — Procedural memory reaches the model as fenced, tainted context — never as `.instructions` (amends 029 §10 Q2)
+# ADR-186 — Procedural memory reaches the model as fenced, tainted context — never as `.instructions` (amends 029 §10 Q2)
+
+- **Renumbered:** written as ADR-180; renumbered on 2026-09-25 when this stack merged into `main`, where ADR-180 was already taken by another ADR. Commit messages and PR titles before that date say ADR-180.
 
 - **Status**: **Proposed — evidence executed and red-teamed once (two rounds of fixes below); awaiting
   project-owner judgment.**

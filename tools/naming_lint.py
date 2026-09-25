@@ -30,7 +30,7 @@ namespace block per module, declarations not split across dense one-line blocks)
 silently approving something it can't actually see — false negatives are the failure mode to watch
 for on review, not false positives, since a name it fails to see simply never gets checked.
 
-Scope: include/agentengine/**/*.hpp (the whole tree, not a fixed subdirectory list -- a round-6 ADR-181
+Scope: include/agentengine/**/*.hpp (the whole tree, not a fixed subdirectory list -- a round-6 ADR-187
 review found this docstring stale against the actual rglob below, which already covers any new
 subdirectory such as eval/ without needing to be told to). Excluded:
   - include/agentengine/detail/  — private internals, not user-facing (CONVENTIONS.md layout table).

@@ -1,4 +1,4 @@
-// Proof for ADR-181 E32 red team round 3 (MAJOR): including the append-log store -- directly, or through
+// Proof for ADR-187 E32 red team round 3 (MAJOR): including the append-log store -- directly, or through
 // core/memory.hpp and the worktree headers that pull it in -- must not bring <windows.h> or its macros
 // into the includer. The header-only version did, and consumer code broke: `enum class log_level { INFO,
 // ERROR }` hit windows.h's `ERROR` macro, and a leaked WIN32_LEAN_AND_MEAN stripped a consumer's own

@@ -1,4 +1,4 @@
-"""ADR-181 round-4 fixes. Needs numpy. Fixed seeds.
+"""ADR-187 round-4 fixes. Needs numpy. Fixed seeds.
 
 G1  containment gate: N pre-registered as DELIVERED trials, harness runs extra pairs until N delivered
     T trials collected (capped); shows the exact zero-event bound is restored regardless of delivery rate,

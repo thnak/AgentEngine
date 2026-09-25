@@ -101,6 +101,8 @@
 #include "agentengine/core/embedder.hpp"
 #include "agentengine/core/fs_walk.hpp"
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/remote_vector_index.hpp"
+#include "agentengine/core/sparse_index.hpp"
 #include "agentengine/core/task.hpp"
 #include "agentengine/core/vector_index.hpp"
 #include "agentengine/core/worktree.hpp"
@@ -681,6 +683,291 @@ public:
             if (!added) co_return std::unexpected(added.error());
             out.chunks_embedded += (end - start);
         }
+
+        co_return out;
+    }
+
+    // ================================================================================================
+    // ADR-180 §2.3a: hybrid (dense + sparse) ingestion -- a SEPARATE method, not a parameter added to
+    // mount() above (which stays byte-for-byte unmodified, per this ADR's own "additive, don't touch
+    // already-Judged code" posture applied here too).
+    // ================================================================================================
+
+    // Mirrors DiskCorpusMountResult, split per-leg because dense and sparse ingestion are gated
+    // INDEPENDENTLY (see mount_hybrid()'s own comment): a chunk can be new to one leg and already
+    // present on the other in the same pass.
+    // ae-naming-lint: allow DiskCorpusHybridMountResult — ADR-180: new vocabulary, not yet in 027 §2-4's tables.
+    struct DiskCorpusHybridMountResult {
+        std::unordered_map<std::string, std::string> file_hashes;
+        std::size_t files_scanned        = 0;
+        std::size_t files_changed        = 0;
+        std::size_t files_unchanged      = 0;
+        std::size_t chunks_seen          = 0;
+        std::size_t chunks_embedded      = 0;  // newly embedded + added to the DENSE index this pass
+        std::size_t chunks_dense_deduped = 0;
+        std::size_t chunks_sparse_indexed = 0;  // newly added to the SPARSE index this pass (no
+                                                  // embedder call -- BM25 indexes raw text directly)
+        std::size_t chunks_sparse_deduped = 0;
+    };
+
+    // Chunks a folder ONCE (never twice -- preserves §3 claim 2's re-mount-dedup property exactly the
+    // same way mount() does) and ingests that SAME chunk set into a dense (embedded vector) index AND
+    // a sparse (BM25, raw text) index. The two legs are gated by their own INDEPENDENT `contains()`
+    // checks, never assumed to stay in lockstep: a chunk already present in `dense_index` (from a
+    // PRIOR plain `mount()`, or an earlier `mount_hybrid()` call) but absent from `sparse_index` --
+    // e.g. hybrid search was just enabled on a previously dense-only corpus -- is backfilled into
+    // `sparse_index` WITHOUT being re-embedded; embedding only ever runs for chunks `dense_index` does
+    // not already contain, exactly matching mount()'s own embedder-call-avoidance property.
+    //
+    // **Calling contract for backfill, stated explicitly because it is easy to get wrong (found by
+    // this ADR's own compile-and-run smoke check, not merely reasoned about): the unchanged-file fast
+    // path below (identical to mount()'s own -- a file whose hash matches `previous_file_hashes`
+    // skips chunking ENTIRELY) runs BEFORE any per-chunk `needs_dense`/`needs_sparse` check ever sees
+    // that file's chunks.** So passing a PRIOR mount's own returned `file_hashes` back in, the normal
+    // steady-state re-mount pattern, is only safe once every index leg you care about is ALREADY
+    // caught up. To backfill a leg that is newly added to an already-mounted corpus (the "hybrid
+    // search just enabled on a previously dense-only corpus" case this method's own name references),
+    // the caller must pass an empty (or otherwise-not-yet-caught-up) `previous_file_hashes` for that
+    // ONE mount_hybrid() call -- forcing every file to be re-chunked -- so the per-chunk dedup below
+    // can actually observe and fill the gap; only the FOLLOWING call may resume passing this call's
+    // own returned `file_hashes` for the cheap steady-state path.
+    //
+    // `DenseIndexT` is `AnyVectorIndex` (ADR-180 §2.1), not `VectorIndex` alone -- a hybrid corpus may
+    // be ingested straight into a network-backed dense index (e.g. `QdrantVectorIndex`, ADR-180 §2.5)
+    // exactly as readily as a local one; the `RemoteVectorIndex` branches below `co_await` its
+    // `add_batch()`/`contains()` (this method is already a coroutine, so no `synchronous_leaf` gate is
+    // needed here -- that trait only matters for driving a task synchronously from `recall`'s
+    // synchronous `invoke`, not from a plain, already-async mount call).
+    //
+    // Partial-failure/commit-ordering policy is IDENTICAL to mount()'s own (see this file's top
+    // comment): every embed_batch() sub-batch for NEW dense chunks runs first, entirely, before any
+    // commit; blob + chunk record are written BEFORE either index's add_batch() for that chunk, so a
+    // failure partway through leaves both `dense_index.contains()`/`sparse_index.contains()` false for
+    // the affected ids -- the next mount_hybrid() call retries them, rather than leaving a permanent
+    // ghost entry on either leg.
+    template <Embedder EmbedderT, AnyVectorIndex DenseIndexT, SparseIndex SparseIndexT,
+              WorktreeObjectStore OS, rt::AppendLogStore RS, ChunkingPolicy ChunkerT = RecursiveChunker>
+    [[nodiscard]] task<result<DiskCorpusHybridMountResult>> mount_hybrid(
+        OS& object_store, RS& ref_store, Mount const& mount, cap::FsWrite const& write_cap,
+        EmbedderT& embedder, DenseIndexT& dense_index, SparseIndexT& sparse_index, EffectContext& ctx,
+        std::unordered_map<std::string, std::string> const& previous_file_hashes,
+        ChunkerT const& chunker = ChunkerT{}) const {
+        std::error_code ec;
+        if (!std::filesystem::is_directory(root_, ec) || ec) {
+            co_return std::unexpected(error{failure_class::contract,
+                                             "corpus source root is not a directory: " + root_.string(),
+                                             "corpus_source.disk_root_not_a_directory"});
+        }
+
+        // Bootstrap, identical to mount() -- see that method's own comment.
+        {
+            auto existing = read_ref(ref_store, mount.ref_name);
+            if (!existing) co_return std::unexpected(existing.error());
+            if (!existing->has_value()) {
+                auto empty = object_store.put_tree(Tree{});
+                if (!empty) co_return std::unexpected(empty.error());
+                auto committed = commit_ref(ref_store, mount.ref_name, *empty);
+                if (!committed) co_return std::unexpected(committed.error());
+            }
+        }
+
+        struct ChangedFile {
+            std::string rel_path;
+            std::string content;
+            std::string file_hash;
+        };
+        std::vector<ChangedFile> changed_files;
+        DiskCorpusHybridMountResult out{};
+
+        // --- Walk once, whole-file hash every entry -- identical to mount() ----------------------------
+        auto walked = fs_walk::for_each_regular_file_recursive(
+            root_, std::filesystem::directory_options::skip_permission_denied,
+            "failed to walk corpus source directory", "corpus_source.disk_read_failed",
+            [&](std::filesystem::directory_entry const& entry) -> result<void> {
+            std::ifstream in(entry.path(), std::ios::binary);
+            if (!in) {
+                return std::unexpected(error{failure_class::contract,
+                                              "failed to open corpus source file: " + entry.path().string(),
+                                              "corpus_source.disk_read_failed"});
+            }
+            std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            std::string const posix_rel = entry.path().lexically_relative(root_).generic_string();
+            ++out.files_scanned;
+
+            auto content_bytes = std::as_bytes(std::span{content.data(), content.size()});
+            auto file_hash = compute_digest(content_bytes);
+            if (!file_hash) return std::unexpected(file_hash.error());
+
+            auto const prev_it = previous_file_hashes.find(posix_rel);
+            bool const unchanged = prev_it != previous_file_hashes.end() && prev_it->second == *file_hash;
+            out.file_hashes.emplace(posix_rel, *file_hash);
+            if (unchanged) {
+                ++out.files_unchanged;
+                return result<void>{};
+            }
+            ++out.files_changed;
+            changed_files.push_back(ChangedFile{posix_rel, std::move(content), *file_hash});
+            return result<void>{};
+        });
+        if (!walked.has_value()) co_return std::unexpected(walked.error());
+
+        // --- Chunk every changed file ONCE; dedup each leg independently ---------------------------------
+        struct PendingChunk {
+            std::string id;
+            std::string text;
+            std::string source_path;
+            std::size_t line_start;
+            std::size_t line_end;
+            std::string source_file_hash;
+            bool        needs_dense  = false;  // NOT already in dense_index
+            bool        needs_sparse = false;  // NOT already in sparse_index
+        };
+        std::vector<PendingChunk> pending;
+        std::unordered_set<std::string> seen_ids_this_pass;
+
+        for (auto const& f : changed_files) {
+            auto chunks = chunker.chunk(f.content);
+            out.chunks_seen += chunks.size();
+            for (auto& tc : chunks) {
+                auto chunk_bytes = std::as_bytes(std::span{tc.text.data(), tc.text.size()});
+                auto id = compute_digest(chunk_bytes);
+                if (!id) co_return std::unexpected(id.error());
+
+                bool dense_has;
+                if constexpr (RemoteVectorIndex<DenseIndexT>) {
+                    auto has = co_await dense_index.contains(*id, ctx);
+                    if (!has) co_return std::unexpected(has.error());
+                    dense_has = *has;
+                } else {
+                    dense_has = dense_index.contains(*id);
+                }
+                bool const sparse_has = sparse_index.contains(*id);
+
+                // seen_ids_this_pass catches two NEW chunks from two different changed files
+                // colliding within THIS pass -- neither index has seen either yet, so contains()
+                // alone can't (same reasoning mount()'s own identical check already documents).
+                bool const already_seen_this_pass = seen_ids_this_pass.contains(*id);
+                bool const needs_dense  = !dense_has && !already_seen_this_pass;
+                bool const needs_sparse = !sparse_has && !already_seen_this_pass;
+                if (already_seen_this_pass) {
+                    // ADR-180 §4 red-team finding M2 (2026-09-22): count this occurrence as deduped
+                    // on BOTH legs unconditionally, not gated on `dense_has`/`sparse_has` -- this
+                    // occurrence is a duplicate of an EARLIER PENDING (not-yet-indexed) chunk from
+                    // this same pass, so `dense_has`/`sparse_has` (which only reflect what the INDEX
+                    // itself already contains, not what's merely pending) are both still false here
+                    // by construction, and the counters silently undercounted (summed to less than
+                    // `chunks_seen`) as a result. Cosmetic (these are progress/logging counters, not
+                    // load-bearing for any correctness property -- `seen_ids_this_pass` itself still
+                    // correctly prevents this chunk from being committed twice), fixed anyway so the
+                    // counters mean what their own names/comments (DiskCorpusHybridMountResult's own
+                    // field comments) claim they mean.
+                    ++out.chunks_dense_deduped;
+                    ++out.chunks_sparse_deduped;
+                    continue;
+                }
+                if (!needs_dense) ++out.chunks_dense_deduped;
+                if (!needs_sparse) ++out.chunks_sparse_deduped;
+                if (!needs_dense && !needs_sparse) continue;  // already fully indexed on both legs
+
+                seen_ids_this_pass.insert(*id);
+                pending.push_back(PendingChunk{*id, std::move(tc.text), f.rel_path, tc.line_start,
+                                                 tc.line_end, f.file_hash, needs_dense, needs_sparse});
+            }
+        }
+
+        if (pending.empty()) co_return out;
+
+        // --- Embed only chunks that need the DENSE leg, sub-batched (identical policy to mount()) --------
+        std::vector<std::size_t> dense_pending_indices;
+        for (std::size_t i = 0; i < pending.size(); ++i) {
+            if (pending[i].needs_dense) dense_pending_indices.push_back(i);
+        }
+
+        auto const caps = embedder.capabilities();
+        std::size_t const batch_cap = caps.max_batch_size > 0
+                                           ? static_cast<std::size_t>(caps.max_batch_size)
+                                           : dense_pending_indices.size();
+        std::unordered_map<std::size_t, std::vector<float>> vectors;  // pending index -> its vector
+        for (std::size_t start = 0; start < dense_pending_indices.size(); start += batch_cap) {
+            std::size_t const end = std::min(start + batch_cap, dense_pending_indices.size());
+            std::vector<std::string> texts;
+            texts.reserve(end - start);
+            for (std::size_t k = start; k < end; ++k) texts.push_back(pending[dense_pending_indices[k]].text);
+
+            auto embedded = co_await embedder.embed_batch(texts, ctx);
+            if (!embedded) co_return std::unexpected(embedded.error());
+            if (embedded->size() != texts.size()) {
+                co_return std::unexpected(
+                    error{failure_class::contract,
+                          "embed_batch returned a different number of vectors than texts requested",
+                          "corpus_source.embed_batch_size_mismatch"});
+            }
+            for (std::size_t k = 0; k < embedded->size(); ++k) {
+                vectors.emplace(dense_pending_indices[start + k], std::move((*embedded)[k]));
+            }
+        }
+
+        // --- Commit: blob + record first (idempotent, both legs), then each leg's own add_batch() -------
+        for (auto const& pc : pending) {
+            auto chunk_bytes = std::as_bytes(std::span{pc.text.data(), pc.text.size()});
+            auto blob_digest = object_store.put_blob(chunk_bytes);
+            if (!blob_digest) co_return std::unexpected(blob_digest.error());
+            if (*blob_digest != pc.id) {
+                co_return std::unexpected(error{failure_class::fatal,
+                                                 "chunk blob digest does not match its precomputed id",
+                                                 "corpus_source.chunk_id_mismatch"});
+            }
+            CorpusChunkRecord record{pc.id, pc.source_path, pc.line_start, pc.line_end, pc.source_file_hash};
+            auto written = write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record);
+            if (!written) co_return std::unexpected(written.error());
+        }
+
+        // ADR-180 §4 red-team finding R3 (2026-09-22): the two legs below are committed
+        // INDEPENDENTLY of each other's outcome -- both are always ATTEMPTED, and either error is
+        // returned only after both have run. An earlier version returned immediately on a dense
+        // failure, which meant a chunk needing ONLY the sparse leg (needs_dense == false,
+        // needs_sparse == true -- e.g. a backfill pass) never got committed to sparse either, purely
+        // because of statement ordering, not because the two legs share any real dependency. Nothing
+        // was ever permanently lost either way (a retry re-derives `needs_*` from each index's own
+        // `contains()` and picks up whatever didn't land), but this makes the ACTUAL independence the
+        // rest of this method's own design already assumes (§2.3a: "the two legs are gated
+        // INDEPENDENTLY") genuinely hold at the commit phase too, not just at the dedup-decision phase.
+        result<void> dense_add_result{};
+        {
+            std::vector<std::string> dense_ids;
+            std::vector<std::vector<float>> dense_vecs;
+            for (std::size_t i = 0; i < pending.size(); ++i) {
+                if (!pending[i].needs_dense) continue;
+                dense_ids.push_back(pending[i].id);
+                dense_vecs.push_back(vectors.at(i));
+            }
+            if (!dense_ids.empty()) {
+                if constexpr (RemoteVectorIndex<DenseIndexT>) {
+                    dense_add_result = co_await dense_index.add_batch(dense_ids, dense_vecs, ctx);
+                } else {
+                    dense_add_result = dense_index.add_batch(dense_ids, dense_vecs);
+                }
+                if (dense_add_result) out.chunks_embedded += dense_ids.size();
+            }
+        }
+
+        result<void> sparse_add_result{};
+        {
+            std::vector<std::string> sparse_ids;
+            std::vector<std::string> sparse_texts;
+            for (auto const& pc : pending) {
+                if (!pc.needs_sparse) continue;
+                sparse_ids.push_back(pc.id);
+                sparse_texts.push_back(pc.text);
+            }
+            if (!sparse_ids.empty()) {
+                sparse_add_result = sparse_index.add_batch(sparse_ids, sparse_texts);
+                if (sparse_add_result) out.chunks_sparse_indexed += sparse_ids.size();
+            }
+        }
+
+        if (!dense_add_result) co_return std::unexpected(dense_add_result.error());
+        if (!sparse_add_result) co_return std::unexpected(sparse_add_result.error());
 
         co_return out;
     }

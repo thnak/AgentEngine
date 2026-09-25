@@ -2,7 +2,7 @@
 // summarizers receive (a fixed instruction plus a JSON Lines transcript, no tools), what a memory
 // extraction reply must look like to be stored, what a compaction reply must contain, and both providers end
 // to end with a mock summarizer that CAPTURES what it is sent -- the thing every earlier mock ignored, which
-// is how a summarizer that was never told to summarize went unnoticed until a live run (ADR-181 §8).
+// is how a summarizer that was never told to summarize went unnoticed until a live run (ADR-187 §8).
 
 #include <chrono>
 #include <iostream>
@@ -311,7 +311,7 @@ int main() {
         call.value = ae::ToolCall{"c1", "deploy", "{}"};
         AE_CHECK(decide_memory_summary(reply_of({text_item("The region is eu-west-1."), call})).verdict == summary_verdict::tool_call,
                  "accept: a reply carrying a structured tool call stores nothing");
-        // The exact markup DeepSeek produced live (ADR-181 §8), and a decodable Hermes call.
+        // The exact markup DeepSeek produced live (ADR-187 §8), and a decodable Hermes call.
         AE_CHECK(decide_memory_summary(reply_of({text_item(
                      "<\xef\xbd\x9c\xef\xbd\x9c" "DSML\xef\xbd\x9c\xef\xbd\x9c calls>\n<\xef\xbd\x9c\xef\xbd\x9c" "DSML\xef\xbd\x9c\xef\xbd\x9c "
                      "invoke name=\"deploy\">")})).verdict == summary_verdict::tool_call &&

@@ -1,9 +1,9 @@
-// Implements decisions/ADR-181-evaluation-harness.md §3.2 / E21's PRECONDITION: is a seeded lesson still
+// Implements decisions/ADR-187-evaluation-harness.md §3.2 / E21's PRECONDITION: is a seeded lesson still
 // among the items MemoryProvider injects after `on_turn_end` has written more episodic items?
 //
 // Recall is a top-`max_injected` ranking (default 3) by salience x recency x keyword (memory_provider.hpp
 // memory_rank_score) with no weight for `kind`. `on_turn_end` writes an episodic item every turn with
-// `salience` left at its default 0.0f. Round-2 red-team of ADR-181 read the source and claimed the lesson
+// `salience` left at its default 0.0f. Round-2 red-team of ADR-187 read the source and claimed the lesson
 // "drops out within a few turns". That holds only if the lesson's own salience is also ~0: the salience
 // factor is (0.05 + salience) and the recency factor is bounded to [1, 2], so a lesson with salience >= ~0.1
 // outranks every zero-salience episodic item regardless of how many are written. This test EXECUTES the

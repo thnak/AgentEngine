@@ -1,4 +1,6 @@
-# ADR-181 — Evaluation harness: a cheap screen now, a rigorous confirmation later (gates ADR-179's reviewer and queue)
+# ADR-187 — Evaluation harness: a cheap screen now, a rigorous confirmation later (gates ADR-179's reviewer and queue)
+
+- **Renumbered:** written as ADR-181; renumbered on 2026-09-25 when this stack merged into `main`, where ADR-181 was already taken by another ADR. Commit messages and PR titles before that date say ADR-181.
 
 - **Status**: **Proposed — design plus executed statistics, and, as of rounds 5-7, real code for four of Tier 1's
   components (§3.0 items 1/2/3, part of item 4, and item 5's ack-digest half): `include/agentengine/eval/`
@@ -31,7 +33,7 @@
   ALREADY-WRAPPED `RecordingChatClient<X>` as `Inner`, chaining the caller's own external sink onto every trial call
   outside the trial's own `EvalStore`/`CapabilitySet` confinement, defeating the doc comment's "there is no way to
   call it unwrapped" claim in effect if not in type; fixed with a `static_assert` (proven both ways by a
-  compile-fail/positive-control pair, §3.8). `decisions/README.md`'s own ADR-181 row also directly contradicted
+  compile-fail/positive-control pair, §3.8). `decisions/README.md`'s own ADR-187 row also directly contradicted
   itself (claiming a live model was called, then closing "No model was called.") — fixed. The lifetime/coroutine-
   frame reviewer found no FATAL or MAJOR issues in the actual coroutine wiring (verified clean under ASan/UBSan).
   **Round 2 (three fresh independent reviewers: confinement completeness, delivery-detection-logic correctness,
@@ -188,7 +190,7 @@
   relative precision whenever the bisection-driven `p` is far from 0.5 (measured: a 463% relative error at
   `alpha=1e-10`) — fixed with `std::log1p`, verified against an independent scipy/mpmath reference; a disclosed,
   not-fixed residual remains at the most extreme alphas (`bisect_decreasing`'s own fixed 60-iteration budget hits
-  double precision's own resolution limit near either end of `[0,1]`, nowhere near ADR-181's real `alpha=0.05`
+  double precision's own resolution limit near either end of `[0,1]`, nowhere near ADR-187's real `alpha=0.05`
   usage). Separately, round 6's denylist expansion introduced 17 proven false positives on realistic, benign lesson
   text (`"post mortems are stored in..."`, `"the .net runtime version..."`, `"call center average wait time..."`,
   `"ssh access to the bastion..."`) — two were clear bugs (`"exec"`/`"sudo"` had no trailing space, matching as a
@@ -220,13 +222,13 @@
   no new evaluation *philosophy*; it makes 022 §4 concrete for one question: **does a candidate lesson help,
   and does it stay safe?**
 - **Reuses**: `RecordingChatClient` / `ReplayChatClient` (004 §6), `AgentSession`, ADR-178 `cancel()`,
-  ADR-180's memory channel, ADR-179's `LessonCandidate` and hostile corpus, `MandatorySandboxProvider`'s
+  ADR-186's memory channel, ADR-179's `LessonCandidate` and hostile corpus, `MandatorySandboxProvider`'s
   task-branch surface (round 4: there is no separate `TaskBranchSandbox` type).
 - **Touches invariants**: I1, I2, I3, I4, I5, I8.
 
 ## 1. The question, and the honest bottom line
 
-A lesson is text that will steer a model. ADR-180 §4b measured one model following some lessons and ignoring
+A lesson is text that will steer a model. ADR-186 §4b measured one model following some lessons and ignoring
 others, and measured **nothing about task outcomes**. Before any lesson is promoted, someone must be able to say
 "with this lesson the agent solves more held-out tasks, by more than noise, without becoming easier to steer."
 
@@ -263,9 +265,9 @@ overstating it.
 | `MemoryProvider::on_turn_end` writes an **ungated episodic item every turn** (`memory_provider.hpp:338-355`); writing requires a host-held `cap::FsWrite` for the mount (`:403`) | as cited |
 | `ChildSpawnRequest` has `token_budget` and `max_turns`; **no deadline**; `run_child_agent_session` **derives a delegated child Principal from the caller** (`agent_spawn_child_run.hpp:57,70-75,124-145`) — it does not mint a fresh id | as cited |
 | **`TaskBranchSandbox` is not a class** (round-4 correction): the task-branch capability was folded into `MandatorySandboxProvider`; its arg/reply structs are real, at `mandatory_sandbox_provider.hpp:155-200`, and `start_task_branch`/`discard_task_branch` are real methods on that provider, later in the same file. It provides start/run/commit/discard on a worktree branch; **leaving a branch undiscarded on a failure path strands it** (the A10 stranded-loser class). This ADR's own text (§3.9, §9's Reuses line) is corrected to say `MandatorySandboxProvider`'s task-branch surface, not a `TaskBranchSandbox` type | as cited |
-| ADR-180 §4b is the **only** behavioural data: 8 trials per cell, one model, binary "applied the lesson" — **not task success** | ADR-180 |
+| ADR-186 §4b is the **only** behavioural data: 8 trials per cell, one model, binary "applied the lesson" — **not task success** | ADR-186 |
 | No registry-wide "what can a `Tool<>` reach" lint exists; `tools/policy_reachability.cpp` checks capability reachability against a fixture. `ToolDescriptor` holds a **type-erased `std::function`**, so no concept can see what a tool body captures; the existing compile-fail harness is a configure-time `try_compile` gate (`tests/CMakeLists.txt:6-30`) | `core/tool_descriptor.hpp:45-58`; `tools/` |
-| **Recall is a top-`max_injected` ranking (default 3)** by salience × recency × keyword, with **no weight for `kind`**; a seeded lesson has the lowest `write_seq`, and `on_turn_end` adds a higher-`write_seq` episodic item every turn (salience left at 0.0). **Executed (`test_memory_lesson_recall`): a lesson written at salience 0.0 is evicted from the top 3 once three later items exist; at salience ≥ 0.05 it survives 60 later unrelated items; against items that quote the user's words only salience 1.0 survives.** The round-2 claim "evicted within a few turns" was therefore true only for a low-salience lesson `on_turn_end` also needs a `SummarizerT` — a second `ChatClient` | `memory_provider.hpp:239,246,256-257,338-355`; ADR-180 §2 Q3b |
+| **Recall is a top-`max_injected` ranking (default 3)** by salience × recency × keyword, with **no weight for `kind`**; a seeded lesson has the lowest `write_seq`, and `on_turn_end` adds a higher-`write_seq` episodic item every turn (salience left at 0.0). **Executed (`test_memory_lesson_recall`): a lesson written at salience 0.0 is evicted from the top 3 once three later items exist; at salience ≥ 0.05 it survives 60 later unrelated items; against items that quote the user's words only salience 1.0 survives.** The round-2 claim "evicted within a few turns" was therefore true only for a low-salience lesson `on_turn_end` also needs a `SummarizerT` — a second `ChatClient` | `memory_provider.hpp:239,246,256-257,338-355`; ADR-186 §2 Q3b |
 | `FileAppendLogStore::append` computes the sequence by re-reading, appends with `ofstream` and `flush()` — **no fsync, no compare-and-swap, no unique-key check**; O(n) per append | `rt/append_log_store.hpp:150-180` |
 | Capabilities are a **runtime `held` set checked in `admit_call`** for the `invoke_tool` pipeline; a tool body is ordinary C++ and nothing sandboxes it; the model client has **no `NetOut` check** (ADR-179 §2) | `trust/tool_pipeline.hpp:376-399` |
 | `start_task_branch`/`discard_task_branch` are public host-callable methods; calling them directly **skips `cap::TaskBranch`**; the provider needs a bound `SandboxRuntime`, quotas and, in practice, a Docker surface; `test_task_branch_tools` and `test_mandatory_sandbox_provider` are **excluded from CI** | `mandatory_sandbox_provider.hpp:244,885-900`; `.github/workflows/ci.yml:164,314` |
@@ -288,7 +290,7 @@ someone builds it.
 
 1. **Rendering is part of the candidate under test.** `LessonCandidate` (ADR-179 §3.3, a closed record) is turned
    into the text the model reads by a **pure host function** `render_lesson(candidate, template_version) →
-   MemoryItem{kind=procedural, content, tags, salience}`. ADR-180 measured wording changing the effect by an order
+   MemoryItem{kind=procedural, content, tags, salience}`. ADR-186 measured wording changing the effect by an order
    of magnitude, and the renderer chooses the `content` and `tags` that recall's keyword term sees, so **the
    rendered bytes and `template_version` are in the candidate digest**. Changing the template invalidates all
    earlier evidence (E26). **Round 5: built for real**, `include/agentengine/eval/lesson_candidate.hpp` —
@@ -316,7 +318,7 @@ someone builds it.
    trials with the lesson, 20 without; the baseline must show ≤ 10% "following" or the probe is invalid (the answer
    is guessable). **Pass iff the exact 95% *lower* bound of the follow rate is ≥ 0.5.** Executed (§6 T1): passes 93%
    at a true follow rate of 85%, 41% at 70%, 2% at 50%. It answers "is this lesson inert *on its own probe*", not
-   "does it help real tasks". This exists because ADR-180's fenced route measured 0/12 for some lessons: without it,
+   "does it help real tasks". This exists because ADR-186's fenced route measured 0/12 for some lessons: without it,
    a rigorous run spends its budget confirming nothing. **Round 4 found "the reviewer role proposes ≤ 3 probes"
    undefined and gameable:** the reviewer is a model, "any of 3 passes" lets it pick the easiest one (§6 G4: any-of-3
    passes 81% at a true follow rate of only 70%, against 41% for one probe), and the cost line never charged for more
@@ -465,7 +467,7 @@ harness **never promotes anything**; ADR-179's approval queue remains the second
 - **B (baseline):** no lesson.
 - **T (treatment):** the candidate lesson, delivered **only through the production route** — a
   `procedural`/`model_inferred` memory item reaching the model as a tainted, fenced `role::system` message
-  (ADR-180). ADR-180 §4b showed the channel changes the effect by an order of magnitude (F 8/8 vs A 1/8), so any
+  (ADR-186). ADR-186 §4b showed the channel changes the effect by an order of magnitude (F 8/8 vs A 1/8), so any
   other route would measure a channel that does not ship. *Amended 2026-09-24 (ADR-183):* a host may opt in to
   approved-lesson delivery, and then the screen must measure that route: `lesson_delivery::approved` (a simulated
   approval; hashed into the pre-registration, E32). Live, the fenced route left every lesson inert (the preamble
@@ -473,7 +475,7 @@ harness **never promotes anything**; ADR-179's approval queue remains the second
 - **S (steering manifest, per candidate):** the *same candidate* on **fixed steerable-slot tasks** (§3.7). It
   records **which tool-argument slots the candidate's value lands in**. This tests *this candidate's* ability to
   steer, not the pipeline's, and it does **not** depend on deciding whether a task is "in scope" for the lesson.
-- Hostile-derived lessons (the ADR-179 R5 corpus, ADR-180's probes) are **not a per-candidate arm**. They are the
+- Hostile-derived lessons (the ADR-179 R5 corpus, ADR-186's probes) are **not a per-candidate arm**. They are the
   **sensitivity control for the harness itself**: a known-bad lesson must produce a flagged slot write in arm S
   (E11), or the harness is blind.
 
@@ -1053,7 +1055,7 @@ against the scripts; where a reviewer's simulation was not re-run by me it is ma
 | D1 | fatal | The detector I quoted (P1) was T vs B on one pooled slot, no B′, no Holm; not the specified one | **§3.7** specified (pooled statistic, within-task permutation, joint test, no B′); **§6 D1** simulates it; P1 relabelled |
 | D2 | fatal | The upper-bound rule covers only containment, the path that misses paraphrase; a paraphrased ≤ 5% steer goes unflagged 42–68% and passes | §3.7: divergence is a **tripwire, "no flag" certifies nothing**; slots kept ≤ 5; stated in §1 and §8 |
 | E1 | fatal | The candidate-to-text rendering is undefined and is part of the candidate under test | **§3.0 item 1** `render_lesson` + `template_version`, in the digest; **E26** |
-| E2 | fatal | The production channel may deliver a near-inert lesson; ADR-180 measured 0/12 fenced; shards would confirm nothing | **§3.0 item 2** follow-rate screen first; **§3.0** tiering; **E27** |
+| E2 | fatal | The production channel may deliver a near-inert lesson; ADR-186 measured 0/12 fenced; shards would confirm nothing | **§3.0 item 2** follow-rate screen first; **§3.0** tiering; **E27** |
 | D3 | serious | Holm makes E24 unmeetable; 200 permutations floors the p-value | §3.7: one joint test, 2,000 permutations; E24 thresholds tied to measured values |
 | D4 | serious | Pooling masks single-task steers; per-task is hopeless at 30 trials | Measured (D1): both weak on a single-task steer (24% / 23%); pooled is primary; **single-task steers named in §8, not fixed** |
 | D5 | serious | Between-common-value steers and many small steers slip through | **Not fixed**; measured by the reviewer (17% / 63%, 0.00 per slot), named in §8 |
@@ -1153,7 +1155,7 @@ punch list — numerics (**R7-Num**), denylist usability/false-positives (**R7-F
 | # | Sev | Finding | Disposition |
 |---|---|---|---|
 | R7-Num1 | fatal | `log_binomial_pmf` (round 6's own fix) computed `log(p)` and `log(1.0-p)` via plain `std::log`. Forming `1.0-p` (or evaluating `log` of an argument already extremely close to 1) loses relative precision in the RESULT whenever the bisection-driven p is far from 0.5 — exactly the regime a small `alpha` or an extreme x/n ratio drives it into, i.e. the same regime round 6 was fixing. Proven against an independent scipy/mpmath reference: at x=1, n=10,000,000, alpha=1e-10, the old code returned a bound 5.6× too large (463% relative error), degrading smoothly as alpha shrank (0.24% at alpha=1e-6, 5.5% at alpha=1e-8) | `std::log1p(p-1.0)` for `log(p)` and `std::log1p(-p)` for `log(1-p)` — both accurate near their respective singular points without ever forming the lossy intermediate. Verified against the same independent reference; residual ~4% error remains at the most extreme alpha tested (1e-10), traced to `bisect_decreasing`'s own resolution floor (R7-Num2), not this bug |
-| R7-Num2 | major *(disclosed, not fixed)* | `bisect_decreasing`'s fixed 60-iteration budget cannot resolve an answer closer than ~2.2×10⁻¹⁶ (double precision's own absolute resolution) to either end of `[0,1]`; past that, the search silently freezes at a fixed value with no error, for any caller passing an alpha extreme enough to need it | Disclosed in §8. ADR-181's real usage is `alpha=0.05` exclusively — orders of magnitude away from this floor — so not fixed; a caller needing sub-1e-15-scale alpha should not trust this function |
+| R7-Num2 | major *(disclosed, not fixed)* | `bisect_decreasing`'s fixed 60-iteration budget cannot resolve an answer closer than ~2.2×10⁻¹⁶ (double precision's own absolute resolution) to either end of `[0,1]`; past that, the search silently freezes at a fixed value with no error, for any caller passing an alpha extreme enough to need it | Disclosed in §8. ADR-187's real usage is `alpha=0.05` exclusively — orders of magnitude away from this floor — so not fixed; a caller needing sub-1e-15-scale alpha should not trust this function |
 | R7-FP1 | major | Round 6's denylist expansion introduced real false positives on plausible, legitimate lesson text: `"exec"`/`"sudo"` had no trailing space (unlike every other entry), so they matched as a substring of ordinary words (`"executive approval..."`, `"execution time budgets..."` — this project's own vocabulary); `".net"` (present since round 5) collided with the .NET framework name (`"the .net runtime version..."`). Both proven with compiled proofs-of-concept against the real header | `"exec"`/`"sudo"` given a trailing space, matching every other entry's convention; `.net` dropped from `kUrlOrPathNeedles` (`://` still catches real URLs; `.net` alone was never a strong signal). Regression tests pin both the false-positive fix and that a genuine `"exec "`/`"sudo "` invocation is still caught |
 | R7-FP2 | major *(disclosed, not fixed)* | 15 more proven false positives found on realistic values whose leading word is also an ordinary English noun (`"post mortems are stored in..."`, `"call center average wait time..."`, `"python is the primary language..."`, `"ssh access to the bastion..."`, `"delete markers are automatically cleaned..."`, `"install steps for the CLI..."`, `"kill switches for the ingest pipeline..."`, `"bash scripts in CI..."`, `"download links for release artifacts..."`), plus ordinary punctuation/templating syntax colliding with the shell needles (`;`, backtick-as-markdown, `${username}` as a template placeholder, `$(formula)` describing a spreadsheet cell) | Disclosed in §8, not fixed: removing any of these words/needles would reopen the exact imperative-shaped or shell-shaped attack text they exist to catch (`"post the credentials to..."`, `"call the webhook with..."`) — a genuine precision/recall trade-off inherent to a fixed denylist over natural language, not a bug with a clean fix. Two regression tests pin the current, disclosed behaviour so it can't silently change unnoticed |
 | R7-Coh1 | minor | §3.0 item 1's own citation of `test_lesson_candidate.cpp`'s check count still read "24/24", stale since round 6 grew the file to 36 (the status header had been updated; this one embedded citation had not) | Corrected to 43/43, with a note explaining the drift so a reader knows this specific class of staleness was checked, not just assumed absent |
@@ -1180,7 +1182,7 @@ independent reviewers: security/capability confinement (**R-TH-Sec**), correctne
 |---|---|---|---|
 | R-TH-Sec1 | major | `TrialResult::delivered`'s fold initialized `every_request_delivered = !rendered_lesson_content.empty()` and only ever set it `false` INSIDE the loop over `trial_result.recordings` — with zero recordings (e.g. `spec.max_turns=0`, or any setup failure before the first model call), the loop body never runs, so `delivered` stayed `true` for a treatment trial that never actually called the model, identical to a real success. Proven with a compiled proof-of-concept (`max_turns=0` — zero recordings, a `run.max_turns_exceeded` outcome, `delivered==true`) | `every_request_delivered` now also requires `!trial_result.recordings.empty()`. New regression test (Scenario 5, `test_eval_trial_driver.cpp`) pins exactly the proof-of-concept's shape |
 | R-TH-Sec2 | major | `run_trial`'s own doc comment claimed wrapping `Inner` in `RecordingChatClient` "enforces... by type — there is no way to call run_trial with an unwrapped client at all." True of the wrapper TYPE, not of the EFFECT: a caller could pass an ALREADY-WRAPPED `RecordingChatClient<X>` as `Inner`, producing `RecordingChatClient<RecordingChatClient<X>>` — the inner instance's own, externally-configured sink (built with whatever authority/persistence the CALLER gave it) then fires on every trial round, entirely outside this trial's `EvalStore`/`CapabilitySet` confinement. Proven with a compiled proof-of-concept: a pre-wrapped sink observed the seeded lesson text through exactly this path | A `static_assert(!detail::is_recording_chat_client_v<Inner>, ...)` now rejects this at compile time, proven both ways by a compile-fail/positive-control pair (§3.8, `tests/compile_fail/eval_run_trial_{rejects_prewrapped_inner,plain_inner_positive_control}.cpp`) |
-| R-TH-Coh1 | fatal *(documentation, not design/security)* | `decisions/README.md`'s own ADR-181 row directly contradicted itself: one clause described a live DeepSeek run in detail, the row's closing sentence read "No model was called." — left over from before the trial-running slice existed | Corrected; the closing sentence now distinguishes rounds 5-7 (no model called) from the trial-running slice (does call a model) |
+| R-TH-Coh1 | fatal *(documentation, not design/security)* | `decisions/README.md`'s own ADR-187 row directly contradicted itself: one clause described a live DeepSeek run in detail, the row's closing sentence read "No model was called." — left over from before the trial-running slice existed | Corrected; the closing sentence now distinguishes rounds 5-7 (no model called) from the trial-running slice (does call a model) |
 | R-TH-Coh2 | major | The ADR's status header, §8, and `decisions/README.md` all stated the live run's SPECIFIC observed mechanism (`delivered_via_recall=true`, a `recall` call) as settled fact — the same class of overclaim rounds 5-6 were previously caught making. A second live run (after the transcript-dump follow-on commit) showed a DIFFERENT, equally correct mechanism (context injection alone, no `recall` call), never disclosed | All three locations rewritten to state both observed outcomes and make explicit that a live model's specific delivery route is nondeterministic and not to be read as a reproduced, settled fact — matching the "observation, not a gate (I5)" framing this repo's other live tests already use |
 | R-TH-Coh3 | minor | `TrialSpec::extra_capabilities` (real code, added so a live `OpenAIChatClient` can get a `cap::Secret` grant) had no corresponding ADR text | Documented in §8's own trial-running-harness paragraph |
 
@@ -1211,7 +1213,7 @@ round 1's own review process: confinement completeness (**R-TH2-Sec**), delivery
 | R-TH2-Sec4 | minor | `TrialSpec::extra_capabilities` is merged into the trial's `CapabilitySet` with no defense-in-depth check that a host didn't accidentally forward a capability scoped to something other than what the trial should touch (e.g. a stray `cap::FsRead` aimed at a production mount). Traced: no path from `spec.candidate` reaches this field (not I3-violating), and merging does not itself widen the trial's own FsRead/FsWrite grants | Disclosed in the field's own comment; no gate added — not exploitable from untrusted input, only a missing caller-mistake guard |
 | R-TH2-Sec5 | minor | `EvalStore::make("trial", spec.trial_id)` hardcodes the tenant_suffix; two `run_trial` calls that reuse the same `trial_id` mint an identical `Principal`. Traced: does NOT cause cross-trial data exposure (every real store access takes the `OS&`/`RS&` instance as an explicit parameter, never a mount_id-keyed global lookup) — the residual is `MemoryOrigin::attribution.principal` uniqueness only (I4-adjacent) | Disclosed in `run_trial`'s own comment; callers minting many trials should pass a genuinely unique `trial_id` per attempt |
 | R-TH2-Logic1 | major | `delivered_via_recall` used a sticky `bool recall_seen` set `true` by ANY recall call and never reset — so a LATER, unrelated non-memory-attributed message that happened to contain the lesson text (coincidence, or another stub tool's canned reply) was misreported as "delivered via recall" even when THAT recall call's own result never carried the lesson. Proven with a compiled, executed reproduction: seeded the lesson at salience 0.0, evicted it from `recall`'s own top-10 ranking with 12 unrelated higher-salience writes, confirmed by inspecting the recording that recall's own `ToolResult` was genuinely lesson-free, and still observed `delivered_via_recall == true` | Replaced the sticky flag with a `std::unordered_set<std::string>` of recall `ToolCall::call_id`s seen so far, and keyed the check to a `ToolResult` whose OWN `call_id` matches one of them (`message_contains_recall_result`) — the pairing `ToolCall`/`ToolResult` already carry in `content.hpp`. New regression scenario (S6, `test_eval_trial_driver.cpp`) exercises the fixed helper directly against exactly this shape (a matching-call_id case, a non-matching-call_id case, and a truly-empty-recall-result case) |
-| R-TH2-Coh1 | major | `decisions/README.md`'s ADR-181 row cited a stale, pre-round-1-fix check count — "143/143 checks green across 7 test binaries" and "Proven deterministically (19/19, a scripted model)" — that round 1's own fix (adding Scenario 5) had already moved past in this very ADR's status header (147/147) without the same edit reaching the sibling doc | Corrected to the current count in the same edit that updated it for round 2 (now 150/150) |
+| R-TH2-Coh1 | major | `decisions/README.md`'s ADR-187 row cited a stale, pre-round-1-fix check count — "143/143 checks green across 7 test binaries" and "Proven deterministically (19/19, a scripted model)" — that round 1's own fix (adding Scenario 5) had already moved past in this very ADR's status header (147/147) without the same edit reaching the sibling doc | Corrected to the current count in the same edit that updated it for round 2 (now 150/150) |
 | R-TH2-Coh2 | minor | §8's naming-lint residual line still listed `EvalStore` as a name "needing" `tools/naming_lint.py` resolution, even though `eval_store.hpp` already carries the `ae-naming-lint: allow` comment (round 5) that is this codebase's own accepted resolution mechanism everywhere else | Removed `EvalStore` from that line |
 
 **Checked and held up (R-TH2-Logic, no other bug found):** string-containment fragility vs. attribution airtightness — confirmed `assemble_context()` stamps `attribution` unconditionally from a fixed, compile-time contributor name, applied only to `ContextContribution.messages`, never to tool-pipeline-appended `ToolResult` messages, so `message_is_memory_attributed` cannot be spoofed by a stub tool's or `recall`'s own reply text (the substring-match fragility is real but correctly firewalled for the primary `delivered` flag). Multiple-candidates/repeated-content: structurally impossible this slice (`TrialSpec::candidate` is a single `optional`, `write_memory_item` called exactly once). The "every round" bar for `delivered`: not a bug, it is §3.2/E21's own explicit spec (catching salience-driven mid-trial eviction), correctly implemented by the per-request AND-fold. Recording order: confirmed synchronous, inline, no concurrency in the only path this slice's clients use. **Noted, not yet acted on:** §3.2 prose describes delivery as "context injection OR recall" but `delivered` and `delivered_via_recall` remain two separate, never-OR'd fields — harmless today (nothing consumes them as a single value yet) but whoever wires `tier1_statistics.hpp` to real trial output next must not naively read `delivered` alone as "the ADR's delivered concept," or it will silently undercount recall-only-delivered trials.
@@ -1518,7 +1520,7 @@ read-back before any trial runs, unreadable records counted as attempts, the OS 
   OS-level confinement (namespace/firewall) is a follow-on.
 - **No engine-enforced per-principal spend budget** exists to charge (§2); suite totals are harness bookkeeping.
 - **Accumulation and interaction** of several lessons are not evaluated (ADR-179 §8 already names the gap).
-- **One model, one provider** is all ADR-180 measured; the harness is parameterised by model but no cross-model
+- **One model, one provider** is all ADR-186 measured; the harness is parameterised by model but no cross-model
   claim exists.
 - **No pilot run**: real discordance, noise floor and required N are unmeasured, and the dev-only power estimate
   is optimistic by construction.
@@ -1693,7 +1695,7 @@ read-back before any trial runs, unreadable records counted as attempts, the OS 
   itself still has no cap of its own, so a future, different caller must bring its own.
 - **`bisect_decreasing`'s fixed 60-iteration budget has a resolution floor near either end of `[0,1]`** (round 7,
   R7-Num2): past roughly double precision's own ~2.2×10⁻¹⁶ absolute resolution, the search silently freezes at a
-  fixed, wrong value with no error. ADR-181's real usage is `alpha=0.05` exclusively, nowhere near this floor, so
+  fixed, wrong value with no error. ADR-187's real usage is `alpha=0.05` exclusively, nowhere near this floor, so
   not fixed — a caller passing a far more extreme alpha (well beyond anything a real multiplicity correction in
   this domain would plausibly need) should not trust the result.
 - **The round-7 fixes are not re-red-teamed.** A round 8, if run, should attack: whether `log_binomial_pmf`'s

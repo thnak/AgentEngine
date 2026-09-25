@@ -252,6 +252,16 @@ struct EffectContext {
     // would require. See `tools/read_content.hpp`'s own file-top comment for why that gap existed in
     // the first place -- this field is what closes it.
     FileSystemAdapter* sandbox_fs = nullptr;
+
+    // ADR-181 §10 C1: 019 §3's idempotency key and the attempt number, as seen BY THE TOOL. The key
+    // was only ever derived for `ToolInvocationAudit`, so no tool could honor it, and an `idempotent`
+    // effect class promised a dedup nothing could perform. Set by `rt::BackgroundJobRunner` for every
+    // attempt of a job, the same key on every retry and resume, so an `idempotent` tool dedups its
+    // external effect on it -- that is the tool's side of the `effect_class::idempotent` contract.
+    // `attempt` is 1-based; 0 (and an empty key) means "not set by this caller": the foreground
+    // `invoke_tool()` path does not populate either yet (named in ADR-181's residuals).
+    std::string   idempotency_key;
+    std::uint32_t attempt = 0;
 };
 
 // ADR-170 (GitHub issue #64): the bracket every real producer of `sandbox_exec_started`/

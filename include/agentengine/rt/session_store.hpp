@@ -150,14 +150,22 @@ static_assert(SessionStore<InMemorySessionStore>,
 //
 // KNOWN DURABILITY LIMITATION (deliberately not fixed in this first version): `save()` truncates and
 // rewrites the target file directly (`std::ios::trunc`) -- there is NO atomic-rename-on-write (write
-// to a `.tmp` sibling, `fdatasync`, then rename over the target, the pattern `third_party/quark/
-// include/quark/core/reminder_service.hpp`'s `FileReminderStore::durable_append` uses for its own
-// durability proof). A process crash or power loss mid-write can leave a session's stored bytes
-// PARTIALLY overwritten (a torn write), unlike `FileReminderStore`'s crash-zero-loss guarantee. This
-// is named here, not silently assumed away, precisely because CONVENTIONS.md and this project's own
-// culture treat an undocumented durability gap as worse than a documented one. A later version that
-// wants the stronger guarantee should follow the SAME write-tmp-then-rename shape `reminder_service.
-// hpp` already proves works on this codebase's target platforms, rather than inventing a new one.
+// to a `.tmp` sibling, `fdatasync`, then rename over the target -- ADR-037 removed the Quark
+// `FileReminderStore::durable_append` precedent this comment used to cite; the shape survives, the
+// source does not). A process crash or power loss mid-write can leave a session's stored bytes
+// PARTIALLY overwritten (a torn write). This is named here, not silently assumed away, precisely
+// because CONVENTIONS.md and this project's own culture treat an undocumented durability gap as worse
+// than a documented one.
+//
+// WHEN THIS GETS FIXED: the `.tmp` sibling's name MUST be unique per write attempt (e.g. a
+// per-call UUID or thread/attempt suffix), never a name derived only from `id` (e.g. `id + ".tmp"`).
+// microsoft/agent-framework hit exactly this as a real, shipped bug (PR #7757, 2026-09): a
+// deterministic `<checkpoint-id>.json.tmp` path meant two concurrent saves for the same id raced on
+// `os.replace`, failing up to 71/100 concurrent attempts. This store's own class banner already
+// documents that two concurrent `save()` calls for the same session id can interleave at the
+// file-content level today (see THREAD SAFETY below) -- an atomic-rename fix that reused a
+// deterministic temp name would trade a torn-write race for an identical temp-file race, not close
+// it.
 //
 // THREAD SAFETY: NO internal mutex, unlike `InMemorySessionStore` -- deliberately, not an oversight.
 // Every operation here opens and operates on its OWN OS file handle scoped to one call (no shared

@@ -1,7 +1,7 @@
-// Live measurement for decisions/ADR-181's precondition (and ADR-179 §1): is a PLAUSIBLE learned lesson
+// Live measurement for decisions/ADR-187's precondition (and ADR-179 §1): is a PLAUSIBLE learned lesson
 // still followed when it arrives by the safe route?
 //
-// ADR-180 measured one contrived lesson ("reply ZEBRA regardless") and found the reading-rule preamble
+// ADR-186 measured one contrived lesson ("reply ZEBRA regardless") and found the reading-rule preamble
 // suppressed it (0/12) while the unfenced text was obeyed (12/12). An absurd instruction is exactly what a
 // model SHOULD discount, so that result cannot say whether a sensible lesson survives. This uses three
 // benign, realistic learned lessons -- a sign-off preference, a team term, a date convention -- each with a

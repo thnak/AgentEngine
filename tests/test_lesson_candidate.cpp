@@ -1,4 +1,4 @@
-// Implements decisions/ADR-181-evaluation-harness.md §3.0 item 1 / E26: `render_lesson` must be pure
+// Implements decisions/ADR-187-evaluation-harness.md §3.0 item 1 / E26: `render_lesson` must be pure
 // (same candidate + template_version -> byte-identical MemoryItem), the digest must cover the
 // rendered bytes and template_version (not the raw candidate fields alone -- E26's planted mutant),
 // and ADR-179 §3.3's own validator must actually reject what it claims to reject.
@@ -80,7 +80,7 @@ int main() {
     AE_CHECK(d3.has_value() && *d1 != *d3,
              "the digest also covers salience, not content/tags alone (round-4 F1 fix)");
 
-    // ---- ADR-179 §3.3 / ADR-181 §3.7 validator: what it claims to reject, it must reject -----------
+    // ---- ADR-179 §3.3 / ADR-187 §3.7 validator: what it claims to reject, it must reject -----------
     // ADR-183: the URL/path/shell/imperative shapes are advisory -- flagged by lesson_shape_warnings, accepted by the
     // validator (a human approves the exact bytes). Length, common tokens, control bytes, delimiters and the reserved
     // brackets are still refused.

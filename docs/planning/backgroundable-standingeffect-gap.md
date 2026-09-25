@@ -1,5 +1,11 @@
 # `Backgroundable`/`StandingEffect` (006 §6b, 019 §2) — residual status
 
+> **Stale (noted 2026-09-23).** The "never built" finding below is out of date: Milestone 7 Phase B
+> built `background_task` as a real `StandingEffect` producer (`core/standing_effect.hpp`,
+> `AgentSession::start_background_task()`, `rt/standing_effect_registry.hpp` via ADR-097). Remaining
+> limits (session-scoped, in-memory only, cancel does not stop the running work) are tracked in
+> `first-class-rag-gap.md` §A2. Kept below for the record.
+
 **Status:** Pre-milestone scoping note, not a stage-4 work breakdown. [The review-signoff
 workflow](v1-review-signoff-workflow.md) §4 gates a work-breakdown-and-kickoff doc on "an RFC/cluster
 reaches Reviewed for the milestone about to start" — this pairing has no owning milestone yet (see

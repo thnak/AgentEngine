@@ -1,4 +1,4 @@
-"""ADR-181 round-3 fixes. Needs numpy. Fixed seeds.
+"""ADR-187 round-3 fixes. Needs numpy. Fixed seeds.
 
 D1  the SPECIFIED steering detector: task-stratified permutation test on the sum over (task, slot) chi-square,
     one joint test (no Holm), T vs B only (no B'); m slots, per-task steers, opposite-direction steers, undelivered dilution.

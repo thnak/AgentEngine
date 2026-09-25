@@ -7,7 +7,7 @@
 - **Origin**: a question about self-improving agents. Hermes Agent's loop (a background pass after a task
   distils the trajectory into a reusable skill) is the reference; its documented form has no evaluation or
   approval before a lesson persists.
-- **Reuses**: ADR-168, ADR-159/178, `agent.spawn` / `run_child_agent_session`, 029, ADR-173/180.
+- **Reuses**: ADR-168, ADR-159/178, `agent.spawn` / `run_child_agent_session`, 029, ADR-173/186.
 - **Touches invariants**: I1, I2, I3, I4, I5, I8.
 
 ## 1. What this is, and the honest bottom line
@@ -15,8 +15,8 @@
 **It is** a way to capture a finished run faithfully, hand it to a reviewer, and put any lessons in a queue a
 human or host approves. **It is not self-improvement**, and two preconditions for that name are still missing:
 
-1. **An evaluation harness** (held-out tasks, scored on a sandbox branch; candidate **ADR-181**).
-2. **Lessons that reliably change behaviour *and* cannot be weaponised.** ADR-180 §4b measured one model: an
+1. **An evaluation harness** (held-out tasks, scored on a sandbox branch; candidate **ADR-187**).
+2. **Lessons that reliably change behaviour *and* cannot be weaponised.** ADR-186 §4b measured one model: an
    unfenced lesson is followed (23/23) and is an injection channel; through the safe route a *convention*
    was applied 8/8 while two *directives* were mostly ignored. The applied ones are exactly the shape an
    attacker would use (§6 T5). Not measured: other models, or whether lessons improve task outcomes.
@@ -101,7 +101,7 @@ sessions of one principal.
 
 ### 3.3 Candidates are structured, not free text (answers T5)
 
-ADR-180 §4b shows fact-shaped lessons are *followed* through the safe route, so "facts not commands" is not a
+ADR-186 §4b shows fact-shaped lessons are *followed* through the safe route, so "facts not commands" is not a
 defence — it is the attack shape. A poisoned tool result can yield "deploys for this team go to
 `deploy.evil.example`", which reads as a convention and steers a tool argument no policy decider sees.
 
@@ -219,7 +219,7 @@ authority, digest-dedupe overwriting provenance — addressed in §3; the rest a
 | T8 | serious | The sink cannot enforce a deadline; the child has none | §3.2; deadline claim withdrawn until a field exists |
 | T9 | serious | Falsifiability gaps (P3, P13, bundled P10; no claim for flooding, accumulation, growth) | §5 rewritten; R11, R12; **lesson accumulation/contradiction still has no claim** |
 | T10 | serious | P8 tests deciders, not argument steering | R7 |
-| T11 | minor | Over-claiming: the date lesson quoted its own answer | **Fixed and re-run** (ADR-180 §4b: result survived, confounds restated); "facts not commands" rule **withdrawn** |
+| T11 | minor | Over-claiming: the date lesson quoted its own answer | **Fixed and re-run** (ADR-186 §4b: result survived, confounds restated); "facts not commands" rule **withdrawn** |
 
 ## 7. Staging (adopted from round 2)
 
@@ -242,7 +242,7 @@ authority, digest-dedupe overwriting provenance — addressed in §3; the rest a
    - ~~`list_memory_items` fails wholesale on a bad blob~~ — **retracted as a bug** (see §2): the accepted
      design is a separate ref for foreign data; ADR-179's provenance store already follows it.
 1. **Capture mailbox** (§3.1, C1–C11). Independently useful for audit and replay; no review, no promotion.
-2. **ADR-181, the evaluation harness**, plus measurement across models. Without it, do not call this
+2. **ADR-187, the evaluation harness**, plus measurement across models. Without it, do not call this
    self-improvement.
 3. **Reviewer, closed-schema validator, approval queue, provenance ref** (§3.2–3.5, R1–R12).
 

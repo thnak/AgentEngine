@@ -1,5 +1,5 @@
 #pragma once
-// Implements ADR-181 §3.0 item 2, the follow-rate screen ("do this first; ~40 runs"): the first
+// Implements ADR-187 §3.0 item 2, the follow-rate screen ("do this first; ~40 runs"): the first
 // slice of multi-trial orchestration -- running many real `run_trial` calls and wiring their
 // aggregate counts into `tier1_statistics.hpp`'s `follow_rate_screen_passes`/
 // `clopper_pearson_lower_bound`. Nothing in the codebase did this before this file: `run_trial`
@@ -7,7 +7,7 @@
 // already-aggregated counts with nothing that produces them from real trial output.
 //
 // Explicitly OUT OF SCOPE for this slice (named, not silently dropped -- see
-// decisions/ADR-181-evaluation-harness.md §8): the gross-harm regression screen (§3.0 item 3 --
+// decisions/ADR-187-evaluation-harness.md §8): the gross-harm regression screen (§3.0 item 3 --
 // built separately, in eval_gross_harm_screen.hpp); arm
 // S / SlotTable / the steering manifest (§3.7); the kill switch and promotion-write digest
 // re-check (§3.0 item 5); EvalSuite/EvalRun/PromotionEvidence, the look ledger, family/shard
@@ -33,7 +33,7 @@
 
 namespace agentengine::eval {
 
-struct FollowRateProbeSpec {  // ae-naming-lint: allow FollowRateProbeSpec — ADR-181 §3.0 item 2
+struct FollowRateProbeSpec {  // ae-naming-lint: allow FollowRateProbeSpec — ADR-187 §3.0 item 2
     std::string probe_id;                        // identity only, never model/candidate-derived
                                                    // (I3); namespaces this probe's trial_ids
     LessonCandidate candidate;
@@ -43,7 +43,7 @@ struct FollowRateProbeSpec {  // ae-naming-lint: allow FollowRateProbeSpec — A
     Message task_prompt;
     std::vector<StubToolFixture> stub_tools;
     GraderFn grader;
-    std::uint64_t n_per_arm = 20;                 // ADR-181 §3.0 item 2 default
+    std::uint64_t n_per_arm = 20;                 // ADR-187 §3.0 item 2 default
     double baseline_invalid_threshold = 0.10;     // "baseline must show <= 10% following"
     double target_lower_bound = 0.5;              // follow_rate_screen_passes's own default, explicit
     double alpha = 0.05;
@@ -66,7 +66,7 @@ struct FollowRateProbeSpec {  // ae-naming-lint: allow FollowRateProbeSpec — A
     std::vector<Capability> extra_capabilities;
 };
 
-struct FollowRateTrialDetail {  // ae-naming-lint: allow FollowRateTrialDetail — ADR-181 §3.0 item 2
+struct FollowRateTrialDetail {  // ae-naming-lint: allow FollowRateTrialDetail — ADR-187 §3.0 item 2
     trial_arm arm;
     std::string trial_id;
     std::uint64_t trial_seed;   // this trial's own derived seed (I5) -- see derive_trial_seed, eval_screen_common.hpp
@@ -80,7 +80,7 @@ struct FollowRateTrialDetail {  // ae-naming-lint: allow FollowRateTrialDetail �
     std::optional<TrialResult> first_attempt;  // when retried; same transcript rule
 };
 
-struct FollowRateScreenResult {  // ae-naming-lint: allow FollowRateScreenResult — ADR-181 §3.0 item 2
+struct FollowRateScreenResult {  // ae-naming-lint: allow FollowRateScreenResult — ADR-187 §3.0 item 2
     std::uint64_t seed = 0;                       // echoed back (I5)
     std::vector<trial_arm> arm_order;              // the realized shuffled sequence
     std::vector<FollowRateTrialDetail> trials;     // every trial, in RUN order, never dropped
@@ -156,7 +156,7 @@ namespace detail {
 }  // namespace detail
 
 // Runs `2 * spec.n_per_arm` trials (baseline + treatment interleaved, seeded per I5), grades each
-// with `spec.grader`, and reports ADR-181 §3.0 item 2's follow-rate screen: pass iff the exact 95%
+// with `spec.grader`, and reports ADR-187 §3.0 item 2's follow-rate screen: pass iff the exact 95%
 // lower bound of the treatment follow rate is >= `target_lower_bound`, unless the run is invalid
 // (baseline too easy, or arms differ too much in how often they could be graded at all).
 //

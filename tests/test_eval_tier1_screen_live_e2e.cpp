@@ -1,4 +1,4 @@
-// Live proof for ADR-181 §3.0 "Tier-1 pre-registration and attempt accounting" (E32,
+// Live proof for ADR-187 §3.0 "Tier-1 pre-registration and attempt accounting" (E32,
 // include/agentengine/eval/eval_tier1_screen.hpp) against a REAL model, with hard goals.
 //
 // A live model is nondeterministic, so this test does not trust anything it is told in memory. It works in
@@ -176,7 +176,7 @@ private:
     int turn_ = 0;
 };
 
-// The summarizer is a second, uncounted model call per trial (ADR-181 §3.7); it is not what these goals
+// The summarizer is a second, uncounted model call per trial (ADR-187 §3.7); it is not what these goals
 // measure, so it answers NONE and costs nothing.
 class NoneSummarizerClient {
 public:

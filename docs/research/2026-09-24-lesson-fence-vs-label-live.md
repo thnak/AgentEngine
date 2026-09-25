@@ -1,7 +1,7 @@
 # Promoted lessons and tool arguments: the fence, not the label (live, 2026-09-24)
 
 **Model:** DeepSeek `deepseek-flash`, via `api.deepseek.com/v1` (the repo's OpenAI-compatible client, real ADR-173
-fence and preamble). **Question:** why did ADR-181's Tier-1 screen find every lesson `inert` in its first live run?
+fence and preamble). **Question:** why did ADR-187's Tier-1 screen find every lesson `inert` in its first live run?
 
 ## 1. The Tier-1 live runs (`tests/test_eval_tier1_screen_live_e2e.cpp`)
 
@@ -16,7 +16,7 @@ only that file and the on-disk attempt log.
   figures equalled an independent re-grading of the model's own logged tool calls (H3), and every counted trial
   had a logged model turn (H4). Only the behaviour goal "helpful lesson -> `cleared`" failed.
 
-The model's own explanation (the label) is a rationale, not a controlled result — and ADR-180 §4b had found, on
+The model's own explanation (the label) is a rationale, not a controlled result — and ADR-186 §4b had found, on
 the same model, that the label alone suppressed nothing for text-reply lessons.
 
 ## 2. The controlled experiment (`tests/test_memory_lesson_label_live_e2e.cpp`)
@@ -54,7 +54,7 @@ the label. §5 is the measurement of the shipped bytes.
   note "unverified" or "untrusted", which the preamble told it.
 - **Without the fence the label decides a lot**: "model-inferred, unverified" 16/20 and 5/20 (first invocation);
   "operator-approved lesson" 20/20 and 18/20 (second invocation, route Q — so the two are not a clean comparison).
-- So a lesson delivered the shipped way (ADR-179 §123, ADR-180) is close to inert whenever acting on it means
+- So a lesson delivered the shipped way (ADR-179 §123, ADR-186) is close to inert whenever acting on it means
   choosing a tool argument; relabelling alone cannot fix that.
 - **"Inert" hides a distinction** (red team): under route A the model usually *named* the lesson and asked the user
   to confirm — the control, with no lesson, guessed instead. The v2 experiment (§5) scores followed / asked / other.

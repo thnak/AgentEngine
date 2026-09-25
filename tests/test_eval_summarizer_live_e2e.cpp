@@ -1,4 +1,4 @@
-// Live check for decisions/ADR-181-evaluation-harness.md's summarizer accounting (PR #100: §3.8's
+// Live check for decisions/ADR-187-evaluation-harness.md's summarizer accounting (PR #100: §3.8's
 // "recorded (E19), budgeted (§3.9)", and the R3-GH-3 fix): runs real `run_trial` calls in which BOTH the
 // agent's model and the memory SUMMARIZER are a real OpenAI-compatible endpoint. Every earlier test drove
 // the summarizer with a scripted mock, so none could show what the budget actually depends on:

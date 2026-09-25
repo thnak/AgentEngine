@@ -5,7 +5,7 @@
 //
 // Before ADR-182 both call sites sent the conversation's own messages to the summarizer with no
 // instruction at all. A real model does the one thing that request asks for: it CONTINUES the
-// conversation. Measured live (ADR-181's `test_eval_summarizer_live_e2e`, DeepSeek `deepseek-flash`): the
+// conversation. Measured live (ADR-187's `test_eval_summarizer_live_e2e`, DeepSeek `deepseek-flash`): the
 // "summary" of a turn that set a deploy region was a reply to the user ("Deploy region is now set to
 // eu-west-1 ... What would you like to do next?"), and in one run it was DeepSeek's raw tool-call markup
 // (`<｜｜DSML｜｜ invoke name="deploy">...`) as plain text -- stored verbatim as an episodic memory item

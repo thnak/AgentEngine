@@ -1,4 +1,4 @@
-// Implements decisions/ADR-181-evaluation-harness.md E31 (round-4 fix for the FATAL "the approver
+// Implements decisions/ADR-187-evaluation-harness.md E31 (round-4 fix for the FATAL "the approver
 // acknowledges an excerpt, never the bytes the model reads" finding): the ack binds a digest of the
 // verbatim rendered item, and the promotion path refuses to write unless the recomputed digest still
 // matches. E31's own planted mutants: "ack recorded without a digest" and "promotion writes without

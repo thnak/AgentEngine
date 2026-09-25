@@ -1,8 +1,8 @@
-// Implements decisions/ADR-180-procedural-memory-channel.md -- the WIRE half.
+// Implements decisions/ADR-186-procedural-memory-channel.md -- the WIRE half.
 //
 // test_memory_procedural_channel.cpp proves which SHAPE each route produces (tainted external vs
 // untainted system). This proves what each REAL wire serializer then does with those two shapes, so
-// "on the wire" in ADR-180 rests on the serializers themselves and not on calling a helper directly.
+// "on the wire" in ADR-186 rests on the serializers themselves and not on calling a helper directly.
 // The two shapes are built here to match what that test showed the real MemoryProvider and the real
 // AgentSession produce; the seam between the two tests is that match.
 //

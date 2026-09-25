@@ -1,4 +1,4 @@
-// Implements decisions/ADR-180-procedural-memory-channel.md (resolves 029 §10 Q2's route).
+// Implements decisions/ADR-186-procedural-memory-channel.md (resolves 029 §10 Q2's route).
 //
 // 029 Q2 (2026-08-04) said a learned/procedural instruction may reach the model ONLY as a
 // `ContextContribution.instructions` append. The code does something different: MemoryProvider puts

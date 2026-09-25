@@ -14,16 +14,27 @@
 //   L7 -- FileAppendLogStore tolerates a torn trailing record (a crash mid-write): read_from() stops
 //         cleanly before the torn record rather than erroring, and every prior, fully-written record
 //         is still returned intact.
-//   L8 -- concurrent appends to one FileAppendLogStore log (ADR-181 E32 red team, FATAL): every
+//   L8 -- concurrent appends to one FileAppendLogStore log (ADR-187 E32 red team, FATAL): every
 //         append lands, seqs are distinct and consecutive, and seq N is the N-th record read back.
 //   L9 -- a torn tail is repaired by the next append instead of swallowing every later record; a header
 //         claiming ~4 GiB is read as a torn tail.
 //   L10 -- the same as L8 across real child PROCESSES (this binary re-run with --append-child), since the
 //          lock is claimed to hold across processes, which threads in one process cannot show.
 //   L11 -- a missing log file reads as empty; a zero-length record at the end of the file reads back.
-//   L12 -- a corrupted length header mid-file is cut like a torn tail: the records after it are hidden, then lost
-//          (disclosed; the round-2/3 quarantine sidecar was removed by the ADR-183 proportionality review).
 //   L16 -- (Windows) a log that cannot be truncated makes the append fail cleanly, the file unchanged.
+//   L20-L24 -- main's ADR-181 (background jobs) phase 0, renumbered from its L8-L12 when the stacks merged:
+//   L20 -- (ADR-181 phase 0) an append AFTER a torn tail is readable and correctly framed, for a torn
+//         payload longer (L20a) or shorter (L20b) than the next frame, and a torn header (L20c).
+//   L21 -- a full-length final record with a bad CRC is a torn write: skipped, then replaced.
+//   L22 -- a bad CRC on a NON-final record is corruption: read and append both refuse it.
+//   L23 -- a v1 (pre-ADR-181, no magic, no CRC) log is still read and appended in v1 framing.
+//   L24 -- append_log_sync::disk appends and persists.
+// Positive controls (2026-09-23): L20a-c fail against the pre-fix store (4 failures); a mutant that
+// skips the torn-tail truncation fails L20a-c/L21/L23 (6); a mutant that treats mid-file corruption as a
+// torn tail fails L22 (3).
+// Merged (2026-09-25): main's v2 format (magic + per-record CRC) now runs under this branch's OS file
+// lock, so both suites apply to one store; the old L12 (a corrupt header mid-file is silently cut) is
+// superseded by L22 (a CRC mismatch before the end is refused as corruption).
 
 #include <cstdio>
 #include <cstddef>
@@ -410,29 +421,6 @@ int main(int argc, char** argv) {
               "L11: a zero-length record at the end of the file reads back as an empty record");
     }
 
-    // L12: a corrupted header mid-file is cut like a torn tail -- the records after it are hidden, then lost (the
-    // disclosed residual; the quarantine sidecar that kept them was removed by the ADR-183 proportionality review).
-    {
-        FileAppendLogStore store(root);
-        (void)store.append("corrupt-log", bytes_from("first"));
-        (void)store.append("corrupt-log", bytes_from("second"));
-        (void)store.append("corrupt-log", bytes_from("third"));
-        std::filesystem::path const path = root / "corrupt-log";
-        {
-            std::fstream f(path, std::ios::binary | std::ios::in | std::ios::out);
-            f.seekp(static_cast<std::streamoff>(4 + 5 + 3));  // the high byte of record 2's length header
-            char const big = static_cast<char>(0x7F);
-            f.write(&big, 1);
-        }
-        auto hidden = store.read_from("corrupt-log", 0);
-        auto s4 = store.append("corrupt-log", bytes_from("fourth"));
-        auto after = store.read_from("corrupt-log", 0);
-        check(hidden.has_value() && hidden->size() == 1 && s4.has_value() && *s4 == 2 && after.has_value() &&
-                  after->size() == 2 && string_from((*after)[1]) == "fourth",
-              "L12: records after a corrupted header are hidden, and the next append follows the last whole record "
-              "(the hidden records are then gone -- disclosed)");
-    }
-
 #if defined(_WIN32)
     // L16: a log that cannot be truncated (a read-only mapping, as an indexer or AV scanner holds) -> the append
     // fails cleanly and nothing is written; once it can, the append lands.
@@ -458,6 +446,155 @@ int main(int argc, char** argv) {
         check(after.has_value() && *after == 2, "L16: once it can, the torn tail is cut and the append lands as seq 2");
     }
 #endif
+
+    // L20 (ADR-181 §10 C3): an append AFTER a torn tail must not be lost or corrupt the log. Before the
+    // fix, append() opened the file in `ios::app` and wrote after the torn bytes, so the reader took the
+    // torn header's length and swallowed the new record: append() reported success with seq 3, and the
+    // record was then unreadable (L20a) or read back as garbage with every later record misframed (L20b).
+    {
+        FileAppendLogStore store(root);
+        (void)store.append("torn-then-append", bytes_from("intact-one"));
+        (void)store.append("torn-then-append", bytes_from("intact-two"));
+        {
+            std::ofstream out(root / "torn-then-append", std::ios::binary | std::ios::app);
+            std::uint32_t const claimed_len = 100;  // longer than everything that follows: L20a
+            out.write(reinterpret_cast<char const*>(&claimed_len), sizeof(claimed_len));
+            out.write("bad", 3);
+        }
+        auto s3 = store.append("torn-then-append", bytes_from("after-crash"));
+        check(s3.has_value() && *s3 == 3, "L20a: the first append after a crash gets seq 3");
+        auto all = store.read_from("torn-then-append", 0);
+        check(all.has_value() && all->size() == 3,
+              "L20a: the record appended after a torn tail is readable -- not swallowed by the torn "
+              "record's length prefix");
+        if (all.has_value() && all->size() == 3) {
+            check(string_from((*all)[2]) == "after-crash",
+                  "L20a: the post-crash record reads back byte-identical");
+        }
+        check(store.last_seq("torn-then-append") == 3, "L20a: last_seq() agrees with the seq append() returned");
+    }
+    {
+        FileAppendLogStore store(root);
+        (void)store.append("torn-misframe", bytes_from("intact-one"));
+        {
+            // A FULL v2 header (length + CRC) claiming 9 bytes, then only 3: the claimed length is
+            // SHORTER than the next append's frame, so without truncation the reader would take the
+            // next record's first 6 bytes as this one's payload and misframe everything after it.
+            std::ofstream out(root / "torn-misframe", std::ios::binary | std::ios::app);
+            std::uint32_t const claimed_len = 9;
+            std::uint32_t const bogus_crc   = 0;
+            out.write(reinterpret_cast<char const*>(&claimed_len), sizeof(claimed_len));
+            out.write(reinterpret_cast<char const*>(&bogus_crc), sizeof(bogus_crc));
+            out.write("bad", 3);
+        }
+        (void)store.append("torn-misframe", bytes_from("after-crash-1"));
+        (void)store.append("torn-misframe", bytes_from("after-crash-2"));
+        auto all = store.read_from("torn-misframe", 0);
+        bool const exact = all.has_value() && all->size() == 3 && string_from((*all)[0]) == "intact-one" &&
+                           string_from((*all)[1]) == "after-crash-1" && string_from((*all)[2]) == "after-crash-2";
+        check(exact,
+              "L20b: a torn record whose claimed length fits inside the next append does not turn the "
+              "next records into garbage -- the log reads back exactly the three durable records");
+    }
+    {
+        // L20c: a torn length header (only 2 of its 4 bytes landed).
+        FileAppendLogStore store(root);
+        (void)store.append("torn-header", bytes_from("intact-one"));
+        {
+            std::ofstream out(root / "torn-header", std::ios::binary | std::ios::app);
+            out.write("\x05\x00", 2);
+        }
+        (void)store.append("torn-header", bytes_from("after-crash"));
+        auto all = store.read_from("torn-header", 0);
+        check(all.has_value() && all->size() == 2 && string_from((*all)[1]) == "after-crash",
+              "L20c: an append after a torn 2-byte header is readable and correctly framed");
+    }
+
+    // L21: a final record with a full header and full-length payload but a WRONG CRC is a torn write (a
+    // partially flushed sector), not corruption: read stops before it, and the next append replaces it.
+    {
+        FileAppendLogStore store(root);
+        (void)store.append("bad-crc-tail", bytes_from("intact-one"));
+        {
+            std::ofstream out(root / "bad-crc-tail", std::ios::binary | std::ios::app);
+            std::uint32_t const len       = 5;
+            std::uint32_t const wrong_crc = 0xDEADBEEFu;
+            out.write(reinterpret_cast<char const*>(&len), sizeof(len));
+            out.write(reinterpret_cast<char const*>(&wrong_crc), sizeof(wrong_crc));
+            out.write("\0\0\0\0\0", 5);  // e.g. a zero-filled block after power loss
+        }
+        auto before = store.read_from("bad-crc-tail", 0);
+        check(before.has_value() && before->size() == 1,
+              "L21: a full-length final record with a bad CRC is treated as torn, not returned as data");
+        (void)store.append("bad-crc-tail", bytes_from("after-crash"));
+        auto after = store.read_from("bad-crc-tail", 0);
+        check(after.has_value() && after->size() == 2 && string_from((*after)[1]) == "after-crash",
+              "L21: the next append replaces the bad-CRC tail and reads back intact");
+    }
+
+    // L22: corruption BEFORE the end is not a torn write. It must not be silently hidden (the records
+    // after it would vanish) and must not be written past.
+    {
+        FileAppendLogStore store(root);
+        (void)store.append("corrupt-mid", bytes_from("record-one"));
+        (void)store.append("corrupt-mid", bytes_from("record-two"));
+        (void)store.append("corrupt-mid", bytes_from("record-three"));
+        {
+            std::fstream f(root / "corrupt-mid", std::ios::binary | std::ios::in | std::ios::out);
+            f.seekp(8 + 8 + 2);  // magic, record one's header, then 2 bytes into its payload
+            f.put('X');
+        }
+        auto read = store.read_from("corrupt-mid", 0);
+        check(!read.has_value() && read.error().code == "rt.append_log_store.corrupt_record",
+              "L22: a CRC mismatch on a non-final record is reported as corruption, not treated as the end");
+        auto appended = store.append("corrupt-mid", bytes_from("record-four"));
+        check(!appended.has_value() && appended.error().code == "rt.append_log_store.corrupt_record",
+              "L22: append() refuses to write past a corrupt record");
+        check(store.last_seq("corrupt-mid") == 0, "L22: last_seq() degrades to 0, as documented");
+    }
+
+    // L23: a log written in the ORIGINAL (v1) format -- no magic, no CRC -- is still read, a torn v1
+    // tail is still tolerated, and appending keeps the v1 framing rather than mixing formats.
+    {
+        FileAppendLogStore store(root);
+        {
+            std::ofstream out(root / "legacy-v1", std::ios::binary);
+            for (std::string const payload : {"old-one", "old-two"}) {
+                auto const len = static_cast<std::uint32_t>(payload.size());
+                out.write(reinterpret_cast<char const*>(&len), sizeof(len));
+                out.write(payload.data(), static_cast<std::streamsize>(payload.size()));
+            }
+            std::uint32_t const torn_len = 50;
+            out.write(reinterpret_cast<char const*>(&torn_len), sizeof(torn_len));
+            out.write("x", 1);
+        }
+        auto old = store.read_from("legacy-v1", 0);
+        check(old.has_value() && old->size() == 2 && string_from((*old)[1]) == "old-two",
+              "L23: a v1 log is read, stopping cleanly before its torn tail");
+        auto s = store.append("legacy-v1", bytes_from("new-three"));
+        check(s.has_value() && *s == 3, "L23: appending to a v1 log continues its seq numbering");
+        auto all = store.read_from("legacy-v1", 0);
+        check(all.has_value() && all->size() == 3 && string_from((*all)[2]) == "new-three",
+              "L23: the appended record reads back in v1 framing");
+        std::ifstream in(root / "legacy-v1", std::ios::binary);
+        char first[4] = {};
+        in.read(first, 4);
+        check(std::string(first, 4) != "AELO", "L23: the v1 file was not rewritten with a v2 magic");
+    }
+
+    // L24: the disk-sync mode appends and persists like the default (the sync itself is not
+    // observable in-process; this proves the path runs and does not fail).
+    {
+        {
+            FileAppendLogStore store(root, agentengine::rt::append_log_sync::disk);
+            auto s1 = store.append("synced", bytes_from("one"));
+            auto s2 = store.append("synced", bytes_from("two"));
+            check(s1.has_value() && *s1 == 1 && s2.has_value() && *s2 == 2,
+                  "L24: append_log_sync::disk appends succeed");
+        }
+        FileAppendLogStore fresh(root);
+        check(fresh.last_seq("synced") == 2, "L24: records written with disk sync persist");
+    }
 
     // Cleanup.
     std::error_code ec;

@@ -100,7 +100,7 @@ flag**.
   the one place in the tree that crossed this line.
 - **An approved lesson carries an `approval`, not a different origin or taint** (amended 2026-09-24,
   `decisions/ADR-183-approved-lesson-delivery.md`). `ContentItem::approval` is empty, or the id of the approval under
-  which that exact text was approved — by a human (ADR-181 E31), or, if the host opted in, by its automated reviewer
+  which that exact text was approved — by a human (ADR-187 E31), or, if the host opted in, by its automated reviewer
   (`automatic:<reviewer>`, ADR-184). It is granted per request, only by `AgentSession`, only to a tainted
   `role::system` text the host's `ApprovedLessonRegistry` holds for the session's principal; the session clears it
   on every other item. The item stays tainted and `external`; the fence names it an approved lesson with a code content cannot

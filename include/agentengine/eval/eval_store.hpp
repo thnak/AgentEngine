@@ -1,12 +1,12 @@
 #pragma once
-// Implements ADR-181 §3.9's `EvalStore` ("the harness is constructed with only an `EvalStore`
+// Implements ADR-187 §3.9's `EvalStore` ("the harness is constructed with only an `EvalStore`
 // handle (a distinct type production wiring never returns) and cannot hold a production store...
 // not yet built"). This is that build: a move-only handle bundling exactly what one trial needs --
 // a fresh in-memory object/ref store pair, an eval-tenant `Principal` (via `mint_eval_trial_principal`,
 // eval_principal.hpp), the `Mount` it bootstraps, and the read/write capabilities scoped to that
 // mount alone.
 //
-// What this file does NOT attempt (named here, not silently dropped -- ADR-181 §8 residual): the
+// What this file does NOT attempt (named here, not silently dropped -- ADR-187 §8 residual): the
 // compile-fail test that a harness holding only an `EvalStore` cannot ALSO hold a production store
 // handle (E25's other half), and the source include-graph lint that fails if a `Tool<>`/
 // `ToolDescriptor`-defining file includes an `eval/` header. Both are repo-wide mechanisms, not
@@ -26,11 +26,11 @@
 
 namespace agentengine::eval {
 
-// A move-only handle: copying would alias two "fresh" stores, defeating the isolation ADR-181
+// A move-only handle: copying would alias two "fresh" stores, defeating the isolation ADR-187
 // §3.2/§3.4 requires ("fresh `ref_name` and ref store per trial... isolation is by the fresh
 // store"). Default-constructed only via `make()`, never publicly, so a caller cannot construct an
 // `EvalStore` around an existing production store/principal by accident.
-class EvalStore {  // ae-naming-lint: allow EvalStore — ADR-181 §3.9
+class EvalStore {  // ae-naming-lint: allow EvalStore — ADR-187 §3.9
 public:
     // `tenant_suffix`/`id` are host-supplied trial identifiers, never derived from model or
     // candidate output (I3) -- forwarded verbatim to `mint_eval_trial_principal`, whose own

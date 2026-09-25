@@ -1,4 +1,4 @@
-// Implements decisions/ADR-181-evaluation-harness.md's Tier-1 statistics as real code (round 5):
+// Implements decisions/ADR-187-evaluation-harness.md's Tier-1 statistics as real code (round 5):
 // the Clopper-Pearson bounds behind the follow-rate screen (E27) and the containment gate (§3.7 gate
 // rule 2), the gross-harm sum statistic (E28), and round 4's hypergeometric min-task concentration
 // fix (§6 G3). Numeric checks are pinned against known closed-form values and against the numbers
@@ -144,7 +144,7 @@ int main() {
         AE_CHECK(lower_tiny_alpha_1e8.has_value() && close_rel(*lower_tiny_alpha_1e8, 1.0000000050e-15, 1e-3),
                  "round-7 fix: x=1,n=10,000,000,alpha=1e-8 matches the independent reference to 0.1% "
                  "(pre-fix this returned 1.055e-15, a 5.5% error)");
-        // At this extreme (alpha=1e-10, an order of magnitude past anything ADR-181 actually asks
+        // At this extreme (alpha=1e-10, an order of magnitude past anything ADR-187 actually asks
         // for), the log1p fix cuts the error from 463% to ~4% -- much closer, but not exact, since
         // `bisect_decreasing`'s own fixed 60-iteration budget starts approaching ITS disclosed
         // resolution limit here too (the comment above `bisect_decreasing` names this residual). The
