@@ -786,8 +786,8 @@ holds whether the session was scripted or live.
   expect today's order: `approval_resolved` after the tool ran (§12 C-1). When P1c fixes the order,
   those two scenarios will fail with an "event N differs" pointing at the move, which is the intended
   signal. They are then re-exported, or edited to the new order, as part of P1c's own change.
-- **Still open (§14):** `tool_call_request_of()` coerces malformed arguments to `{}`. Not exported
-  as a scenario, because a golden would lock in the bug.
+- **Closed by ADR-197 (§14):** `tool_call_request_of()` coerced malformed arguments to `{}`. Now
+  refused as `tool.malformed_arguments`; exported as scenario `scripted_malformed_arguments`.
 
 ### Revised build phases (replaces §12's list)
 

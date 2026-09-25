@@ -1823,6 +1823,14 @@ add_executable(test_rt_agent_session_quarantine_tool test_rt_agent_session_quara
 target_link_libraries(test_rt_agent_session_quarantine_tool PRIVATE agentengine::core agentengine::hmac agentengine_warnings)
 add_test(NAME test_rt_agent_session_quarantine_tool COMMAND test_rt_agent_session_quarantine_tool)
 
+# ---- decisions/ADR-197-reject-malformed-tool-arguments.md (issue #105): argument text that is not
+# valid JSON is refused at 006 §3 step 2 as tool.malformed_arguments, never coerced to {} -- proven
+# with an all-optional-arguments tool through invoke_tool, admit_call, background_task and a real
+# AgentSession round.
+add_executable(test_tool_call_malformed_arguments test_tool_call_malformed_arguments.cpp)
+target_link_libraries(test_tool_call_malformed_arguments PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_tool_call_malformed_arguments COMMAND test_tool_call_malformed_arguments)
+
 # ---- decisions/ADR-069-content-triggered-model-response-replay.md §7's own open question, answered
 # with real evidence: ADR-067's turn/pre_model hook and ADR-069's ContentReplayGateway, both wired
 # into ONE real AgentSession simultaneously -- proves they compose correctly, not merely independently.
