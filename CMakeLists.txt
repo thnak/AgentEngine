@@ -130,6 +130,14 @@ add_executable(agentengine_mcp_conformance_client tools/mcp_conformance_client.c
 target_link_libraries(agentengine_mcp_conformance_client
   PRIVATE agentengine::core agentengine::net_egress_proxy agentengine_warnings)
 
+# ---- ADR-182 test driver (tools/) -- an MCP server over stdio that drives in-process sessions with
+# a scripted model, for a Claude Code test agent. A host executable like cli_chat: the engine library
+# binds nothing. Built by default (ADR-182 §12 R11) -- it needs only agentengine::core, and it is
+# never installed or linked by anything else.
+add_executable(agentengine_test_driver tools/agentengine_test_driver.cpp)
+target_include_directories(agentengine_test_driver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+target_link_libraries(agentengine_test_driver PRIVATE agentengine::core agentengine_warnings)
+
 # ---- native_jail ShellRunner backend (src/backends/native_jail/) --------------
 # Implements decisions/ADR-001-shellrunner-grammar-and-dispatch.md — Design A: the
 # recursive-descent parser, the pmr-backed AST, the tree-walking evaluator, the fixed builtin

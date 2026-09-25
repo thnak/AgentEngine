@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "agentengine-test": {
+      "type": "stdio",
+      "command": "build/agentengine_test_driver",
+      "args": []
+    }
+  }
+}

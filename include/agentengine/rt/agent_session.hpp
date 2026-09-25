@@ -2420,9 +2420,18 @@ private:
                             run_event_payload::InteractionRef{next.interaction_id});
             for (HookProcessedCall const& hc : pending_hook_decisions_[next.interaction_id].calls) {
                 if (hc.outcome == hook_call_outcome::pass_through) {
+                    // ADR-182 P1: same payload fields as run_rounds()'s own emit site. Every call
+                    // reaching this loop is pass_through, but only some of them needed a decider.
+                    ToolDescriptor const* td = tool_table.find(hc.request.tool_name);
+                    bool const needs = td != nullptr &&
+                                       resolve_approval_outcome(*td, hc.request.provenance,
+                                                                effect_context_.principal,
+                                                                /*arguments_tainted=*/true, policy_decider_) ==
+                                           approval_outcome::needs_decider;
                     emit_run_event(run_event_kind::approval_requested,
-                                    run_event_payload::ApprovalRequested{hc.request.call_id,
-                                                                          next.interaction_id});
+                                    run_event_payload::ApprovalRequested{
+                                        hc.request.call_id, next.interaction_id, hc.request.tool_name,
+                                        json::dump(hc.request.arguments), needs});
                 }
             }
             co_return std::unexpected(error{failure_class::contract,
@@ -2810,6 +2819,10 @@ private:
                 });
 
             bool any_needs_approval = false;
+            // ADR-182 P1: which calls needed a decider, per call, for the approval_requested
+            // payload's `needs_approval` field. Filled by the loop below, which therefore no longer
+            // stops at the first gated call.
+            std::vector<bool> call_needs_approval(calls.size(), false);
             if (suspend_for_approval_ && !approval_decider_) {
                 for (std::size_t i = 0; i < calls.size(); ++i) {
                     // A call the hook stage already denied is finished -- its outcome is already
@@ -2839,7 +2852,7 @@ private:
                                                   /*arguments_tainted=*/true, policy_decider_) ==
                             approval_outcome::needs_decider) {
                         any_needs_approval = true;
-                        break;
+                        call_needs_approval[i] = true;
                     }
                 }
             }
@@ -2881,10 +2894,17 @@ private:
                         "round suspended awaiting an external tool-call hook decision",
                         kSuspendedForHookDecision});
                 }
-                for (ToolCall const& call : calls) {
+                for (std::size_t i = 0; i < calls.size(); ++i) {
+                    // ADR-182 P1: the arguments the approval check actually judged -- the post-hook
+                    // request's when the hook stage ran (it may have rewritten them), else the
+                    // model's own text.
+                    std::string arguments_json = hook_touched_round
+                                                     ? json::dump(processed[i].request.arguments)
+                                                     : calls[i].arguments_json;
                     emit_run_event(run_event_kind::approval_requested,
-                                    run_event_payload::ApprovalRequested{call.call_id,
-                                                                          interaction.interaction_id});
+                                    run_event_payload::ApprovalRequested{
+                                        calls[i].call_id, interaction.interaction_id, calls[i].tool_name,
+                                        std::move(arguments_json), call_needs_approval[i]});
                 }
                 // Suspended -- no real response yet. Unlike the Quark original (an unanswered Ask,
                 // left to resolve later via a completely separate ResolveInteraction message with

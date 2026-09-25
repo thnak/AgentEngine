@@ -184,9 +184,22 @@ struct InteractionRef {
 // resume call. Appended... except these two payloads shipped with only `call_id` before ADR-029
 // and had zero real producers (run_event.hpp's own prior top comment), so widening the struct here
 // is a genuine field addition, not a break of any real wire contract yet exercised.
+//
+// ADR-182 P1 (BUG-3 in tests/test_rt_agent_session_hitl_live_e2e.cpp): the three fields below are
+// appended last, so every existing `ApprovalRequested{call_id}`/`{call_id, interaction_id}` site is
+// unaffected. Before them, a consumer asked to approve had no way to learn WHAT it was approving
+// except re-deriving it from `history().back()`. `arguments_json` is the call's arguments as the
+// approval check saw them (after any tool-call-hook rewrite); it is model output already recorded in
+// history, so carrying it here exposes nothing new. `needs_approval` is false for a call that shares
+// the suspended round but would never itself have needed a decider (BUG-1): the event still fires for
+// it -- changing that is a semantics change left to BUG-1's own fix -- but a consumer can now tell the
+// two apart instead of asking a human about a call nobody gated.
 struct ApprovalRequested {
     std::string call_id;
     std::string interaction_id{};
+    std::string tool_name{};
+    std::string arguments_json{};
+    bool        needs_approval = true;
 };
 
 struct ApprovalResolved {

@@ -4061,3 +4061,19 @@ if(AGENTENGINE_WITH_VULKAN)
     agentengine::core agentengine_vulkan_vector_index_fault_injection agentengine_warnings)
   add_test(NAME test_vulkan_cosine_index_fault_injection COMMAND test_vulkan_cosine_index_fault_injection)
 endif()
+
+# ---- ADR-182 P1 + P2: the shared strict testing::ScriptedChatClient, and approval_requested carrying
+# tool name / arguments / needs_approval (BUG-3, BUG-1 info).
+add_executable(test_scripted_chat_client_and_approval_payload test_scripted_chat_client_and_approval_payload.cpp)
+target_link_libraries(test_scripted_chat_client_and_approval_payload PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_scripted_chat_client_and_approval_payload COMMAND test_scripted_chat_client_and_approval_payload)
+
+# ---- ADR-182 driver phase 1: tools/test_driver/test_driver.hpp's Driver, driven in-process through
+# handle_line() with the exact JSON-RPC lines the stdio binary receives.
+add_executable(test_agentengine_test_driver test_agentengine_test_driver.cpp)
+target_include_directories(test_agentengine_test_driver PRIVATE ${PROJECT_SOURCE_DIR}/tools)
+target_link_libraries(test_agentengine_test_driver PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_agentengine_test_driver COMMAND test_agentengine_test_driver)
+# ADR-182 §12 R11: engine code must not include agentengine/testing/.
+add_test(NAME lint_testing_includes
+  COMMAND ${CMAKE_COMMAND} -DSOURCE_DIR=${PROJECT_SOURCE_DIR} -P ${PROJECT_SOURCE_DIR}/cmake/check_testing_includes.cmake)
