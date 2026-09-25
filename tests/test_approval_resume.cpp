@@ -422,6 +422,8 @@ int main() {
         fresh.initialize("s-s1", ae::Principal{"p1", ""});
         s.fork_from(fresh, "s-s1");
         s.set_capabilities(&no_caps());
+        // Round 2 is not hook-touched, so nothing overwrites the discarded round's stored state under the reused id.
+        s.set_tool_call_hook({});
         // Round 2: a plain approval that reuses the interaction id the discarded round had.
         (void)drive(s.start_run(StartRun{text_msg(ae::role::user, "second")}));
         std::string const new_id = s.has_open_interactions() ? s.open_interactions().front().interaction_id : "";
