@@ -46,17 +46,13 @@
 #include <iterator>
 #include <limits>
 #include <mutex>
+#include <optional>
+#include <utility>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 #include "agentengine/core/error.hpp"
-
-#if defined(_WIN32)
-#include <io.h>  // _commit, _fileno
-#else
-#include <unistd.h>  // fsync
-#endif
 
 namespace agentengine::rt {
 
@@ -146,21 +142,30 @@ static_assert(AppendLogStore<InMemoryAppendLogStore>,
 // `rt.append_log_store.corrupt_record` (`fatal`) rather than silently hiding the records after it, and
 // `append()` refuses to write past it.
 //
-// DURABILITY. `append_log_sync::os_buffer` (the default) flushes every append to the OS: it survives a
+// DURABILITY. `append_log_sync::os_buffer` (the default) hands every append to the OS: it survives a
 // process crash, not a power loss. `append_log_sync::disk` additionally forces the bytes to stable
-// storage on every append (`_commit` on Windows, `fsync` elsewhere). Neither syncs the DIRECTORY entry
-// of a newly created log file, which POSIX needs for the file itself to survive a power loss right
-// after creation -- a named residual, not claimed.
+// storage on every append (`FlushFileBuffers` on Windows, `fsync` elsewhere). Neither syncs the
+// DIRECTORY entry of a newly created log file, which POSIX needs for the file itself to survive a power
+// loss right after creation -- a named residual, not claimed.
 //
-// THREAD SAFETY / WRITERS. Appends from this process are serialized by one process-wide mutex:
-// truncating a torn tail is only safe if no other append to the same file is in flight, since another
-// writer's half-written record looks exactly like a torn tail. SINGLE WRITER PROCESS PER ROOT: two
-// processes appending to the same log could truncate each other's in-flight record, and could before
-// this change already hand out duplicate seq numbers -- not supported, not guarded against. Readers
-// take no lock: a read racing an append may see that append's record as a torn tail and stop before
-// it, which is the correct answer for a record that has not finished yet. Every `append()` still
-// re-reads the whole file (to find the end and count records), so a log's total write cost grows
-// quadratically with its length -- a named performance residual.
+// WRITERS: AN OS FILE LOCK, ACROSS THREADS, INSTANCES AND PROCESSES (merged 2026-09-25 from the ADR-195
+// E32 work, which built it independently of the format above). Every append holds an exclusive lock on
+// the log file (`LockFileEx` / `flock`, released by the OS if the process dies) across the scan, any
+// torn-tail truncation and the one write; every read holds a shared one (Windows byte-range locks are
+// mandatory, so an unlocked read of a file another process holds exclusively FAILS rather than
+// blocking). Two appends to the same log -- from threads, instances or processes -- therefore get
+// distinct, consecutive seqs, and truncating a torn tail can never cut another writer's in-flight
+// record. (The E32 red team measured the first unlocked version: 4 threads x 50 appends returned ~51
+// distinct seqs and lost most records.) This replaces the phase-0 process-wide mutex and its
+// "single writer process per root" limit. Every `append()` still re-reads the whole file (to find the
+// end and count records), so a log's total write cost grows quadratically with its length -- a named
+// performance residual.
+//
+// THE OS CALLS LIVE IN src/rt/append_log_file.cpp. Including <windows.h> here reached every includer of
+// memory.hpp and the worktree headers and broke consumer code (its `ERROR`, `GetMessage` macros; a
+// leaked WIN32_LEAN_AND_MEAN stripped a consumer's own <shellapi.h>). The header declares an opaque
+// handle; the static library `agentengine_rt_file_log`, linked through `agentengine::core`, holds the
+// platform code.
 //
 // NO PATH-TRAVERSAL PROTECTION BEYOND A BASIC REJECT: same rule and same reasoning as
 // FileSessionStore's own `path_for()` -- a LogId is assumed host-controlled (I2/I3), this is a cheap
@@ -267,12 +272,43 @@ struct LogScan {
     }
 }
 
-[[nodiscard]] inline std::mutex& append_mutex() {
-    static std::mutex m;
-    return m;
-}
-
 }  // namespace append_log_store_detail
+
+namespace detail {
+
+// An open log file held under an OS lock for as long as this object lives: exclusive for a writer, shared
+// for a reader. Readers must lock too -- Windows byte-range locks are mandatory, so an unlocked read of a
+// file another process holds exclusively FAILS rather than blocking (found by this fix's own concurrency
+// test: readers saw a writer's lock as an empty or torn log). Defined in src/rt/append_log_file.cpp.
+class LockedAppendLogFile {
+public:
+    LockedAppendLogFile(LockedAppendLogFile const&) = delete;
+    LockedAppendLogFile& operator=(LockedAppendLogFile const&) = delete;
+    LockedAppendLogFile& operator=(LockedAppendLogFile&&) = delete;
+    LockedAppendLogFile(LockedAppendLogFile&& o) noexcept
+        : handle_(std::exchange(o.handle_, kNoHandle)), locked_(std::exchange(o.locked_, false)) {}
+    ~LockedAppendLogFile() { close(); }
+
+    // A writer creates the file if it is missing; a reader does not, and gets `std::nullopt` for "no log yet".
+    [[nodiscard]] static result<std::optional<LockedAppendLogFile>> open(std::filesystem::path const& path,
+                                                                         bool writer);
+    [[nodiscard]] result<std::vector<std::byte>> read_all();
+    // Cuts the file back to `length` bytes and positions the next write there.
+    [[nodiscard]] result<void> truncate_and_seek(std::size_t length);
+    [[nodiscard]] result<void> write_all(std::vector<std::byte> const& bytes);
+    // Forces what was written to stable storage (`append_log_sync::disk`).
+    [[nodiscard]] result<void> sync_to_disk();
+
+private:
+    static constexpr std::intptr_t kNoHandle = -1;  // INVALID_HANDLE_VALUE on Windows, -1 as a POSIX fd
+    LockedAppendLogFile() = default;
+    void close() noexcept;
+
+    std::intptr_t handle_ = kNoHandle;
+    bool locked_ = false;
+};
+
+}  // namespace detail
 
 // ae-naming-lint: allow FileAppendLogStore — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class FileAppendLogStore {
@@ -293,21 +329,16 @@ public:
                                           "rt.append_log_store.record_too_large"});
         }
 
-        std::lock_guard<std::mutex> lock(d::append_mutex());  // see THREAD SAFETY above
-
-        auto existing = read_file(*path);
+        auto opened = detail::LockedAppendLogFile::open(*path, /*writer=*/true);  // see WRITERS above
+        if (!opened) return std::unexpected(opened.error());
+        detail::LockedAppendLogFile* file = &**opened;
+        auto existing = file->read_all();
         if (!existing) return std::unexpected(existing.error());
         d::LogScan const scan = d::scan_log(*existing, 0, /*collect=*/false);
         if (scan.tail == d::log_tail::corrupt) return std::unexpected(corrupt_error(*path));
-
-        if (scan.valid_end < existing->size()) {  // a torn tail from an earlier crash: drop it first
-            std::error_code ec;
-            std::filesystem::resize_file(*path, scan.valid_end, ec);
-            if (ec) {
-                return std::unexpected(error{failure_class::transient,
-                                              "could not truncate torn tail of append log: " + path->string(),
-                                              "rt.append_log_store.file_write_failed"});
-            }
+        // A torn tail from an earlier crash is dropped first; the next write lands where it began.
+        if (auto cut = file->truncate_and_seek(static_cast<std::size_t>(scan.valid_end)); !cut) {
+            return std::unexpected(cut.error());
         }
 
         // An empty log (fresh, or a v1 log whose only record was torn) is written as v2.
@@ -328,27 +359,29 @@ public:
         }
         frame.insert(frame.end(), bytes.begin(), bytes.end());
 
-        auto written = write_all(*path, frame);
-        if (!written) return std::unexpected(written.error());
+        if (auto wrote = file->write_all(frame); !wrote) {
+            // Leave the file as it was, so a failed append cannot become a torn record (best effort).
+            (void)file->truncate_and_seek(static_cast<std::size_t>(scan.valid_end));
+            return std::unexpected(wrote.error());
+        }
+        if (sync_ == append_log_sync::disk) {
+            if (auto synced = file->sync_to_disk(); !synced) return std::unexpected(synced.error());
+        }
         return static_cast<SeqNo>(scan.record_count) + 1;
     }
 
     [[nodiscard]] result<std::vector<std::vector<std::byte>>> read_from(LogId const& id,
                                                                           SeqNo from) const {
         namespace d = append_log_store_detail;
-        auto path = path_for(id);
-        if (!path) return std::unexpected(path.error());
-        auto existing = read_file(*path);
+        auto existing = read_locked(id);
         if (!existing) return std::unexpected(existing.error());
         d::LogScan scan = d::scan_log(*existing, from, /*collect=*/true);
-        if (scan.tail == d::log_tail::corrupt) return std::unexpected(corrupt_error(*path));
+        if (scan.tail == d::log_tail::corrupt) return std::unexpected(corrupt_error(root_ / id));
         return std::move(scan.records);
     }
 
     [[nodiscard]] SeqNo last_seq(LogId const& id) const {
-        auto path = path_for(id);
-        if (!path) return SeqNo{0};
-        auto existing = read_file(*path);
+        auto existing = read_locked(id);
         if (!existing) return SeqNo{0};
         auto const scan = append_log_store_detail::scan_log(*existing, 0, /*collect=*/false);
         if (scan.tail == append_log_store_detail::log_tail::corrupt) return SeqNo{0};
@@ -356,50 +389,14 @@ public:
     }
 
 private:
-    [[nodiscard]] static result<std::vector<std::byte>> read_file(std::filesystem::path const& path) {
-        std::vector<std::byte> out;
-        std::error_code ec;
-        if (!std::filesystem::exists(path, ec) || ec) return out;  // no file yet == empty log
-        std::ifstream in(path, std::ios::binary);
-        if (!in.is_open()) {
-            return std::unexpected(error{failure_class::transient,
-                                          "could not open append log for reading: " + path.string(),
-                                          "rt.append_log_store.file_open_failed"});
-        }
-        std::vector<char> raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        out.resize(raw.size());
-        if (!raw.empty()) std::memcpy(out.data(), raw.data(), raw.size());
-        return out;
-    }
-
-    [[nodiscard]] result<void> write_all(std::filesystem::path const& path,
-                                          std::vector<std::byte> const& frame) const {
-        std::FILE* f = nullptr;
-#if defined(_WIN32)
-        if (::_wfopen_s(&f, path.c_str(), L"ab") != 0) f = nullptr;
-#else
-        f = std::fopen(path.c_str(), "ab");
-#endif
-        if (f == nullptr) {
-            return std::unexpected(error{failure_class::transient,
-                                          "could not open append log for writing: " + path.string(),
-                                          "rt.append_log_store.file_open_failed"});
-        }
-        bool ok = std::fwrite(frame.data(), 1, frame.size(), f) == frame.size();
-        ok      = (std::fflush(f) == 0) && ok;
-        if (ok && sync_ == append_log_sync::disk) {
-#if defined(_WIN32)
-            ok = ::_commit(::_fileno(f)) == 0;
-#else
-            ok = ::fsync(::fileno(f)) == 0;
-#endif
-        }
-        ok = (std::fclose(f) == 0) && ok;
-        if (!ok) {
-            return std::unexpected(error{failure_class::transient, "failed appending record to: " + path.string(),
-                                          "rt.append_log_store.file_write_failed"});
-        }
-        return {};
+    // The whole file under a shared lock; a missing file is an empty log.
+    [[nodiscard]] result<std::vector<std::byte>> read_locked(LogId const& id) const {
+        auto path = path_for(id);
+        if (!path) return std::unexpected(path.error());
+        auto opened = detail::LockedAppendLogFile::open(*path, /*writer=*/false);
+        if (!opened) return std::unexpected(opened.error());
+        if (!opened->has_value()) return std::vector<std::byte>{};
+        return (*opened)->read_all();
     }
 
     [[nodiscard]] static error corrupt_error(std::filesystem::path const& path) {

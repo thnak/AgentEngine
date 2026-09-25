@@ -41,6 +41,7 @@ namespace agentengine::testing {
 
 // One scripted model call: either a response (message + usage), or a failure the call returns
 // instead. `error` wins when both are set.
+// ae-naming-lint: allow ScriptedTurn — ADR-182 (test driver): testing vocabulary, 027 not yet updated
 struct ScriptedTurn {
     Message              message{};
     Usage                usage{};
@@ -53,6 +54,7 @@ inline constexpr char const* kScriptExhaustedCode = "scripted_chat_client.script
 // before returning, so a message with more items than this would block. Refused up front instead.
 inline constexpr std::size_t kMaxScriptedItemsPerTurn = 200;
 
+// ae-naming-lint: allow ScriptedChatClient — ADR-182 (test driver): testing vocabulary, 027 not yet updated
 class ScriptedChatClient {
 public:
     explicit ScriptedChatClient(ChatClientCapabilities caps = default_capabilities())
@@ -184,6 +186,7 @@ static_assert(LegacyChatClient<ScriptedChatClient>);
     return t;
 }
 
+// ae-naming-lint: allow ScriptedToolCall — ADR-182 (test driver): testing vocabulary, 027 not yet updated
 struct ScriptedToolCall {
     std::string call_id;
     std::string tool_name;

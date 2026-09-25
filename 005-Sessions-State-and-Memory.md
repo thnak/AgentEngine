@@ -96,7 +96,7 @@ Long sessions exceed context windows. Strategies, selected by policy:
 | Strategy | Mechanism |
 |---|---|
 | `Window<N>` | Keep the last N turns verbatim |
-| `Summarize<N>` | Summarize older turns into a `system` summary message via a declared model |
+| `Summarize<N>` | Summarize older turns into a `system` summary message via a declared model, sent a fixed compaction instruction and the older turns as a transcript — never the raw turns, which a real model answers instead of summarizing; a reply with no prose fails the compaction (ADR-190) |
 | `Salience` | Retain by scored importance (tool results, decisions, user constraints) |
 | `Hierarchical` | Recursive summaries with retained anchors |
 

@@ -676,6 +676,89 @@ int main() {
         check(!session.has_open_interactions(), "H4b: the interaction closed once resolved");
     }
 
+    // H4d (ADR-179 stage 0): an INCOMPLETE answer set must not strand the run. `resolve_hook_decision()`
+    // used to erase its pending-round state BEFORE checking that every dispatch call had an answer, so a
+    // resume missing one answer returned `session.hook_decision.incomplete` with the interaction still
+    // open and nothing left to resume: the retry hit `session.hook_decision.unknown`, and start_run() stayed
+    // refused for good (`run.approval_pending`). A validation failure must leave the round retryable.
+    {
+        plain_tool_invoked_log() = false;
+
+        Session session;
+        session.initialize("h4d", Principal{"p", ""});
+        ScriptedChatClient& client = session.emplace_chat_client();
+        client.set_script({
+            {tool_call_response("c1", "plain_tool", R"({"value":7})"), Usage{1, 1, 0, 0, 0.0}},
+            {text_response("done-after-retry"), Usage{1, 1, 0, 0, 0.0}},
+        });
+        CapabilitySet const held = CapabilitySet::grant_root({});
+        session.set_capabilities(&held);
+        session.set_tool_call_hook([](ToolCallHookContext& hctx) -> task<agentengine::result<std::monostate>> {
+            if (hctx.tool_name == "plain_tool") hctx.needs_external_dispatch = true;
+            co_return agentengine::result<std::monostate>{};
+        });
+
+        auto r1 = drive(session.start_run(StartRun{user_message("go")}));
+        check(!r1.has_value() && session.open_interactions().size() == 1,
+              "H4d setup: the round suspends for a hook decision");
+        std::string const interaction_id = session.open_interactions().front().interaction_id;
+
+        // Answers present but for the WRONG call id -> `c1` has no answer.
+        auto bad = drive(session.resolve_interaction(ResolveInteraction{
+            interaction_id, /*approved=*/false, std::nullopt, std::nullopt, std::nullopt,
+            std::vector<HookDispatchAnswer>{HookDispatchAnswer{"not-c1", /*approved=*/true, std::nullopt,
+                                                                  std::nullopt}}}));
+        check(!bad.has_value() && bad.error().code == "session.hook_decision.incomplete",
+              "H4d: a resume missing the answer for c1 fails with session.hook_decision.incomplete");
+        check(!plain_tool_invoked_log(), "H4d: the tool was not invoked by the failed resume");
+        check(session.has_open_interactions() && session.open_interactions().size() == 1 &&
+                  session.open_interactions().front().interaction_id == interaction_id,
+              "H4d: the interaction is STILL open after the validation failure");
+
+        auto retry = drive(session.resolve_interaction(ResolveInteraction{
+            interaction_id, /*approved=*/false, std::nullopt, std::nullopt, std::nullopt,
+            std::vector<HookDispatchAnswer>{HookDispatchAnswer{"c1", /*approved=*/true, std::nullopt,
+                                                                  std::nullopt}}}));
+        check(retry.has_value(),
+              "H4d: RETRYING with the complete answers converges -- the run was not stranded");
+        check(plain_tool_invoked_log(), "H4d: the tool was invoked on the successful retry");
+        check(!session.has_open_interactions(), "H4d: the interaction closed on the successful retry");
+    }
+
+    // H4e (control for H4d): the OTHER pre-erase validation (no `hook_dispatch_answers` at all) already
+    // left the round retryable, because it runs before the erase. Pins that behaviour so the H4d fix
+    // cannot regress it, and shows H4d fails for the erase ordering, not for a generic retry problem.
+    {
+        plain_tool_invoked_log() = false;
+
+        Session session;
+        session.initialize("h4e", Principal{"p", ""});
+        session.emplace_chat_client().set_script({
+            {tool_call_response("c1", "plain_tool", R"({"value":8})"), Usage{1, 1, 0, 0, 0.0}},
+            {text_response("done-after-retry"), Usage{1, 1, 0, 0, 0.0}},
+        });
+        CapabilitySet const held = CapabilitySet::grant_root({});
+        session.set_capabilities(&held);
+        session.set_tool_call_hook([](ToolCallHookContext& hctx) -> task<agentengine::result<std::monostate>> {
+            if (hctx.tool_name == "plain_tool") hctx.needs_external_dispatch = true;
+            co_return agentengine::result<std::monostate>{};
+        });
+
+        auto r1 = drive(session.start_run(StartRun{user_message("go")}));
+        check(!r1.has_value() && session.open_interactions().size() == 1, "H4e setup: suspends");
+        std::string const interaction_id = session.open_interactions().front().interaction_id;
+
+        auto no_answers = drive(session.resolve_interaction(
+            ResolveInteraction{interaction_id, /*approved=*/false, std::nullopt}));
+        check(!no_answers.has_value() && no_answers.error().code == "session.hook_decision.missing_answers",
+              "H4e: no hook_dispatch_answers at all -> session.hook_decision.missing_answers");
+        auto retry = drive(session.resolve_interaction(ResolveInteraction{
+            interaction_id, /*approved=*/false, std::nullopt, std::nullopt, std::nullopt,
+            std::vector<HookDispatchAnswer>{HookDispatchAnswer{"c1", /*approved=*/true, std::nullopt,
+                                                                  std::nullopt}}}));
+        check(retry.has_value() && plain_tool_invoked_log(), "H4e: the retry with answers converges");
+    }
+
     // H4c (regression, not one of the four required proofs but guards a real bug the implementing
     // pass's own report names): a hook-decision resume that completes into a policy_driven call must
     // still consult policy_decider_ -- an auto_approve verdict must let the call actually run, never

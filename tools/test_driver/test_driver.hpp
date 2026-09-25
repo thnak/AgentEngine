@@ -367,6 +367,7 @@ struct DriverConfig {
         case run_event_kind::warning: return "warning";
         case run_event_kind::policy_decision: return "policy_decision";
         case run_event_kind::model_output_discarded: return "model_output_discarded";
+        case run_event_kind::delegated_event: return "delegated_event";  // ADR-193
     }
     return "unknown";
 }
@@ -454,6 +455,14 @@ overloaded(Fs...) -> overloaded<Fs...>;
             },
             [](rp::ModelOutputDiscarded const& x) {
                 return obj({{"attempt", num(x.attempt)}, {"reason", str(x.reason)}});
+            },
+            // ADR-193: a delegated agent's event carried in this run -- the inner event is reported as it is.
+            [](rp::DelegatedEvent const& x) {
+                if (!x.inner) return obj({{"child_run_id", str(x.child_run_id)}, {"depth", num(x.depth)}});
+                return obj({{"child_run_id", str(x.child_run_id)},
+                            {"depth", num(x.depth)},
+                            {"kind", num(static_cast<double>(x.inner->kind))},
+                            {"payload", payload_json(x.inner->payload)}});
             },
         },
         p);

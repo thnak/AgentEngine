@@ -163,10 +163,11 @@ using ApprovalDecider = std::function<bool(Principal const& caller, std::string_
 // `ApprovalDecider`, exactly like `always_require`) -- this seam only ever makes a call MORE resolved
 // (auto_approve/auto_deny) than today, never less, and never widens past the tool's own declared
 // `capability_ceiling` (it decides among already-possessed authority, it does not grant any).
-// Never consulted for `never_require`, `always_require`, or a `text_derived` call: 007 §4's closed
-// declassifier list stays closed (ADR-023's own red-team already found a laxer version of THAT gate
-// unsafe) -- this is a deliberately narrower, different question, and `resolve_approval_outcome`
-// below enforces the distinction structurally, not just by convention.
+// Never consulted for `never_require` or `always_require`. For a `text_derived` call its `auto_approve`
+// is never an approval: 007 §4's closed declassifier list stays closed (ADR-023's own red-team already
+// found a laxer version of THAT gate unsafe). Its `auto_deny` IS honoured there since ADR-192 (denying
+// only narrows; before, a denied text_derived call skipped the deny and reached the ApprovalDecider).
+// `resolve_approval_outcome` below enforces the distinction structurally, not just by convention.
 enum class policy_decision { auto_approve, auto_deny, require_approval };  // ae-naming-lint: allow policy_decision — ADR-070, same idiom as approval_mode/call_provenance
 // ae-naming-lint: allow PolicyDecider — ADR-070, same idiom as ApprovalDecider above
 using PolicyDecider = std::function<policy_decision(Principal const& caller, ToolDescriptor const& tool,
@@ -200,6 +201,7 @@ struct ToolInvocationAudit {
     std::string principal_id;
     std::string principal_tenant_id;
     std::string principal_on_behalf_of;
+    std::string principal_delegation_root{};  // ADR-193: the chain's root principal; empty when not delegated
 };
 
 namespace tool_pipeline_detail {
@@ -525,6 +527,7 @@ struct AdmittedCallOutcome {
     audit.principal_id           = ctx.principal.id;
     audit.principal_tenant_id    = ctx.principal.tenant_id;
     audit.principal_on_behalf_of = ctx.principal.on_behalf_of;
+    audit.principal_delegation_root = ctx.principal.delegation_root;  // ADR-193
     return audit;
 }
 
@@ -566,6 +569,7 @@ struct AdmittedCallOutcome {
             audit_out->principal_id            = ctx.principal.id;
             audit_out->principal_tenant_id     = ctx.principal.tenant_id;
             audit_out->principal_on_behalf_of  = ctx.principal.on_behalf_of;
+            audit_out->principal_delegation_root = ctx.principal.delegation_root;  // ADR-193
         }
         return result;
     };
@@ -762,6 +766,10 @@ using BackgroundTaskCompletion = std::function<void(ToolResult, ToolInvocationAu
     // merely reads `ctx.sandbox_fs` directly, so that guard does not cover this pointer. Reset
     // unconditionally, on this function's own local copy, before step 8 ever runs a tool against it.
     ctx.sandbox_fs = nullptr;
+    // ADR-193 (red team round 1): both capture the session that dispatched this call, which a backgrounded call may
+    // outlive -- the same class ADR-060/ADR-170 closed for the sinks above.
+    ctx.delegated_event_sink = [](RunEvent const&) {};
+    ctx.charge_delegated_usage = [](Usage const&, std::uint64_t) {};
 
     // -- step 4/7: authorize + bind (the tool's own capability ceiling) -----------------------------
     std::vector<BoundCapability> bound;
@@ -824,6 +832,7 @@ using BackgroundTaskCompletion = std::function<void(ToolResult, ToolInvocationAu
         audit.principal_id       = ctx.principal.id;
         audit.principal_tenant_id = ctx.principal.tenant_id;
         audit.principal_on_behalf_of = ctx.principal.on_behalf_of;
+        audit.principal_delegation_root = ctx.principal.delegation_root;  // ADR-193
 
         if (!invoke_result) {
             error const& e = invoke_result.error();

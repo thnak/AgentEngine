@@ -11,9 +11,12 @@
 // framing the M4 breakdown doc's own decision for this phase names.
 
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "agentengine/core/json_value.hpp"
@@ -278,6 +281,33 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
     return item;
 }
 
+namespace memory_detail {
+
+// ADR-179 stage 0. One mutex per memory REF NAME, handed out from a process-wide registry, so concurrent
+// `write_memory_item()` calls to the SAME ref are serialized while writers to different refs (different
+// principals) are not. `write_memory_item()` is read-modify-write -- it predicts `write_seq` from
+// `last_seq()+1`, then `mount_write()` reads the ref's tree, adds the blob and appends a `RefMoved`
+// (`commit_ref` is a plain append, no compare-and-swap) -- so two unserialized writers each build a tree
+// holding only their own item and the later append wins: the other item is silently lost and its stamped
+// `write_seq` no longer matches the log. Memory is per PRINCIPAL and a principal can have many sessions,
+// each with its own `MemoryProvider::on_turn_end`, so this is reachable, not theoretical.
+//
+// Scope, stated so it is not over-read: this serializes writers WITHIN ONE PROCESS that go through
+// `write_memory_item()`. It does not protect against another process writing the same ref, nor against a
+// caller writing the ref through `mount_write()` directly, nor make `InMemoryWorktreeObjectStore` (which has
+// no mutex of its own) safe for concurrent use across DIFFERENT refs. Entries are never removed: one small
+// mutex per principal ever written, bounded by the principal count.
+[[nodiscard]] inline std::mutex& ref_write_mutex(std::string const& ref_name) {
+    static std::mutex registry_mutex;
+    static std::unordered_map<std::string, std::unique_ptr<std::mutex>> registry;
+    std::lock_guard<std::mutex> guard(registry_mutex);
+    std::unique_ptr<std::mutex>& slot = registry[ref_name];
+    if (!slot) slot = std::make_unique<std::mutex>();
+    return *slot;
+}
+
+}  // namespace memory_detail
+
 // Writes `item` as a blob at `<kind>/<id>` under `mount`, through `granted` (an already-bound
 // `cap::FsWrite`) — the SAME capability-gated path every other worktree write in this project
 // goes through (`mount_write`, 025 §5), never a bypass. `item.id` is computed here (from
@@ -293,15 +323,20 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
     if (!digest) return std::unexpected(digest.error());
     item.id = *digest;
 
+    // ADR-179 stage 0: the whole read-modify-write below (predict write_seq, read the tree, add the blob,
+    // append the new tree) is one critical section per ref -- see `memory_detail::ref_write_mutex`.
+    // Without it, concurrent writers to one ref lost updates (measured: 54-56 of 240 items survived).
+    std::lock_guard<std::mutex> const ref_lock(memory_detail::ref_write_mutex(mount.ref_name));
+
     // Gap-audit finding 18: `write_seq` is PREDICTED, not read back after the fact -- `mount_write`
     // below performs exactly one `commit_ref` internally (worktree.hpp), which is the NEXT append
     // to this ref's own log, so reading the current tail here and adding 1 gives that upcoming
     // commit's own SeqNo without a second round-trip (and second commit) to correct it afterward,
-    // which would double this function's write cost. Named residual: this assumes no OTHER writer
-    // commits to the SAME ref between this read and `mount_write`'s own commit below -- true for
-    // every caller in this codebase today (one principal's memory worktree, written sequentially by
-    // that principal's own turn loop), not a structurally enforced guarantee against a future
-    // concurrent writer to the same principal's memory.
+    // which would double this function's write cost. Named residual, NARROWED by ADR-179 stage 0: this
+    // assumes no OTHER writer commits to the SAME ref between this read and `mount_write`'s own commit
+    // below. That is now enforced against other threads of THIS process going through this function (the
+    // lock above); it is still NOT enforced against another process, or a caller writing the ref through
+    // `mount_write()` directly.
     item.write_seq = ref_store.last_seq(ref_log_id(mount.ref_name)) + 1;
 
     std::string const record = json::dump(memory_item_to_json(item));

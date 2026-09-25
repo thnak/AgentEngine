@@ -1,4 +1,5 @@
 #pragma once
+// Also: ADR-191/192 -- a join requires equal `approval` and `deliver_as_instructions`.
 // ADR-035 Phase 3: the shared "drain a chat_stream() call to completion and reconstruct a Message"
 // primitive. Three independent call sites need exactly this, none of which needed a fourth copy of
 // the same ~15-line poll loop: `core/model_call_gateway.hpp` (each retry/failover attempt),
@@ -69,7 +70,8 @@ namespace agentengine {
 inline void append_stream_delta(Message& accumulated, ContentItem delta, bool continues_previous) {
     if (continues_previous && !accumulated.content.empty()) {
         ContentItem& back = accumulated.content.back();
-        if (back.origin == delta.origin && back.tainted == delta.tainted) {
+        if (back.origin == delta.origin && back.tainted == delta.tainted && back.approval == delta.approval &&
+            back.deliver_as_instructions == delta.deliver_as_instructions) {
             if (auto* into = std::get_if<Text>(&back.value)) {
                 if (auto* from = std::get_if<Text>(&delta.value)) {
                     into->text += from->text;
@@ -95,7 +97,8 @@ namespace chat_stream_drain_detail {
 // the member count changes -- whoever adds the field is sent here to decide whether it must match
 // for a join, instead of finding out from a lost value.
 inline void join_compares_every_field(ContentItem const& c, Text const& t, Reasoning const& r) {
-    [[maybe_unused]] auto const& [c_value, c_origin, c_tainted] = c;
+    // approval (ADR-191) and deliver_as_instructions (ADR-192) must match for a join.
+    [[maybe_unused]] auto const& [c_value, c_origin, c_tainted, c_approval, c_deliver_as_instructions] = c;
     [[maybe_unused]] auto const& [t_text] = t;
     [[maybe_unused]] auto const& [r_text, r_encrypted, r_producer_chat_client_id] = r;
 }

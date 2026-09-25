@@ -30,6 +30,7 @@
 // identically") needs a durable form eventually; that is a named gap for whichever phase builds
 // recording, not solved here.
 
+#include <memory>
 #include <cstdint>
 #include <string>
 #include <variant>
@@ -57,7 +58,14 @@ enum class run_event_kind {  // ae-naming-lint: allow run_event_kind — 013 §1
     // 013 §1 (ADR-177): the model output emitted since the last `model_call_started` is VOID -- the
     // engine discarded that call and is re-issuing it. APPENDED LAST so no existing kind's value moves.
     model_output_discarded,
+    // ADR-193: an event from a DELEGATED agent's run (a spawned child, or its own children), carried in the
+    // parent's run so the root's host sees every hop -- wrapped, never re-emitted as the parent's own lifecycle
+    // (a child's run_finished is not the parent's; protocol projectors ignore or label this kind). APPENDED LAST.
+    delegated_event,
 };
+
+// ae-naming-lint: allow RunEvent — forward declaration for ADR-193's DelegatedEvent; see the definition below
+struct RunEvent;
 
 namespace run_event_payload {
 
@@ -257,6 +265,16 @@ struct HookDecisionRequested {
 
 }  // namespace run_event_payload
 
+namespace run_event_payload {
+// ADR-193: `inner` is the delegated run's own event, unchanged (its run id and sequence); `depth` counts the hops
+// between this run and that one (1 = this run's direct child).
+struct DelegatedEvent {
+    std::string child_run_id{};
+    std::uint32_t depth = 1;
+    std::shared_ptr<RunEvent const> inner;
+};
+}  // namespace run_event_payload
+
 // ae-naming-lint: allow RunEventPayload — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using RunEventPayload = std::variant<run_event_payload::Empty, run_event_payload::RunFailed,
                                       run_event_payload::Turn, run_event_payload::ModelDelta,
@@ -267,7 +285,8 @@ using RunEventPayload = std::variant<run_event_payload::Empty, run_event_payload
                                       run_event_payload::ApprovalResolved, run_event_payload::Warning,
                                       run_event_payload::PolicyDecision, run_event_payload::CodeActAskRequested,
                                       run_event_payload::HookDecisionRequested,
-                                      run_event_payload::ModelOutputDiscarded>;
+                                      run_event_payload::ModelOutputDiscarded,
+                                      run_event_payload::DelegatedEvent>;
 
 // 013 §1: "Ordered and monotonic per run, with a sequence number." `seq` starts at 1 for the first
 // event a given run emits -- 0 is never a real sequence number, so a default-constructed RunEvent is

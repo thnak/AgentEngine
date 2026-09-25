@@ -38,6 +38,17 @@ struct Principal {
     // full chain is reconstructable after the fact.
     std::string   on_behalf_of{};
     std::uint32_t delegation_depth = 0;
+    // ADR-193: the `id` of the principal that started this delegation chain -- empty for a root (a
+    // principal that is not delegated). `on_behalf_of` names only the immediate parent; this names the
+    // root, so every hop of an A -> B -> C chain carries A (I4: C's effects trace to A without walking an
+    // audit surface), a per-principal spawn quota can bound a whole tree, and a chain can share one
+    // approval scope. Set only by `derive_on_behalf_of`.
+    std::string   delegation_root{};
+
+    // The chain's root: this principal's own id if it is not delegated.
+    [[nodiscard]] std::string const& root_id() const noexcept {
+        return delegation_root.empty() ? id : delegation_root;
+    }
 
     // Fields added after `id`/`tenant_id` with defaults, deliberately — every pre-existing
     // `Principal{id, tenant_id}` two-argument aggregate-init call site across `tests/` (and
@@ -109,6 +120,7 @@ inline constexpr std::uint32_t kMaxDelegationDepth = 8;
     derived.kind            = principal_kind::agent;
     derived.on_behalf_of    = parent.id;
     derived.delegation_depth = parent.delegation_depth + 1;
+    derived.delegation_root  = parent.root_id();  // ADR-193
     return derived;
 }
 

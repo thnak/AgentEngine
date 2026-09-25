@@ -2,6 +2,7 @@
 
 - **Status:** Proposed — implemented, proven (31 checks, new `tests/test_system_channel_taint_fence.cpp`),
   the affected pre-existing suites re-run green, pending project-owner sign-off.
+- **Amended by ADR-191 (2026-09-24):** the bracket glyphs are reserved for the fence code: both serializers turn raw U+27E6/U+27E7 into ASCII brackets in every text they emit that is not a fence they opened — fenced bodies, tool results after their parts are joined, user/assistant text, tool-call arguments (Anthropic's after parsing), tool descriptions, untainted system text (each run joined first). JSON escapes and lookalike brackets are not rewritten (rewriting escapes corrupted tool-call arguments, ADR-191 round 3). A session-approved lesson's open marker reads `approved-lesson:<code>` (a code drawn fresh per request) and the preamble gains a sentence naming the code; every other marker keeps the fixed form below (ADR-191 round 3 tried coding every marker of such a request and reverted it on live data). This ADR's zero-width-space neutralization was measured insufficient live: a model cannot see the zero-width space, and a hostile fenced block that spelled a close marker was read as if the fence had ended (ADR-191 §7, L1). The neutralization text below is historical.
 - **Date:** 2026-09-04.
 - **Scope:** `include/agentengine/core/system_channel_fence.hpp` (new — the one shared mechanism),
   `include/agentengine/protocol/anthropic/chat_client.hpp` and
@@ -95,7 +96,8 @@ a fence", and a guarantee that means different bytes on different backends is no
 - **A host-authored preamble states the reading rule, once per request**, ahead of everything —
   including the agent's own instructions, since it explains markers that appear later and nothing
   tainted can get above it. Emitted only when there is fenced content, so a request with no tainted
-  system content pays zero tokens and produces byte-identical output to before this fix.
+  system content pays zero tokens and gets no preamble or fence (since ADR-191, every outbound text still loses the
+  raw U+27E6/U+27E7 brackets, which become ASCII brackets).
 - **Keyed on `tainted`, not `origin`.** `::external` is legitimately carried by content that never
   reaches the system channel, and ADR-066 §5 settled that a provider may claim `::system` for its own
   host-authored text. `tainted` is the field whose entire meaning is "this came from somewhere not
@@ -234,7 +236,8 @@ The figures quoted above are from a tree with #67's fix applied.
 
 ## 7. Promotion gate
 
-**G1 (met).** Every tainted byte admitted to the model's system channel is inside a delimiter pair
+**G1 (met; since ADR-192, unless the host opted out).** Every tainted byte admitted to the model's system channel
+— except an item the host told `AgentSession` to deliver as instructions (ADR-192) — is inside a delimiter pair
 the content itself cannot forge, on both wire formats, with the reading rule stated once. Falsifiable
 and it does fail: reverting the fence call in either serializer fails W1/O3; reverting the
 double-neutralization fails F3; reverting `history_provider.hpp`'s stamping fails P1/P2; quoting the

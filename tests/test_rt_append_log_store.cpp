@@ -14,27 +14,54 @@
 //   L7 -- FileAppendLogStore tolerates a torn trailing record (a crash mid-write): read_from() stops
 //         cleanly before the torn record rather than erroring, and every prior, fully-written record
 //         is still returned intact.
-//   L8 -- (ADR-181 phase 0) an append AFTER a torn tail is readable and correctly framed, for a torn
-//         payload longer (L8a) or shorter (L8b) than the next frame, and a torn header (L8c).
-//   L9 -- a full-length final record with a bad CRC is a torn write: skipped, then replaced.
-//   L10 -- a bad CRC on a NON-final record is corruption: read and append both refuse it.
-//   L11 -- a v1 (pre-ADR-181, no magic, no CRC) log is still read and appended in v1 framing.
-//   L12 -- append_log_sync::disk appends and persists.
-// Positive controls (2026-09-23): L8a-c fail against the pre-fix store (4 failures); a mutant that
-// skips the torn-tail truncation fails L8a-c/L9/L11 (6); a mutant that treats mid-file corruption as a
-// torn tail fails L10 (3).
+//   L8 -- concurrent appends to one FileAppendLogStore log (ADR-195 E32 red team, FATAL): every
+//         append lands, seqs are distinct and consecutive, and seq N is the N-th record read back.
+//   L9 -- a torn tail is repaired by the next append instead of swallowing every later record; a header
+//         claiming ~4 GiB is read as a torn tail.
+//   L10 -- the same as L8 across real child PROCESSES (this binary re-run with --append-child), since the
+//          lock is claimed to hold across processes, which threads in one process cannot show.
+//   L11 -- a missing log file reads as empty; a zero-length record at the end of the file reads back.
+//   L16 -- (Windows) a log that cannot be truncated makes the append fail cleanly, the file unchanged.
+//   L20-L24 -- main's ADR-181 (background jobs) phase 0, renumbered from its L8-L12 when the stacks merged:
+//   L20 -- (ADR-181 phase 0) an append AFTER a torn tail is readable and correctly framed, for a torn
+//         payload longer (L20a) or shorter (L20b) than the next frame, and a torn header (L20c).
+//   L21 -- a full-length final record with a bad CRC is a torn write: skipped, then replaced.
+//   L22 -- a bad CRC on a NON-final record is corruption: read and append both refuse it.
+//   L23 -- a v1 (pre-ADR-181, no magic, no CRC) log is still read and appended in v1 framing.
+//   L24 -- append_log_sync::disk appends and persists.
+// Positive controls (2026-09-23): L20a-c fail against the pre-fix store (4 failures); a mutant that
+// skips the torn-tail truncation fails L20a-c/L21/L23 (6); a mutant that treats mid-file corruption as a
+// torn tail fails L22 (3).
+// Merged (2026-09-25): main's v2 format (magic + per-record CRC) now runs under this branch's OS file
+// lock, so both suites apply to one store; the old L12 (a corrupt header mid-file is silently cut) is
+// superseded by L22 (a CRC mismatch before the end is refused as corruption).
 
 #include <cstdio>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <fstream>
+#include <iterator>
+#include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #if defined(_WIN32)
 #include <process.h>
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 #else
+#include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -69,6 +96,14 @@ std::string string_from(std::vector<std::byte> const& b) {
     return out;
 }
 
+#if defined(_WIN32)
+// Only the Windows-only L16 reads a file whole (gcc -Werror=unused-function otherwise).
+std::string read_file(std::filesystem::path const& p) {
+    std::ifstream in(p, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+#endif
+
 [[nodiscard]] int current_pid() noexcept {
 #if defined(_WIN32)
     return ::_getpid();
@@ -80,16 +115,83 @@ std::string string_from(std::vector<std::byte> const& b) {
 std::filesystem::path make_temp_root() {
     std::filesystem::path root =
         std::filesystem::temp_directory_path() /
-        ("ae_rt_append_log_store_test_" + std::to_string(current_pid()));
+        ("ae_rt_append_log_store_test_" + std::to_string(current_pid()) + "_" +
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));  // pids are reused
     std::error_code ec;
     std::filesystem::remove_all(root, ec);  // clean slate if a previous crashed run left it behind
+    // A killed run leaves its per-pid directory, and no later run has the same pid: sweep ones over a day old.
+    auto const stale = std::filesystem::file_time_type::clock::now() - std::chrono::hours(24);
+    // Non-throwing iteration throughout: other processes change %TEMP% while this walks it, and a range-for's
+    // operator++ throws on that (it crashed this test under ctest).
+    std::filesystem::directory_iterator it(std::filesystem::temp_directory_path(), ec);
+    for (; !ec && it != std::filesystem::directory_iterator(); it.increment(ec)) {
+        std::error_code tec;
+        std::filesystem::path const p = it->path();
+        if (p.filename().u8string().starts_with(u8"ae_rt_append_log_store_test_") && it->last_write_time(tec) < stale &&
+            !tec) {
+            std::filesystem::remove_all(p, tec);
+        }
+    }
     std::filesystem::create_directories(root);
     return root;
 }
 
+// L10's child: appends `count` records tagged with `child` to one log, then exits 0 (1 on any failure).
+int run_append_child(char const* root, int child, int count) {
+    FileAppendLogStore store{std::filesystem::path(root)};
+    for (int i = 0; i < count; ++i) {
+        std::string const payload = "c" + std::to_string(child) + "-" + std::to_string(i) +
+                                    std::string(static_cast<std::size_t>(i % 5) * 60, 'y');
+        if (!store.append("xproc-log", bytes_from(payload)).has_value()) return 1;
+    }
+    return 0;
+}
+
+// Starts this binary as `count` child processes appending to one log; true iff all exited 0.
+bool spawn_append_children(char const* self, std::filesystem::path const& root, int children, int count) {
+    std::string const root_s = root.string();
+    std::string const count_s = std::to_string(count);
+#if defined(_WIN32)
+    std::vector<intptr_t> pids;
+    for (int c = 0; c < children; ++c) {
+        std::string const child_s = std::to_string(c);
+        std::string const q_self = "\"" + std::string(self) + "\"";
+        std::string const q_root = "\"" + root_s + "\"";
+        intptr_t const pid = ::_spawnl(_P_NOWAIT, self, q_self.c_str(), "--append-child", q_root.c_str(),
+                                       child_s.c_str(), count_s.c_str(), nullptr);
+        if (pid == -1) return false;
+        pids.push_back(pid);
+    }
+    bool ok = true;
+    for (intptr_t pid : pids) {
+        int status = 1;
+        if (::_cwait(&status, pid, 0) == -1 || status != 0) ok = false;
+    }
+    return ok;
+#else
+    std::vector<pid_t> pids;
+    for (int c = 0; c < children; ++c) {
+        pid_t const pid = ::fork();
+        if (pid < 0) return false;
+        if (pid == 0) ::_exit(run_append_child(root_s.c_str(), c, count));
+        pids.push_back(pid);
+    }
+    (void)self;
+    bool ok = true;
+    for (pid_t pid : pids) {
+        int status = 0;
+        if (::waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0) ok = false;
+    }
+    return ok;
+#endif
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc == 5 && std::string(argv[1]) == "--append-child") {
+        return run_append_child(argv[2], std::atoi(argv[3]), std::atoi(argv[4]));
+    }
     // ---- InMemoryAppendLogStore -------------------------------------------------------------------
     {
         InMemoryAppendLogStore store;
@@ -206,31 +308,173 @@ int main() {
               "so it must not count as a real entry either");
     }
 
-    // L8 (ADR-181 §10 C3): an append AFTER a torn tail must not be lost or corrupt the log. Before the
+    // L8: concurrent appends. The first version counted, then wrote header and payload as two separate
+    // writes with no lock: 4 threads x 50 appends returned ~51 distinct seqs and lost most records.
+    {
+        FileAppendLogStore store(root);
+        constexpr int kThreads = 4;
+        constexpr int kPerThread = 50;
+        std::vector<std::vector<std::pair<SeqNo, std::string>>> got(kThreads);
+        std::vector<std::thread> threads;
+        for (int t = 0; t < kThreads; ++t) {
+            threads.emplace_back([&store, &got, t] {
+                // A separate instance per thread too: the lock is on the file, not the object.
+                FileAppendLogStore mine(store);
+                for (int i = 0; i < kPerThread; ++i) {
+                    std::string const payload = "t" + std::to_string(t) + "-" + std::to_string(i) +
+                                                std::string(static_cast<std::size_t>(i % 7) * 40, 'x');
+                    auto seq = (i % 2 == 0 ? store : mine).append("race-log", bytes_from(payload));
+                    got[static_cast<std::size_t>(t)].emplace_back(seq.has_value() ? *seq : 0, payload);
+                }
+            });
+        }
+        // A reader racing the writers: every read must succeed and never see the log shrink. (A reader that
+        // takes no lock fails outright on Windows, where a writer's byte-range lock is mandatory.)
+        std::atomic<bool> writers_done{false};
+        bool reads_ok = true;
+        std::size_t reads = 0;
+        std::thread reader([&store, &writers_done, &reads_ok, &reads] {
+            std::size_t last = 0;
+            while (!writers_done.load()) {
+                auto seen = store.read_from("race-log", 0);
+                ++reads;
+                if (!seen.has_value() || seen->size() < last) {
+                    reads_ok = false;
+                    return;
+                }
+                last = seen->size();
+            }
+        });
+        for (auto& th : threads) th.join();
+        writers_done = true;
+        reader.join();
+        check(reads_ok && reads > 0, "L8: a reader racing the writers never gets an error or sees the log shrink");
+
+        auto all = store.read_from("race-log", 0);
+        std::set<SeqNo> seqs;
+        bool every_seq_matches = all.has_value();
+        for (auto const& per_thread : got) {
+            for (auto const& [seq, payload] : per_thread) {
+                seqs.insert(seq);
+                every_seq_matches = every_seq_matches && seq >= 1 && seq <= all->size() &&
+                                    string_from((*all)[seq - 1]) == payload;
+            }
+        }
+        check(all.has_value() && all->size() == kThreads * kPerThread,
+              "L8: 4 threads x 50 concurrent appends -> all 200 records read back, none overwritten");
+        check(seqs.size() == kThreads * kPerThread && *seqs.begin() == 1 && *seqs.rbegin() == 200,
+              "L8: the 200 appends got 200 distinct seqs, exactly 1..200");
+        check(every_seq_matches,
+              "L8: the seq each append returned is the position its own payload reads back at");
+    }
+
+    // L9: a torn tail is repaired by the next append. The first version appended after the torn bytes, so
+    // every later record was swallowed and each append returned the same seq.
+    {
+        FileAppendLogStore store(root);
+        (void)store.append("repair-log", bytes_from("one"));
+        std::filesystem::path const path = root / "repair-log";
+        {
+            std::ofstream out(path, std::ios::binary | std::ios::app);
+            std::uint32_t const claimed_len = 0xFFFFFFF0u;  // a crash left a header, and a garbage one
+            out.write(reinterpret_cast<char const*>(&claimed_len), sizeof(claimed_len));
+            out.write("ab", 2);
+        }
+        auto before = store.read_from("repair-log", 0);
+        check(before.has_value() && before->size() == 1,
+              "L9: a header claiming ~4 GiB is read as a torn tail -- the records before it still read");
+        auto s2 = store.append("repair-log", bytes_from("two"));
+        auto s3 = store.append("repair-log", bytes_from("three"));
+        auto after = store.read_from("repair-log", 0);
+        check(s2.has_value() && *s2 == 2 && s3.has_value() && *s3 == 3,
+              "L9: appends after the torn tail get seqs 2 and 3, not the same seq twice");
+        check(after.has_value() && after->size() == 3 && string_from((*after)[1]) == "two" &&
+                  string_from((*after)[2]) == "three",
+              "L9: and both read back -- the torn bytes were cut, not left to swallow later records");
+    }
+
+    // L10: across processes.
+    {
+        constexpr int kChildren = 4;
+        constexpr int kPerChild = 40;
+        bool const spawned = spawn_append_children(argv[0], root, kChildren, kPerChild);
+        FileAppendLogStore store(root);
+        auto all = store.read_from("xproc-log", 0);
+        std::set<std::string> payloads;
+        if (all.has_value()) {
+            for (auto const& p : *all) payloads.insert(string_from(p));
+        }
+        check(spawned && all.has_value() && all->size() == kChildren * kPerChild &&
+                  payloads.size() == kChildren * kPerChild,
+              "L10: 4 child processes x 40 concurrent appends -> all 160 records read back, all distinct");
+    }
+
+    // L11: a missing file, and a zero-length record at the end.
+    {
+        FileAppendLogStore store(root);
+        auto none = store.read_from("never-written", 0);
+        check(none.has_value() && none->empty() && store.last_seq("never-written") == 0,
+              "L11: a log that was never written reads as empty, not an error");
+        check(!std::filesystem::exists(root / "never-written"),
+              "L11: reading a log that was never written does not create its file");
+        (void)store.append("empty-tail", bytes_from("x"));
+        auto s2 = store.append("empty-tail", {});
+        auto all = store.read_from("empty-tail", 0);
+        check(s2.has_value() && *s2 == 2 && all.has_value() && all->size() == 2 && (*all)[1].empty(),
+              "L11: a zero-length record at the end of the file reads back as an empty record");
+    }
+
+#if defined(_WIN32)
+    // L16: a log that cannot be truncated (a read-only mapping, as an indexer or AV scanner holds) -> the append
+    // fails cleanly and nothing is written; once it can, the append lands.
+    {
+        FileAppendLogStore store(root);
+        std::filesystem::path const path = root / "mapped";
+        (void)store.append("mapped", bytes_from("a"));
+        std::ofstream(path, std::ios::binary | std::ios::app) << std::string("\x09\x00\x00\x00" "ab", 6);
+        std::string const before = read_file(path);
+        HANDLE const f = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        HANDLE const m =
+            f == INVALID_HANDLE_VALUE ? nullptr : ::CreateFileMappingW(f, nullptr, PAGE_READONLY, 0, 0, nullptr);
+        void const* view = m == nullptr ? nullptr : ::MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0);
+        auto const while_mapped = store.append("mapped", bytes_from("b"));
+        std::string const during = read_file(path);
+        if (view != nullptr) ::UnmapViewOfFile(view);
+        if (m != nullptr) ::CloseHandle(m);
+        if (f != INVALID_HANDLE_VALUE) ::CloseHandle(f);
+        auto after = store.append("mapped", bytes_from("b"));
+        check(view != nullptr && !while_mapped.has_value() && during == before,
+              "L16: while the log cannot be truncated, the append fails and the file is unchanged");
+        check(after.has_value() && *after == 2, "L16: once it can, the torn tail is cut and the append lands as seq 2");
+    }
+#endif
+
+    // L20 (ADR-181 §10 C3): an append AFTER a torn tail must not be lost or corrupt the log. Before the
     // fix, append() opened the file in `ios::app` and wrote after the torn bytes, so the reader took the
     // torn header's length and swallowed the new record: append() reported success with seq 3, and the
-    // record was then unreadable (L8a) or read back as garbage with every later record misframed (L8b).
+    // record was then unreadable (L20a) or read back as garbage with every later record misframed (L20b).
     {
         FileAppendLogStore store(root);
         (void)store.append("torn-then-append", bytes_from("intact-one"));
         (void)store.append("torn-then-append", bytes_from("intact-two"));
         {
             std::ofstream out(root / "torn-then-append", std::ios::binary | std::ios::app);
-            std::uint32_t const claimed_len = 100;  // longer than everything that follows: L8a
+            std::uint32_t const claimed_len = 100;  // longer than everything that follows: L20a
             out.write(reinterpret_cast<char const*>(&claimed_len), sizeof(claimed_len));
             out.write("bad", 3);
         }
         auto s3 = store.append("torn-then-append", bytes_from("after-crash"));
-        check(s3.has_value() && *s3 == 3, "L8a: the first append after a crash gets seq 3");
+        check(s3.has_value() && *s3 == 3, "L20a: the first append after a crash gets seq 3");
         auto all = store.read_from("torn-then-append", 0);
         check(all.has_value() && all->size() == 3,
-              "L8a: the record appended after a torn tail is readable -- not swallowed by the torn "
+              "L20a: the record appended after a torn tail is readable -- not swallowed by the torn "
               "record's length prefix");
         if (all.has_value() && all->size() == 3) {
             check(string_from((*all)[2]) == "after-crash",
-                  "L8a: the post-crash record reads back byte-identical");
+                  "L20a: the post-crash record reads back byte-identical");
         }
-        check(store.last_seq("torn-then-append") == 3, "L8a: last_seq() agrees with the seq append() returned");
+        check(store.last_seq("torn-then-append") == 3, "L20a: last_seq() agrees with the seq append() returned");
     }
     {
         FileAppendLogStore store(root);
@@ -252,11 +496,11 @@ int main() {
         bool const exact = all.has_value() && all->size() == 3 && string_from((*all)[0]) == "intact-one" &&
                            string_from((*all)[1]) == "after-crash-1" && string_from((*all)[2]) == "after-crash-2";
         check(exact,
-              "L8b: a torn record whose claimed length fits inside the next append does not turn the "
+              "L20b: a torn record whose claimed length fits inside the next append does not turn the "
               "next records into garbage -- the log reads back exactly the three durable records");
     }
     {
-        // L8c: a torn length header (only 2 of its 4 bytes landed).
+        // L20c: a torn length header (only 2 of its 4 bytes landed).
         FileAppendLogStore store(root);
         (void)store.append("torn-header", bytes_from("intact-one"));
         {
@@ -266,10 +510,10 @@ int main() {
         (void)store.append("torn-header", bytes_from("after-crash"));
         auto all = store.read_from("torn-header", 0);
         check(all.has_value() && all->size() == 2 && string_from((*all)[1]) == "after-crash",
-              "L8c: an append after a torn 2-byte header is readable and correctly framed");
+              "L20c: an append after a torn 2-byte header is readable and correctly framed");
     }
 
-    // L9: a final record with a full header and full-length payload but a WRONG CRC is a torn write (a
+    // L21: a final record with a full header and full-length payload but a WRONG CRC is a torn write (a
     // partially flushed sector), not corruption: read stops before it, and the next append replaces it.
     {
         FileAppendLogStore store(root);
@@ -284,14 +528,14 @@ int main() {
         }
         auto before = store.read_from("bad-crc-tail", 0);
         check(before.has_value() && before->size() == 1,
-              "L9: a full-length final record with a bad CRC is treated as torn, not returned as data");
+              "L21: a full-length final record with a bad CRC is treated as torn, not returned as data");
         (void)store.append("bad-crc-tail", bytes_from("after-crash"));
         auto after = store.read_from("bad-crc-tail", 0);
         check(after.has_value() && after->size() == 2 && string_from((*after)[1]) == "after-crash",
-              "L9: the next append replaces the bad-CRC tail and reads back intact");
+              "L21: the next append replaces the bad-CRC tail and reads back intact");
     }
 
-    // L10: corruption BEFORE the end is not a torn write. It must not be silently hidden (the records
+    // L22: corruption BEFORE the end is not a torn write. It must not be silently hidden (the records
     // after it would vanish) and must not be written past.
     {
         FileAppendLogStore store(root);
@@ -305,14 +549,14 @@ int main() {
         }
         auto read = store.read_from("corrupt-mid", 0);
         check(!read.has_value() && read.error().code == "rt.append_log_store.corrupt_record",
-              "L10: a CRC mismatch on a non-final record is reported as corruption, not treated as the end");
+              "L22: a CRC mismatch on a non-final record is reported as corruption, not treated as the end");
         auto appended = store.append("corrupt-mid", bytes_from("record-four"));
         check(!appended.has_value() && appended.error().code == "rt.append_log_store.corrupt_record",
-              "L10: append() refuses to write past a corrupt record");
-        check(store.last_seq("corrupt-mid") == 0, "L10: last_seq() degrades to 0, as documented");
+              "L22: append() refuses to write past a corrupt record");
+        check(store.last_seq("corrupt-mid") == 0, "L22: last_seq() degrades to 0, as documented");
     }
 
-    // L11: a log written in the ORIGINAL (v1) format -- no magic, no CRC -- is still read, a torn v1
+    // L23: a log written in the ORIGINAL (v1) format -- no magic, no CRC -- is still read, a torn v1
     // tail is still tolerated, and appending keeps the v1 framing rather than mixing formats.
     {
         FileAppendLogStore store(root);
@@ -329,19 +573,19 @@ int main() {
         }
         auto old = store.read_from("legacy-v1", 0);
         check(old.has_value() && old->size() == 2 && string_from((*old)[1]) == "old-two",
-              "L11: a v1 log is read, stopping cleanly before its torn tail");
+              "L23: a v1 log is read, stopping cleanly before its torn tail");
         auto s = store.append("legacy-v1", bytes_from("new-three"));
-        check(s.has_value() && *s == 3, "L11: appending to a v1 log continues its seq numbering");
+        check(s.has_value() && *s == 3, "L23: appending to a v1 log continues its seq numbering");
         auto all = store.read_from("legacy-v1", 0);
         check(all.has_value() && all->size() == 3 && string_from((*all)[2]) == "new-three",
-              "L11: the appended record reads back in v1 framing");
+              "L23: the appended record reads back in v1 framing");
         std::ifstream in(root / "legacy-v1", std::ios::binary);
         char first[4] = {};
         in.read(first, 4);
-        check(std::string(first, 4) != "AELO", "L11: the v1 file was not rewritten with a v2 magic");
+        check(std::string(first, 4) != "AELO", "L23: the v1 file was not rewritten with a v2 magic");
     }
 
-    // L12: the disk-sync mode appends and persists like the default (the sync itself is not
+    // L24: the disk-sync mode appends and persists like the default (the sync itself is not
     // observable in-process; this proves the path runs and does not fail).
     {
         {
@@ -349,10 +593,10 @@ int main() {
             auto s1 = store.append("synced", bytes_from("one"));
             auto s2 = store.append("synced", bytes_from("two"));
             check(s1.has_value() && *s1 == 1 && s2.has_value() && *s2 == 2,
-                  "L12: append_log_sync::disk appends succeed");
+                  "L24: append_log_sync::disk appends succeed");
         }
         FileAppendLogStore fresh(root);
-        check(fresh.last_seq("synced") == 2, "L12: records written with disk sync persist");
+        check(fresh.last_seq("synced") == 2, "L24: records written with disk sync persist");
     }
 
     // Cleanup.

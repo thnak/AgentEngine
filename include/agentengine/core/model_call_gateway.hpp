@@ -618,6 +618,7 @@ public:
     [[nodiscard]] ChatClientCapabilities capabilities() const { return inner_.capabilities(); }
 
     task<result<ChatResponse>> call(ChatRequest request, EffectContext& ctx) {
+        auto const granted = middleware_detail::granted_deliveries(request);  // ADR-191/192: see keep_only_granted_deliveries
         ModelCallContext mctx{std::move(request), std::nullopt, std::nullopt};
         std::size_t stopped_at = 0;
 
@@ -626,6 +627,7 @@ public:
                 co_await middleware_detail::run_before<0>(middlewares_, mctx, stopped_at, trace_hook_);
             (void)ignored;
         }
+        middleware_detail::keep_only_granted_deliveries(mctx.request, granted);
 
         std::optional<ChatResponse> raw_backend_response;
         if (!mctx.settled()) {

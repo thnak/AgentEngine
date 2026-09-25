@@ -1,6 +1,7 @@
 # 029 — Memory System
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 003, 005, 007, 009, 025 · **Gate:** §9
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-24** (§6,
+ADR-191: approved lessons) · **Depends on:** 003, 005, 007, 009, 025 · **Gate:** §9
 
 ## Goal
 
@@ -88,6 +89,13 @@ standing of a `UserStated` one — see §6.
   `on_turn_end` may call a declared `ChatClient` (004) to extract candidate `MemoryItem`s from the
   turn — an ordinary, budgeted, `EffectContext`-carrying model call, recorded exactly like any other
   (004 §6). There is no background thread the trace does not know about.
+- **The extraction call says what it is for** (ADR-190). The summarizer is sent a fixed, host-authored
+  instruction (`system`) and the turn — including the user's message that started it — as a tainted JSON
+  Lines transcript (`user`), one object per item with the speaker as a field, so content cannot pose as
+  someone else; data to read, not turns to answer; no tools offered; it may answer `NONE`. Only the reply's
+  prose is stored, and nothing when it is `NONE`, empty, oversized, or makes a tool call. Sending the
+  turn's raw messages, as before ADR-190, made a real model continue the conversation, and that reply was
+  stored as memory.
 - **Extraction is opt-in policy, not implicit behaviour.** An agent with no memory-writing
   `ContextProvider` configured writes nothing. Whether extraction happens, on what cadence, and
   under what budget is an operator decision, not a default the engine assumes.
@@ -266,7 +274,10 @@ satisfies G7's attributed/waived path exactly as chunking and graph extraction a
   provenance markers like any other retrieved content (017).
 - **`ModelInferred` items are rendered with visibly lower confidence than `UserStated` ones** when
   both are injected in the same turn — the prompt-level counterpart to not letting a guess pose as a
-  fact.
+  fact. *Exception (2026-09-24, `decisions/ADR-191-approved-lesson-delivery.md`):* when a host opts in, an
+  item whose exact text a human approved (a promoted lesson) is delivered as an approved-lesson block — still
+  tainted and fenced, still `external` — without its confidence label; the fence says instead that a human
+  approved it, and the model may follow it as guidance. Nothing else changes rank or label.
 - **No `MemoryItem`, regardless of `MemorySource`, may satisfy a policy predicate that requires a
   user assertion** (007 §4's `PolicyDriven` approval, e.g. "auto-approve because the user said X") —
   I3 confines model-derived content to data, never authority, and memory is model-derived content the
@@ -349,6 +360,15 @@ Items decayed below a threshold are consolidation candidates, never silently gon
   designed per-turn, attributed, tainted injection path) is the only route: a learned instruction is
   injected alongside the static instructions each turn, visibly sourced (§6), never silently becoming
   part of the agent's reviewed baseline.
+  **Superseded 2026-09-21 (`decisions/ADR-194-procedural-memory-channel.md`) — the ROUTE above is
+  withdrawn; the principle (memory never rewrites the reviewed baseline) stands.** `ContextContribution.
+  instructions` is materialized `origin=system, tainted=false`, outside ADR-173's fence and its
+  reading-rule preamble, so routing model-derived text through it launders it past §6's own "tainted
+  external content" rule (and the "designed ... tainted injection path" wording above is inaccurate:
+  `agent_session.hpp` declassifies it). **Procedural memory reaches the model only as tainted
+  `role::system` `messages`, fenced, exactly as every other retrieved item does; it is never contributed
+  through `.instructions`.** This is what `MemoryProvider` already does; no code changes. Not yet
+  enforced by any gate (ADR-194 §5).
 - ~~**Q3** — Consolidation cadence: per-turn (cheap per step, many small merges) versus periodic
   batch (cheaper overall, a staleness window in between).~~ **Resolved, operator-configurable,
   defaulting to periodic batch (2026-08-04):** this dissolves the per-turn-vs-batch framing as a
