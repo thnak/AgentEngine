@@ -36,6 +36,7 @@
 // file only proves the primitive itself is sound, the same way `session_store.hpp` was built and
 // tested standalone before `agent_session.hpp`'s Slice 2 wired it in.
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -122,25 +123,65 @@ static_assert(AppendLogStore<InMemoryAppendLogStore>,
 // FileAppendLogStore -- one file per log id under a configured root directory, records appended in
 // order. Proves the interface is usable for real durable storage, matching FileSessionStore's own role.
 //
-// ON-DISK FORMAT (ADR-181 phase 0, 2026-09-23). A file starts with the 8-byte magic `AELOGv2\n`, then
-// records of `[u32 LE payload length][u32 LE CRC-32 of the payload][payload]`. A file WITHOUT the magic
-// is the original (v1) format -- `[u32 native length][payload]`, no checksum -- written by every
-// version before this one; it is still read, and appended to in its own v1 framing, so no existing
-// log is rewritten or orphaned. A v1 file cannot be mistaken for v2: its first four bytes are a record
-// length, and `AELO` read as one is ~1.3 GB.
+// ON-DISK FORMAT: THREE VERSIONS, ALL STILL READ (v3: ADR-195 §8a, 2026-09-25; v2: ADR-181 phase 0).
+//   v3 (every NEW log): the 8-byte magic `AELOGv3\n`, then records of
+//      `[u32 LE payload length][u32 LE CRC-32 of the payload][u32 LE CRC-32 of the previous 8 bytes][payload]`.
+//   v2 (logs created 2026-09-23..25): magic `AELOGv2\n`, records `[u32 LE length][u32 LE payload CRC][payload]`.
+//   v1 (older): no magic, records `[u32 native length][payload]`, no checksum at all.
+// An existing log is appended to in its OWN framing -- a v1 or v2 log is never upgraded. Upgrading would
+// mean rewriting the file (the OS lock below is held on the file itself, so replace-by-rename would let
+// two writers lock two different files) or mixing framings in one file (which no reader of either version
+// can parse). What v1 and v2 logs still cannot detect is listed under WHAT IS NOT DETECTED.
 //
-// TORN WRITES. A crash mid-append leaves an incomplete record at the end of the file (a short length
-// header, a payload shorter than its header claims, or -- v2 only -- a full-length final record whose
-// CRC does not match, e.g. a partially flushed sector). `read_from()` stops cleanly before such a TORN
-// TAIL and returns every intact record before it, not an error: an append log's "recover everything
-// durable, drop only the tail that never finished" contract. `append()` TRUNCATES a torn tail before
-// writing. Before ADR-181 it did not: it opened the file in append mode and wrote after the torn
-// bytes, so the next read took the torn header's length and swallowed the new record -- `append()`
-// reported success and the record was then unreadable, or read back as garbage with every later record
-// misframed (`test_rt_append_log_store` L8 reproduces all three shapes). A CRC mismatch on a record
-// that is NOT the last one is not a torn write but real corruption: `read_from()` returns
-// `rt.append_log_store.corrupt_record` (`fatal`) rather than silently hiding the records after it, and
-// `append()` refuses to write past it.
+// MAGIC. A file whose first bytes are neither a known magic nor a v1 record, but agree with `AELOGv?\n` in
+// at least 5 of its 7 fixed positions (a damaged magic, or a FUTURE version such as `AELOGv4\n`), is
+// `rt.append_log_store.unknown_format` (`fatal`): `read_from()` returns it, `append()` refuses, and
+// `last_seq()` reports 0. It is never parsed as v1 -- before ADR-195 §8a it was: `AELO` read as a v1
+// length (~1.3 GB) made the whole file one "torn tail", reads returned zero records with no error and the
+// next append truncated the file to nothing (red team round 3, P1). A file SHORTER than the magic whose
+// bytes are a prefix of a known magic is a torn creation: empty, and the next append writes it afresh.
+// One flipped bit can turn `v3` into `v2` or back; the other version's framing then fails its checks
+// (header CRC, payload CRC, or the v2 re-sync below), so this is reported as corruption, not misread.
+//
+// TORN WRITES vs CORRUPTION. A crash mid-append leaves at the end of the file either a PREFIX of the
+// frame being written (process crash: every byte present is correct, the rest is missing) or, after a
+// power loss, a frame whose missing part reads as ZEROS (the file's size reached the disk before its data;
+// NTFS's valid-data length and XFS both return zeros there, and a lost block is lost whole, so the zeros
+// begin at the start of the frame or at a 512-byte-aligned offset). Such a TORN TAIL is not an error:
+// `read_from()` stops before it and returns every record before it, and `append()` truncates it before
+// writing (before ADR-181 it wrote after the torn bytes, which then swallowed the new record; L20). The
+// rule that tells the two apart, per version:
+//   v3 -- fewer than 12 bytes left: torn (no record fits). Header CRC valid: the length is TRUE, so a
+//         payload shorter than it is torn; a complete payload with a bad CRC is torn only if it ends in a
+//         zero run beginning at an aligned offset inside it, otherwise it is corruption (a bit flip in the
+//         LAST record is `corrupt_record`, not silently dropped). Header CRC bad: torn only if the bytes
+//         from inside the header to the end are zeros (a header that reached the disk only in part);
+//         otherwise corruption -- a damaged length can no longer pass for a torn tail and hide the intact
+//         records after it (red team round 3, P2).
+//   v2 -- no header CRC, so a damaged length cannot be told from a torn one by the header alone. A length
+//         that overruns the file, or a complete final record with a bad CRC and a zero-filled end, is
+//         torn only if no CRC-valid non-empty v2 record starts anywhere in the bytes it would cut (a
+//         re-sync scan, bounded to 64 MiB of checksumming; past that it fails closed as corruption).
+//   v1 -- no checksum. A length that overruns the file is torn only if the bytes it would cut are no
+//         longer than the largest intact record before it plus its header; otherwise corruption.
+// A bad record with more bytes after it than the rule allows is `rt.append_log_store.corrupt_record`
+// (`fatal`): `read_from()` returns it, `append()` refuses to write past it (it never truncates it), and
+// `last_seq()` reports 0. So `append()` only ever truncates bytes that cannot contain an intact record.
+//
+// WHAT IS NOT DETECTED. (1) Truncation at a record boundary, or deletion of the file: an append log with
+// no external anchor cannot tell "the last N records were cut" from "they were never written", so anyone
+// who can write the log directory can roll a log back (for ADR-195 E32 that is the host-that-can-write-
+// the-store class, §8). The CRCs are integrity checks against accident, not authentication: a writer can
+// recompute them. (2) v3: a damaged final record whose payload happens to end in an aligned zero run is
+// taken for torn (a binary payload ending in >= 512 zero bytes). A power loss that leaves STALE non-zero
+// data (ext4 `data=writeback`) is reported as corruption -- the log fails closed and needs repair by hand.
+// (3) v2: a damaged length that fits inside the file misframes silently only until the next record's
+// CRC fails (then corruption); a hidden record that is EMPTY (zero-length) is not found by the re-sync
+// scan; a torn tail that itself contains a CRC-valid v2 frame (a payload that embeds one) fails closed.
+// (4) v1: nothing is checksummed -- a damaged payload reads back as data, a damaged length that fits
+// misframes every later record silently, and a crash while appending a v1 record larger than every earlier
+// one leaves a tail that fails closed. (5) An OLDER binary (before ADR-195 §8a) reading a v3 log parses it
+// as v1 -- the P1 bug -- and its next append destroys the log: do not share a log directory with one.
 //
 // DURABILITY. `append_log_sync::os_buffer` (the default) hands every append to the OS: it survives a
 // process crash, not a power loss. `append_log_sync::disk` additionally forces the bytes to stable
@@ -180,9 +221,16 @@ enum class append_log_sync {
 
 namespace append_log_store_detail {
 
-inline constexpr std::array<char, 8> file_magic = {'A', 'E', 'L', 'O', 'G', 'v', '2', '\n'};
-inline constexpr std::size_t v2_header_size     = 8;  // u32 length + u32 crc
-inline constexpr std::size_t v1_header_size     = 4;  // u32 length
+inline constexpr std::array<char, 8> file_magic_v3 = {'A', 'E', 'L', 'O', 'G', 'v', '3', '\n'};
+inline constexpr std::array<char, 8> file_magic_v2 = {'A', 'E', 'L', 'O', 'G', 'v', '2', '\n'};
+inline constexpr std::size_t magic_size             = 8;
+inline constexpr std::size_t magic_version_at       = 6;   // the one byte v2 and v3 magics differ in
+inline constexpr std::size_t near_magic_min_matches = 5;   // of the 7 fixed magic positions
+inline constexpr std::size_t v3_header_size         = 12;  // u32 length + u32 payload crc + u32 header crc
+inline constexpr std::size_t v2_header_size         = 8;   // u32 length + u32 payload crc
+inline constexpr std::size_t v1_header_size         = 4;   // u32 length
+inline constexpr std::size_t zero_fill_granule      = 512;  // the smallest unit a lost write zero-fills
+inline constexpr std::uint64_t v2_resync_budget     = std::uint64_t{64} << 20;  // bytes checksummed, at most
 
 // CRC-32 (IEEE 802.3, reflected, polynomial 0xEDB88320) -- the zlib/PNG checksum. Bitwise, no table:
 // a record is checksummed once per append and once per read, and the payloads here are small.
@@ -205,65 +253,143 @@ inline void store_le32(std::vector<std::byte>& out, std::uint32_t v) {
 }
 
 // ae-naming-lint: allow log_tail — ADR-181 phase 0: internal detail vocabulary
-enum class log_tail { clean, torn, corrupt };
+enum class log_tail { clean, torn, corrupt, unknown_format };
+
+// ae-naming-lint: allow log_format — ADR-195 §8a: internal detail vocabulary
+enum class log_format { v1, v2, v3 };
 
 // ae-naming-lint: allow LogScan — ADR-181 phase 0: internal detail vocabulary
 struct LogScan {
-    bool legacy                = false;  // v1 file: no magic, no per-record CRC
+    log_format format          = log_format::v3;  // an empty or torn-at-creation log is (re)written as v3
     std::uint64_t record_count = 0;
     std::uint64_t valid_end    = 0;  // offset just past the last intact record (or past the magic)
     log_tail tail              = log_tail::clean;
     std::vector<std::vector<std::byte>> records;  // records with seq > keep_from, when collecting
 };
 
-// The ONE framing parser both read_from() and append() use, so the two can never disagree about
-// where the valid log ends -- that disagreement is exactly the bug this format revision fixes.
+// The v3 header CRC covers the length and the payload CRC, as written.
+[[nodiscard]] inline std::uint32_t v3_header_crc(std::byte const* header) noexcept { return crc32(header, 8); }
+
+// True iff [pos, end of file) looks like a write that never reached the disk after a power loss: it ends in
+// zeros that begin either at `pos` itself or at a `zero_fill_granule`-aligned offset before `frame_end`. So
+// the non-zero bytes kept before the zeros all belong to the frame starting at `pos` (the caller bounds
+// `frame_end` to that frame), and cutting at `pos` can lose no other record.
+[[nodiscard]] inline bool zero_filled_tail(std::vector<std::byte> const& bytes, std::size_t pos,
+                                           std::size_t frame_end) noexcept {
+    std::size_t zeros_from = bytes.size();
+    while (zeros_from > pos && bytes[zeros_from - 1] == std::byte{0}) --zeros_from;
+    if (zeros_from == bytes.size()) return false;  // it does not end in a zero at all
+    if (zeros_from == pos) return true;            // nothing of this frame reached the disk
+    std::size_t const aligned = (zeros_from + zero_fill_granule - 1) / zero_fill_granule * zero_fill_granule;
+    return aligned < frame_end && aligned < bytes.size();
+}
+
+// v2 only (no header CRC): whether a CRC-valid, non-empty v2 record starts anywhere in [from, end). If one
+// does, the bytes a torn-tail cut would remove hold an intact record, and the tail is really corruption.
+// Bounded to `v2_resync_budget` bytes of checksumming; past it, reports "found" -- fails closed.
+[[nodiscard]] inline bool v2_hides_a_record(std::vector<std::byte> const& bytes, std::size_t from,
+                                            std::size_t end) noexcept {
+    std::uint64_t work = 0;
+    for (std::size_t q = from; q + v2_header_size <= end; ++q) {
+        std::uint32_t const len = load_le32(bytes.data() + q);
+        if (len == 0 || len > end - q - v2_header_size) continue;
+        work += len;
+        if (work > v2_resync_budget) return true;
+        if (crc32(bytes.data() + q + v2_header_size, len) == load_le32(bytes.data() + q + 4)) return true;
+    }
+    return false;
+}
+
+// Reads the magic: sets `s.format` and returns where records start, or sets `s.tail` (torn creation, unknown
+// format) and returns nullopt.
+[[nodiscard]] inline std::optional<std::size_t> read_magic(std::vector<std::byte> const& bytes, LogScan& s) {
+    std::size_t const size = bytes.size();
+    std::size_t const cmp  = size < magic_size ? size : magic_size;
+    bool prefix_v3 = true, prefix_v2 = true;
+    std::size_t agreeing = 0;  // agreement with `AELOGv?\n` outside the version byte
+    for (std::size_t i = 0; i < cmp; ++i) {
+        char const c = static_cast<char>(bytes[i]);
+        prefix_v3 = prefix_v3 && c == file_magic_v3[i];
+        prefix_v2 = prefix_v2 && c == file_magic_v2[i];
+        if (i != magic_version_at && c == file_magic_v3[i]) ++agreeing;
+    }
+    if (prefix_v3 || prefix_v2) {
+        if (size < magic_size) {  // the magic itself was torn: nothing was ever recorded
+            s.tail = log_tail::torn;
+            return std::nullopt;
+        }
+        s.format    = prefix_v3 ? log_format::v3 : log_format::v2;
+        s.valid_end = magic_size;
+        return magic_size;
+    }
+    if (agreeing >= near_magic_min_matches) {  // a damaged or future magic: never guess v1
+        s.tail = log_tail::unknown_format;
+        return std::nullopt;
+    }
+    s.format = log_format::v1;
+    return 0;
+}
+
+// The ONE framing parser read_from(), append() and last_seq() all use, so they can never disagree about
+// where the valid log ends -- that disagreement was the ADR-181 phase 0 bug. The torn-vs-corrupt rule per
+// version is the banner's TORN WRITES vs CORRUPTION.
 [[nodiscard]] inline LogScan scan_log(std::vector<std::byte> const& bytes, SeqNo keep_from, bool collect) {
     LogScan s;
     std::size_t const size = bytes.size();
-    std::size_t pos        = 0;
-    if (size == 0) return s;  // fresh log: v2, nothing yet
+    if (size == 0) return s;  // fresh log: v3, nothing yet
+    auto const first = read_magic(bytes, s);
+    if (!first) return s;
+    std::size_t pos         = *first;
+    std::uint32_t v1_max_len = 0;  // the largest intact v1 payload so far
 
-    std::size_t const magic_cmp = size < file_magic.size() ? size : file_magic.size();
-    bool magic_prefix           = true;
-    for (std::size_t i = 0; i < magic_cmp; ++i) {
-        if (static_cast<char>(bytes[i]) != file_magic[i]) magic_prefix = false;
-    }
-    if (magic_prefix && size < file_magic.size()) {  // the magic itself was torn
-        s.tail = log_tail::torn;
-        return s;
-    }
-    if (magic_prefix) {
-        pos         = file_magic.size();
-        s.valid_end = pos;
-    } else {
-        s.legacy = true;
-    }
-
+    auto stop = [&s](log_tail t) -> LogScan {
+        s.tail = t;
+        return std::move(s);
+    };
     for (;;) {
         std::size_t const remaining = size - pos;
         if (remaining == 0) return s;
-        std::size_t const header = s.legacy ? v1_header_size : v2_header_size;
-        if (remaining < header) {
-            s.tail = log_tail::torn;
-            return s;
-        }
         std::uint32_t len = 0;
-        if (s.legacy) {
-            std::memcpy(&len, bytes.data() + pos, sizeof(len));  // v1 wrote the length in native order
-        } else {
-            len = load_le32(bytes.data() + pos);
-        }
-        if (remaining - header < len) {
-            s.tail = log_tail::torn;
-            return s;
+        std::size_t header = 0;
+        switch (s.format) {
+            case log_format::v3: {
+                header = v3_header_size;
+                if (remaining < header) return stop(log_tail::torn);  // no record fits in what is left
+                if (v3_header_crc(bytes.data() + pos) != load_le32(bytes.data() + pos + 8)) {
+                    return stop(zero_filled_tail(bytes, pos, pos + header) ? log_tail::torn : log_tail::corrupt);
+                }
+                len = load_le32(bytes.data() + pos);
+                if (remaining - header < len) return stop(log_tail::torn);  // a TRUE length: the file ends inside it
+                break;
+            }
+            case log_format::v2: {
+                header = v2_header_size;
+                if (remaining < header) return stop(log_tail::torn);  // no record, not even an empty one, fits
+                len = load_le32(bytes.data() + pos);
+                if (remaining - header < len) {
+                    return stop(v2_hides_a_record(bytes, pos + header, size) ? log_tail::corrupt : log_tail::torn);
+                }
+                break;
+            }
+            case log_format::v1: {
+                header = v1_header_size;
+                if (remaining < header) return stop(log_tail::torn);
+                std::memcpy(&len, bytes.data() + pos, sizeof(len));  // v1 wrote the length in native order
+                if (remaining - header < len) {
+                    return stop(remaining <= header + std::size_t{v1_max_len} ? log_tail::torn : log_tail::corrupt);
+                }
+                v1_max_len = (std::max)(v1_max_len, len);
+                break;
+            }
         }
         std::byte const* payload = bytes.data() + pos + header;
-        if (!s.legacy && crc32(payload, len) != load_le32(bytes.data() + pos + 4)) {
-            // A bad final record is a torn write (a partially flushed sector); a bad record with more
-            // bytes after it cannot be, and is real corruption.
-            s.tail = (pos + header + len == size) ? log_tail::torn : log_tail::corrupt;
-            return s;
+        if (s.format != log_format::v1 && crc32(payload, len) != load_le32(bytes.data() + pos + 4)) {
+            // A complete record with a bad CRC is a torn write only if its end is zero-filled (a power loss);
+            // a bit flip -- in the last record or any other -- is corruption.
+            std::size_t const frame_end = pos + header + len;
+            bool torn = zero_filled_tail(bytes, pos, frame_end);
+            if (torn && s.format == log_format::v2) torn = !v2_hides_a_record(bytes, pos + header, size);
+            return stop(torn ? log_tail::torn : log_tail::corrupt);
         }
         ++s.record_count;
         if (collect && s.record_count > keep_from) s.records.emplace_back(payload, payload + len);
@@ -335,27 +461,31 @@ public:
         auto existing = file->read_all();
         if (!existing) return std::unexpected(existing.error());
         d::LogScan const scan = d::scan_log(*existing, 0, /*collect=*/false);
-        if (scan.tail == d::log_tail::corrupt) return std::unexpected(corrupt_error(*path));
-        // A torn tail from an earlier crash is dropped first; the next write lands where it began.
+        if (auto bad = damage_error(scan, *path); bad) return std::unexpected(*bad);
+        // A torn tail from an earlier crash is dropped first; the next write lands where it began. scan_log()
+        // classes a tail as torn only when it cannot hold an intact record, so this never cuts one.
         if (auto cut = file->truncate_and_seek(static_cast<std::size_t>(scan.valid_end)); !cut) {
             return std::unexpected(cut.error());
         }
 
-        // An empty log (fresh, or a v1 log whose only record was torn) is written as v2.
-        bool const legacy = scan.legacy && scan.valid_end > 0;
+        // An empty log (fresh, or torn before its first record was whole) is written as v3; an existing
+        // v1 or v2 log keeps its own framing (banner: ON-DISK FORMAT).
+        d::log_format const format = scan.valid_end == 0 ? d::log_format::v3 : scan.format;
         std::vector<std::byte> frame;
-        frame.reserve(d::file_magic.size() + d::v2_header_size + bytes.size());
+        frame.reserve(d::magic_size + d::v3_header_size + bytes.size());
         if (scan.valid_end == 0) {
-            for (char c : d::file_magic) frame.push_back(static_cast<std::byte>(c));
+            for (char c : d::file_magic_v3) frame.push_back(static_cast<std::byte>(c));
         }
         auto const len = static_cast<std::uint32_t>(bytes.size());
-        if (legacy) {
+        if (format == d::log_format::v1) {
             std::byte raw[sizeof(len)];
             std::memcpy(raw, &len, sizeof(len));
             frame.insert(frame.end(), raw, raw + sizeof(len));
         } else {
+            std::size_t const header_at = frame.size();
             d::store_le32(frame, len);
             d::store_le32(frame, d::crc32(bytes.data(), bytes.size()));
+            if (format == d::log_format::v3) d::store_le32(frame, d::v3_header_crc(frame.data() + header_at));
         }
         frame.insert(frame.end(), bytes.begin(), bytes.end());
 
@@ -376,7 +506,7 @@ public:
         auto existing = read_locked(id);
         if (!existing) return std::unexpected(existing.error());
         d::LogScan scan = d::scan_log(*existing, from, /*collect=*/true);
-        if (scan.tail == d::log_tail::corrupt) return std::unexpected(corrupt_error(root_ / id));
+        if (auto bad = damage_error(scan, root_ / id); bad) return std::unexpected(*bad);
         return std::move(scan.records);
     }
 
@@ -384,7 +514,7 @@ public:
         auto existing = read_locked(id);
         if (!existing) return SeqNo{0};
         auto const scan = append_log_store_detail::scan_log(*existing, 0, /*collect=*/false);
-        if (scan.tail == append_log_store_detail::log_tail::corrupt) return SeqNo{0};
+        if (damage_error(scan, root_ / id)) return SeqNo{0};
         return static_cast<SeqNo>(scan.record_count);
     }
 
@@ -399,10 +529,21 @@ private:
         return (*opened)->read_all();
     }
 
-    [[nodiscard]] static error corrupt_error(std::filesystem::path const& path) {
-        return error{failure_class::fatal,
-                     "append log has a corrupt record before its end (not a torn write): " + path.string(),
-                     "rt.append_log_store.corrupt_record"};
+    // A scan that must not be read past or appended after: a corrupt record, or a file this version cannot parse.
+    [[nodiscard]] static std::optional<error> damage_error(append_log_store_detail::LogScan const& scan,
+                                                           std::filesystem::path const& path) {
+        using append_log_store_detail::log_tail;
+        if (scan.tail == log_tail::corrupt) {
+            return error{failure_class::fatal,
+                         "append log has a corrupt record (damage, not a torn write): " + path.string(),
+                         "rt.append_log_store.corrupt_record"};
+        }
+        if (scan.tail == log_tail::unknown_format) {
+            return error{failure_class::fatal,
+                         "append log starts with a damaged or unknown format magic: " + path.string(),
+                         "rt.append_log_store.unknown_format"};
+        }
+        return std::nullopt;
     }
 
     [[nodiscard]] result<std::filesystem::path> path_for(LogId const& id) const {
