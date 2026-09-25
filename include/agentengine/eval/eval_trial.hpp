@@ -40,6 +40,7 @@
 #include "agentengine/eval/eval_store.hpp"
 #include "agentengine/eval/eval_stub_tool.hpp"
 #include "agentengine/eval/lesson_candidate.hpp"
+#include "agentengine/eval/lesson_screen_record.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/append_log_store.hpp"
 #include "agentengine/trust/capability.hpp"
@@ -48,18 +49,14 @@ namespace agentengine::eval {
 
 enum class trial_arm { baseline, treatment };  // ae-naming-lint: allow trial_arm — ADR-195 §3.2; arm S is out of scope this slice
 
-// ADR-191: how the treatment arm delivers its lesson -- the way the host will deliver a promoted one. `fenced`
-// (the default, and the only route before ADR-191) is plain retrieved memory: tainted, fenced, "model-inferred,
-// unverified". `approved` is the route a host opts into with `AgentSession::set_approved_lessons`: the lesson is
-// registered in the trial's own `ApprovedLessonRegistry` as a SIMULATED approval (the screen runs before any human
-// has approved anything) and reaches the model as an approved-lesson block (still tainted and fenced; the preamble
-// says it may be followed). A screen must measure the route that ships, or its verdict is about a lesson delivered
-// some other way.
-enum class lesson_delivery { fenced, approved };  // ae-naming-lint: allow lesson_delivery — ADR-191
-
-[[nodiscard]] inline std::string_view lesson_delivery_name(lesson_delivery d) noexcept {
-    return d == lesson_delivery::approved ? "approved" : "fenced";
-}
+// ADR-191/192: how the treatment arm delivers its lesson -- the way the host will deliver a promoted one
+// (`lesson_delivery`, lesson_screen_record.hpp, one value per wire form). A screen must measure the form that ships,
+// or its verdict is about a lesson delivered some other way (ADR-191 §3.8, round 4). The approved forms register the
+// lesson in the trial's own `ApprovedLessonRegistry` (the screen runs before anyone has approved anything):
+// `approved`, `approved_instructions` and `approved_fence_off` as a SIMULATED approval; `approved_automatic` through
+// `approve_automatic` under the reviewer id `tier1-screen:<trial>`, since the automatic wording is chosen by the
+// approval id's `automatic:` prefix (so that one trial-local approval reads "automatic", not "simulated"). The fence-off
+// forms switch the fence off for BOTH arms: it is a deployment setting, and the baseline must differ only by the lesson.
 
 struct TrialSpec {  // ae-naming-lint: allow TrialSpec — ADR-195 §3.0 items 2-4
     trial_arm arm;
@@ -467,17 +464,27 @@ template <class Inner, class SummarizerT>
                                  detail::SummarizerRecorder<SummarizerT>{std::move(summarizer), &trial_result,
                                                                          spec.summarizer_token_budget},
                                  spec.max_injected};
-    // ADR-191: the approved route. The trial's own registry (declared above, so it outlives the session) holds the
-    // rendered lesson as a simulated approval for this trial's principal; an unset `delivery` leaves the session
-    // exactly as before.
-    if (spec.delivery == lesson_delivery::approved && !rendered_lesson_content.empty()) {
-        if (auto registered =
-                approved_lessons.approve_simulated(store.principal().id, rendered_lesson_content, spec.trial_id);
-            !registered) {
+    // ADR-191/192: the delivery form. The trial's own registry (declared above, so it outlives the session) holds the
+    // rendered lesson for this trial's principal; `fenced` leaves the session exactly as before.
+    std::string const screen_operator = "tier1-screen:" + spec.trial_id;
+    if (spec.delivery == lesson_delivery::approved_fence_off || spec.delivery == lesson_delivery::unfenced) {
+        if (auto off = session.disable_system_channel_fence(screen_operator); !off) {  // both arms (see above)
+            trial_result.setup_error = off.error();
+            co_return trial_result;
+        }
+    }
+    if (lesson_delivery_is_approved(spec.delivery) && !rendered_lesson_content.empty()) {
+        auto registered =
+            spec.delivery == lesson_delivery::approved_automatic
+                ? approved_lessons.approve_automatic(store.principal().id, rendered_lesson_content, screen_operator)
+                : approved_lessons.approve_simulated(store.principal().id, rendered_lesson_content, spec.trial_id);
+        if (!registered) {
             trial_result.setup_error = registered.error();
             co_return trial_result;
         }
-        session.set_approved_lessons(&approved_lessons);
+        session.set_approved_lessons(&approved_lessons, spec.delivery == lesson_delivery::approved_instructions
+                                                            ? approved_lesson_level::instructions
+                                                            : approved_lesson_level::guidance);
     }
     auto engaged = session.history_provider().engage(
         std::tuple{HistoryProvider<Window<0>>{}, std::move(memory_provider),
