@@ -95,8 +95,8 @@ it the same way:
 
 - It **does not untaint** anything and **does not fence** delegated tasks. The next agent follows a delegated task
   about as readily as before (it is still a user-role request); the change is that it is told the request came from
-  a model, and every consumer sees the taint. Whether telling it changes how readily it follows is **not measured
-  yet**.
+  a model, and every consumer sees the taint. Telling it did **not** change how readily it follows, measured live
+  (§6): 20/20 and 20/20 as a delegated task, the same as the old plain form.
 - (5) and (6) are host opt-ins under ADR-070's seam (explicit, off by default, audited, host code only). Sharing
   lessons down a chain extends ADR-183's approval scope from a principal to its delegation tree, which is the owner's
   call.
@@ -121,7 +121,7 @@ it the same way:
 - **`texts(scope)`** shares `find`'s existing key format: a principal id containing `\x1f` could reach another
   scope's texts. This is a pre-existing limit of the registry key; ids are host-assigned.
 - **Event ordering** across hops is by arrival; each child's own sequence is kept inside the wrapper.
-- Not yet red-teamed; no live measurement.
+- Measured live on one model (§6).
 
 ## 5. Checked against the invariants
 
@@ -153,6 +153,10 @@ it the same way:
   - **P9b:** at depth 2 a lesson is approved through the root, and another principal's are never shared.
   - **P10:** a lesson A's model copies into the input stays unapproved.
   - **R1:** a target with an empty operator is refused at registration.
+- **Live** (DeepSeek `deepseek-flash`, `tests/test_memory_lesson_label_live_e2e.cpp` arms D0/D1, one interleaved run,
+  20 trials per cell; followed / asked / other). The same task, handed to an agent the old way (plain user text) and
+  as a delegated message: alert channel 20/0/0 vs 20/0/0, deploy region 20/0/0 vs 20/0/0 (control with no task:
+  0/0/20, 0/16/4). The host line costs nothing in task-following on this model.
 - Planted mutants, each failing a test:
   - **Build:** input untainted; no root on derive; usage not charged; no event sink; final-call usage only; quota on
     the caller; no root-scope lesson lookup; no workflow rewrap; no budget check on fold; unattended setting ignored.
