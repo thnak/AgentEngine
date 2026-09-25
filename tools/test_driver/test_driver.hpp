@@ -139,6 +139,9 @@ struct Fixture {
     std::string              description;
     std::vector<std::string> tools;
     bool                     suspend_for_approval = true;
+    // A live fixture's model is a real provider (ADR-182 §3.3). Refused unless the driver was
+    // started with --allow-live. Live runs are exploratory and never gating (022 §1).
+    bool                     live = false;
 };
 
 [[nodiscard]] inline std::vector<Fixture> const& fixtures() {
@@ -146,6 +149,10 @@ struct Fixture {
         {"basic", "echo, gated_echo (needs approval) and fail. Gated calls suspend the run for approval.",
          {"echo", "gated_echo", "fail"}, true},
         {"no_tools", "No tools at all: the model can only answer in text.", {}, true},
+        {"basic_live",
+         "Like basic, but a REAL model answers (live mode; needs --allow-live). Every call is recorded.",
+         {"echo", "gated_echo", "fail"}, true, true},
+        {"no_tools_live", "Like no_tools, with a REAL model (live mode; needs --allow-live).", {}, true, true},
     };
     return all;
 }
@@ -174,7 +181,100 @@ private:
     std::vector<ToolDescriptor> tools_;
 };
 
-using Session = rt::AgentSession<testing::ScriptedChatClient, rt::NoSessionState, DriverHistoryProvider>;
+// ---- The model behind a session: scripted (default) or live (ADR-182 §3.3) ---------------------------
+//
+// A small type-erased seam so one `Session` type serves both modes. Virtual dispatch is fine here: this
+// is a test tool under tools/, not the engine's hot path (CONVENTIONS.md's rule is about the engine).
+
+class ModelBackend {
+public:
+    virtual ~ModelBackend() = default;
+    [[nodiscard]] virtual ChatClientCapabilities capabilities() const = 0;
+    [[nodiscard]] virtual task<result<ChatResponse>> chat(ChatRequest const& request, EffectContext& ctx) = 0;
+    [[nodiscard]] virtual stream<ChatResponseUpdate> chat_stream(ChatRequest const& request, EffectContext& ctx) = 0;
+};
+
+class ScriptedBackend final : public ModelBackend {
+public:
+    explicit ScriptedBackend(testing::ScriptedChatClient client) : client_(std::move(client)) {}
+    [[nodiscard]] ChatClientCapabilities capabilities() const override { return client_.capabilities(); }
+    [[nodiscard]] task<result<ChatResponse>> chat(ChatRequest const& request, EffectContext& ctx) override {
+        return client_.chat(request, ctx);
+    }
+    [[nodiscard]] stream<ChatResponseUpdate> chat_stream(ChatRequest const& request, EffectContext& ctx) override {
+        return client_.chat_stream(request, ctx);
+    }
+
+private:
+    testing::ScriptedChatClient client_;
+};
+
+// Every request the engine sends the model, in both modes, for `model_requests`. Bounded (ADR-182 §12
+// R9): the oldest entries are dropped past kMaxCapturedRequests; `total` keeps counting.
+inline constexpr std::size_t kMaxCapturedRequests = 64;
+
+class RequestLog {
+public:
+    void record(ChatRequest const& r) {
+        std::lock_guard lock(mutex_);
+        requests_.push_back(r);
+        ++total_;
+        if (requests_.size() > kMaxCapturedRequests) requests_.pop_front();
+    }
+    // (index of the first kept request, the kept requests)
+    [[nodiscard]] std::pair<std::size_t, std::vector<ChatRequest>> snapshot() const {
+        std::lock_guard lock(mutex_);
+        return {total_ - requests_.size(), std::vector<ChatRequest>(requests_.begin(), requests_.end())};
+    }
+    [[nodiscard]] std::size_t total() const {
+        std::lock_guard lock(mutex_);
+        return total_;
+    }
+
+private:
+    mutable std::mutex        mutex_;
+    std::deque<ChatRequest>   requests_;
+    std::size_t               total_ = 0;
+};
+
+class DriverChatClient {
+public:
+    DriverChatClient() = default;
+    DriverChatClient(std::shared_ptr<ModelBackend> backend, std::shared_ptr<RequestLog> log)
+        : backend_(std::move(backend)), log_(std::move(log)) {}
+
+    [[nodiscard]] ChatClientCapabilities capabilities() const { return backend_->capabilities(); }
+    [[nodiscard]] task<result<ChatResponse>> chat(ChatRequest const& request, EffectContext& ctx) const {
+        log_->record(request);
+        co_return co_await backend_->chat(request, ctx);
+    }
+    [[nodiscard]] stream<ChatResponseUpdate> chat_stream(ChatRequest const& request, EffectContext& ctx) const {
+        log_->record(request);
+        return backend_->chat_stream(request, ctx);
+    }
+
+private:
+    std::shared_ptr<ModelBackend> backend_;
+    std::shared_ptr<RequestLog>   log_;
+};
+static_assert(ChatClient<DriverChatClient>);
+
+using Session = rt::AgentSession<DriverChatClient, rt::NoSessionState, DriverHistoryProvider>;
+
+// The secret name a live backend's key is stored under. A live session's grant holds exactly this
+// cap::Secret and nothing else; a scripted session's grant is empty.
+inline constexpr std::string_view kLiveSecretName = "test_driver.live_model_key";
+
+// Host-side configuration, fixed for the process lifetime (from the command line). No tool argument
+// can change any of it (ADR-182 §12 C-3).
+struct DriverConfig {
+    // Builds a live backend; empty = live mode not enabled (the binary was started without
+    // --allow-live, or was built without HTTPS).
+    std::function<std::shared_ptr<ModelBackend>(std::string const& session_id)> live_backend_factory;
+    std::string live_description;  // e.g. "deepseek-flash @ api.deepseek.com", for fixtures_list
+    // Strings that must never appear in any output line (ADR-182 §12 R8, P6): the live key.
+    std::vector<std::string> secret_canaries;
+};
 
 // ---- Event → JSON ----------------------------------------------------------------------------------
 
@@ -454,7 +554,9 @@ struct DriverSession {
     std::shared_ptr<SessionMonitor>  monitor = std::make_shared<SessionMonitor>();
     CapabilitySet                    held = CapabilitySet::grant_root({});  // must outlive `session`
     std::unique_ptr<Session>         session = std::make_unique<Session>();
-    testing::ScriptedChatClient      client;  // shares state with the session's own copy
+    // Scripted sessions only: the script queue (shares state with the backend's copy).
+    std::optional<testing::ScriptedChatClient> script;
+    std::shared_ptr<RequestLog>      requests = std::make_shared<RequestLog>();
     std::uint64_t                    action_mark = 0;  // monitor seq at the last send/resolve/cancel
     std::uint64_t                    next_call_id = 1;
     // Declared LAST so it is destroyed FIRST: its destructor finishes every queued job while the
@@ -543,8 +645,38 @@ using ToolResultJson = std::variant<Value, ToolError>;
 
 class Driver {
 public:
-    // One JSON-RPC message in, zero or one JSON-RPC message out (notifications get no reply).
+    Driver() = default;
+    explicit Driver(DriverConfig config) : config_(std::move(config)) {}
+
+    // One JSON-RPC message in, zero or one JSON-RPC message out (notifications get no reply). Every
+    // reply passes the secret canary filter (ADR-182 §12 R8, P6): a reply containing a canary string
+    // is replaced by an error that names no content.
     [[nodiscard]] std::optional<std::string> handle_line(std::string_view line) {
+        std::optional<std::string> reply = dispatch_line(line);
+        if (!reply) return reply;
+        for (std::string const& canary : config_.secret_canaries) {
+            if (!canary.empty() && reply->find(canary) != std::string::npos) {
+                ++secret_leaks_blocked_;
+                return json::dump(rpc_error(reply_id(*reply), -32000,
+                                            "test.secret_leak_blocked: this reply contained a configured "
+                                            "secret and was withheld"));
+            }
+        }
+        return reply;
+    }
+
+    [[nodiscard]] std::uint64_t secret_leaks_blocked() const { return secret_leaks_blocked_; }
+
+private:
+    // The id of a reply we built ourselves (for the canary path's replacement error).
+    [[nodiscard]] static Value reply_id(std::string const& reply) {
+        auto parsed = json::parse(reply);
+        if (!parsed) return Value{};
+        Value const* id = parsed->find("id");
+        return id != nullptr ? *id : Value{};
+    }
+
+    [[nodiscard]] std::optional<std::string> dispatch_line(std::string_view line) {
         if (line.size() > kMaxLineBytes) {
             return json::dump(rpc_error(Value{}, -32600, "request line exceeds the size limit"));
         }
@@ -584,6 +716,7 @@ public:
         return json::dump(rpc_error(*id, -32601, "method not found: " + *method));
     }
 
+public:
     [[nodiscard]] std::size_t session_count() const { return sessions_.size(); }
 
     // Closes every session (stdin EOF / shutdown).
@@ -821,8 +954,9 @@ private:
             {"state", str(std::string(run_state_name(st)))},
             {"last_outcome", outcome_json(s.monitor->last_outcome())},
             {"pending_approvals", pending_json(s.monitor->pending())},
-            {"script_pending", num(static_cast<double>(s.client.pending()))},
-            {"model_calls", num(static_cast<double>(s.client.call_count()))},
+            {"model", str(s.fixture.live ? "live" : "scripted")},
+            {"script_pending", num(static_cast<double>(s.script ? s.script->pending() : 0))},
+            {"model_calls", num(static_cast<double>(s.requests->total()))},
             {"last_seq", num(static_cast<double>(s.monitor->last_seq()))},
             {"events_dropped", num(static_cast<double>(s.monitor->dropped()))},
         };
@@ -855,9 +989,13 @@ private:
             out.push_back(obj({{"name", str(f.name)},
                                {"description", str(f.description)},
                                {"tools", arr(std::move(tools))},
-                               {"suspend_for_approval", boolean(f.suspend_for_approval)}}));
+                               {"suspend_for_approval", boolean(f.suspend_for_approval)},
+                               {"live", boolean(f.live)},
+                               {"available", boolean(!f.live || static_cast<bool>(config_.live_backend_factory))}}));
         }
-        return obj({{"fixtures", arr(std::move(out))}});
+        return obj({{"fixtures", arr(std::move(out))},
+                    {"live_model", str(config_.live_backend_factory ? config_.live_description
+                                                                    : std::string("disabled (start with --allow-live)"))}});
     }
 
     ToolResultJson t_session_start(Value const& args) {
@@ -865,6 +1003,10 @@ private:
         if (!name) return err("test.bad_arguments", "fixture is required");
         Fixture const* fixture = find_fixture(*name);
         if (fixture == nullptr) return err("test.unknown_fixture", "no compiled-in fixture named " + *name);
+        if (fixture->live && !config_.live_backend_factory) {
+            return err("test.live_disabled",
+                       "live fixtures need the driver started with --allow-live and a key file (host decision)");
+        }
         if (sessions_.size() >= kMaxSessions) {
             return err("test.too_many_sessions", "close a session first (max " + std::to_string(kMaxSessions) + ")");
         }
@@ -875,7 +1017,18 @@ private:
         Session& session = *ds->session;
         session.initialize(ds->id, Principal{"test-driver/" + fixture->name, "test"}, std::nullopt,
                            kMaxTurnsPerRun);
-        ds->client = session.emplace_chat_client();
+        std::shared_ptr<ModelBackend> backend;
+        if (fixture->live) {
+            backend = config_.live_backend_factory(ds->id);
+            if (!backend) return err("test.live_unavailable", "the live backend could not be created");
+            // The one grant a live session holds: use of the live key, at the point of use (I2).
+            ds->held = CapabilitySet::grant_root(
+                {Capability{cap::Secret{std::string(kLiveSecretName), std::chrono::seconds{0}}}});
+        } else {
+            ds->script.emplace();
+            backend = std::make_shared<ScriptedBackend>(*ds->script);
+        }
+        session.emplace_chat_client(std::move(backend), ds->requests);
         session.set_capabilities(&ds->held);
         session.set_suspend_for_approval(fixture->suspend_for_approval);
         std::vector<ToolDescriptor> tools;
@@ -897,6 +1050,9 @@ private:
         ToolError e;
         DriverSession* s = find_session(args, e);
         if (s == nullptr) return e;
+        if (!s->script) {
+            return err("test.live_session", "this session's model is live; there is no script to push to");
+        }
         if (s->monitor->state() == run_state::running) {
             return err("test.session_running",
                        "push turns only while the session is idle or suspended (keeps runs deterministic)");
@@ -953,10 +1109,10 @@ private:
             }
             parsed.push_back(std::move(turn));
         }
-        if (auto pushed = s->client.push(std::move(parsed)); !pushed) {
+        if (auto pushed = s->script->push(std::move(parsed)); !pushed) {
             return err(pushed.error().code, pushed.error().message);
         }
-        return obj({{"script_pending", num(static_cast<double>(s->client.pending()))}});
+        return obj({{"script_pending", num(static_cast<double>(s->script->pending()))}});
     }
 
     ToolResultJson t_session_send(Value const& args) {
@@ -1123,11 +1279,13 @@ private:
         DriverSession* s = find_session(args, e);
         if (s == nullptr) return e;
         std::size_t const since = static_cast<std::size_t>(get_u64(args, "since_index").value_or(0));
-        std::vector<ChatRequest> const reqs = s->client.requests();
+        auto const [first_index, reqs] = s->requests->snapshot();
         std::vector<Value> out;
-        for (std::size_t i = since; i < reqs.size() && out.size() < 50; ++i) {
+        for (std::size_t k = 0; k < reqs.size() && out.size() < 50; ++k) {
+            std::size_t const i = first_index + k;
+            if (i < since) continue;
             std::vector<Value> messages;
-            for (Message const& m : reqs[i].messages) {
+            for (Message const& m : reqs[k].messages) {
                 std::vector<Value> calls;
                 for (ToolCall const& c : tool_calls_of(m)) {
                     calls.push_back(obj({{"call_id", str(c.call_id)}, {"tool_name", str(c.tool_name)},
@@ -1146,16 +1304,18 @@ private:
                 messages.push_back(obj(std::move(mm)));
             }
             std::vector<Value> tools;
-            for (ToolDescriptor const& t : reqs[i].tools) tools.push_back(str(std::string(t.name)));
+            for (ToolDescriptor const& t : reqs[k].tools) tools.push_back(str(std::string(t.name)));
             out.push_back(obj({{"index", num(static_cast<double>(i))},
                                {"messages", arr(std::move(messages))},
                                {"tools", arr(std::move(tools))}}));
         }
-        return obj({{"requests", arr(std::move(out))}, {"total", num(static_cast<double>(reqs.size()))}});
+        return obj({{"requests", arr(std::move(out))}, {"total", num(static_cast<double>(s->requests->total()))}});
     }
 
+    DriverConfig config_;
     std::map<std::string, std::unique_ptr<DriverSession>, std::less<>> sessions_;
     std::uint64_t next_session_ = 1;
+    std::uint64_t secret_leaks_blocked_ = 0;
 };
 
 }  // namespace agentengine::test_driver

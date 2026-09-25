@@ -137,6 +137,12 @@ target_link_libraries(agentengine_mcp_conformance_client
 add_executable(agentengine_test_driver tools/agentengine_test_driver.cpp)
 target_include_directories(agentengine_test_driver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tools)
 target_link_libraries(agentengine_test_driver PRIVATE agentengine::core agentengine_warnings)
+# Live mode (--allow-live: a real OpenAI-compatible model, DeepSeek by default) needs the TLS client.
+if(AGENTENGINE_WITH_HTTPS)
+  target_link_libraries(agentengine_test_driver PRIVATE
+    agentengine::provider_http_client MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  target_compile_definitions(agentengine_test_driver PRIVATE AGENTENGINE_WITH_HTTPS)
+endif()
 
 # ---- native_jail ShellRunner backend (src/backends/native_jail/) --------------
 # Implements decisions/ADR-001-shellrunner-grammar-and-dispatch.md — Design A: the

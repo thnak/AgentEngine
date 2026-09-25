@@ -324,6 +324,62 @@ int main() {
         check(gone.is_error && gone.error_code == "test.unknown_session", "MISC: a closed session is unknown");
     }
 
+    // ---- LIVE: live fixtures are a host decision --------------------------------------------------------------
+    {
+        td::Driver d;  // no live factory: the binary was started without --allow-live
+        CallResult r = call(d, "session_start", td::obj({{"fixture", td::str("basic_live")}}));
+        check(r.is_error && r.error_code == "test.live_disabled",
+              "LIVE: a live fixture is refused unless the host enabled live mode");
+
+        // A stand-in live backend (scripted underneath, no network) to exercise the live-session rules.
+        agentengine::testing::ScriptedChatClient fake;
+        (void)fake.push(agentengine::testing::text_turn("live says hi"));
+        td::DriverConfig cfg;
+        cfg.live_description = "fake";
+        cfg.live_backend_factory = [fake](std::string const&) -> std::shared_ptr<td::ModelBackend> {
+            return std::make_shared<td::ScriptedBackend>(fake);
+        };
+        td::Driver live(std::move(cfg));
+        std::string const id = start(live, "basic_live");
+        check(!id.empty(), "LIVE: with live mode enabled, a live fixture starts");
+        CallResult push_live = call(live, "model_script_push", sid(id, {{"turns", td::arr({text_turn("x")})}}));
+        check(push_live.is_error && push_live.error_code == "test.live_session",
+              "LIVE: a live session has no script to push to");
+        (void)call(live, "session_send", sid(id, {{"text", td::str("hello")}}));
+        Value w = wait(live, id, "idle");
+        check(w.find("snapshot") && outcome_field(*w.find("snapshot"), "text") == "live says hi" &&
+                  td::get_string(*w.find("snapshot"), "model") == "live",
+              "LIVE: the run is answered by the live backend and the snapshot says model=live");
+        CallResult reqs = call(live, "model_requests", sid(id));
+        check(td::get_u64(reqs.body, "total") == 1u, "LIVE: model_requests captures live calls too");
+    }
+
+    // ---- C6: secret canary (positive control first) ------------------------------------------------------------
+    {
+        std::string const canary = "SEKRET-canary-0123456789";
+        auto leak_run = [&](td::Driver& d) {
+            std::string const id = start(d, "no_tools");
+            push(d, id, td::arr({text_turn("the key is " + canary)}));
+            (void)call(d, "session_send", sid(id, {{"text", td::str("leak it")}}));
+            std::string const line = agentengine::json::dump(
+                td::obj({{"jsonrpc", td::str("2.0")}, {"id", td::num(g_next_id++)}, {"method", td::str("tools/call")},
+                         {"params", td::obj({{"name", td::str("session_wait_for")},
+                                             {"arguments", sid(id, {{"until", td::str("idle")}})}})}}));
+            return d.handle_line(line).value_or("");
+        };
+        td::Driver open_driver;
+        std::string const unfiltered = leak_run(open_driver);
+        check(unfiltered.find(canary) != std::string::npos,
+              "C6 control: without a canary configured, the scripted text reaches the reply");
+        td::DriverConfig cfg;
+        cfg.secret_canaries.push_back(canary);
+        td::Driver guarded(std::move(cfg));
+        std::string const filtered = leak_run(guarded);
+        check(filtered.find(canary) == std::string::npos && filtered.find("test.secret_leak_blocked") != std::string::npos,
+              "C6: with the canary configured, the reply is withheld and names no content");
+        check(guarded.secret_leaks_blocked() == 1, "C6: the block is counted");
+    }
+
     // ---- C2 (Windows form): observe from the MCP thread while the worker runs -------------------------------
     {
         td::Driver d;

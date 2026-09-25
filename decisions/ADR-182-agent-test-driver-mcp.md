@@ -2,7 +2,7 @@
 
 - **Status**: **Proposed — design pass + red-team pass 1 (2026-09-25), revised (§12). Owner
   delegated Q1–Q4 (§11). P1 and P2 (§13) and driver phase 1 (§14) implemented and proven,
-  including an end-to-end run by a headless Claude tester. Scenario export and replay not started.** Where §12
+  including an end-to-end run by a headless Claude tester. Live mode (§15) built early: a Claude tester drove the engine's agent running on live DeepSeek, 4/4. Scenario export and replay not started.** Where §12
   and an earlier section disagree, §12 wins.
 - **Date**: 2026-09-25
 - **Origin**: live-provider tests drive a real `rt::AgentSession` by sending a free-form prompt and
@@ -637,3 +637,69 @@ engine ran the tool with `{}`, and the model got back "missing required field 't
 `json::parse` fails. That contradicts 006 §3 step 2 ("reject, do not coerce"). A tool whose arguments
 are all optional would *run* on malformed model output. Recorded here and not fixed in this ADR: the
 fix changes the tool pipeline, so it needs its own change and a scenario that proves it.
+
+## 15. Live mode — done (2026-09-25), ahead of the original phase plan
+
+Project-owner direction (2026-09-25): AgentEngine's own agent should run on a real model (DeepSeek,
+key in the git-ignored `deep-seek.txt`) while a Claude sub-agent drives it. This moves §12's phase-5
+`live` mode and P6 forward. The rest of phase 5 (file fixtures, real tools, fork, P3 matching) stays
+where it was.
+
+- **Seam.** A session's model is a type-erased `ModelBackend` behind one `DriverChatClient`, so one
+  `Session` type serves both modes. `ScriptedBackend` wraps the P2 client. `LiveBackend`
+  (`tools/test_driver/live_backend.hpp`, compiled only with `AGENTENGINE_WITH_HTTPS`) wraps
+  `RecordingChatClient<openai::OpenAIChatClient<InMemorySecretStore>>`. `DriverChatClient` captures
+  every request in both modes, in a ring bounded at 64 (§12 R9).
+- **Host decisions only.** These command-line flags are fixed for the process:
+  - `--allow-live`
+  - `--live-key-file` (first line, trimmed)
+  - `--live-host` (default `api.deepseek.com`), `--live-path-prefix` (`/v1`), `--live-model`
+    (`deepseek-flash`)
+  - `--live-max-calls` (default 40 per session; past it every call fails
+    `test.live_call_budget_exhausted`, I8)
+  - `--record-dir`
+
+  No tool argument can enable live mode, pick the key or change the budget. The live fixtures
+  (`basic_live`, `no_tools_live`) are compiled in, and are refused (`test.live_disabled`) unless the
+  host enabled live mode.
+- **I2.** The key sits in an `InMemorySecretStore` and is resolved at the point of use against the
+  session's grant. A live session's grant is exactly `cap::Secret{"test_driver.live_model_key"}`; a
+  scripted session's grant is empty.
+- **P6 secret canary.** The key is registered as a canary. `Driver::handle_line()` withholds any reply
+  containing a canary and returns `test.secret_leak_blocked`, which names no content.
+- **I5.** Every live call is written to `--record-dir` as `<session>-call-<n>.json`
+  (`ChatCallRecording`), so a confusing live run can be replayed later.
+- **Q2 held.** Live fixtures have only the in-process test tools, so a tester's approval of a live
+  model's call still authorizes nothing real (§12 C-2).
+- **Config.** `.claude/test-driver-live.mcp.json` launches `build-https-driver/agentengine_test_driver`
+  with the flags above (12 calls per session).
+- **Build note (Windows).** The existing `build-https` cache could not configure: its C compiler is
+  `clang-cl` (which the vendored mbedTLS needs, because it passes MSVC flags) and CMake found no `mt`.
+  A fresh tree works with `-DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang++
+  -DCMAKE_MT=<LLVM>/bin/llvm-mt.exe -DAGENTENGINE_WITH_HTTPS=ON`. `build-https-driver/` was
+  configured that way (git-ignored).
+
+### Proof
+
+- **Offline** (`tests/test_agentengine_test_driver.cpp`, now 50/50):
+  - a live fixture is refused without live mode;
+  - with a stand-in live backend (no network), the session starts, refuses `model_script_push`
+    (`test.live_session`), is answered by the backend, reports `model: live`, and `model_requests`
+    captures the call;
+  - C6: with no canary configured, a scripted reply carrying the canary text reaches the client
+    (positive control); with the canary configured, the reply is withheld and the block is counted.
+- **Live stdio smoke test** (DeepSeek `deepseek-flash`): the real model called `gated_echo` with
+  `{"text": "hello from deepseek"}`, the run suspended, and `interaction_list` showed the call. One
+  recording was written, containing zero occurrences of the key (checked with `grep -F -f`, key
+  never printed).
+- **Claude tester driving the live agent.** `claude -p --mcp-config .claude/test-driver-live.mcp.json`
+  ran 4 cases, all PASS, in 60 s, 24 turns and 8 DeepSeek calls, all recorded, none containing the
+  key:
+  - approve: exactly one `tool_call_started`, after `approval_requested`;
+  - deny: no `tool_call_started`;
+  - tool error: `is_error` with `kaboom`, and a model answer reflecting it;
+  - a mixed echo + gated_echo round that the live model really did issue in one round: both events
+    fired, with `needs_approval` false and true, and the ungated call was held until the decision.
+- **Rediscovered on its own.** Without being told, the tester reported that `approval_resolved` comes
+  after the tool ran (§12 C-1 / P1c): "anything that reads the events and expects 'resolved, then
+  executed' will see them in the wrong order". That is two independent sources for P1c.
