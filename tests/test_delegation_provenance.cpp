@@ -199,7 +199,11 @@ public:
         if (sp) {
             for (auto& t : sp->tools) c.tools.push_back(std::move(t));
         }
-        for (auto& t : ToolTable::from_tools<DangerTool>().descriptors()) c.tools.push_back(t);
+        // Named, not a temporary: `descriptors()` returns a reference into the table, and a range-for over a
+        // temporary's member only keeps it alive under C++23's P2718, which clang-cl did not apply (PR #103 CI:
+        // C saw "unknown tool: danger", and the run crashed in the next scenario).
+        ToolTable const danger_table = ToolTable::from_tools<DangerTool>();
+        for (auto const& t : danger_table.descriptors()) c.tools.push_back(t);
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
