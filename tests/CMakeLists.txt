@@ -4077,3 +4077,13 @@ add_test(NAME test_agentengine_test_driver COMMAND test_agentengine_test_driver)
 # ADR-182 §12 R11: engine code must not include agentengine/testing/.
 add_test(NAME lint_testing_includes
   COMMAND ${CMAKE_COMMAND} -DSOURCE_DIR=${PROJECT_SOURCE_DIR} -P ${PROJECT_SOURCE_DIR}/cmake/check_testing_includes.cmake)
+
+# ---- ADR-182 §16: one ctest per checked-in scenario, replayed with the scripted model (no network,
+# no Claude). Scenarios are exported by the test driver (scenario_export), usually by a Claude tester
+# sub-agent -- including from live-model runs, whose observed answers become the script.
+file(GLOB AE_SCENARIO_FILES CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/tests/scenarios/*.json)
+foreach(scenario IN LISTS AE_SCENARIO_FILES)
+  get_filename_component(scenario_name ${scenario} NAME_WE)
+  add_test(NAME scenario_${scenario_name} COMMAND agentengine_scenario_runner ${scenario})
+  set_tests_properties(scenario_${scenario_name} PROPERTIES LABELS "scenario" TIMEOUT 120)
+endforeach()

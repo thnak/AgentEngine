@@ -25,6 +25,9 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <functional>
 #include <future>
 #include <map>
@@ -237,25 +240,78 @@ private:
     std::size_t               total_ = 0;
 };
 
+// Every answer the model gave (or the failure in its place), in call order. This is what
+// `scenario_export` turns into the replay script: a scenario replays the model's OBSERVED behaviour
+// through the scripted client, whether the session was scripted or live (ADR-182 §16).
+inline constexpr std::size_t kMaxExchanges = 256;
+
+struct ModelExchange {
+    std::optional<ChatResponse> response;
+    std::optional<error>        failure;
+};
+
+class ExchangeLog {
+public:
+    void record(result<ChatResponse> const& r) {
+        std::lock_guard lock(mutex_);
+        if (exchanges_.size() >= kMaxExchanges) {
+            overflow_ = true;
+            return;
+        }
+        ModelExchange x;
+        if (r) x.response = *r;
+        else x.failure = r.error();
+        exchanges_.push_back(std::move(x));
+    }
+    // A streamed call's answer is not captured, so a session that made one cannot be exported.
+    void mark_unrecordable() {
+        std::lock_guard lock(mutex_);
+        unrecordable_ = true;
+    }
+    [[nodiscard]] std::vector<ModelExchange> exchanges() const {
+        std::lock_guard lock(mutex_);
+        return exchanges_;
+    }
+    [[nodiscard]] bool overflow() const {
+        std::lock_guard lock(mutex_);
+        return overflow_;
+    }
+    [[nodiscard]] bool unrecordable() const {
+        std::lock_guard lock(mutex_);
+        return unrecordable_;
+    }
+
+private:
+    mutable std::mutex         mutex_;
+    std::vector<ModelExchange> exchanges_;
+    bool                       overflow_ = false;
+    bool                       unrecordable_ = false;
+};
+
 class DriverChatClient {
 public:
     DriverChatClient() = default;
-    DriverChatClient(std::shared_ptr<ModelBackend> backend, std::shared_ptr<RequestLog> log)
-        : backend_(std::move(backend)), log_(std::move(log)) {}
+    DriverChatClient(std::shared_ptr<ModelBackend> backend, std::shared_ptr<RequestLog> log,
+                     std::shared_ptr<ExchangeLog> exchanges)
+        : backend_(std::move(backend)), log_(std::move(log)), exchanges_(std::move(exchanges)) {}
 
     [[nodiscard]] ChatClientCapabilities capabilities() const { return backend_->capabilities(); }
     [[nodiscard]] task<result<ChatResponse>> chat(ChatRequest const& request, EffectContext& ctx) const {
         log_->record(request);
-        co_return co_await backend_->chat(request, ctx);
+        result<ChatResponse> r = co_await backend_->chat(request, ctx);
+        exchanges_->record(r);
+        co_return r;
     }
     [[nodiscard]] stream<ChatResponseUpdate> chat_stream(ChatRequest const& request, EffectContext& ctx) const {
         log_->record(request);
+        exchanges_->mark_unrecordable();
         return backend_->chat_stream(request, ctx);
     }
 
 private:
     std::shared_ptr<ModelBackend> backend_;
     std::shared_ptr<RequestLog>   log_;
+    std::shared_ptr<ExchangeLog>  exchanges_;
 };
 static_assert(ChatClient<DriverChatClient>);
 
@@ -274,6 +330,9 @@ struct DriverConfig {
     std::string live_description;  // e.g. "deepseek-flash @ api.deepseek.com", for fixtures_list
     // Strings that must never appear in any output line (ADR-182 §12 R8, P6): the live key.
     std::vector<std::string> secret_canaries;
+    // Where scenario_export writes and scenario_replay reads `<name>.json` (ADR-182 §12 C-4).
+    // Empty = both tools disabled.
+    std::filesystem::path scenarios_root;
 };
 
 // ---- Event → JSON ----------------------------------------------------------------------------------
@@ -557,6 +616,11 @@ struct DriverSession {
     // Scripted sessions only: the script queue (shares state with the backend's copy).
     std::optional<testing::ScriptedChatClient> script;
     std::shared_ptr<RequestLog>      requests = std::make_shared<RequestLog>();
+    std::shared_ptr<ExchangeLog>     exchanges = std::make_shared<ExchangeLog>();
+    // The user-side steps, in order, for scenario_export (ADR-182 §16). Interaction ids are stored
+    // normalized (`<S>:interaction:N`).
+    std::vector<Value>               steps;
+    std::string                      nondeterministic_reason;  // non-empty = cannot be exported
     std::uint64_t                    action_mark = 0;  // monitor seq at the last send/resolve/cancel
     std::uint64_t                    next_call_id = 1;
     // Declared LAST so it is destroyed FIRST: its destructor finishes every queued job while the
@@ -643,6 +707,178 @@ struct ToolError {
 };
 using ToolResultJson = std::variant<Value, ToolError>;
 
+// ---- The turn format: model_script_push input == scenario model_turns (ADR-182 §16) -----------------
+//
+// Accepted shapes:
+//   short:   {"text": "...", "tool_calls": [{"name", "arguments" (object|raw string), "call_id"?}]}
+//   exact:   {"content": [{"text": ...} | {"reasoning": ...} | {"tool_call": {"call_id","name","arguments"}}],
+//             "usage": {"input_tokens", "output_tokens"}?}
+//   failure: {"error": {"code", "message", "class"?: transient|policy|contract|resource|fatal}}
+// Export writes the exact shape, so item order and raw argument text survive the round trip.
+
+[[nodiscard]] inline std::string_view failure_class_name(failure_class k) noexcept {
+    switch (k) {
+        case failure_class::transient: return "transient";
+        case failure_class::policy: return "policy";
+        case failure_class::contract: return "contract";
+        case failure_class::resource: return "resource";
+        case failure_class::fatal: return "fatal";
+    }
+    return "fatal";
+}
+[[nodiscard]] inline std::optional<failure_class> failure_class_from(std::string_view n) noexcept {
+    if (n == "transient") return failure_class::transient;
+    if (n == "policy") return failure_class::policy;
+    if (n == "contract") return failure_class::contract;
+    if (n == "resource") return failure_class::resource;
+    if (n == "fatal") return failure_class::fatal;
+    return std::nullopt;
+}
+
+template <class V>
+[[nodiscard]] ContentItem assistant_item(V v) {
+    ContentItem item;
+    item.origin = content_origin::assistant;
+    item.value = std::move(v);
+    return item;
+}
+
+[[nodiscard]] inline std::variant<testing::ScriptedTurn, ToolError> parse_turn(Value const& t,
+                                                                               std::uint64_t& next_call_id) {
+    auto bad = [](std::string m) { return ToolError{"test.bad_arguments", std::move(m)}; };
+    if (!t.is_object()) return bad("each turn must be an object");
+    if (Value const* fe = t.find("error"); fe != nullptr) {
+        auto klass = failure_class_from(get_string(*fe, "class").value_or("fatal"));
+        if (!klass) return bad("error.class must be transient|policy|contract|resource|fatal");
+        return testing::failure_turn(error{*klass, get_string(*fe, "message").value_or("scripted model failure"),
+                                           get_string(*fe, "code").value_or("test.scripted_failure")});
+    }
+    testing::ScriptedTurn turn;
+    turn.message.role = role::assistant;
+    turn.usage = Usage{1, 1, 0, 0, 0.0};
+    if (Value const* u = t.find("usage"); u != nullptr) {
+        turn.usage.input_tokens = get_u64(*u, "input_tokens").value_or(0);
+        turn.usage.output_tokens = get_u64(*u, "output_tokens").value_or(0);
+    }
+    auto tool_call_of = [&](Value const& c) -> std::optional<ToolCall> {
+        auto name = get_string(c, "name");
+        if (!name) return std::nullopt;
+        std::string arguments = "{}";
+        if (Value const* a = c.find("arguments"); a != nullptr) {
+            arguments = a->is_string() ? a->as_string() : json::dump(*a);
+        }
+        ToolCall call;
+        call.call_id = get_string(c, "call_id").value_or("call_" + std::to_string(next_call_id++));
+        call.tool_name = *name;
+        call.arguments_json = std::move(arguments);
+        call.provenance = call_provenance::vendor_structured;
+        return call;
+    };
+    Value const* content = t.find("content");
+    if (content != nullptr) {
+        if (!content->is_array()) return bad("content must be an array");
+        for (Value const& c : content->as_array()) {
+            if (auto text = get_string(c, "text")) {
+                turn.message.content.push_back(assistant_item(Text{*text}));
+            } else if (auto reasoning = get_string(c, "reasoning")) {
+                Reasoning r;
+                r.text = *reasoning;
+                turn.message.content.push_back(assistant_item(std::move(r)));
+            } else if (Value const* tc = c.find("tool_call"); tc != nullptr) {
+                auto call = tool_call_of(*tc);
+                if (!call) return bad("each tool_call needs a name");
+                turn.message.content.push_back(assistant_item(std::move(*call)));
+            } else {
+                return bad("content items are {text} | {reasoning} | {tool_call}");
+            }
+        }
+    }
+    if (auto text = get_string(t, "text"); text && !text->empty()) {
+        turn.message.content.push_back(assistant_item(Text{*text}));
+    }
+    if (Value const* calls = t.find("tool_calls"); calls != nullptr) {
+        if (!calls->is_array()) return bad("tool_calls must be an array");
+        for (Value const& c : calls->as_array()) {
+            auto call = tool_call_of(c);
+            if (!call) return bad("each tool call needs a name");
+            turn.message.content.push_back(assistant_item(std::move(*call)));
+        }
+    }
+    // An exact-shape turn may legitimately be empty (a real model can answer with nothing).
+    if (turn.message.content.empty() && content == nullptr) {
+        return bad("a turn needs text, tool_calls, content or error");
+    }
+    return turn;
+}
+
+// The exact shape (see above) of one observed exchange.
+[[nodiscard]] inline Value exchange_to_turn(ModelExchange const& x) {
+    if (x.failure) {
+        return obj({{"error", obj({{"code", str(x.failure->code)},
+                                   {"message", str(x.failure->message)},
+                                   {"class", str(std::string(failure_class_name(x.failure->klass)))}})}});
+    }
+    std::vector<Value> content;
+    Usage u{};
+    if (x.response) {
+        u = x.response->usage;
+        for (ContentItem const& c : x.response->message.content) {
+            if (auto const* t = std::get_if<Text>(&c.value)) {
+                content.push_back(obj({{"text", str(t->text)}}));
+            } else if (auto const* r = std::get_if<Reasoning>(&c.value)) {
+                content.push_back(obj({{"reasoning", str(r->text)}}));
+            } else if (auto const* call = std::get_if<ToolCall>(&c.value)) {
+                content.push_back(obj({{"tool_call", obj({{"call_id", str(call->call_id)},
+                                                          {"name", str(call->tool_name)},
+                                                          {"arguments", str(call->arguments_json)}})}}));
+            }
+        }
+    }
+    return obj({{"content", arr(std::move(content))},
+                {"usage", obj({{"input_tokens", num(static_cast<double>(u.input_tokens))},
+                               {"output_tokens", num(static_cast<double>(u.output_tokens))}})}});
+}
+
+// Rewrites every string that starts with "<session_id>:" to start with "<S>:", recursively. Run and
+// interaction ids carry the session id as their prefix; nothing else in the event stream depends on
+// which driver session produced it (ADR-182 §12 R6).
+[[nodiscard]] inline Value normalize_ids(Value const& v, std::string const& session_id) {
+    std::string const prefix = session_id + ":";
+    switch (v.kind()) {
+        case json::value_kind::string: {
+            std::string const& s = v.as_string();
+            if (s.starts_with(prefix)) return str("<S>:" + s.substr(prefix.size()));
+            return v;
+        }
+        case json::value_kind::array: {
+            std::vector<Value> out;
+            for (Value const& e : v.as_array()) out.push_back(normalize_ids(e, session_id));
+            return arr(std::move(out));
+        }
+        case json::value_kind::object: {
+            Members out;
+            for (auto const& [k, e] : v.as_object()) out.emplace_back(k, normalize_ids(e, session_id));
+            return obj(std::move(out));
+        }
+        default: return v;
+    }
+}
+// The inverse, for replaying a step that names an interaction.
+[[nodiscard]] inline std::string denormalize_id(std::string const& id, std::string const& session_id) {
+    if (id.starts_with("<S>:")) return session_id + ":" + id.substr(4);
+    return id;
+}
+
+// Scenario names are file names under a host-fixed root: nothing path-shaped (ADR-182 §12 C-4).
+[[nodiscard]] inline bool valid_scenario_name(std::string_view n) {
+    if (n.empty() || n.size() > 64) return false;
+    for (char c : n) {
+        bool const ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+        if (!ok) return false;
+    }
+    return true;
+}
+
 class Driver {
 public:
     Driver() = default;
@@ -680,7 +916,11 @@ private:
         if (line.size() > kMaxLineBytes) {
             return json::dump(rpc_error(Value{}, -32600, "request line exceeds the size limit"));
         }
-        auto parsed = json::parse(line);
+        // A scenario replay pushes every recorded model turn in one line, so allow more nodes than
+        // the default; the line itself is already capped at kMaxLineBytes.
+        json::ParseBudget budget;
+        budget.max_nodes_visited = 4'000'000;
+        auto parsed = json::parse(line, budget);
         if (!parsed || !parsed->is_object()) {
             return json::dump(rpc_error(Value{}, -32700, "parse error"));
         }
@@ -868,6 +1108,18 @@ private:
                      "What the engine sent the model on each call: messages (role + text) and tool names.",
                      schema({{"session_id", sid}, {"since_index", prop("integer", "Default 0.")}},
                             {"session_id"})),
+            tool_def("scenario_export",
+                     "Save this session as a replayable scenario <name>.json: the model's observed answers "
+                     "(scripted or live) become the script, your send/resolve/cancel steps are replayed, and "
+                     "the whole normalized event stream is the expected result. Session must not be running.",
+                     schema({{"session_id", sid},
+                             {"name", prop("string", "[a-z0-9_-]{1,64}")},
+                             {"description", prop("string", "What this scenario checks.")},
+                             {"overwrite", prop("boolean", "Replace an existing scenario of that name.")}},
+                            {"session_id", "name"})),
+            tool_def("scenario_replay",
+                     "Replay a saved scenario with the scripted model (no network) and diff the event stream.",
+                     schema({{"name", prop("string", "Scenario name.")}}, {"name"})),
         });
     }
 
@@ -885,6 +1137,8 @@ private:
             {"session_cancel", &Driver::t_session_cancel},
             {"session_close", &Driver::t_session_close},
             {"model_requests", &Driver::t_model_requests},
+            {"scenario_export", &Driver::t_scenario_export},
+            {"scenario_replay", &Driver::t_scenario_replay},
         };
         return h;
     }
@@ -1028,7 +1282,7 @@ private:
             ds->script.emplace();
             backend = std::make_shared<ScriptedBackend>(*ds->script);
         }
-        session.emplace_chat_client(std::move(backend), ds->requests);
+        session.emplace_chat_client(std::move(backend), ds->requests, ds->exchanges);
         session.set_capabilities(&ds->held);
         session.set_suspend_for_approval(fixture->suspend_for_approval);
         std::vector<ToolDescriptor> tools;
@@ -1063,51 +1317,9 @@ private:
         }
         std::vector<testing::ScriptedTurn> parsed;
         for (Value const& t : turns->as_array()) {
-            if (!t.is_object()) return err("test.bad_arguments", "each turn must be an object");
-            if (Value const* fe = t.find("error"); fe != nullptr) {
-                failure_class klass = failure_class::fatal;
-                std::string const k = get_string(*fe, "class").value_or("fatal");
-                if (k == "transient") klass = failure_class::transient;
-                else if (k == "contract") klass = failure_class::contract;
-                else if (k != "fatal") return err("test.bad_arguments", "error.class must be transient|fatal|contract");
-                parsed.push_back(testing::failure_turn(
-                    error{klass, get_string(*fe, "message").value_or("scripted model failure"),
-                          get_string(*fe, "code").value_or("test.scripted_failure")}));
-                continue;
-            }
-            testing::ScriptedTurn turn;
-            turn.message.role = role::assistant;
-            turn.usage = Usage{1, 1, 0, 0, 0.0};
-            if (auto text = get_string(t, "text"); text && !text->empty()) {
-                ContentItem item;
-                item.origin = content_origin::assistant;
-                item.value = Text{*text};
-                turn.message.content.push_back(std::move(item));
-            }
-            if (Value const* calls = t.find("tool_calls"); calls != nullptr) {
-                if (!calls->is_array()) return err("test.bad_arguments", "tool_calls must be an array");
-                for (Value const& c : calls->as_array()) {
-                    auto name = get_string(c, "name");
-                    if (!name) return err("test.bad_arguments", "each tool call needs a name");
-                    std::string arguments = "{}";
-                    if (Value const* a = c.find("arguments"); a != nullptr) {
-                        arguments = a->is_string() ? a->as_string() : json::dump(*a);
-                    }
-                    ToolCall call;
-                    call.call_id = get_string(c, "call_id").value_or("call_" + std::to_string(s->next_call_id++));
-                    call.tool_name = *name;
-                    call.arguments_json = std::move(arguments);
-                    call.provenance = call_provenance::vendor_structured;
-                    ContentItem item;
-                    item.origin = content_origin::assistant;
-                    item.value = std::move(call);
-                    turn.message.content.push_back(std::move(item));
-                }
-            }
-            if (turn.message.content.empty()) {
-                return err("test.bad_arguments", "a turn needs text, tool_calls or error");
-            }
-            parsed.push_back(std::move(turn));
+            auto turn = parse_turn(t, s->next_call_id);
+            if (auto* bad = std::get_if<ToolError>(&turn)) return *bad;
+            parsed.push_back(std::move(std::get<testing::ScriptedTurn>(turn)));
         }
         if (auto pushed = s->script->push(std::move(parsed)); !pushed) {
             return err(pushed.error().code, pushed.error().message);
@@ -1127,6 +1339,7 @@ private:
             return err("test.session_suspended",
                        "resolve the open interaction (interaction_resolve) or session_cancel first");
         }
+        s->steps.push_back(obj({{"op", str("send")}, {"text", str(*text)}}));
         s->action_mark = s->monitor->last_seq();
         s->monitor->set_state(run_state::running);  // before submit, so a wait never sees a stale idle
         (void)s->pool->submit(send_job(s, *text));
@@ -1228,6 +1441,9 @@ private:
         for (PendingCall const& c : s->monitor->pending())
             if (c.interaction_id == *interaction_id) known = true;
         if (!known) return err("test.unknown_interaction", "no open interaction " + *interaction_id);
+        s->steps.push_back(obj({{"op", str("resolve")},
+                                {"interaction_id", normalize_ids(str(*interaction_id), s->id)},
+                                {"decision", str(*decision)}}));
         s->action_mark = s->monitor->last_seq();
         s->monitor->set_state(run_state::running);
         (void)s->pool->submit(resolve_job(s, *interaction_id, *decision == "approve"));
@@ -1241,10 +1457,13 @@ private:
         run_state const st = s->monitor->state();
         s->action_mark = s->monitor->last_seq();
         if (st == run_state::running) {
+            // Where a cancel lands inside a running run depends on timing, so it cannot be replayed.
+            s->nondeterministic_reason = "session_cancel while a run was in flight (timing-dependent)";
             s->session->cancel();  // thread-safe (stop source under cancel_mutex_)
             return obj({{"canceled", boolean(true)}, {"was", str("running")}});
         }
         if (st == run_state::suspended) {
+            s->steps.push_back(obj({{"op", str("cancel")}}));
             s->monitor->set_state(run_state::running);
             (void)s->pool->submit(cancel_suspended_job(s));
             return obj({{"canceled", boolean(true)}, {"was", str("suspended")}});
@@ -1312,10 +1531,285 @@ private:
         return obj({{"requests", arr(std::move(out))}, {"total", num(static_cast<double>(s->requests->total()))}});
     }
 
+    // ---- scenarios (ADR-182 §16) ----
+
+    ToolResultJson t_scenario_export(Value const& args) {
+        ToolError e;
+        DriverSession* s = find_session(args, e);
+        if (s == nullptr) return e;
+        if (config_.scenarios_root.empty()) {
+            return err("test.export_disabled", "the driver was started without a scenarios root");
+        }
+        std::string const name = get_string(args, "name").value_or("");
+        if (!valid_scenario_name(name)) return err("test.bad_name", "name must match [a-z0-9_-]{1,64}");
+        if (s->monitor->state() == run_state::running) {
+            return err("test.session_running", "wait until the session settles before exporting");
+        }
+        if (!s->nondeterministic_reason.empty()) {
+            return err("test.nondeterministic", "cannot replay this session: " + s->nondeterministic_reason);
+        }
+        if (s->exchanges->overflow() || s->exchanges->unrecordable()) {
+            return err("test.not_recordable", "this session's model exchanges were not all captured");
+        }
+        if (s->monitor->dropped() != 0) {
+            return err("test.events_dropped", "the event ring overflowed; the expected stream is incomplete");
+        }
+        if (s->steps.empty()) return err("test.nothing_to_export", "the session has no steps yet");
+
+        std::vector<Value> turns;
+        for (ModelExchange const& x : s->exchanges->exchanges()) turns.push_back(exchange_to_turn(x));
+        std::vector<Value> events;
+        for (LoggedEvent const& ev : s->monitor->events_since(0, kEventRingCapacity)) {
+            events.push_back(normalize_ids(event_json(ev), s->id));
+        }
+        std::string replay_fixture = s->fixture.name;
+        if (replay_fixture.ends_with("_live")) replay_fixture.resize(replay_fixture.size() - 5);
+
+        Members recorded{{"fixture", str(s->fixture.name)}, {"model", str(s->fixture.live ? "live" : "scripted")}};
+        if (s->fixture.live) recorded.emplace_back("live_model", str(config_.live_description));
+        std::size_t const n_turns = turns.size();
+        std::size_t const n_events = events.size();
+        std::size_t const n_steps = s->steps.size();
+        Value scenario = obj({
+            {"format", num(1)},
+            {"name", str(name)},
+            {"description", str(get_string(args, "description").value_or(""))},
+            {"fixture", str(replay_fixture)},
+            {"recorded_with", obj(std::move(recorded))},
+            {"model_turns", arr(std::move(turns))},
+            {"steps", arr(s->steps)},
+            {"expected", normalize_ids(obj({{"state", str(std::string(run_state_name(s->monitor->state())))},
+                                            {"outcome", outcome_json(s->monitor->last_outcome())},
+                                            {"events", arr(std::move(events))}}),
+                                       s->id)},
+        });
+
+        std::error_code ec;
+        std::filesystem::create_directories(config_.scenarios_root, ec);
+        std::filesystem::path const path = config_.scenarios_root / (name + ".json");
+        if (std::filesystem::exists(path) && !get_bool(args, "overwrite").value_or(false)) {
+            return err("test.exists", "scenario " + name + " exists; pass overwrite: true to replace it");
+        }
+        // A scenario file is output too: the same secret canary that guards every reply guards it
+        // (ADR-182 §12 R8). Checked before anything is written.
+        std::string const text = json::dump(scenario);
+        for (std::string const& canary : config_.secret_canaries) {
+            if (!canary.empty() && text.find(canary) != std::string::npos) {
+                ++secret_leaks_blocked_;
+                return err("test.secret_leak_blocked", "the scenario contained a configured secret and was not written");
+            }
+        }
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        if (!out) return err("test.write_failed", "cannot write " + path.generic_string());
+        out << text << "\n";
+        return obj({{"written", str(path.generic_string())},
+                    {"steps", num(static_cast<double>(n_steps))},
+                    {"model_turns", num(static_cast<double>(n_turns))},
+                    {"events", num(static_cast<double>(n_events))}});
+    }
+
+    ToolResultJson t_scenario_replay(Value const& args);  // defined after replay_scenario()
+
     DriverConfig config_;
     std::map<std::string, std::unique_ptr<DriverSession>, std::less<>> sessions_;
     std::uint64_t next_session_ = 1;
     std::uint64_t secret_leaks_blocked_ = 0;
 };
+
+
+// ---- Scenario replay (ADR-182 §16) -----------------------------------------------------------------
+//
+// Replays a scenario in a fresh Driver with the SCRIPTED model: the recorded model turns are pushed
+// up front (the script is a FIFO, consumed in call order), each step is re-issued and followed by a
+// wait until the session settles, and the whole normalized event stream plus the final state and
+// outcome are compared with what was recorded. No network, no Claude, deterministic by construction:
+// the only inputs are the scenario file and the engine.
+
+struct ReplayReport {
+    bool                     passed = false;
+    std::vector<std::string> problems;
+    std::size_t              events_compared = 0;
+};
+
+namespace replay_detail {
+
+struct Call {
+    bool  is_error = false;
+    Value body;
+};
+
+inline Call call(Driver& d, std::string const& tool, Value args, std::uint64_t& id) {
+    Value req = obj({{"jsonrpc", str("2.0")},
+                     {"id", num(static_cast<double>(id++))},
+                     {"method", str("tools/call")},
+                     {"params", obj({{"name", str(tool)}, {"arguments", std::move(args)}})}});
+    Call out;
+    auto reply = d.handle_line(json::dump(req));
+    auto parsed = reply ? json::parse(*reply) : result<Value>(std::unexpected(error{}));
+    Value const* res = parsed ? parsed->find("result") : nullptr;
+    if (res == nullptr) {
+        out.is_error = true;
+        out.body = obj({{"error", obj({{"code", str("rpc")}, {"message", str(reply.value_or(""))}})}});
+        return out;
+    }
+    if (Value const* e = res->find("isError"); e != nullptr && e->is_bool()) out.is_error = e->as_bool();
+    if (Value const* sc = res->find("structuredContent"); sc != nullptr) out.body = *sc;
+    return out;
+}
+
+inline std::string clip(std::string s, std::size_t n = 400) {
+    if (s.size() > n) s = s.substr(0, n) + "...";
+    return s;
+}
+
+}  // namespace replay_detail
+
+[[nodiscard]] inline ReplayReport replay_scenario(Value const& scenario) {
+    using replay_detail::call;
+    using replay_detail::Call;
+    using replay_detail::clip;
+    ReplayReport report;
+    auto fail = [&](std::string m) {
+        report.problems.push_back(std::move(m));
+        return report;
+    };
+    if (get_u64(scenario, "format") != 1u) return fail("unsupported scenario format (expected 1)");
+    auto fixture = get_string(scenario, "fixture");
+    if (!fixture) return fail("scenario has no fixture");
+
+    Driver d;
+    std::uint64_t id = 1;
+    Call started = call(d, "session_start", obj({{"fixture", str(*fixture)}}), id);
+    if (started.is_error) return fail("session_start failed: " + json::dump(started.body));
+    std::string const sid = get_string(started.body, "session_id").value_or("");
+    auto with_sid = [&](Members extra) {
+        Members m{{"session_id", str(sid)}};
+        for (auto& kv : extra) m.push_back(std::move(kv));
+        return obj(std::move(m));
+    };
+
+    Value const* turns = scenario.find("model_turns");
+    if (turns != nullptr && turns->is_array() && !turns->as_array().empty()) {
+        Call pushed = call(d, "model_script_push", with_sid({{"turns", *turns}}), id);
+        if (pushed.is_error) return fail("model_script_push failed: " + json::dump(pushed.body));
+    }
+
+    Value const* steps = scenario.find("steps");
+    if (steps == nullptr || !steps->is_array()) return fail("scenario has no steps");
+    std::size_t index = 0;
+    for (Value const& step : steps->as_array()) {
+        std::string const op = get_string(step, "op").value_or("");
+        Call r;
+        if (op == "send") {
+            r = call(d, "session_send", with_sid({{"text", str(get_string(step, "text").value_or(""))}}), id);
+        } else if (op == "resolve") {
+            std::string const ix = denormalize_id(get_string(step, "interaction_id").value_or(""), sid);
+            r = call(d, "interaction_resolve",
+                     with_sid({{"interaction_id", str(ix)}, {"decision", str(get_string(step, "decision").value_or(""))}}),
+                     id);
+        } else if (op == "cancel") {
+            r = call(d, "session_cancel", with_sid({}), id);
+        } else {
+            return fail("step " + std::to_string(index) + ": unknown op '" + op + "'");
+        }
+        if (r.is_error) {
+            return fail("step " + std::to_string(index) + " (" + op + ") was refused: " + clip(json::dump(r.body)) +
+                        " -- the replay has diverged before this step");
+        }
+        Call w = call(d, "session_wait_for", with_sid({{"until", str("settled")}, {"timeout_ms", num(60000)}}), id);
+        if (get_bool(w.body, "timed_out").value_or(true)) {
+            return fail("step " + std::to_string(index) + " (" + op + "): the session did not settle within 60 s");
+        }
+        ++index;
+    }
+
+    // Actual stream, paged, normalized.
+    std::vector<Value> actual;
+    std::uint64_t since = 0;
+    for (;;) {
+        Call page = call(d, "session_events", with_sid({{"since_seq", num(static_cast<double>(since))}}), id);
+        Value const* evs = page.body.find("events");
+        if (evs == nullptr || !evs->is_array() || evs->as_array().empty()) break;
+        for (Value const& e : evs->as_array()) {
+            actual.push_back(normalize_ids(e, sid));
+            since = get_u64(e, "seq").value_or(since);
+        }
+    }
+    Call snap = call(d, "session_snapshot", with_sid({}), id);
+    (void)call(d, "session_close", with_sid({}), id);
+
+    Value const* expected = scenario.find("expected");
+    if (expected == nullptr) return fail("scenario has no expected block");
+    std::vector<Value> expected_events;
+    if (Value const* ev = expected->find("events"); ev != nullptr && ev->is_array()) expected_events = ev->as_array();
+
+    std::size_t const n = std::min(expected_events.size(), actual.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        std::string const want = json::dump(expected_events[i]);
+        std::string const got = json::dump(actual[i]);
+        if (want != got) {
+            report.problems.push_back("event " + std::to_string(i) + " differs\n  expected: " + clip(want) +
+                                      "\n  actual:   " + clip(got));
+            break;
+        }
+    }
+    if (report.problems.empty() && expected_events.size() != actual.size()) {
+        report.problems.push_back("event count differs: expected " + std::to_string(expected_events.size()) +
+                                  ", actual " + std::to_string(actual.size()) +
+                                  (actual.size() > n ? "; first extra: " + clip(json::dump(actual[n]))
+                                                     : "; first missing: " + clip(json::dump(expected_events[n]))));
+    }
+    report.events_compared = n;
+
+    std::string const want_state = get_string(*expected, "state").value_or("");
+    std::string const got_state = get_string(snap.body, "state").value_or("");
+    if (want_state != got_state) {
+        report.problems.push_back("final state differs: expected " + want_state + ", actual " + got_state);
+    }
+    Value const* want_outcome = expected->find("outcome");
+    Value const* got_outcome = snap.body.find("last_outcome");
+    std::string const wo = want_outcome ? json::dump(*want_outcome) : "null";
+    std::string const go = got_outcome ? json::dump(normalize_ids(*got_outcome, sid)) : "null";
+    if (wo != go) {
+        report.problems.push_back("final outcome differs\n  expected: " + clip(wo) + "\n  actual:   " + clip(go));
+    }
+    if (auto left = get_u64(snap.body, "script_pending"); left && *left != 0) {
+        report.problems.push_back(std::to_string(*left) +
+                                  " recorded model turn(s) were never requested: the replay made fewer model calls");
+    }
+    report.passed = report.problems.empty();
+    return report;
+}
+
+[[nodiscard]] inline Value report_json(ReplayReport const& r) {
+    std::vector<Value> problems;
+    for (std::string const& p : r.problems) problems.push_back(str(p));
+    return obj({{"passed", boolean(r.passed)},
+                {"events_compared", num(static_cast<double>(r.events_compared))},
+                {"problems", arr(std::move(problems))}});
+}
+
+[[nodiscard]] inline result<Value> read_scenario_file(std::filesystem::path const& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return std::unexpected(error{failure_class::contract, "cannot read " + path.generic_string(), "test.no_scenario"});
+    std::stringstream buf;
+    buf << in.rdbuf();
+    json::ParseBudget budget;
+    budget.max_nodes_visited = 10'000'000;
+    auto parsed = json::parse(buf.str(), budget);
+    if (!parsed) return std::unexpected(error{failure_class::contract, "scenario is not valid JSON: " + parsed.error().message, "test.bad_scenario"});
+    return *parsed;
+}
+
+inline ToolResultJson Driver::t_scenario_replay(Value const& args) {
+    if (config_.scenarios_root.empty()) {
+        return err("test.export_disabled", "the driver was started without a scenarios root");
+    }
+    std::string const name = get_string(args, "name").value_or("");
+    if (!valid_scenario_name(name)) return err("test.bad_name", "name must match [a-z0-9_-]{1,64}");
+    auto scenario = read_scenario_file(config_.scenarios_root / (name + ".json"));
+    if (!scenario) return err(scenario.error().code, scenario.error().message);
+    return report_json(replay_scenario(*scenario));
+}
 
 }  // namespace agentengine::test_driver

@@ -21,6 +21,8 @@
 //            stronger form (named in ADR-182 §13).
 
 #include <cstdio>
+#include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -378,6 +380,120 @@ int main() {
         check(filtered.find(canary) == std::string::npos && filtered.find("test.secret_leak_blocked") != std::string::npos,
               "C6: with the canary configured, the reply is withheld and names no content");
         check(guarded.secret_leaks_blocked() == 1, "C6: the block is counted");
+
+        // Scenario files are output too.
+        std::filesystem::path const root = std::filesystem::temp_directory_path() / "ae_test_driver_canary";
+        std::error_code ec;
+        std::filesystem::remove_all(root, ec);
+        td::DriverConfig ecfg;
+        ecfg.secret_canaries.push_back(canary);
+        ecfg.scenarios_root = root;
+        td::Driver exporter(std::move(ecfg));
+        std::string const id = start(exporter, "no_tools");
+        push(exporter, id, td::arr({text_turn("the key is " + canary)}));
+        (void)call(exporter, "session_send", sid(id, {{"text", td::str("leak it")}}));
+        (void)call(exporter, "session_wait_for", sid(id, {{"until", td::str("idle")}}));  // reply itself is withheld
+        CallResult ex = call(exporter, "scenario_export", sid(id, {{"name", td::str("leaky")}}));
+        check(ex.is_error && ex.error_code == "test.secret_leak_blocked" &&
+                  !std::filesystem::exists(root / "leaky.json"),
+              "C6: a scenario containing the canary is not written");
+        std::filesystem::remove_all(root, ec);
+    }
+
+    // ---- SCN: scenario export and replay (ADR-182 §16) --------------------------------------------------------
+    {
+        namespace fs = std::filesystem;
+        fs::path const root = fs::temp_directory_path() / "ae_test_driver_scenarios";
+        std::error_code ec;
+        fs::remove_all(root, ec);
+
+        td::DriverConfig cfg;
+        cfg.scenarios_root = root;
+        td::Driver d(std::move(cfg));
+        std::string const id = start(d, "basic");
+        push(d, id, td::arr({call_turn({{"gated_echo", "ship it"}}), text_turn("done")}));
+        (void)call(d, "session_send", sid(id, {{"text", td::str("do it")}}));
+        (void)wait(d, id, "suspended");
+        auto pending = pending_of(d, id);
+        std::string const ix = pending.empty() ? "" : td::get_string(pending[0], "interaction_id").value_or("");
+        (void)call(d, "interaction_resolve", sid(id, {{"interaction_id", td::str(ix)}, {"decision", td::str("approve")}}));
+        (void)wait(d, id, "idle");
+
+        CallResult bad_name = call(d, "scenario_export", sid(id, {{"name", td::str("../escape")}}));
+        check(bad_name.is_error && bad_name.error_code == "test.bad_name", "SCN: a path-shaped scenario name is refused");
+        CallResult ex = call(d, "scenario_export", sid(id, {{"name", td::str("approve_flow")}}));
+        check(!ex.is_error && fs::exists(root / "approve_flow.json"), "SCN: export writes <root>/approve_flow.json");
+        CallResult again = call(d, "scenario_export", sid(id, {{"name", td::str("approve_flow")}}));
+        check(again.is_error && again.error_code == "test.exists", "SCN: an existing scenario is not overwritten by default");
+
+        CallResult rp = call(d, "scenario_replay", td::obj({{"name", td::str("approve_flow")}}));
+        check(!rp.is_error && td::get_bool(rp.body, "passed") == true, "SCN: the exported scenario replays and passes");
+
+        auto scenario = td::read_scenario_file(root / "approve_flow.json");
+        check(scenario.has_value(), "SCN: the scenario file parses");
+        if (scenario) {
+            check(td::replay_scenario(*scenario).passed, "SCN: replay_scenario() passes it too (the runner's path)");
+            check(td::replay_scenario(*scenario).passed, "SCN: and again (replay is repeatable)");
+
+            // Positive controls: each tampering must be caught.
+            std::string const text = agentengine::json::dump(*scenario);
+            auto tampered = [&](std::string const& from, std::string const& to) {
+                std::string t = text;
+                auto pos = t.find(from);
+                if (pos == std::string::npos) return std::optional<Value>{};
+                t.replace(pos, from.size(), to);
+                auto v = agentengine::json::parse(t);
+                return v ? std::optional<Value>(*v) : std::optional<Value>{};
+            };
+            // expected tool result text lives only in the expected events
+            auto t1 = tampered(R"(\"text\":\"ship it\"})", R"(\"text\":\"ship IT\"})");
+            check(t1 && !td::replay_scenario(*t1).passed, "SCN control: a changed expected event fails the replay");
+            auto t2 = tampered(R"(ship it)", R"(ship them)");  // first occurrence: the model turn's arguments
+            check(t2 && !td::replay_scenario(*t2).passed, "SCN control: a changed model turn fails the replay");
+            auto t3 = tampered(R"("decision":"approve")", R"("decision":"deny")");
+            bool deny_fails = false;
+            if (t3) {
+                td::ReplayReport const r = td::replay_scenario(*t3);
+                deny_fails = !r.passed && !r.problems.empty();
+                if (!r.problems.empty()) std::fprintf(stderr, "  .. deny control reports: %s\n", r.problems[0].c_str());
+            }
+            check(deny_fails, "SCN control: a changed step (approve -> deny) fails the replay with a diff");
+        }
+
+        // A cancel that lands while a run is in flight is timing-dependent: not exportable.
+        std::string const id2 = start(d, "basic");
+        push(d, id2, td::arr({text_turn("x")}));
+        (void)call(d, "session_send", sid(id2, {{"text", td::str("go")}}));
+        (void)call(d, "session_cancel", sid(id2));  // state is `running` from the send, synchronously
+        (void)wait(d, id2, "settled");
+        CallResult nd = call(d, "scenario_export", sid(id2, {{"name", td::str("cancel_race")}}));
+        check(nd.is_error && nd.error_code == "test.nondeterministic", "SCN: a cancel-while-running session is refused");
+
+        // A live session exports as a scripted scenario: the model's observed answers become the script.
+        agentengine::testing::ScriptedChatClient fake;
+        (void)fake.push({agentengine::testing::tool_calls_turn({{"live_c1", "echo", R"({"text":"from live"})"}}),
+                         agentengine::testing::text_turn("live done")});
+        td::DriverConfig lcfg;
+        lcfg.scenarios_root = root;
+        lcfg.live_description = "fake-live";
+        lcfg.live_backend_factory = [fake](std::string const&) -> std::shared_ptr<td::ModelBackend> {
+            return std::make_shared<td::ScriptedBackend>(fake);
+        };
+        td::Driver live(std::move(lcfg));
+        std::string const lid = start(live, "basic_live");
+        (void)call(live, "session_send", sid(lid, {{"text", td::str("echo please")}}));
+        (void)wait(live, lid, "idle");
+        CallResult lex = call(live, "scenario_export", sid(lid, {{"name", td::str("from_live")}}));
+        auto lsc = td::read_scenario_file(root / "from_live.json");
+        check(!lex.is_error && lsc && td::get_string(*lsc, "fixture") == "basic",
+              "SCN: a live session exports against the scripted twin fixture");
+        check(lsc && td::replay_scenario(*lsc).passed, "SCN: the live-derived scenario replays offline and passes");
+
+        td::Driver no_root;
+        std::string const id3 = start(no_root, "basic");
+        CallResult dis = call(no_root, "scenario_export", sid(id3, {{"name", td::str("x")}}));
+        check(dis.is_error && dis.error_code == "test.export_disabled", "SCN: export is disabled without a scenarios root");
+        fs::remove_all(root, ec);
     }
 
     // ---- C2 (Windows form): observe from the MCP thread while the worker runs -------------------------------

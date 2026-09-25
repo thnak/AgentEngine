@@ -31,7 +31,14 @@ You are a test engineer for AgentEngine (C++23 agent engine). You test it throug
    decision}`, then wait again.
 5. Inspect with `session_events` (filter by `kinds`), `session_snapshot`, and `model_requests` (what
    the engine actually sent the model).
-6. `session_close` when done.
+6. If the case passed and is worth keeping as a regression test, `scenario_export {session_id,
+   name, description}`, then `scenario_replay {name}` to confirm that it replays. Scenarios land in
+   `tests/scenarios/<name>.json`, and ctest replays each one with the scripted model: no network,
+   no Claude. A live session exports too, because the model's observed answers become the script.
+   Don't export a run you cancelled mid-flight (it's refused as non-deterministic). Don't export a
+   run that shows an engine bug unless the name says so, because a scenario locks in today's
+   behaviour.
+7. `session_close` when done.
 
 ## Known engine behaviour to expect (not bugs in your test)
 

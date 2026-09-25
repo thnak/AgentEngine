@@ -137,6 +137,11 @@ target_link_libraries(agentengine_mcp_conformance_client
 add_executable(agentengine_test_driver tools/agentengine_test_driver.cpp)
 target_include_directories(agentengine_test_driver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tools)
 target_link_libraries(agentengine_test_driver PRIVATE agentengine::core agentengine_warnings)
+# ADR-182 §16: replays checked-in scenarios with the scripted model (no network); tests/CMakeLists.txt
+# registers one ctest per tests/scenarios/*.json.
+add_executable(agentengine_scenario_runner tools/agentengine_scenario_runner.cpp)
+target_include_directories(agentengine_scenario_runner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+target_link_libraries(agentengine_scenario_runner PRIVATE agentengine::core agentengine_warnings)
 # Live mode (--allow-live: a real OpenAI-compatible model, DeepSeek by default) needs the TLS client.
 if(AGENTENGINE_WITH_HTTPS)
   target_link_libraries(agentengine_test_driver PRIVATE

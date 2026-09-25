@@ -2,7 +2,7 @@
 
 - **Status**: **Proposed — design pass + red-team pass 1 (2026-09-25), revised (§12). Owner
   delegated Q1–Q4 (§11). P1 and P2 (§13) and driver phase 1 (§14) implemented and proven,
-  including an end-to-end run by a headless Claude tester. Live mode (§15) built early: a Claude tester drove the engine's agent running on live DeepSeek, 4/4. Scenario export and replay not started.** Where §12
+  including an end-to-end run by a headless Claude tester. Live mode (§15) built early: a Claude tester drove the engine's agent running on live DeepSeek, 4/4. Scenario export/replay (§16) done: 7 checked-in scenarios (4 recorded from live DeepSeek) replay offline as ctests, 100/100 each.** Where §12
   and an earlier section disagree, §12 wins.
 - **Date**: 2026-09-25
 - **Origin**: live-provider tests drive a real `rt::AgentSession` by sending a free-form prompt and
@@ -703,3 +703,98 @@ where it was.
 - **Rediscovered on its own.** Without being told, the tester reported that `approval_resolved` comes
   after the tool ran (§12 C-1 / P1c): "anything that reads the events and expects 'resolved, then
   executed' will see them in the wrong order". That is two independent sources for P1c.
+
+## 16. Scenario export and replay — done (2026-09-25)
+
+The design choice that keeps replay simple: **every scenario replays with the scripted model.** That
+holds whether the session was scripted or live.
+
+- `DriverChatClient` logs every model exchange (the response, or the failure in its place) in call
+  order (`ExchangeLog`, up to 256; a streamed call marks the session unrecordable).
+- On export those exchanges become the scenario's `model_turns`, in the *exact* turn shape: an
+  ordered `content` list of text, reasoning and tool calls with raw argument text and call ids, plus
+  usage, or an `error` with its class and code.
+- On replay the whole list is pushed up front. The script is a FIFO consumed in call order, so no
+  step needs to know when the model is called.
+- A live DeepSeek run and a hand-scripted run produce the same kind of file, and both replay with no
+  network.
+
+### What was built
+
+- **Turn codec.** One format for `model_script_push` input and scenario `model_turns`
+  (`parse_turn`, `exchange_to_turn`). The short shape (`text` / `tool_calls`) still works for hand
+  scripting; the exact shape adds `content`, `usage` and all five failure classes.
+- **Step journal.** `session_send` → `{op: send, text}`. `interaction_resolve` →
+  `{op: resolve, interaction_id: "<S>:interaction:N", decision}`. `session_cancel` on a suspended
+  session → `{op: cancel}`. A cancel while a run is in flight marks the session non-deterministic,
+  because where it lands depends on timing (§12 R5), and export refuses it.
+- **Normalization (§12 R6).** Every string that starts with `<session_id>:` becomes `<S>:`. That
+  covers run and interaction ids. Call ids need no rewriting, because they come from the recorded
+  model turns and are reproduced exactly. `RunEvent` has no timestamps.
+- **`scenario_export {session_id, name, description?, overwrite?}`** writes
+  `<scenarios-root>/<name>.json`. It holds the fixture (a live fixture maps to its scripted twin,
+  `basic_live` → `basic`), `recorded_with` (fixture, model, live model), `model_turns`, `steps`, and
+  `expected` {final state, final outcome, every normalized event}.
+  - It refuses a session that is running, non-deterministic, unrecordable, has dropped events or has
+    no steps.
+  - It refuses a name outside `[a-z0-9_-]{1,64}` (§12 C-4), and an existing file unless
+    `overwrite: true`.
+  - It refuses content that contains a secret canary: scenario files are output too, so the P6 guard
+    applies before anything is written.
+  - `--scenarios-root` is a host flag (default `tests/scenarios`).
+- **`replay_scenario()`** runs a fresh `Driver`:
+  - start the fixture, push `model_turns`, then for each step issue it and wait (≤ 60 s) until the
+    session settles;
+  - compare the full normalized event stream element by element and report the first difference with
+    expected and actual, then the final state, the final outcome, and any recorded turns never
+    consumed (the replay made fewer model calls).
+- **Surfaces.** The MCP tool `scenario_replay {name}`, so the tester confirms its own export. The
+  binary `agentengine_scenario_runner <file>...`. One ctest per `tests/scenarios/*.json` (label
+  `scenario`, `CONFIGURE_DEPENDS` glob), all in the default build with no HTTPS and no network.
+
+### Proof
+
+- **`tests/test_agentengine_test_driver.cpp`, 67/67.** The new scenario checks:
+  - export → `scenario_replay` passes, and `replay_scenario()` (the runner's path) passes twice;
+  - three positive controls, each caught:
+    - a changed expected event;
+    - a changed model-turn argument;
+    - a changed step (approve → deny), reported as "event 7 differs";
+  - refusals: a path-shaped name, overwriting without the flag, a cancel-while-running session, and
+    export with no root;
+  - a stand-in live session exports against the scripted twin and replays offline;
+  - a scenario containing a canary is not written.
+- **First corpus, built by the tester.** A `claude -p` tester (57 turns, $0.82 of Claude plus a few
+  cents of DeepSeek) produced 7 scenarios, each confirmed with `scenario_replay`:
+  - 4 from live DeepSeek runs: `live_gated_approve`, `live_gated_deny`, `live_tool_error`,
+    `live_mixed_round`. In the last one the live model really did issue both calls in one round.
+  - 3 scripted: `scripted_parallel_free_calls`, `scripted_model_failure`,
+    `scripted_cancel_suspended`.
+  - None of the files contains the key (`grep -F -f`).
+- **C5 met:** `ctest -L scenario -j 8 --repeat until-fail:100` passes every scenario 100/100 (700
+  replays, 34 s).
+
+### Findings from this round
+
+- **New: two error codes for one model failure.** In `scripted_model_failure` the `run_failed` event
+  carries `error_code: run.chat_failed`, while the run's result carries `provider.overloaded`. A
+  consumer of the event stream (AG-UI, A2A) and a caller of `start_run()` see different codes for
+  one failure. The tester also noted that a `transient` model failure was not retried in-session.
+  Whether that is expected depends on the session's retry configuration (ADR-177). Recorded here, not
+  judged.
+- **Locked in on purpose, so it will show up as a diff.** `live_gated_approve` and `live_mixed_round`
+  expect today's order: `approval_resolved` after the tool ran (§12 C-1). When P1c fixes the order,
+  those two scenarios will fail with an "event N differs" pointing at the move, which is the intended
+  signal. They are then re-exported, or edited to the new order, as part of P1c's own change.
+- **Still open (§14):** `tool_call_request_of()` coerces malformed arguments to `{}`. Not exported
+  as a scenario, because a golden would lock in the bug.
+
+### Revised build phases (replaces §12's list)
+
+1. **Done:** P1, P2 (§13); driver phase 1 (§14); live mode and P6 (§15); scenario export, replay,
+   runner and the first corpus (§16).
+2. Next: C9 (MCP Inspector `--cli` contract run); C2 under TSan on Linux; the headless recipe in docs
+   (tester + live config + `ctest -L scenario`).
+3. P4 file fixtures (git-tracked check), P5 tool doubles, sandboxed real tools, `session_fork`.
+4. Workflows; P1b (BUG-1/BUG-2) and P1c (event order), each its own ADR. The two-error-code finding
+   and the malformed-arguments finding are candidates for the same kind of small ADR.

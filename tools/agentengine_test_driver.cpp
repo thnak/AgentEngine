@@ -12,6 +12,7 @@
 //   agentengine_test_driver --allow-live --live-key-file deep-seek.txt [--live-model deepseek-flash]
 //       [--live-host api.deepseek.com] [--live-path-prefix /v1] [--live-max-calls 40]
 //       [--record-dir build/test-driver-recordings]
+//   --scenarios-root <dir>   where scenario_export writes / scenario_replay reads (default tests/scenarios)
 // Every flag is a HOST decision, fixed for the process: no tool argument can turn live mode on, pick
 // the key, or change the budget (ADR-182 §12 C-3). Live mode needs an AGENTENGINE_WITH_HTTPS build.
 
@@ -75,6 +76,7 @@ struct Args {
     std::string model = "deepseek-flash";
     std::string record_dir;
     unsigned    max_calls = 40;
+    std::string scenarios_root = "tests/scenarios";
 };
 
 bool parse_args(int argc, char** argv, Args& a) {
@@ -97,6 +99,8 @@ bool parse_args(int argc, char** argv, Args& a) {
             if (!value(a.model)) return false;
         } else if (f == "--record-dir") {
             if (!value(a.record_dir)) return false;
+        } else if (f == "--scenarios-root") {
+            if (!value(a.scenarios_root)) return false;
         } else if (f == "--live-max-calls") {
             std::string n;
             if (!value(n)) return false;
@@ -116,6 +120,7 @@ int main(int argc, char** argv) {
     if (!parse_args(argc, argv, args)) return 2;
 
     agentengine::test_driver::DriverConfig config;
+    config.scenarios_root = args.scenarios_root;
     if (args.allow_live) {
 #ifdef AGENTENGINE_WITH_HTTPS
         std::string key = args.key_file.empty() ? std::string{} : read_key_file(args.key_file);
