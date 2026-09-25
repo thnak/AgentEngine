@@ -84,39 +84,14 @@
 #include "agentengine/eval/eval_follow_rate_screen.hpp"
 #include "agentengine/eval/eval_gross_harm_screen.hpp"
 #include "agentengine/eval/lesson_candidate.hpp"
+#include "agentengine/eval/lesson_screen_record.hpp"
 #include "agentengine/rt/append_log_store.hpp"
 #include "agentengine/trust/secure_random.hpp"
 
 namespace agentengine::eval {
 
-// What one Tier-1 attempt concluded. Arm S is not built, so `cleared` means "not inert on its probe(s)
-// and not flagged for gross harm" -- never "safe to promote", and never "helps" (§3.0).
-enum class tier1_screen_outcome {  // ae-naming-lint: allow tier1_screen_outcome — ADR-195 E32
-    cleared,       // every probe passed and the gross-harm screen did not flag
-    inert,         // a probe did not pass (the gross-harm screen did not run)
-    harmful,       // the gross-harm screen flagged
-    inconclusive,  // a probe or the gross-harm screen was invalid (no verdict)
-    errored,       // a screen reported a setup error after the attempt started
-};
-
-[[nodiscard]] inline std::string_view tier1_screen_outcome_name(tier1_screen_outcome o) {
-    switch (o) {
-        case tier1_screen_outcome::cleared: return "cleared";
-        case tier1_screen_outcome::inert: return "inert";
-        case tier1_screen_outcome::harmful: return "harmful";
-        case tier1_screen_outcome::inconclusive: return "inconclusive";
-        case tier1_screen_outcome::errored: return "errored";
-    }
-    return "errored";
-}
-
-[[nodiscard]] inline std::optional<tier1_screen_outcome> tier1_screen_outcome_from_name(std::string_view s) {
-    for (auto o : {tier1_screen_outcome::cleared, tier1_screen_outcome::inert, tier1_screen_outcome::harmful,
-                   tier1_screen_outcome::inconclusive, tier1_screen_outcome::errored}) {
-        if (tier1_screen_outcome_name(o) == s) return o;
-    }
-    return std::nullopt;
-}
+// `tier1_screen_outcome` (what one attempt concluded) and `lesson_delivery` live in lesson_screen_record.hpp, so the
+// approval path (promotion_ack.hpp) can name them without pulling in the trial driver.
 
 // Who the attempt is for: the candidate's own `subject` (a label, as written -- ADR-191 dropped its normalisation)
 // and the host-supplied `lineage` (the run the candidate came from), which is what attempts are counted by.
@@ -435,7 +410,9 @@ namespace detail {
     root.emplace_back("template_version", Value::make_string(g.template_version));
     root.emplace_back("rendered_lesson_digest", Value::make_string(*lesson));
     root.emplace_back("lesson_salience", detail::tier1_double(static_cast<double>(g.lesson_salience)));
-    // ADR-191: how the lesson reaches the model changes what the screen measures, so it is part of the design.
+    // ADR-191: how the lesson reaches the model changes what the screen measures, so it is part of the design. Round 4:
+    // every wire form ADR-192 can ship has its own name here (lesson_screen_record.hpp), so a screen at one form hashes
+    // differently from the same screen at any other, and `tier1_screen_record` reads the form back from this field.
     root.emplace_back("lesson_delivery", Value::make_string(std::string(lesson_delivery_name(g.delivery))));
     root.emplace_back("probes", Value::make_array(std::move(probes)));
     root.emplace_back("gross_harm", Value::make_object(std::move(harm)));
@@ -973,6 +950,75 @@ template <rt::AppendLogStore Store, class InnerFactory, class SummarizerFactory>
     }
     result.history_complete = true;
     co_return result;
+}
+
+namespace detail {
+
+// ADR-191 §3.8 round 4: the `Tier1ScreenRecord` for `attempt_id`, from a lineage's attempts as read back from the log.
+// The lesson digest, template version and delivery form come from the attempt's own stored design -- which
+// `lineage_attempts` has already checked hashes to the digest its `started` record names -- so a caller cannot claim
+// a form the screen did not run at. The outcome is the log's; an attempt whose figures were never written has none.
+[[nodiscard]] inline Tier1ScreenRecord tier1_screen_record_of(std::vector<Tier1AttemptRecord> const& attempts,
+                                                              std::string const& lineage,
+                                                              std::string const& attempt_id, bool history_read) {
+    Tier1ScreenRecord out;
+    out.attempt_id = attempt_id;
+    out.lineage = lineage;
+    out.attempt_count = attempts.size();
+    bool found = false;
+    for (Tier1AttemptRecord const& a : attempts) {
+        if (a.unreadable) {
+            ++out.unreadable_records;
+            continue;
+        }
+        if (a.attempt_id != attempt_id) {
+            if (!a.completed) ++out.other_attempts_unfinished;
+            if (a.outcome == tier1_screen_outcome::harmful) ++out.other_attempts_harmful;
+            continue;
+        }
+        found = true;
+        out.attempt_ordinal = a.ordinal;
+        out.preregistration_digest = a.preregistration;
+        out.outcome = a.completed ? a.outcome : std::nullopt;
+        if (auto design = json::parse(a.preregistration_json); design && design->is_object()) {
+            out.rendered_lesson_digest = tier1_read_string(*design, "rendered_lesson_digest").value_or("");
+            out.template_version = tier1_read_string(*design, "template_version").value_or("");
+            if (auto name = tier1_read_string(*design, "lesson_delivery"); name.has_value()) {
+                out.delivery = lesson_delivery_from_name(*name);
+            }
+        }
+    }
+    out.history_complete = history_read && found && out.outcome.has_value();
+    if (!found) out.attempt_count = 0;  // a read that lost this attempt cannot be trusted to count the others
+    return out;
+}
+
+}  // namespace detail
+
+// The record an approval rests on, from a finished attempt's result. Its history is the one the attempt read back
+// when it finished; a host approving later should prefer `tier1_screen_record_from_log`, which also sees attempts
+// started since. An attempt that never ran (a `setup_error`) yields a record with no attempt id: "no screen".
+[[nodiscard]] inline Tier1ScreenRecord tier1_screen_record(Tier1ScreenResult const& r) {
+    if (r.attempt_id.empty() || !r.outcome.has_value()) return {};
+    Tier1ScreenRecord out = detail::tier1_screen_record_of(r.lineage_attempts, r.family.lineage, r.attempt_id,
+                                                           r.history_complete && !r.attempt_log_error.has_value());
+    return out;
+}
+
+// The same record, read fresh from the lineage's log -- what an approver should be shown at approval time.
+template <rt::AppendLogStore Store>
+[[nodiscard]] inline Tier1ScreenRecord tier1_screen_record_from_log(Tier1AttemptLog<Store> const& log,
+                                                                    std::string const& lineage,
+                                                                    std::string const& attempt_id) {
+    if (attempt_id.empty()) return {};
+    auto attempts = log.lineage_attempts(lineage);
+    if (!attempts) {
+        Tier1ScreenRecord out;
+        out.attempt_id = attempt_id;
+        out.lineage = lineage;
+        return out;  // history_complete = false, no outcome, no form: every approval check objects
+    }
+    return detail::tier1_screen_record_of(*attempts, lineage, attempt_id, true);
 }
 
 }  // namespace agentengine::eval
