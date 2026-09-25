@@ -764,6 +764,10 @@ struct DriverSession {
     // The user-side steps, in order, for scenario_export (ADR-182 §16). Interaction ids are stored
     // normalized (`<S>:interaction:N`).
     std::vector<Value>               steps;
+    // A forked session's ancestry, oldest first (ADR-182 §20): for each ancestor, the model turns it had
+    // consumed and the steps it had taken when it was forked, and the turn it was forked at. Replay runs
+    // each segment in turn, forking between them, then this session's own turns and steps.
+    std::vector<Value>               segments;
     std::string                      nondeterministic_reason;  // non-empty = cannot be exported
     std::uint64_t                    action_mark = 0;  // monitor seq at the last send/resolve/cancel
     std::uint64_t                    next_call_id = 1;
@@ -1265,6 +1269,13 @@ private:
                      "Cancel the current run. On a suspended session this also denies every open "
                      "interaction, so the session returns to idle.",
                      schema({{"session_id", sid}}, {"session_id"})),
+            tool_def("session_fork",
+                     "Copy an idle session into a new one with the same fixture: its history up to at_turn "
+                     "(a turn starts at a user message; default all), an empty script, no open interactions. "
+                     "The source is unchanged. A fork can be exported; replay rebuilds its ancestry.",
+                     schema({{"session_id", sid},
+                             {"at_turn", prop("integer", "Keep this many turns (0 = empty history). Default all.")}},
+                            {"session_id"})),
             tool_def("session_close", "Cancel anything in flight and discard the session.",
                      schema({{"session_id", sid}}, {"session_id"})),
             tool_def("model_requests",
@@ -1300,6 +1311,7 @@ private:
             {"interaction_list", &Driver::t_interaction_list},
             {"interaction_resolve", &Driver::t_interaction_resolve},
             {"session_cancel", &Driver::t_session_cancel},
+            {"session_fork", &Driver::t_session_fork},
             {"session_close", &Driver::t_session_close},
             {"model_requests", &Driver::t_model_requests},
             {"scenario_export", &Driver::t_scenario_export},
@@ -1435,6 +1447,16 @@ private:
         if (!name) return err("test.bad_arguments", "fixture is required");
         Fixture const* fixture = find_fixture(*name);
         if (fixture == nullptr) return err("test.unknown_fixture", "no compiled-in fixture named " + *name);
+        auto made = make_session(*fixture);
+        if (auto* e = std::get_if<ToolError>(&made)) return *e;
+        DriverSession& ref = *std::get<DriverSession*>(made);
+        return obj({{"session_id", str(ref.id)}, {"snapshot", snapshot(ref, false)}});
+    }
+
+    // Builds and registers a fully configured session for a fixture: the one place a session's model,
+    // grant, tools and tap are chosen, so a fork gets exactly what a start would (ADR-182 §12 R4).
+    std::variant<DriverSession*, ToolError> make_session(Fixture const& fixture_ref) {
+        Fixture const* fixture = &fixture_ref;
         if (fixture->live && !config_.live_backend_factory) {
             return err("test.live_disabled",
                        "live fixtures need the driver started with --allow-live and a key file (host decision)");
@@ -1473,9 +1495,82 @@ private:
         std::shared_ptr<SessionMonitor> monitor = ds->monitor;
         session.set_run_event_tap([monitor](RunEvent const& ev) { monitor->on_event(ev); });
 
-        DriverSession& ref = *ds;
+        DriverSession* ref = ds.get();
         sessions_.emplace(ds->id, std::move(ds));
-        return obj({{"session_id", str(ref.id)}, {"snapshot", snapshot(ref, false)}});
+        return ref;
+    }
+
+    // ADR-182 §12 R4 / §20. The target is built from the source's fixture exactly as session_start would
+    // build it (its own model, grant, tools and tap; a scripted target starts with an empty script). Then
+    // `fork_from` copies the history prefix. That runs as a job on the SOURCE's worker, the only thread
+    // allowed to read the source (I1). The target has run nothing yet, so writing it there is safe, and
+    // waiting for the job orders that write before the target's first job.
+    ToolResultJson t_session_fork(Value const& args) {
+        ToolError e;
+        DriverSession* src = find_session(args, e);
+        if (src == nullptr) return e;
+        run_state const st = src->monitor->state();
+        if (st == run_state::running) return err("test.session_running", "wait until the session settles before forking");
+        if (st == run_state::suspended) {
+            return err("test.session_suspended",
+                       "fork only an idle session: fork_from drops open interactions, so a fork of a suspended "
+                       "session could never be resumed (resolve or cancel first, or fork before the send)");
+        }
+        std::optional<std::uint64_t> at_turn;
+        if (args.find("at_turn") != nullptr) {
+            at_turn = get_u64(args, "at_turn");
+            if (!at_turn) return err("test.bad_arguments", "at_turn must be a non-negative integer");
+        }
+        auto made = make_session(src->fixture);
+        if (auto* me = std::get_if<ToolError>(&made)) return *me;
+        DriverSession* dst = std::get<DriverSession*>(made);
+
+        Session* from = src->session.get();
+        Session* to = dst->session.get();
+        std::string const new_id = dst->id;
+        std::size_t turns = 0;
+        std::size_t kept = 0;
+        bool in_range = false;
+        bool const ran = run_on_worker(*src, [&] {
+            // A turn starts at a user message. The source is idle, so every turn in its history is complete.
+            std::vector<Message> const& h = from->history();
+            std::optional<std::size_t> cut;
+            for (std::size_t i = 0; i < h.size(); ++i) {
+                if (h[i].role != role::user) continue;
+                if (at_turn && turns == *at_turn && !cut) cut = i;
+                ++turns;
+            }
+            in_range = !at_turn || *at_turn <= turns;
+            if (!in_range) return;
+            kept = cut.value_or(h.size());
+            to->fork_from(*from, new_id, kept);
+        });
+        if (!ran || !in_range) {
+            (void)close_session(new_id);
+            if (!ran) return err("test.fork_failed", "the fork job did not complete");
+            return err("test.bad_arguments", "at_turn is " + std::to_string(*at_turn) + " but the session has only " +
+                                                 std::to_string(turns) + " turn(s)");
+        }
+        std::uint64_t const fork_turn = at_turn.value_or(turns);
+
+        // Lineage, so the fork can be exported and replayed (§20).
+        dst->segments = src->segments;
+        std::vector<Value> src_turns;
+        for (ModelExchange const& x : src->exchanges->exchanges()) src_turns.push_back(exchange_to_turn(x));
+        dst->segments.push_back(obj({{"model_turns", arr(std::move(src_turns))},
+                                     {"steps", arr(src->steps)},
+                                     {"fork_at_turn", num(static_cast<double>(fork_turn))}}));
+        dst->nondeterministic_reason = src->nondeterministic_reason;
+        if (dst->nondeterministic_reason.empty() && (src->exchanges->overflow() || src->exchanges->unrecordable())) {
+            dst->nondeterministic_reason = "forked from a session whose model exchanges were not all captured";
+        }
+        dst->next_call_id = src->next_call_id;  // a scripted call id in the target never repeats one in its history
+        return obj({{"session_id", str(new_id)},
+                    {"forked_from", str(src->id)},
+                    {"at_turn", num(static_cast<double>(fork_turn))},
+                    {"turns_in_source", num(static_cast<double>(turns))},
+                    {"history_length", num(static_cast<double>(kept))},
+                    {"snapshot", snapshot(*dst, false)}});
     }
 
     ToolResultJson t_model_script_push(Value const& args) {
@@ -1753,12 +1848,14 @@ private:
         std::size_t const n_turns = turns.size();
         std::size_t const n_events = events.size();
         std::size_t const n_steps = s->steps.size();
+        bool const forked = !s->segments.empty();
         Value scenario = obj({
-            {"format", num(1)},
+            {"format", num(forked ? 2 : 1)},
             {"name", str(name)},
             {"description", str(get_string(args, "description").value_or(""))},
             {"fixture", str(replay_fixture)},
             {"recorded_with", obj(std::move(recorded))},
+            {"segments", arr(s->segments)},
             {"model_turns", arr(std::move(turns))},
             {"steps", arr(s->steps)},
             {"expected", normalize_ids(obj({{"state", str(std::string(run_state_name(s->monitor->state())))},
@@ -1860,7 +1957,8 @@ inline std::string clip(std::string s, std::size_t n = 400) {
         report.problems.push_back(std::move(m));
         return report;
     };
-    if (get_u64(scenario, "format") != 1u) return fail("unsupported scenario format (expected 1)");
+    auto const format = get_u64(scenario, "format");
+    if (format != 1u && format != 2u) return fail("unsupported scenario format (expected 1 or 2)");
     auto fixture = get_string(scenario, "fixture");
     if (!fixture) return fail("scenario has no fixture");
 
@@ -1868,60 +1966,86 @@ inline std::string clip(std::string s, std::size_t n = 400) {
     std::uint64_t id = 1;
     Call started = call(d, "session_start", obj({{"fixture", str(*fixture)}}), id);
     if (started.is_error) return fail("session_start failed: " + json::dump(started.body));
-    std::string const sid = get_string(started.body, "session_id").value_or("");
+    std::string sid = get_string(started.body, "session_id").value_or("");
     auto with_sid = [&](Members extra) {
         Members m{{"session_id", str(sid)}};
         for (auto& kv : extra) m.push_back(std::move(kv));
         return obj(std::move(m));
     };
 
-    Value const* turns = scenario.find("model_turns");
-    if (turns != nullptr && turns->is_array() && !turns->as_array().empty()) {
-        Call pushed = call(d, "model_script_push", with_sid({{"turns", *turns}}), id);
-        if (pushed.is_error) return fail("model_script_push failed: " + json::dump(pushed.body));
-    }
-
-    Value const* steps = scenario.find("steps");
-    if (steps == nullptr || !steps->is_array()) return fail("scenario has no steps");
-    std::size_t index = 0;
-    for (Value const& step : steps->as_array()) {
-        std::string const op = get_string(step, "op").value_or("");
-        Call r;
-        if (op == "send") {
-            r = call(d, "session_send", with_sid({{"text", str(get_string(step, "text").value_or(""))}}), id);
-        } else if (op == "resolve") {
-            std::string const ix = denormalize_id(get_string(step, "interaction_id").value_or(""), sid);
-            r = call(d, "interaction_resolve",
-                     with_sid({{"interaction_id", str(ix)}, {"decision", str(get_string(step, "decision").value_or(""))}}),
-                     id);
-        } else if (op == "cancel") {
-            r = call(d, "session_cancel", with_sid({}), id);
-        } else {
-            return fail("step " + std::to_string(index) + ": unknown op '" + op + "'");
+    // Pushes one session's recorded turns and re-issues its steps. Returns a problem, or nothing.
+    // `where` prefixes step numbers ("segment 0 step 2") when the scenario has an ancestry (§20).
+    auto play = [&](Value const* turns, Value const* steps, std::string const& where) -> std::optional<std::string> {
+        if (turns != nullptr && turns->is_array() && !turns->as_array().empty()) {
+            Call pushed = call(d, "model_script_push", with_sid({{"turns", *turns}}), id);
+            if (pushed.is_error) return where + "model_script_push failed: " + json::dump(pushed.body);
         }
-        if (r.is_error) {
-            return fail("step " + std::to_string(index) + " (" + op + ") was refused: " + clip(json::dump(r.body)) +
-                        " -- the replay has diverged before this step");
-        }
-        Call w = call(d, "session_wait_for", with_sid({{"until", str("settled")}, {"timeout_ms", num(60000)}}), id);
-        if (get_bool(w.body, "timed_out").value_or(true)) {
-            return fail("step " + std::to_string(index) + " (" + op + "): the session did not settle within 60 s");
-        }
-        // C8: the engine asked the model something other than what was recorded. Everything after this
-        // point would diff too, so name the cause and stop.
-        if (Value const* snap = w.body.find("snapshot"); snap != nullptr) {
-            if (Value const* mm = snap->find("replay_mismatch"); mm != nullptr) {
-                Value const* req = mm->find("actual_request");
-                return fail("step " + std::to_string(index) + " (" + op + "): test.replay_mismatch at model call " +
-                            std::to_string(get_u64(*mm, "call_index").value_or(0)) +
-                            ": the engine's request differs from the recording (expected " +
-                            get_string(*mm, "expected").value_or("?") + ", got " +
-                            get_string(*mm, "actual").value_or("?") + ")\n  actual request: " +
-                            clip(req != nullptr ? json::dump(*req) : std::string("?"), 1200));
+        if (steps == nullptr || !steps->is_array()) return where + "no steps";
+        std::size_t index = 0;
+        for (Value const& step : steps->as_array()) {
+            std::string const op = get_string(step, "op").value_or("");
+            std::string const at = where + "step " + std::to_string(index);
+            Call r;
+            if (op == "send") {
+                r = call(d, "session_send", with_sid({{"text", str(get_string(step, "text").value_or(""))}}), id);
+            } else if (op == "resolve") {
+                std::string const ix = denormalize_id(get_string(step, "interaction_id").value_or(""), sid);
+                r = call(d, "interaction_resolve",
+                         with_sid({{"interaction_id", str(ix)}, {"decision", str(get_string(step, "decision").value_or(""))}}),
+                         id);
+            } else if (op == "cancel") {
+                r = call(d, "session_cancel", with_sid({}), id);
+            } else {
+                return at + ": unknown op '" + op + "'";
             }
+            if (r.is_error) {
+                return at + " (" + op + ") was refused: " + clip(json::dump(r.body)) +
+                       " -- the replay has diverged before this step";
+            }
+            Call w = call(d, "session_wait_for", with_sid({{"until", str("settled")}, {"timeout_ms", num(60000)}}), id);
+            if (get_bool(w.body, "timed_out").value_or(true)) {
+                return at + " (" + op + "): the session did not settle within 60 s";
+            }
+            // C8: the engine asked the model something other than what was recorded. Everything after this
+            // point would diff too, so name the cause and stop.
+            if (Value const* snap = w.body.find("snapshot"); snap != nullptr) {
+                if (Value const* mm = snap->find("replay_mismatch"); mm != nullptr) {
+                    Value const* req = mm->find("actual_request");
+                    return at + " (" + op + "): test.replay_mismatch at model call " +
+                           std::to_string(get_u64(*mm, "call_index").value_or(0)) +
+                           ": the engine's request differs from the recording (expected " +
+                           get_string(*mm, "expected").value_or("?") + ", got " +
+                           get_string(*mm, "actual").value_or("?") + ")\n  actual request: " +
+                           clip(req != nullptr ? json::dump(*req) : std::string("?"), 1200);
+                }
+            }
+            ++index;
         }
-        ++index;
+        return std::nullopt;
+    };
+
+    // A forked session's ancestry (§20): replay each ancestor, then fork where it was forked. The
+    // ancestors' own event streams are not compared; any divergence there shows up as a request
+    // mismatch or a diff in the final session.
+    std::size_t checked_before = 0;
+    if (Value const* segs = scenario.find("segments"); segs != nullptr && segs->is_array()) {
+        std::size_t k = 0;
+        for (Value const& seg : segs->as_array()) {
+            std::string const where = "segment " + std::to_string(k) + " ";
+            if (auto problem = play(seg.find("model_turns"), seg.find("steps"), where)) return fail(*problem);
+            Call snap = call(d, "session_snapshot", with_sid({}), id);
+            checked_before += static_cast<std::size_t>(get_u64(snap.body, "requests_checked").value_or(0));
+            Call forked = call(d, "session_fork",
+                               with_sid({{"at_turn", num(static_cast<double>(get_u64(seg, "fork_at_turn").value_or(0)))}}),
+                               id);
+            if (forked.is_error) return fail(where + "fork was refused: " + clip(json::dump(forked.body)));
+            std::string const next = get_string(forked.body, "session_id").value_or("");
+            (void)call(d, "session_close", with_sid({}), id);
+            sid = next;
+            ++k;
+        }
     }
+    if (auto problem = play(scenario.find("model_turns"), scenario.find("steps"), "")) return fail(*problem);
 
     // Actual stream, paged, normalized.
     std::vector<Value> actual;
@@ -1936,7 +2060,8 @@ inline std::string clip(std::string s, std::size_t n = 400) {
         }
     }
     Call snap = call(d, "session_snapshot", with_sid({}), id);
-    report.requests_checked = static_cast<std::size_t>(get_u64(snap.body, "requests_checked").value_or(0));
+    report.requests_checked =
+        checked_before + static_cast<std::size_t>(get_u64(snap.body, "requests_checked").value_or(0));
     for (std::size_t since_index = 0;;) {
         Call page = call(d, "model_requests", with_sid({{"since_index", num(static_cast<double>(since_index))}}), id);
         Value const* reqs = page.body.find("requests");

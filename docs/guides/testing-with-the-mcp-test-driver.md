@@ -39,6 +39,11 @@ change moves an event on purpose, update the affected scenarios as part of that 
 this when it moved `approval_resolved` ahead of dispatch, and exactly the two scenarios that cross an
 approve failed, at exactly the moved event.
 
+A forked session (`session_fork`) exports as format 2. Its `segments` list the ancestors, each with
+the model turns it had consumed, the steps it had taken and the turn it was forked at. Replay rebuilds
+each ancestor, forks it, and then compares the final session's events.
+`tests/scenarios/scripted_fork_branch.json` is an example.
+
 A scenario exported before request digests existed can be given them with
 `build/agentengine_scenario_runner --stamp-requests <file>...`. This replays the scenario and writes the
 observed digests only if the replay passes with one model call per recorded turn.

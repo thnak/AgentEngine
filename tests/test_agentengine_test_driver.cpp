@@ -605,6 +605,116 @@ int main() {
         fs::remove_all(root, ec);
     }
 
+    // ---- FORK: session_fork (ADR-182 §12 R4, §20) ------------------------------------------------------------
+    {
+        namespace fs = std::filesystem;
+        fs::path const root = fs::temp_directory_path() / "ae_test_driver_fork";
+        std::error_code ec;
+        fs::remove_all(root, ec);
+        td::DriverConfig cfg;
+        cfg.scenarios_root = root;
+        td::Driver d(std::move(cfg));
+
+        std::string const src = start(d, "basic");
+        push(d, src, td::arr({text_turn("r1"), call_turn({{"echo", "two"}}), text_turn("r2")}));
+        (void)call(d, "session_send", sid(src, {{"text", td::str("one")}}));
+        (void)wait(d, src, "idle");
+        (void)call(d, "session_send", sid(src, {{"text", td::str("two")}}));
+        (void)wait(d, src, "idle");
+        auto history_len = [&](std::string const& id) {
+            return td::get_u64(call(d, "session_snapshot", sid(id)).body, "history_length").value_or(999);
+        };
+        std::uint64_t const src_len = history_len(src);  // user, r1, user, assistant(call), tool, r2
+
+        CallResult f1 = call(d, "session_fork", sid(src, {{"at_turn", td::num(1)}}));
+        std::string const b1 = td::get_string(f1.body, "session_id").value_or("");
+        check(!f1.is_error && !b1.empty() && td::get_u64(f1.body, "turns_in_source") == 2u,
+              "FORK: an idle session forks at turn 1 of 2");
+        check(history_len(b1) == 2u, "FORK: the fork keeps exactly turn 1 (user 'one' + 'r1')");
+        check(history_len(src) == src_len, "FORK: the source's history is unchanged");
+        check(td::get_u64(call(d, "session_snapshot", sid(b1)).body, "script_pending") == 0u,
+              "FORK: the fork starts with an empty script (the source's is not shared)");
+
+        // The branch diverges: the model sees turn 1, then the branch's own message, not 'two'.
+        push(d, b1, td::arr({text_turn("branch reply")}));
+        (void)call(d, "session_send", sid(b1, {{"text", td::str("alternative")}}));
+        Value wb = wait(d, b1, "idle");
+        check(wb.find("snapshot") && outcome_field(*wb.find("snapshot"), "text") == "branch reply",
+              "FORK: the fork runs on its own script");
+        CallResult reqs = call(d, "model_requests", sid(b1));
+        std::string seen;
+        if (Value const* list = reqs.body.find("requests"); list != nullptr && list->is_array() && !list->as_array().empty()) {
+            for (Value const& m : list->as_array()[0].find("messages")->as_array())
+                seen += td::get_string(m, "role").value_or("") + ":" + td::get_string(m, "text").value_or("") + "|";
+        }
+        check(seen == "user:one|assistant:r1|user:alternative|",
+              "FORK: the fork's first request is turn 1 plus its own message (" + seen + ")");
+        check(history_len(src) == src_len, "FORK: running the fork does not touch the source");
+
+        CallResult whole = call(d, "session_fork", sid(src));
+        check(!whole.is_error && history_len(td::get_string(whole.body, "session_id").value_or("")) == src_len,
+              "FORK: with no at_turn the whole history is copied");
+        (void)call(d, "session_close", sid(td::get_string(whole.body, "session_id").value_or("")));
+        CallResult zero = call(d, "session_fork", sid(src, {{"at_turn", td::num(0)}}));
+        check(!zero.is_error && history_len(td::get_string(zero.body, "session_id").value_or("")) == 0u,
+              "FORK: at_turn 0 gives an empty history");
+        (void)call(d, "session_close", sid(td::get_string(zero.body, "session_id").value_or("")));
+        CallResult too_far = call(d, "session_fork", sid(src, {{"at_turn", td::num(3)}}));
+        check(too_far.is_error && too_far.error_code == "test.bad_arguments", "FORK: at_turn past the end is refused");
+        CallResult bad_turn = call(d, "session_fork", sid(src, {{"at_turn", td::str("1")}}));
+        check(bad_turn.is_error && bad_turn.error_code == "test.bad_arguments", "FORK: a non-integer at_turn is refused");
+        CallResult sneaky = call(d, "session_fork", sid(src, {{"fixture", td::str("no_tools")}, {"at_turn", td::num(0)}}));
+        std::string const sneaky_id = td::get_string(sneaky.body, "session_id").value_or("");
+        check(!sneaky.is_error && td::get_string(call(d, "session_snapshot", sid(sneaky_id)).body, "fixture") == "basic",
+              "FORK: the fork always takes the source's fixture (a fixture argument is ignored)");
+        (void)call(d, "session_close", sid(sneaky_id));
+
+        std::string const sus = start(d, "basic");
+        push(d, sus, td::arr({call_turn({{"gated_echo", "x"}})}));
+        (void)call(d, "session_send", sid(sus, {{"text", td::str("go")}}));
+        (void)wait(d, sus, "suspended");
+        CallResult fs_sus = call(d, "session_fork", sid(sus));
+        check(fs_sus.is_error && fs_sus.error_code == "test.session_suspended", "FORK: a suspended session is refused");
+        (void)call(d, "session_close", sid(sus));
+
+        // Export and replay a fork, and a fork of a fork.
+        CallResult ex = call(d, "scenario_export", sid(b1, {{"name", td::str("fork_branch")}}));
+        auto sc = td::read_scenario_file(root / "fork_branch.json");
+        check(!ex.is_error && sc && td::get_u64(*sc, "format") == 2u && sc->find("segments") != nullptr &&
+                  sc->find("segments")->as_array().size() == 1,
+              "FORK: a fork exports as format 2 with its ancestry");
+        td::ReplayReport const rr = sc ? td::replay_scenario(*sc) : td::ReplayReport{};
+        if (!rr.problems.empty()) std::fprintf(stderr, "  .. fork replay: %s\n", rr.problems[0].c_str());
+        check(rr.passed && rr.requests_checked == 4, "FORK: the fork's scenario replays (3 ancestor + 1 own request checked)");
+
+        CallResult f2 = call(d, "session_fork", sid(b1, {{"at_turn", td::num(1)}}));
+        std::string const b2 = td::get_string(f2.body, "session_id").value_or("");
+        push(d, b2, td::arr({text_turn("grandchild")}));
+        (void)call(d, "session_send", sid(b2, {{"text", td::str("third way")}}));
+        (void)wait(d, b2, "idle");
+        CallResult ex2 = call(d, "scenario_export", sid(b2, {{"name", td::str("fork_of_fork")}}));
+        auto sc2 = td::read_scenario_file(root / "fork_of_fork.json");
+        td::ReplayReport const rr2 = sc2 ? td::replay_scenario(*sc2) : td::ReplayReport{};
+        if (!rr2.problems.empty()) std::fprintf(stderr, "  .. fork-of-fork replay: %s\n", rr2.problems[0].c_str());
+        check(!ex2.is_error && sc2 && sc2->find("segments")->as_array().size() == 2 && rr2.passed,
+              "FORK: a fork of a fork exports two segments and replays");
+
+        // Control: tampering with an ancestor's step changes the history the fork inherits, which the
+        // fork's own request digest catches.
+        if (sc) {
+            std::string text = agentengine::json::dump(*sc);
+            std::string const from = R"({"op":"send","text":"one"})";
+            auto const pos = text.find(from);
+            if (pos != std::string::npos) text.replace(pos, from.size(), R"({"op":"send","text":"uno"})");
+            auto t = agentengine::json::parse(text);
+            td::ReplayReport const tr = t ? td::replay_scenario(*t) : td::ReplayReport{};
+            check(pos != std::string::npos && !tr.passed && !tr.problems.empty() &&
+                      tr.problems[0].find("test.replay_mismatch") != std::string::npos,
+                  "FORK control: a changed ancestor step fails the replay with test.replay_mismatch");
+        }
+        fs::remove_all(root, ec);
+    }
+
     // ---- C2 (Windows form): observe from the MCP thread while the worker runs -------------------------------
     {
         td::Driver d;

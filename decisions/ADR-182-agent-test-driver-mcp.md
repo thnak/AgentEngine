@@ -926,3 +926,41 @@ differs fails that model call with `test.replay_mismatch`.
   which is P3's request matching. Recordings under `--record-dir` remain diagnostic artifacts only.
 - **Residual:** `RequestLog` keeps the last 64 requests. So `--stamp-requests` refuses a scenario with
   more than 64 model calls; export and checking are unaffected.
+
+## 20. `session_fork` — done (2026-09-25; GitHub #109)
+
+Built to §12 R4's specification.
+
+- **`session_fork {session_id, at_turn?}`.** The target is built by the same `make_session()` that
+  `session_start` uses, from the **source's** fixture. So it gets the fixture's own model, grant, tools,
+  suspend flag and tap, and a scripted target starts with an empty script. A `fixture` argument is
+  ignored, as C3 requires. `fork_from` then copies the history prefix, as a job on the source's worker,
+  the only thread allowed to read the source (I1). The target has run nothing yet, and waiting for the
+  job orders that write before the target's first job.
+- **Turns map to message indices.** A turn starts at a user message. `at_turn: N` keeps the first N
+  turns (0 is an empty history), and omitting it keeps everything. `at_turn` past the end is refused.
+- **Refused:** a running source; a suspended source, because `fork_from` drops open interactions, so
+  the fork could never be resumed; and more than the session cap.
+- **Exportable.** Each session records its ancestry as `segments`: for each ancestor, the model turns
+  it had consumed, the steps it had taken and the turn it was forked at. A fork exports as `format: 2`.
+  Replay rebuilds each ancestor, forks it at the recorded turn, and then plays the final session and
+  compares its events. The ancestors' streams are not compared. A divergence there changes the history
+  the fork inherits, which the fork's own C8 request digest catches (FORK control).
+  - A fork inherits the source's non-determinism mark. A fork of a session whose exchanges were not all
+    captured is marked too.
+  - The target continues the source's scripted call-id counter, so its call ids never repeat one in its
+    history.
+- **Proof** (`tests/test_agentengine_test_driver.cpp`, FORK):
+  - fork at turn 1 of 2 keeps exactly 2 messages, and the source is unchanged, before and after the
+    fork runs;
+  - the fork's first model request is turn 1 plus its own message;
+  - `at_turn` omitted copies everything, 0 gives an empty history, past-the-end and non-integer values
+    are refused, a `fixture` argument is ignored, and a suspended source is refused;
+  - a fork and a fork of a fork export (1 and 2 segments) and replay, with 4 requests checked;
+  - **control:** changing an ancestor's step fails the replay with `test.replay_mismatch`.
+
+  The checked-in `tests/scenarios/scripted_fork_branch.json` was recorded through the real binary over
+  stdio. It forks after an echo turn, and the branch's gated call is approved. It runs as
+  `scenario_scripted_fork_branch`.
+- **Not in scope:** `session_save`/`session_restore` (§3.4), which needs a snapshot store and a
+  `--snapshot-root`. It isn't needed for branching, which a fork now covers.
