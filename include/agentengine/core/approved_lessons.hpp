@@ -23,6 +23,7 @@
 // (`approved_lesson_level`, set on `AgentSession::set_approved_lessons`).
 
 #include <map>
+#include <mutex>
 #include <optional>
 #include <shared_mutex>
 #include <string>

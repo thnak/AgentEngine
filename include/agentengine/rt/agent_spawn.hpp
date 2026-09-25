@@ -110,7 +110,7 @@ struct AgentSpawnReply {
     // its final call (the ADR-163 bug, repeated here). The same total is charged to the caller's run.
     std::uint64_t input_tokens  = 0;
     std::uint64_t output_tokens = 0;
-    std::string   child_id;  // ADR-185 (I4): which child ran, so the caller's audit can name it
+    std::string   child_id{};  // ADR-185 (I4): which child ran, so the caller's audit can name it
 };
 AE_JSON_SCHEMA(AgentSpawnReply, output, input_tokens, output_tokens, child_id)
 

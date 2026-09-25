@@ -3,6 +3,12 @@
 # compile together and that the declared concepts (ChatClient, Runner, SandboxBackend) are
 # satisfiable by a conforming type.
 
+# Every test target: AgentSession-heavy test TUs exceed MSVC's default object-file section limit under ASan
+# (C1128; PR #103 CI). /bigobj only changes the object format, so it is safe to apply to all of them.
+if(MSVC)
+  add_compile_options(/bigobj)
+endif()
+
 # ---- 007 §9 G2 compile-fail proof (docs/planning/milestone-1-core-substrate-breakdown.md task 2) --
 # I3's static half: Tainted<T> must have NO implicit conversion to the untainted capability-API
 # surface. A configure-time try_compile() gate, not a CTest entry — try_compile() runs during
@@ -12,6 +18,7 @@
 # the same effect. Two files, not one: a fail-only suite can't distinguish "correctly rejected" from
 # "nothing here compiles at all," so tainted_declassify_positive_control.cpp proves the explicit
 # unsafe_view() declassifier still compiles.
+
 try_compile(AE_TAINTED_REJECTS_IMPLICIT_CONVERSION
   "${CMAKE_CURRENT_BINARY_DIR}/compile_fail_checks/no_implicit_conversion"
   "${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/tainted_no_implicit_conversion.cpp"

@@ -256,7 +256,7 @@ namespace run_event_payload {
 // ADR-185: `inner` is the delegated run's own event, unchanged (its run id and sequence); `depth` counts the hops
 // between this run and that one (1 = this run's direct child).
 struct DelegatedEvent {
-    std::string child_run_id;
+    std::string child_run_id{};
     std::uint32_t depth = 1;
     std::shared_ptr<RunEvent const> inner;
 };

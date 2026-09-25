@@ -201,7 +201,7 @@ struct ToolInvocationAudit {
     std::string principal_id;
     std::string principal_tenant_id;
     std::string principal_on_behalf_of;
-    std::string principal_delegation_root;  // ADR-185: the chain's root principal; empty when not delegated
+    std::string principal_delegation_root{};  // ADR-185: the chain's root principal; empty when not delegated
 };
 
 namespace tool_pipeline_detail {

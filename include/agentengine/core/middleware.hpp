@@ -237,8 +237,8 @@ task<std::monostate> run_after(Tuple& mws, ModelCallContext& ctx, std::size_t st
 // `deliver_as_instructions` to the same rule, so a hook cannot use the MARK to unfence text. This guards the marks
 // only: a hook can still change `tainted`, `origin` or `role` (as before ADR-184) -- middleware is host code.
 struct GrantedDelivery {
-    std::string text;
-    std::string approval;
+    std::string text{};
+    std::string approval{};
     bool deliver_as_instructions = false;
     friend bool operator==(GrantedDelivery const&, GrantedDelivery const&) = default;
 };

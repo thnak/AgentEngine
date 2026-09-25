@@ -161,7 +161,7 @@ struct ContentItem {  // ae-naming-lint: allow ContentItem — pre-existing M0 s
     // can grant it. It changes nothing about taint or authority: at ADR-183's default level the item is still fenced
     // (the fence names it an approved lesson and its preamble says such a block may be followed); at ADR-184's
     // `instructions` level it is also marked `deliver_as_instructions` below.
-    std::string    approval;
+    std::string    approval{};  // `{}`: a designated initializer that omits it stays warning-clean under clang (-Wmissing-designated-field-initializers)
     // ADR-184: true only on a tainted `role::system` text item the host told the session to deliver as plain
     // instructions -- an approved lesson at `approved_lesson_level::instructions`, or any such item when the host
     // turned the system-channel fence off. The serializers then send it unfenced. Set ONLY by `AgentSession`

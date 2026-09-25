@@ -96,10 +96,13 @@ std::string string_from(std::vector<std::byte> const& b) {
     return out;
 }
 
+#if defined(_WIN32)
+// Only the Windows-only L16 reads a file whole (gcc -Werror=unused-function otherwise).
 std::string read_file(std::filesystem::path const& p) {
     std::ifstream in(p, std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
+#endif
 
 [[nodiscard]] int current_pid() noexcept {
 #if defined(_WIN32)

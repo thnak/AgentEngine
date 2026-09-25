@@ -32,8 +32,8 @@ namespace agentengine {
 // Where a delegated task came from. Host-derived values only (a principal id, a node label, a depth) -- never text
 // the delegating model wrote (I3).
 struct DelegationSource {  // ae-naming-lint: allow DelegationSource — ADR-185
-    std::string   kind;          // "agent.spawn" | "workflow node"
-    std::string   from;          // the delegating principal's id, or a label for the upstream node
+    std::string   kind{};        // "agent.spawn" | "workflow node"
+    std::string   from{};        // the delegating principal's id, or a label for the upstream node
     std::uint32_t depth = 0;     // the receiving agent's delegation depth (1 = delegated once)
 };
 
