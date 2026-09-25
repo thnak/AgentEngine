@@ -4409,6 +4409,7 @@ add_test(NAME lint_testing_includes
 file(GLOB AE_SCENARIO_FILES CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/tests/scenarios/*.json)
 foreach(scenario IN LISTS AE_SCENARIO_FILES)
   get_filename_component(scenario_name ${scenario} NAME_WE)
-  add_test(NAME scenario_${scenario_name} COMMAND agentengine_scenario_runner ${scenario})
+  add_test(NAME scenario_${scenario_name} COMMAND agentengine_scenario_runner
+         --fixtures-root ${PROJECT_SOURCE_DIR}/tests/fixtures/test_driver ${scenario})
   set_tests_properties(scenario_${scenario_name} PROPERTIES LABELS "scenario" TIMEOUT 120)
 endforeach()

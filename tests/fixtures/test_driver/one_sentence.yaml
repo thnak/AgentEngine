@@ -1,0 +1,17 @@
+# ADR-182 §21 (P4): a file fixture for agentengine_test_driver. A 015 Agent document: the driver
+# compiles it with compile_agent_document, resolves spec.tools against its in-process test tools only,
+# and refuses spec.capabilities. It is used only while git tracks it with no uncommitted change.
+apiVersion: agentengine.dev/v1
+kind: Agent
+metadata:
+  id: one-sentence
+  description: Answers in one sentence and may echo text; gated_echo needs approval.
+spec:
+  instructions: |
+    Answer in exactly one sentence.
+    Use the echo tool when asked to repeat something.
+  tools:
+    - echo
+    - gated_echo
+  limits:
+    max_turns: 6

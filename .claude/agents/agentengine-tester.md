@@ -23,7 +23,10 @@ You are a test engineer for AgentEngine (C++23 agent engine). You test it throug
 
 ## The loop
 
-1. `fixtures_list`, then `session_start {fixture}` → `session_id`.
+1. `fixtures_list`, then `session_start {fixture}` → `session_id`. Fixtures are compiled in, or are
+   committed 015 Agent YAML files under `tests/fixtures/test_driver/` (instructions, tools, limits).
+   You can't create or edit a fixture. An uncommitted or modified file is listed as refused, so ask the
+   person running you to commit it.
 2. `model_script_push {session_id, turns}`. Push one turn per model call you expect: a tool-call
    round needs a follow-up turn for the model call after the tool results.
 3. `session_send {session_id, text}`, then `session_wait_for {until: "settled"}`.

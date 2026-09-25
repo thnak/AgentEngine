@@ -3,8 +3,9 @@
 // no Claude: this is what turns a test agent's exploration -- including a live-model run -- into a
 // deterministic ctest (022 §3 golden traces).
 //
-// Usage: agentengine_scenario_runner <scenario.json>...
-//        agentengine_scenario_runner --stamp-requests <scenario.json>...
+// Usage: agentengine_scenario_runner [--fixtures-root <dir>] [--stamp-requests] <scenario.json>...
+// --fixtures-root: where a scenario's file fixture (ADR-182 §21) is found. No git check here: the
+// runner is run by a person or CI, not by the tester.
 // Exit code: 0 if every scenario passes, 1 otherwise.
 //
 // --stamp-requests (ADR-182 §19, C8) is maintenance for a scenario exported before request digests
@@ -57,10 +58,23 @@ std::string stamp(Value& scenario, td::ReplayReport const& report) {
 
 int main(int argc, char** argv) {
     int first = 1;
-    bool const stamping = argc > 1 && std::string_view(argv[1]) == "--stamp-requests";
-    if (stamping) ++first;
+    td::ReplayFixtures fixtures;
+    bool stamping = false;
+    while (first < argc) {
+        std::string_view const f = argv[first];
+        if (f == "--stamp-requests") {
+            stamping = true;
+            ++first;
+        } else if (f == "--fixtures-root" && first + 1 < argc) {
+            fixtures.root = argv[first + 1];
+            first += 2;
+        } else {
+            break;
+        }
+    }
     if (argc <= first) {
-        std::fprintf(stderr, "usage: agentengine_scenario_runner [--stamp-requests] <scenario.json>...\n");
+        std::fprintf(stderr,
+                     "usage: agentengine_scenario_runner [--fixtures-root <dir>] [--stamp-requests] <scenario.json>...\n");
         return 2;
     }
     int failed = 0;
@@ -72,7 +86,7 @@ int main(int argc, char** argv) {
             ++failed;
             continue;
         }
-        td::ReplayReport const report = td::replay_scenario(*scenario);
+        td::ReplayReport const report = td::replay_scenario(*scenario, fixtures);
         std::printf("%s %s (%zu events compared, %zu model requests checked)\n", report.passed ? "PASS" : "FAIL",
                     path.c_str(), report.events_compared, report.requests_checked);
         for (std::string const& p : report.problems) std::printf("  %s\n", p.c_str());

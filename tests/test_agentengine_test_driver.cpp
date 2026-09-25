@@ -20,6 +20,10 @@
 //   C8   -- (§19) export stamps each turn's request digest; a replay whose request diverges fails with
 //            test.replay_mismatch at that model call. Positive control: a changed user message, which no
 //            event shows, passes without digests and fails with them.
+//   P4   -- (§21) file fixtures: a committed 015 Agent document starts a session with its instructions,
+//            tools and limits; capabilities, unknown tools, untrusted files, unknown extension keys,
+//            path-shaped names and shadowing a compiled-in name are refused; the real git check refuses
+//            an untracked or modified file in a scratch repository and accepts a committed one.
 //   C2   -- (Windows form) 200 send/observe cycles polling snapshot and events from the MCP thread
 //            while the worker runs; every run settles with the expected text. TSan on Linux is the
 //            stronger form (named in ADR-182 §13).
@@ -27,11 +31,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "agentengine/pal/env.hpp"
+#include "test_driver/fixture_trust.hpp"
 #include "test_driver/test_driver.hpp"
 
 namespace td = agentengine::test_driver;
@@ -713,6 +719,168 @@ int main() {
                   "FORK control: a changed ancestor step fails the replay with test.replay_mismatch");
         }
         fs::remove_all(root, ec);
+    }
+
+    // ---- P4: file fixtures (ADR-182 §21) --------------------------------------------------------------------
+    {
+        namespace fs = std::filesystem;
+        fs::path const root = fs::temp_directory_path() / "ae_test_driver_fixtures";
+        fs::path const scen = fs::temp_directory_path() / "ae_test_driver_fixture_scenarios";
+        std::error_code ec;
+        fs::remove_all(root, ec);
+        fs::remove_all(scen, ec);
+        fs::create_directories(root, ec);
+        auto write = [&](std::string const& name, std::string const& text) {
+            std::ofstream(root / (name + ".yaml"), std::ios::binary) << text;
+        };
+        std::string const head = "apiVersion: agentengine.dev/v1\nkind: Agent\nmetadata:\n  id: t\n  description: A test agent.\n";
+        write("terse", head + "spec:\n  instructions: Answer in one word.\n  tools:\n    - echo\n  limits:\n    max_turns: 1\n");
+        write("grabby", head + "spec:\n  tools:\n    - echo\n  capabilities:\n    net_out: [\"example.com\"]\n");
+        write("ghost", head + "spec:\n  tools:\n    - run_shell\n");
+        write("dirty", head + "spec:\n  tools:\n    - echo\n");
+        write("basic", head + "spec:\n  tools:\n    - fail\n");
+        write("no_gate", head + "spec:\n  tools:\n    - gated_echo\nx-test-driver:\n  suspend_for_approval: false\n");
+        write("typo", head + "spec:\n  tools:\n    - echo\nx-test-driver:\n  live: true\n");
+
+        td::DriverConfig cfg;
+        cfg.fixtures_root = root;
+        cfg.scenarios_root = scen;
+        cfg.fixture_trust_check = [](fs::path const& p) -> std::optional<std::string> {
+            if (p.stem() == "dirty") return std::string("has uncommitted changes");
+            return std::nullopt;
+        };
+        td::Driver d(std::move(cfg));
+
+        CallResult ok = call(d, "session_start", td::obj({{"fixture", td::str("terse")}}));
+        std::string const id = td::get_string(ok.body, "session_id").value_or("");
+        check(!ok.is_error && !id.empty(), "P4: a committed file fixture starts a session");
+        push(d, id, td::arr({text_turn("Yes.")}));
+        (void)call(d, "session_send", sid(id, {{"text", td::str("ok?")}}));
+        (void)wait(d, id, "idle");
+        CallResult reqs = call(d, "model_requests", sid(id));
+        std::string first_role;
+        std::string first_text;
+        std::string tools;
+        if (Value const* list = reqs.body.find("requests"); list != nullptr && list->is_array() && !list->as_array().empty()) {
+            Value const& r0 = list->as_array()[0];
+            Value const& m0 = r0.find("messages")->as_array()[0];
+            first_role = td::get_string(m0, "role").value_or("");
+            first_text = td::get_string(m0, "text").value_or("");
+            for (Value const& t : r0.find("tools")->as_array()) tools += t.as_string() + ",";
+        }
+        check(first_role == "system" && first_text.find("Answer in one word.") != std::string::npos,
+              "P4: the fixture's instructions reach the model as system text");
+        check(tools == "echo,", "P4: the model is offered exactly the fixture's tools (" + tools + ")");
+
+        // max_turns: 1 -- a tool round needs a second model call, which the limit refuses.
+        std::string const lim = start(d, "terse");
+        push(d, lim, td::arr({call_turn({{"echo", "a"}}), text_turn("never reached")}));
+        (void)call(d, "session_send", sid(lim, {{"text", td::str("go")}}));
+        Value wl = wait(d, lim, "idle");
+        std::fprintf(stderr, "  .. max_turns outcome: %s\n",
+                     wl.find("snapshot") ? outcome_field(*wl.find("snapshot"), "error_code").c_str() : "?");
+        check(wl.find("snapshot") && outcome_field(*wl.find("snapshot"), "ok").empty() &&
+                  td::get_u64(call(d, "session_snapshot", sid(lim)).body, "script_pending") == 1u,
+              "P4: the fixture's max_turns limit applies (the second model call never happens)");
+
+        auto refused = [&](std::string const& name) {
+            return call(d, "session_start", td::obj({{"fixture", td::str(name)}}));
+        };
+        CallResult grabby = refused("grabby");
+        check(grabby.is_error && grabby.error_code == "test.bad_fixture", "P4: a fixture declaring capabilities is refused");
+        CallResult ghost = refused("ghost");
+        check(ghost.is_error && ghost.error_code == "test.bad_fixture",
+              "P4: a fixture naming a tool that is not a driver test tool is refused");
+        CallResult dirty = refused("dirty");
+        check(dirty.is_error && dirty.error_code == "test.fixture_untrusted",
+              "P4 (C3b): a fixture the host's trust check rejects is refused");
+        CallResult typo = refused("typo");
+        check(typo.is_error && typo.error_code == "test.bad_fixture", "P4: an unknown x-test-driver key is refused");
+        CallResult escape = refused("../terse");
+        check(escape.is_error && escape.error_code == "test.unknown_fixture", "P4: a path-shaped fixture name is refused");
+        std::string const shadow = start(d, "basic");
+        CallResult shadow_list = call(d, "model_requests", sid(shadow));
+        push(d, shadow, td::arr({text_turn("x")}));
+        (void)call(d, "session_send", sid(shadow, {{"text", td::str("go")}}));
+        (void)wait(d, shadow, "idle");
+        shadow_list = call(d, "model_requests", sid(shadow));
+        std::string shadow_tools;
+        if (Value const* list = shadow_list.body.find("requests"); list != nullptr && !list->as_array().empty()) {
+            for (Value const& t : list->as_array()[0].find("tools")->as_array()) shadow_tools += t.as_string() + ",";
+        }
+        check(shadow_tools == "echo,gated_echo,fail,", "P4: a file cannot shadow a compiled-in fixture (" + shadow_tools + ")");
+
+        std::string const ng = start(d, "no_gate");
+        push(d, ng, td::arr({call_turn({{"gated_echo", "x"}}), text_turn("after")}));
+        (void)call(d, "session_send", sid(ng, {{"text", td::str("go")}}));
+        Value wn = wait(d, ng, "settled");
+        auto finished = events_of_kind(d, ng, "tool_call_finished");
+        bool const refused_call = finished.size() == 1 && finished[0].find("payload") != nullptr &&
+                                  td::get_bool(*finished[0].find("payload"), "is_error") == true &&
+                                  td::get_string(*finished[0].find("payload"), "result").value_or("").find("approval") !=
+                                      std::string::npos;
+        check(wn.find("snapshot") && state_of(*wn.find("snapshot")) == "idle" &&
+                  events_of_kind(d, ng, "approval_requested").empty() && refused_call,
+              "P4: x-test-driver suspend_for_approval: false -- no suspension; the gated call is refused at the "
+              "approval step (no decider)");
+
+        CallResult list = call(d, "fixtures_list");
+        std::string listed;
+        if (Value const* fx = list.body.find("fixtures"); fx != nullptr) {
+            for (Value const& f : fx->as_array()) {
+                if (td::get_string(f, "source") != "file") continue;
+                listed += td::get_string(f, "name").value_or("") + (td::get_bool(f, "available") == true ? "+" : "-") + ",";
+            }
+        }
+        check(listed == "basic-,dirty-,ghost-,grabby-,no_gate+,terse+,typo-,",
+              "P4: fixtures_list shows every file fixture, sorted, with whether it loads (" + listed + ")");
+
+        // Export and replay with the fixture; without the fixtures root the replay cannot find it.
+        CallResult ex = call(d, "scenario_export", sid(id, {{"name", td::str("terse_flow")}}));
+        auto sc = td::read_scenario_file(scen / "terse_flow.json");
+        check(!ex.is_error && sc && td::replay_scenario(*sc, td::ReplayFixtures{root, {}}).passed,
+              "P4: a file-fixture session exports and replays against the same fixture");
+        check(sc && !td::replay_scenario(*sc).passed, "P4: the replay needs the fixtures root");
+        // Control: a changed fixture changes the request, which the digest catches.
+        write("terse", head + "spec:\n  instructions: Answer in two words.\n  tools:\n    - echo\n  limits:\n    max_turns: 1\n");
+        td::ReplayReport const changed = sc ? td::replay_scenario(*sc, td::ReplayFixtures{root, {}}) : td::ReplayReport{};
+        check(!changed.passed && !changed.problems.empty() &&
+                  changed.problems[0].find("test.replay_mismatch") != std::string::npos,
+              "P4 control: editing the fixture's instructions fails the replay with test.replay_mismatch");
+        fs::remove_all(root, ec);
+        fs::remove_all(scen, ec);
+    }
+
+    // ---- P4: the real git trust check, against a throwaway repository -------------------------------------------
+    {
+        namespace fs = std::filesystem;
+        fs::path const repo = fs::temp_directory_path() / "ae_test_driver_git_fixture";
+        std::error_code ec;
+        fs::remove_all(repo, ec);
+        fs::create_directories(repo, ec);
+        std::string const q = "\"" + repo.string() + "\"";
+#ifdef _WIN32
+        std::string const quiet = " >NUL 2>&1";
+#else
+        std::string const quiet = " >/dev/null 2>&1";
+#endif
+        bool const have_git = std::system(("git -C " + q + " init -q" + quiet).c_str()) == 0;
+        check(have_git, "P4 git: git is available and a scratch repository initializes");
+        if (have_git) {
+            fs::path const file = repo / "agent.yaml";
+            std::ofstream(file, std::ios::binary) << "kind: Agent\nspec: {}\n";
+            check(td::git_fixture_trust_check(file) == std::optional<std::string>("not tracked by git"),
+                  "P4 git: an untracked fixture file is refused");
+            int const committed = std::system(("git -C " + q + " add agent.yaml" + quiet).c_str()) |
+                                  std::system(("git -C " + q + " -c user.email=t@example.com -c user.name=t "
+                                               "-c commit.gpgsign=false commit -q -m init" + quiet).c_str());
+            check(committed == 0 && !td::git_fixture_trust_check(file).has_value(),
+                  "P4 git: the same file, committed, is accepted");
+            std::ofstream(file, std::ios::binary | std::ios::app) << "# edited\n";
+            check(td::git_fixture_trust_check(file) == std::optional<std::string>("has uncommitted changes"),
+                  "P4 git: a modified committed file is refused");
+        }
+        fs::remove_all(repo, ec);
     }
 
     // ---- C2 (Windows form): observe from the MCP thread while the worker runs -------------------------------

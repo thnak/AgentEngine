@@ -964,3 +964,48 @@ Built to §12 R4's specification.
   `scenario_scripted_fork_branch`.
 - **Not in scope:** `session_save`/`session_restore` (§3.4), which needs a snapshot store and a
   `--snapshot-root`. It isn't needed for branching, which a fork now covers.
+
+## 21. P4 file fixtures — done (2026-09-25; GitHub #109)
+
+**In plain terms:** a tester can now run the engine's agent with instructions and a tool set written
+in a file, instead of only the four compiled-in fixtures. A file can never give a session more
+authority than a compiled-in fixture has, and only a committed file is used.
+
+- **Format.** `<fixtures_root>/<name>.yaml` is a 015 Agent document, compiled by the engine's own
+  `compile_agent_document` (I6: a driver fixture and a declarative agent mean the same thing).
+  - It decides the instructions (sent as the session's static instructions), which test tools the agent
+    has, and `limits` (`max_turns`, capped at the driver's 32; `token_budget`).
+  - `x-test-driver: {suspend_for_approval: bool}` is the only driver extension, and any other key is
+    refused.
+  - Example: `tests/fixtures/test_driver/one_sentence.yaml`.
+- **What a file cannot do (C-3):**
+  - declare `spec.capabilities` (refused: a fixture never grants authority);
+  - name a tool the driver doesn't have (`spec.tools` resolves through a `ToolRegistry` holding only
+    the in-process test tools, and `compile_agent_document` fails closed on an unknown name);
+  - shadow a compiled-in fixture name;
+  - be path-shaped (`[a-z0-9_-]{1,64}`);
+  - be live. Live file fixtures are not supported; this is a scope limit.
+- **Git trust check (C3b, §12 C-3).** `agentengine_test_driver` wires `git_fixture_trust_check`
+  (`tools/test_driver/fixture_trust.hpp`). At every `session_start` the file must pass
+  `git ls-files --error-unmatch` and `git diff --quiet HEAD`, otherwise it is refused with
+  `test.fixture_untrusted`. `fixtures_list` shows every file fixture, sorted, with whether it loads now
+  and why not. The scenario runner uses no trust check, because a person or CI runs it, not the tester.
+  It takes `--fixtures-root`, which ctest passes. The tester agent's tools are MCP, Read, Grep and Glob,
+  so it has no Write or Edit to change a fixture.
+- **Replay.** `replay_scenario` takes the fixtures root. Editing a fixture changes the request, so an
+  existing scenario fails with `test.replay_mismatch` (§19) rather than passing on changed instructions.
+- **Proof** (`tests/test_agentengine_test_driver.cpp`, P4):
+  - the fixture's instructions reach the model as the first, system, message;
+  - exactly the fixture's tools are offered;
+  - `max_turns: 1` stops the second model call (`run.max_turns_exceeded`);
+  - each refusal is checked: capabilities, an unknown tool, an untrusted file, an unknown extension
+    key, a path-shaped name, and a file named like a compiled-in fixture;
+  - `suspend_for_approval: false` gives no suspension and the gated call refused at the approval step;
+  - the listing is checked;
+  - export and replay pass with the root and fail without it;
+  - **control:** an edited fixture fails the replay with `test.replay_mismatch`.
+
+  The real git check is tested against a scratch repository: untracked is refused, committed is
+  accepted, and modified is refused.
+- **Residual.** The check trusts the working tree's git. A tester that could run `git commit` could
+  launder a fixture, but the tester agent has no shell.

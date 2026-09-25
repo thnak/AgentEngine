@@ -70,6 +70,13 @@ claude -p --mcp-config .mcp.json --allowedTools "mcp__agentengine-test__*" \
   permission prompt; headless runs cannot answer prompts.
 - `--output-format json` returns the tester's final report plus its turn count and cost.
 
+**Your own agent under test (file fixtures).** Put a 015 Agent document at
+`tests/fixtures/test_driver/<name>.yaml` (see `one_sentence.yaml`). It sets the instructions, which
+driver test tools the agent has (`echo`, `gated_echo`, `fail`), and `limits`. Commit it: the driver
+uses only a file that git tracks with no uncommitted change, and `fixtures_list` shows any other file as
+refused, with the reason. A fixture can't grant capabilities or name any other tool. The driver takes
+`--fixtures-root <dir>` to look elsewhere, and the scenario runner takes the same flag.
+
 ## 3. Live exploration (engine on DeepSeek, Claude tester drives)
 
 Live mode needs an HTTPS build of the driver and a key file. The key file is never committed

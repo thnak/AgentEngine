@@ -8,8 +8,9 @@
 // is only the stdin/stdout pump.
 //
 // What phase 1 deliberately does NOT have (ADR-182 §12):
-//   - fixture files. Fixtures are compiled in (`fixtures()`), so no tool argument and no file the
-//     tester can write changes a session's tools or capability grant (§12 C-3);
+//   - fixture files (P4, added in §21): a fixture file is a 015 Agent document under a host-fixed
+//     root, accepted only when the host's trust check passes (git-tracked and unmodified), resolved
+//     only against the test tools below, and never able to grant a capability (§12 C-3);
 //   - real tools. The only tools are the in-process test doubles below, so an approval the tester
 //     gives authorizes nothing outside this process (§12 C-2);
 //   - scenario export, assert, fork, live mode (later phases).
@@ -42,12 +43,15 @@
 #include <variant>
 #include <vector>
 
+#include "agentengine/core/agent_yaml_compiler.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/core/run_event.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
+#include "agentengine/core/tool_registry.hpp"
+#include "agentengine/core/yaml_value.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/message_codec.hpp"
 #include "agentengine/rt/thread_pool.hpp"
@@ -147,6 +151,12 @@ struct Fixture {
     // A live fixture's model is a real provider (ADR-182 §3.3). Refused unless the driver was
     // started with --allow-live. Live runs are exploratory and never gating (022 §1).
     bool                     live = false;
+    // File fixtures only (§21): the agent's instructions (sent as the session's static instructions)
+    // and its declared limits. max_turns is capped at kMaxTurnsPerRun.
+    std::string                  instructions{};
+    std::optional<std::uint64_t> max_turns{};
+    std::optional<std::uint64_t> token_budget{};
+    std::string                  source = "compiled";  // "compiled" | "file"
 };
 
 [[nodiscard]] inline std::vector<Fixture> const& fixtures() {
@@ -166,6 +176,107 @@ struct Fixture {
     for (Fixture const& f : fixtures())
         if (f.name == name) return &f;
     return nullptr;
+}
+
+// Fixture and scenario names are file names under a host-fixed root: nothing path-shaped (§12 C-4).
+[[nodiscard]] inline bool valid_scenario_name(std::string_view n) {
+    if (n.empty() || n.size() > 64) return false;
+    for (char c : n) {
+        bool const ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+        if (!ok) return false;
+    }
+    return true;
+}
+
+// ---- File fixtures (ADR-182 §21, P4) ------------------------------------------------------------------
+//
+// `<fixtures_root>/<name>.yaml` is a 015 Agent document, compiled by the engine's own
+// `compile_agent_document`, so a driver fixture and a declarative agent mean the same thing (I6). What a
+// file may decide: instructions, which of the driver's test tools the agent has, and its limits. What it
+// may not: `spec.capabilities` is refused (a fixture never grants authority), `spec.tools` resolves only
+// against the in-process test tools (an unknown name is refused, never skipped), and a name that is
+// also a compiled-in fixture is refused. `x-test-driver: {suspend_for_approval: bool}` is the only
+// driver extension. Live file fixtures are not supported.
+
+struct FixtureLoad {
+    std::optional<Fixture> fixture;
+    std::string            code;  // on failure: test.unknown_fixture | test.fixture_untrusted | test.bad_fixture
+    std::string            message;
+};
+
+[[nodiscard]] inline ToolRegistry const& test_tool_registry();  // defined after the test tools' table
+
+[[nodiscard]] inline FixtureLoad load_file_fixture(
+    std::filesystem::path const& root, std::string const& name,
+    std::function<std::optional<std::string>(std::filesystem::path const&)> const& trust_check) {
+    auto fail = [&](std::string code, std::string message) {
+        return FixtureLoad{std::nullopt, std::move(code), std::move(message)};
+    };
+    if (root.empty() || !valid_scenario_name(name)) return fail("test.unknown_fixture", "no fixture named " + name);
+    if (find_fixture(name) != nullptr) return fail("test.bad_fixture", name + " is a compiled-in fixture name");
+    std::filesystem::path const path = root / (name + ".yaml");
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec)) return fail("test.unknown_fixture", "no fixture named " + name);
+    if (trust_check) {
+        if (std::optional<std::string> why = trust_check(path)) {
+            return fail("test.fixture_untrusted",
+                        "fixture file " + name + ".yaml is refused: " + *why +
+                            " (a fixture decides a session's tools and instructions, so only a committed file is used)");
+        }
+    }
+    std::ifstream in(path, std::ios::binary);
+    std::stringstream buf;
+    buf << in.rdbuf();
+    auto doc = yaml::parse(buf.str());
+    if (!doc) return fail("test.bad_fixture", name + ".yaml is not valid YAML: " + doc.error().message);
+    if (get_string(*doc, "kind") != "Agent") return fail("test.bad_fixture", name + ".yaml must be kind: Agent");
+    Value const* spec = doc->find("spec");
+    if (spec != nullptr) {
+        if (Value const* caps = spec->find("capabilities");
+            caps != nullptr && !(caps->is_null() || (caps->is_object() && caps->as_object().empty()) ||
+                                 (caps->is_array() && caps->as_array().empty()))) {
+            return fail("test.bad_fixture", name + ".yaml declares spec.capabilities; a fixture never grants capabilities");
+        }
+        if (Value const* tools = spec->find("tools"); tools != nullptr && tools->is_array()) {
+            for (Value const& t : tools->as_array()) {
+                if (!t.is_string()) return fail("test.bad_fixture", name + ".yaml: spec.tools entries must be tool names");
+            }
+        }
+    }
+    auto meta = compile_agent_document(*doc, &test_tool_registry());
+    if (!meta) return fail("test.bad_fixture", name + ".yaml does not compile: " + meta.error().message);
+
+    Fixture f;
+    f.name = name;
+    f.description = meta->agent_description.empty() ? "(file fixture)" : meta->agent_description;
+    for (ToolDescriptor const& d : meta->tools.descriptors()) f.tools.push_back(d.name);
+    f.instructions = meta->agent_instructions;
+    if (spec != nullptr && spec->find("limits") != nullptr) {
+        if (spec->find("limits")->find("max_turns") != nullptr) f.max_turns = meta->max_turns;
+        f.token_budget = meta->token_budget;
+    }
+    if (Value const* ext = doc->find("x-test-driver"); ext != nullptr) {
+        if (!ext->is_object()) return fail("test.bad_fixture", name + ".yaml: x-test-driver must be a mapping");
+        for (auto const& [k, v] : ext->as_object()) {
+            if (k == "suspend_for_approval" && v.is_bool()) {
+                f.suspend_for_approval = v.as_bool();
+            } else {
+                return fail("test.bad_fixture", name + ".yaml: unknown or mistyped x-test-driver key '" + k + "'");
+            }
+        }
+    }
+    f.source = "file";
+    return FixtureLoad{std::move(f), {}, {}};
+}
+
+// The name-keyed registry a file fixture's spec.tools resolves against: the test tools and nothing else.
+[[nodiscard]] inline ToolRegistry const& test_tool_registry() {
+    static ToolRegistry const registry = [] {
+        ToolRegistry r;
+        for (ToolDescriptor const& d : all_test_tool_descriptors()) (void)r.register_tool(d.name, d, tool_provenance::native);
+        return r;
+    }();
+    return registry;
 }
 
 // ---- The session's context provider: history plus the fixture's tools ------------------------------
@@ -467,6 +578,12 @@ struct DriverConfig {
     // Where scenario_export writes and scenario_replay reads `<name>.json` (ADR-182 §12 C-4).
     // Empty = both tools disabled.
     std::filesystem::path scenarios_root;
+    // Where file fixtures live, `<name>.yaml` (§21). Empty = compiled-in fixtures only.
+    std::filesystem::path fixtures_root;
+    // The host's check on a fixture file before it is used: returns why it is refused, or nothing.
+    // agentengine_test_driver wires git_fixture_trust_check (fixture_trust.hpp). Empty = no check,
+    // which only the scenario runner and tests use.
+    std::function<std::optional<std::string>(std::filesystem::path const&)> fixture_trust_check;
 };
 
 // ---- Event → JSON ----------------------------------------------------------------------------------
@@ -1023,16 +1140,6 @@ template <class V>
     return id;
 }
 
-// Scenario names are file names under a host-fixed root: nothing path-shaped (ADR-182 §12 C-4).
-[[nodiscard]] inline bool valid_scenario_name(std::string_view n) {
-    if (n.empty() || n.size() > 64) return false;
-    for (char c : n) {
-        bool const ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
-        if (!ok) return false;
-    }
-    return true;
-}
-
 class Driver {
 public:
     Driver() = default;
@@ -1215,7 +1322,10 @@ private:
                                   "answers; a different request fails the call with test.replay_mismatch.")}})},
         });
         return arr({
-            tool_def("fixtures_list", "List the compiled-in session fixtures and their tools.", schema({}, {})),
+            tool_def("fixtures_list",
+                     "List the session fixtures: compiled-in ones and the host's committed fixture files "
+                     "(015 Agent YAML; a modified or untracked file is listed as refused).",
+                     schema({}, {})),
             tool_def("session_start",
                      "Start a session from a fixture. Returns its session_id. The model is scripted: push "
                      "turns with model_script_push before sending.",
@@ -1435,7 +1545,36 @@ private:
                                {"tools", arr(std::move(tools))},
                                {"suspend_for_approval", boolean(f.suspend_for_approval)},
                                {"live", boolean(f.live)},
-                               {"available", boolean(!f.live || static_cast<bool>(config_.live_backend_factory))}}));
+                               {"available", boolean(!f.live || static_cast<bool>(config_.live_backend_factory))},
+                               {"source", str(f.source)}}));
+        }
+        // File fixtures (§21): every <name>.yaml under the host's root, with whether it would load now.
+        std::vector<std::string> names;
+        std::error_code ec;
+        if (!config_.fixtures_root.empty() && std::filesystem::is_directory(config_.fixtures_root, ec)) {
+            for (auto const& entry : std::filesystem::directory_iterator(config_.fixtures_root, ec)) {
+                if (entry.path().extension() != ".yaml") continue;
+                std::string const stem = entry.path().stem().string();
+                if (valid_scenario_name(stem)) names.push_back(stem);
+            }
+        }
+        std::sort(names.begin(), names.end());  // directory order is not stable (tools/list-style determinism)
+        for (std::string const& n : names) {
+            FixtureLoad const load = load_file_fixture(config_.fixtures_root, n, config_.fixture_trust_check);
+            Members m{{"name", str(n)}, {"source", str("file")}, {"live", boolean(false)}};
+            if (load.fixture) {
+                std::vector<Value> tools;
+                for (std::string const& t : load.fixture->tools) tools.push_back(str(t));
+                m.emplace_back("description", str(load.fixture->description));
+                m.emplace_back("tools", arr(std::move(tools)));
+                m.emplace_back("suspend_for_approval", boolean(load.fixture->suspend_for_approval));
+                m.emplace_back("has_instructions", boolean(!load.fixture->instructions.empty()));
+                m.emplace_back("available", boolean(true));
+            } else {
+                m.emplace_back("available", boolean(false));
+                m.emplace_back("refused", obj({{"code", str(load.code)}, {"message", str(load.message)}}));
+            }
+            out.push_back(obj(std::move(m)));
         }
         return obj({{"fixtures", arr(std::move(out))},
                     {"live_model", str(config_.live_backend_factory ? config_.live_description
@@ -1445,8 +1584,14 @@ private:
     ToolResultJson t_session_start(Value const& args) {
         auto name = get_string(args, "fixture");
         if (!name) return err("test.bad_arguments", "fixture is required");
+        std::optional<Fixture> loaded;
         Fixture const* fixture = find_fixture(*name);
-        if (fixture == nullptr) return err("test.unknown_fixture", "no compiled-in fixture named " + *name);
+        if (fixture == nullptr) {
+            FixtureLoad load = load_file_fixture(config_.fixtures_root, *name, config_.fixture_trust_check);
+            if (!load.fixture) return err(load.code, load.message);
+            loaded = std::move(load.fixture);
+            fixture = &*loaded;
+        }
         auto made = make_session(*fixture);
         if (auto* e = std::get_if<ToolError>(&made)) return *e;
         DriverSession& ref = *std::get<DriverSession*>(made);
@@ -1469,8 +1614,9 @@ private:
         ds->id = "s" + std::to_string(next_session_++);
         ds->fixture = *fixture;
         Session& session = *ds->session;
-        session.initialize(ds->id, Principal{"test-driver/" + fixture->name, "test"}, std::nullopt,
-                           kMaxTurnsPerRun);
+        session.initialize(ds->id, Principal{"test-driver/" + fixture->name, "test"}, fixture->token_budget,
+                           std::min(fixture->max_turns.value_or(kMaxTurnsPerRun), kMaxTurnsPerRun));
+        if (!fixture->instructions.empty()) session.set_static_instructions(fixture->instructions);
         std::shared_ptr<ModelBackend> backend;
         if (fixture->live) {
             backend = config_.live_backend_factory(ds->id);
@@ -1948,7 +2094,14 @@ inline std::string clip(std::string s, std::size_t n = 400) {
 
 }  // namespace replay_detail
 
-[[nodiscard]] inline ReplayReport replay_scenario(Value const& scenario) {
+// Where a replay finds file fixtures (§21). The runner passes the root with no trust check; the
+// driver's scenario_replay passes its own root and check.
+struct ReplayFixtures {
+    std::filesystem::path                                                    root;
+    std::function<std::optional<std::string>(std::filesystem::path const&)> trust_check;
+};
+
+[[nodiscard]] inline ReplayReport replay_scenario(Value const& scenario, ReplayFixtures const& fixtures = {}) {
     using replay_detail::call;
     using replay_detail::Call;
     using replay_detail::clip;
@@ -1962,7 +2115,10 @@ inline std::string clip(std::string s, std::size_t n = 400) {
     auto fixture = get_string(scenario, "fixture");
     if (!fixture) return fail("scenario has no fixture");
 
-    Driver d;
+    DriverConfig replay_config;
+    replay_config.fixtures_root = fixtures.root;
+    replay_config.fixture_trust_check = fixtures.trust_check;
+    Driver d(std::move(replay_config));
     std::uint64_t id = 1;
     Call started = call(d, "session_start", obj({{"fixture", str(*fixture)}}), id);
     if (started.is_error) return fail("session_start failed: " + json::dump(started.body));
@@ -2145,7 +2301,7 @@ inline ToolResultJson Driver::t_scenario_replay(Value const& args) {
     if (!valid_scenario_name(name)) return err("test.bad_name", "name must match [a-z0-9_-]{1,64}");
     auto scenario = read_scenario_file(config_.scenarios_root / (name + ".json"));
     if (!scenario) return err(scenario.error().code, scenario.error().message);
-    return report_json(replay_scenario(*scenario));
+    return report_json(replay_scenario(*scenario, ReplayFixtures{config_.fixtures_root, config_.fixture_trust_check}));
 }
 
 }  // namespace agentengine::test_driver
