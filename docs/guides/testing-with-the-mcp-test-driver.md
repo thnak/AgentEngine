@@ -24,8 +24,11 @@ ctest --test-dir build -L scenario
 
 Every `tests/scenarios/*.json` becomes one ctest (`scenario_<name>`). A replay starts the scenario's
 fixture, feeds the recorded model answers as the script, repeats the recorded steps (send, approve or
-deny, cancel), and compares the whole normalized event stream. A failure names the first event that
-differs, with expected and actual side by side. To run one file directly:
+deny, cancel), and compares the whole normalized event stream. Before that, every model call is
+checked against the recorded turn's `request_digest`. If the engine asks the model something different
+(another prompt, tool result text or tool description), the replay stops with
+`test.replay_mismatch at model call N` and prints the actual request. Otherwise a failure names the
+first event that differs, with expected and actual side by side. To run one file directly:
 
 ```
 build/agentengine_scenario_runner tests/scenarios/live_gated_approve.json
@@ -35,6 +38,17 @@ A scenario records today's behaviour, including known bugs it happens to cross. 
 change moves an event on purpose, update the affected scenarios as part of that change: ADR-183 did
 this when it moved `approval_resolved` ahead of dispatch, and exactly the two scenarios that cross an
 approve failed, at exactly the moved event.
+
+A forked session (`session_fork`) exports as format 2. Its `segments` list the ancestors, each with
+the model turns it had consumed, the steps it had taken and the turn it was forked at. Replay rebuilds
+each ancestor, forks it, and then compares the final session's events.
+`tests/scenarios/scripted_fork_branch.json` is an example.
+
+Every recorded turn must carry a `request_digest`, and a scenario without one fails. To add digests to
+an older scenario, run `build/agentengine_scenario_runner --stamp-requests <file>...`. After a change to
+the digest itself, run `--restamp-requests` instead. Both write digests only if the rest of the replay
+passes with one model call per recorded turn. They don't apply to a forked scenario, which you
+re-export instead.
 
 ## 2. Scripted exploration (Claude tester, engine model scripted)
 
@@ -57,6 +71,13 @@ claude -p --mcp-config .mcp.json --allowedTools "mcp__agentengine-test__*" \
 - `--allowedTools "mcp__agentengine-test__*"` is what lets the tester use the driver without a
   permission prompt; headless runs cannot answer prompts.
 - `--output-format json` returns the tester's final report plus its turn count and cost.
+
+**Your own agent under test (file fixtures).** Put a 015 Agent document at
+`tests/fixtures/test_driver/<name>.yaml` (see `one_sentence.yaml`). It sets the instructions, which
+driver test tools the agent has (`echo`, `gated_echo`, `fail`), and `limits`. Commit it: the driver
+uses only a file that git tracks with no uncommitted change, and `fixtures_list` shows any other file as
+refused, with the reason. A fixture can't grant capabilities or name any other tool. The driver takes
+`--fixtures-root <dir>` to look elsewhere, and the scenario runner takes the same flag.
 
 ## 3. Live exploration (engine on DeepSeek, Claude tester drives)
 

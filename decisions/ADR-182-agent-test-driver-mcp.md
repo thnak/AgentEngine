@@ -873,7 +873,229 @@ bypass for text-derived calls to pure, capability-free `always_require` tools (A
 Remaining engine items: P1b (BUG-1/BUG-2), the two-error-code finding, the malformed-arguments
 finding, and ADR-183 §5.
 
-## 18. Remaining engine items — closed (2026-09-25)
+## 19. C8, second half — request matching, done (2026-09-25; GitHub #109)
+
+**In plain terms:** a replay used to check only what the engine *did* (the event stream), not what it
+*asked the model*. A change that alters the prompt without changing any event, such as a different user
+message, a changed tool result text, a new tool description or a reordered history, passed silently.
+Now every recorded model turn carries a digest of the request it answered, and a replayed request that
+differs fails that model call with `test.replay_mismatch`.
+
+- **What the digest covers** (`request_summary()`, `tools/test_driver/test_driver.hpp`):
+  - every message's role and items: text, reasoning, tool calls (id, name, raw arguments) and tool
+    results (id, error flag, text);
+  - every offered tool's name, description and argument schema;
+  - the output schema.
+
+  Session-prefixed ids are normalized. The digest is FNV-1a 64 over the summary's JSON, which is
+  portable and deterministic.
+- **What it leaves out, on purpose:**
+  - the client's options (sampling, output-token limit, idempotency key), which differ by construction
+    between a live session and its scripted replay;
+  - content flags the model never sees (origin, taint).
+
+  So this check does not catch a taint-flag regression; that stays with the engine's own unit tests.
+- **Where it is checked:** `DriverChatClient` on every call, against a FIFO kept in step with the script.
+  - A turn with no `request_digest` checks nothing, so older scenarios and hand-pushed turns still work.
+  - On a mismatch the turn is not consumed, and the session becomes unexportable.
+  - The snapshot carries `replay_mismatch`, with the call index and the actual request summary.
+  - `replay_scenario` stops at the first mismatch and reports it before any event diff.
+  - `model_requests` shows each request's digest, so a tester can pin one by hand.
+- **Export** writes `request_digest` on every turn, for scripted and live sessions alike. For a live
+  session, the digest is of the request the engine actually sent the live model, so a live-derived
+  scenario now also proves that the replay asks the same questions the live run asked.
+- **The 7 checked-in scenarios** predate this. `agentengine_scenario_runner --stamp-requests` replayed
+  each one and, only because it passed with exactly one model call per recorded turn, wrote the observed
+  digests in. Each scenario's diff is a single line: only `request_digest` was added. All 7 now report
+  "N model requests checked". For the 4 live-derived ones, the stamped digests come from the replay, not
+  the live run. That is sound only because the replay also reproduced every recorded event.
+- **Proof** (`tests/test_agentengine_test_driver.cpp`, C8):
+  - export stamps every turn;
+  - the untouched scenario passes with 2 requests checked;
+  - **positive control:** changing only the user message ("please echo a" to "b") passes when the
+    digests are stripped (the old blind spot, 0 requests checked) and fails with them, as
+    `test.replay_mismatch at model call 0`, showing the actual request;
+  - a hand-pushed turn with a wrong digest fails the run with `test.replay_mismatch`, is not consumed,
+    blocks export and is named in the snapshot;
+  - a live-derived export checks both of its requests.
+
+  The existing approve-to-deny tampering control now reports the mismatch at model call 1 (the denial
+  text in the tool result differs) instead of an event diff at event 7.
+- **Not built, and no longer needed for C8:** P3's multi-recording `ReplayChatClient` sequencer.
+  Scenarios replay the observed answers through the scripted client and now match requests by digest,
+  which is P3's request matching. Recordings under `--record-dir` remain diagnostic artifacts only.
+- **Residual:** `RequestLog` keeps the last 64 requests. So `--stamp-requests` refuses a scenario with
+  more than 64 model calls; export and checking are unaffected.
+
+## 20. `session_fork` — done (2026-09-25; GitHub #109)
+
+Built to §12 R4's specification.
+
+- **`session_fork {session_id, at_turn?}`.** The target is built by the same `make_session()` that
+  `session_start` uses, from the **source's** fixture. So it gets the fixture's own model, grant, tools,
+  suspend flag and tap, and a scripted target starts with an empty script. A `fixture` argument is
+  ignored, as C3 requires. `fork_from` then copies the history prefix, as a job on the source's worker,
+  the only thread allowed to read the source (I1). The target has run nothing yet, and waiting for the
+  job orders that write before the target's first job.
+- **Turns map to message indices.** A turn starts at a user message. `at_turn: N` keeps the first N
+  turns (0 is an empty history), and omitting it keeps everything. `at_turn` past the end is refused.
+- **Refused:** a running source; a suspended source, because `fork_from` drops open interactions, so
+  the fork could never be resumed; and more than the session cap.
+- **Exportable.** Each session records its ancestry as `segments`: for each ancestor, the model turns
+  it had consumed, the steps it had taken and the turn it was forked at. A fork exports as `format: 2`.
+  Replay rebuilds each ancestor, forks it at the recorded turn, and then plays the final session and
+  compares its events. *(Superseded by §22: each ancestor's own events and end state are now recorded
+  and compared too. The earlier claim that "a divergence there changes the history the fork inherits"
+  held only for divergence that reaches the history.)*
+  - A fork inherits the source's non-determinism mark. A fork of a session whose exchanges were not all
+    captured is marked too.
+  - The target continues the source's scripted call-id counter, so its call ids never repeat one in its
+    history.
+- **Proof** (`tests/test_agentengine_test_driver.cpp`, FORK):
+  - fork at turn 1 of 2 keeps exactly 2 messages, and the source is unchanged, before and after the
+    fork runs;
+  - the fork's first model request is turn 1 plus its own message;
+  - `at_turn` omitted copies everything, 0 gives an empty history, past-the-end and non-integer values
+    are refused, a `fixture` argument is ignored, and a suspended source is refused;
+  - a fork and a fork of a fork export (1 and 2 segments) and replay, with 4 requests checked;
+  - **control:** changing an ancestor's step fails the replay with `test.replay_mismatch`.
+
+  The checked-in `tests/scenarios/scripted_fork_branch.json` was recorded through the real binary over
+  stdio. It forks after an echo turn, and the branch's gated call is approved. It runs as
+  `scenario_scripted_fork_branch`.
+- **Not in scope:** `session_save`/`session_restore` (§3.4), which needs a snapshot store and a
+  `--snapshot-root`. It isn't needed for branching, which a fork now covers.
+
+## 21. P4 file fixtures — done (2026-09-25; GitHub #109)
+
+**In plain terms:** a tester can now run the engine's agent with instructions and a tool set written
+in a file, instead of only the four compiled-in fixtures. A file can never give a session more
+authority than a compiled-in fixture has, and only a committed file is used.
+
+- **Format.** `<fixtures_root>/<name>.yaml` is a 015 Agent document, compiled by the engine's own
+  `compile_agent_document` (I6: a driver fixture and a declarative agent mean the same thing).
+  - It decides the instructions (sent as the session's static instructions), which test tools the agent
+    has, and `limits` (`max_turns`, capped at the driver's 32; `token_budget`).
+  - `x-test-driver: {suspend_for_approval: bool}` is the only driver extension, and any other key is
+    refused.
+  - Example: `tests/fixtures/test_driver/one_sentence.yaml`.
+- **What a file cannot do (C-3):**
+  - declare `spec.capabilities` (refused: a fixture never grants authority);
+  - name a tool the driver doesn't have (`spec.tools` resolves through a `ToolRegistry` holding only
+    the in-process test tools, and `compile_agent_document` fails closed on an unknown name);
+  - shadow a compiled-in fixture name;
+  - be path-shaped (`[a-z0-9_-]{1,64}`);
+  - be live. Live file fixtures are not supported; this is a scope limit.
+- **Git trust check (C3b, §12 C-3).** `agentengine_test_driver` wires `git_fixture_trust_check`
+  (`tools/test_driver/fixture_trust.hpp`). At every `session_start` the file must pass
+  `git ls-files --error-unmatch` and `git diff --quiet HEAD`, otherwise it is refused with
+  `test.fixture_untrusted`. `fixtures_list` shows every file fixture, sorted, with whether it loads now
+  and why not. The scenario runner uses no trust check, because a person or CI runs it, not the tester.
+  It takes `--fixtures-root`, which ctest passes. The tester agent's tools are MCP, Read, Grep and Glob,
+  so it has no Write or Edit to change a fixture.
+- **Replay.** `replay_scenario` takes the fixtures root. Editing a fixture changes the request, so an
+  existing scenario fails with `test.replay_mismatch` (§19) rather than passing on changed instructions.
+- **Proof** (`tests/test_agentengine_test_driver.cpp`, P4):
+  - the fixture's instructions reach the model as the first, system, message;
+  - exactly the fixture's tools are offered;
+  - `max_turns: 1` stops the second model call (`run.max_turns_exceeded`);
+  - each refusal is checked: capabilities, an unknown tool, an untrusted file, an unknown extension
+    key, a path-shaped name, and a file named like a compiled-in fixture;
+  - `suspend_for_approval: false` gives no suspension and the gated call refused at the approval step;
+  - the listing is checked;
+  - export and replay pass with the root and fail without it;
+  - **control:** an edited fixture fails the replay with `test.replay_mismatch`.
+
+  The real git check is tested against a scratch repository: untracked is refused, committed is
+  accepted, and modified is refused.
+- **Residual.** The check trusts the working tree's git. A tester that could run `git commit` could
+  launder a fixture, but the tester agent has no shell.
+
+## 22. Red-team pass on §19–§21, and the fixes (2026-09-25)
+
+A `general-purpose` agent with no prior context red-teamed §19–§21. It could build and run the code
+and could not edit it.
+
+**No Critical findings.** Nothing it tried widened a session's tools or grant: file fixtures pick only
+among the in-process test tools, and every grant is still `grant_root({})`.
+
+Five Real gaps, all fixed:
+
+1. **A fork job that timed out could use freed memory.**
+   - Before: `run_on_worker` gave up after 10 s, and the fork then closed the target while the job
+     could still write to it and to the caller's stack frame. The snapshot read job had the same
+     pattern.
+   - Fix: the fork now waits for its job with no timeout (`run_on_worker_to_completion`). The source is
+     idle, so nothing is queued ahead of it. The snapshot job owns its output through a `shared_ptr`.
+2. **The git check did not check the bytes that were parsed.**
+   - Before: `git update-index --assume-unchanged` (or `--skip-worktree`) hid an edit from
+     `git diff --quiet`, a committed symlink passed while its target was read, and the file could
+     change between the check and the read.
+   - Fix: the reader is now `git_committed_fixture`, which returns the committed blob
+     (`git show HEAD:./<name>`) and never the working file. It refuses symlinks, and refuses a root
+     path containing characters the shell would interpret.
+   - `DriverConfig::fixture_reader` replaces `fixture_trust_check`; with no reader, the working file
+     is read, but symlinks are still refused.
+3. **After a digest mismatch, the digest queue and the script fell out of step.**
+   - Before: the mismatched turn was not consumed but its digest was popped, so a later call was
+     answered by that turn with nothing checked.
+   - Fix: a mismatch is now terminal. Every later model call in that session fails with
+     `test.replay_mismatch`.
+4. **Ancestors' events were never compared.**
+   - Before: a divergence in an ancestor that never reached the fork's history passed. Examples: a
+     tool result's recorded text, an event order, an outcome code, or a turn left unconsumed.
+   - Fix: each segment now records the ancestor's normalized events, state and outcome at fork time.
+     Replay compares them, including `script_pending == 0`, before it forks.
+   - The red team's specific example, appending `{"op":"cancel"}` to an idle ancestor, is a no-op in
+     the engine, so it is not a divergence. The controls use a changed recorded event and a changed
+     end state instead.
+5. **C8 switched off silently when digests were missing.**
+   - Fix: every recorded turn, in every segment, must carry a `request_digest`, otherwise the replay
+     fails and names the count.
+   - `--restamp-requests` re-derives the digests when the digest itself changes, as it did here (next
+     list). It applies only when everything else in the replay passes.
+
+Minor findings, fixed:
+- **A test check that could not fail.** The `max_turns` check read a bool through `get_string`. It
+  now asserts `run.max_turns_exceeded`.
+- **An undertested claim.** The fork-digest property is now tested directly: with the ancestor's
+  digests stripped, a changed ancestor message still fails, at the fork's own step 0.
+- **A lossy digest.** Tool-result content is now summarized item by item, recursively, and Data,
+  Error and Custom items are named with their content. Text "error: x" and `Error{x}`, or `["a","b"]`
+  and `["ab"]`, no longer digest the same. All scenarios were restamped. A comparison showed only
+  `request_digest` values changed, and the fork scenario was re-recorded to carry its segment's
+  expected block.
+- **015 fields silently ignored.** `spec` keys other than `instructions`, `tools`, `limits` and
+  `capabilities` are refused, as are a non-list `tools` and non-text `instructions`.
+- **Loose replay input.** A missing `fork_at_turn` or segment `expected` fails the replay, and so
+  does a mismatch between `format` and `segments`.
+- **No cap on fork depth.** Fork chains are capped at 8 (`test.fork_too_deep`).
+
+Minor findings, recorded as residuals:
+- A fork of a live session gets a fresh live-call budget. This is the same as close and start, so
+  total live spend is bounded only per session.
+- On Windows, `std::system` goes through `cmd.exe`. If `NoDefaultCurrentDirectoryInExePath` is unset,
+  a `git.bat` in the working directory would run. An argv-based spawn needs a process API that
+  `pal/` does not have.
+- Media and Citation items are digested by kind only. No driver tool or scripted turn produces them.
+- `normalize_ids` rewrites any string that starts with the session prefix, user text included. It is
+  harmless while session ids are `sN`.
+- **§12 C-3 drift:** the `permissions.deny` rules §12 promised were never written. The tester agent's
+  tool allowlist (MCP, Read, Grep, Glob, with no Write, Edit or shell) is what enforces it.
+
+**Proof:** `tests/test_agentengine_test_driver.cpp`, every check marked (§22).
+- A mismatch is terminal: after it, two turns stay unconsumed.
+- An ancestor event that differs, and an ancestor end state that differs, each fail as `segment 0`.
+- A fork chain stops at 8.
+- `spec.approval` and a scalar `spec.tools` are refused.
+- With the edit hidden by `--assume-unchanged`, the scratch-repo check returns only the committed
+  bytes.
+- Without digests, the events alone miss a changed user message, and the missing digests now fail
+  the replay.
+
+All 9 scenarios pass, with every model request checked.
+
+## 23. Remaining engine items — closed (2026-09-25)
 
 - **P1b (BUG-1/BUG-2) and R6 (approver identity):** ADR-196. `approval_requested` names only gated calls;
   `ResolveInteraction::call_decisions` decides per call; `approver_id` is carried on `approval_resolved`. The driver's

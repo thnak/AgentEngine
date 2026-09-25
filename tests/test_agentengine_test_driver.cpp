@@ -17,6 +17,13 @@
 //            never ran, and a following send is accepted.
 //   MISC -- send while suspended refused; per-call decisions refused (BUG-2 not fixed); a wait that
 //            cannot match times out; max sessions enforced; close discards the session.
+//   C8   -- (§19) export stamps each turn's request digest; a replay whose request diverges fails with
+//            test.replay_mismatch at that model call. Positive control: a changed user message, which no
+//            event shows, passes without digests and fails with them.
+//   P4   -- (§21) file fixtures: a committed 015 Agent document starts a session with its instructions,
+//            tools and limits; capabilities, unknown tools, untrusted files, unknown extension keys,
+//            path-shaped names and shadowing a compiled-in name are refused; the real git check refuses
+//            an untracked or modified file in a scratch repository and accepts a committed one.
 //   C2   -- (Windows form) 200 send/observe cycles polling snapshot and events from the MCP thread
 //            while the worker runs; every run settles with the expected text. TSan on Linux is the
 //            stronger form (named in ADR-182 §13).
@@ -24,11 +31,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "agentengine/pal/env.hpp"
+#include "test_driver/fixture_trust.hpp"
 #include "test_driver/test_driver.hpp"
 
 namespace td = agentengine::test_driver;
@@ -566,12 +575,481 @@ int main() {
         check(!lex.is_error && lsc && td::get_string(*lsc, "fixture") == "basic",
               "SCN: a live session exports against the scripted twin fixture");
         check(lsc && td::replay_scenario(*lsc).passed, "SCN: the live-derived scenario replays offline and passes");
+        check(lsc && td::replay_scenario(*lsc).requests_checked == 2,
+              "C8: the live-derived scenario's replay checks both model requests against the live recording");
 
         td::Driver no_root;
         std::string const id3 = start(no_root, "basic");
         CallResult dis = call(no_root, "scenario_export", sid(id3, {{"name", td::str("x")}}));
         check(dis.is_error && dis.error_code == "test.export_disabled", "SCN: export is disabled without a scenarios root");
         fs::remove_all(root, ec);
+    }
+
+    // ---- C8: a replay whose model REQUEST diverges fails with test.replay_mismatch (ADR-182 §19) -----------
+    {
+        namespace fs = std::filesystem;
+        fs::path const root = fs::temp_directory_path() / "ae_test_driver_c8";
+        std::error_code ec;
+        fs::remove_all(root, ec);
+        td::DriverConfig cfg;
+        cfg.scenarios_root = root;
+        td::Driver d(std::move(cfg));
+        std::string const id = start(d, "basic");
+        push(d, id, td::arr({call_turn({{"echo", "a"}}), text_turn("done")}));
+        (void)call(d, "session_send", sid(id, {{"text", td::str("please echo a")}}));
+        (void)wait(d, id, "idle");
+        CallResult ex = call(d, "scenario_export", sid(id, {{"name", td::str("c8_flow")}}));
+        auto sc = td::read_scenario_file(root / "c8_flow.json");
+        bool stamped = sc.has_value() && !ex.is_error;
+        if (sc) {
+            Value const* turns = sc->find("model_turns");
+            stamped = stamped && turns != nullptr && turns->as_array().size() == 2;
+            if (stamped) {
+                for (Value const& t : turns->as_array()) {
+                    stamped = stamped && td::get_string(t, "request_digest").value_or("").starts_with("fnv1a64:");
+                }
+            }
+        }
+        check(stamped, "C8: export records the request digest of every model turn");
+        if (sc) {
+            td::ReplayReport const clean = td::replay_scenario(*sc);
+            check(clean.passed && clean.requests_checked == 2, "C8: the untouched scenario replays and checks 2 requests");
+
+            // The user's text is in no event, so an events-only replay cannot see it change. Change it.
+            std::string text = agentengine::json::dump(*sc);
+            std::string const from = "please echo a";
+            auto const pos = text.find(from);
+            text.replace(pos, from.size(), "please echo b");
+            auto changed = agentengine::json::parse(text);
+
+            // Control: with the digests stripped, the event comparison alone finds nothing (the pre-C8
+            // blind spot), and since §22 the missing digests are themselves the failure.
+            std::string stripped_text = text;
+            for (std::size_t p; (p = stripped_text.find(",\"request_digest\":\"")) != std::string::npos;) {
+                std::size_t const end = stripped_text.find('"', p + 19);
+                stripped_text.erase(p, end + 1 - p);
+            }
+            auto stripped = agentengine::json::parse(stripped_text);
+            td::ReplayReport const blind = stripped ? td::replay_scenario(*stripped) : td::ReplayReport{};
+            check(stripped && !blind.passed && blind.problems.size() == 1 && blind.requests_checked == 0 &&
+                      blind.problems[0].find("carry no request_digest") != std::string::npos,
+                  "C8 control: without digests the events alone miss the changed message; the missing digests fail (§22)");
+
+            td::ReplayReport const r = changed ? td::replay_scenario(*changed) : td::ReplayReport{};
+            bool const named = !r.problems.empty() &&
+                               r.problems[0].find("test.replay_mismatch at model call 0") != std::string::npos &&
+                               r.problems[0].find("please echo b") != std::string::npos;
+            if (!r.problems.empty()) std::fprintf(stderr, "  .. C8 reports: %.200s\n", r.problems[0].c_str());
+            check(changed && !r.passed && named,
+                  "C8: with digests, the changed request fails as test.replay_mismatch at call 0, showing the request");
+        }
+
+        // Directly: a scripted turn that expects another request fails the model call and is not consumed.
+        std::string const id2 = start(d, "basic");
+        push(d, id2, td::arr({td::obj({{"text", td::str("never said")},
+                                       {"request_digest", td::str("fnv1a64:0000000000000000")}})}));
+        (void)call(d, "session_send", sid(id2, {{"text", td::str("hi")}}));
+        Value w = wait(d, id2, "idle");
+        Value const* snap = w.find("snapshot");
+        check(snap != nullptr && outcome_field(*snap, "error_code") == "test.replay_mismatch",
+              "C8: a request that does not match the turn's digest fails the run with test.replay_mismatch");
+        check(snap != nullptr && snap->find("replay_mismatch") != nullptr &&
+                  td::get_u64(*snap->find("replay_mismatch"), "call_index") == 0u,
+              "C8: the snapshot names the diverging call");
+        check(snap != nullptr && td::get_u64(*snap, "script_pending") == 1u, "C8: the turn was not consumed");
+        // §22: a mismatch is terminal. Before, the digest queue moved on while the script did not, so a
+        // later call was answered by the unconsumed turn with nothing checked.
+        push(d, id2, td::arr({text_turn("second")}));
+        (void)call(d, "session_send", sid(id2, {{"text", td::str("again")}}));
+        Value w3 = wait(d, id2, "idle");
+        check(w3.find("snapshot") && outcome_field(*w3.find("snapshot"), "error_code") == "test.replay_mismatch" &&
+                  td::get_u64(*w3.find("snapshot"), "script_pending") == 2u,
+              "C8 (§22): after a mismatch every later call fails too; no turn is consumed unchecked");
+        CallResult ex2 = call(d, "scenario_export", sid(id2, {{"name", td::str("c8_diverged")}}));
+        check(ex2.is_error && ex2.error_code == "test.not_recordable", "C8: a diverged session cannot be exported");
+        CallResult reqs = call(d, "model_requests", sid(id2));
+        Value const* list = reqs.body.find("requests");
+        check(list != nullptr && list->is_array() && !list->as_array().empty() &&
+                  td::get_string(list->as_array()[0], "digest").value_or("").starts_with("fnv1a64:"),
+              "C8: model_requests shows each request's digest");
+        fs::remove_all(root, ec);
+    }
+
+    // ---- FORK: session_fork (ADR-182 §12 R4, §20) ------------------------------------------------------------
+    {
+        namespace fs = std::filesystem;
+        fs::path const root = fs::temp_directory_path() / "ae_test_driver_fork";
+        std::error_code ec;
+        fs::remove_all(root, ec);
+        td::DriverConfig cfg;
+        cfg.scenarios_root = root;
+        td::Driver d(std::move(cfg));
+
+        std::string const src = start(d, "basic");
+        push(d, src, td::arr({text_turn("r1"), call_turn({{"echo", "two"}}), text_turn("r2")}));
+        (void)call(d, "session_send", sid(src, {{"text", td::str("one")}}));
+        (void)wait(d, src, "idle");
+        (void)call(d, "session_send", sid(src, {{"text", td::str("two")}}));
+        (void)wait(d, src, "idle");
+        auto history_len = [&](std::string const& id) {
+            return td::get_u64(call(d, "session_snapshot", sid(id)).body, "history_length").value_or(999);
+        };
+        std::uint64_t const src_len = history_len(src);  // user, r1, user, assistant(call), tool, r2
+
+        CallResult f1 = call(d, "session_fork", sid(src, {{"at_turn", td::num(1)}}));
+        std::string const b1 = td::get_string(f1.body, "session_id").value_or("");
+        check(!f1.is_error && !b1.empty() && td::get_u64(f1.body, "turns_in_source") == 2u,
+              "FORK: an idle session forks at turn 1 of 2");
+        check(history_len(b1) == 2u, "FORK: the fork keeps exactly turn 1 (user 'one' + 'r1')");
+        check(history_len(src) == src_len, "FORK: the source's history is unchanged");
+        check(td::get_u64(call(d, "session_snapshot", sid(b1)).body, "script_pending") == 0u,
+              "FORK: the fork starts with an empty script (the source's is not shared)");
+
+        // The branch diverges: the model sees turn 1, then the branch's own message, not 'two'.
+        push(d, b1, td::arr({text_turn("branch reply")}));
+        (void)call(d, "session_send", sid(b1, {{"text", td::str("alternative")}}));
+        Value wb = wait(d, b1, "idle");
+        check(wb.find("snapshot") && outcome_field(*wb.find("snapshot"), "text") == "branch reply",
+              "FORK: the fork runs on its own script");
+        CallResult reqs = call(d, "model_requests", sid(b1));
+        std::string seen;
+        if (Value const* list = reqs.body.find("requests"); list != nullptr && list->is_array() && !list->as_array().empty()) {
+            for (Value const& m : list->as_array()[0].find("messages")->as_array())
+                seen += td::get_string(m, "role").value_or("") + ":" + td::get_string(m, "text").value_or("") + "|";
+        }
+        check(seen == "user:one|assistant:r1|user:alternative|",
+              "FORK: the fork's first request is turn 1 plus its own message (" + seen + ")");
+        check(history_len(src) == src_len, "FORK: running the fork does not touch the source");
+
+        CallResult whole = call(d, "session_fork", sid(src));
+        check(!whole.is_error && history_len(td::get_string(whole.body, "session_id").value_or("")) == src_len,
+              "FORK: with no at_turn the whole history is copied");
+        (void)call(d, "session_close", sid(td::get_string(whole.body, "session_id").value_or("")));
+        CallResult zero = call(d, "session_fork", sid(src, {{"at_turn", td::num(0)}}));
+        check(!zero.is_error && history_len(td::get_string(zero.body, "session_id").value_or("")) == 0u,
+              "FORK: at_turn 0 gives an empty history");
+        (void)call(d, "session_close", sid(td::get_string(zero.body, "session_id").value_or("")));
+        CallResult too_far = call(d, "session_fork", sid(src, {{"at_turn", td::num(3)}}));
+        check(too_far.is_error && too_far.error_code == "test.bad_arguments", "FORK: at_turn past the end is refused");
+        CallResult bad_turn = call(d, "session_fork", sid(src, {{"at_turn", td::str("1")}}));
+        check(bad_turn.is_error && bad_turn.error_code == "test.bad_arguments", "FORK: a non-integer at_turn is refused");
+        CallResult sneaky = call(d, "session_fork", sid(src, {{"fixture", td::str("no_tools")}, {"at_turn", td::num(0)}}));
+        std::string const sneaky_id = td::get_string(sneaky.body, "session_id").value_or("");
+        check(!sneaky.is_error && td::get_string(call(d, "session_snapshot", sid(sneaky_id)).body, "fixture") == "basic",
+              "FORK: the fork always takes the source's fixture (a fixture argument is ignored)");
+        (void)call(d, "session_close", sid(sneaky_id));
+
+        // §22: a fork chain is capped (each fork carries its whole ancestry).
+        {
+            td::Driver deep;
+            std::string cur = start(deep, "no_tools");
+            std::string last_code;
+            int made = 0;
+            for (int i = 0; i < 12; ++i) {
+                CallResult f = call(deep, "session_fork", sid(cur));
+                if (f.is_error) {
+                    last_code = f.error_code;
+                    break;
+                }
+                std::string const next = td::get_string(f.body, "session_id").value_or("");
+                (void)call(deep, "session_close", sid(cur));
+                cur = next;
+                ++made;
+            }
+            check(made == static_cast<int>(td::kMaxForkDepth) && last_code == "test.fork_too_deep",
+                  "FORK (§22): a fork chain stops at the depth cap with test.fork_too_deep");
+        }
+
+        std::string const sus = start(d, "basic");
+        push(d, sus, td::arr({call_turn({{"gated_echo", "x"}})}));
+        (void)call(d, "session_send", sid(sus, {{"text", td::str("go")}}));
+        (void)wait(d, sus, "suspended");
+        CallResult fs_sus = call(d, "session_fork", sid(sus));
+        check(fs_sus.is_error && fs_sus.error_code == "test.session_suspended", "FORK: a suspended session is refused");
+        (void)call(d, "session_close", sid(sus));
+
+        // Export and replay a fork, and a fork of a fork.
+        CallResult ex = call(d, "scenario_export", sid(b1, {{"name", td::str("fork_branch")}}));
+        auto sc = td::read_scenario_file(root / "fork_branch.json");
+        check(!ex.is_error && sc && td::get_u64(*sc, "format") == 2u && sc->find("segments") != nullptr &&
+                  sc->find("segments")->as_array().size() == 1,
+              "FORK: a fork exports as format 2 with its ancestry");
+        td::ReplayReport const rr = sc ? td::replay_scenario(*sc) : td::ReplayReport{};
+        if (!rr.problems.empty()) std::fprintf(stderr, "  .. fork replay: %s\n", rr.problems[0].c_str());
+        check(rr.passed && rr.requests_checked == 4, "FORK: the fork's scenario replays (3 ancestor + 1 own request checked)");
+
+        CallResult f2 = call(d, "session_fork", sid(b1, {{"at_turn", td::num(1)}}));
+        std::string const b2 = td::get_string(f2.body, "session_id").value_or("");
+        push(d, b2, td::arr({text_turn("grandchild")}));
+        (void)call(d, "session_send", sid(b2, {{"text", td::str("third way")}}));
+        (void)wait(d, b2, "idle");
+        CallResult ex2 = call(d, "scenario_export", sid(b2, {{"name", td::str("fork_of_fork")}}));
+        auto sc2 = td::read_scenario_file(root / "fork_of_fork.json");
+        td::ReplayReport const rr2 = sc2 ? td::replay_scenario(*sc2) : td::ReplayReport{};
+        if (!rr2.problems.empty()) std::fprintf(stderr, "  .. fork-of-fork replay: %s\n", rr2.problems[0].c_str());
+        check(!ex2.is_error && sc2 && sc2->find("segments")->as_array().size() == 2 && rr2.passed,
+              "FORK: a fork of a fork exports two segments and replays");
+
+        // §22: each ancestor is compared with what it recorded. What an ancestor did that never reaches the
+        // fork's history -- here its tool call's recorded result, and separately its end state -- was
+        // invisible before, because only the final session's events were compared.
+        if (sc) {
+            auto tamper = [&](std::string const& from, std::string const& to) {
+                std::string text = agentengine::json::dump(*sc);
+                auto const pos = text.find(from);  // the first occurrence is inside segments[0]
+                if (pos == std::string::npos) return td::ReplayReport{};
+                text.replace(pos, from.size(), to);
+                auto t = agentengine::json::parse(text);
+                return t ? td::replay_scenario(*t) : td::ReplayReport{};
+            };
+            td::ReplayReport const ev = tamper(R"("result":"{\"text\":\"two\"}")", R"("result":"{\"text\":\"TWO\"}")");
+            if (!ev.problems.empty()) std::fprintf(stderr, "  .. ancestor control: %.160s\n", ev.problems[0].c_str());
+            check(!ev.passed && !ev.problems.empty() && ev.problems[0].starts_with("segment 0 event"),
+                  "FORK control (§22): an ancestor event that differs from its recording fails as segment 0");
+            td::ReplayReport const st = tamper(R"("fork_at_turn":1,"expected":{"state":"idle")",
+                                               R"("fork_at_turn":1,"expected":{"state":"suspended")");
+            check(!st.passed && !st.problems.empty() && st.problems[0].starts_with("segment 0 final state"),
+                  "FORK control (§22): an ancestor end state that differs fails as segment 0");
+        }
+        // With the ancestor's digests and events out of the way, a changed ancestor message still reaches
+        // the fork's history, which the fork's own first request digest catches.
+        if (sc) {
+            std::string text = agentengine::json::dump(*sc);
+            std::string const from = R"({"op":"send","text":"one"})";
+            auto const pos = text.find(from);
+            if (pos != std::string::npos) text.replace(pos, from.size(), R"({"op":"send","text":"uno"})");
+            auto t = agentengine::json::parse(text);
+            td::ReplayReport tr;
+            if (t) {
+                td::Members top;
+                for (auto const& [k, v] : t->as_object()) {
+                    if (k != "segments") {
+                        top.emplace_back(k, v);
+                        continue;
+                    }
+                    std::vector<Value> segs;
+                    for (Value const& seg : v.as_array()) {
+                        td::Members sm;
+                        for (auto const& [sk, sv] : seg.as_object()) {
+                            if (sk == "model_turns") {
+                                std::vector<Value> turns;
+                                for (Value const& turn : sv.as_array()) {
+                                    td::Members tm;
+                                    for (auto const& [tk, tv] : turn.as_object())
+                                        if (tk != "request_digest") tm.emplace_back(tk, tv);
+                                    turns.push_back(td::obj(std::move(tm)));
+                                }
+                                sm.emplace_back(sk, td::arr(std::move(turns)));
+                            } else {
+                                sm.emplace_back(sk, sv);
+                            }
+                        }
+                        segs.push_back(td::obj(std::move(sm)));
+                    }
+                    top.emplace_back(k, td::arr(std::move(segs)));
+                }
+                tr = td::replay_scenario(td::obj(std::move(top)));
+            }
+            check(pos != std::string::npos && !tr.passed && !tr.problems.empty() &&
+                      tr.problems[0].starts_with("step 0 (send): test.replay_mismatch"),
+                  "FORK: a changed ancestor message is caught by the fork's own first request digest");
+        }
+        // Control: tampering with an ancestor's step fails the replay (here at the ancestor's own digest).
+        if (sc) {
+            std::string text = agentengine::json::dump(*sc);
+            std::string const from = R"({"op":"send","text":"one"})";
+            auto const pos = text.find(from);
+            if (pos != std::string::npos) text.replace(pos, from.size(), R"({"op":"send","text":"uno"})");
+            auto t = agentengine::json::parse(text);
+            td::ReplayReport const tr = t ? td::replay_scenario(*t) : td::ReplayReport{};
+            check(pos != std::string::npos && !tr.passed && !tr.problems.empty() &&
+                      tr.problems[0].find("test.replay_mismatch") != std::string::npos,
+                  "FORK control: a changed ancestor step fails the replay with test.replay_mismatch");
+        }
+        fs::remove_all(root, ec);
+    }
+
+    // ---- P4: file fixtures (ADR-182 §21) --------------------------------------------------------------------
+    {
+        namespace fs = std::filesystem;
+        fs::path const root = fs::temp_directory_path() / "ae_test_driver_fixtures";
+        fs::path const scen = fs::temp_directory_path() / "ae_test_driver_fixture_scenarios";
+        std::error_code ec;
+        fs::remove_all(root, ec);
+        fs::remove_all(scen, ec);
+        fs::create_directories(root, ec);
+        auto write = [&](std::string const& name, std::string const& text) {
+            std::ofstream(root / (name + ".yaml"), std::ios::binary) << text;
+        };
+        std::string const head = "apiVersion: agentengine.dev/v1\nkind: Agent\nmetadata:\n  id: t\n  description: A test agent.\n";
+        write("terse", head + "spec:\n  instructions: Answer in one word.\n  tools:\n    - echo\n  limits:\n    max_turns: 1\n");
+        write("grabby", head + "spec:\n  tools:\n    - echo\n  capabilities:\n    net_out: [\"example.com\"]\n");
+        write("ghost", head + "spec:\n  tools:\n    - run_shell\n");
+        write("dirty", head + "spec:\n  tools:\n    - echo\n");
+        write("basic", head + "spec:\n  tools:\n    - fail\n");
+        write("no_gate", head + "spec:\n  tools:\n    - gated_echo\nx-test-driver:\n  suspend_for_approval: false\n");
+        write("typo", head + "spec:\n  tools:\n    - echo\nx-test-driver:\n  live: true\n");
+        write("loose", head + "spec:\n  tools:\n    - echo\n  approval: never_require\n");
+        write("scalar", head + "spec:\n  tools: echo\n");
+
+        td::DriverConfig cfg;
+        cfg.fixtures_root = root;
+        cfg.scenarios_root = scen;
+        cfg.fixture_reader = [](fs::path const& p) -> agentengine::result<std::string> {
+            if (p.stem() == "dirty") {
+                return std::unexpected(agentengine::error{agentengine::failure_class::policy, "has uncommitted changes",
+                                                          "test.fixture_untrusted"});
+            }
+            std::ifstream in(p, std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        };
+        td::Driver d(std::move(cfg));
+
+        CallResult ok = call(d, "session_start", td::obj({{"fixture", td::str("terse")}}));
+        std::string const id = td::get_string(ok.body, "session_id").value_or("");
+        check(!ok.is_error && !id.empty(), "P4: a committed file fixture starts a session");
+        push(d, id, td::arr({text_turn("Yes.")}));
+        (void)call(d, "session_send", sid(id, {{"text", td::str("ok?")}}));
+        (void)wait(d, id, "idle");
+        CallResult reqs = call(d, "model_requests", sid(id));
+        std::string first_role;
+        std::string first_text;
+        std::string tools;
+        if (Value const* list = reqs.body.find("requests"); list != nullptr && list->is_array() && !list->as_array().empty()) {
+            Value const& r0 = list->as_array()[0];
+            Value const& m0 = r0.find("messages")->as_array()[0];
+            first_role = td::get_string(m0, "role").value_or("");
+            first_text = td::get_string(m0, "text").value_or("");
+            for (Value const& t : r0.find("tools")->as_array()) tools += t.as_string() + ",";
+        }
+        check(first_role == "system" && first_text.find("Answer in one word.") != std::string::npos,
+              "P4: the fixture's instructions reach the model as system text");
+        check(tools == "echo,", "P4: the model is offered exactly the fixture's tools (" + tools + ")");
+
+        // max_turns: 1 -- a tool round needs a second model call, which the limit refuses.
+        std::string const lim = start(d, "terse");
+        push(d, lim, td::arr({call_turn({{"echo", "a"}}), text_turn("never reached")}));
+        (void)call(d, "session_send", sid(lim, {{"text", td::str("go")}}));
+        Value wl = wait(d, lim, "idle");
+        std::fprintf(stderr, "  .. max_turns outcome: %s\n",
+                     wl.find("snapshot") ? outcome_field(*wl.find("snapshot"), "error_code").c_str() : "?");
+        check(wl.find("snapshot") && outcome_field(*wl.find("snapshot"), "error_code") == "run.max_turns_exceeded" &&
+                  td::get_u64(call(d, "session_snapshot", sid(lim)).body, "script_pending") == 1u,
+              "P4: the fixture's max_turns limit applies (the second model call never happens)");
+
+        auto refused = [&](std::string const& name) {
+            return call(d, "session_start", td::obj({{"fixture", td::str(name)}}));
+        };
+        CallResult grabby = refused("grabby");
+        check(grabby.is_error && grabby.error_code == "test.bad_fixture", "P4: a fixture declaring capabilities is refused");
+        CallResult ghost = refused("ghost");
+        check(ghost.is_error && ghost.error_code == "test.bad_fixture",
+              "P4: a fixture naming a tool that is not a driver test tool is refused");
+        CallResult dirty = refused("dirty");
+        check(dirty.is_error && dirty.error_code == "test.fixture_untrusted",
+              "P4 (C3b): a fixture the host's trust check rejects is refused");
+        CallResult typo = refused("typo");
+        check(typo.is_error && typo.error_code == "test.bad_fixture", "P4: an unknown x-test-driver key is refused");
+        CallResult loose = refused("loose");
+        check(loose.is_error && loose.error_code == "test.bad_fixture",
+              "P4 (§22): a 015 field the driver does not apply (spec.approval) is refused, not ignored");
+        CallResult scalar = refused("scalar");
+        check(scalar.is_error && scalar.error_code == "test.bad_fixture",
+              "P4 (§22): spec.tools that is not a list is refused, not read as no tools");
+        CallResult escape = refused("../terse");
+        check(escape.is_error && escape.error_code == "test.unknown_fixture", "P4: a path-shaped fixture name is refused");
+        std::string const shadow = start(d, "basic");
+        CallResult shadow_list = call(d, "model_requests", sid(shadow));
+        push(d, shadow, td::arr({text_turn("x")}));
+        (void)call(d, "session_send", sid(shadow, {{"text", td::str("go")}}));
+        (void)wait(d, shadow, "idle");
+        shadow_list = call(d, "model_requests", sid(shadow));
+        std::string shadow_tools;
+        if (Value const* list = shadow_list.body.find("requests"); list != nullptr && !list->as_array().empty()) {
+            for (Value const& t : list->as_array()[0].find("tools")->as_array()) shadow_tools += t.as_string() + ",";
+        }
+        check(shadow_tools == "echo,gated_echo,fail,", "P4: a file cannot shadow a compiled-in fixture (" + shadow_tools + ")");
+
+        std::string const ng = start(d, "no_gate");
+        push(d, ng, td::arr({call_turn({{"gated_echo", "x"}}), text_turn("after")}));
+        (void)call(d, "session_send", sid(ng, {{"text", td::str("go")}}));
+        Value wn = wait(d, ng, "settled");
+        auto finished = events_of_kind(d, ng, "tool_call_finished");
+        bool const refused_call = finished.size() == 1 && finished[0].find("payload") != nullptr &&
+                                  td::get_bool(*finished[0].find("payload"), "is_error") == true &&
+                                  td::get_string(*finished[0].find("payload"), "result").value_or("").find("approval") !=
+                                      std::string::npos;
+        check(wn.find("snapshot") && state_of(*wn.find("snapshot")) == "idle" &&
+                  events_of_kind(d, ng, "approval_requested").empty() && refused_call,
+              "P4: x-test-driver suspend_for_approval: false -- no suspension; the gated call is refused at the "
+              "approval step (no decider)");
+
+        CallResult list = call(d, "fixtures_list");
+        std::string listed;
+        if (Value const* fx = list.body.find("fixtures"); fx != nullptr) {
+            for (Value const& f : fx->as_array()) {
+                if (td::get_string(f, "source") != "file") continue;
+                listed += td::get_string(f, "name").value_or("") + (td::get_bool(f, "available") == true ? "+" : "-") + ",";
+            }
+        }
+        check(listed == "basic-,dirty-,ghost-,grabby-,loose-,no_gate+,scalar-,terse+,typo-,",
+              "P4: fixtures_list shows every file fixture, sorted, with whether it loads (" + listed + ")");
+
+        // Export and replay with the fixture; without the fixtures root the replay cannot find it.
+        CallResult ex = call(d, "scenario_export", sid(id, {{"name", td::str("terse_flow")}}));
+        auto sc = td::read_scenario_file(scen / "terse_flow.json");
+        check(!ex.is_error && sc && td::replay_scenario(*sc, td::ReplayFixtures{root, {}}).passed,
+              "P4: a file-fixture session exports and replays against the same fixture");
+        check(sc && !td::replay_scenario(*sc).passed, "P4: the replay needs the fixtures root");
+        // Control: a changed fixture changes the request, which the digest catches.
+        write("terse", head + "spec:\n  instructions: Answer in two words.\n  tools:\n    - echo\n  limits:\n    max_turns: 1\n");
+        td::ReplayReport const changed = sc ? td::replay_scenario(*sc, td::ReplayFixtures{root, {}}) : td::ReplayReport{};
+        check(!changed.passed && !changed.problems.empty() &&
+                  changed.problems[0].find("test.replay_mismatch") != std::string::npos,
+              "P4 control: editing the fixture's instructions fails the replay with test.replay_mismatch");
+        fs::remove_all(root, ec);
+        fs::remove_all(scen, ec);
+    }
+
+    // ---- P4: the real git trust check, against a throwaway repository -------------------------------------------
+    {
+        namespace fs = std::filesystem;
+        fs::path const repo = fs::temp_directory_path() / "ae_test_driver_git_fixture";
+        std::error_code ec;
+        fs::remove_all(repo, ec);
+        fs::create_directories(repo, ec);
+        std::string const q = "\"" + repo.string() + "\"";
+#ifdef _WIN32
+        std::string const quiet = " >NUL 2>&1";
+#else
+        std::string const quiet = " >/dev/null 2>&1";
+#endif
+        bool const have_git = std::system(("git -C " + q + " init -q" + quiet).c_str()) == 0;
+        check(have_git, "P4 git: git is available and a scratch repository initializes");
+        if (have_git) {
+            fs::path const file = repo / "agent.yaml";
+            std::string const committed_text = "kind: Agent\nspec: {}\n";
+            std::ofstream(file, std::ios::binary) << committed_text;
+            auto why = [](agentengine::result<std::string> const& r) { return r ? std::string() : r.error().message; };
+            check(why(td::git_committed_fixture(file)) == "not tracked by git",
+                  "P4 git: an untracked fixture file is refused");
+            int const committed = std::system(("git -C " + q + " add agent.yaml" + quiet).c_str()) |
+                                  std::system(("git -C " + q + " -c user.email=t@example.com -c user.name=t "
+                                               "-c commit.gpgsign=false commit -q -m init" + quiet).c_str());
+            auto const accepted = td::git_committed_fixture(file);
+            check(committed == 0 && accepted && *accepted == committed_text,
+                  "P4 git: the same file, committed, is accepted and its committed bytes are returned");
+            std::ofstream(file, std::ios::binary | std::ios::app) << "# edited\n";
+            check(why(td::git_committed_fixture(file)) == "has uncommitted changes",
+                  "P4 git: a modified committed file is refused");
+            // §22 (red team): assume-unchanged hides the edit from `git diff`. The reader still returns only
+            // the committed blob, so the edit is never parsed.
+            int const hidden = std::system(("git -C " + q + " update-index --assume-unchanged agent.yaml" + quiet).c_str());
+            auto const masked = td::git_committed_fixture(file);
+            check(hidden == 0 && masked && *masked == committed_text,
+                  "P4 git (§22): with the edit hidden by --assume-unchanged, only the committed bytes are used");
+        }
+        fs::remove_all(repo, ec);
     }
 
     // ---- C2 (Windows form): observe from the MCP thread while the worker runs -------------------------------
