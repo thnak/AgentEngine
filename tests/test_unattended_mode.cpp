@@ -145,7 +145,7 @@ int main() {
     }
     {
         Captured const c = capture([&](LessonSession& s) {
-            s.set_approved_lessons(&reg, ae::approved_lesson_level::instructions);
+            (void)s.set_approved_lessons(&reg, ae::approved_lesson_level::instructions, "ops");
         });
         std::string const wire = openai_wire(c.request);
         ae::ContentItem const& lesson = item_at(c, 0);
@@ -191,7 +191,7 @@ int main() {
                   autoreg.find("p1", kLesson)->approval_id == "automatic:review-bot",
               "L5: an automatic approval is recorded as automatic, with the reviewer as its id");
         Captured const c = capture([&](LessonSession& s) {
-            s.set_approved_lessons(&autoreg, ae::approved_lesson_level::instructions);
+            (void)s.set_approved_lessons(&autoreg, ae::approved_lesson_level::instructions, "ops");
         });
         check(item_at(c, 0).approval == "automatic:review-bot" && c.decisions.size() == 1 &&
                   contains(c.decisions.front(), "(automatic)"),
@@ -217,7 +217,7 @@ int main() {
             (void)s.disable_system_channel_fence("ops-automation");
         });
         check(item_at(c, 0).deliver_as_instructions && !item_at(c, 0).approval.empty() && c.decisions.size() == 2 &&
-                  contains(c.decisions.at(0), "delivered as instructions (fence off)") &&
+                  contains(c.decisions.at(0), "delivered as instructions (fence off by operator") &&
                   contains(c.decisions.at(1), "2 tainted"),
               "L7: a guidance-level lesson with the fence off is audited as what is actually sent -- instructions -- "
               "and is not counted again as an unfenced memory item (red team MINOR)");

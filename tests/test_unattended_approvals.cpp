@@ -579,7 +579,7 @@ int main() {
     }
     {
         Captured const c =
-            capture([&](LessonSession& s) { s.set_approved_lessons(&reg, ae::approved_lesson_level::instructions); });
+            capture([&](LessonSession& s) { (void)s.set_approved_lessons(&reg, ae::approved_lesson_level::instructions, "ops"); });
         check(!fenced(c, 0) && fenced(c, 1) && fenced(c, 2) && c.messages.at(0).content.front().tainted,
               "D2: level instructions unfences only the approved text, which stays tainted");
     }
@@ -603,8 +603,8 @@ int main() {
     }
     {
         Captured const c = capture([&](LessonSession& s) { (void)s.enable_unattended_mode("ops-automation", &reg); });
-        check(count_containing(c.decisions, "delivered as instructions: approval") == 1 &&
-                  count_containing(c.decisions, "(fence off)") == 0,
+        check(count_containing(c.decisions, "delivered as instructions (level set by operator ops-automation): approval") == 1 &&
+                  count_containing(c.decisions, "(fence off") == 0,
               "D5: enable_unattended_mode sets the instructions level itself, not only the fence (round 2 MAJOR)");
     }
     {

@@ -254,6 +254,7 @@ ChainResult run_chain(ChainOptions const& opt) {
     b.child_token_budget = opt.b_child_budget;
     b.approved_lessons = opt.b_lessons;
     b.lesson_level = opt.b_level;
+    if (opt.b_level == approved_lesson_level::instructions) b.lesson_level_set_by = "ops";
     b.share_lessons = opt.b_share;
     b.run_child = [](std::string id, ChildSpawnRequest req) {
         return run_child_agent_session<ChainClient, NoSessionState, ChainProvider<1>>(
@@ -387,7 +388,7 @@ public:
 }  // namespace
 
 int main() {
-    (void)g_lessons.approve("p-A", kLesson, LessonApproval{"alice", "2026-09-25", "", false, false});
+    (void)g_lessons.approve(LessonScope{"tenant-1", "p-A"}, kLesson, LessonApproval{"alice", "2026-09-25", "", false, false});
 
     {
         ChainResult const r = run_chain(ChainOptions{});
@@ -686,8 +687,8 @@ int main() {
     }
     {
         ApprovedLessonRegistry reg;
-        (void)reg.approve("p-A", kLesson, LessonApproval{"alice", "t", "", false, false});
-        (void)reg.approve("p-other", "a lesson for someone else entirely", LessonApproval{"bob", "t", "", false, false});
+        (void)reg.approve(LessonScope{"tenant-1", "p-A"}, kLesson, LessonApproval{"alice", "t", "", false, false});
+        (void)reg.approve(LessonScope{"tenant-1", "p-other"}, "a lesson for someone else entirely", LessonApproval{"bob", "t", "", false, false});
         ChainOptions o;
         o.c_lessons = &reg;
         o.c_share = true;

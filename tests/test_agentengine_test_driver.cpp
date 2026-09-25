@@ -280,22 +280,76 @@ int main() {
         (void)wait(d, id, "suspended");
         auto pending = pending_of(d, id);
         bool gated = false;
-        bool free_call = false;
+        bool free_listed = false;
         for (Value const& p : pending) {
             if (td::get_string(p, "tool_name") == "gated_echo") gated = td::get_bool(p, "needs_approval") == true;
-            if (td::get_string(p, "tool_name") == "echo") free_call = td::get_bool(p, "needs_approval") == false;
+            if (td::get_string(p, "tool_name") == "echo") free_listed = true;
         }
-        check(pending.size() == 2 && gated && free_call,
-              "MIX: both calls listed; gated needs_approval=true, echo needs_approval=false");
+        // ADR-196 (issue #104 BUG-1): only a call that waits on the decision is named.
+        check(pending.size() == 1 && gated && !free_listed,
+              "MIX (ADR-196): only the gated call is listed; echo, which needs no approval, is not");
         CallResult per_call = call(d, "interaction_resolve",
                                    sid(id, {{"interaction_id", td::str(pending.empty() ? "" : td::get_string(pending[0], "interaction_id").value_or(""))},
                                             {"decision", td::str("deny")},
-                                            {"call_ids", td::arr({td::str("call_1")})}}));
-        check(per_call.is_error && per_call.error_code == "test.unsupported",
-              "MISC: per-call decisions are refused until BUG-2 is fixed");
+                                            {"call_decisions", td::arr({td::obj({{"call_id", td::str("not-a-listed-call")},
+                                                                                 {"decision", td::str("approve")}})})}}));
+        check(per_call.is_error && per_call.error_code == "test.bad_arguments",
+              "MISC (ADR-196): a per-call decision for a call the interaction did not ask about is refused");
         CallResult send_again = call(d, "session_send", sid(id, {{"text", td::str("more")}}));
         check(send_again.is_error && send_again.error_code == "test.session_suspended",
               "MISC: a send while suspended is refused with a clear code");
+    }
+
+    // ---- PC: per-call decisions and the approver (ADR-196, issues #104/#108; ADR-182 C7) -------------------
+    {
+        td::Driver d;
+        std::string const id = start(d, "basic");
+        push(d, id, td::arr({call_turn({{"gated_echo", "one"}, {"gated_echo", "two"}, {"echo", "free"}}),
+                             text_turn("ok")}));
+        (void)call(d, "session_send", sid(id, {{"text", td::str("three")}}));
+        (void)wait(d, id, "suspended");
+        auto pending = pending_of(d, id);
+        std::string ix, first, second;
+        for (Value const& p : pending) {
+            ix = td::get_string(p, "interaction_id").value_or("");
+            std::string const args = td::get_string(p, "arguments").value_or("");
+            if (args.find("one") != std::string::npos) first = td::get_string(p, "call_id").value_or("");
+            if (args.find("two") != std::string::npos) second = td::get_string(p, "call_id").value_or("");
+        }
+        check(pending.size() == 2 && !first.empty() && !second.empty(), "PC: the two gated calls are listed");
+        // The round is DENIED, except the first call, which is approved -- by a named approver.
+        CallResult r = call(d, "interaction_resolve",
+                            sid(id, {{"interaction_id", td::str(ix)},
+                                     {"decision", td::str("deny")},
+                                     {"call_decisions", td::arr({td::obj({{"call_id", td::str(first)},
+                                                                          {"decision", td::str("approve")}})})},
+                                     {"approver_id", td::str("alice")}}));
+        check(!r.is_error, "PC: a per-call resolve is accepted");
+        (void)wait(d, id, "idle");
+        auto resolved = events_of_kind(d, id, "approval_resolved");
+        bool first_yes = false, second_no = false, named = resolved.size() == 2;
+        for (Value const& e : resolved) {
+            Value const* pl = e.find("payload");
+            if (pl == nullptr) continue;
+            if (td::get_string(*pl, "approver_id") != "alice") named = false;
+            if (td::get_string(*pl, "call_id") == first) first_yes = td::get_bool(*pl, "approved") == true;
+            if (td::get_string(*pl, "call_id") == second) second_no = td::get_bool(*pl, "approved") == false;
+        }
+        check(first_yes && second_no, "PC (#104): each call's approval_resolved carries its own decision");
+        check(named, "PC (#108): every approval_resolved names the approver the host supplied");
+        auto started = events_of_kind(d, id, "tool_call_started");
+        bool ran_first = false, ran_second = false, ran_free = false;
+        for (Value const& e : started) {
+            Value const* pl = e.find("payload");
+            if (pl == nullptr) continue;
+            std::string const call_id = td::get_string(*pl, "call_id").value_or("");
+            if (call_id == first) ran_first = true;
+            if (call_id == second) ran_second = true;
+            if (td::get_string(*pl, "tool_name") == "echo") ran_free = true;
+        }
+        // ADR-182 C7: reintroducing BUG-2 (a round-level deny folded into every call) makes this fail.
+        check(ran_first && !ran_second, "PC (#104 BUG-2): the approved call runs, the denied one does not");
+        check(ran_free, "PC (#104 BUG-2): the call that never needed approval runs although the round was denied");
     }
 
     // ---- C10: cancel a suspended session ------------------------------------------------------------------

@@ -2081,6 +2081,12 @@ add_executable(test_unattended_approvals test_unattended_approvals.cpp)
 target_link_libraries(test_unattended_approvals PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_unattended_approvals COMMAND test_unattended_approvals)
 
+# ADR-196 (issues #104/#107/#108), ADR-198 (issue #106) and the round-3 red-team fixes to ADR-191/192: the session's
+# resume paths (tool surface, per-call decisions, approver, stale per-interaction state) and the lesson registry.
+add_executable(test_approval_resume test_approval_resume.cpp)
+target_link_libraries(test_approval_resume PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME test_approval_resume COMMAND test_approval_resume)
+
 # ---- OQ-21 (core/tool_call_hook.hpp) prove phase -- the tool-call hook stage wired into a real
 # rt::AgentSession round: deny-before-approval, rewrite-reaches-dispatch-and-downgrades-provenance,
 # a no-hook regression/positive control, and the interaction_reason::hook_decision suspend/resume
