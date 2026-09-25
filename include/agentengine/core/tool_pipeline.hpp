@@ -165,8 +165,9 @@ using ApprovalDecider = std::function<bool(Principal const& caller, std::string_
 // `capability_ceiling` (it decides among already-possessed authority, it does not grant any).
 // Never consulted for `never_require` or `always_require`. For a `text_derived` call its `auto_approve`
 // is never an approval: 007 §4's closed declassifier list stays closed (ADR-023's own red-team already
-// found a laxer version of THAT gate unsafe). Its `auto_deny` IS honoured there since ADR-192 (denying
+// found a laxer version of THAT gate unsafe). Its `auto_deny` IS honoured there since ADR-184 (denying
 // only narrows; before, a denied text_derived call skipped the deny and reached the ApprovalDecider).
+// ADR-192's unattended mode additionally asks it about every call that reaches the decider.
 // `resolve_approval_outcome` below enforces the distinction structurally, not just by convention.
 enum class policy_decision { auto_approve, auto_deny, require_approval };  // ae-naming-lint: allow policy_decision — ADR-070, same idiom as approval_mode/call_provenance
 // ae-naming-lint: allow PolicyDecider — ADR-070, same idiom as ApprovalDecider above
