@@ -55,7 +55,10 @@
 // contract still matters for I1's own sake (two deliveries to one session in one round would queue behind
 // each other on that session's mutex, holding two workers), not for memory safety.
 
+#include <atomic>
 #include <functional>
+#include <memory>
+#include <stop_token>
 #include <utility>
 
 #include "agentengine/rt/block_on.hpp"
@@ -120,7 +123,19 @@ template <class ChatClientT, class StateT, class HistoryProviderT>
             // unrelated call into this same session (a cyclic node revisited later, or an app
             // calling start_run() directly outside any workflow) pays zero cost and never inherits
             // a closure captured by reference into this since-returned EffectContext.
-            session.set_run_event_tap([&ctx](agentengine::RunEvent const& ev) { ctx.agent_turn_sink(ev); });
+            // ADR-193 round 2 (ADR-178): cancelling the workflow (`ctx.cancellation`, issue #37) cancels this node's
+            // run too -- the node used to run to completion on its own fresh stop source. The flag is re-applied from
+            // the tap because `start_run()` replaces the session's stop source (the same race
+            // `run_child_agent_session` closes for agent.spawn).
+            auto const canceled = std::make_shared<std::atomic<bool>>(false);
+            session.set_run_event_tap([&ctx, &session, canceled](agentengine::RunEvent const& ev) {
+                if (canceled->load(std::memory_order_acquire)) session.cancel();
+                ctx.agent_turn_sink(ev);
+            });
+            std::stop_callback const cancel_bridge(ctx.cancellation, [&session, canceled] {
+                canceled->store(true, std::memory_order_release);
+                session.cancel();
+            });
 
             // ADR-193: every part of the input another agent wrote (an upstream node's reply, or its items merged in
             // by a fan-in) reaches this agent as DELEGATED content -- tainted and external, with a host line when it
@@ -133,7 +148,13 @@ template <class ChatClientT, class StateT, class HistoryProviderT>
 
             session.set_run_event_tap({});
 
-            if (!driven) return std::unexpected(driven.error());
+            if (!driven) {
+                // ADR-193 round 2: a failed run still spent what it spent (red team: a node that blew its budget
+                // reported nothing, and the workflow's usage stayed 0). An error carries no usage, so it goes out
+                // through `ctx.charge_delegated_usage`, which the supervisor's job binds to this node's reply.
+                ctx.charge_delegated_usage(session.run_usage(), session.discarded_tokens_estimate());
+                return std::unexpected(driven.error());
+            }
             // GitHub issue #35 follow-up (ADR-163): `session.run_usage()` -- NOT `driven->usage` --
             // is the real per-call total. `AgentResponse::usage` (`driven->usage`) only ever reflects
             // the FINAL round's own model call (`agent_session.hpp:2357`'s own construction site,

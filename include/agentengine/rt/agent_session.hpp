@@ -956,21 +956,21 @@ public:
     // ADR-193: both include what delegated agents charged that has not been folded in yet -- a run that ended
     // without another model call (suspended, canceled, or its last round delegated) still reports it.
     [[nodiscard]] std::uint64_t run_tokens_consumed() const {
-        std::lock_guard<std::mutex> lock(delegated_usage_mutex_);
-        return run_tokens_consumed_ + pending_delegated_usage_.input_tokens + pending_delegated_usage_.output_tokens +
-               pending_delegated_extra_tokens_;
+        std::lock_guard<std::mutex> lock(delegated_charges_->mutex);
+        return run_tokens_consumed_ + delegated_charges_->usage.input_tokens + delegated_charges_->usage.output_tokens +
+               delegated_charges_->extra_tokens;
     }
     // ADR-163: the full-`Usage` sibling of the accessor above -- see `run_usage_`'s own comment for
     // why this is a separate, parallel field rather than a re-derivation of `run_tokens_consumed_`.
     [[nodiscard]] agentengine::Usage run_usage() const {
         agentengine::Usage u = run_usage_;
-        std::lock_guard<std::mutex> lock(delegated_usage_mutex_);
-        u.input_tokens += pending_delegated_usage_.input_tokens;
-        u.output_tokens += pending_delegated_usage_.output_tokens;
-        u.cached_input_tokens += pending_delegated_usage_.cached_input_tokens;
-        u.reasoning_tokens += pending_delegated_usage_.reasoning_tokens;
-        u.cost_estimate += pending_delegated_usage_.cost_estimate;
-        u.cache_write_tokens += pending_delegated_usage_.cache_write_tokens;
+        std::lock_guard<std::mutex> lock(delegated_charges_->mutex);
+        u.input_tokens += delegated_charges_->usage.input_tokens;
+        u.output_tokens += delegated_charges_->usage.output_tokens;
+        u.cached_input_tokens += delegated_charges_->usage.cached_input_tokens;
+        u.reasoning_tokens += delegated_charges_->usage.reasoning_tokens;
+        u.cost_estimate += delegated_charges_->usage.cost_estimate;
+        u.cache_write_tokens += delegated_charges_->usage.cache_write_tokens;
         return u;
     }
 
@@ -1115,21 +1115,27 @@ public:
         // ADR-193: a tool that runs another agent reports the child's events and usage back through these. Both
         // capture `this`: every tool call of this run finishes before the run does, and the session outlives it.
         effect_context_.delegated_event_sink = [this](RunEvent const& ev) { forward_run_event(ev); };
-        effect_context_.charge_delegated_usage = [this](agentengine::Usage const& u, std::uint64_t extra_budget_tokens) {
-            std::lock_guard<std::mutex> lock(delegated_usage_mutex_);
-            pending_delegated_extra_tokens_ += extra_budget_tokens;
-            pending_delegated_usage_.input_tokens += u.input_tokens;
-            pending_delegated_usage_.output_tokens += u.output_tokens;
-            pending_delegated_usage_.cached_input_tokens += u.cached_input_tokens;
-            pending_delegated_usage_.reasoning_tokens += u.reasoning_tokens;
-            pending_delegated_usage_.cost_estimate += u.cost_estimate;
-            pending_delegated_usage_.cache_write_tokens += u.cache_write_tokens;
-        };
+        std::uint64_t charge_run = 0;
         {
-            std::lock_guard<std::mutex> lock(delegated_usage_mutex_);
-            pending_delegated_usage_ = agentengine::Usage{};
-            pending_delegated_extra_tokens_ = 0;
+            std::lock_guard<std::mutex> lock(delegated_charges_->mutex);
+            charge_run = ++delegated_charges_->run;
+            delegated_charges_->usage = agentengine::Usage{};
+            delegated_charges_->extra_tokens = 0;
         }
+        // Round 2: captures the shared state, not `this` (see `DelegatedCharges`), so it is safe to hand to a
+        // detached worker.
+        effect_context_.charge_delegated_usage = [charges = delegated_charges_, charge_run](
+                                                     agentengine::Usage const& u, std::uint64_t extra_budget_tokens) {
+            std::lock_guard<std::mutex> lock(charges->mutex);
+            if (charges->run != charge_run) return;  // a late charge for an earlier run
+            charges->extra_tokens += extra_budget_tokens;
+            charges->usage.input_tokens += u.input_tokens;
+            charges->usage.output_tokens += u.output_tokens;
+            charges->usage.cached_input_tokens += u.cached_input_tokens;
+            charges->usage.reasoning_tokens += u.reasoning_tokens;
+            charges->usage.cost_estimate += u.cost_estimate;
+            charges->usage.cache_write_tokens += u.cache_write_tokens;
+        };
         {
             // ADR-178: one source PER RUN. Replaced (not reset) so a cancel aimed at the previous run,
             // still holding the old source, cannot reach this one; guarded because `cancel()` may be
@@ -1921,12 +1927,15 @@ private:
         if (reqs.empty()) return out;
         // ADR-193: what this run may still spend, so a tool that runs another agent caps the child's budget by it
         // (red team round 1: each child got its own full `child_token_budget` whatever the parent had left).
-        if (token_budget_.has_value()) {
+        // Recomputed before EVERY sequential call (round 2: set once per batch, every spawn in one response saw the
+        // same pre-batch remainder, and batches compounded with depth), since each child's charge lands in
+        // `run_tokens_consumed()` the moment it returns.
+        auto const remaining_budget = [this]() -> std::optional<std::uint64_t> {
+            if (!token_budget_.has_value()) return std::nullopt;
             std::uint64_t const used = run_tokens_consumed();
-            effect_context_.remaining_token_budget = used >= *token_budget_ ? 0 : *token_budget_ - used;
-        } else {
-            effect_context_.remaining_token_budget.reset();
-        }
+            return used >= *token_budget_ ? 0 : *token_budget_ - used;
+        };
+        effect_context_.remaining_token_budget = remaining_budget();
 
         for (auto const& req : reqs) {
             emit_run_event(run_event_kind::tool_call_started,
@@ -1995,6 +2004,7 @@ private:
                         [this](run_event_kind kind, run_event_payload::SandboxExec p) {
                             emit_run_event(kind, std::move(p));
                         };
+                    effect_context_.remaining_token_budget = remaining_budget();  // ADR-193 round 2
                     ToolInvocationAudit audit;
                     ToolResult result =
                         invoke_tool(tool_table, held, req, effect_context_, approve, &audit, policy);
@@ -2050,6 +2060,17 @@ private:
         // one real worker thread per concurrency class -- an exclusivity_group class's own members
         // still run as an ordinary sequential loop WITHIN that one job/thread (MUST-FIX 5); no group
         // member ever separately occupies a second worker slot.
+        // ADR-193 round 2: concurrent calls cannot see each other's charges, so the remainder left after every
+        // sequential call above is SPLIT evenly among them (a share of 0 refuses a spawn). Each can then overshoot
+        // its share by one in-flight model call of its own; without the split every one could spend the whole.
+        if (std::optional<std::uint64_t> const left = remaining_budget(); left.has_value()) {
+            std::size_t members = 0;
+            for (auto const& job : jobs) members += job.ctxs.size();
+            if (members > 0) {
+                for (auto& job : jobs)
+                    for (auto& ctx : job.ctxs) ctx.remaining_token_budget = *left / members;
+            }
+        }
         std::vector<std::function<void()>> runnables;
         runnables.reserve(jobs.size());
         for (auto& job : jobs) {
@@ -3520,22 +3541,30 @@ private:
     std::mutex                                             run_event_mutex_;
     // ADR-193: usage a delegated agent reported through `charge_delegated_usage`, not yet folded into this run's.
     // Guarded because a tool may run on a worker thread (ADR-160); folded on the session's thread.
-    mutable std::mutex                                     delegated_usage_mutex_;
-    agentengine::Usage                                     pending_delegated_usage_{};
-    // Budget-only tokens a delegated agent reported (its discarded-stream estimates, ADR-177): they count against
-    // this run's token budget, never into `run_usage_`, the same split this session keeps for its own.
-    std::uint64_t                                          pending_delegated_extra_tokens_ = 0;
+    // Round 2: held through a shared_ptr that the charge closure captures instead of `this`, so a charge that
+    // arrives from a detached thread (a WorkflowChatClient worker whose stream the run abandoned on cancel) can
+    // never touch a destroyed session; `run` tags each charge with the run it was issued for, and one aimed at an
+    // earlier run is dropped.
+    struct DelegatedCharges {
+        std::mutex         mutex;
+        std::uint64_t      run = 0;
+        agentengine::Usage usage{};
+        // Budget-only tokens a delegated agent reported (its discarded-stream estimates, ADR-177): they count
+        // against this run's token budget, never into `run_usage_`, the same split this session keeps for its own.
+        std::uint64_t      extra_tokens = 0;
+    };
+    std::shared_ptr<DelegatedCharges> delegated_charges_ = std::make_shared<DelegatedCharges>();
 
     // Folds pending delegated usage into this run's usage and token count; true if there was any.
     bool fold_delegated_usage() {
         agentengine::Usage u;
         std::uint64_t extra = 0;
         {
-            std::lock_guard<std::mutex> lock(delegated_usage_mutex_);
-            u = pending_delegated_usage_;
-            extra = pending_delegated_extra_tokens_;
-            pending_delegated_usage_ = agentengine::Usage{};
-            pending_delegated_extra_tokens_ = 0;
+            std::lock_guard<std::mutex> lock(delegated_charges_->mutex);
+            u = delegated_charges_->usage;
+            extra = delegated_charges_->extra_tokens;
+            delegated_charges_->usage = agentengine::Usage{};
+            delegated_charges_->extra_tokens = 0;
         }
         std::uint64_t const tokens = u.input_tokens + u.output_tokens;
         if (tokens == 0 && extra == 0 && u.cost_estimate == 0.0) return false;

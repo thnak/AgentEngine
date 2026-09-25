@@ -1,4 +1,5 @@
 #pragma once
+// (Also implements ADR-193 round 2: a failed inner run's spend is charged to the caller.)
 // GitHub issue #35: `WorkflowChatClient` -- lets a whole, already-initialized rt::WorkflowSupervisor
 // satisfy this codebase's `ChatClient` concept (core/chat_client.hpp), so a built Workflow can be
 // reused anywhere a model-backed agent backend is expected -- a direct caller, or (with the real,
@@ -160,7 +161,9 @@ template <class T>
     ctx.sandbox_fs = nullptr;
     ctx.report_progress = [](agentengine::ContentItem) {};
     ctx.delegated_event_sink = [](agentengine::RunEvent const&) {};                 // ADR-193
-    ctx.charge_delegated_usage = [](agentengine::Usage const&, std::uint64_t) {};  // ADR-193
+    // ADR-193 round 2: `charge_delegated_usage` is KEPT -- it is how a FAILED inner run's spend reaches the caller
+    // (a failed stream carries no usage). Safe on the detached thread: `AgentSession`'s closure holds its shared
+    // charge state, never the session itself, and drops a charge aimed at an earlier run.
     ctx.agent_turn_sink = [](agentengine::RunEvent const&) {};
     ctx.moderator_delta_sink = [](std::string const&) {};
     return ctx;
@@ -400,6 +403,7 @@ inline void run_worker(std::shared_ptr<agentengine::rt::WorkflowSupervisor> inne
             if (asks.empty()) {
                 // Structurally shouldn't happen (suspended implies open_interactions() non-empty), but
                 // fail closed rather than push zero updates and close as if nothing were pending.
+                ctx.charge_delegated_usage(usage_delta, 0);  // ADR-193 round 2: see the default branch
                 producer.fail(agentengine::error{
                     agentengine::failure_class::fatal,
                     "workflow chat call: inner run reports suspended with no open interaction asks",
@@ -418,6 +422,10 @@ inline void run_worker(std::shared_ptr<agentengine::rt::WorkflowSupervisor> inne
         }
         default: {
             char const* const tag = agentengine::rt::workflow_status_tag(r.status);
+            // ADR-193 round 2: a failed stream carries no usage, so the inner run's spend -- a failing agent
+            // node's whole run included -- is charged to the caller's run directly, BEFORE the stream fails (the
+            // caller is still draining it). It used to vanish: the outer session was charged 0.
+            ctx.charge_delegated_usage(usage_delta, 0);
             producer.fail(agentengine::error{
                 agentengine::failure_class::contract,
                 std::string("workflow chat call: the wrapped workflow did not complete (status=") +
