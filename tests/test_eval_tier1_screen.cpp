@@ -9,7 +9,9 @@
 #include <map>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <memory_resource>
 #include <optional>
@@ -1332,6 +1334,57 @@ int main() {
                      r.lineage_attempts.empty(),
                  "T32: a truncated read that lost this attempt shows no count -- not '1 attempt' read from what "
                  "survived");
+    }
+
+    // ---- T34: damage to the durable log cannot roll a lineage's attempt count back (ADR-195 §8a) --------------
+    // E32 red team round 3 (P3): one damaged magic byte made FileAppendLogStore read 4 harmful attempts as an
+    // empty log, and the next begin_attempt truncated them -- "attempt 1 of 1". The same for a damaged record
+    // length. Positive control (2026-09-25): against the pre-§8a store both cases began a new attempt and
+    // read back 1 attempt.
+    for (std::size_t const damage_at : {std::size_t{3}, std::size_t{8 + 3}}) {  // the magic; record 1's length
+        auto const root = std::filesystem::temp_directory_path() /
+                          ("ae_test_eval_tier1_screen_damage_" + std::to_string(damage_at) + "_" +
+                           std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        ae::rt::FileAppendLogStore store(root);
+        ev::Tier1AttemptLog<ae::rt::FileAppendLogStore> log(store);
+        std::string const design = R"({"design":"harmful lesson v1"})";
+        auto const digest = *ev::detail::tier1_digest_of(design);
+        bool setup = true;
+        for (int i = 0; i < 4; ++i) {
+            auto started = log.begin_attempt(family, digest, design, "op", "t");
+            setup = setup && started.has_value() &&
+                    log.complete_attempt(family, *started, ev::tier1_screen_outcome::harmful, {}, std::nullopt)
+                        .has_value();
+        }
+        auto const before = log.lineage_attempts(family.lineage);
+        setup = setup && before.has_value() && before->size() == 4;
+        auto const path = root / *ev::detail::tier1_lineage_log_id(family.lineage);
+        std::string raw;
+        {
+            std::ifstream in(path, std::ios::binary);
+            raw.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        std::string const damaged = [&] {
+            std::string d = raw;
+            d[damage_at] = static_cast<char>(d[damage_at] ^ 0x5A);
+            return d;
+        }();
+        {
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            out.write(damaged.data(), static_cast<std::streamsize>(damaged.size()));
+        }
+        auto const next = log.begin_attempt(family, digest, design, "op", "t");
+        auto const after = log.lineage_attempts(family.lineage);
+        std::string now;
+        {
+            std::ifstream in(path, std::ios::binary);
+            now.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        AE_CHECK(setup && !next.has_value() && !after.has_value() && now == damaged,
+                 "T34: after damage to the magic or a record length, no attempt can begin, the history reads as an "
+                 "error (not 'attempt 1 of 1'), and the 4 recorded harmful attempts are still in the file");
+        std::error_code ec;
+        (void)std::filesystem::remove_all(root, ec);
     }
 
     std::cout << (g_failures == 0 ? "test_eval_tier1_screen: OK\n" : "test_eval_tier1_screen: FAIL\n");
