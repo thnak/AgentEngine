@@ -114,6 +114,16 @@ target_compile_features(agentengine_rt_file_log PRIVATE cxx_std_23)
 target_link_libraries(agentengine_rt_file_log PRIVATE agentengine_warnings)
 target_link_libraries(agentengine_core INTERFACE agentengine_rt_file_log)
 
+# ---- Tool-call pipeline (src/core/) -- ADR-201, issue #120 S5 --------------------------------------
+# core/tool_pipeline.hpp's function bodies (006 §3: admit, approve, invoke, audit, background tasks), compiled
+# once here instead of in each of the ~206 files that include the header. Moved verbatim; the header keeps every
+# type and declaration. Linked through agentengine::core like the libraries around it.
+add_library(agentengine_tool_pipeline STATIC src/core/tool_pipeline.cpp)
+target_include_directories(agentengine_tool_pipeline PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_compile_features(agentengine_tool_pipeline PRIVATE cxx_std_23)
+target_link_libraries(agentengine_tool_pipeline PRIVATE agentengine_warnings)
+target_link_libraries(agentengine_core INTERFACE agentengine_tool_pipeline)
+
 # ---- rt::AgentSessionCore (src/rt/) -- ADR-199, issue #115 E3 ------------------------------------
 # AgentSession's non-template half (include/agentengine/rt/agent_session_core.hpp): the turn loop and
 # everything else that does not depend on the session's template parameters, compiled once here instead
@@ -129,6 +139,9 @@ if(MSVC)
   target_compile_options(agentengine_rt_session PRIVATE /bigobj)
 endif()
 target_link_libraries(agentengine_rt_session PUBLIC agentengine_rt_file_log)
+# The turn loop calls the tool pipeline (admit_call, invoke_tool, ...), now compiled in its own library: named
+# here so a single-pass linker sees it after this library (ADR-201).
+target_link_libraries(agentengine_rt_session PUBLIC agentengine_tool_pipeline)
 if(WIN32)
   target_link_libraries(agentengine_rt_session PUBLIC ws2_32)
 endif()
