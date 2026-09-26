@@ -584,6 +584,25 @@ jobs:
       - name: Run naming lint
         run: python tools/naming_lint.py
 
+  layering-lint:
+    name: Include layering lint (#120 S10)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      # The self-test runs first: it proves the rule and the baseline ratchet can fail on a
+      # synthetic tree before the real run is trusted to pass.
+      - name: Layering lint self-test
+        run: python tools/layering_lint.py --self-test
+
+      - name: Run layering lint
+        run: python tools/layering_lint.py
+
   milestone-status-lint:
     name: Milestone-status drift lint (ADR-026)
     runs-on: ubuntu-latest
