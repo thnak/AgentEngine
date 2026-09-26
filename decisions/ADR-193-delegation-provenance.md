@@ -3,7 +3,8 @@
 - **Renumbered:** written as ADR-185; renumbered to ADR-193 on 2026-09-25 when this stack merged into `main`, where those numbers had been taken by other ADRs in the meantime. Commit messages, PR titles and ADR cross-references written before then use the old number.
 
 - **Status:** Proposed — built, tested offline (§6), red-teamed twice (§7: no fatal; 4 major, all fixed; §8, round
-  2: 3 major and 6 minor, all fixed, 2026-09-25; the round-2 fixes are not yet re-red-teamed). **Needs the project owner's judgement** (it touches I3's untainting rule, 003 §2, for every
+  2: 3 major and 6 minor, all fixed, 2026-09-25; §9, red team round 3 against the round-2 fixes, 2026-09-26: 2 major
+  (issue #113) plus 2 found while fixing, all fixed; not yet re-red-teamed). **Needs the project owner's judgement** (it touches I3's untainting rule, 003 §2, for every
   handoff).
 - **Date:** 2026-09-25.
 - **Scope:** `core/delegation.hpp` (new: `make_delegated_message`), `trust/principal.hpp` (`delegation_root`,
@@ -11,7 +12,9 @@
   (event forwarding, delegated usage folded and budget-checked, pinned context, root-scope lesson lookup),
   `rt/agent_spawn.hpp` / `rt/agent_spawn_child_run.hpp` (delegated input, root-keyed quota, `child_id`, whole-run
   usage, per-target settings, shared lessons), `rt/agent_workflow_executor.hpp` (delegated input for agent nodes),
-  `core/approved_lessons.hpp` (`texts(scope)`), `core/tool_pipeline.hpp` (audit names the root), tests (§6).
+  `core/approved_lessons.hpp` (`texts(scope)`), `core/tool_pipeline.hpp` (audit names the root), tests (§6); round 3
+  (§9): `rt/delegated_run_guard.hpp` (new), `rt/workflow_supervisor.hpp` (`WorkflowResult::usage`),
+  `rt/workflow_as_chat_client.hpp`, `rt/workflow_as_executor.hpp`.
 - **Related:** 003 §2 (taint; untainting is explicit and logged) · 007 §2 / 018 §2 (delegation via `on_behalf_of`) ·
   ADR-163 (whole-run usage for workflow nodes) · ADR-173 (the fence) · ADR-191 (approved lessons) · ADR-192
   (unattended mode; its §5 residual on spawned children) · the investigation behind this ADR (a 3-hop offline probe;
@@ -294,4 +297,85 @@ P9/P9b were adjusted to approve in A's tenant, as the round-3 scope change requi
 - **`WorkflowChatClient` canceled mid-run:** the stream is abandoned; the inner run's delta is charged only if the
   worker reaches its failure branch while the caller's run is still the current one.
 - The round-2 host-line wording is **not re-measured live** (§8.3).
+
+## 9. Red team round 3 (2026-09-26)
+
+A red team against the round-2 fixes as merged (#110, e46c08f) found two major I8 defects, both reproduced by an
+executed probe (GitHub issue #113). Fixing them found two more of the same kind.
+
+### 9.1 Findings
+
+| # | Severity | Finding | Probe |
+|---|---|---|---|
+| C1 | major | A workflow agent node whose chat client **throws** was never charged. `agent_session_as_executor_body` charged only on the `!driven` error path; §8.1's "a body that throws leaves what it charged" was true only of a body that charged before throwing, which this one never did. The supervisor classes a throw as transient, so a retry edge spent again, also uncharged. The throw also skipped `set_run_event_tap({})`, leaving a tap that holds `&ctx` -- a dead job frame -- on the session for its next, unrelated run. m5's unwind charge had gone into `run_child_agent_session` only. | 6 model calls, 300 tokens spent, workflow usage 0 |
+| C2 | major | `WorkflowChatClient` charged `inner->usage()` after minus before. `run_workflow()` resets that total, so every fresh call after the first was charged its spend minus the previous run's. The failure paths' `charge_delegated_usage(usage_delta, 0)` used the same wrong delta. Root cause dates from ADR-163, whose "delta is per-call" claim (T11) was tested only across a suspend/resume, never across two fresh runs. | spend 1000/1000/200 charged 1000, 0, then ~2^64 (unsigned wrap) |
+| C3 | major (found while fixing) | The round-2 failure path charged `session.run_usage()` even when `start_run()` was refused before a run began (admission refusal, `run.approval_pending`). `run_usage()` then still holds the session's PREVIOUS run, which was charged a second time. | R3-C1c: 1000 charged for a refused call |
+| C4 | major (found while fixing) | `workflow_as_executor_body` (ADR-150), the third body that runs another workflow, reported the inner run's spend on neither success nor failure: a nested workflow's model calls never reached the outer `usage()`. | R3-N1: 0 both ways |
+
+### 9.2 The rule, and the fix
+
+One rule for every delegated body -- `run_child_agent_session` (agent.spawn), `agent_session_as_executor_body`
+(workflow agent nodes), `WorkflowChatClient`, `workflow_as_executor_body`: **the body charges the whole spend of the run
+it drove, exactly once, on every exit path** -- success in its outcome's usage, failure through
+`EffectContext::charge_delegated_usage`, a throw through the same hook from a guard's destructor -- and it charges
+only a run it actually started.
+
+- **Shared guards** (`rt/delegated_run_guard.hpp`): `ChargeOnUnwind` (moved out of `agent_spawn_child_run.hpp`) runs
+  the charge from a destructor when the scope is left by an exception -- never catch-and-rethrow, which crashed
+  clang-cl's ASan build in the Windows unwinder (PR #110); `OnScopeExit` runs an action on every exit.
+- **C1.** The agent-node adapter guards `drive(start_run(...))` with `ChargeOnUnwind`. The supervisor already folds a
+  faulted attempt's slot usage per attempt (§8.1), and each attempt gets a fresh slot, so each is counted once. The
+  event tap is detached by `OnScopeExit` on every exit, the throw included.
+- **C3.** The adapter remembers `last_run_id()` before `start_run()` and charges only if it changed.
+- **C2.** `WorkflowResult` gains `usage`: what THAT call spent, measured by the supervisor under its own run lock --
+  the whole run for `run_workflow()` (the total was just reset), the added spend for `resume_workflow()` /
+  `continue_workflow()` (whose bodies moved behind lock-taking wrappers so the before/after readings share one lock
+  hold; saturating subtraction all the same). `WorkflowChatClient` sums `r.usage` over every run/resume call it makes
+  (every signal in a multi-answer resume, not only the last). It delivers that sum on the terminal push when the
+  caller's stream accepts it; on every other way out -- failed or ask-less inner run, a refused push (the caller
+  dropped the stream), a throw -- an `OnScopeExit` charges it through `charge_delegated_usage` instead, before the
+  stream fails where it fails. Nothing differences two reads of `usage()` any more, so a second client or host
+  driving the same supervisor between them no longer skews the number. `run_sub_workflow_job` reads `r.usage` too.
+- **C4.** `workflow_as_executor_body` puts `r.usage` in the outcome on success and charges it on failure.
+
+### 9.3 Evidence
+
+`tests/test_delegation_provenance.cpp`, 43 checks, all green. New: R3-C1 (throwing node behind a 2-attempt retry
+edge: 200 tokens in `usage()` and in `WorkflowResult::usage`), R3-C1b (body called directly: a throw charges 100
+once; the session's next run sends nothing to the dead call's sink), R3-C1c (refused run charges 0), R3-C2 (three
+fresh calls: 1000, 1000, 200), R3-C2b (two `WorkflowChatClient`s over one supervisor on two threads, 6 runs each:
+every outer run charged its own 1000, sum = node spend), R3-C2c (a caller that drops the stream is still charged
+1000 through its context), R3-N1 (nested workflow node: 1000 on success and on failure). ADR-163's T11 (a resume
+that dispatches nothing reports 0) still passes and now guards the resume path.
+
+Positive controls (each fix reverted by hand, the check seen to fail, the fix restored from a backup copy):
+no `ChargeOnUnwind` in the adapter (R3-C1, R3-C1b fail); tap reset on the normal path only (R3-C1b); no
+`last_run_id()` check (R3-C1c); the pre-fix `workflow_as_chat_client.hpp` (R3-C2, R3-C2b, R3-C2c); terminal usage
+marked delivered before the push (R3-C2c); `workflow_as_executor_body` reporting nothing (R3-N1); `resume_workflow()`
+reporting the cumulative total instead of the added spend (ADR-163's T11).
+
+### 9.4 Corrected claims
+
+- §8.1 "a body that throws leaves what it charged": true, but the agent-node body charged nothing before a throw
+  (C1); it now charges on unwind.
+- §8.1 "`WorkflowChatClient` charges a failed or ask-less inner run's delta": the delta was wrong (C2); it now
+  charges that call's own spend.
+- §8.2 m5 "`try`/`catch (...)` that charges and rethrows": replaced before merge by the destructor guard (PR #110),
+  now shared.
+- ADR-163's claim that `WorkflowChatClient` reports per-call usage as an `inner->usage()` before/after delta was
+  correct only for calls that resume a run; for fresh runs it is corrected here (ADR-163 carries a note).
+
+### 9.5 Remaining residuals
+
+- **A pushed terminal update is delivered.** If the caller's stream accepted the terminal push but the caller then
+  stops reading before it reaches it (canceled mid-drain), that usage is lost; §8.5's "late charges are dropped"
+  still applies to a charge that arrives after the caller started a newer run.
+- **`WorkflowChatClient` reads `open_interactions()` outside the supervisor's lock** (pre-existing), so two clients
+  over one supervisor may race that read; the usage number no longer depends on it. Sharing one supervisor between
+  clients is still not a supported shape for a suspending graph.
+- **A resolved nested `sub_workflow` that suspended** still contributes via `inner->usage()` at resolution
+  (ADR-163's `OpenPort::usage`), which is correct only while nothing but the outer supervisor drives `inner` -- the
+  existing caller contract.
+- An ordinary `function`-kind body that holds its own chat client still reports nothing (ADR-163's residual).
+- The round-3 fixes are not re-red-teamed.
 

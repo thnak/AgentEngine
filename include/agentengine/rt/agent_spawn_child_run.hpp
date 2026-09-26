@@ -55,6 +55,7 @@
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/core/tool_pipeline.hpp"  // ApprovalDecider, PolicyDecider (GitHub issue #30 / ADR-151)
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/delegated_run_guard.hpp"
 #include "agentengine/rt/task.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "agentengine/trust/principal.hpp"
@@ -247,20 +248,10 @@ template <class ChatClientT, class StateT = agentengine::rt::NoSessionState,
         return spent;
     };
     // Charged by a guard during unwinding, not by catch-and-rethrow: clang-cl's ASan build crashes in the Windows
-    // unwinder on a `throw;` from this frame (CI, PR #110).
-    struct ChargeOnUnwind {
-        decltype(charge) const& fn;
-        int const entry_exceptions = std::uncaught_exceptions();
-        ~ChargeOnUnwind() {
-            if (std::uncaught_exceptions() <= entry_exceptions) return;
-            try {
-                (void)fn();
-            } catch (...) {  // NOLINT(bugprone-empty-catch): a second throw while unwinding would terminate
-            }
-        }
-    };
+    // unwinder on a `throw;` from this frame (CI, PR #110). The guard is shared with the workflow agent-node adapter
+    // and `WorkflowChatClient` (rt/delegated_run_guard.hpp, ADR-193 §9).
     agentengine::result<agentengine::rt::AgentResponse> response = [&] {
-        ChargeOnUnwind const guard{charge};
+        delegated_run_detail::ChargeOnUnwind const guard{charge};
         return agent_spawn_detail::drive(child.start_run(agentengine::rt::StartRun{std::move(req.input)}));
     }();
     agentengine::Usage const spent = charge();

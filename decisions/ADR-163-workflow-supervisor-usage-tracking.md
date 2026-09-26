@@ -1,5 +1,12 @@
 # ADR-163: Real, cumulative `Usage` tracking for `WorkflowSupervisor` (closes ADR-162's named gap)
 
+> **Correction (2026-09-26, ADR-193 §9, GitHub issue #113).** `WorkflowChatClient`'s per-call usage as an
+> `inner->usage()` before/after delta was right only for a call that RESUMES a run (T11). A fresh `run_workflow()`
+> resets the total, so the second of two fresh calls was charged its spend minus the first's, and a cheaper call
+> wrapped to ~2^64 tokens. Each run/resume/continue call now reports its own spend in `WorkflowResult::usage`
+> (measured under the supervisor's run lock), and `WorkflowChatClient` sums those. Claim 2 below holds for the
+> suspend/resume case it tested; the fresh-run case is proven by ADR-193's R3-C2/R3-C2b.
+
 ## 1. The question
 
 ADR-162 built `WorkflowChatClient`, a `ChatClient`-shaped adapter over a whole `WorkflowSupervisor`,

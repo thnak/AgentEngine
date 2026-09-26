@@ -462,9 +462,17 @@ struct PendingCodeActAsk {
 // open interaction, dropped with it. A resume dispatches against exactly `offered_tools` (round-3 red team: a resume
 // used to rebuild the tool list from the raw provider, bringing back tools the host's turn middleware had removed), and
 // an `approval` resume asks about exactly `gated_call_ids` (issue #104 BUG-1).
+//
+// ADR-196 §7 (red team round 1, issue #111): the record is the ONLY thing an interaction resolves against.
+//   - `offered_tools` holds the descriptors themselves, as the host's turn middleware left them -- approval mode,
+//     invoke, everything (A4: keeping only names lost a middleware's tightening or wrapped invoke on resume).
+//   - `message_index` names the suspended assistant message in `history_`; a resolve checks it is still the tail.
+//   - An interaction with no record (one restored from an `AgentSessionRecord`, which carries none) is closed with
+//     nothing run -- it never resolves against whatever the history happens to hold (A1).
 struct SuspendedRoundRecord {  // ae-naming-lint: allow SuspendedRoundRecord — ADR-196
-    std::vector<std::string> offered_tools;
-    std::vector<std::string> gated_call_ids;
+    std::vector<ToolDescriptor> offered_tools;
+    std::vector<std::string>    gated_call_ids;
+    std::size_t                 message_index = 0;
 };
 
 // Slice 2's narrowed durable record -- see file banner for exactly what is and isn't carried
@@ -1277,7 +1285,48 @@ public:
                                              "session.resolve_interaction.unsupported_reason"});
         }
 
-        if (history_.empty() || history_.back().role != role::assistant) {
+        // ADR-196 §7 (issue #111 A5/A6): everything about the request is checked, for EVERY interaction kind, before
+        // anything closes, is announced or runs -- so a malformed resolve is refused and can be retried. The hook and
+        // CodeAct branches used to return before the approver check, and ignored `call_decisions`.
+        if (request.approver_id && !agentengine::is_attributable_id(*request.approver_id)) {
+            co_return std::unexpected(error{failure_class::contract,
+                                             "an approver id must be non-blank with no control characters (I4)",
+                                             "session.resolve_interaction.bad_approver"});
+        }
+        if (request.call_decisions && it->reason != interaction_reason::approval) {
+            co_return std::unexpected(error{failure_class::contract,
+                                             "call_decisions apply only to an approval interaction",
+                                             "session.resolve_interaction.call_decisions_not_applicable"});
+        }
+        if (it->reason == interaction_reason::codeact_ask && !request.answer.has_value()) {
+            co_return std::unexpected(error{failure_class::contract,
+                                             "resolving a codeact_ask interaction requires an answer",
+                                             "session.resolve_interaction.answer_required"});
+        }
+        if (it->reason == interaction_reason::hook_decision && !request.hook_dispatch_answers) {
+            co_return std::unexpected(error{failure_class::contract,
+                                             "hook_decision resume requires hook_dispatch_answers",
+                                             "session.hook_decision.missing_answers"});
+        }
+
+        // ADR-196 §7 (issue #111 A1): an interaction resolves only against the round this session recorded when it
+        // suspended. One without a record -- restored from an AgentSessionRecord, which carries none (OQ-21) -- used
+        // to fall back to "every call in the last history message", which after a restore onto a live session was a
+        // DIFFERENT round: a human approved one call and another ran, attributed to them. Now it is closed with nothing
+        // run, so it cannot keep start_run() refused either (the codeact_ask branch's own precedent).
+        if (!suspended_rounds_.contains(it->interaction_id)) {
+            std::string const orphan_id = it->interaction_id;
+            pending_hook_decisions_.erase(orphan_id);
+            pending_codeact_asks_.erase(orphan_id);
+            (void)resolve_interaction_record(orphan_id);
+            co_return std::unexpected(error{
+                failure_class::contract,
+                "this interaction has no recorded round in this session (restored or replaced) -- closed, nothing ran",
+                "session.resolve_interaction.round_not_recorded"});
+        }
+
+        if (history_.empty() || history_.back().role != role::assistant ||
+            suspended_rounds_.at(it->interaction_id).message_index != history_.size() - 1) {
             co_return std::unexpected(agentengine::error{
                 agentengine::failure_class::contract,
                 "session state has moved on since this interaction was opened",
@@ -1319,24 +1368,14 @@ public:
         }
 
         // ADR-196 (issues #104/#108): everything about the request is checked BEFORE the interaction closes, so a
-        // malformed resolve leaves the round open and retryable.
-        if (request.approver_id && !agentengine::is_attributable_id(*request.approver_id)) {
-            co_return std::unexpected(error{failure_class::contract,
-                                             "an approver id must be non-blank with no control characters (I4)",
-                                             "session.resolve_interaction.bad_approver"});
-        }
-        auto const hook_hit  = pending_hook_decisions_.find(resolved_interaction_id);
-        auto const round_hit = suspended_rounds_.find(resolved_interaction_id);
-        // The calls this interaction asked about: the recorded list. A restored session has no record (OQ-21: the
-        // records are in memory only) and falls back to every call in the suspended message, as before ADR-196.
-        std::vector<std::string> asked;
-        if (hook_hit != pending_hook_decisions_.end()) {
-            asked = hook_hit->second.approval_requested_call_ids;
-        } else if (round_hit != suspended_rounds_.end()) {
-            asked = round_hit->second.gated_call_ids;
-        } else {
-            for (ToolCall const& call : pending_calls) asked.push_back(call.call_id);
-        }
+        // malformed resolve leaves the round open and retryable (the approver was checked above, for every kind).
+        auto const hook_hit = pending_hook_decisions_.find(resolved_interaction_id);
+        // Copied: resolve_interaction_record() below drops the record with the interaction.
+        SuspendedRoundRecord const round_record = suspended_rounds_.at(resolved_interaction_id);
+        // The calls this interaction asked about: the recorded list (ADR-196 §7: there is no fallback any more).
+        std::vector<std::string> const asked = hook_hit != pending_hook_decisions_.end()
+                                                   ? hook_hit->second.approval_requested_call_ids
+                                                   : round_record.gated_call_ids;
         auto const was_asked = [&asked](std::string const& call_id) {
             return std::find(asked.begin(), asked.end(), call_id) != asked.end();
         };
@@ -1365,8 +1404,6 @@ public:
             }
             return request.approved;
         };
-        std::optional<std::vector<std::string>> offered;
-        if (round_hit != suspended_rounds_.end()) offered = round_hit->second.offered_tools;
         // One shape for both kinds of round: a plain round becomes a hook-processed one whose calls all pass through.
         PendingHookDecisionRound round;
         if (hook_hit != pending_hook_decisions_.end()) {
@@ -1383,7 +1420,8 @@ public:
         result<void> const resolved = resolve_interaction_record(resolved_interaction_id);
         if (!resolved) co_return std::unexpected(resolved.error());
         emit_run_event(run_event_kind::input_resolved,
-                        run_event_payload::InteractionRef{request.interaction_id});
+                        run_event_payload::InteractionRef{request.interaction_id,
+                                                          request.approver_id.value_or(std::string{})});
 
         // ADR-183: the decision is announced before anything acts on it -- one approval_resolved per
         // approval_requested this interaction emitted, in the same order, before on_context() and before any
@@ -1415,7 +1453,7 @@ public:
             co_return co_await finish_hook_processed_round(std::move(round), ToolTable::from_descriptors({}),
                                                            ApprovalDecider{});
         }
-        result<ToolTable> const tool_table = co_await resume_tool_table(offered);
+        result<ToolTable> const tool_table = co_await resume_tool_table(round_record);
         if (!tool_table) co_return std::unexpected(tool_table.error());
         // ADR-196: this used to dispatch the whole round under an always-yes decider with no policy, so a call nobody
         // was asked about -- a policy_driven call the host's policy denies, say -- ran on the strength of someone
@@ -1435,11 +1473,16 @@ public:
 
     // ADR-196 / round-3 red team: the tool list a resumed round dispatches against. With the round's record, exactly
     // the tools the model was offered when it made these calls (and that the provider still offers -- a tool removed
-    // since does not come back); without one (a restored session, OQ-21), the host's turn middleware decides it again,
-    // as it does for a fresh turn. Before, every resume rebuilt the list from the raw provider -- the host's turn
+    // since does not come back). Before, every resume rebuilt the list from the raw provider -- the host's turn
     // middleware never ran on it -- so a tool the host had hidden from the round could be dispatched on resume, and
     // with ADR-192's unattended approvals, with no human at all.
-    task<result<ToolTable>> resume_tool_table(std::optional<std::vector<std::string>> const& offered) {
+    //
+    // ADR-196 §7 (issue #111 A4): the table is the round's RECORDED descriptors -- exactly as the turn middleware left
+    // them (an approval mode it tightened, an invoke it wrapped) -- never the provider's current ones. The provider is
+    // still asked, but only to NARROW: a recorded tool it no longer offers is dropped (and `schedule_wakeup` only while
+    // the grant still holds). There is no record-less fallback any more: resolve_interaction() refuses a round it has
+    // no record of before this is reached.
+    task<result<ToolTable>> resume_tool_table(SuspendedRoundRecord const& round) {
         // ADR-061 §20.7: effect_context_.principal, not principal_ -- per-request, not session-level.
         SessionContext session_ctx{session_id_, effect_context_.principal, history_};
         result<ContextContribution> contribution =
@@ -1452,24 +1495,17 @@ public:
         }
         CapabilitySet const empty_caps = CapabilitySet::grant_root({});
         CapabilitySet const& held = effect_context_.capabilities ? *effect_context_.capabilities : empty_caps;
-        if (held.find_schedule().has_value()) contribution->tools.push_back(schedule_wakeup_tool());
-        if (offered) {
-            std::erase_if(contribution->tools, [&offered](ToolDescriptor const& d) {
-                return std::find(offered->begin(), offered->end(), d.name) == offered->end();
-            });
-        } else if (turn_middleware_hook_) {
-            agentengine::ContextAssemblyResult assembled_for_turn{std::move(*contribution), {}};
-            agentengine::TurnContext turn_ctx{assembled_for_turn};
-            result<std::monostate> const turn_outcome = co_await turn_middleware_hook_(turn_ctx);
-            *contribution = std::move(assembled_for_turn.combined);
-            if (!turn_outcome) {
-                emit_run_event(run_event_kind::run_failed,
-                                run_event_payload::RunFailed{turn_outcome.error().code, turn_outcome.error().message,
-                                                              "run.turn_denied"});
-                co_return std::unexpected(turn_outcome.error());
-            }
+        bool const schedule_held = held.find_schedule().has_value();
+        std::vector<ToolDescriptor> tools;
+        tools.reserve(round.offered_tools.size());
+        for (ToolDescriptor const& recorded : round.offered_tools) {
+            bool const still_offered =
+                (schedule_held && recorded.name == ScheduleWakeupTool::name) ||
+                std::any_of(contribution->tools.begin(), contribution->tools.end(),
+                            [&recorded](ToolDescriptor const& d) { return d.name == recorded.name; });
+            if (still_offered) tools.push_back(recorded);
         }
-        co_return ToolTable::from_descriptors(std::move(contribution->tools));
+        co_return ToolTable::from_descriptors(std::move(tools));
     }
 
     // ADR-053 §5 follow-up: the session-scoped `schedule_wakeup` tool, offered only to a session holding `cap::Schedule`
@@ -1497,13 +1533,6 @@ public:
                                         "schedule_wakeup armed: " + args.label});
                 return ScheduleWakeupReply{effect->handle_id};
             });
-    }
-
-    [[nodiscard]] static std::vector<std::string> tool_names_of(ToolTable const& table) {
-        std::vector<std::string> names;
-        names.reserve(table.descriptors().size());
-        for (ToolDescriptor const& d : table.descriptors()) names.push_back(d.name);
-        return names;
     }
 
     // ---- Pure bookkeeping, unchanged in behavior from core/agent_session.hpp -----------------
@@ -2264,8 +2293,9 @@ private:
         // turns a silent, unattributable content loss into a real, attributable run failure instead.
         if (auto gate = validate_outbound_media_capabilities(request, chat_client_->capabilities());
             !gate) {
-            emit_run_event(run_event_kind::run_failed,
-                            run_event_payload::RunFailed{gate.error().code, gate.error().message});
+            // ADR-198 §5 (issue #112 B3): no run_failed here -- the caller (run_rounds()) emits the one run_failed
+            // for any failed model call. This site and the two leak refusals below used to emit their own, so one
+            // failure produced two (AG-UI: two RUN_ERRORs).
             co_return std::unexpected(gate.error());
         }
 
@@ -2315,9 +2345,7 @@ private:
                         // it as an ordinary text reply.
                         if (auto leak = detect_undeclared_tool_call_leak(response->message, request.tools);
                             !leak) {
-                            emit_run_event(run_event_kind::run_failed,
-                                            run_event_payload::RunFailed{leak.error().code, leak.error().message});
-                            co_return std::unexpected(leak.error());
+                            co_return std::unexpected(leak.error());  // ADR-198 §5: the caller reports it
                         }
                     }
                     co_return response;
@@ -2336,9 +2364,7 @@ private:
         } else if (response.has_value() && chat_client_->capabilities().tool_calling) {
             // OQ-23 -- same check, same reasoning, as the non-streaming early-return branch above.
             if (auto leak = detect_undeclared_tool_call_leak(response->message, request.tools); !leak) {
-                emit_run_event(run_event_kind::run_failed,
-                                run_event_payload::RunFailed{leak.error().code, leak.error().message});
-                co_return std::unexpected(leak.error());
+                co_return std::unexpected(leak.error());  // ADR-198 §5: the caller reports it
             }
         }
         co_return response;
@@ -2385,17 +2411,23 @@ private:
                 "session restore mid-ask -- pending_codeact_asks_ is not durably checkpointed)",
                 "session.resolve_interaction.codeact_ask_record_missing"});
         }
-        rec_it->second.answers_so_far.push_back(*request.answer);
-
-        emit_run_event(run_event_kind::input_resolved, run_event_payload::InteractionRef{interaction_id});
-
-        std::optional<std::vector<std::string>> offered;
-        if (auto const r = suspended_rounds_.find(interaction_id); r != suspended_rounds_.end()) {
-            offered = r->second.offered_tools;
-        }
-        result<ToolTable> const resumed_table = co_await resume_tool_table(offered);
+        // ADR-196 §7 (issue #111 A6): validate first, commit second. The answer used to be appended (and
+        // `input_resolved` announced) BEFORE the fallible tool-table step below; when that failed, the interaction
+        // stayed open with the answer kept, so the retry's answer landed on the NEXT question -- the script ran with
+        // [first try, retry] while a human had only ever seen one question. Now every fallible step runs first; the
+        // answer is committed only once nothing before the replay can fail.
+        result<ToolTable> const resumed_table = co_await resume_tool_table(suspended_rounds_.at(interaction_id));
         if (!resumed_table) co_return std::unexpected(resumed_table.error());
         ToolTable const& tool_table = *resumed_table;
+        rec_it = pending_codeact_asks_.find(interaction_id);  // re-found after the await, not assumed still valid
+        if (rec_it == pending_codeact_asks_.end()) {
+            co_return std::unexpected(error{failure_class::fatal, "the codeact-ask record vanished during the resume",
+                                             "session.resolve_interaction.codeact_ask_record_missing"});
+        }
+        rec_it->second.answers_so_far.push_back(*request.answer);
+
+        emit_run_event(run_event_kind::input_resolved,
+                        run_event_payload::InteractionRef{interaction_id, request.approver_id.value_or(std::string{})});
         CapabilitySet const empty_caps = CapabilitySet::grant_root({});
         // ADR-061 §20.6: per-request, not session-level -- effect_context_.capabilities is freshly
         // written by apply_dispatch_authority() at the top of every real entry point (start_run(),
@@ -2678,16 +2710,19 @@ private:
             hc.outcome = hook_call_outcome::pass_through;
         }
 
-        std::optional<std::vector<std::string>> offered;
-        if (auto const r = suspended_rounds_.find(interaction_id); r != suspended_rounds_.end()) {
-            offered = r->second.offered_tools;
-        }
+        // Copied: resolve_interaction_record() below drops the record with the interaction.
+        SuspendedRoundRecord const round_record = suspended_rounds_.at(interaction_id);
         result<void> const resolved = resolve_interaction_record(interaction_id);
         if (!resolved) co_return std::unexpected(resolved.error());
         pending_hook_decisions_.erase(interaction_id);  // resolved: the stored round is no longer resumable
-        emit_run_event(run_event_kind::input_resolved, run_event_payload::InteractionRef{interaction_id});
+        // ADR-196 §7 (issue #111 A5): the resolve names who answered, like an approval does.
+        emit_run_event(run_event_kind::input_resolved,
+                        run_event_payload::InteractionRef{interaction_id, request.approver_id.value_or(std::string{})});
 
-        result<ToolTable> const resumed_table = co_await resume_tool_table(offered);
+        // ADR-196 §7 (issue #111 A4): the round's recorded descriptors -- so an approval mode the turn middleware
+        // tightened for this turn is what the check below sees (it used to see the provider's raw one, and a call the
+        // middleware made always_require ran with no human after the hook allowed it).
+        result<ToolTable> const resumed_table = co_await resume_tool_table(round_record);
         if (!resumed_table) co_return std::unexpected(resumed_table.error());
         ToolTable const& tool_table = *resumed_table;
 
@@ -2718,7 +2753,10 @@ private:
             // own external-dispatch question does not itself satisfy a separate human-approval need.
             Interaction const& next = open_interaction(effect_context_.run_id, interaction_reason::approval);
             pending_hook_decisions_[next.interaction_id] = std::move(round);
-            suspended_rounds_[next.interaction_id].offered_tools = tool_names_of(tool_table);  // ADR-196
+            // ADR-196 §7: the cascade carries the same round forward -- its descriptors and its message.
+            SuspendedRoundRecord& next_record = suspended_rounds_[next.interaction_id];
+            next_record.offered_tools = tool_table.descriptors();
+            next_record.message_index = round_record.message_index;
             emit_run_event(run_event_kind::input_required,
                             run_event_payload::InteractionRef{next.interaction_id});
             for (HookProcessedCall const& hc : pending_hook_decisions_[next.interaction_id].calls) {
@@ -3011,6 +3049,15 @@ private:
             // real and stays charged (attributable); the response is dropped, so no tool it asked for runs.
             if (effect_context_.cancellation.stop_requested()) co_return finish_canceled();
 
+            // ADR-196 §7 (issue #111 A2/A3): the engine owns call identity. A call id repeated within this response
+            // is renamed before anything records it, so every approval, decision, hook answer, audit record and tool
+            // result addresses exactly one call. Announced, so the rename is attributable (I4).
+            for (agentengine::CallIdRename const& rename : agentengine::make_call_ids_unique(response->message)) {
+                emit_run_event(run_event_kind::warning,
+                                run_event_payload::Warning{"the model repeated call id \"" + rename.from +
+                                                           "\" in one response; the engine renamed that call to \"" +
+                                                           rename.to + "\""});
+            }
             std::size_t const response_msg_index = history_.size();
             history_.push_back(response->message);
 
@@ -3182,7 +3229,8 @@ private:
                 }
                 // ADR-196: what the model was offered this round, and which calls wait on the decision.
                 SuspendedRoundRecord& round_record = suspended_rounds_[interaction.interaction_id];
-                round_record.offered_tools = tool_names_of(tool_table);
+                round_record.offered_tools = tool_table.descriptors();  // ADR-196 §7: as the turn middleware left them
+                round_record.message_index = response_msg_index;
                 for (std::size_t i = 0; i < calls.size(); ++i) {
                     if (call_needs_approval[i]) round_record.gated_call_ids.push_back(calls[i].call_id);
                 }
@@ -3354,7 +3402,9 @@ private:
                         }
                     }
                     pending_codeact_asks_[interaction.interaction_id] = std::move(record);
-                    suspended_rounds_[interaction.interaction_id].offered_tools = tool_names_of(tool_table);  // ADR-196
+                    SuspendedRoundRecord& ask_record = suspended_rounds_[interaction.interaction_id];  // ADR-196 §7
+                    ask_record.offered_tools = tool_table.descriptors();
+                    ask_record.message_index = response_msg_index;
 
                     // 013 SS2.2 hard ordering obligation -- see the sibling site above.
                     emit_run_event(run_event_kind::codeact_ask_requested,

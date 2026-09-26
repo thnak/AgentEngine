@@ -32,6 +32,19 @@
 //        is delivered as before. The session's form names match eval::shipped_lesson_delivery for every setting.
 //   M1   ADR-197: a call whose arguments are not valid JSON never suspends the round for approval.
 //
+// ADR-196 §7 (red team round 1, issue #111) and ADR-198 §5 (issue #112 B3):
+//   A7   (A1) A record restored onto a live session: approving its interaction runs nothing (it used to run the
+//        LATER round's call as alice's approval); the orphan is closed. Control: the live round resolves and runs.
+//   A8   (A2) Two calls with one model-chosen id are renamed apart; a per-call split runs exactly the approved one;
+//        approval_resolved and the tool results name distinct ids.
+//   A9   (A3) Denying a gated call does not deny a never-gated call that shared its id.
+//   A10  (A4) Resume uses the descriptors the turn middleware left: a tightened approval mode is asked about after a
+//        hook decision (control: not tightened, it runs), and a wrapped invoke is the one that runs on approval.
+//   A11  (A5) Hook-decision and CodeAct resolves check the approver and refuse call_decisions before anything closes;
+//        input_resolved names who resolved.
+//   A12  (A6) A CodeAct resolve that fails keeps no answer: the retry answers Q1 and Q2 is shown to a human.
+//   F2   (B3) A media-gate refusal yields exactly one run_failed.
+//
 // Positive controls: each MAJOR fix was reverted by hand and the matching check was seen to fail (recorded in
 // ADR-196 §6 / ADR-192 §9).
 #include <cstdio>
@@ -100,6 +113,15 @@ std::map<std::string, int>& runs() {
     static std::map<std::string, int> m;
     return m;
 }
+// The `value` argument of every invocation, by tool name (ADR-196 §7: which call ran, not just how many).
+std::map<std::string, std::vector<int>>& values() {
+    static std::map<std::string, std::vector<int>> m;
+    return m;
+}
+void reset_runs() {
+    runs().clear();
+    values().clear();
+}
 
 template <class Derived, ae::approval_mode Mode>
 struct CountingTool : ae::Tool<Derived, ae::Capabilities<>, ae::EffectClass<ae::effect_class::at_most_once>,
@@ -108,6 +130,7 @@ struct CountingTool : ae::Tool<Derived, ae::Capabilities<>, ae::EffectClass<ae::
     using Reply = ValReply;
     static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
         ++runs()[std::string(Derived::name)];
+        values()[std::string(Derived::name)].push_back(a.value);
         return Reply{a.value};
     }
 };
@@ -180,20 +203,55 @@ ae::Message calls_msg(std::vector<std::pair<std::string, std::string>> const& id
     return m;
 }
 
+// One call per entry, each with its own id, tool and `value` (ADR-196 §7 checks need calls that differ).
+struct CallSpec {
+    std::string id;
+    std::string tool;
+    int         value;
+};
+ae::Message calls_msg_v(std::vector<CallSpec> const& specs) {
+    ae::Message m;
+    m.role = ae::role::assistant;
+    for (CallSpec const& c : specs) {
+        ae::ContentItem item;
+        item.origin = ae::content_origin::assistant;
+        ae::ToolCall call;
+        call.call_id        = c.id;
+        call.tool_name      = c.tool;
+        call.arguments_json = "{\"value\":" + std::to_string(c.value) + "}";
+        call.provenance     = ae::call_provenance::vendor_structured;
+        item.value          = call;
+        m.content.push_back(item);
+    }
+    return m;
+}
+
 using Session = AgentSession<ScriptedClient, NoSessionState, Provider>;
 
 struct Events {
-    std::vector<ae::run_event_payload::ApprovalResolved> resolved;
-    std::vector<ae::run_event_payload::RunFailed>        failed;
-    std::vector<std::string>                             decisions;
+    std::vector<ae::run_event_payload::ApprovalResolved>  resolved;
+    std::vector<ae::run_event_payload::ApprovalRequested> requested;
+    std::vector<ae::run_event_payload::RunFailed>         failed;
+    std::vector<ae::run_event_payload::InteractionRef>    input_resolved;
+    std::vector<std::string>                              decisions;
+    std::vector<std::string>                              warnings;
 };
-void tap(Session& s, Events& ev) {
+template <class S>
+void tap(S& s, Events& ev) {
     s.set_run_event_tap([&ev](ae::RunEvent const& e) {
         if (auto const* p = std::get_if<ae::run_event_payload::ApprovalResolved>(&e.payload)) ev.resolved.push_back(*p);
+        if (auto const* p = std::get_if<ae::run_event_payload::ApprovalRequested>(&e.payload)) {
+            ev.requested.push_back(*p);
+        }
         if (auto const* p = std::get_if<ae::run_event_payload::RunFailed>(&e.payload)) ev.failed.push_back(*p);
+        if (auto const* p = std::get_if<ae::run_event_payload::InteractionRef>(&e.payload);
+            p != nullptr && e.kind == ae::run_event_kind::input_resolved) {
+            ev.input_resolved.push_back(*p);
+        }
         if (auto const* p = std::get_if<ae::run_event_payload::PolicyDecision>(&e.payload)) {
             ev.decisions.push_back(p->description);
         }
+        if (auto const* p = std::get_if<ae::run_event_payload::Warning>(&e.payload)) ev.warnings.push_back(p->message);
     });
 }
 
@@ -276,6 +334,102 @@ public:
     ae::task<std::monostate> on_turn_end(ae::TurnView, ae::EffectContext&) { co_return std::monostate{}; }
 };
 using AskSession = AgentSession<ScriptedClient, NoSessionState, AskProvider>;
+
+ae::Message execute_code_call(std::string id) {
+    ae::Message call_msg;
+    call_msg.role = ae::role::assistant;
+    ae::ContentItem item;
+    item.origin = ae::content_origin::assistant;
+    ae::ToolCall ask_call;
+    ask_call.call_id        = std::move(id);
+    ask_call.tool_name      = "execute_code";
+    ask_call.arguments_json = R"json({"code":"agent.ask('q1'); agent.ask('q2')","language":"python"})json";
+    ask_call.provenance     = ae::call_provenance::vendor_structured;
+    item.value              = ask_call;
+    call_msg.content.push_back(item);
+    return call_msg;
+}
+
+// ---- A12 --------------------------------------------------------------------------------------------------------
+// A script that asks two questions, then acts with the answers it received. Its provider can be made to fail.
+bool& two_ask_context_fails() {
+    static bool b = false;
+    return b;
+}
+struct FreeAskTool : ae::Tool<FreeAskTool, ae::Capabilities<>, ae::EffectClass<ae::effect_class::at_most_once>,
+                              ae::Approval<ae::approval_mode::never_require>> {
+    static constexpr std::string_view name        = "execute_code";
+    static constexpr std::string_view description = "Asks two questions, then acts.";
+    using Args  = AskArgs;
+    using Reply = AskReply;
+    static ae::result<Reply> invoke(Args, ae::EffectContext&) {
+        return std::unexpected(ae::error{ae::failure_class::fatal, "dead path", "test.dead_static_invoke_path"});
+    }
+};
+std::vector<std::string>& two_ask_acted_with() {
+    static std::vector<std::string> v;
+    return v;
+}
+class TwoAskProvider {
+public:
+    [[nodiscard]] ae::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext& sc,
+                                                                            ae::EffectContext&) {
+        if (two_ask_context_fails()) {
+            co_return std::unexpected(ae::error{ae::failure_class::transient, "store down", "test.ctx_down"});
+        }
+        ae::ContextContribution c;
+        c.messages.assign(sc.history.begin(), sc.history.end());
+        c.tools = {ae::make_tool_descriptor_with_invoke<FreeAskTool>(
+            [](AskArgs, ae::EffectContext& ctx) -> ae::result<AskReply> {
+                auto const& a = ctx.codeact_preseeded_answers;
+                if (a.empty()) {
+                    return std::unexpected(ae::error{ae::failure_class::contract, "Q1", "codeact.ask_pending"});
+                }
+                if (a.size() == 1) {
+                    return std::unexpected(ae::error{ae::failure_class::contract, "Q2", "codeact.ask_pending"});
+                }
+                two_ask_acted_with() = a;
+                return AskReply{true};
+            })};
+        co_return c;
+    }
+    ae::task<std::monostate> on_turn_end(ae::TurnView, ae::EffectContext&) { co_return std::monostate{}; }
+};
+using TwoAskSession = AgentSession<ScriptedClient, NoSessionState, TwoAskProvider>;
+
+// ---- A10 --------------------------------------------------------------------------------------------------------
+// Issue #111 A4 (tightening): the turn middleware makes other_tool (never_require at the provider) always_require for
+// the turn; the tool-call hook holds it for an external decision, which allows it. Returns {approval_requested count,
+// other_tool runs}.
+std::pair<std::size_t, int> a10_tightened(bool tighten) {
+    reset_runs();
+    Session s;
+    Events ev;
+    s.initialize("s-a10", ae::Principal{"p1", ""});
+    s.emplace_chat_client().set_script({calls_msg_v({{"c1", "other_tool", 9}}), text_msg(ae::role::assistant, "done")});
+    s.set_capabilities(&no_caps());
+    s.set_suspend_for_approval(true);
+    tap(s, ev);
+    if (tighten) {
+        s.set_turn_middleware_hook([](ae::TurnContext& ctx) -> ae::task<ae::result<std::monostate>> {
+            for (ae::ToolDescriptor& d : ctx.assembled.combined.tools) {
+                if (d.name == "other_tool") d.approval = ae::approval_mode::always_require;
+            }
+            co_return std::monostate{};
+        });
+    }
+    s.set_tool_call_hook([](ae::ToolCallHookContext& h) -> ae::task<ae::result<std::monostate>> {
+        h.needs_external_dispatch = true;
+        co_return std::monostate{};
+    });
+    (void)drive(s.start_run(StartRun{text_msg(ae::role::user, "go")}));
+    if (!s.has_open_interactions()) return {999, -1};
+    ResolveInteraction r{s.open_interactions().front().interaction_id, false};
+    r.hook_dispatch_answers =
+        std::vector<ae::HookDispatchAnswer>{ae::HookDispatchAnswer{"c1", true, std::nullopt, std::nullopt}};
+    (void)drive(s.resolve_interaction(r));
+    return {ev.requested.size(), runs()["other_tool"]};
+}
 
 int u2_replays(bool clear_before_answer) {
     ask_invocations() = 0;
@@ -646,6 +800,263 @@ int main() {
         check(r.has_value() && !s.has_open_interactions() && runs()["gated_tool"] == 0,
               "M1: a gated call with unparseable arguments does not suspend for approval; it is refused and the run "
               "goes on");
+    }
+
+    // ==== ADR-196 §7: red team round 1 (issue #111 A1-A6) ======================================================
+
+    // ---- A7 (issue A1): a restored approval never resolves against a round it did not ask about ----------------
+    {
+        reset_runs();
+        Session s;
+        Events ev;
+        s.initialize("s-a7", ae::Principal{"p1", ""});
+        s.emplace_chat_client().set_script({calls_msg_v({{"c1", "gated_tool", 1}}),
+                                            calls_msg_v({{"c2", "gated_tool", 666}}),
+                                            text_msg(ae::role::assistant, "done")});
+        s.set_capabilities(&no_caps());
+        s.set_suspend_for_approval(true);
+        tap(s, ev);
+        (void)drive(s.start_run(StartRun{text_msg(ae::role::user, "go")}));
+        std::string const first_id = s.open_interactions().front().interaction_id;
+        AgentSessionRecord const checkpoint = s.to_record();  // pending: gated_tool{"value":1}
+        (void)drive(s.resolve_interaction(ResolveInteraction{first_id, false}));  // denied; round 2 suspends on 666
+        check(s.has_open_interactions() && ev.requested.size() == 2 && ev.requested[1].arguments_json == "{\"value\":666}",
+              "A7 setup: the first round was denied and the second suspended on gated_tool{value:666}");
+        s.restore_from_record(checkpoint);  // roll back onto the same, live object -- history_ still ends in round 2
+        s.set_capabilities(&no_caps());
+        ResolveInteraction approve{first_id, true};
+        approve.approver_id = "alice";
+        auto r = drive(s.resolve_interaction(approve));
+        check(!r && r.error().code == "session.resolve_interaction.round_not_recorded",
+              "A7: approving the restored interaction is refused -- it has no recorded round in this session");
+        bool alice_named = false;
+        for (auto const& res : ev.resolved) alice_named = alice_named || res.approver_id == "alice";
+        check(values()["gated_tool"].empty() && !alice_named,
+              "A7: nothing ran and nothing was attributed to alice (it used to run value=666 as alice's approval)");
+        check(!s.has_open_interactions(),
+              "A7: the orphaned interaction is closed, so it cannot keep the session refusing new runs");
+        // Control: the live round-2 interaction, on a session that was not restored, does resolve and run.
+        reset_runs();
+        Session live;
+        live.initialize("s-a7c", ae::Principal{"p1", ""});
+        live.emplace_chat_client().set_script({calls_msg_v({{"c1", "gated_tool", 1}}),
+                                               calls_msg_v({{"c2", "gated_tool", 666}}),
+                                               text_msg(ae::role::assistant, "done")});
+        live.set_capabilities(&no_caps());
+        live.set_suspend_for_approval(true);
+        (void)drive(live.start_run(StartRun{text_msg(ae::role::user, "go")}));
+        (void)drive(live.resolve_interaction(ResolveInteraction{live.open_interactions().front().interaction_id, false}));
+        auto ok = drive(live.resolve_interaction(ResolveInteraction{live.open_interactions().front().interaction_id, true}));
+        check(ok.has_value() && values()["gated_tool"] == std::vector<int>{666},
+              "A7 control: approving the round that asked about value=666 runs exactly that call");
+    }
+
+    // ---- A8 (issue A2): model-chosen duplicate call ids -- one decision covers exactly one call ------------------
+    {
+        reset_runs();
+        Session s;
+        Events ev;
+        s.initialize("s-a8", ae::Principal{"p1", ""});
+        s.emplace_chat_client().set_script({calls_msg_v({{"c1", "gated_tool", 1}, {"c1", "gated_tool", 666}}),
+                                            text_msg(ae::role::assistant, "done")});
+        s.set_capabilities(&no_caps());
+        s.set_suspend_for_approval(true);
+        tap(s, ev);
+        (void)drive(s.start_run(StartRun{text_msg(ae::role::user, "go")}));
+        std::string const ix = s.open_interactions().front().interaction_id;
+        check(ev.requested.size() == 2 && ev.requested[0].call_id == "c1" && ev.requested[1].call_id == "c1_ae1" &&
+                  ev.requested[1].arguments_json == "{\"value\":666}" && ev.warnings.size() == 1,
+              "A8: the repeated id is renamed before anything records it (c1, c1_ae1), and the rename is announced");
+        ResolveInteraction split{ix, false};
+        split.call_decisions = std::vector<ApprovalCallDecision>{{"c1", true}, {"c1_ae1", false}};
+        split.approver_id    = "alice";
+        auto r = drive(s.resolve_interaction(split));
+        check(r.has_value() && values()["gated_tool"] == std::vector<int>{1},
+              "A8: approving c1 and denying the other call runs only value=1 (it used to run both)");
+        check(ev.resolved.size() == 2 && ev.resolved[0].call_id == "c1" && ev.resolved[0].approved &&
+                  ev.resolved[1].call_id == "c1_ae1" && !ev.resolved[1].approved,
+              "A8: approval_resolved names each call by its own id with its own decision");
+        std::vector<std::string> result_ids;
+        for (ae::Message const& m : s.history()) {
+            for (ae::ContentItem const& i : m.content) {
+                if (auto const* tr = std::get_if<ae::ToolResult>(&i.value)) result_ids.push_back(tr->call_id);
+            }
+        }
+        check(result_ids == std::vector<std::string>{"c1", "c1_ae1"},
+              "A8: the tool results in history carry the same two distinct ids");
+    }
+
+    // ---- A9 (issue A3): a duplicate id never carries a denial onto a call nobody gated --------------------------
+    {
+        reset_runs();
+        Session s;
+        s.initialize("s-a9", ae::Principal{"p1", ""});
+        s.emplace_chat_client().set_script({calls_msg_v({{"c1", "gated_tool", 1}, {"c1", "other_tool", 5}}),
+                                            text_msg(ae::role::assistant, "done")});
+        s.set_capabilities(&no_caps());
+        s.set_suspend_for_approval(true);
+        (void)drive(s.start_run(StartRun{text_msg(ae::role::user, "go")}));
+        (void)drive(s.resolve_interaction(ResolveInteraction{s.open_interactions().front().interaction_id, false}));
+        check(runs()["gated_tool"] == 0 && values()["other_tool"] == std::vector<int>{5},
+              "A9: denying the gated c1 does not deny the never-gated call that shared its id");
+    }
+
+    // ---- A10 (issue A4): resume dispatches the descriptors the turn middleware left ----------------------------
+    {
+        auto const tightened = a10_tightened(true);
+        check(tightened.first == 1 && tightened.second == 0,
+              "A10: a call the turn middleware made always_require is asked about after the hook allows it -- it "
+              "does not run with no human (it used to)");
+        auto const plain = a10_tightened(false);
+        check(plain.first == 0 && plain.second == 1,
+              "A10 control: without the tightening the same call runs straight after the hook allows it");
+
+        reset_runs();
+        int wrapped = 0;
+        Session s;
+        s.initialize("s-a10w", ae::Principal{"p1", ""});
+        s.emplace_chat_client().set_script({calls_msg_v({{"c1", "gated_tool", 42}}), text_msg(ae::role::assistant, "done")});
+        s.set_capabilities(&no_caps());
+        s.set_suspend_for_approval(true);
+        s.set_turn_middleware_hook([&wrapped](ae::TurnContext& ctx) -> ae::task<ae::result<std::monostate>> {
+            for (ae::ToolDescriptor& d : ctx.assembled.combined.tools) {
+                if (d.name != "gated_tool") continue;
+                d.invoke = [&wrapped](ae::json::Value const&, ae::EffectContext&) -> ae::result<ae::json::Value> {
+                    ++wrapped;  // e.g. a dry-run variant for this turn
+                    return ae::json::Value::make_object({{"value", ae::json::Value::make_number(0)}});
+                };
+            }
+            co_return std::monostate{};
+        });
+        (void)drive(s.start_run(StartRun{text_msg(ae::role::user, "go")}));
+        (void)drive(s.resolve_interaction(ResolveInteraction{s.open_interactions().front().interaction_id, true}));
+        check(wrapped == 1 && runs()["gated_tool"] == 0,
+              "A10: an approved call runs the invoke the turn middleware wrapped for that round, not the raw one");
+    }
+
+    // ---- A11 (issue A5): every interaction kind validates the resolve before anything closes -------------------
+    {
+        reset_runs();
+        Session s;
+        Events ev;
+        s.initialize("s-a11", ae::Principal{"p1", ""});
+        s.emplace_chat_client().set_script({calls_msg_v({{"c1", "other_tool", 3}}), text_msg(ae::role::assistant, "done")});
+        s.set_capabilities(&no_caps());
+        tap(s, ev);
+        s.set_tool_call_hook([](ae::ToolCallHookContext& h) -> ae::task<ae::result<std::monostate>> {
+            h.needs_external_dispatch = true;
+            co_return std::monostate{};
+        });
+        (void)drive(s.start_run(StartRun{text_msg(ae::role::user, "go")}));
+        std::string const ix = s.open_interactions().front().interaction_id;
+        auto const answers =
+            std::vector<ae::HookDispatchAnswer>{ae::HookDispatchAnswer{"c1", true, std::nullopt, std::nullopt}};
+        ResolveInteraction bad{ix, false};
+        bad.hook_dispatch_answers = answers;
+        bad.approver_id           = "mallory\nroot";
+        auto r1 = drive(s.resolve_interaction(bad));
+        check(!r1 && r1.error().code == "session.resolve_interaction.bad_approver" && s.has_open_interactions() &&
+                  runs()["other_tool"] == 0,
+              "A11: a hook-decision resolve with a multi-line approver is refused; still open, nothing ran");
+        ResolveInteraction stray{ix, false};
+        stray.hook_dispatch_answers = answers;
+        stray.call_decisions        = std::vector<ApprovalCallDecision>{{"c1", true}};
+        auto r2 = drive(s.resolve_interaction(stray));
+        check(!r2 && r2.error().code == "session.resolve_interaction.call_decisions_not_applicable" &&
+                  s.has_open_interactions() && runs()["other_tool"] == 0,
+              "A11: call_decisions on a hook-decision interaction are refused, not ignored; still open");
+        ResolveInteraction good{ix, false};
+        good.hook_dispatch_answers = answers;
+        good.approver_id           = "carol";
+        auto r3 = drive(s.resolve_interaction(good));
+        check(r3.has_value() && runs()["other_tool"] == 1 && ev.input_resolved.size() == 1 &&
+                  ev.input_resolved[0].approver_id == "carol",
+              "A11: the hook-decision resolve succeeds and input_resolved names who resolved it");
+
+        TwoAskSession a;
+        Events aev;
+        a.initialize("s-a11c", ae::Principal{"p1", ""});
+        a.emplace_chat_client().set_script({execute_code_call("k1"), text_msg(ae::role::assistant, "done")});
+        a.set_capabilities(&no_caps());
+        tap(a, aev);
+        two_ask_context_fails() = false;
+        (void)drive(a.start_run(StartRun{text_msg(ae::role::user, "go")}));
+        std::string const aix = a.open_interactions().front().interaction_id;
+        ResolveInteraction a_stray{aix, false};
+        a_stray.answer         = "yes";
+        a_stray.call_decisions = std::vector<ApprovalCallDecision>{{"k1", true}};
+        auto a1 = drive(a.resolve_interaction(a_stray));
+        ResolveInteraction a_bad{aix, false};
+        a_bad.answer      = "yes";
+        a_bad.approver_id = " ";
+        auto a2 = drive(a.resolve_interaction(a_bad));
+        check(!a1 && a1.error().code == "session.resolve_interaction.call_decisions_not_applicable" && !a2 &&
+                  a2.error().code == "session.resolve_interaction.bad_approver" && aev.input_resolved.empty(),
+              "A11: a CodeAct answer with call_decisions or a blank approver is refused before anything is recorded");
+        ResolveInteraction a_good{aix, false};
+        a_good.answer      = "yes";
+        a_good.approver_id = "bob";
+        (void)drive(a.resolve_interaction(a_good));
+        check(aev.input_resolved.size() == 1 && aev.input_resolved[0].approver_id == "bob",
+              "A11: a CodeAct answer's input_resolved names who answered");
+    }
+
+    // ---- A12 (issue A6): a failed CodeAct resolve keeps nothing -------------------------------------------------
+    {
+        two_ask_acted_with().clear();
+        two_ask_context_fails() = false;
+        TwoAskSession s;
+        Events ev;
+        s.initialize("s-a12", ae::Principal{"p1", ""});
+        s.emplace_chat_client().set_script({execute_code_call("k1"), text_msg(ae::role::assistant, "done")});
+        s.set_capabilities(&no_caps());
+        int asks = 0;
+        s.set_run_event_tap([&asks, &ev](ae::RunEvent const& e) {
+            if (std::holds_alternative<ae::run_event_payload::CodeActAskRequested>(e.payload)) ++asks;
+            if (auto const* p = std::get_if<ae::run_event_payload::InteractionRef>(&e.payload);
+                p != nullptr && e.kind == ae::run_event_kind::input_resolved) {
+                ev.input_resolved.push_back(*p);
+            }
+        });
+        (void)drive(s.start_run(StartRun{text_msg(ae::role::user, "go")}));
+        std::string const ix = s.open_interactions().front().interaction_id;
+        two_ask_context_fails() = true;
+        ResolveInteraction first{ix, false};
+        first.answer = "yes";
+        auto r1 = drive(s.resolve_interaction(first));
+        two_ask_context_fails() = false;
+        check(!r1 && r1.error().code == "test.ctx_down" && s.has_open_interactions() && ev.input_resolved.empty(),
+              "A12 setup: the first answer fails in the context provider; the question stays open, nothing announced");
+        ResolveInteraction retry{ix, false};
+        retry.answer = "NO";
+        auto r2 = drive(s.resolve_interaction(retry));
+        check(!r2 && r2.error().code == AskSession::kSuspendedForCodeActAsk && asks == 2,
+              "A12: the retried answer goes to Q1, so the script asks Q2 of a human (it used to skip straight past it)");
+        ResolveInteraction second{ix, false};
+        second.answer = "sure";
+        auto r3 = drive(s.resolve_interaction(second));
+        check(r3.has_value() && two_ask_acted_with() == std::vector<std::string>{"NO", "sure"},
+              "A12: the script acts with exactly the answers a human gave to the questions it was shown");
+    }
+
+    // ---- F2 (issue #112 B3): a failure inside the model call is reported once ---------------------------------
+    {
+        Session s;
+        Events ev;
+        s.initialize("s-f2", ae::Principal{"p1", ""});
+        s.emplace_chat_client().set_script({text_msg(ae::role::assistant, "never reached")});
+        s.set_capabilities(&no_caps());
+        tap(s, ev);
+        ae::Message in = text_msg(ae::role::user, "look");
+        ae::ContentItem img;
+        img.origin = ae::content_origin::user;
+        img.value  = ae::Media{std::string("https://example.invalid/x.png"), "image/png"};
+        in.content.push_back(img);
+        auto r = drive(s.start_run(StartRun{in}));
+        check(!r && ev.failed.size() == 1 && ev.failed[0].error_code == r.error().code &&
+                  ev.failed[0].stage == "run.chat_failed",
+              "F2: a request the media gate refuses yields exactly one run_failed, with the result's code and stage "
+              "run.chat_failed (it used to yield two)");
     }
 
     std::fprintf(stderr, "%s (%d failure(s))\n", g_failures == 0 ? "ALL PASSED" : "FAILURES", g_failures);

@@ -1,6 +1,7 @@
 # ADR-196 — An approval decides exactly the calls it was asked about, names who decided, and resumes against the round it was asked in
 
-- **Status**: **Proposed — design + implementation + proof (2026-09-25; not yet red-teamed).**
+- **Status**: **Proposed — design + implementation + proof (2026-09-25); red team round 1 (2026-09-26, issue #111)
+  found six defects, all fixed (§7).**
 - **Date**: 2026-09-25
 - **Origin**: GitHub issues #104 (ADR-182's BUG-1/BUG-2, prerequisite P1b), #107 (ADR-183 §6 residuals), #108
   (ADR-182 R6), and two findings of the ADR-192 round-3 red team (2026-09-25) that live on the same resume paths.
@@ -9,7 +10,8 @@
   `resolve_codeact_ask`, `resume_tool_table`, `fork_from`, `restore_from_record`, `run_rounds`' suspend site),
   `include/agentengine/core/run_event.hpp` (`ApprovalResolved::approver_id`), `tools/test_driver/test_driver.hpp`
   (`interaction_resolve`'s `call_decisions`/`approver_id`), `tests/test_approval_resume.cpp`,
-  `tests/test_agentengine_test_driver.cpp` (MIX, PC), `tests/scenarios/live_mixed_round.json`.
+  `tests/test_agentengine_test_driver.cpp` (MIX, PC), `tests/scenarios/live_mixed_round.json`. §7 adds
+  `core/tool_call_extraction.hpp` (`make_call_ids_unique`) and `run_event.hpp` (`InteractionRef::approver_id`).
 - **Invariants**: I3 (a decision is host input, never model output), I4 (every decision names who made it).
 
 ## 1. The defects
@@ -90,9 +92,9 @@ When a round suspended for approval, the session treated the whole round as one 
 ## 4. What this does NOT claim (residuals)
 
 - **The records are in memory (OQ-21).** A restored session has no `SuspendedRoundRecord`, no hook round and no CodeAct
-  record: an approval asks about every call in the suspended message (as before), and the tool list comes from the
-  turn middleware. A restored session also has no history (`AgentSessionRecord` does not carry it), so its approvals
-  cannot actually resume today.
+  record. *Superseded by §7:* such an interaction is now closed with nothing run
+  (`session.resolve_interaction.round_not_recorded`); the "every call in the suspended message" and turn-middleware
+  fallbacks are gone. Durable records remain OQ-21 work.
 - **Binding is by tool and arguments, not by call id.** Two identical calls in one round, one approved and one denied:
   the denied one is not dispatched and the approved one runs, which is the intended outcome; the decider itself cannot
   tell them apart.
@@ -127,4 +129,59 @@ counter not continued → S2.
 
 ## 6. Red team
 
-Not yet run.
+Round 1 (2026-09-26): §7.
+
+## 7. Red team round 1 (2026-09-26)
+
+A red team against this ADR as merged in #110 (e46c08f) reproduced six defects with an executed probe (issue #111).
+They share one cause: §2 said an interaction "records what it asked", but the record was partial (tool *names* only,
+no call identity the engine controlled, no binding to the suspended message) and optional (a missing record fell back
+to reading `history_`). The fix reframes the rule rather than patching each path:
+
+**An interaction resolves only against the round this session recorded when it suspended, and the record is complete:
+the calls' engine-owned ids, the descriptors the model was offered, and the message the round suspended on. Every
+request is validated, for every interaction kind, before anything closes, is announced or runs.**
+
+### 7.1 Findings and fixes
+
+| # | Finding (severity) | Fix |
+|---|---|---|
+| A1 | MAJOR (I3/I4). `restore_from_record()` onto a live session keeps `history_` and drops the records; a record-less approval asked about "every call in the last message" -- a later round's. Probe: alice approved `gated_tool{"value":1}`; `{"value":666}` ran, audited as hers. §4's "restored approvals cannot resume" was false. | Fail closed. An interaction with no `SuspendedRoundRecord` is closed with nothing run (`session.resolve_interaction.round_not_recorded`), the codeact branch's existing precedent, so it cannot keep `start_run()` refused. Both fallbacks (every call in the message; re-running the turn middleware) are removed. The record also carries `message_index`; a resolve whose history tail is not that message is `stale`. Chosen over clearing `history_` on restore: `AgentSessionRecord` carries no history, so clearing it would silently change what a restored-onto session's *next* run sends, and it would still leave a record-less interaction guessing. No documented host flow resolves a restored approval (checked: every `restore_from_record` test). |
+| A2 | MAJOR (I3). Call ids are model output and were not unique: two `gated_tool` calls both `c1` -- a split decision was refused as a duplicate, and approving `c1` ran both. | The engine owns call identity. `make_call_ids_unique()` (`core/tool_call_extraction.hpp`) runs on every model response before it enters `history_`: the first call keeps its id, a repeat becomes `<id>_ae<n>` (smallest unused n; a second empty id becomes `call_ae<n>`). Every downstream consumer -- `approval_requested`, `call_decisions`, hook answers, audit, tool results -- derives from that message, so they agree by construction. Each rename is announced as a `warning` (I4). Renaming, not refusing: some local models repeat ids routinely, and a refusal would fail those runs. |
+| A3 | MINOR. Same collision: `c1: gated_tool` + `c1: free_tool`; denying the round denied the free call. | Same fix. |
+| A4 | MAJOR. `resume_tool_table` kept only names and dispatched the provider's *current* descriptors: a turn middleware that made `free_tool` `always_require` was ignored on a hook-decision resume (it ran with no human); one that wrapped `gated_tool.invoke` saw the raw invoke run on approval. | `SuspendedRoundRecord::offered_tools` holds the descriptors as the turn middleware left them. Every resume -- hook decision, approval, CodeAct -- decides approval against and dispatches exactly those. The provider is still asked, only to narrow: a recorded tool it no longer offers is dropped (and `schedule_wakeup` only while the grant holds). The hook cascade carries the record forward. |
+| A5 | MINOR (I4). The hook-decision branch returned before the `approver_id` check and ignored `call_decisions`; the CodeAct branch recorded no approver. | One validation block before the branch, for every kind: bad `approver_id` refused; `call_decisions` on a non-approval interaction refused (`session.resolve_interaction.call_decisions_not_applicable`); a CodeAct resolve without `answer` and a hook resolve without `hook_dispatch_answers` refused -- all before the orphan close or anything else. `InteractionRef` gains `approver_id` (defaulted, appended last); `input_resolved` carries the resolver for every kind. The test driver adds it to the payload only when set. |
+| A6 | MAJOR (predates this ADR). A CodeAct resolve appended the answer and emitted `input_resolved` before the fallible `resume_tool_table`/`on_context()`; after a failure the interaction stayed open with the answer kept, so the retry's answer landed on the *next* question (`[yes, NO]` with one question ever shown). | Validate first, commit second: the tool table is built first; the answer is appended and `input_resolved` emitted only after it succeeded. The approval and hook paths keep ADR-183's order (the decision is announced before `on_context()`, and a failure there fails the run with the interaction closed), since they have no answer to carry into a retry. |
+
+### 7.2 Evidence
+
+`tests/test_approval_resume.cpp`, all pass.
+
+| Check | What it proves |
+|---|---|
+| A7 (+ control) | A record restored onto the live session: approving `:interaction:1` as alice is refused `round_not_recorded`, nothing runs, nothing is attributed to alice, the orphan is closed. Control: on a session not restored, approving round 2 runs exactly `value=666`. |
+| A8 | Two `gated_tool` calls both `c1` are named `c1` and `c1_ae1` in `approval_requested`, with one rename warning; approve `c1` + deny `c1_ae1` runs only `value=1`; `approval_resolved` and the history's tool results carry the two distinct ids. |
+| A9 | `c1: gated_tool` + `c1: other_tool` (never gated), round denied: `other_tool` runs, `gated_tool` does not. |
+| A10 (+ control) | Middleware makes `other_tool` `always_require`; after the hook allows it, the resume asks a human (one `approval_requested`) and does not run it. Control: not tightened, it runs. A middleware-wrapped `gated_tool.invoke` is the one that runs on approval; the raw invoke does not. |
+| A11 | Hook-decision resolve: multi-line approver and `call_decisions` each refused, interaction open, nothing ran; the valid resolve's `input_resolved` names `carol`. CodeAct resolve: `call_decisions` and a blank approver refused before anything is announced; the valid answer's `input_resolved` names `bob`. |
+| A12 | CodeAct: the first answer fails in `on_context()` (interaction open, no `input_resolved`); the retry answers Q1, Q2 is asked of a human, and the script acts with exactly `[NO, sure]`. |
+
+**Positive controls** (each fix reverted in `agent_session.hpp` / `tool_call_extraction.hpp`, the named checks seen to
+fail, sources restored from a scratchpad copy with `cp`): record-less fallback reinstated (a fake record built from
+`history_.back()` and the provider's tools) → A7 (2 checks); the rename loop skipped → A8 (4) and A9; resume dispatches
+the provider's descriptor instead of the recorded one → A10 (2); approver/`call_decisions` validation limited to
+approval interactions → A11 (5); the CodeAct answer appended before the tool table → A12 (2).
+
+### 7.3 Residuals
+
+- **Records are still in memory (OQ-21).** A restored interaction now fails closed instead of guessing; making it
+  resumable needs durable records (and durable history), unchanged scope.
+- **A streamed response may already have announced the model's own id** in a `model_delta` before the rename; the
+  tool events and every decision use the renamed id. A consumer that correlates deltas to tool events by id sees the
+  first call only for a repeated id.
+- **Approval binding is still by tool and canonical arguments** inside the decider (§4); with ids now unique, two
+  *identical* calls with split decisions still run the approved one and settle the denied one, as intended.
+- **Hook answers naming a call that is not awaiting dispatch are ignored**, not refused (unchanged; a stray answer
+  cannot widen anything, since only pending calls are looked up).
+- **The provider is still consulted on resume** (to narrow), so a failing `on_context()` still fails an approval
+  resume after ADR-183's announce; the CodeAct path now keeps that retryable.

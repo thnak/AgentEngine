@@ -1,5 +1,6 @@
 #pragma once
-// (Also implements ADR-193 round 2: a failed inner run's spend is charged to the caller.)
+// (Also implements ADR-193 round 2: a failed inner run's spend is charged to the caller; §9: each call reports or
+// charges exactly its own inner spend, once, on every exit path.)
 // GitHub issue #35: `WorkflowChatClient` -- lets a whole, already-initialized rt::WorkflowSupervisor
 // satisfy this codebase's `ChatClient` concept (core/chat_client.hpp), so a built Workflow can be
 // reused anywhere a model-backed agent backend is expected -- a direct caller, or (with the real,
@@ -20,8 +21,9 @@
 // `chat()` entirely instead of patching it a fourth time.
 //
 // GitHub issue #35 follow-up (ADR-163) CLOSED THE ROOT CAUSE round 8/9 worked around: `usage` on the
-// terminal push is now REAL, not always `nullopt` -- sourced from `WorkflowSupervisor::usage()` (a
-// before/after delta around this one call, see `run_worker()`'s own comment), which itself sums every
+// terminal push is now REAL, not always `nullopt` -- sourced from the supervisor's usage tracking (since
+// ADR-193 §9, the `WorkflowResult::usage` of each run/resume call this one call makes; it was a before/after
+// delta of `WorkflowSupervisor::usage()`, wrong across fresh runs -- see `run_worker()`), which itself sums every
 // TRACKED dispatch's real cost (every `agent`-kind node via `AgentSession::run_usage()`, plus any
 // resolved nested `sub_workflow`'s own recursively-summed total -- `WorkflowSupervisor::usage()`'s own
 // comment has the full contract and its one honestly-disclosed residual: an ordinary `function`-kind
@@ -131,6 +133,7 @@
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_value.hpp"
+#include "agentengine/rt/delegated_run_guard.hpp"
 #include "agentengine/rt/message_codec.hpp"
 #include "agentengine/rt/task.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
@@ -310,15 +313,46 @@ inline void run_worker(std::shared_ptr<agentengine::rt::WorkflowSupervisor> inne
         return;
     }
 
-    // GitHub issue #35 follow-up (ADR-163): `WorkflowSupervisor::usage()` is CUMULATIVE across this
-    // instance's whole suspend/resume lifecycle (never reset by resume_workflow(), only by a fresh
-    // run_workflow() -- see that accessor's own comment), but this adapter must report per-CALL usage,
-    // matching every other real ChatClient conformer's own "usage for just this exchange" contract (an
-    // outer AgentSession sums per-call deltas into ITS OWN running total; reporting the cumulative
-    // total on every call would badly over-count there). Snapshotting before/after this one call's own
-    // dispatch and reporting the delta is correct for BOTH the fresh-call case (before is always zero,
-    // just reset) and the resume case (before is whatever accumulated across earlier calls so far).
-    agentengine::Usage const usage_before = inner->usage();
+    // GitHub issue #35 follow-up (ADR-163), corrected by ADR-193 §9 (issue #113): this adapter reports per-CALL
+    // usage, matching every other ChatClient conformer's "usage for just this exchange" contract (an outer
+    // AgentSession sums what each call reports). It is the sum of `WorkflowResult::usage` over the run/resume calls
+    // this one call makes -- each measured by the supervisor under its own run lock. It used to be
+    // `inner->usage()` after minus before, which is wrong across a FRESH run: `run_workflow()` resets the
+    // cumulative total, so the second fresh call was charged its spend minus the first's (0 for equal spend) and a
+    // cheaper third call wrapped to ~2^64 tokens. It also raced any other caller driving the same supervisor.
+    agentengine::Usage spent{};
+    // ADR-193 §9's rule, "every delegated body charges its whole run exactly once, on every exit path": the
+    // terminal push carries `spent` when the caller receives it; on EVERY other way out -- a failed or ask-less
+    // inner run, a caller that stopped draining (a push that terminated), a throw -- it is charged through
+    // `ctx.charge_delegated_usage` instead, BEFORE the stream fails (the caller is still draining it), since a
+    // failed stream carries no usage.
+    bool usage_delivered = false;
+    auto const charge_undelivered = [&ctx, &spent, &usage_delivered] {
+        if (usage_delivered) return;
+        usage_delivered = true;
+        if (spent.input_tokens == 0 && spent.output_tokens == 0 && spent.cached_input_tokens == 0 &&
+            spent.reasoning_tokens == 0 && spent.cache_write_tokens == 0 && spent.cost_estimate == 0.0) {
+            return;
+        }
+        ctx.charge_delegated_usage(spent, 0);
+    };
+    agentengine::rt::delegated_run_detail::OnScopeExit const charge_on_exit{charge_undelivered};
+    auto const add_spent = [&spent](agentengine::Usage const& u) {
+        spent.input_tokens += u.input_tokens;
+        spent.output_tokens += u.output_tokens;
+        spent.cached_input_tokens += u.cached_input_tokens;
+        spent.reasoning_tokens += u.reasoning_tokens;
+        spent.cost_estimate += u.cost_estimate;
+        spent.cache_write_tokens += u.cache_write_tokens;
+    };
+    // Pushes the terminal update carrying `spent`; only a push the caller's stream accepted counts as delivered.
+    auto const push_final = [&producer, &spent, &usage_delivered](agentengine::ChatResponseUpdate upd) {
+        upd.is_final = true;
+        upd.usage = spent;
+        if (producer.push(std::move(upd)) != agentengine::stream_push::ok) return false;
+        usage_delivered = true;
+        return true;
+    };
 
     std::vector<agentengine::Interaction> open = inner->open_interactions();
     agentengine::rt::WorkflowResult r;
@@ -330,6 +364,7 @@ inline void run_worker(std::shared_ptr<agentengine::rt::WorkflowSupervisor> inne
             return;
         }
         r = drive(inner->run_workflow(agentengine::rt::RunWorkflow{*envelope}));
+        add_spent(r.usage);
     } else {
         std::vector<ResumeSignal> signals = find_resume_signals(request.messages, open);
         if (signals.empty()) {
@@ -359,42 +394,27 @@ inline void run_worker(std::shared_ptr<agentengine::rt::WorkflowSupervisor> inne
             if (!still_present) continue;  // resolved by an earlier signal in this same loop
             r = drive(inner->resume_workflow(
                 agentengine::rt::ResumeWorkflow{sig.interaction_id, sig.response, {}}));
+            add_spent(r.usage);  // every iteration's spend, not only the last one's (ADR-193 §9)
         }
     }
 
-    // GitHub issue #35 follow-up (ADR-163): the real per-call delta, read ONCE here (not per-push) --
-    // `inner->usage()` only advances at well-defined fold points inside `execute()`, never mid-push, so
-    // one read after `r` is already final is exactly this call's own total. Applied to the TERMINAL
-    // push only (`ChatResponseUpdate::usage`'s own doc comment: "populated only on the terminal
-    // update"), never fabricated on an intermediate one.
-    agentengine::Usage const usage_after = inner->usage();
-    agentengine::Usage usage_delta{};
-    usage_delta.input_tokens = usage_after.input_tokens - usage_before.input_tokens;
-    usage_delta.output_tokens = usage_after.output_tokens - usage_before.output_tokens;
-    usage_delta.cached_input_tokens = usage_after.cached_input_tokens - usage_before.cached_input_tokens;
-    usage_delta.reasoning_tokens = usage_after.reasoning_tokens - usage_before.reasoning_tokens;
-    usage_delta.cost_estimate = usage_after.cost_estimate - usage_before.cost_estimate;
-    usage_delta.cache_write_tokens = usage_after.cache_write_tokens - usage_before.cache_write_tokens;
-
     switch (r.status) {
         case agentengine::rt::workflow_status::completed: {
+            // `spent` rides the TERMINAL push only (`ChatResponseUpdate::usage`: "populated only on the terminal
+            // update"), never an intermediate one. A push the caller's stream refused leaves it undelivered, and
+            // `charge_on_exit` charges it instead.
             if (r.output.content.empty()) {
-                agentengine::ChatResponseUpdate upd{};
-                upd.is_final = true;
-                upd.usage = usage_delta;
-                if (producer.push(std::move(upd)) == agentengine::stream_push::ok) {
-                    producer.close();
-                }
+                if (push_final(agentengine::ChatResponseUpdate{})) producer.close();
                 return;
             }
-            for (std::size_t i = 0; i < r.output.content.size(); ++i) {
+            for (std::size_t i = 0; i + 1 < r.output.content.size(); ++i) {
                 agentengine::ChatResponseUpdate upd{};
                 upd.delta = r.output.content[i];
-                upd.is_final = (i + 1 == r.output.content.size());
-                if (upd.is_final) upd.usage = usage_delta;
                 if (producer.push(std::move(upd)) != agentengine::stream_push::ok) return;
             }
-            producer.close();
+            agentengine::ChatResponseUpdate last{};
+            last.delta = r.output.content.back();
+            if (push_final(std::move(last))) producer.close();
             return;
         }
         case agentengine::rt::workflow_status::suspended: {
@@ -403,21 +423,21 @@ inline void run_worker(std::shared_ptr<agentengine::rt::WorkflowSupervisor> inne
             if (asks.empty()) {
                 // Structurally shouldn't happen (suspended implies open_interactions() non-empty), but
                 // fail closed rather than push zero updates and close as if nothing were pending.
-                ctx.charge_delegated_usage(usage_delta, 0);  // ADR-193 round 2: see the default branch
+                charge_undelivered();  // ADR-193 round 2: see the default branch
                 producer.fail(agentengine::error{
                     agentengine::failure_class::fatal,
                     "workflow chat call: inner run reports suspended with no open interaction asks",
                     "chat_client.workflow_chat_client.suspended_with_no_asks"});
                 return;
             }
-            for (std::size_t i = 0; i < asks.size(); ++i) {
+            for (std::size_t i = 0; i + 1 < asks.size(); ++i) {
                 agentengine::ChatResponseUpdate upd{};
                 upd.delta = build_ask_item(asks[i]);
-                upd.is_final = (i + 1 == asks.size());
-                if (upd.is_final) upd.usage = usage_delta;
                 if (producer.push(std::move(upd)) != agentengine::stream_push::ok) return;
             }
-            producer.close();
+            agentengine::ChatResponseUpdate last{};
+            last.delta = build_ask_item(asks.back());
+            if (push_final(std::move(last))) producer.close();
             return;
         }
         default: {
@@ -425,7 +445,7 @@ inline void run_worker(std::shared_ptr<agentengine::rt::WorkflowSupervisor> inne
             // ADR-193 round 2: a failed stream carries no usage, so the inner run's spend -- a failing agent
             // node's whole run included -- is charged to the caller's run directly, BEFORE the stream fails (the
             // caller is still draining it). It used to vanish: the outer session was charged 0.
-            ctx.charge_delegated_usage(usage_delta, 0);
+            charge_undelivered();
             producer.fail(agentengine::error{
                 agentengine::failure_class::contract,
                 std::string("workflow chat call: the wrapped workflow did not complete (status=") +

@@ -190,6 +190,10 @@ struct ArtifactProduced {
 // by run_event_kind alone.
 struct InteractionRef {
     std::string interaction_id;
+    // ADR-196 §7 (issue #111 A5): on `input_resolved`, who resolved the interaction -- the host-supplied
+    // `ResolveInteraction::approver_id`, for every kind (approval, hook decision, CodeAct answer). Empty: anonymous, or
+    // an event that is not a resolve. Appended last and defaulted, so every `InteractionRef{id}` site is unchanged.
+    std::string approver_id{};
 };
 
 // ADR-029: `interaction_id` correlates these back to the `Interaction` (interaction.hpp)
