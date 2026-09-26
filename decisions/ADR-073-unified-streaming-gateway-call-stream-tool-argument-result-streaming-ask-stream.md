@@ -170,7 +170,7 @@ chunk and THEN fails is terminal, the fallback is NEVER attempted, proven with a
 proving real `model_delta` events fire end-to-end through `AgentSession`'s corrected dispatch, not just
 that it compiles.
 
-**Live network.** A new test, `tests/test_session_builder_openrouter_live_e2e.cpp` (`live-network` label,
+**Live network.** A new test, `tests/core/context/test_session_builder_openrouter_live_e2e.cpp` (`live-network` label,
 env-var-gated per 018 §4, credentials never compiled in), is the first test ever to exercise
 `Bundle::ask()`/`Bundle::ask_stream()` at all — run against real OpenRouter:
 - QS-1 (`Bundle::ask()`): succeeds end to end — `QuickstartSessionBuilder` → `Bundle` → a real

@@ -9,8 +9,8 @@ threading), `include/agentengine/rt/agent_session.hpp` (`set_policy_decider`/`po
 `expired_interaction_ids`/`set_interaction_expiry`, `history_provider()`'s amended doc contract),
 `include/agentengine/workflow/graph.hpp` (`TerminationBound::token_budget`'s amended doc contract),
 `include/agentengine/rt/workflow_supervisor.hpp` (`token_budget_unenforced()`). Proven by
-`tests/test_tool_pipeline.cpp` (6 new checks), `tests/test_rt_agent_session_suspend_approval.cpp`
-(SU7-SU9, 20 new checks), `tests/test_rt_workflow_supervisor.cpp` (6 new checks) — real Windows/MSVC
+`tests/core/tools/test_tool_pipeline.cpp` (6 new checks), `tests/rt/agent_session/test_rt_agent_session_suspend_approval.cpp`
+(SU7-SU9, 20 new checks), `tests/workflow/test_rt_workflow_supervisor.cpp` (6 new checks) — real Windows/MSVC
 build, see §5 for commands and counts.
 
 **Relates to:** `007-Capability-and-Trust-Model.md` (owns I2/I3, the two invariants this ADR must not
@@ -160,7 +160,7 @@ default — a human's explicit approval is never re-litigated by policy.
 | `require_approval` falls through to `ApprovalDecider` exactly as an unset decider would. | Wire `require_approval` plus a real `ApprovalDecider`; assert it IS consulted. | **CORRECT** — `test_tool_pipeline.cpp`. |
 | `PolicyDecider` can never bypass capability binding (step 4/7 runs before step 5, structurally). | `auto_approve` wired, but `held` lacks the tool's declared capability; assert denial with `tool.capability_not_held`, not a policy path. | **CORRECT** — `test_tool_pipeline.cpp`; this is also a structural proof of §4's property 3, not merely a policy-layer test. |
 | `text_derived` never consults `PolicyDecider`, even for a `policy_driven` tool (§4a's must-not-loosen list). *Amended by ADR-192 (2026-09-24): it is consulted, but only its `auto_deny` counts -- denying narrows; `auto_approve` still approves nothing. Its red team found the old rule let an always-yes decider run a call the host's policy had denied.* | Wire a `PolicyDecider` tripwire on a `text_derived` call to a `policy_driven`, capability-bearing tool; assert denial (no decider present) AND the tripwire never fires. | **CORRECT** — `test_tool_pipeline.cpp`. |
-| The suspend-for-approval pre-check (not just `invoke_tool()`'s own step 5) recognizes a `PolicyDecider`'s verdict, so a resolved call never opens a needless human `Interaction`. | Session-level: `suspend_for_approval_` true, no `ApprovalDecider`, a `PolicyDecider` wired `auto_approve`/`auto_deny`; assert the run converges with NO `Interaction` ever opening, for both verdicts. | **CORRECT** — `tests/test_rt_agent_session_suspend_approval.cpp` SU7 (auto_approve, tool invoked, no suspend) and SU8 (auto_deny, tool never invoked, no suspend). |
+| The suspend-for-approval pre-check (not just `invoke_tool()`'s own step 5) recognizes a `PolicyDecider`'s verdict, so a resolved call never opens a needless human `Interaction`. | Session-level: `suspend_for_approval_` true, no `ApprovalDecider`, a `PolicyDecider` wired `auto_approve`/`auto_deny`; assert the run converges with NO `Interaction` ever opening, for both verdicts. | **CORRECT** — `tests/rt/agent_session/test_rt_agent_session_suspend_approval.cpp` SU7 (auto_approve, tool invoked, no suspend) and SU8 (auto_deny, tool never invoked, no suspend). |
 
 Windows/MSVC build, `ninja test_tool_pipeline test_rt_agent_session_suspend_approval`: zero compile
 errors. `test_tool_pipeline`: all checks pass (6 new ADR-070 checks plus all pre-existing ones,

@@ -6,7 +6,7 @@
   prevented every `KataBackend::create()` call in this WSL2 session, including the one this ADR's own
   fix needed to re-run. Named accurately rather than claimed proven.
 - **Date:** 2026-08-29.
-- **Scope:** `tests/test_kata_backend_abuse_corpus_linux.cpp` only (Case 1 and Case 2's guest-side
+- **Scope:** `tests/backends/kata/test_kata_backend_abuse_corpus_linux.cpp` only (Case 1 and Case 2's guest-side
   heartbeat-writing loops, plus the file's own top-of-file disclosure comment). No production code
   touched — `src/backends/kata/kata_backend.cpp`/`.hpp` are unchanged by this ADR.
 - **Related specs:** `decisions/ADR-109-kata-backend-rootfs-writable-layer-fix.md` §8 (the residual

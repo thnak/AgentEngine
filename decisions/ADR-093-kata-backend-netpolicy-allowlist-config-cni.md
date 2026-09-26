@@ -154,7 +154,7 @@ NetPolicy shape earlier; with any grant present, `authorize_spec()`'s own identi
 (`sandbox.net_not_authorized`) fires first, at the very top of `create()`, before any of this
 backend's own NetPolicy validation runs at all. That now-dead check was removed rather than kept as
 inert code, per this project's own "don't validate scenarios that can't happen" discipline --
-`tests/test_kata_backend_slice9_10_linux.cpp` cases 2a/2b prove both surviving paths (the new
+`tests/backends/kata/test_kata_backend_slice9_10_linux.cpp` cases 2a/2b prove both surviving paths (the new
 capability gate, and `authorize_spec()`'s own redundant rejection) fire correctly end-to-end through
 KataBackend, not just in `sandbox.hpp`'s own isolated unit tests.
 
@@ -181,7 +181,7 @@ the existing exit-code check and `cleanup_partial()`, not a fail-open).
   (`test_kata_backend_linux`, `test_kata_backend_slice2_linux`, `test_kata_backend_abuse_corpus_
   linux`), and the new `test_kata_backend_slice9_10_linux` all compile clean against the rewritten
   backend.
-- A new test file, `tests/test_kata_backend_slice9_10_linux.cpp`, gained 7 cases: `--config`-mode
+- A new test file, `tests/backends/kata/test_kata_backend_slice9_10_linux.cpp`, gained 7 cases: `--config`-mode
   round-trip parity (create/exec/destroy under `deny_all`, unchanged caller-visible behavior); the
   §5 capability-gate fail-closed check (case 2a) and `authorize_spec()`'s own redundant
   unrestricted-egress rejection firing end-to-end through KataBackend (case 2b); a

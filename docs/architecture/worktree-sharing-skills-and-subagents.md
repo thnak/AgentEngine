@@ -22,7 +22,7 @@ A worktree is a content-addressed object store (`Blob`/`Tree` by digest) plus a 
 directly (immediate cross-visibility), `branch` copies the parent's digest and diverges
 independently in both directions until merge-on-join (025 §4), `readonly` pins a digest with an
 empty `backing_ref_name`, `scratch` starts empty. All four modes are proven at the `Ref`/`Tree` API
-level (`tests/test_worktree_sub_worktree.cpp`, `test_worktree_branch_concurrency.cpp`,
+level (`tests/worktree/test_worktree_sub_worktree.cpp`, `test_worktree_branch_concurrency.cpp`,
 `test_worktree_merge.cpp`) — using bare string ref names (`"session:s-1/agents/a"`) as stand-ins for
 what a real agent would use, never a real `AgentSession`/spawned-actor instance.
 
@@ -145,7 +145,7 @@ with a spawned agent in it.
   level — two `branch` siblings isolated from each other and from the parent; two `shared` executors
   cross-visible; a capability minted for one executor's mount rejected against another's; a `readonly`
   executor correctly gets no guest-facing `Mount`; a resumed `branch`/`shared` grant continues the
-  same worktree rather than silently re-branching (`tests/test_workflow_worktree_scoping.cpp`, 47
+  same worktree rather than silently re-branching (`tests/workflow/test_workflow_worktree_scoping.cpp`, 47
   checks).
 
 **Not proven — no test found** (grepped `tests/` for "worktree" combined with "agent_session",

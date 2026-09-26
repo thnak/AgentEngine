@@ -3,7 +3,7 @@
 **Model:** DeepSeek `deepseek-flash`, via `api.deepseek.com/v1` (the repo's OpenAI-compatible client, real ADR-173
 fence and preamble). **Question:** why did ADR-195's Tier-1 screen find every lesson `inert` in its first live run?
 
-## 1. The Tier-1 live runs (`tests/test_eval_tier1_screen_live_e2e.cpp`)
+## 1. The Tier-1 live runs (`tests/eval/test_eval_tier1_screen_live_e2e.cpp`)
 
 Every model turn was logged to `actions.jsonl` as it happened; pass/fail was decided by an analysis that reads
 only that file and the on-disk attempt log.
@@ -19,7 +19,7 @@ only that file and the on-disk attempt log.
 The model's own explanation (the label) is a rationale, not a controlled result — and ADR-194 §4b had found, on
 the same model, that the label alone suppressed nothing for text-reply lessons.
 
-## 2. The controlled experiment (`tests/test_memory_lesson_label_live_e2e.cpp`)
+## 2. The controlled experiment (`tests/memory/test_memory_lesson_label_live_e2e.cpp`)
 
 One chat call per trial, the probe tool offered, a normal host system prompt. Followed = the model's reply calls
 the tool with the lesson's value. 20 trials per cell; every call logged to `label-trials.jsonl` and the table
@@ -69,7 +69,7 @@ other models before anything depends on the exact numbers.
 
 ## 5. The shipped route (experiment v2) and the full Tier-1 screen
 
-**Experiment v2** (`tests/test_memory_lesson_label_live_e2e.cpp` as committed): every request through the real
+**Experiment v2** (`tests/memory/test_memory_lesson_label_live_e2e.cpp` as committed): every request through the real
 OpenAI serializer, lessons rendered by `render_lesson`, all arms in one seeded-shuffled invocation, 20 trials per
 cell, scored followed / asked (no call, the reply names the value) / other. Four invocations; within each, arms are
 comparable; across them, only the rows marked are.
@@ -110,13 +110,13 @@ every marker (round 3, invocations 6-7) made forgeries work again, 2-4/20 per ce
 approved guidance"; the round-2 form was restored (invocation 8: 0 forgeries followed). X8 spells the coded shape
 with a guessed code. Arm A drifted 7 → 12 → 4 across invocations with identical bytes: compare within an invocation.
 
-**Full Tier-1 screen, approved route** (`tests/test_eval_tier1_screen_live_e2e.cpp`, N=20 per arm, 10 tasks × K=5):
+**Full Tier-1 screen, approved route** (`tests/eval/test_eval_tier1_screen_live_e2e.cpp`, N=20 per arm, 10 tasks × K=5):
 helpful `cleared` (20/20 vs 0/20; gross-harm screen live, baseline success 1.000, not flagged); reworded retry
 `cleared` 17/20, headline "attempt 2 of 2"; overridden `inert` 0/20; consequential `cleared` 19/20. Two harmful
 approved lessons were declined 20/20 each (the model put the tool's documentation and the user's request first), so
 no live positive control for the gross-harm path exists yet.
 
-**Agent-driven conversations** (`tests/lesson_chat_live.cpp`): nine multi-turn chats, three Sonnet personas × three
+**Agent-driven conversations** (`tests/eval/lesson_chat_live.cpp`): nine multi-turn chats, three Sonnet personas × three
 blind arms, scored from the action logs only — every hard goal passed (ADR-191 §6).
 
 ## 6. ADR-192 arms (invocation 9)

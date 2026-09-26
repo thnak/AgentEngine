@@ -1,6 +1,6 @@
 // Linux/POSIX counterpart to tests/helpers/hostile_child.cpp (the Windows hostile-child helper) --
 // same modes, same purpose: a deliberately hostile test-only process for
-// tests/test_native_jail_backend_linux.cpp to launch and try to contain. Never a product target,
+// tests/backends/native_jail/test_native_jail_backend_linux.cpp to launch and try to contain. Never a product target,
 // never linked into anything else.
 //
 // Modes (argv[1]):

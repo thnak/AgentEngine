@@ -6,7 +6,7 @@
   redesign, same day.**
 - **Date:** 2026-08-30/31.
 - **Scope:** `include/agentengine/rt/async_quota.hpp` (`try_consume()`/`release_child_share()`
-  signature and logic), `tests/test_identity_authority_grant.cpp` (sections [8]/[9] rewritten to match
+  signature and logic), `tests/trust/test_identity_authority_grant.cpp` (sections [8]/[9] rewritten to match
   the corrected semantics).
 - **Related specs:** `decisions/ADR-102-identity-native-sandbox-implementation-phase-1.md` (the
   original port this hardens), `decisions/ADR-111-ledger-merge-async-quota-gating.md`/`ADR-112` (the
@@ -27,7 +27,7 @@ channel or the child's own separate returned `AsyncQuota` object. Together, a ca
 unlimited quota: allocate a share, spend some of it directly against the parent (never touching the
 returned child object at all), release the share, and watch the full original amount come back anyway.
 Confirmed not yet reachable through any real production caller (only
-`tests/test_identity_authority_grant.cpp` exercised this primitive at the time) — should it be fixed
+`tests/trust/test_identity_authority_grant.cpp` exercised this primitive at the time) — should it be fixed
 now, before this API accretes a real caller depending on the broken shape?
 
 ## 2. Findings
@@ -52,7 +52,7 @@ that type's own mutex-guarded `try_consume()`, so whatever `remaining_` holds is
 is preserved in spirit: the `children_` ledger entry is still explicitly erased on success, so a second
 release for the same child identity fails closed instead of re-crediting twice.
 
-`tests/test_identity_authority_grant.cpp` sections [8]/[9] rewritten: proves the direct-parent-spend
+`tests/trust/test_identity_authority_grant.cpp` sections [8]/[9] rewritten: proves the direct-parent-spend
 channel now fails closed (`async_quota.unauthorized_spender`), proves spending through the child's own
 object still works and correctly decrements only that object (never the parent), and proves
 `release_child_share()` credits back only the genuinely-unspent remainder (15 of an original 20-unit

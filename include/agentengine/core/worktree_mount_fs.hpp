@@ -132,7 +132,7 @@ private:
 
 // TEST-ONLY, deliberately vulnerable control -- this project's established pattern for proving a
 // containment check is a real gate rather than one that cannot fail (022 §5; the precedent is
-// `redteam`-style naive_last_writer_wins_merge in tests/test_worktree_branch_concurrency.cpp).
+// `redteam`-style naive_last_writer_wins_merge in tests/worktree/test_worktree_branch_concurrency.cpp).
 // NEVER call this outside a test binary. It is declared here, once, rather than duplicated inside
 // the test file, so ADR-014's evidence and any future regression both call the identical
 // vulnerable implementation the ADR's red-team section describes.

@@ -3,7 +3,7 @@
 
 **Status:** Proposed — design complete, three independent red-team rounds complete (2026-08-27); F3's
 immediate mitigation is real, built, and proven the same day (`mediated_shell_dispatch.{hpp,cpp}`,
-`mediated_shell_runner.hpp`, `tests/test_mediated_shell_runner_wall_clock_timeout.cpp`, 11/11 shell/
+`mediated_shell_runner.hpp`, `tests/backends/native_jail/test_mediated_shell_runner_wall_clock_timeout.cpp`, 11/11 shell/
 sandbox tests green, zero regressions), still awaiting `Judged` sign-off. Per explicit project-owner
 direction: reconcile ADR-096 and ADR-098 before any further implementation in this space, including
 `ADR-099`'s own A3/A9 follow-on work, which named this exact gap as a residual it deliberately left
@@ -109,7 +109,7 @@ mitigation is now built and proven (2026-08-27, same day as this ADR):
   `MediatedShellRunner::run()` and translated into a real `ExecOutcome{klass:
   exec_outcome_class::timeout}` — a legitimate outcome, matching exactly how
   `NativeJailBackend`'s own watchdog classifies a real wall-clock kill, never a propagated error the
-  caller has to specially handle. Proven by `tests/test_mediated_shell_runner_wall_clock_timeout.cpp`:
+  caller has to specially handle. Proven by `tests/backends/native_jail/test_mediated_shell_runner_wall_clock_timeout.cpp`:
   a positive control (an ordinary bounded loop still completes normally, no false positive) and a
   real 20-level-nested, 3-items-per-level exponential-blowup script (3^20 ≈ 3.49 billion body
   executions, well under every existing parser bound) given a 20ms/50ms budget — both return a real

@@ -215,7 +215,7 @@ Full design: `docs/planning/sub-workflow-nested-request-port-design-draft.md`.
 
 **New:**
 - `docs/planning/sub-workflow-nested-request-port-design-draft.md`
-- `tests/test_rt_workflow_sub_workflow.cpp`
+- `tests/workflow/test_rt_workflow_sub_workflow.cpp`
 - `examples/27_sub_workflow_nested_request_port.cpp`
 
 **Edited:**
@@ -227,7 +227,7 @@ Full design: `docs/planning/sub-workflow-nested-request-port-design-draft.md`.
   OQ-19 quarantine, `execute()`'s sub_workflow dispatch block, the bottom-of-round suspend check
   fix, `resume_workflow()`'s new pending-check branch, `finish()`'s unconditional
   `open_interactions()`.
-- `tests/test_workflow_agent_executor_gate.cpp` — G6 updated to match the intentionally-changed
+- `tests/workflow/test_workflow_agent_executor_gate.cpp` — G6 updated to match the intentionally-changed
   contract (see claim 10).
 - `tests/CMakeLists.txt`, `examples/CMakeLists.txt` — new target registrations.
 
@@ -255,7 +255,7 @@ item 3, claims 18-23):
   guard-wrapped `drive()` call, `execute()`'s two dispatch sites (ordinary exec_deliveries +
   sub_workflow) now passing the new parameters, `resume_workflow()`'s pending-sub-workflow branch's
   guard-wrapped `drive()` call.
-- `tests/test_rt_workflow_event_stream.cpp` — W10-W13, plus `<atomic>`/`<condition_variable>`/
+- `tests/workflow/test_rt_workflow_event_stream.cpp` — W10-W13, plus `<atomic>`/`<condition_variable>`/
   `<mutex>`/`<thread>` includes.
 - Design: `docs/planning/nested-workflow-event-forwarding-design-draft.md` (independently
   red-teamed BEFORE implementation — two MUST-FIX findings, both closed by redesigning the

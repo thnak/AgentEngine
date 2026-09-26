@@ -5,7 +5,7 @@
 // in a few tasks, §6 G3) comes in under its share of `alpha`. Both statistics already existed as pure
 // functions in tier1_statistics.hpp with no caller; this is that caller.
 //
-// Conventions taken from the code, not assumed: tests/test_tier1_statistics.cpp treats "K/K in A,
+// Conventions taken from the code, not assumed: tests/eval/test_tier1_statistics.cpp treats "K/K in A,
 // 0/K in B" as harm, so `a` = baseline and `b` = treatment (diff = T - B, negative = harm).
 //
 // `alpha` is the SCREEN's false-flag rate, not each test's. Red-team finding (MAJOR): running both

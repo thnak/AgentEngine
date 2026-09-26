@@ -146,7 +146,7 @@ would have reintroduced a version of the audit's own "safe becomes silent" failu
 
 ## 5. Evidence
 
-New regression block in `tests/test_mediated_shell_runner_smoke.cpp` (E3-Q0 through E3-Q5), against a
+New regression block in `tests/backends/native_jail/test_mediated_shell_runner_smoke.cpp` (E3-Q0 through E3-Q5), against a
 fresh mount with a known byte-exact baseline (one 10-byte seeded file), run under this project's real
 `MediatedShellRunner`/`MediatedFileSystemAdapter`/`CapabilitySet` — not a mock:
 

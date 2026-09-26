@@ -23,7 +23,7 @@
 //
 // Generic over `RunnerT` on purpose (not hardcoded to `native_jail::MediatedPythonRunner`) so this
 // binding's own claim/fail-closed logic is independently, deterministically testable
-// (`tests/test_codeact_runner_binding.cpp`) without needing a real embedded CPython interpreter --
+// (`tests/core/tools/test_codeact_runner_binding.cpp`) without needing a real embedded CPython interpreter --
 // this codebase's own established "no `std::any`/type-erasure" convention (ADR-028 §2) rules out a
 // type-erased alternative, and templating is the only fit that doesn't reintroduce that pattern.
 

@@ -16,7 +16,7 @@
   section, reproduces on a second, independent allocator and filesystem.
 - **Date:** 2026-08-30.
 - **Scope:** `include/agentengine/core/file_worktree_object_store.hpp` (new), `tests/test_content_
-  durability_cross_process.cpp` (new), `tests/test_content_durability_concurrency.cpp` (new), `tests/
+  durability_cross_process.cpp` (new), `tests/core/ledger/test_content_durability_concurrency.cpp` (new), `tests/
   test_identity_durability_precondition.cpp` (new), `tests/CMakeLists.txt` (three new targets
   registered). No existing production file was modified.
 - **Related specs:** `docs/planning/content-durability-conformer-design-draft.md` (this same session's
@@ -73,7 +73,7 @@ copyable, so the indirection is still required today, for the identical reason t
 had it. Registered with the same `// ae-naming-lint: allow` suppression `InMemoryWorktreeObjectStore`
 itself already carries (ADR-025 §4c precedent).
 
-**`tests/test_content_durability_cross_process.cpp`** — a **genuine TWO-REAL-OS-PROCESS proof**
+**`tests/core/ledger/test_content_durability_cross_process.cpp`** — a **genuine TWO-REAL-OS-PROCESS proof**
 (mirroring `identity-native-sandbox-worktree-design.md` §34.3's own methodology), the strongest bar
 available for a security/hot-path-adjacent claim like this. One executable plays both roles: invoked
 with no arguments it is "process 2" (the reader) — it first self-relaunches via `std::system()` with
@@ -88,7 +88,7 @@ test does not use). The merged tree's own content is then read back through the 
 `get_blob_safe()` production path and confirmed byte-for-byte correct for both the root's own blob and
 the child's real, cross-process-recovered blob — not merely "the merge call returned success."
 
-**`tests/test_content_durability_concurrency.cpp`** — real, executed adversarial probe of the design
+**`tests/core/ledger/test_content_durability_concurrency.cpp`** — real, executed adversarial probe of the design
 draft's own §3 disclosure. **[1] Content is safe**: 8 real OS threads, each with its own separate
 `FileWorktreeObjectStore` instance pointed at the same objects root, write 200 total distinct blobs
 concurrently — every one reads back byte-exact through a fourth, freshly-constructed store instance, and
@@ -103,7 +103,7 @@ the SAME, pre-existing, unchanged hazard `ADR-128` §2's own "still-live double-
 design draft's own §3/§6 already name — confirmed here as genuinely unchanged (not worsened, not fixed)
 by adding durable content alongside it.
 
-**`tests/test_identity_durability_precondition.cpp`** — real, adversarial, two-real-process proof of the
+**`tests/core/ledger/test_identity_durability_precondition.cpp`** — real, adversarial, two-real-process proof of the
 design draft's own gate item 6 (the §33/§34.2 precondition), on CURRENT production code. **[1] The
 vulnerable configuration**: an owner process using an in-memory-only `IdentityAuthority` (no
 `durable_dir` — the easy-to-get-wrong default) mints its identity as the first `mint_root()` call in

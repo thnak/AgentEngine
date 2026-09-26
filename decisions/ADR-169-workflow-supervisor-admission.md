@@ -12,7 +12,7 @@
   refusal branch in the ADR-157 nested-resume path; propagation hook in `bind_sub_workflow()`),
   `include/agentengine/rt/workflow_as_executor.hpp` (modified — one new `case` in the second
   exhaustive `switch(workflow_status)`),
-  `tests/test_rt_workflow_supervisor_admission.cpp` (new),
+  `tests/workflow/test_rt_workflow_supervisor_admission.cpp` (new),
   `tests/CMakeLists.txt` (additive wiring). **No other production file changed**, and no existing test
   file needed a single edit.
 - **Related specs:** GitHub issue #65 (the defect this closes) ·
@@ -50,7 +50,7 @@ Three facts, re-confirmed against `main` on 2026-09-04 before any code was writt
 
 What *was* guarded, stated precisely so the gap is not overstated: `resume_workflow()` already failed
 closed on an unknown or already-resolved `interaction_id` (proven by E2 in
-`tests/test_rt_workflow_supervisor_request_port.cpp`), and ADR-157's `pending_sub_workflows_` lookup
+`tests/workflow/test_rt_workflow_supervisor_request_port.cpp`), and ADR-157's `pending_sub_workflows_` lookup
 failed closed on a stale id rather than misrouting. The existing guard was **id validity, not
 ownership**: knowing a live id was sufficient authority.
 
@@ -208,7 +208,7 @@ debugging it needs to look. The structural event is still pushed on the outer's 
 
 ## 8. Evidence
 
-`tests/test_rt_workflow_supervisor_admission.cpp`, A1–A12. Every denial assertion is paired with an
+`tests/workflow/test_rt_workflow_supervisor_admission.cpp`, A1–A12. Every denial assertion is paired with an
 admission against the *same* supervisor that must succeed, and every case asserts
 `admission_denied_count()` — a gate that "denies" by doing nothing observable cannot pass this file.
 

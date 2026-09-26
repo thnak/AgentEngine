@@ -1068,7 +1068,7 @@ exercised end-to-end, not merely string-level).
 ```
 llvm-nm --undefined-only build-clang/agentengine_shell_runner.lib
 ```
-parsed programmatically (`tests/test_shell_runner_no_process_creation.cpp`) for an EXACT trailing
+parsed programmatically (`tests/backends/native_jail/test_shell_runner_no_process_creation.cpp`) for an EXACT trailing
 symbol-name match (not substring) against: `CreateProcessA/W`, `CreateProcessAsUserA/W`,
 `_wspawnv[e]`, `_spawnv[e]`, `system`, `_wsystem`, `LoadLibraryA/W`, `WinExec`, `ShellExecuteA`.
 **Result: zero matches** — the full undefined-symbol list (reproduced in the ADR's working notes,
@@ -1096,7 +1096,7 @@ recorded as **static check: CORRECT; dynamic shim: NOT ATTEMPTED** — two disti
 laundered into one.
 
 ### 8.8 Sh-S1 behavioral corpus, Sh-C1, Sh-C2, Sh-C3, Sh-G4, capability checks, A-C2 —
-`tests/test_shell_runner_proof.cpp`, real output (clang `build-clang/`, representative — identical
+`tests/backends/native_jail/test_shell_runner_proof.cpp`, real output (clang `build-clang/`, representative — identical
 under MSVC)
 
 ```
@@ -1127,7 +1127,7 @@ under MSVC)
 test_shell_runner_proof: PASS
 ```
 
-### 8.9 `RealFileSystemAdapter` path-escape list — `tests/test_real_filesystem_adapter.cpp`, real
+### 8.9 `RealFileSystemAdapter` path-escape list — `tests/backends/native_jail/test_real_filesystem_adapter.cpp`, real
 output
 
 ```

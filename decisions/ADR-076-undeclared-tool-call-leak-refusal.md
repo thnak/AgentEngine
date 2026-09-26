@@ -18,7 +18,7 @@ pure detector), `decisions/ADR-035-chatclient-streaming-completeness.md` (the ba
 the one enforced check that a declared `tool_calling` bit isn't quietly contradicted by what a
 response actually contains). Design draft, kept as the full uncompressed record:
 `docs/planning/oq23-undeclared-tool-call-leak-design-draft.md`. Confirming fixture for the
-underlying gap: `tests/test_openai_chat_client_translation.cpp`'s `OQ-23-R1` block.
+underlying gap: `tests/protocol/openai/test_openai_chat_client_translation.cpp`'s `OQ-23-R1` block.
 
 ## 1. The question
 
@@ -93,7 +93,7 @@ promote-or-diagnostic mechanism is already the answer there.
 
 | # | Claim | Verdict | Basis |
 |---|---|---|---|
-| D1 | The new check fires on the exact `OQ-23-R1` scenario and returns a `Contract`-class error instead of a successful response. | **CORRECT** | `tests/test_openai_chat_client_translation.cpp` `OQ-23-D1`: a literal llama.cpp-raw-Hermes leak matching a live `get_weather` tool is refused with `chat_client.undeclared_tool_call_leak`, `failure_class::contract`. |
+| D1 | The new check fires on the exact `OQ-23-R1` scenario and returns a `Contract`-class error instead of a successful response. | **CORRECT** | `tests/protocol/openai/test_openai_chat_client_translation.cpp` `OQ-23-D1`: a literal llama.cpp-raw-Hermes leak matching a live `get_weather` tool is refused with `chat_client.undeclared_tool_call_leak`, `failure_class::contract`. |
 | D2 | The check does not fire when scanning is armed, AND does not misfire on an unmatched-candidate diagnostic left behind by a prior scan pass. | **CORRECT, two scenarios both proven, not one** | `OQ-23-D2a`: run against an already-`apply_response_format_scan`-promoted message — silent (nothing left to detect). `OQ-23-D2b`: run DIRECTLY against a tainted, unmatched-candidate diagnostic `Text` (`ADR-023 P2-R2`'s own shape) — silent, because the detector's own `item.tainted` skip holds independent of which call site invokes it (the red-team's required revision, built into the implementation from the start, not bolted on after a failing test). |
 | D3 | The check does not fire on ordinary clean content, or on a leak whose recipient is not a currently-offered tool name. | **CORRECT** | `OQ-23-D3` (two sub-cases) at the function level; `OQ-M3`/`OQ-M4` at the real `AgentSession::run_model_call()` level (unrecognized recipient converges normally; ordinary clean content is byte-identical pass-through). |
 | D4 | The check never produces or exposes a `ToolCall`/`ToolCallRequest` under any input. | **CORRECT, structural** | `detect_undeclared_tool_call_leak`'s return type is `result<void>`; no `ToolCall`/`ContentItem` construction appears anywhere in its body (`core/response_format_leak_scan.hpp`) — a property of the code's shape, not a runtime test outcome. |
@@ -173,8 +173,8 @@ amendment added to 004 §2 in this same change.
 
 **Evidence (`docs/planning/oq23-undeclared-tool-call-leak-design-draft.md` §10 has the full
 uncompressed record):** 22 new tests, all passing — 9 function-level (`OQ-23-D1/D2a/D2b/D3` in
-`tests/test_openai_chat_client_translation.cpp`) and 13 real `AgentSession::run_model_call()` round
-trips (`OQ-M1..OQ-M4` in `tests/test_rt_agent_session_streaming_and_events.cpp`, via a
+`tests/protocol/openai/test_openai_chat_client_translation.cpp`) and 13 real `AgentSession::run_model_call()` round
+trips (`OQ-M1..OQ-M4` in `tests/rt/agent_session/test_rt_agent_session_streaming_and_events.cpp`, via a
 `ScriptedChatClient` extended with a `caps_tool_calling` flag, default `false`, so no existing test
 was disturbed). Full project build: clean. Full `ctest`: 227/229 real passes. The only 2 failures
 (`test_openai_chat_client_live`, `test_anthropic_chat_client_live`, both in the same live-TLS

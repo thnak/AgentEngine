@@ -125,7 +125,7 @@ const copy = {
         guarantee.
       </>
     ),
-    s2bUsageEyebrow: "tests/test_mediated_python_runner_agent_files_data.cpp",
+    s2bUsageEyebrow: "tests/python/test_mediated_python_runner_agent_files_data.cpp",
     s2bUsageBody: (
       <>
         <code>agent.files.input</code> reads real bytes back. <code>agent.files.artifact</code>{" "}
@@ -349,7 +349,7 @@ const copy = {
         026 §5 cố định tập hàm này và là nguồn của cam kết "không nạp toàn bộ vào bộ nhớ".
       </>
     ),
-    s2bUsageEyebrow: "tests/test_mediated_python_runner_agent_files_data.cpp",
+    s2bUsageEyebrow: "tests/python/test_mediated_python_runner_agent_files_data.cpp",
     s2bUsageBody: (
       <>
         <code>agent.files.input</code> đọc lại đúng byte thật. <code>agent.files.artifact</code>{" "}
@@ -700,11 +700,11 @@ export function ApiCodeActReference() {
                 <a href={gh("026-Agent-Facing-Runtime-Surface.md")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
                   026-Agent-Facing-Runtime-Surface.md §5
                 </a>
-                <a href={gh("tests/test_mediated_python_runner_agent_tools.cpp")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
-                  tests/test_mediated_python_runner_agent_tools.cpp
+                <a href={gh("tests/python/test_mediated_python_runner_agent_tools.cpp")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
+                  tests/python/test_mediated_python_runner_agent_tools.cpp
                 </a>
-                <a href={gh("tests/test_codeact_tool_union.cpp")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
-                  tests/test_codeact_tool_union.cpp
+                <a href={gh("tests/protocol/mcp/test_codeact_tool_union.cpp")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
+                  tests/protocol/mcp/test_codeact_tool_union.cpp
                 </a>
               </div>
             </div>

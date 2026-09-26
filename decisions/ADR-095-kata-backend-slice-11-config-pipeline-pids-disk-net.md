@@ -113,12 +113,12 @@ this was a fix-and-re-review, not a structural redesign.
   object when `net_bytes > 0`; `cleanup_partial()` reordered (unmount/detach before `remove_all`) and
   extended for the new resources; `destroy()` extended with the matching reverse-order teardown and
   now unmounts `lower_dir` (never `rootfs_dir`).
-- `tests/test_kata_backend_slice2_linux.cpp` — 3 new cases proving the workdir-mount-exclusion fix:
+- `tests/backends/kata/test_kata_backend_slice2_linux.cpp` — 3 new cases proving the workdir-mount-exclusion fix:
   exact-root match, contained-within match, and a sibling-path negative control (proves the check is
   path-component-aware, not a naive substring match). **These 3 cases pass for real in this session**
   (§6) — they run before any resource acquisition, so unlike every other case in this backend's test
   suite they do not require a live Kata/containerd deployment.
-- `tests/test_kata_backend_slice9_10_linux.cpp` — 3 new cases (`pids` smoke test; `disk_bytes` real
+- `tests/backends/kata/test_kata_backend_slice9_10_linux.cpp` — 3 new cases (`pids` smoke test; `disk_bytes` real
   ENOSPC-vs-fits-cleanly pair; `net_bytes` real request-exceeds-256-byte-budget case) — all require a
   live deployment, not run this session, same disclosed posture as every prior Kata test.
 - `docs/planning/kata-backend-config-pipeline-pids-disk-net-redesign-draft.md` — the full design,

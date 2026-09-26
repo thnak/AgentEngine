@@ -8,7 +8,7 @@
 // live model call -- it is an entire two-step INNER Workflow ("fetch" -> "digest"), wrapped once and
 // handed into the OUTER MagenticWorkflowBuilder's `bodies` vector exactly like any other participant.
 // Proves the adapter is genuinely composable with this session's own convenience builder (ADR-149),
-// not just unit-tested standalone (see tests/test_rt_workflow_as_executor.cpp's own W7 for the
+// not just unit-tested standalone (see tests/workflow/test_rt_workflow_as_executor.cpp's own W7 for the
 // minimal-graph version of the same proof).
 //
 // Also demonstrates a real design-draft disclosure directly: the OUTER graph declares this

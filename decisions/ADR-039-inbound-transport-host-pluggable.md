@@ -142,7 +142,7 @@ configuration), never read from the token itself, for the same reason `expected_
 are caller-supplied to `verify_bearer_token()`: a bearer token asserts *who*, never *what kind of
 caller*, and letting token content assert `kind` would let anything mintable off one key claim a
 stronger kind than the issuing host intended for that subject. Proven in
-`tests/test_principal_from_bearer_claims.cpp` (9 checks, all passing): `sub`/`tenant_id` map correctly
+`tests/trust/test_principal_from_bearer_claims.cpp` (9 checks, all passing): `sub`/`tenant_id` map correctly
 (P1), the `kind` override is honored and never silently ignored (P2), no claims field beyond
 `sub`/`tenant_id`/the explicit `kind` leaks into the resulting `Principal` (P3, a regression guard
 against a future `Principal` field addition silently starting to leak token-internal claims), and
@@ -227,7 +227,7 @@ correction + binding contract, §3c real closable code, §3d named residual):
 
 - `include/agentengine/trust/bearer_token.hpp` — `principal_from_bearer_claims()` (§3c), plus the new
   `#include "agentengine/trust/principal.hpp"`.
-- `tests/test_principal_from_bearer_claims.cpp` (new, 9 checks) — this ADR's §3c evidence.
+- `tests/trust/test_principal_from_bearer_claims.cpp` (new, 9 checks) — this ADR's §3c evidence.
 - `tests/CMakeLists.txt` — registers the new test target (same `WIN32`-gated block as
   `test_bearer_token_proof`, since both transitively depend on `trust/hmac.hpp`'s current
   BCrypt-backed implementation).

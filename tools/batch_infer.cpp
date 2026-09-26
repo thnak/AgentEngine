@@ -19,7 +19,7 @@
 // (`openai::detail::build_request_body` / `anthropic::detail::build_request_body`), proving that
 // translation is valid for the batch endpoint's `body` field too, not just the synchronous one.
 //
-// `kDefaultModel` below is NOT the alias tests/test_openrouter_live_e2e.cpp uses for its synchronous
+// `kDefaultModel` below is NOT the alias tests/protocol/openai/test_openrouter_live_e2e.cpp uses for its synchronous
 // calls (`~deepseek/deepseek-v4-flash-latest`) -- confirmed live, 2026-08-21, that alias 400s on
 // submit with "does not have a :batch endpoint." Batch-endpoint support is a real, separate,
 // per-model capability the synchronous path says nothing about. `openai/gpt-4o-mini` is confirmed

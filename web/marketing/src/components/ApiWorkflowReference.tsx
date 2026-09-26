@@ -112,7 +112,7 @@ const copy = {
         termination bound.
       </>
     ),
-    patternsNote: <>proven in <code>tests/test_rt_workflow_supervisor_patterns.cpp</code></>,
+    patternsNote: <>proven in <code>tests/workflow/test_rt_workflow_supervisor_patterns.cpp</code></>,
     patternsTableColumns: ["Pattern", "Graph shape", "Use case"],
     patternsGuidance: (
       <>
@@ -395,7 +395,7 @@ const copy = {
       </>
     ),
     patternsNote: (
-      <>được chứng minh trong <code>tests/test_rt_workflow_supervisor_patterns.cpp</code></>
+      <>được chứng minh trong <code>tests/workflow/test_rt_workflow_supervisor_patterns.cpp</code></>
     ),
     patternsTableColumns: ["Mẫu", "Hình dạng đồ thị", "Use case"],
     patternsGuidance: (
@@ -823,7 +823,7 @@ export function ApiWorkflowReference() {
               rel="noreferrer"
               style={{ borderTop: "none", paddingTop: 0, marginTop: 18, display: "block" }}
             >
-              tests/test_rt_workflow_supervisor_request_port.cpp
+              tests/workflow/test_rt_workflow_supervisor_request_port.cpp
             </a>
           </RevealItem>
         </RevealGroup>
@@ -962,7 +962,7 @@ export function ApiWorkflowReference() {
               rel="noreferrer"
               style={{ borderTop: "none", paddingTop: 0, marginTop: 18, display: "block" }}
             >
-              tests/test_rt_workflow_supervisor.cpp
+              tests/workflow/test_rt_workflow_supervisor.cpp
             </a>
           </RevealItem>
         </RevealGroup>

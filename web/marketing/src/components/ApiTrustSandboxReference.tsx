@@ -1134,7 +1134,7 @@ export function ApiTrustSandboxReference() {
           </RevealItem>
 
           <RevealItem>
-            <CodePanel filename="tests/test_tool_pipeline.cpp">
+            <CodePanel filename="tests/core/tools/test_tool_pipeline.cpp">
               {highlightCpp(capabilityDenialErrorSnippet)}
             </CodePanel>
           </RevealItem>
@@ -1255,7 +1255,7 @@ export function ApiTrustSandboxReference() {
             <div style={{ marginTop: 14, display: "flex", gap: 16, flexWrap: "wrap" }}>
               <RawCite href={gh("include/agentengine/trust/secret_quarantine.hpp")} label="include/agentengine/trust/secret_quarantine.hpp" />
               <RawCite href={gh("decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md")} label="decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md" />
-              <RawCite href={gh("tests/test_rt_agent_session_quarantine_tool.cpp")} label="tests/test_rt_agent_session_quarantine_tool.cpp" />
+              <RawCite href={gh("tests/rt/agent_session/test_rt_agent_session_quarantine_tool.cpp")} label="tests/rt/agent_session/test_rt_agent_session_quarantine_tool.cpp" />
             </div>
           </RevealItem>
         </RevealGroup>
@@ -1600,15 +1600,15 @@ export function ApiTrustSandboxReference() {
                 href={gh("decisions/ADR-004-appcontainer-native-jail-windows-backend.md")}
                 label="decisions/ADR-004-appcontainer-native-jail-windows-backend.md §10"
               />
-              <RawCite href={gh("tests/test_native_jail_abuse_corpus_windows.cpp")} label="tests/test_native_jail_abuse_corpus_windows.cpp" />
-              <RawCite href={gh("tests/test_native_jail_abuse_corpus_linux.cpp")} label="tests/test_native_jail_abuse_corpus_linux.cpp" />
+              <RawCite href={gh("tests/backends/native_jail/test_native_jail_abuse_corpus_windows.cpp")} label="tests/backends/native_jail/test_native_jail_abuse_corpus_windows.cpp" />
+              <RawCite href={gh("tests/backends/native_jail/test_native_jail_abuse_corpus_linux.cpp")} label="tests/backends/native_jail/test_native_jail_abuse_corpus_linux.cpp" />
               <RawCite
-                href={gh("tests/test_mediated_python_runner_hostile_corpus.cpp")}
-                label="tests/test_mediated_python_runner_hostile_corpus.cpp"
+                href={gh("tests/python/test_mediated_python_runner_hostile_corpus.cpp")}
+                label="tests/python/test_mediated_python_runner_hostile_corpus.cpp"
               />
               <RawCite
-                href={gh("tests/test_mediated_shell_runner_hostile_corpus.cpp")}
-                label="tests/test_mediated_shell_runner_hostile_corpus.cpp"
+                href={gh("tests/backends/native_jail/test_mediated_shell_runner_hostile_corpus.cpp")}
+                label="tests/backends/native_jail/test_mediated_shell_runner_hostile_corpus.cpp"
               />
             </div>
           </RevealItem>

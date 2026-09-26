@@ -11,7 +11,7 @@
 // add_over_broad_positive_control() addition -- a CI gate that is permanently red over a known,
 // accepted fixture entry is not a useful gate (007 §10 Q3: findings are "for an operator to
 // review"). The detector's ability to actually catch that positive control is proven separately, by
-// tests/test_policy_reachability.cpp (ctest), not by this binary's own default run.
+// tests/trust/test_policy_reachability.cpp (ctest), not by this binary's own default run.
 
 #include <cstdio>
 #include <string>

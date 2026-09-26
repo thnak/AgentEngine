@@ -289,7 +289,7 @@ effect, proven against the real compiled fixture, not a hand-crafted test double
   and trailer fields are parsed past and discarded, not surfaced; a malformed chunk-size or truncated
   chunk data fails closed with `net.protocol_error` rather than misparsing. No `Content-Length`-framed
   or read-until-close (non-chunked) response's behavior changes. New tests in
-  `tests/test_net_egress_proxy.cpp`: a real chunked response (two data chunks, one with an extension,
+  `tests/sandbox/test_net_egress_proxy.cpp`: a real chunked response (two data chunks, one with an extension,
   a discarded trailer) dechunks to the correct body; a malformed chunk-size fails closed with the
   documented error code, not a misparse. This is a bug fix against this ADR's own already-decided
   design (a `Content-Length`-or-read-until-close read loop, claim C8's byte-cap-during-the-loop
@@ -336,7 +336,7 @@ effect, proven against the real compiled fixture, not a hand-crafted test double
   ADR-016) also resolves it successfully to 127.0.0.1 — which is CORRECT, not a bug: an operator's own
   configured provider endpoint is legitimately allowed to be loopback, however it is spelled, matching
   every other value `resolve_host` already accepts unfiltered. Fixed by correcting the test's own wrong
-  assumption: `tests/test_provider_egress_address_policy.cpp`'s G3 block now asserts the two resolvers'
+  assumption: `tests/sandbox/test_provider_egress_address_policy.cpp`'s G3 block now asserts the two resolvers'
   actually-correct, actually-different outcomes separately (`resolve_and_validate` rejects with
   `net.address_blocked`; `resolve_host` resolves to 127.0.0.1), with a comment explaining why they
   differ. Verified via a real negative control: temporarily removing `is_blocked_address`'s loopback
@@ -356,7 +356,7 @@ effect, proven against the real compiled fixture, not a hand-crafted test double
   different, earlier mechanism) — the two system resolvers simply disagree on whether the string
   resolves at all. Fixed with a real `#ifdef _WIN32`/`#else` split (matching this codebase's own
   established precedent for platform-conditional expected outcomes,
-  `tests/test_mediated_shell_runner_hostile_corpus.cpp`'s SH7-SH10 block): Windows asserts BOTH
+  `tests/backends/native_jail/test_mediated_shell_runner_hostile_corpus.cpp`'s SH7-SH10 block): Windows asserts BOTH
   resolvers fail with `net.host_unresolvable`; Linux asserts the split outcome the first correction
   already established. Re-verified clean on both platforms after this second fix (Windows: rebuilt and
   ran directly, `ALL PASS`; Linux: rebuilt and ran directly, `ALL PASS`), then confirmed with a full
@@ -380,7 +380,7 @@ effect, proven against the real compiled fixture, not a hand-crafted test double
   `net_egress_proxy.hpp`'s `narrow_by_resource_limit()` reconciles it with this proxy's own `byte_cap`
   (the tighter of the two wins), wired into `wasm_backend.cpp`'s `cb_http_request` via
   `Instance::limits` (already captured at `create()` time, now also read here). Proven directly as a
-  pure function (`tests/test_net_egress_proxy.cpp`'s C12: both-directions narrowing, no-grant-cap and
+  pure function (`tests/sandbox/test_net_egress_proxy.cpp`'s C12: both-directions narrowing, no-grant-cap and
   no-resource-limit edge cases, `net_bytes == 0` treated as "no limit" not "zero bytes"), composed with
   the byte-cap enforcement C8 already proves rather than re-testing that through a live WASM
   round-trip. `ResourceLimits`' other six fields (`cpu_ms`, `pids`, `fds`, `disk_bytes`,

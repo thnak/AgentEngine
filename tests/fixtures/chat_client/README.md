@@ -66,7 +66,7 @@ speculatively designed against a type that doesn't exist yet.
 ## `reference_agent/` (Milestone 3 Phase H1, 026 §8 G1)
 
 Three hand-authored fixtures, one per task in the reference-agent task corpus
-(`tests/test_reference_agent_task_corpus.cpp`). Each `message.content[0]` is a `text` item shaped
+(`tests/core/agent/test_reference_agent_task_corpus.cpp`). Each `message.content[0]` is a `text` item shaped
 like a real CodeAct-style reply: narration, then a fenced ```` ```python ```` block the test extracts
 and actually executes through `MediatedPythonRunner`.
 

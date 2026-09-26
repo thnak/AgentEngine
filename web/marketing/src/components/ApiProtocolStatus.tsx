@@ -77,7 +77,7 @@ const copy = {
     ),
     s2bBodyNote: (
       <>
-        <code>tests/test_agui_sse.cpp:34-46</code> checks the <code>data: </code> prefix, the{" "}
+        <code>tests/protocol/agui/test_agui_sse.cpp:34-46</code> checks the <code>data: </code> prefix, the{" "}
         <code>\n\n</code> terminator, and that the bytes between them parse as the real
         projected event — never a hand-built JSON literal.
       </>
@@ -95,7 +95,7 @@ const copy = {
     s2bCaption2Note: (
       <>
         projection.hpp's file-top comment documents the context-free mapping.{" "}
-        <code>tests/test_rt_agui_projection.cpp:188-206</code> proves the{" "}
+        <code>tests/protocol/agui/test_rt_agui_projection.cpp:188-206</code> proves the{" "}
         <code>messageId</code> bracketing end to end.
       </>
     ),
@@ -112,7 +112,7 @@ const copy = {
     s2bCaption3NoteSpec: <>013 §2.2 — AG-UI's event model has no pause state.</>,
     s2bCaption3NoteTest: (
       <>
-        <code>tests/test_a2a_streaming.cpp:70-78</code> confirms{" "}
+        <code>tests/protocol/a2a/test_a2a_streaming.cpp:70-78</code> confirms{" "}
         <code>TASK_STATE_INPUT_REQUIRED</code> is non-terminal via <code>is_terminal()</code>.
       </>
     ),
@@ -214,7 +214,7 @@ const copy = {
     ),
     s2bBodyNote: (
       <>
-        <code>tests/test_agui_sse.cpp:34-46</code> kiểm tra tiền tố <code>data: </code>, dấu
+        <code>tests/protocol/agui/test_agui_sse.cpp:34-46</code> kiểm tra tiền tố <code>data: </code>, dấu
         kết thúc <code>\n\n</code>, và rằng các byte nằm giữa chúng phân tích được thành đúng sự
         kiện đã được chiếu thật — không bao giờ là một literal JSON viết tay.
       </>
@@ -232,7 +232,7 @@ const copy = {
     s2bCaption2Note: (
       <>
         Comment ở đầu file projection.hpp ghi lại ánh xạ không phụ thuộc ngữ cảnh này.{" "}
-        <code>tests/test_rt_agui_projection.cpp:188-206</code> chứng minh việc đóng khung{" "}
+        <code>tests/protocol/agui/test_rt_agui_projection.cpp:188-206</code> chứng minh việc đóng khung{" "}
         <code>messageId</code> đầu-cuối.
       </>
     ),
@@ -249,7 +249,7 @@ const copy = {
     s2bCaption3NoteSpec: <>013 §2.2 — mô hình sự kiện của AG-UI không có trạng thái tạm dừng.</>,
     s2bCaption3NoteTest: (
       <>
-        <code>tests/test_a2a_streaming.cpp:70-78</code> xác nhận{" "}
+        <code>tests/protocol/a2a/test_a2a_streaming.cpp:70-78</code> xác nhận{" "}
         <code>TASK_STATE_INPUT_REQUIRED</code> không kết thúc, bằng <code>is_terminal()</code>.
       </>
     ),

@@ -46,7 +46,7 @@ using agentengine::rt::WorkflowSupervisor;
 using agentengine::rt::workflow_status;
 
 // Drives an `agentengine::rt::task<T>` to completion from a plain, non-coroutine `main()` -- the same
-// helper `tests/test_rt_workflow_supervisor.cpp` establishes: safe here because neither the
+// helper `tests/workflow/test_rt_workflow_supervisor.cpp` establishes: safe here because neither the
 // workflow's own superstep loop nor a specialist's `client.chat()` call genuinely parks (the real
 // HTTPS client blocks under the hood instead of suspending a coroutine), so one external `resume()`
 // chain runs the whole thing inline.

@@ -5,7 +5,7 @@
 // -- Windows now, Linux next) and produces the same outcome classification for every case."
 //
 // This header is that "one hostile test corpus": ONE array, included verbatim by both
-// tests/test_native_jail_parity_windows.cpp and tests/test_native_jail_parity_linux.cpp, so parity
+// tests/backends/native_jail/test_native_jail_parity_windows.cpp and tests/backends/native_jail/test_native_jail_parity_linux.cpp, so parity
 // is a structural fact (the same table, compiled into two different binaries against two different
 // SandboxBackend implementations) rather than an assertion that happens to agree because two
 // independently-written test files were kept in sync by hand.

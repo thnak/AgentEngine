@@ -15,6 +15,6 @@ what is and isn't built (notably: extended-thinking blocks are response-parsing 
 round-tripped back to the API, since this project's content model has nowhere to keep the required
 `signature`).
 
-Tested in `tests/test_anthropic_chat_client_translation.cpp` (pure translation/parsing logic, offline,
-literal wire-format JSON) and `tests/test_anthropic_chat_client_live.cpp` (end-to-end against a real
+Tested in `tests/protocol/anthropic/test_anthropic_chat_client_translation.cpp` (pure translation/parsing logic, offline,
+literal wire-format JSON) and `tests/protocol/anthropic/test_anthropic_chat_client_live.cpp` (end-to-end against a real
 local TLS server, both `chat()` and `chat_stream()`).

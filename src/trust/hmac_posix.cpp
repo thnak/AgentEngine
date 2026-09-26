@@ -20,7 +20,7 @@
 //
 // where H is SHA-256, and K' is K zero-padded to the 64-byte SHA-256 block size (or H(K) zero-padded,
 // if K is longer than 64 bytes) -- RFC 2104 §2's construction, verified against RFC 4231's published
-// known-answer test vectors (tests/test_hmac_sha256.cpp, wired for both platforms since the vectors
+// known-answer test vectors (tests/trust/test_hmac_sha256.cpp, wired for both platforms since the vectors
 // exercise the portable `hmac_sha256()` interface itself, not either platform's specific backend).
 //
 // Timing: every operation below -- the key-length comparison that selects K'=K vs. K'=H(K), the

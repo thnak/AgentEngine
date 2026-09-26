@@ -106,7 +106,7 @@ mechanism, adopted as a patch).
 
 Both designs were attacked by a party assumed to hold **tokens/refs but never the SecretKey**, and
 in Design B's case, to be an unprivileged caller of the registry's public API — i.e., exactly the
-trust boundary 007 Q1 is about (`tests/test_capability_token_redteam.cpp`):
+trust boundary 007 Q1 is about (`tests/trust/test_capability_token_redteam.cpp`):
 
 - **R-A1** bit-flip one byte of `signature`.
 - **R-A2** tamper the signed `param` field post-mint, keep the old signature.

@@ -5,9 +5,9 @@ session: `include/agentengine/core/context_assembly.hpp` (`assemble_context()`'s
 from `task<ContextAssemblyResult>` to `task<result<ContextAssemblyResult>>`; the silent oldest-first
 trim loop replaced with a fail-closed check), `include/agentengine/core/composed_context_provider.hpp`
 (`ComposedContextProvider::on_context()` propagates the new failure verbatim instead of discarding
-`ContextAssemblyResult.drops`). Proven by `tests/test_context_assembly.cpp` (rewritten: proves the
-failure — class, code, and attributed contributor — instead of the old trim), `tests/test_composed_context_provider.cpp`
-(new Part 1b), and signature-only migrations in `tests/test_context_provenance.cpp`/`test_memory_provider.cpp`
+`ContextAssemblyResult.drops`). Proven by `tests/core/context/test_context_assembly.cpp` (rewritten: proves the
+failure — class, code, and attributed contributor — instead of the old trim), `tests/core/context/test_composed_context_provider.cpp`
+(new Part 1b), and signature-only migrations in `tests/core/context/test_context_provenance.cpp`/`test_memory_provider.cpp`
 (neither exercises a nonzero budget, so their behavior is unchanged).
 
 **Relates to:** `docs/planning/2026-08-22-component-role-audit-tracker.md` Finding E (per-contributor

@@ -507,7 +507,7 @@ was never actually built by Phase J, despite decision 8 above naming it as somet
 assert" -- and its absence went unrecorded in both directions: Phase J's own completion claim above
 names only G1/030§7 G1, and the "deliberately does NOT close" list right below never named G3 either,
 so it silently fell through the gap between "delivered" and "explicitly deferred" rather than landing
-in either. Closed for real, separately, via `tests/test_rt_workflow_supervisor_scheduling_shuffle.cpp`
+in either. Closed for real, separately, via `tests/workflow/test_rt_workflow_supervisor_scheduling_shuffle.cpp`
 and `decisions/ADR-051-workflow-scheduling-shuffle-test.md` -- reusing this doc's own decision 5/8
 design (one `WorkflowSupervisor`, re-run sequentially across 1000 seeds, never one spawned per seed).
 

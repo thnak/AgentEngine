@@ -301,7 +301,7 @@ export function ApiBuiltinToolsReference() {
           </RevealItem>
 
           <RevealItem>
-            <CodePanel filename="tests/test_read_content.cpp">
+            <CodePanel filename="tests/tools/test_read_content.cpp">
               {highlightCpp(readContentAmbiguousSourceTestSnippet)}
             </CodePanel>
           </RevealItem>

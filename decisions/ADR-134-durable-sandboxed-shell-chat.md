@@ -5,7 +5,7 @@
   failure, pre-existing/environment, zero regression), `naming_lint.py` clean. **SAME-DAY INDEPENDENT
   RED-TEAM ROUND COMPLETE (§6, 2026-08-30)**: one honest documentation gap found and fixed (Ctrl+C/SIGINT
   disclosure), one methodology gap in this ADR's own §3 evidence found and closed with a new permanent
-  automated regression test (`tests/test_durable_sandboxed_shell_chat_cross_process.cpp`) that checks a
+  automated regression test (`tests/backends/native_jail/test_durable_sandboxed_shell_chat_cross_process.cpp`) that checks a
   strictly stronger, decisive signal than tree-object count alone. Full rebuild (zero errors) and full
   `ctest` (293 total — one more than before, the new test — 1 pre-existing failure, zero regression) and
   `naming_lint.py` clean after every change. **Linux-verified, ADR-135**: the tool itself
@@ -22,7 +22,7 @@
 - **Date:** 2026-08-30.
 - **Scope:** `tools/durable_sandboxed_shell_chat.cpp` (new; independent red-team round added a Ctrl+C/
   SIGINT disclosure to its top comment, no behavior change), `CMakeLists.txt` (one new target
-  registered), `tests/test_durable_sandboxed_shell_chat_cross_process.cpp` (new, added by the
+  registered), `tests/backends/native_jail/test_durable_sandboxed_shell_chat_cross_process.cpp` (new, added by the
   independent red-team round), `tests/CMakeLists.txt` (one new test target registered by the same round).
   No existing production file's behavior was changed.
 - **Related specs:** Closes `decisions/ADR-132-store-generic-sandbox-tool-surface.md` §5's own disclosed
@@ -35,7 +35,7 @@
 ADR-130 (`FileWorktreeObjectStore`), ADR-128 (`bind_root_branch()`), and ADR-132 (the `Store`-generic
 tool surface) together make durable, crash-recoverable content storage a real *capability* of
 `MandatorySandboxProvider` — proven correct end to end by
-`tests/test_task_branch_content_durability_integration.cpp`. But nothing in the whole design line wires
+`tests/sandbox/test_task_branch_content_durability_integration.cpp`. But nothing in the whole design line wires
 a real, user-reachable host to actually use it. Does the capability work when a real user runs a real CLI
 tool twice, killing it in between — not merely when a test simulates the same shape?
 
@@ -116,7 +116,7 @@ file is a tool, not a library header).
 - **No automatic garbage collection or cross-process locking** for the durable state directory —
   inherits, unchanged, every residual `ADR-130`/`ADR-132` already disclosed for the underlying mechanisms
   this tool composes. A real, concurrently-running SECOND invocation of this same tool would hit the
-  exact metadata-bookkeeping race `tests/test_content_durability_concurrency.cpp` already demonstrates
+  exact metadata-bookkeeping race `tests/core/ledger/test_content_durability_concurrency.cpp` already demonstrates
   and does not close — not a new risk this tool introduces, but worth naming: this tool is not safe to
   run twice concurrently against the same durable root.
 

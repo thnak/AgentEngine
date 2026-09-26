@@ -127,8 +127,8 @@ public:
     // fully-disclosed no-op, not a crash, matching this codebase's own established best-effort-
     // disclosed precedent (ADR-112 §2's per-entry ACL-grant cap) -- only when BOTH sides are tagged
     // with two DIFFERENT sessions' own identities. A bare, standalone instance (`owner_ == 0` on
-    // both sides, e.g. every `tests/test_composed_context_provider.cpp` instance and every move-
-    // CONSTRUCTION-based check in `tests/test_session_builder.cpp`) and a session assigning to itself
+    // both sides, e.g. every `tests/core/context/test_composed_context_provider.cpp` instance and every move-
+    // CONSTRUCTION-based check in `tests/core/context/test_session_builder.cpp`) and a session assigning to itself
     // (same identity, or caught by the identity check just above) are both completely unaffected --
     // this is why `history_provider().engage(...)`, `ComposedQuickstartSessionBuilder::build()`, and
     // every other real caller needed zero changes for this fix.

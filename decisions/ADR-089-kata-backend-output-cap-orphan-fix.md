@@ -105,7 +105,7 @@ Like ADR-088's own fix, the exact `ctr` CLI surface this depends on (`ctr tasks 
 is **not independently re-verified against a live Kata deployment this session** (none reachable) —
 a wrong assumption fails into the existing stderr log line, not silently.
 
-## 4. The abuse-corpus test (`tests/test_kata_backend_abuse_corpus_linux.cpp`, Case 2 extended)
+## 4. The abuse-corpus test (`tests/backends/kata/test_kata_backend_abuse_corpus_linux.cpp`, Case 2 extended)
 
 The red-team pass's fourth finding attacked the initial test-plan draft directly: extending Case 2
 with a heartbeat-file proof (mirroring Case 1's own proof of the timeout fix) is sound in shape, but

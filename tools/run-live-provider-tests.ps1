@@ -4,7 +4,7 @@
   Runs the `live-network` ctest label -- the end-to-end tests that talk to REAL inference servers.
 
 .DESCRIPTION
-  tests/test_openrouter_live_e2e.cpp and tests/test_llamacpp_live_e2e.cpp are excluded from a
+  tests/protocol/openai/test_openrouter_live_e2e.cpp and tests/protocol/openai/test_llamacpp_live_e2e.cpp are excluded from a
   default `ctest` run by self-skipping when their configuration is absent (see each file's own top
   comment for why: a live model is nondeterministic, and I5 keeps nondeterminism out of the
   deterministic suite). This script supplies that configuration and selects exactly those tests.

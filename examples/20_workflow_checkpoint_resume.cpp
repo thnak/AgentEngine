@@ -15,7 +15,7 @@
 //     never hand-writes a `set_checkpoint_hook()` closure.
 //   - `resume_or_start(store, run_id, sup, graph, bodies)` is "resume if a checkpoint exists for
 //     run_id, else start fresh" as one call, returning which one happened.
-// See tests/test_rt_workflow_checkpoint_manager.cpp for the full proof (including the fail-closed
+// See tests/workflow/test_rt_workflow_checkpoint_manager.cpp for the full proof (including the fail-closed
 // guard on agent-kind/sub_workflow-kind executors, not exercised by this deliberately simple
 // function-only graph).
 //

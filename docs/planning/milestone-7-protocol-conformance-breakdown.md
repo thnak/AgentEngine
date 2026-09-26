@@ -231,7 +231,7 @@ current test files directly for what they actually run against today.
   Notification), `parse_response()` (result XOR error enforced, both-or-neither rejected), `to_json()`
   overloads, and the 011 §5 error-code constants (including the revision's renumbered
   `HeaderMismatch`/`MissingRequiredClientCapability`/`UnsupportedProtocolVersion`). 24 checks in
-  `tests/test_mcp_json_rpc.cpp`, all passing, including negative cases (wrong/missing `"jsonrpc"`
+  `tests/protocol/mcp/test_mcp_json_rpc.cpp`, all passing, including negative cases (wrong/missing `"jsonrpc"`
   version, malformed error object, an explicit `"id": null` rejected rather than silently treated as
   a notification). 131/131 full suite (was 130 after Phase B).
 
@@ -248,7 +248,7 @@ current test files directly for what they actually run against today.
   wired to a real long-running tool, deferred to C4). Content mapping is narrower than MCP's full
   part vocabulary (text/image/audio/resource) — every `ToolResult::content` item this pipeline
   produces today is `Data`/`Error`/`Text`, and all three map onto one `{"type":"text",...}` part; a
-  richer content kind is a real, named follow-up, not silently claimed. `tests/test_mcp_server.cpp`
+  richer content kind is a real, named follow-up, not silently claimed. `tests/protocol/mcp/test_mcp_server.cpp`
   (new, 20 checks, all passing) proves all of the above against two real tools (one that succeeds,
   one that always fails) through the real pipeline, not a stub. 132/132 full suite (was 131 after C1).
 
@@ -272,7 +272,7 @@ current test files directly for what they actually run against today.
   produce). Digest-pinning (§8) hashes each `tools/list` response (FNV-1a over
   name+description+schema, the same non-cryptographic deterministic-hash idiom `argument_digest()`
   already uses) and flags a change under the same cache key as a detected rug pull.
-  `tests/test_mcp_client.cpp` (new, 16 checks, all passing) proves all of the above. 133/133 full suite
+  `tests/protocol/mcp/test_mcp_client.cpp` (new, 16 checks, all passing) proves all of the above. 133/133 full suite
   (was 132 after C2).
 
   **What is honestly NOT built for C3**: the generic JSON-Schema-2020-12 validator §3.1 asks for
@@ -302,7 +302,7 @@ current test files directly for what they actually run against today.
   `Background<N>`'s own capacity ceiling (G9, Phase B) is enforced through this path unchanged, counted
   fresh off the task registry's own `"working"` entries rather than a second counter that could drift
   (proven, C4-7). Client side (`protocol/mcp/client.hpp`): `call_tool_as_task()`, `get_task()`,
-  `cancel_task()`, symmetric with the server's own method names. `tests/test_mcp_tasks_extension.cpp`
+  `cancel_task()`, symmetric with the server's own method names. `tests/protocol/mcp/test_mcp_tasks_extension.cpp`
   (new, 19 checks, all passing) proves all of the above against a REAL `McpServer` backgrounding REAL
   tools (`SlowBackgroundableTool`, `FailingBackgroundableTool`, `ForegroundOnlyTool`), including that a
   cancelled task's status survives its own uncancellable worker's eventual completion (C4-9) and that
@@ -352,7 +352,7 @@ current test files directly for what they actually run against today.
   kind including unknown ones" corpus is G2's own job at milestone close, not claimed here).
   `Message`/`Artifact`/`TaskStatus`/`Task` round-trip every field with camelCase wire names, and unset
   optionals/empty repeated fields are omitted on the wire rather than emitted empty (D1-10).
-  `tests/test_a2a_types.cpp` (new, 30 checks, all passing) proves all of the above, including negative
+  `tests/protocol/a2a/test_a2a_types.cpp` (new, 30 checks, all passing) proves all of the above, including negative
   cases (a `Part` with two oneof members, or zero; a `Message` with an empty `parts[]`; an
   unrecognized `task_state` string) are rejected, never silently coerced. 135/135 full suite (was 134
   after Phase C4).
@@ -384,7 +384,7 @@ current test files directly for what they actually run against today.
   binding or streaming/push machinery exists yet (D3+'s own job) — proven directly (D2-3). `AgentSkill.
   tags` is always a present-but-empty array (§A.3 requires the field; no tag vocabulary exists
   anywhere in `core/tool.hpp` to populate it from, so it is never invented from a tool's name/
-  description text, proven D2-7). `tests/test_a2a_agent_card.cpp` (new, 15 checks, all passing)
+  description text, proven D2-7). `tests/protocol/a2a/test_a2a_agent_card.cpp` (new, 15 checks, all passing)
   proves all of the above against two REAL `register_agent<A>()`-compiled agents (one with two tools,
   one with none), including that a caller-supplied `AgentInterface` (the shape a real D3+ binding will
   actually populate) round-trips untouched. 136/136 full suite (was 135 after D1).
@@ -419,8 +419,8 @@ current test files directly for what they actually run against today.
   return value. `cancel_task()` always rejects, faithfully: every task this dispatcher can produce is
   ALREADY terminal by the time it's observable (fully synchronous dispatch), so §2.3's "terminal is
   terminal" is proven honestly rather than fabricating a `CANCELED` transition this implementation
-  cannot really perform (D3-6). `tests/test_a2a_mapping.cpp` (new, 14 checks) and
-  `tests/test_a2a_server.cpp` (new, 17 checks), all passing. 138/138 full suite (was 136 after D2).
+  cannot really perform (D3-6). `tests/protocol/a2a/test_a2a_mapping.cpp` (new, 14 checks) and
+  `tests/protocol/a2a/test_a2a_server.cpp` (new, 17 checks), all passing. 138/138 full suite (was 136 after D2).
 
   **Bug found and fixed while building this phase**: the test harness's `LocalRouter` was initially a
   constructor-local variable, but Quark's `ActorRef` holds a raw `LocalRouter*` internally — the
@@ -450,7 +450,7 @@ current test files directly for what they actually run against today.
   digest over the card's own JSON (the same non-cryptographic change-DETECTION idiom `McpClient`'s
   own `digest_of()` already establishes for MCP tool listings, §8 there / §4a here) flags a card whose
   content changed under repeated fetches as a rug pull — "re-approved rather than silently trusted" —
-  never silently overwriting the prior trust decision. `tests/test_a2a_client.cpp` (new, 12 checks,
+  never silently overwriting the prior trust decision. `tests/protocol/a2a/test_a2a_client.cpp` (new, 12 checks,
   all passing) proves the real send/get/cancel passthrough plus caching/no-rug-pull/rug-pull-detected/
   fetcher-failure across four independent `A2aClient` instances sharing one real transport. 139/139
   full suite (was 138 after D3).
@@ -502,7 +502,7 @@ current test files directly for what they actually run against today.
   contract") and camelCase field names. `RunFinishedSuccess`/`RunFinishedInterrupt` are deliberately
   TWO structs sharing one wire `"type":"RUN_FINISHED"` (rather than one struct with an optional
   outcome) so a caller cannot construct the nonsensical "finished, no outcome at all" state — proven
-  directly (both produce `RUN_FINISHED`, with different `outcome` shapes). `tests/test_agui_types.cpp`
+  directly (both produce `RUN_FINISHED`, with different `outcome` shapes). `tests/protocol/agui/test_agui_types.cpp`
   (new, 22 checks, all passing) proves every alternative. 141/141 full suite (was 140 after ADR-022,
   which added no product code of its own).
 
@@ -563,7 +563,7 @@ current test files directly for what they actually run against today.
   literal byte in the framed output — the whole frame carries exactly two newline bytes (the trailing
   terminator), proven against a delta deliberately containing `\n` (E3-2), not just against
   newline-free fixtures that would pass vacuously. Proven end to end (E3-3): a real `RunEventProjector`
-  output, framed and concatenated, preserves event order. `tests/test_agui_sse.cpp` (new, 10 checks,
+  output, framed and concatenated, preserves event order. `tests/protocol/agui/test_agui_sse.cpp` (new, 10 checks,
   all passing). 143/143 full suite (was 142 after E2).
 
   **What is honestly NOT built for E3**: binary protobuf framing (§4's other named encoding, a 4-byte
@@ -602,8 +602,8 @@ current test files directly for what they actually run against today.
   exhaustively), with a per-`progressToken` monotonically-increasing counter closing the cited spec
   MUST ("the progress value MUST increase with each notification",
   `docs/research/2026-mcp-protocol-detail.md` §10) — proven directly, including that a different token
-  gets its own independent counter. `tests/test_a2a_streaming.cpp` (new, 13 checks),
-  `tests/test_mcp_progress.cpp` (new, 8 checks), and `tests/test_cross_surface_equivalence.cpp` (new,
+  gets its own independent counter. `tests/protocol/a2a/test_a2a_streaming.cpp` (new, 13 checks),
+  `tests/protocol/mcp/test_mcp_progress.cpp` (new, 8 checks), and `tests/test_cross_surface_equivalence.cpp` (new,
   11 checks) — the last one is 013 §6 G3's own real evidence: ONE real `AgentSession` run (both a
   success path and a failure path), the SAME captured internal event sequence fed through both
   `RunEventProjector` and `A2aStreamProjector`, proving both surfaces agree on outcome (neither ever
@@ -661,7 +661,7 @@ current test files directly for what they actually run against today.
   flow style throughout (§3's `executors`/`edges` entries are actually `- { ... }` FLOW mappings inside
   a block sequence, a different valid shape from the block-continuation form Y-4 separately proves),
   which is why this parser had to support both styles from the start rather than deferring flow style
-  as a later increment. `tests/test_yaml_value.cpp` (new, 45 checks, all passing, all correct on the
+  as a later increment. `tests/core/json/test_yaml_value.cpp` (new, 45 checks, all passing, all correct on the
   first real test run against this complexity of parser — worth noting plainly, not oversold: real
   YAML edge cases and adversarial-input hardening beyond the negative suite built here remain
   unexercised, a named residual, not a claim that no further scrutiny is warranted). 147/147 full suite
@@ -698,7 +698,7 @@ current test files directly for what they actually run against today.
   explicit `kind:` always overrides `agent:`-implied `executor_kind::agent` inference (015 §4's own
   "strict" posture — an author's explicit statement is never silently overridden); a small real
   duration parser for `limits.deadline` covering `ms`/`s`/`m`/`h` (proven for all four, plus a rejected
-  unrecognized unit, W-6). `tests/test_workflow_yaml_compiler.cpp` (new, 24 checks, all passing, all
+  unrecognized unit, W-6). `tests/workflow/test_workflow_yaml_compiler.cpp` (new, 24 checks, all passing, all
   correct on the first real run). 148/148 full suite (was 147 after F1).
 
   **What is honestly NOT built for F2**: `switch_case`/`multi_selection`/`chain` edge kinds and
@@ -744,7 +744,7 @@ current test files directly for what they actually run against today.
   `MaxTurns<12>`, `TokenBudget<200000>`, `Approval<policy_driven>`), compiled via the REAL
   `register_agent<A>()`, agrees FIELD-FOR-FIELD with the YAML-compiled `AgentMetadata` on
   `agent_name`/`agent_instructions`/`chat_client_id`/`max_turns`/`token_budget`/`approval` — every
-  field this narrow slice covers. `tests/test_agent_yaml_compiler.cpp` (new, 27 checks, all passing,
+  field this narrow slice covers. `tests/core/agent/test_agent_yaml_compiler.cpp` (new, 27 checks, all passing,
   all correct on the first real run). 149/149 full suite (was 148 after F2).
 
   **What is honestly NOT built for F3**: `tools`/`capability_ceiling` (blocked on the two gaps above),
@@ -858,7 +858,7 @@ current test files directly for what they actually run against today.
   Fixed with per-principal binding, ownership checked *before* task state (so a stranger cannot learn a
   task exists from a state-specific error), byte-identical not-found responses (012 §4), a new
   header-only `trust/secure_random.hpp` (BCrypt/`getrandom`, fails closed), and identity on
-  `ToolInvocationAudit`. `tests/test_task_principal_binding.cpp` — 19 checks, every negative paired
+  `ToolInvocationAudit`. `tests/protocol/a2a/test_task_principal_binding.cpp` — 19 checks, every negative paired
   with a positive control. **Harness teeth verified** per ADR-015's precedent: neutering the ownership
   predicate turns 5 checks red while every positive control stays green.
 
@@ -900,7 +900,7 @@ current test files directly for what they actually run against today.
   §10 G2 is NOT met** despite non-auth being complete (G2 names `auth` as one of its four required
   suites). See the ADR's own §11 for the six claims' individual evidence, including two real teeth
   experiments (`derive_param_headers` broken -> passing count drops by 30, reverted) and the previously
-  forward-referenced-but-nonexistent `tests/test_mcp_conformance_transport.cpp` written for real.
+  forward-referenced-but-nonexistent `tests/protocol/mcp/test_mcp_conformance_transport.cpp` written for real.
 
   **Open, and load-bearing for whoever picks this up:**
   - **All 33 findings remain open for Tier 3** (host-fronted HTTP). Research confirmed Tier 3 is the

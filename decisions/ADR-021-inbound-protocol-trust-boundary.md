@@ -11,7 +11,7 @@ primitive under the new design (ADR-039 §3c/§4).
 
 **Status:** Judged (2026-08-08) — the STRATEGIC question only (§8). Design A (first-party termination)
 accepted; its core bearer-token mechanism is real, red-teamed, and proven
-(`trust/bearer_token.hpp`/`hmac.hpp`, `tests/test_bearer_token_proof.cpp`, 32/32 checks). The network
+(`trust/bearer_token.hpp`/`hmac.hpp`, `tests/trust/test_bearer_token_proof.cpp`, 32/32 checks). The network
 listener, server-role TLS, and HTTP/1.1 request parsing remain real, named follow-on work — Milestone 7
 Phase C4+ (011 MCP transport/auth) and Phase D5+ (012 A2A transport/auth) stay blocked on THAT, not on
 this ADR's own question, which is now settled.
@@ -226,7 +226,7 @@ Built and proven:
      deployed processes is NOT caught) is not silently true — it is directly DEMONSTRATED: the same
      `jti` is shown accepted on two independent `ReplayGuard`s (B8), the honest way to record a known
      gap per this project's own "named, not silently claimed" discipline.
-- **`tests/test_bearer_token_proof.cpp`** (new, 32 checks, all passing) — includes a genuine POSITIVE
+- **`tests/trust/test_bearer_token_proof.cpp`** (new, 32 checks, all passing) — includes a genuine POSITIVE
   control (B1: a valid token is accepted) before any negative case, per decisions/README.md's own
   "a test that cannot fail proves nothing" rule for security claims. 140/140 full suite.
 

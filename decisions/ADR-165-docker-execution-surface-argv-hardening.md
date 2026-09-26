@@ -9,9 +9,9 @@
 - **Date:** 2026-09-02.
 - **Scope:** `include/agentengine/sandbox/docker_execution_surface.hpp` (modified — `DockerCliBackend`'s
   six methods, the validation-helper set, a new `docker_cli_detail::run_argv()` per platform, a new
-  `docker_cli_detail::path_to_utf8()` per platform — see §5a), `tests/test_sandbox_runtime.cpp`
+  `docker_cli_detail::path_to_utf8()` per platform — see §5a), `tests/sandbox/test_sandbox_runtime.cpp`
   (modified — one test scenario updated to match the new, correct behavior),
-  `tests/test_docker_run_argv_timeout.cpp` (new, Windows-only), `tests/test_docker_non_ascii_path.cpp`
+  `tests/sandbox/execution_surface/test_docker_run_argv_timeout.cpp` (new, Windows-only), `tests/sandbox/execution_surface/test_docker_non_ascii_path.cpp`
   (new — §5a's own positive control), `tests/CMakeLists.txt` (additive wiring for both new tests).
   **No other production file changed** — `DockerExecutionSurface`'s own public methods, the
   `ExecutionSurface` concept, and `SandboxRuntime` are untouched.
@@ -59,7 +59,7 @@ actually built, in this session, against the real repo:
 - **Every `DockerCliBackend` method ported**: `create()`, `copy_to_container()`, `copy_from_container()`,
   `exec()`, `destroy()`, `reap_orphans()` all build a real argv vector and call `run_argv()` instead of
   `run_capture(std::ostringstream(...).str())`. `run_capture()` itself is KEPT, unchanged — real test
-  files (`tests/test_docker_orphan_reap.cpp`, `tests/test_sandbox_runtime.cpp`) call it directly with
+  files (`tests/sandbox/execution_surface/test_docker_orphan_reap.cpp`, `tests/sandbox/test_sandbox_runtime.cpp`) call it directly with
   static, non-attacker-influenced strings for host-side setup/assertions outside the code path under
   test — but it is no longer used by any production call site in this file.
 - **Validation collapsed and unified**: `docker_cli_reject_unsafe_for_shell`/
@@ -72,12 +72,12 @@ actually built, in this session, against the real repo:
   `docker_cli_reject_argv_value()` (NUL + leading-dash + empty, applied to `image`/`host_path`/
   `container_path` — leading-dash is a real, still-relevant `docker` CLI flag-injection concern
   independent of any shell; empty/NUL are fail-fast correctness checks, no longer security boundaries).
-- **One test updated to match the new, correct behavior**: `tests/test_sandbox_runtime.cpp`'s check [6]
+- **One test updated to match the new, correct behavior**: `tests/sandbox/test_sandbox_runtime.cpp`'s check [6]
   used to assert that `echo "this double-quote trips the shell guard"` gets REJECTED — that assertion
   encoded exactly the over-blocking defect issue #50 reports. Replaced with a command containing an
   embedded NUL byte (the one check that survives), preserving the same underlying invariant under test
   (RunCost is refunded when `run()` is rejected before ever attempting the command).
-- **New test, `tests/test_docker_run_argv_timeout.cpp`** (Windows-only): directly re-runs the historical
+- **New test, `tests/sandbox/execution_surface/test_docker_run_argv_timeout.cpp`** (Windows-only): directly re-runs the historical
   `cmd.exe`-orphaning scenario (`docker exec <id> sh -c "tail -f /dev/null"` under a short timeout)
   against the new, `cmd.exe`-free `run_argv()` path, against a real Docker Desktop daemon.
 
@@ -111,7 +111,7 @@ actually built, in this session, against the real repo:
   All six built with zero compiler warnings/errors on the first pass after the port. The one
   intentional test-source change (`test_sandbox_runtime.cpp` check [6]) is documented in §2 above and
   in that file's own updated top comment/inline comments.
-- **C4:** `tests/test_docker_run_argv_timeout.cpp`, new, run against the same live daemon:
+- **C4:** `tests/sandbox/execution_surface/test_docker_run_argv_timeout.cpp`, new, run against the same live daemon:
   ```
   === run_argv() timeout-kill leaves no orphaned docker.exe (no cmd.exe layer) ===
   [ok]   CreateToolhelp32Snapshot() succeeds
@@ -218,7 +218,7 @@ of every value fed into the new `run_argv()` and found a real, live, previously-
   contract exactly; POSIX is a pure passthrough, since POSIX paths have no ACP-vs-UTF-8 distinction to
   begin with). `copy_to_container()`/`copy_from_container()` now validate and embed the SAME
   UTF-8-correct bytes, both call sites.
-- **New, permanent positive-control test**: `tests/test_docker_non_ascii_path.cpp` — a real host
+- **New, permanent positive-control test**: `tests/sandbox/execution_surface/test_docker_non_ascii_path.cpp` — a real host
   directory named with Vietnamese, CJK, and an emoji character, round-tripped through BOTH
   `copy_to_container()` (verified via a real `exec()` read-back) and `copy_from_container()` (verified
   via reading the drained file back off real disk), against the same live Docker Desktop daemon. **9/9

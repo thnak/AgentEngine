@@ -11,7 +11,7 @@
 // Honestly scoped, matching the record's own narrowing: `history_`/`state`/`metadata` are NOT part
 // of `AgentSessionRecord` yet (the same narrowing the original, Quark-based record had -- this
 // migration carried it forward unchanged, not silently working now). This example asserts that
-// absence explicitly, the same way `tests/test_rt_agent_session_snapshot.cpp` does, rather than
+// absence explicitly, the same way `tests/rt/agent_session/test_rt_agent_session_snapshot.cpp` does, rather than
 // only showing the part that round-trips.
 //
 // Run: ./agentengine_example_12_session_checkpoint

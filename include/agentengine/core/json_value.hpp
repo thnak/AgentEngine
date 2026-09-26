@@ -239,7 +239,7 @@ private:
         // `std::string` it was handed. Measured on a 41 KB object of 2000 short pairs: the tree
         // held 29,780 bytes of content in 86,025,808 bytes of capacity, 2888x. After this
         // change the same document holds it in 60,000 bytes, 2.0x
-        // (tests/test_json_parse_allocation.cpp A4).
+        // (tests/core/json/test_json_parse_allocation.cpp A4).
         std::size_t const first_special = text_.find_first_of("\"\\", pos_);
         if (first_special == std::string_view::npos) {
             pos_ = text_.size();
@@ -424,7 +424,7 @@ private:
 // Appends each run of bytes that need no escaping in one `append`, rather than one `+=` per byte: every
 // `json::dump` of message history, recordings and checkpoints goes through here. The bytes that ARE
 // escaped, and how, are exactly as before: '"', '\\', and every byte below 0x20 (0x7f and every byte
-// of a UTF-8 sequence pass through verbatim). tests/test_json_dump_escape.cpp holds the old per-byte
+// of a UTF-8 sequence pass through verbatim). tests/core/json/test_json_dump_escape.cpp holds the old per-byte
 // loop and compares the two.
 inline void dump_escaped_string(std::string const& s, std::string& out) {
     out += '"';

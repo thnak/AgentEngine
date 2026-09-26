@@ -17,8 +17,8 @@
 - **Date:** 2026-08-29.
 - **Scope:** `src/backends/kata/kata_backend.cpp`/`.hpp` (the rootfs-mounting and mount-point-
   pre-creation logic inside `create()`/`destroy()`, plus a new unconditional `guest_path` traversal
-  guard), `tests/test_kata_backend_slice2_linux.cpp` (2 stale error-code assertions corrected),
-  `tests/test_kata_backend_slice9_10_linux.cpp` (1 test-sequencing cleanup bug fixed). No other file
+  guard), `tests/backends/kata/test_kata_backend_slice2_linux.cpp` (2 stale error-code assertions corrected),
+  `tests/backends/kata/test_kata_backend_slice9_10_linux.cpp` (1 test-sequencing cleanup bug fixed). No other file
   touched — `build_oci_spec_json()`'s own declared mount/capability/resource shape is unchanged; this
   ADR is about how the rootfs those mounts target gets prepared, not what the OCI spec itself says.
 - **Related specs:** `docs/planning/kata-backend-ci-runner-setup.md` (the provisioning runbook this

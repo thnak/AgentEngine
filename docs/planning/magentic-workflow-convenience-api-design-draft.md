@@ -42,7 +42,7 @@ HITL payload, and the checkpoint-persistence glue by hand.
   The engine never infers what a stall MEANS; it only counts an explicit boolean, exactly as
   trusted as `routes` already is (I3 — model/host output is data, never authority; `stalled` is
   data the host chooses to emit off the moderator's own judgment, same trust level a route label
-  already carries per `tests/test_rt_workflow_supervisor_request_port.cpp`'s IQ5 finding that "a
+  already carries per `tests/workflow/test_rt_workflow_supervisor_request_port.cpp`'s IQ5 finding that "a
   human's answer gets no more authority than a model's").
 - `MagenticPlanSignoffRequest{std::string plan}` / `MagenticPlanSignoffResponse{bool approved;
   std::string feedback}`, each `AE_JSON_SCHEMA`-annotated (mirrors the tool Args/Reply idiom,
@@ -56,7 +56,7 @@ HITL payload, and the checkpoint-persistence glue by hand.
   (`rt/session_store.hpp`) — no new serialization or store abstraction. `.attach(sup)` registers
   an auto-persisting `checkpoint_hook_`; `resume_or_start(store, run_id, sup, graph, bodies)`
   packages the existing "brand-new supervisor → initialize → restore_from_record" resume idiom
-  `tests/test_rt_workflow_checkpoint_g2.cpp` already establishes into one call.
+  `tests/workflow/test_rt_workflow_checkpoint_g2.cpp` already establishes into one call.
 - `Transcript = std::vector<agentengine::Message>` (alias, not a new type — `Message` already
   carries `role`) + `transcript_of(WorkflowResult const&)` extracting `.payload` from
   `WorkflowResult.partial` in round order.

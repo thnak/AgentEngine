@@ -2,7 +2,7 @@
 //
 // The exact same graph shape -- a router node choosing exactly one downstream branch by returning
 // its case label -- IS also 014 §3's "Handoff" pattern ("switch/case on a routing decision, control
-// transfer"; see tests/test_rt_workflow_supervisor_patterns.cpp's own "SW-1" scenario, which builds
+// transfer"; see tests/workflow/test_rt_workflow_supervisor_patterns.cpp's own "SW-1" scenario, which builds
 // this identical triage->billing/tech shape under the graph id "handoff"). MAF ships Router and
 // Handoff as separate samples/builders (ConditionalEdges vs. HandoffBuilder's auto-generated
 // per-agent handoff tools + mesh topology); AgentEngine intentionally does not need a second

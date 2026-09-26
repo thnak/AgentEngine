@@ -433,7 +433,7 @@ it (released before `ctr run --config` itself, which does not need serialization
 
 ## 9. Test plan (compile-verified only this session, no live deployment — named, not hidden)
 
-- `pids`: extend `tests/test_kata_backend_slice9_10_linux.cpp` (or a new file, TBD at implementation
+- `pids`: extend `tests/backends/kata/test_kata_backend_slice9_10_linux.cpp` (or a new file, TBD at implementation
   time) with a case asserting the OCI spec JSON `create()` writes contains the expected
   `linux.resources.pids.limit` value when `spec.limits.pids > 0`, and omits the member when unset —
   a pure JSON-shape assertion, runnable without a live deployment (the same "prove the artifact we

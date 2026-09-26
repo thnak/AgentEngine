@@ -37,7 +37,7 @@ enable streaming everywhere" was unsafe only after it shipped?
 
 `AnthropicUsageSnapshot` and its two pure reduce functions, `seed_usage_from_message_start`/
 `accumulate_message_delta_usage` (`include/agentengine/protocol/anthropic/chat_client.hpp`),
-already existed and were already unit-tested (`tests/test_anthropic_chat_client_translation.cpp`'s
+already existed and were already unit-tested (`tests/protocol/anthropic/test_anthropic_chat_client_translation.cpp`'s
 E2-R1) — but neither function was ever actually called from `StreamingUpdateAccumulator`, so no real
 streaming call against Anthropic ever populated `ChatResponseUpdate::usage`. Under ADR-034's own
 fail-closed rule, this meant every Anthropic-backed streaming call would hit `run.usage_unavailable`
@@ -231,7 +231,7 @@ gaps in what §5/§6 claimed versus the actual code, both fixed in place (not le
 ## 8. Files changed
 
 **Phase 1a:** `include/agentengine/protocol/anthropic/chat_client.hpp`,
-`tests/test_anthropic_chat_client_translation.cpp`.
+`tests/protocol/anthropic/test_anthropic_chat_client_translation.cpp`.
 
 **Phase 1b:** `include/agentengine/core/response_format_leak_scan.hpp` (new),
 `include/agentengine/core/agent_session.hpp`, `include/agentengine/core/content.hpp` (comment

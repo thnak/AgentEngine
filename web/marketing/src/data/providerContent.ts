@@ -139,8 +139,8 @@ export const providerEntries: Record<Lang, ApiEntry[]> = {
       title: "What a canned loopback server can never prove",
       body:
         "test_openai_chat_client_live.cpp and test_anthropic_chat_client_live.cpp run over a real TLS socket, but against a canned loopback server: every byte the client receives was written by the test itself, so they prove plumbing and parsing and nothing about whether what this project sends is well-formed. A canned server drains and replies unconditionally; a real one returns HTTP 400. Two files close that gap — one against a hosted service over real TLS with the real DNS resolver and the real vendored CA bundle, one against a local llama.cpp server over the opt-in plaintext transport. Both skip with exit 0 when their environment variable is unset, both carry the ctest label live-network, and nothing in either asserts on model content: every assertion is structural, because a live model is nondeterministic and I5 is respected here by exclusion, not by pretending the output is stable.",
-      cite: "tests/test_openrouter_live_e2e.cpp:16",
-      href: gh("tests/test_openrouter_live_e2e.cpp"),
+      cite: "tests/protocol/openai/test_openrouter_live_e2e.cpp:16",
+      href: gh("tests/protocol/openai/test_openrouter_live_e2e.cpp"),
     },
     {
       id: "gaps",
@@ -241,8 +241,8 @@ export const providerEntries: Record<Lang, ApiEntry[]> = {
       title: "Điều mà một máy chủ loopback đóng hộp không bao giờ chứng minh được",
       body:
         "test_openai_chat_client_live.cpp và test_anthropic_chat_client_live.cpp chạy qua một socket TLS thật, nhưng đối diện một máy chủ loopback đóng hộp: mọi byte client nhận được đều do chính bài kiểm thử viết ra, nên chúng chứng minh phần đấu nối và phân tích cú pháp chứ không nói gì về việc những gì dự án này gửi đi có đúng dạng hay không. Một máy chủ đóng hộp đọc hết rồi trả lời vô điều kiện; một máy chủ thật trả về HTTP 400. Hai tệp lấp khoảng trống đó — một đối diện dịch vụ được lưu trữ (hosted) qua TLS thật với resolver DNS thật và bộ CA đã ghim thật, một đối diện máy chủ llama.cpp cục bộ qua transport plaintext phải khai báo rõ mới dùng. Cả hai đều bỏ qua với mã thoát 0 khi biến môi trường của chúng chưa được đặt, cả hai mang nhãn ctest live-network, và không có gì trong hai tệp khẳng định về nội dung của model: mọi khẳng định đều mang tính cấu trúc, vì một model chạy thật là bất định và I5 ở đây được tôn trọng bằng cách loại trừ, chứ không phải bằng cách vờ như đầu ra là ổn định.",
-      cite: "tests/test_openrouter_live_e2e.cpp:16",
-      href: gh("tests/test_openrouter_live_e2e.cpp"),
+      cite: "tests/protocol/openai/test_openrouter_live_e2e.cpp:16",
+      href: gh("tests/protocol/openai/test_openrouter_live_e2e.cpp"),
     },
     {
       id: "gaps",
@@ -494,44 +494,44 @@ export interface LiveTestRow {
 export const liveTestRows: Record<Lang, LiveTestRow[]> = {
   en: [
     {
-      file: "tests/test_openrouter_live_e2e.cpp",
+      file: "tests/protocol/openai/test_openrouter_live_e2e.cpp",
       gate: "AGENTENGINE_OPENROUTER_API_KEY unset → prints SKIPPED, exits 0. ctest label live-network, TIMEOUT 300. Host/model overridable; tools/run-live-provider-tests.ps1 populates the environment and runs ctest -L live-network.",
       proves: "16 checks across both backends against one host that exposes BOTH wire contracts. OR-OAI-1/ANT-1: chat() completes. OR-OAI-2: data:-framed SSE decodes; OR-ANT-2: named-event SSE decodes. OR-OAI-3/ANT-3: the same ToolDescriptor projects onto two different tool shapes and a real model calls it. OR-OAI-4/ANT-4: the tool RESULT turn is accepted back — the half a canned server cannot test. OR-OAI-5/ANT-5: structured output via response_format and via output_config. OR-ANT-6: system extraction plus prompt-caching breakpoints on a real request. OR-OAI-7/ANT-7 are POSITIVE CONTROLS — a deliberately wrong credential must be rejected by the real service. OR-OAI-8/ANT-8: an ungranted cap::Secret fails closed BEFORE any egress. OR-ANT-8: reasoning_effort has an observable effect. OR-PARITY-1: one unchanged call site, two real backends (004 §7 G1, I6). This is the only test in the suite that exercises the real DNS resolver and the real vendored CA bundle together.",
     },
     {
-      file: "tests/test_llamacpp_live_e2e.cpp",
+      file: "tests/protocol/openai/test_llamacpp_live_e2e.cpp",
       gate: "AGENTENGINE_LLAMACPP_PORT unset → SKIPPED, exit 0. ctest label live-network, TIMEOUT 300. Host defaults to 127.0.0.1; a prompt prefix is configurable because ChatRequest carries no sampling parameters to turn a thinking model down with.",
       proves: "ADR-016's gate G5 — the endpoint class 004 §3 names explicitly and that motivated the ADR. LC-1: the real client against a real local model, with usage mapped from the server's own counters. LC-2/LC-3: tool calling and the tool-result turn. LC-4: structured output against a grammar-constrained local decoder. LC-5: TLS is still the default — the same endpoint is not reachable without opting in. LC-6: chunked SSE streaming genuinely works over the plaintext transport, which falsified an earlier draft of ADR-016 that claimed it did not. LC-7: an ungranted capability fails closed before egress. LC-8: the GUEST path is still refused at that very same live address.",
     },
     {
-      file: "tests/test_provider_egress_address_policy.cpp",
+      file: "tests/sandbox/test_provider_egress_address_policy.cpp",
       gate: "None — deterministic, offline, a plain-HTTP loopback server, no credential, no egress. Deliberately not labelled live-network: it runs in the default suite.",
       proves: "The positive control ADR-016 needed. Relaxing the SSRF table on one path while keeping it on the other is only defensible if both halves are shown against the same live loopback address in the same run, which is exactly what this does — gates G1-G4.",
     },
     {
-      file: "tests/test_openai_chat_client_live.cpp · tests/test_anthropic_chat_client_live.cpp",
+      file: "tests/protocol/openai/test_openai_chat_client_live.cpp · tests/protocol/anthropic/test_anthropic_chat_client_live.cpp",
       gate: "No environment gate — they run in the default suite over a real TLS socket to a canned loopback server, with an injected resolver and a self-signed leaf.",
       proves: "Plumbing and parsing end to end, including TLS. What they cannot prove, and say so in their own headers, is that what this project sends is well-formed: a canned server drains and replies unconditionally where a real one returns HTTP 400. That is the gap the two live-network files above exist to close.",
     },
   ],
   vi: [
     {
-      file: "tests/test_openrouter_live_e2e.cpp",
+      file: "tests/protocol/openai/test_openrouter_live_e2e.cpp",
       gate: "Nếu AGENTENGINE_OPENROUTER_API_KEY chưa đặt → in SKIPPED, thoát mã 0. Nhãn ctest live-network, TIMEOUT 300. Host/model có thể ghi đè; tools/run-live-provider-tests.ps1 nạp môi trường và chạy ctest -L live-network.",
       proves: "16 nhóm kiểm tra trên cả hai backend, đối diện một host phơi bày CẢ HAI hợp đồng dây. OR-OAI-1/ANT-1: chat() hoàn tất. OR-OAI-2: SSE đóng khung data: giải mã được; OR-ANT-2: SSE sự-kiện-có-tên giải mã được. OR-OAI-3/ANT-3: cùng một ToolDescriptor chiếu sang hai hình dạng tool khác nhau và một model thật gọi nó. OR-OAI-4/ANT-4: lượt KẾT QUẢ tool được chấp nhận trở lại — nửa mà một máy chủ đóng hộp không kiểm thử được. OR-OAI-5/ANT-5: đầu ra có cấu trúc qua response_format và qua output_config. OR-ANT-6: tách system cùng các điểm ngắt prompt-caching trên một request thật. OR-OAI-7/ANT-7 là ĐỐI CHỨNG DƯƠNG — một credential cố tình sai phải bị dịch vụ thật từ chối. OR-OAI-8/ANT-8: một cap::Secret chưa được cấp sẽ từ chối đóng TRƯỚC mọi lần ra mạng. OR-ANT-8: reasoning_effort có tác dụng quan sát được. OR-PARITY-1: một điểm gọi không đổi, hai backend thật (004 §7 G1, I6). Đây là bài kiểm thử duy nhất trong bộ chạy cả resolver DNS thật lẫn bộ CA đã ghim thật cùng lúc.",
     },
     {
-      file: "tests/test_llamacpp_live_e2e.cpp",
+      file: "tests/protocol/openai/test_llamacpp_live_e2e.cpp",
       gate: "Nếu AGENTENGINE_LLAMACPP_PORT chưa đặt → SKIPPED, thoát mã 0. Nhãn ctest live-network, TIMEOUT 300. Host mặc định 127.0.0.1; tiền tố prompt cấu hình được, vì ChatRequest không mang tham số sampling nào để hạ bớt một model hay suy luận.",
       proves: "Cổng G5 của ADR-016 — chính lớp endpoint mà 004 §3 nêu đích danh và là động cơ của ADR đó. LC-1: client thật đối diện một model cục bộ thật, với usage ánh xạ từ chính bộ đếm của máy chủ. LC-2/LC-3: gọi tool và lượt trả kết quả tool. LC-4: đầu ra có cấu trúc đối diện một bộ giải mã cục bộ bị ràng buộc bằng ngữ pháp. LC-5: TLS vẫn là mặc định — cùng endpoint đó không với tới được nếu không khai báo rõ. LC-6: streaming SSE dạng chunked thực sự chạy được trên transport plaintext, điều này bác bỏ một bản nháp trước đó của ADR-016 vốn khẳng định ngược lại. LC-7: một capability chưa được cấp từ chối đóng trước khi ra mạng. LC-8: đường GUEST vẫn bị từ chối tại đúng địa chỉ đang chạy đó.",
     },
     {
-      file: "tests/test_provider_egress_address_policy.cpp",
+      file: "tests/sandbox/test_provider_egress_address_policy.cpp",
       gate: "Không có cổng nào — tất định, ngoại tuyến, một máy chủ loopback HTTP thuần, không credential, không ra mạng. Cố ý không gắn nhãn live-network: nó chạy trong bộ mặc định.",
       proves: "Đối chứng dương mà ADR-016 cần. Việc nới lỏng bảng SSRF trên một đường trong khi vẫn giữ ở đường kia chỉ biện minh được nếu cả hai nửa được chứng minh trên cùng một địa chỉ loopback đang chạy trong cùng một lần chạy, và đó đúng là điều bài này làm — các cổng G1-G4.",
     },
     {
-      file: "tests/test_openai_chat_client_live.cpp · tests/test_anthropic_chat_client_live.cpp",
+      file: "tests/protocol/openai/test_openai_chat_client_live.cpp · tests/protocol/anthropic/test_anthropic_chat_client_live.cpp",
       gate: "Không có cổng môi trường — chúng chạy trong bộ mặc định qua một socket TLS thật tới một máy chủ loopback đóng hộp, với resolver được tiêm vào và một chứng chỉ lá tự ký.",
       proves: "Phần đấu nối và phân tích cú pháp từ đầu tới cuối, bao gồm cả TLS. Điều chúng không chứng minh được, và tự nói ra trong header của mình, là những gì dự án này gửi đi có đúng dạng hay không: một máy chủ đóng hộp đọc hết rồi trả lời vô điều kiện, còn máy chủ thật trả về HTTP 400. Đó chính là khoảng trống mà hai tệp live-network ở trên tồn tại để lấp.",
     },

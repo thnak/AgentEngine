@@ -153,7 +153,7 @@ test doubles.
   bodies become unreachable poison; the five process-global statics reduce to two (the runner itself
   and its binding, both still process-wide by necessity); `main()` reordered so session construction
   precedes the skills banner, and calls `configure()` once.
-- `tests/test_codeact_runner_binding.cpp` (new), `tests/test_codeact_session_isolation.cpp` (new) —
+- `tests/core/tools/test_codeact_runner_binding.cpp` (new), `tests/test_codeact_session_isolation.cpp` (new) —
   this ADR's §4 evidence.
 - `tests/CMakeLists.txt` — registers both new test targets.
 

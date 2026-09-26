@@ -210,7 +210,7 @@ recommendation, adopted here:
 - `include/agentengine/rt/agent_workflow_executor.hpp` (edit — restructure `drive()` to interleave
   drain-and-forward with `resume()`, with the CONCURRENCY CONTRACT comment re-verified and a test
   proving it still holds)
-- `tests/test_rt_workflow_event_stream.cpp` (new — including a taint-preservation test, a
+- `tests/workflow/test_rt_workflow_event_stream.cpp` (new — including a taint-preservation test, a
   retry-attempt-aliasing test, and the concurrent-push/backpressure stress test adapted from the
   red team's scratchpad version into a real, repo-tracked test)
 - `examples/24_*.cpp` (new — a fan-out round with 2+ concurrently-streaming agent-kind nodes,

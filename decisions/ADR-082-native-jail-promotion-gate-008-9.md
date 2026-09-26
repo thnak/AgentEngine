@@ -264,7 +264,7 @@ this gate would start mattering is exactly the day someone adds instance pooling
 reason and forgets this property was never actually gated on a test.
 
 **Update (2026-08-23) — closed, upgraded from INCONCLUSIVE to CORRECT.**
-`tests/test_native_jail_session_boundary_windows.cpp`, new this pass: two `MediatedPythonRunner`
+`tests/backends/native_jail/test_native_jail_session_boundary_windows.cpp`, new this pass: two `MediatedPythonRunner`
 instances (008-Sandbox-and-Isolation.md's `sandbox_lifetime::per_session` worker, `decisions/ADR-081-
 jailed-python-worker-process-slice-1.md`) held alive concurrently against the same `NativeJailBackend`.
 A canary planted in session A is read back from A itself both before and after session B's own probe

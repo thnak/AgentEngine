@@ -116,7 +116,7 @@ namespace detail {
 // argument split into two, or inject what looks like a second flag) -- exactly the class of bug
 // this project's own MediatedShellRunner grammar work (ADR-001/ADR-015) already treats as
 // security-relevant for its OWN (non-process-spawning) parser. Exposed (not anonymous-namespace-
-// private) so tests/test_native_process_spawn.cpp can verify it directly against known-correct
+// private) so tests/backends/native_process/test_native_process_spawn.cpp can verify it directly against known-correct
 // vectors, not only indirectly through a real spawned process's observed behavior.
 std::wstring quote_one_argument(std::wstring const& arg) {
     bool const needs_quotes =

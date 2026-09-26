@@ -66,7 +66,7 @@ per `context_provider.hpp`'s own top comment (cited at `chat_client.hpp:73`).
 
 ## 2. Local backends: grammar-constrained decoding is not currently reachable, confirmed
 
-AgentEngine's llama.cpp/Ollama paths (`tests/test_llamacpp_live_e2e.cpp`, `tests/test_ollama_live_e2e.cpp`)
+AgentEngine's llama.cpp/Ollama paths (`tests/protocol/openai/test_llamacpp_live_e2e.cpp`, `tests/protocol/openai/test_ollama_live_e2e.cpp`)
 reuse `OpenAIChatClient` against each server's **OpenAI-compatible** `/v1/chat/completions` endpoint with
 `ProviderTransport::plaintext_http` (ADR-016) — there is no native llama.cpp binding anywhere in the tree.
 `docs/research/2026-08-21-ollama-openai-compat-api.md` already flags, unresolved, whether Ollama's

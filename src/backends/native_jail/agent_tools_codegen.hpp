@@ -15,7 +15,7 @@
 // imported, in the generated module source itself -- but only to encode/decode the WIRE format
 // `_ae_internal.call_tool` speaks (F2's raw-JSON-text boundary) at CALL time, not to re-derive the
 // schema. This header stays Python-free specifically so its string-generation logic is unit-testable
-// without an embedded CPython interpreter (tests/test_agent_tools_codegen.cpp); the actual `PyRun_
+// without an embedded CPython interpreter (tests/python/test_agent_tools_codegen.cpp); the actual `PyRun_
 // String` wiring that executes the generated source lives in mediated_python_runner.cpp, alongside
 // this header's own Python-execution counterpart, `run_agent_tools_bootstrap`.
 //

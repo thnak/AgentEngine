@@ -3,7 +3,7 @@
 
 Status: **implemented and proven** — `split_worker_budget()`, the `WorkflowSupervisor(worker_budget)`
 constructor, the automatic `nesting_depth_`/`kMaxNestingDepth` cap, and `live_worker_thread_count()`
-all shipped; both §6 proofs executed (positive: S12 in `tests/test_rt_workflow_sub_workflow.cpp`;
+all shipped; both §6 proofs executed (positive: S12 in `tests/workflow/test_rt_workflow_sub_workflow.cpp`;
 negative/mutation: a temporary `pool_(0 * worker_budget)` mutation reproduced a real ceiling breach
 — 21 live threads against a declared budget of 7 — confirming S12's assertion is load-bearing, not
 vacuous; the mutation also caught and fixed a real bug in S12 itself: a background sampler thread

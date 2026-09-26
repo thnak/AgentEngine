@@ -86,13 +86,13 @@ detail.
 
 ## 6. Evidence
 
-`tests/test_outbound_media_capability_gate.cpp` (new, pure-function level): each of the four
+`tests/core/chat/test_outbound_media_capability_gate.cpp` (new, pure-function level): each of the four
 categories independently fails closed with no declared capability and a real, attributable error
 code; a positive control proves a declared capability lets the identical content through; a
 text-only request is unaffected regardless of capabilities; `Media` nested inside `ToolResult::
 content` is caught (with its own positive control); a `Reasoning` item never trips the gate.
 
-`tests/test_rt_agent_session_media_capability_gate.cpp` (new, end-to-end): a real run whose history
+`tests/rt/agent_session/test_rt_agent_session_media_capability_gate.cpp` (new, end-to-end): a real run whose history
 carries an ungrantable image fails closed and `chat()` is NEVER invoked — the whole point, verified
 directly rather than merely inferred from the pure-function result; a positive control with the
 capability declared converges normally with exactly one `chat()` call.

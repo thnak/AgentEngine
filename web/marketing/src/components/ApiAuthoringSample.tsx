@@ -31,8 +31,8 @@ export function ApiAuthoringSample() {
           <RevealItem>
             <p className="gs-note" style={{ marginTop: 20 }}>
               {t.prefix}{" "}
-              <a href={gh("tests/test_agent_registry.cpp")} target="_blank" rel="noreferrer" style={{ textDecoration: "underline" }}>
-                tests/test_agent_registry.cpp
+              <a href={gh("tests/core/agent/test_agent_registry.cpp")} target="_blank" rel="noreferrer" style={{ textDecoration: "underline" }}>
+                tests/core/agent/test_agent_registry.cpp
               </a>{" "}
               {t.suffix}
             </p>

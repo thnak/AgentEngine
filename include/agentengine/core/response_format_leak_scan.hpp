@@ -92,7 +92,7 @@ namespace agentengine {
 // function, a raw wire-format leak (e.g. llama.cpp-served Hermes/Qwen with no `--tool-call-parser`)
 // in that exact window is captured as ordinary, untainted `Text` -- no error, no warning, the model's
 // tool-call attempt is invisible to the engine (confirmed real by
-// `tests/test_openai_chat_client_translation.cpp`'s `OQ-23-R1` fixture before this function existed).
+// `tests/protocol/openai/test_openai_chat_client_translation.cpp`'s `OQ-23-R1` fixture before this function existed).
 //
 // Never constructs a `ToolCall`, never touches `call_provenance`, never reaches `invoke_tool` --
 // structurally distinct from, and does not modify, ADR-023's own capability-scoped declassifier. The

@@ -18,7 +18,7 @@
   **three real production CLI tools** (`tools/cli_chat.cpp`, `tools/sandboxed_shell_chat.cpp`,
   `tools/containerd_shell_chat.cpp` — each now grants `cap::RunCommand` on the session it builds),
   three test files driving `run_command` through the real pipeline (`tests/test_mandatory_sandbox_
-  provider.cpp`, `tests/test_composed_sandbox_providers_live.cpp`, `tests/test_composed_containerd_
+  provider.cpp`, `tests/sandbox/execution_surface/test_composed_sandbox_providers_live.cpp`, `tests/test_composed_containerd_
   providers_live.cpp`), and `CMakeLists.txt` (one `/bigobj` fix — see §4). `decisions/ADR-102-
   identity-native-sandbox-implementation-phase-1.md` (two disclosure updates pointing here).
 - **Related specs:** `decisions/ADR-102-identity-native-sandbox-implementation-phase-1.md` §26 (the
@@ -66,18 +66,18 @@ references the string `"run_command"` and classified each by whether it drives t
 real `invoke_tool()` pipeline (needs the new grant) or calls the provider/descriptor directly (bypasses
 `Tool<>`'s declared ceiling entirely, unaffected — the identical "direct-call bypass is test-only, never
 reachable by a real caller" property ADR-117's own red-team confirmed for the task-branch tools):
-- `tests/test_mandatory_sandbox_provider.cpp` section [3] — real pipeline, updated.
-- `tests/test_composed_sandbox_providers_live.cpp` and `tests/test_composed_containerd_providers_live.cpp`
+- `tests/sandbox/test_mandatory_sandbox_provider.cpp` section [3] — real pipeline, updated.
+- `tests/sandbox/execution_surface/test_composed_sandbox_providers_live.cpp` and `tests/sandbox/execution_surface/test_composed_containerd_providers_live.cpp`
   — both drive `run_command` through the real pipeline in one composed session alongside `run_shell` —
   both updated.
-- `tests/test_mandatory_sandbox_provider.cpp` sections [2]/[4] — call `contribution->tools[0].invoke(...)`
+- `tests/sandbox/test_mandatory_sandbox_provider.cpp` sections [2]/[4] — call `contribution->tools[0].invoke(...)`
   directly on the `ToolDescriptor`'s own closure, never through `agentengine::invoke_tool()` — confirmed
   unaffected (the capability ceiling is data `invoke_tool()`'s step 4/7 consults; the raw `invoke`
   closure itself never reads it).
-- `tests/test_mandatory_sandbox_provider_composed.cpp` — only checks tool *declaration* (`on_context()`
+- `tests/sandbox/test_mandatory_sandbox_provider_composed.cpp` — only checks tool *declaration* (`on_context()`
   contribution), never invokes the real closure at all (that file's own top comment says so explicitly)
   — confirmed unaffected.
-- `tests/test_task_branch_tools.cpp` — only checks that `run_command` is the ONE contributed tool name
+- `tests/sandbox/test_task_branch_tools.cpp` — only checks that `run_command` is the ONE contributed tool name
   before `bind_task_branch_tools()` is called; never invokes it — confirmed unaffected.
 
 **A real, new regression found and fixed while verifying, not merely anticipated.** Building the
@@ -127,14 +127,14 @@ each gains `.grant(Capability{cap::RunCommand{}})` in its builder chain; both fi
 "`run_command` ... deliberately has NO static ceiling here" comments are corrected to describe the new
 double-gate contract.
 
-`tests/test_mandatory_sandbox_provider.cpp`: section [3]'s `held` now grants `cap::RunCommand`. A new
+`tests/sandbox/test_mandatory_sandbox_provider.cpp`: section [3]'s `held` now grants `cap::RunCommand`. A new
 section [7] proves the fail-closed direction end-to-end, mirroring ADR-117 §7's identical proof shape
 for the task-branch tools: a session with `bind_sandbox()` called (the identity/quota gate, satisfied)
 but an explicitly empty `CapabilitySet` gets `run_command` rejected as a real `role::tool` error result
 — `start_run()` itself still completes normally, no real reply ever appears in history, zero `RunCost`
 is spent, and the target file is never written to the real Ledger branch — all four checked
-independently, not merely inferred from one assertion. `tests/test_composed_sandbox_providers_live.cpp`
-and `tests/test_composed_containerd_providers_live.cpp`: both `held` sets now also grant
+independently, not merely inferred from one assertion. `tests/sandbox/execution_surface/test_composed_sandbox_providers_live.cpp`
+and `tests/sandbox/execution_surface/test_composed_containerd_providers_live.cpp`: both `held` sets now also grant
 `cap::RunCommand`.
 
 `CMakeLists.txt`: `agentengine_sandboxed_shell_chat` gets the `/bigobj` MSVC compile option (guarded by
@@ -170,7 +170,7 @@ special-case entry needed.
 ## 5. What was NOT done
 
 - ~~No Linux verification.~~ **Closed by ADR-120** (2026-08-30, same day): `tools/containerd_shell_
-  chat.cpp` and `tests/test_composed_containerd_providers_live.cpp` were both edited but never built or
+  chat.cpp` and `tests/sandbox/execution_surface/test_composed_containerd_providers_live.cpp` were both edited but never built or
   run in this pass — both now built and run for real, on real GCC 14.2.0 against a real containerd
   daemon, with `test_composed_containerd_providers_live` passing completely (a genuine `run_command`
   call, carrying the new `cap::RunCommand` grant, actually executing in a real container end to end).
@@ -214,7 +214,7 @@ provider.cpp` sections [2]/[4] — unaffected. Confirmed `docs/planning/proofs/`
 any `CMakeLists.txt` anywhere in the tree (not built, not run) — a frozen historical artifact, not a
 live caller. Confirmed `examples/` (built by default, `AGENTENGINE_BUILD_EXAMPLES ON`) contains zero
 references to `MandatorySandboxProvider`/`run_command` — no example silently broken. Independently
-re-confirmed `tests/test_mandatory_sandbox_provider_composed.cpp` and `tests/test_task_branch_tools.
+re-confirmed `tests/sandbox/test_mandatory_sandbox_provider_composed.cpp` and `tests/test_task_branch_tools.
 cpp` only check tool *declaration*/*presence*, never invoke the real closure or drive through
 `invoke_tool()` — unaffected, as this ADR's §2 already claimed. No missed real caller found.
 
@@ -259,7 +259,7 @@ pure` AND every capability in the tool's declared ceiling to be inert — `std::
 range is vacuously `true`, so an EMPTY ceiling (RunCommandTool's pre-ADR-119 shape) would already have
 auto-declassified IF `RunCommandTool` had ever declared `effect_class::pure`. It never did: `Tool<>`'s
 `declared_effect_class()` defaults to `effect_class::at_most_once` (confirmed in `include/agentengine/
-core/tool.hpp:152` and cross-checked against `tests/test_effect_reexecution.cpp`'s own
+core/tool.hpp:152` and cross-checked against `tests/core/tools/test_effect_reexecution.cpp`'s own
 `UndeclaredTool::declared_effect_class() == effect_class::at_most_once` assertion), and
 `mandatory_sandbox_provider.hpp` never overrides it for `RunCommandTool`. So the auto-declassification
 gate was never actually reachable for `run_command` either before or after this ADR — `run_command`

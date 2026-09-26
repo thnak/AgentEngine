@@ -458,12 +458,12 @@ function buildPanes(lang: "en" | "vi"): Record<PatternId, PatternPane> {
         </>
       ),
       code: (
-        <CodePanel filename="tests/test_rt_workflow_supervisor_patterns.cpp">
+        <CodePanel filename="tests/workflow/test_rt_workflow_supervisor_patterns.cpp">
           {highlightCpp(workflowReflectionSnippet)}
         </CodePanel>
       ),
-      sourceCite: "tests/test_rt_workflow_supervisor_patterns.cpp (CY-1)",
-      sourceHref: gh("tests/test_rt_workflow_supervisor_patterns.cpp"),
+      sourceCite: "tests/workflow/test_rt_workflow_supervisor_patterns.cpp (CY-1)",
+      sourceHref: gh("tests/workflow/test_rt_workflow_supervisor_patterns.cpp"),
       code2Note: en
         ? "CY-1 above converges. examples/13_reflection_loop.cpp is the other honest outcome the same shape has to handle: a writer/critic pair that never converges, stopped cleanly at bound.max_rounds."
         : "CY-1 ở trên hội tụ. examples/13_reflection_loop.cpp là kết quả trung thực còn lại mà cùng một hình dạng phải xử lý: một cặp writer/critic không bao giờ hội tụ, bị dừng sạch sẽ tại bound.max_rounds.",

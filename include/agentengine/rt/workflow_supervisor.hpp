@@ -500,7 +500,7 @@ public:
     //     `contexts_`/`sub_workflows_` are not: a restored run's caller re-supplies host configuration
     //     fresh. Because these are object-level members that `restore_from_record()` never touches, a
     //     supervisor configured and THEN restored keeps its gate -- proven by A10 in
-    //     tests/test_rt_workflow_supervisor_admission.cpp, which is the positive control for the
+    //     tests/workflow/test_rt_workflow_supervisor_admission.cpp, which is the positive control for the
     //     "checkpoint round-trip silently disarms the gate" failure this shape could otherwise have.
     //
     // Unset (a default-constructed `Principal`) plus a caller-bearing request is DENIED, not admitted:
@@ -782,13 +782,13 @@ private:
     // Originally (issue #52) this struct only ever held the ONE narrow shape a `fallback` edge's
     // named recovery rejoining the SAME target directly produced, registered freshly each round by a
     // since-removed `register_fan_in_holds()`. Issue #62 found -- via
-    // tests/test_workflow_research_pipeline_large_context_live_e2e.cpp, a production-shaped pipeline
+    // tests/workflow/test_workflow_research_pipeline_large_context_live_e2e.cpp, a production-shaped pipeline
     // where two genuinely multi-round cyclic specialists (each ~11 real sequential turns) shared a
     // fan_in target with a fast-resolving third branch -- that this left the GENERAL case (two
     // ORDINARY, non-failing fan_in sources that simply resolve after different numbers of rounds)
     // completely unguarded: the target dispatched as soon as the fast source delivered, then AGAIN
     // once the slow source finally delivered, silently overwriting the first (pinned offline by
-    // tests/test_workflow_fanin_uneven_round_sources_fix.cpp's U1, before this fix; now a positive
+    // tests/workflow/test_workflow_fanin_uneven_round_sources_fix.cpp's U1, before this fix; now a positive
     // proof of the fix instead). Pre-registering EVERY multi-source fan_in target up front, once,
     // subsumes the narrow #52 shape too (a `fallback` edge's own `to` and the recovery's own `fan_in`
     // edge back to it are both ordinary declared sources under this generalization) -- so
@@ -1196,7 +1196,7 @@ private:
     // thread count is unbounded once fan-out is unbounded, regardless of how carefully any single
     // level's own budget is computed (red-team finding, same design draft).
     std::size_t nesting_depth_ = 0;
-    // A generous but real ceiling -- S11 (tests/test_rt_workflow_sub_workflow.cpp) proves 3 levels
+    // A generous but real ceiling -- S11 (tests/workflow/test_rt_workflow_sub_workflow.cpp) proves 3 levels
     // genuinely work; this is not tuned to that number, just chosen as a small, structural,
     // CLAUDE.md-compliant bound rather than left unbounded. A host that legitimately needs deeper
     // nesting is free to raise this constant, but the DEFAULT must not be "unbounded."

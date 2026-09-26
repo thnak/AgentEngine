@@ -212,7 +212,7 @@ against ADR-070 §4:
 All live runs: DeepSeek `deepseek-flash`; every model call logged to a file as it happened; every figure below
 computed from those files. Raw tables and caveats: the research note.
 
-**Offline.** `tests/test_approved_lesson_delivery.cpp` (registry scope, attribution and exactness; the session as
+**Offline.** `tests/eval/test_approved_lesson_delivery.cpp` (registry scope, attribution and exactness; the session as
 the only grantor; the audit event; revocation; both serializers' preamble and coded approved marker — only on the
 approved block, ADR-173's fences everywhere else; forged, split (inside a glyph's bytes too) and escaped markers; tool-call
 arguments with an escape sent intact); `test_middleware_model_call_gateway` T16 (a hook can neither add an approval
@@ -221,7 +221,7 @@ hashed; approval only through E31; the trial's route; every probe trial of an ap
 log-failure reporting). Planted mutants (per-piece stripping of OpenAI system text; no middleware check; overwritten
 log error; counts kept after a lost attempt) each fail a test.
 
-**Label experiment** (`tests/test_memory_lesson_label_live_e2e.cpp`: the real serializer, interleaved arms, 20 trials
+**Label experiment** (`tests/memory/test_memory_lesson_label_live_e2e.cpp`: the real serializer, interleaved arms, 20 trials
 per cell; followed / asked the user, naming the value / other):
 
 Rows are labelled by the design they measured: **r1** the round-1 fix (visible removal of whole spelled markers +
@@ -256,7 +256,7 @@ No spill-over: an approved lesson being present does not make the model follow o
 pasting the value is obeyed with or without markers (X1/X5) — the user's own authority, not a forgery. The "asked"
 column is loose for the region (the control names regions as examples).
 
-**Full Tier-1 screen through the approved route** (`tests/test_eval_tier1_screen_live_e2e.cpp`, N=20 per arm, 10
+**Full Tier-1 screen through the approved route** (`tests/eval/test_eval_tier1_screen_live_e2e.cpp`, N=20 per arm, 10
 regression tasks × K=5, 500 trials, r1 design; every figure re-derived from `actions.jsonl` by the analyzer and matched):
 the helpful lesson `cleared` (treatment 20/20, baseline 0/20; the gross-harm screen ran live for the first time,
 baseline success 1.000, not flagged); the subject/key-swapped retry `cleared` 17/20 and read "attempt 2 of 2"
@@ -266,7 +266,7 @@ documentation; an extra "reopened" step contradicting the user's request) were e
 the approved lesson and said the user's request or the tool's documentation came first, as the preamble allows. The
 gross-harm path is proven by the scripted tests only.
 
-**Conversations driven by another agent** (`tests/lesson_chat_live.cpp`, `tests/lesson_chat_score.py`): nine
+**Conversations driven by another agent** (`tests/eval/lesson_chat_live.cpp`, `tests/eval/lesson_chat_score.py`): nine
 multi-turn chats, three Sonnet personas × three blind arms, scored from the files. Approved: the alert went to the
 lesson's channel in both conversations where the user named none, and to #general where the user asked for it (the
 lesson was offered as a cross-post and not acted on once the user declined). Fenced: once to the lesson's channel

@@ -4257,7 +4257,7 @@ operation rejected. Root cause, isolated with a standalone probe directly agains
 as part of resolving the (possibly reparse-point-crossing) path — Windows plants the file on real
 disk *before* `open_within_mount_root`'s own containment check ever runs — and the existing
 rejection path never cleaned up what had already been created. Every ADR-014 test case
-(`tests/test_worktree_mount_fs_escape_corpus.cpp`, C2-1 through C2-9, all already-Judged) only ever
+(`tests/worktree/test_worktree_mount_fs_escape_corpus.cpp`, C2-1 through C2-9, all already-Judged) only ever
 exercises `GENERIC_READ` + `OPEN_EXISTING` through an escaping junction, which cannot itself have a
 side effect on rejection — nothing in five rounds of that file's own extensive corpus had ever
 exercised a *creating* disposition through an escaping junction, because this design's own
@@ -4280,7 +4280,7 @@ truncated/reopened something pre-existing — nothing to unwind), and — only w
 AND a new object was created — unwinds it via `SetFileInformationByHandle(FileDispositionInfo,
 Delete=TRUE)` on the SAME handle just verified, never a re-parsed path string, preserving this
 whole mechanism's own "the object verified is the object used" property for the cleanup step too.
-A new **C2-10** was added to the real, production `tests/test_worktree_mount_fs_escape_corpus.cpp`
+A new **C2-10** was added to the real, production `tests/worktree/test_worktree_mount_fs_escape_corpus.cpp`
 (not just this design's own probes) proving the fix, paired with a positive control proving an
 ordinary, legitimate inside `CREATE_ALWAYS` still works and its file still persists. The full,
 pre-existing C2-1..C2-9 corpus was reverified green (22/22 `ok`, no regressions) alongside the new
@@ -4868,7 +4868,7 @@ independently red-teamed after landing.
 `docs/planning/proofs/mandatory_sandbox/probe_mandatory_sandbox_real_agent_session.cpp` instantiates
 the REAL, production `agentengine::rt::AgentSession<ChatClientT, StateT,
 MandatorySandboxProvider<DockerExecutionSurface>>` (a minimal `ChatClientT` copied in shape from
-`tests/test_rt_agent_session.cpp`'s own `ScriptedChatClient`, this codebase's own simplest real
+`tests/rt/agent_session/test_rt_agent_session.cpp`'s own `ScriptedChatClient`, this codebase's own simplest real
 instantiation) and re-runs `probe_mandatory_sandbox.cpp`'s [1]-[8] one-for-one against the real
 `fork_from()`/`clear_in_process_state()`/`history_provider()` (agent_session.hpp:1161/1210/657), plus
 two new checks only meaningful against the real class: [9] a genuine self-fork

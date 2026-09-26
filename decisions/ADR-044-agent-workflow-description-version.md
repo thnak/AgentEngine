@@ -43,7 +43,7 @@ extended to fixing.
   card/listing) — same member name, different semantics, on two unrelated but easily-confused CRTP
   conventions an author skimming both could reasonably conflate. Named explicitly in code (§3) rather
   than left for someone to discover the hard way.
-- **I6's proof machinery needed no new infrastructure.** `tests/test_agent_yaml_compiler.cpp`'s F-2 is
+- **I6's proof machinery needed no new infrastructure.** `tests/core/agent/test_agent_yaml_compiler.cpp`'s F-2 is
   a field-by-field struct comparison between a YAML-compiled and a C++-compiled equivalent agent —
   extending it to cover two more fields was mechanical, not a new proof shape. The audit's own caveat
   ("proven only for the maintained corpus, not structurally") remains accurate and is not something
@@ -98,10 +98,10 @@ Confirmed safe before, not after, something broke.
 
 ## 6. Evidence
 
-- `tests/test_agent_yaml_compiler.cpp` (F-1/F-2, extended): the 015 §2 worked example's
+- `tests/core/agent/test_agent_yaml_compiler.cpp` (F-1/F-2, extended): the 015 §2 worked example's
   `metadata.description`/`metadata.version` compile into `AgentMetadata` correctly; the equivalent
   hand-written `ResearcherAgent` (now declaring optional `description`/`version` statics) produces an
   identical value via `register_agent<A>()` — I6 holds for the extended field set.
-- `tests/test_workflow_yaml_compiler.cpp` (W-2, extended): the same for `Workflow`'s
+- `tests/workflow/test_workflow_yaml_compiler.cpp` (W-2, extended): the same for `Workflow`'s
   `description`/`version`.
 - Full suite: green (`ctest`, this pass), zero regressions.

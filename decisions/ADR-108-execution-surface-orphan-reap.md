@@ -19,9 +19,9 @@
   a POSIX/Windows `process_is_alive()` pair, `DockerCliBackend::reap_orphans()`), `include/agentengine/
   sandbox/containerd_execution_surface.hpp` (adds a POSIX `process_is_alive()`, `ContainerdCliBackend::
   reap_orphans()` — `reset()`'s existing `ae_ces_<pid>_<seq>` naming is unchanged, it was already
-  discoverable), new `tests/test_docker_orphan_reap.cpp` (cross-platform, `docker` CLI required, no
+  discoverable), new `tests/sandbox/execution_surface/test_docker_orphan_reap.cpp` (cross-platform, `docker` CLI required, no
   `WIN32` gate — mirrors `test_sandbox_runtime.cpp`'s own posture), and 8 new checks appended to
-  `tests/test_containerd_execution_surface.cpp` (Linux-only, unchanged gate). **No behavior change to
+  `tests/sandbox/execution_surface/test_containerd_execution_surface.cpp` (Linux-only, unchanged gate). **No behavior change to
   either class's existing `reset()`/`run()`/`drain_to()` verbs or the `ExecutionSurface` concept
   itself** — `reap_orphans()` is a new, additional, explicitly-invoked method, never called
   automatically from any constructor/destructor/verb.
@@ -106,11 +106,11 @@ into either tool's own startup** — named as a residual below, not silently lef
 ## 4. Verification
 
 **Pre-red-team (self):**
-- `tests/test_docker_orphan_reap.cpp`: 9/9 checks, against a real Docker daemon (Docker Desktop,
+- `tests/sandbox/execution_surface/test_docker_orphan_reap.cpp`: 9/9 checks, against a real Docker daemon (Docker Desktop,
   Windows) — proves C1/C2/C3 for `DockerCliBackend` directly (create() the live-pid case for real;
   `docker rename` a second/third container to a confirmed-dead-pid name and a foreign name
   respectively, since `create()` itself can only ever embed this test process's own live pid).
-- `tests/test_containerd_execution_surface.cpp`'s new "ADR-108" block: 8/8 checks (26/26 total in that
+- `tests/sandbox/execution_surface/test_containerd_execution_surface.cpp`'s new "ADR-108" block: 8/8 checks (26/26 total in that
   file), against a real containerd 2.2.2/runc 1.4.0 daemon (WSL2 Ubuntu, root) — proves C1/C2/C3 for
   `ContainerdCliBackend` directly, using `create(id, ...)`'s own real `id` parameter to embed a
   genuinely fork()+waitpid()-confirmed-dead pid for the negative case, no rename step needed (`ctr`'s
@@ -118,10 +118,10 @@ into either tool's own startup** — named as a residual below, not silently lef
 - Full Windows `ctest`: 289/289 passed, 100% (`test_docker_orphan_reap` included).
 
 **Post-red-team (after the §5 fixes), re-verified against real daemons on both platforms:**
-- `tests/test_docker_orphan_reap.cpp`: **11/11** (the 2 new truncation-regression checks added, plus
+- `tests/sandbox/execution_surface/test_docker_orphan_reap.cpp`: **11/11** (the 2 new truncation-regression checks added, plus
   the original 9), against Docker Desktop on Windows AND against Docker inside WSL2/Linux (Docker
   Desktop's WSL2 integration exposes the same daemon there) — both **11/11**.
-- `tests/test_containerd_execution_surface.cpp`: **28/28** total (2 new truncation-regression checks
+- `tests/sandbox/execution_surface/test_containerd_execution_surface.cpp`: **28/28** total (2 new truncation-regression checks
   added on top of the prior 26), against the real containerd/runc daemon in WSL2 as root.
 - Full Windows `ctest`: **289/289 passed, 100%.**
 - Full Linux `ctest` (WSL2, root): 207 total; the only failures are the 4 pre-existing Kata tests
@@ -165,7 +165,7 @@ every prior independent pass on this code has found something real.
 4. Both new tests hardcoded a fixed literal name for the "foreign, non-prefixed" negative-control
    container; a leftover from a prior interrupted run could collide. **Fixed anyway** (cheap, and
    directly actionable) — both now suffix the name with the test process's own pid.
-5. `tests/test_docker_orphan_reap.cpp` computed an unused `alive_name` local. **Fixed** (dead code
+5. `tests/sandbox/execution_surface/test_docker_orphan_reap.cpp` computed an unused `alive_name` local. **Fixed** (dead code
    removed).
 6. A theoretical vacuous-pass edge case in one check's isolated reading — the red-team's own report
    confirms the overall suite still correctly fails via an earlier gating check, so this does not
@@ -256,10 +256,10 @@ unlikely, but not provably impossible.
 Verified with a NEW, direct positive control added to both test files, proving the fix rather than
 just its absence of regression: a container embedding THIS test process's own real, live pid but a
 DELIBERATELY WRONG start-key (simulating exactly the pid-reuse scenario) is confirmed REAPED, while
-the identical pid with its OWN correct start-key survives. `tests/test_docker_orphan_reap.cpp`:
+the identical pid with its OWN correct start-key survives. `tests/sandbox/execution_surface/test_docker_orphan_reap.cpp`:
 **14/14** (Windows and, separately, WSL2/Linux Docker, each run in isolation — a real, disclosed
 cross-daemon interference finding from running both concurrently is its own new residual above, not a
-regression in the fix itself). `tests/test_containerd_execution_surface.cpp`: **31/31** (WSL2 root).
+regression in the fix itself). `tests/sandbox/execution_surface/test_containerd_execution_surface.cpp`: **31/31** (WSL2 root).
 
 **Tool-startup wiring.** `main()` in both `tools/sandboxed_shell_chat.cpp` and
 `tools/containerd_shell_chat.cpp` now runs a `DockerCliBackend`/`ContainerdCliBackend::reap_orphans()`

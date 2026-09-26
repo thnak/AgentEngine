@@ -409,7 +409,7 @@ private:
             // MUST be `if constexpr`, not a runtime `if` nested inside `if constexpr` -- a runtime `if`
             // does not prune the unreached branch from template instantiation, and
             // `MiddlewareModelCallGateway`/`ContentReplayGateway` (real, currently-used
-            // `ModelCallGatewayLike` conformers, e.g. `tests/test_rt_agent_session_content_replay.cpp`)
+            // `ModelCallGatewayLike` conformers, e.g. `tests/rt/agent_session/test_rt_agent_session_content_replay.cpp`)
             // have no `call_stream()` member at all -- a runtime-gated `chat_client_->call_stream(...)`
             // would be a hard compile error the instant either type is instantiated here, regardless of
             // `stream_model_calls_`'s value.

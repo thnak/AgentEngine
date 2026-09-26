@@ -122,7 +122,7 @@ themselves — this ADR is purely a new caller of already-settled, already-Judge
 - **Self-caught during implementation** (not from red-team): the correctness red-team's own
   should-fix suggestion — make the two feature-detection macros `PRIVATE`, since only
   `default_sandbox_registry.cpp` itself reads them — turned out to be wrong once the real test file
-  was written: `tests/test_default_sandbox_registry.cpp` also needs to see
+  was written: `tests/sandbox/test_default_sandbox_registry.cpp` also needs to see
   `AGENTENGINE_HAVE_WASM_BACKEND`/`AGENTENGINE_HAVE_KATA_BACKEND` to conditionally compile its own
   wasm/kata assertions, and `PRIVATE` would have silently skipped those checks even when the
   backends were actually built in. Caught by re-reading the diagnostics before running the build,

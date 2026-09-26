@@ -193,7 +193,7 @@ Full design: `docs/planning/workflow-event-stream-design-draft.md`.
 - `docs/planning/workflow-event-stream-design-draft.md`
 - `include/agentengine/workflow/workflow_event.hpp`
 - `include/agentengine/workflow/multiplex_sink.hpp`
-- `tests/test_rt_workflow_event_stream.cpp`
+- `tests/workflow/test_rt_workflow_event_stream.cpp`
 - `examples/25_workflow_event_stream_live.cpp`
 - `examples/26_workflow_event_stream_live_openrouter.cpp` — the live-model counterpart to 25;
   needs `AGENTENGINE_OPENROUTER_API_KEY`, SKIPs (exit 0) when unset, same convention as
@@ -216,7 +216,7 @@ and `WorkflowLiveEvent` are all untouched.
 touch this ADR's own mechanism; each is a pre-existing latent issue in an unrelated file, surfaced
 only because this pass's own full rebuild was the first to exercise it against a `-Werror`/`/WX`
 level a concurrent session had recently tightened):
-- `tests/test_rt_multi_agent.cpp` — an unconditional `throw` followed by an unreachable `co_return`
+- `tests/rt/test_rt_multi_agent.cpp` — an unconditional `throw` followed by an unreachable `co_return`
   (needed only to keep the lambda a valid `task<T>`-returning coroutine) tripped MSVC C4702.
   Fixed with a `static volatile bool` guard so the compiler can no longer prove the branch
   unconditional — not a `#pragma` suppression, which CONVENTIONS.md/`pal/env.hpp`'s own precedent

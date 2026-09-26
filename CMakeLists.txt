@@ -175,7 +175,7 @@ add_library(agentengine::net_egress_proxy ALIAS agentengine_net_egress_proxy)
 # be stated at link-target granularity: this library links ONLY against agentengine::core (header
 # -only vocabulary, no Quark dependency since ADR-037) and the C++ standard library -- nothing here
 # can pull in an object that defines CreateProcess/_wspawnv/system/LoadLibrary/posix_spawn/exec*/
-# fork by construction of what it's linked against, which tests/test_shell_runner_proof.cpp
+# fork by construction of what it's linked against, which tests/backends/native_jail/test_shell_runner_proof.cpp
 # verifies against the actual built artifact, not against prose.
 add_library(agentengine_shell_runner STATIC
   src/backends/native_jail/shell_parser.cpp
@@ -714,7 +714,7 @@ if(AGENTENGINE_WITH_VULKAN)
   add_library(agentengine_vulkan_vector_index STATIC
     src/backends/vulkan_vector_index/vulkan_cosine_index.cpp)
   # PUBLIC, matching agentengine_wasm_backend's own identical pattern above -- so a consumer (e.g.
-  # tests/test_vulkan_cosine_index.cpp) can `#include "backends/vulkan_vector_index/
+  # tests/core/rag/test_vulkan_cosine_index.cpp) can `#include "backends/vulkan_vector_index/
   # vulkan_cosine_index.hpp"` by merely linking this target, the same convention every other
   # src/backends/* seam backend in this tree already uses.
   target_include_directories(agentengine_vulkan_vector_index PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -1223,7 +1223,7 @@ endif()
 # ---- ADR-132 §5 residual, closed: tools/durable_sandboxed_shell_chat.cpp -- the FIRST real,
 # user-reachable production consumer of agentengine::FileWorktreeObjectStore (ADR-130),
 # bind_root_branch() (ADR-128), and the Store-generic tool surface (ADR-132), composed the way
-# tests/test_task_branch_content_durability_integration.cpp already proved works, through a real
+# tests/sandbox/test_task_branch_content_durability_integration.cpp already proved works, through a real
 # interactive CLI. Deliberately does NOT use SandboxToolProvider/QuarantineSecretStore (unlike its
 # sibling tools/sandboxed_shell_chat.cpp) -- no hmac/mediated_shell_runner dependency, so this target is
 # portable on BOTH platforms from the start, gated only on AGENTENGINE_WITH_HTTPS (real network calls to

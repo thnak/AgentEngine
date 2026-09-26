@@ -143,8 +143,8 @@ deliberately carries no depth/budget field the *model* can influence (line ~98-1
 "comes from the CALLER's already-held CapabilitySet/SpawnBudget, never from the call's own args" —
 I3, model output is never authority). `CapabilitySet::attenuate()` itself
 (`include/agentengine/trust/capability.hpp:794-804`) is real, tested
-(`tests/test_capability_enforcement.cpp`, `tests/test_agent_tool_invocation.cpp`,
-`tests/test_native_exec_capability.cpp`), fails closed the instant any requested entry isn't
+(`tests/trust/test_capability_enforcement.cpp`, `tests/core/agent/test_agent_tool_invocation.cpp`,
+`tests/trust/test_native_exec_capability.cpp`), fails closed the instant any requested entry isn't
 subsumed by the parent's own grant, and narrows concretely per capability type (e.g. `find_net_out()`
 narrows a multi-host `NetOut` grant down to exactly one matched host, never the original set). This
 is precisely the "scoped/attenuated capability as a formal object" every other framework surveyed

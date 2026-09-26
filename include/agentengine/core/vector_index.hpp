@@ -222,7 +222,7 @@ struct ByteReader {
 // `search()`/`contains()`/`size()` take a shared (reader) lock, so any number of concurrent readers
 // may proceed together, but a writer excludes everyone. This is a real, permanent fix (not merely a
 // "currently unreachable" residual note) — correct today for the pure-read-concurrency case R15
-// (`tests/test_vector_rag_context_provider.cpp`) already proves, AND now also correct once a real
+// (`tests/core/rag/test_vector_rag_context_provider.cpp`) already proves, AND now also correct once a real
 // concurrent-writer ingestion path exists, without needing to revisit this file again.
 // ae-naming-lint: allow BruteForceCosineIndex — ADR-063: new vocabulary, not yet in 027 §2-4's tables.
 class BruteForceCosineIndex {

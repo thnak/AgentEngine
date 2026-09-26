@@ -7,7 +7,7 @@ live-provider test flakiness problem · **Status:** research + proposed shape; n
 
 Live-provider tests (`ctest -L live-network`) drive a real `rt::AgentSession` by sending a free-form
 prompt and hoping the model does the thing the test needs ("You must call BOTH get_weather … AND
-send_message", `tests/test_rt_agent_session_hitl_live_e2e.cpp:477`). When the model doesn't comply
+send_message", `tests/rt/agent_session/test_rt_agent_session_hitl_live_e2e.cpp:477`). When the model doesn't comply
 the test can only downgrade the check to a printed note (`:502`), and `tools/farm_ops_interactive_cli.py`
 exists purely to work out *why* a live run failed, because pass/fail from the C++ test hides it.
 The model under test is both the thing being exercised **and** the source of nondeterminism.
@@ -27,13 +27,13 @@ Nothing is wired up as a driver, but almost every seam a driver needs is already
 | Observe | `enable_event_stream()` (single-consumer, :816), `set_run_event_tap()` :840; `run_event_kind` `core/run_event.hpp:41`; `workflow_event_kind` `workflow/workflow_event.hpp:54` | no condition-wait helper |
 | Inspect state | `history()`, `state()`, `metadata()`, `run_usage()`, `snapshot_record()`, `agent_session_record_to_json` (:480, :1485-1512) | no compact "snapshot" projection |
 | Branch / cancel | `fork_from()` :1355, `cancel()` :745 (ADR-178) | none |
-| Script the model | `ScriptedChatClient` — **re-implemented ad hoc in ~40 test files** (e.g. `tests/test_rt_agent_session.cpp:88`, `examples/05_human_approval.cpp:89`) | no shared, strict, multi-turn scripted client |
+| Script the model | `ScriptedChatClient` — **re-implemented ad hoc in ~40 test files** (e.g. `tests/rt/agent_session/test_rt_agent_session.cpp:88`, `examples/05_human_approval.cpp:89`) | no shared, strict, multi-turn scripted client |
 | Record / replay | `RecordingChatClient<Inner>` `core/recording_chat_client.hpp:118`; `ReplayChatClient` `core/replay_chat_client.hpp:135` (one recording per instance); `cli_chat` already dumps cassettes (`AGENTENGINE_CLI_CHAT_DUMP_DIR`) | no multi-call sequencer |
 | Interactive host | `tools/cli_chat.cpp` (stdin REPL, blocking y/N approval) | not machine-drivable |
 | MCP server role | `protocol/mcp/server.hpp:178` `McpServer` | exposes a **ToolTable**, not a session; no stdio; not reusable here |
 | Declarative agents | `core/agent_yaml_compiler.hpp` (RFC 015) | no host loads agent YAML |
 
-Known engine bugs a driver hits immediately (documented at `tests/test_rt_agent_session_hitl_live_e2e.cpp:10-40`):
+Known engine bugs a driver hits immediately (documented at `tests/rt/agent_session/test_rt_agent_session_hitl_live_e2e.cpp:10-40`):
 - **BUG-1:** `approval_requested` fires for *every* call in a round, not only gated ones.
 - **BUG-2:** one deny applies to all pending calls in the round.
 - **BUG-3:** neither `Interaction` nor the approval payload carries tool name/args — a driver must

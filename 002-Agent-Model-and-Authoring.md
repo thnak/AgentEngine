@@ -214,7 +214,7 @@ deprecation-then-migration cost to justify keeping the three `chat()`-only wrapp
 `ModelCallGateway`/`MiddlewareModelCallGateway` gave `AgentSession` a real, streaming-capable
 successor with the identical combined-not-layered reasoning. **The TURN interception point is now
 also real and wired** (`decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md`,
-implementation complete and proven by `tests/test_turn_middleware.cpp`, 22/22, though the ADR itself
+implementation complete and proven by `tests/core/context/test_turn_middleware.cpp`, 22/22, though the ADR itself
 is still Proposed, awaiting explicit project-owner "Judged"): `AgentSession::set_turn_middleware_hook()`
 runs a `TurnMiddlewareHook` (`core/turn_middleware.hpp`) once per round, after the final tool surface
 and instructions are assembled and before the model is called (`run_rounds()`,

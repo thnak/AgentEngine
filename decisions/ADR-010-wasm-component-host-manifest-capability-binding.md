@@ -366,7 +366,7 @@ function signature names them directly — they carry the shared `capability-han
 `ToolResult`/`ContentItem` record/variant types every gated interface's functions are built from. §7.5
 covers what this cost in real bugs before the host correctly matched this reality.
 
-### 7.3 Tests (`tests/test_wasm_backend.cpp`, gated `AGENTENGINE_WITH_WASM`)
+### 7.3 Tests (`tests/plugin/test_wasm_backend.cpp`, gated `AGENTENGINE_WITH_WASM`)
 
 Four cases, all against the one real fixture component above — no hand-crafted stub components, no
 mocked wasmtime calls:

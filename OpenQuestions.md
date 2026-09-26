@@ -317,8 +317,8 @@ finding corrected the design draft's own prose: forcing every contributor-source
 `content_origin::system` advertisement — fixed by narrowing the override to `content_origin::user`
 specifically (the one origin only a genuine, verbatim historical replay may truthfully claim).
 
-Proven: `tests/test_context_provenance.cpp` (16/16 checks, adversarial forging provider included) and
-`tests/test_rt_agent_session_context_provenance.cpp` (13/13, real `AgentSession` round through
+Proven: `tests/core/context/test_context_provenance.cpp` (16/16 checks, adversarial forging provider included) and
+`tests/rt/agent_session/test_rt_agent_session_context_provenance.cpp` (13/13, real `AgentSession` round through
 `ComposedContextProvider`, inspecting the actual outbound `ChatRequest`). **Named residual, not
 closed by this ADR:** `AgentSession`'s dominant single-`HistoryProviderT`-slot construction path
 (most of today's production usage) bypasses `assemble_context()` entirely and so carries no
@@ -330,8 +330,8 @@ non-cooperating) conformer, and `HistoryProvider<Summarize<N,SummarizerT>>`'s sy
 inheriting `content_origin::assistant` with nothing marking it as a summary.
 
 Full text: `decisions/ADR-066-context-provider-attribution-provenance.md`;
-`docs/planning/context-provider-provenance-design-draft.md`; `tests/test_context_provenance.cpp`;
-`tests/test_rt_agent_session_context_provenance.cpp`.
+`docs/planning/context-provider-provenance-design-draft.md`; `tests/core/context/test_context_provenance.cpp`;
+`tests/rt/agent_session/test_rt_agent_session_context_provenance.cpp`.
 
 ### OQ-24 — Should tools have a typed, non-capability per-run dependency-injection seam?
 
@@ -357,7 +357,7 @@ precedents:
    `ToolDescriptor::captures_session_state` documents this as the intended escape hatch for exactly
    this dependency shape.
 2. `CodeActRunnerBinding<RunnerT>` (`codeact_runner_binding.hpp`, proven in
-   `tests/test_codeact_runner_binding.cpp`) is a template binding wrapping a runner reference; tests
+   `tests/core/tools/test_codeact_runner_binding.cpp`) is a template binding wrapping a runner reference; tests
    swap in a trivial `FakeRunner` at construction. Build-time CRTP composition, not per-`.run()`, but
    the same substitution PydanticAI's DI achieves, just bound earlier in the object's lifetime.
 
@@ -381,7 +381,7 @@ Hermes model family is a real, concrete wire-shape trap: served through vLLM/SGL
 parser, tool calls arrive as a standard `tool_calls[]` array; served raw through llama.cpp/GGUF, the
 *same weights* emit tool calls as literal `<tool_call>{"name":...}</tool_call>` text embedded in an
 ordinary completion, indistinguishable from plain `Text` unless something specifically looks for the
-tags. Confirmed real, not hypothetical, by a fixture (`tests/test_openai_chat_client_translation.cpp`'s
+tags. Confirmed real, not hypothetical, by a fixture (`tests/protocol/openai/test_openai_chat_client_translation.cpp`'s
 `OQ-23-R1` block, same day): an operator declaring `tool_calling: true` for such an endpoint got no
 error and no warning — the leak was captured as ordinary, untainted `Text`, unless
 `AgentSession::scan_response_format_leaks` (a separate, default-`false` flag with no relationship to
@@ -418,9 +418,9 @@ generic deployment would — both real, both bounded to "a refusal happens," nev
 No finding was fatal to the design's central safety claim.
 
 Implemented and proven the same session: 22 new tests, all passing (9 function-level in
-`tests/test_openai_chat_client_translation.cpp`, including the exact tainted-diagnostic case the
+`tests/protocol/openai/test_openai_chat_client_translation.cpp`, including the exact tainted-diagnostic case the
 red-team's required revision targeted; 13 real `AgentSession::run_model_call()` round trips in
-`tests/test_rt_agent_session_streaming_and_events.cpp`). Full `ctest`: 227/229 real passes; the only 2
+`tests/rt/agent_session/test_rt_agent_session_streaming_and_events.cpp`). Full `ctest`: 227/229 real passes; the only 2
 failures (`test_openai_chat_client_live`, `test_anthropic_chat_client_live`) were confirmed
 pre-existing and unrelated to this change — reproduced identically against the untouched pre-change
 baseline via `git stash`, rebuild, and re-run. Amends `004-Model-Provider-Plane.md` §2 with the inbound
@@ -715,7 +715,7 @@ pre-existing blocker — `test_rt_agent_spawn.cpp` (and `test_agent_spawn_worktr
 build on non-Windows, because `core/agent_spawn_worktree.hpp`'s `derive_spawn_child_id()` reaches
 `compute_digest()`, which is Windows CNG/BCrypt-only (no Linux SHA-256 backend exists anywhere in
 this tree yet — 021 §2's own platform-priority backlog, unrelated to spawn's own design). Rather than
-leave C9 blocked on that separate, larger port, `tests/test_rt_spawn_pump_concurrency.cpp` reproduces
+leave C9 blocked on that separate, larger port, `tests/rt/agent_spawn/test_rt_spawn_pump_concurrency.cpp` reproduces
 `SpawnPump`'s exact cost-consumption synchronization shape (one dedicated worker thread as the sole
 resumer of a `consume()` coroutine) using only the portable `rt::SpawnCostBudget`, and runs it on
 Linux (WSL Ubuntu, clang 21.1.8) under REAL `-fsanitize=thread`: 16 threads, 25 rounds, zero race
@@ -1018,7 +1018,7 @@ agent-kind node gets a fresh, history-less `AgentSession` — `restore_from_reco
 (`yaml_compiler.executor_capability_ceiling_unsupported`), not silently dropped — I6-safe, pending the
 same per-kind capability registry work `agent_yaml_compiler.hpp`'s own `spec.capabilities` gap already
 names. 26 new passing tests across two new suites
-(`tests/test_workflow_agent_executor_gate.cpp`, `tests/test_rt_agent_workflow_executor.cpp`) prove
+(`tests/workflow/test_workflow_agent_executor_gate.cpp`, `tests/workflow/test_rt_agent_workflow_executor.cpp`) prove
 every claim, including the two FATAL first-draft findings' fixes and the "every OTHER delivery
 completes normally" claim under two distinct edge failure policies. Full falsifiable-claims table and
 residuals: ADR-077 §6/§7.
@@ -1080,7 +1080,7 @@ never treating the hook's answer as if a human had approved.
 
 `core/tool_call_hook.hpp` (new): `ToolCallHookContext` (no `EffectContext&`, no capability type,
 matching `ModelCallContext`'s I2 discipline exactly). 46 new tests
-(`tests/test_rt_agent_session_tool_call_hook.cpp`, H1-H4), all passing; full `ctest` 229/231, the same
+(`tests/rt/agent_session/test_rt_agent_session_tool_call_hook.cpp`, H1-H4), all passing; full `ctest` 229/231, the same
 2 pre-existing, unrelated live-TLS failures already confirmed independent of this work, zero new
 regressions.
 

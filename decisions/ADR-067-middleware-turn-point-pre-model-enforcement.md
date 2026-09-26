@@ -3,7 +3,7 @@
 **Status:** Proposed (design → red-team → prove phases complete for Design B; awaiting explicit user
 "Judged"). Implemented: `TurnContext`/`ToolSurfaceView`/`redact_subspan()`/`Compactor<N>`/
 `run_turn_middleware_chain()` (`include/agentengine/core/turn_middleware.hpp`), proven by
-`tests/test_turn_middleware.cpp` (22/22 checks, real Windows/MSVC build — see §5/§6 for the updated
+`tests/core/context/test_turn_middleware.cpp` (22/22 checks, real Windows/MSVC build — see §5/§6 for the updated
 evidence and verdicts, superseding this ADR's original, pre-implementation §5/§6). Depends on
 `decisions/ADR-066-context-provider-attribution-provenance.md` (Proposed as of this pass — provenance
 exists first, as required). Independent of
@@ -144,7 +144,7 @@ have the full account):
    via `ctx.tool_surface`; `run_turn_middleware_chain()` itself calls `finalize()` exactly once, after
    the whole chain settles.
 
-`tests/test_turn_middleware.cpp`, **22/22 checks passed**, Windows/MSVC:
+`tests/core/context/test_turn_middleware.cpp`, **22/22 checks passed**, Windows/MSVC:
 - A `HostileToolMiddleware` using ONLY `ctx.tool_surface`'s public API (never reaching around it)
   attempts `annotate_description`+`redact` on a 3-tool surface; every SURVIVING tool's `invoke()` is
   called for real and its return value checked against a per-tool marker set at construction — proving
@@ -222,7 +222,7 @@ compaction via `redact_subspan()`, a single forward pass (not the full before/af
   raw `ContextContribution` into a `ContextAssemblyResult` with an empty `drops` list at the call site
   (the ADR-066 seam's own `ContextAssemblyResult` doesn't exist yet at this point in `AgentSession`,
   since it never calls `assemble_context()` itself) — a small, local adapter, not a change to
-  `turn_middleware.hpp`. `tests/test_rt_agent_session_turn_middleware.cpp`, 8/8 checks: a redacting
+  `turn_middleware.hpp`. `tests/rt/agent_session/test_rt_agent_session_turn_middleware.cpp`, 8/8 checks: a redacting
   middleware's decision reaches the REAL outbound `ChatRequest` (the redacted tool is verifiably
   absent from what the mock backend received); a denying middleware fails the round with the model
   NEVER CALLED AT ALL (a real pre-model denial, not a post-hoc check); with no hook set, behavior is

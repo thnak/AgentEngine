@@ -170,7 +170,7 @@ const copy = {
     ),
     s1RoundtripNote: (
       <>
-        <code>tests/test_rt_agent_session_snapshot.cpp</code> follows this same
+        <code>tests/rt/agent_session/test_rt_agent_session_snapshot.cpp</code> follows this same
         discard-and-reload discipline
       </>
     ),
@@ -211,7 +211,7 @@ const copy = {
         <code>FileSessionStore</code> handle out of scope entirely, then resumes — from nothing
         but a freshly reopened on-disk store and the run's own id — into a brand-new supervisor
         holding the same open interaction the original run left waiting.{" "}
-        <code>tests/test_rt_workflow_checkpoint_manager.cpp</code> adds the fail-closed guard this
+        <code>tests/workflow/test_rt_workflow_checkpoint_manager.cpp</code> adds the fail-closed guard this
         simple example doesn't exercise: an <code>agent</code>-kind or{" "}
         <code>sub_workflow</code>-kind executor is refused rather than checkpointed incompletely.
       </>
@@ -287,7 +287,7 @@ const copy = {
       </>
     ),
 
-    s5Eyebrow: "tests/test_effect_reexecution.cpp",
+    s5Eyebrow: "tests/core/tools/test_effect_reexecution.cpp",
     s5Heading: "One at-most-once effect, interrupted, and refused a second time",
     s5Body: (
       <>
@@ -368,7 +368,7 @@ const copy = {
     card2Body: "Quark's FenceToken prevented two activations of one session. ADR-037 removed it and nothing replaced it: there is no fence, epoch or lease anywhere in this tree, no cross-process locking in either store, and five node-loss/fencing test files were retired as an accepted permanent gap. What survives is an in-process FIFO AsyncMutex — enough to make a snapshot safe against a concurrent turn, and nothing more.",
     card3Title: "Deploys — the version pin is unbuilt",
     card3Body: "019 §4 wants a version-skew policy that defaults to pin, so a resumed run never silently changes behaviour under new instructions. AgentMetadata::agent_version exists, but nothing consults it when a run resumes — no pin-or-migrate decision gets made at all.",
-    s8PoisonLabel: "tests/test_rt_agent_session_identity_and_admission.cpp — POISON-1…4, the real policy",
+    s8PoisonLabel: "tests/rt/agent_session/test_rt_agent_session_identity_and_admission.cpp — POISON-1…4, the real policy",
     s8PoisonBody: (
       <>
         The card above describes the behaviour; here is the actual quarantine loop, against a real{" "}
@@ -465,7 +465,7 @@ const copy = {
     ),
     s1RoundtripNote: (
       <>
-        <code>tests/test_rt_agent_session_snapshot.cpp</code> theo đúng kỷ luật
+        <code>tests/rt/agent_session/test_rt_agent_session_snapshot.cpp</code> theo đúng kỷ luật
         vứt-bỏ-rồi-nạp-lại này
       </>
     ),
@@ -506,7 +506,7 @@ const copy = {
         <code>FileSessionStore</code> gốc ra khỏi phạm vi hoàn toàn, rồi tiếp tục — từ không gì
         khác ngoài một store trên đĩa vừa mở lại và chính id của run — vào một supervisor hoàn
         toàn mới đang giữ đúng cùng interaction đang mở mà run gốc để lại.{" "}
-        <code>tests/test_rt_workflow_checkpoint_manager.cpp</code> thêm vào điểm bảo vệ
+        <code>tests/workflow/test_rt_workflow_checkpoint_manager.cpp</code> thêm vào điểm bảo vệ
         từ-chối-đóng mà ví dụ đơn giản này không thực hiện: một executor kiểu <code>agent</code>{" "}
         hay <code>sub_workflow</code> bị từ chối thay vì bị checkpoint thiếu sót.
       </>
@@ -582,7 +582,7 @@ const copy = {
       </>
     ),
 
-    s5Eyebrow: "tests/test_effect_reexecution.cpp",
+    s5Eyebrow: "tests/core/tools/test_effect_reexecution.cpp",
     s5Heading: "Một hiệu ứng at-most-once, bị ngắt, và bị từ chối ở lần thứ hai",
     s5Body: (
       <>
@@ -663,7 +663,7 @@ const copy = {
     card2Body: "FenceToken của Quark từng ngăn hai lần kích hoạt của cùng một session. ADR-037 bỏ nó và không gì thay thế: trong cây mã này không có fence, epoch hay lease nào, không store nào khóa liên tiến trình, và năm tệp kiểm thử về mất node/fencing đã bị rút như một khoảng trống vĩnh viễn được chấp nhận. Thứ còn lại là một AsyncMutex FIFO trong tiến trình — đủ để một snapshot an toàn trước một lượt đang chạy, và chỉ vậy thôi.",
     card3Title: "Triển khai — việc ghim phiên bản chưa xây",
     card3Body: "019 §4 muốn một chính sách lệch phiên bản mặc định là ghim, để một run tiếp tục không bao giờ âm thầm đổi hành vi dưới bộ chỉ dẫn mới. AgentMetadata::agent_version tồn tại thật, nhưng không gì tra tới nó khi một run tiếp tục — chẳng có quyết định ghim-hay-chuyển nào được đưa ra cả.",
-    s8PoisonLabel: "tests/test_rt_agent_session_identity_and_admission.cpp — POISON-1…4, chính sách thật",
+    s8PoisonLabel: "tests/rt/agent_session/test_rt_agent_session_identity_and_admission.cpp — POISON-1…4, chính sách thật",
     s8PoisonBody: (
       <>
         Thẻ ở trên mô tả hành vi; đây là vòng lặp cách ly thật, chạy trên một{" "}
@@ -1126,7 +1126,7 @@ export function ApiDurabilityReference() {
             </RevealItem>
 
             <RevealItem>
-              <CodePanel filename="tests/test_rt_agent_session_identity_and_admission.cpp">
+              <CodePanel filename="tests/rt/agent_session/test_rt_agent_session_identity_and_admission.cpp">
                 {highlightCpp(poisonRunPolicySnippet)}
               </CodePanel>
             </RevealItem>

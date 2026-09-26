@@ -127,13 +127,13 @@ implicit consequence a future reader might assume was accidental.
 
 ## 6. Evidence
 
-`tests/test_rt_agent_session_reasoning_provenance.cpp` (new): T1 proves a cross-provider Reasoning-
+`tests/rt/agent_session/test_rt_agent_session_reasoning_provenance.cpp` (new): T1 proves a cross-provider Reasoning-
 only message is excluded entirely and a real `policy_decision` event names the excluded message and
 its producer; T2 (positive control) proves a same-provider item survives untouched; T3 proves mixed-
 content filtering strips only the offending item; T4 proves the "no identity, no filtering" default
 degrade for a `ChatClientT` without the optional accessor.
 
-`tests/test_anthropic_chat_client_translation.cpp` (extended, E6 block): `parse_message_response()`
+`tests/protocol/anthropic/test_anthropic_chat_client_translation.cpp` (extended, E6 block): `parse_message_response()`
 stamps a given producer id onto both `thinking` and `redacted_thinking` blocks, and stamps nothing
 (empty, matching every pre-existing call site) when none is given; the STREAMING path
 (`parse_streaming_response_into_updates`/`StreamingUpdateAccumulator::release()`) stamps identically,

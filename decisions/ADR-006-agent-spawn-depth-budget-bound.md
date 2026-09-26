@@ -66,7 +66,7 @@ cross-process byte string an untrusted party could fabricate from scratch.
 
 The adversarial question isn't "can an external party forge bytes" (there are no bytes to forge) —
 it's "is there any path, at any starting depth, that produces a budget wider than attenuation should
-allow, or that keeps succeeding past exhaustion." `tests/test_spawn_budget.cpp`:
+allow, or that keeps succeeding past exhaustion." `tests/rt/agent_spawn/test_spawn_budget.cpp`:
 
 - **S-R1** — after a budget is exhausted, ten further attempts are made against the *same*
   exhausted instance, confirming every single one fails, not just the exhaustion-triggering call
@@ -103,7 +103,7 @@ machine, same documented gap as ADR-005). Full existing CTest suite re-run after
 | S2 | **CORRECT** | S-C2, S-R2 (exhaustive over 51 starting depths) |
 | S3 | **CORRECT** | S-C3, S-C4 (positive control) |
 | S4 | **CORRECT** | S-R1 (ten repeated attempts, all fail) |
-| S5 | **CORRECT** | Compile-time `static_assert`s in `tests/test_spawn_budget.cpp` |
+| S5 | **CORRECT** | Compile-time `static_assert`s in `tests/rt/agent_spawn/test_spawn_budget.cpp` |
 
 ## 8. The decision
 

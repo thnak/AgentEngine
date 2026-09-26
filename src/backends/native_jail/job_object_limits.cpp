@@ -181,7 +181,7 @@ result<JobWaitOutcome> JobObjectLimits::wait_or_kill(HANDLE process_handle,
         // completion message this class watches for) -- callers still have to infer it from an
         // unexpected exit_code alongside a wall_elapsed far shorter than wall_ms, as before.
         // A WAIT_OBJECT_0 with exit_code == STATUS_QUOTA_EXCEEDED (0xC0000044) is the kernel's own
-        // JOB_OBJECT_LIMIT_JOB_TIME firing (measured, tests/test_job_object_limits.cpp's
+        // JOB_OBJECT_LIMIT_JOB_TIME firing (measured, tests/backends/native_jail/test_job_object_limits.cpp's
         // test_job_time_limit -- see job_object_limits.hpp's header comment for the finding this
         // confirms and the reliability caveat that goes with it). This method does not special-case
         // that exit code into its own kill_reason value; callers that care distinguish it themselves.

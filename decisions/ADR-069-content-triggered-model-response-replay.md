@@ -3,7 +3,7 @@
 **Status:** Judged (2026-08-21, project owner sign-off). Implemented: `ContentReplayDecision`/`ContentReplayTrigger`/`ContentReplayAttemptEvent`/
 `ContentReplayTraceHook`/`corrective_message()`/`ContentReplayGateway<Inner>`
 (`include/agentengine/core/content_replay_gateway.hpp`), proven by
-`tests/test_content_replay_gateway.cpp` (30/30 checks, real Windows/MSVC build — see §5/§6 for the
+`tests/core/chat/test_content_replay_gateway.cpp` (30/30 checks, real Windows/MSVC build — see §5/§6 for the
 updated evidence and verdicts, superseding this ADR's original, pre-implementation §5/§6).
 Independent of `decisions/ADR-066-context-provider-attribution-provenance.md` and
 `decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md` — confirmed by
@@ -11,7 +11,7 @@ implementation: `content_replay_gateway.hpp` has no include of either header. **
 `decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md`, now answered with real,
 positive evidence (2026-08-20)**: both mechanisms are now wired into `rt::AgentSession`
 simultaneously (`set_turn_middleware_hook()` and the `ContentReplayGateway<Inner>` `ChatClientT`
-slot) and `tests/test_rt_agent_session_turn_and_replay_composition.cpp` runs ONE real session using
+slot) and `tests/rt/agent_session/test_rt_agent_session_turn_and_replay_composition.cpp` runs ONE real session using
 both at once, 4/4 checks passing: they genuinely do not overlap or interfere — the turn middleware
 runs exactly once per round, before `run_model_call()` even starts, so it neither re-runs per replay
 attempt nor is bypassed by one; a tool it redacts stays redacted across EVERY attempt the gateway
@@ -115,7 +115,7 @@ discarded response's own content. §1's header records the full reasoning; `test
 test_content_replay_gateway.cpp` proves it directly against the real request the gateway sends, not
 merely by inspecting `corrective_message()` in isolation.
 
-`tests/test_content_replay_gateway.cpp`, **30/30 checks passed**, Windows/MSVC:
+`tests/core/chat/test_content_replay_gateway.cpp`, **30/30 checks passed**, Windows/MSVC:
 - A non-triggering response passes through with exactly one backend call and zero replay budget
   consumed.
 - A discard-and-retry scenario: the retried response is checked by the SAME trigger predicate again
@@ -182,7 +182,7 @@ non-streaming calls only. It binds:
 `decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md`'s `pre_model` mechanism and this
 ADR's `post_model`-adjacent mechanism are genuinely non-overlapping, or two designs solving adjacent
 halves of one problem that should be unified. Both are now wired into `rt::AgentSession`
-simultaneously and `tests/test_rt_agent_session_turn_and_replay_composition.cpp` proves, for real,
+simultaneously and `tests/rt/agent_session/test_rt_agent_session_turn_and_replay_composition.cpp` proves, for real,
 that they compose without interference: the turn middleware runs once, upstream of the gateway's own
 retry loop, so its effect (a redacted tool, in the test) applies uniformly to the original call AND
 every replayed one — no shared mutable state, no re-entrancy, no bypass. What this does NOT settle:
@@ -195,7 +195,7 @@ design question, still open, that "they don't conflict" does not answer.
   `AgentSession` already accepts anything satisfying `ChatClient<ChatClientT>` OR
   `ModelCallGatewayLike<ChatClientT>` (its own class-template `requires` clause, `agent_session.hpp:
   470`), and `ContentReplayGateway<Inner>` satisfies the latter directly.
-  `tests/test_rt_agent_session_content_replay.cpp`, 8/8 checks: a discard-and-retry gateway is
+  `tests/rt/agent_session/test_rt_agent_session_content_replay.cpp`, 8/8 checks: a discard-and-retry gateway is
   completely transparent to `AgentSession`'s own turn loop (ONE round, ONE `AgentResponse`, TWO real
   backend calls underneath); durable history holds only the FINAL kept response, never the discarded
   one — this mechanism's own core promise (§2), now proven against real session history, not just an

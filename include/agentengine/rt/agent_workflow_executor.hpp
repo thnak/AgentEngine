@@ -29,13 +29,13 @@
 // CHECKPOINT/RESUME -- a documented, tested limitation, not a design gap (design draft §5 item 1):
 // `WorkflowSupervisor::restore_from_record()` never touches `bodies_` (caller-supplied fresh at
 // `initialize()`, matched to `graph_.executors` purely by array index, with zero structural link to
-// a checkpoint record -- confirmed against `tests/test_rt_workflow_checkpoint_g2.cpp`'s own "a
+// a checkpoint record -- confirmed against `tests/workflow/test_rt_workflow_checkpoint_g2.cpp`'s own "a
 // genuinely NEW WorkflowSupervisor instance" pattern). So an agent-kind node's AgentSession on a
 // resumed run is WHATEVER fresh session the caller binds via a fresh
 // agent_session_as_executor_body() call -- its conversation history does NOT survive a checkpoint/
 // resume cycle, the same already-accepted gap `AgentSessionRecord` itself names (no `history_`
 // field; examples/12_session_checkpoint.cpp's own comment: "conversation history is NOT restored by
-// this snapshot"). tests/test_rt_agent_workflow_executor.cpp proves this directly rather than leaving
+// this snapshot"). tests/workflow/test_rt_agent_workflow_executor.cpp proves this directly rather than leaving
 // it merely asserted here.
 //
 // CONCURRENCY CONTRACT -- this body's own drive() loop (below) is safe ONLY because

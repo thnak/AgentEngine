@@ -121,7 +121,7 @@ that landed, matching this doc's own evidence discipline.
   mediation as the PRIMARY filesystem boundary, 008 §1b, already Judged and shipped) already means a
   guest request for the leaking files never reaches the leaky ACL check. What this row actually asked
   for — proof the leak is real but bounded — already existed and already passes
-  (`tests/test_native_jail_abuse_corpus_windows.cpp` Case 4, predating this pass); ADR-004 §11 item 1
+  (`tests/backends/native_jail/test_native_jail_abuse_corpus_windows.cpp` Case 4, predating this pass); ADR-004 §11 item 1
   asked for exactly this test and had gone stale (never marked done), corrected in the same pass.
 - **Gap 12 (ShellRunner write-quota false denial) is CLOSED, and its own deferred FsRead note is
   folded in and CLOSED too.** `decisions/ADR-056-fs-quota-capability-gate-fix.md` (Judged) confirms
@@ -226,7 +226,7 @@ that landed, matching this doc's own evidence discipline.
   real, narrower documentation gap along the way: that same doc's own Phase J completion section
   silently dropped G3 between its "delivered" claim (naming only G1/030§7 G1) and its own separate
   "deliberately does NOT close" list (G3 absent from that too) — corrected with an honest update note
-  rather than rewritten. Built `tests/test_rt_workflow_supervisor_scheduling_shuffle.cpp`, broadening
+  rather than rewritten. Built `tests/workflow/test_rt_workflow_supervisor_scheduling_shuffle.cpp`, broadening
   `test_rt_workflow_supervisor_patterns.cpp`'s own already-proven (single-hand-picked-delay)
   fan-out/fan-in claim to a real 1000-seed sweep of independently randomized delays, against the
   CURRENT (post-ADR-037) `ThreadPool`-backed fan-out mechanism. Self-red-team: paired with a real

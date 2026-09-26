@@ -7,11 +7,11 @@ bug in already-shipped code** (`ThreadPool`+`AsyncMutex`+`AgentSession` — see 
 revised in place below to fix the findings that are fixable within this design (bound corrected 64→1,
 double-wrapped `result<T>` fixed, migration checklist added, citations corrected). **The
 separately-flagged `ThreadPool` bug was FIXED for real** (§7 top — `rt/thread_pool.hpp`,
-`tests/test_rt_thread_pool.cpp` T6), independent of this ADR's own Design B. **Design B itself is now
+`tests/rt/test_rt_thread_pool.cpp` T6), independent of this ADR's own Design B. **Design B itself is now
 implemented and proven** — `rt/drive_leaf_task.hpp` (new), `Embedder::synchronous_leaf`
 (`core/embedder.hpp`), all 4 real conformers migrated, `VectorRagContextProvider::recall`'s real
-`invoke`, a new `tests/test_rt_drive_leaf_task.cpp` (D1-D5), and real end-to-end coverage in
-`tests/test_vector_rag_context_provider.cpp` (R8/R8b/R8c) — see §5/§6. **A second red-team pass
+`invoke`, a new `tests/rt/test_rt_drive_leaf_task.cpp` (D1-D5), and real end-to-end coverage in
+`tests/core/rag/test_vector_rag_context_provider.cpp` (R8/R8b/R8c) — see §5/§6. **A second red-team pass
 against this real implementation (§5's own subsection) found no blocking defect** — one real
 `resume()`/try-catch asymmetry fixed, one comment's own justification corrected (and now backed by a
 new test, R12, driving `recall` through the actual `shared_ptr`-backed wiring), one overclaimed
@@ -239,8 +239,8 @@ adding a REQUIRED trait to `Embedder` breaks every existing conformer's own `sta
 tree today, all genuinely leaf by inspection (no `co_await`, only `co_return`), so each is a true
 one-line fix, not a design problem — but must actually be done, together, in the same change:
 `OpenAIEmbedder` (`protocol/openai/embedder.hpp`, production), `MockEmbedder` in
-`tests/test_corpus_source.cpp`, `MockEmbedder` in `tests/test_vector_rag_context_provider.cpp`, and
-`AlternatingEmbedder` in `tests/test_vector_rag_context_provider.cpp`.
+`tests/core/rag/test_corpus_source.cpp`, `MockEmbedder` in `tests/core/rag/test_vector_rag_context_provider.cpp`, and
+`AlternatingEmbedder` in `tests/core/rag/test_vector_rag_context_provider.cpp`.
 
 **Steelman:** smallest blast radius by a wide margin — touches `core/embedder.hpp` (one new trait),
 a new ~20-line `rt/drive_leaf_task.hpp`, and `vector_rag_context_provider.hpp`'s `recall` `invoke`
@@ -336,8 +336,8 @@ usage sketch showing both must be unwrapped at the call site.
 
 **REAL GAP 4 — the new REQUIRED `synchronous_leaf` trait breaks all 4 existing `Embedder` conformers
 in the tree today** (each pinned by its own `static_assert(Embedder<...>)`): `OpenAIEmbedder`
-(production), `MockEmbedder` in `tests/test_corpus_source.cpp`, `MockEmbedder` and
-`AlternatingEmbedder` in `tests/test_vector_rag_context_provider.cpp`. All four are, by inspection,
+(production), `MockEmbedder` in `tests/core/rag/test_corpus_source.cpp`, `MockEmbedder` and
+`AlternatingEmbedder` in `tests/core/rag/test_vector_rag_context_provider.cpp`. All four are, by inspection,
 genuinely leaf — a true one-line fix each — but this always-triggered migration was not named as a
 checklist item in the original draft. **Fixed in §3 above.**
 
@@ -395,8 +395,8 @@ Design B; they tighten it.
   omits it fails `static_assert(Embedder<...>)` at compile time, not silently.
 - All 4 real conformers in the tree migrated, each a genuine one-line addition as predicted (§4
   finding 4): `OpenAIEmbedder` (`protocol/openai/embedder.hpp`, `synchronous_leaf = true`, justified
-  by its body never awaiting anything, fact 3), `MockEmbedder` in `tests/test_corpus_source.cpp`,
-  `MockEmbedder` and `AlternatingEmbedder` in `tests/test_vector_rag_context_provider.cpp` (all three
+  by its body never awaiting anything, fact 3), `MockEmbedder` in `tests/core/rag/test_corpus_source.cpp`,
+  `MockEmbedder` and `AlternatingEmbedder` in `tests/core/rag/test_vector_rag_context_provider.cpp` (all three
   `true`, each genuinely leaf — `co_return` only — by inspection).
 - `VectorRagContextProvider::recall`'s `invoke` (`core/vector_rag_context_provider.hpp`) now branches
   on `if constexpr (EmbedderT::synchronous_leaf)`: the `true` path drives `embedder_.embed_batch()`
@@ -417,7 +417,7 @@ Design B; they tighten it.
 
 **Tests, both new and extended:**
 
-- `tests/test_rt_drive_leaf_task.cpp` (NEW, 10 checks, D1-D5): D1 a conforming leaf task drives in
+- `tests/rt/test_rt_drive_leaf_task.cpp` (NEW, 10 checks, D1-D5): D1 a conforming leaf task drives in
   exactly one `resume()`, both `result<T>` layers unwrap to the real value; D2 the double-wrap is
   preserved (outer succeeds, inner carries the leaf's own ordinary `std::unexpected` error) — not
   flattened; D3 a genuine C++ exception thrown inside the leaf task's body maps to a DISTINCT outer
@@ -429,7 +429,7 @@ Design B; they tighten it.
   violated `synchronous_leaf` contract (`rt.leaf_task_contract_violation`), and the abandoned
   contender's destruction does not corrupt the mutex for later legitimate use (a third, later lock on
   the same mutex still succeeds cleanly).
-- `tests/test_vector_rag_context_provider.cpp` — R8/R8b/R8c rewritten from the old fail-closed-stub
+- `tests/core/rag/test_vector_rag_context_provider.cpp` — R8/R8b/R8c rewritten from the old fail-closed-stub
   assertion to real end-to-end coverage: `recall()` invoked with well-formed args against
   `MockEmbedder` (`synchronous_leaf = true`) now SUCCEEDS, returning both corpus chunks ranked by the
   query's own embedding, carrying the identical citation-label + tainted-content-neutralization
@@ -447,7 +447,7 @@ error message/code, not by a NEW conformer that declares `false` end-to-end thro
 `invoke` — the 4 real conformers in the tree today all declare `true`, so there was no
 `false`-declaring conformer in the tree to drive that branch through a real `if constexpr`
 instantiation. **Closed**: a new, dedicated `NonLeafEmbedder` test conformer
-(`tests/test_vector_rag_context_provider.cpp`) declares `synchronous_leaf = false`; R16 drives
+(`tests/core/rag/test_vector_rag_context_provider.cpp`) declares `synchronous_leaf = false`; R16 drives
 `recall`'s `invoke` against it and confirms the fail-closed fallback behaves exactly as designed
 through a real instantiation, not merely a compile check.
 
@@ -493,7 +493,7 @@ the design**. **Fixed**: the comment now names both wiring shapes explicitly.
 
 **REAL, TEST GAP, NOW CLOSED — no test exercised `recall`'s `invoke` through the actual
 `make_shared<ProviderT>`-backed path the comment specifically cites, only through a still-in-scope
-stack-local `Provider`.** New `tests/test_vector_rag_context_provider.cpp` R12 moves a provider into a
+stack-local `Provider`.** New `tests/core/rag/test_vector_rag_context_provider.cpp` R12 moves a provider into a
 real `ContextProviderDescriptor` (`context_assembly.hpp::make_context_provider_descriptor()`) BEFORE
 calling `on_context()`/`recall`, proving the captured `this` really does follow the provider into
 shared_ptr-managed heap storage (the original stack-local `provider` is moved-from and out of scope by
@@ -526,7 +526,7 @@ successful call that simply finds nothing). New R13 proves an empty index still 
   own state for scripted single-threaded determinism and would race on THEIR OWN state if driven
   concurrently, which would test the wrong thing). All 8 threads return the correct result; stable
   across 5 repeated runs (no observed flake).
-- Both proofs live in `tests/test_vector_rag_context_provider.cpp`. Full suite: **195/195**
+- Both proofs live in `tests/core/rag/test_vector_rag_context_provider.cpp`. Full suite: **195/195**
   (`ctest -LE live-network`), zero regressions — R14/R15 are new checks inside the existing target,
   not new `ctest` targets, so the target count is unchanged.
 - **Open at the time of this follow-up, CLOSED by a later same-day follow-up (see §6's `IndexT`
@@ -638,7 +638,7 @@ Per `decisions/README.md`'s bar — decided by observed output, not argument.
 once and fails it loudly (a diagnosable `JobOutcome::faulted`, `rt.leaf_task_contract_violation`-
 shaped message) instead of looping `resume()` if it isn't `done()` yet — safe by construction now,
 not merely by luck of `tools/cli_chat.cpp` always using `ThreadPool pool(1)`. New
-`tests/test_rt_thread_pool.cpp` T6 proves a job that genuinely contends an `AsyncMutex` fails cleanly
+`tests/rt/test_rt_thread_pool.cpp` T6 proves a job that genuinely contends an `AsyncMutex` fails cleanly
 AND that the mutex is unharmed afterward (the abandoned job's `destroy()` correctly self-removes from
 the waiter queue, reusing `AsyncMutex`/`channel<T>`'s own already-proven cancellation-safety per
 ADR-017's "drop the handle = cancel" idiom). Documented as an addendum to `decisions/ADR-037-remove-

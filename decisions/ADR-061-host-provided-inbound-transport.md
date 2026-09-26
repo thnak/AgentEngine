@@ -135,7 +135,7 @@ mechanism piece is now in `include/agentengine/rt/agent_session.hpp`/`core/effec
 design text. One real gap the design phase never surfaced: `EffectContext::capabilities`'s type change
 broke ~30 test/example files that construct an `EffectContext` directly and assign a raw pointer — no
 red-team round ever grepped outside `agent_session.hpp`'s "known" consumers. Fixed with a
-`borrow_capabilities()` helper. `tests/test_rt_agent_session_tier3_authority.cpp` (new, 10 scenarios)
+`borrow_capabilities()` helper. `tests/rt/agent_session/test_rt_agent_session_tier3_authority.cpp` (new, 10 scenarios)
 proves every real security claim against running code, including the central one: a per-request
 `authority` grant works with NO session-level grant, and a per-request grant that withholds a
 capability denies the call even when the SESSION level would have allowed it — the exact claim W1
@@ -150,7 +150,7 @@ built) and re-scopes ADR-021.
 Two independent adversarial passes returned 27 findings (§7), four of which were **live security
 defects in shipped M7 code** rather than design problems — latent only because no inbound transport
 existed to reach them, which is precisely what this ADR proposes to add. Those four are now fixed and
-proven (§7a, `tests/test_task_principal_binding.cpp`), except for two halves that need spec
+proven (§7a, `tests/protocol/a2a/test_task_principal_binding.cpp`), except for two halves that need spec
 amendments this ADR owes.
 
 §3/§4 are the first design iteration, superseded by **§8** and kept as record. §8 reframes the
@@ -252,7 +252,7 @@ of friction that gets bypassed, and a bypassed control protects nothing.
 - **ADR-021's cryptographic mechanism is real and proven**: `trust/bearer_token.hpp` /
   `bearer_token.cpp` (mint/verify, algorithm pinned by construction, `aud`/`iss` from caller config
   never token content, `exp`-pruned `ReplayGuard`), `trust/hmac.hpp` (shared, previously-audited
-  HMAC-SHA256 + constant-time compare), `tests/test_bearer_token_proof.cpp`, 32/32 checks. ~~Critically,
+  HMAC-SHA256 + constant-time compare), `tests/trust/test_bearer_token_proof.cpp`, 32/32 checks. ~~Critically,
   **it operates on token bytes and needs no socket** — it survives this re-scope entirely intact.~~
   **Struck, and corrected by §7 (R5, R6): both halves of that sentence are wrong.** It does not
   operate on bytes — `BearerToken` holds already-parsed claims, no `Authorization` header decoder
@@ -513,7 +513,7 @@ decides, and no design below is safe to ship ahead of them.
 
 **Status of the R1-R4 remediation (2026-08-15), split by whether a spec change is required.**
 
-Fixed, built, and proven by `tests/test_task_principal_binding.cpp` (19 checks, every negative case
+Fixed, built, and proven by `tests/protocol/a2a/test_task_principal_binding.cpp` (19 checks, every negative case
 paired with its own positive control per decisions/README.md's rule for security claims):
 
 - **R1/R3 binding** — both task stores now record the establishing principal and check it on every
@@ -583,7 +583,7 @@ also said the mechanism *"operates on token bytes and needs no socket."* It does
 `BearerToken` holds an already-parsed `BearerTokenClaims` (`trust/bearer_token.hpp:65-68`), and
 `encode_claims()` is mint-side only (`src/trust/bearer_token.cpp:43-57`). Confirmed by grep: the only
 files mentioning `BearerToken` anywhere in the tree are its own header, its own `.cpp`, and
-`tests/test_bearer_token_proof.cpp` — **zero production consumers.** No `Authorization: Bearer <string>`
+`tests/trust/test_bearer_token_proof.cpp` — **zero production consumers.** No `Authorization: Bearer <string>`
 parser exists. The single highest-risk step in the chain — attacker-controlled bytes with
 attacker-controlled `u32` length prefixes (`put_str`, `:38-41`) decoded into typed claims — is unbuilt
 and was asserted as done.
@@ -1233,7 +1233,7 @@ decisions/README.md.
 | 17 | R12 | Verification latency is O(1) amortized in outstanding un-expired credentials | p99 at N = 0 vs N = 10⁵, ≥8 concurrent verifier threads. **Repairs claim 9**, which measured N ≈ 0 |
 | 18 | R24 | The bytes verified and the bytes parsed are the same object, and nothing derived from `InboundRequest` outlives the call unless owned | Hostile host fixture that mutates its buffer after `authenticate()` returns and scribbles/frees on return, under ASan, with a background task and a stream in flight |
 | 19 | R25 | **Splits claim 5.** (a) `TransportFacts` never influences identity or capability derivation; (b) its non-identity uses are exactly enumerated; (c) `tls_terminated_by_host == false` on a credential-bearing request is a rejection in production configuration | (a) adversarially varied facts, identical authorization outcome; (c) present a credential with the flag false, assert rejection |
-| 20 | R1/R6-family | Every server-minted handle is bound to its establishing principal, and a cross-principal read is indistinguishable from not-found | **Already proven** — `tests/test_task_principal_binding.cpp`, 19 checks, harness teeth verified |
+| 20 | R1/R6-family | Every server-minted handle is bound to its establishing principal, and a cross-principal read is indistinguishable from not-found | **Already proven** — `tests/protocol/a2a/test_task_principal_binding.cpp`, 19 checks, harness teeth verified |
 | 21 | R13 | An anonymous principal's `tenant_id` is never taken from the request | Send unauthenticated requests asserting a victim tenant through every channel; derived tenant unchanged |
 | 22 | R26 | Every audit record carries `{principal.id, tenant_id, on_behalf_of}`, and 007 §9 G5's reconciliation re-runs with two concurrent principals | **Partly proven** — the fields exist; the two-principal reconciliation is not yet run |
 | 23 | G | The identity-exchange seam is the only path to an `asserted_by_host` principal, it is recorded as an auditable event, and the issued credential's audience is engine-minted | Attempt to reach an asserted principal by any other route; assert an audit record per exchange |
@@ -1884,7 +1884,7 @@ below were taken as final:
   workaround redundant and, briefly, actively harmful (double-decoding an already-plain body). Retired
   it from this file in the same pass.
 - `tools/mcp_conformance_client.cpp`'s own top comment had referred to a
-  `tests/test_mcp_conformance_transport.cpp` proving claim 4's two-way SSRF control since the file was
+  `tests/protocol/mcp/test_mcp_conformance_transport.cpp` proving claim 4's two-way SSRF control since the file was
   first written — it did not exist. Written for real as part of this prove phase (below).
 
 | # | Claim | Result | Evidence |
@@ -1892,9 +1892,9 @@ below were taken as final:
 | 1 | Published percentage per suite, pinned to a conformance release | **CORRECT, with a real, load-bearing gap named.** `--suite all --spec-version 2026-07-28`: **78 passed, 46 failed, 1 warning** (125 total). Every one of the 46 failures is an `auth/*` scenario — **non-auth: 75/75 (100%)**; **auth: 3/49 (~6%)**, and the 3 that pass (`resource-mismatch`, 2 of `authorization-server-migration`) do so on request-shape checks reachable before any token exchange, not because auth itself works. `McpClient`/this driver implement **no OAuth machinery at all** (confirmed by inspection: zero matches for `oauth`/`bearer`/`authorization` in either file) — every auth scenario fails at the very first `tools/list`, HTTP 401 "Missing Authorization header". This is real, not a driver bug to fix casually: **RFC 011 §10's G2 gate names `auth` as one of the four required suites, so G2 is NOT met as of this run.** The CLI's own `--suite core`/`--suite extensions`/`--suite backcompat` (run individually, matching §10b's literal wording) returned incomplete or empty results at this alpha version — `extensions`/`backcompat` returned 0/0/0, `core` returned a different, overlapping scenario set than `all` — a real tool-immaturity finding, not silently smoothed over; `--suite all` is the one complete, authoritative run and is what these numbers are taken from. |
 | 2 | Every counted check is engine-attributable (no fixture in the loop) | **CORRECT, teeth fired.** Broke `derive_param_headers()` (`client.hpp`) to return `{}` unconditionally — `http-custom-headers` dropped from 35 passed/0 failed to **5 passed/30 failed**, total dropped from 78 to 48. Reverted; baseline (78/46/1) reconfirmed after rebuild. (The claim row's own suggested example, `isError` surfacing, was tried FIRST and produced no observable change — no scenario in this run's reachable set currently depends on it — so `derive_param_headers` was used instead; recorded honestly rather than silently swapped without comment.) |
 | 3 | Fails loudly rather than defaulting to a guessed endpoint | **CORRECT.** No argv: `usage: ... <server-url>`, exit 2. Never attempts a connection. (The scenario env var's own absence does not gate behavior — it is informational/diagnostic only, per the code's own comment — so the claim's actual subject, the endpoint, was what was tested.) |
-| 4 | Loopback requires an explicit egress address policy; the SSRF block is real | **CORRECT, and the missing test now exists.** New `tests/test_mcp_conformance_transport.cpp`: `resolve_host(127.0.0.1, ...)` (this binary's real, deliberate choice, ADR-016) succeeds; `resolve_and_validate(127.0.0.1, ...)` (the guest-path resolver, ADR-011) fails with `net.address_blocked` specifically. Both halves pass. Registered in `tests/CMakeLists.txt`, part of the ordinary suite from now on. |
+| 4 | Loopback requires an explicit egress address policy; the SSRF block is real | **CORRECT, and the missing test now exists.** New `tests/protocol/mcp/test_mcp_conformance_transport.cpp`: `resolve_host(127.0.0.1, ...)` (this binary's real, deliberate choice, ADR-016) succeeds; `resolve_and_validate(127.0.0.1, ...)` (the guest-path resolver, ADR-011) fails with `net.address_blocked` specifically. Both halves pass. Registered in `tests/CMakeLists.txt`, part of the ordinary suite from now on. |
 | 5 | `RequestSender` is the only inbound seam, no ambient state | **CORRECT (inspection, as §10b itself scoped this claim).** `McpClient` has exactly two constructors, both taking a sender callable (`client.hpp:347,350`); the ONLY two call sites that invoke a sender are `client.hpp:612-613`, both gated by the constructor-injected member. No socket/http/connect call anywhere else in the file. |
-| 6 | No credential/secret reaches stdout/stderr over a full suite run | **CORRECT, teeth fired, with a scope note.** Temporarily planted a distinctive marker (`MCPTIER1-CANARY-9f61ac2e`) as a tool-call string argument (env-var-gated, reverted after). With `AE_MCP_TRACE` unset (the real default/gate posture): **zero occurrences** in this binary's own captured `stdout.txt`/`stderr.txt` across a scenario that actually carries the marker over the wire (`http-custom-headers`). With `AE_MCP_TRACE=1` (the one intentional, opt-in diagnostic path): the marker **does** appear in `stderr.txt` — proving the scan itself is non-vacuous, not silently blind to a real occurrence. Scope note: the harness's own saved `checks.json` DOES contain the marker regardless of trace — that file is the harness's OWN server-side record (it runs the mock server and necessarily observes every argument to verify SEP-2243 header derivation), not an artifact this binary produces, so it is outside claim 6's actual subject ("reaches stdout/stderr"); named explicitly rather than silently excluded. Currently this finding is close to vacuous in the other direction too — no auth flow in this driver ever completes (claim 1), so no REAL credential material exists anywhere in its data flow yet to leak; the marker experiment proves the MECHANISM works, not that a real secret was ever at risk this run. Citation correction: the claim row cites "ADR-015's precedent" — ADR-015 (`decisions/ADR-015-shellrunner-grammar-parser-fuzzing.md`) contains no canary-scan material; the real precedent is `tests/test_rt_secret_hygiene_canary_scan.cpp` (ADR-043/018 §7 G2). Noted here rather than silently corrected without comment. |
+| 6 | No credential/secret reaches stdout/stderr over a full suite run | **CORRECT, teeth fired, with a scope note.** Temporarily planted a distinctive marker (`MCPTIER1-CANARY-9f61ac2e`) as a tool-call string argument (env-var-gated, reverted after). With `AE_MCP_TRACE` unset (the real default/gate posture): **zero occurrences** in this binary's own captured `stdout.txt`/`stderr.txt` across a scenario that actually carries the marker over the wire (`http-custom-headers`). With `AE_MCP_TRACE=1` (the one intentional, opt-in diagnostic path): the marker **does** appear in `stderr.txt` — proving the scan itself is non-vacuous, not silently blind to a real occurrence. Scope note: the harness's own saved `checks.json` DOES contain the marker regardless of trace — that file is the harness's OWN server-side record (it runs the mock server and necessarily observes every argument to verify SEP-2243 header derivation), not an artifact this binary produces, so it is outside claim 6's actual subject ("reaches stdout/stderr"); named explicitly rather than silently excluded. Currently this finding is close to vacuous in the other direction too — no auth flow in this driver ever completes (claim 1), so no REAL credential material exists anywhere in its data flow yet to leak; the marker experiment proves the MECHANISM works, not that a real secret was ever at risk this run. Citation correction: the claim row cites "ADR-015's precedent" — ADR-015 (`decisions/ADR-015-shellrunner-grammar-parser-fuzzing.md`) contains no canary-scan material; the real precedent is `tests/rt/test_rt_secret_hygiene_canary_scan.cpp` (ADR-043/018 §7 G2). Noted here rather than silently corrected without comment. |
 
 **Net effect on §10's gates**: `sender_with_headers_ + perform_http_exchange` (Tier 1's actual, minimal
 surface) is proven — claims 2-6 all hold, with claim 2's real teeth and claim 4's real test now
@@ -2965,7 +2965,7 @@ single-executor guarantee." **Re-verified directly**: `start_background_task()` 
 **"PLAIN, UNLOCKED"** per the file's own banner (`agent_session.hpp:125-134`, and independently seen at
 its own definition site, `:915-916`: *"PLAIN, UNLOCKED — matches the original's own asymmetry exactly;
 see file banner"*) — no `session_mutex_` acquisition, a genuine independent host-callable entry point
-(confirmed: `tests/test_rt_agent_session_background_task.cpp` calls it directly, not via `run_rounds()`).
+(confirmed: `tests/rt/agent_session/test_rt_agent_session_background_task.cpp` calls it directly, not via `run_rounds()`).
 It is not "later in the same frame" as §17.1 claims. Its own signature
 (`agent_session.hpp:919-921`) takes no `authority`/`require_authority` parameter at all — it can only
 ever read whatever `effect_context_.capabilities` a prior locked call left behind, reproducing exactly
@@ -3139,7 +3139,7 @@ three sites, just unnamed. The difference that matters: `start_background_task()
 UNLOCKED"** by its own file banner (915-918) and its own signature confirms it — `result<...>`, not
 `task<...>`, no `AsyncMutex::Guard`. Grepped for real callers across `include/` and found **none** —
 every hit outside `agent_session.hpp` itself is a comment or a test
-(`tests/test_rt_agent_session_background_task.cpp` and others call it directly). It is not reached
+(`tests/rt/agent_session/test_rt_agent_session_background_task.cpp` and others call it directly). It is not reached
 from inside `run_rounds()`'s own model-driven tool-call loop; it is a genuinely separate,
 host-initiated third entry point, exactly as X2 said. Its signature —
 `start_background_task(ToolTable const&, ToolCallRequest const&, ApprovalDecider const&)` — carries
@@ -3405,7 +3405,7 @@ calls `apply_dispatch_authority(authority, now)` then uses `*effect_context_.cap
 audit.** §19.6 examined its *internal* reads (993, 997) but not its own callability. Reading its
 signature again while designing this fix: it is `result<...>`, not `task<...>` — **no
 `session_mutex_` guard, exactly the same unlocked shape as `start_background_task()`**, and grep
-confirms real direct test callers (`tests/test_rt_agent_session_schedule_wakeup.cpp`). But it is
+confirms real direct test callers (`tests/rt/agent_session/test_rt_agent_session_schedule_wakeup.cpp`). But it is
 *also* called internally, from the closure `run_rounds()` registers at line 1384 — which runs
 **already inside the lock** (via `invoke_tool()`, itself only reached from a locked `start_run()`/
 `resolve_interaction()`). Locking `schedule_wakeup()` itself, the way `start_background_task()` above
@@ -3490,7 +3490,7 @@ prose — several of §20's riskiest-looking claims held up under that scrutiny;
 
 ### 21a. Mechanism-lens findings
 
-**Finding 1 (real, severe) — `require_authority_` is not carried by `fork_from()`/`restore_from_record()`, and a real passing test proves the resulting session is immediately runnable with it silently at its unsafe default.** §20.2 claims moving the flag to session-construction-time state "removes the 'forgot on message N' bug class by construction." True only on the *message* axis. `fork_from()` (agent_session.hpp:775-797) copies `principal_` field-by-field onto a freshly default-constructed target but was never taught about a `require_authority_` field, and `restore_from_record()`'s `AgentSessionRecord` has no slot for it either. `tests/test_rt_agent_session_lifecycle.cpp:318-349` (FORK4/FORK5) constructs a fresh session, calls only `fork_from(source, ...)`, and immediately `start_run()`s successfully — no re-wiring call in between. A session forked from a Tier-3-fronted parent would inherit `principal_` (the identity) but not `require_authority_` (the rule that identity must come from a live, per-request-verified authority) — a real, demonstrated trust-tier downgrade, not a hypothetical one.
+**Finding 1 (real, severe) — `require_authority_` is not carried by `fork_from()`/`restore_from_record()`, and a real passing test proves the resulting session is immediately runnable with it silently at its unsafe default.** §20.2 claims moving the flag to session-construction-time state "removes the 'forgot on message N' bug class by construction." True only on the *message* axis. `fork_from()` (agent_session.hpp:775-797) copies `principal_` field-by-field onto a freshly default-constructed target but was never taught about a `require_authority_` field, and `restore_from_record()`'s `AgentSessionRecord` has no slot for it either. `tests/rt/agent_session/test_rt_agent_session_lifecycle.cpp:318-349` (FORK4/FORK5) constructs a fresh session, calls only `fork_from(source, ...)`, and immediately `start_run()`s successfully — no re-wiring call in between. A session forked from a Tier-3-fronted parent would inherit `principal_` (the identity) but not `require_authority_` (the rule that identity must come from a live, per-request-verified authority) — a real, demonstrated trust-tier downgrade, not a hypothetical one.
 
 **Finding 2 (real inconsistency) — §20.5's literal code and §20.6.3's description of the same call disagree on null-safety.** §20.5 shows the line-1384 closure calling `schedule_wakeup_impl(..., *ctx.capabilities, ...)` — an unguarded dereference. §20.6.3 describes the *same* call using the null-safe `held` pattern (`? *x : empty_caps`). Nothing in `apply_dispatch_authority()` validates `authority->capabilities` is non-null before assignment, so if a `RequestAuthority` is ever constructed with a null `capabilities`, §20.5's literal form crashes where §20.6.3's doesn't.
 
@@ -3535,7 +3535,7 @@ void fork_from(AgentSession const& source, std::string new_session_id,
     // identity) was already carried forward while `require_authority_` (the rule that identity must
     // come from a live, per-request-verified authority, not a bare claim) was not -- a silent
     // downgrade in exactly the dangerous direction, proven reachable by a real, already-passing test
-    // (tests/test_rt_agent_session_lifecycle.cpp FORK4/FORK5) that forks and immediately start_run()s
+    // (tests/rt/agent_session/test_rt_agent_session_lifecycle.cpp FORK4/FORK5) that forks and immediately start_run()s
     // with no re-wiring call in between.
     ...
 }
@@ -4318,7 +4318,7 @@ the test itself once instrumented, before any claim was recorded as proven.
 
 ### 30.4 Real, compiled, passing positive/negative controls
 
-`tests/test_rt_agent_session_tier3_authority.cpp` (new, 10 scenarios, all passing against a full
+`tests/rt/agent_session/test_rt_agent_session_tier3_authority.cpp` (new, 10 scenarios, all passing against a full
 release build): T1/T2 close X3 for real (a `require_authority_` session rejects caller-only and bare
 requests, `ChatClientT` never reached); T3 rejects a non-admitted per-request principal; T4 proves a
 live, admitted authority is accepted AND that the resulting `EffectContext` carries the per-request
@@ -4911,7 +4911,7 @@ rather than assumed still true (`server.hpp:319-322`, the single surviving code 
 `session_mutex_` concurrency guarantee — all held), and one thing no prior round had reason to examine —
 `RunStarter`/`RunOutcome`'s own type consistency against what `AgentSession::start_run()` actually
 returns — was checked for the first time and confirmed correct, including against real, currently
-passing test evidence (`tests/test_a2a_server.cpp:108-117`).
+passing test evidence (`tests/protocol/a2a/test_a2a_server.cpp:108-117`).
 
 This is the first clean round against this document's own six-round history on this section. Per this
 ADR's own `design → red-team → prove → judge` discipline, **§31-§35 (as corrected in place through
@@ -4934,7 +4934,7 @@ corrected text. Depends on `rt/agent_session.hpp` (for `RequestAuthority`) and `
 
 ### 37.1 Real, compiled, passing positive controls
 
-`tests/test_request_authority_bridge.cpp` (new, 21 checks, all passing) exercises every row of the
+`tests/trust/test_request_authority_bridge.cpp` (new, 21 checks, all passing) exercises every row of the
 falsifiable claims tables at §31.3 and §33.8:
 - **Claim 1**: 2,000 consecutive `mint_endpoint_id()` calls, zero collisions, correct 32-hex-char width.
 - **Claim 2**: `EndpointRegistry::resolve()` succeeds on the real configured key, fails closed on both
@@ -4999,9 +4999,9 @@ fail open — `AgentSession::start_run()`'s own §20.4 admission branches on the
 (the common case, 018 §1) never reads `authority` at all, and a Tier-3 session with `authority` unset
 is denied outright (`run.authority_required`), by the session's own construction, not by this
 dispatcher's discipline. A trailing defaulted parameter therefore keeps every existing 2-argument call
-site (`tests/test_a2a_server.cpp`, `tests/test_task_principal_binding.cpp`) unaffected.
+site (`tests/protocol/a2a/test_a2a_server.cpp`, `tests/protocol/a2a/test_task_principal_binding.cpp`) unaffected.
 
-**Real, compiled, passing positive/negative controls** (`tests/test_a2a_server.cpp`, new D3-9/D3-10):
+**Real, compiled, passing positive/negative controls** (`tests/protocol/a2a/test_a2a_server.cpp`, new D3-9/D3-10):
 against a real `require_authority_ == true` session, the 2-argument call (no `authority`) is denied —
 surfaced as a real, retrievable `TASK_STATE_FAILED` task (the same shape D3-8 already proved for a
 chat-layer failure; `SendMessage` itself does not reject, the task reports it) — and a real,
@@ -5436,7 +5436,7 @@ real source (`protocol/mcp/server.hpp`'s own scope comment, `core/tool_pipeline.
 
 ### 41.1 Real, compiled, passing positive/negative controls
 
-`tests/test_mcp_capability_grant.cpp` (new, 17 checks, all passing) exercises every row of §39.4's
+`tests/protocol/mcp/test_mcp_capability_grant.cpp` (new, 17 checks, all passing) exercises every row of §39.4's
 falsifiable claims table, against a real `GatedTool`/`GatedBackgroundableTool` pair whose own
 `capability_ceiling` genuinely requires `cap::Entropy` (not a trivially-empty ceiling `held_` could
 satisfy by accident):
@@ -5588,7 +5588,7 @@ asserted in prose (§43's first, FATAL-severity correction):
     auto deadline = trust::steady_deadline_from(claims.exp, wall_now, steady_now, trust::kMaxAuthorityHorizon);
     if (!deadline) {
         // Re-wrap: this function's own, already-tested error code
-        // (tests/test_request_authority_bridge.cpp:183 asserts this EXACT string) must survive the
+        // (tests/trust/test_request_authority_bridge.cpp:183 asserts this EXACT string) must survive the
         // refactor unchanged -- the shared primitive's generic `steady_deadline.horizon_exceeded`
         // is deliberately NOT what this function returns to its own callers.
         return std::unexpected(ae::error{failure_class::contract,
@@ -5661,7 +5661,7 @@ for one `constexpr` constant) outright rather than accepting it as a named cost.
 
 | # | Claim | Disproving experiment | Positive control / teeth |
 |---|---|---|---|
-| 1 | `trust::steady_deadline_from()`'s extraction preserved `rt::request_authority_from_bearer_claims()`'s exact prior behavior, INCLUDING its own error code | Run `tests/test_request_authority_bridge.cpp`'s existing 7-row claims table (§31.3/§33.8, especially claim 7's exact assertion on the `request_authority.exp_horizon_exceeded` string) unmodified against the refactored function | Control: the shared primitive's own generic `steady_deadline.horizon_exceeded` code is never observed by any `rt::` caller — only the re-wrapped code is |
+| 1 | `trust::steady_deadline_from()`'s extraction preserved `rt::request_authority_from_bearer_claims()`'s exact prior behavior, INCLUDING its own error code | Run `tests/trust/test_request_authority_bridge.cpp`'s existing 7-row claims table (§31.3/§33.8, especially claim 7's exact assertion on the `request_authority.exp_horizon_exceeded` string) unmodified against the refactored function | Control: the shared primitive's own generic `steady_deadline.horizon_exceeded` code is never observed by any `rt::` caller — only the re-wrapped code is |
 | 2 | `mcp::capability_grant_from_bearer_claims()`'s `CapabilityGrant.expiry` matches `trust::steady_deadline_from()`'s own output exactly, for the same `claims`/`wall_now`/`steady_now` | Call both directly with identical inputs; compare `expiry` | Control: differing `wall_now` inputs produce differing `expiry`, proving it's not a fixed/ignored value |
 | 3 | An exp beyond `kMaxAuthorityHorizon` is rejected by the MCP-side bridge too, surfaced as `capability_grant.exp_horizon_exceeded` (never the shared primitive's own generic code, and never the rt-side's differently-namespaced code) | `claims.exp = wall_now + 1000 years` via `capability_grant_from_bearer_claims()`; inspect the returned error's code | Control: `claims.exp = wall_now + 1 hour` succeeds |
 | 4 | The resulting `CapabilityGrant` is accepted by a REAL `McpServer::dispatch()` call, end to end | Verify a real bearer token, bridge it to a `CapabilityGrant`, dispatch a `tools/call` requiring a capability only the grant (not `held_`) supplies | Control: the same grant with `kind = human` produces a `Principal` with `principal_kind::human`, threaded through correctly |
@@ -5776,7 +5776,7 @@ phase.
   `rt::` verbatim (value/type unchanged, only namespace and file).
 - `include/agentengine/rt/request_authority_bridge.hpp` — `rt::request_authority_from_bearer_claims()`
   refactored to call the shared primitive and re-wrap into its own, unchanged
-  `request_authority.exp_horizon_exceeded` error code. `tests/test_request_authority_bridge.cpp`
+  `request_authority.exp_horizon_exceeded` error code. `tests/trust/test_request_authority_bridge.cpp`
   (already-shipped, already-passing) re-run unmodified: **21/21 checks still pass**, including claim
   7's exact-string assertion on that code — the refactor the design's own red-team round existed to
   make safe is confirmed safe against the real, already-shipped test that would have caught it wrong.
@@ -5787,7 +5787,7 @@ and `trust::` only, never reaching `agentengine::rt`.
 
 ### 44.1 Real, compiled, passing positive controls
 
-`tests/test_capability_grant_bridge.cpp` (new, 12 checks, all passing on the first run — no test-
+`tests/protocol/mcp/test_capability_grant_bridge.cpp` (new, 12 checks, all passing on the first run — no test-
 authoring bugs found this round) exercises §42.3's remaining claims (claim 1 is covered by the
 existing, re-run `test_request_authority_bridge.cpp` above):
 
@@ -5961,8 +5961,8 @@ whose type parameter list updates automatically with no lambda body to touch):
 const approve;` default-constructed members).
 
 **Tests with real 2-argument lambdas (2 files, 7 sites)**:
-- `tests/test_memory_no_authority_laundering.cpp:157`/`:167` — `denies`/`approves`.
-- `tests/test_tool_pipeline.cpp:206`/`:221`/`:257`/`:299`/`:309` — `deny`/`allow`/`tripwire`/`deny`/
+- `tests/memory/test_memory_no_authority_laundering.cpp:157`/`:167` — `denies`/`approves`.
+- `tests/core/tools/test_tool_pipeline.cpp:206`/`:221`/`:257`/`:299`/`:309` — `deny`/`allow`/`tripwire`/`deny`/
   `allow`; `:221`'s `allow` lambda already captures and inspects `tool_name`/`args_json` by name (not
   just `[&]`-and-ignore) — worth reading at prove time rather than pure find-replace, though the risk
   is lower than a same-type-adjacent-parameter mistake would be: `Principal`, `string_view`, and
@@ -6048,7 +6048,7 @@ Both call sites (`invoke_tool()`, `background_task()`) pass `ctx.principal`. Eve
 (corrected) enumeration named was updated: the two `one_shot_approve` lambdas
 (`rt/agent_session.hpp`), `native_jail::bridge_tool_call`'s `bundled_approval`
 (`src/backends/native_jail/tool_bridge.hpp`), and the seven real 2-argument test lambdas across
-`tests/test_memory_no_authority_laundering.cpp` (2) and `tests/test_tool_pipeline.cpp` (5) — including
+`tests/memory/test_memory_no_authority_laundering.cpp` (2) and `tests/core/tools/test_tool_pipeline.cpp` (5) — including
 `:221`'s `allow` lambda, hand-checked as flagged: its three parameters are distinct types, so the
 insertion could only ever have failed to compile, not silently misbound, and it compiled and passed
 unchanged. `protocol/mcp/server.hpp` needed no edit at all, confirmed by claim 2 below. Every
@@ -6057,7 +6057,7 @@ including the seven call sites the red-team round's own second pass found.
 
 ### 47.1 Real, compiled, passing positive controls
 
-`tests/test_approval_decider_principal.cpp` (new, 12 checks, all passing) proves §46.5's claims 1, 2,
+`tests/core/tools/test_approval_decider_principal.cpp` (new, 12 checks, all passing) proves §46.5's claims 1, 2,
 and 4 (claim 3 is the full-suite regression run below, per its own table row):
 
 - **Claim 1**: a capturing decider's observed `Principal` is byte-identical to the SAME call's

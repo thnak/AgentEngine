@@ -3,7 +3,7 @@
 **Status:** Judged (2026-08-14, project owner sign-off). Designed (inherited from
 `docs/planning/schedule-wakeup-standing-effect-design-draft.md`'s own already-red-teamed sketch, this
 ADR's §2 corrects one part of it against real code), implemented, and proven (real code + tests, §4).
-Re-verified at sign-off review: `tests/test_rt_agent_session_schedule_wakeup.cpp` still passes in full
+Re-verified at sign-off review: `tests/rt/agent_session/test_rt_agent_session_schedule_wakeup.cpp` still passes in full
 (S1-S6), unchanged since commit `51083eb`.
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #7 (the finding this ADR
@@ -102,7 +102,7 @@ only.
 
 ## 4. Evidence
 
-`tests/test_rt_agent_session_schedule_wakeup.cpp` (S1-S6, new):
+`tests/rt/agent_session/test_rt_agent_session_schedule_wakeup.cpp` (S1-S6, new):
 - **S1** — no `cap::Schedule` granted at all: fails closed, nothing registered.
 - **S2** — a delay exceeding the grant's own `max_horizon` fails closed; a delay within the same
   horizon then succeeds, proving S2 rejected for the stated reason, not because the grant is unusable.
@@ -147,7 +147,7 @@ edited headers plus the new test binary.
 
 **Status of this amendment: Judged (2026-08-14, project owner sign-off)**, separate from this ADR's
 original Judged verdict above (per this project's governance, `decisions/README.md`; `OpenQuestions.md`
-OQ-11). Re-verified at sign-off review: `tests/test_rt_agent_session_schedule_wakeup_tool.cpp` (G1-G6)
+OQ-11). Re-verified at sign-off review: `tests/rt/agent_session/test_rt_agent_session_schedule_wakeup_tool.cpp` (G1-G6)
 still passes in full, unchanged since commit `732f6a8`.
 
 At the project owner's explicit direction, this ADR's own §5 residual is closed: `schedule_wakeup` is
@@ -193,7 +193,7 @@ within `max_horizon`; live count under `max_active`) is exactly the LIVE, per-ca
 wakeup()` already performs — the same reason `Background<max_concurrent>`'s own enforcement lives
 inside `background_task()`'s body rather than a static descriptor field.
 
-**Evidence**: `tests/test_rt_agent_session_schedule_wakeup_tool.cpp` (G1-G6, new):
+**Evidence**: `tests/rt/agent_session/test_rt_agent_session_schedule_wakeup_tool.cpp` (G1-G6, new):
 - **G1** — a session with no `cap::Schedule` grant is never OFFERED the tool at all (absent from the
   `ChatRequest.tools` the model actually sees).
 - **G2** — a session WITH a grant IS offered it, with the real name/description and a real args schema

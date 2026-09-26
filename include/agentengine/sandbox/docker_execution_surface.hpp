@@ -32,7 +32,7 @@
 // DIRECTLY via the new `run_argv()` (this namespace, both platforms), never through `cmd.exe`/`/bin/sh`,
 // matching `ContainerdCliBackend`'s own already-shipped shape (containerd_execution_surface.hpp)
 // exactly. `run_capture()` itself is KEPT, unchanged, purely because real test files
-// (`tests/test_docker_orphan_reap.cpp`, `tests/test_sandbox_runtime.cpp`) call it directly, with
+// (`tests/sandbox/execution_surface/test_docker_orphan_reap.cpp`, `tests/sandbox/test_sandbox_runtime.cpp`) call it directly, with
 // static, non-attacker-influenced strings, for host-side setup/assertions outside the code path under
 // test -- it is no longer used by any production call site in this file. See the class-level comment
 // on `DockerCliBackend` below and `docs/planning/docker-execution-surface-argv-hardening-design-draft.md`
@@ -52,7 +52,7 @@
 // changed is narrower and worth stating exactly: before it, `create()` emitted a `docker run` with
 // **no isolation flags at all** -- unfiltered bridge egress, unbounded memory/pids/CPU, the default
 // Linux capability set. That is now closed and proven against a live daemon by reading the container's
-// OWN cgroup values from inside it (`tests/test_docker_isolation.cpp`), not by trusting a flag string.
+// OWN cgroup values from inside it (`tests/sandbox/execution_surface/test_docker_isolation.cpp`), not by trusting a flag string.
 //
 // STILL MISSING for a real 008 §2 backend, so nobody has to re-derive it:
 //   - NO `CapabilitySet` mediation. `create()` takes no `EffectContext` and consults no capability;
@@ -1045,7 +1045,7 @@ struct OrphanIdentity {
 struct ContainerIsolation {  // ae-naming-lint: allow ContainerIsolation — ADR-171 (issue #63); 008 §2 names the obligations, 027 has not been updated
     // `false` => `--network none`. The container gets a loopback interface and nothing else --
     // verified by reading `/sys/class/net` from inside, not merely by passing the flag (see
-    // tests/test_docker_isolation.cpp).
+    // tests/sandbox/execution_surface/test_docker_isolation.cpp).
     bool          network_enabled = false;
     std::uint64_t memory_bytes    = 512ull * 1024 * 1024;
     std::uint32_t pids            = 128;

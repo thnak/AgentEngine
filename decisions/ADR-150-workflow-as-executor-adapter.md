@@ -133,7 +133,7 @@ Full design: `docs/planning/workflow-as-executor-body-adapter-design-draft.md`.
 **New:**
 - `docs/planning/workflow-as-executor-body-adapter-design-draft.md`
 - `include/agentengine/rt/workflow_as_executor.hpp`
-- `tests/test_rt_workflow_as_executor.cpp`
+- `tests/workflow/test_rt_workflow_as_executor.cpp`
 - `examples/21_workflow_as_participant.cpp`
 
 **Edited:**

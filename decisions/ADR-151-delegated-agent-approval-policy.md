@@ -19,8 +19,8 @@ child_run.hpp`).
 `include/agentengine/trust/delegated_approval_policy.hpp` (new), `include/agentengine/rt/agent_spawn.hpp`
 (extended: `SpawnTargetDescriptor::approval_decider`/`policy_decider`), `include/agentengine/rt/
 agent_spawn_child_run.hpp` (extended: `ChildSpawnRequest::approval_decider`/`policy_decider`,
-`run_child_agent_session()`'s wiring), `tests/test_agent_tool_invocation.cpp` (extended, case 6),
-`tests/test_rt_agent_spawn.cpp` (extended, T8-T9), `examples/24_delegated_agent_approval.cpp` (new).
+`run_child_agent_session()`'s wiring), `tests/core/agent/test_agent_tool_invocation.cpp` (extended, case 6),
+`tests/rt/agent_spawn/test_rt_agent_spawn.cpp` (extended, T8-T9), `examples/24_delegated_agent_approval.cpp` (new).
 
 ## 1. The question
 
@@ -149,7 +149,7 @@ made before this ADR).
 
 ## 4. Evidence
 
-`tests/test_agent_tool_invocation.cpp` case 6 (4 sub-cases, through the REAL `invoke_agent_tool()`
+`tests/core/agent/test_agent_tool_invocation.cpp` case 6 (4 sub-cases, through the REAL `invoke_agent_tool()`
 entry point, not a synthetic `resolve_approval_outcome()` unit test): 6a non-delegated caller ->
 denied (no blanket approval); 6b delegated caller (real `derive_on_behalf_of()` output) with
 `arguments_tainted=true` -> auto-approves, `ApprovalDecider` tripwire never consulted, audit records
@@ -157,7 +157,7 @@ success; 6c delegation_depth exceeding `max_depth` -> falls back to denial, same
 delegation_depth == max_depth (the pinned boundary) -> still auto-approves, removing off-by-one
 ambiguity.
 
-`tests/test_rt_agent_spawn.cpp` T8-T9, through the REAL `perform_agent_spawn()`/`AgentSpawnTool` call
+`tests/rt/agent_spawn/test_rt_agent_spawn.cpp` T8-T9, through the REAL `perform_agent_spawn()`/`AgentSpawnTool` call
 path (not a hand-built `ToolCallRequest`) — a spawned child's own live turn loop genuinely issues a
 `policy_driven` tool call via its own scripted model output (so `arguments_tainted` really is the
 production-constant `true` MUST-FIX 1 named, not a test-chosen value): T8, with `SpawnTargetDescriptor::

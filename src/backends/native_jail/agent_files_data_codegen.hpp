@@ -12,7 +12,7 @@
 // the function set is fixed by 026 §5's table, not generated from caller-supplied metadata -- so this
 // header is a pair of static Python source strings, not a generator over a schema. It stays a
 // separate, pure-C++, Python-free header purely so the exact generated TEXT stays readable/diffable/
-// testable without an embedded interpreter (tests/test_agent_files_data_codegen.cpp), matching
+// testable without an embedded interpreter (tests/python/test_agent_files_data_codegen.cpp), matching
 // agent_tools_codegen.hpp's own established shape; the `PyRun_String` execution wiring
 // (`run_agent_files_data_bootstrap`) lives in mediated_python_runner.cpp, alongside every other
 // CPython-C-API caller.

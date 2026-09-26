@@ -18,7 +18,7 @@
   core/ledger.hpp` (`orphaned_branches()`/`reclaim_orphaned_branch()`/`load_durable_state()` — the
   already-existing, already-proven durability/recovery primitives this fix reuses, never re-derives),
   `include/agentengine/sandbox/sandbox_runtime.hpp` (`reclaim_orphaned_child()` — the same primitive
-  `commit_task_branch()`'s own conflict-retry path already relies on), `tests/test_ledger.cpp` (the
+  `commit_task_branch()`'s own conflict-retry path already relies on), `tests/core/ledger/test_ledger.cpp` (the
   established "destroy + reconstruct against the SAME `durable_dir`" crash-simulation methodology this
   ADR's own test mirrors, and the same file's own prior disclosure of the content-vs-metadata
   durability split this ADR's own test had to precisely rediscover).
@@ -100,9 +100,9 @@ operates on the FRESH `runtime_`/`owner_`, never the prior binding's). The new p
 prefix-matches `ledger_->orphaned_branches()` against `runtime_->branch_name() + "/child-"`, reclaims
 each match via `SandboxRuntime::reclaim_orphaned_child()`, and inserts successes into `task_branches_`.
 
-`tests/test_task_branch_durability_recovery.cpp` (new, Docker-independent — never calls `run_in_task_
-branch()`, using a `FakeSurface` stand-in mirroring `tests/test_mandatory_sandbox_provider_composed.cpp`'s
-own fixture): mirrors `tests/test_ledger.cpp`'s own established "destroy + reconstruct against the SAME
+`tests/sandbox/test_task_branch_durability_recovery.cpp` (new, Docker-independent — never calls `run_in_task_
+branch()`, using a `FakeSurface` stand-in mirroring `tests/sandbox/test_mandatory_sandbox_provider_composed.cpp`'s
+own fixture): mirrors `tests/core/ledger/test_ledger.cpp`'s own established "destroy + reconstruct against the SAME
 `durable_dir`" crash-simulation methodology. Phase A binds against a durable Ledger, starts TWO task
 branches, then lets everything go out of scope (the same "at least as strong as a real crash" reasoning
 `test_ledger.cpp` itself already established, since a real process exit runs no destructors either).
@@ -226,7 +226,7 @@ cross-owner leak (the ACL check in (1)/(2) still gates it to the SAME owner), bu
 method's own documented "direct children only" scope.
 **Fix**: after the prefix match, additionally require no further `/` in the matched remainder — a direct
 child's own suffix is exactly `<id>-<seq>` (never containing `/`); any deeper descendant always does.
-**Proof it was real**: added Phase D (`tests/test_task_branch_durability_recovery.cpp`, checks [5]/[6]) —
+**Proof it was real**: added Phase D (`tests/sandbox/test_task_branch_durability_recovery.cpp`, checks [5]/[6]) —
 builds a genuine grandchild via direct `Ledger::branch_from()` calls (bypassing the tool surface
 entirely, the same way any other lower-level caller could), simulates a crash, reconstructs, and asserts
 the grandchild is correctly left an unrecovered orphan while the true direct child is still recovered

@@ -566,7 +566,7 @@ const copy = {
       </>
     ),
     s7NoteCite: (
-      <>tests/test_rt_agent_session_streaming_and_events.cpp — S1 (streamed deltas → model_delta events), A2 (the full non-streaming success-path sequence)</>
+      <>tests/rt/agent_session/test_rt_agent_session_streaming_and_events.cpp — S1 (streamed deltas → model_delta events), A2 (the full non-streaming success-path sequence)</>
     ),
   },
   vi: {
@@ -1097,7 +1097,7 @@ const copy = {
       </>
     ),
     s7NoteCite: (
-      <>tests/test_rt_agent_session_streaming_and_events.cpp — S1 (delta streaming → sự kiện model_delta), A2 (toàn bộ chuỗi thành công không streaming)</>
+      <>tests/rt/agent_session/test_rt_agent_session_streaming_and_events.cpp — S1 (delta streaming → sự kiện model_delta), A2 (toàn bộ chuỗi thành công không streaming)</>
     ),
   },
 } as const;
@@ -1418,7 +1418,7 @@ export function ApiRuntimeReference() {
           </RevealItem>
 
           <RevealItem>
-            <CodePanel filename="tests/test_rt_agent_session_tool_call_hook.cpp">
+            <CodePanel filename="tests/rt/agent_session/test_rt_agent_session_tool_call_hook.cpp">
               {highlightCpp(toolCallHookExampleSnippet)}
             </CodePanel>
           </RevealItem>

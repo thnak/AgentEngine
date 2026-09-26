@@ -12,7 +12,7 @@
   `include/agentengine/trust/policy_reachability.hpp` (`capability_kind_name()`'s own exhaustive
   switch extended), `include/agentengine/sandbox/mandatory_sandbox_provider.hpp` (the four task-branch
   `Tool<>` conformers gain a real `Capabilities<...>` ceiling; capability-gating comment block
-  rewritten), `tests/test_task_branch_tools.cpp` (existing real-pipeline section updated to grant the
+  rewritten), `tests/sandbox/test_task_branch_tools.cpp` (existing real-pipeline section updated to grant the
   new capabilities; new section added proving the fail-closed property). No other file touched.
 - **Related specs:** `decisions/ADR-114-task-branch-tools-promotion.md` §2 (the question this closes,
   named there as real, disclosed follow-on work, not silently skipped), `decisions/ADR-009-capability-
@@ -68,7 +68,7 @@ sufficient. Giving the tools a real ceiling makes this a genuine DOUBLE gate: th
 opt-in, unchanged, PLUS a new static requirement that the calling session's own granted `CapabilitySet`
 (`AgentSession::set_capabilities()`, which defaults to a genuinely empty `CapabilitySet::grant_root({})`
 when never called — never to "unrestricted") actually holds `cap::TaskBranch`/`cap::TaskBranchCommit`.
-Confirmed directly, not assumed: `tests/test_task_branch_tools.cpp`'s own pre-existing real-pipeline
+Confirmed directly, not assumed: `tests/sandbox/test_task_branch_tools.cpp`'s own pre-existing real-pipeline
 section ([6]) passed a session's capabilities as `CapabilitySet::grant_root({})` — genuinely empty —
 and that call would now be REJECTED by `invoke_tool()`'s own "no leaked capability" step if left
 unchanged. This is a real, disclosed **behavior change** to an API surface ADR-114 shipped, not a purely
@@ -76,13 +76,13 @@ additive one.
 
 **Decision: make the change now, not defer it again.** ADR-114 landed the SAME DAY as this ADR, and its
 own §5/§6 name zero real production callers of `bind_task_branch_tools()` anywhere outside
-`tests/test_task_branch_tools.cpp` itself (confirmed by search, matching that ADR's own disclosed
+`tests/sandbox/test_task_branch_tools.cpp` itself (confirmed by search, matching that ADR's own disclosed
 scope). This is the lowest-risk moment this contract will ever be to change — before any real host
 outside this test file has adopted the old, single-gate behavior. Deferring again would only grow the
 number of real callers that would eventually need to be migrated onto the double-gate contract, for no
 offsetting benefit: the two-tag split, the fieldless-marker shape, and the exact wiring were already
 fully designed and reasoned about (§2 above), so there was no remaining design uncertainty to wait out.
-The one real cost — updating `tests/test_task_branch_tools.cpp`'s own section [6] to grant both tags —
+The one real cost — updating `tests/sandbox/test_task_branch_tools.cpp`'s own section [6] to grant both tags —
 is a three-line fix to the one file that needed it.
 
 **Why a double gate, not a straight swap.** The existing dynamic gate (`is_bound()` AND
@@ -120,7 +120,7 @@ is rewritten to describe the new double-gate contract in full, including the exa
 (`tool.capability_not_held`, from `tool_pipeline.hpp`'s own step 4/7) and an explicit note that this is
 a disclosed behavior change from this file's own ADR-114 original.
 
-`tests/test_task_branch_tools.cpp`: section [6]'s `held` `CapabilitySet` now grants both
+`tests/sandbox/test_task_branch_tools.cpp`: section [6]'s `held` `CapabilitySet` now grants both
 `cap::TaskBranch{}` and `cap::TaskBranchCommit{}` (previously empty — the exact grant that would now
 fail). A new section [7] proves the fail-closed direction: a session that calls `bind_sandbox()` +
 `bind_task_branch_tools()` (the dynamic gate, satisfied) but is given an explicitly empty
@@ -132,7 +132,7 @@ nothing is spent on a call that never executes).
 
 ## 4. Verification
 
-`tests/test_task_branch_tools.cpp` rebuilt and run against a REAL Docker daemon (Windows/MSVC):
+`tests/sandbox/test_task_branch_tools.cpp` rebuilt and run against a REAL Docker daemon (Windows/MSVC):
 **ALL CHECKS PASSED**, including the updated section [6] (now granting both tags) and the new section
 [7] (the fail-closed proof). Sanity-checked the new test the same way this design line always does:
 temporarily reverted `StartTaskBranchTool`'s ceiling back to `Tool<StartTaskBranchTool>` (no

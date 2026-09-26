@@ -415,13 +415,13 @@ only. It does not extend fan-out into a `function`-kind executor body's own nest
   loop — MUST-FIX 4's corrected inventory) now call this one shared method instead of each
   maintaining its own inline loop; the codeact-ask replay site (a single call, never a batch) is
   untouched, as scoped.
-- **`tests/test_tool_batch_partition.cpp`** (new, 20 checks): `partition_batch()` in complete
+- **`tests/core/tools/test_tool_batch_partition.cpp`** (new, 20 checks): `partition_batch()` in complete
   isolation — the eligibility gate, `ExclusivityGroup<Name>` members correlating into one class,
   `captures_session_state` forcing sequential even inside an eligible batch (built against a real
   `make_tool_descriptor_with_invoke<T>()` descriptor, the same shape `ScheduleWakeupTool` uses,
   proving MUST-FIX 1's fix against the actual hazard named), unresolved-tool-name fail-closed
   behavior, and the empty-batch case.
-- **`tests/test_tool_batch_parallel_dispatch.cpp`** (new, 3 claims, real `AgentSession` round-trips):
+- **`tests/core/tools/test_tool_batch_parallel_dispatch.cpp`** (new, 3 claims, real `AgentSession` round-trips):
   (1) two independent `Parallelizable` calls proven to run on different OS threads at the same time
   via a rendezvous (each blocks until it observes the other has started); (2) two
   `ExclusivityGroup<"db-write">` calls proven to NEVER overlap via an instrumented concurrent-count

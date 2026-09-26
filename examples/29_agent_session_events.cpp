@@ -13,7 +13,7 @@
 // This is the exact mechanism an AG-UI/A2A/SSE bridge (see the Events API page) projects onto its
 // own wire format; nothing about this event stream is bridge-specific.
 //
-// Mirrors tests/test_rt_agent_session_streaming_and_events.cpp's S1 (streamed deltas -> model_delta
+// Mirrors tests/rt/agent_session/test_rt_agent_session_streaming_and_events.cpp's S1 (streamed deltas -> model_delta
 // events) and A2 (the full non-streaming success-path sequence), combined into one narrative program.
 // Fully offline: the scripted ChatClientT below pushes its whole reply synchronously, no background
 // thread, no network.

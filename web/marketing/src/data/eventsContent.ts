@@ -187,7 +187,7 @@ export const runEventKindRows: Record<Lang, RunEventKindRow[]> = {
 
 // ------------------------------------------------------------------------------------------------
 // workflow_event_kind: 19 values. Real/proven rows cite the actual W-numbered test function
-// (tests/test_rt_workflow_event_stream.cpp) or a real example that observes the kind; anything this
+// (tests/workflow/test_rt_workflow_event_stream.cpp) or a real example that observes the kind; anything this
 // review could not directly trace says so rather than guessing.
 // ------------------------------------------------------------------------------------------------
 
@@ -200,7 +200,7 @@ export const workflowEventKindRows: Record<Lang, WorkflowEventKindRow[]> = {
   en: [
     {
       kind: "workflow_run_started · workflow_run_completed · workflow_run_failed",
-      today: "Real -- W1 (tests/test_rt_workflow_event_stream.cpp) and examples/09, /25.",
+      today: "Real -- W1 (tests/workflow/test_rt_workflow_event_stream.cpp) and examples/09, /25.",
     },
     {
       kind: "workflow_run_suspended · workflow_run_resumed",
@@ -224,15 +224,15 @@ export const workflowEventKindRows: Record<Lang, WorkflowEventKindRow[]> = {
     },
     {
       kind: "route_selected",
-      today: "Real -- proven by w6_route_selected_events in tests/test_rt_workflow_event_stream.cpp.",
+      today: "Real -- proven by w6_route_selected_events in tests/workflow/test_rt_workflow_event_stream.cpp.",
     },
     {
       kind: "request_port_opened · request_port_resolved",
-      today: "Real -- proven by w3_request_port_events in tests/test_rt_workflow_event_stream.cpp.",
+      today: "Real -- proven by w3_request_port_events in tests/workflow/test_rt_workflow_event_stream.cpp.",
     },
     {
       kind: "checkpoint_saved",
-      today: "Real -- proven by w4_checkpoint_saved in tests/test_rt_workflow_event_stream.cpp.",
+      today: "Real -- proven by w4_checkpoint_saved in tests/workflow/test_rt_workflow_event_stream.cpp.",
     },
     {
       kind: "merge_completed · merge_conflict",
@@ -250,7 +250,7 @@ export const workflowEventKindRows: Record<Lang, WorkflowEventKindRow[]> = {
   vi: [
     {
       kind: "workflow_run_started · workflow_run_completed · workflow_run_failed",
-      today: "Thật -- W1 (tests/test_rt_workflow_event_stream.cpp) và examples/09, /25.",
+      today: "Thật -- W1 (tests/workflow/test_rt_workflow_event_stream.cpp) và examples/09, /25.",
     },
     {
       kind: "workflow_run_suspended · workflow_run_resumed",
@@ -274,15 +274,15 @@ export const workflowEventKindRows: Record<Lang, WorkflowEventKindRow[]> = {
     },
     {
       kind: "route_selected",
-      today: "Thật -- được chứng minh bởi w6_route_selected_events trong tests/test_rt_workflow_event_stream.cpp.",
+      today: "Thật -- được chứng minh bởi w6_route_selected_events trong tests/workflow/test_rt_workflow_event_stream.cpp.",
     },
     {
       kind: "request_port_opened · request_port_resolved",
-      today: "Thật -- được chứng minh bởi w3_request_port_events trong tests/test_rt_workflow_event_stream.cpp.",
+      today: "Thật -- được chứng minh bởi w3_request_port_events trong tests/workflow/test_rt_workflow_event_stream.cpp.",
     },
     {
       kind: "checkpoint_saved",
-      today: "Thật -- được chứng minh bởi w4_checkpoint_saved trong tests/test_rt_workflow_event_stream.cpp.",
+      today: "Thật -- được chứng minh bởi w4_checkpoint_saved trong tests/workflow/test_rt_workflow_event_stream.cpp.",
     },
     {
       kind: "merge_completed · merge_conflict",
@@ -527,7 +527,7 @@ struct WorkflowLiveEvent {
     std::size_t                     in_flight_message_count = 0;
 };`;
 
-export const liveViewTestSnippet = `// tests/test_rt_workflow_live_view.cpp:147-171 (trimmed) -- a human-in-the-loop graph:
+export const liveViewTestSnippet = `// tests/workflow/test_rt_workflow_live_view.cpp:147-171 (trimmed) -- a human-in-the-loop graph:
 // draft -> ready -> approve (a request_port) -> publish
 auto viewer = sup.enable_live_view(std::pmr::get_default_resource());
 WorkflowResult r1 = drive(sup.run_workflow(RunWorkflow{text_message("in")}));

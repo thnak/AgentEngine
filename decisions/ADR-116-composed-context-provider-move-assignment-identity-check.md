@@ -53,7 +53,7 @@ move-assignment operator `private`, friended only to `agentengine::rt::AgentSess
 rejected: access control can't distinguish "assignment reached through
 `session->history_provider()`" from "assignment on a bare, standalone local variable" (both are
 ordinary calls to the same `operator=`, from code that is equally *not* a member of `AgentSession`
-either way). Making `operator=` private would have silently broken `tests/test_session_builder.cpp`'s
+either way). Making `operator=` private would have silently broken `tests/core/context/test_session_builder.cpp`'s
 own B21a (self-move-assignment through the accessor — the exact regression test for a real,
 previously-fixed "`engaged_` not reset" bug) with no legitimate substitute, since self-move-
 CONSTRUCTION isn't a meaningful operation and B21a's whole point is testing `operator=`'s own guard.
@@ -117,7 +117,7 @@ subtly wrong one.
 
 ## 4. Verification
 
-`tests/test_session_builder.cpp`'s B20 used to demonstrate the cross-session transfer *succeeding* (it
+`tests/core/context/test_session_builder.cpp`'s B20 used to demonstrate the cross-session transfer *succeeding* (it
 predates this ADR; round 5's own red-team wrote it to check the move MECHANICS were sound, not that the
 transfer itself was safe). Rewritten to prove the opposite, using the exact same statement:
 `built2->session().history_provider() = std::move(built1->session().history_provider());` — where
@@ -207,7 +207,7 @@ constructor deliberately left `owner_` at its default, reasoning "not yet embedd
 member slot") that still held session1's live content — one side being untagged was enough to skip the
 refusal regardless of the other side's own tag. `session2.history_provider() = std::move(smuggler);`
 then leaked session1's content into session2 in two ordinary-looking lines, with zero further
-trickery. Empirically confirmed: a new permanent test (`tests/test_session_builder.cpp`'s B23) failed
+trickery. Empirically confirmed: a new permanent test (`tests/core/context/test_session_builder.cpp`'s B23) failed
 against the pre-fix code. A second variant (B24) proved a THIRD hop — through a bare `relay` variable
 populated via `operator=` rather than move-construction — independently required `operator=` itself
 (not just the move constructor) to propagate an untagged destination's tag, or the bypass reopens one

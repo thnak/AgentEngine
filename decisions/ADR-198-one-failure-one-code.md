@@ -8,7 +8,7 @@
 - **Touches**: `include/agentengine/core/run_event.hpp` (`RunFailed::stage`), `include/agentengine/rt/agent_session.hpp`
   (the `run.chat_failed`, `run.context_unavailable` and `run.turn_denied` emit sites),
   `tools/test_driver/test_driver.hpp` (payload), `tests/scenarios/scripted_model_failure.json`,
-  `tests/test_approval_resume.cpp` F1.
+  `tests/core/tools/test_approval_resume.cpp` F1.
 
 ## 1. The defect
 
@@ -40,7 +40,7 @@ retry. The category is not lost — it moved to `stage`.
 
 ## 4. Evidence
 
-`tests/test_approval_resume.cpp` F1: a scripted `provider.overloaded` failure yields exactly one `run_failed` whose
+`tests/core/tools/test_approval_resume.cpp` F1: a scripted `provider.overloaded` failure yields exactly one `run_failed` whose
 `error_code` equals the result's code, with `stage == "run.chat_failed"`. `scenario_scripted_model_failure` expects
 `{"error_code":"provider.overloaded","message":"overloaded","stage":"run.chat_failed"}`; with the old emit it fails.
 
@@ -58,7 +58,7 @@ three causes, deliberately: the code already names the cause (`chat_client.multi
 `chat_client.undeclared_tool_call_leak`), and `stage` answers only "where in the run" -- the model-call step. The only other stage-bearing
 emit sites (`run.context_unavailable`, `run.turn_denied`) were already single.
 
-**Evidence.** `tests/test_approval_resume.cpp` F2: a media-gate refusal yields exactly one `run_failed`, whose
+**Evidence.** `tests/core/tools/test_approval_resume.cpp` F2: a media-gate refusal yields exactly one `run_failed`, whose
 `error_code` equals the result's code, with `stage == "run.chat_failed"`. Positive control: re-adding the gate's own
 emit fails F2 (two events), source restored from a scratchpad copy.
 

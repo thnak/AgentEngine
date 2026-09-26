@@ -25,12 +25,12 @@ exit-criterion proof.
 | Item | State |
 |---|---|
 | `ChatClient` concept (`include/agentengine/core/chat_client.hpp:60-65`) | **Vocabulary only, stale M0 scaffolding.** Requires `capabilities()`, `chat(ChatRequest, EffectContext&) -> result<ChatResponse>` (synchronous, not `ae::task<T>`), and an unconstrained callable `chat_stream`. `ChatRequest` (`chat_client.hpp:35-39`) carries only `messages` — no tool declarations, no structured-output schema (both real since M2's 006, just never wired back in here). `ChatClientCapabilities` (`chat_client.hpp:16-33`) is missing `stop_sequences`, `seed`, `token_counting`, `batch` from 004 §2's full bitset |
-| Mock `ChatClient` instances (M1-M4 precedent) | Real but scattered: `DummyChatClient` (`tests/smoke_vocabulary.cpp:31-39`), `EchoChatClient` (`tests/test_agent_session_isolation.cpp:44`), `RecordedChatClient` (`tests/support/recorded_chat_client.hpp`, a JSON-fixture player explicitly documented as "a test-scoped stand-in for 004 §6, not an implementation of it"). No canonical mock, none reconciled with a real backend shape yet |
+| Mock `ChatClient` instances (M1-M4 precedent) | Real but scattered: `DummyChatClient` (`tests/core/agent/smoke_vocabulary.cpp:31-39`), `EchoChatClient` (`tests/test_agent_session_isolation.cpp:44`), `RecordedChatClient` (`tests/support/recorded_chat_client.hpp`, a JSON-fixture player explicitly documented as "a test-scoped stand-in for 004 §6, not an implementation of it"). No canonical mock, none reconciled with a real backend shape yet |
 | `ChatClientId<"vendor:model">` (`core/agent.hpp:28`) | Compile-time name tag only, no binding to an endpoint, credential, or backend instance |
 | `check_chat_client_credentials` (`core/agent_registry.hpp:268-269`) | **Explicit permanent stub, always passes.** Top-of-file comment (lines 7-20) names the exact gap: "needs a real ChatClient registry, 004 — Milestone 2 builds no such registry; there is no `Engine` type yet." Confirmed: no `Engine` type exists anywhere in `include/`/`src/` |
 | `check_output_schema_enforceable` (`agent_registry.hpp:321-322`) | Stub, always passes — needs a bound `ChatClient` instance to query `structured_output_native` against |
 | `include/agentengine/protocol/openai/` | Empty except a 4-line README pointing at 004 §3. No headers, nothing compiled. No comparable directory exists for Anthropic at all |
-| Secret seam (`SecretRef`/`SecretStore`/`SecretLease`, 018 §4) | **Built, Phase A (commit `2ecc85e`).** Correction to this table's own first-pass finding: "greenfield" was true only for `include/agentengine`/`src` — it missed that Quark itself already ships a real, Accepted, tested `SecretSource`/`Secret` mechanism (`third_party/quark/include/quark/core/secret.hpp`, 020-Security §4: zeroizing buffer, non-copyable, no `std::string` conversion, `Env`/`File` adapters; `security_secret_source_test.cpp`/`security_secret_zeroize_test.cpp`). `include/agentengine/trust/secret.hpp` wraps it rather than reimplementing it (the "no second storage engine" discipline 005/025 already apply to persistence, applied here to secrets), adding only the `cap::Secret` capability gate 018 §4 requires and Quark has no opinion about. `tests/test_secret_store.cpp` (15 checks) proves the gate, per-name scoping, rotation-without-restart, and real env/file resolution |
+| Secret seam (`SecretRef`/`SecretStore`/`SecretLease`, 018 §4) | **Built, Phase A (commit `2ecc85e`).** Correction to this table's own first-pass finding: "greenfield" was true only for `include/agentengine`/`src` — it missed that Quark itself already ships a real, Accepted, tested `SecretSource`/`Secret` mechanism (`third_party/quark/include/quark/core/secret.hpp`, 020-Security §4: zeroizing buffer, non-copyable, no `std::string` conversion, `Env`/`File` adapters; `security_secret_source_test.cpp`/`security_secret_zeroize_test.cpp`). `include/agentengine/trust/secret.hpp` wraps it rather than reimplementing it (the "no second storage engine" discipline 005/025 already apply to persistence, applied here to secrets), adding only the `cap::Secret` capability gate 018 §4 requires and Quark has no opinion about. `tests/trust/test_secret_store.cpp` (15 checks) proves the gate, per-name scoping, rotation-without-restart, and real env/file resolution |
 | `CapabilityToken`/`SecretKey` (`trust/capability_token.hpp`, ADR-005) | Real, Judged, red-teamed — but **a different concept wearing a confusable name.** This is the HMAC-chain root key for cross-process capability bearer tokens (018 §8 Q2, already resolved and closed). Not 018 §4's outbound-credential seam; do not conflate when scoping this milestone |
 | `agentengine::Principal` (`trust/principal.hpp:9-12`) | Real, bare `{id, tenant_id}` struct, wired into `EffectContext`/`AgentSession`/`MemoryOrigin` (unchanged since M4). No registry, no auth mechanism producing a `Principal` from any inbound request — every test-constructed `Principal` today is hand-built C++ |
 | `EffectContext` (`core/effect_context.hpp:16-39`) | Real, carries `principal`, `capabilities`, `bound_capabilities`, `deadline`, `trace_id`/`span_id`, `run_id`/`turn_index` (since M4). This is exactly the parameter 018 §4's `SecretStore::resolve(SecretRef, EffectContext&)` should hang off of — nothing does yet |
@@ -201,7 +201,7 @@ exit-criterion proof.
   reentrancy hazard ADR-018's own residual risks name (that hazard is specific to draining a stream
   opened via a real cross-actor `ask_stream<F>`; research directly into `reply_stream.hpp`/
   `ask_stream_coawait_real_scheduler_test.cpp` confirmed this before writing the adapter). Proven end to
-  end against a real, non-mock `ChatClient` conformer (`tests/test_chat_client_stream.cpp`,
+  end against a real, non-mock `ChatClient` conformer (`tests/core/chat/test_chat_client_stream.cpp`,
   `StreamingWordChatClient`) whose `chat_stream()` streams for real across a background producer
   thread — the same shape a live HTTP/SSE backend (Phase D/E) will use: FIFO/lossless delivery under
   real cross-thread backpressure (ring capacity deliberately smaller than the item count, so the
@@ -404,10 +404,10 @@ format was sourced directly from the official Anthropic C# SDK's generated model
     with `prompt_caching` declared and a system message actually round-trips over a real TLS
     connection without the server rejecting the shape, `test_anthropic_chat_client_live.cpp`).
 
-Proven in `tests/test_anthropic_chat_client_translation.cpp` (pure translation/parsing logic, offline,
+Proven in `tests/protocol/anthropic/test_anthropic_chat_client_translation.cpp` (pure translation/parsing logic, offline,
 literal wire-format JSON — including the message-reshaping, real-JSON-object tool input, thinking/
 redacted_thinking parsing, cumulative-usage reduce, and named-event SSE splitting) and
-`tests/test_anthropic_chat_client_live.cpp` (end-to-end against a real local TLS server, both `chat()`
+`tests/protocol/anthropic/test_anthropic_chat_client_live.cpp` (end-to-end against a real local TLS server, both `chat()`
 and `chat_stream()`, including secret rotation, capability denial, and the system+caching request
 shape).
 
@@ -512,7 +512,7 @@ into the schema, since nothing in the research confirms Anthropic requires or ev
 
 ### Phase G — Recording and replay (004 §6, decision 8) — **DONE**
 
-Shared foundation, built first and proved standalone (8/8 checks, `tests/test_chat_recording_codec.cpp`):
+Shared foundation, built first and proved standalone (8/8 checks, `tests/core/chat/test_chat_recording_codec.cpp`):
 `include/agentengine/core/chat_recording.hpp` — a dependency-free JSON codec (built on
 `core/json_value.hpp`, never nlohmann — CONVENTIONS.md's core dependency tier) for the full
 `ChatCallRecording` envelope: every `ContentItem` variant alternative (all 9, including `Media`'s
@@ -536,7 +536,7 @@ I/O (`write_chat_call_recording`/`read_chat_call_recording`) included.
   re-delivering it unchanged (same order, same boundaries) through a new stream, then mirrors Inner's
   terminal condition onto that new stream (`Closed`/`Failed` exactly, `Cancelled`/`DeadlineExceeded`
   translated through `fail()` since `ReplyStreamProducer` exposes no producer-side setter for either —
-  named honestly, not silently approximated). Proved in `tests/test_recording_chat_client.cpp` (5
+  named honestly, not silently approximated). Proved in `tests/core/chat/test_recording_chat_client.cpp` (5
   scenarios: success and failure `chat()` calls recorded and passed through unchanged, a multi-chunk
   stream recorded with order/content preserved on both the recording and the caller-facing delivery,
   and `stream_terminal` matching the inner stream's real terminal).
@@ -552,7 +552,7 @@ I/O (`write_chat_call_recording`/`read_chat_call_recording`) included.
   cadence reproduces exactly") via an injectable `SleepFn` (same seam shape as `ResilientChatClient`'s
   jitter source — tests inject a non-blocking fake and assert the exact deltas it was asked to wait),
   then maps the recorded `stream_terminal` back to a real stream terminal; called against a unary-mode
-  recording it fails immediately without pushing an item. Proved in `tests/test_replay_chat_client.cpp`
+  recording it fails immediately without pushing an item. Proved in `tests/core/chat/test_replay_chat_client.cpp`
   (8 scenarios covering both `chat()` outcomes, both mode-mismatch fail-closed paths, ordered
   multi-chunk replay, exact inter-chunk timing via the injected fake sleep, and all four
   `stream_terminal` → real-terminal mappings).
@@ -587,7 +587,7 @@ milestone can build without 011/012/013 (decision 1).
   `principal_admitted_for(caller, owner)` is the one shared ownership predicate — exact match, or a
   single-hop `on_behalf_of` match, never across tenants — Phase H2 and any future session-adjacent
   surface (memory, sandbox — Phase I) both reuse it rather than re-deriving the rule. Proved standalone
-  in `tests/test_principal_delegation.cpp` (24 checks: factory kinds, tenant/kind/depth preservation
+  in `tests/trust/test_principal_delegation.cpp` (24 checks: factory kinds, tenant/kind/depth preservation
   across chained delegation, the depth-bound failing closed, and `principal_admitted_for`'s exact-match/
   single-hop-delegation/cross-tenant/forged-delegation/two-hop-rejection cases).
 - **H2. Done.** Admission check at the `AgentSession` actor boundary (018 §2), checked FIRST in
@@ -656,7 +656,7 @@ native_jail backend).
     both of its principals share one tenant — only the different-tenant, same-id case was
     untested. Fixed: both functions now fold `tenant_id` into their derivation (their own comments
     in `memory.hpp` carry the full story). Proven — failure class closed, same-tenant behavior
-    unaffected — in the new `tests/test_memory_cross_tenant_isolation.cpp`.
+    unaffected — in the new `tests/memory/test_memory_cross_tenant_isolation.cpp`.
   - **Sandbox workspace (008/M2-M3).** Narrower than the other two legs, named explicitly: unlike
     memory, no `AgentSession`-level or principal/tenant-keyed mount-naming convention exists
     anywhere in the tree for sandbox workspaces yet (`AgentSession` wires no workspace `Mount` at
@@ -665,7 +665,7 @@ native_jail backend).
     same bug. What IS real and already proven (M2/M3, unchanged by this phase): the generic
     `Mount`/capability-mismatch mechanism `mount_read`/`mount_write` enforce — two distinct
     `mount_id`s are rejected outright against each other, before any store access
-    (`tests/test_worktree_mount.cpp`). Cross-tenant denial at this surface today reduces to that
+    (`tests/worktree/test_worktree_mount.cpp`). Cross-tenant denial at this surface today reduces to that
     same generic, already-real mechanism; a dedicated tenant-keyed naming convention for sandbox
     workspaces (the thing that would let this leg's proof mirror memory's exactly) doesn't exist
     to build against yet, named here rather than silently assumed complete.
@@ -674,9 +674,9 @@ native_jail backend).
 - **I2. Done, requiring no new code.** Delegation attenuation (G5) — "a derived principal/capability
   set never gains authority its parent lacked" — is a composition of two independently real, already-
   tested mechanisms: capability attenuation (007 G3, real and red-teamed since M2 —
-  `tests/test_capability_enforcement.cpp`'s C2/C3/R-C3 prove every widening axis of
+  `tests/trust/test_capability_enforcement.cpp`'s C2/C3/R-C3 prove every widening axis of
   `CapabilitySet::attenuate()` is rejected, not just narrowing accepted) and principal attenuation
-  (H1, this milestone — `tests/test_principal_delegation.cpp`'s H1-R9/R10 prove `derive_on_behalf_of()`
+  (H1, this milestone — `tests/trust/test_principal_delegation.cpp`'s H1-R9/R10 prove `derive_on_behalf_of()`
   never elevates tenant or kind). Together they cover the full claim at 007's existing scope; full
   A2A/MCP delegation chains (018 §7 G5's complete text) still need 012/011 (M7), matching decision 10.
 
@@ -732,7 +732,7 @@ the native_jail backend).
   struct: no field anywhere in that schema is capable of carrying request/response/secret content.
 - **J3 (004 §7 G2).** Done, and narrower than the gate's full text — a real, previously-unnoted gap
   found while building this proof, named rather than silently claimed covered.
-  `tests/test_chat_client_stream_cancellation_bounded.cpp` (traced finding, quantified in J3-R3..R5)
+  `tests/core/chat/test_chat_client_stream_cancellation_bounded.cpp` (traced finding, quantified in J3-R3..R5)
   found that `run_stream_worker` calls `perform_provider_https_exchange(..., /*stop_token=*/
   std::nullopt, ...)` at BOTH the OpenAI and Anthropic `chat_stream()` call sites — dropping the
   consumer's `stream<T>` cancels the RING (`core/stream.hpp`) but has no wiring back into the
@@ -790,7 +790,7 @@ dropped):**
   (copies share stop-state — no watcher thread, no polling, no extra allocation);
   `stream<T>::cancel()`/`~stream()` request stop; both backends hand
   `stream_producer<T>::stop_token()` to `perform_provider_https_exchange`, reaching Phase C2's
-  already-proven mid-flight bound. `tests/test_chat_client_stream_cancellation_bounded.cpp`'s
+  already-proven mid-flight bound. `tests/core/chat/test_chat_client_stream_cancellation_bounded.cpp`'s
   J3-R3/R4/R5 are the SAME measurements inverted, deliberately kept in the same currency rather than
   replaced by a generic "it cancels" check: **1 of 6** drip chunks delivered before teardown, against
   6 of 6 before. The ring itself is untouched — a parallel signal for the I/O layer, so any producer
@@ -806,7 +806,7 @@ dropped):**
   `decisions/ADR-016-provider-egress-address-policy.md`: the provider path resolves through
   `resolve_host` (no blocked-range filter — that table is an SSRF defence and the provider
   destination is deployment config, never guest-supplied, never model-derived per I3) and gained an
-  opt-in `ProviderTransport::plaintext_http`. `tests/test_llamacpp_live_e2e.cpp` drives the real
+  opt-in `ProviderTransport::plaintext_http`. `tests/protocol/openai/test_llamacpp_live_e2e.cpp` drives the real
   `OpenAIChatClient` against a real `llama-server` — chat, streaming, tool calling, the tool-result
   turn, structured output — with no proxy and no injected resolver.
   **`Remote agent as ChatClient`** (004 §3's other row) still deferred: needs 012 (M7).
@@ -839,7 +839,7 @@ dropped):**
   `parse_streaming_response_into_updates` is now a WRAPPER over the incremental accumulator, so
   the two paths are one decoder — which is also why both large offline translation suites re-prove
   the new decoder, and passed unchanged. Measured
-  (`tests/test_chat_client_stream_incremental.cpp`): OpenAI first item **131 ms** against a
+  (`tests/core/chat/test_chat_client_stream_incremental.cpp`): OpenAI first item **131 ms** against a
   **751 ms** stream; Anthropic **263 ms** against **883 ms**.
 - **10⁴-scale gates and full 023 baselining** — stay `TBD-baselined` project-wide until M8, same
   status quo every earlier milestone established.
@@ -853,7 +853,7 @@ dropped):**
   declining: `minimal` is excluded (OpenAI-only), and `nullopt` ("emit nothing") stays distinct from
   `off` ("explicitly disable"). What decided option (c) over (b) was live evidence — the level could
   not be shown to change anything on the OpenAI surface, but IS structurally observable on Anthropic's
-  (`['thinking','text']` vs `['text']`). `tests/test_reasoning_effort_portability.cpp` drives BOTH
+  (`['thinking','text']` vs `['text']`). `tests/protocol/anthropic/test_reasoning_effort_portability.cpp` drives BOTH
   backends from the same enumerators (33 assertions, G1-G7); `test_openrouter_live_e2e.cpp` OR-ANT-8 is
   the live G8: **off -> 0 Reasoning items, high -> 1**, same model, same question.
   **Notable:** the fail-closed branch fired on the FIRST real configuration it met -- this file's own
@@ -872,7 +872,7 @@ dropped):**
   4-cache_control-blocks hard invariant, and its cache-TTL constructor option) landed 2026-08-07, built
   by two parallel subagents against that same doc. ~~Also still flags an untested llama.cpp
   structured-output wire-shape compatibility risk~~ — **RESOLVED 2026-08-07 with live evidence.** A
-  real `llama-server` was available and `tests/test_llamacpp_live_e2e.cpp` LC-4 drives Phase D4's
+  real `llama-server` was available and `tests/protocol/openai/test_llamacpp_live_e2e.cpp` LC-4 drives Phase D4's
   `translate_output_schema` output — `response_format` including the forced `additionalProperties:
   false` and `strict:true` — through llama.cpp's own grammar-constrained decoder, which accepts it and
   returns a schema-conforming object. The suspected incompatibility does not exist.

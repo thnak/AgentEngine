@@ -77,7 +77,7 @@ that is not an object is refused by `tool_call_request_of()` as well, with the s
 
 ## 3. Proof
 
-`tests/test_tool_call_malformed_arguments.cpp` (ctest `test_tool_call_malformed_arguments`), with a
+`tests/core/tools/test_tool_call_malformed_arguments.cpp` (ctest `test_tool_call_malformed_arguments`), with a
 probe tool whose only argument is `std::optional<std::string>` — so `{}` is a valid call and only a
 real step-2 refusal stops it:
 

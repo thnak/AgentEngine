@@ -11,7 +11,7 @@
 - **Narrows one consequence of ADR-171. Reopens none of its decisions.**
 - **Files**: `include/agentengine/sandbox/ustar_writer.hpp` (new),
   `include/agentengine/sandbox/docker_execution_surface.hpp`,
-  `tests/test_ustar_writer.cpp` (new), `tests/test_docker_seed_ownership.cpp` (new),
+  `tests/sandbox/test_ustar_writer.cpp` (new), `tests/sandbox/execution_surface/test_docker_seed_ownership.cpp` (new),
   `tests/CMakeLists.txt`, `.github/workflows/ci.yml`.
 
 ---
@@ -283,7 +283,7 @@ docker exec c sh -c 'cat note.txt && echo -n " + turn-2 addition" >> note.txt'
 #   without $ISO:  turn-1 content                                              [exit=0]
 ```
 
-**`tests/test_ustar_writer.cpp` — 55 checks, offline.** Needs no daemon, network or privileges, so
+**`tests/sandbox/test_ustar_writer.cpp` — 55 checks, offline.** Needs no daemon, network or privileges, so
 it runs on every CI leg including the ones with no container runtime at all. U1-U6 assert the archive
 bytes: uid/gid 0 and uname/gname `root`; the POSIX `ustar\0` + `00` magic specifically, not GNU tar's
 older `ustar  \0`; the checksum a reader recomputes with the field read as eight spaces; block
@@ -295,7 +295,7 @@ U9-U11 are the regression guards for H1: `config..bak` and `..hidden` are archiv
 component is still refused, and a long path goes through PAX while one with a legal prefix split
 still uses the prefix field and emits no PAX header.
 
-**`tests/test_docker_seed_ownership.cpp` — 17 checks, live.** S1 reads the seeded file's uid from
+**`tests/sandbox/execution_surface/test_docker_seed_ownership.cpp` — 17 checks, live.** S1 reads the seeded file's uid from
 **inside the container** rather than inferring it from what we sent. S3 is issue #68 itself: the
 container writes a file it did not create, with `--cap-drop ALL` in place, and a second check
 confirms the write landed so a zero exit cannot be a false pass. S6 drives the real `reset()` →

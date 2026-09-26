@@ -4,7 +4,7 @@
 (§6 point 3, the Reasoning/Text half — see §8) and Phase 2 (§6 point 4, the text-derived
 declassifier, including the 007 §4 amendment it required — see §9). Every falsifiable claim in §5 now
 has BOTH a spike/red-team-level verdict and a real-code regression test behind it, including the
-confused-deputy scenario (§4b Finding 1) as a permanent test (`tests/test_tool_pipeline.cpp`'s
+confused-deputy scenario (§4b Finding 1) as a permanent test (`tests/core/tools/test_tool_pipeline.cpp`'s
 `ADR-023 P2-T2`). "Judged" here does not mean §7's residuals are closed — format-coverage gaps
 (Llama 3.1 native syntax, the fail-closed delimiter-collision cost) and the inherited WASM-codec perf
 question (G6) remain real, named, and open, matching this project's own precedent (e.g. ADR-006,
@@ -250,10 +250,10 @@ Conclusion unchanged; reasoning corrected.
   `transport`) and `detail::apply_response_format_scan(Message)`, called from `chat()` only when
   armed — Finding 6's "operator-armed, never content-triggered" honored exactly. `chat_stream()` is
   untouched (Finding 7, streaming stays out of scope).
-- Tests: `tests/test_response_format_codec.cpp` (30 checks: all 4 real formats including a full
+- Tests: `tests/core/chat/test_response_format_codec.cpp` (30 checks: all 4 real formats including a full
   multi-channel Harmony turn proving ORDER is preserved, 2 negative controls, 2 adversarial controls —
   delimiter-in-args and a dangling/truncated block, both proven fail-closed) and 3 new checks appended
-  to `tests/test_openai_chat_client_translation.cpp` (the armed splice, a clean-content no-op, and
+  to `tests/protocol/openai/test_openai_chat_client_translation.cpp` (the armed splice, a clean-content no-op, and
   proof that structured `ToolCall` items are never touched). 150/150 project tests pass, zero
   regressions, including both live-network backend tests.
 - What's still NOT built: everything in §6 point 4 (the tool-call declassification half) and
@@ -302,7 +302,7 @@ own §6 left open.
   name keeps the Phase-1 diagnostic (hygiene, not safety — `invoke_tool` step 1 would reject an
   unknown name regardless). The actual trust decision stays entirely in `invoke_tool` step 5, never in
   the `ChatClient`.
-- **Tests, including the load-bearing one**: `tests/test_tool_pipeline.cpp` gained the full
+- **Tests, including the load-bearing one**: `tests/core/tools/test_tool_pipeline.cpp` gained the full
   declassifier suite — a positive control (a capability-free, pure tool auto-declassifies, with a
   tripwire decider proving `approve()` is never even consulted) and, critically, `ADR-023 P2-T2`: a
   `text_derived` call to a real, `NetOut`-capable tool that ALSO declares `Approval<never_require>`
@@ -313,7 +313,7 @@ own §6 left open.
   matching exactly what the tool's declaration converts to, confirmed by rerunning and seeing the
   right checks pass for the right reason.) `vendor_structured` behavior is proven byte-for-byte
   unaffected for both a `never_require` and a capability-bearing tool. `tests/
-  test_response_format_codec.cpp` and `tests/test_openai_chat_client_translation.cpp` extended with
+  test_response_format_codec.cpp` and `tests/protocol/openai/test_openai_chat_client_translation.cpp` extended with
   candidate-population and promotion/non-promotion checks.
 - Full project build + `ctest`: **150/150 tests pass**, zero regressions, including both live-network
   backend tests.

@@ -7,7 +7,7 @@
 // regardless of whether the wrapped `Ms` is itself copyable). This probe deliberately composes the
 // REAL, production `SandboxToolProvider` (src/backends/native_jail/sandbox_tool_provider.hpp,
 // ADR-096) rather than a synthetic minimal stand-in, to exercise the exact composed type
-// `tools/sandboxed_shell_chat.cpp` and `tests/test_composed_sandbox_providers_live.cpp` both use as a
+// `tools/sandboxed_shell_chat.cpp` and `tests/sandbox/execution_surface/test_composed_sandbox_providers_live.cpp` both use as a
 // real session's `HistoryProviderT` -- not because `SandboxToolProvider`'s own non-copyability is
 // what causes the deletion. That deleted copy-assignment makes `AgentSession::fork_from()`'s
 // `history_provider_ = source.history_provider_;` (include/agentengine/rt/agent_session.hpp) fail to
@@ -30,7 +30,7 @@
 // statement now compiles but is a RUNTIME no-op, not a compile error -- `operator=` refuses the
 // transfer whenever both sides are tagged with two different sessions' own addresses (an identity tag
 // `AgentSession::history_provider()` stamps on every call), leaving both sessions' own provider state
-// untouched. Proven by `tests/test_session_builder.cpp`'s own B20, a runtime test, not a `try_compile()`
+// untouched. Proven by `tests/core/context/test_session_builder.cpp`'s own B20, a runtime test, not a `try_compile()`
 // gate like this one -- a compile-fail idiom cannot express "compiles, but does nothing."
 
 #include "agentengine/core/chat_client.hpp"
@@ -47,7 +47,7 @@ namespace {
 // Trivial, minimal ChatClient conformer -- never actually invoked (fork_from() never calls the
 // chat client), only needed to satisfy AgentSession<ChatClientT, ...>'s own `ChatClient<ChatClientT>`
 // constraint so this file's `Session` alias below is well-formed. Mirrors
-// tests/smoke_vocabulary.cpp's own DummyChatClient exactly.
+// tests/core/agent/smoke_vocabulary.cpp's own DummyChatClient exactly.
 struct DummyChatClient {
     [[nodiscard]] ChatClientCapabilities capabilities() const { return {}; }
     stream<ChatResponseUpdate> chat_stream(ChatRequest const&, EffectContext&) {

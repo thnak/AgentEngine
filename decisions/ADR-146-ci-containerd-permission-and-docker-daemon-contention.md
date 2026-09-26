@@ -227,7 +227,7 @@ red test in the entire CI matrix, and the theory space narrows back to something
 when composed with `SandboxToolProvider`, on `ubuntu-latest` specifically.
 
 **Extensive real-repro effort, all of it negative** (i.e., could not reproduce):
-- Added instrumentation to the test itself (`tests/test_composed_sandbox_providers_live.cpp`) that
+- Added instrumentation to the test itself (`tests/sandbox/execution_surface/test_composed_sandbox_providers_live.cpp`) that
   dumps every tool-role reply's actual content — error message, JSON, or text — on failure only, so
   the next real CI failure is diagnosable from the log directly rather than needing another guess.
   Building this surfaced and fixed a real bug in the instrumentation's own first draft:

@@ -78,7 +78,7 @@ tools are genuinely new territory:
 
 ## 4. Properties verified, and by which test
 
-`tests/test_tool_optimizer_provider.cpp` (36 checks, all passing):
+`tests/core/context/test_tool_optimizer_provider.cpp` (36 checks, all passing):
 
 - **Declare/invoke cadence** (skill_tool_scoping.hpp's own warning: the model-declared table and the
   `invoke_tool()`-authorized table must be the same table, recomputed from the same state, same

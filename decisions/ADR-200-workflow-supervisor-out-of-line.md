@@ -75,10 +75,10 @@ with the header from `main`. CPU is the compiler process's total CPU time (the b
 
 | Translation unit | Wall before → after | CPU before → after |
 |---|---|---|
-| `tests/test_rt_workflow_supervisor.cpp` | 6.3 → 4.6 s | 17.1 → 11.2 s (−35 %) |
-| `tests/test_rt_workflow_sub_workflow.cpp` | 5.8 → 3.9 s | 15.8 → 8.6 s (−46 %) |
+| `tests/workflow/test_rt_workflow_supervisor.cpp` | 6.3 → 4.6 s | 17.1 → 11.2 s (−35 %) |
+| `tests/workflow/test_rt_workflow_sub_workflow.cpp` | 5.8 → 3.9 s | 15.8 → 8.6 s (−46 %) |
 | `examples/04_first_workflow.cpp` | 5.2 → 3.6 s | 13.3 → 6.7 s (−50 %) |
-| `tests/test_json_value.cpp` (control: no supervisor) | 1.6 → 1.6 s | 2.5 → 2.4 s |
+| `tests/core/json/test_json_value.cpp` (control: no supervisor) | 1.6 → 1.6 s | 2.5 → 2.4 s |
 
 `src/rt/workflow_supervisor.cpp` itself costs 4.9 s wall / 11.6 s CPU, once per build. Against about 6 CPU-s saved in
 each of the ~46 including files, a cold build saves on the order of 250 CPU-s under `/O2`, and an edit to a moved body

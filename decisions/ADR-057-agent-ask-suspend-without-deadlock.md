@@ -350,7 +350,7 @@ candidate this pass evaluated on equal footing with A/B/C.
 `include/agentengine/core/run_event.hpp`, `include/agentengine/rt/agent_session.hpp`, a new
 `src/backends/native_jail/agent_ask_codegen.hpp`, `src/backends/native_jail/
 mediated_python_runner.{hpp,cpp}`, and `tools/cli_chat.cpp`, plus a new
-`tests/test_agent_session_suspend_codeact_ask.cpp` (B1-B7) registered in `tests/CMakeLists.txt`
+`tests/rt/agent_session/test_agent_session_suspend_codeact_ask.cpp` (B1-B7) registered in `tests/CMakeLists.txt`
 alongside the other `AGENTENGINE_BUILD_PYTHON_RUNNER`-gated tests.
 
 **Build.** Configured and built in Release, as this project's own notes require for any
@@ -667,7 +667,7 @@ extend, not copy.
   now increments `turn_index` and checks it against `max_turns_` itself before suspending for another
   ask, failing closed with the identical `run.max_turns_exceeded` `run_rounds()`'s own fallthrough
   produces once the cap is reached, instead of granting the ask loop unlimited rounds no other resume
-  path gets. Regression-proofed: `tests/test_rt_agent_session_codeact_ask_max_turns.cpp` (R1/R2) --
+  path gets. Regression-proofed: `tests/rt/agent_session/test_rt_agent_session_codeact_ask_max_turns.cpp` (R1/R2) --
   verified to actually have teeth (reverting the fix reproduces the original 50-rounds-never-fires
   failure). A session with `max_turns_` left at its true, explicit `std::nullopt` default is
   unaffected -- this only enforces a cap the host actually set, matching every other `max_turns_`

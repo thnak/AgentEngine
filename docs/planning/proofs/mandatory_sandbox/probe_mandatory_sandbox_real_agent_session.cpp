@@ -10,7 +10,7 @@
 // (agent_session.hpp:1210)/`history_provider()` (agent_session.hpp:657) methods, unmodified.
 //
 // `ChatClientT` is `RealAgentSessionProbeChatClient`, a minimal conformer to `agentengine::ChatClient`
-// copied in shape from `tests/test_rt_agent_session.cpp`'s own `ScriptedChatClient` fixture (the
+// copied in shape from `tests/rt/agent_session/test_rt_agent_session.cpp`'s own `ScriptedChatClient` fixture (the
 // simplest real `AgentSession<...>` instantiation already used elsewhere in this codebase's own test
 // suite, per this task's own instruction to find one rather than invent an unrealistic one) -- never
 // actually invoked here: every check below drives `MandatorySandboxProvider` directly through the

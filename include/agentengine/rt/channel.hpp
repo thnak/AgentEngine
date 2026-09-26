@@ -22,7 +22,7 @@
 //     is available instead of spin-polling `try_pop()` in a loop. This is genuinely new relative to
 //     `quark::ReplyStream<T>`, which supplies no per-item consumer suspension at all (`core/
 //     stream.hpp`'s own top comment names this as an inherited limitation). BOTH halves are fully
-//     implemented and tested below (see `tests/test_rt_channel.cpp`), not just the synchronous one.
+//     implemented and tested below (see `tests/rt/test_rt_channel.cpp`), not just the synchronous one.
 //
 // THREADING MODEL. Producer and consumer genuinely run on different threads (a worker thread pushing,
 // a coroutine-driving thread consuming) -- this is not a place to reach for lock-free cleverness; one

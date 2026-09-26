@@ -15,7 +15,7 @@
   branches, plus `next_exec_id()`; all four PDF tools share this function),
   `src/backends/native_jail/session_shell_wiring.hpp` (modified — the second real producer),
   `include/agentengine/protocol/agui/projection.hpp` (modified — the new fields reach the wire),
-  `tests/test_sandbox_exec_events.cpp` (new), `tests/CMakeLists.txt` (additive wiring).
+  `tests/sandbox/test_sandbox_exec_events.cpp` (new), `tests/CMakeLists.txt` (additive wiring).
   **No existing test file changed.**
 - **Related specs:** GitHub issue #64 (the defect this closes) · `013-UI-and-Streaming-Surfaces.md`
   §1 (the event vocabulary, amended by this ADR to name the producer), §2.1 (the AG-UI
@@ -36,7 +36,7 @@
 `run_event_kind::sandbox_exec_started` and `sandbox_exec_finished` have existed since the enum was
 written. 013 §1 lists `SandboxExecStarted · SandboxExecFinished` as normative members of the internal
 run event stream. `protocol/agui/projection.hpp` projects both to an AG-UI `ActivitySnapshot`, and
-`tests/test_rt_agui_projection.cpp` tests that projection.
+`tests/protocol/agui/test_rt_agui_projection.cpp` tests that projection.
 
 **Nothing in the tree ever emitted one.** The only construction site anywhere was the synthetic event
 in that projection test. So the practical consequence issue #64 names is real: sandbox provisioning —
@@ -160,7 +160,7 @@ caller's live sink never fires.
 
 ## 6. Evidence
 
-`tests/test_sandbox_exec_events.cpp`, S1–S9, 41 checks.
+`tests/sandbox/test_sandbox_exec_events.cpp`, S1–S9, 41 checks.
 
 | | claim |
 |---|---|

@@ -48,7 +48,7 @@ codebase ever claims to have built it.
 
 ## 3. The design
 
-`tests/test_rt_workflow_supervisor_scheduling_shuffle.cpp` (new), reusing `test_rt_workflow_
+`tests/workflow/test_rt_workflow_supervisor_scheduling_shuffle.cpp` (new), reusing `test_rt_workflow_
 supervisor_patterns.cpp`'s own FI-1/FI-2 graph shape (a `src` node fanning out to four parallel
 branches, fanning back into one `agg` node) — that file already proved a NARROWER version of this
 exact claim (fixed source-order merge, for one hand-picked delay assignment); this ADR broadens it to
@@ -112,7 +112,7 @@ current substrate, not a claim about deleted code.
 
 ## 6. Evidence
 
-`tests/test_rt_workflow_supervisor_scheduling_shuffle.cpp`: G3-POS (1000 seeds, byte-identical
+`tests/workflow/test_rt_workflow_supervisor_scheduling_shuffle.cpp`: G3-POS (1000 seeds, byte-identical
 output every time) and G3-NEG (200-seed subset, a deliberately order-dependent executor's output
 provably diverges) both pass. `docs/planning/milestone-6-multi-agent-orchestration-breakdown.md`
 corrected in the same pass to honestly record G3's prior silent omission and this closure.

@@ -75,7 +75,7 @@ than guessed at implementation time and left undocumented:
    (`third_party/quark/include/quark/core/testkit.hpp`) is the right harness (single-actor,
    deterministic, no cluster/engine bring-up), not a full `Engine`.
 4. **Hard-coded mock `ChatClient` + end-to-end proof** — a fixed, canned-response mock (test-local,
-   not core — mirrors `tests/test_recorded_chat_client.cpp`'s existing precedent of keeping fixture
+   not core — mirrors `tests/core/chat/test_recorded_chat_client.cpp`'s existing precedent of keeping fixture
    clients in `tests/`) satisfying the `ChatClient` concept, and a test driving one full turn through
    `TestKit<AgentSession<MockChatClient>>::ask<AgentResponse>(StartRun{...})`, asserting the session
    history grew by the user turn + the assistant reply and the response content matches. This is

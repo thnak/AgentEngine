@@ -38,7 +38,7 @@ analysis had NOT anticipated (the default-constructibility constraint runs deepe
 text captured). Matches this project's `design → red-team → prove → judge` discipline (CLAUDE.md),
 same honesty level as `docs/planning/tool-optimizer-provider-design-draft.md` and `docs/planning/
 model-call-gateway-routing-design-draft.md`. Real, compiling, passing code:
-`include/agentengine/core/session_builder.hpp`, `tests/test_session_builder.cpp` (65/65 checks,
+`include/agentengine/core/session_builder.hpp`, `tests/core/context/test_session_builder.cpp` (65/65 checks,
 Windows/MSVC, `AGENTENGINE_WITH_HTTPS=ON`, full suite 221/221 `ctest -LE live-network`). Still not
 implemented: `.with_fallback()`/`.with_middleware()`/`.with_content_replay()`. This draft's own
 `.raw_client_only()` escape hatch is now IMPLEMENTED (2026-09-03) as `RawQuickstartSessionBuilder<
@@ -77,7 +77,7 @@ for the record:
    grant for the first name behind, an I4 attributability smell (an audit reading `capabilities()` back
    would see a grant with no corresponding usable secret). **Fixed**: the auto-derived grant now lives
    in its own `primary_secret_grant_` field, overwritten (not appended) each call — last-call-wins,
-   matching `api_key_ref_`'s own semantics. Regression-proofed: `tests/test_session_builder.cpp`'s
+   matching `api_key_ref_`'s own semantics. Regression-proofed: `tests/core/context/test_session_builder.cpp`'s
    "B4" case.
 3. **STILL OPEN — real, disclosed, not yet fixed.** `build()` requires `Store` to be default-
    constructible and expose `.set(name, value)` — properties `InMemorySecretStore` (the default, and
@@ -232,10 +232,10 @@ posture every prior "just fixed" state in this file has had before its own next 
 Not a red-team round — a design → prototype pass, resolving §2b (below), which every prior round left
 explicitly unattempted. `ComposedQuickstartSessionBuilder<Provider, Store, Ms...>` + `detail::
 LazyComposedContextProvider<Ms...>` (see finding 8, header's own comment, and §2b below for the full
-account). Real, compiling, passing code — B14-B17 in `tests/test_session_builder.cpp`, driven via
+account). Real, compiling, passing code — B14-B17 in `tests/core/context/test_session_builder.cpp`, driven via
 CodeGraph exploration of `rt/agent_session.hpp`/`core/composed_context_provider.hpp`/`core/skill_
 provider.hpp` first, matching this project's "explore before editing" convention. Full suite 221/221
-(`ctest -LE live-network`), zero regressions; `tests/test_session_builder.cpp` alone now 47/47.
+(`ctest -LE live-network`), zero regressions; `tests/core/context/test_session_builder.cpp` alone now 47/47.
 
 **Not yet independently red-teamed** — every prior round in this file found something real in whatever
 landed most recently (finding 3 → 4, finding 5 → 7); this pass has had no round against it yet at all,
@@ -284,7 +284,7 @@ found and fixed one real, HIGH-severity design gap plus one comprehensibility ga
    position." Closed as B18, using two instances of the same non-default-constructible fixture type with
    distinct text.
 
-Full suite 221/221 (`ctest -LE live-network`) after all four fixes; `tests/test_session_builder.cpp` now
+Full suite 221/221 (`ctest -LE live-network`) after all four fixes; `tests/core/context/test_session_builder.cpp` now
 51/51. **Verdict: findings 9-10 (header's own numbering) fixed; not yet independently red-teamed a fifth
 time**, same disclosure posture every prior "just fixed" state in this file has had before its own next
 round.
@@ -381,7 +381,7 @@ file); the two builders' `25`-turn defaults have not drifted from each other; a 
 `assemble_context`'s provenance stamping uses the contributor's INDEX, not its name, as the real
 disambiguator.
 
-Full suite 221/221 (`ctest -LE live-network`) after B21a-d landed; `tests/test_session_builder.cpp` now
+Full suite 221/221 (`ctest -LE live-network`) after B21a-d landed; `tests/core/context/test_session_builder.cpp` now
 65/65. Finding 7 has now survived TWO rounds (5, 6) without a new finding against it specifically —
 still disclosed as never independently re-examined in its OWN dedicated round the way findings 9/11
 were, but no longer untouched by any later round's fresh-eyes sweep either.
@@ -412,7 +412,7 @@ warned a host this specific path is unbounded. **Fixed** in `rt/agent_session.hp
 `max_turns_` itself, failing closed with `run.max_turns_exceeded` before suspending for another ask
 once the cap is reached — mirroring exactly how the ordinary (non-codeact) approval-resume branches one
 function up already increment once per call regardless of approved/denied. Regression-proofed:
-`tests/test_rt_agent_session_codeact_ask_max_turns.cpp` (R1/R2, no real `MediatedPythonRunner` needed —
+`tests/rt/agent_session/test_rt_agent_session_codeact_ask_max_turns.cpp` (R1/R2, no real `MediatedPythonRunner` needed —
 any tool returning `error_code == "codeact.ask_pending"` reaches the same path) — verified to actually
 have teeth by reverting the fix and confirming the test fails exactly the way the red-team's own probe
 did. Also recorded as an addendum to `decisions/ADR-057-agent-ask-suspend-without-deadlock.md` §8, since
@@ -434,12 +434,12 @@ extra, unguarded unit of resolution work before the next check catches it — a 
 fixed (a one-round grace at the boundary, judged not worth the added complexity of tightening further in
 this pass). (b) B11-B13 (session_builder.hpp's own finding-7 regression tests) only ever proved value-
 readback through `AgentSession::max_turns()`, matching their own disclosed scope limit — but
-`tests/test_rt_agent_session_tool_call_loop.cpp`'s R4/R5 (predating finding 7's own fix commit) already
+`tests/rt/agent_session/test_rt_agent_session_tool_call_loop.cpp`'s R4/R5 (predating finding 7's own fix commit) already
 give the real "does `max_turns_` bound `run_rounds()`'s ordinary loop" proof, live, no network, just
 uncross-referenced from this file. Worth a cross-reference, not a new test.
 
 Full suite 222/222 (`ctest -LE live-network`) after the fix (`rt/agent_session.hpp` + the new
-`tests/test_rt_agent_session_codeact_ask_max_turns.cpp`) landed — a full rebuild confirmed zero
+`tests/rt/agent_session/test_rt_agent_session_codeact_ask_max_turns.cpp`) landed — a full rebuild confirmed zero
 regressions anywhere else in the tree, including every OTHER `AgentSession` consumer. **Verdict: finding
 7's own dedicated round finally ran, and found a real bug — not in this facade, but in the mechanism it
 wires into.** Independently re-examined next, in round 8 (§0j below).
@@ -540,7 +540,7 @@ directly — for a deterministic fake (`JokerChatClient`...) or a test double") 
    `.openai()`/`.anthropic()`/credential machinery altogether.
 
 These are NOT the same feature, and only one of them resolves what two other files in this codebase
-independently say `.raw_client_only()`'s absence blocks: `tests/test_session_builder.cpp`'s own comment
+independently say `.raw_client_only()`'s absence blocks: `tests/core/context/test_session_builder.cpp`'s own comment
 on B14-B17 ("it has no `.raw_client_only()` escape hatch... to substitute a scripted client without real
 network") and `decisions/ADR-102-identity-native-sandbox-implementation-phase-1.md:1218`'s identical
 framing. Reading (a) alone does NOT close that gap — a bare `Primary` is still a real OpenAI/Anthropic
@@ -595,7 +595,7 @@ Same pass also fixed a minor, real inefficiency: `CapabilitySet::grant_root(gran
 where `std::move(grants_)` is free and correct (`grants_` is never read again, and this code path runs
 at most once per instance).
 
-Regression-proofed: `tests/test_session_builder.cpp`'s new B26-B29 (5th pass) — B26 proves the happy
+Regression-proofed: `tests/core/context/test_session_builder.cpp`'s new B26-B29 (5th pass) — B26 proves the happy
 path (default-constructed `Store`, `.grant()` reaching `capabilities()`); **B27 is the proof that
 actually closes the B14-B17/ADR-102 gap**, driving a REAL, live `AgentSession::start_run()` (via
 `Bundle::ask()`) against a scripted `ScriptedChatClient` fixture (same shape as `JokerChatClient`, kept
@@ -784,7 +784,7 @@ existing `ComposedContextProvider<Ms...>` (`core/composed_context_provider.hpp`)
 when EVERY `Ms` is itself default-constructible — true for `HistoryProvider<Window<n>>` or a mock, never
 true for real `SkillsProvider` (explicit ctor, requires a `vector<SkillSourceDescriptor>`, no default),
 `MemoryProvider`/`VectorRagContextProvider` (both take required reference parameters). Confirmed
-empirically: `tests/test_composed_context_provider.cpp`'s only real `AgentSession` proof
+empirically: `tests/core/context/test_composed_context_provider.cpp`'s only real `AgentSession` proof
 (`ThreeWayProvider`) uses three deliberately default-constructible MOCK providers, never a real
 `SkillsProvider`/`MemoryProvider`/`VectorRagContextProvider` — composing any of those three into a real
 `AgentSession` had never actually been exercised, a materially bigger gap than this section's original

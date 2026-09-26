@@ -12,6 +12,6 @@ streaming into `ae::stream<ChatResponseUpdate>` — see the header's own top com
 is and isn't built (notably: the underlying network fetch is not low-latency incremental yet, and the
 Responses API shape is not implemented, only Chat Completions).
 
-Tested in `tests/test_openai_chat_client_translation.cpp` (pure translation/parsing logic, offline,
-literal wire-format JSON) and `tests/test_openai_chat_client_live.cpp` (end-to-end against a real
+Tested in `tests/protocol/openai/test_openai_chat_client_translation.cpp` (pure translation/parsing logic, offline,
+literal wire-format JSON) and `tests/protocol/openai/test_openai_chat_client_live.cpp` (end-to-end against a real
 local TLS server, both `chat()` and `chat_stream()`).

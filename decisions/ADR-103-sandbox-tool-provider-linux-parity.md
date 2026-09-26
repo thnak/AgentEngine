@@ -260,7 +260,7 @@ pre-existing gap.
   without changing — this section's own pre-existing symlink-follow disclosure, now in this function's
   own top-of-file comment).
 - **Docker-dependent consumers remain untested on Linux**: `tools/sandboxed_shell_chat.cpp`,
-  `tests/test_composed_sandbox_providers_live.cpp`, and the two ADR-096 C2 `compile_fail` probes all
+  `tests/sandbox/execution_surface/test_composed_sandbox_providers_live.cpp`, and the two ADR-096 C2 `compile_fail` probes all
   compose `SandboxToolProvider` alongside `MandatorySandboxProvider<DockerExecutionSurface>`, and this
   session's WSL2 verification environment has no Docker daemon reachable (Docker Desktop's WSL
   integration is not enabled for this distro) — untested on Linux, deliberately not claimed either way.

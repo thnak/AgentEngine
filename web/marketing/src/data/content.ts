@@ -301,7 +301,7 @@ assert(meta.has_value());`;
 // above (real since GitHub issue #46 replaced that snippet's own former
 // fictional `engine.create_session()` tail). Sourced from CONVENTIONS.md,
 // the real CMakeLists.txt / .github/workflows/ci.yml, and
-// tests/test_agent_registry.cpp + tests/test_m1_walking_skeleton.cpp.
+// tests/core/agent/test_agent_registry.cpp + tests/test_m1_walking_skeleton.cpp.
 // ---------------------------------------------------------------------------
 
 export interface BuildStep {
@@ -417,7 +417,7 @@ struct Researcher
 // register_agent<A>() compiles + validates the whole policy set -- tool-name
 // collisions, capability-ceiling coverage, ChatClientId presence -- into a
 // read-only AgentMetadata table. Real, tested logic, not a stub:
-// tests/test_agent_registry.cpp
+// tests/core/agent/test_agent_registry.cpp
 auto meta = ae::register_agent<Researcher>();
 assert(meta.has_value());
 assert(meta->tools.find("echo") != nullptr);`;

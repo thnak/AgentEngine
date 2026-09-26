@@ -123,7 +123,7 @@ Environment: Windows 11 (`10.0.26200.0`), MSVC (Visual Studio 18, toolset via `v
 Ninja, `cmake --build build --target test_worktree_mount_fs_escape_corpus -j4`, run directly and
 via `ctest`. `core/worktree_mount_fs.cpp`/`.hpp` (new), linked into the existing
 `agentengine::worktree_store` CMake target alongside `worktree_digest.cpp` — same real-syscall,
-no-third-party-dependency posture. `tests/test_worktree_mount_fs_escape_corpus.cpp` builds a real
+no-third-party-dependency posture. `tests/worktree/test_worktree_mount_fs_escape_corpus.cpp` builds a real
 scratch directory tree under the system temp path (junctions created via `cmd.exe /c mklink /J` —
 test-setup infrastructure only, matching `decisions/ADR-004`'s own precedent of shelling out to
 `icacls` for spike setup rather than hand-rolling WDK-only reparse-point structs), and removes it
@@ -161,7 +161,7 @@ ALL PASS
 **C2-7's TOCTOU proof, read carefully, is the load-bearing evidence for this ADR's decision.** The
 interleaving is applied by hand — delete the checked/opened directory, replace it with a junction
 to a different, pre-populated "outside" directory — rather than via real concurrent threads: this is
-the same discrete-event-simulation precedent `tests/test_worktree_branch_concurrency.cpp` (Phase
+the same discrete-event-simulation precedent `tests/worktree/test_worktree_branch_concurrency.cpp` (Phase
 B4) established for a different concurrency property, applied here because it makes the exact state
 a real racing attacker needs reproducible instead of timing-dependent, without violating CLAUDE.md's
 machine-safety constraint against spawning extra threads.
@@ -315,7 +315,7 @@ commits to as a floor; open-then-verify via `/proc/self/fd` needs nothing newer 
 true on any real Linux install. Ordinary follow-on task, not a second ADR, per decision 6's own
 framing (this ADR already settled the design question; nothing here is a first design pass).
 
-Proven in `tests/test_worktree_mount_fs_escape_corpus_linux.cpp` (21 checks, real unprivileged Linux
+Proven in `tests/worktree/test_worktree_mount_fs_escape_corpus_linux.cpp` (21 checks, real unprivileged Linux
 filesystem I/O — `symlink()`, unlike Windows junctions, needs no special privilege at all, so the
 Linux corpus is if anything less environment-dependent than the Windows one): the identical TOCTOU
 interleaving reproduced deterministically (a real directory checked, then swapped for a symlink
@@ -362,7 +362,7 @@ Delete=TRUE)` on the SAME handle already verified — never a re-parsed path str
 step itself introduces no new check-then-use gap, preserving this ADR's own "the object verified is
 the object used" property one step further than before.
 
-**Proven**: a new **C2-10** in `tests/test_worktree_mount_fs_escape_corpus.cpp` — a creating
+**Proven**: a new **C2-10** in `tests/worktree/test_worktree_mount_fs_escape_corpus.cpp` — a creating
 `CREATE_ALWAYS` open through the existing `escape_link` junction is still rejected, and now leaves
 nothing planted at the escaped location (`GetFileAttributesW` on the would-be planted path returns
 `INVALID_FILE_ATTRIBUTES`), paired with a positive control proving an ordinary, legitimate inside

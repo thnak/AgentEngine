@@ -29,7 +29,7 @@ for M3 regardless.
 | `ExecState`, `Runner` concept (`sandbox/runner.hpp`) | M0 vocabulary only — `{cwd, env}` and a `run(request, state, ctx) -> result<ExecOutcome>` concept. No concrete `Runner`, no `PythonRunner`/`ShellRunner` satisfying it |
 | `SandboxBackend`, `MountSpec`, `ExecRequest`/`ExecOutcome` (`sandbox/sandbox.hpp`) | Real (M2), including `MountSpec::source` as `std::variant<std::string /*host path*/, BlobRef>` — already anticipates a worktree-backed mount source, unused by any caller yet |
 | `BlobRef` (`core/content.hpp`) | Real (M0/M2) — digest + media type + size, the one digest vocabulary 025 §2 says the worktree's `Blob` should share rather than reinvent. Currently a hand-rolled digest holder, not wired to any actual hash function or store |
-| `agent_library_registry()`/`granted_modules()`/`push_side_summary()` (`trust/agent_library_manifest.hpp`) | Real, already proven (`tests/test_agent_library_manifest.cpp`) — 026 §5a's discoverability *metadata* mirrors §5's nine-module table and gates on `capability_kind`. This is the registry only: no embedded CPython `agent` module exists yet to bind `dir()`/`help()` against, and it gates on bare `capability_kind` rather than a real parameterized `Capability` (documented limitation in the header itself, left for a follow-up, not blocking) |
+| `agent_library_registry()`/`granted_modules()`/`push_side_summary()` (`trust/agent_library_manifest.hpp`) | Real, already proven (`tests/trust/test_agent_library_manifest.cpp`) — 026 §5a's discoverability *metadata* mirrors §5's nine-module table and gates on `capability_kind`. This is the registry only: no embedded CPython `agent` module exists yet to bind `dir()`/`help()` against, and it gates on bare `capability_kind` rather than a real parameterized `Capability` (documented limitation in the header itself, left for a follow-up, not blocking) |
 | `src/backends/native_jail/{shell_grammar,shell_parser,shell_dispatch,shell_runner,command_registry}.*` | ADR-001's (**Judged**) prove-phase spike for the `ShellRunner` grammar/dispatch design — ADR-001 accepted "Design A" (recursive-descent parser → pmr AST → tree-walking evaluator against injected `FileSystemAdapter`/`CommandRegistry`) on Windows only; no adversarial red-team or fuzzing pass has run against the parser (010 §9 G8 is new work, not yet started) |
 | `src/backends/native_jail/{python_lockdown,python_runner}.*` | ADR-002's (**Judged, with a stated caveat** — "the finder mechanism is accepted; the 'closed by construction' claim is [narrower than first written]") prove-phase spike for CPython embedding + `sys.meta_path` import mediation. `python_runner.hpp`'s own header states plainly what's *not* built: `__import__`/`importlib.import_module` defense-in-depth wrappers, `open`/`socket`/`subprocess` mediation wrappers, and per-call capability-freshness derivation from `EffectContext` — it uses a fixed allowlist baked in at construction, not real 007 `CapabilitySet` enforcement |
 | ADR-003 (caller-aware dual-registry import gating) | **Judged**, but per the M2 breakdown's own note, "has never been built as real C++ (only a standalone Python reproduction used for red-team/prove)" — this gap is explicitly M3's to close, not M2's |
@@ -141,12 +141,12 @@ for M3 regardless.
   dependency" posture ADR-005's `capability_token.cpp` already established for HMAC-SHA256, a Linux
   provider named as the same kind of tracked gap ADR-005 itself left open, not silently assumed.
   `InMemoryWorktreeObjectStore` is the reference adapter, proven in
-  `tests/test_worktree_object_store.cpp` (13 checks): dedup structurally verified via `blob_count()`/
+  `tests/worktree/test_worktree_object_store.cpp` (13 checks): dedup structurally verified via `blob_count()`/
   `tree_count()` staying at 1 after a duplicate put (022 §5 — digest equality alone doesn't prove
   "stored once"), canonical ordering (two insertion orders of the same entries hash identically),
   tree-diff-via-digest (a one-entry change produces a different digest, `get_tree` returns entries in
   canonical order), fail-closed lookup on an unknown digest, and `canonical_tree_bytes` proven
-  directly as a pure function. `tests/smoke_vocabulary.cpp`'s stale `ae::Blob{"digest-1"}`
+  directly as a pure function. `tests/core/agent/smoke_vocabulary.cpp`'s stale `ae::Blob{"digest-1"}`
   construction (the old M0 stub's shape) was updated to the new vocabulary in the same pass — it
   would not otherwise have compiled. Full regression run after landing: Windows `ctest -j4` 35/36 (the
   one failure is the already-tracked, pre-existing `test_native_jail_backend_windows` `-j4` timing
@@ -169,7 +169,7 @@ for M3 regardless.
   needs and a snapshot-only Ref would not have provided without revisiting this task later. A small
   `quark::error` → `agentengine::error` conversion (`detail::from_quark_error`) was needed — the two
   error vocabularies don't share a type, a boundary this is the first worktree.hpp task to cross.
-  Proven in `tests/test_worktree_ref_store.cpp` (14 checks): fresh commit, uncommitted-name read
+  Proven in `tests/worktree/test_worktree_ref_store.cpp` (14 checks): fresh commit, uncommitted-name read
   returns `nullopt`, round-trip, a Ref moved across three commits reflects the latest (not the
   first), and — the fencing claim specifically, not just a happy-path round trip (022 §5) — a
   stale-fenced writer's commit is rejected with a positive control proving the current fence's
@@ -213,7 +213,7 @@ for M3 regardless.
   empty), so `write_sub_worktree` fails closed on the mode itself, before the store is ever
   consulted. Default-by-concurrency (025 §3) is, as scoped, a caller-supplied flag — not inferred
   here, since that needs 001's run/turn scheduling context this header doesn't have. Proven in
-  `tests/test_worktree_sub_worktree.cpp` (22 checks): `shared`'s claim proven as TRUE immediate
+  `tests/worktree/test_worktree_sub_worktree.cpp` (22 checks): `shared`'s claim proven as TRUE immediate
   cross-visibility (a write through the sub-worktree is read back through the parent's own name
   directly), not merely an identical starting value; `branch`/`scratch` proven to diverge
   independently in BOTH directions (a write to the child doesn't move the parent, AND a later move
@@ -263,7 +263,7 @@ for M3 regardless.
     is data") has no code here either — B2 is the deterministic algorithmic merge only; a drafting
     workflow needs the tool-invocation and approval-gate machinery (007, 006 §4) this header doesn't
     own.
-  Proven in `tests/test_worktree_merge.cpp` (37 checks): disjoint top-level additions (B2-C1), identical
+  Proven in `tests/worktree/test_worktree_merge.cpp` (37 checks): disjoint top-level additions (B2-C1), identical
   edits merging trivially (B2-C2), a genuine divergent edit surfacing as a conflict with all three
   versions retained (B2-C3), recursion actually happening — disjoint changes inside a commonly-touched
   subdirectory merge clean (B2-C4) while a real conflict nested inside that same subdirectory is still
@@ -307,7 +307,7 @@ for M3 regardless.
     `readonly` is pinned at creation, so none of the three can ever be "stale" in this sense, and
     silently returning "not stale" for them would be worse than refusing to answer the question at
     all.
-  Proven in `tests/test_worktree_staleness.cpp` (27 checks): identical trees diff to nothing (B3-C1);
+  Proven in `tests/worktree/test_worktree_staleness.cpp` (27 checks): identical trees diff to nothing (B3-C1);
   single added/modified/removed top-level files reported with the right kind (B3-C2/C3/C4); a whole
   added subdirectory correctly counted per-file rather than per-directory (B3-C5); a disjoint addition
   inside a commonly-touched directory doesn't drag in its unchanged sibling (B3-C6); a blob↔tree type
@@ -341,7 +341,7 @@ for M3 regardless.
     already-observed parent first (the ordinary case, no extra read), and only re-reads live on a
     subsequent attempt, specifically because the prior one was rejected as stale. A genuine conflict
     is never retried — it's a real, terminal result returned immediately, exactly like a clean merge.
-  - `tests/test_worktree_branch_concurrency.cpp` (5 checks, but each an aggregate over hundreds of
+  - `tests/worktree/test_worktree_branch_concurrency.cpp` (5 checks, but each an aggregate over hundreds of
     trials — 025 §9 G3's claim is a property of the whole run, not any one trial in isolation; a
     per-trial failure is still reported immediately by number, not averaged away): **B4-C1** — 500
     trials, 5 agents each making a disjoint edit, dispatched in a random order every trial; every
@@ -395,7 +395,7 @@ for M3 regardless.
     `file_count_cap` (write) are deliberately NOT enforced here** — that numeric check is C3's own
     task, proven against this mount layer directly, not duplicated ahead of it (a named gap, not a
     silent omission).
-  Proven in `tests/test_worktree_mount.cpp` (34 checks): `split_mount_path`'s own contract in
+  Proven in `tests/worktree/test_worktree_mount.cpp` (34 checks): `split_mount_path`'s own contract in
   isolation (a leading `/`, a trailing `/`, `//`, `.`/`..` all rejected, an ordinary path splits
   correctly) (C1-C1); `mount_read` happy path, a capability for a different `mount_id` rejected, a
   path-prefix-scoped capability rejected outside its scope with a positive control proving the SAME
@@ -432,7 +432,7 @@ for M3 regardless.
   rejected — no cached, staleable "validated" answer either way. A real production bug was found and
   fixed during this proof: the target handle initially lacked `FILE_SHARE_DELETE`, which would let a
   guest's still-open handle block a host-side delete/replace; caught by the TOCTOU test's own setup,
-  not a separate review pass. Full corpus (`tests/test_worktree_mount_fs_escape_corpus.cpp`, 22
+  not a separate review pass. Full corpus (`tests/worktree/test_worktree_mount_fs_escape_corpus.cpp`, 22
   checks, real Win32 I/O against a scratch temp directory, junctions created via `cmd.exe /c mklink
   /J` matching ADR-004's own shell-out-for-setup precedent): lexical `..`/absolute-redirect rejected
   pre-syscall; a junction crossing the mount boundary rejected with a positive control proving an
@@ -466,7 +466,7 @@ for M3 regardless.
   under 025 §9 G4's project-wide deferral of real p99 measurement past M3. Error framing matches
   026 §3's mapping table verbatim: `failure_class::resource`, message `"No space left on device"` —
   an ordinary OS-shaped message a future guest-facing translator (Phase E) can raise as-is, not a
-  policy identifier to reword. Proven in `tests/test_worktree_mount_quota.cpp` (26 checks, same
+  policy identifier to reword. Proven in `tests/worktree/test_worktree_mount_quota.cpp` (26 checks, same
   in-memory content-addressed store as C1 — no real filesystem needed at this layer): a write under
   both caps succeeds (C3-C1); byte-quota and file-count rejections each confirmed
   `failure_class::resource` with the exact 026 §3 message, and the Ref proven byte-for-byte unchanged
@@ -499,7 +499,7 @@ for M3 regardless.
   `CMakeLists.txt`) linking only `worktree_mount_fs_posix.cpp` — no digest provider, since nothing
   here needs `compute_digest`/the content-addressed store, so this is not blocked on decision 2's
   still-open Linux SHA-256 gap. Proven in
-  `tests/test_worktree_mount_fs_escape_corpus_linux.cpp` (21 checks, real unprivileged Linux
+  `tests/worktree/test_worktree_mount_fs_escape_corpus_linux.cpp` (21 checks, real unprivileged Linux
   filesystem I/O — `symlink()` needs no special privilege at all, unlike Windows junctions, so this
   corpus is if anything less environment-dependent than the Windows one): the identical TOCTOU
   interleaving reproduced deterministically, with an even more direct proof-of-immunity than Windows
@@ -538,7 +538,7 @@ for M3 regardless.
   turn digest" wording rather than a narrower "only turns `commit_turn` itself minted." Rewind is
   proven non-destructive, not merely asserted: a SECOND `rewind_to_turn` recovers the exact state
   that existed just before the first one, since a rewind is itself a new, ordinary retained log entry
-  rather than a history edit. Proven in `tests/test_worktree_turn_commit.cpp` (30 checks, real
+  rather than a history edit. Proven in `tests/worktree/test_worktree_turn_commit.cpp` (30 checks, real
   Blob/Tree fixtures, same real-crypto dependency as A1/B1-B4/C1): strictly increasing turn numbers
   on repeated commits with per-name isolation (D1-C1/C2, D1-R1); a 3-turn history rewound to turn 2
   with the fetched tree's content verified directly, not just digest equality (D2-C1); the live
@@ -569,7 +569,7 @@ for M3 regardless.
   worked examples ("a `cd` in a shell command mutates the same ExecState a subsequent `execute_code`
   call reads", and the reverse direction via `os.chdir()`) are reproduced using two minimal,
   `static_assert`-proven `Runner`-concept-conforming mock runners (test-only) rather than waiting on
-  the real ones. Proven in `tests/test_exec_state.cpp` (15 checks): default-constructed on first
+  the real ones. Proven in `tests/sandbox/test_exec_state.cpp` (15 checks): default-constructed on first
   access; a second `get_or_create` for the same id observes an earlier mutation through a genuinely
   identical object (`&first == &second`, not just equal content); both §3a directions reproduced
   literally via the mock runners; two sessions proven never to observe each other's mutation;
@@ -601,7 +601,7 @@ for M3 regardless.
     at call boundaries (real `SetCurrentDirectoryW`/environment-block sync in before `run()`, read
     back out after) rather than continuous interception — correct because this process hosts exactly
     one session (ADR-002 §5.5.6's scope, unchanged), proven bidirectionally in
-    `tests/test_mediated_python_runner_smoke.cpp` (E2-C3/C4: a variable AND a script's own
+    `tests/python/test_mediated_python_runner_smoke.cpp` (E2-C3/C4: a variable AND a script's own
     `os.chdir()` both survive into the next call on the same Runner, matching 010 §9 G3 literally).
   - **Stage B (import allowlist)**: a fresh custom `PyTypeObject` meta-path finder (ADR-002 §3.1's
     "gate by module name before any loader runs" finding, reimplemented) delegating allowed names to
@@ -639,7 +639,7 @@ for M3 regardless.
     "fixed at construction" gap for exactly the surface that has a real capability to check. Covers
     r/rb/w/wb/a/ab modes only this pass (a named, narrower scope, not a silent wrong guess for other
     mode strings).
-  Proven in `tests/test_mediated_python_runner_smoke.cpp` (21 checks, two sequential interpreter
+  Proven in `tests/python/test_mediated_python_runner_smoke.cpp` (21 checks, two sequential interpreter
   lifetimes in one process — `Py_Finalize` then a fresh `Py_InitializeFromConfig`, proving that
   cycle itself works): real execution + stdout capture; variable AND `cwd` persistence across calls;
   import denial (fail-closed default) paired with its positive control (a second runner with the
@@ -710,11 +710,11 @@ for M3 regardless.
   mangles it unless the WHOLE source is wrapped in one shell-level double-quoted word — a genuine,
   named limitation of composing through a grammar with no heredoc support (ADR-001 §3's own v1
   scope), not a `ShellRunner` bug, and worth remembering for Phase F/G's own `agent.*` library design.
-  Proven in `tests/test_mediated_shell_runner_smoke.cpp` (37 checks: parser bounds, registration-time
+  Proven in `tests/backends/native_jail/test_mediated_shell_runner_smoke.cpp` (37 checks: parser bounds, registration-time
   shadowing rejection, all 10 builtins with denied/granted capability pairs — `mv`/`cp` proving BOTH
   a granted `FsRead` source and `FsWrite` destination are independently required — pipelines,
   `&&`/`||`, `if`/`for`, command-not-found fail-closed across a hostile-name corpus, the fake-Runner
-  gate + negative control) and `tests/test_mediated_shell_runner_python_composition.cpp` (6 checks,
+  gate + negative control) and `tests/backends/native_jail/test_mediated_shell_runner_python_composition.cpp` (6 checks,
   only built when `AGENTENGINE_BUILD_PYTHON_RUNNER` is ON). **Named residual, not silently closed**:
   `make_directory`'s `CreateDirectoryW`-against-a-verified-parent-path pattern is a narrower TOCTOU
   guarantee than `open_within_mount_root`'s own primitive (a real, if smaller, race window remains
@@ -727,7 +727,7 @@ for M3 regardless.
   `test_native_jail_backend_windows` flake. **L**
 - **E4 (done, G7's literal syscall-trace claim named as an open residual).** Containment/mediation
   proof (010 §9 G2, G7) against the REAL `MediatedPythonRunner` (E2) and `MediatedShellRunner` (E3).
-  `tests/test_mediated_python_runner_hostile_corpus.cpp` (21 checks): `ctypes`/`winreg` (Windows'
+  `tests/python/test_mediated_python_runner_hostile_corpus.cpp` (21 checks): `ctypes`/`winreg` (Windows'
   `/proc` analogue)/`array` (a real stdlib native extension, not a hypothetical one) denied by the
   import allowlist; `os.popen`/the exec/spawn family denied or genuinely absent (measured, not
   assumed); `os.fork()` absent on Windows CPython entirely; egress to `169.254.169.254` denied
@@ -736,8 +736,8 @@ for M3 regardless.
   `open_within_mount_root` (ADR-014) path `open()` mediation always uses, paired with an inside-the-
   mount positive control; an object-graph-introspection probe generalizing "sys.settrace
   shenanigans" to the real underlying risk (recovering a pre-mediation reference via ordinary
-  attribute access, no trace hooks needed). `tests/test_mediated_shell_runner_hostile_corpus.cpp`
-  (20 checks) + `tests/test_mediated_shell_runner_no_process_creation.cpp` (the STATIC half, same
+  attribute access, no trace hooks needed). `tests/backends/native_jail/test_mediated_shell_runner_hostile_corpus.cpp`
+  (20 checks) + `tests/backends/native_jail/test_mediated_shell_runner_no_process_creation.cpp` (the STATIC half, same
   llvm-nm-against-the-built-artifact methodology as the untouched spike's own
   `test_shell_runner_no_process_creation.cpp`, applied to `agentengine_mediated_shell_runner`):
   PATH hijacking has no code path to hijack (`resolve()` never reads `ExecState.env` at all, proven
@@ -828,7 +828,7 @@ for M3 regardless.
   quota check a guest `open(..., "w")` gets) and returns one `ContentItem` per file harvested
   (digested via A1's `compute_digest`, `BlobRef{digest, media_type, size, store="worktree"}") —
   closing 025 §7's "the agent saves a file, the user receives an artifact" claim end to end, proven
-  in `tests/test_worktree_mount_sync.cpp` against the REAL `MediatedFileSystemAdapter` (ADR-014), not
+  in `tests/worktree/test_worktree_mount_sync.cpp` against the REAL `MediatedFileSystemAdapter` (ADR-014), not
   a test double: real files on disk, real nested directories, real Tree round-trips via `mount_read`
   after harvest, and positive-control-paired capability denials (022 §5) for both directions. Reuses
   `mount_read`/`mount_write` entirely rather than touching the object/ref store directly, so the
@@ -864,7 +864,7 @@ for M3 regardless.
   `capability_ceiling` through and was deliberately not reused as a template here. Bundled approval
   (010 §10 Q2) is one `ApprovalDecider` closure capturing `config.approved`, gating the whole
   pre-registered set at `execute_code` time, never per-call. Results re-enter tainted unconditionally
-  (pipeline step 9, 003 §2). Proven in `tests/test_tool_bridge.cpp` (13 checks): capability scoping
+  (pipeline step 9, 003 §2). Proven in `tests/backends/native_jail/test_tool_bridge.cpp` (13 checks): capability scoping
   and bundled approval each with a positive control (022 §5), result tainting, and the SAME
   capability-handle-reuse-denial discipline `test_tool_pipeline_capability_reuse.cpp` (M2 B4) proved
   for `invoke_tool()` directly, reproduced end to end through the bridge.
@@ -939,7 +939,7 @@ for M3 regardless.
   a caller can override per session via `MediatedPythonConfig::output_cap_bytes`/
   `MediatedShellRunner`'s new (defaulted, so no existing call site breaks) constructor parameter —
   exactly the override point a real per-turn value would need once 023 lands. Proven directly in
-  `tests/test_output_discipline.cpp` (`cap_output()`'s own byte accounting, marker presence, and a
+  `tests/backends/native_jail/test_output_discipline.cpp` (`cap_output()`'s own byte accounting, marker presence, and a
   UTF-8-codepoint-boundary case: a cut that would land mid-multi-byte-sequence backs off rather than
   emitting a truncated codepoint) and through both Runners with a small explicit cap (F3-T1 in the
   Python smoke test, F3-S1 in the Shell smoke test). Full regression: default `build` 51/52,
@@ -957,7 +957,7 @@ for M3 regardless.
   `src/backends/native_jail/agent_tools_codegen.hpp` (parses `args_schema_json` via the existing
   `core/json_value.hpp` parser, not by having the GENERATED Python re-introspect its own schema at
   runtime), specifically so the generation logic is unit-testable without an embedded interpreter
-  (`tests/test_agent_tools_codegen.cpp`) — the actual `PyRun_String` execution wiring
+  (`tests/python/test_agent_tools_codegen.cpp`) — the actual `PyRun_String` execution wiring
   (`run_agent_tools_bootstrap`) stays in `mediated_python_runner.cpp` alongside the rest of that
   file's CPython-C-API code.
 
@@ -1007,10 +1007,10 @@ for M3 regardless.
   §5.5.6) — `json` becoming importable exactly when `agent.tools` exists is the intended shape, not a
   leak into a session that never asked for it.
 
-  Proven in `tests/test_agent_tools_codegen.cpp` (portable, no CPython dependency — 9 checks: real
+  Proven in `tests/python/test_agent_tools_codegen.cpp` (portable, no CPython dependency — 9 checks: real
   signature shape, docstring escaping, the zero-argument boundary, the two loud-failure cases, full
   module source shape, `.pyi` stub parity with the real signature) and
-  `tests/test_mediated_python_runner_agent_tools.cpp` (Python-gated, 10 checks against a real
+  `tests/python/test_mediated_python_runner_agent_tools.cpp` (Python-gated, 10 checks against a real
   embedded interpreter): an ordinary `from agent import tools; tools.echo_tool(message=...)` round
   trip; `dir()`/`help()` discoverability; special characters (embedded quote, backslash, newline)
   surviving the real `json.dumps`/`json.loads` wire encoding exactly, proving real JSON handling
@@ -1079,7 +1079,7 @@ for M3 regardless.
   against the root) applied to a directory HANDLE for the first time, then enumerates via
   `FindFirstFileW`/`FindNextFileW` against the ALREADY-VERIFIED canonical path, never the raw guest
   string — "the object verified is the object used" preserved for listing, not just for opening.
-  Proven in `tests/test_worktree_mount_fs_listdir.cpp` (6 checks: empty-root listing, real
+  Proven in `tests/worktree/test_worktree_mount_fs_listdir.cpp` (6 checks: empty-root listing, real
   file/subdir entries with correct name/is_dir/size, a `..`-escape negative control, and a junction-
   escape negative control paired with a junction-stays-inside positive control, 022 §5).
 
@@ -1097,7 +1097,7 @@ for M3 regardless.
   silently widened every one of those sessions' importable set the moment this bootstrap's `import
   json` ran. Fixed by adding the dedicated flag (defaulting `false`, changing nothing for any caller
   that predates G2) and adding a permanent regression control for the exact shape of this bug
-  (`tests/test_mediated_python_runner_agent_files_data.cpp`'s G2-N3, independent of relying on the
+  (`tests/python/test_mediated_python_runner_agent_files_data.cpp`'s G2-N3, independent of relying on the
   older test file alone to keep catching it).
 
   **`agent.tools`/`agent.files`/`agent.data` coexistence**: G1's own `generate_agent_tools_module_
@@ -1112,10 +1112,10 @@ for M3 regardless.
   `agent.files`, and `agent.data` all resolve off the SAME `agent` object regardless of which
   bootstrap ran first.
 
-  Proven in `tests/test_agent_files_data_codegen.cpp` (portable, no CPython dependency — 15 checks:
+  Proven in `tests/python/test_agent_files_data_codegen.cpp` (portable, no CPython dependency — 15 checks:
   every function defined/attached, the canonical `/input`/`/out` mount framing, the `agent`-reuse
   fix, both generators actually using `yield`) and
-  `tests/test_mediated_python_runner_agent_files_data.cpp` (Python-gated, 22 checks across three
+  `tests/python/test_mediated_python_runner_agent_files_data.cpp` (Python-gated, 22 checks across three
   scenarios): a real `input`/`artifact`/`list` round trip including a real file landing on disk at
   `/out`; `read_json_lines` proven to be a real generator streaming NDJSON (skipping a blank line,
   and correctly NOT raising on a file `json.load` would reject outright); `read_csv_rows`; a
@@ -1175,9 +1175,9 @@ for M3 regardless.
   bootstraps active at once (`test_mediated_python_runner_agent_files_data.cpp`'s G3-coexist check):
   `agent.__doc__` carries all three lines regardless of ordering.
 
-  Proven in `tests/test_mediated_python_runner_agent_tools.cpp` (+2 checks: `agent.tools.__doc__`
+  Proven in `tests/python/test_mediated_python_runner_agent_tools.cpp` (+2 checks: `agent.tools.__doc__`
   matches the registry exactly; `agent.__doc__` mentions it) and
-  `tests/test_mediated_python_runner_agent_files_data.cpp` (+4 checks: `agent.files.__doc__`/
+  `tests/python/test_mediated_python_runner_agent_files_data.cpp` (+4 checks: `agent.files.__doc__`/
   `agent.data.__doc__` each match the registry; `agent.__doc__` mentions both; the three-way coexist
   check above) — every check compares against `trust::module_one_line(...)` directly rather than a
   second hand-typed copy of the expected string, so a future edit to the registry's wording cannot
@@ -1297,7 +1297,7 @@ for M3 regardless.
   judge` and an ADR, not a work-breakdown phase. `tool.deadline_exceeded`'s existing `TimeoutError`
   mapping (a single TOOL CALL's own deadline, already correct, G1-era) is unaffected and unchanged.
 
-  Proven in a new, portable-to-build test (`tests/test_mediated_python_runner_error_mapping.cpp`,
+  Proven in a new, portable-to-build test (`tests/python/test_mediated_python_runner_error_mapping.cpp`,
   10 checks: G4-R1 for path/mount, G4-R2-Q1 through Q3 and C1 through C3 for both quota axes, G4-R3-1
   and R3-2 for host-not-permitted on both the raw-socket and tool-call paths) plus fixes to two
   PRE-EXISTING tests whose assertions encoded the old, now-superseded behavior:
@@ -1319,7 +1319,7 @@ for M3 regardless.
 - **H1.** A small reference-agent task corpus (026 §8 G1/026 §10 Q5, 010 §9 G1), split model-
   independent/model-dependent since only one half needs a `ChatClient` at all:
   - **Prompt assembly + §7 budget + §8 G3 no-leakage** (`include/agentengine/core/token_estimate.hpp`,
-    `include/agentengine/core/reference_agent_prompt.hpp`, `tests/test_reference_agent_prompt.cpp`).
+    `include/agentengine/core/reference_agent_prompt.hpp`, `tests/core/agent/test_reference_agent_prompt.cpp`).
     `assemble_reference_agent_prompt` renders the environment line plus one line per granted tool/
     `agent.*` module/skill, each measured against §7's per-element budget (a conservative ~4-chars/
     token ceiling estimate — never a real tokenizer, documented as such); a positive control (an
@@ -1333,7 +1333,7 @@ for M3 regardless.
     "workspace." A second, separate function, `assemble_informed_prompt`, builds Phase H2's variant by
     appending explicit architecture detail to the SAME base prompt — never a flag on the budgeted
     function, so §7/§8 G3 compliance is structural for the only function real sessions would call.
-  - **Task corpus execution** (`tests/test_reference_agent_task_corpus.cpp`, fixtures under
+  - **Task corpus execution** (`tests/core/agent/test_reference_agent_task_corpus.cpp`, fixtures under
     `tests/fixtures/chat_client/reference_agent/`). Three tasks — CSV sum (plain `csv`+`open()`),
     directory listing, and a pandas groupby producing a CSV artifact (matplotlib is NOT installed in
     this environment, named as a residual rather than silently swapped for a chart nobody can render)
@@ -1357,7 +1357,7 @@ for M3 regardless.
     the leakage bug, the fixture-vs-live-call reconciliation, and the two mediation-boundary findings
     were each real, unplanned work)
 - **H2. The milestone's central claim.**
-  (`tests/test_reference_agent_containment_invariance.cpp`.) The claim proven is structural, not
+  (`tests/core/agent/test_reference_agent_containment_invariance.cpp`.) The claim proven is structural, not
   statistical: `ExecRequest` (sandbox/sandbox.hpp) carries exactly a language tag and a source string;
   `EffectContext` carries a capability set, deadline, and trace context — neither has a field a prompt
   string could reach. A representative subset of the existing E4 hostile corpus (subprocess denial,

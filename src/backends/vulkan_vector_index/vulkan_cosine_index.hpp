@@ -127,7 +127,7 @@ namespace detail {
 #ifdef AGENTENGINE_VULKAN_FAULT_INJECTION
 // Red-team pass 5 (2026-09-23): a TEST-ONLY fault-injection seam, compiled in ONLY when the
 // translation unit is built with AGENTENGINE_VULKAN_FAULT_INJECTION (tests/CMakeLists.txt builds a
-// separate library variant for tests/test_vulkan_cosine_index_fault_injection.cpp; the production
+// separate library variant for tests/core/rag/test_vulkan_cosine_index_fault_injection.cpp; the production
 // `agentengine::vulkan_vector_index` target never defines it, so none of this exists there). Every
 // prior red-team pass (§4c/§4d) recorded that NONE of this file's checked-VkResult failure branches
 // had ever been executed -- only reasoned about -- because a real device-lost/OOM cannot be induced

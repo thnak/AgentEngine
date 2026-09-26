@@ -111,14 +111,14 @@ honestly as the same discipline applied earlier in the design step rather than t
 
 ## 6. Evidence
 
-`tests/test_memory_ranking_formula.cpp` (new file): R1 proves recency actually participates
+`tests/memory/test_memory_ranking_formula.cpp` (new file): R1 proves recency actually participates
 (identical salience/keyword, higher `write_seq` scores strictly higher); R2 proves recency is
 bounded, not raw (a much older, far more salient item beats a barely-relevant, 1000-seq-newer one);
 R3 proves a zero-salience freshly-extracted item is not structurally rank-zero, and that a real
 keyword match still measurably boosts it; a determinism check; a legacy-record control (`write_seq
 == 0` with an all-zero batch produces a finite, non-NaN score, no division by zero).
 
-`tests/test_memory_provider.cpp`'s pre-existing G4-R2/G4-R6 and `tests/test_memory_retrieval_
+`tests/memory/test_memory_provider.cpp`'s pre-existing G4-R2/G4-R6 and `tests/test_memory_retrieval_
 determinism.cpp`'s H3-R1 (unchanged assertions, re-verified against the new formula) continue to
 pass — the new formula preserves every previously-tested ranking outcome while adding the
 previously-absent recency term.

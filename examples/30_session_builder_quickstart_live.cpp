@@ -12,7 +12,7 @@
 // vocabulary required from the caller at all. See the Builder API page for the native
 // `WorkflowBuilder`/`MagenticWorkflowBuilder` half of this same "ergonomic surface" story.
 //
-// Mirrors tests/test_session_builder_openrouter_live_e2e.cpp's QS-1 (`Bundle::ask()`) end to end --
+// Mirrors tests/core/context/test_session_builder_openrouter_live_e2e.cpp's QS-1 (`Bundle::ask()`) end to end --
 // this file is the narrative "here's what it looks like to actually use it" counterpart, not another
 // proof of the same claims (see that test for the fuller QS-2/QS-3 credential/streaming coverage).
 //

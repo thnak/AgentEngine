@@ -263,7 +263,7 @@
 //    assignment now explicitly reset the moved-from side's `engaged_` to `false` (and defensively clear
 //    its `contributors_`) -- restores the invariant ("`engaged_` implies `contributors_` is populated")
 //    across a move, so a moved-from instance correctly fails closed via the EXISTING `not_engaged` guard
-//    and can be `engage()`d again. Regression-proofed: `tests/test_session_builder.cpp`'s "B20".
+//    and can be `engage()`d again. Regression-proofed: `tests/core/context/test_session_builder.cpp`'s "B20".
 //    Deliberately NOT changed: a move-assignment INTO an already-engaged target still silently replaces
 //    its contributors with no diagnostic -- ordinary `operator=` replacement semantics, identical to
 //    `history_provider() = HistoryProviderT{}`'s own pre-existing silent-reset behavior, not a new
@@ -292,7 +292,7 @@
 // just finished constructing for this session. `agent_library_manifest.hpp` needed NO changes of its
 // own: its `"spawn"` row is already gated on `capability_kind::agent_call`, so a session holding any
 // `cap::AgentCall` grant picks up "agent.spawn: Run a sub-agent and get its result." automatically.
-// Regression-proofed: `tests/test_session_builder.cpp`'s own "B23"/"B24" (built via a real, non-HTTPS
+// Regression-proofed: `tests/core/context/test_session_builder.cpp`'s own "B23"/"B24" (built via a real, non-HTTPS
 // `AgentSession<...>::set_static_instructions()` call proving the exact materialization this builder
 // change wires into, since `QuickstartSessionBuilder` itself only compiles under
 // `AGENTENGINE_WITH_HTTPS`, off by default -- this pass's own build did not enable it, so the two new
@@ -912,7 +912,7 @@ using AnthropicSessionBuilder = QuickstartSessionBuilder<Provider::anthropic>;
 // circuit-breaker wrapping, or (b) let the host install an entirely different, already-constructed
 // `ChatClientT` (a scripted double, e.g. `JokerChatClient` from `examples/01_hello_agent.cpp`), bypassing
 // `Provider`/credentials/`ModelCallGateway` altogether. Reading (a) alone does not resolve what this
-// file's own top comment and `tests/test_session_builder.cpp`'s comment on B14-B17 both say they are
+// file's own top comment and `tests/core/context/test_session_builder.cpp`'s comment on B14-B17 both say they are
 // blocked on -- driving a live `start_run()` in a test with NO real network -- since a bare `Primary` is
 // still a real OpenAI/Anthropic backend that still does real HTTP. `RawQuickstartSessionBuilder` below
 // implements reading (b), the one that actually closes that gap; project-owner confirmed this reading

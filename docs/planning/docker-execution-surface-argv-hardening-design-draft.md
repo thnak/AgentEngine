@@ -119,7 +119,7 @@ shape `ContainerdCliBackend::exec()` already ships (line 467-479). Concretely:
   75-85). Windows side reuses this codebase's OWN already-tested MS-CRT argv-quoting algorithm —
   `agentengine::native_process::detail::quote_one_argument`/`build_command_line`
   (`src/backends/native_process/native_process_spawn.hpp:75-78`, implemented and independently
-  unit-tested in `native_process_spawn.cpp`/`tests/test_native_process_spawn.cpp`) — to build a
+  unit-tested in `native_process_spawn.cpp`/`tests/backends/native_process/test_native_process_spawn.cpp`) — to build a
   correctly-quoted `lpCommandLine`, THEN spawns it via `CreateProcessA`/`W` with
   **`lpApplicationName = nullptr`** so Win32's own standard PATH search resolves `docker` -> `docker.exe`
   directly, with **no `cmd.exe /c` wrapper at all**. All of the existing Job-Object timeout-kill
@@ -224,14 +224,14 @@ judged now.
   to be there.
 - **Finding 5 — blast radius on existing tests confirmed small, not merely assumed.** `run_capture(std::string)`
   is called directly, with static, non-attacker-influenced strings, from real test files
-  (`tests/test_docker_orphan_reap.cpp:75,87,170`, `tests/test_sandbox_runtime.cpp:61`) for host-side
+  (`tests/sandbox/execution_surface/test_docker_orphan_reap.cpp:75,87,170`, `tests/sandbox/test_sandbox_runtime.cpp:61`) for host-side
   setup/assertions outside the code path under test — this design does not remove or change
   `run_capture()` itself, only adds `run_argv()` alongside it and repoints `DockerCliBackend`'s own
   internal call sites, so those tests are unaffected by construction, not merely expected to still
   pass. Real, already-shipped live-Docker coverage that WOULD need to be re-run against the ported
-  code before promotion: `tests/test_composed_sandbox_providers_live.cpp`,
-  `tests/test_mandatory_sandbox_provider.cpp`, `tests/test_task_branch_tools.cpp`,
-  `tests/test_task_branch_concurrent_dispatch.cpp` — all real, Docker-backed, not mocked.
+  code before promotion: `tests/sandbox/execution_surface/test_composed_sandbox_providers_live.cpp`,
+  `tests/sandbox/test_mandatory_sandbox_provider.cpp`, `tests/sandbox/test_task_branch_tools.cpp`,
+  `tests/sandbox/test_task_branch_concurrent_dispatch.cpp` — all real, Docker-backed, not mocked.
 - **Finding 6 (self-correction) — this document's own §2 Design A "deferred, not rejected" framing was
   checked against CLAUDE.md's actual rule and adjusted.** An earlier draft of this section called
   Design A "rejected" outright; re-reading CLAUDE.md's "Feature vs. safety balance" section
@@ -247,23 +247,23 @@ judged now.
   `docker_cli_detail::run_argv()` (both platforms), the unified `docker_cli_reject_argv_value()`/
   `docker_cli_reject_embedded_nul()` checks, and the full `DockerCliBackend` port all landed in
   `include/agentengine/sandbox/docker_execution_surface.hpp`. Evidence, not reasoning:
-  - `tests/test_docker_orphan_reap.cpp` — 14/14 checks pass (create()/destroy()/reap_orphans(), all
+  - `tests/sandbox/execution_surface/test_docker_orphan_reap.cpp` — 14/14 checks pass (create()/destroy()/reap_orphans(), all
     argv-based now) against a live daemon.
-  - `tests/test_sandbox_runtime.cpp` — full suite passes, including a rewritten check [6]: the old
+  - `tests/sandbox/test_sandbox_runtime.cpp` — full suite passes, including a rewritten check [6]: the old
     scenario (`echo "this double-quote trips the shell guard"` expecting rejection) is now, correctly,
     no longer rejected at all — replaced with an embedded-NUL-byte command, the one check that
     survives, matching `ctr_cli_detail::reject_embedded_nul()`'s own posture exactly.
-  - `tests/test_composed_sandbox_providers_live.cpp`, `tests/test_mandatory_sandbox_provider.cpp`,
-    `tests/test_task_branch_tools.cpp`, `tests/test_task_branch_concurrent_dispatch.cpp` — all pass
+  - `tests/sandbox/execution_surface/test_composed_sandbox_providers_live.cpp`, `tests/sandbox/test_mandatory_sandbox_provider.cpp`,
+    `tests/sandbox/test_task_branch_tools.cpp`, `tests/sandbox/test_task_branch_concurrent_dispatch.cpp` — all pass
     unchanged, real Docker-backed regression coverage for `exec()`/`create()`/`copy_to_container()`/
     `copy_from_container()`/`destroy()` all now argv-based.
-  - **New, permanent test**: `tests/test_docker_run_argv_timeout.cpp` (Windows-only, wired into
+  - **New, permanent test**: `tests/sandbox/execution_surface/test_docker_run_argv_timeout.cpp` (Windows-only, wired into
     `tests/CMakeLists.txt`) directly answers Finding 1 below — see its own updated status.
   - `agentengine_cli_chat`, `agentengine_sandboxed_shell_chat`, `agentengine_durable_sandboxed_shell_chat`
     (the three real tool binaries that `#include` this header) all rebuild cleanly against the ported
     API — `DockerCliBackend`'s own public method signatures never changed shape, only their internals.
 - **Finding 1's Job-Object-retargeting reasoning is now empirically proven, not merely reasoned.**
-  `tests/test_docker_run_argv_timeout.cpp` re-runs the exact scenario that validated the ORIGINAL
+  `tests/sandbox/execution_surface/test_docker_run_argv_timeout.cpp` re-runs the exact scenario that validated the ORIGINAL
   `cmd.exe`-based fix (`docker exec <id> sh -c "tail -f /dev/null"` under a short timeout) against the
   NEW, `cmd.exe`-free `run_argv()` path, on a real Docker Desktop daemon: the call returned in ~3.0s
   (matching the 3s timeout given, not the real 30s default — proving the Job Object kill actually

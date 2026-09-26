@@ -65,7 +65,7 @@ own internal authority model is. `backends/wasm/wasm_tool_bridge.hpp`'s
 - **No production loader.** This bridge takes an already-`create()`d, already-`load_component()`d
   `handle` — it never calls either itself, matching `mcp_tools_as_descriptors()`'s identical
   assumption toward an already-connected `McpClient`. Confirmed by direct search: `load_component()`
-  has exactly one caller anywhere in this repo today, `tests/test_wasm_backend.cpp`. No
+  has exactly one caller anywhere in this repo today, `tests/plugin/test_wasm_backend.cpp`. No
   session/registry/CLI loader exists yet.
 - **`PluginManifest.id` uniqueness is unenforced.** Nothing today stops two different loaded
   components from being given the same `plugin_id` string by whatever future loader constructs their
@@ -122,7 +122,7 @@ the two models independent by construction.
 
 ## 6. Evidence
 
-`tests/test_wasm_tool_bridge.cpp`:
+`tests/plugin/test_wasm_tool_bridge.cpp`:
 - W1 — "I2 gate" block: `held` without the `ToolCall` entry, `operator_grant` fully granted, denies
   with `tool.capability_not_held`.
 - W2 — "delimiter guard" block, against a never-created backend/handle (proves the check precedes

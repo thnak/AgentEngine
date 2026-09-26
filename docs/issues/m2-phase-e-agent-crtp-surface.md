@@ -22,25 +22,25 @@ missing entirely). `Agent` itself does nothing yet — no metadata compiler, no 
   table — real behavior for most is out of scope until the milestone that owns it (document per
   tag which milestone that is). **Size: M** — see the breakdown doc's own E1 entry (Phase E
   section) for the full writeup; `include/agentengine/core/agent.hpp` and
-  `tests/smoke_vocabulary.cpp`.
+  `tests/core/agent/smoke_vocabulary.cpp`.
 - **E2.** (done) `register_agent<A>()` — the real metadata compiler: builds the agent metadata
   table, runs 002 §6's 8 named validation checks. Checks needing machinery this milestone doesn't
   build (credentials/004, handoff-cycle/014, and — a real finding, not anticipated by this task's
   original scope note — `SandboxProfile<P>`'s two checks, whose template-parameter kind 002 §2 and
   008 §2a disagree about) are stubbed to always-pass with a tracked comment, not silently skipped.
   **Size: L** — see the breakdown doc's own E2 entry for the full writeup;
-  `include/agentengine/core/agent_registry.hpp`, `tests/test_agent_registry.cpp`.
+  `include/agentengine/core/agent_registry.hpp`, `tests/core/agent/test_agent_registry.cpp`.
 - **E3.** (done) An agent declaring `Tools<TrivialNativeTool>` and a matching `Capabilities<...>`
   ceiling actually runs one tool call end-to-end through Phase B's pipeline — the headline
   exit-criterion sentence, made real. Pure wiring, as scoped: `invoke_agent_tool()`
   (`core/agent_registry.hpp`) is the one glue function connecting `register_agent<A>()`'s compiled
   `AgentMetadata` (E2) to `core/tool_pipeline.hpp`'s real `invoke_tool()` (Phase B) via a fresh
   `CapabilitySet::grant_root(meta.capability_ceiling)` per call — no new enforcement logic.
-  **Size: M** — `include/agentengine/core/agent_registry.hpp`, `tests/test_agent_tool_invocation.cpp`.
+  **Size: M** — `include/agentengine/core/agent_registry.hpp`, `tests/core/agent/test_agent_tool_invocation.cpp`.
 - **E4.** (done) 002 §8 G3 miniature — validation rejects at least the capability-ceiling-mismatch
   and tool-name-collision defect classes with a specific diagnostic, negative test per class (full
   8-class suite deferred alongside E2's scoping). **Size: M** — already satisfied by E2's own
-  `tests/test_agent_registry.cpp` (its `NameCollisionAgent`/`CapabilityGapAgent` negative cases each
+  `tests/core/agent/test_agent_registry.cpp` (its `NameCollisionAgent`/`CapabilityGapAgent` negative cases each
   assert a specific `error.code`, not just pass/fail); this task added no new test file, only
   explicit `002 §8 G3` cross-references at those two cases and the file's top comment so the gate's
   satisfaction is traceable by name rather than implicit. A G3 gate is about the proof existing, not

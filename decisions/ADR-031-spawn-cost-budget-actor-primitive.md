@@ -10,7 +10,7 @@ landed) removed Quark entirely — the `quark::Actor<SpawnCostBudgetActor, quark
 §2/§6 describe below no longer exists. It was ported to `include/agentengine/rt/spawn_cost_
 budget.hpp` as `agentengine::rt::SpawnCostBudget`, re-expressed over `rt::AsyncMutex` instead of
 Quark's `Sequential` dispatch — that file's own top comment states directly this is "unchanged
-here, just re-expressed." Re-verified at sign-off: `tests/test_rt_spawn_cost_budget.cpp` (the
+here, just re-expressed." Re-verified at sign-off: `tests/rt/agent_spawn/test_rt_spawn_cost_budget.cpp` (the
 ported T1/T2 claims below) passes in full, including T2's real-concurrency double-spend proof. §2
 and §6 below are kept as written (the historical record of what was actually designed/reviewed) —
 read `Actor<..., Sequential>`/`trust/spawn_cost_budget.hpp` as historical, current code lives at

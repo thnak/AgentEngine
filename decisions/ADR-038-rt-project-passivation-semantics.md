@@ -76,7 +76,7 @@ creeping into `pause_project`'s implementation (the hazard ADR-034's own ActorId
 existed to rule out).
 
 Claim (a) still means something in `rt::` land and is reproven directly
-(`tests/test_rt_project_scale_isolation.cpp`), strengthened from "nothing broke" to "provably nothing
+(`tests/rt/project/test_rt_project_scale_isolation.cpp`), strengthened from "nothing broke" to "provably nothing
 was touched": each of the 100 Projects gets its own `InMemorySessionStore` instance, and pausing
 Project #50 is checked to have called `save()` against ONLY store #50 — none of the other 99. All 99
 then complete a real second `Run`, each continuing its own run-id sequence.
@@ -95,9 +95,9 @@ first place — the hazard claim (b) was built to catch cannot arise by construc
 
 ## 4. Falsifiable claims and verdicts
 
-`tests/test_rt_project_supervisor.cpp` (Q1-Q5, checkpoint-orchestration primitive itself),
-`tests/test_rt_project_manifest.cpp` (M1-M2 manifest round-trip, P1-P5 directed lifecycle + I4),
-`tests/test_rt_project_scale_isolation.cpp` (G1, reframed per §3). Deterministic, offline, single-
+`tests/rt/project/test_rt_project_supervisor.cpp` (Q1-Q5, checkpoint-orchestration primitive itself),
+`tests/rt/project/test_rt_project_manifest.cpp` (M1-M2 manifest round-trip, P1-P5 directed lifecycle + I4),
+`tests/rt/project/test_rt_project_scale_isolation.cpp` (G1, reframed per §3). Deterministic, offline, single-
 threaded throughout — no sleeps, no real concurrency needed once there is no scheduler to race
 against.
 
@@ -142,9 +142,9 @@ commits — `rt::ProjectRegistry`, `rt::ProjectSupervisor`, `rt::AppendLogStore`
 `rt::ProjectRecord`/directed lifecycle — this ADR is the first to write up that already-implemented
 design formally and close the remaining test gap)
 
-- `tests/test_rt_project_manifest.cpp` — added the I4 check (a real second `Run` right after
+- `tests/rt/project/test_rt_project_manifest.cpp` — added the I4 check (a real second `Run` right after
   `pause_project()`) to `test_p1_pause_healthy()`.
-- `tests/test_rt_project_scale_isolation.cpp` (new) — 030 §7 G1, reframed per §3.
+- `tests/rt/project/test_rt_project_scale_isolation.cpp` (new) — 030 §7 G1, reframed per §3.
 - `tests/CMakeLists.txt` — registers the new test target; removes the two now-fully-superseded old
   Quark-actor targets below.
 - `include/agentengine/project/lifecycle.hpp`, `include/agentengine/project/project.hpp` (deleted) —

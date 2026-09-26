@@ -39,7 +39,7 @@
   approval-gated tool (a second `AgentSession` instantiation) and was left out.
 - **No cancel state is persisted** through `fork_from`/snapshot (matches ADR-159).
 
-## 3. Claims and proof (`tests/test_rt_agent_session_cancel.cpp`)
+## 3. Claims and proof (`tests/rt/agent_session/test_rt_agent_session_cancel.cpp`)
 
 Each claim has a control (the same shape without the cancel) and a planted mutant that must fail it.
 

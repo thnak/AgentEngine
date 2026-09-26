@@ -41,7 +41,7 @@
 // blocks, per core/stream.hpp's own file banner) that must run concurrently with -- not before -- the
 // caller draining the NEW stream this wrapper hands back. So: spawn one thread that (a) drains
 // Inner's stream with the exact `while (!s.done()) { while (auto x = s.next()) {...}; if (!s.done())
-// yield(); }` idiom `tests/test_chat_client_stream.cpp` (~lines 148-198) already established as this
+// yield(); }` idiom `tests/core/chat/test_chat_client_stream.cpp` (~lines 148-198) already established as this
 // codebase's precedent, recording each chunk's content and elapsed time as it goes and re-pushing it
 // into the new stream, then (b) once Inner's stream reaches its terminal, builds and emits the final
 // `ChatCallRecording` BEFORE mirroring that terminal onto the new stream's producer -- see the
@@ -186,7 +186,7 @@ public:
                 bool downstream_alive = true;
 
                 // The exact poll-loop idiom this codebase already established
-                // (tests/test_chat_client_stream.cpp ~148-198) -- `next()` is poll-only, never
+                // (tests/core/chat/test_chat_client_stream.cpp ~148-198) -- `next()` is poll-only, never
                 // blocking (core/stream.hpp's own file banner).
                 while (!inner_stream.done()) {
                     while (auto update = inner_stream.next()) {

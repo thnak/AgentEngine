@@ -24,7 +24,7 @@
 // A from-scratch, standard SHA-256 (FIPS 180-4 §6.2) avoids all three problems and carries no timing
 // side-channel concern here: compute_digest hashes public content bytes for content-addressed
 // storage, never a secret. Verified against the FIPS 180-4 / RFC 6234 published known-answer test
-// vectors for the empty string and "abc" in tests/test_worktree_object_store.cpp -- a portable test
+// vectors for the empty string and "abc" in tests/worktree/test_worktree_object_store.cpp -- a portable test
 // that also runs against the Windows BCrypt implementation, proving both platforms agree with the
 // real standard, not just with each other.
 //
@@ -34,7 +34,7 @@
 // primitive rather than a second copy of SHA-256. This file now owns only the hex-encoding this
 // digest store's own `Digest` type needs -- verified NOT to have changed `compute_digest`'s output by
 // re-running the exact same FIPS 180-4/RFC 6234 known-answer vectors this file's own tests already
-// covered (tests/test_worktree_object_store.cpp), unchanged, against a real Linux build.
+// covered (tests/worktree/test_worktree_object_store.cpp), unchanged, against a real Linux build.
 //
 // This translation unit has been built and run for real on Linux (WSL2 Ubuntu) as of ADR-107 --
 // previously carried a note that it had only been self-reviewed, never built; that residual is now

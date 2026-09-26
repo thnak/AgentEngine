@@ -7,7 +7,7 @@ prove → judge" order, prove being this step). Relates to `OpenQuestions.md` OQ
 `decisions/ADR-023-response-format-codec-seam.md` (the codec/declassifier this design sits beside
 without modifying), `decisions/ADR-035-chatclient-streaming-completeness.md` (the backend-agnostic
 `AgentSession::run_model_call()` centralization this design reuses as its insertion point). Confirming
-fixture for the underlying gap: `tests/test_openai_chat_client_translation.cpp`'s `OQ-23-R1` block
+fixture for the underlying gap: `tests/protocol/openai/test_openai_chat_client_translation.cpp`'s `OQ-23-R1` block
 (2026-08-23, 9/9 passing).
 
 ## 1. The question
@@ -274,8 +274,8 @@ not originally named (§5/§6), now folded in above rather than left as a separa
 - `include/agentengine/protocol/openai/chat_client.hpp` — comment-only change per §6/§9 item 2.
 
 **Tests, all passing, all newly written for this design:**
-- `tests/test_openai_chat_client_translation.cpp`: function-level tests for D1 (refuses the OQ-23-R1 leak, specific error code, `failure_class::contract`), D2a (silent on an already-promoted message), D2b (silent on a tainted diagnostic fed directly — the exact case red-team's must-fix targeted), D3 (clean content, and unrecognized-name leak) — 9 checks, all passing.
-- `tests/test_rt_agent_session_streaming_and_events.cpp`: four real `AgentSession::run_model_call()` round trips (`ScriptedChatClient` extended with a `caps_tool_calling` flag, default `false`, to reach the new branch without disturbing any existing S1-S4/L1-L4 test): OQ-M1 (streaming, refused, confirms D1 + D5's "exactly one round, no retry" claim + a `RunFailed` event carrying the specific code), OQ-M2 (streaming, scan armed, unaffected — D2a at the integration level), OQ-M3 (chat() path, unrecognized recipient, converges — D3), OQ-M4 (chat() path, clean content, converges — D3) — 13 checks, all passing.
+- `tests/protocol/openai/test_openai_chat_client_translation.cpp`: function-level tests for D1 (refuses the OQ-23-R1 leak, specific error code, `failure_class::contract`), D2a (silent on an already-promoted message), D2b (silent on a tainted diagnostic fed directly — the exact case red-team's must-fix targeted), D3 (clean content, and unrecognized-name leak) — 9 checks, all passing.
+- `tests/rt/agent_session/test_rt_agent_session_streaming_and_events.cpp`: four real `AgentSession::run_model_call()` round trips (`ScriptedChatClient` extended with a `caps_tool_calling` flag, default `false`, to reach the new branch without disturbing any existing S1-S4/L1-L4 test): OQ-M1 (streaming, refused, confirms D1 + D5's "exactly one round, no retry" claim + a `RunFailed` event carrying the specific code), OQ-M2 (streaming, scan armed, unaffected — D2a at the integration level), OQ-M3 (chat() path, unrecognized recipient, converges — D3), OQ-M4 (chat() path, clean content, converges — D3) — 13 checks, all passing.
 
 **Regression evidence:**
 - Full project build (`cmake --build build --config Debug`): clean, zero errors.

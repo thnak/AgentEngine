@@ -210,7 +210,7 @@ everything else in this draft.
 
 Two things happened this pass: (1) the `background_task()` fix (Revision 3's §2 item 5) was
 actually implemented (`tool_pipeline.hpp`, next to the existing `report_progress` reset) and
-proven by a new regression test (`tests/test_agent_session_tool_call_progress.cpp`, case "E") —
+proven by a new regression test (`tests/rt/agent_session/test_agent_session_tool_call_progress.cpp`, case "E") —
 this item is **done**, not just designed. (2) Two more red-team agents were run: one built and
 compiled a real, minimal probe against real MSVC to test Revision 3's central `fork_from()`
 prediction directly; the other did a fresh, broader pass over the whole `ContextProvider`-
@@ -220,7 +220,7 @@ composition design now that it's the draft's central claim.
 A throwaway probe (`ComposedContextProvider<FakeSandboxToolProvider>` where the fake type holds a
 non-copyable `std::unique_ptr<int>`, same shape as the real `SandboxToolProvider`/
 `SessionShellSandbox`) was compiled with real MSVC against this tree's actual headers, following
-`tests/test_composed_context_provider.cpp`'s own known-working instantiation pattern. Result: a
+`tests/core/context/test_composed_context_provider.cpp`'s own known-working instantiation pattern. Result: a
 real compile error, pinpointed by MSVC's own instantiation trace to the exact predicted line —
 `agent_session.hpp(1194)`, `history_provider_ = source.history_provider_;` — via `composed_context_
 provider.hpp:105-120`'s user-deleted copy ctor/assignment. Revision 3 §3's claim holds: composing a
@@ -317,11 +317,11 @@ this draft has now made three times (Revision 1's fabricated `CodeActRunnerBindi
 Revision 3's unproven-until-compiled `fork_from()` claim, now this).** Revision 5 claimed
 `clear_in_process_state_locked()`'s call from `delete_session()` was the function's *only* real
 caller, grep-confirmed. A third red-team pass actually ran that grep properly and found this false:
-`tests/test_rt_agent_session_codeact_ask_max_turns.cpp:283` calls the **unlocked**
+`tests/rt/agent_session/test_rt_agent_session_codeact_ask_max_turns.cpp:283` calls the **unlocked**
 `clear_in_process_state()` directly, with its own comment explicitly framing the fix at that site
 around **"a pooled/reused session object"** — this codebase's own commentary already treats
 post-clear reuse as a real, contemplated scenario, not a hypothetical Revision 5 could dismiss.
-More directly: `tests/test_rt_agent_session_tooling_and_delegation.cpp`'s case S5 (line ~519) calls
+More directly: `tests/rt/agent_session/test_rt_agent_session_tooling_and_delegation.cpp`'s case S5 (line ~519) calls
 `fork.clear_in_process_state()` and then **actually reuses the object** — `fork.initialize(...)`
 followed by a second, successful `fork.start_run(...)`. Session reuse after
 `clear_in_process_state()` is a real, exercised, currently-passing pattern in this codebase, not
@@ -576,7 +576,7 @@ Option A should be triggered by a real second-backend need, not by this draft's 
    as convention only.
 5. **DONE (Revision 4)**: `background_task()` resets `ctx.sandbox_fs = nullptr;`
    (`tool_pipeline.hpp`, next to the existing `report_progress` reset), mirroring that line exactly.
-   Implemented and proven by a new regression test, `tests/test_agent_session_tool_call_progress.cpp`
+   Implemented and proven by a new regression test, `tests/rt/agent_session/test_agent_session_tool_call_progress.cpp`
    case "E" — a `Backgroundable` tool given a live, non-null `sandbox_fs` in the caller's
    `EffectContext` observes `nullptr` on `background_task()`'s own detached thread. Full project
    rebuild and test suite green after this change.
@@ -590,8 +590,8 @@ Option A should be triggered by a real second-backend need, not by this draft's 
    (Revision 5 above).
 7. **REOPENED (Revision 6, correcting Revision 5's false empirical claim)**: session reuse after
    `clear_in_process_state()` is a REAL, tested pattern in this codebase
-   (`tests/test_rt_agent_session_tooling_and_delegation.cpp`'s case S5;
-   `tests/test_rt_agent_session_codeact_ask_max_turns.cpp:283`'s own comment names "a pooled/reused
+   (`tests/rt/agent_session/test_rt_agent_session_tooling_and_delegation.cpp`'s case S5;
+   `tests/rt/agent_session/test_rt_agent_session_codeact_ask_max_turns.cpp:283`'s own comment names "a pooled/reused
    session object" directly) — Revision 5's "only caller is `delete_session()`, grep-confirmed" was
    wrong. No current test reuses a session with a `ComposedContextProvider<Ms...>`-based
    `HistoryProviderT` specifically, so the exact `composed_context.not_engaged` hazard isn't proven
@@ -601,7 +601,7 @@ Option A should be triggered by a real second-backend need, not by this draft's 
    before that session's next `on_context()` call — mirroring `capabilities_`'s own already-
    documented "re-call `set_capabilities()` after `fork_from()`" contract. The `engage()` API
    already exists and is already proven as "a real recovery path"
-   (`tests/test_composed_context_provider.cpp`'s own P3b case) — the gap is the documented
+   (`tests/core/context/test_composed_context_provider.cpp`'s own P3b case) — the gap is the documented
    obligation, not new mechanism, but it is real and must be named, not struck.
 
 ## 3. What this draft deliberately does not decide
@@ -692,7 +692,7 @@ implementation of the pieces already confirmed safe (the `EffectContext` orderin
 
 `SandboxToolProvider` itself — the design's central type, unimplemented when the ADR above was
 first written — is now real code: `src/backends/native_jail/sandbox_tool_provider.hpp`, proven by
-`tests/test_sandbox_tool_provider.cpp` (19 checks), full project rebuild + full `ctest` suite
+`tests/sandbox/test_sandbox_tool_provider.cpp` (19 checks), full project rebuild + full `ctest` suite
 (252/252) green. It matches Design B exactly, including the C8 digest-based subdirectory-naming
 defense-in-depth check and the idempotent host-directory creation the fifth red-team round (above)
 found missing. See ADR-096 §5 and §8 for the updated evidence and residual list — the implementation

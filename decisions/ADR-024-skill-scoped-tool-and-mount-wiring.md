@@ -124,9 +124,9 @@ the sandbox's own working-directory mount.
 
 | # | Claim | Evidence | Verdict |
 |---|---|---|---|
-| 1 | A tool absent from the scoped table is genuinely unreachable, not just undeclared | `tests/test_tool_table_scoping.cpp` R3: a real, registered tool (`alpha`) succeeds when called against the unscoped universe, and is rejected with `tool.unknown_name` (via `ToolInvocationAudit::error_code`) when called against the scoped table it was filtered out of — same tool, same capabilities, only table membership differs | **CORRECT** |
-| 2 | A materialized skill's real content is reachable by real Python code through the actual mediated `open()`, not a shortcut | `tests/test_mediated_python_runner_skill_mounts.cpp` R1: `open('/real-mounted-skill/SKILL.md').read()` inside a real `MediatedPythonRunner::run()` returns the real frontmatter+body bytes | **CORRECT** |
-| 3 | A skill named identically to a reserved sandbox mount is refused, not silently shadowing it | `tests/test_skill_mount_materializer.cpp` R2: a skill named `work` against `reserved_mount_ids={"work"}` fails with `skill.mount_id_reserved`, and the host directory is never created | **CORRECT** |
+| 1 | A tool absent from the scoped table is genuinely unreachable, not just undeclared | `tests/core/tools/test_tool_table_scoping.cpp` R3: a real, registered tool (`alpha`) succeeds when called against the unscoped universe, and is rejected with `tool.unknown_name` (via `ToolInvocationAudit::error_code`) when called against the scoped table it was filtered out of — same tool, same capabilities, only table membership differs | **CORRECT** |
+| 2 | A materialized skill's real content is reachable by real Python code through the actual mediated `open()`, not a shortcut | `tests/python/test_mediated_python_runner_skill_mounts.cpp` R1: `open('/real-mounted-skill/SKILL.md').read()` inside a real `MediatedPythonRunner::run()` returns the real frontmatter+body bytes | **CORRECT** |
+| 3 | A skill named identically to a reserved sandbox mount is refused, not silently shadowing it | `tests/core/skills/test_skill_mount_materializer.cpp` R2: a skill named `work` against `reserved_mount_ids={"work"}` fails with `skill.mount_id_reserved`, and the host directory is never created | **CORRECT** |
 | 4 | A path-traversal attempt against a materialized skill mount is denied, not silently served | `test_mediated_python_runner_skill_mounts.cpp` R3, and a real bug in the FIRST version of this check: `ExecOutcome::klass == ok` does **not** mean guest code didn't raise — an uncaught Python exception is still a normal, well-formed run outcome (like a REPL cell), with the traceback in `stderr_text`. First version of R3 asserted on `klass`, always passed even before any fix, and was caught only by manually inspecting stderr with a debug print and seeing a real `OSError: '.'/'..' are not meaningful in a content-addressed tree path` come back — fixed to assert on `stderr_text` content | **CORRECT** (after a real false-positive test bug was found and fixed, not assumed) |
 | 5 | This end-to-end chain works against a live model, not only against a fixed script | §6 below: a live OpenRouter session where the model, unprompted with any exact tool syntax, chose to call `execute_code` with `open('/using-the-code-interpreter/SKILL.md').read()` and the real file content came back | **CORRECT** |
 
@@ -243,7 +243,7 @@ session start (009 §8b, unaffected by mount state); mounting only activates too
 operator already pre-authorized by configuring that skill's source in the first place. A model calling
 `mount_skill` selects a point within an already-fixed ceiling — it never widens the ceiling itself.
 
-**Evidence:** `tests/test_on_demand_skill_mount.cpp` — core-tier, no live model — proves the negative
+**Evidence:** `tests/core/skills/test_on_demand_skill_mount.cpp` — core-tier, no live model — proves the negative
 (`invoke_tool` rejects a skill-named tool, `tool.unknown_name`, before that skill is mounted) then the
 positive (the identical call succeeds after `MountedSkillsState::mount(...)`, through the same real
 pipeline). Run live against a real OpenRouter model: on the very first turn, the model called

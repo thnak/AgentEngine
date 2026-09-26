@@ -181,7 +181,7 @@ conclusion. Not re-steelmanned; nothing changed since ADR-011 that would revisit
 - **R-C5 (test seam is not a production bypass).** Grepped `net_egress_proxy.cpp`'s one call site
   directly (not merely asserted): `TlsClientSession::handshake(guard.fd, host_header)` — exactly two
   arguments, the third (`ca_bundle_pem_override`) never supplied. The seam exists only for
-  `tests/test_https_egress.cpp`'s own deterministic, offline-generated certificate chains.
+  `tests/sandbox/test_https_egress.cpp`'s own deterministic, offline-generated certificate chains.
 
 ## 6. Executed evidence
 
@@ -204,7 +204,7 @@ sat in front of `pal/net.hpp` without `<atomic>` between them. Since Quark is ne
 https_egress.cpp` both now include `<atomic>` explicitly before `pal/net.hpp`, documented as a
 deliberate ordering requirement, not an incidental one.
 
-**C1-C4 (`tests/test_https_egress.cpp`, only built when `AGENTENGINE_WITH_HTTPS` is ON).** A
+**C1-C4 (`tests/sandbox/test_https_egress.cpp`, only built when `AGENTENGINE_WITH_HTTPS` is ON).** A
 test-only, in-memory X.509 generator (`mbedtls_x509write_crt_*`, no filesystem/CLI dependency,
 deterministic ECDSA P-256 keys) produces: a self-signed root; a leaf matching hostname
 `test.invalid` with a correct SAN and a long validity window (C1); a leaf signed by a SECOND,
@@ -247,7 +247,7 @@ introduced). A fresh Linux container's own default build: 23/23 passed, 1 expect
 34/35 passed — the one failure is the same pre-existing, unrelated `test_native_jail_backend_windows`
 Job-Object OOM-vs-timeout flake already documented against ADR-011/ADR-012 (reconfirmed as pre-
 existing, not newly introduced, by C6's clean run above). Linux (Docker, gcc-14, fresh container):
-24/24 passed, 1 expected skip. `tests/test_net_egress_proxy.cpp`'s own pre-existing C3 case (https
+24/24 passed, 1 expected skip. `tests/sandbox/test_net_egress_proxy.cpp`'s own pre-existing C3 case (https
 rejected before any network activity) was updated to be conditional: unchanged (still proves
 pre-resolution rejection) when `AGENTENGINE_WITH_HTTPS` is off; when on, proves the scheme gate no
 longer blocks https pre-resolution instead (the resolver is now called), since the full TLS-handshake

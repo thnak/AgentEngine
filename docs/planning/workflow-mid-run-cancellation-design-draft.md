@@ -196,7 +196,7 @@ Two SHOULD-FIX refinements, both incorporated:
 - `include/agentengine/rt/workflow_as_executor.hpp` — `status_tag()`'s own new case (§2b MUST-FIX;
   a SECOND exhaustive switch over `workflow_status`, missed in the first draft's own file list).
 - `include/agentengine/core/effect_context.hpp` — `EffectContext::cancellation`.
-- `tests/test_rt_workflow_cancellation.cpp` (new) — the proofs from §5.
+- `tests/workflow/test_rt_workflow_cancellation.cpp` (new) — the proofs from §5.
 - `decisions/ADR-159-workflow-mid-run-cancellation.md` (once implemented and proven — 159 is the
   next free number as of this draft; verify against `decisions/` before committing in case another
   session claimed it concurrently, matching this repo's own established numbering-collision

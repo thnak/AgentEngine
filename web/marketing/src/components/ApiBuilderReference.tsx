@@ -115,7 +115,7 @@ const copy = {
         <code>Provider</code>/<code>.openai()</code>/<code>.anthropic()</code>/credential resolution
         entirely — there is no backend to select and no <code>SecretRef</code> to resolve when the
         client already exists. This is what closes the real gap named in{" "}
-        <code>tests/test_session_builder.cpp</code>'s own comment on B14-B17: a live{" "}
+        <code>tests/core/context/test_session_builder.cpp</code>'s own comment on B14-B17: a live{" "}
         <code>.ask()</code> round trip through <code>AgentSession::start_run()</code> with zero
         network dependency, proven end to end by that file's B26-B29.
       </>
@@ -325,7 +325,7 @@ const copy = {
         <code>Provider</code>/<code>.openai()</code>/<code>.anthropic()</code>/việc phân giải
         credential — không có backend nào cần chọn, không có <code>SecretRef</code> nào cần phân
         giải khi client đã tồn tại sẵn. Đây chính là thứ đóng lại lỗ hổng thật được nêu tên trong chú
-        thích của <code>tests/test_session_builder.cpp</code> về B14-B17: một vòng khứ hồi{" "}
+        thích của <code>tests/core/context/test_session_builder.cpp</code> về B14-B17: một vòng khứ hồi{" "}
         <code>.ask()</code> sống qua <code>AgentSession::start_run()</code> không phụ thuộc mạng,
         được B26-B29 của file đó chứng minh trọn vẹn.
       </>
@@ -539,7 +539,7 @@ export function ApiBuilderReference() {
           </RevealItem>
 
           <RevealItem>
-            <Cite path="docs/planning/quickstart-session-builder-design-draft.md" label="docs/planning/quickstart-session-builder-design-draft.md — §2a/§2b · tests/test_session_builder.cpp" />
+            <Cite path="docs/planning/quickstart-session-builder-design-draft.md" label="docs/planning/quickstart-session-builder-design-draft.md — §2a/§2b · tests/core/context/test_session_builder.cpp" />
           </RevealItem>
         </RevealGroup>
 
@@ -602,7 +602,7 @@ export function ApiBuilderReference() {
           </RevealItem>
 
           <RevealItem>
-            <CodePanel filename="tests/test_workflow_graph_validation.cpp">
+            <CodePanel filename="tests/workflow/test_workflow_graph_validation.cpp">
               {highlightCpp(workflowBuilderWorkedExampleSnippet)}
             </CodePanel>
           </RevealItem>

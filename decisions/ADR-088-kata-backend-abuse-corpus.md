@@ -107,7 +107,7 @@ output stops being captured. Scope-bounded to the timeout path, which is the one
 pass actually investigated and found concretely broken; the output-cap path is disclosed as an
 open, analogous, unconfirmed risk in `kata_backend.hpp`'s own header comment.
 
-## 5. The abuse-corpus test (`tests/test_kata_backend_abuse_corpus_linux.cpp`)
+## 5. The abuse-corpus test (`tests/backends/kata/test_kata_backend_abuse_corpus_linux.cpp`)
 
 Three cases, gated identically to the existing Kata tests (`NOT WIN32 AND
 AGENTENGINE_BUILD_KATA_BACKEND` + `AGENTENGINE_KATA_SANDBOX_TESTS`, requiring a real

@@ -11,7 +11,7 @@
 - **Date:** 2026-08-30.
 - **Scope:** `include/agentengine/sandbox/sandbox_runtime.hpp`, `include/agentengine/sandbox/real_io_
   filesystem.hpp`, `include/agentengine/sandbox/mandatory_sandbox_provider.hpp` (all three widened, no
-  method body logic changed), `tests/test_task_branch_content_durability_integration.cpp` (new),
+  method body logic changed), `tests/sandbox/test_task_branch_content_durability_integration.cpp` (new),
   `tests/CMakeLists.txt` (one new target registered). No call site anywhere else in the repository needed
   any change.
 - **Related specs:** Closes `decisions/ADR-130-content-durability-conformer.md` §2's own explicitly-named
@@ -54,7 +54,7 @@ identically, with zero call-site changes.**
 A repo-wide search before starting found 20 files mentioning `SandboxRuntime`/`MandatorySandboxProvider`
 by name. Checking each individually (not assumed) found **19 of them are comment-only** — doc references,
 not actual type usages — and the ONE real type-usage site outside the three files this ADR touches
-(`tests/test_sandbox_runtime.cpp:93`: `SandboxRuntime runtime(ledger, std::move(*root_r), staging);`)
+(`tests/sandbox/test_sandbox_runtime.cpp:93`: `SandboxRuntime runtime(ledger, std::move(*root_r), staging);`)
 needed **zero changes**, because it is a local-variable declaration with a matching-constructor
 initializer — exactly the shape C++17 class template argument deduction (CTAD) handles automatically,
 deducing `Store` from the `ledger` argument's own type with no deduction guide required. Confirmed, not
@@ -74,7 +74,7 @@ not the injected name.
 
 ## 4. What was built and verified
 
-**The full-stack integration proof** (`tests/test_task_branch_content_durability_integration.cpp`, new)
+**The full-stack integration proof** (`tests/sandbox/test_task_branch_content_durability_integration.cpp`, new)
 — the definitive test this whole session's task-branch crash-recovery line has been building toward:
 
 - **[1]** Real content is committed to a durable `Ledger<FileWorktreeObjectStore>`'s root branch via the

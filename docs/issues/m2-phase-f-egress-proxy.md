@@ -33,7 +33,7 @@ the sequential A–E phases because both are cross-cutting rather than owned by 
   vocabulary in code (a single bool, ADR-007), so taint is enumerated as that boolean, and the walk
   itself proves admission is taint-invariant today. The exit criterion's own demanded positive control
   (an over-broad grant a manual per-tool review would miss) is proven by
-  `tests/test_policy_reachability.cpp`, not exercised by the CLI's own default run (see the breakdown
+  `tests/trust/test_policy_reachability.cpp`, not exercised by the CLI's own default run (see the breakdown
   doc's F2 entry for why). Verified on Windows and a fresh Linux container; see
   `docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md`'s F2 entry for the full
   design/evidence writeup.

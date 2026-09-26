@@ -39,7 +39,7 @@
 //
 // A SECOND REFINEMENT, on `ToolSurfaceView`'s own guarantee: it is the SANCTIONED, documented way for
 // a `turn` middleware to touch the tool surface, and using ONLY its public API there is no path to
-// substituting a tool's `invoke` closure (proven in tests/test_turn_middleware.cpp). It is NOT a
+// substituting a tool's `invoke` closure (proven in tests/core/context/test_turn_middleware.cpp). It is NOT a
 // guarantee against a middleware that deliberately bypasses the sanctioned API and reaches into
 // `TurnContext::assembled.combined.tools` directly (still a plain, mutable `std::vector<
 // ToolDescriptor>&`, reachable through the SAME reference `TurnContext` already needs for message
@@ -171,7 +171,7 @@ struct TurnContext {
 // `length` is clamped to what's actually left after `offset`. The result is always exactly
 // `original`'s bytes with one contiguous range removed -- a genuine subsequence of the input, for
 // every `{offset, length}` including adversarial ones (proven by property test,
-// tests/test_turn_middleware.cpp).
+// tests/core/context/test_turn_middleware.cpp).
 [[nodiscard]] inline TaintedText redact_subspan(TaintedText const& original, std::size_t offset,
                                                   std::size_t length) {
     std::string const& s = original.unsafe_view();

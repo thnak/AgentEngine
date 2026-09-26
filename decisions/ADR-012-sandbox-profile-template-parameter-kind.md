@@ -52,7 +52,7 @@ constrained to a closed enum naming the engine's own shipped profiles, or to any
   `agentengine::wasm::WasmBackend` (Windows+Linux, `AGENTENGINE_WITH_WASM`). A `remote` backend does not
   exist yet (M9).
 - **`resolve_strict()`** (`sandbox.hpp`), 008 §3's ranking rule made real and already tested
-  (`tests/test_sandbox_backend_contract.cpp`): highest-`strength` `ProfileTraits` supporting the current
+  (`tests/sandbox/test_sandbox_backend_contract.cpp`): highest-`strength` `ProfileTraits` supporting the current
   platform, ties broken toward broader platform support. It takes `std::span<ProfileTraits const>` as a
   **caller-supplied** parameter — nothing populates that span from the real backend types anywhere in
   the codebase today.
@@ -195,7 +195,7 @@ direction failing. Windows (MSVC 19.51, VS18) configure output:
 ```
 Reconfirmed identical on Linux (gcc-14, Docker, fresh container).
 
-**C3/C4 (runtime round-trip, `tests/test_sandbox_profile_kind.cpp`).** Three fixture agents:
+**C3/C4 (runtime round-trip, `tests/sandbox/test_sandbox_profile_kind.cpp`).** Three fixture agents:
 `DefaultProfileAgent` (no `SandboxProfile<...>` tag at all), `StrictAgent`
 (`SandboxProfile<Strict>` explicit), `ConcreteProfileAgent` (`SandboxProfile<ConformingBackend>`, a
 local test-only conforming type mirroring `smoke_vocabulary.cpp`'s existing `DummySandboxBackend`

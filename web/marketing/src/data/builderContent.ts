@@ -351,7 +351,7 @@ WorkflowBuilder& connect(TypedExecutor<FromIn, FromOut> const& from,
     return *this;
 }`;
 
-export const workflowBuilderWorkedExampleSnippet = `// tests/test_workflow_graph_validation.cpp:233-247 -- A6
+export const workflowBuilderWorkedExampleSnippet = `// tests/workflow/test_workflow_graph_validation.cpp:233-247 -- A6
 TypedExecutor<Question, Draft>  writer{.id = "writer", .kind = executor_kind::agent, .capability_ceiling = {}};
 TypedExecutor<Draft, Verdict>   critic{.id = "critic", .kind = executor_kind::agent, .capability_ceiling = {}};
 

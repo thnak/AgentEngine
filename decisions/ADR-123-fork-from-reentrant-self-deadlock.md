@@ -12,13 +12,13 @@
 - **Scope:** `include/agentengine/rt/async_mutex.hpp` (one new field, one new public method, two small
   edits to `unlock()`, both purely additive — no behavior change for any existing caller),
   `include/agentengine/rt/agent_session.hpp` (`fork_from()`'s own locking logic, comment rewrite),
-  `tests/test_rt_agent_session_fork_from_serialization.cpp` (new section [3]). `decisions/ADR-102-
+  `tests/rt/agent_session/test_rt_agent_session_fork_from_serialization.cpp` (new section [3]). `decisions/ADR-102-
   identity-native-sandbox-implementation-phase-1.md`, `decisions/ADR-114-task-branch-tools-
   promotion.md` (disclosure corrections pointing here).
 - **Related specs:** `decisions/ADR-102-identity-native-sandbox-implementation-phase-1.md` §26 point 5
   / its own Phase 5 summary (the original SHOULD-FIX disclosure this ADR closes — `fork_from()`'s own
   cross-thread serialization gap was fixed there; fixing it introduced THIS narrower, still-open
-  hazard, disclosed but not fixed at the time), `tests/test_rt_block_on.cpp` (the established
+  hazard, disclosed but not fixed at the time), `tests/rt/test_rt_block_on.cpp` (the established
   "temporarily revert, confirm the new test genuinely fails, restore" methodology this ADR reuses).
 
 ## 1. The question
@@ -108,7 +108,7 @@ unconditional `block_on(acquire_session_mutex(source.session_mutex_))` to a cond
 by `!source.session_mutex_.is_held_by_current_thread()`. The extensive disclosure comment immediately
 above it is rewritten to describe the fix (rather than merely naming the hazard) and point here.
 
-`tests/test_rt_agent_session_fork_from_serialization.cpp`: a new `ReentrantChatClient` fixture (see §2's
+`tests/rt/agent_session/test_rt_agent_session_fork_from_serialization.cpp`: a new `ReentrantChatClient` fixture (see §2's
 own design-lesson) whose `chat()` — called from INSIDE an in-flight `start_run()` round, holding
 `session_mutex_` on the calling thread — calls `fork_from()` reentrantly on the very session running
 that round, forking FROM it INTO a separate, freshly-constructed target (deliberately not self-into-

@@ -284,7 +284,7 @@ job to size for its own workload" contract, unchanged, not newly invented here).
   `resume_workflow()`'s new pending-check branch, `finish()`'s unconditional `open_interactions()`)
 - `include/agentengine/workflow/graph.hpp` (edit — narrow the `sub_workflow` refusal to "refused
   unless bound", mirroring the existing agent-kind precedent exactly)
-- `tests/test_rt_workflow_sub_workflow.cpp` (new) — including: a basic nested suspend/resume/
+- `tests/workflow/test_rt_workflow_sub_workflow.cpp` (new) — including: a basic nested suspend/resume/
   complete round-trip; the OQ-19-generalization concurrency proof (mirroring ADR-150's own
   adversarial mutation-test discipline — temporarily narrow the quarantine back to agent-only,
   confirm a real crash/race reproduces, then revert); the checkpoint-restore fail-closed proof

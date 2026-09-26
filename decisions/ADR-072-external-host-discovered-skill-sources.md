@@ -114,7 +114,7 @@ threat model it does not share — ceremony without a corresponding risk.
 
 ## 5. Falsifiable claims, evidence, and per-claim verdicts
 
-### 5a. Discovery correctness (`tests/test_external_skill_discovery.cpp`, D1-D5c)
+### 5a. Discovery correctness (`tests/core/skills/test_external_skill_discovery.cpp`, D1-D5c)
 
 | Claim | Disproving experiment | Verdict |
 |---|---|---|

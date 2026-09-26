@@ -46,7 +46,7 @@ An independent pass (fresh context, real file:line citations, no prior exposure 
 `WorkflowSupervisor::restore_from_record()` (`rt/workflow_supervisor.hpp:607-630`) restores only
 `RunStateRecord` (pending deliveries, partial outputs, ports) — it never touches `bodies_`, which is
 caller-supplied fresh at `initialize()` and matched to `graph_.executors` purely by array index, with
-zero structural link to a checkpoint record. `tests/test_rt_workflow_checkpoint_g2.cpp`'s own pattern
+zero structural link to a checkpoint record. `tests/workflow/test_rt_workflow_checkpoint_g2.cpp`'s own pattern
 (line 9's comment: "a genuinely NEW `WorkflowSupervisor` instance") confirms this is the intended
 shape: a resumed run gets brand-new bodies from the caller, not reconnected ones. Worse, even a
 correctly-reconnected `AgentSession` has amnesia: `AgentSessionRecord` carries no `history_` field —
@@ -181,7 +181,7 @@ instead of aborting the round, feed ONLY the hazardous entries into the SAME per
 failure-outcome channel `JobOutcome`/`ExecuteReply` already uses for a real executor failure — i.e., the
 duplicate deliveries fail individually (attributable to the specific node, a specific error code, e.g.
 `workflow.duplicate_delivery_same_round`), routed through the EXISTING failure-policy/retry/fallback
-machinery `tests/test_rt_workflow_supervisor_failure_policies.cpp` already proves works, while every
+machinery `tests/workflow/test_rt_workflow_supervisor_failure_policies.cpp` already proves works, while every
 OTHER unrelated delivery in that round dispatches and completes normally. No new `workflow_status`
 value needed — this reuses the executor-failure shape, not the whole-run-invalid shape.
 

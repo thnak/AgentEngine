@@ -373,7 +373,7 @@ one validator serves both" with language matching what C1/C2 found is actually e
 
 **Run** (this pass, prove phase, 2026-08-14). Real code implementing §8's plan was written in
 `include/agentengine/rt/agent_session.hpp` (the only production file this pass touched) plus a new
-`tests/test_agent_session_output_schema.cpp` (O1-O5), registered in `tests/CMakeLists.txt` immediately
+`tests/rt/agent_session/test_agent_session_output_schema.cpp` (O1-O5), registered in `tests/CMakeLists.txt` immediately
 after `test_rt_agent_session_suspend_approval`, in the default (non-`AGENTENGINE_BUILD_PYTHON_RUNNER`)
 `build` tree — matching that test's own link set exactly (`agentengine::core` + `agentengine_warnings`
 only).
@@ -679,7 +679,7 @@ either a new test (matching `tests/test_agent_session_suspend_approval.cpp`'s ow
 offline, scripted-`ChatClient` style) or a small addition to `cli_chat.cpp` — the test route is
 preferred, since `cli_chat.cpp` has no existing `OutputSchema<T>`-declaring agent and adding one
 there is a bigger, separately-motivated change than this ADR's own scope. **AS IMPLEMENTED, §5:** the
-test route was taken, exactly as preferred — `tests/test_agent_session_output_schema.cpp`, a `DemoOutput`
+test route was taken, exactly as preferred — `tests/rt/agent_session/test_agent_session_output_schema.cpp`, a `DemoOutput`
 two-field `AE_JSON_SCHEMA` struct standing in for the real `T`, no `register_agent<A>()`/`AgentMetadata`
 involved at all (Design B's own point: `AgentSession` never needs `AgentMetadata`, only the two erased
 values plus a closure).

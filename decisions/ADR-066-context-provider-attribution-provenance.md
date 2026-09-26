@@ -3,7 +3,7 @@
 **Status:** Judged (2026-08-21, project owner sign-off). Implemented: `ContributorProvenance` (`content.hpp`), `Message::attribution` and
 `ToolDescriptor::attribution`, `HasContextProviderName`/`ContextProviderDescriptor::name`
 (`context_assembly.hpp`), and the stamping logic inside `assemble_context()` itself — proven by
-`tests/test_context_provenance.cpp` (16/16 checks, real Windows/MSVC build; see §5/§6 for the
+`tests/core/context/test_context_provenance.cpp` (16/16 checks, real Windows/MSVC build; see §5/§6 for the
 updated evidence and verdicts, superseding this ADR's original, pre-implementation §5/§6). A real,
 mid-implementation finding corrected the design draft's own §4 prose (recorded in
 `context_assembly.hpp`'s own stamping-loop comment and §5/§6 below): "any contributor-sourced
@@ -124,7 +124,7 @@ carried (`ContentItem`'s own default, `::assistant`) with nothing marking it as 
 a real assistant turn. This ADR's `::user`-only check does NOT close that gap (a summary is not
 claiming `::user`) — named here as a real residual (§7), not silently claimed fixed.
 
-New test file `tests/test_context_provenance.cpp`: an `AdversarialProvider` conformer (the concrete
+New test file `tests/core/context/test_context_provenance.cpp`: an `AdversarialProvider` conformer (the concrete
 009 §2 threat named in §2/§4) returns one message forging `content_origin::user` on brand-new,
 non-replayed text, one message legitimately claiming `content_origin::system` (the same shape
 `SkillsProvider` already ships), and one contributed `ToolDescriptor` — run alongside a real
@@ -195,7 +195,7 @@ test_context_provenance --config Debug`, `ctest --test-dir build -C Debug --outp
   user/assistant turns, appended straight to `history_` by `AgentSession::run_rounds()`) never carry
   attribution either, by design, not by omission.
 - **WIRED, real end-to-end evidence (2026-08-20, same pass as the AgentSession wiring for all four of
-  this batch's ADRs)**: `tests/test_rt_agent_session_context_provenance.cpp` runs a real
+  this batch's ADRs)**: `tests/rt/agent_session/test_rt_agent_session_context_provenance.cpp` runs a real
   `rt::AgentSession<..., ComposedContextProvider<HistoryProvider<Window<0>>, SkillLikeProvider>>`
   round and inspects the ACTUAL outbound `ChatRequest` the mock backend received — 13/13 checks pass:
   both contributors' messages/tools reach the wire correctly stamped (`contributor_type`/

@@ -153,7 +153,7 @@ Open question raised during this draft: does making `on_context()` conditionally
   this — when `rank_memory_items` returns nothing, `contribution.messages` stays empty but
   `contribution.tools` still always carries the `recall` descriptor. This exact "sometimes-empty
   content, always-present tool" pattern is already shipped and covered by
-  `tests/test_memory_retrieval_determinism.cpp` / `tests/test_context_provenance.cpp`.
+  `tests/memory/test_memory_retrieval_determinism.cpp` / `tests/core/context/test_context_provenance.cpp`.
 
 So the adaptive/suppress behavior (§4) is entirely internal to `TodoProvider::on_context()`'s own
 control flow — it never needs to reach `ContextProviderDescriptor`, `assemble_context()`, or
@@ -167,7 +167,7 @@ control flow — it never needs to reach `ContextProviderDescriptor`, `assemble_
   of today. Whether `items_`/`next_id_` need to survive `save_agent_session_snapshot`/
   `load_agent_session_snapshot` (`rt/agent_session.hpp`) the way real session state does is unverified
   against the actual checkpoint code (`examples/12_session_checkpoint.cpp`,
-  `tests/test_rt_agent_session_checkpoint_restart.cpp`) — needs a real check before implementation,
+  `tests/rt/agent_session/test_rt_agent_session_checkpoint_restart.cpp`) — needs a real check before implementation,
   not assumed either way here.
 - **Capability ceiling for a future `always_show_when_empty` + external persistence.** This draft only
   covers pure in-memory state. If a future variant persists todos to disk/DB (so they survive process
