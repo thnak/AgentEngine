@@ -16,7 +16,7 @@
       "name": "dev",
       "inherits": "base",
       "displayName": "Development (fast test build)",
-      "description": "Release library, tests/ compiled without optimization (issue #115 E4). For day-to-day work; not a production build.",
+      "description": "Release library; tests, examples and test tools compiled without optimization (#115 E4, #120 S2). For day-to-day work; not a production build.",
       "cacheVariables": { "AGENTENGINE_FAST_TESTS": "ON" }
     },
     {

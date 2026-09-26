@@ -85,7 +85,7 @@
 #include "agentengine/eval/eval_gross_harm_screen.hpp"
 #include "agentengine/eval/lesson_candidate.hpp"
 #include "agentengine/eval/lesson_screen_record.hpp"
-#include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/rt/append_log_file_store.hpp"
 #include "agentengine/trust/secure_random.hpp"
 
 namespace agentengine::eval {
