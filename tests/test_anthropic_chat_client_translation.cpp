@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/protocol/anthropic/chat_client.hpp"
 
 using namespace agentengine;
@@ -1088,6 +1089,65 @@ int main() {
                       "cache_creation_input_tokens is absent from the wire response");
             }
         }
+    }
+
+    // ---- Issue #112 B2 (ADR-197 §5): tool_use `input` -- missing means {}, a non-object is refused ----------------------
+    {
+        auto block_call = [](std::string const& block_json) -> std::optional<ToolCall> {
+            auto block = json::parse(block_json);
+            if (!block) return std::nullopt;
+            auto item = translate_response_block(*block);
+            if (!item) return std::nullopt;
+            if (auto const* tc = std::get_if<ToolCall>(&item->value)) return *tc;
+            return std::nullopt;
+        };
+        auto refused = [](ToolCall const& tc) { return !tool_call_request_of(tc, 0).arguments_parse_error.empty(); };
+
+        bool all_refused = true;
+        for (char const* v : {"12345", "null", "\"ls\"", "[1]", "false"}) {
+            auto tc = block_call(std::string(R"({"type":"tool_use","id":"c1","name":"shell","input":)") + v + "}");
+            all_refused = all_refused && tc && refused(*tc);
+        }
+        check(all_refused, "B2-A1: a non-object tool_use `input` (number, null, string, array, boolean) is refused as "
+                           "malformed at step 2, never run");
+        auto obj = block_call(R"({"type":"tool_use","id":"c1","name":"shell","input":{"cmd":"ls"}})");
+        auto missing = block_call(R"({"type":"tool_use","id":"c1","name":"shell"})");
+        check(obj && !refused(*obj) && missing && missing->arguments_json == "{}" && !refused(*missing),
+              "B2-A2 control: an object `input` is the arguments; a missing one is a no-argument call");
+
+        auto stream_call = [](std::string const& events) -> std::optional<ToolCall> {
+            auto updates = parse_streaming_response_into_updates(events + "event: message_stop\ndata: {}\n\n",
+                                                                 /*is_chunked=*/false);
+            if (!updates) return std::nullopt;
+            for (auto const& u : *updates) {
+                if (auto const* tc = std::get_if<ToolCall>(&u.delta.value)) return *tc;
+            }
+            return std::nullopt;
+        };
+        auto whole = stream_call(
+            "event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"c1\","
+            "\"name\":\"shell\",\"input\":{\"cmd\":\"rm -rf /tmp/x\"}}}\n\n"
+            "event: content_block_stop\ndata: {\"index\":0}\n\n");
+        check(whole && whole->arguments_json == R"({"cmd":"rm -rf /tmp/x"})" && !refused(*whole),
+              "B2-A3: streamed -- a tool_use whose start already carries the input (no deltas) keeps it, not {}");
+        auto both = stream_call(
+            "event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"c1\","
+            "\"name\":\"shell\",\"input\":{\"cmd\":\"a\"}}}\n\n"
+            "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"input_json_delta\","
+            "\"partial_json\":\"{\\\"cmd\\\":\\\"b\\\"}\"}}\n\n"
+            "event: content_block_stop\ndata: {\"index\":0}\n\n");
+        check(both && refused(*both),
+              "B2-A4: streamed -- an input given both in the start and as deltas is refused, never resolved");
+        auto num = stream_call(
+            "event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"c1\","
+            "\"name\":\"shell\",\"input\":{}}}\n\n"
+            "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"input_json_delta\","
+            "\"partial_json\":7}}\n\n"
+            "event: content_block_stop\ndata: {\"index\":0}\n\n");
+        check(num && num->arguments_json == "7" && refused(*num),
+              "B2-A5: streamed -- a non-string partial_json is kept as its JSON text and refused, not dropped to {}");
+        check(translate_tool_use_input("42").is_object() && translate_tool_use_input("42").as_object().empty(),
+              "B2-A6: history replay sends {} for a call whose arguments were a non-object (the wire requires one)");
     }
 
     if (g_failures == 0) {

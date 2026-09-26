@@ -362,4 +362,45 @@ spawned children); the joined-string key (MAJOR: an approval for scope `victim<U
 defeated by a leading newline, NBSP or zero-width space. Evidence: `test_approval_resume` L1-L6, `test_delegation_provenance`
 R2-T1.
 
-**The round-3 and round-4 changes are not yet re-red-teamed.**
+**Round 5 (2026-09-26; GitHub issue #112 B4, red-team round 4 of the ADR-191..198 stack).**
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| B4 | minor (I4) | The round-3/4 id checks were ASCII-only. `is_attributable_id` accepted an id of only ZWSP or NBSP, and an embedded U+2028 or U+0085 (a line break to any Unicode-aware log viewer); the reserved-prefix check was fooled by Cyrillic `аutomatic:`, a full-width colon, or a ZWSP inside the word. Audit-trail confusion only: `is_automatic_approval_id` still classified correctly. The same checks guard `set_unattended_approvals`, `disable_system_channel_fence`, `enable_unattended_mode`, `set_approved_lessons`, `resolve_interaction`'s approver and ADR-193's spawn ids | Unicode-aware, table-driven checks in `approved_lessons.hpp` (below) |
+
+*What the checks are now* (`id_check_detail` in `core/approved_lessons.hpp`; every caller keeps calling
+`is_attributable_id` / `id_has_control_char`, so every guarded setter gets them):
+
+1. **Valid UTF-8 or refused.** Strict RFC 3629 decoding: no overlongs, surrogates, values above U+10FFFF or
+   truncated sequences. Bytes no reader can agree on the display of do not name anyone.
+2. **Line- or order-breaking code points refused** (`id_has_control_char`, which also guards the
+   acknowledgement): C0, DEL, C1 (U+0080-U+009F, so U+0085 NEL), U+2028/U+2029, the bidi embeddings and
+   overrides U+202A-U+202E, the isolates U+2066-U+2069, and the marks U+200E/U+200F/U+061C.
+3. **Blank after removing invisibles is blank** (`is_attributable_id`): Unicode White_Space (incl. NBSP,
+   U+1680, U+2000-U+200A, U+202F, U+205F, U+3000), zero-width and format characters (U+200B-U+200F,
+   U+2060-U+206F, U+FEFF, U+00AD, U+034F, U+180B-U+180F, U+17B4/5), Hangul and braille blanks (U+115F,
+   U+1160, U+3164, U+FFA0, U+2800), variation selectors (U+FE00-U+FE0F), U+FFF9-U+FFFB, musical format
+   U+1D173-U+1D17A, and the tag / variation-selector-supplement plane block U+E0000-U+E0FFF. An id must
+   hold at least one code point outside that set. Inner NBSP and emoji ZWJ sequences stay allowed.
+4. **The reserved prefix on a skeleton-lite fold**, not the raw bytes: drop the invisibles above; narrow
+   full-width ASCII (U+FF01-U+FF5E); map a closed table of Cyrillic, Greek, Armenian and letterlike
+   look-alikes of the letters in `automatic`/`simulated` (a c d e i l m o s t u) and of the colon (U+02D0,
+   U+02F8, U+0589, U+05C3, U+2236, U+A789, U+FE13, U+FE55, plus full-width U+FF1A); fold ASCII case; fold
+   `l`/`1`/`|` into `i` and `0` into `o`. Then search for `automatic:` and `simuiated:` (the skeleton's
+   spelling of `simulated:`) anywhere, as before. Any other non-ASCII code point folds to a byte that
+   matches nothing, so it cannot complete a match.
+
+*Residual, stated.* This is not UTS #39 confusable detection: look-alikes outside the table (Cherokee,
+mathematical alphanumerics U+1D400+, Latin small capitals, combining marks that render near-invisibly over a
+letter, multi-character confusables such as `rn` for `m`) still pass the reserved-prefix check. The defence
+is proportionate to the finding's severity: the prefix check keeps a human approval id from *reading* like
+an engine-written one in an audit trail; the engine's own classification (`LessonApproval::automatic` /
+`simulated`, `is_automatic_approval_id`) never depended on it. The folding adds false positives only for ids
+that visibly spell a reserved word with a colon.
+
+Evidence: `test_approved_lesson_delivery` I1-I6 (blank-by-Unicode ids refused; U+2028/U+2029/U+0085, RLO,
+RLI, invalid, truncated and overlong UTF-8 refused by the registry and the unattended opt-ins; a U+2028
+acknowledgement refused; seven reserved-prefix disguises refused on both fields; controls: accented, CJK,
+Cyrillic, inner-NBSP, emoji-ZWJ and `automation-team:ci` ids accepted). Positive controls recorded below.
+
+**The round-3, round-4 and round-5 changes are not yet re-red-teamed.**

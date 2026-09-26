@@ -734,7 +734,11 @@ overloaded(Fs...) -> overloaded<Fs...>;
             },
             [](rp::StateChanged const& x) { return obj({{"description", str(x.description)}}); },
             [](rp::ArtifactProduced const& x) { return obj({{"artifact_id", str(x.artifact_id)}}); },
-            [](rp::InteractionRef const& x) { return obj({{"interaction_id", str(x.interaction_id)}}); },
+            [](rp::InteractionRef const& x) {
+                // ADR-196 §7: the resolver only when named, so an anonymous resolve keeps its old shape.
+                if (x.approver_id.empty()) return obj({{"interaction_id", str(x.interaction_id)}});
+                return obj({{"interaction_id", str(x.interaction_id)}, {"approver_id", str(x.approver_id)}});
+            },
             [](rp::ApprovalRequested const& x) {
                 return obj({{"call_id", str(x.call_id)}, {"interaction_id", str(x.interaction_id)},
                             {"tool_name", str(x.tool_name)}, {"arguments", str(x.arguments_json)},

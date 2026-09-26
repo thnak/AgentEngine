@@ -1,6 +1,7 @@
 # ADR-198 — One failure, one code: `run_failed` carries the run's own error code, and the stage beside it
 
-- **Status**: **Proposed — design + implementation + proof (2026-09-25; not yet red-teamed).**
+- **Status**: **Proposed — design + implementation + proof (2026-09-25); red team round 1 (2026-09-26, issue #112
+  B3) found a second emit site, fixed (§5).**
 - **Date**: 2026-09-25
 - **Origin**: GitHub issue #106, found by the agent test driver scenario `tests/scenarios/scripted_model_failure.json`
   (ADR-182 §16, "Findings from this round").
@@ -42,3 +43,24 @@ retry. The category is not lost — it moved to `stage`.
 `tests/test_approval_resume.cpp` F1: a scripted `provider.overloaded` failure yields exactly one `run_failed` whose
 `error_code` equals the result's code, with `stage == "run.chat_failed"`. `scenario_scripted_model_failure` expects
 `{"error_code":"provider.overloaded","message":"overloaded","stage":"run.chat_failed"}`; with the old emit it fails.
+
+## 5. Red team round 1 (2026-09-26, issue #112 B3)
+
+**Finding (MAJOR, §2's claim false): one failure, two `run_failed`.** `run_model_call()` emitted its own `run_failed`
+at three sites -- the outbound media-capability gate (gap-audit finding 19) and both undeclared-tool-call leak
+refusals (OQ-23, buffered and streamed paths) -- and then returned the error to `run_rounds()`, whose `run.chat_failed`
+site emitted a second one. AG-UI projects each as a `RUN_ERROR`. Probe: an image input to a client that declares no
+multimodal support produced two events for one failure.
+
+**Fix: one failure, one emit site.** `run_model_call()` never emits `run_failed`; it only returns the error. The caller
+emits exactly one, with `error_code` = the result's code and `stage = run.chat_failed`. One stage is kept for all
+three causes, deliberately: the code already names the cause (`chat_client.multimodal_capability_missing` vs.
+`chat_client.undeclared_tool_call_leak`), and `stage` answers only "where in the run" -- the model-call step. The only other stage-bearing
+emit sites (`run.context_unavailable`, `run.turn_denied`) were already single.
+
+**Evidence.** `tests/test_approval_resume.cpp` F2: a media-gate refusal yields exactly one `run_failed`, whose
+`error_code` equals the result's code, with `stage == "run.chat_failed"`. Positive control: re-adding the gate's own
+emit fails F2 (two events), source restored from a scratchpad copy.
+
+**Residual.** The leak-refusal sites are covered by the same single emit path but not by their own check (F2 drives
+the media gate, the one reachable with a plain scripted client); they share the code path verbatim.

@@ -616,7 +616,18 @@ namespace detail {
             ToolCall call;
             call.call_id = (id && id->is_string()) ? id->as_string() : std::string{};
             call.tool_name = (name && name->is_string()) ? name->as_string() : std::string{};
-            call.arguments_json = (args && args->is_string()) ? args->as_string() : std::string{"{}"};
+            // Issue #112 B2 (ADR-197 §5): only a MISSING `arguments` means "no arguments" (`{}`). A present value
+            // that is not the string the wire specifies is kept as its own JSON text, never replaced: an object is
+            // the arguments themselves (some OpenAI-compatible servers send one) and parses as such; a number,
+            // `null`, boolean or array is refused at step 2 as `tool.malformed_arguments` (`tool_call_request_of`).
+            // It used to become `{}`, so a tool whose arguments are all optional ran with its defaults.
+            if (args == nullptr) {
+                call.arguments_json = "{}";
+            } else if (args->is_string()) {
+                call.arguments_json = args->as_string();
+            } else {
+                call.arguments_json = json::dump(*args);
+            }
             ContentItem item;
             item.value = std::move(call);
             item.origin = content_origin::assistant;
@@ -915,9 +926,20 @@ private:
                         if (auto const* name = fn->find("name"); name && name->is_string()) {
                             acc.name += name->as_string();
                         }
-                        if (auto const* args = fn->find("arguments");
-                            args && args->is_string() && !args->as_string().empty()) {
-                            acc.arguments += args->as_string();
+                        auto const* args = fn->find("arguments");
+                        // Issue #112 B2: a streamed fragment that is not a string is not dropped (that turned an
+                        // object sent in one delta into `{}`). It is appended as its JSON text, the same rule as
+                        // the non-streamed path: a whole object alone parses as the arguments; anything else, or an
+                        // object mixed with string fragments, fails to parse and is refused at step 2. `null` is
+                        // "no fragment in this delta", like an absent field -- deltas omit fields routinely.
+                        std::string fragment;
+                        if (args != nullptr && args->is_string()) {
+                            fragment = args->as_string();
+                        } else if (args != nullptr && !args->is_null()) {
+                            fragment = json::dump(*args);
+                        }
+                        if (!fragment.empty()) {
+                            acc.arguments += fragment;
                             // OpenAI's stream has no explicit per-tool-call completion boundary event
                             // (only this unparsed `index`-transition convention or a trailing
                             // `finish_reason`) -- `is_final` stays false here; open question, not
@@ -925,7 +947,7 @@ private:
                             // side).
                             ChatResponseUpdate chunk_update;
                             chunk_update.tool_call_argument_chunk = ToolCallArgumentChunk{
-                                acc.id, acc.name, args->as_string(), /*is_final=*/false};
+                                acc.id, acc.name, fragment, /*is_final=*/false};
                             chunk_out->push_back(std::move(chunk_update));
                         }
                     }

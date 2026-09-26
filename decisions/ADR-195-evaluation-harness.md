@@ -1774,3 +1774,100 @@ as v1 (P1), and its next append destroys the log, so a log directory must not be
 reads as an error, and the file still holds all 4 harmful attempts). Positive controls: against the pre-§8a store,
 16 store checks and both T42 cases fail. Six planted mutants (header-CRC failure taken for torn, final-record CRC
 failure taken for torn, no unknown-format check, no v2 re-sync, no v1 bound, no zero-fill rule) are each caught.
+
+### Red team round (2026-09-26): issue #114
+
+Red team round 4 ran compiled probes against the §8a store as merged in #110 (e46c08f) and found three ways a torn
+tail could still hide damage.
+
+- **D1 (MAJOR): zeros past the torn frame dropped fsynced records.** A zero run to EOF was taken for torn if it began
+  at a frame or at a 512-aligned offset inside one, *however far it ran*. So 4 records appended with
+  `append_log_sync::disk`, then zeroed from record 3 to EOF, read as 2 records with no error, and the next append
+  reused seq 3. This is the P3 outcome this section says is closed. Zeroing from a block inside record 2 had the
+  same effect.
+- **D2 (MAJOR for the generic store; E32 not exposed): one bit, v3 to v2.** `read_magic` accepted the flipped magic
+  as v2, and an empty v3 record also parses as a v2 record. The v3 header CRC then read as a v2 length that overran
+  the file, the re-sync scan found no v2 record among the v3 frames, and every later record became a torn tail.
+  The store banner said the reverse: that such a flip "is reported as corruption".
+- **D3 (MINOR): three damaged magic bytes still parsed as v1.** The 5-of-7 bar caught only 1 or 2 damaged bytes.
+  `A\0\0\0Gv3\n` returned a garbage record, and the next append wrote v1 framing into a v3 file.
+
+**The rule, stated once in the store banner, with every check following it.** *Only the final frame may be torn.
+Anything else that fails a check is damage: an error, never truncated or rewritten.* The crash model is unchanged.
+One append writes one frame. A crash leaves a prefix of that frame, or, after a power loss, the frame with its lost
+part read as zeros from the frame start or from a 512-aligned offset. Either way, the file ends at or before the
+end of that one frame. The fixes:
+- **v3, complete payload with a bad CRC (D1):** torn only if the frame ends exactly at EOF and its lost part reads
+  as zeros. Zeros that run past the frame's end cover other records.
+- **v3, bad header CRC (D1):** torn only if the header never reached the disk whole, *and* the zeros can only be one
+  frame:
+  - If the 4 length bytes landed, the frame they claim must reach EOF.
+  - If the length was lost too, zeros carry no length, so nothing shows where the lost frame ended. The zero run is
+    accepted only while it is too short to hold two frames (under 24 bytes). A longer run may be several zeroed
+    records, so it fails closed as `corrupt_record`.
+
+  A bound based on block size ("one minimum frame plus 512") was rejected. It would still hide two small records:
+  the probe's two records took about 200 bytes.
+- **v2 and v1, whose lengths are unverified (D2):** a cut, whether an overrun or a zero-filled final frame, is torn
+  only if it is no longer than the largest intact frame before it. v1 already had this bound, and v2 now has it too.
+  v2 also keeps its re-sync scan.
+- **Version detection (D2):** a `v2` magic followed by a CRC-valid v3 header is `unknown_format`. A real v2 record
+  matches that CRC only by 2^-32 chance.
+- **Magic (D3):** a known version needs its magic exact. Three kinds of file are `unknown_format`, never parsed as
+  v1:
+  - a file that still resembles the magic (2 or more of its 7 fixed bytes);
+  - a file with a CRC-valid v3 header, or a CRC-valid non-empty v2 record, where the first record would sit;
+  - a file whose first 8 bytes are zeros (a first append lost whole, or damage).
+
+  One exception is a short all-zero file, under 32 bytes: too short for the magic plus two frames, so it is read
+  as a torn creation and rewritten as v3.
+- **Appending to damage:** `append()` refuses every file classed `corrupt_record` or `unknown_format` before it
+  truncates or writes anything. This was already true, and each new case now tests it.
+
+**Evidence.** `tests/test_rt_append_log_store.cpp`:
+- L31 (D1): two records zeroed from a record boundary; a lost block inside record 2 running over records 3 and 4; a
+  landed length that claims a frame ending before EOF; a lost-length run of 23 bytes (torn) against 24 (corrupt).
+- L32 (D2): a v3 log with its version byte flipped, first record empty or non-empty; a v2 overrun longer than any
+  earlier frame.
+- L33 (D3): the red team's `A\0\0\0Gv3\n`; the same with the first header damaged too; all 8 magic bytes damaged; a
+  zeroed magic; all-zero files of 32 bytes (refused) and 31 bytes (torn creation); a real v1 log whose first byte
+  is `A` (still read, and appended in v1 framing).
+
+Each damage case checks that `read_from` and `append` both fail with the named code, `last_seq` is 0, and the file is
+byte-for-byte unchanged. The red team's scenarios L1a, L1b, L2 and L3 are included as they were written. L28, L29 and
+L21, the existing recovery cases, still pass: a real torn tail is still repaired. The test process now runs under
+`tests/support/memory_cap.hpp`.
+
+Positive controls: against the e46c08f store, 13 checks fail. Eight planted mutants on the fixed store are each
+caught by at least one check:
+- a bad-payload-CRC frame taken for torn without ending at EOF;
+- a lost-length zero run with no bound;
+- a landed length not checked against EOF;
+- no v3-header check behind a v2 magic;
+- no largest-frame bound on a v2 or v1 cut;
+- the old 5-of-7 magic bar;
+- no CRC-valid-record check after a non-magic;
+- a zeroed magic parsed as v1.
+
+The first run showed the 5-of-7 mutant surviving, because the record check also caught the red team's case. A
+damaged-magic-plus-damaged-header case was added so that the similarity bar is tested on its own.
+
+**Residuals (also in the store banner, WHAT IS NOT DETECTED).**
+- **Fails closed where it used to recover.** Each of the following now needs repair by hand:
+  - a power loss that loses a frame's length along with 24 or more of its bytes;
+  - a power loss that loses more than the last append (possible in `os_buffer` mode, where appends are not synced);
+  - a power loss that loses a new log's magic;
+  - a v2 or v1 crash while appending a record larger than every earlier one.
+
+  These are availability costs of the rule. Zeros carry no length, so none of these runs can be proven to be one
+  frame.
+- **Still passes as torn:**
+  - a final v3 frame whose landed length and zeroed tail are both damage (two faults);
+  - in v2, a hidden *empty* record inside a cut no longer than the largest earlier frame.
+- **Zeros as empty records:** v2 and v1 still read zeros as empty records. Neither format can tell these apart from
+  real empty records.
+- **Legacy v1 logs refused:** a v1 log whose first bytes resemble the magic, or begin with 8 zero bytes, is refused
+  as `unknown_format`.
+- **No format change:** v3 framing is unchanged, so logs written since §8a still read. The version byte is not
+  covered by any CRC. The two-direction check above (a CRC-valid v3 header behind a `v2` magic; the v3 header CRC
+  failing behind a `v3` magic on a v2 log) is what makes a one-bit flip visible.

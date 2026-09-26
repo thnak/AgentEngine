@@ -40,6 +40,19 @@
 //         with records after it and a v2 final-record bit flip are corruption.
 //   L30 -- a damaged v1 length that would hide later records is corruption.
 //   L21 was amended by §8a: only a zero-filled final frame is torn now, not any final record with a bad CRC.
+//   L31-L33 -- issue #114 (red team round 4 on §8a). The rule: ONLY THE FINAL FRAME MAY BE TORN; anything else
+//         that fails a check is damage, refused by read and append, file untouched:
+//   L31 (D1) -- zeros from a record boundary, or from a block inside an earlier record, to EOF are damage, not a
+//         power-loss tail; a lost-length zero run too short for two frames is still torn, one that fits two is not.
+//   L32 (D2) -- a v3 log whose version byte flipped to '2' is refused (empty or non-empty first record); a v2
+//         overrun whose cut is longer than any earlier frame is corruption even with no re-sync hit.
+//   L33 (D3) -- a magic with 3 (or all 8) bytes damaged is refused, never parsed as v1; v1 logs whose first
+//         length byte matches the magic's 'A' still read; a zeroed magic is torn only as a short all-zero file.
+// Positive controls (2026-09-26, issue #114): against the e46c08f store 13 checks fail (L31 x4, L32 x3, L33 x6).
+// Planted mutants on the fixed store, each caught: a bad-payload-CRC frame taken for torn without ending at EOF
+// (L31); a lost-length zero run unbounded (L31 x2); a landed length not checked against EOF (L31); no v3-header
+// check behind a v2 magic (L32 x2); no largest-frame bound on a v2/v1 cut (L30, L32); the old 5-of-7 magic bar
+// (L33); no CRC-valid-record check after a non-magic (L33); a zeroed magic parsed as v1 (L33 x2).
 // Positive controls (2026-09-25): against the pre-§8a store, 16 checks fail (L21, L25 x4, L26 overrun,
 // L27 x2, L28 x4 -- that store cannot read v3 -- L29 x2, L30). Planted mutants on the §8a store, each caught:
 // a bad v3 header CRC taken for torn (L26 x2); a complete final record with a bad CRC taken for torn (L27 x2,
@@ -83,6 +96,7 @@
 #endif
 
 #include "agentengine/rt/append_log_store.hpp"
+#include "support/memory_cap.hpp"
 
 using agentengine::rt::FileAppendLogStore;
 using agentengine::rt::InMemoryAppendLogStore;
@@ -244,6 +258,9 @@ bool spawn_append_children(char const* self, std::filesystem::path const& root, 
 }  // namespace
 
 int main(int argc, char** argv) {
+    // Several cases below hand the parser crafted lengths up to ~4 GiB: a broken parser that allocates by them must
+    // fail here, not take the machine (CLAUDE.md "Machine safety").
+    (void)agentengine::test_support::cap_process_memory(std::size_t{256} << 20, std::size_t{1024} << 20);
     if (argc == 5 && std::string(argv[1]) == "--append-child") {
         return run_append_child(argv[2], std::atoi(argv[3]), std::atoi(argv[4]));
     }
@@ -781,6 +798,105 @@ int main(int argc, char** argv) {
         v1[3] = '\x7f';  // record one's length (native order; every supported target is little-endian)
         check(refused("v1-length-grown", v1, "rt.append_log_store.corrupt_record"),
               "L30: a v1 length damaged to hide the records after it is corruption, not a torn tail");
+    }
+
+    // ---- issue #114 (red team round 4): only the FINAL frame may be torn -----------------------------------------
+    // L31 (D1): zeros past the torn frame. Before the fix a zero run from a frame (or a 512-aligned offset inside it)
+    // to EOF was torn however far it ran: 4 fsynced records with [frame 3, EOF) zeroed read as 2 records, no error,
+    // and the next append reused seq 3.
+    {
+        std::string const rec = std::string(90, 'r');
+        std::string four = kMagicV3;
+        for (int i = 0; i < 4; ++i) four += v3_frame(rec + std::to_string(i));
+        std::size_t const frame = 12 + rec.size() + 1;
+        std::string boundary = four;
+        std::fill(boundary.begin() + static_cast<std::ptrdiff_t>(8 + 2 * frame), boundary.end(), '\0');
+        check(refused("zeros-from-boundary", boundary, "rt.append_log_store.corrupt_record"),
+              "L31: two records zeroed from a record boundary to EOF are corruption, not a torn tail");
+
+        std::string big = kMagicV3;
+        for (int i = 0; i < 4; ++i) big += v3_frame(std::string(900, 'b') + std::to_string(i));
+        std::size_t const rec2_payload = 8 + (12 + 901) + 12;
+        std::size_t const block = (rec2_payload / 512 + 1) * 512;  // an aligned offset inside record 2's payload
+        std::fill(big.begin() + static_cast<std::ptrdiff_t>(block), big.end(), '\0');
+        check(refused("zeros-past-frame-end", big, "rt.append_log_store.corrupt_record"),
+              "L31: a lost block inside record 2 whose zeros run over records 3-4 is corruption (frame ends before EOF)");
+
+        // The length landed (a block boundary 6 bytes into record 2's header), but the frame it claims ends
+        // before the file does: the zeros cover record 3 too.
+        std::string landed = kMagicV3 + v3_frame(std::string(486, 'a')) + v3_frame(std::string(40, 'b')) +
+                             v3_frame(std::string(40, 'c'));
+        std::fill(landed.begin() + 512, landed.end(), '\0');
+        check(refused("zeros-landed-length", landed, "rt.append_log_store.corrupt_record"),
+              "L31: a header whose length landed but claims a frame ending before EOF is corruption");
+
+        std::string const one = kMagicV3 + v3_frame("intact-one");
+        check(recovers("zeros-23", one + std::string(23, '\0'), 1),
+              "L31: a lost-length zero run too short to hold two frames (23 bytes) is still a torn tail");
+        check(refused("zeros-24", one + std::string(24, '\0'), "rt.append_log_store.corrupt_record"),
+              "L31: a lost-length zero run that could hold two frames (24 bytes) is corruption");
+    }
+
+    // L32 (D2): one bit turns `v3` into `v2`. An empty v3 record also parses as v2; the v3 header CRC was then read
+    // as a v2 length that overran the file, and the re-sync scan found no v2 record in the v3 frames after it: every
+    // later record was dropped as a torn tail and the next append truncated them.
+    {
+        std::string empty_first = kMagicV3 + v3_frame("");
+        for (int i = 1; i <= 3; ++i) empty_first += v3_frame("{\"n\":" + std::to_string(i) + "}");
+        empty_first[6] = '2';
+        check(refused("v3-as-v2-empty", empty_first, "rt.append_log_store.unknown_format"),
+              "L32: a v3 log with an empty first record and its version byte flipped to '2' is refused");
+        std::string nonempty_first = kMagicV3 + v3_frame("first") + v3_frame("second");
+        nonempty_first[6] = '2';
+        check(refused("v3-as-v2", nonempty_first, "rt.append_log_store.unknown_format"),
+              "L32: a v3 log with its version byte flipped to '2' is refused");
+        // A genuine v2 magic whose final length overruns the file by more than any earlier frame: corruption, even
+        // though no CRC-valid v2 record hides in the cut (the re-sync scan alone called this torn).
+        std::string overrun = kMagicV2 + v2_frame("a") + le32(1000) + le32(0) + std::string(40, 'x');
+        check(refused("v2-overrun-longer-than-any-frame", overrun, "rt.append_log_store.corrupt_record"),
+              "L32: a v2 cut longer than the largest earlier frame is corruption, not a torn tail");
+    }
+
+    // L33 (D3): a damaged magic. The old bar (5 of 7 bytes) let 3 damaged bytes parse as v1: `A\0\0\0Gv3\n` read a
+    // garbage record and the next append wrote v1 framing into the v3 file.
+    {
+        std::string three = five_records("magic-three-damaged");
+        three[1] = three[2] = three[3] = '\0';
+        check(refused("magic-three-damaged", three, "rt.append_log_store.unknown_format"),
+              "L33: a v3 magic with 3 damaged bytes is refused, never parsed as v1");
+        // The first record's header CRC damaged too, so no CRC-valid record follows the magic: only the magic's
+        // resemblance (4 of 7 fixed bytes still agree) keeps this from parsing as v1.
+        std::string three_and_header = three;
+        three_and_header[8 + 8] = static_cast<char>(three_and_header[8 + 8] ^ 0x01);
+        check(refused("magic-three-and-header", three_and_header, "rt.append_log_store.unknown_format"),
+              "L33: a 3-byte-damaged magic in front of a damaged first header is refused, never parsed as v1");
+        std::string all8 = five_records("magic-all-damaged");
+        for (std::size_t i = 0; i < 8; ++i) all8[i] = static_cast<char>(0x80 + i);
+        check(refused("magic-all-damaged", all8, "rt.append_log_store.unknown_format"),
+              "L33: a magic with all 8 bytes damaged is refused (a CRC-valid v3 header follows it)");
+        std::string zero_magic = five_records("magic-zeroed");
+        std::fill(zero_magic.begin(), zero_magic.begin() + 8, '\0');
+        check(refused("magic-zeroed", zero_magic, "rt.append_log_store.unknown_format"),
+              "L33: a zeroed magic in front of records is refused");
+        check(refused("all-zero-32", std::string(32, '\0'), "rt.append_log_store.unknown_format"),
+              "L33: an all-zero file long enough for the magic and two frames is refused");
+        check(recovers("all-zero-31", std::string(31, '\0'), 0),
+              "L33: a short all-zero file (a first append lost to a power loss) is a torn creation, rewritten as v3");
+
+        // A genuine v1 log whose first record is 65 bytes long: its first byte is 'A', one match with the magic.
+        std::string v1;
+        for (std::string const& payload : {std::string(65, 'p'), std::string("second")}) {
+            auto const len = static_cast<std::uint32_t>(payload.size());
+            v1.append(reinterpret_cast<char const*>(&len), sizeof(len));
+            v1 += payload;
+        }
+        write_file(root / "v1-starts-with-A", v1);
+        FileAppendLogStore store(root);
+        auto old = store.read_from("v1-starts-with-A", 0);
+        auto s3 = store.append("v1-starts-with-A", bytes_from("third"));
+        check(v1[0] == 'A' && old.has_value() && old->size() == 2 && s3.has_value() && *s3 == 3 &&
+                  !read_file(root / "v1-starts-with-A").starts_with(kMagicV3),
+              "L33: a v1 log whose first byte happens to be 'A' is still read and appended in v1 framing");
     }
 
     // Cleanup.

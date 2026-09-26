@@ -126,7 +126,9 @@ using Resolver = std::function<result<sandbox::VerifiedEndpoint>(std::string_vie
 // parsed into this shape for outbound translation, and json::dump()'d back for inbound.
 [[nodiscard]] inline json::Value translate_tool_use_input(std::string const& arguments_json) {
     auto parsed = json::parse(arguments_json);
-    if (!parsed) return json::Value::make_object({});  // malformed input -- send an empty object
+    // Malformed input -- send an empty object. So is a non-object (issue #112 B2): the wire requires an object, and
+    // such a call was refused at step 2 (its result in the same history says so).
+    if (!parsed || !parsed->is_object()) return json::Value::make_object({});
     // ADR-191: parsing turns a JSON escape of a reserved bracket glyph into the real glyph, which this block then sends
     // raw. Only then is the parsed value re-dumped (json::dump writes non-ASCII raw), cleaned and parsed again -- an
     // input without the glyphs is sent exactly as parsed (round 3: rewriting the escapes in the text corrupted it).
@@ -558,6 +560,8 @@ inline constexpr std::uint64_t kMinThinkingBudgetTokens = 1024;
         ToolCall call;
         call.call_id = (id && id->is_string()) ? id->as_string() : std::string{};
         call.tool_name = (name && name->is_string()) ? name->as_string() : std::string{};
+        // Issue #112 B2 (ADR-197 §5): a missing `input` is no arguments; any present value is kept as its JSON text,
+        // so a non-object `input` is refused at step 2 as `tool.malformed_arguments` (`tool_call_request_of`).
         call.arguments_json = input ? json::dump(*input) : std::string{"{}"};
         item.value = std::move(call);
         return item;
@@ -928,6 +932,15 @@ private:
                     if (auto const* name = cb->find("name"); name && name->is_string()) {
                         b.tool_name = name->as_string();
                     }
+                    // Issue #112 B2: Anthropic's own stream opens a tool_use block with the placeholder
+                    // `"input": {}` and sends the arguments as `partial_json` deltas. A start that already carries
+                    // a real input (a gateway replaying a whole message as SSE) is not dropped -- that ran the call
+                    // with `{}`. Its JSON text starts the buffer; deltas after it make the text unparseable, so an
+                    // input given both ways is refused at step 2, never resolved.
+                    if (auto const* input = cb->find("input");
+                        input != nullptr && !input->is_null() && !(input->is_object() && input->as_object().empty())) {
+                        b.tool_input_json = json::dump(*input);
+                    }
                 } else if (b.kind == "redacted_thinking") {
                     b.redacted = true;
                 }
@@ -962,12 +975,20 @@ private:
                         out.push_back(BlockItem{std::move(item), static_cast<std::size_t>(*bounded)});
                     }
                 } else if (dkind == "input_json_delta") {
-                    if (auto const* pj = delta->find("partial_json"); pj && pj->is_string() &&
-                                                                        !pj->as_string().empty()) {
-                        b.tool_input_json += pj->as_string();
+                    // Issue #112 B2: a non-string `partial_json` is appended as its JSON text, not dropped (the
+                    // OpenAI stream's rule); `null` is no fragment.
+                    auto const* pj = delta->find("partial_json");
+                    std::string fragment;
+                    if (pj != nullptr && pj->is_string()) {
+                        fragment = pj->as_string();
+                    } else if (pj != nullptr && !pj->is_null()) {
+                        fragment = json::dump(*pj);
+                    }
+                    if (!fragment.empty()) {
+                        b.tool_input_json += fragment;
                         ChatResponseUpdate chunk_update;
                         chunk_update.tool_call_argument_chunk = ToolCallArgumentChunk{
-                            b.tool_id, b.tool_name, pj->as_string(), /*is_final=*/false};
+                            b.tool_id, b.tool_name, fragment, /*is_final=*/false};
                         chunk_out->push_back(std::move(chunk_update));
                     }
                 } else if (dkind == "thinking_delta") {

@@ -27,7 +27,15 @@
 //   R2-E1 a throwing child still charges; R2-L1 the host-line label is cut on a character boundary, controls replaced;
 //   R2-H1 the host line ends in a paragraph break and claims everything after it; W3/W4 updated: a fan-in merge of
 //   any role becomes a user-role delegated message (host items, host line, foreign items).
+//   Round 3 (red team, issue #113; ADR-193 §9 -- every delegated body charges its whole run once, on every exit):
+//   R3-C1 a THROWING workflow agent node is charged per attempt; R3-C1b the throw charges once and detaches the event
+//   tap; R3-C1c a run refused before it starts charges nothing (not the previous run); R3-C2 fresh WorkflowChatClient
+//   calls are charged their own spend (was a delta against the previous run, wrapping); R3-C2b the same with two
+//   clients over one supervisor on two threads; R3-C2c a dropped stream is still charged; R3-N1 a nested workflow
+//   node reports its inner spend.
 
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <functional>
 #include <memory>
@@ -35,6 +43,8 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/approved_lessons.hpp"
@@ -50,6 +60,7 @@
 #include "agentengine/rt/agent_spawn.hpp"
 #include "agentengine/rt/agent_workflow_executor.hpp"
 #include "agentengine/rt/workflow_as_chat_client.hpp"
+#include "agentengine/rt/workflow_as_executor.hpp"
 
 using namespace agentengine;
 using agentengine::rt::AgentSession;
@@ -690,6 +701,63 @@ struct DirectSpawn {
     }
 };
 
+// ---- Round 3 (issue #113) fixtures -------------------------------------------------------------------------------
+// A node client that alternates: a call spending 50+50 that asks for an unknown tool, then a call that THROWS.
+// `g_r3_throws` = false makes every call a plain 50+50 answer.
+int g_r3_calls = 0;
+bool g_r3_throws = true;
+class AlternatingThrowClient {
+public:
+    [[nodiscard]] ChatClientCapabilities capabilities() const { return {}; }
+    task<result<ChatResponse>> chat(ChatRequest, EffectContext&) {
+        int const n = g_r3_calls++;
+        if (!g_r3_throws) co_return ChatResponse{assistant_text("fine"), Usage{50, 50, 0, 0, 0.0}};
+        if (n % 2 == 0)
+            co_return ChatResponse{assistant_call("r3-" + std::to_string(n), "nosuch", "{}"), Usage{50, 50, 0, 0, 0.0}};
+        throw std::runtime_error("node chat client blew up");
+    }
+    agentengine::stream<ChatResponseUpdate> chat_stream(ChatRequest, EffectContext&) { return {}; }
+};
+
+// A node client whose per-call spend the test sets (g_r3_in + g_r3_out), answering at once.
+std::atomic<std::uint64_t> g_r3_in{500};
+std::atomic<std::uint64_t> g_r3_out{500};
+std::atomic<int> g_r3_spend_calls{0};
+class SetSpendClient {
+public:
+    [[nodiscard]] ChatClientCapabilities capabilities() const { return {}; }
+    task<result<ChatResponse>> chat(ChatRequest, EffectContext&) {
+        ++g_r3_spend_calls;
+        co_return ChatResponse{assistant_text("node-answer"), Usage{g_r3_in.load(), g_r3_out.load(), 0, 0, 0.0}};
+    }
+    agentengine::stream<ChatResponseUpdate> chat_stream(ChatRequest, EffectContext&) { return {}; }
+};
+
+Message r3_user(std::string t) {
+    Message m;
+    m.role = role::user;
+    ContentItem it{};
+    it.origin = content_origin::user;
+    it.value = Text{std::move(t)};
+    m.content.push_back(it);
+    return m;
+}
+workflow::Executor r3_exec(char const* id, workflow::executor_kind k) {
+    return workflow::Executor{.id = id, .kind = k, .input_type = "T", .output_type = "T",
+                              .worktree_mode = sharing_mode::branch, .capability_ceiling = {}};
+}
+// A one-node workflow whose node is `body`.
+workflow::Workflow r3_one_node(char const* id, workflow::executor_kind k) {
+    workflow::Workflow wf;
+    wf.id = id;
+    wf.executors = {r3_exec("a", k)};
+    wf.start = "a";
+    wf.output_selection.push_back("a");
+    wf.bound.max_rounds = 2;
+    return wf;
+}
+std::uint64_t r3_tokens(Usage const& u) { return u.input_tokens + u.output_tokens; }
+
 }  // namespace
 
 int main() {
@@ -1257,6 +1325,197 @@ int main() {
                   joined == host + forged && joined.find("have. Everything") != std::string::npos,
               "R2-H1: joined as OpenAI joins it, the host line ends in a paragraph break before the delegated text and "
               "first says that any host-looking text after it belongs to the request (round 2 MINOR)");
+    }
+
+    // ---- Round 3 (issue #113, ADR-193 §9): every delegated body charges its whole run exactly once, on every exit.
+    {
+        // C1 (red team D1): a workflow agent node whose chat client THROWS mid-run, behind a retry edge. Every attempt
+        // spends 50+50 then throws; the supervisor classes the throw as transient and retries.
+        g_r3_calls = 0;
+        g_r3_throws = true;
+        AgentSession<AlternatingThrowClient> node;
+        node.initialize("r3-throw-node", Principal{"p-r3", ""}, std::optional<std::uint64_t>{1'000'000});
+        rt::WorkflowSupervisor sup;
+        workflow::Workflow wf;
+        wf.id = "r3-c1";
+        wf.executors = {r3_exec("a", workflow::executor_kind::agent), r3_exec("sink", workflow::executor_kind::function)};
+        workflow::Edge e{"a", "sink", workflow::edge_kind::direct, {}};
+        e.on_failure = workflow::EdgeFailurePolicy{workflow::edge_failure_policy::retry, 2, {}};
+        wf.edges.push_back(e);
+        wf.start = "a";
+        wf.output_selection.push_back("sink");
+        wf.bound.max_rounds = 4;
+        std::vector<rt::ExecutorBody> bodies;
+        bodies.push_back(rt::agent_session_as_executor_body(node));
+        bodies.push_back([](Message const& in, EffectContext&) -> result<rt::ExecutorOutcome> {
+            return rt::ExecutorOutcome{in};
+        });
+        sup.initialize(wf, std::move(bodies));
+        auto const r = rt::block_on(sup.run_workflow(rt::RunWorkflow{r3_user("go")}));
+        std::uint64_t const spent = static_cast<std::uint64_t>((g_r3_calls + 1) / 2) * 100;
+        check(r.status != rt::workflow_status::completed && g_r3_calls >= 4 && spent >= 200 &&
+                  r3_tokens(sup.usage()) == spent && r3_tokens(r.usage) == spent,
+              "R3-C1: a workflow agent node whose chat client throws is charged every attempt's spend (retried: "
+              "2 attempts, 200 tokens; was 0) -- in usage() and in the run's WorkflowResult::usage");
+    }
+    {
+        // C1, the tap: the node body called directly with a context that outlives it. After a throw, the session's
+        // event tap must be detached -- a later, unrelated run of the same session must not reach this context's
+        // sink (in a workflow that context is a dead job frame). The throw's spend is charged to the context once.
+        g_r3_calls = 0;
+        g_r3_throws = true;
+        AgentSession<AlternatingThrowClient> node;
+        node.initialize("r3-tap-node", Principal{"p-r3", ""}, std::optional<std::uint64_t>{1'000'000});
+        rt::ExecutorBody body = rt::agent_session_as_executor_body(node);
+        int sink_events = 0;
+        Usage charged{};
+        int charges = 0;
+        EffectContext ctx;
+        ctx.agent_turn_sink = [&sink_events](RunEvent const&) { ++sink_events; };
+        ctx.charge_delegated_usage = [&charged, &charges](Usage const& u, std::uint64_t) {
+            ++charges;
+            charged.input_tokens += u.input_tokens;
+            charged.output_tokens += u.output_tokens;
+        };
+        bool threw = false;
+        try {
+            (void)body(r3_user("go"), ctx);
+        } catch (std::runtime_error const&) {
+            threw = true;
+        }
+        int const events_during = sink_events;
+        g_r3_throws = false;
+        auto const later = rt::block_on(node.start_run(StartRun{r3_user("an unrelated run")}));
+        check(threw && charges == 1 && r3_tokens(charged) == 100 && events_during > 0 && later.has_value() &&
+                  sink_events == events_during,
+              "R3-C1b: a throwing node run charges its 100 tokens once, and its event tap is detached on the throw -- "
+              "the session's next, unrelated run sends nothing to the dead call's sink");
+    }
+    {
+        // C1, found while fixing: a node run REFUSED before it starts (here: the session requires per-request
+        // authority) must charge nothing -- `run_usage()` then still holds the session's previous run, which the
+        // round-2 failure path charged again.
+        g_r3_in = 500;
+        g_r3_out = 500;
+        AgentSession<SetSpendClient> node;
+        node.initialize("r3-refused-node", Principal{"p-r3", ""}, std::optional<std::uint64_t>{1'000'000});
+        auto const direct = rt::block_on(node.start_run(StartRun{r3_user("an earlier, direct run")}));
+        node.set_require_authority(true);
+        rt::WorkflowSupervisor sup;
+        sup.initialize(r3_one_node("r3-refused", workflow::executor_kind::agent),
+                       {rt::agent_session_as_executor_body(node)});
+        auto const r = rt::block_on(sup.run_workflow(rt::RunWorkflow{r3_user("go")}));
+        check(direct.has_value() && r3_tokens(node.run_usage()) == 1000 && r.status != rt::workflow_status::completed &&
+                  r3_tokens(sup.usage()) == 0,
+              "R3-C1c: a node whose run is refused before it starts charges 0, not the session's previous run (1000)");
+    }
+    {
+        // C2 (red team D2): three FRESH calls through WorkflowChatClient spending 1000, 1000, then 200. Each outer
+        // run is charged exactly its own call (was 1000, 0, then ~2^64 -- a delta against the previous run's total).
+        g_r3_in = 500;
+        g_r3_out = 500;
+        AgentSession<SetSpendClient> node;
+        node.initialize("r3-node2", Principal{"p-node2", ""}, std::optional<std::uint64_t>{1'000'000});
+        auto inner = std::make_shared<rt::WorkflowSupervisor>();
+        inner->initialize(r3_one_node("r3-c2", workflow::executor_kind::agent),
+                          {rt::agent_session_as_executor_body(node)});
+        AgentSession<rt::WorkflowChatClient> outer;
+        outer.initialize("r3-outer", Principal{"p-outer", ""}, std::optional<std::uint64_t>{5'000});
+        outer.emplace_chat_client(inner);
+        auto const r1 = rt::block_on(outer.start_run(StartRun{r3_user("one")}));
+        Usage const u1 = outer.run_usage();
+        auto const r2 = rt::block_on(outer.start_run(StartRun{r3_user("two")}));
+        Usage const u2 = outer.run_usage();
+        g_r3_in = 100;
+        g_r3_out = 100;
+        auto const r3 = rt::block_on(outer.start_run(StartRun{r3_user("three")}));
+        Usage const u3 = outer.run_usage();
+        check(r1.has_value() && r2.has_value() && r3.has_value() && r3_tokens(u1) == 1000 && r3_tokens(u2) == 1000 &&
+                  r3_tokens(u3) == 200,
+              "R3-C2: three fresh WorkflowChatClient calls spending 1000, 1000, 200 charge the outer session exactly "
+              "that (was 1000, 0, then a wrapped ~2^64)");
+    }
+    {
+        // C2 under concurrency: two outer sessions, each with its OWN WorkflowChatClient over the SAME supervisor,
+        // on two threads. The supervisor serializes the runs; each outer run must still be charged its own 1000.
+        g_r3_in = 500;
+        g_r3_out = 500;
+        g_r3_spend_calls = 0;
+        AgentSession<SetSpendClient> node;
+        node.initialize("r3-shared-node", Principal{"p-shared", ""}, std::optional<std::uint64_t>{100'000'000});
+        auto inner = std::make_shared<rt::WorkflowSupervisor>();
+        inner->initialize(r3_one_node("r3-c2-shared", workflow::executor_kind::agent),
+                          {rt::agent_session_as_executor_body(node)});
+        constexpr int kRuns = 6;
+        std::atomic<int> wrong{0};
+        std::atomic<std::uint64_t> total{0};
+        auto const drive_outer = [&inner, &wrong, &total](char const* id) {
+            AgentSession<rt::WorkflowChatClient> outer;
+            outer.initialize(id, Principal{id, ""}, std::optional<std::uint64_t>{100'000'000});
+            outer.emplace_chat_client(inner);
+            for (int i = 0; i < kRuns; ++i) {
+                auto const res = rt::block_on(outer.start_run(StartRun{r3_user("go")}));
+                std::uint64_t const t = r3_tokens(outer.run_usage());
+                total += t;
+                if (!res.has_value() || t != 1000) ++wrong;
+            }
+        };
+        std::thread a(drive_outer, "r3-outer-a");
+        std::thread b(drive_outer, "r3-outer-b");
+        a.join();
+        b.join();
+        check(wrong.load() == 0 && g_r3_spend_calls.load() == 2 * kRuns && total.load() == 2 * kRuns * 1000ull &&
+                  r3_tokens(inner->usage()) == 1000,
+              "R3-C2b: two WorkflowChatClients over one supervisor, driven from two threads, 6 runs each -- every "
+              "outer run is charged exactly its own 1000, and the sum is the node's whole spend");
+    }
+    {
+        // C2, the abandoned stream: a caller that drops the stream before the terminal push still gets the call's
+        // spend charged through its context (the push is refused, so the usage it carried is never delivered).
+        g_r3_in = 500;
+        g_r3_out = 500;
+        AgentSession<SetSpendClient> node;
+        node.initialize("r3-abandon-node", Principal{"p-ab", ""}, std::optional<std::uint64_t>{1'000'000});
+        auto inner = std::make_shared<rt::WorkflowSupervisor>();
+        inner->initialize(r3_one_node("r3-abandon", workflow::executor_kind::agent),
+                          {rt::agent_session_as_executor_body(node)});
+        rt::WorkflowChatClient client(inner);
+        auto const charged = std::make_shared<std::atomic<std::uint64_t>>(0);
+        EffectContext ctx;
+        ctx.charge_delegated_usage = [charged](Usage const& u, std::uint64_t) {
+            *charged += u.input_tokens + u.output_tokens;
+        };
+        ChatRequest req;
+        req.messages.push_back(r3_user("go"));
+        { (void)client.chat_stream(req, ctx); }  // dropped at once
+        for (int i = 0; i < 2500 && charged->load() == 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        check(charged->load() == 1000,
+              "R3-C2c: a WorkflowChatClient call whose caller dropped the stream charges its 1000 through the context "
+              "(the refused terminal push used to take it with it)");
+    }
+    {
+        // The same rule for the third delegating body: a workflow nested as a function-kind node
+        // (workflow_as_executor_body, ADR-150) reports its inner run's spend -- on success in the outcome, on failure
+        // through the context. It reported neither.
+        g_r3_in = 500;
+        g_r3_out = 500;
+        auto const run_nested = [](std::optional<std::uint64_t> node_budget) {
+            AgentSession<SetSpendClient> node;
+            node.initialize("r3-nested-node", Principal{"p-nest", ""}, node_budget);
+            auto inner = std::make_shared<rt::WorkflowSupervisor>();
+            inner->initialize(r3_one_node("r3-nested-inner", workflow::executor_kind::agent),
+                              {rt::agent_session_as_executor_body(node)});
+            auto body = rt::workflow_as_executor_body(inner);
+            rt::WorkflowSupervisor outer;
+            outer.initialize(r3_one_node("r3-nested-outer", workflow::executor_kind::function), {std::move(*body)});
+            auto const r = rt::block_on(outer.run_workflow(rt::RunWorkflow{r3_user("go")}));
+            return std::pair{r.status == rt::workflow_status::completed, r3_tokens(outer.usage())};
+        };
+        auto const ok_run = run_nested(std::optional<std::uint64_t>{1'000'000});
+        auto const failed_run = run_nested(std::optional<std::uint64_t>{100});  // one 1000-token call blows it
+        check(ok_run.first && ok_run.second == 1000 && !failed_run.first && failed_run.second == 1000,
+              "R3-N1: a nested workflow node's inner spend (1000) reaches the outer workflow's usage, completed or "
+              "failed (was 0 both ways)");
     }
 
     std::fprintf(stderr, "test_delegation_provenance: %d/%d passed\n", g_checks - g_failures, g_checks);

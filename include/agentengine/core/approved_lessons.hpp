@@ -22,6 +22,8 @@
 // `automatic` wherever it is reported), and the level a session delivers approved lessons at
 // (`approved_lesson_level`, set on `AgentSession::set_approved_lessons`).
 
+#include <cstddef>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <tuple>
@@ -96,19 +98,151 @@ struct ApprovedLessonMatch {  // ae-naming-lint: allow ApprovedLessonMatch — A
     LessonApproval approval;
 };
 
-// Round 3: an id an audit line names -- an approver, a reviewer, ADR-192's operator -- must be visible and single-line:
-// a blank id named nobody, and an embedded newline could forge a further audit line.
-[[nodiscard]] inline bool id_has_control_char(std::string_view id) noexcept {
-    for (char const ch : id) {
-        auto const c = static_cast<unsigned char>(ch);
-        if (c < 0x20 || c == 0x7F) return true;
+// Issue #112 B4 (ADR-191 §7 round 5): the id checks below read UTF-8 code points, not bytes. The round-3 checks were
+// ASCII-only, so an id of only U+200B or U+00A0 was "non-blank", U+2028 / U+0085 slipped a line break past the
+// control-character test, and `аutomatic:` (Cyrillic а), `automatic：` (full-width colon) or `auto<U+200B>matic:`
+// passed the reserved-prefix test. The tables are deliberately small and closed; ADR-191 §7 lists what they cover and
+// the residual (a full UTS #39 skeleton is not attempted).
+namespace id_check_detail {
+
+struct CodePointRange {  // ae-naming-lint: allow CodePointRange — ADR-191 §7 round 5: private helper of the id checks
+    char32_t lo;
+    char32_t hi;
+};
+
+// Decodes one strict UTF-8 code point at `at` (RFC 3629: no overlongs, no surrogates, nothing above U+10FFFF,
+// no truncation). Returns U+FFFFFFFF on any error; `len` is how many bytes to skip.
+[[nodiscard]] constexpr char32_t decode_utf8(std::string_view s, std::size_t at, std::size_t& len) noexcept {
+    constexpr char32_t bad = 0xFFFFFFFF;
+    auto const b0 = static_cast<unsigned char>(s[at]);
+    len = 1;
+    if (b0 < 0x80) return b0;
+    std::size_t need = 0;
+    char32_t cp = 0;
+    char32_t min = 0;
+    if ((b0 & 0xE0) == 0xC0) { need = 1; cp = b0 & 0x1F; min = 0x80; }
+    else if ((b0 & 0xF0) == 0xE0) { need = 2; cp = b0 & 0x0F; min = 0x800; }
+    else if ((b0 & 0xF8) == 0xF0) { need = 3; cp = b0 & 0x07; min = 0x10000; }
+    else return bad;
+    if (at + need >= s.size()) return bad;  // truncated sequence
+    for (std::size_t i = 1; i <= need; ++i) {
+        auto const b = static_cast<unsigned char>(s[at + i]);
+        if ((b & 0xC0) != 0x80) return bad;
+        cp = (cp << 6) | (b & 0x3F);
+    }
+    len = need + 1;
+    if (cp < min || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return bad;
+    return cp;
+}
+
+// Code points that break an audit line or reorder how it displays: C0/DEL/C1 controls (U+0085 NEL among them), the
+// line and paragraph separators, and the bidirectional controls (embeddings, overrides, isolates, marks).
+inline constexpr CodePointRange kLineOrOrderBreaking[] = {
+    {0x0000, 0x001F}, {0x007F, 0x009F}, {0x061C, 0x061C}, {0x200E, 0x200F},
+    {0x2028, 0x2029}, {0x202A, 0x202E}, {0x2066, 0x2069},
+};
+
+// Code points that show nothing (or only space): Unicode White_Space, the default-ignorable format characters and
+// fillers most often used to fake a visible id (ZWSP/ZWNJ/ZWJ, word joiner and invisible operators, BOM, soft
+// hyphen, CGJ, Hangul and braille blanks, variation selectors, tags). An id made only of these names nobody.
+inline constexpr CodePointRange kInvisible[] = {
+    {0x0009, 0x000D}, {0x0020, 0x0020}, {0x0085, 0x0085}, {0x00A0, 0x00A0}, {0x00AD, 0x00AD},
+    {0x034F, 0x034F}, {0x061C, 0x061C}, {0x115F, 0x1160}, {0x1680, 0x1680}, {0x17B4, 0x17B5},
+    {0x180B, 0x180F}, {0x2000, 0x200F}, {0x2028, 0x202F}, {0x205F, 0x206F}, {0x2800, 0x2800},
+    {0x3000, 0x3000}, {0x3164, 0x3164}, {0xFE00, 0xFE0F}, {0xFEFF, 0xFEFF}, {0xFFA0, 0xFFA0},
+    {0xFFF9, 0xFFFB}, {0x1D173, 0x1D17A}, {0xE0000, 0xE0FFF},
+};
+
+[[nodiscard]] constexpr bool in_ranges(char32_t cp, CodePointRange const* first, std::size_t n) noexcept {
+    for (std::size_t i = 0; i < n; ++i) {
+        if (cp >= first[i].lo && cp <= first[i].hi) return true;
     }
     return false;
 }
+[[nodiscard]] constexpr bool breaks_line_or_order(char32_t cp) noexcept {
+    return in_ranges(cp, kLineOrOrderBreaking, std::size(kLineOrOrderBreaking));
+}
+[[nodiscard]] constexpr bool is_invisible(char32_t cp) noexcept {
+    return in_ranges(cp, kInvisible, std::size(kInvisible));
+}
+
+// Look-alikes of the letters of `automatic:` / `simulated:` (a c d e i l m o s t u and the colon), mapped to ASCII for
+// the reserved-prefix check. Cyrillic and Greek homoglyphs, dotless i, script l, and colon look-alikes. 'l', 'I' and
+// '1' are folded together as 'i' by the check itself (they read alike in many fonts), so they map to 'i' here too.
+struct Confusable {  // ae-naming-lint: allow Confusable — ADR-191 §7 round 5: private helper of the id checks
+    char32_t cp;
+    char ascii;
+};
+inline constexpr Confusable kConfusables[] = {
+    // Cyrillic
+    {0x0430, 'a'}, {0x0410, 'a'}, {0x0441, 'c'}, {0x0421, 'c'}, {0x0501, 'd'}, {0x0435, 'e'}, {0x0415, 'e'},
+    {0x0456, 'i'}, {0x0406, 'i'}, {0x04CF, 'i'}, {0x04C0, 'i'}, {0x043C, 'm'}, {0x041C, 'm'}, {0x043E, 'o'},
+    {0x041E, 'o'}, {0x0455, 's'}, {0x0405, 's'}, {0x0442, 't'}, {0x0422, 't'},
+    // Greek
+    {0x03B1, 'a'}, {0x0391, 'a'}, {0x03F2, 'c'}, {0x03F9, 'c'}, {0x03B5, 'e'}, {0x0395, 'e'}, {0x03B9, 'i'},
+    {0x0399, 'i'}, {0x039C, 'm'}, {0x03BF, 'o'}, {0x039F, 'o'}, {0x03C4, 't'}, {0x03A4, 't'}, {0x03C5, 'u'},
+    // Armenian, Latin, letterlike
+    {0x057D, 'u'}, {0x0585, 'o'}, {0x0131, 'i'}, {0x2113, 'i'}, {0x217C, 'i'}, {0x2170, 'i'},
+    // colon look-alikes
+    {0x02D0, ':'}, {0x02F8, ':'}, {0x0589, ':'}, {0x05C3, ':'}, {0x2236, ':'}, {0xA789, ':'}, {0xFE13, ':'},
+    {0xFE55, ':'},
+};
+
+// The skeleton-lite fold used only by the reserved-prefix check: invisible code points dropped, full-width ASCII
+// (U+FF01-U+FF5E) narrowed, the look-alikes above mapped, ASCII case folded, l/1/| folded into i and 0 into o. Any other
+// non-ASCII code point (or an undecodable byte) becomes a byte that matches no needle, so it cannot join a match.
+[[nodiscard]] inline std::string reserved_prefix_skeleton(std::string_view id) {
+    std::string out;
+    out.reserve(id.size());
+    for (std::size_t at = 0; at < id.size();) {
+        std::size_t len = 1;
+        char32_t cp = decode_utf8(id, at, len);
+        at += len;
+        if (cp != 0xFFFFFFFF && is_invisible(cp)) continue;
+        if (cp >= 0xFF01 && cp <= 0xFF5E) cp -= 0xFEE0;
+        char c = '\x01';
+        if (cp < 0x80) {
+            c = static_cast<char>(cp);
+        } else {
+            for (Confusable const& k : kConfusables) {
+                if (k.cp == cp) {
+                    c = k.ascii;
+                    break;
+                }
+            }
+        }
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        if (c == 'l' || c == '1' || c == '|') c = 'i';
+        if (c == '0') c = 'o';
+        out += c;
+    }
+    return out;
+}
+
+}  // namespace id_check_detail
+
+// Round 3: an id an audit line names -- an approver, a reviewer, ADR-192's operator -- must be visible and single-line:
+// a blank id named nobody, and an embedded newline could forge a further audit line. Issue #112 B4: "control
+// character" now means any code point that breaks a line or reorders display (C0, DEL, C1 incl. U+0085, U+2028/9,
+// the bidi controls) -- and bytes that are not valid UTF-8 count too, since no reader can say what they display.
+[[nodiscard]] inline bool id_has_control_char(std::string_view id) noexcept {
+    for (std::size_t at = 0; at < id.size();) {
+        std::size_t len = 1;
+        char32_t const cp = id_check_detail::decode_utf8(id, at, len);
+        if (cp == 0xFFFFFFFF || id_check_detail::breaks_line_or_order(cp)) return true;
+        at += len;
+    }
+    return false;
+}
+// Non-blank means at least one code point that is not whitespace or an invisible format character (issue #112 B4:
+// an id of only ZWSP or NBSP was accepted).
 [[nodiscard]] inline bool is_attributable_id(std::string_view id) noexcept {
     if (id_has_control_char(id)) return false;
-    for (char const ch : id) {
-        if (ch != ' ') return true;
+    for (std::size_t at = 0; at < id.size();) {
+        std::size_t len = 1;
+        char32_t const cp = id_check_detail::decode_utf8(id, at, len);
+        if (!id_check_detail::is_invisible(cp)) return true;
+        at += len;
     }
     return false;
 }
@@ -211,20 +345,12 @@ public:
     }
 
 private:
-    [[nodiscard]] static bool uses_reserved_prefix(std::string_view id) noexcept {
-        auto contains_ci = [id](std::string_view needle) {
-            for (std::size_t at = 0; at + needle.size() <= id.size(); ++at) {
-                bool hit = true;
-                for (std::size_t i = 0; i < needle.size() && hit; ++i) {
-                    char c = id[at + i];
-                    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-                    hit = c == needle[i];
-                }
-                if (hit) return true;
-            }
-            return false;
-        };
-        return contains_ci("automatic:") || contains_ci("simulated:");
+    // Issue #112 B4: matched on `reserved_prefix_skeleton` (invisible characters dropped, full-width and Cyrillic /
+    // Greek look-alikes mapped, case and l/1/i folded), so `аutomatic:`, `automatic：` and `auto<ZWSP>matic:` are
+    // refused like `automatic:`. The needles are written in the skeleton's alphabet ("simulated" folds to "simuiated").
+    [[nodiscard]] static bool uses_reserved_prefix(std::string_view id) {
+        std::string const skeleton = id_check_detail::reserved_prefix_skeleton(id);
+        return skeleton.find("automatic:") != std::string::npos || skeleton.find("simuiated:") != std::string::npos;
     }
 
     [[nodiscard]] result<void> put(LessonScope const& scope, std::string_view content, LessonApproval approval,

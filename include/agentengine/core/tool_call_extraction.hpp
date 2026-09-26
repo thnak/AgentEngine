@@ -17,9 +17,13 @@
 // `approval_mode` instead. `tool_call_request_of` below is the one place this gets threaded
 // correctly; every caller building a `ToolCallRequest` from a live `ToolCall` should go through it
 // rather than hand-building the aggregate.
+//
+// decisions/ADR-196-per-call-approval-decisions.md §7 (issue #111 A2/A3): `make_call_ids_unique()` -- the engine,
+// not the model, owns the identity of the calls in one response.
 
 #include <cstdint>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "agentengine/core/content.hpp"
@@ -37,6 +41,41 @@ namespace agentengine {
         if (auto const* tc = std::get_if<ToolCall>(&item.value)) out.push_back(*tc);
     }
     return out;
+}
+
+// ADR-196 §7 (issue #111 A2/A3): a call id is model output (I3), yet approvals, per-call decisions, hook answers,
+// audit records and tool results are all addressed by it. Two calls in one response with the same id made one
+// approval cover two effects, and a denial of one call deny another. So the engine makes the ids of one response
+// unique before anything records them: the first call with an id keeps it; each later call with the same id (or a
+// second empty id) is renamed `<id>_ae<n>`, choosing the smallest n that no call in the message uses. The renamed id
+// is what every event, decision and result then names. Returns one {original, renamed} pair per rename, in order.
+struct CallIdRename {  // ae-naming-lint: allow CallIdRename — ADR-196 §7
+    std::string from;
+    std::string to;
+};
+[[nodiscard]] inline std::vector<CallIdRename> make_call_ids_unique(Message& m) {
+    std::vector<CallIdRename> renames;
+    std::unordered_set<std::string> taken;  // every id the message carries, plus every id minted here
+    for (ContentItem const& item : m.content) {
+        if (auto const* tc = std::get_if<ToolCall>(&item.value)) taken.insert(tc->call_id);
+    }
+    std::unordered_set<std::string> used;  // ids already given to an earlier call
+    for (ContentItem& item : m.content) {
+        auto* tc = std::get_if<ToolCall>(&item.value);
+        if (tc == nullptr) continue;
+        if (used.insert(tc->call_id).second) continue;
+        std::string const base = tc->call_id.empty() ? std::string{"call"} : tc->call_id;
+        std::string minted;
+        for (std::uint64_t n = 1;; ++n) {
+            minted = base + "_ae" + std::to_string(n);
+            if (!taken.contains(minted)) break;
+        }
+        taken.insert(minted);
+        used.insert(minted);
+        renames.push_back(CallIdRename{tc->call_id, minted});
+        tc->call_id = std::move(minted);
+    }
+    return renames;
 }
 
 // The concatenation of every `Text` content item's own text — used only for CLI/test display, never
@@ -67,8 +106,16 @@ namespace agentengine {
                         /*arguments_tainted=*/true, call_index, call.provenance};
     if (call.arguments_json.find_first_not_of(" \t\r\n") == std::string::npos) return req;
     auto parsed = json::parse(call.arguments_json);
-    if (parsed) {
+    if (parsed && parsed->is_object()) {
         req.arguments = std::move(*parsed);
+    } else if (parsed) {
+        // Issue #112 B2 (ADR-197 §5): tool arguments are a JSON object on every wire this engine speaks. A number,
+        // string, array, `null` or boolean is refused here, at the one choke point, rather than left to each tool's
+        // codec -- a tool whose argument type accepts any value would otherwise run on it. This is also what makes an
+        // adapter's non-string OpenAI `arguments` (re-serialized as its JSON text) a malformed call, not `{}`.
+        static constexpr char const* kKind[] = {"null", "boolean", "number", "string", "array", "object"};
+        req.arguments_parse_error =
+            std::string("got a JSON ") + kKind[static_cast<std::size_t>(parsed->kind())] + ", not an object";
     } else {
         req.arguments_parse_error = parsed.error().message.empty() ? std::string{"parse failed"}
                                                                    : parsed.error().message;

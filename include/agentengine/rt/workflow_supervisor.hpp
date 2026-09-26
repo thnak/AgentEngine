@@ -1,5 +1,6 @@
 #pragma once
-// (Also implements ADR-193 round 2: a failed executor's spend is counted in usage().)
+// (Also implements ADR-193 round 2: a failed executor's spend is counted in usage(); §9: WorkflowResult::usage is
+// what each run/resume/continue call itself spent.)
 // ADR-037 Phase 3, Slice 1: `agentengine::rt::WorkflowSupervisor`, the Quark-actor-free replacement
 // for `agentengine::workflow::WorkflowSupervisor` (workflow/supervisor.hpp)'s core superstep loop.
 // Lives under `agentengine::rt`, a NEW namespace, deliberately NOT wired into any live call site yet
@@ -431,6 +432,11 @@ struct WorkflowResult {
     std::string     failed_executor{};
     std::vector<agentengine::Interaction> open_interactions{};
     std::vector<std::string> unopened_ports{};
+    // ADR-193 §9 (issue #113): what THIS call spent -- a `run_workflow()` reports its whole run so far, a
+    // `resume_workflow()`/`continue_workflow()` only what it added. Measured under the supervisor's own run lock,
+    // so a caller never has to difference two reads of the cumulative `usage()` (which a fresh run resets, and
+    // which another caller can advance in between -- `WorkflowChatClient` charged a wrapped delta that way).
+    agentengine::Usage usage{};
 };
 
 // ADR-149 (issue #28 item 6), REVISED SCOPE -- ADR-149 §3 finding 8 (a red-team pass found this
@@ -721,7 +727,9 @@ public:
     // any nested `sub_workflow`'s own recursively-summed total once it resolves (`OpenPort::usage`'s
     // own comment has the full nested-suspend disclosure). Reset only by a fresh `run_workflow()` call,
     // NOT by `resume_workflow()`/`continue_workflow()` -- the same "accumulates across a suspend/resume
-    // lifecycle" contract `rounds_` itself already has.
+    // lifecycle" contract `rounds_` itself already has. A caller that wants what ONE call spent reads
+    // `WorkflowResult::usage` (ADR-193 §9), never a difference of two reads of this: a fresh run resets it, so
+    // "after minus before" across a `run_workflow()` is wrong (and wraps when the new run spent less).
     //
     // NAMED, DISCLOSED RESIDUAL, not fixed here: an ordinary `function`-kind executor's `ExecutorBody`
     // is arbitrary C++, free to hold and call a real `ChatClient` directly without ever reporting
@@ -807,13 +815,33 @@ public:
         state_.pending.push_back(Delivery{index_of(graph_.start), request.input});
 
         push_structural_event(workflow_event_kind::workflow_run_started);
-        co_return co_await execute();
+        WorkflowResult r = co_await execute();
+        r.usage = total_usage_;  // ADR-193 §9: reset above, so the total IS this run's spend
+        co_return r;
     }
 
+    // ADR-193 §9: the lock is taken here, not in the body, so the spend this call adds is measured under it.
     task<WorkflowResult> resume_workflow(ResumeWorkflow request) {
+        AsyncMutex::Guard guard = co_await run_mutex_.lock();  // I1 -- see file banner
+        agentengine::Usage const before = total_usage_;
+        WorkflowResult r = co_await resume_workflow_locked(std::move(request));
+        r.usage = usage_added_since(before);
+        co_return r;
+    }
+
+    task<WorkflowResult> continue_workflow(ContinueWorkflow request) {
+        AsyncMutex::Guard guard = co_await run_mutex_.lock();  // I1 -- see file banner
+        agentengine::Usage const before = total_usage_;
+        WorkflowResult r = co_await continue_workflow_locked(std::move(request));
+        r.usage = usage_added_since(before);
+        co_return r;
+    }
+
+private:
+    // Both bodies below run with `run_mutex_` held by their public wrapper above.
+    task<WorkflowResult> resume_workflow_locked(ResumeWorkflow request) {
         using agentengine::workflow::workflow_event_kind;
         using agentengine::workflow::workflow_event_payload::RunFailed;
-        AsyncMutex::Guard guard = co_await run_mutex_.lock();  // I1 -- see file banner
         // ADR-169 (issue #65) -- THE entry point this ADR exists for. Before `valid_`, and before
         // BOTH lookups below: the pre-ADR-169 body's only guard was id VALIDITY (an unknown or
         // already-resolved `interaction_id` fails closed, proven by E2 in
@@ -995,10 +1023,9 @@ public:
         co_return co_await execute();
     }
 
-    task<WorkflowResult> continue_workflow(ContinueWorkflow request) {
+    task<WorkflowResult> continue_workflow_locked(ContinueWorkflow request) {
         using agentengine::workflow::workflow_event_kind;
         using agentengine::workflow::workflow_event_payload::RunFailed;
-        AsyncMutex::Guard guard = co_await run_mutex_.lock();  // I1 -- see file banner
         // ADR-169 (issue #65) item 4: gated identically to its two siblings. Not an afterthought --
         // this is the entry point a checkpoint-restored run is driven through
         // (rt/workflow_checkpoint_manager.hpp's own `resumed == true` contract), so leaving it open
@@ -1014,6 +1041,23 @@ public:
         co_return co_await execute();
     }
 
+    // ADR-193 §9: this call's spend, from two readings of the cumulative total taken under one hold of `run_mutex_`
+    // (so the total only grew between them). Saturating all the same: a wrapped unsigned difference is a charge of
+    // ~2^64 tokens.
+    [[nodiscard]] agentengine::Usage usage_added_since(agentengine::Usage const& before) const noexcept {
+        auto const sub = [](std::uint64_t after, std::uint64_t b) { return after > b ? after - b : std::uint64_t{0}; };
+        agentengine::Usage d{};
+        d.input_tokens        = sub(total_usage_.input_tokens, before.input_tokens);
+        d.output_tokens       = sub(total_usage_.output_tokens, before.output_tokens);
+        d.cached_input_tokens = sub(total_usage_.cached_input_tokens, before.cached_input_tokens);
+        d.reasoning_tokens    = sub(total_usage_.reasoning_tokens, before.reasoning_tokens);
+        d.cache_write_tokens  = sub(total_usage_.cache_write_tokens, before.cache_write_tokens);
+        d.cost_estimate = total_usage_.cost_estimate > before.cost_estimate ? total_usage_.cost_estimate - before.cost_estimate
+                                                                            : 0.0;
+        return d;
+    }
+
+public:
     // ---- Slice 2: checkpointing (file banner has the design writeup) --------------------------
 
     // Unlocked, synchronous -- matches rt::AgentSession::to_record()'s own shape. Not the caller's
@@ -1360,9 +1404,10 @@ private:
             // into the outer run's total via the ordinary replies[] fold, the same path an agent-kind
             // node's own usage already takes. The SUSPENDED branch below intentionally does NOT do this
             // -- see OpenPort::usage's own comment for why that case is captured retroactively instead,
-            // at final resolution.
+            // at final resolution. ADR-193 §9: `r.usage` (this fresh run's whole spend, read under the inner
+            // supervisor's lock), the same number `inner->usage()` gave while nothing else drives `inner`.
             *out = ExecuteReply{r.output, {}, true, agentengine::failure_class::fatal, false, std::nullopt,
-                                 inner->usage()};
+                                 r.usage};
             co_return;
         }
         if (r.status == workflow_status::suspended) {
@@ -1374,7 +1419,7 @@ private:
         }
         // ADR-193 round 2: a failed nested run still spent what it spent.
         *out = ExecuteReply{agentengine::Message{}, {}, false, agentengine::failure_class::fatal, false,
-                             std::nullopt, inner->usage()};
+                             std::nullopt, r.usage};
         co_return;
     }
 

@@ -148,10 +148,21 @@ template <class T>
 
 // One full, fresh run of `inner` against `in`. See file banner's CONTRACT paragraph for why this is
 // always a fresh run, and the REQUEST_PORT paragraph for why `suspended` can never occur here.
+//
+// ADR-193 §9 (issue #113): the inner run's whole spend (`WorkflowResult::usage`) goes to the outer workflow exactly
+// once -- in the outcome on success, through `ctx.charge_delegated_usage` (which the outer supervisor binds to this
+// node's reply) on failure. This adapter used to report neither, so a nested workflow's model calls were invisible
+// to the outer `usage()`.
 [[nodiscard]] inline agentengine::result<ExecutorOutcome> run_once(WorkflowSupervisor& inner,
-                                                                     agentengine::Message const& in) {
+                                                                     agentengine::Message const& in,
+                                                                     agentengine::EffectContext& ctx) {
     WorkflowResult r = drive(inner.run_workflow(RunWorkflow{in}));
-    if (r.status == workflow_status::completed) return ExecutorOutcome{r.output};
+    if (r.status == workflow_status::completed) {
+        ExecutorOutcome outcome{r.output};
+        outcome.usage = r.usage;
+        return outcome;
+    }
+    ctx.charge_delegated_usage(r.usage, 0);
     return std::unexpected(agentengine::error{
         agentengine::failure_class::contract,
         std::string("workflow_as_executor_body: the wrapped workflow did not complete (status=") +
@@ -176,9 +187,9 @@ template <class T>
     auto call_mutex = std::make_shared<std::mutex>();
     return [inner = std::move(inner), call_mutex](
                agentengine::Message const& in,
-               agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+               agentengine::EffectContext& ctx) -> agentengine::result<ExecutorOutcome> {
         std::lock_guard<std::mutex> guard(*call_mutex);
-        return workflow_as_executor_detail::run_once(*inner, in);
+        return workflow_as_executor_detail::run_once(*inner, in, ctx);
     };
 }
 
@@ -191,9 +202,9 @@ template <class T>
     }
     auto call_mutex = std::make_shared<std::mutex>();
     return [&inner, call_mutex](agentengine::Message const& in,
-                                 agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+                                 agentengine::EffectContext& ctx) -> agentengine::result<ExecutorOutcome> {
         std::lock_guard<std::mutex> guard(*call_mutex);
-        return workflow_as_executor_detail::run_once(inner, in);
+        return workflow_as_executor_detail::run_once(inner, in, ctx);
     };
 }
 
