@@ -51,9 +51,12 @@
 # not, so a warning can never be what rejects them.
 #
 # ---- Running --------------------------------------------------------------------------------------
-# `ctest -L compile_fail` runs them all. Each runs `cmake --build` in this build directory, so they hold
-# RESOURCE_LOCK agentengine_build_dir: two of them never run the build tool here at once. Run them after
-# the build, as CI does; the fixture setup builds what they need if it is stale.
+# `ctest -L compile_fail` runs them all. Each runs `cmake --build --parallel 1` in this build directory,
+# and each is RUN_SERIAL: no other test runs while a compile does. That keeps two builds out of the build
+# directory at once, keeps the compiler's CPU load away from timing-sensitive tests (in #126's CI the
+# native-jail abuse corpus's 300 ms output-flood positive control, under ASan, lost to a concurrent
+# compile), and keeps to CONVENTIONS.md's -j4 rule (Ninja otherwise uses every core). Run them after the
+# build, as CI does; the fixture setup builds what they need if it is stale.
 
 # agentengine_compile_fail_control(<target> SOURCE <src> [LIBS <lib>...] [INCLUDE_DIRS <dir>...])
 #
@@ -122,22 +125,22 @@ function(agentengine_compile_fail_test name)
   if(NOT ae_have_setup)
     set_property(GLOBAL PROPERTY AE_COMPILE_FAIL_SETUP_${AE_CF_CONTROL} TRUE)
     add_test(NAME ${ae_fixture}
-      COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target ${AE_CF_CONTROL} ${ae_config_args})
+      COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target ${AE_CF_CONTROL} --parallel 1 ${ae_config_args})
     set_tests_properties(${ae_fixture} PROPERTIES
       FIXTURES_SETUP ${ae_fixture}
-      RESOURCE_LOCK agentengine_build_dir
+      RUN_SERIAL TRUE
       TIMEOUT ${AE_CF_TIMEOUT}
       LABELS compile_fail)
   endif()
 
   add_test(NAME ${target}
-    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target ${target} ${ae_config_args})
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target ${target} --parallel 1 ${ae_config_args})
   set_tests_properties(${target} PROPERTIES
     PASS_REGULAR_EXPRESSION "error( C[0-9]+)?:[^\n]*(${AE_CF_EXPECT})"
     FAIL_REGULAR_EXPRESSION
       "Linking CXX executable;LNK[0-9]+;undefined reference;ld returned;ld: ;cannot open (source|include) file;No such file or directory;C1083;C2220;\\[-Werror"
     FIXTURES_REQUIRED ${ae_fixture}
-    RESOURCE_LOCK agentengine_build_dir
+    RUN_SERIAL TRUE
     TIMEOUT ${AE_CF_TIMEOUT}
     LABELS compile_fail)
 endfunction()
