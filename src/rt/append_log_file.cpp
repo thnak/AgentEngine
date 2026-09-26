@@ -63,8 +63,8 @@ inline constexpr std::uint64_t v2_resync_budget     = std::uint64_t{64} << 20;  
            (static_cast<std::uint32_t>(p[2]) << 16) | (static_cast<std::uint32_t>(p[3]) << 24);
 }
 
-inline void store_le32(std::vector<std::byte>& out, std::uint32_t v) {
-    for (int shift = 0; shift < 32; shift += 8) out.push_back(static_cast<std::byte>((v >> shift) & 0xFFu));
+inline void put_le32(std::byte* p, std::uint32_t v) noexcept {
+    for (int i = 0; i < 4; ++i) p[i] = static_cast<std::byte>((v >> (8 * i)) & 0xFFu);
 }
 
 // ae-naming-lint: allow log_tail — ADR-181 phase 0: internal detail vocabulary
@@ -526,23 +526,24 @@ result<SeqNo> FileAppendLogStore::append(LogId const& id, std::vector<std::byte>
     // An empty log (fresh, or torn before its first record was whole) is written as v3; an existing
     // v1 or v2 log keeps its own framing (banner: ON-DISK FORMAT).
     d::log_format const format = scan.valid_end == 0 ? d::log_format::v3 : scan.format;
-    std::vector<std::byte> frame;
-    frame.reserve(d::magic_size + d::v3_header_size + bytes.size());
-    if (scan.valid_end == 0) {
-        for (char c : d::file_magic_v3) frame.push_back(static_cast<std::byte>(c));
-    }
+    // The frame is sized once and filled in place: magic (new log only), header, payload. Growing it with
+    // push_back() after reserve() made gcc-14 -O3 report -Wfree-nonheap-object inside std::vector (#121 CI).
+    std::size_t const magic_len  = scan.valid_end == 0 ? d::magic_size : 0;
+    std::size_t const header_len = format == d::log_format::v1   ? d::v1_header_size
+                                   : format == d::log_format::v2 ? d::v2_header_size
+                                                                 : d::v3_header_size;
+    std::vector<std::byte> frame(magic_len + header_len + bytes.size());
+    std::byte* const header = frame.data() + magic_len;
+    if (magic_len != 0) std::memcpy(frame.data(), d::file_magic_v3.data(), magic_len);
     auto const len = static_cast<std::uint32_t>(bytes.size());
     if (format == d::log_format::v1) {
-        std::byte raw[sizeof(len)];
-        std::memcpy(raw, &len, sizeof(len));
-        frame.insert(frame.end(), raw, raw + sizeof(len));
+        std::memcpy(header, &len, sizeof(len));  // v1 wrote the length in native order
     } else {
-        std::size_t const header_at = frame.size();
-        d::store_le32(frame, len);
-        d::store_le32(frame, d::crc32(bytes.data(), bytes.size()));
-        if (format == d::log_format::v3) d::store_le32(frame, d::v3_header_crc(frame.data() + header_at));
+        d::put_le32(header, len);
+        d::put_le32(header + 4, d::crc32(bytes.data(), bytes.size()));
+        if (format == d::log_format::v3) d::put_le32(header + 8, d::v3_header_crc(header));
     }
-    frame.insert(frame.end(), bytes.begin(), bytes.end());
+    if (!bytes.empty()) std::memcpy(header + header_len, bytes.data(), bytes.size());
 
     if (auto wrote = file->write_all(frame); !wrote) {
         // Leave the file as it was, so a failed append cannot become a torn record (best effort).
