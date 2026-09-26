@@ -129,6 +129,22 @@ if(WIN32)
 endif()
 target_link_libraries(agentengine_core INTERFACE agentengine_rt_session)
 
+# ---- rt::WorkflowSupervisor (src/rt/) -- ADR-200, issue #120 S1 -----------------------------------
+# WorkflowSupervisor is not a template, but every member body lived in its header, so each of the ~46 files
+# that included it compiled and optimized the whole superstep loop again. The bodies are compiled once here
+# (moved verbatim); the header keeps the class, declarations and small accessors. Linked through
+# agentengine::core like the libraries above, so no consumer needs a CMake change.
+add_library(agentengine_rt_workflow STATIC src/rt/workflow_supervisor.cpp)
+target_include_directories(agentengine_rt_workflow PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_compile_features(agentengine_rt_workflow PRIVATE cxx_std_23)
+target_link_libraries(agentengine_rt_workflow PRIVATE agentengine_warnings)
+if(MSVC)
+  # Coroutine-heavy object, like agentengine_rt_session's (ADR-199 red team): stay clear of the COFF section limit.
+  target_compile_options(agentengine_rt_workflow PRIVATE /bigobj)
+endif()
+# No PUBLIC link dependencies: the object references no symbol from another agentengine library (ADR-200 §8).
+target_link_libraries(agentengine_core INTERFACE agentengine_rt_workflow)
+
 # ---- Egress proxy (src/sandbox/) -- Windows + Linux ---------------------------------------------
 # Implements decisions/ADR-011-first-party-egress-proxy.md (008 §10 Q3, M2 Phase F task F1): the
 # host-mediated mechanism NetOut (007 §3) is enforced through. Ordinary OS socket/DNS APIs
