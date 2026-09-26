@@ -1105,3 +1105,26 @@ All 9 scenarios pass, with every model request checked.
 - **The two-error-code finding:** ADR-198. `run_failed.error_code` is the run's own code; `stage` carries
   `run.chat_failed`. `scripted_model_failure.json` updated.
 - **The malformed-arguments finding:** ADR-197, with its scenario `scripted_malformed_arguments.json`.
+
+## 24. C7 as a checked-in scenario, and the driver's approver check (2026-09-26; GitHub #104, #109)
+
+§23 met C7 with a unit test (`test_agentengine_test_driver` PC). Issue #104's done-when asks for a checked-in
+scenario, so there is now one: `tests/scenarios/scripted_per_call_decisions.json`. A round with two `gated_echo`
+calls and one `echo` is denied except the first gated call, approved by `alice`.
+
+**Positive controls** (each applied to `agent_session.hpp`, the scenario seen to fail, source restored):
+
+| Mutant | Replay result |
+|---|---|
+| per-call decision ignored (the round's decision applies to every asked call) | `test.replay_mismatch at model call 1`: `call_1` comes back denied |
+| round deny folded into calls nobody was asked about (BUG-2) | `test.replay_mismatch at model call 1`: `call_3` (`echo`) comes back denied |
+
+Both are caught by the request digest (C8) before any event is compared, because the denial changes the tool
+results the model is sent next.
+
+**Driver fix.** `interaction_resolve` checked `call_decisions` against `interaction_list` before resuming, but
+not `approver_id`. A blank or multi-line approver was passed to the asynchronous resolve, the session refused it
+(`session.resolve_interaction.bad_approver`) and kept the interaction open, while the driver had already cleared
+it and marked the run failed. The driver now refuses such an approver with `test.bad_arguments` using the
+session's own rule (`is_attributable_id`). PC checks that a blank and a two-line approver are refused and the
+interaction is still listed; with the check removed, PC fails there and at every later step.

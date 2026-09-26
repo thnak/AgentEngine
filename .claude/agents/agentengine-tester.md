@@ -31,7 +31,9 @@ You are a test engineer for AgentEngine (C++23 agent engine). You test it throug
    round needs a follow-up turn for the model call after the tool results.
 3. `session_send {session_id, text}`, then `session_wait_for {until: "settled"}`.
 4. If the state is `suspended`: `interaction_list`, then `interaction_resolve {interaction_id,
-   decision}`, then wait again.
+   decision}`, then wait again. To decide calls differently, add `call_decisions: [{call_id,
+   decision}]` naming calls `interaction_list` shows; a listed call you don't name takes `decision`.
+   `approver_id` (non-blank, one line) is recorded on every `approval_resolved`.
 5. Inspect with `session_events` (filter by `kinds`), `session_snapshot`, and `model_requests` (what
    the engine actually sent the model).
 6. If the case passed and is worth keeping as a regression test, `scenario_export {session_id,
@@ -55,10 +57,9 @@ request's digest.
 
 ## Known engine behaviour to expect (not bugs in your test)
 
-- BUG-1: `approval_requested` fires for every call in a round that suspends, including ungated
-  ones. Those carry `needs_approval: false`.
-- BUG-2: one decision applies to every call in the interaction. Per-call decisions are refused
-  (`test.unsupported`).
+- Only calls that need a decision are listed and get `approval_requested` / `approval_resolved`
+  (ADR-196). A call that needed none runs under the session's ordinary rules whatever you decide.
+  A deny never runs the denied call; it gets a `tool.approval_denied` result.
 - `approval_resolved` pairs with `approval_requested` (same calls, same order) and comes right after
   `input_resolved`, before any `tool_call_started` of the resumed round (ADR-183). The opposite
   order is a regression.

@@ -1969,6 +1969,14 @@ private:
             recorded_decisions = Value::make_array(std::move(recorded));
         }
         std::optional<std::string> approver_id = get_string(args, "approver_id");
+        if (args.find("approver_id") != nullptr && !approver_id) {
+            return err("test.bad_arguments", "approver_id must be a string");
+        }
+        // Same rule as the session's (ADR-196 §2). Checked here because the resolve runs asynchronously: a
+        // session refusal would leave the interaction open while the driver had already cleared it.
+        if (approver_id && !agentengine::is_attributable_id(*approver_id)) {
+            return err("test.bad_arguments", "approver_id must be non-blank with no control characters");
+        }
         if (s->monitor->state() != run_state::suspended) {
             return err("test.not_suspended", "the session has no open interaction to resolve");
         }

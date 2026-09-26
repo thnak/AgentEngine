@@ -71,6 +71,9 @@ claude -p --mcp-config .mcp.json --allowedTools "mcp__agentengine-test__*" \
 - `--allowedTools "mcp__agentengine-test__*"` is what lets the tester use the driver without a
   permission prompt; headless runs cannot answer prompts.
 - `--output-format json` returns the tester's final report plus its turn count and cost.
+- `interaction_resolve` can decide each gated call separately (`call_decisions`) and name who decided
+  (`approver_id`), as ADR-196 allows. Both are recorded in an exported scenario and replayed.
+  `tests/scenarios/scripted_per_call_decisions.json` denies a round except one approved call.
 
 **Your own agent under test (file fixtures).** Put a 015 Agent document at
 `tests/fixtures/test_driver/<name>.yaml` (see `one_sentence.yaml`). It sets the instructions, which

@@ -326,6 +326,17 @@ int main() {
             if (args.find("two") != std::string::npos) second = td::get_string(p, "call_id").value_or("");
         }
         check(pending.size() == 2 && !first.empty() && !second.empty(), "PC: the two gated calls are listed");
+        // A bad approver is refused by the driver before the asynchronous resolve, so the interaction stays open
+        // in both the session and the driver's view, and the retry below still works.
+        for (char const* bad : {"  ", "alice\nbob"}) {
+            CallResult b = call(d, "interaction_resolve",
+                                sid(id, {{"interaction_id", td::str(ix)},
+                                         {"decision", td::str("approve")},
+                                         {"approver_id", td::str(bad)}}));
+            check(b.is_error && b.error_code == "test.bad_arguments",
+                  "PC (ADR-196): a blank or multi-line approver_id is refused before the resolve runs");
+        }
+        check(pending_of(d, id).size() == 2, "PC: after a refused approver the interaction is still open");
         // The round is DENIED, except the first call, which is approved -- by a named approver.
         CallResult r = call(d, "interaction_resolve",
                             sid(id, {{"interaction_id", td::str(ix)},
