@@ -4,6 +4,10 @@
 # a runnable program that checks its own output IS the test, not a separate thing built alongside
 # one.
 
+# AGENTENGINE_FAST_TESTS: examples are ctest programs too, so they build unoptimized with the tests
+# (cmake/AgentEngineFastBuild.cmake; #120 S2).
+agentengine_fast_build_this_directory()
+
 add_executable(agentengine_example_01_hello_agent 01_hello_agent.cpp)
 target_link_libraries(agentengine_example_01_hello_agent PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME example_01_hello_agent COMMAND agentengine_example_01_hello_agent)

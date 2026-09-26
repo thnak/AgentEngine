@@ -105,9 +105,9 @@ jobs:
           # TU's inputs -- see the file-header sccache note), and /Z7 needs neither that shared .pdb
           # nor the /FS flag that used to serialize writes to it under the old MSBuild generator.
           #
-          # AGENTENGINE_FAST_TESTS (issue #115 E4) on the ASan leg only: tests/ builds at /Od, which
-          # cuts the optimizer time that dominates a cold build. The Release leg keeps it OFF, so
-          # MSVC's optimizer still compiles every test on every commit.
+          # AGENTENGINE_FAST_TESTS (#115 E4, #120 S2) on the ASan leg only: tests, examples and test
+          # tools build at /Od, which cuts the optimizer time that dominates a cold build. The Release
+          # leg keeps it OFF, so MSVC's optimizer still compiles all of them on every commit.
           if ("${{ matrix.build_type }}" -eq "ASan") {
             $flags = "/fsanitize=address /Z7"
             $fastTests = "ON"

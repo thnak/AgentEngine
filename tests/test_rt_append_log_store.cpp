@@ -95,7 +95,7 @@
 #include <unistd.h>
 #endif
 
-#include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/rt/append_log_file_store.hpp"
 #include "support/memory_cap.hpp"
 
 using agentengine::rt::FileAppendLogStore;

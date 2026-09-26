@@ -24,6 +24,7 @@
 #include <system_error>
 #include <vector>
 
+#include "agentengine/rt/append_log_file_store.hpp"
 #include "agentengine/rt/project_archive.hpp"
 
 using agentengine::rt::FileAppendLogStore;

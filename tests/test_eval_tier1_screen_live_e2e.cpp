@@ -57,7 +57,7 @@
 #include "agentengine/eval/eval_tier1_screen.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
-#include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/rt/append_log_file_store.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
 

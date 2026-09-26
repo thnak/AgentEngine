@@ -612,36 +612,8 @@ if(ae_dir_defs)
   set_directory_properties(PROPERTIES COMPILE_DEFINITIONS "${ae_dir_defs}")
 endif()
 
-# ---- AGENTENGINE_FAST_TESTS (issue #115 E4) -------------------------------------------------------
-# Most of a cold build is the optimizer, and it is spent here, not in src/: AgentSession<...> and the
-# other engine templates are instantiated inside each test TU, once per mock client type. The worst
-# TU (test_delegation_provenance) measured 130-180 CPU-s under MSVC Release and 25.4 s under /Od.
-#
-# The option turns optimization off for this directory only. Library targets defined outside tests/
-# keep their optimized flags, and the build type is unchanged (still Release semantics otherwise).
-# The cost is coverage: a bug that only MSVC's optimizer exposes in engine templates is not seen
-# in a fast-tests build. CI keeps that coverage on the Windows / MSVC / Release leg, which leaves the
-# option OFF; the MSVC ASan leg turns it on (.github/workflows/ci.yml).
-#
-# The optimization flags are stripped from the flag variables rather than overridden with a later
-# /Od, for the same reason as the NDEBUG block above: `/O2 ... /Od` makes cl emit D9025 on every TU.
-if(AGENTENGINE_FAST_TESTS)
-  foreach(ae_lang C CXX)
-    foreach(ae_flags_var CMAKE_${ae_lang}_FLAGS
-                          CMAKE_${ae_lang}_FLAGS_RELEASE
-                          CMAKE_${ae_lang}_FLAGS_RELWITHDEBINFO
-                          CMAKE_${ae_lang}_FLAGS_MINSIZEREL)
-      # Every /O... or -O... token: /O2 /Ob2 /Oi /Oy- (cl, clang-cl), -O1 -O3 -Os -Ofast (gcc, clang).
-      string(REGEX REPLACE "(^| )[/-]O[^ ]*" "" ${ae_flags_var} "${${ae_flags_var}}")
-    endforeach()
-  endforeach()
-  if(MSVC)
-    add_compile_options(/Od)
-  else()
-    add_compile_options(-O0)
-  endif()
-  message(STATUS "AGENTENGINE_FAST_TESTS: tests/ compiled without optimization")
-endif()
+# AGENTENGINE_FAST_TESTS: optimization off for every test target (cmake/AgentEngineFastBuild.cmake).
+agentengine_fast_build_this_directory()
 
 add_executable(smoke_vocabulary smoke_vocabulary.cpp)
 target_link_libraries(smoke_vocabulary PRIVATE agentengine::core agentengine_warnings)

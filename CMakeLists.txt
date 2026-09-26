@@ -60,6 +60,11 @@ endif()
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(AgentEngineWarnings)
 include(AgentEngineCompilerGuard) # 021 §5 compiler-version floor
+include(AgentEngineFastBuild)     # AGENTENGINE_FAST_TESTS (#115 E4, #120 S2)
+# Build tests/, examples/ and the test tools (tools/CMakeLists.txt) without optimization; library and
+# shipped executables keep theirs. See cmake/AgentEngineFastBuild.cmake for what it costs.
+option(AGENTENGINE_FAST_TESTS
+  "Compile tests, examples and test tools with optimization off (/Od, -O0): a faster build, not a production build" OFF)
 
 # ---- Windows toolchain wiring -------------------------------------------------
 # Mirrors third_party/quark/CMakeLists.txt's pattern: NOMINMAX/WIN32_LEAN_AND_MEAN project-wide so
@@ -142,49 +147,9 @@ target_link_libraries(agentengine_net_egress_proxy PUBLIC agentengine::core)
 target_link_libraries(agentengine_net_egress_proxy PRIVATE agentengine_warnings)
 add_library(agentengine::net_egress_proxy ALIAS agentengine_net_egress_proxy)
 
-# ---- Policy-reachability CI tool (tools/) -- 007 §9 gate G6, M2 Phase F task F2 ------------------
-# Enumerates {capability kind, tool, taint} against the real mechanical enforcement
-# decisions/ADR-009-capability-set-enforcement-mechanism.md built (CapabilitySet::contains(),
-# trust/capability.hpp) via include/agentengine/trust/policy_reachability.hpp's enumerator -- see
-# that header's own top comment for the RFC-vs-code scope note (no declarative rule set exists yet,
-# decision 4; taint is enumerated as the boolean the mechanism actually has, not 007 §5's
-# aspirational graded levels). Header-only logic (agentengine::core is enough); no new dependency.
-add_executable(agentengine_policy_reachability tools/policy_reachability.cpp)
-target_link_libraries(agentengine_policy_reachability PRIVATE agentengine::core agentengine_warnings)
-
-# ---- MCP conformance client (tools/) -- ADR-023 §10 Tier 1, 011 §10 G2 --------------------------
-# The binary `conformance client --command` spawns. See tools/mcp_conformance_client.cpp's own top
-# comment for why the CLIENT role needs no listener and no fixture, and
-# docs/research/2026-08-15-mcp-conformance-harness.md for the empirically confirmed harness contract.
-# Links the real egress proxy (ADR-011/ADR-016) rather than a test double -- the point of this target
-# is that the conformance number it produces is attributable to engine code.
-add_executable(agentengine_mcp_conformance_client tools/mcp_conformance_client.cpp)
-target_link_libraries(agentengine_mcp_conformance_client
-  PRIVATE agentengine::core agentengine::net_egress_proxy agentengine_warnings)
-
-# ---- ADR-182 test driver (tools/) -- an MCP server over stdio that drives in-process sessions with
-# a scripted model, for a Claude Code test agent. A host executable like cli_chat: the engine library
-# binds nothing. Built by default (ADR-182 §12 R11) -- it needs only agentengine::core, and it is
-# never installed or linked by anything else.
-add_executable(agentengine_test_driver tools/agentengine_test_driver.cpp)
-target_include_directories(agentengine_test_driver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tools)
-target_link_libraries(agentengine_test_driver PRIVATE agentengine::core agentengine_warnings)
-# ADR-182 §16: replays checked-in scenarios with the scripted model (no network); tests/CMakeLists.txt
-# registers one ctest per tests/scenarios/*.json.
-add_executable(agentengine_scenario_runner tools/agentengine_scenario_runner.cpp)
-target_include_directories(agentengine_scenario_runner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tools)
-target_link_libraries(agentengine_scenario_runner PRIVATE agentengine::core agentengine_warnings)
-if(MSVC)
-  # Both include the whole AgentSession surface and exceed MSVC's default section limit (C1128).
-  target_compile_options(agentengine_test_driver PRIVATE /bigobj)
-  target_compile_options(agentengine_scenario_runner PRIVATE /bigobj)
-endif()
-# Live mode (--allow-live: a real OpenAI-compatible model, DeepSeek by default) needs the TLS client.
-if(AGENTENGINE_WITH_HTTPS)
-  target_link_libraries(agentengine_test_driver PRIVATE
-    agentengine::provider_http_client MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
-  target_compile_definitions(agentengine_test_driver PRIVATE AGENTENGINE_WITH_HTTPS)
-endif()
+# ---- Test and conformance tools (tools/CMakeLists.txt) -------------------------------------------
+# policy_reachability, mcp_conformance_client, agentengine_test_driver, agentengine_scenario_runner:
+# added near the end of this file, with the examples, so AGENTENGINE_FAST_TESTS can reach them.
 
 # ---- native_jail ShellRunner backend (src/backends/native_jail/) --------------
 # Implements decisions/ADR-001-shellrunner-grammar-and-dispatch.md — Design A: the
@@ -1289,6 +1254,8 @@ endif()
 # "Get started" examples (mirrors Microsoft Agent Framework's samples/01-get-started progression) --
 # small, offline, single-file programs, one AgentEngine concept each. Needs only agentengine::core;
 # no HTTPS/Python runner prerequisites, unlike agentengine_cli_chat above.
+add_subdirectory(tools)
+
 option(AGENTENGINE_BUILD_EXAMPLES "Build AgentEngine get-started examples" ON)
 if(AGENTENGINE_BUILD_EXAMPLES)
   enable_testing()
@@ -1297,10 +1264,6 @@ endif()
 
 # ---- Tests --------------------------------------------------------------------
 option(AGENTENGINE_BUILD_TESTS "Build AgentEngine tests" ON)
-# Issue #115 E4: build the test executables without optimization (library targets keep theirs).
-# See tests/CMakeLists.txt for what it changes and why one CI leg still builds tests optimized.
-option(AGENTENGINE_FAST_TESTS
-  "Compile tests/ with optimization off (/Od, -O0): a faster build, not a production build" OFF)
 if(AGENTENGINE_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
