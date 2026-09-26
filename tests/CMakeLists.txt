@@ -339,7 +339,8 @@ if(WIN32)
     "${PROJECT_SOURCE_DIR}/src/backends/native_jail/mediated_shell_dispatch.cpp"
     "${PROJECT_SOURCE_DIR}/src/backends/native_jail/mediated_filesystem_adapter.cpp"
     "${PROJECT_SOURCE_DIR}/src/core/worktree_digest.cpp"
-    "${PROJECT_SOURCE_DIR}/src/core/worktree_mount_fs.cpp")
+    "${PROJECT_SOURCE_DIR}/src/core/worktree_mount_fs.cpp"
+    "${PROJECT_SOURCE_DIR}/src/rt/agent_session_core.cpp")
   set(AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_LINK_LIBRARIES bcrypt)
 else()
   set(AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_DEPS
@@ -347,7 +348,8 @@ else()
     "${PROJECT_SOURCE_DIR}/src/backends/native_jail/mediated_shell_dispatch.cpp"
     "${PROJECT_SOURCE_DIR}/src/backends/native_jail/mediated_filesystem_adapter_posix.cpp"
     "${PROJECT_SOURCE_DIR}/src/core/worktree_digest_posix.cpp"
-    "${PROJECT_SOURCE_DIR}/src/core/worktree_mount_fs_posix.cpp")
+    "${PROJECT_SOURCE_DIR}/src/core/worktree_mount_fs_posix.cpp"
+    "${PROJECT_SOURCE_DIR}/src/rt/agent_session_core.cpp")
   set(AE_SANDBOX_TOOL_PROVIDER_FORK_FROM_LINK_LIBRARIES)
 endif()
 
@@ -485,10 +487,12 @@ endif()
 # instantiates run_trial, which reaches compute_digest() (worktree_digest{,_posix}.cpp) -- the same
 # extra-sources/link-libraries shape ADR-096 C2's compile-fail proof above already uses.
 if(WIN32)
-  set(AE_EVAL_RUN_TRIAL_DEPS "${PROJECT_SOURCE_DIR}/src/core/worktree_digest.cpp")
+  set(AE_EVAL_RUN_TRIAL_DEPS "${PROJECT_SOURCE_DIR}/src/core/worktree_digest.cpp"
+                             "${PROJECT_SOURCE_DIR}/src/rt/agent_session_core.cpp")
   set(AE_EVAL_RUN_TRIAL_LINK_LIBRARIES bcrypt)
 else()
-  set(AE_EVAL_RUN_TRIAL_DEPS "${PROJECT_SOURCE_DIR}/src/core/worktree_digest_posix.cpp")
+  set(AE_EVAL_RUN_TRIAL_DEPS "${PROJECT_SOURCE_DIR}/src/core/worktree_digest_posix.cpp"
+                             "${PROJECT_SOURCE_DIR}/src/rt/agent_session_core.cpp")
   set(AE_EVAL_RUN_TRIAL_LINK_LIBRARIES)
 endif()
 

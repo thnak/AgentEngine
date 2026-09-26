@@ -109,6 +109,26 @@ target_compile_features(agentengine_rt_file_log PRIVATE cxx_std_23)
 target_link_libraries(agentengine_rt_file_log PRIVATE agentengine_warnings)
 target_link_libraries(agentengine_core INTERFACE agentengine_rt_file_log)
 
+# ---- rt::AgentSessionCore (src/rt/) -- ADR-199, issue #115 E3 ------------------------------------
+# AgentSession's non-template half (include/agentengine/rt/agent_session_core.hpp): the turn loop and
+# everything else that does not depend on the session's template parameters, compiled once here instead
+# of once per session type in every translation unit that includes agent_session.hpp. Linked through
+# agentengine::core like the log file above, for the same reasons.
+add_library(agentengine_rt_session STATIC src/rt/agent_session_core.cpp)
+target_include_directories(agentengine_rt_session PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_compile_features(agentengine_rt_session PRIVATE cxx_std_23)
+target_link_libraries(agentengine_rt_session PRIVATE agentengine_warnings)
+if(MSVC)
+  # The object holds every coroutine of the turn loop: ~44,000 COFF sections under the CI ASan flags, against the
+  # 65,279 limit without /bigobj (ADR-199 red team).
+  target_compile_options(agentengine_rt_session PRIVATE /bigobj)
+endif()
+target_link_libraries(agentengine_rt_session PUBLIC agentengine_rt_file_log)
+if(WIN32)
+  target_link_libraries(agentengine_rt_session PUBLIC ws2_32)
+endif()
+target_link_libraries(agentengine_core INTERFACE agentengine_rt_session)
+
 # ---- Egress proxy (src/sandbox/) -- Windows + Linux ---------------------------------------------
 # Implements decisions/ADR-011-first-party-egress-proxy.md (008 §10 Q3, M2 Phase F task F1): the
 # host-mediated mechanism NetOut (007 §3) is enforced through. Ordinary OS socket/DNS APIs
