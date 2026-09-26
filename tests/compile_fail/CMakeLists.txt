@@ -130,12 +130,14 @@ if(WIN32)
   agentengine_compile_fail_test(worktree_object_store_rejects_blob_digest_override
     SOURCE worktree_object_store_rejects_blob_digest_override.cpp
     CONTROL compile_fail_worktree_object_store_positive_control
-    EXPECT "put_blob"
+    # MSVC names the function (C2660 'put_blob': function does not take 2 arguments); clang-cl names the parameter.
+    EXPECT "put_blob|too many arguments to function call, expected single argument 'bytes'"
     LIBS agentengine::worktree_store)
   agentengine_compile_fail_test(worktree_object_store_rejects_tree_digest_override
     SOURCE worktree_object_store_rejects_tree_digest_override.cpp
     CONTROL compile_fail_worktree_object_store_positive_control
-    EXPECT "put_tree"
+    # MSVC names the function (C2660 'put_tree': function does not take 2 arguments); clang-cl names the parameter.
+    EXPECT "put_tree|too many arguments to function call, expected single argument 'tree'"
     LIBS agentengine::worktree_store)
 endif()
 
