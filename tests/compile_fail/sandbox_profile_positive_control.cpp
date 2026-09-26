@@ -27,4 +27,10 @@ struct DummySandboxBackend {
 SandboxProfile<Strict> ok_strict;
 SandboxProfile<DummySandboxBackend> ok_backend;
 
-int main() { return 0; }
+int main() {
+    // Named here so -Wunused-variable does not fire under agentengine_warnings: ok_backend's type has
+    // internal linkage, so gcc treats the variable as file-local.
+    (void)ok_strict;
+    (void)ok_backend;
+    return 0;
+}
