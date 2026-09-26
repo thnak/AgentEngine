@@ -1,5 +1,5 @@
 // Proves backends/wasm/wasm_tool_bridge.hpp -- decisions/ADR-040-wasm-tool-pipeline-bridge.md.
-// Reuses the same real ae:tool component tests/test_wasm_backend.cpp already proves
+// Reuses the same real ae:tool component tests/plugin/test_wasm_backend.cpp already proves
 // (tests/fixtures/wasm_ae_tool_fixture/) but does NOT re-prove WasmBackend's own internals (import
 // verification, capability-kind confusion, wall_ms kill -- all covered there already). This file
 // proves the NEW seam only: a wasm-hosted tool reachable through the REAL 006 §3

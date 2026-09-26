@@ -348,7 +348,7 @@ structurally, exactly the run/turn-level gating hook Q1 concluded needed real re
   `task<result<std::monostate>>`-returning (genuinely **async**, `co_await`-able) hook, called exactly
   ONCE per round (`agent_session.hpp:1905-1916`), after context assembly and before the round's
   `ChatRequest` is built. It can deny outright (`std::unexpected` → the model is never called that
-  round, a real pre-model refusal, proven by `tests/test_rt_agent_session_turn_middleware.cpp`) or
+  round, a real pre-model refusal, proven by `tests/rt/agent_session/test_rt_agent_session_turn_middleware.cpp`) or
   rewrite the tool surface via `ToolSurfaceView` (`redact()`/`reorder()`/`annotate_description()`).
 - **Why Q1's "needs restructuring" conclusion doesn't apply here, and this isn't a contradiction of
   Q1's own reasoning, it's the same reasoning applied to a narrower, correctly-scoped point**: Q1

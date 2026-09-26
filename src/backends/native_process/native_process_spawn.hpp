@@ -66,7 +66,7 @@ struct NativeExecOutcome {
 
 [[nodiscard]] result<NativeExecOutcome> spawn_native_process(NativeExecRequest const& request);
 
-// Exposed for direct unit testing (tests/test_native_process_spawn.cpp): the Microsoft C runtime
+// Exposed for direct unit testing (tests/backends/native_process/test_native_process_spawn.cpp): the Microsoft C runtime
 // argv-quoting algorithm this module's command-line construction depends on is security-relevant
 // (an incorrect quote/backslash escape can make one intended argument split into two, or inject
 // what reads as a second flag) -- it gets its own dedicated test vectors, the same way this

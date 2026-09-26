@@ -18,7 +18,7 @@
 // Quark actor engine underneath. `run_workflow()` returns an `rt::task<WorkflowResult>`; the local
 // `drive<T>()` helper below just resumes it to completion (its only suspension points are an
 // uncontended mutex and a nested `co_await` that never itself suspends -- see
-// `tests/test_rt_workflow_supervisor.cpp`'s own `drive<T>()` comment for why one `resume()` always
+// `tests/workflow/test_rt_workflow_supervisor.cpp`'s own `drive<T>()` comment for why one `resume()` always
 // finishes it here). No engine, no router, no actor refs, no placement dance.
 //
 // Run: ./agentengine_example_13_reflection_loop
@@ -78,7 +78,7 @@ void check(bool cond, char const* what) {
 
 // Safe here: run_workflow()'s only suspension points are the run mutex's uncontended fast path and
 // a nested co_await whose own body never suspends either -- see
-// tests/test_rt_workflow_supervisor.cpp's own drive<T>() comment for the full reasoning.
+// tests/workflow/test_rt_workflow_supervisor.cpp's own drive<T>() comment for the full reasoning.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
     while (!t.done()) t.resume();

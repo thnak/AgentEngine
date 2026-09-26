@@ -24,5 +24,5 @@ landing as real code.
 Remaining scope gaps, named not silently dropped: no signature/publisher verification, no
 AOT-cache-by-digest, no instance pooling, `blob`/`tool-call` host imports recognized in the WIT
 contract but never linked (ADR-010 §9), and no production loader anywhere in this repo yet — every
-caller today (`tests/test_wasm_backend.cpp`, `tests/test_wasm_tool_bridge.cpp`) already has a loaded
+caller today (`tests/plugin/test_wasm_backend.cpp`, `tests/plugin/test_wasm_tool_bridge.cpp`) already has a loaded
 handle by construction (ADR-040 §2's own residual).

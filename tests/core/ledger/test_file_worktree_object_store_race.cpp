@@ -9,7 +9,7 @@
 //      probe that found this. It is a narrow window, not a rare cosmic ray: roughly one query in 175.
 //   2. Nothing in `put_blob()` caught it, so the exception escaped a function whose entire contract
 //      is to fail closed into `result<T>` -- past twenty lines of comments establishing exactly that.
-//   3. `tests/test_content_durability_concurrency.cpp`'s [1b] case calls `put_blob()` from sixteen
+//   3. `tests/core/ledger/test_content_durability_concurrency.cpp`'s [1b] case calls `put_blob()` from sixteen
 //      `std::thread` bodies with no handler anywhere.
 //   4. An exception escaping a `std::thread` body on this toolchain exits the process with
 //      0xC0000409 (measured directly, not inferred from the documentation).

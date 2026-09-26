@@ -5,7 +5,7 @@
 // and this promotion inherits verbatim, but this pass did not add a dedicated concurrent-dispatch
 // stress test the way ADR-102 Phase 4's own block_on() fix did for the quota-sharing case."
 //
-// This file is that stress test -- mirroring tests/test_rt_block_on.cpp's own real, two-OS-thread
+// This file is that stress test -- mirroring tests/rt/test_rt_block_on.cpp's own real, two-OS-thread
 // contention methodology exactly (staggered thread starts, several rounds, outcome-based correctness
 // checks), but exercising `MandatorySandboxProvider`'s OWN task-branch verbs directly (not a synthetic
 // critical section), driven through `agentengine::rt::block_on()` on each thread (the same,

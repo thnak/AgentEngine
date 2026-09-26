@@ -10,12 +10,12 @@
   section [1] (the test's own core, Docker-independent claim) passes completely on real GCC 14.2.0 --
   8 concurrent threads, 5 rounds, correct `task_branches_`/`BranchCost` accounting every time.
 - **Date:** 2026-08-30.
-- **Scope:** `tests/test_task_branch_concurrent_dispatch.cpp` (new), `tests/CMakeLists.txt` (one new
+- **Scope:** `tests/sandbox/test_task_branch_concurrent_dispatch.cpp` (new), `tests/CMakeLists.txt` (one new
   test target). `decisions/ADR-114-task-branch-tools-promotion.md` (disclosure correction pointing
   here).
 - **Related specs:** `decisions/ADR-114-task-branch-tools-promotion.md` §5/§6 (the residual this ADR
   closes: "did not add a dedicated concurrent-dispatch stress test the way ADR-102 Phase 4's own
-  `block_on()` fix did for the quota-sharing case"), `tests/test_rt_block_on.cpp` (the methodology this
+  `block_on()` fix did for the quota-sharing case"), `tests/rt/test_rt_block_on.cpp` (the methodology this
   ADR's own test mirrors), `decisions/ADR-123-fork-from-reentrant-self-deadlock.md` (the sibling
   concurrency-hardening ADR from the same pass).
 
@@ -27,7 +27,7 @@ the discipline the prove-phase original established and ADR-114's promotion inhe
 test has ever driven two of these calls through GENUINE, real two-OS-thread concurrent dispatch on the
 SAME provider instance; every existing test exercises them sequentially. Does `task_branch_mutex_`
 actually hold up under real concurrent dispatch, the way `AsyncQuota`'s own internal mutex was proven to
-under `block_on()` (`tests/test_rt_block_on.cpp`, ADR-102 Phase 4)?
+under `block_on()` (`tests/rt/test_rt_block_on.cpp`, ADR-102 Phase 4)?
 
 ## 2. Findings
 
@@ -82,7 +82,7 @@ inconclusive result against the reverted code, so the stronger version was kept 
 
 ## 3. What was built
 
-`tests/test_task_branch_concurrent_dispatch.cpp` (new): the three-scenario stress test described in §2,
+`tests/sandbox/test_task_branch_concurrent_dispatch.cpp` (new): the three-scenario stress test described in §2,
 using `agentengine::rt::block_on()` to drive each thread's own coroutine call (the same, already-proven
 -safe driver `test_rt_block_on.cpp` itself validates generically — this file's own job is to confirm
 `MandatorySandboxProvider`'s SPECIFIC use of the underlying primitive, not to re-prove the primitive).

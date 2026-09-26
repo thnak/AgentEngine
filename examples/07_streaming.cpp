@@ -9,7 +9,7 @@
 // session-level "stream a run" ask yet -- this example demonstrates the real, already-shipped layer
 // underneath one: a `ChatClient` conformer that genuinely streams, word by word, across a real
 // background thread and a real credit-controlled ring (`agentengine::stream<T>`, core/stream.hpp),
-// the same primitive `tests/test_chat_client_stream.cpp` proves end to end.
+// the same primitive `tests/core/chat/test_chat_client_stream.cpp` proves end to end.
 //
 // Run: ./agentengine_example_07_streaming
 

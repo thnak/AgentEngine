@@ -124,7 +124,7 @@ from the registry, not toward it.** Two concrete, differently-scoped follow-ons:
   `kDefaultShellWallClockBudget` = 10s, provisional, mirroring `output_discipline.hpp`'s own
   disclosed-not-final posture); on expiry the internal fail-fast error is translated into a real
   `ExecOutcome{klass: exec_outcome_class::timeout}`, matching how `NativeJailBackend`'s own watchdog
-  classifies a wall-clock kill. Proven by `tests/test_mediated_shell_runner_wall_clock_timeout.cpp`: a
+  classifies a wall-clock kill. Proven by `tests/backends/native_jail/test_mediated_shell_runner_wall_clock_timeout.cpp`: a
   positive control (an ordinary bounded loop still completes normally) plus a real 20-level-nested,
   3-items-per-level script (3^20 ≈ 3.49 billion body executions, well under every parser bound) given
   a 20ms/50ms budget — both return a real `timeout` outcome within a measured, bounded real wall-clock

@@ -4,7 +4,7 @@
 // caller changing -- ADR-058 §4 B1/B3). This file IS that new call site (per ADR-058 §8's own
 // "A new, real call site is required" section): a small demo struct with AE_JSON_SCHEMA(...) stands
 // in for the real T in OutputSchema<T>, driven through a deterministic, offline, scripted-ChatClient
-// -- the same style tests/test_rt_agent_session_suspend_approval.cpp already established, copied
+// -- the same style tests/rt/agent_session/test_rt_agent_session_suspend_approval.cpp already established, copied
 // rather than shared (that file's own "no cross-test-file coupling" precedent).
 //
 //   O1 -- a scripted response whose text is valid JSON matching the declared schema: the round

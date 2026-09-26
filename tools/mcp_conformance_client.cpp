@@ -24,7 +24,7 @@
 // binary is not a guest path: the destination is supplied by the operator running the gate, on the
 // command line, never derived from model output (I3) and never guest-supplied -- exactly the case
 // ADR-016 judged. Swapping `resolve_host` for `resolve_and_validate` here MUST fail on loopback; that
-// is the negative half of claim 4's two-way control, and `tests/test_mcp_conformance_transport.cpp`
+// is the negative half of claim 4's two-way control, and `tests/protocol/mcp/test_mcp_conformance_transport.cpp`
 // asserts both halves.
 
 #include <cstdio>

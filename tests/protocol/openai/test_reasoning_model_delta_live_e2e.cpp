@@ -39,7 +39,7 @@
 // live credential's cost/flakiness surface no larger than every sibling file in this suite already
 // accepts; the cross-vendor claim above is a repro finding, not re-asserted per-model here.
 //
-// Mirrors tests/test_openrouter_live_e2e.cpp's / test_openai_chat_client_openrouter_live_e2e.cpp's
+// Mirrors tests/protocol/openai/test_openrouter_live_e2e.cpp's / test_openai_chat_client_openrouter_live_e2e.cpp's
 // EXACT pattern (env-var-gated credential, SKIP not FAIL when absent, structural-only assertions) --
 // see either file's own top comment for the full rationale, not repeated here.
 //

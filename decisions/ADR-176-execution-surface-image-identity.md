@@ -18,10 +18,10 @@
   `include/agentengine/sandbox/docker_execution_surface.hpp`,
   `include/agentengine/sandbox/containerd_execution_surface.hpp`,
   `include/agentengine/sandbox/mandatory_sandbox_provider.hpp`,
-  `tests/test_execution_surface_image_identity.cpp` (new), `tests/test_containerd_execution_surface.cpp`,
-  `tests/test_mandatory_sandbox_provider.cpp`, `tests/test_task_branch_tools.cpp`,
+  `tests/sandbox/execution_surface/test_execution_surface_image_identity.cpp` (new), `tests/sandbox/execution_surface/test_containerd_execution_surface.cpp`,
+  `tests/sandbox/test_mandatory_sandbox_provider.cpp`, `tests/sandbox/test_task_branch_tools.cpp`,
   `tests/support/memory_cap.hpp`, `tests/support/image_provenance_shape.hpp` (new),
-  `tests/test_image_provenance_shape.cpp` (new),
+  `tests/core/tools/test_image_provenance_shape.cpp` (new),
   `tests/compile_fail/image_provenance_unstampable_reply.cpp` (new) and its positive control (new),
   `bench/docker_image_digest_resolution.cpp` (new), `tests/CMakeLists.txt`, `.github/workflows/ci.yml`,
   `027-Vocabulary-and-Naming.md`, `docs/research/2026-09-18-image-id-vs-descriptor-digest.md` (new).
@@ -363,7 +363,7 @@ previous container's image.
 > claim had been restated from Docker's documentation rather than measured — the exact failure mode
 > CLAUDE.md's "do not assert what a protocol does from memory" rule names.
 
-**`tests/test_execution_surface_image_identity.cpp`** (new) — **24 runtime checks** plus 3
+**`tests/sandbox/execution_surface/test_execution_surface_image_identity.cpp`** (new) — **24 runtime checks** plus 3
 compile-time assertions, against a **live Docker daemon**, reported as 24/24 on the branch. Memory-capped
 at 256 MiB (1 GiB under a sanitizer) via `tests/support/memory_cap.hpp`, per CLAUDE.md's machine-safety
 rule — the cap bounds a mutant planted in a parsing loop that reads daemon stdout, not a growth path the
@@ -385,12 +385,12 @@ test itself has.
 | N12 | **CONTROL.** `unknown` is reachable three ways: an unrecognized media type, a line that merely *contains* a known media type (the exact-match guard, §9), and a malformed image id. So no kind is a constant. |
 | N13 | The kind travels with the digest across a move, in both directions. Unlike N8 this **cannot** pass by accident: an enum is copied intact by a move, so without the explicit reset the moved-from surface would still answer `index`. |
 
-**`tests/test_mandatory_sandbox_provider.cpp`** — **4 new checks**: `bound_image()` reports the
+**`tests/sandbox/test_mandatory_sandbox_provider.cpp`** — **4 new checks**: `bound_image()` reports the
 configured reference and a well-formed digest, and the real `run_command` reply **JSON** carries both,
 the digest cross-checked against the same surface's own accessor rather than a literal (a hardcoded
 expectation would still pass if both were fabricated).
 
-**`tests/test_containerd_execution_surface.cpp`** — **8 issue-#80/§9 checks**, and the first draft's
+**`tests/sandbox/execution_surface/test_containerd_execution_surface.cpp`** — **8 issue-#80/§9 checks**, and the first draft's
 claim that these were "NEVER EXECUTED" was **wrong about CI**. It was true of the development machine,
 whose containerd socket is root-only and whose `sudo` cannot authenticate non-interactively. It was never
 true of the Linux CI leg, which pulls `alpine` and runs the three containerd tests under `sudo`:
@@ -822,7 +822,7 @@ Three consequences worth stating plainly:
   the schema's `"required"` array is what catches the `std::optional` spelling from the wire side, since
   that is the only thing an optional field changes in the published schema.
 
-The controls live in **`tests/test_image_provenance_shape.cpp`**, a separate binary with no daemon
+The controls live in **`tests/core/tools/test_image_provenance_shape.cpp`**, a separate binary with no daemon
 dependency — because the two binaries that apply the gate for real are excluded from all three Windows CI
 legs, and controls that run on one leg are not much of a control. Nine hand-built descriptors: conforming
 passes; missing companion fails; non-string companion fails; **no image at all fails**, and passes only

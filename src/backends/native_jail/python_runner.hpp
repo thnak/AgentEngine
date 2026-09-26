@@ -31,7 +31,7 @@ namespace agentengine {
 // allowlist) for the whole session, mirroring `ShellRunner`'s constructor-injection pattern
 // (ADR-001) — a session's `PythonRunner` is bound to one interpreter for its whole lifetime, never
 // re-bound per call, consistent with §5.5.6's one-process-per-session scope. Not default-
-// constructible (see tests/test_native_jail_runner_stubs.cpp's comment on why ShellRunner and now
+// constructible (see tests/backends/native_jail/test_native_jail_runner_stubs.cpp's comment on why ShellRunner and now
 // PythonRunner are both exercised by their own dedicated tests instead).
 class PythonRunner {
 public:

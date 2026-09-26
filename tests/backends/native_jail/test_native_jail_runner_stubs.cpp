@@ -4,7 +4,7 @@
 // Neither ShellRunner nor PythonRunner is a stub anymore:
 //  - ShellRunner (decisions/ADR-001-shellrunner-grammar-and-dispatch.md, prove phase) has a real
 //    grammar/dispatch implementation, is constructor-injected with a FileSystemAdapter&/
-//    CommandRegistry const&, and is exercised by tests/test_shell_runner_proof.cpp.
+//    CommandRegistry const&, and is exercised by tests/backends/native_jail/test_shell_runner_proof.cpp.
 //  - PythonRunner (decisions/ADR-002-pythonrunner-embedding-and-mediation.md, prove phase) now
 //    embeds a real CPython interpreter behind `native_jail::PythonLockdownInterpreter` and is
 //    constructor-injected with a `PythonLockdownConfig`, so it is no longer default-constructible
@@ -29,13 +29,13 @@
 #include "../../support/crt_fail_fast.hpp"
 
 // PythonRunner's own Runner-concept static_assert now lives in
-// tests/test_python_embed_smoke.cpp, built only when AGENTENGINE_BUILD_PYTHON_RUNNER is ON (it
+// tests/python/test_python_embed_smoke.cpp, built only when AGENTENGINE_BUILD_PYTHON_RUNNER is ON (it
 // requires python_runner.hpp, which pulls in native_jail::PythonLockdownInterpreter and therefore
 // needs the agentengine_python_runner target to be configured) — not duplicated here so this
 // always-built test doesn't gain a conditional Python dependency of its own.
 
 namespace {
-// See tests/test_real_filesystem_adapter.cpp's identical helper for why this matters: a failed
+// See tests/backends/native_jail/test_real_filesystem_adapter.cpp's identical helper for why this matters: a failed
 // assert() under the MSVC CRT otherwise pops a blocking interactive dialog in a non-interactive
 // CTest run (CLAUDE.md Machine Safety).
 } // namespace

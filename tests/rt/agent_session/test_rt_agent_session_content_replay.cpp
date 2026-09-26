@@ -3,7 +3,7 @@
 // AgentSession already accepts anything satisfying ChatClient<ChatClientT> OR
 // ModelCallGatewayLike<ChatClientT> (agent_session.hpp's own class template requires-clause), and
 // ContentReplayGateway<Inner> satisfies ModelCallGatewayLike directly. This is the real end-to-end
-// proof tests/test_content_replay_gateway.cpp's own standalone unit tests didn't attempt: a settled,
+// proof tests/core/chat/test_content_replay_gateway.cpp's own standalone unit tests didn't attempt: a settled,
 // policy-violating response is discarded and replaced BEFORE it ever reaches AgentSession's own turn
 // loop or durable history, and AgentSession's own loop never even knows a replay happened.
 

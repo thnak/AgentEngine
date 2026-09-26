@@ -1,6 +1,6 @@
 // Proves decisions/ADR-013-https-egress-tls-client.md's falsifiable claims -- only built when
 // AGENTENGINE_WITH_HTTPS is ON (tests/CMakeLists.txt). Structure follows
-// tests/test_net_egress_proxy.cpp's own ADR-011 precedent: a real loopback TLS server, no live
+// tests/sandbox/test_net_egress_proxy.cpp's own ADR-011 precedent: a real loopback TLS server, no live
 // internet dependency, deterministic in-process-generated certificates rather than real, publicly-
 // trusted ones (impossible to test hostname-mismatch/expired/untrusted-root rejection
 // deterministically against real CA-issued certs).

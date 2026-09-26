@@ -19,7 +19,7 @@
 // written against just the three concept methods will not see plugin loading at all, by design"),
 // never the generic SandboxBackend::exec() adapter below. This backend's own internals (import
 // verification, capability-kind confusion, wall_ms kill) stay proven standalone (tests/
-// test_wasm_backend.cpp); the bridge's own tests (tests/test_wasm_tool_bridge.cpp) prove only the
+// test_wasm_backend.cpp); the bridge's own tests (tests/plugin/test_wasm_tool_bridge.cpp) prove only the
 // new seam, not re-prove this file's internals.
 
 #include <cstdint>

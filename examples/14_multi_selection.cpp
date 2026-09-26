@@ -96,7 +96,7 @@ void check(bool cond, char const* what) {
 
 // Safe here: run_workflow()'s only suspension points are the run mutex's uncontended fast path and
 // a nested co_await whose own body never suspends either -- see
-// tests/test_rt_workflow_supervisor.cpp's own drive<T>() comment for the full reasoning.
+// tests/workflow/test_rt_workflow_supervisor.cpp's own drive<T>() comment for the full reasoning.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
     while (!t.done()) t.resume();

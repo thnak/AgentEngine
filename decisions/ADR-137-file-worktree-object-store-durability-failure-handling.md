@@ -75,7 +75,7 @@ draft introduced, one a pre-existing gap this pass's own scrutiny of the surroun
 **(1) Regression: shared, digest-derived temp filenames made the new cleanup-on-failure logic actively
 unsafe under concurrent same-digest writes.** The first draft's temp filename was `<digest>.tmp` —
 identical across every concurrent writer of the SAME content, exactly the scenario
-`tests/test_content_durability_concurrency.cpp`'s own `[1b]` section exercises (16 threads x 20
+`tests/core/ledger/test_content_durability_concurrency.cpp`'s own `[1b]` section exercises (16 threads x 20
 iterations). Under the ORIGINAL, error-ignoring code this was harmless (nothing ever deleted the shared
 temp file). Adding real cleanup-on-failure (`std::filesystem::remove(temp, ...)` on a write/rename
 failure) made it unsafe: one racing writer's failure-path cleanup could delete a SIBLING writer's
@@ -98,7 +98,7 @@ previously undiscovered cross-platform correctness gap, confirmed via a dedicate
 racing renames of identical content from two independent store instances succeeded outright, 167 hit
 exactly this "access denied" path; 0 corruption in any case). Made the new hard-failure behavior a real
 regression for `create_root_branch()`'s own always-identical empty-tree case
-(`tests/test_content_durability_concurrency.cpp`'s `[2c]` section, which constructs exactly two
+(`tests/core/ledger/test_content_durability_concurrency.cpp`'s `[2c]` section, which constructs exactly two
 independent `Ledger<FileWorktreeObjectStore>` instances sharing one durable root) — `[2c]` genuinely
 failed 7/10 runs after (1)'s fix alone, versus 0/8 on the pre-ADR-137 baseline. **Fixed**: on a rename
 failure, read back the destination and recompute its digest — content-addressing guarantees that if

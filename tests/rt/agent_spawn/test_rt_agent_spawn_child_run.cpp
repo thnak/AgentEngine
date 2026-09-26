@@ -1,9 +1,9 @@
 // Implements docs/planning/agent-spawn-runtime-design-draft.md item 2 (§4.2) -- OpenQuestions.md
 // OQ-14, `agent.spawn`'s own "sharpest case": proves rt::run_child_agent_session()
 // (rt/agent_spawn_child_run.hpp), the nested-agent-run invocation mechanism. Style/structure mirrors
-// tests/test_rt_agent_workflow_executor.cpp (this project's own closest precedent for "drive a real
+// tests/workflow/test_rt_agent_workflow_executor.cpp (this project's own closest precedent for "drive a real
 // AgentSession synchronously from a plain, non-coroutine call site"). Composes items 4/5 -- ALREADY
-// landed, tests/test_agent_spawn_capability.cpp / trust/agent_spawn_capability.hpp -- to mint the
+// landed, tests/rt/agent_spawn/test_agent_spawn_capability.cpp / trust/agent_spawn_capability.hpp -- to mint the
 // child's own CapabilitySet exactly as a real perform_agent_spawn() (item 1, not built here) would,
 // so this proves the real end-to-end wiring the task asks for, not a stand-in ceiling. Items 1
 // (Tool<>/SpawnTargetRegistry), 3 (dynamic worktree minting), 4c (SpawnPump), and 6 (OQ-16 session

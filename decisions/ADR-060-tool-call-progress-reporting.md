@@ -30,8 +30,8 @@ directly against the current tree found the event-stream HALF is already real an
 `stream<RunEvent>` (`core/stream.hpp`, `rt::channel<T>`-backed), and `emit_run_event()`/
 `emit_run_event_for()` are real member functions already firing for `RunStarted`/`ToolCallStarted`/
 `TurnFinished`/etc. throughout the round loop. `ToolCallDelta` and `run_event_kind::tool_call_delta`
-are real, already-declared types (`run_event.hpp`), exercised today only by `tests/test_mcp_progress.cpp`
-and `tests/test_rt_agui_projection.cpp` — both construct `ToolCallDelta{...}` directly as test
+are real, already-declared types (`run_event.hpp`), exercised today only by `tests/protocol/mcp/test_mcp_progress.cpp`
+and `tests/protocol/agui/test_rt_agui_projection.cpp` — both construct `ToolCallDelta{...}` directly as test
 fixtures, proving the PROJECTION machinery (event → MCP progress notification / AG-UI SSE frame), not
 a real producer.
 

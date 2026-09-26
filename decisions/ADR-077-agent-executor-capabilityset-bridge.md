@@ -134,10 +134,10 @@ hazard as why its `synchronous_leaf` contract excludes `AgentSession`).
 
 | # | Claim | Verdict | Basis |
 |---|---|---|---|
-| P1 | The graph-layer gate (contexts-aware `check_workflow_executable`) accepts a satisfied ceiling, rejects an unsatisfied or absent one, and leaves `sub_workflow` refused unconditionally. | **CORRECT** | `tests/test_workflow_agent_executor_gate.cpp` G1–G6, all passing. |
+| P1 | The graph-layer gate (contexts-aware `check_workflow_executable`) accepts a satisfied ceiling, rejects an unsatisfied or absent one, and leaves `sub_workflow` refused unconditionally. | **CORRECT** | `tests/workflow/test_workflow_agent_executor_gate.cpp` G1–G6, all passing. |
 | P2 | `TypedExecutor`'s `capability_ceiling` escape hatch round-trips through `describe()`, matching `worktree_mode`'s own precedent. | **CORRECT** | G7. |
 | P3 | The YAML compiler refuses an authored `capability_ceiling:` key loudly (never silently drops it), and is unaffected — identical to the C++ default — when the key is absent (I6). | **CORRECT** | G8, G9. |
-| P4 | `AgentExecutorBodyTag`'s structural marker is a real positive control: non-null for a genuinely agent-backed body, null for an ordinary function closure satisfying the same call signature. | **CORRECT** | `tests/test_rt_agent_workflow_executor.cpp` T1. |
+| P4 | `AgentExecutorBodyTag`'s structural marker is a real positive control: non-null for a genuinely agent-backed body, null for an ordinary function closure satisfying the same call signature. | **CORRECT** | `tests/workflow/test_rt_agent_workflow_executor.cpp` T1. |
 | P5 | A graph declaring an agent-kind node bound to a non-agent-backed body refuses to run (`workflow_status::invalid`) rather than silently executing it as a plain function — closing the stale-comment test-coverage gap the first red-team pass found. | **CORRECT** | T2. |
 | P6 | A real end-to-end dispatch through a scripted `AgentSession` produces that session's own response as the workflow's output. | **CORRECT** | T3. |
 | P7 | An unsatisfied `capability_ceiling` refuses the run before it starts (`initialize()`-time, not a race discovered mid-run). | **CORRECT** | T4. |

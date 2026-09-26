@@ -3,8 +3,8 @@
 **Date:** 2026-08-21. **Source:** `https://docs.ollama.com/api/openai-compatibility` (live docs page;
 content verified identical to `docs/api/openai-compatibility.mdx` on `main` in
 `github.com/ollama/ollama`). Per `CLAUDE.md`'s research discipline: fetched, not recalled. Written to
-ground `tests/test_ollama_live_e2e.cpp` — the same class of "does 004 §3's OpenAI-compatible backend
-actually work against this real local server" proof `tests/test_llamacpp_live_e2e.cpp` already gives
+ground `tests/protocol/openai/test_ollama_live_e2e.cpp` — the same class of "does 004 §3's OpenAI-compatible backend
+actually work against this real local server" proof `tests/protocol/openai/test_llamacpp_live_e2e.cpp` already gives
 for llama.cpp (ADR-016 gate G5), for the other local server 004 §3's own table names by name
 ("vLLM/llama.cpp/Ollama-style local servers").
 

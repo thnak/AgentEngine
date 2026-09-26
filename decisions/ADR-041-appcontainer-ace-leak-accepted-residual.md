@@ -84,7 +84,7 @@ undone was narrower: **proving the residual is real and bounded**, not fixing it
 
 ## 4. The evidence, already real
 
-`tests/test_native_jail_abuse_corpus_windows.cpp`, Case 4 (fs-escape, `M2 Phase C task C3`, commit
+`tests/backends/native_jail/test_native_jail_abuse_corpus_windows.cpp`, Case 4 (fs-escape, `M2 Phase C task C3`, commit
 `b39f5ea` — predates this ADR; not new code written for it):
 
 - The case's primary assertion: an arbitrary host file outside any granted mount (`secret_file`, a

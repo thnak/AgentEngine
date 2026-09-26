@@ -114,18 +114,18 @@ fix; the label is a separate, memory-specific concern layered on top.
 
 ## 6. Evidence
 
-`tests/test_memory_provider.cpp` (extended, new "Gap-audit finding 17" block, L1/L2): confirms the
+`tests/memory/test_memory_provider.cpp` (extended, new "Gap-audit finding 17" block, L1/L2): confirms the
 rendered label differs by provenance (`UserStated` vs `ModelInferred`), and that a `ModelInferred`
 item's content embedding the literal real marker for a `UserStated` label is neutralized — the exact
 marker appears exactly once across both items' rendered text (the genuine item's own real label),
 never twice. Also extends G4-R6 with a new G4-R6b proving the `recall()` path renders labels too.
 
-`tests/test_memory_retrieval_determinism.cpp` and `tests/test_memory_no_authority_laundering.cpp`:
+`tests/memory/test_memory_retrieval_determinism.cpp` and `tests/memory/test_memory_no_authority_laundering.cpp`:
 updated where they depended on the previous bare-content rendering (substring checks in place of
 exact-equality where labels now prefix content); their own actual claims (determinism, no-authority-
 laundering) are unaffected and still pass.
 
-`tests/test_anthropic_chat_client_translation.cpp`: E1-R1 updated for the new separator; new E1-R1b
+`tests/protocol/anthropic/test_anthropic_chat_client_translation.cpp`: E1-R1 updated for the new separator; new E1-R1b
 proves the separator prevents a concrete semantic corruption a bare concatenation would otherwise
 produce (`"...prefers dark"` + `"mode is not..."` reading as one word, `"...darkmode..."`).
 

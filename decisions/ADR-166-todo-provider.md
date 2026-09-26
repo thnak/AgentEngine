@@ -9,7 +9,7 @@ and without opening a new capability/DoS/forgery surface?
 - **Date:** 2026-09-03.
 - **Scope:** `include/agentengine/core/todo_provider.hpp` (new — `TodoProvider`, five tool
   descriptors, `TodoAddArgs`/`TodoAddReply`/`TodoIdArgs`/`TodoOkReply`/`TodoNoArgs`/
-  `TodoListReply`), `tests/test_todo_provider.cpp` (new, 14 named claims), `tests/CMakeLists.txt`
+  `TodoListReply`), `tests/core/context/test_todo_provider.cpp` (new, 14 named claims), `tests/CMakeLists.txt`
   (additive wiring, unguarded — no `WIN32`/worktree dependency), `005-Sessions-State-and-Memory.md`
   §5 (modified — added `TodoProvider` to the provider-kinds list). **No other production file
   changed** — `ContextProvider`, `ContextContribution`, `ComposedContextProvider`,
@@ -166,7 +166,7 @@ tree, branch `feature/todo-provider`:
 
 ```
 $ cmake --build . --target test_todo_provider -j 4
-[1/4] Scanning D:/GitSrc2/AgentEngine/tests/test_todo_provider.cpp for CXX dependencies
+[1/4] Scanning D:/GitSrc2/AgentEngine/tests/core/context/test_todo_provider.cpp for CXX dependencies
 [2/4] Generating CXX dyndep file tests/CMakeFiles/test_todo_provider.dir/CXX.dd
 [3/4] Building CXX object tests/CMakeFiles/test_todo_provider.dir/test_todo_provider.cpp.obj
 [4/4] Linking CXX executable tests\test_todo_provider.exe

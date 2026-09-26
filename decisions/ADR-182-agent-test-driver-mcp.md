@@ -7,7 +7,7 @@
 - **Date**: 2026-09-25
 - **Origin**: live-provider tests drive a real `rt::AgentSession` by sending a free-form prompt and
   hoping the model does what the test needs, e.g. "You must call BOTH get_weather … AND send_message"
-  (`tests/test_rt_agent_session_hitl_live_e2e.cpp:477`). When the model doesn't comply, the test can only
+  (`tests/rt/agent_session/test_rt_agent_session_hitl_live_e2e.cpp:477`). When the model doesn't comply, the test can only
   downgrade the check to a printed note (`:502`). `tools/farm_ops_interactive_cli.py` exists only to find
   out *why* a live run failed. Project-owner direction (2026-09-25): build a first-class automation-test
   surface, shaped like Playwright MCP, that a Claude Code sub-agent can use to drive a running session.
@@ -580,7 +580,7 @@ Every finding is accepted unless stated otherwise.
   - `chat_stream()` pushes synchronously and puts usage on the last content update, because
     `drain_chat_stream` appends every update's delta;
   - builders: `text_turn`, `tool_calls_turn`, `failure_turn`.
-- **Proof:** `tests/test_scripted_chat_client_and_approval_payload.cpp`, 22/22 checks.
+- **Proof:** `tests/testing/test_scripted_chat_client_and_approval_payload.cpp`, 22/22 checks.
   - SC2 has a positive control: the repeat-last policy that every ad-hoc copy uses answers the extra
     call, so the check can fail.
   - AP2 proves a mixed round reports `needs_approval` true for the gated call and false for the free
@@ -609,7 +609,7 @@ Every finding is accepted unless stated otherwise.
   `lint_testing_includes`. Passes on the tree; a planted `#include "agentengine/testing/..."` under
   `src/` makes it fail (positive control, run by hand 2026-09-25). The project has no install rules,
   so there is nothing to exclude yet.
-- **Proof:** `tests/test_agentengine_test_driver.cpp`, 42/42 checks, driving `handle_line()` with the
+- **Proof:** `tests/testing/test_agentengine_test_driver.cpp`, 42/42 checks, driving `handle_line()` with the
   exact JSON-RPC lines the binary receives:
   - protocol P1–P5, and C1, C3, C3b, C4 (restated), C10;
   - a mixed round, and the refusals (send while suspended, per-call decisions, too many sessions);
@@ -681,7 +681,7 @@ where it was.
 
 ### Proof
 
-- **Offline** (`tests/test_agentengine_test_driver.cpp`, now 50/50):
+- **Offline** (`tests/testing/test_agentengine_test_driver.cpp`, now 50/50):
   - a live fixture is refused without live mode;
   - with a stand-in live backend (no network), the session starts, refuses `model_script_push`
     (`test.live_session`), is answered by the backend, reports `model: live`, and `model_requests`
@@ -754,7 +754,7 @@ holds whether the session was scripted or live.
 
 ### Proof
 
-- **`tests/test_agentengine_test_driver.cpp`, 67/67.** The new scenario checks:
+- **`tests/testing/test_agentengine_test_driver.cpp`, 67/67.** The new scenario checks:
   - export → `scenario_replay` passes, and `replay_scenario()` (the runner's path) passes twice;
   - three positive controls, each caught:
     - a changed expected event;
@@ -823,7 +823,7 @@ holds whether the session was scripted or live.
   - **Driver bug, fixed.** `initialize` echoed any `protocolVersion` the client asked for while
     `supportedVersions` listed others. It now echoes only a version it serves (2026-07-28,
     2025-11-25, 2025-06-18) and otherwise answers with its own. Test: P1 in
-    `tests/test_agentengine_test_driver.cpp` (the Inspector's version is served, `1999-01-01` is not
+    `tests/testing/test_agentengine_test_driver.cpp` (the Inspector's version is served, `1999-01-01` is not
     echoed).
 - **Which handshake clients send (closes §14's open question).** Captured with a stdio tee: both the
   MCP Inspector CLI and Claude Code (`claude -p`, 2026-09-25) send `initialize` with
@@ -909,7 +909,7 @@ differs fails that model call with `test.replay_mismatch`.
   digests in. Each scenario's diff is a single line: only `request_digest` was added. All 7 now report
   "N model requests checked". For the 4 live-derived ones, the stamped digests come from the replay, not
   the live run. That is sound only because the replay also reproduced every recorded event.
-- **Proof** (`tests/test_agentengine_test_driver.cpp`, C8):
+- **Proof** (`tests/testing/test_agentengine_test_driver.cpp`, C8):
   - export stamps every turn;
   - the untouched scenario passes with 2 requests checked;
   - **positive control:** changing only the user message ("please echo a" to "b") passes when the
@@ -951,7 +951,7 @@ Built to §12 R4's specification.
     captured is marked too.
   - The target continues the source's scripted call-id counter, so its call ids never repeat one in its
     history.
-- **Proof** (`tests/test_agentengine_test_driver.cpp`, FORK):
+- **Proof** (`tests/testing/test_agentengine_test_driver.cpp`, FORK):
   - fork at turn 1 of 2 keeps exactly 2 messages, and the source is unchanged, before and after the
     fork runs;
   - the fork's first model request is turn 1 plus its own message;
@@ -995,7 +995,7 @@ authority than a compiled-in fixture has, and only a committed file is used.
   so it has no Write or Edit to change a fixture.
 - **Replay.** `replay_scenario` takes the fixtures root. Editing a fixture changes the request, so an
   existing scenario fails with `test.replay_mismatch` (§19) rather than passing on changed instructions.
-- **Proof** (`tests/test_agentengine_test_driver.cpp`, P4):
+- **Proof** (`tests/testing/test_agentengine_test_driver.cpp`, P4):
   - the fixture's instructions reach the model as the first, system, message;
   - exactly the fixture's tools are offered;
   - `max_turns: 1` stops the second model call (`run.max_turns_exceeded`);
@@ -1083,7 +1083,7 @@ Minor findings, recorded as residuals:
 - **§12 C-3 drift:** the `permissions.deny` rules §12 promised were never written. The tester agent's
   tool allowlist (MCP, Read, Grep, Glob, with no Write, Edit or shell) is what enforces it.
 
-**Proof:** `tests/test_agentengine_test_driver.cpp`, every check marked (§22).
+**Proof:** `tests/testing/test_agentengine_test_driver.cpp`, every check marked (§22).
 - A mismatch is terminal: after it, two turns stay unconsumed.
 - An ancestor event that differs, and an ancestor end state that differs, each fail as `segment 0`.
 - A fork chain stops at 8.

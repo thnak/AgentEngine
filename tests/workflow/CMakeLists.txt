@@ -103,7 +103,7 @@ agentengine_add_test(test_rt_workflow_supervisor_failure_policies LIBS agentengi
 
 # ---- GitHub issue #52 fix proof: `propagate`/`fallback` on a `fan_in` edge whose target a SIBLING
 # also delivers to normally in the SAME round -- a real gap D4 above never exercised, found live via
-# tests/test_workflow_research_pipeline_live_e2e.cpp, now fixed (route_from()'s deliver_or_merge()/
+# tests/workflow/test_workflow_research_pipeline_live_e2e.cpp, now fixed (route_from()'s deliver_or_merge()/
 # seed_fan_in_holds()/deliver_to_fan_in()/resolve_fan_in_await(), workflow_supervisor.hpp) -- see this
 # file's own top comment for the full trace.
 agentengine_add_test(test_workflow_fanin_concurrent_failure_policy_fix
@@ -113,7 +113,7 @@ agentengine_add_test(test_workflow_fanin_concurrent_failure_policy_fix
 # `fan_in` target did not wait for every declared source before dispatching -- when two sources
 # resolved at genuinely different round counts (no failure/fallback involved at all), the target
 # dispatched TWICE, and the second invocation silently overwrote the first. Found live via
-# tests/test_workflow_research_pipeline_large_context_live_e2e.cpp, now fixed by generalizing #52's
+# tests/workflow/test_workflow_research_pipeline_large_context_live_e2e.cpp, now fixed by generalizing #52's
 # fix (seed_fan_in_holds() pre-registers every multi-source fan_in target's barrier up front, not just
 # a fallback's direct-rejoin shape) -- see this file's own top comment for the full trace.
 agentengine_add_test(test_workflow_fanin_uneven_round_sources_fix LIBS agentengine::core agentengine_warnings)

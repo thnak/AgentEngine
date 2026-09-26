@@ -17,7 +17,7 @@ to, and extends one of). `decisions/ADR-073-unified-streaming-gateway-call-strea
 result-streaming-ask-stream.md` (`call_stream()`, extended here for sticky-tier parity).
 `include/agentengine/core/routing_model_call_gateway.hpp` (new), `include/agentengine/core/model_call_
 gateway.hpp` (extended), `include/agentengine/core/chat_client.hpp` (`ChatResponse::route_index`, new
-field), `tests/test_routing_model_call_gateway.cpp` (new), `tests/test_model_call_gateway.cpp`
+field), `tests/core/chat/test_routing_model_call_gateway.cpp` (new), `tests/core/chat/test_model_call_gateway.cpp`
 (extended, G12-G15).
 
 ## 1. The question
@@ -181,7 +181,7 @@ separate, undesigned work.
 
 ## 4. Evidence
 
-`tests/test_routing_model_call_gateway.cpp` (new, 18 checks) and `tests/test_model_call_gateway.cpp`
+`tests/core/chat/test_routing_model_call_gateway.cpp` (new, 18 checks) and `tests/core/chat/test_model_call_gateway.cpp`
 G12-G15 (25 new checks, appended to the existing 46), built and run directly (Debug, MSVC, Windows):
 
 ```

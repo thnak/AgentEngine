@@ -14,7 +14,7 @@
 - **Date:** 2026-08-29.
 - **Scope:** new `include/agentengine/sandbox/containerd_execution_surface.hpp` (header-only, matching
   `docker_execution_surface.hpp`'s own shape — no new CMake library target), new
-  `tests/test_containerd_execution_surface.cpp` (Linux-only, `NOT WIN32`-gated in
+  `tests/sandbox/execution_surface/test_containerd_execution_surface.cpp` (Linux-only, `NOT WIN32`-gated in
   `tests/CMakeLists.txt`, no new opt-in flag). **No existing production file changed** — this is a pure
   addition; `DockerExecutionSurface`, `MandatorySandboxProvider<Surface>`, `SandboxRuntime`, and every
   other already-shipped file are untouched.
@@ -90,7 +90,7 @@ to a per-class `"containerd_execution_surface.not_reset"`, matching `DockerExecu
 `"docker_execution_surface.not_reset"` convention — a sensible improvement, also undisclosed until now.
 
 **One real addition beyond the prove-phase probe**: the ported test
-(`tests/test_containerd_execution_surface.cpp`) adds a check the original probe never exercised —
+(`tests/sandbox/execution_surface/test_containerd_execution_surface.cpp`) adds a check the original probe never exercised —
 `drain_to()` to a DIFFERENT directory than the one bind-mounted (the general `ExecutionSurface`
 contract, previously only implemented, never tested — the prove-phase's own §5 named this exact gap:
 "`drain_to()` to a directory OTHER than the one bind-mounted falls back to an implemented-but-
@@ -232,7 +232,7 @@ over the `ExecutionSurface` concept, `include/agentengine/sandbox/mandatory_sand
   unchanged), new `agentengine_containerd_shell_chat` CMake target (`AGENTENGINE_WITH_HTTPS AND NOT
   WIN32`). Also closed the deeper half of this residual — proof that the COMPOSITION actually works
   through the real pipeline, not just that a tool file compiles: `tests/test_composed_containerd_
-  providers_live.cpp`, a near-verbatim port of `tests/test_composed_sandbox_providers_live.cpp`, run
+  providers_live.cpp`, a near-verbatim port of `tests/sandbox/execution_surface/test_composed_sandbox_providers_live.cpp`, run
   as root against a real containerd/runc daemon — **`ALL CHECKS PASSED`**, the first real production
   use of `MandatorySandboxProvider<ContainerdExecutionSurface>` through the actual, unmodified
   `session.start_run() -> invoke_tool()` 10-step pipeline anywhere in this codebase (confirmed via

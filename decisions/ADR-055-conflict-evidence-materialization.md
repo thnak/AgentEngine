@@ -4,7 +4,7 @@
 `docs/planning/conflict-evidence-materialization-design-draft.md`'s own already-self-red-teamed
 sketch, unchanged except one field-naming correction found while implementing it — see §2),
 implemented, and proven (real code + tests, §4). Re-verified at sign-off review:
-`tests/test_worktree_conflict_evidence.cpp` (M1-M6) still passes in full, unchanged since commit
+`tests/worktree/test_worktree_conflict_evidence.cpp` (M1-M6) still passes in full, unchanged since commit
 `51083eb`.
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #14 (the finding this ADR
@@ -100,7 +100,7 @@ not silently assumed away.
 
 ## 5. Evidence
 
-`tests/test_worktree_conflict_evidence.cpp` (M1-M6, new):
+`tests/worktree/test_worktree_conflict_evidence.cpp` (M1-M6, new):
 - **M1** — `conflicts_ref_name()` is deterministic (same parent → same name) and collision-free across
   distinct parents.
 - **M2** — end-to-end: a REAL `merge_branch_into_parent()` conflict (parent and branch both edit `a.txt`
@@ -135,7 +135,7 @@ Full suite: green (this pass), zero regressions.
 
 **Status of this amendment: Judged (2026-08-14, project owner sign-off)**, separate from this ADR's
 original Judged verdict above (per this project's governance, `decisions/README.md`; `OpenQuestions.md`
-OQ-11). Re-verified at sign-off review: `tests/test_rt_workflow_supervisor_merge_on_join.cpp` (J1-J3)
+OQ-11). Re-verified at sign-off review: `tests/workflow/test_rt_workflow_supervisor_merge_on_join.cpp` (J1-J3)
 still passes in full, unchanged since commit `82ee6b0`.
 
 At the project owner's explicit direction, this ADR's own §6 residual is closed: a `branch`-mode
@@ -177,7 +177,7 @@ back when its agent completes."* — a per-EXECUTOR-completion event, not tied t
   conflict, this ADR's own `materialize_merge_conflicts()` before returning the error — evidence is
   durably retained even though the run itself terminates.
 
-**Evidence**: `tests/test_rt_workflow_supervisor_merge_on_join.cpp` (J1-J3, new) — the first test in
+**Evidence**: `tests/workflow/test_rt_workflow_supervisor_merge_on_join.cpp` (J1-J3, new) — the first test in
 this codebase to drive a `branch`-mode executor through `WorkflowSupervisor` to completion:
 - **J1** — happy path: a single branch executor's own write folds back into the parent, proven by
   re-reading the parent ref directly afterward, with NO manual `merge_branch_into_parent` call
@@ -242,7 +242,7 @@ defined later): `MergeConflict::path`'s own `/`-separated segments become real d
 agent_id` or `branch.name`) has its own `/` sanitized to `_` before becoming the LEAF's suffix — an
 identifier is not itself a navigable path, and should never be mistaken for one.
 
-**Evidence**: `tests/test_worktree_conflict_evidence.cpp`, extended:
+**Evidence**: `tests/worktree/test_worktree_conflict_evidence.cpp`, extended:
 - **M7** — `conflicts_mount_id()`/`conflicts_mount()` are deterministic and derived, mirroring M1's
   own proof shape for `conflicts_ref_name()`.
 - **M8** — end to end: real conflict evidence (both `ours` and `theirs`, the latter's agent identity
@@ -254,7 +254,7 @@ identifier is not itself a navigable path, and should never be mistaken for one.
   reading it back through `mount_read()` and by inspecting the conflicts ref's own root directly (one
   real subdirectory entry, never a flat entry literally named with an embedded `/`).
 
-`tests/test_rt_workflow_supervisor_merge_on_join.cpp`'s own J1-J3 (Amendment 1) re-verified passing
+`tests/workflow/test_rt_workflow_supervisor_merge_on_join.cpp`'s own J1-J3 (Amendment 1) re-verified passing
 unchanged — their own assertions only checked entry COUNTS, not exact names, so they were unaffected
 by the naming fix; re-run explicitly to confirm regardless.
 

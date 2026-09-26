@@ -550,7 +550,7 @@ wasmtime_error_t* cb_http_request(void* env, wasmtime_context_t* ctx,
     }
 
     // ADR-011 §9's named residual, reconciled via net_egress_proxy.hpp's narrow_by_resource_limit()
-    // (a pure, independently-tested function, tests/test_net_egress_proxy.cpp): the SandboxSpec-level
+    // (a pure, independently-tested function, tests/sandbox/test_net_egress_proxy.cpp): the SandboxSpec-level
     // ResourceLimits::net_bytes budget narrows this grant's own cap::NetOut::byte_cap when tighter,
     // matching 020 §1's "configuration may never widen" rule. `call->limits` is null only on the
     // tool-listing path (above, "no capability calls happen while merely listing tools"), which never

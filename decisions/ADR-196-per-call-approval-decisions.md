@@ -9,8 +9,8 @@
   `ApprovalCallDecision`, `SuspendedRoundRecord`, `resolve_interaction`, `resolve_hook_decision`,
   `resolve_codeact_ask`, `resume_tool_table`, `fork_from`, `restore_from_record`, `run_rounds`' suspend site),
   `include/agentengine/core/run_event.hpp` (`ApprovalResolved::approver_id`), `tools/test_driver/test_driver.hpp`
-  (`interaction_resolve`'s `call_decisions`/`approver_id`), `tests/test_approval_resume.cpp`,
-  `tests/test_agentengine_test_driver.cpp` (MIX, PC), `tests/scenarios/live_mixed_round.json`. §7 adds
+  (`interaction_resolve`'s `call_decisions`/`approver_id`), `tests/core/tools/test_approval_resume.cpp`,
+  `tests/testing/test_agentengine_test_driver.cpp` (MIX, PC), `tests/scenarios/live_mixed_round.json`. §7 adds
   `core/tool_call_extraction.hpp` (`make_call_ids_unique`) and `run_event.hpp` (`InteractionRef::approver_id`).
 - **Invariants**: I3 (a decision is host input, never model output), I4 (every decision names who made it).
 
@@ -104,7 +104,7 @@ When a round suspended for approval, the session treated the whole round as one 
 
 ## 5. Evidence
 
-`tests/test_approval_resume.cpp` (all pass):
+`tests/core/tools/test_approval_resume.cpp` (all pass):
 
 | Check | What it proves |
 |---|---|
@@ -116,7 +116,7 @@ When a round suspended for approval, the session treated the whole round as one 
 | S1 | after `fork_from()`, resolving a reused interaction id runs the new round, never the discarded round's calls |
 | S2 | an `input` interaction from a record is refused; the next interaction id continues past the restored ones |
 
-`tests/test_agentengine_test_driver.cpp` MIX (only the gated call is listed; a decision for an unlisted call is refused)
+`tests/testing/test_agentengine_test_driver.cpp` MIX (only the gated call is listed; a decision for an unlisted call is refused)
 and PC (two gated calls and a free call; the round is denied except the first call, approved by `alice`: each
 `approval_resolved` carries its own decision and the approver, the approved call and the free call run, the denied one
 does not). PC is ADR-182's C7: reintroducing BUG-2 fails it. `tests/scenarios/live_mixed_round.json` now expects only
@@ -155,7 +155,7 @@ request is validated, for every interaction kind, before anything closes, is ann
 
 ### 7.2 Evidence
 
-`tests/test_approval_resume.cpp`, all pass.
+`tests/core/tools/test_approval_resume.cpp`, all pass.
 
 | Check | What it proves |
 |---|---|

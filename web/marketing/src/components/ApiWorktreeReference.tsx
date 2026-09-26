@@ -425,7 +425,7 @@ export function ApiWorktreeReference() {
             </div>
           </RevealItem>
           <RevealItem>
-            <CodePanel filename="tests/test_worktree_object_store.cpp">
+            <CodePanel filename="tests/worktree/test_worktree_object_store.cpp">
               {highlightCpp(worktreeObjectStoreDedupSnippet)}
             </CodePanel>
           </RevealItem>
@@ -447,7 +447,7 @@ export function ApiWorktreeReference() {
             <CodePanel filename="worktree.hpp">{highlightCpp(worktreeSubWorktreeSnippet)}</CodePanel>
           </RevealItem>
           <RevealItem>
-            <CodePanel filename="tests/test_workflow_worktree_scoping.cpp">
+            <CodePanel filename="tests/workflow/test_workflow_worktree_scoping.cpp">
               {highlightCpp(worktreeSharedMountSnippet)}
             </CodePanel>
           </RevealItem>

@@ -169,7 +169,7 @@ Full design and every rejected alternative: `docs/planning/workflow-as-chatclien
 **New:**
 - `docs/planning/workflow-as-chatclient-adapter-design-draft.md` (ten red-team rounds' full history)
 - `include/agentengine/rt/workflow_as_chat_client.hpp`
-- `tests/test_rt_workflow_as_chat_client.cpp`
+- `tests/workflow/test_rt_workflow_as_chat_client.cpp`
 - `examples/28_workflow_as_chat_client.cpp`
 
 **Edited:**

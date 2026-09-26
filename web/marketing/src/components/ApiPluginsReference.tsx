@@ -306,7 +306,7 @@ export function ApiPluginsReference() {
           </RevealItem>
 
           <RevealItem>
-            <CodePanel filename="tests/test_wasm_backend.cpp">
+            <CodePanel filename="tests/plugin/test_wasm_backend.cpp">
               {highlightCpp(pluginHostLoadingCallSnippet)}
             </CodePanel>
           </RevealItem>
@@ -341,7 +341,7 @@ export function ApiPluginsReference() {
           </RevealItem>
 
           <RevealItem>
-            <CodePanel filename="tests/test_wasm_backend.cpp">
+            <CodePanel filename="tests/plugin/test_wasm_backend.cpp">
               {highlightCpp(pluginStubTrapSnippet)}
             </CodePanel>
           </RevealItem>

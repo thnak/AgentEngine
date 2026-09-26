@@ -5,7 +5,7 @@
 // production caller of SandboxRuntime::merge_into() anywhere in this codebase.
 //
 // REQUIRES a running Docker daemon reachable via the `docker` CLI on PATH -- every check below shells
-// out to a REAL container. Follows tests/test_mandatory_sandbox_provider.cpp's own established rigor
+// out to a REAL container. Follows tests/sandbox/test_mandatory_sandbox_provider.cpp's own established rigor
 // bar: direct-accessor proofs for the state-machine/error-path claims, PLUS at least one proof driven
 // through the REAL, unmodified session.start_run() -> invoke_tool() pipeline (this design's own prior
 // red-team history shows direct-accessor-only proofs get flagged as insufficient).

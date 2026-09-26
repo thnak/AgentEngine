@@ -134,7 +134,7 @@ task<WorkflowResult> WorkflowSupervisor::resume_workflow_locked(ResumeWorkflow r
     // ADR-169 (issue #65) -- THE entry point this ADR exists for. Before `valid_`, and before
     // BOTH lookups below: the pre-ADR-169 body's only guard was id VALIDITY (an unknown or
     // already-resolved `interaction_id` fails closed, proven by E2 in
-    // tests/test_rt_workflow_supervisor_request_port.cpp), never OWNERSHIP -- so knowing a live
+    // tests/workflow/test_rt_workflow_supervisor_request_port.cpp), never OWNERSHIP -- so knowing a live
     // id was sufficient authority to inject this run's next `Message` AND name its `routes`,
     // which on a switch_case/multi_selection edge decides where the run goes next. Ids are not
     // secrets: they cross `WorkflowResult::open_interactions` to the host, and per ADR-061 the
@@ -1098,7 +1098,7 @@ WorkflowSupervisor::route_result WorkflowSupervisor::route_from(std::size_t from
                 return route_result::workflow_failed;
 
             // GitHub issue #52 FIX (2026-09-03, was a KNOWN GAP), GENERALIZED by issue #62
-            // (2026-09-03): found live via tests/test_workflow_research_pipeline_live_e2e.cpp (a
+            // (2026-09-03): found live via tests/workflow/test_workflow_research_pipeline_live_e2e.cpp (a
             // production-shaped concurrent research pipeline against real OpenRouter calls),
             // pinned offline first by test_workflow_fanin_concurrent_failure_policy_gap.cpp (#52,
             // since promoted to test_workflow_fanin_concurrent_failure_policy_fix.cpp) and again
@@ -1128,7 +1128,7 @@ WorkflowSupervisor::route_result WorkflowSupervisor::route_from(std::size_t from
             //     will never independently deliver; the recovery executor is itself an ordinary
             //     declared source (when its own edge back to `edge.to` is ALSO `fan_in`) and
             //     resolves its own slot normally, later, via `deliver_to_fan_in()`.
-            // D4 in tests/test_rt_workflow_supervisor_failure_policies.cpp only ever exercised
+            // D4 in tests/workflow/test_rt_workflow_supervisor_failure_policies.cpp only ever exercised
             // `fallback` on a single-source (non-fan_in-shared) edge; F1-F4 in
             // test_workflow_fanin_concurrent_failure_policy_fix.cpp assert the CORRECT merged-once
             // behavior this fix produces, closing the 014 §8 G1 gap that combination left unproven.

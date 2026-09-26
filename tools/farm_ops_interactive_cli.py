@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Interactive, real-terminal-input CLI mirroring tests/test_rt_agent_session_farm_ops_live_e2e.cpp's
+"""Interactive, real-terminal-input CLI mirroring tests/rt/agent_session/test_rt_agent_session_farm_ops_live_e2e.cpp's
 scenario -- two independently-mountable skills (crop-field-operations, livestock-care-operations), a
 separate five-tool "optimizer pool" (schedule_task/cancel_task/get_market_price/place_sell_order/
 execute_code) gated behind search_tools/mount_tool/unmount_tool, and REAL Python code execution for

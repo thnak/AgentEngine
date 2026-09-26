@@ -12,16 +12,16 @@
 // already-proven `SandboxRuntime::reclaim_orphaned_child()` (the SAME primitive `commit_task_branch()`'s
 // own conflict-retry path already uses).
 //
-// Mirrors `tests/test_ledger.cpp`'s own established "destroy + reconstruct against the SAME durable_dir"
+// Mirrors `tests/core/ledger/test_ledger.cpp`'s own established "destroy + reconstruct against the SAME durable_dir"
 // crash-simulation methodology exactly (that file's own comment: letting a `BranchHandle`/`Ledger` go
 // out of scope normally is "at least as strong a test as the real crash case," since a real process
 // exit runs no destructors at all either). Docker-independent throughout -- this file never calls
 // `run_in_task_branch()` (the one verb that would need a real container), so a `FakeSurface` stand-in
-// (mirroring `tests/test_mandatory_sandbox_provider_composed.cpp`'s own fixture) is enough to satisfy
+// (mirroring `tests/sandbox/test_mandatory_sandbox_provider_composed.cpp`'s own fixture) is enough to satisfy
 // `MandatorySandboxProvider<Surface>`'s own template constraint.
 //
 // A REAL SCOPE BOUNDARY, found empirically (not assumed), and precisely distinguished, not conflated:
-// `durable_dir` persists Ledger's own BRANCH/ACL bookkeeping ONLY -- `tests/test_ledger.cpp`'s own
+// `durable_dir` persists Ledger's own BRANCH/ACL bookkeeping ONLY -- `tests/core/ledger/test_ledger.cpp`'s own
 // header comment already discloses that a durable OBJECT-STORE conformer (real BLOB/TREE content
 // durability) was never ported. A recovered task branch's own METADATA (its existence, its ACL, its
 // place in `task_branches_`) survives a simulated crash; its own real tree CONTENT, held only in the
@@ -100,7 +100,7 @@ template <class T>
     return t.take_value();
 }
 
-// Mirrors tests/test_mandatory_sandbox_provider_composed.cpp's own fixture exactly -- never actually
+// Mirrors tests/sandbox/test_mandatory_sandbox_provider_composed.cpp's own fixture exactly -- never actually
 // reset()/run()/drain_to()'d here (this file never calls run_in_task_branch()), so it never touches a
 // real process or Docker.
 struct FakeSurface {
@@ -173,7 +173,7 @@ int main() {
 
         // durable_ledger (and every live BranchHandle/SandboxRuntime this provider holds) goes out of
         // scope HERE -- a real process exit runs no destructor at all either, so this is at least as
-        // strong a test as the real crash case (tests/test_ledger.cpp's own established reasoning).
+        // strong a test as the real crash case (tests/core/ledger/test_ledger.cpp's own established reasoning).
     }
 
     check(!root_branch_name.empty() && !handle_to_discard.empty() && !handle_to_commit.empty(),

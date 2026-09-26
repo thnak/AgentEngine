@@ -15,7 +15,7 @@
 //      against the REAL OpenRouter error response, not a synthetic std::unexpected --
 //      protocol/openai/chat_client.hpp's `map_http_status_error` is what turns that real HTTP 4xx
 //      into `failure_class::contract`. A SEPARATE small graph (P1 below) proves the sharper claim
-//      `tests/test_rt_workflow_supervisor_failure_policies.cpp`'s D2c already proves offline -- that a
+//      `tests/workflow/test_rt_workflow_supervisor_failure_policies.cpp`'s D2c already proves offline -- that a
 //      `contract` failure is never retried, even under a `retry` policy -- but against a real wire
 //      response instead of a hand-classified stand-in: if OpenRouter ever changed its "unknown model"
 //      response to a 5xx, that offline test would not notice the reclassification to `transient`
@@ -25,7 +25,7 @@
 //      `competitive_fallback` as the recovery executor, which has its own `fan_in` edge back to the
 //      SAME `aggregate` target `market`/`technical` also feed. THIS FILE'S FIRST LIVE RUN (2026-09-03)
 //      found that composition genuinely broken -- GitHub issue #52, pinned offline by
-//      `tests/test_workflow_fanin_concurrent_failure_policy_fix.cpp` -- and an interim version of this
+//      `tests/workflow/test_workflow_fanin_concurrent_failure_policy_fix.cpp` -- and an interim version of this
 //      file routed around it with an application-level try/catch instead of the engine policy. That
 //      gap is now FIXED (`route_from()`'s `seed_fan_in_holds()`/`deliver_to_fan_in()`/
 //      `RunState::held_fan_in`, see workflow_supervisor.hpp), and this file was switched back to the
@@ -36,7 +36,7 @@
 //      specialists run in the SAME round via `edge_kind::fan_out`/`fan_in`
 //      (`examples/09_concurrent_workflow.cpp`'s mechanism), each a real network call with genuinely
 //      different, unpredictable latency -- unlike
-//      `tests/test_rt_workflow_supervisor_scheduling_shuffle.cpp`'s synthetic shuffle, completion
+//      `tests/workflow/test_rt_workflow_supervisor_scheduling_shuffle.cpp`'s synthetic shuffle, completion
 //      order here is real, not injected. The aggregator must still run EXACTLY ONCE with all three
 //      contributions, regardless of which specialist's socket happened to finish first.
 //

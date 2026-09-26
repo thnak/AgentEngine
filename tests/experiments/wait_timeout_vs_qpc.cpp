@@ -3,7 +3,7 @@
 //
 // The question is not academic. src/backends/native_jail/job_object_limits.cpp's wait_or_kill()
 // brackets a WaitForSingleObject with two steady_clock reads and reports the difference as
-// JobWaitOutcome::wall_elapsed. tests/test_job_object_limits.cpp then asserted
+// JobWaitOutcome::wall_elapsed. tests/backends/native_jail/test_job_object_limits.cpp then asserted
 // `wall_elapsed >= deadline` -- and that assertion failed intermittently in CI on an UNinstrumented
 // MSVC Release build (runs 31925631415 and 31939239439), which the clang/ASan finding recorded in
 // docs/research/2026-08-16-clang-windows-asan-exception-ptr.md does not explain -- that one needs
@@ -34,7 +34,7 @@
 // signature that got it written off as "environmental flakiness" for most of a session.
 //
 // Verdict: the platform, not wait_or_kill(). The test now allows one tick of slack; see the comment
-// at tests/test_job_object_limits.cpp's wall-clock assertion.
+// at tests/backends/native_jail/test_job_object_limits.cpp's wall-clock assertion.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <timeapi.h>  // WIN32_LEAN_AND_MEAN drops mmsystem.h, which is where timeBeginPeriod lives

@@ -51,7 +51,7 @@ carried, because only the producer can see the boundary (Anthropic's `tool_use` 
 the text blocks either side of them, so adjacency is not continuity); an update without it starts a
 new item. A drain joins a marked delta only onto an item of the same kind with identical metadata,
 and never joins encrypted reasoning. The flag is part of a recorded chunk (§6), so a replay
-rebuilds the message the live run did. Proof: `tests/test_stream_delta_coalescing.cpp`.
+rebuilds the message the live run did. Proof: `tests/core/chat/test_stream_delta_coalescing.cpp`.
 
 ## 2. Capabilities
 

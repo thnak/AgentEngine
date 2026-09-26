@@ -17,7 +17,7 @@
 // test already prove standalone); the orchestration point that submits a `ConsumeSpawnTokens`
 // request ahead of `mint_child_spawn_capabilities` below is the design's own SpawnPump (§4.4c),
 // which belongs to the full orchestration pipeline (items 1/2/3) this file does not build. This
-// header's own test (tests/test_agent_spawn_capability.cpp) exercises both budgets side by side --
+// header's own test (tests/rt/agent_spawn/test_agent_spawn_capability.cpp) exercises both budgets side by side --
 // depth via check_and_consume_spawn_depth() below, cost via rt::SpawnCostBudget::consume() called
 // directly -- in the same order §2 of the design doc specifies (depth, pure/local, before cost,
 // which mutates shared state), proving the two ALREADY-PROVEN primitives compose correctly without

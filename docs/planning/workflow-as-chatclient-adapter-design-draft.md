@@ -1535,7 +1535,7 @@ design-level red-team rounds.
 
 - **New**: `include/agentengine/rt/workflow_as_chat_client.hpp` (`WorkflowChatClient`)
 - **New** (or an addition to `workflow_supervisor.hpp` directly): `open_interaction_asks()` (§5)
-- **New**: `tests/test_rt_workflow_as_chat_client.cpp` — at minimum, per rounds 4-9's own findings (named
+- **New**: `tests/workflow/test_rt_workflow_as_chat_client.cpp` — at minimum, per rounds 4-9's own findings (named
   here so they don't only live in test-writer's memory of §10): (a) the message-flattening envelope
   round-trips through `message_to_json()`/`message_from_json()` and a wrapped `start` executor actually
   receives what the caller intended (§9 item 2's own priority note — no runtime shape-check catches a

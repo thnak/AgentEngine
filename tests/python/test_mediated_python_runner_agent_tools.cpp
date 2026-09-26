@@ -8,7 +8,7 @@
 //
 // Generation-only correctness (the TEXT of the generated source: signatures, escaping, the
 // zero-argument/bad-identifier edge cases) is covered separately, without any CPython dependency, in
-// tests/test_agent_tools_codegen.cpp -- this file is deliberately narrow: does the generated code,
+// tests/python/test_agent_tools_codegen.cpp -- this file is deliberately narrow: does the generated code,
 // once actually executed, behave the way an ordinary Python library would.
 
 #include <cstdio>

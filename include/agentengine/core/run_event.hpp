@@ -203,7 +203,7 @@ struct InteractionRef {
 // and had zero real producers (run_event.hpp's own prior top comment), so widening the struct here
 // is a genuine field addition, not a break of any real wire contract yet exercised.
 //
-// ADR-182 P1 (BUG-3 in tests/test_rt_agent_session_hitl_live_e2e.cpp): the three fields below are
+// ADR-182 P1 (BUG-3 in tests/rt/agent_session/test_rt_agent_session_hitl_live_e2e.cpp): the three fields below are
 // appended last, so every existing `ApprovalRequested{call_id}`/`{call_id, interaction_id}` site is
 // unaffected. Before them, a consumer asked to approve had no way to learn WHAT it was approving
 // except re-deriving it from `history().back()`. `arguments_json` is the call's arguments as the

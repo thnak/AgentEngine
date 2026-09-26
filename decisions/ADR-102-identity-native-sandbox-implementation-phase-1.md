@@ -25,12 +25,12 @@ covers Phase 2, §16 onward covers Phase 3, §23 onward covers Phase 4, §30 onw
 `ComposedContextProvider<Ms...>` slice, §48 onward covers the negative-probe slice).
 Real, compiled, tested:
 - **Phase 1**: `include/agentengine/trust/identity_authority.hpp`, `include/agentengine/rt/
-  async_quota.hpp`, `tests/test_identity_authority_grant.cpp` (14 checks, passing), two
+  async_quota.hpp`, `tests/trust/test_identity_authority_grant.cpp` (14 checks, passing), two
   `tests/compile_fail/identity_*.cpp` negative probes (both passing at CMake configure time). One
   independent red-team round found and fixed a real MUST-FIX (a cross-tenant identity-collision gap
   in `adopt()`) same day.
 - **Phase 2**: `include/agentengine/core/ledger.hpp` (`Ledger<Store>`/`BranchHandle<Store>`/
-  `Checkpoint`/`merge_trees()`), `tests/test_ledger.cpp` (47 checks, passing). One independent
+  `Checkpoint`/`merge_trees()`), `tests/core/ledger/test_ledger.cpp` (47 checks, passing). One independent
   red-team round found and fixed a real MUST-FIX (§10/§12: after a legitimate descendant identity
   merges its work into a parent branch, the parent's own creator was permanently locked out of
   reading its own branch's new head — breaking the "orchestrator spawns a sub-agent, sub-agent merges
@@ -39,7 +39,7 @@ Real, compiled, tested:
 - **Phase 3**: `include/agentengine/sandbox/{execution_surface,docker_execution_surface,
   real_io_filesystem,sandbox_runtime}.hpp` (`ExecutionSurface`/`SurfaceRunOutcome`,
   `DockerCliBackend`/`DockerExecutionSurface`, `RealIoFileSystem`, `SandboxRuntime`/
-  `SandboxRunOutcome`/`RunCost`/`ResetCost`), `tests/test_sandbox_runtime.cpp` (10 checks, all
+  `SandboxRunOutcome`/`RunCost`/`ResetCost`), `tests/sandbox/test_sandbox_runtime.cpp` (10 checks, all
   requiring and exercising a REAL Docker daemon, passing). One independent red-team round found and
   fixed a real SHOULD-FIX (§19: `merge_into()`/`discard()` mutated `branch_` without holding
   `exclusivity_`, unlike every sibling method) plus corrected one disclosure comment that was found to
@@ -55,7 +55,7 @@ Real, compiled, tested:
   `AsyncQuota` shared across sibling sessions, a real, demonstrated usage pattern, not a hypothetical
   one) — fixed by porting the prove-phase original's own ASan-hardened `block_on<T>()` for real, into
   a NEW shared production primitive (`include/agentengine/rt/block_on.hpp`), with its own dedicated
-  positive-control test (`tests/test_rt_block_on.cpp`) proving the fix under the identical contention
+  positive-control test (`tests/rt/test_rt_block_on.cpp`) proving the fix under the identical contention
   shape the red-team's own repro used. One further SHOULD-FIX disclosed, not fixed (§26: `AgentSession::
   fork_from()` is unlocked and could in principle race a concurrent in-flight `run()` on the same
   source session — not live today, no real production caller of `fork_from()` exists anywhere in this
@@ -76,7 +76,7 @@ Real, compiled, tested:
   test-coverage gap an independent red-team round found (the exact "one `ContextProvider` embeds
   `MandatorySandboxProvider` and merges its contribution outside any skill-scoping" composition
   `cli_chat.cpp` uses had zero automated coverage anywhere) — closed with a new, Docker-independent
-  test, `tests/test_mandatory_sandbox_provider_composed.cpp` (§30).
+  test, `tests/sandbox/test_mandatory_sandbox_provider_composed.cpp` (§30).
 - **Closing `AgentSession::fork_from()`'s own session-serialization gap** (§37 onward): the SAME
   structural finding Phase 3 §22 and Phase 4 §29 each independently disclosed but did not fix —
   `fork_from()` ran with no serialization against a concurrent in-flight round on its own `source` —
@@ -286,7 +286,7 @@ production code," so it is named here explicitly rather than left implicit a sec
 
 - `include/agentengine/trust/identity_authority.hpp`, `include/agentengine/rt/async_quota.hpp`:
   compiled clean under MSVC 19.51 (`cl /std:c++latest`), zero new warnings.
-- `tests/test_identity_authority_grant.cpp`: 14 checks (11 original + 3 added by the red-team fix),
+- `tests/trust/test_identity_authority_grant.cpp`: 14 checks (11 original + 3 added by the red-team fix),
   100% passing, run directly (`test_identity_authority_grant.exe`) and via `ctest`.
 - `tests/compile_fail/identity_handle_no_direct_construction.cpp` and
   `tests/compile_fail/identity_authority_no_copy.cpp`: both confirmed failing to compile as intended,
@@ -423,7 +423,7 @@ alongside `Ledger` in the same file (its only real caller). `StorageBytes`/`Bran
 consumer. Scope: only `Store = InMemoryWorktreeObjectStore` (already real, already shipped) is
 exercised — a durable object-store conformer is explicitly NOT ported in this phase.
 
-**The real finding, not anticipated at design time**: `tests/test_ledger.cpp`'s own first working
+**The real finding, not anticipated at design time**: `tests/core/ledger/test_ledger.cpp`'s own first working
 version used TWO independent `IdentityAuthority::mint_root()` calls to model a "parent session" and
 a "branch child" — and several checks failed for a specific, structural reason, not a port defect:
 `authorized_for()`'s ACL check is keyed on `IdentityAuthority`-tracked IDENTITY ancestry
@@ -507,7 +507,7 @@ Two independent rounds, 2026-08-28, both against the real, ported, compiled, liv
 - `include/agentengine/core/ledger.hpp`: compiled clean under MSVC 19.51, zero new warnings, linked
   against the real `agentengine::worktree_store` library (real SHA-256 via Windows CNG/BCrypt,
   `src/core/worktree_digest.cpp`).
-- `tests/test_ledger.cpp`: 47 checks, 100% passing, covering real branch creation, commit, read-back,
+- `tests/core/ledger/test_ledger.cpp`: 47 checks, 100% passing, covering real branch creation, commit, read-back,
   branch-from with genuine identity-descendant inheritance, a clean three-way merge, a real detected
   merge conflict with reclaimable-orphan recovery, `reset_to()`, drop-triggered abandon +
   `reap_pending_abandons()`, the ACL root cap (both the rejection and the no-op-on-already-present-
@@ -616,7 +616,7 @@ plus a `docker ps -a` before/after check to confirm container lifecycle behavior
 
 1. **C8 verified in full** — zero silent behavior changes found from any of the `probe::` →
    `agentengine::` renames across all four files; every constructed `agentengine::error`'s
-   `failure_class` is defensible and matches what `tests/test_sandbox_runtime.cpp` actually asserts on
+   `failure_class` is defensible and matches what `tests/sandbox/test_sandbox_runtime.cpp` actually asserts on
    (`docker_cli_backend.unsafe_shell_argument`, `async_quota.exhausted`, `ledger.no_such_checkpoint`).
 2. **The load-bearing finding (C9, SHOULD-FIX)**: `merge_into()` (then at what is now
    `sandbox_runtime.hpp:275-278` pre-fix) and `discard()` (then `:311-313` pre-fix) mutate `branch_`
@@ -658,7 +658,7 @@ plus a `docker ps -a` before/after check to confirm container lifecycle behavior
   sandbox_runtime}.hpp`: compiled clean under MSVC 19.51 on the first attempt (no iteration needed to
   get the port to compile at all), zero new warnings, linked against the real `agentengine::
   worktree_store` library.
-- `tests/test_sandbox_runtime.cpp`: 10 checks (ported from `docs/planning/proofs/execution_surface/
+- `tests/sandbox/test_sandbox_runtime.cpp`: 10 checks (ported from `docs/planning/proofs/execution_surface/
   {probe_execution_surface.cpp,probe_sandbox_rollback.cpp}`'s own coverage), 100% passing against a
   REAL, running Docker daemon — real multi-turn persistence through the actual Ledger checkpoint chain
   across genuinely fresh containers, a non-zero exit code as a normal result, RunCost consumed before
@@ -750,7 +750,7 @@ artifact of the prove-phase's own 2-field error having nothing real to preserve 
   composition itself).** *Disproof: `MandatorySandboxProvider` fails to satisfy `ContextProvider`, or
   `RunCommandTool`'s contract with `invoke_tool()`'s real 10 steps diverges from what the prove-phase
   original established against `FakeAgentSession`.* — **CORRECT**, confirmed by `static_assert(
-  agentengine::ContextProvider<Provider>)` and by `tests/test_mandatory_sandbox_provider.cpp`'s checks
+  agentengine::ContextProvider<Provider>)` and by `tests/sandbox/test_mandatory_sandbox_provider.cpp`'s checks
   [1]/[2]/[4]/[5]/[6] (unbound-zero-tools, direct bind+invoke, real `fork_from()` isolation, real
   `clear_in_process_state()`, real `would_fork_succeed()` quota reflection) — all passing on the first
   real build, mirroring the prove-phase original's own already-proven claims against the REAL
@@ -759,7 +759,7 @@ artifact of the prove-phase's own 2-field error having nothing real to preserve 
   pipeline, via `session.start_run()`, actually executes a real command in a real container and commits
   a real Ledger checkpoint).** *Disproof: the pipeline-driven call never reaches `RunCommandTool`'s
   closure, or reaches it but the result is not observable through `session.history()`.* — **CORRECT**,
-  proved by check [3] (`tests/test_mandatory_sandbox_provider.cpp`) — the first time in this entire
+  proved by check [3] (`tests/sandbox/test_mandatory_sandbox_provider.cpp`) — the first time in this entire
   design's history (prove-phase included) this exact composition has been driven end to end this way.
 - **C12 (SandboxRuntime's own locking discipline, driven through this new composition's own call
   pattern, is internally sound under real cross-thread contention this composition's own usage pattern
@@ -770,7 +770,7 @@ artifact of the prove-phase's own 2-field error having nothing real to preserve 
   I1-based argument that turned out to be TRUE but insufficient — a targeted repro against the real,
   unmodified `AsyncMutex`/`task<T>` reproduced the corruption 5/5 runs. **CORRECT after the fix**
   (porting the prove-phase original's own ASan-hardened `block_on<T>()` for real), re-verified by a
-  SECOND, independent positive-control test (`tests/test_rt_block_on.cpp`) proving the fix holds under
+  SECOND, independent positive-control test (`tests/rt/test_rt_block_on.cpp`) proving the fix holds under
   the identical contention shape, 5/5 rounds, zero corruption.
 
 ## 26. The red-team attack (Phase 4)
@@ -821,7 +821,7 @@ instance from two different threads."
    exact "second resume() on an already-suspended awaiter" hazard the naive loop hit.
    `mandatory_sandbox_provider.hpp`'s two call sites (the tool closure, the copy-assignment) both now
    use `agentengine::rt::block_on()` instead of the naive loop.
-4. **Second, independent verification**: a dedicated positive-control test, `tests/test_rt_block_on.cpp`,
+4. **Second, independent verification**: a dedicated positive-control test, `tests/rt/test_rt_block_on.cpp`,
    reproduces the IDENTICAL two-thread contention shape the red-team's own repro used, this time
    against `block_on()` — 5 contention rounds, `max_concurrent_holders` checked never to exceed 1 in
    any round, plus a positive control confirming an uncontended call still returns the correct value.
@@ -854,7 +854,7 @@ instance from two different threads."
 - `include/agentengine/rt/block_on.hpp`: a NEW shared production primitive (not scoped to this one
   file, unlike every other "drive a task<T>" helper in this codebase, which are all local/duplicated
   per file) — compiled clean, zero new warnings.
-- `tests/test_mandatory_sandbox_provider.cpp`: 6 check groups (ported from and condensed relative to
+- `tests/sandbox/test_mandatory_sandbox_provider.cpp`: 6 check groups (ported from and condensed relative to
   `docs/planning/proofs/mandatory_sandbox/probe_mandatory_sandbox_real_agent_session.cpp`'s own 10),
   100% passing against a REAL, running Docker daemon — unbound-zero-tools, direct bind+invoke real
   execution, THE headline new claim (a `run_command` call driven through `session.start_run()` →
@@ -868,7 +868,7 @@ instance from two different threads."
   bypass that), `IdentityAuthority::adopt()` correctly minted an unrelated identity and `AsyncQuota::
   try_consume()` correctly refused it (`async_quota.unauthorized_spender`) — a real proof the identity
   bridge works correctly, exposed by a test bug, not a port bug.
-- `tests/test_rt_block_on.cpp`: 3 checks (5 contention rounds + 1 uncontended positive control), 100%
+- `tests/rt/test_rt_block_on.cpp`: 3 checks (5 contention rounds + 1 uncontended positive control), 100%
   passing, proving `block_on()` preserves `AsyncMutex`'s mutual exclusion under the identical
   contention shape the red-team's own repro used to break the naive loop.
 - Docker container hygiene confirmed via `docker ps -a` before/after every real-Docker test run in this
@@ -1013,11 +1013,11 @@ pass.
    not a new, separate regression as the round's own report first concluded), it correctly identified
    that the exact composition `cli_chat.cpp` uses (one `ContextProvider` embedding
    `MandatorySandboxProvider` and merging its contribution outside any skill-scoping) had ZERO automated
-   test coverage anywhere — `tests/test_mandatory_sandbox_provider.cpp` only ever exercises
+   test coverage anywhere — `tests/sandbox/test_mandatory_sandbox_provider.cpp` only ever exercises
    `MandatorySandboxProvider` as the SOLE `HistoryProviderT`, never composed alongside a second provider
    the way `cli_chat.cpp` actually does it, and `cli_chat.cpp` itself is not unit-testable in isolation
    (needs `AGENTENGINE_WITH_HTTPS`/`AGENTENGINE_BUILD_PYTHON_RUNNER` and a live model). Closed with a
-   new, Docker-independent test, `tests/test_mandatory_sandbox_provider_composed.cpp` — a minimal
+   new, Docker-independent test, `tests/sandbox/test_mandatory_sandbox_provider_composed.cpp` — a minimal
    `ComposedProvider` mirroring `ToolDeclaringHistoryProvider`'s own real shape (a `FakeExecutionSurface`
    stand-in means no Docker daemon is needed to prove the DECLARATION-time composition, only actual
    invocation needs the real one), proving `run_command` is present from the very first `on_context()`
@@ -1047,7 +1047,7 @@ pass.
 - A real, live interactive smoke test against a genuine OpenRouter-backed model: `run_command`
   discovered and called correctly, a real Docker container executed a real command, the result
   independently verified from the raw request/response JSON dump.
-- `tests/test_mandatory_sandbox_provider_composed.cpp`: 3 check groups, 100% passing, no Docker daemon
+- `tests/sandbox/test_mandatory_sandbox_provider_composed.cpp`: 3 check groups, 100% passing, no Docker daemon
   required (a `FakeExecutionSurface` stand-in proves the declaration-time composition only) — the first
   automated coverage anywhere for the exact "embed-and-merge, outside skill-scoping" composition pattern
   `cli_chat.cpp` uses.
@@ -1214,7 +1214,7 @@ guard — named explicitly here so whoever wires that future caller does not red
 "bare `HistoryProviderT`" wiring choice: `agentengine::ComposedContextProvider<Ms...>`
 (`core/composed_context_provider.hpp`, ADR-074's consolidation) had, before this slice, **zero real
 production consumers anywhere in this codebase** — every use was either a unit test driving
-`on_context()`/`on_turn_end()` directly (`tests/test_session_builder.cpp`'s own top comment: "no
+`on_context()`/`on_turn_end()` directly (`tests/core/context/test_session_builder.cpp`'s own top comment: "no
 `.raw_client_only()` escape hatch... driven DIRECTLY instead") or `docs/planning/proofs/` probe code.
 `SandboxToolProvider` (ADR-096, `src/backends/native_jail/sandbox_tool_provider.hpp`) — the ONE real
 conformer this codebase ships specifically *for* composing via `ComposedContextProvider<Ms...>` — had
@@ -1230,7 +1230,7 @@ previously-standalone files, and answered "yes, a new gap" — §16-19)?
 
 Two new files, no changes to any Phase 1-4 file:
 
-- `tests/test_composed_sandbox_providers_live.cpp` — a real, Docker-and-Windows-requiring test proving
+- `tests/sandbox/execution_surface/test_composed_sandbox_providers_live.cpp` — a real, Docker-and-Windows-requiring test proving
   `agentengine::rt::AgentSession<ScriptedChatClient, NoSessionState, ComposedContextProvider<
   SandboxToolProvider, MandatorySandboxProvider<DockerExecutionSurface>>>` end to end: [1] one
   `on_context()` call from the composed provider contributes BOTH tools; [2] a scripted `run_command`
@@ -1240,7 +1240,7 @@ Two new files, no changes to any Phase 1-4 file:
   filesystem via `SandboxToolProvider`'s own native jail. Mirrors `tests/test_mandatory_sandbox_
   provider.cpp`'s (Phase 4) `ScriptedChatClient`/`tool_call_message()`/`drive()` fixtures verbatim (no
   shared header exports these — every file that needs them defines its own copy, the established
-  convention in this test suite) and `tests/test_sandbox_tool_provider.cpp`'s own digest-based
+  convention in this test suite) and `tests/sandbox/test_sandbox_tool_provider.cpp`'s own digest-based
   scratch-directory verification.
 - `tools/sandboxed_shell_chat.cpp` — a new, small, real, user-reachable CLI binary (`agentengine_
   sandboxed_shell_chat`), the first genuinely production host wiring of `ComposedContextProvider<Ms...>`
@@ -1322,7 +1322,7 @@ execution + a full static trace of every claim in §42-43.
    explicitly at the declaration site.
 
 **One SHOULD-FIX-level observation, disclosed rather than changed**: `session_digest_of()`
-(`tests/test_composed_sandbox_providers_live.cpp`) is a hand-duplicated copy of `SandboxToolProvider::
+(`tests/sandbox/execution_surface/test_composed_sandbox_providers_live.cpp`) is a hand-duplicated copy of `SandboxToolProvider::
 ensure_sandbox()`'s own digest computation, not a call into shared code — matching this test suite's
 own established "every file defines its own copy" convention (confirmed not a new pattern by the
 red-team round itself), but a real, named drift risk: if `ensure_sandbox()`'s own byte-encoding of
@@ -1365,7 +1365,7 @@ matching the accepted convention, named here for the record rather than left imp
 
 ## 45. Executed evidence
 
-- `tests/test_composed_sandbox_providers_live.cpp`: 15 checks, 100% passing, run against a REAL Docker
+- `tests/sandbox/execution_surface/test_composed_sandbox_providers_live.cpp`: 15 checks, 100% passing, run against a REAL Docker
   daemon on Windows — three times independently (this session's own first run, the independent
   red-team round's plain-MSVC run, and that same round's clang-ASan-instrumented run), zero failures
   and zero ASan diagnostics across all three.
@@ -1509,7 +1509,7 @@ Two real findings, both fixed same day:
    here and at the code site, not attempted in this pass. **Closed by ADR-116** (2026-08-30): implemented
    the owning-session-identity check — `ComposedContextProvider` now carries an opaque `owner_` tag that
    `AgentSession::history_provider()` stamps on every call, and `operator=` refuses (a silent no-op) a
-   transfer between two differently-tagged instances. `tests/test_session_builder.cpp`'s own B20 (which
+   transfer between two differently-tagged instances. `tests/core/context/test_session_builder.cpp`'s own B20 (which
    used to demonstrate this transfer succeeding) now proves the refusal instead.
 
 Everything else the round checked came back clean: no vacuous-failure risk (the real C2280 was
@@ -1552,7 +1552,7 @@ move from a temporary, not a copy).
   and doesn't need to change — a runtime refusal isn't a compile-fail-shaped claim), but the underlying
   aliasing hazard itself is now closed at runtime: `operator=` refuses a transfer between two
   differently-tagged sessions' own providers as a silent no-op, proven by
-  `tests/test_session_builder.cpp`'s own B20.
+  `tests/core/context/test_session_builder.cpp`'s own B20.
 - **This gate is specific to `SandboxToolProvider`+`ComposedContextProvider<Ms...>`** — it does not
   generalize to every possible non-copyable `ContextProvider` a future session might compose;
   `LazyComposedContextProvider` (`session_builder.hpp`) already carries its own, separately-maintained

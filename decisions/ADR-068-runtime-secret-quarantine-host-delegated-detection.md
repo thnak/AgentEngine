@@ -3,9 +3,9 @@
 **Status:** Proposed (design → red-team → prove phases complete for Design B; awaiting explicit user
 "Judged"). Implemented: `include/agentengine/trust/secret_quarantine.hpp`
 (`QuarantineSecretStore`/`SecretDetector`/`QuarantineAuditHook`/`scan_and_quarantine`/
-`QuarantineSecretTool`/`QuarantineToolProvider`), proven by `tests/test_secret_quarantine.cpp`
+`QuarantineSecretTool`/`QuarantineToolProvider`), proven by `tests/trust/test_secret_quarantine.cpp`
 (24/24 checks) and, wired into a real `rt::AgentSession` round via `QuarantineToolProvider`,
-`tests/test_rt_agent_session_quarantine_tool.cpp` (5/5 checks, 2026-08-20 — see §7's residual-risk
+`tests/rt/agent_session/test_rt_agent_session_quarantine_tool.cpp` (5/5 checks, 2026-08-20 — see §7's residual-risk
 update), real Windows/MSVC build — see §5/§6 for the updated evidence and verdicts; this ADR's
 original §5/§6, written before implementation, are superseded by that section, not deleted). A real,
 mid-implementation finding corrected the original design (recorded in the header's own top comment and §7 below):
@@ -124,7 +124,7 @@ which refs a host MAY fold into a real grant at its own next `CapabilitySet::gra
 `agent_initiated` refs (minted through `QuarantineSecretTool`) are NEVER grant-eligible, structurally,
 regardless of what a model passes as the argument.
 
-Windows/MSVC build, `tests/test_secret_quarantine.cpp`, **24/24 checks passed**, `ctest` clean
+Windows/MSVC build, `tests/trust/test_secret_quarantine.cpp`, **24/24 checks passed**, `ctest` clean
 (`test_secret_store`/`test_secret_quarantine`, 2/2). Commands: `cmake -S . -B build`, `cmake --build
 build --target test_secret_quarantine --config Debug`, `ctest --test-dir build -C Debug -R secret
 --output-on-failure`.
@@ -168,7 +168,7 @@ build --target test_secret_quarantine --config Debug`, `ctest --test-dir build -
   `QuarantineSecretStore`, contributing exactly one tool (`quarantine_secret`) — it occupies
   `AgentSession`'s `HistoryProviderT` slot directly, or composes alongside other contributors via
   `ComposedContextProvider`, with zero changes to `agent_session.hpp`.
-  `tests/test_rt_agent_session_quarantine_tool.cpp`, 5/5 checks, drives a REAL round where the model
+  `tests/rt/agent_session/test_rt_agent_session_quarantine_tool.cpp`, 5/5 checks, drives a REAL round where the model
   calls `quarantine_secret` as an ordinary tool through the actual `ToolTable`/`invoke_tool()`
   pipeline (not a hand-built `EffectContext` calling the closure directly, the standalone unit test's
   own shape): the raw secret never appears anywhere in durable session history (recursing into the

@@ -9,7 +9,7 @@
 //
 // Everything here is deterministic and offline: a plain-HTTP loopback test server (no TLS, no
 // certificate, no external dependency) plus pure-function resolver assertions. Nothing in this file
-// needs a live model, a credential, or egress -- unlike tests/test_llamacpp_live_e2e.cpp, which
+// needs a live model, a credential, or egress -- unlike tests/protocol/openai/test_llamacpp_live_e2e.cpp, which
 // proves ADR-016's G5 (the motivating case actually works) against a real local inference server.
 //
 // The loopback server is the point, not an inconvenience: 127.0.0.1 is simultaneously (a) an address

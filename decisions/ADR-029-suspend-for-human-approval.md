@@ -145,7 +145,7 @@ about an expired interaction is entirely the host's job — typically the ALREAD
 arriving real human answer via `session_mutex_` (I1) — this amendment adds no new resolution
 mechanism, only the query and the setter that were missing. An interaction nobody calls
 `set_interaction_expiry` for keeps `expires_at_ns == 0` ("no expiry") exactly as before this
-amendment — every existing caller is unaffected. Proven: `tests/test_rt_agent_session_suspend_approval.cpp`'s
+amendment — every existing caller is unaffected. Proven: `tests/rt/agent_session/test_rt_agent_session_suspend_approval.cpp`'s
 SU9.
 - **`AgentSessionRecord`'s checkpoint already includes `open_interactions` (Phase D1) but the
   suspended round's OWN state — the pending assistant tool-call message in `history_` — is not

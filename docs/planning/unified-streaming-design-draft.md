@@ -109,9 +109,9 @@ closed three residuals at once:
   `stream_model_calls_` would have stayed at its default `false` — `run_model_call()`'s dispatch would
   never have reached `call_stream()` at all, and `ask_stream()` would have silently returned an EMPTY text
   stream regardless of what the model said. Fixed in `session_builder.hpp` before any test exercised it.
-- `tests/test_openai_chat_client_translation.cpp` **compiles and passes clean** (the D2-R4 fix from the
+- `tests/protocol/openai/test_openai_chat_client_translation.cpp` **compiles and passes clean** (the D2-R4 fix from the
   earlier B/C/E `prove` pass held up).
-- `tests/test_anthropic_chat_client_translation.cpp` **found a real, second bug** the hand-trace missed:
+- `tests/protocol/anthropic/test_anthropic_chat_client_translation.cpp` **found a real, second bug** the hand-trace missed:
   E-STREAM-R1's expected update count was still the OLD number. Traced `sandbox::SseEventFramer::feed()`
   directly (splits on every `"\n\n"`/`"\r\n\r\n"` — one block per SSE record, confirmed by reading the
   framer's own source, not assumed) to compute the real expected sequence (6 updates, not 3: a text delta,
@@ -119,7 +119,7 @@ closed three residuals at once:
   Corrected; now passes.
 
 **Then a genuinely new live test was written and run against real OpenRouter**
-(`tests/test_session_builder_openrouter_live_e2e.cpp`, `live-network` label, env-var-gated per 018 §4,
+(`tests/core/context/test_session_builder_openrouter_live_e2e.cpp`, `live-network` label, env-var-gated per 018 §4,
 mirroring this suite's established live-test pattern) — the first test ever to exercise `Bundle::ask()`/
 `Bundle::ask_stream()` end to end, not just compile them:
 - **QS-1** (`Bundle::ask()`): succeeds against real OpenRouter — `QuickstartSessionBuilder` → `Bundle` → a
@@ -203,13 +203,13 @@ earlier citation) found:
 3. **[Finding 2, MUST-FIX] `protocol/agui/projection.hpp:87-91`** — a real, shipped protocol projector
    (`RunEventProjector::project()`'s `model_delta` case), reading `p.text_delta` directly. Not in Rev 2's
    list at all.
-4. **[Finding 3, MUST-FIX] Two test files**: `tests/test_rt_agent_session_streaming_and_events.cpp:383`
+4. **[Finding 3, MUST-FIX] Two test files**: `tests/rt/agent_session/test_rt_agent_session_streaming_and_events.cpp:383`
    (a real behavioral test, S1, exercising the production path in point 2 above and asserting on
-   `.text_delta`) and `tests/test_a2a_streaming.cpp:112-113` (hand-constructs `ModelDelta{"text"}` as an
+   `.text_delta`) and `tests/protocol/a2a/test_a2a_streaming.cpp:112-113` (hand-constructs `ModelDelta{"text"}` as an
    A2A projection fixture). Neither was in Rev 2's list.
 5. **[Finding 34, MUST-FIX, from the third red-team pass] Three MORE sites, missed by both prior rounds —
-   the same recurring defect class a third time.** `tests/test_mcp_progress.cpp:73`,
-   `tests/test_rt_agui_projection.cpp:195`, `tests/test_rt_agui_projection.cpp:209` — all positional
+   the same recurring defect class a third time.** `tests/protocol/mcp/test_mcp_progress.cpp:73`,
+   `tests/protocol/agui/test_rt_agui_projection.cpp:195`, `tests/protocol/agui/test_rt_agui_projection.cpp:209` — all positional
    `ModelDelta{"some text"}` constructions. Notably, two of the three are in files this draft is ALREADY
    touching for other pieces (Piece E's own migration list already names `test_mcp_progress.cpp` lines
    35/47/49/61, and Piece C/E name `test_rt_agui_projection.cpp` lines 225/111-117) — yet their `ModelDelta`
@@ -224,7 +224,7 @@ four real sites, all found by direct re-grep, not by trusting the earlier draft'
 recording.hpp` does not round-trip this data at all, and the "safe, established `usage`-precedent"
 argument this whole correction leans on does not actually hold up at that seam.** `chat_recording.hpp:
 482-498`'s `chat_response_update_to_json`/`_from_json` serialize `delta`/`is_final` only — **`usage` is
-never round-tripped either**, confirmed by direct read, and `tests/test_chat_recording_codec.cpp:211-244`'s
+never round-tripped either**, confirmed by direct read, and `tests/core/chat/test_chat_recording_codec.cpp:211-244`'s
 own streaming round-trip test never sets or asserts it. This is a real, pre-existing, independently-
 confirmed gap (not introduced by this design) feeding a real path: `write_chat_call_recording`/`read_
 chat_call_recording` (`chat_recording.hpp:654-681`) round-trip `RecordedChunk`s to `ReplayChatClient`
@@ -467,8 +467,8 @@ and one of the four "symmetric" emission sites is genuinely NOT mechanical.**
    event-stream renderer: `case run_event_kind::tool_call_finished: { ... (p.ok ? "OK" : "FAILED") ... }` —
    reads `p.ok` directly; stops compiling once `ok` is gone. Fix: `!p.result.is_error ? "OK" : "FAILED"`.
 4. **Two test files** — **[Finding 21, minor-correction, from the second red-team pass] one of these was
-   mischaracterized.** `tests/test_rt_agui_projection.cpp` does construct `ToolCallFinished{...}` fixtures
-   directly, as claimed. `tests/test_rt_agent_session_background_task.cpp` does NOT — it drives the real
+   mischaracterized.** `tests/protocol/agui/test_rt_agui_projection.cpp` does construct `ToolCallFinished{...}` fixtures
+   directly, as claimed. `tests/rt/agent_session/test_rt_agent_session_background_task.cpp` does NOT — it drives the real
    background-task path and reads `p->ok` off a genuinely produced `ToolCallFinished` event
    (`:263-264`, `finished_ok = p->ok;`), which needs updating to `!p->result.is_error` once the type
    widens. The migration cost was already correctly counted; the description of the mechanism was wrong —
@@ -574,8 +574,8 @@ code for the concrete `ChatClientT`, regardless of `stream_model_calls_`'s runti
 `MiddlewareModelCallGateway` and `ContentReplayGateway` genuinely have no `call_stream()` member,
 `chat_client_->call_stream(request, ctx)` is a hard "no member named `call_stream`" error the instant
 `AgentSession<ContentReplayGateway<...>>`/`AgentSession<MiddlewareModelCallGateway<...>>` is instantiated
-— which real, in-tree tests do today (`tests/test_rt_agent_session_content_replay.cpp:133,167`,
-`tests/test_rt_agent_session_turn_and_replay_composition.cpp:137`). **Fix: nest a second `if constexpr`**
+— which real, in-tree tests do today (`tests/rt/agent_session/test_rt_agent_session_content_replay.cpp:133,167`,
+`tests/rt/agent_session/test_rt_agent_session_turn_and_replay_composition.cpp:137`). **Fix: nest a second `if constexpr`**
 — this codebase already has the working idiom for exactly this shape at `rt/agent_session.hpp:1721-1725`
 (`if constexpr (HasProducerChatClientId<ChatClientT>) { if (chat_client_) {...} }` — the SAME precedent
 Finding 4/5 itself cites for why `call_stream()` should be duck-typed in the first place; Rev 6 borrowed
@@ -935,9 +935,9 @@ case run_event_kind::tool_call_delta: {
 6. **[Finding 25, MUST-FIX, from the second red-team pass; citation corrected by the third pass's Finding
    35] Four real test sites break under `ToolCallDelta`'s own type change** (corrected from the original
    five — see below), **none previously listed.** `ToolCallDelta{call_id, progress_text}` → `{call_id,
-   content}` breaks: `tests/test_mcp_progress.cpp:35,47,49,61` (positional `ToolCallDelta{"call-1", "25%
-   done"}` — a string literal no longer initializes a `ContentItem`), `tests/test_rt_agui_projection.cpp:
-   225` (same pattern), and `tests/test_agent_session_tool_call_progress.cpp:276` (`delta_text = p->
+   content}` breaks: `tests/protocol/mcp/test_mcp_progress.cpp:35,47,49,61` (positional `ToolCallDelta{"call-1", "25%
+   done"}` — a string literal no longer initializes a `ContentItem`), `tests/protocol/agui/test_rt_agui_projection.cpp:
+   225` (same pattern), and `tests/rt/agent_session/test_agent_session_tool_call_progress.cpp:276` (`delta_text = p->
    progress_text;` — field no longer exists). **[Finding 35, minor-correction] The original fix also cited
    `test_agent_session_tool_call_progress.cpp:329` as breaking — checked directly, it does not**: that
    line reads only `p->call_id` (unaffected by the `progress_text` → `content` rename) and

@@ -4,7 +4,7 @@
 // WorkflowSupervisor-side changes that make an `executor_kind::agent` node actually runnable
 // (rt/workflow_supervisor.hpp). The GRAPH-layer half (Executor::capability_ceiling,
 // check_workflow_executable(wf, contexts), the YAML compiler's refusal) is proven separately in
-// tests/test_workflow_agent_executor_gate.cpp, which never links against rt:: at all. Covers:
+// tests/workflow/test_workflow_agent_executor_gate.cpp, which never links against rt:: at all. Covers:
 //   T1 -- AgentExecutorBodyTag's positive control (design draft §5 item 4's own explicit ask): the
 //         structural marker returns non-null for a REAL agent-backed body and null for an ordinary
 //         function closure that merely happens to satisfy ExecutorBody's call signature.

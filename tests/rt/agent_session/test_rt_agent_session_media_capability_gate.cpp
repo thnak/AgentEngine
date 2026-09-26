@@ -1,5 +1,5 @@
 // Gap-audit finding 19, Phase 1 fix (2026-08-14): proves the pure-function gate
-// (`validate_outbound_media_capabilities`, tests/test_outbound_media_capability_gate.cpp) is
+// (`validate_outbound_media_capabilities`, tests/core/chat/test_outbound_media_capability_gate.cpp) is
 // actually WIRED into `AgentSession::run_model_call()`, not merely defined and unused --
 // end-to-end, a real run whose history carries `Media` content the bound backend hasn't declared
 // support for fails closed with the real error, and the backend's own `chat()` is NEVER called at

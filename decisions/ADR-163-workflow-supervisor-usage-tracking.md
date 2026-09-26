@@ -53,7 +53,7 @@ folds every round). Verified instead by the same standard this project's own `CL
 hot path: a load-bearing invariant needs a test that can fail, and here the tests genuinely did fail
 first, catching two real defects before this ADR was written (below).
 
-**Two real bugs found and fixed, both by T10/T11 (`tests/test_rt_workflow_as_chat_client.cpp`)
+**Two real bugs found and fixed, both by T10/T11 (`tests/workflow/test_rt_workflow_as_chat_client.cpp`)
 actually failing at 0/0 instead of the scripted 100/50 tokens, not by code review:**
 
 1. `run_executor_job()`'s `ExecuteReply` construction never threaded `outcome->usage` through at all —
@@ -147,7 +147,7 @@ just the last call's.
   accessor; fold-site calls in both places `execute()` already folds a reply; the two bug fixes in
   `run_executor_job()` and `run_sub_workflow_job()`; the `resolved_port.usage = inner->usage()` site in
   `resume_workflow()`.
-- `tests/test_rt_workflow_as_chat_client.cpp` — `ScriptedChatClient`/`ScriptedSession` fixtures, T10/T11
+- `tests/workflow/test_rt_workflow_as_chat_client.cpp` — `ScriptedChatClient`/`ScriptedSession` fixtures, T10/T11
   (usage reaches the terminal push exactly; usage is per-call, not cumulative-duplicated across
   suspend/resume); T12 (a real `rt::AgentSession<WorkflowChatClient>` composed end to end, for both a
   real-`agent`-kind-node wrapped graph and an all-`function`-kind one — §4's own correction); T4/T5

@@ -39,7 +39,7 @@ agentengine::EffectContext make_ctx(agentengine::CapabilitySet const& held) {
     return ctx;
 }
 
-// A fake FileSystemAdapter (mirrors tests/test_read_content.cpp's own FakeEgressBackend pattern)
+// A fake FileSystemAdapter (mirrors tests/tools/test_read_content.cpp's own FakeEgressBackend pattern)
 // -- used ONLY to prove the negative-control case (a denied capability check never reaches the
 // adapter at all), so that case doesn't depend on real filesystem I/O to observe.
 class CountingFileSystemAdapter final : public agentengine::FileSystemAdapter {

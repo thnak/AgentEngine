@@ -2,7 +2,7 @@
 // Implements the v1 slice of `docs/planning/dynamic-multi-agent-fanout-design-draft.md`
 // (rounds 1-14: design -> red-team -> corrected design, 3 independent fresh-context red-team passes)
 // -- host-authored dynamic multi-agent fan-out over `agentengine::rt::AgentSession`. NOT an ADR yet;
-// this file is the "prove" phase real code + tests (`tests/test_rt_multi_agent.cpp`) that a future ADR
+// this file is the "prove" phase real code + tests (`tests/rt/test_rt_multi_agent.cpp`) that a future ADR
 // will cite as its executed evidence, per `decisions/README.md`'s own requirement that an ADR record
 // real, run evidence, not a design read as correct.
 //

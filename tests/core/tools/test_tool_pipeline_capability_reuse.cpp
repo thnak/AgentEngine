@@ -1,6 +1,6 @@
 // Proves M2 Phase B task B4 (miniature 006 §8 G3 / 007 §9 G3): "a capability handle from call n is
 // unusable in call n+1" -- at the PIPELINE level, not just the primitive level
-// (tests/test_capability_enforcement.cpp already proves ADR-009's BoundCapability/revoke() in
+// (tests/trust/test_capability_enforcement.cpp already proves ADR-009's BoundCapability/revoke() in
 // isolation; this proves core/tool_pipeline.hpp actually WIRES that mechanism end to end: step 7
 // really does hand a live, usable handle to `invoke()` via `EffectContext::bound_capabilities`, and
 // step 10 really does revoke it before `invoke_tool()` returns to the caller).

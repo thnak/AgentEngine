@@ -85,7 +85,7 @@ a complete, `json::parse`-validated `json::Value` — already matches where the 
 Nothing found here weakens that invariant or argues it should change. What this search adds beyond what the
 gap doc already scoped: class A (grammar-constrained decoding) is a materially different, stronger technique
 that AgentEngine hasn't discussed anywhere yet, and it's not purely theoretical for this project — the repo
-already has live-tested llama.cpp/Ollama backend paths (`tests/test_llamacpp_live_e2e.cpp`,
-`tests/test_ollama_live_e2e.cpp`) where it could someday apply, alongside OpenAI's own already-partially-wired
+already has live-tested llama.cpp/Ollama backend paths (`tests/protocol/openai/test_llamacpp_live_e2e.cpp`,
+`tests/protocol/openai/test_ollama_live_e2e.cpp`) where it could someday apply, alongside OpenAI's own already-partially-wired
 `strict` mechanism (`openai/chat_client.hpp:209-231`, currently only for response-schema, not yet tool-call
 schemas). See the companion design draft for how these map onto real AgentEngine types.

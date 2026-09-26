@@ -188,7 +188,7 @@ Concretely, before treating a new backend as production-ready:
   READMEs for backends that are stubs (`remote`) or fully real (`wasm`) — the pattern to follow for
   documenting your own backend's directory: what profile it implements, what dependency tier it
   takes (CONVENTIONS.md), what's real vs. not yet.
-- **`tests/test_sandbox_backend_registry.cpp`** — minimal fake backends (`StatefulBackend`,
+- **`tests/sandbox/test_sandbox_backend_registry.cpp`** — minimal fake backends (`StatefulBackend`,
   `StrongerNamedOnlyBackend`, `LinuxOnlyBackend`) used purely to exercise the registry's own
   resolution logic. Useful as a *syntactic* skeleton for satisfying the concept, but they are
   intentionally not realistic — they don't spawn anything or enforce `SandboxSpec` at all. Do not

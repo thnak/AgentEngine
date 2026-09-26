@@ -273,7 +273,7 @@ provider.hpp, vector_rag_context_provider.hpp, mcp_tool_bridge.hpp, native_provi
 list `effect_class`'s own comment already names) fails closed to `std::nullopt` automatically
 (`std::optional`'s own default construction), needing no changes at any of those sites.
 
-**`tests/test_tool_exclusivity_group.cpp`** (new, 10 checks) proves the declarative surface end to
+**`tests/core/tools/test_tool_exclusivity_group.cpp`** (new, 10 checks) proves the declarative surface end to
 end, through the REAL `Tool<Derived,Policies...>` and `make_tool_descriptor<ToolT>()` — not a
 synthetic stand-in: an undeclared tool and a bare-`Parallelizable` tool both report no exclusivity
 group (the MUST-FIX 1 regression check: `Parallelizable` must never populate it); a tool declaring

@@ -8,7 +8,7 @@
   `ContainerdIsolation`, `kDefaultDroppedCapabilities`, `containerd_isolation_argv()`,
   `containerd_isolation_from()`; `ContainerdCliBackend::create()` and `ContainerdExecutionSurface`'s
   constructor take isolation, defaulted conservative; move ctor/assignment carry the new member; a
-  "what this file is, and is not" scope statement), `tests/test_containerd_isolation.cpp` (new),
+  "what this file is, and is not" scope statement), `tests/sandbox/execution_surface/test_containerd_isolation.cpp` (new),
   `tests/CMakeLists.txt` (additive wiring, inside the existing `NOT WIN32` block).
   **No existing test file changed, and no existing call site needed editing.**
 - **Related specs:** GitHub issue #66 (the defect this closes), split from issue #63 ·
@@ -93,7 +93,7 @@ The header now says so, matching the Docker sibling and 008 §2a's amended rule.
 
 ## 4. Evidence
 
-`tests/test_containerd_isolation.cpp`, **39 checks, all passing** against live containerd 2.2.2.
+`tests/sandbox/execution_surface/test_containerd_isolation.cpp`, **39 checks, all passing** against live containerd 2.2.2.
 
 | | claim |
 |---|---|

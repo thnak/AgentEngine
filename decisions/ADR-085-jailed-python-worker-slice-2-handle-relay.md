@@ -117,7 +117,7 @@ reproduced byte-for-byte identically before this ADR's own diff ever existed —
 open/listdir/socket relay. Named as an explicit residual (§5), not silently left unexplained.
 
 **New positive/negative controls, built and run this pass**
-(`tests/test_native_jail_python_worker_handle_relay.cpp`, new):
+(`tests/backends/native_jail/test_native_jail_python_worker_handle_relay.cpp`, new):
 - SOCK-1: a real `connect_authorize`+`connect_send`+`connect_recv`+`connect_close` round trip against
   a real local TCP loopback echo server, under a real granted `cap::NetOut` — **PASSES**. Required a
   new test-only resolver-override seam (`set_test_connect_resolver_override`, RAII-guarded per Finding

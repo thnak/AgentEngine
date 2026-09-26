@@ -118,7 +118,7 @@ struct EffectContext {
     // `sandbox_exec_finished`. Those two kinds, and 013 §1's `SandboxExecStarted`/`SandboxExecFinished`
     // rows, and the AG-UI projection that turns them into an `ActivitySnapshot`
     // (`protocol/agui/projection.hpp`), all existed and were tested -- with **nothing anywhere in the
-    // tree ever emitting one**. Only a synthetic event in `tests/test_rt_agui_projection.cpp` did.
+    // tree ever emitting one**. Only a synthetic event in `tests/protocol/agui/test_rt_agui_projection.cpp` did.
     //
     // A DEDICATED field, not `report_progress` above, for the same "one field per audience" reason
     // ADR-152's own two bridge fields are separate from it: `report_progress` is bound per CALL and

@@ -1,7 +1,7 @@
 // Milestone 2 Phase C, task C4 (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md):
 // 008-Sandbox-and-Isolation.md §9 G1 -- "one hostile test corpus runs against every available
 // backend on every platform in the current target set and produces the same outcome
-// classification for every case." This is the Linux half; tests/test_native_jail_parity_windows.cpp
+// classification for every case." This is the Linux half; tests/backends/native_jail/test_native_jail_parity_windows.cpp
 // is the Windows half, both consuming the SAME table (tests/helpers/abuse_case_corpus.hpp) verbatim.
 //
 // Requires a delegated cgroup v2 root and CAP_SYS_ADMIN, same as C2/C3's Linux tests -- run via
@@ -40,7 +40,7 @@ std::string hostile_child_cmd(std::string const& args) {
     return std::string("\"") + AE_HOSTILE_CHILD_POSIX_EXE + "\" " + args;
 }
 
-// C2-Linux's own measured finding (tests/test_native_jail_backend_linux.cpp,
+// C2-Linux's own measured finding (tests/backends/native_jail/test_native_jail_backend_linux.cpp,
 // docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md's C2 writeup): cgroups v2's
 // reclaim-before-OOM-kill dance took ~2-7.9s wall-clock for this exact 512 MB-vs-32 MB shape in
 // this harness's environment -- a real, documented, platform-specific latency this corpus's shared

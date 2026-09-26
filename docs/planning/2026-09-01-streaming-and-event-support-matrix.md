@@ -171,7 +171,7 @@ session.set_run_event_tap({});
 
 ### Axis B, workflow-level consumption — `WorkflowSupervisor::enable_event_stream()`
 
-`tests/test_rt_workflow_event_stream.cpp:157-173` (W1): opting in, running, then draining the
+`tests/workflow/test_rt_workflow_event_stream.cpp:157-173` (W1): opting in, running, then draining the
 structural events a plain linear graph produces with no agent-kind node involved at all —
 `workflow_run_started` → `executor_dispatched`/`executor_completed` per node → `message_routed` →
 `workflow_run_completed`, the same channel `agent_turn_event`/`moderator_stream_delta` ride when an

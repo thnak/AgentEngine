@@ -97,7 +97,7 @@ int main() {
     // Background<max_concurrent> is a SEPARATE capability from the tool's own declared ceiling
     // (cap::Entropy here) -- background_task()'s own G9 check needs it independently, for ANY
     // backgrounded call regardless of what the tool itself requires (matching
-    // tests/test_mcp_tasks_extension.cpp's own precedent). Granted here so claim 7 tests the grant's
+    // tests/protocol/mcp/test_mcp_tasks_extension.cpp's own precedent). Granted here so claim 7 tests the grant's
     // Entropy-vs-held_ distinction specifically, not accidentally fail on the unrelated G9 gate.
     auto const kEntropyGrant = std::make_shared<ae::CapabilitySet const>(
         ae::CapabilitySet::grant_root({ae::cap::Entropy{}, ae::cap::Background{4}}));

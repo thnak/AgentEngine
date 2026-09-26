@@ -1,7 +1,7 @@
 // Proves 004-Model-Provider-Plane.md §3's OpenAI-compatible backend (protocol/openai/chat_client.hpp)
 // end to end against a REAL, LOCAL Ollama server -- the other local-server target that section's own
 // table names by name ("vLLM/llama.cpp/Ollama-style local servers"), alongside
-// tests/test_llamacpp_live_e2e.cpp, which already proves the llama.cpp half. This file mirrors that
+// tests/protocol/openai/test_llamacpp_live_e2e.cpp, which already proves the llama.cpp half. This file mirrors that
 // one's EXACT pattern (ADR-016's `resolve_host`/`plaintext_http` opt-in for a local server, real
 // resolver/secret/capability path, structural-only assertions, `live-network` ctest label, SKIP not
 // FAIL when unconfigured) -- see that file's own top comment for the ADR-016 rationale, not repeated

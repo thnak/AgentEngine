@@ -525,7 +525,7 @@ template <agentengine::fixed_string ProgramPattern, agentengine::fixed_string Wo
 
 // Named `capability_detail`, not the more obvious `detail` -- `agentengine::trust::detail` already
 // exists (trust/agent_library_manifest.hpp) and a caller with both `using namespace agentengine;`
-// and `using namespace agentengine::trust;` in scope (tests/test_agent_library_manifest.cpp does
+// and `using namespace agentengine::trust;` in scope (tests/trust/test_agent_library_manifest.cpp does
 // exactly this) would otherwise hit a genuine ambiguous-symbol error on unqualified `detail::`.
 namespace capability_detail {
 

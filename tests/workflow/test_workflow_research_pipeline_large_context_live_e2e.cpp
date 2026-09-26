@@ -9,7 +9,7 @@
 // (014 §9 Q2's "cycles are allowed"; the same switch_case-self-edge shape
 // test_rt_workflow_supervisor_patterns.cpp's CY-1/CY-2 already prove offline, and the SAME "one
 // AgentSession reused across rounds accumulates real history" guarantee
-// tests/test_rt_agent_workflow_executor.cpp's T5 already proves with a scripted backend) -- each one
+// tests/workflow/test_rt_agent_workflow_executor.cpp's T5 already proves with a scripted backend) -- each one
 // binds its OWN real `rt::AgentSession<RealClient>` and drives it through ~10 REAL, SEQUENTIAL live
 // turns: turn i sends a fresh ~28K-char slice of a real reference document (sliced from this repo's
 // own MIT-licensed design docs) and asks for a one-sentence note; the FINAL turn asks for the actual
@@ -39,7 +39,7 @@
 // content -- then `writer` -> the `publish_review` request_port opened -> `execute()`'s round loop
 // (`if (!ports_.empty() || ...) {status = suspended; break;}`) ended the ENTIRE run immediately,
 // abandoning `market`/`technical` mid-loop. Filed as GitHub issue #62, pinned offline by (the
-// since-renamed) tests/test_workflow_fanin_uneven_round_sources_fix.cpp, and FIXED the same day:
+// since-renamed) tests/workflow/test_workflow_fanin_uneven_round_sources_fix.cpp, and FIXED the same day:
 // `seed_fan_in_holds()` (workflow_supervisor.hpp) now pre-registers, before round 1 ever runs, a
 // join barrier for EVERY fan_in target with 2+ declared sources -- `aggregate` now genuinely waits
 // for `market_done`, `technical_done`, AND `competitive`/`competitive_fallback` before it ever

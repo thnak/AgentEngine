@@ -7,7 +7,7 @@
 //   (1) auto-persisting a checkpoint every round, instead of the caller writing its own
 //       `set_checkpoint_hook()` closure;
 //   (2) "resume from store if one exists, else start fresh" as one call, instead of the caller
-//       hand-rolling `tests/test_rt_workflow_checkpoint_g2.cpp`'s own "brand-new supervisor,
+//       hand-rolling `tests/workflow/test_rt_workflow_checkpoint_g2.cpp`'s own "brand-new supervisor,
 //       initialize(), restore_from_record()" idiom every time.
 //
 // FAIL-CLOSED ON THE AGENT-HISTORY GAP (ADR-149 §3 finding 4): docs/planning/agent-as-workflow-

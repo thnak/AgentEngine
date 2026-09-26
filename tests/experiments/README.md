@@ -55,7 +55,7 @@ Exit 0 with `repro: clean` means the platform is fine. A nonzero exit is the fin
 
 ## `wait_timeout_vs_qpc.cpp`
 
-Evidence for the wall-clock tolerance in `tests/test_job_object_limits.cpp`.
+Evidence for the wall-clock tolerance in `tests/backends/native_jail/test_job_object_limits.cpp`.
 
 `test_job_object_limits` asserted that a `WaitForSingleObject(h, 500)` measured with `steady_clock`
 reports at least 500 ms elapsed. It failed intermittently in CI on an **uninstrumented** MSVC

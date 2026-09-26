@@ -1,7 +1,7 @@
 // Proof for docs/planning/agent-spawn-runtime-design-draft.md §4.3 (item 3 of OpenQuestions.md
 // OQ-14's agent.spawn wiring; 026-Agent-Facing-Runtime-Surface.md §5) --
 // core/agent_spawn_worktree.hpp's `allocate_spawn_seq`/`derive_spawn_child_id`/`check_child_id`/
-// `mint_spawn_worktree`. Style/structure mirrors tests/test_workflow_worktree_scoping.cpp (this
+// `mint_spawn_worktree`. Style/structure mirrors tests/workflow/test_workflow_worktree_scoping.cpp (this
 // project's own closest precedent -- proving each named red-team finding stays fixed, not merely
 // "does the happy path work"). The final block (T11) proves the "wired into item 2's nested-session
 // mechanism" half of the task: a REAL `mint_spawn_worktree()` grant, threaded through item 5's already

@@ -3,7 +3,7 @@
 // ADR-130 (a real, durable `WorktreeObjectStore` conformer): does `MandatorySandboxProvider::commit_
 // task_branch()` genuinely SUCCEED after a simulated crash, through the REAL, unmodified production tool
 // surface, with REAL content that survived on real disk -- not `ledger.merge_tree_load_failed`, the
-// exact, precise failure `tests/test_task_branch_durability_recovery.cpp` (ADR-126) correctly asserts
+// exact, precise failure `tests/sandbox/test_task_branch_durability_recovery.cpp` (ADR-126) correctly asserts
 // for the `InMemoryWorktreeObjectStore` case that test deliberately uses?
 //
 // This is possible ONLY because of ADR-132's own real change: `MandatorySandboxProvider`/`SandboxRuntime`
@@ -19,7 +19,7 @@
 //       (`bind_sandbox()`) and starts a real task branch (`start_task_branch()`) -- a real child, through
 //       the real tool surface, never merged.
 //   [3] Everything goes out of scope WITHOUT merging -- the simulated crash, mirroring
-//       tests/test_task_branch_durability_recovery.cpp's own established "destroy + reconstruct against
+//       tests/sandbox/test_task_branch_durability_recovery.cpp's own established "destroy + reconstruct against
 //       the SAME durable_dir" methodology exactly.
 //   [4] A fresh Ledger<FileWorktreeObjectStore> (SAME durable_dir/objects root) is reconstructed.
 //       MandatorySandboxProvider<FakeSurface, FileWorktreeObjectStore>::bind_root_branch() (ADR-128)
@@ -68,7 +68,7 @@ template <class T>
     return out;
 }
 
-// Mirrors tests/test_task_branch_durability_recovery.cpp's own fixture exactly -- never actually
+// Mirrors tests/sandbox/test_task_branch_durability_recovery.cpp's own fixture exactly -- never actually
 // reset()/run()/drain_to()'d for real content here (real content is committed via the raw Ledger API,
 // step [1]), so a FakeSurface stand-in is enough to satisfy MandatorySandboxProvider<Surface, Store>'s
 // own template constraint.

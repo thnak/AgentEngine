@@ -58,7 +58,7 @@ of refinement:
 1. First correction (this doc's own initial pass): batch-eligible deliveries suspend the round the
    same way `request_port` does — `Interaction` (`core/interaction.hpp:35-46`) IS already durable
    (part of what `to_record()`/`restore_from_record()` checkpoint, proven by
-   `tests/test_rt_workflow_checkpoint_g2.cpp`'s 20/20 result), unlike `StandingEffect`, which
+   `tests/workflow/test_rt_workflow_checkpoint_g2.cpp`'s 20/20 result), unlike `StandingEffect`, which
    `core/standing_effect.hpp`'s own file-top comment states directly is "in-memory-only, never
    persisted" — ADR-037 found and removed a dead persistence tag on it for exactly this reason. A
    24-hour-capable wait needs the durable mechanism.

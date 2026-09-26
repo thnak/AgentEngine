@@ -1,10 +1,10 @@
 // End-to-end proof of decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §3 claim 6's
 // live half: "QdrantVectorIndex reaches a real Qdrant instance and round-trips add_batch -> search ->
-// contains correctly." Mirrors tests/test_openai_embedder_openrouter_live_e2e.cpp's EXACT pattern
+// contains correctly." Mirrors tests/protocol/openai/test_openai_embedder_openrouter_live_e2e.cpp's EXACT pattern
 // (env-var-gated credential/host, SKIP not FAIL when unset, an auth positive control, an I2
 // capability-denial control) -- see that file's own top comment for the full rationale, not repeated
 // here. The offline-provable half (request/response shape, point-id derivation, error parsing) is
-// tests/test_qdrant_vector_index.cpp -- this file exists ONLY to prove the real wire round-trip a
+// tests/core/rag/test_qdrant_vector_index.cpp -- this file exists ONLY to prove the real wire round-trip a
 // mocked/canned test cannot.
 //
 // CREDENTIALS ARE NEVER COMPILED IN (018 §4). Configuration comes from the environment:

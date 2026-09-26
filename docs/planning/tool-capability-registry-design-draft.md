@@ -84,7 +84,7 @@ against a host-curated table, `ChatClientId` → `ChatClientCapabilities`); `com
 gains the identical parameter shape for `ToolRegistry const*`, defaulting to `nullptr`.
 
 **The `nullptr` case must preserve today's exact behavior, not fail closed — a real, checked
-constraint, not an assumption.** `tests/test_agent_yaml_compiler.cpp`'s F-1 already asserts, against
+constraint, not an assumption.** `tests/core/agent/test_agent_yaml_compiler.cpp`'s F-1 already asserts, against
 015 §2's own worked example (which DOES list `web_search`/`code_interpreter`/a handoff), that
 `compiled_meta.tools.descriptors().empty()` holds when no registry machinery exists —
 `compile_agent_document()`'s own file-top comment calls this "honestly empty rather than fabricated."

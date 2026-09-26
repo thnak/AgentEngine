@@ -36,7 +36,7 @@ struct WebSearch : Tool<WebSearch,
   and Anthropic's real `tools` wire formats carry a `description` on every parameter, not only on the
   tool itself; an undescribed (plain-typed) field emits none, byte-for-byte unaffected. Composes with
   `std::optional<T>` in either order the wrapper is applied — `Described<std::optional<T>, "...">` is
-  still detected as not required. Proven in `tests/test_json_schema_described.cpp`, including the
+  still detected as not required. Proven in `tests/core/json/test_json_schema_described.cpp`, including the
   description surviving both backends' real `translate_tool()` end to end.
 - **`EffectContext` is mandatory** in the signature. There is no ambient-context accessor, because
   I4 requires attribution at the point of effect and I2 forbids ambient authority.
@@ -56,7 +56,7 @@ struct WebSearch : Tool<WebSearch,
   `EffectClass<C>`/`effect_class` and `declared_effect_class()`'s conservative default in
   `include/agentengine/core/tool.hpp` and `tool_pipeline.hpp`; `authorize_reexecution()`'s three-way
   gate in `tool_pipeline.hpp`; all three cases covered end-to-end, including the undeclared-default
-  case, by `tests/test_effect_reexecution.cpp`.
+  case, by `tests/core/tools/test_effect_reexecution.cpp`.
 
 ## 2. Tool sources
 

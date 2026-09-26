@@ -128,7 +128,7 @@ io.containerd.kata-clh.v2 <image> <id> sleep infinity` (a persistent, otherwise-
 `exec()` runs `ctr tasks exec --exec-id <uuid> <id> /bin/sh -c <source>` against it; `destroy()`
 kills and removes the task/container.
 
-**End-to-end evidence** (`tests/test_kata_backend_linux.cpp`, run against the real deployment
+**End-to-end evidence** (`tests/backends/kata/test_kata_backend_linux.cpp`, run against the real deployment
 above, not mocked): sandbox creation succeeds; the guest kernel is real and distinct from the host
 (`uname -r` → `6.18.35`); a state file written by one `exec()` call is read back correctly by a
 LATER `exec()` call on the same instance — the real-VM analogue of `test_sandbox_backend_registry

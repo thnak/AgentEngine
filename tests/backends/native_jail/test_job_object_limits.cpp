@@ -220,7 +220,7 @@ static bool test_wall_clock_kill_standalone() {
     // being generous costs nothing: one tick still cannot mask the defect this line exists to catch,
     // and the `< 3000` bound below pins the other side. The load-bearing claim -- that the wall-clock
     // watcher is what killed the child -- is the assertion above this one, which is unchanged.
-    // (tests/test_rt_channel.cpp:261 already carries a tolerance on a timing assertion for the same
+    // (tests/rt/test_rt_channel.cpp:261 already carries a tolerance on a timing assertion for the same
     // class of reason; this matches that practice rather than inventing one.)
     constexpr auto kTimerGranularitySlack = std::chrono::milliseconds(16);  // one 15.625 ms tick, rounded up
     assert(outcome->wall_elapsed >= deadline - kTimerGranularitySlack);

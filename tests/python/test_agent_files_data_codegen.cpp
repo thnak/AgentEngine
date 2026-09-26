@@ -6,7 +6,7 @@
 // registrations, and the "reuse an existing `agent` module" logic G1's own agent_tools_codegen.hpp
 // needed a matching fix for. The generated source actually RUNNING -- a real
 // `agent.files.artifact(...)`/`agent.data.read_json_lines(...)` round trip, negative controls -- is
-// proven separately, Python-gated, in tests/test_mediated_python_runner_agent_files_data.cpp.
+// proven separately, Python-gated, in tests/python/test_mediated_python_runner_agent_files_data.cpp.
 
 #include <cstdio>
 #include <string>

@@ -108,7 +108,7 @@ deferred, not silently dropped. See "What's explicitly deferred past M2" at the 
   be one inseparable design, not two: you cannot design attenuation-checking without first deciding
   what a capability's parameters look like. **Result:** `cap::` variant (16 per-kind structs) +
   checked `attenuate()` + shared-ticket `BoundCapability`/`revoke()`, proven via
-  `tests/test_capability_enforcement.cpp` (27/27 checks, positive-control-bearing) on Windows
+  `tests/trust/test_capability_enforcement.cpp` (27/27 checks, positive-control-bearing) on Windows
   (MSVC + ASan, zero findings) and Linux (Docker, gcc-14). A real `agentengine::ToolCall` naming
   collision against `content.hpp` was found via a live build failure and fixed (per-kind structs
   moved to `agentengine::cap`). Miniature G1/G3/G4 scoped as originally planned — not the full
@@ -124,7 +124,7 @@ deferred, not silently dropped. See "What's explicitly deferred past M2" at the 
   into the real runtime `Capability` a `CapabilitySet` checks against (needed because `cap::NetOut`
   etc. carry a `std::vector`, so aren't structural types and can't themselves be NTTPs — the decl
   tags are the necessarily-simpler structural stand-in). Proven in
-  `tests/test_capability_declaration_tags.cpp` (9/9 checks — declaration-site compile, NetOut/
+  `tests/trust/test_capability_declaration_tags.cpp` (9/9 checks — declaration-site compile, NetOut/
   FsRead/ToolCall/AgentCall round-tripping to the correct runtime grant, including the AgentCall
   case reusing ADR-006's `SpawnBudget` for its depth parameter) on Windows and Linux (Docker,
   gcc-14). Ordinary task, not ADR-track: this is declaration-surface plumbing, not itself an
@@ -153,11 +153,11 @@ deferred, not silently dropped. See "What's explicitly deferred past M2" at the 
   `AE_JSON_SCHEMA`-described struct recurses (found via ADL, the same lookup shape
   `quark_describe` uses) rather than flattening or stringifying. `Tool<Derived,
   Policies...>::args_schema()/reply_schema()` route to exactly this. Proven in
-  `tests/test_tool_json_schema.cpp` (parses the emitted string with nlohmann::json and asserts on
+  `tests/core/json/test_tool_json_schema.cpp` (parses the emitted string with nlohmann::json and asserts on
   real structure — primitive types, required/optional split, vector-of-nested-object, and that
   `Tool`'s methods match `schema::json_schema_of<T>()` exactly) on Windows and Linux (Docker,
   gcc-14). Cross-platform Linux Docker verification for this task also surfaced a pre-existing,
-  unrelated gap: `tests/test_real_filesystem_adapter.cpp`'s case-fold-consistency check
+  unrelated gap: `tests/backends/native_jail/test_real_filesystem_adapter.cpp`'s case-fold-consistency check
   (ADR-001-era, M1) assumes a case-insensitive filesystem and a Windows junction (`cmd /c mklink
   /J`) and fails/wouldn't run on Linux — not a regression from this task, but apparently never
   previously run against a real Linux filesystem; tracked for Phase C's cross-platform parity work
@@ -181,12 +181,12 @@ deferred, not silently dropped. See "What's explicitly deferred past M2" at the 
   (`Value` + recursive-descent `parse()`/`dump()`) was added because `agentengine::core` cannot link
   nlohmann::json (CONVENTIONS.md's dependency-tier discipline keeps it test-only) but the pipeline's
   steps 2/9 need real JSON (de)serialization in product code, not just schema-shape derivation,
-  proven in `tests/test_json_value.cpp`. `core/json_schema.hpp`'s `AE_JSON_SCHEMA(Type, member...)`
+  proven in `tests/core/json/test_json_value.cpp`. `core/json_schema.hpp`'s `AE_JSON_SCHEMA(Type, member...)`
   macro (B1) was extended — same one field list, no duplication — to also generate `ae_to_json`/
   `ae_from_json` round-tripping a real instance through `json::Value`: `std::optional<T>` fields are
   omitted from the JSON object when absent (never emitted as `null`) and accept either an absent key
   or an explicit `null` on the way in; a present-but-wrong-typed field is rejected, never coerced
-  (006 §3 step 2); proven in `tests/test_json_schema_codec.cpp`. Scoping decisions made explicit in
+  (006 §3 step 2); proven in `tests/core/json/test_json_schema_codec.cpp`. Scoping decisions made explicit in
   the pipeline header itself: step 3 (taint) is tracked as one bool stamped onto the result's
   `ContentItem`, not deep per-field `Tainted<T>` propagation into every `Args` member (003/006 don't
   specify that granularity); step 5 (approve) auto-approves `never_require`, calls the injected
@@ -198,7 +198,7 @@ deferred, not silently dropped. See "What's explicitly deferred past M2" at the 
   decision 2). `EffectContext` gained a `bound_capabilities` field (this call's freshly minted,
   step-10-revoked handles, distinct from the long-lived `capabilities` pointer) so a tool can
   actually reach the handles step 7 describes. **XL**, the mechanism the whole milestone's exit
-  criterion hangs off — proven end to end in `tests/test_tool_pipeline.cpp` (below) on Windows and
+  criterion hangs off — proven end to end in `tests/core/tools/test_tool_pipeline.cpp` (below) on Windows and
   Linux (Docker, gcc-14).
 - **B3 (done).** One trivial native tool (`EchoTool`, gated by a bare `Entropy` capability) plus a
   second tool (`GatedTool`, `Approval<always_require>`) proving both authorize and approve paths —
@@ -209,7 +209,7 @@ deferred, not silently dropped. See "What's explicitly deferred past M2" at the 
   canonicalized arguments (006 §4's binding). "`TestKit`-driven" in this task's original wording
   assumed tool-calling was already wired into `AgentSession`'s turn loop — B2's note above explains
   why that wiring is out of scope for M2; the pipeline function itself is proven directly instead,
-  which is what's actually testable at this milestone's real scope. `tests/test_tool_pipeline.cpp`,
+  which is what's actually testable at this milestone's real scope. `tests/core/tools/test_tool_pipeline.cpp`,
   Windows + Linux (Docker, gcc-14).
 - **B4 (done).** Capability-handle-reuse-denial, at the PIPELINE level (ADR-009's
   `test_capability_enforcement.cpp` already proves the primitive in isolation; this proves
@@ -221,7 +221,7 @@ deferred, not silently dropped. See "What's explicitly deferred past M2" at the 
   the literal "a capability handle from call n is unusable in call n+1" (006 §8 G3). Verified
   load-bearing the same way M1's `Tainted<T>` gate and A4's compile-fail gate were: temporarily
   commented out the step-10 `revoke()` call, confirmed the test's three post-call assertions
-  correctly failed, reverted, confirmed pass again. `tests/test_tool_pipeline_capability_reuse.cpp`,
+  correctly failed, reverted, confirmed pass again. `tests/core/tools/test_tool_pipeline_capability_reuse.cpp`,
   Windows + Linux (Docker, gcc-14). **S**, as sized.
 
 ### Phase C — `native-jail` sandbox (008), Windows + Linux
@@ -253,7 +253,7 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   (003 §3) rather than inventing a second digest+store vocabulary — no existing caller constructed
   `MountSpec` yet, so this was a pure addition, not a breaking change. `smoke_vocabulary.cpp`'s
   `DummySandboxBackend` updated to declare `traits` (the concept now requires it).
-  `tests/test_sandbox_backend_contract.cpp` (8 checks: `resolve_strict`'s strength/platform/tie-break
+  `tests/sandbox/test_sandbox_backend_contract.cpp` (8 checks: `resolve_strict`'s strength/platform/tie-break
   cases including the "nothing supports this platform" case, `MountSpec::source` holding each
   alternative) on Windows (MSVC) and Linux (Docker, gcc-14) — both green. Full suite also run both
   platforms: 22/22 on Windows; 17/18 on Linux, the one failure being `test_real_filesystem_adapter`'s
@@ -288,7 +288,7 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   into a live filesystem grant is new work this task does not attempt), not silently ignored.
   `tests/helpers/hostile_child.cpp` gained a `fail <code>` mode (a clean nonzero exit unrelated to
   any resource limit) to give the crash/oom split a positive control.
-  `tests/test_native_jail_backend_windows.cpp`: create() against a real mount + limits; exec()
+  `tests/backends/native_jail/test_native_jail_backend_windows.cpp`: create() against a real mount + limits; exec()
   reporting `ok`/`timeout`/`crash`/`oom` against real child processes under real AppContainer +
   Job Object isolation; exec() on a destroyed handle fails closed. All pass on Windows (MSVC).
   Full suite: 23/23 on Windows; Linux build/test confirmed the new code is cleanly `WIN32`-gated
@@ -346,7 +346,7 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   additional un-movable root-cgroup resident; a plain `gcc:14` container with no init also
   accumulates unreaped zombies from prior build steps that permanently block root's
   `cgroup.subtree_control` write, fixed by `docker run --init`, not by more script logic — both
-  measured directly, not theorized). `tests/test_native_jail_backend_linux.cpp`: same shape as the
+  measured directly, not theorized). `tests/backends/native_jail/test_native_jail_backend_linux.cpp`: same shape as the
   Windows test (create/exec/destroy, `ok`/`timeout`/`crash`/`oom`, fail-closed on a destroyed
   handle) plus a bulk-read fix in the setup script itself (bash's `read` builtin does small/
   byte-at-a-time reads against `cgroup.procs`, a kernel seq_file, and was observed to silently stop
@@ -441,7 +441,7 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   structural fact, not an assertion that happens to hold because two independently-written test
   files were kept in sync by hand: `tests/helpers/abuse_case_corpus.hpp` is ONE array (case name,
   probe args, `ResourceLimits`, expected `exec_outcome_class`) included verbatim by both
-  `tests/test_native_jail_parity_windows.cpp` and `tests/test_native_jail_parity_linux.cpp`, each
+  `tests/backends/native_jail/test_native_jail_parity_windows.cpp` and `tests/backends/native_jail/test_native_jail_parity_linux.cpp`, each
   compiled against its own platform's `SandboxBackend`. Five cases — well-behaved, ordinary
   failure, infinite loop, OOM, unbounded output — chosen because they're exactly the ones that
   reduce to a single `exec_outcome_class` comparison; C3's fork-bomb (a succeeded-count, not a
@@ -536,8 +536,8 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   machine-safe bounded count (CLAUDE.md's build/test resource caps apply), rationale documented, same
   pattern as M1 deferring 001's 10⁴-session gate. **M**
 
-  New tests: `tests/test_native_jail_teardown_cycles_windows.cpp`,
-  `tests/test_native_jail_teardown_cycles_linux.cpp`. 300 create/exec/destroy cycles (not 10⁵) against
+  New tests: `tests/backends/native_jail/test_native_jail_teardown_cycles_windows.cpp`,
+  `tests/backends/native_jail/test_native_jail_teardown_cycles_linux.cpp`. 300 create/exec/destroy cycles (not 10⁵) against
   each `native-jail` half, after a 5-cycle warm-up (absorbs one-time setup cost — first AppContainer
   profile creation, first DACL grant, first delegated-cgroup-root controller enable — so the
   before/after delta measures steady-state per-cycle behavior, not first-call cost misclassified as a
@@ -617,7 +617,7 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   this task imports and proves the dependency, nothing under `src/backends/wasm/` was written — no
   `SandboxBackend` implementation exists yet (that's D3, security-critical, goes through
   design→red-team→prove→judge per CLAUDE.md before it's real code). New test:
-  `tests/test_wasmtime_smoke.cpp`, gated behind `AGENTENGINE_WITH_WASM`, linking directly against
+  `tests/plugin/test_wasmtime_smoke.cpp`, gated behind `AGENTENGINE_WITH_WASM`, linking directly against
   `agentengine::wasmtime_vendor` — compiles a trivial WAT module at run time, instantiates it with
   zero imports, calls its one export, and asserts the *actual returned value* (2 + 3 = 5), not just
   that the binary linked and ran.
@@ -715,7 +715,7 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   `ae:tool/base` (never called, correctly elided by the toolchain) — a real correction to this ADR's
   own design-phase assumption. `.wasm` output is not committed (`.gitignore`'s project-wide "WASM
   plugin build output" rule); CMake builds it opportunistically when `cargo`/`cargo-component` are
-  found (`find_program`), and `tests/test_wasm_backend.cpp` SKIPs (`SKIP_RETURN_CODE 77`) rather than
+  found (`find_program`), and `tests/plugin/test_wasm_backend.cpp` SKIPs (`SKIP_RETURN_CODE 77`) rather than
   failing when the toolchain is absent, mirroring the existing `test_shell_runner_no_process_creation`
   pattern.
 
@@ -731,7 +731,7 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   (`wasmtime_component_val_delete` already recursively frees embedded resource pointers — a second,
   explicit `resource_any_delete` loop crashed with `STATUS_HEAP_CORRUPTION` on every call).
 
-  Tests (`tests/test_wasm_backend.cpp`): positive load+list+invoke against the real fixture; negative
+  Tests (`tests/plugin/test_wasm_backend.cpp`): positive load+list+invoke against the real fixture; negative
   fail-closed load when the manifest omits a capability the component structurally needs, checked
   against the exact error code; a capability-kind-confusion probe via the real fixture itself (grant
   `{Entropy, Clock}` in that order so the guest's first capability slot is the wrong kind for what it
@@ -814,7 +814,7 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   no sibling capability kind within its interface class and so unambiguously exercises the
   operator-side rejection.
 
-  `tests/test_wasm_backend.cpp` grew from 4 to 6 top-level cases: the new operator-grant-missing
+  `tests/plugin/test_wasm_backend.cpp` grew from 4 to 6 top-level cases: the new operator-grant-missing
   negative case (§3 above), and a new gated-callback section running 8 probes (right-kind and
   wrong-kind, for each of the four remaining callbacks) via a small shared `probe_gated_callback()`
   helper -- warranted here (not a premature abstraction) because the 8 blocks are genuinely
@@ -855,7 +855,7 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   a template default, since a default the metadata compiler (E2) inferred would silently apply
   Stateless authority-adjacent semantics to an agent that never asked for it.
 
-  Extended `tests/smoke_vocabulary.cpp`'s existing `DemoAgent` (the file's own "prove every vocabulary
+  Extended `tests/core/agent/smoke_vocabulary.cpp`'s existing `DemoAgent` (the file's own "prove every vocabulary
   header compiles together" agent) to declare all six new tags at once, reusing the file's own
   `DummyContextProvider` (already `static_assert`-checked against the real `ContextProvider` concept)
   for `Memory<...>` and three new minimal dummy types for `Retry`/`Middleware`/`OutputSchema`'s
@@ -924,7 +924,7 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   accessor: `find()` alone can't answer "are there duplicates" or "what does each tool need,"
   which E2's own two headline checks are built on.
 
-  `tests/test_agent_registry.cpp`: one positive case asserting every 002 §3 table default lands
+  `tests/core/agent/test_agent_registry.cpp`: one positive case asserting every 002 §3 table default lands
   correctly in the compiled `AgentMetadata` (`MaxTurns`=16, `TokenBudget`=unbounded, `Approval`=
   policy_driven, `Concurrency`=sequential, `Telemetry`=metadata_only, `Stateless`=off) plus a
   negative case per real check (missing `ChatClientId`, tool-name collision, capability-ceiling-
@@ -958,7 +958,7 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   fresh per call since `AgentMetadata` is 002 §1's read-only compiled table, not request-scoped
   state. No new enforcement logic; A and B do all the real work, exactly as the task predicted.
 
-  `tests/test_agent_tool_invocation.cpp` (new): an `EchoAgent` declaring `Tools<EchoTool>` +
+  `tests/core/agent/test_agent_tool_invocation.cpp` (new): an `EchoAgent` declaring `Tools<EchoTool>` +
   a covering `Capabilities<cap::decl::Entropy>` ceiling round-trips a real tool call through
   `register_agent<EchoAgent>()` + `invoke_agent_tool()` end-to-end -- the reply content is the
   tool's own actually-computed value (`"echo: hi"`), not a stub, and is provenance-marked
@@ -974,7 +974,7 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   and tool-name-collision defect classes with a specific diagnostic, negative test per class (full
   8-class suite deferred alongside E2's scoping). **M**
 
-  Already satisfied by E2's own `tests/test_agent_registry.cpp`: `NameCollisionAgent` asserts
+  Already satisfied by E2's own `tests/core/agent/test_agent_registry.cpp`: `NameCollisionAgent` asserts
   `error.code == "agent.tool_name_collision"` and `CapabilityGapAgent` asserts `error.code ==
   "agent.capability_ceiling_exceeded"` — both a specific diagnostic, not merely `!has_value()`,
   which is exactly what G3 asks for. This task's own contribution was recognizing that and making
@@ -1016,9 +1016,9 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   Wired end-to-end into `wasm`'s `http-request` host import (`src/backends/wasm/wasm_backend.cpp`'s
   `cb_http_request`) — the first of that file's five gated I/O callbacks (fs-read/fs-write/http-
   request/resolve-secret still trap as stubs) to go from stub to a real backing effect, proven against
-  the real compiled fixture (`tests/test_wasm_backend.cpp`'s `http-request/right-kind` rewritten for
+  the real compiled fixture (`tests/plugin/test_wasm_backend.cpp`'s `http-request/right-kind` rewritten for
   the new, non-trapping behavior) as well as a dedicated hostile test corpus with G2-style positive
-  controls (`tests/test_net_egress_proxy.cpp`). A real bug was found and fixed during this pass in the
+  controls (`tests/sandbox/test_net_egress_proxy.cpp`). A real bug was found and fixed during this pass in the
   test double, not the product code: closing a test HTTP server's socket without draining the client's
   request first sent a TCP RST instead of a FIN, surfacing as a spurious `ECONNRESET` on the client
   side (ADR-011 §6 has the full account).
@@ -1068,7 +1068,7 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   0 clean today. The positive control (`add_over_broad_positive_control()`) is deliberately NOT part of
   the CLI's own default run — a gate that's permanently red over a known, accepted fixture entry isn't
   a useful gate (007 §10 Q3: findings are "for an operator to review") — so it's exercised only by
-  `tests/test_policy_reachability.cpp` (ctest), which proves the CLI's clean pass, the over-broad-grant
+  `tests/trust/test_policy_reachability.cpp` (ctest), which proves the CLI's clean pass, the over-broad-grant
   detector catching its positive control, and two further detector positive controls (a deliberately
   wrong oracle entry caught as `oracle_mismatch`; a deliberately dropped oracle entry caught as
   `uncovered_by_oracle`) — the detectors are proven to actually detect, not just assumed clean because

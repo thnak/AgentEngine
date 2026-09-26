@@ -23,7 +23,7 @@
 //
 // REQUIRES: Linux, a running containerd daemon reachable via the `ctr` CLI on PATH (root or an
 // unprivileged containerd-socket ACL -- containerd's default socket permissions require it, matching
-// tests/test_containerd_execution_surface.cpp's own disclosed precondition), and OPENAI_API_KEY set
+// tests/sandbox/execution_surface/test_containerd_execution_surface.cpp's own disclosed precondition), and OPENAI_API_KEY set
 // in the environment.
 //
 // ADR-108 §7 residual, closed here: main() now runs `ContainerdCliBackend::reap_orphans()` as an

@@ -3,7 +3,7 @@
 // agentengine::ComposedContextProvider<SandboxToolProvider, MandatorySandboxProvider<
 // DockerExecutionSurface>>, composed as a REAL, production agentengine::rt::AgentSession<...>'s
 // actual HistoryProviderT -- the first time ComposedContextProvider<Ms...> is driven through a real
-// session.start_run() anywhere in this codebase (every prior use, tests/test_session_builder.cpp
+// session.start_run() anywhere in this codebase (every prior use, tests/core/context/test_session_builder.cpp
 // included, drives on_context()/on_turn_end() directly -- see that file's own top comment), and the
 // first time SandboxToolProvider (ADR-096, zero real production consumers before this) and
 // MandatorySandboxProvider<Surface> (ADR-102 Phase 4) are proven to genuinely coexist inside ONE

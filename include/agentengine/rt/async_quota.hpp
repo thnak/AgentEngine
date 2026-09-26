@@ -37,7 +37,7 @@
 // unlimited quota. Fixed by removing the direct-parent-spend channel entirely (try_consume() is now
 // owner-only) and having release_child_share() take the child's own AsyncQuota object BY VALUE,
 // crediting back exactly its real, mutation-tracked `remaining_` instead of a caller-supplied number.
-// Not yet reachable through any real production caller (only tests/test_identity_authority_grant.cpp
+// Not yet reachable through any real production caller (only tests/trust/test_identity_authority_grant.cpp
 // exercised this primitive at the time the bug was found) -- fixed now, before this API accretes a
 // real caller depending on the broken shape.
 

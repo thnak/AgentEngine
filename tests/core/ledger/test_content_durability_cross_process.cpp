@@ -40,7 +40,7 @@
 //       own production automation is built on, used here at the raw Ledger level since the tool-surface
 //       layer is not Store-generic yet).
 //   [4] THE CORE CLAIM: process 2's merge(child, root, ...) SUCCEEDS -- not `ledger.merge_tree_load_
-//       failed`, the exact, precise failure `tests/test_task_branch_durability_recovery.cpp` (`ADR-126`)
+//       failed`, the exact, precise failure `tests/sandbox/test_task_branch_durability_recovery.cpp` (`ADR-126`)
 //       asserts as the correct, disclosed behavior for the in-memory-store case. Real content, written
 //       by a DIFFERENT OS process, genuinely round-trips through real files on real disk.
 //   [5] the merged tree's own content is read back via get_blob_safe() (the ACL-gated production read

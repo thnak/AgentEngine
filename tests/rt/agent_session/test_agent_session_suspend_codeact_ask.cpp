@@ -3,7 +3,7 @@
 // runs inside, and a host-driven resolve/replay cycle
 // (`rt::AgentSession::resolve_interaction()`'s new `codeact_ask` branch) resumes it against a real
 // embedded CPython interpreter -- not a stand-in. Style/structure deliberately mirrors
-// tests/test_rt_agent_session_suspend_approval.cpp (this project's own precedent for this class of
+// tests/rt/agent_session/test_rt_agent_session_suspend_approval.cpp (this project's own precedent for this class of
 // test): deterministic, offline, a hand-scripted `ChatClientT`, `check()`/`drive<T>()` copied rather
 // than shared (that file's own "no cross-test-file coupling" precedent). Unlike that file, this one
 // needs a REAL `MediatedPythonRunner` -- `agent.ask()`'s suspend/replay mechanism lives inside

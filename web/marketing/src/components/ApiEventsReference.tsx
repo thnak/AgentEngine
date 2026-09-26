@@ -110,7 +110,7 @@ const copy = {
         for the session's whole lifetime; a second run appends more events, renumbered from{" "}
         <code>seq</code> 1 again. <code>examples/29_agent_session_events.cpp</code> is the real,
         passing worked example this section excerpts — it mirrors S1/A2 of{" "}
-        <code>tests/test_rt_agent_session_streaming_and_events.cpp</code>.
+        <code>tests/rt/agent_session/test_rt_agent_session_streaming_and_events.cpp</code>.
       </>
     ),
     s2Note: (
@@ -224,7 +224,7 @@ const copy = {
       <>
         <code>enable_live_view()</code> answers "what happened this round" in one summary event —
         enough for a dashboard that only needs round-by-round progress, and{" "}
-        <code>tests/test_rt_workflow_live_view.cpp</code> proves it keeps working across a real
+        <code>tests/workflow/test_rt_workflow_live_view.cpp</code> proves it keeps working across a real
         suspend/resume boundary (a human-in-the-loop <code>request_port</code> graph).{" "}
         <code>enable_event_stream()</code> answers "what is happening <em>right now</em>, including
         inside this round" — reach for it when a UI needs to show a fan-out's individual
@@ -340,7 +340,7 @@ const copy = {
         vòng đời của session; một lần chạy thứ hai sẽ nối thêm sự kiện, đánh số lại từ{" "}
         <code>seq</code> bằng 1. <code>examples/29_agent_session_events.cpp</code> là ví dụ minh
         họa thật, đang pass, mà mục này trích dẫn — nó phản ánh S1/A2 của{" "}
-        <code>tests/test_rt_agent_session_streaming_and_events.cpp</code>.
+        <code>tests/rt/agent_session/test_rt_agent_session_streaming_and_events.cpp</code>.
       </>
     ),
     s2Note: (
@@ -453,7 +453,7 @@ const copy = {
       <>
         <code>enable_live_view()</code> trả lời "round này đã xảy ra chuyện gì" bằng một sự kiện tóm
         tắt duy nhất — đủ cho một dashboard chỉ cần tiến trình theo từng round, và{" "}
-        <code>tests/test_rt_workflow_live_view.cpp</code> chứng minh nó vẫn hoạt động qua một ranh
+        <code>tests/workflow/test_rt_workflow_live_view.cpp</code> chứng minh nó vẫn hoạt động qua một ranh
         giới suspend/resume thật (một đồ thị <code>request_port</code> có con người tham gia).{" "}
         <code>enable_event_stream()</code> trả lời "điều gì đang xảy ra <em>ngay bây giờ</em>, kể cả
         bên trong round này" — dùng nó khi một UI cần hiển thị các thành viên riêng lẻ của một
@@ -674,7 +674,7 @@ export function ApiEventsReference() {
           </RevealItem>
 
           <RevealItem>
-            <CodePanel filename="tests/test_rt_workflow_live_view.cpp">
+            <CodePanel filename="tests/workflow/test_rt_workflow_live_view.cpp">
               {highlightCpp(liveViewTestSnippet)}
             </CodePanel>
           </RevealItem>
@@ -684,7 +684,7 @@ export function ApiEventsReference() {
           </RevealItem>
 
           <RevealItem>
-            <Cite path="tests/test_rt_workflow_live_view.cpp" label="tests/test_rt_workflow_live_view.cpp" />
+            <Cite path="tests/workflow/test_rt_workflow_live_view.cpp" label="tests/workflow/test_rt_workflow_live_view.cpp" />
           </RevealItem>
         </RevealGroup>
 

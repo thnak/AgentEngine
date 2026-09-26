@@ -117,7 +117,7 @@ asked for approval.
 
 ## 3. Proof
 
-- **`tests/test_tool_pipeline.cpp`, ADR-184 T1–T6** (new):
+- **`tests/core/tools/test_tool_pipeline.cpp`, ADR-184 T1–T6** (new):
   - T1: a `text_derived` call to a pure, capability-free `always_require` tool is refused with no
     decider.
   - T2: the decider is consulted for it, a "no" blocks it, and a "yes" lets it through.
@@ -138,13 +138,13 @@ asked for approval.
     call through, so the refusal is the gate and not an unrelated failure.
   - ADR-070's text-derived case now asserts that the `PolicyDecider`'s `auto_approve` never lets the
     call through (refused as `tool.approval_denied`).
-- **`tests/test_rt_background_job_runner.cpp`, R1 (ADR-184)** (new): a `text_derived` request to a
+- **`tests/rt/test_rt_background_job_runner.cpp`, R1 (ADR-184)** (new): a `text_derived` request to a
   non-declassifiable `never_require` tool needs attestation; the same request `vendor_structured` does
   not.
-- **`tests/test_rt_agent_session_tool_call_hook.cpp`, H5** (new): ADR-183 §5's exact reproduction,
+- **`tests/rt/agent_session/test_rt_agent_session_tool_call_hook.cpp`, H5** (new): ADR-183 §5's exact reproduction,
   end to end. A hook rewrites a pure `always_require` call's arguments, the round suspends for
   approval, the tool does not run before approval, and it runs once approved.
-- **`tests/test_rt_agent_session_approval_resolved_order.cpp`**: its gated tool is back to `pure`,
+- **`tests/rt/agent_session/test_rt_agent_session_approval_resolved_order.cpp`**: its gated tool is back to `pure`,
   so O4/O5 (hook rewrite, then approve or deny) now cross this path too.
 - **Positive controls** (pre-fix headers stashed):
   - `test_tool_pipeline`: T1, T2, T4, T6, T7 (text-derived), T8 and T9 fail. T3, T5 and T7's

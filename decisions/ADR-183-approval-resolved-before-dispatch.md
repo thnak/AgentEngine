@@ -79,7 +79,7 @@ not read it.
 
 ## 4. Proof
 
-- **`tests/test_rt_agent_session_approval_resolved_order.cpp`** (new, 58 checks). For each case it
+- **`tests/rt/agent_session/test_rt_agent_session_approval_resolved_order.cpp`** (new, 58 checks). For each case it
   checks:
   - the resolved ids equal the requested ids, in order;
   - `approved` carries the decision;
@@ -103,7 +103,7 @@ not read it.
     process aborts inside O4 (§2).
   - Mutation: with the hook round's recorded list ignored, so every call in the message is named,
     O6 and O7 fail with "resolved [c1,c2,c3] pairs with asked [c1,c2]".
-- **ADR-182 C4 restored to its original form.** `tests/test_agentengine_test_driver.cpp` now checks
+- **ADR-182 C4 restored to its original form.** `tests/testing/test_agentengine_test_driver.cpp` now checks
   that `approval_resolved` comes strictly before `tool_call_started` through the MCP driver.
 - **Scenarios.** With the fix, exactly `live_gated_approve` and `live_mixed_round` failed, at exactly
   the moved event ("event 7 differs": expected `tool_call_started`, actual `approval_resolved`). Their

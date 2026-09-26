@@ -3,7 +3,7 @@
 // `on_context()` contribution into its own, OUTSIDE any skill-scoping mechanism (`run_command` is a
 // session-level sandbox capability, not a skill-unlocked one). This exact composition -- one
 // `ContextProvider` embedding another and folding its contribution into its own -- has no automated
-// coverage anywhere else: `tests/test_mandatory_sandbox_provider.cpp` only ever exercises
+// coverage anywhere else: `tests/sandbox/test_mandatory_sandbox_provider.cpp` only ever exercises
 // `MandatorySandboxProvider` as the SOLE `HistoryProviderT`, never composed alongside a second provider
 // the way `cli_chat.cpp` actually does it; `cli_chat.cpp` itself is not unit-testable in isolation (it
 // needs `AGENTENGINE_WITH_HTTPS`/`AGENTENGINE_BUILD_PYTHON_RUNNER` and a live model backend). This file

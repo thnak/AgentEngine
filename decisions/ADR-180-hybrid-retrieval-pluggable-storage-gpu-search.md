@@ -87,7 +87,7 @@ must be measured against).
 Re-grounded against the real, current, Judged ADR-063 text (not assumed from memory) before drafting:
 
 1. **§2.3B named Vulkan as deferred, not rejected**, behind three gates: (i) a CPU baseline exists and is
-   benched — **done**, `BruteForceCosineIndex` + `tests/test_vector_index_benchmark.cpp`; (ii) that bench
+   benched — **done**, `BruteForceCosineIndex` + `tests/core/rag/test_vector_index_benchmark.cpp`; (ii) that bench
    shows brute-force is the actual bottleneck — **done**, ADR-063 §6's own verdict on claim 1 is a real,
    measured Goal-tier MISS beyond ~1000 chunks against `023-Performance-Targets-and-Budgets.md`'s
    `≤ 500 µs` row; (iii) an explicit resolution of §3.5's determinism concern before merge — **not done**,
@@ -149,7 +149,7 @@ byte-for-byte unmodified.
   *Steelman for widening `VectorIndex` itself instead:* one concept, not two; every provider's template
   constraint stays a single name. **Rejected**: `BruteForceCosineIndex::search()` etc. would have to become
   coroutines (even though they never suspend), every existing call site in `vector_rag_context_provider.hpp`
-  and `corpus_source.hpp` would need `co_await` added, and `tests/test_vector_rag_context_provider.cpp`'s
+  and `corpus_source.hpp` would need `co_await` added, and `tests/core/rag/test_vector_rag_context_provider.cpp`'s
   193 green assertions would all need re-verifying against the new shape — real risk to Judged, proven code
   for a feature (remote indices) most deployments won't use. CLAUDE.md's actions-with-care guidance applies
   to code changes too, not just shell commands: don't take a hard-to-reverse-feeling risk against tested
@@ -358,7 +358,7 @@ lockstep. Named explicitly as real, not-yet-written logic — §8's implementati
 1. **Claim (§2.1):** every existing `VectorRagContextProvider<EmbedderT, IndexT>` call site, with `IndexT =
    BruteForceCosineIndex` (a plain `VectorIndex`, not a `RemoteVectorIndex`), behaves byte-identically to
    pre-ADR-180 code — zero regression from adding the `AnyVectorIndex`/`if constexpr` dispatch.
-   **Disproof:** `tests/test_vector_rag_context_provider.cpp`'s existing suite (all pre-existing cases,
+   **Disproof:** `tests/core/rag/test_vector_rag_context_provider.cpp`'s existing suite (all pre-existing cases,
    unmodified) fails, or any new assertion is needed to make it pass again.
 2. **Claim (§2.3):** RRF fusion over a dense list and a sparse list, where a specific chunk is ranked #1
    dense / unranked sparse and a different chunk is ranked #1 sparse / unranked dense, produces a fused
@@ -388,7 +388,7 @@ lockstep. Named explicitly as real, not-yet-written logic — §8's implementati
    established pattern) against a real (can be a local Docker) Qdrant instance that fails to add points,
    fails to retrieve the added point via `search`, or `contains()` disagrees with what was actually added.
    **STATUS (2026-09-22): the offline-provable HALF is CORRECT, executed** — mirroring `OpenAIEmbedder`'s
-   own claim-4 split (ADR-063 §6), `tests/test_qdrant_vector_index.cpp` proves the request/response
+   own claim-4 split (ADR-063 §6), `tests/core/rag/test_qdrant_vector_index.cpp` proves the request/response
    shape, point-id derivation and its documented (128-bit) collision surface, the `payload.chunk_id`
    round-trip that recovers the real chunk digest from a search result, and the Qdrant-specific error
    envelope (`status.error`, not OpenAI's `error.message`) — 27 assertions, green under both a plain
@@ -609,7 +609,7 @@ residuals, not silently left undocumented) — see §5-6 below.
 ## 4c. Red-team pass 3 (2026-09-22, `general-purpose` agent, no prior context) — `VulkanCosineIndex` specifically
 
 Run against `src/backends/vulkan_vector_index/vulkan_cosine_index.{hpp,cpp}`, `cosine_similarity.comp`
-(+ its checked-in `.spv`), `tests/test_vulkan_cosine_index.cpp`, and the `AGENTENGINE_WITH_VULKAN` CMake
+(+ its checked-in `.spv`), `tests/core/rag/test_vulkan_cosine_index.cpp`, and the `AGENTENGINE_WITH_VULKAN` CMake
 wiring in both `CMakeLists.txt` files — §8 step 8's own account (above) was the only prior context this
 pass started from, per this repo's own established "fresh agent, no context, attack the real cited
 source" methodology (ADR-063 §4, ADR-180 §4/§4b). A real Vulkan SDK (1.4.350.0) and a real discrete GPU
@@ -717,7 +717,7 @@ new proving assertions closing the coverage gaps named; 4 as a named, honest res
 second pass
 
 Run against the SAME files §4c reviewed (`src/backends/vulkan_vector_index/vulkan_cosine_index.{hpp,cpp}`,
-`cosine_similarity.comp` + its checked-in `.spv`, `tests/test_vulkan_cosine_index.cpp`, and the
+`cosine_similarity.comp` + its checked-in `.spv`, `tests/core/rag/test_vulkan_cosine_index.cpp`, and the
 `AGENTENGINE_WITH_VULKAN` CMake wiring), post-§4c-fix — a genuinely SECOND, independent pass, run because
 this ADR's own Status line named it an open question whether `VulkanCosineIndex` was owed one, mirroring
 `QdrantVectorIndex`'s own two-pass precedent (§4b). This pass started from §4c's own account only (the
@@ -850,7 +850,7 @@ genuine empty-batch no-op is NOT confused with it; an n=1/dim=1 corpus with inte
 ## 4e. Red-team pass 5 (2026-09-23, general-purpose agent, no prior context) — VulkanCosineIndex, third pass
 
 Run against the same files §4c/§4d reviewed (`src/backends/vulkan_vector_index/vulkan_cosine_index.{hpp,cpp}`,
-`cosine_similarity.comp` + its checked-in `.spv`, `tests/test_vulkan_cosine_index.cpp`, and the
+`cosine_similarity.comp` + its checked-in `.spv`, `tests/core/rag/test_vulkan_cosine_index.cpp`, and the
 `AGENTENGINE_WITH_VULKAN` CMake wiring), post-§4d-fix, at `main`'s tip (`11f774f`). The project owner asked
 for this pass specifically because §4d found a new Critical that §4c missed. It was the same bug class (a
 discarded `VkResult`), at a call site outside §4c's narrower brief. So this pass's brief was to be
@@ -988,7 +988,7 @@ framed as "is every `VkResult` checked" could not have found it.
 
 Every distinct `vk*` entry point in `vulkan_cosine_index.cpp`: 47 in total, 22 of them `VkResult`-returning.
 "Fault point" means this pass's injection seam makes that call's failure branch execute. The branch is
-proven by `tests/test_vulkan_cosine_index_fault_injection.cpp`: the typed error, the same-instance recovery,
+proven by `tests/core/rag/test_vulkan_cosine_index_fault_injection.cpp`: the typed error, the same-instance recovery,
 and zero validation errors.
 
 | Entry point | Sites | Returns `VkResult`? | Failure handling / void-call precondition | Failure branch executed? |
@@ -1084,7 +1084,7 @@ See §5-6.
 **§8 steps 1-6, real, this session (2026-09-22):**
 - `core/vector_index.hpp`: `PersistentVectorIndex` concept + `BruteForceCosineIndex::snapshot()`/
   `restore()`, additive (existing `VectorIndex` concept and every other member unchanged). Claims 4/5
-  CORRECT — `tests/test_vector_index.cpp`'s new persistence block: round-trip fidelity (identical top-K
+  CORRECT — `tests/core/rag/test_vector_index.cpp`'s new persistence block: round-trip fidelity (identical top-K
   pre-snapshot vs. post-restore), content-addressed re-snapshot dedup (unchanged index → identical
   digest twice), and reject-not-coerce on both a nonexistent digest and a non-snapshot blob (wrong
   magic). Green under the real `InMemoryWorktreeObjectStore` + real `compute_digest()` (linked against
@@ -1097,7 +1097,7 @@ See §5-6.
   waits for a real conformer (`QdrantVectorIndex`, step 7) to test against; a mock-only test would
   mostly test the mock.
 - `core/sparse_index.hpp` (new): `SparseIndex` concept + `BM25Index`. Claim 3 CORRECT —
-  `tests/test_sparse_index.cpp`: the Okapi BM25 formula matches a hand-computed value (0.957781
+  `tests/core/rag/test_sparse_index.cpp`: the Okapi BM25 formula matches a hand-computed value (0.957781
   measured vs. 0.957720 hand-computed, within the stated 0.001 tolerance — the small gap is the hand
   computation's own rounding, not a formula discrepancy) on a fixed 3-document corpus; non-negative
   IDF for a universally-common term; the same score-desc/id-asc tie-break `BruteForceCosineIndex`
@@ -1107,12 +1107,12 @@ See §5-6.
   `last_user_text()` extracted to free functions in `vector_rag_detail` (behavior-preserving — same
   bodies, `this`-members become explicit parameters); `IndexT` constrained by `AnyVectorIndex` instead
   of `VectorIndex`; `on_context()` and `recall`'s `invoke` each gained one `if constexpr` branch.
-  Claim 1 CORRECT — `tests/test_vector_rag_context_provider.cpp` (unmodified) re-run after every change
+  Claim 1 CORRECT — `tests/core/rag/test_vector_rag_context_provider.cpp` (unmodified) re-run after every change
   and stayed 100% green throughout, proving the refactor is genuinely behavior-preserving for the
   existing `VectorIndex`/local-index case, not merely claimed to be. The new `RemoteVectorIndex` branch
   is covered only by the same session-local mock smoke check named above (not yet a permanent test).
 - `core/hybrid_rag_context_provider.hpp` (new): `HybridRagContextProvider`, RRF fusion. Claims 2 and 8
-  CORRECT — `tests/test_hybrid_rag_context_provider.cpp`: a "dense-strong, sparse-silent" chunk and a
+  CORRECT — `tests/core/rag/test_hybrid_rag_context_provider.cpp`: a "dense-strong, sparse-silent" chunk and a
   "sparse-strong, dense-silent" chunk (by construction, invisible to the OTHER retrieval method alone)
   both surface in the fused top-K (H1-H8); the citation-forgery defense scenario (ADR-063's own
   disproof shape) re-run through `HybridRagContextProvider::on_context()` shows the real marker exactly
@@ -1121,7 +1121,7 @@ See §5-6.
   smoke check, not a permanent test): a hand-constructed tie case (`RRF(A) == RRF(C)` by construction)
   confirmed the id-ascending tie-break applies to fused scores exactly as claimed.
 - `corpus_source.hpp`: `DiskCorpusSource::mount_hybrid()` (new method; existing `mount()` byte-for-byte
-  unmodified — `tests/test_corpus_source.cpp`'s pre-existing (a)-(e) blocks all still pass unchanged,
+  unmodified — `tests/core/rag/test_corpus_source.cpp`'s pre-existing (a)-(e) blocks all still pass unchanged,
   confirming zero regression). **A real bug was found and fixed during this session's own testing, not
   merely by reasoning about the design**: the first version of `mount_hybrid()`'s backfill scenario
   (§2.3a) silently did nothing, because the unchanged-file fast path (inherited from `mount()`) skips
@@ -1129,7 +1129,7 @@ See §5-6.
   prior mount's own `file_hashes` back in (the natural-looking steady-state call) defeats backfill
   silently. Fixed by documenting the real calling contract explicitly in the method's own comment
   (pass empty `previous_file_hashes` for the one backfill call) and proven via
-  `tests/test_corpus_source.cpp`'s new M1-M7 block: a fresh mount, a steady-state re-mount (zero
+  `tests/core/rag/test_corpus_source.cpp`'s new M1-M7 block: a fresh mount, a steady-state re-mount (zero
   embedder calls, zero sparse calls — both legs already caught up), and a backfill pass onto a FRESH
   sparse index that populates it WITHOUT re-embedding. This is exactly the kind of finding `ADR-063`
   §4/§5's own red-team passes exist to catch — found here by executing the design instead, underscoring
@@ -1154,7 +1154,7 @@ See §5-6.
   Satisfies `RemoteVectorIndex` (and, proven by a dedicated `static_assert`, does NOT also satisfy plain
   `VectorIndex` — ADR-180 §4 finding R1's disjointness guarantee holds against a real conformer, not
   just a synthetic mock).
-- `tests/test_qdrant_vector_index.cpp` (new, registered in `tests/CMakeLists.txt`): mirrors
+- `tests/core/rag/test_qdrant_vector_index.cpp` (new, registered in `tests/CMakeLists.txt`): mirrors
   `test_openai_embedder.cpp`'s own offline/live split exactly — exercises only the `detail::` functions
   (`chunk_id_to_qdrant_point_id`, `build_upsert_request_body`, `build_search_request_body`,
   `parse_search_response`, `map_http_status_error`) directly, never `perform_provider_https_exchange`,
@@ -1200,7 +1200,7 @@ See §5-6.
   All new assertions green under both a plain build and AddressSanitizer.
 - **What was still owed at the time (since CLOSED 2026-09-23, §3 claim 6: 12/12 live, wrong-key
   negative run fails)**: a live-network test against a real Qdrant
-  instance. The test itself is written (`tests/test_qdrant_vector_index_live_e2e.cpp`, registered in
+  instance. The test itself is written (`tests/core/rag/test_qdrant_vector_index_live_e2e.cpp`, registered in
   `tests/CMakeLists.txt`, `live-network`-labeled, mirroring `test_openai_embedder_openrouter_live_
   e2e.cpp`'s exact shape — real add_batch/search/contains round-trip, a `k=0` live counterpart, an
   auth positive control, an I2 capability-denial control) but has **not been run against a real
@@ -1229,7 +1229,7 @@ agent then merged to `main` (fast-forward, commit `f085bbd`):**
   — closed by also marking `*.spv binary` in `.gitattributes`, which was NOT already true and is a
   real fix, not a defensive no-op: the checked-in `.spv` was previously subject to `text=auto`
   mangling).
-- `tests/test_vulkan_cosine_index.cpp` (registered in `tests/CMakeLists.txt`, gated on
+- `tests/core/rag/test_vulkan_cosine_index.cpp` (registered in `tests/CMakeLists.txt`, gated on
   `AGENTENGINE_WITH_VULKAN`): correctness, `VectorIndex` contract-rejection parity with
   `BruteForceCosineIndex`, and claim 7's epsilon-bounded GPU-vs-CPU top-K comparison at dim=1536,
   n∈{1000, 5000}. The test binary itself fails closed (SKIP, exit 0) at run time if no Vulkan-capable
@@ -1275,7 +1275,7 @@ agent then merged to `main` (fast-forward, commit `f085bbd`):**
    structurally disjoint from `VectorIndex` by construction, not merely by convention. Proven via a
    constructed `DualShapedIndex` type in the new `test_remote_vector_index.cpp` (`static_assert`s that it
    satisfies `VectorIndex` and `AnyVectorIndex` but NOT `RemoteVectorIndex`).
-3. (Real gap) New `tests/test_remote_vector_index.cpp` (registered in `tests/CMakeLists.txt`): a real,
+3. (Real gap) New `tests/core/rag/test_remote_vector_index.cpp` (registered in `tests/CMakeLists.txt`): a real,
    working `MockRemoteIndex` driven through every dispatch branch this ADR added --
    `VectorRagContextProvider::on_context()`'s `co_await` branch, `recall`'s `rt::drive_leaf_task()` branch
    (both embedder AND index legs synchronous), `HybridRagContextProvider::on_context()` with a remote dense
@@ -1283,10 +1283,10 @@ agent then merged to `main` (fast-forward, commit `f085bbd`):**
    with real assertions on results, not compile-only checks.
 4. (Real gap) `corpus_source.hpp`: `mount_hybrid()`'s dense and sparse commit blocks now run
    independently -- both always attempted, either error reported only after both have run. New regression
-   test (`tests/test_corpus_source.cpp`) scripts a dense-leg failure and proves a sparse-only chunk in the
+   test (`tests/core/rag/test_corpus_source.cpp`) scripts a dense-leg failure and proves a sparse-only chunk in the
    SAME pass still commits.
 5. (Real gap) New cross-tenant isolation test for `HybridRagContextProvider`
-   (`tests/test_hybrid_rag_context_provider.cpp`), mirroring ADR-063's own `C5-R1`--`C5-R5` shape -- confirms
+   (`tests/core/rag/test_hybrid_rag_context_provider.cpp`), mirroring ADR-063's own `C5-R1`--`C5-R5` shape -- confirms
    the mechanism held up as expected, closing the coverage gap.
 6. (Minor) `hybrid_rag_context_provider.hpp`: `reciprocal_rank_fusion()` skips a non-positive-denominator
    contribution instead of accumulating `+inf`/a negative score. New test proves no `inf`/`nan` for a
@@ -1327,7 +1327,7 @@ agent then merged to `main` (fast-forward, commit `f085bbd`):**
    is tested against a crafted header rather than a genuinely oversized blob. Four new assertions:
    accepts a realistic pair, rejects an over-`UINT32_MAX` count, rejects an over-`UINT32_MAX`
    dimension, and does not divide-by-zero for `dim == 0`.
-3. (Real gap) `tests/test_vulkan_cosine_index.cpp`: 12 new assertions close the coverage gap named in
+3. (Real gap) `tests/core/rag/test_vulkan_cosine_index.cpp`: 12 new assertions close the coverage gap named in
    §4c finding 3 — a fresh index's `search()` returns empty (not an error) on a never-populated index;
    `search(k=0)` returns empty; `search(k > corpus size)` returns every entry; an id is rejected by
    `add_batch()` when it was committed by an EARLIER, separate `add_batch()` call (not just a
@@ -1375,7 +1375,7 @@ leak detector ran; see §7 for the honest scope of that claim.)
    branch's own "should be unreachable" comment true rather than aspirational, and giving the caller an
    immediate, correctly-classified rejection at add_batch() time instead of a later, wrongly-classified
    `fatal` one at search() time. `search()`'s own comment was corrected to state the (now genuinely
-   true) invariant accurately. `tests/test_vulkan_cosine_index.cpp`: 6 new assertions — the rejection
+   true) invariant accurately. `tests/core/rag/test_vulkan_cosine_index.cpp`: 6 new assertions — the rejection
    fires when no dimensionality is established yet; the rejected call leaves the index untouched; the
    SAME zero-sized-vector input, after a real dimensionality is already established, still falls
    through to the pre-existing (unchanged) `add_batch_dimension_mismatch` rejection, not the new check;
@@ -1383,7 +1383,7 @@ leak detector ran; see §7 for the honest scope of that claim.)
    still succeeds as a no-op, both on a fresh index and after real data exists.
 4. (Minor) The unconditional `cache_dirty = true` on every `add_batch()` call, including a no-op empty
    one: named, not fixed — see §4d and §7.
-5. (Real gap, test coverage) `tests/test_vulkan_cosine_index.cpp`: 8 new assertions cover the
+5. (Real gap, test coverage) `tests/core/rag/test_vulkan_cosine_index.cpp`: 8 new assertions cover the
    adversarial/boundary shapes named in this pass's own brief that §4c's coverage fix didn't reach — an
    n=1, dim=1 corpus (the smallest possible non-empty index), `k` exactly equal to corpus size (distinct
    from both `k == 0` and `k >` corpus size, which §4c's own fix already covered), and two no-op
@@ -1476,7 +1476,7 @@ not chased further.
        nothing is torn down while pending.
    - **The build.** `tests/CMakeLists.txt` builds a separate library variant from the same `.cpp` with that
      macro defined (`agentengine_vulkan_vector_index_fault_injection`), plus
-     `tests/test_vulkan_cosine_index_fault_injection.cpp`.
+     `tests/core/rag/test_vulkan_cosine_index_fault_injection.cpp`.
    - **The test, `create()`.** For each of the 9 `create()` points it asserts a typed, fail-closed error.
    - **The test, `search()`.** For each of the 12 `search()` points and every N at which the point is
      reached, it runs three phases on one instance:
@@ -1593,7 +1593,7 @@ reported none leaked or double-destroyed across 59 instance teardowns.
   daemon hang below had cleared by the next day. The live test ran from WSL2 against a real,
   auth-enabled Qdrant 1.19.1 and passed 12/12, and a wrong-key negative run failed as it should
   (§3 claim 6). The original account follows, kept for the record: the live test is written
-  (`tests/test_qdrant_vector_index_live_e2e.cpp`) but has not been run against a real instance. This
+  (`tests/core/rag/test_qdrant_vector_index_live_e2e.cpp`) but has not been run against a real instance. This
   session made roughly eight separate attempts (`docker run`, `docker start`, cleanup-and-retry cycles)
   over more than half an hour to bring up a local Qdrant, all either hanging or leaving the container
   stuck in `Created` without ever reaching `Running`; even a bare `docker rm -f` on the stuck containers
@@ -1774,7 +1774,7 @@ reported none leaked or double-destroyed across 59 instance teardowns.
   `vector_index_detail::sort_and_truncate()` with a NaN-total comparator (§8 item 1's originally planned
   shared helper). Finite input cannot produce a NaN score on this path (double accumulation, zero-norm
   already returns 0), so (a) makes NaN scores unreachable and (b) keeps the sort's precondition
-  independent of that. `tests/test_vector_index.cpp`: 10 new assertions, including a hand-built AEV1 blob
+  independent of that. `tests/core/rag/test_vector_index.cpp`: 10 new assertions, including a hand-built AEV1 blob
   carrying a NaN and the comparator driven directly with 29 NaNs among 200 scores; 56/56 green in a
   plain build and under AddressSanitizer. The scratch reproduction now shows NaN rejected at the
   boundary. Every other test depending on `vector_index.hpp` re-run plain + ASan, all green:
@@ -1856,7 +1856,7 @@ reported none leaked or double-destroyed across 59 instance teardowns.
    pattern), plus an offline request/response-shape test matching `test_openai_embedder.cpp`'s split.
 8. **DONE (2026-09-22).** `src/backends/vulkan_vector_index/` (`AGENTENGINE_WITH_VULKAN` CMake option,
    default OFF): `VulkanCosineIndex`, the SPIR-V shader (checked in pre-compiled), fail-closed
-   device-selection logic. `tests/test_vulkan_cosine_index.cpp`: claim 7 (bench + epsilon-bounded top-K
+   device-selection logic. `tests/core/rag/test_vulkan_cosine_index.cpp`: claim 7 (bench + epsilon-bounded top-K
    comparison against `BruteForceCosineIndex`) — part (b) CORRECT, part (a) DISPROVEN at first (GPU measured
    slower than CPU on the one reference GPU tested; see §3 claim 7, §5-6, §7), then PARTLY CORRECT after
    §10's layout fix (faster from n=5000 up, still slower at n=1000). Built in an isolated
@@ -1991,7 +1991,7 @@ tried one change at a time.
 - `vulkan_cosine_index.cpp`: dimension-major upload, and `select_top_k()` replacing
   `sort_and_truncate()`.
 - `core/vector_index.hpp`: `std::partial_sort` in `sort_and_truncate()`.
-- `tests/test_vulkan_cosine_index.cpp`:
+- `tests/core/rag/test_vulkan_cosine_index.cpp`:
   - A new layout-regression block. The index grows across batches of 37, 64 and 131 at an odd
     dim=17, searching between batches. Every candidate's score is compared with CPU by id.
   - Claim 7 gains n=20000.

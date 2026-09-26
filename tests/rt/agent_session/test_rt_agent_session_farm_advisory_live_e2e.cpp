@@ -5,7 +5,7 @@
 // machinery, which this scenario has no need for) driven through a real remote model over OpenRouter.
 //
 // This is a NEW skill/tool pair, purpose-built for this file, not a reuse of the builtin five (009
-// §8f) or of tests/test_rt_agent_session_skills_live_e2e.cpp's `execute_code`: a "farm-field-advisory"
+// §8f) or of tests/rt/agent_session/test_rt_agent_session_skills_live_e2e.cpp's `execute_code`: a "farm-field-advisory"
 // skill naming one tool, `check_field_weather`, framed around a concrete end-to-end scenario -- a rice
 // farmer asking whether to spray or irrigate a named field today. The point of the scenario is the
 // same as that file's: prove the model reaches for what the SKILL's advertisement names, in response

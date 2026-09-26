@@ -1,7 +1,7 @@
 # A durable `WorktreeObjectStore` conformer for `Ledger<Store>` — closing the blob/tree content half of a long-disclosed gap
 
 Design research only, prompted by the open residual `ADR-126`/`ADR-128` each declined to touch and
-`tests/test_ledger.cpp` has disclosed since before either of them landed. **This document is not an
+`tests/core/ledger/test_ledger.cpp` has disclosed since before either of them landed. **This document is not an
 ADR** — no `design → red-team → prove → judge` loop has been executed against it, no code exists, and
 nothing here is Judged or Proposed. It is what I would carry into a real round of that process. No file
 under `include/`, `src/`, or `tests/` was touched to produce it.
@@ -31,7 +31,7 @@ The consequence is exact and already has a real error code: `perform_three_way_m
 path — a recovered `BranchHandle` whose branch metadata survived but whose store is a fresh, empty
 `InMemoryWorktreeObjectStore` — those loads fail, and `merge()` returns `ledger.merge_tree_load_failed`
 (`ledger.hpp:1037-1043`). `MandatorySandboxProvider::commit_task_branch()` hits this directly through
-`merge_into()`. `tests/test_task_branch_durability_recovery.cpp` (built by `ADR-126`) asserts this
+`merge_into()`. `tests/sandbox/test_task_branch_durability_recovery.cpp` (built by `ADR-126`) asserts this
 *exact* code as a precise regression test, not merely tolerates it: recovery gets you far enough to
 `discard_task_branch()` a recovered handle (a pure branch-table erase, no content needed) but not far
 enough to `commit_task_branch()` it (real content load, which fails). `get_blob_safe()`/`get_tree_safe()`
@@ -293,7 +293,7 @@ Matching this repo's own stated policy ("A design without a falsifiable gate doe
 as settled"), before any of this could be marked Judged I would want, at minimum:
 
 1. **The exact regression `ADR-126` already wrote, now passing for the right reason.**
-   `tests/test_task_branch_durability_recovery.cpp`'s Phase B currently *asserts*
+   `tests/sandbox/test_task_branch_durability_recovery.cpp`'s Phase B currently *asserts*
    `commit_task_branch()` fails with `ledger.merge_tree_load_failed` on a recovered handle — that
    assertion is the precise, disclosed signature of this gap. A real implementation must make that
    `commit_task_branch()` call **succeed** instead, and the test updated accordingly, with the old

@@ -100,7 +100,7 @@ Message tool_call_message(std::string call_id, std::string tool_name, std::strin
 
 // Extracts run_command's own RunCommandReply JSON fields back out of a real role::tool history
 // message -- the black-box way to observe a real invoke_tool()-driven call's outcome after the fact,
-// matching tests/test_rt_agent_session_tooling_and_delegation.cpp's own counter_total_of() shape.
+// matching tests/rt/agent_session/test_rt_agent_session_tooling_and_delegation.cpp's own counter_total_of() shape.
 std::optional<std::string> tool_reply_json_of(Message const& m) {
     for (ContentItem const& item : m.content) {
         auto const* tr = std::get_if<ToolResult>(&item.value);

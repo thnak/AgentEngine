@@ -331,7 +331,7 @@ Two §0 statements were wrong and are corrected here:
 
 - Handle ids are not unguessable: they are `session_id + ":standing:" + ++counter`, and
   `StandingEffectRegistry::reset()` sets the counter back to 0.
-- `commit_ref_impl` appends to the journal log directly; only `tests/test_rt_effect_journal.cpp` calls
+- `commit_ref_impl` appends to the journal log directly; only `tests/rt/test_rt_effect_journal.cpp` calls
   `journal_effect_*`.
 
 Each finding and its disposition:
@@ -481,7 +481,7 @@ Each finding and its disposition:
 
 ## 11. Phase 0 — done (2026-09-23): `FileAppendLogStore` torn-write fix
 
-- **Reproduced first.** New checks L8a–c in `tests/test_rt_append_log_store.cpp` failed 4 times against
+- **Reproduced first.** New checks L8a–c in `tests/rt/test_rt_append_log_store.cpp` failed 4 times against
   the unfixed store. `append()` returned seq 3 for a record that was then unreadable (L8a), or was read
   back misframed (L8b, L8c).
 - **Fix.** One framing parser, `append_log_store_detail::scan_log()`, is shared by `read_from()`,
@@ -512,7 +512,7 @@ phase 0 full build had passed only because CMake did not reconfigure. Fixed with
 
 ## 12. Phase 1 — done (2026-09-23): the in-memory runner
 
-`include/agentengine/rt/background_job_runner.hpp`, `tests/test_rt_background_job_runner.cpp` (R1–R17).
+`include/agentengine/rt/background_job_runner.hpp`, `tests/rt/test_rt_background_job_runner.cpp` (R1–R17).
 
 - **What it is.** A bounded pool of worker threads the runner owns. Every job has its own
   `std::stop_source`. The run cascade (§8 Q1) is a `std::stop_callback` on the submitting run's token.

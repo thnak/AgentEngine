@@ -62,7 +62,7 @@ namespace agentengine {
 // ADR-137: a real, per-call-unique suffix for temp-file names -- NOT the digest alone. Before this,
 // `put_blob()`/`put_tree()` derived the temp filename purely from the content digest, which is
 // IDENTICAL across every concurrent writer of the same content (exactly the scenario
-// `tests/test_content_durability_concurrency.cpp`'s own `[1b]` same-digest race section exercises).
+// `tests/core/ledger/test_content_durability_concurrency.cpp`'s own `[1b]` same-digest race section exercises).
 // That was harmless under the pre-ADR-137 shape (a rename failure was silently ignored, and nothing
 // ever deleted the shared temp file), but adding real write/rename-failure handling (this same ADR,
 // see put_blob()'s own comment) made it actively unsafe: one racing writer's failure-path cleanup
@@ -111,7 +111,7 @@ public:
         // handles. Measured on a real Windows 11 host: 15263 throws of "status: Access is denied" in
         // 2665982 queries while sibling threads renamed onto the same name. That exception escaped
         // this function entirely, past the `result<T>` contract every other failure here fails closed
-        // into, and in `tests/test_content_durability_concurrency.cpp`'s own 16-thread same-digest
+        // into, and in `tests/core/ledger/test_content_durability_concurrency.cpp`'s own 16-thread same-digest
         // case it escaped a `std::thread` body -- which on MSVC terminates the process with exit code
         // 0xC0000409, the intermittent CI crash issue #69 was filed for.
         //
@@ -167,7 +167,7 @@ public:
                 // through a DIFFERENT FileWorktreeObjectStore instance racing on the SAME on-disk
                 // `root_` (real, reproduced case: two Ledger<FileWorktreeObjectStore> instances, each
                 // with its own store object, sharing one durable_dir -- exactly what
-                // tests/test_content_durability_concurrency.cpp's [2c] section constructs). Content
+                // tests/core/ledger/test_content_durability_concurrency.cpp's [2c] section constructs). Content
                 // addressing makes this safe to detect after the fact: this digest is a function of
                 // `bytes` alone, so if `path` exists NOW, it holds these exact bytes regardless of
                 // which racing writer's rename actually won -- confirmed to genuinely happen on

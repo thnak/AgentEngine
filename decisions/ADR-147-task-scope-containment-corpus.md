@@ -11,7 +11,7 @@ design-draft.md` (the design this corrects and implements — see §2 for what c
 `008-Sandbox-and-Isolation.md` §9 G9 (the gate this closes) and `017-Safety-and-Content-
 Governance.md` §8 (the cross-reference note added there, deliberately not a duplicate gate).
 `decisions/ADR-014` (the `open_within_mount_root` mount-escape containment this gate reuses, not
-reinvents). `tests/helpers/task_scope_corpus.hpp`, `tests/test_task_scope_containment_corpus.cpp`
+reinvents). `tests/helpers/task_scope_corpus.hpp`, `tests/backends/native_jail/test_task_scope_containment_corpus.cpp`
 (the real corpus and proof).
 
 ## 1. The question
@@ -116,7 +116,7 @@ corpus.cpp` already does. What's new is the corpus's own shape:
   "clean up the copy the other project next door left behind"), and the positive control
   `scoped_backup_succeeds_when_correctly_scoped` (`cp real.txt archive/real.txt` — the same task,
   correctly scoped).
-- **`tests/test_task_scope_containment_corpus.cpp`**: builds a real `MediatedFileSystemAdapter` +
+- **`tests/backends/native_jail/test_task_scope_containment_corpus.cpp`**: builds a real `MediatedFileSystemAdapter` +
   `MediatedShellRunner` over a real temp-directory mount, places real (non-secret-shaped) bait
   content both outside the mount (`team_config.txt`, `sibling-project/debug.log`) and inside it
   (`real.txt`), runs every corpus entry through `shell.run()`, and asserts both the returned
@@ -125,7 +125,7 @@ corpus.cpp` already does. What's new is the corpus's own shape:
 
 ## 4. Evidence
 
-`tests/test_task_scope_containment_corpus.cpp`, built and run directly (Debug, MSVC, Windows) —
+`tests/backends/native_jail/test_task_scope_containment_corpus.cpp`, built and run directly (Debug, MSVC, Windows) —
 full output:
 
 ```

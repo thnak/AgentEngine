@@ -5,7 +5,7 @@
 // manager pauses for a human to approve its plan before any participant runs) AND
 // samples/03-workflows/orchestrations/magentic_checkpoint.py (the exact mechanics of persisting that
 // paused request across a restart and resuming with the saved response) -- IN ONE example, because
-// that combination is the actual MAF scenario neither `tests/test_workflow_magentic_plan_signoff.cpp`
+// that combination is the actual MAF scenario neither `tests/workflow/test_workflow_magentic_plan_signoff.cpp`
 // (proves the plan-signoff mechanism in-process, no restart) nor `examples/20_workflow_checkpoint_
 // resume.cpp` (proves checkpoint/resume, but on a plain function graph with no Magentic manager or
 // typed payload) demonstrates on its own.
@@ -158,7 +158,7 @@ int main() {
     // `bodies` is parallel to `built->graph.executors` BY INDEX -- manager, participants in call
     // order (writer), the synthetic "done" sink, then the plan_review request_port LAST
     // (MagenticWorkflowBuilder's own add-order convention -- see
-    // tests/test_workflow_magentic_plan_signoff.cpp's identical P4 bodies vector).
+    // tests/workflow/test_workflow_magentic_plan_signoff.cpp's identical P4 bodies vector).
     std::vector<ExecutorBody> bodies = {
         manager_body(),
         writer_body(),

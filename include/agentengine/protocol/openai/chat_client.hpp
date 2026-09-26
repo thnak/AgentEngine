@@ -1117,7 +1117,7 @@ public:
     // `http_referer`/`x_title`/`end_user_id`/`seed` (Milestone 5 research follow-up, docs/research/
     // 2026-08-07-provider-metadata-and-sampling-params-survey.md "Recommended design" items 1/2): ALL
     // optional, APPENDED after `ca_bundle_pem_override` -- never inserted earlier in this list. Every
-    // existing construction call site in tests/test_openai_chat_client_live.cpp uses positional
+    // existing construction call site in tests/protocol/openai/test_openai_chat_client_live.cpp uses positional
     // arguments; inserting a parameter anywhere but the end would silently misalign every one of them
     // (the same class of bug `Usage::cache_write_tokens`'s own placement note in core/content.hpp
     // documents, deliberately avoided here the same way). `transport` (ADR-016) is appended after all

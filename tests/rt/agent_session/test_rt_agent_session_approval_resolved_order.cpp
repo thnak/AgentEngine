@@ -18,7 +18,7 @@
 //         approval_requested names the pass-through calls only (not the hook-denied c3), and the
 //         approval_resolved pairs with exactly those, on approve (O6) and deny (O7).
 //
-// Style follows tests/test_rt_agent_session_tool_call_hook.cpp: offline, hand-scripted
+// Style follows tests/rt/agent_session/test_rt_agent_session_tool_call_hook.cpp: offline, hand-scripted
 // ChatClientT, check()/drive<T>() copied rather than shared.
 
 #include <algorithm>

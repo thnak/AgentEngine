@@ -17,7 +17,7 @@ mediating CPython's `import` — mixing that into M2 would pull a whole RFC's sc
 unchanged.
 
 **A pre-existing, unrelated finding surfaced during Phase B's Linux verification pass**:
-`tests/test_real_filesystem_adapter.cpp`'s case-fold-consistency check (ADR-001-era, M1) assumes a
+`tests/backends/native_jail/test_real_filesystem_adapter.cpp`'s case-fold-consistency check (ADR-001-era, M1) assumes a
 case-insensitive filesystem and a Windows junction (`cmd /c mklink /J`) and fails on Linux — not a
 regression from Phase A/B, but apparently never previously run against a real Linux filesystem.
 Worth resolving as part of (or alongside) this phase's cross-platform parity work.

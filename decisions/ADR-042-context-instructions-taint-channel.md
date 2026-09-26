@@ -145,15 +145,15 @@ one merge step; no analogous "which of several candidates wins" question exists 
 
 ## 6. Evidence
 
-- `tests/test_context_assembly.cpp` (B3-I1/I2/I3): two `TaintedText`-contributing providers combine
+- `tests/core/context/test_context_assembly.cpp` (B3-I1/I2/I3): two `TaintedText`-contributing providers combine
   in declared order via `.unsafe_view()` concatenation; a provider that never sets `.instructions`
   leaves the combined field unset (no stray empty `TaintedText`).
-- `tests/test_rt_agent_session_instructions.cpp` (T1-T3, new file): instructions reach the model as a
+- `tests/rt/agent_session/test_rt_agent_session_instructions.cpp` (T1-T3, new file): instructions reach the model as a
   real, correctly-shaped, correctly-positioned `role::system` `Message` (`origin=system`,
   `tainted=false`, verbatim text, prepended ahead of the user's own message); the no-instructions path
   is byte-identical to before this fix (nothing regressed for the dominant, current-production case);
   instructions are recomputed every round, not cached from round 1.
-- `tests/test_memory_retrieval_determinism.cpp`: a pre-existing equality helper
+- `tests/memory/test_memory_retrieval_determinism.cpp`: a pre-existing equality helper
   (`contribution_identical()`) broke against the type change (`Tainted<T>` deliberately provides no
   `operator==`) and was fixed to declassify explicitly on both sides before comparing — the one real
   ripple effect of the type change anywhere in the tree, found by the build, not missed.

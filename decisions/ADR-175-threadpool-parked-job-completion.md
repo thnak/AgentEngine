@@ -12,8 +12,8 @@
   resume-until-done loops in `rt/agent_workflow_executor.hpp`, `rt/agent_spawn_child_run.hpp`,
   `rt/workflow_as_executor.hpp`, `rt/workflow_as_chat_client.hpp`, `rt/workflow_supervisor.hpp`;
   `core/session_builder.hpp`; comments in `rt/agent_session.hpp`, `rt/agent_spawn.hpp`,
-  `rt/bounded_call_fanout.hpp`; `tests/test_rt_parked_task_home.cpp` (new); `tests/test_rt_thread_pool.cpp`
-  T6 and `tests/test_rt_drive_leaf_task.cpp` D5 (rewritten); `tests/test_session_builder.cpp` B30-B31;
+  `rt/bounded_call_fanout.hpp`; `tests/rt/test_rt_parked_task_home.cpp` (new); `tests/rt/test_rt_thread_pool.cpp`
+  T6 and `tests/rt/test_rt_drive_leaf_task.cpp` D5 (rewritten); `tests/core/context/test_session_builder.cpp` B30-B31;
   `tests/CMakeLists.txt`; `bench/rt_block_on_handoff.cpp` (new); the marketing site's Builder API and HITL
   pages, which quoted `Bundle::ask()`'s old single-resume code.
 
@@ -234,7 +234,7 @@ that cancel is what wakes it (round 2 finding 6; mutant m4 is an ASan use-after-
 
 ## 7. Evidence
 
-**`tests/test_rt_parked_task_home.cpp`** — 20 checks, no daemon, memory-capped, self-watchdogged:
+**`tests/rt/test_rt_parked_task_home.cpp`** — 20 checks, no daemon, memory-capped, self-watchdogged:
 
 | Check | Property |
 |---|---|
@@ -256,7 +256,7 @@ that cancel is what wakes it (round 2 finding 6; mutant m4 is an ASan use-after-
 | H16 | round 4 findings 1-2: 5,000 bare-resumed waiters granted into closed homes complete on one 1 MiB stack, and such a waiter holds the lock under a fresh id |
 | H17 | round 4 finding 3, pinned: a sub-task raw-resumed inside a round is not the round's holder |
 
-**`tests/test_session_builder.cpp` B30-B31** — round 3 finding 1: `ask_stream()` over a provider that
+**`tests/core/context/test_session_builder.cpp` B30-B31** — round 3 finding 1: `ask_stream()` over a provider that
 throws ends its stream failed, and the process survives. Round 4 finding 4: five consecutive `ask_stream()`
 calls each deliver the full reply text.
 

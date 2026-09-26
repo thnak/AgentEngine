@@ -135,7 +135,7 @@ events nobody listens to, and the tool pipeline's own audit record does not say 
 ## 6. Evidence
 
 **Offline.**
-- `tests/test_unattended_approvals.cpp` (31 checks, no HTTPS needed, so it runs in every build; round 2 moved the
+- `tests/core/tools/test_unattended_approvals.cpp` (31 checks, no HTTPS needed, so it runs in every build; round 2 moved the
   core delivery checks here too, D1-D7, since the other file only builds with HTTPS). A1-A7: `always_require`
   and `text_derived` calls are denied by default and run unattended, each audited exactly once. Suspend-for-approval
   never suspends. `auto_deny` still denies, for `text_derived` calls too (A5b), and a policy's `auto_approve` is still
@@ -146,7 +146,7 @@ events nobody listens to, and the tool pipeline's own audit record does not say 
   that clears unattended mode from inside itself neither crashes nor approves. D1-D7: default level; `instructions`
   unfences only approved text; a provider's own mark is cleared; fence off drops the preamble; automatic approvals
   are not worded as human; `enable_unattended_mode` sets the level; reserved ids refused on both fields.
-- `tests/test_unattended_mode.cpp` (17 checks). L1-L9: the default level is unchanged. `instructions` is unfenced on
+- `tests/eval/test_unattended_mode.cpp` (17 checks). L1-L9: the default level is unchanged. `instructions` is unfenced on
   the OpenAI wire while an unapproved note beside it stays fenced. With the fence off every tainted system text is
   unfenced and audited once, and switching it back on restores it. Automatic approvals are recorded and audited; the
   mark round-trips through recordings. Both knobs together are audited as what is sent. An automatic approval is not
@@ -162,7 +162,7 @@ events nobody listens to, and the tool pipeline's own audit record does not say 
   equivalent: removing the first "still unattended?" re-read, since a second one before approving has the same effect
   (it only changes which audit line a policy denial gets after clearing).
 
-**Live** (DeepSeek `deepseek-flash`, `tests/test_memory_lesson_label_live_e2e.cpp` through the real OpenAI serializer,
+**Live** (DeepSeek `deepseek-flash`, `tests/memory/test_memory_lesson_label_live_e2e.cpp` through the real OpenAI serializer,
 one interleaved run, 20 trials per cell; followed / asked the user, naming the value / other):
 
 | Arm | alert channel | deploy region |

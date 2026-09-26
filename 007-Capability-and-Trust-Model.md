@@ -121,7 +121,7 @@ when the tool's entire capability ceiling is provably inert (read-only/informati
 even overriding a tool's own `Approval<never_require>` declaration, because that declaration was
 authored for the trusted, vendor-structured path, not for text reconstructed from a raw leak.
 Enforced at exactly one point, `core/tool_pipeline.hpp`'s `invoke_tool` step 5 — see that function's
-own comment for the mechanism, and `tests/test_tool_pipeline.cpp`'s `ADR-023 P2-T2` case for the
+own comment for the mechanism, and `tests/core/tools/test_tool_pipeline.cpp`'s `ADR-023 P2-T2` case for the
 regression test encoding the confused-deputy scenario this amendment exists to close.
 
 **Amendment (2026-09-25, ADR-184 — the declassifier only ever removes provenance's own gate).**

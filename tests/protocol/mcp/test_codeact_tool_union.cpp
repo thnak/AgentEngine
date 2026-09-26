@@ -3,7 +3,7 @@
 // protocol/mcp/mcp_tool_bridge.hpp's mcp_tools_as_descriptors() (the adapter that makes an MCP
 // server's tools a real, callable third source). No CPython dependency -- this is the pure-logic
 // half; the "does agent.tools actually see a refreshed set inside a real interpreter" half is
-// tests/test_mediated_python_runner_agent_tools.cpp's own scenario.
+// tests/python/test_mediated_python_runner_agent_tools.cpp's own scenario.
 
 #include <cstdio>
 #include <memory>

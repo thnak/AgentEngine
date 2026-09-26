@@ -95,7 +95,7 @@ const copy = {
       </>
     ),
     descriptorNote: <>006 §6 — "resolved at run start into an immutable per-run tool table"</>,
-    multiToolEyebrow: "tests/test_rt_agent_session_live_multitool_e2e.cpp",
+    multiToolEyebrow: "tests/rt/agent_session/test_rt_agent_session_live_multitool_e2e.cpp",
     multiToolHeading: "Four real tools, one ToolTable, one real model",
     multiToolBody: (
       <>
@@ -114,7 +114,7 @@ const copy = {
         <code>"-&gt; calling tool '...'"</code> / <code>"&lt;- tool call OK"</code>
       </>
     ),
-    describedEyebrow: 'tests/test_json_schema_described.cpp — Described<T, "...">',
+    describedEyebrow: 'tests/core/json/test_json_schema_described.cpp — Described<T, "...">',
     describedHeading: (
       <>
         A second channel to carry <code>"description"</code>: <code>Described&lt;T, "..."&gt;</code>
@@ -228,7 +228,7 @@ const copy = {
     descriptorNote: (
       <>006 §6 — "được phân giải khi bắt đầu chạy thành một bảng tool bất biến theo từng lần chạy"</>
     ),
-    multiToolEyebrow: "tests/test_rt_agent_session_live_multitool_e2e.cpp",
+    multiToolEyebrow: "tests/rt/agent_session/test_rt_agent_session_live_multitool_e2e.cpp",
     multiToolHeading: "Bốn tool thật, một ToolTable, một model thật",
     multiToolBody: (
       <>
@@ -247,7 +247,7 @@ const copy = {
         <code>"-&gt; calling tool '...'"</code> / <code>"&lt;- tool call OK"</code>
       </>
     ),
-    describedEyebrow: 'tests/test_json_schema_described.cpp — Described<T, "...">',
+    describedEyebrow: 'tests/core/json/test_json_schema_described.cpp — Described<T, "...">',
     describedHeading: (
       <>
         Một kênh khác để mang <code>"description"</code>: <code>Described&lt;T, "..."&gt;</code>

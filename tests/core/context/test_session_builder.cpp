@@ -16,7 +16,7 @@
 // matching this project's own "live-network" label convention for that class of test. B14-B17 (§2b)
 // similarly never drive a live `start_run()` through `ComposedQuickstartSessionBuilder`'s own session --
 // `ComposedContextProvider::on_context()` is driven DIRECTLY instead, the same scope limit
-// `tests/test_composed_context_provider.cpp`'s own "Part 1" uses for the equivalent reason; that
+// `tests/core/context/test_composed_context_provider.cpp`'s own "Part 1" uses for the equivalent reason; that
 // specific gap is now closed, just not for THIS builder -- B26-B29 close it for `RawQuickstartSession
 // Builder` instead (a scripted `ChatClientT`, no real backend involved at all, so `.ask()` really can
 // run live in this test binary with zero network dependency).

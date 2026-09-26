@@ -2,7 +2,7 @@
 
 - **Renumbered:** written as ADR-182; renumbered to ADR-190 on 2026-09-25 when this stack merged into `main`, where those numbers had been taken by other ADRs in the meantime. Commit messages, PR titles and ADR cross-references written before then use the old number.
 
-- **Status:** Proposed — implemented, proven (new `tests/test_summarizer_prompt.cpp`, 47 checks;
+- **Status:** Proposed — implemented, proven (new `tests/memory/test_summarizer_prompt.cpp`, 47 checks;
   `test_history_provider_summarize` B4-R3 restated; the full suite minus the Docker and live-network tests, 354
   tests, green), checked LIVE against DeepSeek `deepseek-flash`, and red-teamed once (three reviewers, §6: 5 MAJOR,
   all fixed). The round-1 fixes are not yet re-red-teamed.
@@ -10,8 +10,8 @@
 - **Scope:** `include/agentengine/core/summarizer_prompt.hpp` (new — the one shared request builder and the reply
   rules), `include/agentengine/core/memory_provider.hpp` (`on_context`, `on_turn_end`, `last_extraction()`),
   `include/agentengine/core/history_provider.hpp` (`HistoryProvider<Summarize<N>>::on_context`),
-  `029-Memory-System.md` §4 and `005-Sessions-State-and-Memory.md` §4 (amended), `tests/test_summarizer_prompt.cpp`
-  (new), `tests/test_history_provider_summarize.cpp` (B4-R3), `tests/test_eval_summarizer_live_e2e.cpp` (two live
+  `029-Memory-System.md` §4 and `005-Sessions-State-and-Memory.md` §4 (amended), `tests/memory/test_summarizer_prompt.cpp`
+  (new), `tests/core/context/test_history_provider_summarize.cpp` (B4-R3), `tests/eval/test_eval_summarizer_live_e2e.cpp` (two live
   checks), `tests/CMakeLists.txt` (additive).
 - **Related specs:** `029-Memory-System.md` §4 (memory extraction), §6 (retrieved memory is tainted, labelled) ·
   `005-Sessions-State-and-Memory.md` §4 (`Summarize<N>`) · `decisions/ADR-195-evaluation-harness.md` §8 (where the
@@ -87,7 +87,7 @@ or repeating it (§5).
 
 ## 4. Proof
 
-- `tests/test_summarizer_prompt.cpp` (47 checks): the request's two messages, roles, taint and instruction; every item
+- `tests/memory/test_summarizer_prompt.cpp` (47 checks): the request's two messages, roles, taint and instruction; every item
   kind as one JSON object with its fields, reasoning omitted, results paired with calls out of order, `is_error`,
   `untrusted`; matching body tags; **forgery** — a tool result with newlines, a fake `[user]` line and a fake JSON line
   stays one tool item, a forged and a real user line render differently, and closing-tag lookalikes (ASCII, upper-case,
@@ -99,7 +99,7 @@ or repeating it (§5).
   user's message still reaches the summarizer, once, and `last_extraction()` reports each outcome;
   `HistoryProvider<Summarize<1>>` end to end — an empty or blank reply fails, a reply with inline reasoning keeps only
   the prose.
-- `tests/test_history_provider_summarize.cpp` B4-R3: the summarizer gets the compaction instruction and a transcript of
+- `tests/core/context/test_history_provider_summarize.cpp` B4-R3: the summarizer gets the compaction instruction and a transcript of
   exactly the older messages.
 - **Live** (DeepSeek `deepseek-flash`): the summaries became facts, attributed — *"The user said they are deploying a new
   service and asked for its deploy region to be set to eu-west-1."*, *"The deploy region was set to `eu-west-1` (stated

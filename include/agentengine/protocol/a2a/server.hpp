@@ -128,7 +128,7 @@ public:
     // through the `caller` branch instead -- fails closed by the session's own construction, not by
     // this dispatcher remembering to check anything. A non-Tier-3 session (the common, embedded/
     // single-tenant case, 018 §1) never reads `authority` at all, so every existing 2-argument call
-    // site (`tests/test_a2a_server.cpp`, `tests/test_task_principal_binding.cpp`) is unaffected.
+    // site (`tests/protocol/a2a/test_a2a_server.cpp`, `tests/protocol/a2a/test_task_principal_binding.cpp`) is unaffected.
     [[nodiscard]] result<Task> send_message(
             Message const& inbound, agentengine::rt::SessionCaller const& caller,
             std::optional<agentengine::rt::RequestAuthority> authority = std::nullopt) {

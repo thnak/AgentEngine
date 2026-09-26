@@ -279,7 +279,7 @@ attribution did not.
 **New fact, not previously known, refines §3's `agent.spawn` characterization (fabrication-hunt).**
 `include/agentengine/rt/agent_spawn.hpp`'s `AgentSpawnToolProvider` already takes a
 `caller_worktree_ref` as an explicit constructor parameter — real, production-shaped plumbing — but
-is constructed **only** in `tests/test_rt_agent_spawn.cpp`, never in production. This makes §3's
+is constructed **only** in `tests/rt/agent_spawn/test_rt_agent_spawn.cpp`, never in production. This makes §3's
 "gets a real, session-scoped caller_ref for free" claim slightly more accurate than stated: the
 wiring point already exists at the tool-provider level; what's missing is a real production
 constructor call passing a session-bound Ref, not new plumbing.

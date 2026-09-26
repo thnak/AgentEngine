@@ -172,7 +172,7 @@ types existed in `namespace agentengine`), not by inspection — resolved by mov
 per-kind parameter structs into a `agentengine::cap` sub-namespace, keeping `Capability`/
 `CapabilitySet`/`BoundCapability`/`capability_kind` unqualified in `agentengine` to match their
 existing pervasive unqualified use. A second, same-shaped collision (`agentengine::detail` vs.
-`agentengine::trust::detail`, surfaced by `tests/test_agent_library_manifest.cpp`'s `using namespace
+`agentengine::trust::detail`, surfaced by `tests/trust/test_agent_library_manifest.cpp`'s `using namespace
 agentengine; using namespace agentengine::trust;`) was fixed the same way, renaming this header's
 internal namespace to `capability_detail`.
 

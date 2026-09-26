@@ -9,13 +9,13 @@
 //
 // Coverage is deliberately split rather than duplicated. "Does each producer stamp `tainted`?" is
 // ALREADY proven per-producer, on real fixtures, by tests that exist:
-//   * memory  -- tests/test_memory_no_authority_laundering.cpp G3(gate)-R1 ("EVERY retrieved memory
+//   * memory  -- tests/memory/test_memory_no_authority_laundering.cpp G3(gate)-R1 ("EVERY retrieved memory
 //                item is tainted on injection, regardless of provenance")
-//   * RAG     -- tests/test_vector_rag_context_provider.cpp R6 ("every injected chunk message is
+//   * RAG     -- tests/core/rag/test_vector_rag_context_provider.cpp R6 ("every injected chunk message is
 //                tainted external content")
-//   * todo    -- tests/test_todo_provider.cpp R7 ("role::system + content_origin::external +
+//   * todo    -- tests/core/context/test_todo_provider.cpp R7 ("role::system + content_origin::external +
 //                tainted=true")
-//   * reflect -- tests/test_bounded_reflection.cpp R2 ("feedback content is tainted")
+//   * reflect -- tests/rt/test_bounded_reflection.cpp R2 ("feedback content is tainted")
 // This file proves the OTHER half -- "tainted therefore fenced, at the wire, on both backends" --
 // plus the one producer whose stamping was NOT already correct (P1/P2: HistoryProvider's summarizer
 // output, which claimed `content_origin::system` + untainted). The composition is airtight because

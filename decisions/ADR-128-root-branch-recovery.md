@@ -16,7 +16,7 @@
   both confirmed passing directly.
 - **Date:** 2026-08-30.
 - **Scope:** `include/agentengine/sandbox/mandatory_sandbox_provider.hpp` (one new public method,
-  `bind_root_branch()`, plus a comment correction on `bind_sandbox()`), `tests/test_root_branch_recovery.cpp`
+  `bind_root_branch()`, plus a comment correction on `bind_sandbox()`), `tests/sandbox/test_root_branch_recovery.cpp`
   (new), `tests/CMakeLists.txt` (one new target registered). **§7's own same-day red-team round added:**
   `include/agentengine/core/ledger.hpp` (`reclaim_orphaned_branch()`/`abandon_orphaned_branch()` now check
   true branch ownership, not content-digest ACL membership -- a real, pre-existing MUST-FIX this ADR's own
@@ -34,7 +34,7 @@ NOT touch the ROOT branch itself -- `bind_sandbox()` still takes an already-reso
 an explicit parameter, so a host recovering a session after a crash has to know `Ledger`'s own
 deterministic root-name format (`"root-" + owner.id() [+ "-" + disambiguator]`) and hand-sequence
 `Ledger::orphaned_branches()` / `reclaim_orphaned_branch()` / `create_root_branch()` itself, in the right
-order, before it can call `bind_sandbox()` at all. `tests/test_task_branch_durability_recovery.cpp`'s own
+order, before it can call `bind_sandbox()` at all. `tests/sandbox/test_task_branch_durability_recovery.cpp`'s own
 Phase B still does exactly this by hand. Is this automatable the same way the child half was, without
 inventing any new persistence mechanism or widening any authority?
 
@@ -98,7 +98,7 @@ closes (the durability-shaped half: reattach to an existing root by identity alo
 (the fuller ADR-099 §1 item 2 claim that an entirely never-bound session should still own a branch -- a
 session-lifecycle question, out of this ADR's own scope).
 
-`tests/test_root_branch_recovery.cpp` (new, Docker-independent -- same `FakeSurface` stand-in
+`tests/sandbox/test_root_branch_recovery.cpp` (new, Docker-independent -- same `FakeSurface` stand-in
 `test_task_branch_durability_recovery.cpp` already established):
 - **[1]** a fresh owner/disambiguator pair takes the create-path, and the resulting binding is genuinely
   functional end to end (a `start_task_branch()`/`discard_task_branch()` round trip through the normal
@@ -189,7 +189,7 @@ mismatch is impossible by construction" claim, verified against `Ledger::create_
 `reclaim_orphaned_branch()`'s real source rather than trusted from this ADR's own account; (3) whether
 the disclosed "still-live double-bind" hazard is worse than disclosed, or cheaply guardable; (4) the
 `orphaned_branches()`-snapshot-then-act TOCTOU window between the check and the reclaim/create call; (5)
-whether `tests/test_root_branch_recovery.cpp`'s checks [1]/[3] are as decisive as [2] (already
+whether `tests/sandbox/test_root_branch_recovery.cpp`'s checks [1]/[3] are as decisive as [2] (already
 self-corrected once in §4); (6) error-handling/`failure_class` correctness on both failure paths; (7)
 lifetime/reference handling and the name-computation string match.
 

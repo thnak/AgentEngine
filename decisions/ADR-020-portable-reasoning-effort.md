@@ -117,7 +117,7 @@ check named"), not closed.
 | G7 | The gate holds on both entry points. | `chat_stream()` accepting what `chat()` refuses. |
 | G8 | The level reaches a real model and changes what it produces. | `off` and `high` yielding the same response shape from a live provider. |
 
-G1–G7 are `tests/test_reasoning_effort_portability.cpp` (33 assertions, deterministic, default
+G1–G7 are `tests/protocol/anthropic/test_reasoning_effort_portability.cpp` (33 assertions, deterministic, default
 suite — both backends driven from the same enumerators in one file, deliberately, since a per-backend
 suite could only ever prove half of a portability claim). **G8 is `test_openrouter_live_e2e.cpp`
 OR-ANT-8**, measured: **`off` → 0 Reasoning content items, `high` → 1**, same model, same question.

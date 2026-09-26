@@ -25,7 +25,7 @@ the parent) is a real risk for whoever implements this next, not a bug that exis
 
 **What re-grounding additionally found, beyond the audit's own framing:** `merge_branch_into_parent()`
 has **zero production call sites anywhere in the codebase** — confirmed by grep across `src/`; the
-only callers are `tests/test_worktree_merge.cpp`/`test_worktree_branch_concurrency.cpp` and its own
+only callers are `tests/worktree/test_worktree_merge.cpp`/`test_worktree_branch_concurrency.cpp` and its own
 retry wrapper. `workflow/worktree_scoping.hpp`'s own top comment states this explicitly: "It does NOT
 implement merge-on-join (025 §4) for a `branch` executor's worktree — WHEN a branch folds back into
 its parent is a separate question this file does not answer." So gap 14 isn't "conflict evidence has

@@ -1,6 +1,6 @@
 # ADR-173 — `tainted`/`origin` were stamped correctly and then dropped at the serializer. Where does the taint distinction have to become bytes?
 
-- **Status:** Proposed — implemented, proven (31 checks, new `tests/test_system_channel_taint_fence.cpp`),
+- **Status:** Proposed — implemented, proven (31 checks, new `tests/core/chat/test_system_channel_taint_fence.cpp`),
   the affected pre-existing suites re-run green, pending project-owner sign-off.
 - **Amended by ADR-191 (2026-09-24):** the bracket glyphs are reserved for the fence code: both serializers turn raw U+27E6/U+27E7 into ASCII brackets in every text they emit that is not a fence they opened — fenced bodies, tool results after their parts are joined, user/assistant text, tool-call arguments (Anthropic's after parsing), tool descriptions, untainted system text (each run joined first). JSON escapes and lookalike brackets are not rewritten (rewriting escapes corrupted tool-call arguments, ADR-191 round 3). A session-approved lesson's open marker reads `approved-lesson:<code>` (a code drawn fresh per request) and the preamble gains a sentence naming the code; every other marker keeps the fixed form below (ADR-191 round 3 tried coding every marker of such a request and reverted it on live data). This ADR's zero-width-space neutralization was measured insufficient live: a model cannot see the zero-width space, and a hostile fenced block that spelled a close marker was read as if the fence had ended (ADR-191 §7, L1). The neutralization text below is historical.
 - **Date:** 2026-09-04.
@@ -8,8 +8,8 @@
   `include/agentengine/protocol/anthropic/chat_client.hpp` and
   `include/agentengine/protocol/openai/chat_client.hpp` (both serializers wired),
   `include/agentengine/core/history_provider.hpp` (the summary's own stamping corrected),
-  `003-Message-and-Content-Model.md` §2 (amended), `tests/test_system_channel_taint_fence.cpp` (new),
-  `tests/test_history_provider_summarize.cpp` (B4-R6 corrected), `tests/CMakeLists.txt` (additive).
+  `003-Message-and-Content-Model.md` §2 (amended), `tests/core/chat/test_system_channel_taint_fence.cpp` (new),
+  `tests/core/context/test_history_provider_summarize.cpp` (B4-R6 corrected), `tests/CMakeLists.txt` (additive).
 - **Related specs:** GitHub issue #61 (the defect this closes) · `003-Message-and-Content-Model.md` §2
   (the taint mechanism, amended here) · `007-Capability-and-Trust-Model.md` §1 (model output is
   assumed hostile) · `decisions/ADR-042-context-instructions-taint-channel.md` §5 (which named this
@@ -182,7 +182,7 @@ rule is stated once — are what is proven; model behaviour is not.
 
 ## 6. Evidence
 
-`tests/test_system_channel_taint_fence.cpp`, **31 checks, all passing**.
+`tests/core/chat/test_system_channel_taint_fence.cpp`, **31 checks, all passing**.
 
 | | claim |
 |---|---|

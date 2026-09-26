@@ -2,7 +2,7 @@
 // sandbox_exec_started`/`sandbox_exec_finished` -- declared in `core/run_event.hpp`, listed
 // normatively in 013 §1, and already projected to AG-UI `ActivitySnapshot`
 // (`protocol/agui/projection.hpp`) -- had **no producer anywhere in the tree**. The only construction
-// site was a synthetic event in `tests/test_rt_agui_projection.cpp`, built purely to exercise the
+// site was a synthetic event in `tests/protocol/agui/test_rt_agui_projection.cpp`, built purely to exercise the
 // projection.
 //
 // Issue #64 proposed emitting them inside `AgentSession`, around `SandboxBackend::create()/exec()`.

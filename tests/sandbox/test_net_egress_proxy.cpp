@@ -282,7 +282,7 @@ int main() {
         check(cr.calls.load() == 0, "resolver was never called for an https grant");
     }
 #else
-    // ADR-013's own hostile test corpus (tests/test_https_egress.cpp) exercises the full TLS
+    // ADR-013's own hostile test corpus (tests/sandbox/test_https_egress.cpp) exercises the full TLS
     // handshake/certificate-validation surface against a real local TLS test server; this file only
     // needs to prove the scheme gate itself no longer blocks https pre-resolution once a TLS client
     // is vendored.

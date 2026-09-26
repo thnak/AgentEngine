@@ -608,7 +608,7 @@ export function ApiHitlReference() {
             </div>
           </RevealItem>
           <RevealItem>
-            <CodePanel filename="tests/test_rt_agent_session_tool_call_hook.cpp">{highlightCpp(toolCallHookExampleSnippet)}</CodePanel>
+            <CodePanel filename="tests/rt/agent_session/test_rt_agent_session_tool_call_hook.cpp">{highlightCpp(toolCallHookExampleSnippet)}</CodePanel>
           </RevealItem>
           <RevealItem>
             <a className="api-cite" href={`${SITE_BASE}/api/runtime.html#tool-call-hook`} style={{ borderTop: "none", paddingTop: 0, display: "block" }}>
@@ -755,13 +755,13 @@ export function ApiHitlReference() {
             <p style={{ fontWeight: 600, marginBottom: 8 }}>AG-UI — three reasons, one wire shape</p>
           </RevealItem>
           <RevealItem>
-            <CodePanel filename="tests/test_rt_agui_projection.cpp">{highlightCpp(aguiInterruptMultiCaseSnippet)}</CodePanel>
+            <CodePanel filename="tests/protocol/agui/test_rt_agui_projection.cpp">{highlightCpp(aguiInterruptMultiCaseSnippet)}</CodePanel>
           </RevealItem>
           <RevealItem>
             <p style={{ fontWeight: 600, margin: "20px 0 8px" }}>A2A — a real, non-terminal state instead</p>
           </RevealItem>
           <RevealItem>
-            <CodePanel filename="tests/test_a2a_streaming.cpp">{highlightCpp(a2aStreamProjectorInterruptSnippet)}</CodePanel>
+            <CodePanel filename="tests/protocol/a2a/test_a2a_streaming.cpp">{highlightCpp(a2aStreamProjectorInterruptSnippet)}</CodePanel>
           </RevealItem>
           <RevealItem>
             <a className="api-cite" href={`${SITE_BASE}/api/protocols.html#protocol-wire-projection`} style={{ borderTop: "none", paddingTop: 0, display: "block" }}>

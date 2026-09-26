@@ -234,7 +234,7 @@ public:
     // "never used from production" is enforced by convention/review only, not the type system or a
     // build flag. Callers MUST reset to `nullptr` unconditionally (an RAII guard, not a bare
     // set-then-reset pair a thrown exception could skip) -- see
-    // `tests/test_native_jail_python_worker_handle_relay.cpp`'s own `TestResolverOverrideGuard` for
+    // `tests/backends/native_jail/test_native_jail_python_worker_handle_relay.cpp`'s own `TestResolverOverrideGuard` for
     // the pattern every future caller should copy, not reinvent.
     static void set_test_connect_resolver_override(
         std::function<result<sandbox::VerifiedEndpoint>(std::string_view, std::uint16_t)> fn);

@@ -7,7 +7,7 @@
 // 10-step pipeline -- the first time MandatorySandboxProvider<ContainerdExecutionSurface> specifically
 // (as opposed to <DockerExecutionSurface>) is proven to work through that real pipeline, not just
 // standalone against ContainerdExecutionSurface directly the way
-// tests/test_containerd_execution_surface.cpp already does.
+// tests/sandbox/execution_surface/test_containerd_execution_surface.cpp already does.
 //
 // Near-verbatim port of test_composed_sandbox_providers_live.cpp -- see that file's own top comment
 // for the full reasoning behind every structural decision reused here unchanged (the bind_sandbox()-
@@ -16,7 +16,7 @@
 // the ExecutionSurface template argument, and requiring `ctr`/containerd instead of `docker`.
 //
 // REQUIRES: Linux, a running containerd daemon reachable via the `ctr` CLI on PATH (root or an
-// unprivileged containerd-socket ACL -- matches tests/test_containerd_execution_surface.cpp's own
+// unprivileged containerd-socket ACL -- matches tests/sandbox/execution_surface/test_containerd_execution_surface.cpp's own
 // disclosed precondition).
 
 #include "agentengine/core/composed_context_provider.hpp"

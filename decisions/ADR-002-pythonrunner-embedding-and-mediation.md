@@ -1226,9 +1226,9 @@ defense-in-depth wrappers were **NOT ATTEMPTED** — see §9 for the exact scope
 New code: `src/backends/native_jail/python_lockdown.{hpp,cpp}` (the embedded interpreter, Layer 0
 sweep, the meta-path finder, the per-call reassertion, the audit hook), `src/backends/native_jail/
 python_runner.hpp` (rewritten from the ADR-002 stub to a real, constructor-injected `Runner`
-backed by `PythonLockdownInterpreter`). New tests: `tests/test_python_embed_smoke.cpp`,
-`tests/test_python_layer0_sweep.cpp`, `tests/test_python_meta_path_finder.cpp`,
-`tests/test_python_numpy_pandas_import.cpp`, `tests/test_python_audit_hook.cpp`. New CMake:
+backed by `PythonLockdownInterpreter`). New tests: `tests/python/test_python_embed_smoke.cpp`,
+`tests/python/test_python_layer0_sweep.cpp`, `tests/python/test_python_meta_path_finder.cpp`,
+`tests/python/test_python_numpy_pandas_import.cpp`, `tests/python/test_python_audit_hook.cpp`. New CMake:
 `AGENTENGINE_BUILD_PYTHON_RUNNER` (default OFF) and `AGENTENGINE_PYTHON_ROOT` (auto-detected
 against `%USERPROFILE%/miniconda3` on Windows) in the root `CMakeLists.txt`, wiring a new
 `agentengine_python_runner` static library (linked against the configured CPython import lib,
@@ -1316,7 +1316,7 @@ on, per CONVENTIONS.md tier-2 dependency discipline.
 
 ### 8.5 Priority item 1 — minimal embedded CPython actually running (claim: foundation, not in §4)
 
-`tests/test_python_embed_smoke.cpp`, real output (MSVC, identical on clang):
+`tests/python/test_python_embed_smoke.cpp`, real output (MSVC, identical on clang):
 ```
 initialize() -> true ()
 Py version string surfaced via sys.modules snapshot below; interpreter is live.
@@ -1330,7 +1330,7 @@ MSVC and clang. **CORRECT.**
 
 ### 8.6 Priority item 2 — Layer 0's sweep and its scope (§3.0, §5.5.1, §6 items 4 and 7)
 
-`tests/test_python_layer0_sweep.cpp`, real output:
+`tests/python/test_python_layer0_sweep.cpp`, real output:
 ```
 Resident sys.modules keys post-bootstrap (isolated=1, site_import=0), count=25:
   __main__ _abc _codecs _frozen_importlib _frozen_importlib_external _imp _io _signal _thread
@@ -1397,7 +1397,7 @@ not attempt removing it mid-session and re-testing; **NOT ATTEMPTED** for those 
 
 ### 8.7 Priority item 3 — the meta-path finder as a real C type; claims A1, A3, A4
 
-`tests/test_python_meta_path_finder.cpp`, real output:
+`tests/python/test_python_meta_path_finder.cpp`, real output:
 ```
 initialize() -> true ()
 [negative control] ok=1 stdout=math ok True
@@ -1439,7 +1439,7 @@ real, not asserted from the mechanism's description.
 
 ### 8.8 Priority item 5 (partial) — the native audit hook, claim C1 (observational, not enforcing)
 
-`tests/test_python_audit_hook.cpp`, real output:
+`tests/python/test_python_audit_hook.cpp`, real output:
 ```
 initialize() -> true ()
 audit import-event count immediately after initialize() (bootstrap's own imports): 17
@@ -1471,7 +1471,7 @@ prerequisite for a future enforcing version, not the enforcing version itself.
 
 ### 8.9 Priority item 4 — numpy and pandas actually importing under lockdown; claims A2 and A5
 
-`tests/test_python_numpy_pandas_import.cpp`, real output:
+`tests/python/test_python_numpy_pandas_import.cpp`, real output:
 ```
 initialize() -> true ()
 [numpy] ok=1
@@ -1795,7 +1795,7 @@ from §10.1's own already-Judged status above, which this addendum does not reop
 nothing here contradicts the finder-mechanism decision). This closes backlog item #39 and §6 item
 5's own text, which explicitly framed the question as "answerable only by trying it."
 
-**The experiment** (`tests/test_python_subinterpreter_spike.cpp`, two independent process
+**The experiment** (`tests/python/test_python_subinterpreter_spike.cpp`, two independent process
 invocations — see below for why not one process): `Py_NewInterpreterFromConfig` under BOTH configs
 §6 item 5 named —
 the STRICT PEP 684 shape (own GIL, `check_multi_interp_extensions=1`, literally CPython's own
@@ -1874,7 +1874,7 @@ addendum does not attempt.
   single-interpreter, per-process design this ADR already ships; this addendum only closes the
   separate, always-open §6 item 5 question about a DIFFERENT architecture this ADR never adopted.
 
-**Files changed:** `tests/test_python_subinterpreter_spike.cpp` (new, two-mode diagnostic spike,
+**Files changed:** `tests/python/test_python_subinterpreter_spike.cpp` (new, two-mode diagnostic spike,
 never wired into `MediatedPythonRunner` or any production code path — this is fact-finding only,
 identical in kind to `test_python_layer0_sweep.cpp`); `tests/CMakeLists.txt` registers both modes
 (`test_python_subinterpreter_spike_strict`, `test_python_subinterpreter_spike_legacy`) as separate

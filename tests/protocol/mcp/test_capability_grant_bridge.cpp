@@ -2,7 +2,7 @@
 // shared trust::steady_deadline_from() primitive's use by mcp::capability_grant_from_bearer_claims()
 // -- the falsifiable claims table at §42.3 -- and, end to end, that the resulting CapabilityGrant is
 // accepted by a REAL McpServer::dispatch() call. trust::steady_deadline_from()'s extraction itself
-// (claim 1) is proven by tests/test_request_authority_bridge.cpp continuing to pass unmodified after
+// (claim 1) is proven by tests/trust/test_request_authority_bridge.cpp continuing to pass unmodified after
 // the rt-side bridge's refactor (§43.2's own claim 1 rewording).
 
 #include <chrono>

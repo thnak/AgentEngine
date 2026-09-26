@@ -3,7 +3,7 @@
 // (core/recording_chat_client.hpp) end to end against hand-rolled, scripted `ChatClient` conformers --
 // no real backend, no network. Mirrors tests/test_resilient_chat_client.cpp's own conformer/check()
 // pattern (state behind a shared_ptr so the test's local handle and the wrapper's internal copy of
-// Inner observe the same state) and tests/test_chat_client_stream.cpp's own poll-loop drain idiom.
+// Inner observe the same state) and tests/core/chat/test_chat_client_stream.cpp's own poll-loop drain idiom.
 //
 // Covers:
 //  (1) a successful chat() call is recorded (request/response/duration) AND passed through to the
@@ -276,7 +276,7 @@ int main() {
         stream<ChatResponseUpdate> s = client.chat_stream(req, ctx);
 
         // The exact poll-loop idiom this codebase already established
-        // (tests/test_chat_client_stream.cpp ~148-198) -- next() is poll-only, never blocking.
+        // (tests/core/chat/test_chat_client_stream.cpp ~148-198) -- next() is poll-only, never blocking.
         std::vector<std::string> received;
         bool saw_final = false;
         while (!s.done()) {

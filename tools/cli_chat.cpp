@@ -412,7 +412,7 @@ AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
         // own execute_code tool can reach `agent.ask()`, matching this file's own `expose_agent_
         // files_data = true` one line up. This CLI does not itself implement a host-driven resolve/
         // replay loop (that is `rt::AgentSession::resolve_interaction()`'s job, proven by
-        // tests/test_agent_session_suspend_codeact_ask.cpp against a real embedded interpreter, not
+        // tests/rt/agent_session/test_agent_session_suspend_codeact_ask.cpp against a real embedded interpreter, not
         // this CLI's own single-session, non-AgentSession-hosted `real_execute_code()` wiring) -- a
         // script calling `agent.ask()` here simply surfaces `ExecOutcome::klass == ask_pending` as
         // an ordinary tool failure (`codeact.ask_pending`) with no resume path, same as any other
@@ -1168,7 +1168,7 @@ void print_skills_banner(std::ostream& out,
 // Everything genuinely provider-agnostic about running one interactive session: templated on `Inner`
 // (the already-CONSTRUCTED, provider-specific chat client `main()` builds below), so this body is
 // written ONCE and instantiated for every provider, rather than duplicated per backend -- the same
-// "one call site, N real backends" shape `tests/test_chat_client_cross_backend_parity.cpp`'s own
+// "one call site, N real backends" shape `tests/core/chat/test_chat_client_cross_backend_parity.cpp`'s own
 // `run_it`/`run_it_gateway` templates already established for this codebase (that file's own top
 // comment). `chat_client` is moved into `actor.emplace_chat_client(...)` together with `sink` -- the
 // dump feature's own sink -- so `ChatClientT` resolves to `RecordingChatClient<Inner>` regardless of
@@ -1535,7 +1535,7 @@ template <class Inner>
     // finalize disagree about which thread owns them.
     //
     // Same fix this project already applied once for a related CPython-teardown hazard
-    // (tests/test_python_subinterpreter_spike.cpp, ADR-002 Section 11): skip the now-known-dangerous
+    // (tests/python/test_python_subinterpreter_spike.cpp, ADR-002 Section 11): skip the now-known-dangerous
     // teardown path entirely and let the OS reclaim the process. Nothing here needs graceful
     // shutdown -- no other process depends on this one's static destructors running.
     //

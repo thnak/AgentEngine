@@ -305,7 +305,7 @@ endif()
 # construction, holds `std::unique_ptr<SessionShellSandbox>`) happens to be non-copyable itself; this
 # gate composes the REAL, production `SandboxToolProvider` (rather than a synthetic minimal stand-in)
 # to exercise the exact composed type tools/sandboxed_shell_chat.cpp and
-# tests/test_composed_sandbox_providers_live.cpp both use as a real session's `HistoryProviderT`. That
+# tests/sandbox/execution_surface/test_composed_sandbox_providers_live.cpp both use as a real session's `HistoryProviderT`. That
 # unconditionally-deleted copy-assignment is load-bearing at `AgentSession::fork_from()`'s
 # `history_provider_ = source.history_provider_;` statement, which must therefore fail to compile for
 # that session type. ADR-096 §6 already recorded a claim shaped like this one "CORRECT, empirically
@@ -317,7 +317,7 @@ endif()
 # `target.history_provider() = std::move(source.history_provider());` still compiles -- see that
 # class's own comment and ADR-102 §48. CLOSED at runtime, not by this compile-time gate, by ADR-116
 # (2026-08-30): that statement no longer aliases live provider state across sessions -- `operator=`
-# refuses it as a silent no-op, proven by tests/test_session_builder.cpp's own B20.
+# refuses it as a silent no-op, proven by tests/core/context/test_session_builder.cpp's own B20.
 #
 # Portable across Windows and Linux (2026-08-29, decisions/ADR-105-sandbox-tool-provider-composed-
 # linux-parity.md) -- previously WIN32-gated on the same stale "SandboxToolProvider's own current
@@ -400,7 +400,7 @@ message(STATUS
 # Name>` -- ambiguous, and this project rejects outright rather than silently keeping only the
 # last-declared one (§5's multi-declaration question). Header-only; no linking needed. No separate
 # positive-control file, matching the ADR-102 §3 C1 gate's own precedent above: the real runtime
-# test (tests/test_tool_exclusivity_group.cpp) already compiles and passes with bare `Parallelizable`
+# test (tests/core/tools/test_tool_exclusivity_group.cpp) already compiles and passes with bare `Parallelizable`
 # alone, `ExclusivityGroup<Name>` alone, and two independent tools sharing one group name, serving as
 # this pair's own positive control.
 try_compile(AE_TOOL_REJECTS_PARALLELIZABLE_AND_EXCLUSIVITY_GROUP

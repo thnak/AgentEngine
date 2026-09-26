@@ -5,7 +5,7 @@
 // silently dropping it (the I6 drift hazard `test_workflow_graph_validation.cpp`'s own decision 6
 // already exists to prevent). The RUNTIME half -- WorkflowSupervisor actually dispatching an
 // agent-kind node through a real AgentSession, the structural body-marker check, and the
-// concurrent-same-node quarantine -- is proven in tests/test_rt_agent_workflow_executor.cpp; this
+// concurrent-same-node quarantine -- is proven in tests/workflow/test_rt_agent_workflow_executor.cpp; this
 // file never links against rt:: at all.
 
 #include <cstdio>

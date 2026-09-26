@@ -14,7 +14,7 @@
 // build ON PURPOSE, not by oversight: `agentengine_shell_runner` (CMakeLists.txt) is a deliberately
 // separate STATIC library so ADR-001 §7 finding 1's fix -- Sh-S1's "zero references to a
 // process-creation primitive" check -- can be verified at link-target granularity against the real
-// built artifact (`tests/test_shell_runner_proof.cpp`), not against prose. This file is "off-limits
+// built artifact (`tests/backends/native_jail/test_shell_runner_proof.cpp`), not against prose. This file is "off-limits
 // to reuse" (ADR-001 decision 4, CMakeLists.txt's own comment) precisely so the mediated replacement
 // shares no source with that proof target.
 //

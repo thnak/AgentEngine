@@ -237,9 +237,9 @@ AE_JSON_SCHEMA(TaskBranchDiscardReply, ok)
 // through the real pipeline with NO capability grant at all (gate 1 alone was sufficient, since gate
 // 2 didn't exist -- `declared_capabilities()` returned an empty vector, so `invoke_tool()`'s step 4/7
 // loop had nothing to bind). Landing gate 2 on the SAME day as ADR-114 itself, before any real host
-// outside `tests/test_task_branch_tools.cpp` has adopted the old contract, is deliberately the lowest
+// outside `tests/sandbox/test_task_branch_tools.cpp` has adopted the old contract, is deliberately the lowest
 // -risk moment to make this change -- see ADR-117 for why this was judged worth doing now rather than
-// deferred again. `tests/test_task_branch_tools.cpp`'s own real-pipeline section [6] is updated to
+// deferred again. `tests/sandbox/test_task_branch_tools.cpp`'s own real-pipeline section [6] is updated to
 // grant both tags; every other section calls the plain provider methods directly
 // (`start_task_branch()` etc.), bypassing `Tool<>`/`invoke_tool()` entirely, so gate 2 has no effect
 // on those and needed no change.
@@ -627,7 +627,7 @@ public:
     // actually name a branch this root never directly created). The fix: after the prefix match,
     // require NO further `/` in the remainder -- a direct child's own suffix is exactly `<id>-<seq>`,
     // which never contains `/`; a descendant deeper than one hop always does. Empirically proven with a
-    // new regression case in `tests/test_task_branch_durability_recovery.cpp` ([5]/[6]): a
+    // new regression case in `tests/sandbox/test_task_branch_durability_recovery.cpp` ([5]/[6]): a
     // Ledger-API-constructed grandchild orphan is correctly left an orphan (never enters
     // `task_branches_`, remains reachable only via the lower-level `Ledger::reclaim_orphaned_branch()`
     // API, exactly like any other out-of-scope orphan), while a genuine direct child is still recovered

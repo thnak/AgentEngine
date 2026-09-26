@@ -4,7 +4,7 @@
 // (rt/agent_spawn_child_run.hpp), 3 (core/agent_spawn_worktree.hpp), 4 (trust::SpawnBudget/ADR-006,
 // rt::SpawnCostBudget/ADR-031), and 5 (trust::mint_child_spawn_capabilities) through the REAL
 // perform_agent_spawn()/AgentSpawnTool/AgentSpawnToolProvider surface -- not a hand-rolled stand-in
-// the way tests/test_rt_agent_spawn_child_run.cpp's own T3 necessarily used (item 1 had not been
+// the way tests/rt/agent_spawn/test_rt_agent_spawn_child_run.cpp's own T3 necessarily used (item 1 had not been
 // built yet when that test was written).
 //
 //   T1 -- perform_agent_spawn() succeeds within budget: a caller holding a real AgentCall grant
@@ -35,7 +35,7 @@
 //         call" gate, mirroring ScheduleWakeupTool's precedent) -- the parent's own ChatRequest never
 //         even lists "agent.spawn" as a callable tool.
 //   T7 -- ADR-079 §7's own named residual, closed here: a REAL multi-OS-thread stress of
-//         SpawnPump::submit() itself (not tests/test_agent_spawn_worktree.cpp's own T10, which is
+//         SpawnPump::submit() itself (not tests/rt/agent_spawn/test_agent_spawn_worktree.cpp's own T10, which is
 //         explicitly that file's "narrower substitute for the not-yet-built SpawnPump" -- SpawnPump
 //         now exists, so this is the real thing). 16 real std::thread callers submit() concurrently
 //         against ONE shared SpawnPump/SpawnCostBudget pair, sized so the pool is exhausted

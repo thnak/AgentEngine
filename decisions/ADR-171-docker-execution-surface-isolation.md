@@ -10,7 +10,7 @@
   deny-all; move ctor/assignment carry the new member; a "what this file is, and is not" scope
   statement), `include/agentengine/sandbox/execution_surface.hpp` (modified — the concept-level scope
   statement issue #63 step 2 asked for), `008-Sandbox-and-Isolation.md` (amended — §2a),
-  `tests/test_docker_isolation.cpp` (new), `tests/CMakeLists.txt` (additive wiring).
+  `tests/sandbox/execution_surface/test_docker_isolation.cpp` (new), `tests/CMakeLists.txt` (additive wiring).
   **No existing test file changed, and no existing call site needed editing.**
 - **Related specs:** GitHub issue #63 (the defect this closes) · GitHub issue #66 (the containerd
   sibling, split out) · `008-Sandbox-and-Isolation.md` §2 (the backend contract), §2a (custom
@@ -90,7 +90,7 @@ assumption is the inverse one: **proximity in the source tree is not conformance
 
 ## 3. Evidence
 
-`tests/test_docker_isolation.cpp`, 37 checks. The offline half needs no daemon; the live half proves
+`tests/sandbox/execution_surface/test_docker_isolation.cpp`, 37 checks. The offline half needs no daemon; the live half proves
 the kernel actually applied the limits.
 
 | | claim |

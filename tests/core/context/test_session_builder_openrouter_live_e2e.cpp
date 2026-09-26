@@ -17,7 +17,7 @@
 // `session_builder.hpp` before this test was written against the fix, not discovered by running a
 // broken version of this file.
 //
-// Mirrors tests/test_openai_chat_client_openrouter_live_e2e.cpp's and tests/test_openrouter_live_e2e.
+// Mirrors tests/protocol/openai/test_openai_chat_client_openrouter_live_e2e.cpp's and tests/test_openrouter_live_e2e.
 // cpp's EXACT pattern (env-var-gated credential, SKIP not FAIL when absent, structural-only assertions
 // on a live model's nondeterministic output, a positive control proving the credential is genuinely
 // load-bearing) -- see either file's own top comment for the full rationale, not repeated here. Unlike

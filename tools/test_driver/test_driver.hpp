@@ -4,7 +4,7 @@
 // (a Claude Code sub-agent) drive in-process `rt::AgentSession`s with a scripted model.
 //
 // This header holds everything except the stdio loop, so tests drive it in-process through
-// `Driver::handle_line()` (tests/test_agentengine_test_driver.cpp). `agentengine_test_driver.cpp`
+// `Driver::handle_line()` (tests/testing/test_agentengine_test_driver.cpp). `agentengine_test_driver.cpp`
 // is only the stdin/stdout pump.
 //
 // What phase 1 deliberately does NOT have (ADR-182 §12):

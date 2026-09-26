@@ -66,7 +66,7 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       tag: "rt::WorkflowCheckpointManager<StoreT> — ADR-149, issue #28",
       title: "The workflow-level counterpart: attach() to auto-checkpoint, resume_or_start() to pick a run back up",
       body:
-        "AgentSessionRecord above is session-scoped bookkeeping; a Workflow run has its own, separate durability story that rides the same SessionStore concept rather than inventing a second one. WorkflowCheckpointManager<StoreT> is a thin wrapper over already-real save_workflow_checkpoint()/load_workflow_checkpoint(): attach(sup) installs a checkpoint hook that persists automatically after every round, so a caller never hand-writes a set_checkpoint_hook() closure, and resume_or_start(store, run_id, sup, graph, bodies) is \"resume if a checkpoint exists for run_id, else start fresh\" as one call, returning which one happened. examples/20_workflow_checkpoint_resume.cpp proves the whole story by actually discarding the original WorkflowSupervisor and FileSessionStore handle, not just re-reading the same objects: a workflow suspended at a request_port gate resumes, from nothing but a freshly reopened on-disk store and the run's own id, into a brand-new supervisor holding the same open interaction the original run left waiting. tests/test_rt_workflow_checkpoint_manager.cpp adds the fail-closed guard this simple function-only example doesn't exercise: an agent-kind or sub_workflow-kind executor is refused rather than silently checkpointed incompletely.",
+        "AgentSessionRecord above is session-scoped bookkeeping; a Workflow run has its own, separate durability story that rides the same SessionStore concept rather than inventing a second one. WorkflowCheckpointManager<StoreT> is a thin wrapper over already-real save_workflow_checkpoint()/load_workflow_checkpoint(): attach(sup) installs a checkpoint hook that persists automatically after every round, so a caller never hand-writes a set_checkpoint_hook() closure, and resume_or_start(store, run_id, sup, graph, bodies) is \"resume if a checkpoint exists for run_id, else start fresh\" as one call, returning which one happened. examples/20_workflow_checkpoint_resume.cpp proves the whole story by actually discarding the original WorkflowSupervisor and FileSessionStore handle, not just re-reading the same objects: a workflow suspended at a request_port gate resumes, from nothing but a freshly reopened on-disk store and the run's own id, into a brand-new supervisor holding the same open interaction the original run left waiting. tests/workflow/test_rt_workflow_checkpoint_manager.cpp adds the fail-closed guard this simple function-only example doesn't exercise: an agent-kind or sub_workflow-kind executor is refused rather than silently checkpointed incompletely.",
       cite: "include/agentengine/rt/workflow_checkpoint_manager.hpp",
       href: gh("include/agentengine/rt/workflow_checkpoint_manager.hpp"),
     },
@@ -107,8 +107,8 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       title: "make_payment, interrupted and replayed, with the real key at every step",
       body:
         "The rewind-and-replay path is proven end to end against a real invoke_tool() call in test_effect_reexecution.cpp: a MakePaymentTool declared EffectClass<at_most_once> runs once, and the same call is then re-run under the same idempotency key. Without an operator acknowledgement, authorize_reexecution() refuses before the pipeline is entered a second time, with the stable code effect.reexecution_requires_ack. With an acknowledgement, the re-execution runs and its audit record carries the identical key — recognizably a repeat of one effect, not a new, unrelated call. What the test does not do, and this page does not claim, is inject the fault itself: the interruption is manual, not a kill -9.",
-      cite: "tests/test_effect_reexecution.cpp:109",
-      href: gh("tests/test_effect_reexecution.cpp"),
+      cite: "tests/core/tools/test_effect_reexecution.cpp:109",
+      href: gh("tests/core/tools/test_effect_reexecution.cpp"),
     },
     {
       id: "du-interactions",
@@ -137,8 +137,8 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       title: "Restart on the same node is real; the rest of 019 §4 is not",
       body:
         "Process restart is the one recovery path with real machinery behind it: a store, a record, a restore, and a run sequence that never repeats itself. Poison runs are a policy, not a mechanism — the PoisonRunPolicy<N> predicate 019 §4 asks for has no home in any shipping header; it survives only as a dependency-free copy inside one test, which drives an always-failing chat client and confirms quarantine at exactly the bound with history intact. Quarantining is then the host's own bookkeeping decision, never a call into the session. Node loss is not handled at all, and 019 §4 says so in its own text: ADR-037 removed Quark's FenceToken and nothing replaced it, so there is no fence, epoch or lease anywhere in this tree, and five node-loss/fencing test files were retired as an accepted permanent gap. The deploy version-skew pin is unimplemented: AgentMetadata::agent_version exists, but nothing consults it when a run resumes.",
-      cite: "tests/test_rt_agent_session_identity_and_admission.cpp:434",
-      href: gh("tests/test_rt_agent_session_identity_and_admission.cpp"),
+      cite: "tests/rt/agent_session/test_rt_agent_session_identity_and_admission.cpp:434",
+      href: gh("tests/rt/agent_session/test_rt_agent_session_identity_and_admission.cpp"),
     },
     {
       id: "du-proofs",
@@ -147,8 +147,8 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       title: "What each durability test actually asserts",
       body:
         "Every test below is a standalone int main() with a file-local check(cond, label): the label is the claim, and each one runs deterministically with no live model and no network. Read the third column as the honest scope line — several of these are genuinely narrower than the 019 §7 gate they sit closest to, and are listed that way rather than rounded up.",
-      cite: "tests/test_rt_agent_session_snapshot.cpp",
-      href: gh("tests/test_rt_agent_session_snapshot.cpp"),
+      cite: "tests/rt/agent_session/test_rt_agent_session_snapshot.cpp",
+      href: gh("tests/rt/agent_session/test_rt_agent_session_snapshot.cpp"),
     },
     {
       id: "du-gaps",
@@ -178,7 +178,7 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       tag: "rt::WorkflowCheckpointManager<StoreT> — ADR-149, issue #28",
       title: "Bản đối ứng ở cấp workflow: attach() để tự checkpoint, resume_or_start() để tiếp tục một run",
       body:
-        "AgentSessionRecord ở trên là sổ sách theo phạm vi session; một run Workflow có câu chuyện bền vững riêng của nó, đi trên cùng một khái niệm SessionStore thay vì bịa ra một cái thứ hai. WorkflowCheckpointManager<StoreT> là một lớp bọc mỏng quanh save_workflow_checkpoint()/load_workflow_checkpoint() vốn đã có thật: attach(sup) cài một hook checkpoint tự động lưu sau mỗi round, nên caller không bao giờ phải tự viết một closure set_checkpoint_hook(), còn resume_or_start(store, run_id, sup, graph, bodies) là \"tiếp tục nếu tồn tại checkpoint cho run_id, nếu không thì bắt đầu mới\" gói trong một lệnh gọi, trả về cái nào đã xảy ra. examples/20_workflow_checkpoint_resume.cpp chứng minh toàn bộ câu chuyện bằng cách thực sự vứt bỏ WorkflowSupervisor gốc và handle FileSessionStore gốc, chứ không chỉ đọc lại cùng đối tượng: một workflow treo tại một cổng request_port tiếp tục, từ không gì khác ngoài một store trên đĩa vừa mở lại và chính id của run, vào một supervisor hoàn toàn mới đang giữ đúng cùng interaction đang mở mà run gốc để lại. tests/test_rt_workflow_checkpoint_manager.cpp thêm vào điểm bảo vệ từ-chối-đóng mà ví dụ đơn giản chỉ-toàn-hàm này không thực hiện: một executor kiểu agent hay sub_workflow bị từ chối thay vì bị checkpoint thiếu sót một cách âm thầm.",
+        "AgentSessionRecord ở trên là sổ sách theo phạm vi session; một run Workflow có câu chuyện bền vững riêng của nó, đi trên cùng một khái niệm SessionStore thay vì bịa ra một cái thứ hai. WorkflowCheckpointManager<StoreT> là một lớp bọc mỏng quanh save_workflow_checkpoint()/load_workflow_checkpoint() vốn đã có thật: attach(sup) cài một hook checkpoint tự động lưu sau mỗi round, nên caller không bao giờ phải tự viết một closure set_checkpoint_hook(), còn resume_or_start(store, run_id, sup, graph, bodies) là \"tiếp tục nếu tồn tại checkpoint cho run_id, nếu không thì bắt đầu mới\" gói trong một lệnh gọi, trả về cái nào đã xảy ra. examples/20_workflow_checkpoint_resume.cpp chứng minh toàn bộ câu chuyện bằng cách thực sự vứt bỏ WorkflowSupervisor gốc và handle FileSessionStore gốc, chứ không chỉ đọc lại cùng đối tượng: một workflow treo tại một cổng request_port tiếp tục, từ không gì khác ngoài một store trên đĩa vừa mở lại và chính id của run, vào một supervisor hoàn toàn mới đang giữ đúng cùng interaction đang mở mà run gốc để lại. tests/workflow/test_rt_workflow_checkpoint_manager.cpp thêm vào điểm bảo vệ từ-chối-đóng mà ví dụ đơn giản chỉ-toàn-hàm này không thực hiện: một executor kiểu agent hay sub_workflow bị từ chối thay vì bị checkpoint thiếu sót một cách âm thầm.",
       cite: "include/agentengine/rt/workflow_checkpoint_manager.hpp",
       href: gh("include/agentengine/rt/workflow_checkpoint_manager.hpp"),
     },
@@ -219,8 +219,8 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       title: "make_payment, bị ngắt rồi phát lại, với khóa thật ở từng bước",
       body:
         "Đường tua-lại-rồi-chạy-lại được chứng minh đầu-cuối trên một lời gọi invoke_tool() thật trong test_effect_reexecution.cpp: một MakePaymentTool khai báo EffectClass<at_most_once> chạy một lần, rồi chính lời gọi đó được chạy lại dưới chính khóa idempotency cũ. Không có xác nhận của người vận hành, authorize_reexecution() từ chối trước khi pipeline được vào lần thứ hai, với mã ổn định effect.reexecution_requires_ack. Có xác nhận rồi thì lần chạy lại diễn ra và bản ghi kiểm toán của nó mang đúng khóa cũ — nhận diện được là một lần lặp của một hiệu ứng, không phải một lời gọi mới không liên quan. Điều bài kiểm thử không làm, và trang này cũng không tuyên bố, là tự tiêm lỗi: sự gián đoạn ở đây là thủ công, không phải một kill -9.",
-      cite: "tests/test_effect_reexecution.cpp:109",
-      href: gh("tests/test_effect_reexecution.cpp"),
+      cite: "tests/core/tools/test_effect_reexecution.cpp:109",
+      href: gh("tests/core/tools/test_effect_reexecution.cpp"),
     },
     {
       id: "du-interactions",
@@ -249,8 +249,8 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       title: "Khởi động lại trên cùng một node là có thật; phần còn lại của 019 §4 thì không",
       body:
         "Khởi động lại tiến trình là đường phục hồi duy nhất có bộ máy thật đứng sau: một store, một bản ghi, một lần khôi phục, và một dãy run không bao giờ lặp lại chính nó. Run độc là một chính sách chứ chưa phải cơ chế — vị từ PoisonRunPolicy<N> mà 019 §4 yêu cầu không có chỗ trong bất kỳ header nào được xuất bản; nó chỉ còn sống dưới dạng một bản sao không phụ thuộc bên trong một bài kiểm thử, bài này lái một chat client luôn hỏng và xác nhận việc cách ly xảy ra đúng tại ngưỡng với lịch sử còn nguyên. Việc cách ly sau đó là quyết định sổ sách của host, không bao giờ là một lời gọi vào session. Mất node hoàn toàn không được xử lý, và chính 019 §4 nói vậy trong văn bản của nó: ADR-037 đã bỏ FenceToken của Quark và không gì thay thế, nên trong cây mã này không có fence, epoch hay lease nào, và năm tệp kiểm thử về mất node/fencing đã bị rút lại như một khoảng trống vĩnh viễn được chấp nhận. Chính sách ghim phiên bản khi triển khai thì chưa hiện thực: AgentMetadata::agent_version có tồn tại, nhưng không gì tra tới nó khi một run tiếp tục.",
-      cite: "tests/test_rt_agent_session_identity_and_admission.cpp:434",
-      href: gh("tests/test_rt_agent_session_identity_and_admission.cpp"),
+      cite: "tests/rt/agent_session/test_rt_agent_session_identity_and_admission.cpp:434",
+      href: gh("tests/rt/agent_session/test_rt_agent_session_identity_and_admission.cpp"),
     },
     {
       id: "du-proofs",
@@ -259,8 +259,8 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       title: "Mỗi bài kiểm thử về tính bền vững thực sự khẳng định điều gì",
       body:
         "Mọi bài kiểm thử dưới đây là một int main() độc lập với một hàm check(cond, label) cục bộ trong tệp: nhãn chính là tuyên bố, và mỗi bài chạy tất định, không model thật, không mạng. Hãy đọc cột thứ ba như dòng phạm vi trung thực — vài bài trong số này thực sự hẹp hơn cổng 019 §7 mà chúng gần nhất, và được liệt kê đúng như vậy thay vì được làm tròn lên.",
-      cite: "tests/test_rt_agent_session_snapshot.cpp",
-      href: gh("tests/test_rt_agent_session_snapshot.cpp"),
+      cite: "tests/rt/agent_session/test_rt_agent_session_snapshot.cpp",
+      href: gh("tests/rt/agent_session/test_rt_agent_session_snapshot.cpp"),
     },
     {
       id: "du-gaps",
@@ -622,10 +622,10 @@ export interface GapRow {
 export const durabilityGaps: Record<Lang, GapRow[]> = {
   en: [
     { item: "G1 — kill -9 at every checkpoint boundary, resume output identical to the control", state: "Met for workflows (20/20 boundaries, byte-identical), not for sessions: the session record carries no history, and ADR-037 retired test_session_restart_identical_resume.cpp as an accepted gap rather than porting it.", cite: "decisions/ADR-037-remove-quark-as-core-runtime.md:237" },
-    { item: "G2 — an interrupted idempotent effect retried exactly once over 10⁴ fault-injected trials", state: "No fault injector exists anywhere in tests/. The journal proves the primitive; nothing drives it under injected duplication or delay.", cite: "tests/test_rt_effect_journal.cpp:1" },
+    { item: "G2 — an interrupted idempotent effect retried exactly once over 10⁴ fault-injected trials", state: "No fault injector exists anywhere in tests/. The journal proves the primitive; nothing drives it under injected duplication or delay.", cite: "tests/rt/test_rt_effect_journal.cpp:1" },
     { item: "G3 — a suspended run's resident cost measured by census: no activation, no sandbox, no connection, no thread", state: "No census test exists; the M4-era test_suspended_zero_resources_e2e.cpp was retired with Quark. Structurally an rt::AgentSession owns no thread or timer at all — but that is an argument from the code, not the measurement 019 asks for.", cite: "decisions/ADR-037-remove-quark-as-core-runtime.md:237" },
     { item: "G4 — 10⁶ reminders due simultaneously wake without a thundering herd", state: "Unreachable: there is no reminder mechanism. 019 §2 and G4 both still say the durable reminders \"carried over intact\" into rt::, and the code disagrees — ADR-037 deleted Quark's ReminderService and rt:: has never had any timer primitive; schedule_wakeup is host-polled.", cite: "include/agentengine/rt/agent_session.hpp:148" },
-    { item: "G5 — a poison run quarantined after its bound, state intact, operator-visible reason", state: "Half met. The bound-and-preserve behaviour is proven, but PoisonRunPolicy<N> exists only as a copy inside a test file — no shipping header defines it, and nothing surfaces an operator-visible reason.", cite: "tests/test_rt_agent_session_identity_and_admission.cpp:108" },
+    { item: "G5 — a poison run quarantined after its bound, state intact, operator-visible reason", state: "Half met. The bound-and-preserve behaviour is proven, but PoisonRunPolicy<N> exists only as a copy inside a test file — no shipping header defines it, and nothing surfaces an operator-visible reason.", cite: "tests/rt/agent_session/test_rt_agent_session_identity_and_admission.cpp:108" },
     { item: "G6 — an at-most-once effect interrupted at the ambiguous instant surfaces indeterminate, 10⁴ trials", state: "Deliberately not built. unconfirmed_effect_intents() answers which intents lack an outcome — a read, never a decision. The decision layer is named as separately-scoped work.", cite: "include/agentengine/rt/effect_journal.hpp:30" },
     { item: "The effect journal is not wired into the turn loop", state: "journal_effect_intent()/journal_effect_outcome()/authorize_reexecution() have no caller outside their own tests. run_rounds() derives and audits the idempotency key on every call, but journals nothing. A host wanting 019 §3's discipline must call the journal itself.", cite: "include/agentengine/rt/agent_session.hpp:1512" },
     { item: "Node loss, fencing, leases, epochs", state: "None exist, by decision. 019 §4 now names this a real, permanent gap; there is no multi-node story and no compare-and-set primitive in either store.", cite: "019-Durability-and-Long-Running-Agents.md:73" },
@@ -635,10 +635,10 @@ export const durabilityGaps: Record<Lang, GapRow[]> = {
   ],
   vi: [
     { item: "G1 — kill -9 tại mọi mốc checkpoint, kết quả tiếp tục giống hệt bản đối chứng", state: "Đạt cho workflow (20/20 mốc, giống hệt từng byte), chưa đạt cho session: bản ghi session không mang lịch sử, và ADR-037 đã rút test_session_restart_identical_resume.cpp như một khoảng trống được chấp nhận thay vì chuyển đổi nó.", cite: "decisions/ADR-037-remove-quark-as-core-runtime.md:237" },
-    { item: "G2 — hiệu ứng idempotent bị ngắt được thử lại đúng một lần qua 10⁴ lần tiêm lỗi", state: "Không có bộ tiêm lỗi nào trong tests/. Nhật ký chứng minh nguyên liệu; không gì lái nó dưới cảnh nhân bản hay trì hoãn được tiêm vào.", cite: "tests/test_rt_effect_journal.cpp:1" },
+    { item: "G2 — hiệu ứng idempotent bị ngắt được thử lại đúng một lần qua 10⁴ lần tiêm lỗi", state: "Không có bộ tiêm lỗi nào trong tests/. Nhật ký chứng minh nguyên liệu; không gì lái nó dưới cảnh nhân bản hay trì hoãn được tiêm vào.", cite: "tests/rt/test_rt_effect_journal.cpp:1" },
     { item: "G3 — chi phí cư trú của một run đang treo đo bằng kiểm đếm: không activation, không sandbox, không kết nối, không luồng", state: "Không có bài kiểm đếm nào; test_suspended_zero_resources_e2e.cpp thời M4 đã bị rút cùng Quark. Về cấu trúc, một rt::AgentSession không sở hữu luồng hay bộ đếm giờ nào — nhưng đó là lập luận từ mã, không phải phép đo mà 019 yêu cầu.", cite: "decisions/ADR-037-remove-quark-as-core-runtime.md:237" },
     { item: "G4 — 10⁶ nhắc giờ cùng đến hạn mà không gây bão đánh thức", state: "Không thể chạm tới: không có cơ chế nhắc giờ nào. Cả 019 §2 lẫn G4 vẫn nói rằng phần nhắc giờ bền vững đã \"được chuyển nguyên vẹn\" sang rt::, còn mã thì nói ngược lại — ADR-037 đã xóa ReminderService của Quark và rt:: chưa từng có nguyên liệu đếm giờ nào; schedule_wakeup do host hỏi vòng.", cite: "include/agentengine/rt/agent_session.hpp:148" },
-    { item: "G5 — một run độc bị cách ly sau ngưỡng, trạng thái còn nguyên, lý do người vận hành thấy được", state: "Đạt một nửa. Hành vi dừng-tại-ngưỡng và giữ nguyên trạng thái đã được chứng minh, nhưng PoisonRunPolicy<N> chỉ tồn tại như một bản sao trong một tệp kiểm thử — không header xuất bản nào định nghĩa nó, và không gì nêu ra lý do cho người vận hành thấy.", cite: "tests/test_rt_agent_session_identity_and_admission.cpp:108" },
+    { item: "G5 — một run độc bị cách ly sau ngưỡng, trạng thái còn nguyên, lý do người vận hành thấy được", state: "Đạt một nửa. Hành vi dừng-tại-ngưỡng và giữ nguyên trạng thái đã được chứng minh, nhưng PoisonRunPolicy<N> chỉ tồn tại như một bản sao trong một tệp kiểm thử — không header xuất bản nào định nghĩa nó, và không gì nêu ra lý do cho người vận hành thấy.", cite: "tests/rt/agent_session/test_rt_agent_session_identity_and_admission.cpp:108" },
     { item: "G6 — hiệu ứng at-most-once bị ngắt đúng khoảnh khắc bất định thì phải nêu là bất định, 10⁴ lần thử", state: "Cố ý chưa xây. unconfirmed_effect_intents() trả lời ý định nào thiếu kết cục — một phép đọc, không bao giờ là một quyết định. Tầng quyết định được nêu tên như phần việc có phạm vi riêng.", cite: "include/agentengine/rt/effect_journal.hpp:30" },
     { item: "Nhật ký hiệu ứng chưa được nối vào vòng lặp lượt", state: "journal_effect_intent()/journal_effect_outcome()/authorize_reexecution() không có caller nào ngoài chính bài kiểm thử của chúng. run_rounds() suy ra và kiểm toán khóa idempotency ở mọi lời gọi, nhưng không ghi nhật ký gì. Host nào muốn kỷ luật của 019 §3 thì phải tự gọi nhật ký.", cite: "include/agentengine/rt/agent_session.hpp:1512" },
     { item: "Mất node, fencing, lease, epoch", state: "Không thứ nào tồn tại, theo quyết định. 019 §4 nay gọi đây là khoảng trống thật và vĩnh viễn; không có câu chuyện đa node và không có nguyên liệu so-sánh-rồi-đặt trong cả hai store.", cite: "019-Durability-and-Long-Running-Agents.md:73" },
@@ -843,7 +843,7 @@ export const workflowCheckpointResumeSnippet = `// examples/20_workflow_checkpoi
     // never a re-derived id -- the run picks up exactly where the original process left it
 }`;
 
-export const poisonRunPolicySnippet = `// tests/test_rt_agent_session_identity_and_admission.cpp:108-116,437-462 (trimmed) -- a faithful,
+export const poisonRunPolicySnippet = `// tests/rt/agent_session/test_rt_agent_session_identity_and_admission.cpp:108-116,437-462 (trimmed) -- a faithful,
 // dependency-free copy of agentengine::PoisonRunPolicy<N> (core/agent_session.hpp) -- see the
 // test file's own banner for why it's copied rather than included
 template <std::uint32_t MaxAttempts>

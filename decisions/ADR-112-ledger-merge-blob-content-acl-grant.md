@@ -7,7 +7,7 @@
   agent, and not yet re-verified on Linux.
 - **Date:** 2026-08-29.
 - **Scope:** `include/agentengine/core/ledger.hpp` (`Ledger<Store>::merge()` body only — no signature
-  change, no new Kind tag, no other file touched) and `tests/test_ledger.cpp` (case [4] extended with
+  change, no new Kind tag, no other file touched) and `tests/core/ledger/test_ledger.cpp` (case [4] extended with
   two new checks: a positive proof the new grant works, and a negative control proving it doesn't
   over-widen to an unrelated identity).
 - **Related specs:** `include/agentengine/core/ledger.hpp`'s own `merge()` — specifically the
@@ -56,7 +56,7 @@ that one digest (an already-authorized principal can still use `mark_digest_shar
 
 ## 3. Verification
 
-`tests/test_ledger.cpp` case [4] extended, not just re-run:
+`tests/core/ledger/test_ledger.cpp` case [4] extended, not just re-run:
 
 - **Positive proof**: after the existing tree-level checks (`get_tree_safe()`/`head_tree_digest()` for
   `owner` post-merge), a new `ledger.get_blob_safe(*blob2_r, owner)` call is asserted to succeed —

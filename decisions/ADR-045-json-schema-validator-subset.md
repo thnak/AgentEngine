@@ -119,7 +119,7 @@ ever reached a test, not found by one.
 
 ## 6. Evidence
 
-`tests/test_json_schema_validator.cpp` (new file, 22 checks):
+`tests/core/json/test_json_schema_validator.cpp` (new file, 22 checks):
 
 - **V-1**: a genuinely valid instance produces zero violations — the positive control every negative
   check below needs (022 §5).

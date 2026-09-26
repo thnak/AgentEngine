@@ -19,7 +19,7 @@
 // assigns those to interpreter-level mediation at the point of use (open/socket byte counters), and
 // a Job Object has no native primitive for any of the three.
 //
-// MEASURED FINDING (tests/test_job_object_limits.cpp test_job_time_limit, 11-run sample, this
+// MEASURED FINDING (tests/backends/native_jail/test_job_object_limits.cpp test_job_time_limit, 11-run sample, this
 // session): JOB_OBJECT_LIMIT_JOB_TIME (the mechanism behind ResourceLimits::cpu_ms) is NOT a
 // reliable enforcement point. Across 11 runs of a 100%-CPU-bound child under a 500ms job-time
 // budget: it auto-terminated the process (STATUS_QUOTA_EXCEEDED) in only 3/11 runs, with the

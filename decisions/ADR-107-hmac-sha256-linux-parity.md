@@ -16,7 +16,7 @@
 - **Date:** 2026-08-29.
 - **Scope:** New `include/agentengine/detail/sha256_posix.hpp` (a shared, header-only SHA-256 primitive
   factored OUT of `src/core/worktree_digest_posix.cpp`, not newly invented), new `src/trust/hmac_posix.cpp`
-  (the actual HMAC-SHA256 Linux implementation), new `tests/test_hmac_sha256.cpp` (a dedicated,
+  (the actual HMAC-SHA256 Linux implementation), new `tests/trust/test_hmac_sha256.cpp` (a dedicated,
   portable RFC 4231 regression test, wired on both platforms). `src/core/worktree_digest_posix.cpp`
   refactored (not rewritten) to delegate to the shared primitive. `CMakeLists.txt`: a new
   `agentengine_hmac` static library, built on both platforms, that `agentengine_capability_token`
@@ -131,7 +131,7 @@ and `agentengine_capability_token` (still `WIN32`-only, unchanged in every other
 the truly-shared primitive (HMAC-SHA256) portable without touching the genuinely-Windows-only code next
 to it, and without ADR-005's cross-process-token design gaining a Linux surface it never asked for.
 
-**A missing link dependency, found and fixed as a byproduct.** `tests/test_session_builder.cpp`'s own
+**A missing link dependency, found and fixed as a byproduct.** `tests/core/context/test_session_builder.cpp`'s own
 B7 case builds a real session against `QuarantineSecretStore` — but `test_session_builder`'s CMake
 target had never linked anything that provides `hmac_sha256` at all, on EITHER platform (not just
 Linux). This was a real, independent, pre-existing bug (an inline, non-template C++ function is only
@@ -164,14 +164,14 @@ list) rather than merely disclosed, since it required no design decision.
   read caught). Result: **7/7 PASS**, byte-for-byte, including Test Case 6/7's key-longer-than-block-size
   `K'=H(K)` branch and Test Case 5's published 128-bit truncated compare. Plus 5 additional edge-case
   checks (empty key, empty data, key exactly 64 bytes, determinism, different-keys-differ) — **12/12
-  total PASS**. This exact vector set was then also written as the permanent `tests/test_hmac_sha256.cpp`
+  total PASS**. This exact vector set was then also written as the permanent `tests/trust/test_hmac_sha256.cpp`
   regression test (wired into `tests/CMakeLists.txt`, both platforms unconditionally) — built and run
   via the project's own `ctest`, passing.
 - **C28:** Temporarily corrupted `hmac_posix.cpp`'s ipad constant (`0x36` → `0x37`) and reran the same
   repro: **all 7 RFC 4231 vectors failed** (5 passed — the platform-agnostic edge checks that don't
   depend on the exact byte value — 7 failed). Restored from a byte-for-byte backup and confirmed via
   `diff` that the restored file was IDENTICAL to the pre-corruption original.
-- **C29:** `tests/test_worktree_object_store.cpp` (the existing empty-string/"abc" known-answer test)
+- **C29:** `tests/worktree/test_worktree_object_store.cpp` (the existing empty-string/"abc" known-answer test)
   built and passed unchanged after the refactor. (The red-team round, §5, independently extended this
   with 9 more cross-checked digests spanning both padding-block boundaries.)
 - **C30:** `cmake --build build-linux --target test_hmac_sha256 test_session_builder agentengine_
@@ -225,7 +225,7 @@ uncommitted diff via `git checkout --`.
   clean, `test_hmac_sha256` still passes, and the fix was confirmed byte-identical-output on every real
   input tested (RFC vectors, edge cases, extra Python-cross-checked vectors) before vs. after.
 - **RFC 4231 re-derivation, independent of this session's own transcription**: fetched the RFC text
-  independently, manually reconciled all 7 numbered vectors against `tests/test_hmac_sha256.cpp` — all
+  independently, manually reconciled all 7 numbered vectors against `tests/trust/test_hmac_sha256.cpp` — all
   7 match exactly — then cross-checked all 7 again via Python's own independent `hmac`/`hashlib` stdlib
   implementation (a completely separate codebase from both this project's and the RFC's own published
   values) — all 7 match.
@@ -262,7 +262,7 @@ built on the existing `worktree_digest_posix.cpp` SHA-256 primitive, factored in
 `agentengine_hmac` CMake library rather than porting `agentengine_capability_token` as a whole — that
 library's other three files are genuinely Windows-only (`BCryptGenRandom`), a distinct, larger,
 deliberately out-of-scope question belonging to ADR-005's own design, not this one. Add a real, dedicated
-RFC 4231 regression test (`tests/test_hmac_sha256.cpp`), wired for both platforms since the vectors
+RFC 4231 regression test (`tests/trust/test_hmac_sha256.cpp`), wired for both platforms since the vectors
 exercise the portable interface itself. Fix the `test_session_builder` missing-link bug found as a
 byproduct, since it needed no design decision. Fix the red-team's found integer-overflow defect directly,
 since it was unambiguously a real bug with an obvious, low-risk fix.

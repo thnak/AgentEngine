@@ -31,8 +31,8 @@ in three composite types that all do "merge N `ContextProvider`s into one" in sl
 
 Fully subsumed by `ComposedContextProvider<Ms...>` since the latter was added
 (`efdac09`). Grep confirms only two real (non-comment) usages left, both regression/e2e tests for a
-historical wire-ordering bug (`tests/test_rt_agent_session_real_backend.cpp`,
-`tests/test_rt_agent_session_skills_live_e2e.cpp`).
+historical wire-ordering bug (`tests/rt/agent_session/test_rt_agent_session_real_backend.cpp`,
+`tests/rt/agent_session/test_rt_agent_session_skills_live_e2e.cpp`).
 
 Its template parameter order is `<HistoryProviderT, SkillsProviderT>` but its constructor deliberately
 pushes **skills first, history second** onto the wire (a documented, intentional inversion — the type's
@@ -183,7 +183,7 @@ is exactly right, but nothing in the tree demonstrates it end-to-end for a third
   writing and wiring a custom `ContextProvider` from scratch — RFC 005 §5 documents the concept's shape
   and its built-in kinds, not an authoring walkthrough.
 - The only concrete "here's a type that satisfies the concept without being a built-in kind" reference
-  in the whole tree is a hand-rolled mock conformer inside `tests/test_composed_context_provider.cpp` —
+  in the whole tree is a hand-rolled mock conformer inside `tests/core/context/test_composed_context_provider.cpp` —
   not surfaced as a guide or sample anywhere a consumer-dev would find it.
 
 Minor, non-blocking naming note found alongside this: `web/marketing/api/providers.html` already exists
@@ -268,7 +268,7 @@ might surface. It doesn't, anywhere in a real run:
 
 - `assemble_context()` (`context_assembly.hpp:165-`) genuinely records every drop into `out.drops` —
   the mechanism to know a drop happened exists and is unit-tested in isolation
-  (`tests/test_context_assembly.cpp`: B3-R1 etc.).
+  (`tests/core/context/test_context_assembly.cpp`: B3-R1 etc.).
 - But **every real composite that wraps it throws `.drops` away**, identically, in three places:
   `ComposedContextProvider::on_context()` (`composed_context_provider.hpp:67-71`),
   `HistoryAndSkillsProvider::on_context()` (`history_and_skills_provider.hpp:77-81`), and
@@ -667,7 +667,7 @@ convenience code, or moving this piece of `session_builder.hpp` out of `core/` i
 `conformance/README.md` is the only file in the directory. CONVENTIONS.md's layout table lists
 `conformance/` as load-bearing and distinct from `tests/`, and its protocol-code rules require conformance
 suites to be "tagged with [the protocol] revision." Real conformance-relevant proofs exist —
-`tests/test_rt_cross_surface_equivalence.cpp` is the actual 013 §6 G3 proof (AG-UI/A2A projection
+`tests/rt/test_rt_cross_surface_equivalence.cpp` is the actual 013 §6 G3 proof (AG-UI/A2A projection
 equivalence) — but they're filed as ordinary `tests/` entries with no revision tag, not where the project's
 own binding contract says they should live. **Disposition: tracked, not closed.** Not "no conformance work
 exists" — it's a location/naming mismatch that makes `conformance/` misleading to a reader trusting the
@@ -789,7 +789,7 @@ say, and should have: staying in the default build target is not oversight, it's
 decision**. `CMakeLists.txt:86-113` builds `agentengine_shell_runner` as a deliberately separate STATIC
 library specifically so ADR-001 §7 finding 1's fix — Sh-S1's "zero references to a process-creation
 primitive" check — can be verified at link-target granularity against the actual built artifact
-(`tests/test_shell_runner_proof.cpp`), not against prose. Line 113's own comment calls out
+(`tests/backends/native_jail/test_shell_runner_proof.cpp`), not against prose. Line 113's own comment calls out
 `real_filesystem_adapter.{hpp,cpp}` by name as "off-limits to reuse" — ADR-001 decision 4 — precisely
 because the mediated replacement (`agentengine_mediated_shell_runner`, same file, lines ~106-118) is
 required to share *no* source with this proof target. So "why is this still compiled" is not an open
@@ -862,7 +862,7 @@ enforced elsewhere (`mount_read`), not because it invents new security policy).
 resolved `cap::FsRead` grant (not just success/failure); `cat` checks `data->size()` against
 `granted.size_cap_bytes` after the read and fails closed with `shell.cat_exceeds_size_cap` (a
 catchable, ordinary command failure, not a hard stop — same treatment as the existing quota-exceeded
-errors) if exceeded. New regression test `E3-Q6` (`tests/test_mediated_shell_runner_smoke.cpp`) proves
+errors) if exceeded. New regression test `E3-Q6` (`tests/backends/native_jail/test_mediated_shell_runner_smoke.cpp`) proves
 an oversized file is refused and never reaches `stdout_text`; the whole `test_mediated_shell_runner_smoke`
 suite plus its two dependents (`test_worktree_mount_sync`, `test_mediated_shell_runner_hostile_corpus`)
 still pass in full. **Known compromise, disclosed, not fixed here**: the check runs AFTER
@@ -883,7 +883,7 @@ checks `GetFileSizeEx` on that handle against `granted_read.size_cap_bytes` and 
 still has that residual (`FileSystemAdapter`'s interface has no stat-only probe, out of scope to widen
 that interface for this fix). New regression tests `E2-C11` (oversized file → `open()` itself raises
 `PermissionError`, content never reaches guest code) and `E2-C12` (positive control: a cap with
-headroom still succeeds) added to `tests/test_mediated_python_runner_smoke.cpp`; full suite re-run and
+headroom still succeeds) added to `tests/python/test_mediated_python_runner_smoke.cpp`; full suite re-run and
 passes (Release config — this target has no vendored Debug-mode CPython lib, a pre-existing,
 unrelated-to-this-fix build environment constraint, confirmed by reproducing the same link failure on
 the pre-fix tree via `git stash`).
@@ -918,7 +918,7 @@ reviewed and approved before any code was written, plus a new ADR
 
 **Finding A (`HistoryAndSkillsProvider` redundant) — closed.** Deleted
 (`include/agentengine/core/history_and_skills_provider.hpp`). Its two real call sites
-(`tests/test_rt_agent_session_real_backend.cpp`, `tests/test_rt_agent_session_skills_live_e2e.cpp`)
+(`tests/rt/agent_session/test_rt_agent_session_real_backend.cpp`, `tests/rt/agent_session/test_rt_agent_session_skills_live_e2e.cpp`)
 migrated to `ComposedContextProvider<Skills, History>` — args reordered (skills first), not left in the
 old `<History, Skills>` order, since `ComposedContextProvider`'s wire order is its declared order,
 always, unlike the old type's own hard-coded skills-first constructor. The real ordering regression
@@ -931,7 +931,7 @@ real wire body.
 `engaged_`/`contributors_` reset, not a naive `=default` move) verbatim. `AgentSession::fork_from()`'s
 plain `history_provider_ = source.history_provider_;` is now a compile error for any session using this
 type as `HistoryProviderT`, closing the I1/I4-adjacent aliasing gap the tracker's own live-reproduced
-probe found. New regression test (`tests/test_composed_context_provider.cpp` Part 3) proves this
+probe found. New regression test (`tests/core/context/test_composed_context_provider.cpp` Part 3) proves this
 directly on the type itself, not just through `ComposedQuickstartSessionBuilder`'s own indirection:
 `static_assert(!std::is_copy_constructible_v<...>)`, plus a runtime move-no-aliasing proof (mutate via
 one instance, move it, confirm the moved-from instance is genuinely `not_engaged` and the moved-to
@@ -942,7 +942,7 @@ instance carries the real content).
 "auto-engage the default constructor when every `Ms` is default-constructible" design silently broke
 `ComposedQuickstartSessionBuilder::build()` for any real caller whose chosen providers happened to all
 be default-constructible (`.engage()` would fail with `already_engaged`), caught by
-`tests/test_session_builder.cpp`'s own pre-existing B22 test cascading into 5 failures before the fix.
+`tests/core/context/test_session_builder.cpp`'s own pre-existing B22 test cascading into 5 failures before the fix.
 Resolved by making default construction always start unengaged, unconditionally — matching
 `LazyComposedContextProvider`'s original, simpler behavior — with four call sites that relied on the old
 eager auto-engage ergonomics updated to call `.engage()` explicitly.
@@ -994,14 +994,14 @@ touched.
 `composed_context_provider.hpp`'s own file-top comment still described the "auto-engage when every `Ms`
 is default-constructible" design `ADR-074` §4 found broken and reverted — contradicting the constructor's
 own comment three lines below it. Corrected to match the real, shipped behavior (always starts unengaged).
-A second stale comment in `tests/test_composed_context_provider.cpp` making the same false claim about
+A second stale comment in `tests/core/context/test_composed_context_provider.cpp` making the same false claim about
 `ThreeWayProvider` was corrected too.
 
-**Verified clean**: `tests/test_context_assembly.cpp` (rewritten — proves the failure's class/code/attributed-contributor
+**Verified clean**: `tests/core/context/test_context_assembly.cpp` (rewritten — proves the failure's class/code/attributed-contributor
 plus an exactly-at-budget boundary case, in place of the old trim-proving assertions),
-`tests/test_composed_context_provider.cpp` (new Part 1b proves the composite propagates the failure;
+`tests/core/context/test_composed_context_provider.cpp` (new Part 1b proves the composite propagates the failure;
 Part 1a keeps the order/tool-survival/turn-end-fan-out coverage, now with budgets out of the way),
-`tests/test_context_provenance.cpp`/`tests/test_memory_provider.cpp` (signature-only migrations — neither
+`tests/core/context/test_context_provenance.cpp`/`tests/memory/test_memory_provider.cpp` (signature-only migrations — neither
 exercises a nonzero budget, confirmed unaffected). Full affected-target Debug rebuild and `ctest` run,
 zero failures.
 
@@ -1175,7 +1175,7 @@ deny (file/socket-dependent checks only), never a crash or silent wrong answer. 
 also explicitly out of scope for this pass, per the same spec.
 
 **One real, undisclosed-until-independent-verification bug found and fixed in this pass, worth naming as
-its own lesson**: `tests/test_agent_session_suspend_codeact_ask.cpp`'s B7 scenario (a residual-demonstration
+its own lesson**: `tests/rt/agent_session/test_agent_session_suspend_codeact_ask.cpp`'s B7 scenario (a residual-demonstration
 test for ADR-057 §4, unrelated in its own original intent to this redesign) silently hung the whole test
 run for the full 60s `ctest` timeout instead of failing cleanly — its old body assumed the mediated write
 it depends on always succeeds and always calls `session.open_interactions().front()` unconditionally; under

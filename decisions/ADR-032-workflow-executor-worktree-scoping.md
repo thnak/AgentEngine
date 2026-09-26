@@ -2,7 +2,7 @@
 
 **Status:** Judged (2026-08-14, project owner sign-off). Designed, red-teamed (independent pass via
 the `Agent` tool, findings in §3), implemented, and proven (real code + tests, §4). Re-verified at
-sign-off review: `tests/test_workflow_worktree_scoping.cpp` still passes in full (M1-M11), unaffected
+sign-off review: `tests/workflow/test_workflow_worktree_scoping.cpp` still passes in full (M1-M11), unaffected
 by ADR-037's later Quark removal (this ADR's own subsystem — sub-worktree/`sharing_mode` — never
 depended on the actor engine).
 
@@ -130,7 +130,7 @@ tracked future landmine).
 
 ## 6. Falsifiable claims and verdicts
 
-`tests/test_workflow_worktree_scoping.cpp`, eleven blocks, each tracing to a specific red-team
+`tests/workflow/test_workflow_worktree_scoping.cpp`, eleven blocks, each tracing to a specific red-team
 finding (cited in the test's own comments) rather than a generic happy-path sweep.
 
 | # | Claim | Verdict |
@@ -161,6 +161,6 @@ deterministic test-authoring bugs, both fixed the same day; see ADR-024 §6's ow
   (forwarded by `describe()`), and `validate_workflow`'s new `/`-in-id rejection.
 - `include/agentengine/workflow/worktree_scoping.hpp` (new) — `ExecutorWorktreeGrant`,
   `mint_executor_worktrees`, `resume_executor_worktrees`.
-- `tests/test_workflow_worktree_scoping.cpp` (new) — this ADR's §6 evidence.
+- `tests/workflow/test_workflow_worktree_scoping.cpp` (new) — this ADR's §6 evidence.
 - `tests/CMakeLists.txt` — registers the new test target (Windows-only, same real-`compute_digest`
   dependency as the other worktree tests it sits beside).

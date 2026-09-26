@@ -1,7 +1,7 @@
 # `wasm_ae_tool_fixture`
 
 A real, minimal `ae:tool` component, built for `decisions/ADR-010-wasm-component-host-manifest-
-capability-binding.md`'s prove phase (§7.2) and used by `tests/test_wasm_backend.cpp` (M2 tasks D3
+capability-binding.md`'s prove phase (§7.2) and used by `tests/plugin/test_wasm_backend.cpp` (M2 tasks D3
 and D5). Source owned and reviewed for this proof — not a fetched third-party binary, matching D1's
 provenance standard for anything that ends up linked or loaded.
 

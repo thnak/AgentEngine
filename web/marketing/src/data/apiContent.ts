@@ -683,7 +683,7 @@ struct WebSearchTool : agentengine::Tool<WebSearchTool> {
     using Args = SearchArgs;
     using Reply = SearchReply;
 };
-// tests/test_tool_json_schema.cpp — parsed and asserted as real JSON, not
+// tests/core/json/test_tool_json_schema.cpp — parsed and asserted as real JSON, not
 // substring-matched: a schema that's "textually plausible" but invalid JSON
 // would pass a substring check and fail every real consumer.`;
 
@@ -726,12 +726,12 @@ struct ToolDescriptor {
 };
 // include/agentengine/core/tool_pipeline.hpp:52-66`;
 
-// tests/test_rt_agent_session_live_multitool_e2e.cpp:166-255 (trimmed) -- four real tools registered
+// tests/rt/agent_session/test_rt_agent_session_live_multitool_e2e.cpp:166-255 (trimmed) -- four real tools registered
 // into ONE ToolTable and driven through a real AgentSession against a real remote model (live-e2e,
 // gated on AGENTENGINE_OPENROUTER_API_KEY -- not offline-deterministic like 01/02/03, but a REAL
 // multi-tool table, not a two-tool toy). get_time/stock_price are deliberate DISTRACTORS the model
 // must never call for this prompt -- proving tool SELECTION discipline, not just declaration.
-export const multiToolRegistrationSnippet = `// tests/test_rt_agent_session_live_multitool_e2e.cpp:166-255 (trimmed)
+export const multiToolRegistrationSnippet = `// tests/rt/agent_session/test_rt_agent_session_live_multitool_e2e.cpp:166-255 (trimmed)
 struct GetWeatherTool : Tool<GetWeatherTool, Capabilities<>, EffectClass<effect_class::pure>> {
     static constexpr std::string_view name = "get_weather";
     using Args = GetWeatherArgs;
@@ -767,11 +767,11 @@ struct StockPriceTool : Tool<StockPriceTool, Capabilities<>, EffectClass<effect_
 // value get_weather actually returned, and get_time/stock_price must NEVER be called for this
 // prompt -- a real sequential-dependency + distractor-discipline proof, not a toy round trip.`;
 
-// tests/test_json_schema_described.cpp:36-41 -- Described<T, "..."> is a SEPARATE channel from
+// tests/core/json/test_json_schema_described.cpp:36-41 -- Described<T, "..."> is a SEPARATE channel from
 // AE_JSON_SCHEMA's own bare field-name list (the note above): the description lives on the FIELD'S
 // OWN TYPE, not as a macro argument, so it survives exactly where a plain field can't carry one.
 // Described<std::optional<T>, "..."> composes correctly too -- still detected as NOT required.
-export const describedFieldSchemaSnippet = `// tests/test_json_schema_described.cpp:36-41
+export const describedFieldSchemaSnippet = `// tests/core/json/test_json_schema_described.cpp:36-41
 struct SearchArgs {
     Described<std::string, "The search query text"> query;
     int max_results = 5;                                             // no description -- plain field
@@ -919,7 +919,7 @@ session2.set_capabilities(&held2);
 auto r2 = drive(session2.start_run(StartRun{user_message("Write a note for me.")}));
 // r2 converges AND write_note's invoke() ran for real.`;
 
-export const capabilityDenialErrorSnippet = `// tests/test_tool_pipeline.cpp:208-221 -- what a denial actually LOOKS LIKE to the caller, not
+export const capabilityDenialErrorSnippet = `// tests/core/tools/test_tool_pipeline.cpp:208-221 -- what a denial actually LOOKS LIKE to the caller, not
 // just "an ordinary tool error" in the abstract
 CapabilitySet held;  // empty: no Entropy grant
 ToolCallRequest req{"call-4", "echo", *json::parse(R"({"message":"should not run"})"), false};
@@ -1072,7 +1072,7 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
       tag: "ContributorProvenance · Message::attribution · ToolDescriptor::attribution",
       title: "Attribution — closing OQ-18's own missing-provenance objection, without reopening OQ-18",
       body:
-        "OQ-18's own red-team gave five reasons a MAF-style chained ContextProvider pipeline doesn't work here; reason #1 was that neither Message nor ToolDescriptor recorded which contributor produced them, so a later provider reacting to an earlier one would be reacting to unattributed content. ADR-066 closes exactly that gap, structurally: assemble_context() (context_assembly.hpp) — the ONE seam every contribution already flows through unconditionally — stamps ContributorProvenance{contributor_index, contributor_type} onto every Message and ToolDescriptor it merges, whether the contributor cooperates or not. This was chosen over MAF's own shape (each provider self-stamps via ChatMessage.WithAgentRequestMessageSource) because a provider that overrides its own merge path, or a non-cooperating third-party WASM plugin conformer (009 §2), can skip a self-stamp; it cannot skip a stamp applied at a seam it doesn't control. A ContextProvider type opts in by declaring static constexpr std::string_view name — HasContextProviderName, reusing ADR-033's HasMiddlewareName pattern verbatim — required by make_context_provider_descriptor<ProviderT>() for any conformer routed through multi-contributor composition (AgentSession's own single-provider slot doesn't need it). The same pass closed a real, separate side-channel: a forged content_origin::user claim ('a human literally typed this') on text that isn't a verbatim match against session_ctx.history is downgraded to content_origin::external — narrower than the design draft's original wording, which would have wrongly clamped SkillsProvider's own legitimate content_origin::system advertisement (skill_provider.hpp:136) too; every origin besides ::user is left exactly as the contributor set it. Proven by tests/test_context_provenance.cpp (16 checks) with an adversarial conformer forging both a user-origin message and unstamped output, and end to end by tests/test_rt_agent_session_context_provenance.cpp (13 checks) through a real rt::AgentSession run inspecting the actual outbound ChatRequest. Named, not silently closed: content_origin::system/::assistant/::tool forgery by a genuinely compromised (not merely untrusted) conformer is a different, broader threat model this doesn't address; a HistoryProvider<Summarize<N,SummarizerT>> synthesized summary still inherits ::assistant with nothing marking it as a summary; attribution does not yet survive a JSON round-trip through rt/message_codec.hpp, so it does not currently persist across a checkpoint/restart.",
+        "OQ-18's own red-team gave five reasons a MAF-style chained ContextProvider pipeline doesn't work here; reason #1 was that neither Message nor ToolDescriptor recorded which contributor produced them, so a later provider reacting to an earlier one would be reacting to unattributed content. ADR-066 closes exactly that gap, structurally: assemble_context() (context_assembly.hpp) — the ONE seam every contribution already flows through unconditionally — stamps ContributorProvenance{contributor_index, contributor_type} onto every Message and ToolDescriptor it merges, whether the contributor cooperates or not. This was chosen over MAF's own shape (each provider self-stamps via ChatMessage.WithAgentRequestMessageSource) because a provider that overrides its own merge path, or a non-cooperating third-party WASM plugin conformer (009 §2), can skip a self-stamp; it cannot skip a stamp applied at a seam it doesn't control. A ContextProvider type opts in by declaring static constexpr std::string_view name — HasContextProviderName, reusing ADR-033's HasMiddlewareName pattern verbatim — required by make_context_provider_descriptor<ProviderT>() for any conformer routed through multi-contributor composition (AgentSession's own single-provider slot doesn't need it). The same pass closed a real, separate side-channel: a forged content_origin::user claim ('a human literally typed this') on text that isn't a verbatim match against session_ctx.history is downgraded to content_origin::external — narrower than the design draft's original wording, which would have wrongly clamped SkillsProvider's own legitimate content_origin::system advertisement (skill_provider.hpp:136) too; every origin besides ::user is left exactly as the contributor set it. Proven by tests/core/context/test_context_provenance.cpp (16 checks) with an adversarial conformer forging both a user-origin message and unstamped output, and end to end by tests/rt/agent_session/test_rt_agent_session_context_provenance.cpp (13 checks) through a real rt::AgentSession run inspecting the actual outbound ChatRequest. Named, not silently closed: content_origin::system/::assistant/::tool forgery by a genuinely compromised (not merely untrusted) conformer is a different, broader threat model this doesn't address; a HistoryProvider<Summarize<N,SummarizerT>> synthesized summary still inherits ::assistant with nothing marking it as a summary; attribution does not yet survive a JSON round-trip through rt/message_codec.hpp, so it does not currently persist across a checkpoint/restart.",
       cite: "include/agentengine/core/context_assembly.hpp:207",
       href: gh("include/agentengine/core/context_assembly.hpp"),
     },
@@ -1092,7 +1092,7 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
       tag: "ToolOptimizerProvider · search_tools / mount_tool / unmount_tool",
       title: "On-demand tool gating — the mount_skill trust shape applied to MCP and plugin tool sources",
       body:
-        "union_codeact_tools unions a connected MCP server's or loaded WASM plugin's entire tool surface unconditionally the moment it's bound — no on-demand gate exists for either source, unlike skills. ToolOptimizerProvider(ToolTable agent_tools, ToolSourceFetch mcp_tools_fetch, ToolSourceFetch plugin_tools_fetch, always_on = {}) is an ordinary ContextProvider closing that gap: on_context() rebuilds the full universe every turn (agent tools plus whatever each ToolSourceFetch closure returns right now, unioned through union_codeact_tools's own cross-source collision check), narrows it to always_on ∪ mounted_ via scope_tools_to_mounted_skills, and appends three always-on, zero-capability management tools reached through make_tool_descriptor_with_invoke — the exact MountSkillTool trust shape: Tool<T, EffectClass<pure>>, no Capabilities<...>, granting no new capability, only moving the visibility window over what's already pre-authorized. Two divergences from mount_skill's own precedent, named plainly: search_tools has none — 009 §8b found no need for search over skills or tools, so this stays a substring/keyword match, not embedding search; unmount_tool has none either — mount_skill never got one, and ADR-024 §8 named that an open, never-closed gap, closed here for tool sources specifically (core/mounted_skills_state.hpp itself is untouched). Because AgentSession already builds exactly one ToolTable per turn from this same on_context() output and reuses it for every invoke_tool() call that turn, a newly-mounted tool is genuinely uncallable until the next turn, never merely hidden — the same declare/invoke cadence ADR-024 §8 proved for skills, re-proven here end to end (tests/test_tool_optimizer_provider.cpp, 36 checks) through a real AgentSession run: a scripted mount_tool call, then the mounted tool present on the following outbound ChatRequest and absent from the one before it. currently_scoped_tools() is exposed for a caller that also feeds a CodeAct bridge's own tool union, so both surfaces stay sourced from the same instance rather than drifting apart.",
+        "union_codeact_tools unions a connected MCP server's or loaded WASM plugin's entire tool surface unconditionally the moment it's bound — no on-demand gate exists for either source, unlike skills. ToolOptimizerProvider(ToolTable agent_tools, ToolSourceFetch mcp_tools_fetch, ToolSourceFetch plugin_tools_fetch, always_on = {}) is an ordinary ContextProvider closing that gap: on_context() rebuilds the full universe every turn (agent tools plus whatever each ToolSourceFetch closure returns right now, unioned through union_codeact_tools's own cross-source collision check), narrows it to always_on ∪ mounted_ via scope_tools_to_mounted_skills, and appends three always-on, zero-capability management tools reached through make_tool_descriptor_with_invoke — the exact MountSkillTool trust shape: Tool<T, EffectClass<pure>>, no Capabilities<...>, granting no new capability, only moving the visibility window over what's already pre-authorized. Two divergences from mount_skill's own precedent, named plainly: search_tools has none — 009 §8b found no need for search over skills or tools, so this stays a substring/keyword match, not embedding search; unmount_tool has none either — mount_skill never got one, and ADR-024 §8 named that an open, never-closed gap, closed here for tool sources specifically (core/mounted_skills_state.hpp itself is untouched). Because AgentSession already builds exactly one ToolTable per turn from this same on_context() output and reuses it for every invoke_tool() call that turn, a newly-mounted tool is genuinely uncallable until the next turn, never merely hidden — the same declare/invoke cadence ADR-024 §8 proved for skills, re-proven here end to end (tests/core/context/test_tool_optimizer_provider.cpp, 36 checks) through a real AgentSession run: a scripted mount_tool call, then the mounted tool present on the following outbound ChatRequest and absent from the one before it. currently_scoped_tools() is exposed for a caller that also feeds a CodeAct bridge's own tool union, so both surfaces stay sourced from the same instance rather than drifting apart.",
       cite: "include/agentengine/core/tool_optimizer_provider.hpp:158",
       href: gh("include/agentengine/core/tool_optimizer_provider.hpp"),
     },
@@ -1132,7 +1132,7 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
       tag: "ContentReplayGateway<Inner>",
       title: "ContentReplayGateway<Inner> — discarding an already-settled response before it commits",
       body:
-        "Middleware<Ms...> above sees a response before it settles; ContentReplayGateway<Inner> answers a different question — a call already succeeded, and only after it settled does something flag the content itself (a leaked secret, a policy hit). Wraps any ModelCallGatewayLike (typically a ModelCallGateway<...> or a MiddlewareModelCallGateway<...>, unmodified) the same way those two already compose over each other — not a new hook on either, and not related to ReplayChatClient below, which replays a previously recorded run offline for deterministic testing; the two share only the English word. Not Retry<Policy> (002 §3) either: that retries because a call errored, while ContentReplayGateway retries because a call succeeded and what it produced must never be kept. The amended retry request appends ONLY a corrective instruction, never the discarded response's own content — re-including it would re-send whatever got the response discarded (a secret, for the motivating case) to the vendor a second time, inside the very call meant to correct it. Bounded two independent ways: max_replay_attempts (per call() invocation, resets every round) and session_lifetime_cap (across every call() this one gateway instance ever serves, for the life of the session) — exhausting either fails closed with a distinct error code rather than looping. Streaming is excluded structurally, not by a runtime check: the type declares no chat_stream() method at all, so there is no expression by which a caller could route a streaming call through it. Drops straight into AgentSession's existing ChatClientT slot with zero changes to agent_session.hpp, because AgentSession already accepts anything satisfying ChatClient<T> or ModelCallGatewayLike<T>. Proven by tests/test_content_replay_gateway.cpp and tests/test_rt_agent_session_content_replay.cpp, the latter through a real rt::AgentSession run confirming durable history holds only the final kept response, never a discarded one. Named, not glossed over: TokenBudget<N> accounting is explicitly not wired to this gateway's own discarded-attempt cost yet — a host that needs that number has to read it off the trace hook itself.",
+        "Middleware<Ms...> above sees a response before it settles; ContentReplayGateway<Inner> answers a different question — a call already succeeded, and only after it settled does something flag the content itself (a leaked secret, a policy hit). Wraps any ModelCallGatewayLike (typically a ModelCallGateway<...> or a MiddlewareModelCallGateway<...>, unmodified) the same way those two already compose over each other — not a new hook on either, and not related to ReplayChatClient below, which replays a previously recorded run offline for deterministic testing; the two share only the English word. Not Retry<Policy> (002 §3) either: that retries because a call errored, while ContentReplayGateway retries because a call succeeded and what it produced must never be kept. The amended retry request appends ONLY a corrective instruction, never the discarded response's own content — re-including it would re-send whatever got the response discarded (a secret, for the motivating case) to the vendor a second time, inside the very call meant to correct it. Bounded two independent ways: max_replay_attempts (per call() invocation, resets every round) and session_lifetime_cap (across every call() this one gateway instance ever serves, for the life of the session) — exhausting either fails closed with a distinct error code rather than looping. Streaming is excluded structurally, not by a runtime check: the type declares no chat_stream() method at all, so there is no expression by which a caller could route a streaming call through it. Drops straight into AgentSession's existing ChatClientT slot with zero changes to agent_session.hpp, because AgentSession already accepts anything satisfying ChatClient<T> or ModelCallGatewayLike<T>. Proven by tests/core/chat/test_content_replay_gateway.cpp and tests/rt/agent_session/test_rt_agent_session_content_replay.cpp, the latter through a real rt::AgentSession run confirming durable history holds only the final kept response, never a discarded one. Named, not glossed over: TokenBudget<N> accounting is explicitly not wired to this gateway's own discarded-attempt cost yet — a host that needs that number has to read it off the trace hook itself.",
       cite: "include/agentengine/core/content_replay_gateway.hpp:116",
       href: gh("include/agentengine/core/content_replay_gateway.hpp"),
     },
@@ -1152,7 +1152,7 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
       tag: "AgentSession::set_stream_model_calls() · enable_event_stream()",
       title: "Watching a run live — the session's own event stream, not just its final answer",
       body:
-        "set_stream_model_calls(true) (ADR-034) is the one flag that routes run_model_call() through the streaming chat_stream() path instead of the plain chat() method — without it, model_delta never fires. enable_event_stream() (Milestone 7 Phase A, 013 §1), subscribed BEFORE start_run() (there is nothing to attach events to otherwise), hands back a real stream<RunEvent> reporting the whole turn lifecycle as one ordered, per-run sequence (RunEvent::seq, 1-based, reset on every new run): run_started, turn_started, model_call_started, model_delta (one per pushed text delta), model_call_finished, turn_finished, run_finished — plus exactly one run_event_kind::warning right after run_started, since opting a run into streaming is itself an operator-visible choice worth surfacing on the event stream. The stream stays open for the session's WHOLE lifetime, not just one call: draining it is \"take whatever is already buffered,\" never \"wait for it to close\" the way a single chat_stream() call is. Mirrors tests/test_rt_agent_session_streaming_and_events.cpp's S1 (streamed deltas -> model_delta events) and A2 (the full non-streaming success-path sequence). This is the exact mechanism an AG-UI/A2A/SSE bridge projects onto its own wire format — the full RunEvent/WorkflowEvent catalog and every event kind live on the Events API page.",
+        "set_stream_model_calls(true) (ADR-034) is the one flag that routes run_model_call() through the streaming chat_stream() path instead of the plain chat() method — without it, model_delta never fires. enable_event_stream() (Milestone 7 Phase A, 013 §1), subscribed BEFORE start_run() (there is nothing to attach events to otherwise), hands back a real stream<RunEvent> reporting the whole turn lifecycle as one ordered, per-run sequence (RunEvent::seq, 1-based, reset on every new run): run_started, turn_started, model_call_started, model_delta (one per pushed text delta), model_call_finished, turn_finished, run_finished — plus exactly one run_event_kind::warning right after run_started, since opting a run into streaming is itself an operator-visible choice worth surfacing on the event stream. The stream stays open for the session's WHOLE lifetime, not just one call: draining it is \"take whatever is already buffered,\" never \"wait for it to close\" the way a single chat_stream() call is. Mirrors tests/rt/agent_session/test_rt_agent_session_streaming_and_events.cpp's S1 (streamed deltas -> model_delta events) and A2 (the full non-streaming success-path sequence). This is the exact mechanism an AG-UI/A2A/SSE bridge projects onto its own wire format — the full RunEvent/WorkflowEvent catalog and every event kind live on the Events API page.",
       cite: "examples/29_agent_session_events.cpp:117",
       href: gh("examples/29_agent_session_events.cpp"),
     },
@@ -1184,7 +1184,7 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
       tag: "ContributorProvenance · Message::attribution · ToolDescriptor::attribution",
       title: "Attribution — đóng lại chính phản bác 'thiếu provenance' của OQ-18, mà không mở lại OQ-18",
       body:
-        "Đợt red-team của chính OQ-18 đưa ra năm lý do khiến một pipeline ContextProvider xâu chuỗi kiểu MAF không phù hợp ở đây; lý do #1 là cả Message lẫn ToolDescriptor đều không ghi lại contributor nào đã tạo ra chúng, nên một provider phía sau phản ứng lại một provider phía trước thực chất đang phản ứng lại nội dung không rõ nguồn gốc. ADR-066 đóng đúng khoảng trống đó, theo cách cấu trúc: assemble_context() (context_assembly.hpp) — MỘT ĐIỂM DUY NHẤT mà mọi contribution đã luôn đi qua một cách vô điều kiện — đóng dấu ContributorProvenance{contributor_index, contributor_type} lên mọi Message và ToolDescriptor mà nó gộp lại, bất kể contributor có hợp tác hay không. Cách này được chọn thay vì hình dạng của MAF (mỗi provider tự đóng dấu qua ChatMessage.WithAgentRequestMessageSource) vì một provider ghi đè đường gộp của chính nó, hoặc một WASM plugin bên thứ ba không hợp tác (009 §2), có thể bỏ qua việc tự đóng dấu; nhưng không thể bỏ qua một dấu được áp tại một điểm nó không kiểm soát được. Một kiểu ContextProvider tham gia cơ chế này chỉ bằng cách khai báo static constexpr std::string_view name — HasContextProviderName, tái sử dụng nguyên văn mẫu HasMiddlewareName của ADR-033 — được make_context_provider_descriptor<ProviderT>() yêu cầu đối với bất kỳ kiểu tuân theo nào được đưa qua composition nhiều contributor (slot provider đơn của AgentSession thì không cần). Cùng đợt này đóng luôn một kênh rò rỉ thật, riêng biệt: một tuyên bố content_origin::user bị giả mạo ('một con người thực sự đã gõ điều này') trên văn bản không khớp verbatim với session_ctx.history sẽ bị hạ xuống content_origin::external — hẹp hơn cách diễn đạt ban đầu trong design draft, vốn sẽ vô tình kẹp luôn cả tuyên bố content_origin::system hợp pháp của chính SkillsProvider (skill_provider.hpp:136); mọi origin khác ngoài ::user được giữ nguyên đúng như contributor đã đặt. Được chứng minh bởi tests/test_context_provenance.cpp (16 kiểm tra) với một provider đối kháng giả mạo cả một thông điệp mang origin user lẫn cố tình để đầu ra không được đóng dấu, và được chứng minh đầu-cuối bởi tests/test_rt_agent_session_context_provenance.cpp (13 kiểm tra) qua một lần chạy rt::AgentSession thật, kiểm tra trực tiếp ChatRequest gửi đi thực sự. Được nêu rõ chứ không âm thầm coi là đã đóng: việc giả mạo content_origin::system/::assistant/::tool bởi một conformer thực sự bị xâm phạm (chứ không chỉ là không đáng tin) là một mô hình đe dọa khác, rộng hơn, chưa được xử lý ở đây; một thông điệp tóm tắt do HistoryProvider<Summarize<N,SummarizerT>> tổng hợp vẫn kế thừa ::assistant mà không có gì đánh dấu đó là một bản tóm tắt; attribution hiện chưa sống sót qua một vòng JSON round-trip trong rt/message_codec.hpp, nên chưa được lưu giữ qua một lần checkpoint/khởi động lại.",
+        "Đợt red-team của chính OQ-18 đưa ra năm lý do khiến một pipeline ContextProvider xâu chuỗi kiểu MAF không phù hợp ở đây; lý do #1 là cả Message lẫn ToolDescriptor đều không ghi lại contributor nào đã tạo ra chúng, nên một provider phía sau phản ứng lại một provider phía trước thực chất đang phản ứng lại nội dung không rõ nguồn gốc. ADR-066 đóng đúng khoảng trống đó, theo cách cấu trúc: assemble_context() (context_assembly.hpp) — MỘT ĐIỂM DUY NHẤT mà mọi contribution đã luôn đi qua một cách vô điều kiện — đóng dấu ContributorProvenance{contributor_index, contributor_type} lên mọi Message và ToolDescriptor mà nó gộp lại, bất kể contributor có hợp tác hay không. Cách này được chọn thay vì hình dạng của MAF (mỗi provider tự đóng dấu qua ChatMessage.WithAgentRequestMessageSource) vì một provider ghi đè đường gộp của chính nó, hoặc một WASM plugin bên thứ ba không hợp tác (009 §2), có thể bỏ qua việc tự đóng dấu; nhưng không thể bỏ qua một dấu được áp tại một điểm nó không kiểm soát được. Một kiểu ContextProvider tham gia cơ chế này chỉ bằng cách khai báo static constexpr std::string_view name — HasContextProviderName, tái sử dụng nguyên văn mẫu HasMiddlewareName của ADR-033 — được make_context_provider_descriptor<ProviderT>() yêu cầu đối với bất kỳ kiểu tuân theo nào được đưa qua composition nhiều contributor (slot provider đơn của AgentSession thì không cần). Cùng đợt này đóng luôn một kênh rò rỉ thật, riêng biệt: một tuyên bố content_origin::user bị giả mạo ('một con người thực sự đã gõ điều này') trên văn bản không khớp verbatim với session_ctx.history sẽ bị hạ xuống content_origin::external — hẹp hơn cách diễn đạt ban đầu trong design draft, vốn sẽ vô tình kẹp luôn cả tuyên bố content_origin::system hợp pháp của chính SkillsProvider (skill_provider.hpp:136); mọi origin khác ngoài ::user được giữ nguyên đúng như contributor đã đặt. Được chứng minh bởi tests/core/context/test_context_provenance.cpp (16 kiểm tra) với một provider đối kháng giả mạo cả một thông điệp mang origin user lẫn cố tình để đầu ra không được đóng dấu, và được chứng minh đầu-cuối bởi tests/rt/agent_session/test_rt_agent_session_context_provenance.cpp (13 kiểm tra) qua một lần chạy rt::AgentSession thật, kiểm tra trực tiếp ChatRequest gửi đi thực sự. Được nêu rõ chứ không âm thầm coi là đã đóng: việc giả mạo content_origin::system/::assistant/::tool bởi một conformer thực sự bị xâm phạm (chứ không chỉ là không đáng tin) là một mô hình đe dọa khác, rộng hơn, chưa được xử lý ở đây; một thông điệp tóm tắt do HistoryProvider<Summarize<N,SummarizerT>> tổng hợp vẫn kế thừa ::assistant mà không có gì đánh dấu đó là một bản tóm tắt; attribution hiện chưa sống sót qua một vòng JSON round-trip trong rt/message_codec.hpp, nên chưa được lưu giữ qua một lần checkpoint/khởi động lại.",
       cite: "include/agentengine/core/context_assembly.hpp:207",
       href: gh("include/agentengine/core/context_assembly.hpp"),
     },
@@ -1204,7 +1204,7 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
       tag: "ToolOptimizerProvider · search_tools / mount_tool / unmount_tool",
       title: "Kiểm soát tool theo yêu cầu — áp dụng hình dạng tin cậy của mount_skill cho các nguồn tool MCP và plugin",
       body:
-        "union_codeact_tools hợp nhất toàn bộ bề mặt tool của một MCP server đã kết nối hoặc một WASM plugin đã nạp một cách vô điều kiện ngay khi nó được gắn vào — không có cổng kiểm soát theo yêu cầu nào cho một trong hai nguồn này, khác với skill. ToolOptimizerProvider(ToolTable agent_tools, ToolSourceFetch mcp_tools_fetch, ToolSourceFetch plugin_tools_fetch, always_on = {}) là một ContextProvider bình thường đóng khoảng trống đó: on_context() xây dựng lại toàn bộ universe mỗi lượt (tool của agent cộng với bất cứ thứ gì mỗi closure ToolSourceFetch trả về ngay lúc đó, được hợp nhất qua đúng cơ chế kiểm tra va chạm giữa các nguồn mà union_codeact_tools đã có), thu hẹp nó xuống còn always_on ∪ mounted_ thông qua scope_tools_to_mounted_skills, rồi thêm vào ba tool quản lý luôn-bật, không có capability, được chạm tới qua make_tool_descriptor_with_invoke — đúng hình dạng tin cậy của MountSkillTool: Tool<T, EffectClass<pure>>, không có Capabilities<...>, không cấp thêm bất kỳ capability nào, chỉ dịch chuyển cửa sổ hiển thị trên những gì đã được cấp phép từ trước. Hai điểm khác biệt so với chính tiền lệ của mount_skill, được nêu rõ chứ không giấu đi: search_tools không có tiền lệ nào — 009 §8b trước đây không thấy cần tìm kiếm trên skill hay tool, nên đây vẫn chỉ là so khớp chuỗi con/từ khóa, không phải embedding search; unmount_tool cũng không có tiền lệ — mount_skill chưa từng có một cơ chế tương ứng, và ADR-024 §8 từng nêu đó là một khoảng trống chưa đóng, được đóng lại ở đây riêng cho các nguồn tool (core/mounted_skills_state.hpp không hề bị đụng tới). Vì AgentSession vốn đã xây dựng đúng một ToolTable mỗi lượt từ chính đầu ra của on_context() này và tái sử dụng nó cho mọi lệnh gọi invoke_tool() trong lượt đó, một tool vừa được mount thực sự không gọi được cho tới lượt kế tiếp, chứ không chỉ là bị ẩn đi — đúng nhịp khai báo/gọi thực thi mà ADR-024 §8 đã chứng minh cho skill, được chứng minh lại ở đây từ đầu tới cuối (tests/test_tool_optimizer_provider.cpp, 36 kiểm tra) qua một lần chạy AgentSession thật: một lệnh gọi mount_tool được dàn dựng sẵn, sau đó tool vừa mount xuất hiện trong ChatRequest gửi đi kế tiếp và vắng mặt ở ChatRequest trước đó. currently_scoped_tools() được phơi bày cho một caller cũng cần cấp dữ liệu cho tool union của một CodeAct bridge, để cả hai bề mặt luôn lấy nguồn từ cùng một thực thể thay vì trôi dạt khỏi nhau.",
+        "union_codeact_tools hợp nhất toàn bộ bề mặt tool của một MCP server đã kết nối hoặc một WASM plugin đã nạp một cách vô điều kiện ngay khi nó được gắn vào — không có cổng kiểm soát theo yêu cầu nào cho một trong hai nguồn này, khác với skill. ToolOptimizerProvider(ToolTable agent_tools, ToolSourceFetch mcp_tools_fetch, ToolSourceFetch plugin_tools_fetch, always_on = {}) là một ContextProvider bình thường đóng khoảng trống đó: on_context() xây dựng lại toàn bộ universe mỗi lượt (tool của agent cộng với bất cứ thứ gì mỗi closure ToolSourceFetch trả về ngay lúc đó, được hợp nhất qua đúng cơ chế kiểm tra va chạm giữa các nguồn mà union_codeact_tools đã có), thu hẹp nó xuống còn always_on ∪ mounted_ thông qua scope_tools_to_mounted_skills, rồi thêm vào ba tool quản lý luôn-bật, không có capability, được chạm tới qua make_tool_descriptor_with_invoke — đúng hình dạng tin cậy của MountSkillTool: Tool<T, EffectClass<pure>>, không có Capabilities<...>, không cấp thêm bất kỳ capability nào, chỉ dịch chuyển cửa sổ hiển thị trên những gì đã được cấp phép từ trước. Hai điểm khác biệt so với chính tiền lệ của mount_skill, được nêu rõ chứ không giấu đi: search_tools không có tiền lệ nào — 009 §8b trước đây không thấy cần tìm kiếm trên skill hay tool, nên đây vẫn chỉ là so khớp chuỗi con/từ khóa, không phải embedding search; unmount_tool cũng không có tiền lệ — mount_skill chưa từng có một cơ chế tương ứng, và ADR-024 §8 từng nêu đó là một khoảng trống chưa đóng, được đóng lại ở đây riêng cho các nguồn tool (core/mounted_skills_state.hpp không hề bị đụng tới). Vì AgentSession vốn đã xây dựng đúng một ToolTable mỗi lượt từ chính đầu ra của on_context() này và tái sử dụng nó cho mọi lệnh gọi invoke_tool() trong lượt đó, một tool vừa được mount thực sự không gọi được cho tới lượt kế tiếp, chứ không chỉ là bị ẩn đi — đúng nhịp khai báo/gọi thực thi mà ADR-024 §8 đã chứng minh cho skill, được chứng minh lại ở đây từ đầu tới cuối (tests/core/context/test_tool_optimizer_provider.cpp, 36 kiểm tra) qua một lần chạy AgentSession thật: một lệnh gọi mount_tool được dàn dựng sẵn, sau đó tool vừa mount xuất hiện trong ChatRequest gửi đi kế tiếp và vắng mặt ở ChatRequest trước đó. currently_scoped_tools() được phơi bày cho một caller cũng cần cấp dữ liệu cho tool union của một CodeAct bridge, để cả hai bề mặt luôn lấy nguồn từ cùng một thực thể thay vì trôi dạt khỏi nhau.",
       cite: "include/agentengine/core/tool_optimizer_provider.hpp:158",
       href: gh("include/agentengine/core/tool_optimizer_provider.hpp"),
     },
@@ -1244,7 +1244,7 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
       tag: "ContentReplayGateway<Inner>",
       title: "ContentReplayGateway<Inner> — loại bỏ một phản hồi đã ổn định trước khi nó được ghi nhận",
       body:
-        "Middleware<Ms...> ở trên nhìn thấy một phản hồi trước khi nó ổn định; ContentReplayGateway<Inner> trả lời một câu hỏi khác — một lệnh gọi đã thành công, và chỉ sau khi nó ổn định thì mới có thứ gì đó gắn cờ chính nội dung của nó (một secret bị lộ, một vi phạm chính sách). Bọc quanh bất kỳ ModelCallGatewayLike nào (thường là một ModelCallGateway<...> hoặc một MiddlewareModelCallGateway<...>, không sửa đổi) theo đúng cách hai kiểu đó vốn đã bọc lẫn nhau — không phải một hook mới trên bất kỳ cái nào, và không liên quan tới ReplayChatClient bên dưới, cái đó phát lại một run đã được ghi lại từ trước, ngoại tuyến, để kiểm thử tất định; hai cái chỉ chung nhau mỗi từ tiếng Anh. Cũng không phải Retry<Policy> (002 §3): cái đó thử lại vì một lệnh gọi bị lỗi, còn ContentReplayGateway thử lại vì một lệnh gọi đã thành công nhưng những gì nó tạo ra không bao giờ được phép giữ lại. Request thử lại đã sửa đổi CHỈ thêm vào chỉ dẫn sửa lỗi, không bao giờ thêm lại nội dung của phản hồi đã bị loại bỏ — việc thêm lại nó sẽ gửi lại đúng thứ khiến phản hồi đó bị loại bỏ (một secret, với trường hợp khởi phát) tới nhà cung cấp mô hình một lần nữa, ngay bên trong lệnh gọi được cho là để sửa nó. Bị giới hạn theo hai cách độc lập: max_replay_attempts (theo từng lần gọi call(), reset lại mỗi round) và session_lifetime_cap (trên mọi call() mà một thực thể gateway này từng phục vụ, trong suốt vòng đời session) — dùng hết một trong hai sẽ từ chối đóng với một mã lỗi riêng biệt thay vì lặp mãi. Streaming bị loại trừ về mặt cấu trúc, không phải bằng một kiểm tra runtime: kiểu này không khai báo phương thức chat_stream() nào cả, nên không có biểu thức nào để một caller định tuyến một lệnh gọi streaming qua nó. Gắn thẳng vào slot ChatClientT sẵn có của AgentSession mà không cần sửa gì agent_session.hpp, vì AgentSession vốn đã chấp nhận bất cứ thứ gì thỏa ChatClient<T> hoặc ModelCallGatewayLike<T>. Được chứng minh bởi tests/test_content_replay_gateway.cpp và tests/test_rt_agent_session_content_replay.cpp, cái sau qua một lần chạy rt::AgentSession thật xác nhận history bền vững chỉ giữ lại phản hồi cuối cùng được chấp nhận, không bao giờ giữ một phản hồi đã bị loại bỏ. Được nêu rõ chứ không lướt qua: việc hạch toán TokenBudget<N> hiện chưa được đấu nối với chi phí của những lần thử bị loại bỏ trên chính gateway này — một host cần con số đó phải tự đọc nó từ trace hook.",
+        "Middleware<Ms...> ở trên nhìn thấy một phản hồi trước khi nó ổn định; ContentReplayGateway<Inner> trả lời một câu hỏi khác — một lệnh gọi đã thành công, và chỉ sau khi nó ổn định thì mới có thứ gì đó gắn cờ chính nội dung của nó (một secret bị lộ, một vi phạm chính sách). Bọc quanh bất kỳ ModelCallGatewayLike nào (thường là một ModelCallGateway<...> hoặc một MiddlewareModelCallGateway<...>, không sửa đổi) theo đúng cách hai kiểu đó vốn đã bọc lẫn nhau — không phải một hook mới trên bất kỳ cái nào, và không liên quan tới ReplayChatClient bên dưới, cái đó phát lại một run đã được ghi lại từ trước, ngoại tuyến, để kiểm thử tất định; hai cái chỉ chung nhau mỗi từ tiếng Anh. Cũng không phải Retry<Policy> (002 §3): cái đó thử lại vì một lệnh gọi bị lỗi, còn ContentReplayGateway thử lại vì một lệnh gọi đã thành công nhưng những gì nó tạo ra không bao giờ được phép giữ lại. Request thử lại đã sửa đổi CHỈ thêm vào chỉ dẫn sửa lỗi, không bao giờ thêm lại nội dung của phản hồi đã bị loại bỏ — việc thêm lại nó sẽ gửi lại đúng thứ khiến phản hồi đó bị loại bỏ (một secret, với trường hợp khởi phát) tới nhà cung cấp mô hình một lần nữa, ngay bên trong lệnh gọi được cho là để sửa nó. Bị giới hạn theo hai cách độc lập: max_replay_attempts (theo từng lần gọi call(), reset lại mỗi round) và session_lifetime_cap (trên mọi call() mà một thực thể gateway này từng phục vụ, trong suốt vòng đời session) — dùng hết một trong hai sẽ từ chối đóng với một mã lỗi riêng biệt thay vì lặp mãi. Streaming bị loại trừ về mặt cấu trúc, không phải bằng một kiểm tra runtime: kiểu này không khai báo phương thức chat_stream() nào cả, nên không có biểu thức nào để một caller định tuyến một lệnh gọi streaming qua nó. Gắn thẳng vào slot ChatClientT sẵn có của AgentSession mà không cần sửa gì agent_session.hpp, vì AgentSession vốn đã chấp nhận bất cứ thứ gì thỏa ChatClient<T> hoặc ModelCallGatewayLike<T>. Được chứng minh bởi tests/core/chat/test_content_replay_gateway.cpp và tests/rt/agent_session/test_rt_agent_session_content_replay.cpp, cái sau qua một lần chạy rt::AgentSession thật xác nhận history bền vững chỉ giữ lại phản hồi cuối cùng được chấp nhận, không bao giờ giữ một phản hồi đã bị loại bỏ. Được nêu rõ chứ không lướt qua: việc hạch toán TokenBudget<N> hiện chưa được đấu nối với chi phí của những lần thử bị loại bỏ trên chính gateway này — một host cần con số đó phải tự đọc nó từ trace hook.",
       cite: "include/agentengine/core/content_replay_gateway.hpp:116",
       href: gh("include/agentengine/core/content_replay_gateway.hpp"),
     },
@@ -1264,7 +1264,7 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
       tag: "AgentSession::set_stream_model_calls() · enable_event_stream()",
       title: "Theo dõi một run trực tiếp — luồng sự kiện riêng của session, không chỉ câu trả lời cuối cùng",
       body:
-        "set_stream_model_calls(true) (ADR-034) là cờ duy nhất định tuyến run_model_call() qua đường chat_stream() streaming thay vì phương thức chat() thuần — thiếu nó, model_delta không bao giờ kích hoạt. enable_event_stream() (Milestone 7 Phase A, 013 §1), được đăng ký TRƯỚC start_run() (nếu không sẽ chẳng có gì để gắn sự kiện vào), trả về một stream<RunEvent> thật báo cáo toàn bộ vòng đời của lượt chạy dưới dạng một dãy có thứ tự, theo từng run (RunEvent::seq, đánh số từ 1, reset ở mỗi run mới): run_started, turn_started, model_call_started, model_delta (một lần cho mỗi delta văn bản được đẩy vào), model_call_finished, turn_finished, run_finished — cộng thêm đúng một run_event_kind::warning ngay sau run_started, vì việc bật streaming cho một run tự nó là một lựa chọn mà người vận hành cần thấy được trên luồng sự kiện. Luồng sự kiện vẫn mở trong SUỐT vòng đời của session, không chỉ một lệnh gọi: rút cạn nó nghĩa là \"lấy bất cứ thứ gì đã có sẵn trong buffer\", không bao giờ là \"chờ nó đóng lại\" như một lệnh chat_stream() đơn lẻ. Phản ánh đúng S1 (các delta streaming -> sự kiện model_delta) và A2 (toàn bộ chuỗi thành công không streaming) của tests/test_rt_agent_session_streaming_and_events.cpp. Đây chính là cơ chế mà một cầu nối AG-UI/A2A/SSE chiếu lên định dạng wire riêng của nó — toàn bộ danh mục RunEvent/WorkflowEvent và mọi loại sự kiện nằm trên trang Events API.",
+        "set_stream_model_calls(true) (ADR-034) là cờ duy nhất định tuyến run_model_call() qua đường chat_stream() streaming thay vì phương thức chat() thuần — thiếu nó, model_delta không bao giờ kích hoạt. enable_event_stream() (Milestone 7 Phase A, 013 §1), được đăng ký TRƯỚC start_run() (nếu không sẽ chẳng có gì để gắn sự kiện vào), trả về một stream<RunEvent> thật báo cáo toàn bộ vòng đời của lượt chạy dưới dạng một dãy có thứ tự, theo từng run (RunEvent::seq, đánh số từ 1, reset ở mỗi run mới): run_started, turn_started, model_call_started, model_delta (một lần cho mỗi delta văn bản được đẩy vào), model_call_finished, turn_finished, run_finished — cộng thêm đúng một run_event_kind::warning ngay sau run_started, vì việc bật streaming cho một run tự nó là một lựa chọn mà người vận hành cần thấy được trên luồng sự kiện. Luồng sự kiện vẫn mở trong SUỐT vòng đời của session, không chỉ một lệnh gọi: rút cạn nó nghĩa là \"lấy bất cứ thứ gì đã có sẵn trong buffer\", không bao giờ là \"chờ nó đóng lại\" như một lệnh chat_stream() đơn lẻ. Phản ánh đúng S1 (các delta streaming -> sự kiện model_delta) và A2 (toàn bộ chuỗi thành công không streaming) của tests/rt/agent_session/test_rt_agent_session_streaming_and_events.cpp. Đây chính là cơ chế mà một cầu nối AG-UI/A2A/SSE chiếu lên định dạng wire riêng của nó — toàn bộ danh mục RunEvent/WorkflowEvent và mọi loại sự kiện nằm trên trang Events API.",
       cite: "examples/29_agent_session_events.cpp:117",
       href: gh("examples/29_agent_session_events.cpp"),
     },
@@ -1500,7 +1500,7 @@ auto r2 = drive(session.resolve_interaction(ResolveInteraction{id, /*approved=*/
 // human approve running it". A hook that sets needs_external_dispatch never blocks inline; it
 // suspends the round exactly the way suspend_for_approval does, but tagged interaction_reason::
 // hook_decision, a DISTINCT reason from ::approval, so the two questions can never be conflated.
-export const toolCallHookExampleSnippet = `// tests/test_rt_agent_session_tool_call_hook.cpp -- H4a/H4b (trimmed)
+export const toolCallHookExampleSnippet = `// tests/rt/agent_session/test_rt_agent_session_tool_call_hook.cpp -- H4a/H4b (trimmed)
 session.set_tool_call_hook([](ToolCallHookContext& hctx) -> task<result<std::monostate>> {
     if (hctx.tool_name == "plain_tool") hctx.needs_external_dispatch = true;   // never blocks inline
     co_return result<std::monostate>{};
@@ -1526,7 +1526,7 @@ using Session = agentengine::rt::AgentSession<Gateway>;       // same slot as an
 // Need failover across a second vendor, or a before/after hook? Same object, more type
 // parameters -- the full composition is below, nothing here needs rewriting to get there.`;
 
-export const middlewareExampleSnippet = `// Shape matches include/agentengine/core/middleware.hpp + tests/test_middleware_model_call_gateway.cpp
+export const middlewareExampleSnippet = `// Shape matches include/agentengine/core/middleware.hpp + tests/core/chat/test_middleware_model_call_gateway.cpp
 struct LoggingMiddleware {
     static constexpr std::string_view name = "logging";     // 002 §5: attribution needs a real name
     ae::task<std::monostate> after_model(ModelCallContext& c) {
@@ -1891,7 +1891,7 @@ export const pluginEntries: Record<Lang, ApiEntry[]> = {
 
 // The four host-lifecycle calls above, as a REAL host actually issues them -- against a genuinely
 // compiled Rust fixture component (tests/fixtures/wasm_ae_tool_fixture), not a mock.
-export const pluginHostLoadingCallSnippet = `// tests/test_wasm_backend.cpp:146-199 (trimmed) -- the real host call sequence.
+export const pluginHostLoadingCallSnippet = `// tests/plugin/test_wasm_backend.cpp:146-199 (trimmed) -- the real host call sequence.
 WasmBackend backend;
 SandboxSpec spec;
 spec.capabilities = CapabilitySet::grant_root({cap::Clock{}, cap::Entropy{}, cap::FsRead{},
@@ -1921,7 +1921,7 @@ auto echo_result = backend.invoke_tool(*handle, ToolInvokeRequest{"echo", "hello
 // Explicit, not a design footnote: the SAME probe helper this test file uses to prove the gated
 // callbacks work also proves which ones DON'T yet -- fs-read passes its capability-kind check and
 // still traps, because the host-side implementation behind it isn't built.
-export const pluginStubTrapSnippet = `// tests/test_wasm_backend.cpp:333-338 -- fs-read is declared and gated correctly in the WIT
+export const pluginStubTrapSnippet = `// tests/plugin/test_wasm_backend.cpp:333-338 -- fs-read is declared and gated correctly in the WIT
 // world, but still traps as not-implemented behind the real capability-kind check.
 probe_gated_callback(bytes, "fs-read/right-kind", "read-file",
                       {cap::FsRead{}, cap::FsWrite{}, cap::NetOut{}, cap::Secret{}, cap::Clock{}},
@@ -2148,7 +2148,7 @@ source.load_skills();   // == supplied, every time -- deterministic, no state to
 // Hand it to SkillsProvider the same way DiskSkillSource would be handed:
 SkillSourceDescriptor descriptor = make_skill_source_descriptor(std::move(source));`;
 
-// The failure-carrying constructor, in isolation -- tests/test_skill_source_inline.cpp:56-83 (R1b),
+// The failure-carrying constructor, in isolation -- tests/core/skills/test_skill_source_inline.cpp:56-83 (R1b),
 // trimmed. No real parsing happens here at all; the point is that a failure handed to the
 // constructor comes back UNCHANGED from load_skills(), every call, and survives type erasure too.
 export const inlineSkillSourceFailureConstructorSnippet = `result<std::vector<SkillSourceResult>> failed = std::unexpected(
@@ -2237,8 +2237,8 @@ export const skillToolScopingSnippet = `// Filters universe's descriptors down t
 // include/agentengine/core/skill_tool_scoping.hpp:47-57`;
 
 // For contrast with the collision-rejection snippet above -- the success case, real and tested:
-// tests/test_skill_provider_mount.cpp:64-80 (R1), trimmed.
-export const skillTwoSourcesMountSnippet = `// tests/test_skill_provider_mount.cpp:64-80 (R1) -- two DIFFERENTLY-named
+// tests/core/skills/test_skill_provider_mount.cpp:64-80 (R1), trimmed.
+export const skillTwoSourcesMountSnippet = `// tests/core/skills/test_skill_provider_mount.cpp:64-80 (R1) -- two DIFFERENTLY-named
 // skills from two DIFFERENT sources mount together with no conflict at all.
 std::vector<SkillSourceDescriptor> sources;
 sources.push_back(make_skill_source_descriptor(InlineSkillSource(
@@ -2484,7 +2484,7 @@ inline std::vector<ModuleDescriptor> const& agent_library_registry() {
 // src/backends/native_jail/agent_files_data_codegen.hpp:88-137 (trimmed) -- REAL generated Python,
 // same shape as agent.tools' own generated function above: a static source-text builder, not a
 // hand-authored .py file, so the exact text stays diffable/testable
-// (tests/test_agent_files_data_codegen.cpp) without an embedded interpreter.
+// (tests/python/test_agent_files_data_codegen.cpp) without an embedded interpreter.
 export const agentFilesDataGeneratedSnippet = `// src/backends/native_jail/agent_files_data_codegen.hpp:88-137 (trimmed)
 def _files_input(name):
     """Reads the whole file at /input/<name> and returns its bytes."""
@@ -2512,9 +2512,9 @@ _data_module.read_json_lines = _data_read_json_lines
 // Every _ae_internal.open() call above still goes through the SAME per-call cap::FsRead/cap::FsWrite
 // check open() already enforces -- agent.files/agent.data widen nothing, they're convenience only.`;
 
-// tests/test_mediated_python_runner_agent_files_data.cpp:126-166 (trimmed) -- the generated source
+// tests/python/test_mediated_python_runner_agent_files_data.cpp:126-166 (trimmed) -- the generated source
 // above actually RUNNING under a real embedded interpreter, against a real scratch mount directory.
-export const agentFilesDataUsageSnippet = `// tests/test_mediated_python_runner_agent_files_data.cpp:126-166 (trimmed)
+export const agentFilesDataUsageSnippet = `// tests/python/test_mediated_python_runner_agent_files_data.cpp:126-166 (trimmed)
 // G2-I1: agent.files.input reads /input/<name> as real bytes.
 ExecRequest req1{"python",
     "from agent import files\\n"
@@ -2540,7 +2540,7 @@ ExecRequest req3{"python",
 // (src/backends/native_jail/agent_ask_codegen.hpp), a real C-implemented bridge
 // (_ae_internal.ask_or_raise, mediated_python_runner.cpp), and a real host-side suspend/resume
 // mechanism (AgentSession::resolve_interaction()'s codeact_ask branch, ADR-057 Design B:
-// abort-and-replay) -- proven end to end by tests/test_agent_session_suspend_codeact_ask.cpp's B1-B7.
+// abort-and-replay) -- proven end to end by tests/rt/agent_session/test_agent_session_suspend_codeact_ask.cpp's B1-B7.
 export const agentAskHitlSnippet = `// 1) src/backends/native_jail/agent_ask_codegen.hpp -- the ACTUAL generated Python source,
 // not a stub -- reuses whichever "agent" module object agent.tools/agent.files/agent.data
 // already created this session:
@@ -2548,7 +2548,7 @@ def ask(prompt):
     return _ae_internal.ask_or_raise(prompt)   // real C -- mediated_python_runner.cpp
 
 // 2) A script calling agent.ask() suspends the WHOLE execute_code call it's inside --
-// tests/test_agent_session_suspend_codeact_ask.cpp B1:
+// tests/rt/agent_session/test_agent_session_suspend_codeact_ask.cpp B1:
 auto result = drive(session.start_run(StartRun{user_message("...")}));
 // result carries the named sentinel kSuspendedForCodeActAsk; session.open_interactions() now holds
 // exactly one Interaction{reason == interaction_reason::codeact_ask}; history_ is untouched -- still
@@ -2755,7 +2755,7 @@ struct Workflow {
 
 // ---- Pattern-by-pattern code, each trimmed from a REAL runnable example or test -- not invented
 // for docs. Sequential/Concurrent/Router are the exact graphs examples/04, 09, and 10 run;
-// Reflection/critic is CY-1 from tests/test_rt_workflow_supervisor_patterns.cpp; Group chat/debate
+// Reflection/critic is CY-1 from tests/workflow/test_rt_workflow_supervisor_patterns.cpp; Group chat/debate
 // generalizes the SAME cyclic switch_case shape CY-1 proves to more than one participant (noted as
 // such in the surrounding prose, not presented as a separate proven test).
 
@@ -2809,7 +2809,7 @@ ExecutorBody triage = [](Message const& in, EffectContext&) -> result<ExecutorOu
 };
 // only the selected branch's invoke() is ever called -- the other declared case never runs`;
 
-export const workflowReflectionSnippet = `// tests/test_rt_workflow_supervisor_patterns.cpp (CY-1) -- Reflection/critic: a bounded cycle.
+export const workflowReflectionSnippet = `// tests/workflow/test_rt_workflow_supervisor_patterns.cpp (CY-1) -- Reflection/critic: a bounded cycle.
 Workflow wf;
 wf.id        = "writer-critic";
 wf.executors = {node("writer"), node("critic"), node("done")};
@@ -3144,8 +3144,8 @@ export const workflowEntries: Record<Lang, ApiEntry[]> = {
       title: "Sequential, Concurrent, Handoff, Router, and four more — configurations, not subsystems",
       body:
         "§3's claim is that its eight named orchestration patterns are configurations of the graph, not eight separate things to build, and test_rt_workflow_supervisor_patterns.cpp is that claim's proof: every row is built from nothing but executors, the six edge kinds above, and a termination bound, then run for real on the superstep engine. A fan-in aggregator is checked on its INVOCATION COUNT (exactly one call, not one per inbound edge) because a merge that silently ran three times would still produce a plausible-looking answer. A router is run against two different inputs through the SAME graph, because one probe can't distinguish a working classifier from a node hardcoded to one branch. An executor that names a route label the graph never declared fails the run with workflow_status::routing_failed rather than being silently ignored (an I3 boundary: a route target is engine-checked structure, never treated as free-form model output to trust).",
-      cite: "tests/test_rt_workflow_supervisor_patterns.cpp",
-      href: gh("tests/test_rt_workflow_supervisor_patterns.cpp"),
+      cite: "tests/workflow/test_rt_workflow_supervisor_patterns.cpp",
+      href: gh("tests/workflow/test_rt_workflow_supervisor_patterns.cpp"),
     },
     {
       id: "workflow-worktree-scoping",
@@ -3186,8 +3186,8 @@ export const workflowEntries: Record<Lang, ApiEntry[]> = {
       title: "Sequential, Concurrent, Handoff, Router, và bốn mẫu khác — là các cấu hình, không phải các phân hệ riêng",
       body:
         "Tuyên bố của §3 là tám mẫu điều phối được nêu tên chỉ là các cấu hình của đồ thị, không phải tám thứ riêng biệt cần xây dựng, và test_rt_workflow_supervisor_patterns.cpp chính là minh chứng cho tuyên bố đó: mỗi hàng chỉ được xây từ executor, sáu loại edge nêu trên, và một termination bound, rồi được chạy thật trên superstep engine. Một bộ tổng hợp fan-in được kiểm tra dựa trên SỐ LẦN GỌI (đúng một lần, không phải một lần cho mỗi cạnh đi vào) bởi vì một phép gộp âm thầm chạy ba lần vẫn có thể tạo ra một câu trả lời trông có vẻ hợp lý. Một router được chạy với hai đầu vào khác nhau trên CÙNG một đồ thị, vì chỉ một phép thử không thể phân biệt được một bộ phân loại đang hoạt động thật với một node bị hardcode chỉ đi theo một nhánh. Một executor nêu tên một nhãn route mà đồ thị chưa từng khai báo sẽ làm run thất bại với workflow_status::routing_failed thay vì bị âm thầm bỏ qua (một ranh giới của I3: đích của một route là cấu trúc được engine kiểm tra, không bao giờ bị coi là đầu ra tự do của model để tin tưởng).",
-      cite: "tests/test_rt_workflow_supervisor_patterns.cpp",
-      href: gh("tests/test_rt_workflow_supervisor_patterns.cpp"),
+      cite: "tests/workflow/test_rt_workflow_supervisor_patterns.cpp",
+      href: gh("tests/workflow/test_rt_workflow_supervisor_patterns.cpp"),
     },
     {
       id: "workflow-worktree-scoping",
@@ -3248,7 +3248,7 @@ export const declarativeCompilerSnippet = `// include/agentengine/core/agent_yam
 // exists yet to resolve spec.tools against, which is exactly why byte-identical AgentMetadata
 // against the C++ equivalent isn't reached for every field yet.`;
 
-export const aguiSseFrameSnippet = `// tests/test_agui_sse.cpp:34-46 -- E3-1: the exact SSE framing shape, proven against a real
+export const aguiSseFrameSnippet = `// tests/protocol/agui/test_agui_sse.cpp:34-46 -- E3-1: the exact SSE framing shape, proven against a real
 // projected AG-UI event, not a hand-built JSON literal. (check() message strings trimmed below
 // to keep this excerpt free of nested escaped quotes; the assertion logic itself is unchanged.)
 agui::AgUiEvent event = agui::RunStarted{"thread-1", "run-1", std::nullopt};
@@ -3265,7 +3265,7 @@ if (parsed.has_value()) {
           "the framed JSON is the real projected event, not a placeholder");
 }`;
 
-export const aguiProjectorMessageSnippet = `// tests/test_rt_agui_projection.cpp:188-206 -- E2-3: the ONE piece of state RunEventProjector
+export const aguiProjectorMessageSnippet = `// tests/protocol/agui/test_rt_agui_projection.cpp:188-206 -- E2-3: the ONE piece of state RunEventProjector
 // holds (projection.hpp's file-top comment) -- a minted messageId bracketing one model turn's text.
 agui::RunEventProjector projector("thread-3");
 
@@ -3284,7 +3284,7 @@ auto out = projector.project(
 (void)projector.project(
     ae::RunEvent{"run-x", 3, ae::run_event_kind::model_call_finished, ae::run_event_payload::Empty{}});`;
 
-export const a2aStreamProjectorInterruptSnippet = `// tests/test_a2a_streaming.cpp:70-78 -- the SAME internal input_required RunEvent that forces
+export const a2aStreamProjectorInterruptSnippet = `// tests/protocol/a2a/test_a2a_streaming.cpp:70-78 -- the SAME internal input_required RunEvent that forces
 // AG-UI to END the run (RunFinishedInterrupt, no native pause event) instead pauses the A2A task
 // in a REAL, non-terminal task_state -- A2A's task model has a native slot AG-UI's doesn't.
 a2a::A2aStreamProjector projector("task-1", "ctx-1");
@@ -3401,7 +3401,7 @@ export interface WorktreeSharingModeRow {
 }
 
 // 025 §3's four sharing modes, verbatim semantics — real, tested (worktree.hpp's create_sub_worktree/
-// read_sub_worktree/write_sub_worktree, tests/test_worktree_sub_worktree.cpp).
+// read_sub_worktree/write_sub_worktree, tests/worktree/test_worktree_sub_worktree.cpp).
 export const worktreeSharingModes: Record<Lang, WorktreeSharingModeRow[]> = {
   en: [
     { mode: "shared", semantics: "Same mutable tree (Ref) as the parent — writes are immediately visible to siblings.", use: "Collaborating agents working one artifact set" },
@@ -3438,7 +3438,7 @@ concept WorktreeObjectStore = requires(S& s, std::span<std::byte const> bytes,
 // comparison proven directly (blob_count()/tree_count() watched not to grow on a duplicate put).
 // A durable pal::file_io-backed adapter is a named, tracked follow-up, not built yet.`;
 
-export const worktreeObjectStoreDedupSnippet = `// tests/test_worktree_object_store.cpp:50-74 (A-C1, A-C2) -- a real put_blob/put_tree call
+export const worktreeObjectStoreDedupSnippet = `// tests/worktree/test_worktree_object_store.cpp:50-74 (A-C1, A-C2) -- a real put_blob/put_tree call
 // sequence. Neither call takes a caller-supplied digest: the store computes it FROM the bytes.
 InMemoryWorktreeObjectStore store;
 auto bytes  = bytes_of("hello worktree");
@@ -3477,7 +3477,7 @@ result<SubWorktree> create_sub_worktree(S& store, Ref const& parent,
     }
 }`;
 
-export const worktreeSharedMountSnippet = `// tests/test_workflow_worktree_scoping.cpp:151-174 (M3) -- two SHARED executors, two mounts,
+export const worktreeSharedMountSnippet = `// tests/workflow/test_workflow_worktree_scoping.cpp:151-174 (M3) -- two SHARED executors, two mounts,
 // ONE backing ref: two different sandboxes attached to the same worktree, proven end to end
 Workflow wf;
 wf.id = "g";
@@ -4454,7 +4454,7 @@ struct ReadContent : Tool<ReadContent, Capabilities<>, Approval<approval_mode::n
 
 // The declaration above stated the contract; this test proves it, end to end, with the tool's own
 // real error codes -- no capability check even reached when the args themselves are malformed.
-export const readContentAmbiguousSourceTestSnippet = `// tests/test_read_content.cpp:289-311 (trimmed) -- both branches of the xor contract, real codes.
+export const readContentAmbiguousSourceTestSnippet = `// tests/tools/test_read_content.cpp:289-311 (trimmed) -- both branches of the xor contract, real codes.
 void test_ambiguous_source_neither_set() {
     ReadContent::Args args;  // both url and path left unset
     auto reply = ReadContent::invoke(args, ctx);

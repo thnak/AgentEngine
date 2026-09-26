@@ -24,7 +24,7 @@
 //
 // Built and run on Linux under clang -fsanitize=thread (this file has zero platform-specific
 // dependency), closing the literal "verified under TSan" half of ADR-079 §5's C9 that its Windows-
-// only sibling (tests/test_rt_agent_spawn.cpp T7, ASan-only, proven 2026-08-23) could not reach.
+// only sibling (tests/rt/agent_spawn/test_rt_agent_spawn.cpp T7, ASan-only, proven 2026-08-23) could not reach.
 //
 //   T1 -- single-threaded sanity: TestSpawnPump::submit() drives consume() to completion correctly
 //         both within budget and on exhaustion, matching SpawnCostBudget's own already-proven
@@ -170,7 +170,7 @@ int main() {
         constexpr std::uint64_t   kPool    = 2000;
         constexpr std::uint64_t   kCost    = 130;
         // floor(kPool / kCost) -- the exact number of the 16 concurrent submits that CAN succeed;
-        // computed, not eyeballed, mirroring tests/test_rt_agent_spawn.cpp's own T7 exactly.
+        // computed, not eyeballed, mirroring tests/rt/agent_spawn/test_rt_agent_spawn.cpp's own T7 exactly.
         constexpr int kExpectedSuccesses = static_cast<int>(kPool / kCost);
         static_assert(kExpectedSuccesses > 0 && kExpectedSuccesses < kThreads,
                       "T2: the scenario must genuinely exhaust the pool mid-run, not merely satisfy "

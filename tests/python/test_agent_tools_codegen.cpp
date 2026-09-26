@@ -5,7 +5,7 @@
 // `ToolDescriptor` metadata every other tool-pipeline caller reads). The generated source actually
 // RUNNING under a real interpreter -- `from agent import tools; tools.echo_tool(message="hi")`,
 // dir()/help(), a capability-denied call -- is proven separately in the Python-gated
-// tests/test_mediated_python_runner_agent_tools.cpp; this file is about the TEXT being correct
+// tests/python/test_mediated_python_runner_agent_tools.cpp; this file is about the TEXT being correct
 // Python and shaped the way 026 §4 describes.
 //
 // ToolDescriptors are built directly (not via Tool<>/AE_JSON_SCHEMA) so this file can construct

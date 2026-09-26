@@ -16,7 +16,7 @@
 // blocked-range filter -- that table is an SSRF defense and there is no attacker on a path whose
 // destination is the deployment's own config, never guest-supplied and never model-derived per I3),
 // and `ProviderTransport::plaintext_http` is available opt-in. The GUEST path is untouched;
-// tests/test_provider_egress_address_policy.cpp is the positive control that proves it, asserting
+// tests/sandbox/test_provider_egress_address_policy.cpp is the positive control that proves it, asserting
 // both halves against the same live loopback address in the same run.
 //
 // So this test needs no proxy, no injected resolver, and no CA override. It constructs

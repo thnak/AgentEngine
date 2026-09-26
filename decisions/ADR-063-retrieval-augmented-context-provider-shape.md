@@ -14,7 +14,7 @@ earlier. Claim 4 has since been executed for real against live `openrouter.ai` w
 credential (all 5 assertion groups pass) and is also CORRECT. **Claim 3 has since been executed for
 real and is CORRECT** (a scripted embedder returning two different vectors for the same query text
 produces two different `ContextContribution`s across two `on_context()` calls). **Claim 1 has since
-been benchmarked for real** (`tests/test_vector_index_benchmark.cpp`, Release/clang numbers: ~248
+been benchmarked for real** (`tests/core/rag/test_vector_index_benchmark.cpp`, Release/clang numbers: ~248
 µs/~1.45 ms/~7.6 ms per `search()` call at n=200/1000/5000, dim 1536), **and RFC 023 §3 now names a
 real budget row** (added 2026-08-19, project owner's own choice: `≤ 500 µs, Goal`, matching the
 existing "Context assembly" analog exactly) — n=200 is a genuine PASS, n=1000/5000 are genuine
@@ -229,7 +229,7 @@ the first draft, not designed here yet as real code:
   (`protocol/openai/chat_client.hpp`) is **already** the one and only client this codebase uses
   against OpenRouter — `http_referer_`/`x_title_` exist specifically for OpenRouter's
   `HTTP-Referer`/`X-Title` app-attribution headers (no JSON body field, confirmed against real
-  OpenRouter docs per that file's own comment), and `tests/test_openrouter_live_e2e.cpp` proves
+  OpenRouter docs per that file's own comment), and `tests/protocol/openai/test_openrouter_live_e2e.cpp` proves
   `OpenAIChatClient` live against real `api.openrouter.ai`. There is no separate `OpenRouterChatClient`
   today, and none is needed — OpenRouter is modeled as "an OpenAI-compatible host," not a distinct
   vendor. **The identical relationship holds for embeddings** — see
@@ -498,7 +498,7 @@ passing:**
 - `core/provenance_marker.hpp` — `neutralize_forged_provenance_markers(content, marker_open)`, the
   generalized §2.6b mechanism. `memory_provider.hpp::neutralize_forged_memory_labels()` is now a
   one-line call to it (behavior-preserving refactor, not a rewrite).
-  `tests/test_provenance_marker.cpp`: proves the mechanism against the ADR's own `⟦rag:` marker
+  `tests/core/rag/test_provenance_marker.cpp`: proves the mechanism against the ADR's own `⟦rag:` marker
   family (a hostile chunk embedding a forged `⟦rag:trusted-file.md:1-5⟧` marker is neutralized to
   zero unbroken occurrences; the real, structurally-prepended label survives as the only unbroken
   occurrence in the assembled text); proves the `rag:` and `memory:` marker families never collide
@@ -510,7 +510,7 @@ passing:**
   conformer exists yet (no `OpenAIEmbedder`), so this is the shape only, not yet exercised by a real
   backend.
 - `core/vector_index.hpp` — `VectorIndex` concept + `BruteForceCosineIndex` (§2.3A), including the
-  score-desc/id-asc tie-break that closes §4 finding 7. `tests/test_vector_index.cpp`: cosine
+  score-desc/id-asc tie-break that closes §4 finding 7. `tests/core/rag/test_vector_index.cpp`: cosine
   ranking correctness (identical/orthogonal/opposite-direction vectors rank as expected), `k`
   truncation, contract rejection on length-mismatched and duplicate-id batches, and the tie-break
   itself (three byte-identical vectors resolve to a deterministic id-ascending order, stable across
@@ -523,7 +523,7 @@ passing:**
   current call, re-verified green.
 - `core/corpus_scope.hpp` — `corpus_scope {per_principal, per_tenant, global_shared}` +
   `rag_corpus_key()`/`rag_corpus_ref_name()`/`rag_corpus_mount_id()`/`rag_corpus_mount()` (§2.6a).
-  `tests/test_corpus_scope.cpp`, mirroring `test_memory_cross_tenant_isolation.cpp`'s shape: proves
+  `tests/core/rag/test_corpus_scope.cpp`, mirroring `test_memory_cross_tenant_isolation.cpp`'s shape: proves
   `per_principal` isolates both across tenants (the same-id-different-tenant case Memory's own Phase
   I1 fixed) and across principals within a tenant; proves `per_tenant` deliberately SHARES a key
   across principals within one tenant while still isolating across tenants; proves `global_shared`
@@ -539,7 +539,7 @@ project rebuild + `ctest -LE live-network`: 193/193 green):**
   by id, path `"chunks/<id>.json"`), the shared citation-metadata contract `CorpusSource` (writer)
   and `VectorRagContextProvider` (reader) both build against — written first, by the coordinator, so
   the three parallel agents below had a fixed, already-compiling interface to target instead of
-  guessing at each other's shape. `tests/test_corpus_chunk.cpp`: round-trip through a real
+  guessing at each other's shape. `tests/core/rag/test_corpus_chunk.cpp`: round-trip through a real
   capability-gated mount, missing-id rejection, malformed-JSON rejection.
 - `core/vector_index.hpp` gained `VectorIndex::contains(id) -> bool` (and
   `BruteForceCosineIndex::contains()`), added by the coordinator before dispatch — closes part of §4
@@ -556,7 +556,7 @@ project rebuild + `ctest -LE live-network`: 193/193 green):**
   sub-batched `embed_batch()` call for all new chunks per pass with nothing committed until every
   sub-batch succeeds — closing findings 8 (partial-failure: whole-mount-aborts, structurally enforced
   by commit ordering, not just asserted) and 9 (sub-batching) for this call site).
-  `tests/test_corpus_source.cpp`, against real temp files and a scripted mock `Embedder`: **directly
+  `tests/core/rag/test_corpus_source.cpp`, against real temp files and a scripted mock `Embedder`: **directly
   proves §3 claim 2's own disproof test** — mutate 1 of 3 files, re-mount, the mock embedder's
   texts-embedded counter rises by exactly 1, not 3; also proves two byte-identical files across
   different source paths dedup to one shared index entry (content-addressed dedup, not an error), and
@@ -577,12 +577,12 @@ project rebuild + `ctest -LE live-network`: 193/193 green):**
   `docs/research/2026-08-19-embedding-provider-landscape.md` §3, appended this pass; OpenRouter's own
   batch limit is explicitly recorded as unconfirmed rather than guessed at ~96 from unsourced
   community chatter).
-  `tests/test_openai_embedder.cpp` (offline, no network): request-body shape, response parsing
+  `tests/protocol/openai/test_openai_embedder.cpp` (offline, no network): request-body shape, response parsing
   (in-order, out-of-order-by-index, incomplete, malformed item/vector, top-level error envelope,
   missing `data`), and `embed_batch()`'s two pre-network gates (empty batch touches nothing;
   declared-limit overflow rejected before credential resolution, proven with an unpopulated
   `SecretStore` so a wrong gate-ordering would surface a different error code).
-  `tests/test_openai_embedder_openrouter_live_e2e.cpp` — **§3 claim 4's own disproof test**, real,
+  `tests/protocol/openai/test_openai_embedder_openrouter_live_e2e.cpp` — **§3 claim 4's own disproof test**, real,
   env-var-gated (`AGENTENGINE_OPENROUTER_API_KEY`), mirroring `test_openrouter_live_e2e.cpp`'s exact
   pattern (SKIP not FAIL when unset, a positive control with a wrong key, an I2 ungranted-capability
   control). **Since executed against real `openrouter.ai` (2026-08-19), with a real credential — all
@@ -612,7 +612,7 @@ project rebuild + `ctest -LE live-network`: 193/193 green):**
   every injected message tainted/external/`role::system` (029 §6's rule, unmodified for RAG).
   `on_turn_end()` is a genuine no-op (a RAG corpus is populated by mount-time ingestion, never written
   from a turn — unlike `MemoryProvider`'s own non-trivial extraction hook).
-  `tests/test_vector_rag_context_provider.cpp` **closes the "full claim" gap for §3 claims 5 and 6
+  `tests/core/rag/test_vector_rag_context_provider.cpp` **closes the "full claim" gap for §3 claims 5 and 6
   end-to-end, not just at the mechanism level**: two separate provider instances for two different
   `{tenant_id, principal}` pairs, IDENTICAL `corpus_name`, DIFFERENT chunks under the SAME
   `source_path`/`line_range` (so citation metadata alone can't be what isolation relies on) — a query
@@ -669,7 +669,7 @@ the same pass with a real, passing test proving each fix:
   field is now encoded as a length-prefixed ("netstring": `"<byte-length>:<bytes>"`) token before
   concatenation — a uniquely-decodable encoding, so no field's content can ever be mistaken for a
   delimiter plus the start of another field, closing the collision class by construction rather than
-  by pattern-matching specific bad inputs. `tests/test_corpus_scope.cpp` now proves the exact
+  by pattern-matching specific bad inputs. `tests/core/rag/test_corpus_scope.cpp` now proves the exact
   colliding pair named above derives distinct keys, plus the general property for an arbitrary
   colon-bearing field. **Deliberately NOT fixed in this pass**: `memory_ref_name()`/
   `memory_mount_id()` (`core/memory.hpp`) use the identical unescaped-join scheme and inherit the
@@ -691,7 +691,7 @@ the same pass with a real, passing test proving each fix:
   match) but is still the same class of I3 violation in principle. **Fixed in both files**:
   `last_user_text()` now walks backward to the most recent `role::user` message, ignoring any
   assistant/tool/system messages appended after it — never just `history.back()`.
-  `tests/test_vector_rag_context_provider.cpp`'s new `R11` proves it directly: a trailing assistant
+  `tests/core/rag/test_vector_rag_context_provider.cpp`'s new `R11` proves it directly: a trailing assistant
   message with its own distinct scripted embedder vector is present in history, and the query used is
   still provably the last real user message (the correct chunk still ranks first).
 - **REAL GAP — `RecursiveChunker` had no byte-length bound (`corpus_source.hpp`).** Chunk-size
@@ -705,7 +705,7 @@ the same pass with a real, passing test proving each fix:
   hard-splits any atom exceeding `max_atom_bytes` (new `RecursiveChunker` constructor parameter,
   default 16 KiB) into fixed-size byte pieces, each tagged with a sentinel word-count so
   `merge_atoms_into_chunks` can never re-merge two already-maximal pieces into one oversized output
-  chunk. `tests/test_corpus_source.cpp`'s new test (e) proves a pathological no-whitespace line is
+  chunk. `tests/core/rag/test_corpus_source.cpp`'s new test (e) proves a pathological no-whitespace line is
   split, every resulting chunk stays within the cap, the split is lossless, and `max_atom_bytes=0`
   genuinely disables the backstop (confirming it — not some unrelated effect — is what changed
   behavior).
@@ -717,12 +717,12 @@ the same pass with a real, passing test proving each fix:
   score — a "silently wrong answer" this codebase's reject-not-coerce convention otherwise exists to
   prevent. **Fixed**: `add_batch()` establishes the index's dimensionality from its first stored
   vector and rejects any subsequent (or same-call) vector of a different width; `search()` rejects a
-  mismatched-width query the same way. `tests/test_vector_index.cpp` proves both gates, including the
+  mismatched-width query the same way. `tests/core/rag/test_vector_index.cpp` proves both gates, including the
   within-one-call disagreement case.
 - **MINOR — `corpus_chunk_record_from_json()` silently defaulted `line_start`/`line_end` to 0 on a
   missing/non-numeric field (`corpus_chunk.hpp`).** Inconsistent with the same function's hard-reject
   handling of `id`/`source_path`/`source_file_hash`. **Fixed**: both fields now go through the same
-  `require_*`-shaped reject-not-coerce helper as the string fields. `tests/test_corpus_chunk.cpp`
+  `require_*`-shaped reject-not-coerce helper as the string fields. `tests/core/rag/test_corpus_chunk.cpp`
   proves both a missing and a wrong-JSON-type case are rejected, not coerced.
 - **Precision addendum to an already-named §7 residual, not a new finding**: the commit phase in
   `DiskCorpusSource::mount()` originally called `index.add_batch()` BEFORE
@@ -745,7 +745,7 @@ remains open. The full local suite is still 193/193 green after these fixes
 
 Two small, targeted additions, neither requiring new production code beyond what already existed:
 
-- **`tests/test_vector_index_benchmark.cpp`** (new) — closes claim 1's own disproof
+- **`tests/core/rag/test_vector_index_benchmark.cpp`** (new) — closes claim 1's own disproof
   (`BruteForceCosineIndex::search()` latency at the hypothesized corpus size). Mirrors
   `test_capability_token_benchmark.cpp`'s own bench-file shape (single-threaded, bounded iteration
   count, warm-up before timing, machine-safety comment per CLAUDE.md). Measured at dim=1536
@@ -753,7 +753,7 @@ Two small, targeted additions, neither requiring new production code beyond what
   session's Debug/MSVC build and found to be meaningless (`~5 ms/call` even at n=200 — an `/Od`
   artifact); rebuilt and re-measured under the repo's existing `build-clang-release` (Release, clang)
   configuration for real numbers, reported in §6.
-- **`tests/test_vector_rag_context_provider.cpp`** (new block, added to the existing file) — closes
+- **`tests/core/rag/test_vector_rag_context_provider.cpp`** (new block, added to the existing file) — closes
   claim 3's own disproof exactly as §3 specifies: a new `AlternatingEmbedder` mock alternates between
   two distinct vectors by CALL COUNT (not by input text), so the identical query text legitimately
   embeds differently across two calls, modeling real provider nondeterminism. Two `on_context()`
@@ -770,20 +770,20 @@ green, zero regressions (see below).
 Per `decisions/README.md`'s CORRECT / WRONG / INCONCLUSIVE bar. Only claims with real, executed
 evidence get a verdict; the rest stay PENDING, not guessed at.
 
-- **Claim 2 (§2.4A, re-mount is O(k) not O(n)) — CORRECT.** `tests/test_corpus_source.cpp`'s own
+- **Claim 2 (§2.4A, re-mount is O(k) not O(n)) — CORRECT.** `tests/core/rag/test_corpus_source.cpp`'s own
   disproof test executed exactly as §3 specifies: 1 of 3 files mutated, re-mounted, the mock
   embedder's call count rose by exactly the mutated file's own chunk count (1), not the whole corpus's
   (3+). The mechanism (`index.contains()` + per-file `source_file_hash` comparison) is real, not
   asserted.
 - **Claim 5 (§2.6a, multi-tenant isolation) — CORRECT, end-to-end, superseding the earlier
-  mechanism-only verdict.** `tests/test_vector_rag_context_provider.cpp`'s `C5-R1`–`C5-R5` run the
+  mechanism-only verdict.** `tests/core/rag/test_vector_rag_context_provider.cpp`'s `C5-R1`–`C5-R5` run the
   ADR's own disproof scenario for real: two providers, two tenants, identical `corpus_name`, and a
   query against one never returns the other's content — proven at two independent layers (index
   scoping, capability-gated record reads), not merely the key-derivation level `test_corpus_scope.cpp`
   proved earlier (that result still stands as a narrower, independently-useful proof of the
   underlying mechanism, not superseded, just no longer the ONLY evidence for claim 5).
 - **Claim 6 (§2.6b, citation-marker forgery) — CORRECT, end-to-end, superseding the earlier
-  mechanism-only verdict.** `tests/test_vector_rag_context_provider.cpp`'s `C6-R1`–`C6-R3` run the
+  mechanism-only verdict.** `tests/core/rag/test_vector_rag_context_provider.cpp`'s `C6-R1`–`C6-R3` run the
   ADR's own disproof scenario for real through `VectorRagContextProvider::on_context()`'s actual
   rendering path: a chunk with an embedded forged `⟦rag:...⟧` marker renders with the real marker
   exactly once, the forged bytes zero times.
@@ -799,7 +799,7 @@ evidence get a verdict; the rest stay PENDING, not guessed at.
   `policy`, an I2 ungranted-capability control denied before any network call, and a same-input
   same-length shape guarantee across two calls. Full transcript in §5's Second-pass evidence.
 - **Claim 3 (§2.2A, unwrapped Embedder breaks replay) — CORRECT, executed
-  (2026-08-19).** `tests/test_vector_rag_context_provider.cpp`'s new claim-3 block runs exactly the
+  (2026-08-19).** `tests/core/rag/test_vector_rag_context_provider.cpp`'s new claim-3 block runs exactly the
   scenario §3 names: a scripted `AlternatingEmbedder` returns two DIFFERENT vectors for the SAME
   query text on two successive calls; two `on_context()` calls against the IDENTICAL stored corpus
   and IDENTICAL history produce two DIFFERENT `ContextContribution`s (chunk A ranks first on call 1,
@@ -808,7 +808,7 @@ evidence get a verdict; the rest stay PENDING, not guessed at.
   were kept as separate tests specifically so neither could be cited as proving the other.
 - **Claim 1 (§2.3A, brute-force latency) — RESOLVED 2026-08-19 with a real budget target; verdict is
   now a real, measured Goal-tier pass at small corpus sizes and an honest Goal-tier MISS beyond
-  that, not an open INCONCLUSIVE.** `tests/test_vector_index_benchmark.cpp` (2026-08-19) measures
+  that, not an open INCONCLUSIVE.** `tests/core/rag/test_vector_index_benchmark.cpp` (2026-08-19) measures
   `BruteForceCosineIndex::search(k=5)` at dim=1536 (text-embedding-3-small's real dimension) across
   the hypothesized corpus-size range. Numbers under a Debug/MSVC build are not representative
   (`/Od`, ~5 ms/call even at n=200 — an artifact of no optimization, not of the algorithm); rebuilt
@@ -883,7 +883,7 @@ copy-at-mount folder retrieval with citation metadata rather than live re-reads.
   genuinely invocable end-to-end for any `synchronous_leaf = true` conformer (all 4 real conformers in
   the tree, including `OpenAIEmbedder`); a conformer declaring `false` still fails closed with the
   original error, unchanged. Real, executed evidence in ADR-064 §5/§6, including a new
-  `tests/test_rt_drive_leaf_task.cpp` and real end-to-end recall coverage.
+  `tests/rt/test_rt_drive_leaf_task.cpp` and real end-to-end recall coverage.
 - **(from §4 red-team) The concurrent-writer race, now more precisely understood as a lost-update on
   `commit_ref()`'s missing compare-and-set** (not mere staleness) for any corpus with more than one
   writer — worse than Memory's own accepted single-writer assumption if RAG corpora turn out to be

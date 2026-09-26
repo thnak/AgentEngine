@@ -2395,7 +2395,7 @@ Items (1) and (2) above are now proven, not argued: `AppContainerProfile::revoke
 for real (`src/backends/native_jail/app_container_profile.hpp`/`.cpp`, mirroring `grant_path()`'s own
 three-Win32-call shape with `SetEntriesInAclW`'s `ACCESS_MODE` flipped to its documented `REVOKE_ACCESS`
 member — no other code path touched), and a real, executed positive-control test —
-`tests/test_native_jail_grant_path_ace_lifecycle_windows.cpp`, registered in `tests/CMakeLists.txt`
+`tests/backends/native_jail/test_native_jail_grant_path_ace_lifecycle_windows.cpp`, registered in `tests/CMakeLists.txt`
 immediately after `test_native_jail_grant_ro_path_once_windows` — proves both of this draft's central
 claims by direct `GetNamedSecurityInfoW`/ACE-walk query, not by reading code:
 
@@ -3617,7 +3617,7 @@ thing, on three load-bearing axes ADR-041 itself makes explicit:**
    caller-supplied data — only about two fixed OS files.
 3. **What evidence backs "bounded."** ADR-041's acceptance is not argued by analogy or intent alone — it
    rests on an EXECUTED, currently-green, positive-control regression test
-   (`tests/test_native_jail_abuse_corpus_windows.cpp`, Case 4) that proves, empirically, both that the leak
+   (`tests/backends/native_jail/test_native_jail_abuse_corpus_windows.cpp`, Case 4) that proves, empirically, both that the leak
    exists AND that it does not reach beyond the documented `win.ini`/`hosts` set to an arbitrary secret the
    test itself plants. This draft's own fix text explicitly has NO equivalent test — it names one, in the
    same paragraph that invokes the ADR-041 precedent, as "real, implementation-ADR-level future work, named
@@ -4581,7 +4581,7 @@ finding 31's cleanup-failure fallback exists to handle. Finding 34's reasoning (
 sharing-violation check the way `DELETE`/data-stream opens are) was real, documented Win32 semantics — but
 argued, never executed.
 
-**This pass built and ran that test.** A third claim was added to `tests/test_native_jail_grant_path_ace_lifecycle_windows.cpp`:
+**This pass built and ran that test.** A third claim was added to `tests/backends/native_jail/test_native_jail_grant_path_ace_lifecycle_windows.cpp`:
 
 - **Claim 3**: grant a directory, create a child file inside it, then open a REAL `HANDLE` on that exact
   child via `CreateFileW` with `dwShareMode = FILE_SHARE_READ` — deliberately excluding `FILE_SHARE_DELETE`.

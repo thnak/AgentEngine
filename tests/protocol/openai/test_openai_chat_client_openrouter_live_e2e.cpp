@@ -1,7 +1,7 @@
 // End-to-end proof that `openai::OpenAIChatClient<>` -- AgentEngine's real OpenAI-shaped ChatClient
 // conformer, unmodified -- works correctly when pointed at OpenRouter's host with a CONCRETELY NAMED
 // OpenAI model (e.g. "openai/gpt-4o-mini"), not the routing ALIAS
-// (`~deepseek/deepseek-v4-flash-latest`) tests/test_openrouter_live_e2e.cpp already exercises. That
+// (`~deepseek/deepseek-v4-flash-latest`) tests/protocol/openai/test_openrouter_live_e2e.cpp already exercises. That
 // file's own OR-OAI-1 note explicitly can't assert much about `ChatResponse::model` because an alias
 // resolves server-side to whichever backend OpenRouter happens to route to; a concretely named vendor
 // model makes that field a meaningful, checkable claim instead -- which is the one thing this file
@@ -11,7 +11,7 @@
 // (`openai/gpt-4o-mini` is also the one model confirmed to support OpenRouter's beta Batch endpoint,
 // unlike the deepseek alias).
 //
-// Mirrors tests/test_openrouter_live_e2e.cpp's and tests/test_openai_embedder_openrouter_live_e2e.cpp's
+// Mirrors tests/protocol/openai/test_openrouter_live_e2e.cpp's and tests/protocol/openai/test_openai_embedder_openrouter_live_e2e.cpp's
 // EXACT pattern (env-var-gated credential, SKIP not FAIL when absent, structural-only assertions, a
 // positive control proving the credential is load-bearing, and an I2 capability-denial control) -- see
 // either file's own top comment for the full rationale, not repeated here. Deliberately does NOT

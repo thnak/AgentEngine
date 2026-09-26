@@ -122,7 +122,7 @@ code this ADR owns going forward, but a real bug this pass found and closed): a
 `sanitize_for_filesystem()` helper percent-escapes `:`/`<`/`>`/`"`/`|`/`?`/`*`/control chars/a
 literal `%` (kept injective) before joining with `root_`. The existing `/`/`\`/`..` REJECTION is
 unchanged (it exists to catch a caller's mistake, not to make an id filesystem-safe) — verified
-`tests/test_rt_session_store.cpp`'s full existing suite (43 checks) still passes unmodified.
+`tests/rt/test_rt_session_store.cpp`'s full existing suite (43 checks) still passes unmodified.
 
 ## 4. The accepted design
 
@@ -195,10 +195,10 @@ pattern, but the live run itself is a named residual, not claimed as executed ev
 - `docs/planning/magentic-workflow-convenience-api-design-draft.md`
 - `include/agentengine/workflow/magentic.hpp`
 - `include/agentengine/rt/workflow_checkpoint_manager.hpp`
-- `tests/test_rt_workflow_stall_reset_bounds.cpp`
-- `tests/test_workflow_magentic_builder.cpp`
-- `tests/test_workflow_magentic_plan_signoff.cpp`
-- `tests/test_rt_workflow_checkpoint_manager.cpp`
+- `tests/workflow/test_rt_workflow_stall_reset_bounds.cpp`
+- `tests/workflow/test_workflow_magentic_builder.cpp`
+- `tests/workflow/test_workflow_magentic_plan_signoff.cpp`
+- `tests/workflow/test_rt_workflow_checkpoint_manager.cpp`
 - `examples/19_magentic_builder_live.cpp`
 
 **Edited:**
@@ -213,9 +213,9 @@ pattern, but the live run itself is a named residual, not claimed as executed ev
 - `include/agentengine/rt/session_store.hpp` — `FileSessionStore::sanitize_for_filesystem()` (the
   Windows-reserved-character fix, §3).
 - `include/agentengine/rt/workflow_checkpoint_manager.hpp` — §8 fix 3 (below).
-- `tests/test_rt_workflow_stall_reset_bounds.cpp`, `tests/test_rt_workflow_checkpoint_manager.cpp` —
+- `tests/workflow/test_rt_workflow_stall_reset_bounds.cpp`, `tests/workflow/test_rt_workflow_checkpoint_manager.cpp` —
   §8 fixes 1/3 regression tests (S7, C4b).
-- `tests/test_workflow_magentic_builder.cpp`, `tests/test_workflow_magentic_plan_signoff.cpp`,
+- `tests/workflow/test_workflow_magentic_builder.cpp`, `tests/workflow/test_workflow_magentic_plan_signoff.cpp`,
   `examples/19_magentic_builder_live.cpp` — §8 fixes 2/4.
 - `tests/CMakeLists.txt`, `examples/CMakeLists.txt` — new target registrations.
 

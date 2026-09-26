@@ -3,7 +3,7 @@
 // decisions/ADR-014-worktree-mount-path-canonicalization.md (Judged, Windows). Ordinary task per
 // the breakdown doc's decision 6 (ADR-014 already settled the design question; this carries its
 // finding forward rather than re-litigating it), mirroring
-// tests/test_worktree_mount_fs_escape_corpus.cpp's structure and numbering scheme so the two
+// tests/worktree/test_worktree_mount_fs_escape_corpus.cpp's structure and numbering scheme so the two
 // platforms' corpora stay legible side by side.
 //
 // Real Linux filesystem I/O against a scratch directory under $TMPDIR (or /tmp), real symlinks

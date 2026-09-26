@@ -2,7 +2,7 @@
 // G1 -- "under native-jail, a scripted data task ... produces ... an artifact identically across the
 // target platform set ... from the same pinned preinstalled image"). This is the model-DEPENDENT half
 // of Phase H1 (the model-independent half, 026 §7's prompt budget and §8 G3's no-leakage rule, is
-// tests/test_reference_agent_prompt.cpp).
+// tests/core/agent/test_reference_agent_prompt.cpp).
 //
 // Three tasks, each backed by a HAND-AUTHORED fixture under
 // tests/fixtures/chat_client/reference_agent/ (tests/support/recorded_chat_client.hpp's own header
@@ -128,7 +128,7 @@ int main() {
     auto widen = [](std::filesystem::path const& p) { return p.wstring(); };
 
     // Measured top-level transitive-import closure of `import numpy, pandas` (ADR-002 §8, also used
-    // verbatim by tests/test_python_numpy_pandas_import.cpp) -- reused here rather than re-measured,
+    // verbatim by tests/python/test_python_numpy_pandas_import.cpp) -- reused here rather than re-measured,
     // since it is a superset that already covers the plain `csv`/`os` tasks too. A session-wide
     // package policy (010 §5) would eventually populate this; until then this IS the fixed, curated
     // set the whole task corpus runs under, matching "one image, one closure" rather than a

@@ -1,7 +1,7 @@
 // Prove phase for OQ-21 (OpenQuestions.md) / core/tool_call_hook.hpp -- the tool-call hook stage
 // wired into a real agentengine::rt::AgentSession round (rt/agent_session.hpp's hook-stage block in
 // run_rounds(), resolve_hook_decision(), finish_hook_processed_round()). Style/structure deliberately
-// mirrors tests/test_rt_agent_session_suspend_approval.cpp (this project's own precedent for this
+// mirrors tests/rt/agent_session/test_rt_agent_session_suspend_approval.cpp (this project's own precedent for this
 // class of test): deterministic, offline, a hand-scripted ChatClientT, check()/drive<T>() copied
 // rather than shared (that file's own "no cross-test-file coupling" precedent).
 //
@@ -13,7 +13,7 @@
 //         invoke() observes the REWRITTEN arguments, not the model's original ones), the rewrite
 //         downgrades the call's provenance to call_provenance::text_derived
 //         (enforce_hook_rewritten_tool_call_provenance -- observed indirectly, the same way
-//         tests/test_tool_pipeline.cpp's own ADR-023 P2-T2 proves it: a capability-bearing tool that
+//         tests/core/tools/test_tool_pipeline.cpp's own ADR-023 P2-T2 proves it: a capability-bearing tool that
 //         ALSO declares Approval<never_require> would otherwise run with no decider at all, but here
 //         it does NOT, proving the call's provenance flipped away from the tool's normal
 //         vendor_structured/never_require fast path), and the call is refused with no approving

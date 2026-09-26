@@ -260,7 +260,7 @@ private:
     // liters", ...) for a tool whose name/description never happened to contain that exact phrase
     // verbatim, causing the model to give up searching for a tool that was in fact present. Matching
     // if ANY query word appears in a tool's name+description is what "search" is actually expected to
-    // mean; a single-word query (this class's own R4 test, tests/test_tool_optimizer_provider.cpp)
+    // mean; a single-word query (this class's own R4 test, tests/core/context/test_tool_optimizer_provider.cpp)
     // behaves identically either way, so this is a strict widening, not a behavior change for it.
     [[nodiscard]] result<SearchToolsReply> real_search_tools(SearchToolsArgs args, EffectContext& ctx) {
         auto universe = build_universe(ctx);

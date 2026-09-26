@@ -246,7 +246,7 @@ Findings are marked using ADR-001/002/003's severity vocabulary.
    for memory/pid (matches expectations) and answered differently than assumed for CPU time (does
    not).
 4. **[RESOLVED — 2026-08-23] LPAC was not tested; now it has been, with a real, executed, decisive
-   result.** `tests/adr004_lpac_decision_spike.cpp` (new, kept in the tree, not ephemeral scratch
+   result.** `tests/backends/native_jail/adr004_lpac_decision_spike.cpp` (new, kept in the tree, not ephemeral scratch
    like this ADR's original `ac_setup.cpp`/`ac_run.cpp`) reuses the real, shipped
    `AppContainerProfile` class and mirrors `native_jail_backend.cpp`'s exact `CreateProcessW`/
    attribute-list construction, adding exactly one attribute for the LPAC arm:
@@ -379,7 +379,7 @@ Windows Job Object:
   duration.
 - `tests/helpers/hostile_child.cpp` — a small test-only process with four modes (`alloc <mb>`,
   `spin`, `sleep <ms>`, `spawn <n> <self_path>`) used to exercise each limit.
-- `tests/test_job_object_limits.cpp` — five tests, each with a **positive control** run against the
+- `tests/backends/native_jail/test_job_object_limits.cpp` — five tests, each with a **positive control** run against the
   identical hostile behavior with the limit under test disabled (008 §9 G2's discipline).
 - Wired into `CMakeLists.txt` (`agentengine_job_object_limits`, `WIN32`-gated, no third-party
   dependency — pure Win32 API) and `tests/CMakeLists.txt`.
@@ -469,7 +469,7 @@ comparison measures against.
 ## 11. Suggested next steps (not part of this ADR's evidence)
 
 1. ~~Add the read-access-leak abuse case to 008 §7, with a hostile-suite test and the positive
-   control §8.3 describes.~~ **Done** — `tests/test_native_jail_abuse_corpus_windows.cpp`'s Case 4
+   control §8.3 describes.~~ **Done** — `tests/backends/native_jail/test_native_jail_abuse_corpus_windows.cpp`'s Case 4
    (`M2 Phase C task C3`, commit `b39f5ea`) asserts `win.ini` reads `ESCAPE_OK` (the documented gap,
    not silently regressed) directly alongside the same case's primary assertion that an arbitrary
    non-curated file (`secret_file`) reads `ESCAPE_DENIED` — the pairing that makes it a real positive

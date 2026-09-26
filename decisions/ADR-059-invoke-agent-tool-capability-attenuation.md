@@ -83,7 +83,7 @@ gets more than its own declared ceiling either (both bounds enforced by the same
   that the CORRECT fail-closed behavior here (the target's ceiling asking for literally unrestricted
   access when the caller only holds a capped grant should fail, matching G4's own resolution), or does
   it produce a surprising rejection for an ordinary, legitimate case that needs a different fix?
-- The existing test, `tests/test_agent_tool_invocation.cpp`, calls `invoke_agent_tool()` with a
+- The existing test, `tests/core/agent/test_agent_tool_invocation.cpp`, calls `invoke_agent_tool()` with a
   **default-constructed `EffectContext`** — `ctx.capabilities` is `nullptr`. This positive test
   currently expects success. Under this fix it must fail (no caller capabilities to attenuate from) —
   correctly, matching this codebase's own established idiom ("null capabilities_ denies per-call
@@ -115,7 +115,7 @@ precedent already on record for this exact module).
 
 Read directly (not the ADR's own paraphrase above) before attacking: `include/agentengine/trust/
 capability.hpp` in full, `include/agentengine/core/agent_registry.hpp` in full,
-`tests/test_agent_tool_invocation.cpp`, and the M3 Phase G4 `find_fs_write` writeup in
+`tests/core/agent/test_agent_tool_invocation.cpp`, and the M3 Phase G4 `find_fs_write` writeup in
 `docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md` lines ~1259-1267.
 
 **R1 — bug shape confirmed exactly as claimed.** `invoke_agent_tool()`
@@ -131,7 +131,7 @@ would build on.
 
 **R2 — zero production callers, re-confirmed directly (not secondhand).** Grepped
 `invoke_agent_tool` across the full tree: 14 files match. Of those, the only files containing an
-actual *call* (not a comment) are `tests/test_agent_tool_invocation.cpp` and `tests/CMakeLists.txt`
+actual *call* (not a comment) are `tests/core/agent/test_agent_tool_invocation.cpp` and `tests/CMakeLists.txt`
 (test registration). Every other hit is a comment:
 `src/backends/native_jail/tool_bridge.hpp:7` explicitly says the bridge does NOT go through
 `invoke_agent_tool` ("that wrapper binds the AGENT's own `capability_ceiling`... exactly the wrong
@@ -193,7 +193,7 @@ Since no capped ceiling can currently be *declared* by an agent, and no operator
 exists to produce one either, a caller's own held `CapabilitySet` — if built the same way (from its
 own agent's declared `Capabilities<...>` ceiling, or hand-`grant_root()`'d by a host mirroring that
 shape) — is uncapped on the same axes too, and `attenuate()` succeeds cleanly (proven directly:
-`tests/test_agent_tool_invocation.cpp` case 4, `attenuated->size() == meta->capability_ceiling.
+`tests/core/agent/test_agent_tool_invocation.cpp` case 4, `attenuated->size() == meta->capability_ceiling.
 size()`). The rejection only fires when a host has deliberately hand-constructed a caller's
 `CapabilitySet` with an explicit numeric cap the target's (uncapped) ceiling request then can't be
 covered by — which is exactly a caller that CANNOT vouch for the full, unbounded access the target's

@@ -50,7 +50,7 @@
 // The known objection to setting the input page is that console UTF-8 *input* was genuinely broken
 // on Windows builds before 10 1903 (`ReadFile` on a console handle at CP 65001 could return zero
 // bytes), which is why some older code sets only the output page. That is not inherited on faith
-// here: `tests/test_console_utf8.cpp` I1-I4 inject real key events into the console's own input
+// here: `tests/rt/test_console_utf8.cpp` I1-I4 inject real key events into the console's own input
 // buffer and read the bytes back, and I4 checks ASCII specifically, on whatever host the test runs
 // on. If a build where it does fail ever matters, split the two flags rather than dropping both.
 //

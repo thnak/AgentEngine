@@ -429,7 +429,7 @@ own RT1/RT2 shape)
    unrelated to `dispatch_worker_query`'s open/listdir/socket relay this design covers. Named as an
    explicit, out-of-scope residual (§5), not silently left unexplained.
 3. **NEW positive control, built and run this pass**
-   (`tests/test_native_jail_python_worker_handle_relay.cpp`, new): a real successful
+   (`tests/backends/native_jail/test_native_jail_python_worker_handle_relay.cpp`, new): a real successful
    `connect_authorize`+`connect_send`+`connect_recv`+`connect_close` round trip against a real local
    TCP loopback echo server, under a real granted `cap::NetOut` — **PASSES**. Required adding a
    TEST-ONLY resolver-override seam (`NativeJailBackend::set_test_connect_resolver_override`, mirroring

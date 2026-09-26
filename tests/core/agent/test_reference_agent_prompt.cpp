@@ -5,7 +5,7 @@
 // already use -- never a second, hand-duplicated summary. Model-independent: no ChatClient, no
 // fixture, no network call anywhere in this file. The model-DEPENDENT half (does a real reference
 // agent's own code succeed first-attempt under this prompt) is
-// tests/test_reference_agent_task_corpus.cpp.
+// tests/core/agent/test_reference_agent_task_corpus.cpp.
 
 #include <cstdio>
 #include <string>

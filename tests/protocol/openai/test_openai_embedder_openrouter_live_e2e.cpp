@@ -7,7 +7,7 @@
 // disproof -- there is no code branch anywhere in protocol/openai/embedder.hpp keyed on which host
 // was passed in.
 //
-// Mirrors tests/test_openrouter_live_e2e.cpp's EXACT pattern (env-var-gated credential, SKIP not FAIL
+// Mirrors tests/protocol/openai/test_openrouter_live_e2e.cpp's EXACT pattern (env-var-gated credential, SKIP not FAIL
 // when absent, structural-only assertions, a positive control proving the credential is load-bearing,
 // and an I2 capability-denial control) -- see that file's own top comment for the full rationale,
 // not repeated here. The one structural difference from that file: embeddings are NOT streaming

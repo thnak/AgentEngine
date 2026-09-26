@@ -9,7 +9,7 @@
 // but legitimately inside the root, proving the mechanism can both allow and deny rather than
 // failing everything indiscriminately. The TOCTOU class is proven via a deterministic, single-
 // threaded interleaving (this project's established discrete-event-simulation precedent from
-// tests/test_worktree_branch_concurrency.cpp, Phase B4) rather than a real timing race: the
+// tests/worktree/test_worktree_branch_concurrency.cpp, Phase B4) rather than a real timing race: the
 // filesystem state is mutated by hand between two calls, exactly the state a real concurrent
 // attacker would need to win a genuine race, made reproducible instead of timing-dependent.
 //
@@ -326,7 +326,7 @@ int main() {
     // ============================================================================================
     // C2-9: root itself and malformed-segment rejections (empty path, trailing slash, double
     // slash) -- reused directly from split_mount_path's own already-proven contract
-    // (tests/test_worktree_mount.cpp C1-C1); re-asserted here through the real-FS entry point so a
+    // (tests/worktree/test_worktree_mount.cpp C1-C1); re-asserted here through the real-FS entry point so a
     // future refactor of open_within_mount_root can't silently stop calling split_mount_path.
     // ============================================================================================
     {

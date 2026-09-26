@@ -151,7 +151,7 @@ for no new logic path. Named as a real scope reduction, not a silent gap.
 
 ## 6. Evidence
 
-`tests/test_rt_agent_session_ack_policy.cpp` (new file, T1-T3), against a real `AgentSession` and a
+`tests/rt/agent_session/test_rt_agent_session_ack_policy.cpp` (new file, T1-T3), against a real `AgentSession` and a
 real `InMemorySessionStore`/a configurable-failure `FlakyStore` fixture:
 
 - **T1**: `at_most_once` makes zero `store.save()` calls — byte-identical to today's unchanged

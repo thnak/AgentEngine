@@ -65,7 +65,7 @@ in the abstract, but actually specified in enough detail to find real defects in
 
 Design D's safety rests on two claims that nine rounds of code-reading argued but did not, by
 themselves, prove. Per this project's own "a test that cannot fail proves nothing" standard, two
-positive-control tests were built and run (`tests/test_native_jail_grant_path_ace_lifecycle_windows.cpp`,
+positive-control tests were built and run (`tests/backends/native_jail/test_native_jail_grant_path_ace_lifecycle_windows.cpp`,
 commits `0a357b0`/`f4eb2bf`):
 
 - **Claim 1 — deletion destroys the grant.** *Verdict: CORRECT.* Real evidence: granted a directory,

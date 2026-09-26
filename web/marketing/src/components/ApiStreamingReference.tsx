@@ -599,8 +599,8 @@ export function ApiStreamingReference() {
 
           <RevealItem>
             <Cite
-              path="tests/test_chat_client_stream.cpp"
-              label="tests/test_chat_client_stream.cpp — the same primitive, proven end to end"
+              path="tests/core/chat/test_chat_client_stream.cpp"
+              label="tests/core/chat/test_chat_client_stream.cpp — the same primitive, proven end to end"
             />
           </RevealItem>
         </RevealGroup>
@@ -742,7 +742,7 @@ export function ApiStreamingReference() {
           <RevealItem>
             <Cite
               path="examples/29_agent_session_events.cpp"
-              label="examples/29_agent_session_events.cpp — mirrors tests/test_rt_agent_session_streaming_and_events.cpp's S1/A2"
+              label="examples/29_agent_session_events.cpp — mirrors tests/rt/agent_session/test_rt_agent_session_streaming_and_events.cpp's S1/A2"
             />
           </RevealItem>
         </RevealGroup>

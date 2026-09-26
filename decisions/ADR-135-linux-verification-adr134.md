@@ -8,7 +8,7 @@
   ADR-133) fast-forwarded to this branch's exact HEAD (`2a84e8d`) and rebuilt/retested with the same
   real GCC 14.2.0 toolchain.
 - **Date:** 2026-08-30.
-- **Scope:** `tests/test_durable_sandboxed_shell_chat_cross_process.cpp` (one real fix: POSIX
+- **Scope:** `tests/backends/native_jail/test_durable_sandboxed_shell_chat_cross_process.cpp` (one real fix: POSIX
   `std::system()` exit-status decoding), plus this ADR itself and the two disclosure-pointer edits it
   makes (`decisions/ADR-134-durable-sandboxed-shell-chat.md`, `decisions/README.md`). No production
   code (`tools/durable_sandboxed_shell_chat.cpp` itself) changed.
@@ -25,7 +25,7 @@ which needed a real Linux-parity fix (ADR-105/107) before it could drop its own 
 portability claim had never actually been executed on Linux before this pass — **this is a genuinely
 new claim being tested for the first time**, not a re-confirmation of an already-proven template
 mechanism the way ADR-133 re-confirmed ADR-132's cross-compiler template reasoning. ADR-134's own
-same-day red-team round also added `tests/test_durable_sandboxed_shell_chat_cross_process.cpp`, a
+same-day red-team round also added `tests/backends/native_jail/test_durable_sandboxed_shell_chat_cross_process.cpp`, a
 real two-process regression test asserting a decisive signal (`ledger_state.snapshot`'s own
 last-write-time staying unchanged across a second invocation, proving reclaim over re-create) — does
 that new test's own POSIX code path (the `unsetenv()`/`setenv()` branch, and the un-doubled
@@ -87,7 +87,7 @@ and the pattern-reuse from the sibling test did not cover that case — exactly 
 call-site-specific gap the task briefing for this pass called out as worth re-checking rather than
 assuming.
 
-**Fixed** in `tests/test_durable_sandboxed_shell_chat_cross_process.cpp`: added `#include
+**Fixed** in `tests/backends/native_jail/test_durable_sandboxed_shell_chat_cross_process.cpp`: added `#include
 <sys/wait.h>` on the POSIX arm and rewrote `run_once()`'s POSIX branch to decode the raw status via
 `WIFEXITED`/`WEXITSTATUS`, mapping a `std::system()` launch failure (`-1`) or a not-normally-exited
 child to `-1` (which never spuriously equals the expected `1`). The Windows arm is unchanged — its

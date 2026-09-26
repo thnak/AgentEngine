@@ -176,7 +176,7 @@ says.
 $ cd build && cmake .. -G Ninja     # picks up the new test target
 [... configure clean ...]
 $ cmake --build . --target test_bounded_reflection
-[1/4] Scanning D:/GitSrc2/AgentEngine/tests/test_bounded_reflection.cpp for CXX dependencies
+[1/4] Scanning D:/GitSrc2/AgentEngine/tests/rt/test_bounded_reflection.cpp for CXX dependencies
 [2/4] Generating CXX dyndep file tests/CMakeFiles/test_bounded_reflection.dir/CXX.dd
 [3/4] Building CXX object tests/CMakeFiles/test_bounded_reflection.dir/test_bounded_reflection.cpp.obj
 [4/4] Linking CXX executable tests\test_bounded_reflection.exe

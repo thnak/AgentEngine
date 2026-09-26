@@ -37,7 +37,7 @@ while implementing it):
   the honest pre-registry stub when it isn't); `register_agent<A>()` grows the second, additive,
   defaulted `sandbox_registry` parameter exactly as §2b specified, threaded through
   `agent_detail::compiler<A,...>::run()`.
-- **Tests** (`tests/test_sandbox_backend_registry.cpp`, `tests/test_agent_registry_sandbox_backend_
+- **Tests** (`tests/sandbox/test_sandbox_backend_registry.cpp`, `tests/test_agent_registry_sandbox_backend_
   registry.cpp`): 15 checks total. The load-bearing one is a literal regression test for the
   confirmed Revision 1 bug — a `StatefulBackend` shaped exactly like `NativeJailBackend`/
   `WasmBackend` (an `instances_` map keyed by opaque handle id) proves `create()` then `exec()` then
@@ -82,7 +82,7 @@ silently editing the original text away, matching this project's ADR-history con
    spawn a process only to have it killed on the same call's return. Fail-closed, not a silent
    leak — but non-functional as sketched. **Fixed in §2a below**: the registry now owns one
    long-lived instance per registration, constructed once, captured by `shared_ptr` in the three
-   closures — matching how `tests/test_wasm_tool_bridge.cpp` already uses `WasmBackend` in practice
+   closures — matching how `tests/plugin/test_wasm_tool_bridge.cpp` already uses `WasmBackend` in practice
    (one `std::make_shared<WasmBackend>()`, reused across calls), and how the real
    `mediated_command_registry.hpp` precedent this draft cited actually works (it stores closures
    around an *already-constructed* instance the caller owns — it never default-constructs anything
@@ -163,7 +163,7 @@ Verified directly against current code (2026-08-23), not assumed from the RFC te
 
 - **A larger, adjacent gap this draft does NOT close, named honestly rather than assumed fixed**:
   grepping the whole tree for real (non-test) `SandboxHandle` construction finds exactly **one**
-  call site, and it is `tests/test_wasm_tool_bridge.cpp` — a test fixture. No production
+  call site, and it is `tests/plugin/test_wasm_tool_bridge.cpp` — a test fixture. No production
   `AgentSession` code path calls any `SandboxBackend::create()` today. `AgentMetadata.sandbox_profile`
   (`agent_registry.hpp:73`) is compiled and structurally validated, but nothing downstream currently
   *reads* it to construct a real sandbox — it is write-only metadata in production as of this

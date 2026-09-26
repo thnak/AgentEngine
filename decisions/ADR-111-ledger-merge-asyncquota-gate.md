@@ -21,7 +21,7 @@
   `ContainerdCliBackend`/`ContainerdExecutionSurface` gaps found alongside it),
   `include/agentengine/sandbox/sandbox_runtime.hpp`
   (`SandboxRuntime::merge_into()` signature and body, threading the new quota through), and
-  `tests/test_ledger.cpp` (two existing merge() call sites updated to pass a quota plus new
+  `tests/core/ledger/test_ledger.cpp` (two existing merge() call sites updated to pass a quota plus new
   consumption/refund proofs, and a new case [12] proving the exhausted-quota path). No other file
   changed — `SandboxRuntime::merge_into()` has zero production or test callers anywhere in this tree
   today (grep-confirmed; only a prove-phase file under `docs/planning/proofs/` calls a same-named
@@ -80,7 +80,7 @@ the matching `AsyncQuota<MergeCost>& merge_quota` parameter and threads it strai
 
 ## 3. Verification
 
-`tests/test_ledger.cpp` updated and extended, not merely made-to-compile:
+`tests/core/ledger/test_ledger.cpp` updated and extended, not merely made-to-compile:
 
 - Case [4] (clean merge, requester `child_identity`): now asserts `child_merge_quota.remaining()`
   drops by exactly 1 across the call — proving real consumption, not a parameter the method silently
@@ -135,7 +135,7 @@ name and genuinely call `abandon()` on it, **erasing the branch from `branches_`
 destroying the caller's own real, committed work (the clean, non-conflicting commit the test's own
 case [12] makes just before attempting the merge), not merely leaving it "untouched" as this ADR's own
 first draft claimed, and not merely "orphaned but recoverable" as every other rejection path
-guarantees. `tests/test_ledger.cpp`'s own first version of case [12] did not catch this: it checked
+guarantees. `tests/core/ledger/test_ledger.cpp`'s own first version of case [12] did not catch this: it checked
 `orphaned_branches()`/`head_tree_digest()` immediately after the failed call and never invoked
 `reap_pending_abandons()`, so the assertions it wrote (branch untouched, not orphaned) happened to be
 true at the instant it checked, while the branch was already scheduled for destruction the moment

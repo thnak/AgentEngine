@@ -57,7 +57,7 @@ correctness hazard today.
 (build+run a throwaway program, since deleted): `run_workflow()` on a graph with an `agent`-kind
 executor genuinely returns `workflow_status::invalid` — the fence works. But `check_workflow_executable()`
 is called from exactly one place in the whole tree (`rt/workflow_supervisor.hpp:490`) and is otherwise
-untested — `tests/test_workflow_graph_validation.cpp:177-178`'s own comment claims the runtime refusal
+untested — `tests/workflow/test_workflow_graph_validation.cpp:177-178`'s own comment claims the runtime refusal
 "is tested in `test_workflow_request_port.cpp`," a file that no longer exists under that name. Only
 `validate_workflow()`'s ACCEPTANCE of an agent-kind graph as well-formed data is tested (line 179-183);
 the runtime REFUSAL to run one is not. Small, independently-landable fix, doesn't depend on anything

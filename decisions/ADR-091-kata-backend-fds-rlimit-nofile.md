@@ -40,7 +40,7 @@ containerd's `ctr` CLI source settles it either way without checking the actual 
 exec-path behavior against a live system.
 
 **Disclosed, not assumed — and not silently left unaddressed either.** A new test case
-(`tests/test_kata_backend_slice2_linux.cpp`, case 6) targets exactly this question directly: with
+(`tests/backends/kata/test_kata_backend_slice2_linux.cpp`, case 6) targets exactly this question directly: with
 `spec.limits.fds = 123` set at `create()`, it execs `ulimit -n` and asserts the exec'd process's own
 reported limit is exactly `123` — real, falsifiable evidence either way, the first time this repo runs
 it against a live deployment, rather than a claim resting on inspection alone. The test's own comment

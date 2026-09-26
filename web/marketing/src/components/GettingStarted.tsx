@@ -149,7 +149,7 @@ export function GettingStarted() {
               <p>
                 {t.authoringBody1} <code>register_agent&lt;A&gt;()</code> {t.authoringBody2}{" "}
                 <code>AgentMetadata</code> {t.authoringBody3}{" "}
-                <code>tests/test_agent_registry.cpp</code>.
+                <code>tests/core/agent/test_agent_registry.cpp</code>.
               </p>
             </div>
           </RevealItem>

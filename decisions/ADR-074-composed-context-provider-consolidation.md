@@ -10,8 +10,8 @@ type that carries both fixes everywhere*. Implemented in this session:
 `include/agentengine/core/composed_context_provider.hpp` (rewritten), `history_and_skills_provider.hpp`
 (deleted), `include/agentengine/core/session_builder.hpp` (`detail::LazyComposedContextProvider`
 removed; `ComposedQuickstartSessionBuilder::HistoryProviderT` now names `ComposedContextProvider<Ms...>`
-directly). Proven by `tests/test_composed_context_provider.cpp` (new Part 3: `engage()`, move-only,
-no-aliasing-after-move), the full pre-existing `tests/test_session_builder.cpp` suite (B14–B22,
+directly). Proven by `tests/core/context/test_composed_context_provider.cpp` (new Part 3: `engage()`, move-only,
+no-aliasing-after-move), the full pre-existing `tests/core/context/test_session_builder.cpp` suite (B14–B22,
 unchanged in what they assert, now exercising the same type instead of a separate one), and every other
 real/test call site in the tree re-built and re-run clean (`test_tool_optimizer_provider`,
 `test_rt_agent_session_context_provenance`, `test_rt_agent_session_real_backend`,
@@ -66,7 +66,7 @@ The first implementation attempt gave `ComposedContextProvider`'s default constr
 ergonomics), otherwise start empty (matching `LazyComposedContextProvider`). This looked like a clean
 "best of both" unification. It was wrong, and the full test suite caught it:
 
-- `tests/test_session_builder.cpp`'s B22 (round 8's exception-safety regression test) uses
+- `tests/core/context/test_session_builder.cpp`'s B22 (round 8's exception-safety regression test) uses
   `ComposedQuickstartSessionBuilder<..., CountingProvider, ThrowingProvider>` — both fixtures happen to
   be default-constructible. With auto-engage, `ProviderT lcp;` (bare default construction) immediately
   populated itself with throwaway default instances and set `engaged_ = true` — so the test's own

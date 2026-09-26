@@ -10,7 +10,7 @@
   tests genuinely fail against the pre-fix code.** Not yet Linux-verified.
 - **Date:** 2026-08-30.
 - **Scope:** `include/agentengine/sandbox/mandatory_sandbox_provider.hpp` (new tools, new methods, new
-  opt-in binding call, no change to `bind_sandbox()`'s existing signature), `tests/test_task_branch_tools.cpp`
+  opt-in binding call, no change to `bind_sandbox()`'s existing signature), `tests/sandbox/test_task_branch_tools.cpp`
   (new), `tests/CMakeLists.txt` (new target), `027-Vocabulary-and-Naming.md` (12 new rows). No other
   file touched — every existing caller of `bind_sandbox()`/`MandatorySandboxProvider` compiles and
   runs unchanged.
@@ -97,7 +97,7 @@ a fork shares AUTHORITY, never another instance's ACTIVE, in-flight state) and i
 
 ## 4. Verification
 
-`tests/test_task_branch_tools.cpp` (new, 252 total project tests now, up from 251) exercises, against
+`tests/sandbox/test_task_branch_tools.cpp` (new, 252 total project tests now, up from 251) exercises, against
 a REAL Docker daemon:
 
 - **The opt-in gate itself**: `bind_sandbox()` alone contributes exactly `run_command`; only after
@@ -158,7 +158,7 @@ gate holds in the composed setting too, not just standalone.
 - **No Linux verification.** **Narrowed by ADR-115** (2026-08-30): the full project (including this
   ADR's own new code) compiles clean on real Linux/GCC-14.2.0, and the underlying `Ledger`/
   `SandboxRuntime`/`reap_orphans()` machinery this promotion depends on is fully re-proven under a
-  REAL containerd runtime there (31/31). Still NOT run for real: `tests/test_task_branch_tools.cpp`
+  REAL containerd runtime there (31/31). Still NOT run for real: `tests/sandbox/test_task_branch_tools.cpp`
   itself is hardcoded to `DockerExecutionSurface`, and no Linux-native Docker daemon was reachable in
   that environment — a disclosed, environment-caused gap, not a code defect, but not yet eliminated.
 - ~~The `Capability`-variant widening question (§2) remains open~~ **Closed by ADR-117** (2026-08-30,
@@ -239,7 +239,7 @@ so it always refunds into the quota that actually granted the branches, never a 
 using the same `agentengine::rt::block_on()` mechanism `operator=`'s own `spawn_child_branch()` call
 already relies on (no signature change to either method).
 
-**Verification of both fixes**: `tests/test_task_branch_tools.cpp` grew three new checks — a bounded
+**Verification of both fixes**: `tests/sandbox/test_task_branch_tools.cpp` grew three new checks — a bounded
 retry-loop proof (a dedicated 3-unit `MergeCost` quota; the 1st and 2nd rejected retries still net
 real MergeCost spend and stay usable, the 3rd fails closed with a distinct
 `task_branch_commit_rejected_and_retry_quota_exhausted` code, force-discarding the handle and

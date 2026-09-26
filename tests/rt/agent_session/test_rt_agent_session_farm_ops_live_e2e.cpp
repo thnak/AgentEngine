@@ -564,7 +564,7 @@ struct PlaceSellOrderTool
 
 // execute_code -- the one REAL tool in this file. Backed by native_jail::PythonRunner (sandbox/
 // runner.hpp's Runner concept), the same real embedded-CPython backend
-// tests/test_python_embed_smoke.cpp proves initializes and runs for real; NOT the mediated/agent.tools
+// tests/python/test_python_embed_smoke.cpp proves initializes and runs for real; NOT the mediated/agent.tools
 // variant tools/cli_chat.cpp uses (no tool bridge, no worktree mounts, no agent.ask -- this scenario
 // has no need for any of that, matching test_rt_agent_session_farm_advisory_live_e2e.cpp's own stated
 // reason for leaving that machinery out).

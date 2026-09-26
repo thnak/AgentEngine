@@ -147,8 +147,8 @@ reason to abandon it; both are reasons this ADR must not be Judged until they ar
 
 ## 9. Evidence
 
-`tests/test_rt_agent_session_stream_retry.cpp` (P1-P10, every claim with a control) and
-`tests/test_stream_retry_real_transport.cpp` (Q1 on the real client and transport).
+`tests/rt/agent_session/test_rt_agent_session_stream_retry.cpp` (P1-P10, every claim with a control) and
+`tests/core/chat/test_stream_retry_real_transport.cpp` (Q1 on the real client and transport).
 
 **A REAL DEFECT, found by running Q1 rather than reading it.** A connection cut mid-body was not
 reported as a stream failure at all. The transport hands a peer close to its caller as an ordinary

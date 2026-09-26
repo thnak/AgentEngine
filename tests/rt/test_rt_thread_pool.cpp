@@ -22,7 +22,7 @@
 //         and completes, on its own worker (decisions/ADR-175). History: ADR-064 §7 made such a job fail
 //         loudly and destroyed it, instead of looping resume() on a parked handle; issue #78 showed that
 //         destruction could free a frame the releasing thread was already running.
-//         tests/test_rt_parked_task_home.cpp carries the issue #78 reproduction and the rest of ADR-175's
+//         tests/rt/test_rt_parked_task_home.cpp carries the issue #78 reproduction and the rest of ADR-175's
 //         proof.
 
 #include <atomic>

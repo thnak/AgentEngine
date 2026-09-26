@@ -28,7 +28,7 @@ confirming the injected-class-name reasoning on MSVC. All of that verification, 
 pass and the red-team round, ran on Windows/MSVC only. Does the SAME reasoning hold, unchanged, when
 a second, independent compiler (GCC 14.2.0) actually compiles this templated code across the whole
 tree — and does the new definitive full-stack proof
-(`tests/test_task_branch_content_durability_integration.cpp`) genuinely pass on Linux too?
+(`tests/sandbox/test_task_branch_content_durability_integration.cpp`) genuinely pass on Linux too?
 
 ## 2. What was done
 
@@ -71,7 +71,7 @@ template deduction, injected-class-name resolution, or overload ambiguity. Concr
   anything other than the current specialization, this would have failed to compile or, worse,
   silently bound to the wrong specialization; neither happened.
 - **CTAD deduced `Store` at the one real external call site with zero source changes.**
-  `tests/test_sandbox_runtime.cpp:93`'s `SandboxRuntime runtime(ledger, std::move(*root_r), staging);`
+  `tests/sandbox/test_sandbox_runtime.cpp:93`'s `SandboxRuntime runtime(ledger, std::move(*root_r), staging);`
   — unmodified since before ADR-132 — compiled and its own dedicated real-Docker test
   (`test_sandbox_runtime`, run directly below) still exercises the real code path, confirming GCC's
   CTAD deduced `Store` from the constructor argument exactly as MSVC's did.

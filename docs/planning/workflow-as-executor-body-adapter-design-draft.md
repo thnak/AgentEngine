@@ -225,7 +225,7 @@ serialized rather than corrupted when two deliveries land on the same node in on
 
 - **New**: `include/agentengine/rt/workflow_as_executor.hpp` (`workflow_as_executor_body()`, both
   overloads)
-- **New**: `tests/test_rt_workflow_as_executor.cpp` — at minimum: a completed inner run's output
+- **New**: `tests/workflow/test_rt_workflow_as_executor.cpp` — at minimum: a completed inner run's output
   reaches the outer graph unchanged; a SECOND call to the same adapter starts fully fresh (no
   leftover state from the first); construction is REFUSED for a graph containing a `request_port`
   node (proving §4's fix, not just its absence of a crash); an inner-workflow failure

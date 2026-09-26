@@ -77,7 +77,7 @@
 // unchanged.
 //
 // SLICE 4 (2026-08-24) -- 008 §9 G1/G2 promotion-gate evidence (partial): the first abuse-corpus test
-// for this backend, `tests/test_kata_backend_abuse_corpus_linux.cpp`. This slice began as an attempt
+// for this backend, `tests/backends/kata/test_kata_backend_abuse_corpus_linux.cpp`. This slice began as an attempt
 // to close the `exec_outcome_class::oom` gap named below via an exit-code-137 heuristic (mirroring
 // `LinuxNativeJailBackend`'s own 128+signal fallback), but an independent red-team pass against that
 // design (`decisions/ADR-088-kata-backend-abuse-corpus.md` §3) found it FATAL: native-jail's heuristic
@@ -178,7 +178,7 @@
 // (this backend's `sleep infinity` placeholder) for certain; whether a LATER `ctr tasks exec`-spawned
 // process (this backend's real per-call workload path) inherits it is **not independently verified
 // against a live Kata deployment this session** (none reachable) -- disclosed at the fix site in
-// `kata_backend.cpp`, not assumed. `tests/test_kata_backend_slice2_linux.cpp` gained a new case that
+// `kata_backend.cpp`, not assumed. `tests/backends/kata/test_kata_backend_slice2_linux.cpp` gained a new case that
 // runs `ulimit -n` inside an `exec()` call under a tight `fds` cap specifically to test that exact
 // open question -- compile-verified only this session, so the answer itself remains unconfirmed until
 // it can run against a real deployment.
@@ -272,7 +272,7 @@
 // `create()` now requires at least one `cap::SandboxNetOut` grant whenever `spec.net` requests
 // anything beyond `deny_all`, independent of `authorize_spec()`'s own opt-in scoping
 // (`kata_backend.net_capability_required` otherwise) -- see the fix site in `kata_backend.cpp` for
-// the full reasoning, and `tests/test_kata_backend_slice9_10_linux.cpp` cases 2a/2b/5 for the proof.
+// the full reasoning, and `tests/backends/kata/test_kata_backend_slice9_10_linux.cpp` cases 2a/2b/5 for the proof.
 //
 // SLICE 11 (2026-08-24, docs/planning/kata-backend-config-pipeline-pids-disk-net-redesign-draft.md,
 // design -> independent red-team (8 findings, 5 BLOCKING, all fixed pre-implementation) -> implement)

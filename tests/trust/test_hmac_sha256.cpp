@@ -3,7 +3,7 @@
 // hmac.hpp declares, never anything platform-specific, so it is wired into tests/CMakeLists.txt for
 // BOTH Windows (hmac.cpp, CNG/BCrypt) and Linux (hmac_posix.cpp, a from-scratch RFC 2104
 // construction) -- the same source proving both backends agree with the real standard, the same
-// posture tests/test_worktree_object_store.cpp already established for compute_digest()'s own
+// posture tests/worktree/test_worktree_object_store.cpp already established for compute_digest()'s own
 // Windows/Linux SHA-256 backends.
 //
 // Prior to this ADR, hmac_sha256() had only INDIRECT coverage (test_capability_token_proof.cpp,

@@ -8,7 +8,7 @@
 // test (that file's own top comment: "this file is pure parsing/serialization logic, deliberately
 // with no server involved").
 //
-// tests/test_openai_embedder_openrouter_live_e2e.cpp (a separate file) proves the REST of the path --
+// tests/protocol/openai/test_openai_embedder_openrouter_live_e2e.cpp (a separate file) proves the REST of the path --
 // the actual HTTPS exchange against real api.openrouter.ai -- and is this project's ADR-063 §3 claim 4
 // disproof test; this file does not attempt that, by design.
 

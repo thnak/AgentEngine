@@ -55,7 +55,7 @@ namespace agentengine::wasm {
 // Split out from the invoke closure below as its own, directly testable pure function: the two
 // mapping decisions it makes (is_error -> a real pipeline error; a Media content item anywhere ->
 // fail closed, never silently dropped) both need proving against hand-built `agentengine::
-// ToolResult` values in tests/test_wasm_tool_bridge.cpp WITHOUT requiring the cargo-component
+// ToolResult` values in tests/plugin/test_wasm_tool_bridge.cpp WITHOUT requiring the cargo-component
 // toolchain or a real wasm component -- the existing fixture (tests/fixtures/wasm_ae_tool_fixture)
 // has no tool that returns `is_error: true` or a `Media` item, so exercising these paths end-to-end
 // isn't possible without growing that fixture's scope. This function is the single source of truth

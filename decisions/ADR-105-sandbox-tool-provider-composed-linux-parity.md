@@ -168,7 +168,7 @@ changes) re-attacked C23-C26 directly against the real repo, not by re-reading t
   files) — no new authority reachable, the same already-portable code is merely exercised on a second
   platform now.
 - **Real findings, not previously disclosed**: two stale top-of-file comments in source files this
-  ADR's own CMake changes didn't touch — `tests/test_composed_sandbox_providers_live.cpp`'s own
+  ADR's own CMake changes didn't touch — `tests/sandbox/execution_surface/test_composed_sandbox_providers_live.cpp`'s own
   "REQUIRES: Windows (SandboxToolProvider's own current platform scope)" comment (now factually wrong:
   the test passes on Linux) and `tools/sandboxed_shell_chat.cpp`'s identical claim (the Windows-only
   OUTCOME is still correct, but the stated REASON is the same stale one this ADR corrected everywhere

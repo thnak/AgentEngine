@@ -22,7 +22,7 @@
 //       resulting binding is genuinely functional (a start/discard round trip through the normal
 //       tool surface succeeds), not merely "returns success" with no usable state behind it.
 //   [2] THE CORE CLAIM -- true crash recovery: after a simulated crash (mirroring
-//       tests/test_task_branch_durability_recovery.cpp's own "destroy + reconstruct against the
+//       tests/sandbox/test_task_branch_durability_recovery.cpp's own "destroy + reconstruct against the
 //       SAME durable_dir" methodology), a SECOND bind_root_branch() call for the SAME
 //       owner/disambiguator on a freshly reconstructed Ledger reattaches to the SAME branch
 //       (reclaim, not create) -- proven by a task-branch handle minted before the crash still
@@ -60,7 +60,7 @@ template <class T>
     return t.take_value();
 }
 
-// Mirrors tests/test_task_branch_durability_recovery.cpp's own fixture exactly -- this file never
+// Mirrors tests/sandbox/test_task_branch_durability_recovery.cpp's own fixture exactly -- this file never
 // calls run_in_task_branch(), so a FakeSurface stand-in is enough.
 struct FakeSurface {
     [[nodiscard]] agentengine::result<void> reset(std::filesystem::path const&) {

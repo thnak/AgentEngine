@@ -1,7 +1,7 @@
 #pragma once
 // Shared reference fixture for M2 Phase F task F2 (007 §9 gate G6): the small, explicit "reference
 // policy set" both tools/policy_reachability.cpp (the CI tool) and
-// tests/test_policy_reachability.cpp (its proof) enumerate against, so the two can never drift
+// tests/trust/test_policy_reachability.cpp (its proof) enumerate against, so the two can never drift
 // apart. See include/agentengine/trust/policy_reachability.hpp's file-top comment for why this walks
 // the mechanical CapabilitySet::contains() surface rather than a 007 §5 declarative rule set (none
 // exists yet, decision 4).
@@ -151,7 +151,7 @@ struct EchoAgent : Agent<EchoAgent, ChatClientId<"anthropic:claude-opus-5">, Too
 inline void build_reference_fixture(std::vector<trust::ReachabilityAgent>& agents,
                                      std::vector<trust::ReachabilityOracleEntry>& oracle) {
     // echo-agent-registered: the real register_agent<A>() path. Registration itself is already
-    // exercised elsewhere (tests/test_agent_tool_invocation.cpp); a failure here would mean this
+    // exercised elsewhere (tests/core/agent/test_agent_tool_invocation.cpp); a failure here would mean this
     // fixture file itself regressed, not something F2 is meant to catch -- fail loudly rather than
     // silently skip the fixture.
     {

@@ -51,7 +51,7 @@ Re-grounded directly against current code (this pass, not carried over from the 
   introduce if built naively*, not a currently-firing defect. `cgroup_limits.cpp:104`,
   `CgroupLimits::destroy_now()`: `::rmdir(path_.c_str())`, explicitly comment `// best-effort; a
   non-empty cgroup fails harmlessly (caller's bug)` — silently ignores failure.
-  `tests/test_native_jail_teardown_cycles_linux.cpp` runs 300 create/exec/destroy cycles and asserts
+  `tests/backends/native_jail/test_native_jail_teardown_cycles_linux.cpp` runs 300 create/exec/destroy cycles and asserts
   the delegated cgroup root's directory-entry count returns exactly to baseline — it currently passes
   *because there is nothing to leak yet* (no mounts exist). §2 step 5 below addresses this directly
   rather than carrying it forward as an open risk.
@@ -59,7 +59,7 @@ Re-grounded directly against current code (this pass, not carried over from the 
   `core/worktree_mount_fs_posix.hpp`/`.cpp`'s `open_within_mount_root` POSIX analogue (ADR-014 §9
   addendum, "Phase C4, Linux parity closed") — `open()` (which resolves symlinks transparently)
   followed by `readlink("/proc/self/fd/N")` to re-verify what the descriptor actually resolves to,
-  proven in `tests/test_worktree_mount_fs_escape_corpus_linux.cpp` (21 checks). The rejected shape
+  proven in `tests/worktree/test_worktree_mount_fs_escape_corpus_linux.cpp` (21 checks). The rejected shape
   (ADR-014 §3 Design A, kept only as a permanent regression control under `redteam::`) is a lexical
   canonicalize-then-string-check-then-reopen — exactly what naive bind-mount-source validation would
   reach for if this primitive weren't reused. **Scoped honestly below (§2 step 1a)**: this primitive

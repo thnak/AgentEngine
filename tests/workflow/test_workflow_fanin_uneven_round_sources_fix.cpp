@@ -8,7 +8,7 @@
 // invocation's output silently OVERWRITES the first, with no error, no trace.
 //
 // Originally a CHARACTERIZATION test (test_workflow_fanin_uneven_round_sources_gap.cpp) pinning the
-// gap, found live 2026-09-03 via tests/test_workflow_research_pipeline_large_context_live_e2e.cpp -- a
+// gap, found live 2026-09-03 via tests/workflow/test_workflow_research_pipeline_large_context_live_e2e.cpp -- a
 // production-shaped pipeline where `market`/`technical` were rebuilt as genuinely multi-turn (real,
 // sequential AgentSession turns, ~11 rounds each) while `competitive` still resolves in ~2 rounds via
 // its `EdgeFailurePolicy::fallback` (GitHub issue #52's own fix, confirmed working correctly in
@@ -172,7 +172,7 @@ int main() {
               "U1 (FIXED): the FINAL output carries BOTH contributions merged -- `fast`'s real content "
               "is no longer silently overwritten and lost, closing the exact mechanism that dropped "
               "market/technical's real findings in "
-              "tests/test_workflow_research_pipeline_large_context_live_e2e.cpp's live run "
+              "tests/workflow/test_workflow_research_pipeline_large_context_live_e2e.cpp's live run "
               "(2026-09-03).");
     }
 

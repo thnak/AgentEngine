@@ -18,7 +18,7 @@
 - **Related:** 003 §2 (taint; untainting is explicit and logged) · 007 §2 / 018 §2 (delegation via `on_behalf_of`) ·
   ADR-163 (whole-run usage for workflow nodes) · ADR-173 (the fence) · ADR-191 (approved lessons) · ADR-192
   (unattended mode; its §5 residual on spawned children) · the investigation behind this ADR (a 3-hop offline probe;
-  findings reproduced in `tests/test_delegation_provenance.cpp`).
+  findings reproduced in `tests/rt/agent_spawn/test_delegation_provenance.cpp`).
 
 ## 1. The question
 
@@ -147,7 +147,7 @@ it the same way:
 
 ## 6. Evidence
 
-`tests/test_delegation_provenance.cpp` (A → agent.spawn(B) → agent.spawn(C), scripted, offline):
+`tests/rt/agent_spawn/test_delegation_provenance.cpp` (A → agent.spawn(B) → agent.spawn(C), scripted, offline):
 - **P1-P2:** B and C receive delegated tasks: a host line (from, depth, "not a human"), then the tainted, external
   text carrying A's memory and the injection.
 - **P3:** root lineage at every hop.
@@ -168,7 +168,7 @@ it the same way:
   - **P9b:** at depth 2 a lesson is approved through the root, and another principal's are never shared.
   - **P10:** a lesson A's model copies into the input stays unapproved.
   - **R1:** a target with an empty operator is refused at registration.
-- **Live** (DeepSeek `deepseek-flash`, `tests/test_memory_lesson_label_live_e2e.cpp` arms D0/D1, one interleaved run,
+- **Live** (DeepSeek `deepseek-flash`, `tests/memory/test_memory_lesson_label_live_e2e.cpp` arms D0/D1, one interleaved run,
   20 trials per cell; followed / asked / other). The same task, handed to an agent the old way (plain user text) and
   as a delegated message: alert channel 20/0/0 vs 20/0/0, deploy region 20/0/0 vs 20/0/0 (control with no task:
   0/0/20, 0/16/4). The host line costs nothing in task-following on this model.
@@ -276,7 +276,7 @@ it the same way:
 
 ### 8.4 Evidence
 
-`tests/test_delegation_provenance.cpp`, 36 checks, all green: R2-B1, R2-B2, R2-B3, R2-C1, R2-C2, R2-T1, R2-W6, R2-Q1,
+`tests/rt/agent_spawn/test_delegation_provenance.cpp`, 36 checks, all green: R2-B1, R2-B2, R2-B3, R2-C1, R2-C2, R2-T1, R2-W6, R2-Q1,
 R2-Q2, R2-E1, R2-L1, R2-H1, and W3/W4 rewritten. Positive controls (each fix reverted by hand, the test seen to
 fail, restored): per-call recompute (B1, B2), parallel split (B3), cancellation bridge (C1), node cancellation bridge
 (C2), node failure charge (W6), supervisor failed-attempt count (W6), `WorkflowChatClient` sanitizer dropping the charge
@@ -340,7 +340,7 @@ only a run it actually started.
 
 ### 9.3 Evidence
 
-`tests/test_delegation_provenance.cpp`, 43 checks, all green. New: R3-C1 (throwing node behind a 2-attempt retry
+`tests/rt/agent_spawn/test_delegation_provenance.cpp`, 43 checks, all green. New: R3-C1 (throwing node behind a 2-attempt retry
 edge: 200 tokens in `usage()` and in `WorkflowResult::usage`), R3-C1b (body called directly: a throw charges 100
 once; the session's next run sends nothing to the dead call's sink), R3-C1c (refused run charges 0), R3-C2 (three
 fresh calls: 1000, 1000, 200), R3-C2b (two `WorkflowChatClient`s over one supervisor on two threads, 6 runs each:

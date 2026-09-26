@@ -153,7 +153,7 @@ int main() {
     {
         // Background<max_concurrent> is a SEPARATE capability from the tool's own declared ceiling
         // (background_task()'s own G9 check needs it independently, for ANY backgrounded call --
-        // matching tests/test_mcp_capability_grant.cpp's own precedent), so `held` above (empty) is
+        // matching tests/protocol/mcp/test_mcp_capability_grant.cpp's own precedent), so `held` above (empty) is
         // deliberately not reused here.
         ae::CapabilitySet const held_with_background =
             ae::CapabilitySet::grant_root({ae::cap::Background{4}});

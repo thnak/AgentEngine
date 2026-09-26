@@ -1,4 +1,4 @@
-// Test-only helper process for tests/test_job_object_limits.cpp. Deliberately hostile behavior
+// Test-only helper process for tests/backends/native_jail/test_job_object_limits.cpp. Deliberately hostile behavior
 // (unbounded memory growth, CPU spin, unbounded child-process creation) so the Job Object limits
 // under test (src/backends/native_jail/job_object_limits.{hpp,cpp}) have something real to contain.
 // Never linked into any product target; built only under AGENTENGINE_BUILD_TESTS.

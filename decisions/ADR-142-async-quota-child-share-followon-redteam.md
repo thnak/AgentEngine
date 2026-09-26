@@ -80,7 +80,7 @@ failure, zero regression. `naming_lint.py` clean.
 
 ## 5. Not done
 
-- No new permanent test added to `tests/test_identity_authority_grant.cpp` for either scenario — the
+- No new permanent test added to `tests/trust/test_identity_authority_grant.cpp` for either scenario — the
   adversarial probe used to find and verify these two fixes was a temporary, standalone file, deleted
   after use rather than promoted into the permanent suite. A real, disclosed gap: neither
   `async_quota.child_share_already_live` nor `async_quota.release_wrong_parent` has permanent
@@ -91,7 +91,7 @@ failure, zero regression. `naming_lint.py` clean.
 ## 6. Residuals
 
 - The test-coverage gap named in §5 — a real, cheap follow-on if ever wanted (promoting the temporary
-  probe's own two scenarios into `tests/test_identity_authority_grant.cpp` as permanent sections), not
+  probe's own two scenarios into `tests/trust/test_identity_authority_grant.cpp` as permanent sections), not
   done in this pass since the task this round was scoped to was adversarial verification of ADR-141,
   not authoring new permanent test surface area.
 - Same blast-radius note ADR-141 §4 already made: none of `allocate_child_share`/

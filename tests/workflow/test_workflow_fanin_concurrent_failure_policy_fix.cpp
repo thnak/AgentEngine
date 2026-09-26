@@ -4,7 +4,7 @@
 // specialist needs (014 §3's "Concurrent" pattern with one branch recovering from failure).
 //
 // Originally a CHARACTERIZATION test pinning the gap, found live 2026-09-03 via
-// tests/test_workflow_research_pipeline_live_e2e.cpp -- a production-shaped workflow against REAL
+// tests/workflow/test_workflow_research_pipeline_live_e2e.cpp -- a production-shaped workflow against REAL
 // OpenRouter calls, where one specialist's edge used `fallback` and the final report silently lost
 // its two successful specialists' findings. Promoted, same day, into this positive-proof test once
 // the engine fix landed; that live test now also exercises the fix directly (its own top comment).
@@ -26,14 +26,14 @@
 //     round-trip through the JSON wire format (`HeldFanInRecord`'s own codec).
 //
 // A quarantine-specific carve-out (`route_from()`'s `is_quarantine_echo` parameter) had to ship
-// alongside this fix: ADR-077 P9 / T7 in tests/test_rt_agent_workflow_executor.cpp relies on the
+// alongside this fix: ADR-077 P9 / T7 in tests/workflow/test_rt_agent_workflow_executor.cpp relies on the
 // OQ-19 same-round duplicate-delivery quarantine's synthetic failure being "silently absorbed" with
 // NO effect on any downstream target -- including one the survivor's real delivery never reached --
 // which a blanket "always merge" propagate/fallback fix would have broken. `route_from()`'s
 // `propagate`/`fallback` handling both skip a `!ok` reply that shares its executor_index with an `ok`
 // reply THIS round (is_same_round_quarantine_echo()), so that guarantee still holds.
 //
-// `tests/test_rt_workflow_supervisor_failure_policies.cpp`'s own D4 only ever exercised `fallback` on
+// `tests/workflow/test_rt_workflow_supervisor_failure_policies.cpp`'s own D4 only ever exercised `fallback` on
 // a single-source (non-fan_in-shared) edge, so this combination was never gate-proven despite 014 §8
 // G1's "each pattern... under injected executor failures" language until F1-F4 below.
 
@@ -270,7 +270,7 @@ int main() {
               "F3 (FIXED): the FINAL workflow output carries ALL THREE contributions merged -- the two "
               "successful siblings' real content AND the recovery branch's output -- closing the exact "
               "mechanism that dropped a production report's real findings in "
-              "tests/test_workflow_research_pipeline_live_e2e.cpp's first live run (2026-09-03)");
+              "tests/workflow/test_workflow_research_pipeline_live_e2e.cpp's first live run (2026-09-03)");
     }
 
     // ==== F4: the SAME `fallback` cross-round join, but with a checkpoint taken WHILE `agg` is held ==

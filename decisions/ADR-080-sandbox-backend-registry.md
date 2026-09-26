@@ -253,8 +253,8 @@ always-pass stub (C4); with one supplied, resolves `desc.is_strict` cases for re
 `register_agent<A>()` grows the second, additive, defaulted `sandbox_registry` parameter, threaded
 through `agent_detail::compiler<A,...>::run()` exactly the way `ChatClientRegistry*` already is.
 
-**Tests** — `tests/test_sandbox_backend_registry.cpp` (the registry itself) and
-`tests/test_agent_registry_sandbox_backend_registry.cpp` (its `register_agent<A>()` wiring), 15 checks
+**Tests** — `tests/sandbox/test_sandbox_backend_registry.cpp` (the registry itself) and
+`tests/core/agent/test_agent_registry_sandbox_backend_registry.cpp` (its `register_agent<A>()` wiring), 15 checks
 total:
 - The load-bearing check is a literal regression test for the confirmed bug above: `StatefulBackend`,
   shaped exactly like `NativeJailBackend`/`WasmBackend` (an `instances_` map keyed by opaque handle

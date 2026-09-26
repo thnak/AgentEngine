@@ -10,7 +10,7 @@
 // bootstrap happened to run first.
 //
 // Generation-only correctness (the TEXT of the generated source) is covered separately, without any
-// CPython dependency, in tests/test_agent_files_data_codegen.cpp -- this file is deliberately narrow:
+// CPython dependency, in tests/python/test_agent_files_data_codegen.cpp -- this file is deliberately narrow:
 // does the generated code, once actually executed, behave the way an ordinary Python library would.
 
 #include <cstdio>

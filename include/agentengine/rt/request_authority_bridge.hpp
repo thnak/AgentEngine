@@ -66,7 +66,7 @@ namespace agentengine::rt {
     // otherwise-valid claims object converts to an ALREADY-DEAD deadline, never a wraparound-derived
     // far-future one). Re-wrapped into THIS function's own, already-tested error code -- the shared
     // primitive's generic `steady_deadline.horizon_exceeded` is never observed by a caller of this
-    // function; `tests/test_request_authority_bridge.cpp` asserts the exact string below.
+    // function; `tests/trust/test_request_authority_bridge.cpp` asserts the exact string below.
     auto deadline =
         trust::steady_deadline_from(claims.exp, wall_now, steady_now, trust::kMaxAuthorityHorizon);
     if (!deadline) {

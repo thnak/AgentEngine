@@ -137,7 +137,7 @@ Full findings and resolution: `docs/planning/workflow-mid-run-cancellation-desig
 
 **New:**
 - `docs/planning/workflow-mid-run-cancellation-design-draft.md`
-- `tests/test_rt_workflow_cancellation.cpp`
+- `tests/workflow/test_rt_workflow_cancellation.cpp`
 
 **Edited:**
 - `include/agentengine/rt/workflow_supervisor.hpp` — `cancel_source_`, `cancel()`,

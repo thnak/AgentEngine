@@ -159,7 +159,7 @@ narrowly-scoped issues before any code was written:
 
 ## 6. Proof
 
-`tests/test_model_call_gateway.cpp` — 20 checks, deterministic and offline, a scripted `ChatClient`
+`tests/core/chat/test_model_call_gateway.cpp` — 20 checks, deterministic and offline, a scripted `ChatClient`
 fixture (`ScriptedGatewayBackend`) whose call count is observed via a `shared_ptr<size_t>` (the
 gateway's constructor takes `Primary`/`Fallback` by value, so a plain member would silently diverge
 from what the gateway's own internal copy actually does — a real bug caught and fixed during this

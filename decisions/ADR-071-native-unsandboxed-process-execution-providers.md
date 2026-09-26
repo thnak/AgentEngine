@@ -107,7 +107,7 @@ Design A, more severely.
    real `examples/06_capabilities_and_denial.cpp` pattern). A `Native*Provider` additionally
    requires explicit host construction with `owned_patterns`/`mount_root`/`worktree_mount_id` — it
    is never reachable by default; a session with no provider wired has zero native-exec surface.
-2. **Fails closed/safe when unset.** Proven in `tests/test_native_providers.cpp` T1: `on_context()`
+2. **Fails closed/safe when unset.** Proven in `tests/backends/native_process/test_native_providers.cpp` T1: `on_context()`
    with no held grant contributes zero tools and zero instructions — byte-for-byte the same as a
    session that never heard of this ADR at all.
 3. **Narrows or decides among already-possessed authority only.** The load-bearing property.
@@ -147,7 +147,7 @@ via a new `native_exec_pattern_covers()` helper, `cap::decl::NativeExec<Pattern,
 | `text_derived` can never auto-declassify a native-exec call. | `is_inert_for_text_derived_declassification(native_exec)` must be `false`; positive control: `fs_read` stays `true`. | **CORRECT** — R-N7. |
 | Kind derivation and the compile-time declaration tag round-trip correctly. | `capability_kind_of()`, `contains_kind()`, `cap::decl::NativeExec<"node","workdir">` → `to_capability()` → covers the matching runtime grant, not an undeclared one. | **CORRECT** — N8, N9. |
 
-`tests/test_native_exec_capability.cpp`: 20/20 checks pass. Zero regressions in the pre-existing
+`tests/trust/test_native_exec_capability.cpp`: 20/20 checks pass. Zero regressions in the pre-existing
 `test_capability_enforcement`/`test_capability_declaration_tags`/`test_policy_reachability`/
 `test_capability_token_proof` suites (all still 100% pass after this header's changes).
 
@@ -169,7 +169,7 @@ Microsoft C runtime argv-quoting algorithm (a real injection vector if implement
 | A real spawn captures stdout and exit code faithfully, including a nonzero exit. | Spawn `cmd.exe /c echo ...` (assert stdout/exit 0) and `cmd.exe /c exit 3` (assert exit 3). | **CORRECT** — S2, S3. |
 | A runaway/hung process is still terminated by a wall-clock safety ceiling, even if the caller sets a short one. | Spawn `ping -n 60 127.0.0.1` (≈59s) with `wall_ms_cap=500`; assert termination within seconds, classified `timeout`. | **CORRECT** — R-S4. |
 
-`tests/test_native_process_spawn.cpp`: 20/20 checks pass (Windows; no POSIX implementation yet — a
+`tests/backends/native_process/test_native_process_spawn.cpp`: 20/20 checks pass (Windows; no POSIX implementation yet — a
 named, honest gap, matching this project's existing "no Linux env available" posture for other
 Milestone-3+ Linux items).
 
@@ -183,7 +183,7 @@ Milestone-3+ Linux items).
 | No grants → nothing discovered, ever, regardless of what exists. | `scan_path({})`; assert empty. | **CORRECT** — P4. |
 | A non-executable-extension file is never surfaced. | `readme.txt` with a matching-name grant; assert empty. | **CORRECT** — P5. |
 
-`tests/test_native_path_scan.cpp`: 8/8 checks pass. **Found-during-implementation gotcha,
+`tests/backends/native_process/test_native_path_scan.cpp`: 8/8 checks pass. **Found-during-implementation gotcha,
 documented for the record:** the first version of this test used Win32 `SetEnvironmentVariableA` to
 control `PATH`, and failed non-deterministically depending on what was actually installed on the
 test machine — `agentengine::pal::env_var()` is CRT-backed (`_dupenv_s` on MSVC), which does **not**
@@ -203,7 +203,7 @@ than silently correcting.
 | A leading `/` WITH a further separator (genuinely absolute-shaped) is rejected. | `"/etc/passwd"`. | **CORRECT** — R-W6. |
 | **A CLI flag is never misread as a path escape attempt** (a REAL bug found live-wiring `NativeShellProvider` to `cmd.exe`: `"/c"` was rejected as an absolute path before this fix). | `"/c"`, `"/v:on"`, `"-n"`, `"--flag=value"` accepted; `"/etc/shadow"` (leading `/` WITH a further separator) still rejected — the narrow-carve-out negative control. | **CORRECT after a fix** — W7; see §6 item 4 for the full account. |
 
-`tests/test_native_worktree_bridge.cpp`: 15/15 checks pass (10 before the flag fix, 5 added with
+`tests/backends/native_process/test_native_worktree_bridge.cpp`: 15/15 checks pass (10 before the flag fix, 5 added with
 it).
 
 ### 5e. `native_providers.hpp` — the four `ContextProvider` conformers, end to end
@@ -218,7 +218,7 @@ it).
 | The SAME tool closure, called with the grant absent, is denied — a fresh per-invocation check, not a cached one. | Build the `ContextContribution` while a grant IS held; invoke with a DIFFERENT `EffectContext` holding none. | **CORRECT** — R-S6. |
 | A worktree-escaping argv entry is rejected end to end, before ever reaching the spawned child. | Invoke with `args: ["/c","type","../../escape.txt"]`; assert denial. | **CORRECT** — R-S7. |
 
-`tests/test_native_providers.cpp`: 21/21 checks pass.
+`tests/backends/native_process/test_native_providers.cpp`: 21/21 checks pass.
 
 ### 5f. `native_capability_announcer.hpp` — composing multiple families into one seeded block
 
@@ -234,7 +234,7 @@ already-tested `assemble_context()` every other multi-provider composition in th
 | Composing all 4 families merges their tools and instructions into one contribution. | Real host machine, real `cmd`/`bash`/`python`/`node` all genuinely installed; compose all 4, assert 4 tools present and the combined instructions text mentions all 4 families. | **CORRECT** — `test_native_capability_announcer.cpp` A1-A3. |
 | A provider with no matching grant contributes nothing, while its siblings still do (no fail-all). | Compose Shell+Python, grant only `cmd`; assert exactly 1 tool present, the ungranted one absent. | **CORRECT** — R-A4. |
 
-`tests/test_native_capability_announcer.cpp`: 15/15 checks pass, run against this development
+`tests/backends/native_process/test_native_capability_announcer.cpp`: 15/15 checks pass, run against this development
 machine's REAL installed `cmd`/`bash`/`python`/`node` (not synthetic fixtures) — a realistic
 end-to-end demonstration of the four-family design intent, not merely a unit test.
 

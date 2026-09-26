@@ -232,7 +232,7 @@ Two pieces of this design have shipped as real, tested code, added at different 
   construction (§2) — lazy `SessionShellSandbox` construction on first `on_context()`, `run_shell`
   contribution plus `ctx.sandbox_fs` assignment on every call, digest-based per-session subdirectory
   naming with the C8 defense-in-depth check, and idempotent host-directory creation (closing the
-  round-5 residual named below, §8). Proven by `tests/test_sandbox_tool_provider.cpp`: static
+  round-5 residual named below, §8). Proven by `tests/sandbox/test_sandbox_tool_provider.cpp`: static
   `ContextProvider` concept conformance and non-copyable/move-only proofs (C1, C2's premise), a real
   `on_context()` call constructing the sandbox and populating `ctx.sandbox_fs`, the contributed
   `ToolDescriptor` running a real command through the actual `invoke_tool()` ten-step pipeline
@@ -262,7 +262,7 @@ since nothing about implementing `SandboxToolProvider` touched `fork_from()`, an
 | C3 — per-round freshness | **CORRECT** | All four real `on_context()` call sites checked directly (`resolve_interaction()`, `resolve_codeact_ask()`, `resolve_hook_decision()`, `run_rounds()`'s own loop), Round 2. |
 | C4 — `EffectContext` ordering hazard closed by contract | **CORRECT** | Every real `ContextProvider` conformer in the tree checked (`skill_provider.hpp`, `memory_provider.hpp`, `vector_rag_context_provider.hpp`, `ToolDeclaringHistoryProvider`) — none reads a field another provider wrote, Round 3. |
 | C5 — `clear_in_process_state()` re-`engage()` obligation | **CORRECT, after correction** | Round 3 refuted the original "not a gap" claim (real reuse exists — S5, `test_rt_agent_session_codeact_ask_max_turns.cpp:283`); Round 4 independently confirmed the corrected fix (re-`engage()`) is both necessary and sufficient. |
-| C6 — background-thread dangling pointer closed | **CORRECT, shipped** | `tests/test_agent_session_tool_call_progress.cpp` case "E," full rebuild + affected suite green. |
+| C6 — background-thread dangling pointer closed | **CORRECT, shipped** | `tests/rt/agent_session/test_agent_session_tool_call_progress.cpp` case "E," full rebuild + affected suite green. |
 | C7 — registry has no live data path | **CORRECT** | `check_sandbox_profile_availability()` (`agent_registry.hpp:366-371`) read directly; every `resolve_strict`/`resolve_named` call site in the tree independently re-grepped, Round 3. |
 | C8 — subdirectory naming safe with defense in depth | **CORRECT, after correction** | Round 5 caught the double-hex-encoding error and the "no filtering needed" overclaim; corrected form matches `agent_spawn_worktree.hpp`'s own WT-6 precedent. |
 
@@ -364,6 +364,6 @@ ready without closing §8's residuals first.
   `FsWrite`, path-scope only) do not offset. **That specific gap is now closed** (same day):
   `MediatedShellRunner`'s `wall_clock_budget` parameter + a per-statement deadline check in
   `evaluate_statement()`, proven against a real 3^20-body-execution exponential-blowup script in
-  `tests/test_mediated_shell_runner_wall_clock_timeout.cpp`. Shell's broader OS-level-containment gap
+  `tests/backends/native_jail/test_mediated_shell_runner_wall_clock_timeout.cpp`. Shell's broader OS-level-containment gap
   (no AppContainer/Job Object at all) is unchanged — see `ADR-100`'s still-deferred
   `create_shell_worker()` follow-on.

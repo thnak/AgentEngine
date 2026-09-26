@@ -197,8 +197,8 @@ export const hitlExampleRows: Record<Lang, HitlExampleRow[]> = {
     { what: "examples/22_magentic_plan_signoff_checkpoint.cpp", mechanism: "Plan sign-off suspended across a SIMULATED process restart (issue #28)", status: "Real, runnable" },
     { what: "examples/28_workflow_as_chat_client.cpp", mechanism: "WorkflowChatClient's Custom-typed request_port bridge (issue #35)", status: "Real, runnable" },
     { what: "examples/31_workflow_chat_client_session_loop.cpp", mechanism: "The same bridge driven as a real session loop across two request_port nodes", status: "Real, runnable" },
-    { what: "tests/test_agent_session_suspend_codeact_ask.cpp", mechanism: "agent.ask() abort-and-replay", status: "Real, test-only — no standalone example yet" },
-    { what: "tests/test_rt_agent_session_tool_call_hook.cpp", mechanism: "ToolCallHook external dispatch", status: "Real, test-only — no standalone example yet" },
+    { what: "tests/rt/agent_session/test_agent_session_suspend_codeact_ask.cpp", mechanism: "agent.ask() abort-and-replay", status: "Real, test-only — no standalone example yet" },
+    { what: "tests/rt/agent_session/test_rt_agent_session_tool_call_hook.cpp", mechanism: "ToolCallHook external dispatch", status: "Real, test-only — no standalone example yet" },
   ],
   vi: [
     { what: "examples/05_human_approval.cpp", mechanism: "Phê duyệt tool — trường hợp cơ bản", status: "Thật, chạy được" },
@@ -208,8 +208,8 @@ export const hitlExampleRows: Record<Lang, HitlExampleRow[]> = {
     { what: "examples/22_magentic_plan_signoff_checkpoint.cpp", mechanism: "Plan sign-off bị đình chỉ qua một lần khởi động lại MÔ PHỎNG (issue #28)", status: "Thật, chạy được" },
     { what: "examples/28_workflow_as_chat_client.cpp", mechanism: "Cầu nối request_port kiểu Custom của WorkflowChatClient (issue #35)", status: "Thật, chạy được" },
     { what: "examples/31_workflow_chat_client_session_loop.cpp", mechanism: "Cùng cầu nối đó, chạy như một vòng lặp phiên thật qua hai node request_port", status: "Thật, chạy được" },
-    { what: "tests/test_agent_session_suspend_codeact_ask.cpp", mechanism: "agent.ask() abort-and-replay", status: "Thật, chỉ có test — chưa có ví dụ độc lập" },
-    { what: "tests/test_rt_agent_session_tool_call_hook.cpp", mechanism: "Điều phối bên ngoài của ToolCallHook", status: "Thật, chỉ có test — chưa có ví dụ độc lập" },
+    { what: "tests/rt/agent_session/test_agent_session_suspend_codeact_ask.cpp", mechanism: "agent.ask() abort-and-replay", status: "Thật, chỉ có test — chưa có ví dụ độc lập" },
+    { what: "tests/rt/agent_session/test_rt_agent_session_tool_call_hook.cpp", mechanism: "Điều phối bên ngoài của ToolCallHook", status: "Thật, chỉ có test — chưa có ví dụ độc lập" },
   ],
 };
 
@@ -277,7 +277,7 @@ WorkflowResult r2 = drive(sup.resume_workflow(ResumeWorkflow{
 // map to a DIFFERENT RunFinishedInterrupt.interrupts[0].reason.
 // ------------------------------------------------------------------------------------------------
 
-export const aguiInterruptMultiCaseSnippet = `// tests/test_rt_agui_projection.cpp:278-309 (trimmed) -- E2-11/12/13, three DIFFERENT
+export const aguiInterruptMultiCaseSnippet = `// tests/protocol/agui/test_rt_agui_projection.cpp:278-309 (trimmed) -- E2-11/12/13, three DIFFERENT
 // RunEvent kinds, all projected onto the SAME wire shape (RunFinishedInterrupt) with different reasons
 agui::RunEventProjector projector;
 

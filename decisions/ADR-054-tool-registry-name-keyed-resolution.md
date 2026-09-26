@@ -3,7 +3,7 @@
 **Status:** Judged (2026-08-14, project owner sign-off). Designed (inherited from
 `docs/planning/tool-capability-registry-design-draft.md`'s own already-self-red-teamed sketch),
 implemented, and proven (real code + tests, §4). Re-verified at sign-off review:
-`tests/test_tool_registry.cpp` (T1-T8) and `tests/test_agent_yaml_compiler.cpp` (F-6) both still pass
+`tests/core/tools/test_tool_registry.cpp` (T1-T8) and `tests/core/agent/test_agent_yaml_compiler.cpp` (F-6) both still pass
 in full, unchanged since commit `51083eb`.
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #4 (the finding this ADR
@@ -156,7 +156,7 @@ slow, runtime one — rejected for the same reason 002 §6 chose fail-fast for t
 
 ## 5. Evidence
 
-`tests/test_tool_registry.cpp` (T1-T8, new): native registration with no outer_grant needed (T1);
+`tests/core/tools/test_tool_registry.cpp` (T1-T8, new): native registration with no outer_grant needed (T1);
 duplicate-name rejection leaves the first registration untouched and is diagnosable via
 `exclusion_reason()` (T2); a covered non-native ceiling registers (T3); an uncovered one is excluded —
 per-tool, not per-batch, and distinguishable from "never offered" (T4, T5); `mcp_server`/`a2a_agent`
@@ -164,7 +164,7 @@ get the identical treatment as `wasm_plugin`, including the empty-grant case (T6
 resolves a real `ToolTable` when every name is present (T7) and fails closed with the specific missing
 name when one isn't (T8).
 
-`tests/test_agent_yaml_compiler.cpp` (F-6, extended): `registry == nullptr` preserves F-1's own
+`tests/core/agent/test_agent_yaml_compiler.cpp` (F-6, extended): `registry == nullptr` preserves F-1's own
 already-passing "honestly empty" assertion byte-for-byte (F-6a); a supplied registry resolves exactly
 the plain-string `spec.tools` entries, correctly skipping a `{handoff: ...}` entry (F-6b); a name absent
 from the supplied registry fails closed with the real, specific error code (F-6c).

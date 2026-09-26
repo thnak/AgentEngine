@@ -113,7 +113,7 @@ identical composition-order reasoning §5's "Composition order with `ResilientCh
 above named. `MiddlewareModelCallGateway<Inner, Ms...>` is the current real consumer — it reuses
 `ModelCallContext`/`middleware_detail::run_before`/`run_after`/`enforce_backend_tool_call_provenance`
 (§4 below) VERBATIM, unchanged by the removal; only `MiddlewareChatClient` itself is gone. This ADR's
-own regression suite (T1-T15, §6) survives: ported to `tests/test_middleware_model_call_gateway.cpp`
+own regression suite (T1-T15, §6) survives: ported to `tests/core/chat/test_middleware_model_call_gateway.cpp`
 (was `test_middleware_chat_client.cpp`), same 15 checks, same meaning, retargeted at the new wrapper.
 
 ## 6. Falsifiable claims and verdicts
