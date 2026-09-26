@@ -46,7 +46,7 @@
 #include "agentengine/core/session_builder.hpp"
 #include "agentengine/core/skill_provider.hpp"
 #include "agentengine/trust/secret_quarantine.hpp"
-#include "support/run_task_sync.hpp"
+#include "../../support/run_task_sync.hpp"
 
 namespace {
 

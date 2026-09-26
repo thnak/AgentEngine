@@ -22,8 +22,8 @@
 // Needs no daemon, no network and no credentials.
 
 #include "agentengine/core/json_value.hpp"
-#include "support/crt_fail_fast.hpp"
-#include "support/memory_cap.hpp"
+#include "../../support/crt_fail_fast.hpp"
+#include "../../support/memory_cap.hpp"
 
 #include <chrono>
 #include <cstdio>

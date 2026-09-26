@@ -12,7 +12,7 @@
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/content_replay_gateway.hpp"
 #include "agentengine/core/effect_context.hpp"
-#include "support/run_task_sync.hpp"
+#include "../../support/run_task_sync.hpp"
 
 using namespace agentengine;
 

@@ -65,7 +65,7 @@
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/model_call_gateway.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
-#include "support/run_task_sync.hpp"
+#include "../../support/run_task_sync.hpp"
 
 namespace {
 

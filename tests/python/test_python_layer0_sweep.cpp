@@ -47,7 +47,7 @@
 
 #if defined(_WIN32)
 #include <crtdbg.h>
-#include "support/crt_fail_fast.hpp"
+#include "../support/crt_fail_fast.hpp"
 #endif
 
 namespace {

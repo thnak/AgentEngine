@@ -38,7 +38,7 @@
 #include "agentengine/protocol/qdrant/vector_index.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
-#include "support/run_task_sync.hpp"
+#include "../../support/run_task_sync.hpp"
 
 using namespace agentengine;
 using namespace agentengine::qdrant;

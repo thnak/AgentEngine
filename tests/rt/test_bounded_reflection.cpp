@@ -11,7 +11,7 @@
 #include "agentengine/core/content.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/bounded_reflection.hpp"
-#include "support/run_task_sync.hpp"
+#include "../support/run_task_sync.hpp"
 
 using namespace agentengine;
 using agentengine::rt::AgentSession;

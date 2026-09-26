@@ -96,7 +96,7 @@
 #endif
 
 #include "agentengine/rt/append_log_file_store.hpp"
-#include "support/memory_cap.hpp"
+#include "../support/memory_cap.hpp"
 
 using agentengine::rt::FileAppendLogStore;
 using agentengine::rt::InMemoryAppendLogStore;

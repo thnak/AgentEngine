@@ -15,7 +15,7 @@
 #include <vector>
 
 #include "agentengine/protocol/qdrant/vector_index.hpp"
-#include "support/run_task_sync.hpp"
+#include "../../support/run_task_sync.hpp"
 
 using namespace agentengine::qdrant;
 using namespace agentengine::qdrant::detail;

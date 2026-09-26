@@ -29,8 +29,8 @@
 #endif
 
 #include "backends/native_jail/native_jail_backend.hpp"
-#include "support/crt_fail_fast.hpp"
-#include "support/error_detail.hpp"
+#include "../../support/crt_fail_fast.hpp"
+#include "../../support/error_detail.hpp"
 
 using namespace agentengine;
 using agentengine::native_jail::NativeJailBackend;

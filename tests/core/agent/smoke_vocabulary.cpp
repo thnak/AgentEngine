@@ -24,7 +24,7 @@
 #include "agentengine/sandbox/sandbox.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "agentengine/trust/principal.hpp"
-#include "support/crt_fail_fast.hpp"
+#include "../../support/crt_fail_fast.hpp"
 
 // ---- ChatClient concept (chat_client.hpp) — trivial conforming type -----------------------------
 

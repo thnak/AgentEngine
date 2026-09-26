@@ -28,7 +28,7 @@
 #include "agentengine/core/composed_context_provider.hpp"
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/rt/agent_session.hpp"
-#include "support/run_task_sync.hpp"
+#include "../../support/run_task_sync.hpp"
 
 using ae::rt::AgentSession;
 using ae::rt::NoSessionState;

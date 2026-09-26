@@ -35,7 +35,7 @@
 
 #include "agentengine/rt/agent_session.hpp"
 
-#include "support/image_provenance_shape.hpp"
+#include "../support/image_provenance_shape.hpp"
 
 #include <cstdio>
 #include <cstdlib>

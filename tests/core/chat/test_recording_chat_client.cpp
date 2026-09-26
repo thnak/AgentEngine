@@ -32,7 +32,7 @@
 #include "agentengine/core/recording_chat_client.hpp"
 #include "agentengine/trust/principal.hpp"
 
-#include "support/run_task_sync.hpp"
+#include "../../support/run_task_sync.hpp"
 
 namespace {
 

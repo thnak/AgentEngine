@@ -14,7 +14,7 @@
 #include <string>
 
 #include "backends/native_process/native_capability_announcer.hpp"
-#include "support/run_task_sync.hpp"
+#include "../../support/run_task_sync.hpp"
 
 using namespace agentengine;
 using namespace agentengine::native_process;

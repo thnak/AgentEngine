@@ -17,7 +17,7 @@
 #include "agentengine/core/composed_context_provider.hpp"
 #include "agentengine/core/worktree.hpp"
 #include "backends/native_jail/sandbox_tool_provider.hpp"
-#include "support/run_task_sync.hpp"
+#include "../support/run_task_sync.hpp"
 
 namespace {
 

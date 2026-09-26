@@ -43,7 +43,7 @@
 #include <string>
 
 #include "backends/native_jail/app_container_profile.hpp"
-#include "support/error_detail.hpp"
+#include "../../support/error_detail.hpp"
 
 using namespace agentengine;
 using agentengine::native_jail::AppContainerProfile;

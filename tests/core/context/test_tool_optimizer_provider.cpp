@@ -29,7 +29,7 @@
 #include "agentengine/core/skill_provider.hpp"
 #include "agentengine/core/tool_optimizer_provider.hpp"
 #include "agentengine/rt/agent_session.hpp"
-#include "support/run_task_sync.hpp"
+#include "../../support/run_task_sync.hpp"
 
 using namespace agentengine;
 

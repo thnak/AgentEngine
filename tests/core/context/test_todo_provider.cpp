@@ -9,7 +9,7 @@
 #include "agentengine/core/context_assembly.hpp"
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/core/todo_provider.hpp"
-#include "support/run_task_sync.hpp"
+#include "../../support/run_task_sync.hpp"
 
 namespace {
 

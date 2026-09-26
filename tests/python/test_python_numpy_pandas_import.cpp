@@ -24,7 +24,7 @@
 #endif
 
 #include "backends/native_jail/python_lockdown.hpp"
-#include "support/crt_fail_fast.hpp"
+#include "../support/crt_fail_fast.hpp"
 
 using agentengine::native_jail::PythonLockdownConfig;
 using agentengine::native_jail::PythonLockdownInterpreter;

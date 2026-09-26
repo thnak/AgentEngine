@@ -27,7 +27,7 @@
 #include "backends/native_jail/mediated_command_registry.hpp"
 #include "backends/native_jail/mediated_filesystem_adapter.hpp"
 #include "backends/native_jail/mediated_shell_runner.hpp"
-#include "helpers/task_scope_corpus.hpp"
+#include "../../helpers/task_scope_corpus.hpp"
 
 using namespace agentengine;
 using namespace agentengine::native_jail::mediated_shell;

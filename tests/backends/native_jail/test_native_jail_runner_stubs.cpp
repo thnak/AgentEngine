@@ -26,7 +26,7 @@
 
 #include "agentengine/sandbox/runner.hpp"
 #include "backends/native_jail/shell_runner.hpp"
-#include "support/crt_fail_fast.hpp"
+#include "../../support/crt_fail_fast.hpp"
 
 // PythonRunner's own Runner-concept static_assert now lives in
 // tests/test_python_embed_smoke.cpp, built only when AGENTENGINE_BUILD_PYTHON_RUNNER is ON (it

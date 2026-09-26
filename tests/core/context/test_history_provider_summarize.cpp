@@ -15,7 +15,7 @@
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/trust/principal.hpp"
-#include "support/run_task_sync.hpp"
+#include "../../support/run_task_sync.hpp"
 
 namespace {
 

@@ -95,7 +95,7 @@
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 #include "agentengine/sandbox/execution_surface.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
-#include "support/memory_cap.hpp"
+#include "../../support/memory_cap.hpp"
 
 namespace {
 

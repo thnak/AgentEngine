@@ -18,7 +18,7 @@
 #include "agentengine/core/context_provider.hpp"
 #include "agentengine/pal/env.hpp"
 #include "backends/native_process/native_providers.hpp"
-#include "support/run_task_sync.hpp"
+#include "../../support/run_task_sync.hpp"
 
 using namespace agentengine;
 using namespace agentengine::native_process;

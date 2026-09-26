@@ -17,7 +17,7 @@
 
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/trust/secret.hpp"
-#include "support/run_task_sync.hpp"
+#include "../../support/run_task_sync.hpp"
 
 namespace {
 

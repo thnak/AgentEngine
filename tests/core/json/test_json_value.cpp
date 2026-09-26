@@ -8,7 +8,7 @@
 #include <string>
 
 #include "agentengine/core/json_value.hpp"
-#include "support/memory_cap.hpp"
+#include "../../support/memory_cap.hpp"
 
 namespace {
 int g_failures = 0;

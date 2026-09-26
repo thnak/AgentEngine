@@ -21,7 +21,7 @@
 #endif
 
 #include "backends/native_jail/real_filesystem_adapter.hpp"
-#include "support/crt_fail_fast.hpp"
+#include "../../support/crt_fail_fast.hpp"
 
 namespace fs = std::filesystem;
 using agentengine::native_jail::RealFileSystemAdapter;

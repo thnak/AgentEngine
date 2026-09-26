@@ -35,9 +35,9 @@ constexpr bool kNdebugActive = false;
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/trust/principal.hpp"
-#include "support/recorded_chat_client.hpp"
-#include "support/run_task_sync.hpp"
-#include "support/crt_fail_fast.hpp"
+#include "../../support/recorded_chat_client.hpp"
+#include "../../support/run_task_sync.hpp"
+#include "../../support/crt_fail_fast.hpp"
 
 #ifndef AE_TEST_FIXTURE_DIR
 #error "AE_TEST_FIXTURE_DIR must be defined by CMake to tests/fixtures/chat_client"

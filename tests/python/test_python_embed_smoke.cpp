@@ -20,7 +20,7 @@
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/sandbox/runner.hpp"
 #include "backends/native_jail/python_runner.hpp"
-#include "support/crt_fail_fast.hpp"
+#include "../support/crt_fail_fast.hpp"
 
 static_assert(agentengine::Runner<agentengine::PythonRunner>,
               "PythonRunner must satisfy the Runner concept (010 §1a) for real, not just as a stub");

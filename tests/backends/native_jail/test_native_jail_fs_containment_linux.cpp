@@ -21,7 +21,7 @@
 #include <string>
 
 #include "backends/native_jail/linux_native_jail_backend.hpp"
-#include "helpers/native_jail_linux_toolchain_mounts.hpp"
+#include "../../helpers/native_jail_linux_toolchain_mounts.hpp"
 
 using namespace agentengine;
 using agentengine::native_jail::LinuxNativeJailBackend;

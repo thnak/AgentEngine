@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "agentengine/eval/eval_stub_tool.hpp"
-#include "support/run_task_sync.hpp"
+#include "../support/run_task_sync.hpp"
 
 namespace {
 

@@ -27,7 +27,7 @@
 #include "agentengine/core/corpus_source.hpp"
 #include "agentengine/core/sparse_index.hpp"
 #include "agentengine/rt/append_log_store.hpp"
-#include "support/run_task_sync.hpp"
+#include "../../support/run_task_sync.hpp"
 
 namespace {
 

@@ -21,7 +21,7 @@
 #endif
 
 #include "backends/native_jail/job_object_limits.hpp"
-#include "support/crt_fail_fast.hpp"
+#include "../../support/crt_fail_fast.hpp"
 
 using agentengine::ResourceLimits;
 using agentengine::native_jail::job_kill_reason;

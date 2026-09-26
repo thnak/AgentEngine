@@ -22,7 +22,7 @@
 
 #include "agentengine/core/memory_provider.hpp"
 #include "agentengine/rt/append_log_store.hpp"
-#include "support/run_task_sync.hpp"
+#include "../support/run_task_sync.hpp"
 
 namespace {
 

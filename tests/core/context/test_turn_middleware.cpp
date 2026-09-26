@@ -18,7 +18,7 @@
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/core/turn_middleware.hpp"
-#include "support/run_task_sync.hpp"
+#include "../../support/run_task_sync.hpp"
 
 using namespace agentengine;
 

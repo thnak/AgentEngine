@@ -59,8 +59,8 @@
 #include "agentengine/rt/channel.hpp"
 #include "agentengine/rt/task.hpp"
 #include "agentengine/rt/thread_pool.hpp"
-#include "support/crt_fail_fast.hpp"
-#include "support/memory_cap.hpp"
+#include "../support/crt_fail_fast.hpp"
+#include "../support/memory_cap.hpp"
 
 using namespace agentengine::rt;
 using namespace std::chrono_literals;

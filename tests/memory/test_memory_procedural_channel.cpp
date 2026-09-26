@@ -29,7 +29,7 @@
 #include "agentengine/core/system_channel_fence.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/append_log_store.hpp"
-#include "support/run_task_sync.hpp"
+#include "../support/run_task_sync.hpp"
 
 namespace {
 

@@ -49,7 +49,7 @@
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/mediated_python_runner.hpp"
-#include "support/crt_fail_fast.hpp"
+#include "../../support/crt_fail_fast.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::NoSessionState;

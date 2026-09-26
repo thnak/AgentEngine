@@ -18,7 +18,7 @@
 
 #include "agentengine/protocol/openai/embedder.hpp"
 #include "agentengine/trust/principal.hpp"
-#include "support/run_task_sync.hpp"
+#include "../../support/run_task_sync.hpp"
 
 using namespace agentengine;
 using namespace agentengine::openai;

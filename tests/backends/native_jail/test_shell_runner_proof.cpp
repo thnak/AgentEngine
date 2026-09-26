@@ -27,7 +27,7 @@
 #include "backends/native_jail/command_registry.hpp"
 #include "backends/native_jail/real_filesystem_adapter.hpp"
 #include "backends/native_jail/shell_runner.hpp"
-#include "support/crt_fail_fast.hpp"
+#include "../../support/crt_fail_fast.hpp"
 
 namespace fs = std::filesystem;
 using namespace agentengine;

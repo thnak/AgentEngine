@@ -46,8 +46,8 @@
 #include "agentengine/pal/env.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/mediated_python_runner.hpp"
-#include "support/recorded_chat_client.hpp"
-#include "support/run_task_sync.hpp"
+#include "../../support/recorded_chat_client.hpp"
+#include "../../support/run_task_sync.hpp"
 
 #ifndef AE_TEST_FIXTURE_DIR
 #error "AE_TEST_FIXTURE_DIR must be defined by CMake to tests/fixtures/chat_client/reference_agent"

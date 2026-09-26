@@ -41,7 +41,7 @@
 #include <initializer_list>
 #include <string_view>
 
-#include "support/image_provenance_shape.hpp"
+#include "../support/image_provenance_shape.hpp"
 
 #include <cstdio>
 #include <cstdlib>

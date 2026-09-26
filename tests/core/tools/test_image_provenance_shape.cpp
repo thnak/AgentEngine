@@ -23,8 +23,8 @@
 
 #include "agentengine/core/tool_descriptor.hpp"
 
-#include "support/image_provenance_shape.hpp"
-#include "support/memory_cap.hpp"
+#include "../../support/image_provenance_shape.hpp"
+#include "../../support/memory_cap.hpp"
 
 namespace {
 
