@@ -1297,6 +1297,10 @@ endif()
 
 # ---- Tests --------------------------------------------------------------------
 option(AGENTENGINE_BUILD_TESTS "Build AgentEngine tests" ON)
+# Issue #115 E4: build the test executables without optimization (library targets keep theirs).
+# See tests/CMakeLists.txt for what it changes and why one CI leg still builds tests optimized.
+option(AGENTENGINE_FAST_TESTS
+  "Compile tests/ with optimization off (/Od, -O0): a faster build, not a production build" OFF)
 if(AGENTENGINE_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
