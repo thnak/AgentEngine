@@ -96,6 +96,7 @@ jobs:
         shell: pwsh
         run: |
           $flags = ""
+          $fastTests = "OFF"
           # /Z7 (debug info embedded in each .obj) is required alongside /fsanitize=address --
           # without SOME debug-info format MSVC raises C5072 ("ASAN enabled without debug
           # information emission"), which agentengine_warnings' /WX (cmake/AgentEngineWarnings.cmake)
@@ -103,8 +104,16 @@ jobs:
           # cache /Zi's output (a shared, incrementally-written .pdb is not a pure function of one
           # TU's inputs -- see the file-header sccache note), and /Z7 needs neither that shared .pdb
           # nor the /FS flag that used to serialize writes to it under the old MSBuild generator.
-          if ("${{ matrix.build_type }}" -eq "ASan") { $flags = "/fsanitize=address /Z7" }
+          #
+          # AGENTENGINE_FAST_TESTS (issue #115 E4) on the ASan leg only: tests/ builds at /Od, which
+          # cuts the optimizer time that dominates a cold build. The Release leg keeps it OFF, so
+          # MSVC's optimizer still compiles every test on every commit.
+          if ("${{ matrix.build_type }}" -eq "ASan") {
+            $flags = "/fsanitize=address /Z7"
+            $fastTests = "ON"
+          }
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="$flags" `
+            -DAGENTENGINE_FAST_TESTS="$fastTests" `
             -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
       - name: Build

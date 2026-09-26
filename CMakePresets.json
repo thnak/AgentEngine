@@ -1,0 +1,44 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 28, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "dev",
+      "inherits": "base",
+      "displayName": "Development (fast test build)",
+      "description": "Release library, tests/ compiled without optimization (issue #115 E4). For day-to-day work; not a production build.",
+      "cacheVariables": { "AGENTENGINE_FAST_TESTS": "ON" }
+    },
+    {
+      "name": "release",
+      "inherits": "base",
+      "displayName": "Release (fully optimized)",
+      "description": "Everything optimized, tests included: what ships, and what CI's Windows / MSVC / Release leg builds.",
+      "cacheVariables": { "AGENTENGINE_FAST_TESTS": "OFF" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "dev", "configurePreset": "dev", "jobs": 4 },
+    { "name": "release", "configurePreset": "release", "jobs": 4 }
+  ],
+  "testPresets": [
+    {
+      "name": "dev", "configurePreset": "dev",
+      "output": { "outputOnFailure": true }, "execution": { "jobs": 4, "timeout": 180 }
+    },
+    {
+      "name": "release", "configurePreset": "release",
+      "output": { "outputOnFailure": true }, "execution": { "jobs": 4, "timeout": 180 }
+    }
+  ]
+}
