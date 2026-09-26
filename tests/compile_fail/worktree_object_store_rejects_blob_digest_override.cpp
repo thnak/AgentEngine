@@ -1,5 +1,5 @@
 // This file MUST NOT compile (025-Worktree-and-Virtual-Filesystem.md §2, Milestone 3 Phase A3) --
-// see tests/CMakeLists.txt's try_compile() gate. `InMemoryWorktreeObjectStore::put_blob` (core/
+// see tests/compile_fail/CMakeLists.txt's compile-fail gate. `InMemoryWorktreeObjectStore::put_blob` (core/
 // worktree.hpp) takes ONLY the content -- `put_blob(bytes) -> digest` -- and the digest is always
 // DERIVED from that content by `compute_digest`, never accepted as a caller-supplied parameter.
 // This is what makes 025 §2's "Blob = immutable bytes, addressed by digest" true by construction,

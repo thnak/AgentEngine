@@ -1,6 +1,6 @@
 // Positive control for the ADR-012 compile-fail proof (decisions/
 // ADR-012-sandbox-profile-template-parameter-kind.md) — this file MUST compile (see
-// tests/CMakeLists.txt). Without this, the companion
+// tests/compile_fail/CMakeLists.txt). Without this, the companion
 // sandbox_profile_rejects_non_conforming_type.cpp failing to compile would be meaningless: it could
 // be failing because core/agent.hpp doesn't compile at all, not because the specific non-conforming
 // type it names is correctly rejected. Both legitimate shapes for `P` — a real `SandboxBackend`, and

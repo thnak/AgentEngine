@@ -1,5 +1,5 @@
 // This file MUST NOT compile (ADR-096 C2, decisions/ADR-096-session-sandbox-lifecycle-context-
-// provider-wiring.md §4/§6) -- see tests/CMakeLists.txt's try_compile() gate. `ComposedContextProvider
+// provider-wiring.md §4/§6) -- see tests/compile_fail/CMakeLists.txt's compile-fail gate. `ComposedContextProvider
 // <Ms...>`'s own copy-assignment operator is UNCONDITIONALLY `= delete`d (core/
 // composed_context_provider.hpp:119-120, ADR-074) -- for ANY `Ms`, not specifically because
 // `SandboxToolProvider` itself happens to be non-copyable (a plain copy would alias the SAME
@@ -17,7 +17,7 @@
 // MSVC compile of a throwaway probe during that ADR's own red-team round (Round 2) -- but that probe
 // was never preserved as a durable, checked-in regression guard, only asserted afterward in a
 // comment. This file turns that one-time claim into a permanent one, matching this repo's own
-// established try_compile() idiom for compile-fail proofs (tests/compile_fail/
+// established idiom for compile-fail proofs (tests/compile_fail/
 // identity_authority_no_copy.cpp, capability_set_no_direct_construction.cpp, etc.) rather than
 // trusting the comment forever.
 //
@@ -30,7 +30,7 @@
 // statement now compiles but is a RUNTIME no-op, not a compile error -- `operator=` refuses the
 // transfer whenever both sides are tagged with two different sessions' own addresses (an identity tag
 // `AgentSession::history_provider()` stamps on every call), leaving both sessions' own provider state
-// untouched. Proven by `tests/core/context/test_session_builder.cpp`'s own B20, a runtime test, not a `try_compile()`
+// untouched. Proven by `tests/core/context/test_session_builder.cpp`'s own B20, a runtime test, not a compile-fail
 // gate like this one -- a compile-fail idiom cannot express "compiles, but does nothing."
 
 #include "agentengine/core/chat_client.hpp"

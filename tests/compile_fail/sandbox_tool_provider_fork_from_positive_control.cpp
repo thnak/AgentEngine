@@ -1,5 +1,5 @@
 // Positive control for tests/compile_fail/sandbox_tool_provider_rejects_fork_from.cpp -- see
-// tests/CMakeLists.txt's try_compile() gate and that file's own top comment for the full claim
+// tests/compile_fail/CMakeLists.txt's compile-fail gate and that file's own top comment for the full claim
 // (ADR-096 C2); that file's own comment also covers the public `history_provider()` move-assignment
 // bypass this pair does NOT (and cannot) prove anything about -- closed at runtime by ADR-116
 // instead, not by this compile-time gate. A fail-only probe cannot distinguish "correctly

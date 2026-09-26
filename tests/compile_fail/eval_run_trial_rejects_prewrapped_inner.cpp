@@ -1,5 +1,5 @@
 // This file MUST NOT compile (decisions/ADR-195-evaluation-harness.md §3.8, round-1 red-team fix on
-// the trial-running harness's first slice) -- see tests/CMakeLists.txt's try_compile() gate.
+// the trial-running harness's first slice) -- see tests/compile_fail/CMakeLists.txt's compile-fail gate.
 // `run_trial`'s own top comment claims wrapping `Inner` in `RecordingChatClient` inside its
 // signature "enforces refuses to run a trial whose client is not wrapped... by type." A round-1
 // reviewer proved that claim was type-true but not effect-true: passing an ALREADY-WRAPPED

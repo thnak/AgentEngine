@@ -1,4 +1,4 @@
-// This file MUST NOT compile (ADR-102 §3 C1) -- see tests/CMakeLists.txt's try_compile() gate.
+// This file MUST NOT compile (ADR-102 §3 C1) -- see tests/compile_fail/CMakeLists.txt's compile-fail gate.
 // `IdentityAuthority` is the one real singleton for this whole authority model; copying it would
 // produce a second, divergent instance with its own independent id/ancestry state, silently
 // defeating the single-source-of-truth guarantee `bootstrap()` exists to provide. Its copy

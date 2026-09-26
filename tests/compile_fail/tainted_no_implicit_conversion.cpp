@@ -1,5 +1,5 @@
-// This file MUST NOT compile (007-Capability-and-Trust-Model.md §9 G2) — see tests/CMakeLists.txt's
-// try_compile gate, which fails the build if it does. `Tainted<T>` has no implicit conversion to
+// This file MUST NOT compile (007-Capability-and-Trust-Model.md §9 G2) — see tests/compile_fail/CMakeLists.txt's
+// compile-fail gate, which fails if it does. `Tainted<T>` has no implicit conversion to
 // `T`/`T const&`, so a tainted value cannot silently flow into an API shaped like the
 // capability-granting/policy-deciding surface 007 §4 forbids it from reaching.
 //
