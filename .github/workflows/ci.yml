@@ -38,8 +38,12 @@
 
 name: CI
 
+# Once per commit (issue #115): a PR branch used to run the whole matrix twice, once for `push` and
+# once for `pull_request` (the concurrency group keys on the ref, which differs), doubling the writes
+# into a GitHub Actions cache that is already over its 10 GB cap. Branch pushes are covered by their PR.
 on:
   push:
+    branches: [main]
   pull_request:
 
 concurrency:
@@ -67,7 +71,10 @@ jobs:
     # Bounds a hang. Without this a stuck ctest runs to GitHub's 6-hour
     # default -- the MSVC ASan leg has done exactly that, reporting one
     # timeout and then sitting for an hour until a human cancelled it.
-    timeout-minutes: 45
+    # 90, not 45 (issue #115): a cold-cache MSVC Release build alone takes 43-45 min (measured
+    # 2026-09-26; warm it is 1.5-3 min), so 45 killed healthy runs mid-build. ctest's own per-test
+    # timeout still bounds a hung test.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -169,7 +176,10 @@ jobs:
     # Bounds a hang. Without this a stuck ctest runs to GitHub's 6-hour
     # default -- the MSVC ASan leg has done exactly that, reporting one
     # timeout and then sitting for an hour until a human cancelled it.
-    timeout-minutes: 45
+    # 90, not 45 (issue #115): a cold-cache MSVC Release build alone takes 43-45 min (measured
+    # 2026-09-26; warm it is 1.5-3 min), so 45 killed healthy runs mid-build. ctest's own per-test
+    # timeout still bounds a hung test.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
