@@ -113,8 +113,9 @@ An independent pass, with its own tools, and a positive control for every probe 
   workflow tests, admission included.
 - **Security (ADR-169).** `admit_caller`, `set_principal` and `set_require_caller` stayed inline and unchanged;
   `deny_admission` and `propagate_admission_to_children` are identical by token and by call target. One new
-  possibility: a host `.cpp` could define a moved member itself, which fails at link with a duplicate symbol unless it
-  replaces all 33. Host code is trusted, so this is outside the I2/I3 model.
+  possibility: a host `.cpp` could define a moved member itself. That fails at link with a duplicate symbol unless
+  the host replaces every moved member the linked objects reference (corrected by ADR-201 §7, whose red team probed the
+  same property: with no other reference into the object, the host's definition silently wins). Host code is trusted, so this is outside the I2/I3 model.
 - **MINOR — stale evidence (fixed).** The first build and test run predated the 3-line header banner. Rebuilt and
   re-ran; §5 reports the re-run.
 - **MINOR — unused link dependencies (fixed).** The library linked `agentengine_rt_file_log` and `ws2_32` PUBLIC, but
