@@ -77,6 +77,8 @@
 #include <vector>
 
 #include "agentengine/core/error.hpp"
+// ADR-203 (#120 S8): the orphan-reaping process-identity check, shared with docker_execution_surface.hpp.
+#include "agentengine/sandbox/detail/process_identity.hpp"
 #include "agentengine/sandbox/execution_surface.hpp"
 // ADR-172 (issue #66): `ResourceLimits`/`NetPolicy`, the 008 §2 vocabulary
 // `containerd_isolation_from()` bridges. Same non-cycle as docker_execution_surface.hpp's own
@@ -303,124 +305,20 @@ struct ProcessOutcome {
 // scheme produced).
 inline constexpr char const* kOrphanIdPrefix = "ae_ces_";
 
-// Real `kill(pid, 0)` liveness probe -- sends no signal, only asks the kernel whether `pid` could be
-// signaled at all. `ESRCH` is the one answer that actually means "no such process" -- every other
-// outcome (success, or a failure this process lacks permission to fully diagnose e.g. `EPERM` for a
-// pid now reused by a different, differently-owned process) is treated as "still alive", failing
-// CLOSED: this function is the one gate standing between a caller and destroying a real container, so
-// a wrong "dead" answer is the only wrong answer that has a real consequence.
-[[nodiscard]] inline bool process_is_alive(long pid) {
-    if (pid <= 0) return true;
-    if (::kill(static_cast<::pid_t>(pid), 0) == 0) return true;
-    return errno != ESRCH;
-}
-
-// ADR-108 §7 pid-reuse-race fix (narrows, not just disclosed) -- identical rationale and shape to
-// `docker_execution_surface.hpp`'s own fix: a plain pid-liveness check alone cannot tell "the
-// ORIGINAL process that created this container is still running" from "the pid was later reused by
-// a completely unrelated process" -- the second case reads as "alive" under `process_is_alive()`
-// alone, so a genuinely orphaned container silently stays unreapable forever once its pid happens to
-// get recycled by something else. Fixed by embedding, alongside the pid, a per-process-INSTANCE
-// "start key" read from `/proc/<pid>/stat`'s own `starttime` field (ticks since boot -- man proc(5)),
-// which is (for all practical purposes) never the same across two different process instances, even
-// ones sharing the same pid. Field 2 (`comm`, the process name) is the one field in that file that can
-// itself contain spaces or parentheses -- every robust parser's own convention, reused here, is to
-// find the LAST `)` in the line and count fields from there, rather than naively splitting on
-// whitespace from the start. After that `)`, `state` (field 3) is the first token; `starttime` (field
-// 22) is therefore the 20th token counting from there.
-[[nodiscard]] inline std::optional<std::uint64_t> read_process_start_ticks(long pid) {
-    if (pid <= 0) return std::nullopt;
-    std::ifstream f("/proc/" + std::to_string(pid) + "/stat");
-    std::string line;
-    if (!f || !std::getline(f, line)) return std::nullopt;
-    auto const close_paren = line.rfind(')');
-    if (close_paren == std::string::npos) return std::nullopt;
-    std::istringstream rest(line.substr(close_paren + 1));
-    std::string token;
-    for (int i = 0; i < 19; ++i) {
-        if (!(rest >> token)) return std::nullopt;
-    }
-    if (!(rest >> token)) return std::nullopt;
-    try {
-        return static_cast<std::uint64_t>(std::stoull(token));
-    } catch (...) {
-        return std::nullopt;
-    }
-}
-[[nodiscard]] inline std::uint64_t current_process_start_key() {
-    return read_process_start_ticks(static_cast<long>(::getpid())).value_or(0);
-}
-// nullopt here means "could not read a start-key for this pid right now" -- deliberately NOT the
-// same thing as "no such process" (`process_is_alive()`, unchanged, is still the one function that
-// answers that). A transient read failure (the process exiting between the caller's own
-// `process_is_alive()` check and this call) must resolve to "unknown", not "gone" --
-// `check_process_identity()` below is the one place that decides what an unreadable key means.
-[[nodiscard]] inline std::optional<std::uint64_t> process_start_key_for(long pid) {
-    return read_process_start_ticks(pid);
-}
-
-enum class ProcessMatch { kAliveSameProcess, kGoneOrReplaced, kUnknown };
-
-// The real, narrowed identity check `reap_orphans()` uses in place of plain `process_is_alive()`.
-// Layered ON TOP of that already-audited function, not a replacement for its own "ESRCH is the one
-// unambiguous 'gone' signal" logic: if no process at all is alive at `pid`, the creator is
-// unambiguously gone regardless of any key comparison. Only when a process genuinely IS alive at that
-// exact pid does the start-key comparison run, to tell "still the same process" apart from "the pid
-// got recycled by something else" -- and if THAT read itself fails (e.g. a race where the process
-// exits between the two checks), the outcome is `kUnknown`, which `reap_orphans()` treats exactly
-// like `kAliveSameProcess` -- fail closed, never destroy on an ambiguous answer.
-[[nodiscard]] inline ProcessMatch check_process_identity(long pid, std::uint64_t recorded_start_key) {
-    if (!process_is_alive(pid)) return ProcessMatch::kGoneOrReplaced;
-    auto const current_key = process_start_key_for(pid);
-    if (!current_key.has_value()) return ProcessMatch::kUnknown;
-    return *current_key == recorded_start_key ? ProcessMatch::kAliveSameProcess
-                                               : ProcessMatch::kGoneOrReplaced;
-}
-
-// Extracts the (pid, start_key) `reset()` embedded in `id` -- the two decimal segments between
-// `kOrphanIdPrefix` and the SECOND following `_` (anything after that, including a third `_`, is the
-// free-form seq suffix and not parsed further). Returns nullopt -- not a best-effort partial parse --
-// for anything that isn't a plain, purely decimal run of digits in EITHER segment: a name sharing this
-// prefix by coincidence (never actually produced by this class, but not provably impossible on a
-// shared host) must never be treated as one of ours just because it starts with the right characters.
-// Fails closed (skip, don't reap) rather than guessing.
-struct OrphanIdentity {
-    long pid = 0;
-    std::uint64_t start_key = 0;
-};
+// The process-identity check `reap_orphans()` runs on every `ae_ces_` id (ADR-108 §5/§7): one implementation,
+// shared with docker_execution_surface.hpp since ADR-203 (#120 S8), in sandbox/detail/process_identity.hpp.
+// These names stay spelled as they always were. (containerd was POSIX only before and is still: the Windows
+// branches there are Docker's.)
+using detail::process_identity::check_process_identity;
+using detail::process_identity::current_process_start_key;
+using detail::process_identity::OrphanIdentity;
+using detail::process_identity::process_is_alive;
+using detail::process_identity::process_start_key_for;
+using detail::process_identity::ProcessMatch;
+using detail::process_identity::read_process_start_ticks;
 
 [[nodiscard]] inline std::optional<OrphanIdentity> parse_orphan_identity(std::string const& id) {
-    std::string const prefix = kOrphanIdPrefix;
-    if (id.rfind(prefix, 0) != 0) return std::nullopt;
-    std::string const rest = id.substr(prefix.size());
-    std::string::size_type const sep1 = rest.find('_');
-    if (sep1 == std::string::npos) return std::nullopt;
-    std::string const pid_str = rest.substr(0, sep1);
-    std::string const rest2 = rest.substr(sep1 + 1);
-    std::string::size_type const sep2 = rest2.find('_');
-    std::string const key_str = (sep2 == std::string::npos) ? rest2 : rest2.substr(0, sep2);
-    if (pid_str.empty() || key_str.empty()) return std::nullopt;
-    for (char const c : pid_str) {
-        if (c < '0' || c > '9') return std::nullopt;
-    }
-    for (char const c : key_str) {
-        if (c < '0' || c > '9') return std::nullopt;
-    }
-    try {
-        long const pid = std::stol(pid_str);
-        // REAL, independent-red-team-found finding (ADR-108 §5), identical to the Docker side's own
-        // fix: `process_is_alive()` below casts this value to `pid_t` (32-bit), but `long` is 64-bit
-        // on LP64 Linux -- a decimal run that fits in `long` yet exceeds INT32_MAX (no real pid ever
-        // reaches that range) silently TRUNCATES on that cast, and the truncated value can
-        // coincidentally read as a dead pid even though the original value was never a real pid.
-        // Rejecting anything outside a real pid's possible 32-bit range closes this before the value
-        // ever reaches a liveness check, not after.
-        if (pid <= 0 || pid > std::numeric_limits<std::int32_t>::max()) return std::nullopt;
-        std::uint64_t const key = std::stoull(key_str);
-        return OrphanIdentity{pid, key};
-    } catch (...) {
-        return std::nullopt;
-    }
+    return detail::process_identity::parse_orphan_identity(id, kOrphanIdPrefix);
 }
 
 }  // namespace ctr_cli_detail

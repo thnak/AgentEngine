@@ -38,3 +38,10 @@ agentengine_add_test(test_tool_json_schema
 # Header-only (core/json_schema.hpp's AE_JSON_SCHEMA-generated ae_to_json/ae_from_json), core-tier
 # -- links only agentengine::core (no nlohmann::json; exercises the dependency-free codec itself).
 agentengine_add_test(test_json_schema_codec LIBS agentengine::core agentengine_warnings)
+
+# ---- #120 S8 (ADR-203) -- the one base64 codec (core/base64.hpp) and every wrapper over it (A2A, MCP, the
+# native-jail relay, the Message JSON codec) against verbatim copies of the copies it replaced
+# (tests/support/oracle_base64.hpp and ADR-202's two codec oracles). `src/` is on the include path for
+# backends/native_jail/relay_base64.hpp.
+agentengine_add_test(test_base64_equivalence LIBS agentengine::core agentengine_warnings)
+target_include_directories(test_base64_equivalence PRIVATE "${PROJECT_SOURCE_DIR}/src")

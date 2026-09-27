@@ -7,6 +7,8 @@
 
 #include "agentengine/core/message_json.hpp"
 
+#include "agentengine/core/base64.hpp"
+
 #include <cstddef>
 #include <utility>
 #include <vector>
@@ -21,71 +23,17 @@ namespace {
     return code;
 }
 
-// Small, self-contained base64 -- the one `ContentItem` payload (`Media`'s `vector<std::byte>`
-// alternative) that isn't already text. No third-party dependency for six lines of table lookup.
-constexpr std::string_view base64_alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-[[nodiscard]] std::string base64_encode(std::vector<std::byte> const& bytes) {
-    std::string out;
-    out.reserve((bytes.size() + 2) / 3 * 4);
-    std::size_t i = 0;
-    while (i + 3 <= bytes.size()) {
-        std::uint32_t n = (static_cast<std::uint32_t>(bytes[i]) << 16) |
-                           (static_cast<std::uint32_t>(bytes[i + 1]) << 8) |
-                           static_cast<std::uint32_t>(bytes[i + 2]);
-        out += base64_alphabet[(n >> 18) & 0x3F];
-        out += base64_alphabet[(n >> 12) & 0x3F];
-        out += base64_alphabet[(n >> 6) & 0x3F];
-        out += base64_alphabet[n & 0x3F];
-        i += 3;
-    }
-    std::size_t const remaining = bytes.size() - i;
-    if (remaining == 1) {
-        std::uint32_t n = static_cast<std::uint32_t>(bytes[i]) << 16;
-        out += base64_alphabet[(n >> 18) & 0x3F];
-        out += base64_alphabet[(n >> 12) & 0x3F];
-        out += "==";
-    } else if (remaining == 2) {
-        std::uint32_t n = (static_cast<std::uint32_t>(bytes[i]) << 16) |
-                           (static_cast<std::uint32_t>(bytes[i + 1]) << 8);
-        out += base64_alphabet[(n >> 18) & 0x3F];
-        out += base64_alphabet[(n >> 12) & 0x3F];
-        out += base64_alphabet[(n >> 6) & 0x3F];
-        out += '=';
-    }
-    return out;
-}
-
-// Lenient by design, in both old copies alike: '=', '\n' and '\r' are skipped wherever they appear, a trailing
-// partial group is dropped, and only a character outside the alphabet is an error.
+// Base64 for the one `ContentItem` payload that isn't already text (`Media`'s `vector<std::byte>` alternative) is
+// core/base64.hpp's since ADR-203 (#120 S8). The codec decodes leniently, as both old copies did ('=', '\n' and '\r'
+// skipped anywhere, a trailing partial group dropped, only a character outside the alphabet an error), and the
+// error is the profile's `bad_base64`.
 [[nodiscard]] result<std::vector<std::byte>> base64_decode(std::string_view text, Profile profile) {
-    auto decode_char = [](char c) -> int {
-        if (c >= 'A' && c <= 'Z') return c - 'A';
-        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-        if (c >= '0' && c <= '9') return c - '0' + 52;
-        if (c == '+') return 62;
-        if (c == '/') return 63;
-        return -1;
-    };
-    std::vector<std::byte> out;
-    out.reserve(text.size() / 4 * 3);
-    std::uint32_t buffer = 0;
-    int bits = 0;
-    for (char c : text) {
-        if (c == '=' || c == '\n' || c == '\r') continue;
-        int const v = decode_char(c);
-        if (v < 0) {
-            return std::unexpected(
-                error{failure_class::contract, "invalid base64 character", error_code(profile, "bad_base64")});
-        }
-        buffer = (buffer << 6) | static_cast<std::uint32_t>(v);
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out.push_back(static_cast<std::byte>((buffer >> bits) & 0xFF));
-        }
+    auto bytes = base64::decode_lenient(text);
+    if (!bytes) {
+        return std::unexpected(
+            error{failure_class::contract, "invalid base64 character", error_code(profile, "bad_base64")});
     }
-    return out;
+    return std::move(*bytes);
 }
 
 [[nodiscard]] json::Value blob_ref_to_json(BlobRef const& b) {
@@ -168,7 +116,7 @@ json::Value content_item_to_json(ContentItem const& item, Profile profile) {
         obj.emplace_back("media_type", json::Value::make_string(m->media_type));
         if (auto const* bytes = std::get_if<std::vector<std::byte>>(&m->payload)) {
             obj.emplace_back("payload_kind", json::Value::make_string("bytes"));
-            obj.emplace_back("bytes_base64", json::Value::make_string(base64_encode(*bytes)));
+            obj.emplace_back("bytes_base64", json::Value::make_string(base64::encode(*bytes)));
         } else if (auto const* uri = std::get_if<std::string>(&m->payload)) {
             obj.emplace_back("payload_kind", json::Value::make_string("uri"));
             obj.emplace_back("uri", json::Value::make_string(*uri));

@@ -129,3 +129,10 @@ set_tests_properties(test_docker_isolation PROPERTIES RESOURCE_LOCK docker_daemo
 # test_docker_isolation/test_sandbox_runtime.
 agentengine_add_test(test_docker_seed_ownership LIBS agentengine::core agentengine_warnings)
 set_tests_properties(test_docker_seed_ownership PROPERTIES TIMEOUT 180 RESOURCE_LOCK docker_daemon)
+
+# ---- #120 S8 (ADR-203) -- the one orphan-reaping process-identity check
+# (sandbox/detail/process_identity.hpp) and the docker_cli_detail:: / ctr_cli_detail:: names over it, against
+# verbatim copies of the two implementations it replaced (tests/support/oracle_process_identity.hpp). No daemon:
+# it parses names and checks this process and pids that do not exist. The containerd half is POSIX only, as that
+# header is.
+agentengine_add_test(test_process_identity_equivalence LIBS agentengine::core agentengine_warnings)

@@ -39,6 +39,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "agentengine/core/base64.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/protocol/mcp/json_rpc.hpp"
@@ -140,36 +141,10 @@ struct CacheEntry {
     }
 }
 
+// The `=?base64?...?=` header-value form below (core/base64.hpp since ADR-203, #120 S8; this file had its own
+// encoder before).
 [[nodiscard]] inline std::string base64_encode(std::string_view in) {
-    static constexpr char kAlphabet[] =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out;
-    out.reserve(((in.size() + 2) / 3) * 4);
-    std::size_t i = 0;
-    for (; i + 2 < in.size(); i += 3) {
-        std::uint32_t const n = (static_cast<unsigned char>(in[i]) << 16) |
-                                 (static_cast<unsigned char>(in[i + 1]) << 8) |
-                                 static_cast<unsigned char>(in[i + 2]);
-        out.push_back(kAlphabet[(n >> 18) & 0x3F]);
-        out.push_back(kAlphabet[(n >> 12) & 0x3F]);
-        out.push_back(kAlphabet[(n >> 6) & 0x3F]);
-        out.push_back(kAlphabet[n & 0x3F]);
-    }
-    if (i + 1 == in.size()) {
-        std::uint32_t const n = static_cast<unsigned char>(in[i]) << 16;
-        out.push_back(kAlphabet[(n >> 18) & 0x3F]);
-        out.push_back(kAlphabet[(n >> 12) & 0x3F]);
-        out.push_back('=');
-        out.push_back('=');
-    } else if (i + 2 == in.size()) {
-        std::uint32_t const n = (static_cast<unsigned char>(in[i]) << 16) |
-                                 (static_cast<unsigned char>(in[i + 1]) << 8);
-        out.push_back(kAlphabet[(n >> 18) & 0x3F]);
-        out.push_back(kAlphabet[(n >> 12) & 0x3F]);
-        out.push_back(kAlphabet[(n >> 6) & 0x3F]);
-        out.push_back('=');
-    }
-    return out;
+    return agentengine::base64::encode(in);
 }
 
 inline constexpr std::string_view kBase64SentinelPrefix = "=?base64?";
