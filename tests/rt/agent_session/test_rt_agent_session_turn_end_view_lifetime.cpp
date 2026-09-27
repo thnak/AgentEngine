@@ -109,8 +109,6 @@ struct SeenTurn {
 // Takes the view by const reference, the shape the red team's probe used. The body first does unrelated
 // work on the stack, then copies what it sees into `seen`, so the test reads nothing through the view itself.
 struct ConstRefTurnEndProvider {
-    static constexpr std::string_view name = "const-ref-turn-end";
-
     std::shared_ptr<std::vector<SeenTurn>> seen = std::make_shared<std::vector<SeenTurn>>();
 
     task<agentengine::result<agentengine::ContextContribution>> on_context(agentengine::SessionContext&,
