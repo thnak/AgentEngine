@@ -114,6 +114,16 @@ target_compile_features(agentengine_rt_file_log PRIVATE cxx_std_23)
 target_link_libraries(agentengine_rt_file_log PRIVATE agentengine_warnings)
 target_link_libraries(agentengine_core INTERFACE agentengine_rt_file_log)
 
+# ---- Message/ContentItem <-> JSON codec (src/core/) -- ADR-202, issue #120 S3 ----------------------
+# The one codec behind core/chat_recording.hpp (recording profile) and rt/message_codec.hpp (state profile),
+# which were two drifted copies before. Both headers keep their functions as thin wrappers. Linked through
+# agentengine::core like the libraries around it.
+add_library(agentengine_message_json STATIC src/core/message_json.cpp)
+target_include_directories(agentengine_message_json PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_compile_features(agentengine_message_json PRIVATE cxx_std_23)
+target_link_libraries(agentengine_message_json PRIVATE agentengine_warnings)
+target_link_libraries(agentengine_core INTERFACE agentengine_message_json)
+
 # ---- Tool-call pipeline (src/core/) -- ADR-201, issue #120 S5 --------------------------------------
 # core/tool_pipeline.hpp's function bodies (006 §3: admit, approve, invoke, audit, background tasks), compiled
 # once here instead of in each of the ~206 files that include the header. Moved verbatim; the header keeps every

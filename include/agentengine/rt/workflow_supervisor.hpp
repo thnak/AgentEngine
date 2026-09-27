@@ -48,9 +48,9 @@
 //     history/state as a narrowing session checkpoints could afford) -- `content_record.hpp`'s own
 //     banner already establishes why a workflow's payloads cannot be dropped the same way ("unlike a
 //     session's history... a workflow's pending/partial payloads ARE its state"). Encoded via
-//     `rt::message_codec.hpp` (message_codec.hpp's own banner explains why that file exists as a
-//     small, adapted duplicate of `core/chat_recording.hpp`'s already-proven Message<->JSON codec,
-//     rather than an #include of it) -- and, since JSON natively expresses a tagged union, this
+//     `rt::message_codec.hpp` (the state profile of the one Message<->JSON codec, core/message_json.hpp,
+//     ADR-202; it was an adapted duplicate of `core/chat_recording.hpp`'s codec until #120 S3) -- and,
+//     since JSON natively expresses a tagged union, this
 //     record stores `agentengine::Message` directly rather than needing the Quark original's own
 //     flat `MessageRecord` indirection (`content_record.hpp`'s whole reason for existing was working
 //     around `quark::Described` having no variant primitive -- a constraint that does not apply here).

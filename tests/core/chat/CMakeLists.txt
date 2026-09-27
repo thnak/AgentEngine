@@ -110,6 +110,10 @@ agentengine_add_test(test_outbound_media_capability_gate LIBS agentengine::core 
 # foundation RecordingChatClient<Inner> and ReplayChatClient both depend on.
 agentengine_add_test(test_chat_recording_codec LIBS agentengine::core agentengine_warnings)
 
+# ---- #120 S3 (ADR-202) -- the one Message JSON codec (core/message_json.hpp) against verbatim copies of the two
+# codecs it replaced (tests/support/oracle_*.hpp), per profile, plus the state profile's I3 property.
+agentengine_add_test(test_message_json_equivalence LIBS agentengine::core agentengine_warnings)
+
 # ---- Milestone 5 Phase G1 -- RecordingChatClient<Inner> (core/recording_chat_client.hpp), the real
 # recording mechanism promoted from RecordedChatClient's test-scoped stand-in.
 agentengine_add_test(test_recording_chat_client LIBS agentengine::core agentengine_warnings)
