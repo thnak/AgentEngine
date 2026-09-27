@@ -1,7 +1,9 @@
 # ADR-201 — The tool-call pipeline's function bodies compiled once in `src/`, not in every file that includes it
 
-- **Status**: **Proposed — design + implementation + proof (2026-09-26); red team round 1 (same day): no BLOCKER or
-  MAJOR, 2 MINOR (one disclosed, one fixed) (§8).**
+- **Status**: **Judged (2026-09-27, project-owner sign-off).** Re-checked on `main` before sign-off: mechanism
+  unchanged; I2 mutations in `src/core/tool_pipeline.cpp` caught (see "Re-check before sign-off" at the end). Original
+  status: Proposed — design + implementation + proof (2026-09-26); red team round 1 (same day): no BLOCKER or MAJOR, 2
+  MINOR (one disclosed, one fixed) (§8).
 - **Date**: 2026-09-26
 - **Origin**: GitHub issue #120 (S5), the structure audit after issue #115 closed.
 - **Touches**: `include/agentengine/core/tool_pipeline.hpp` (declarations), `src/core/tool_pipeline.cpp` (new),
@@ -137,3 +139,19 @@ An independent pass with its own tools, and a positive control for every probe t
 - **MINOR — link-time override (disclosed, §7).**
 - **MINOR — bookkeeping (fixed).** The ADR index row was missing, and the `.cpp` banner mentioned function templates
   the header does not have.
+
+## Re-check before sign-off (2026-09-27)
+
+On `main` at f37912a: full `dev` build with `/W4 /WX`, no warnings; `ctest -LE live-network` with Docker 29.7.2 running,
+363/363 pass (the two `*_no_process_creation` probes skipped as always, `test_external_skill_discovery` excluded).
+
+`tool_pipeline.hpp` is unchanged since the merge. `test_tool_pipeline.cpp.obj` defines none of `admit_call`,
+`run_admitted_call`, `invoke_tool` or `background_task` and references two of them.
+
+Mutations of the moved `admit_call`:
+
+- A missing capability is skipped instead of refused. `test_tool_pipeline` fails ("capability not held is denied").
+- A `needs_decider` call is approved without asking the decider. `test_tool_pipeline` fails ("approval denied blocks the
+  call", "the approval decider was actually consulted"), and so does `test_agent_tool_invocation` 6a.
+
+Both reverted; both tests pass.

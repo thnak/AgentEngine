@@ -1,7 +1,8 @@
 # ADR-206 — The OpenAI and Anthropic chat clients: non-template code compiled once in `src/`, shared HTTP plumbing written once
 
-- **Status**: **Proposed — design + implementation + proof (2026-09-27); red team round 1 (same day): no BLOCKER or
-  MAJOR, 2 MINOR, both fixed (§8).**
+- **Status**: **Judged (2026-09-27, project-owner sign-off).** Re-checked on `main` before sign-off: controls C3 and C4
+  re-run and caught (see "Re-check before sign-off" at the end). Original status: Proposed — design + implementation +
+  proof (2026-09-27); red team round 1 (same day): no BLOCKER or MAJOR, 2 MINOR, both fixed (§8).
 - **Date**: 2026-09-27
 - **Origin**: GitHub issue #120 (S6), the structure audit after issue #115 closed.
 - **Touches**: `include/agentengine/protocol/{openai,anthropic}/chat_client.hpp` (declarations),
@@ -219,3 +220,18 @@ An independent pass, with its own scripts, and a positive control for every prob
   999 (nothing branches above 500). L2 client code now shares a static library with the L1 provider HTTP client:
   the lint checks includes, not libraries; the choice is §2's design B. `exchange_json` is public, but it adds no
   authority: `perform_provider_https_exchange` already is (I2).
+
+## Re-check before sign-off (2026-09-27)
+
+On `main` at f37912a: full `dev` build with `/W4 /WX`, no warnings; `ctest -LE live-network` with Docker 29.7.2 running,
+363/363 pass (the two `*_no_process_creation` probes skipped as always, `test_external_skill_discovery` excluded).
+
+The two client headers are unchanged since the merge (22ec616).
+
+Controls re-run on `src/protocol/provider_chat_wire.cpp`, in the `AGENTENGINE_WITH_HTTPS=ON` build:
+
+- C3, `exchange_json` skips its non-2xx check: `test_provider_chat_wire_equivalence` fails on the 401 and 503 `chat()`
+  cases.
+- C4, `http_status_error` no longer classes 401 as policy: it fails on both backends' differential comparisons.
+
+Reverted; the test passes.

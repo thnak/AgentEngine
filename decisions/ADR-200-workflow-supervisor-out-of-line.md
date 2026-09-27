@@ -1,7 +1,9 @@
 # ADR-200 — `rt::WorkflowSupervisor`'s member bodies compiled once in `src/`, not in every file that includes it
 
-- **Status**: **Proposed — design + implementation + proof (2026-09-26); red team round 1 (same day): no BLOCKER or
-  MAJOR, 2 MINOR, both fixed (§8).**
+- **Status**: **Judged (2026-09-27, project-owner sign-off).** Re-checked on `main` before sign-off: mechanism
+  unchanged; three mutations of moved bodies in `src/rt/workflow_supervisor.cpp` caught (see "Re-check before sign-off"
+  at the end). Original status: Proposed — design + implementation + proof (2026-09-26); red team round 1 (same day): no
+  BLOCKER or MAJOR, 2 MINOR, both fixed (§8).
 - **Date**: 2026-09-26
 - **Origin**: GitHub issue #120 (S1), the structure audit after issue #115 closed.
 - **Touches**: `include/agentengine/rt/workflow_supervisor.hpp` (declarations), `src/rt/workflow_supervisor.cpp` (new),
@@ -121,3 +123,17 @@ An independent pass, with its own tools, and a positive control for every probe 
 - **MINOR — unused link dependencies (fixed).** The library linked `agentengine_rt_file_log` and `ws2_32` PUBLIC, but
   its object references no symbol from either. Both removed.
 - **Wording (fixed).** §3 now says how body lines are counted.
+
+## Re-check before sign-off (2026-09-27)
+
+On `main` at f37912a: full `dev` build with `/W4 /WX`, no warnings; `ctest -LE live-network` with Docker 29.7.2 running,
+363/363 pass (the two `*_no_process_creation` probes skipped as always, `test_external_skill_discovery` excluded).
+
+The header has changed by 7 lines since the merge (8bdeb47) and gained no function body. Every member the consumer
+object `test_rt_workflow_supervisor.cpp.obj` defines is either an accessor this ADR kept inline (`rounds_executed`,
+`run_id`, `token_budget_unenforced`, `snapshot_record`) or container code for the nested types (`PendingSubWorkflow`,
+`OpenPort`, `Delivery`, `HeldFanIn`, `RunState`).
+
+Mutations that edit only bodies now compiled in `src/rt/workflow_supervisor.cpp`, run the same day for the ADR-157 and
+ADR-159 sign-offs, are all caught. Callers therefore run the compiled-once code: the sub_workflow quarantine (S7),
+forwarding (W10-W12), the worker budget (S12) and the cancellation check (6 checks) and wiring (C3).
