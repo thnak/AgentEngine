@@ -13,9 +13,12 @@
 //      - lenient: `base64::decode_lenient` against both Message-codec oracles, `a2a::detail::base64_decode` against
 //        its oracle (value, or failure_class + code + message), and the Message JSON codec end to end (a `media`
 //        item's `bytes_base64`, both profiles) against the ADR-202 oracles;
-//      - stop-at-padding: `base64::decode_stop_at_padding` and `relay_base64::decode` against the relay oracle.
+//      - relay (ADR-205 changed it on purpose): `relay_base64::decode` is `base64::decode_strict`; wherever the old
+//        relay decoder accepted, strict gives the same bytes on a canonical input and rejects a non-canonical one
+//        (each rejection classified: content after '=', bad length, misplaced '=', non-zero leftover bits);
+//        wherever the old one rejected, strict rejects too; anything strict accepts re-encodes to itself.
 // 3. Self-control: the two OLD decode rules must compare as different on inputs where they really differ, so the
-//    comparison demonstrably can fail.
+//    comparison demonstrably can fail; and the old relay rule and strict differ on ADR-205's examples.
 
 #include <cstddef>
 #include <cstdint>
@@ -155,6 +158,29 @@ bool same_item(ItemResult const& a, ItemResult const& b) {
            a.error().message == b.error().message;
 }
 
+// Why an input the old relay decoder accepted is not canonical base64. Written from the rule's statement
+// (ADR-205 §3), independently of `decode_strict`'s code; kCanonical means none of the reasons applies.
+enum class NonCanonical { kCanonical, kContentAfterPadding, kBadLength, kMisplacedPadding, kNonZeroTrailingBits };
+
+NonCanonical classify(std::string_view s) {
+    std::size_t const first_pad = s.find('=');
+    if (first_pad != std::string_view::npos && s.find_first_not_of('=', first_pad) != std::string_view::npos) {
+        return NonCanonical::kContentAfterPadding;
+    }
+    if (s.size() % 4 != 0) return NonCanonical::kBadLength;
+    std::size_t const pad = first_pad == std::string_view::npos ? 0 : s.size() - first_pad;
+    if (pad > 2) return NonCanonical::kMisplacedPadding;
+    if (pad > 0) {
+        int const last = ae::base64::detail::decode_char(s[s.size() - pad - 1]);
+        if ((last & (pad == 1 ? 0x03 : 0x0F)) != 0) return NonCanonical::kNonZeroTrailingBits;
+    }
+    return NonCanonical::kCanonical;
+}
+
+long g_relay_same = 0;                // old relay accepted, strict accepted, same bytes
+long g_relay_both_reject = 0;         // old relay rejected, strict rejected
+long g_relay_newly_rejected[5] = {};  // old relay accepted, strict rejected; indexed by NonCanonical
+
 void diff_decode(std::string const& s, std::string const& label) {
     std::string const what = label + " '" + printable(s) + "'";
     // Lenient.
@@ -184,16 +210,37 @@ void diff_decode(std::string const& s, std::string const& label) {
     check(same_item(ae::rt::content_item_from_json(j), ae::oracle_state::content_item_from_json(j)),
           "media item decode (state): " + what);
 
-    // Stop at padding.
-    auto const stop = ae::base64::decode_stop_at_padding(s);
+    // The relay: strict now (ADR-205), compared with the old stop-at-padding relay decoder.
+    auto const strict = ae::base64::decode_strict(s);
     auto const relay_new = ae::native_jail::relay_base64::decode(s);
     auto const relay_old = ae::oracle_relay_base64::decode(s);
     g_decodings += 2;
-    if (!stop) ++g_decode_errors;
-    check(stop == relay_old, "stop-at-padding vs old relay: " + what + " new=" + describe(stop) +
-                                 " old=" + describe(relay_old));
-    check(relay_new == relay_old, "relay_base64::decode vs old relay: " + what + " new=" + describe(relay_new) +
-                                      " old=" + describe(relay_old));
+    if (!strict) ++g_decode_errors;
+    check(relay_new == strict, "relay_base64::decode is decode_strict: " + what);
+    if (strict) {
+        // Anything strict accepts is canonical: it is exactly the encoding of what it decodes to.
+        check(ae::base64::encode(std::span<std::byte const>(*strict)) == s,
+              "strict accepted a non-canonical input: " + what);
+    }
+    if (!relay_old) {
+        check(!strict, "strict accepts what the old relay rejected: " + what + " strict=" + describe(strict));
+        ++g_relay_both_reject;
+        return;
+    }
+    NonCanonical const why = classify(s);
+    if (strict) {
+        check(*strict == *relay_old, "strict vs old relay on a canonical input: " + what + " new=" + describe(strict) +
+                                         " old=" + describe(relay_old));
+        check(why == NonCanonical::kCanonical, "classifier calls a strict-accepted input non-canonical: " + what);
+        ++g_relay_same;
+    } else {
+        // Newly rejected: non-canonical both by the rule's statement and by re-encoding the old result.
+        check(why != NonCanonical::kCanonical,
+              "strict rejects an input the old relay accepted that the classifier calls canonical: " + what);
+        check(ae::base64::encode(std::span<std::byte const>(*relay_old)) != s,
+              "strict rejects the canonical encoding of its old decoding: " + what);
+        ++g_relay_newly_rejected[static_cast<int>(why)];
+    }
 }
 
 Bytes random_bytes(std::mt19937_64& rng, std::size_t n) {
@@ -224,6 +271,8 @@ std::vector<std::string> malformed_corpus() {
         "////", "++++", "/+/+/", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         // high bits in trailing partial groups
         "//", "///", "/w", "/w=", "/w==", "//8", "//8=", "__8=",
+        // non-zero leftover bits under otherwise canonical padding (ADR-205), and their canonical neighbours
+        "QR==", "QT==", "Q/==", "QUK=", "QUL=", "QU/=", "QUJDRF==", "QUJDREX=", "QQ==", "QUI=",
     };
     // Long inputs: 4,001 characters, and a long valid run with one bad character at the end / after padding.
     c.push_back(std::string(4001, 'A'));
@@ -291,9 +340,18 @@ void self_control(std::vector<std::string> const& corpus) {
     check(differs("QU\nJD"), "self-control: a line break (lenient skips, stop rejects)");
     check(differs("QU\rJD"), "self-control: a carriage return (lenient skips, stop rejects)");
     check(!differs("QUJD"), "self-control: a plain valid encoding decodes the same under both");
-    // The new functions keep the difference.
-    check(ae::base64::decode_lenient("QQ==QQ==") != ae::base64::decode_stop_at_padding("QQ==QQ=="),
+    // The new functions keep the lenient/relay difference.
+    check(ae::base64::decode_lenient("QQ==QQ==") != ae::base64::decode_strict("QQ==QQ=="),
           "self-control: the two new decoders differ on data after '='");
+    // ADR-205's examples: the old relay rule accepted each but the last (partly), strict rejects all of them, and
+    // both agree on a canonical encoding.
+    for (std::string_view s : {"QQ==!!garbage", "QQ==QQ==", "QQ", "QUJ", "QR==", "QUK=", "Q===", "QUJD\n"}) {
+        bool const old_accepts = ae::oracle_relay_base64::decode(s).has_value();
+        check(old_accepts == (s != "QUJD\n"), "self-control: the old relay rule's verdict on '" + printable(s) + "'");
+        check(!ae::base64::decode_strict(s), "self-control: strict rejects '" + printable(s) + "'");
+    }
+    check(ae::base64::decode_strict("QUJD") == ae::oracle_relay_base64::decode("QUJD"),
+          "self-control: strict and the old relay rule agree on a canonical encoding");
 }
 
 }  // namespace
@@ -342,6 +400,20 @@ int main() {
     std::printf("encodings compared: %ld; decodings compared: %ld (%ld core-decoder rejections); corpus %zu, fuzz %ld; "
                 "checks %ld\n",
                 g_encodings, g_decodings, g_decode_errors, corpus.size(), fuzz_cases, g_checks);
+    std::printf("relay (ADR-205): same bytes %ld; both reject %ld; newly rejected: content after '=' %ld, bad length "
+                "%ld, misplaced '=' %ld, non-zero leftover bits %ld, canonical (must be 0) %ld\n",
+                g_relay_same, g_relay_both_reject,
+                g_relay_newly_rejected[static_cast<int>(NonCanonical::kContentAfterPadding)],
+                g_relay_newly_rejected[static_cast<int>(NonCanonical::kBadLength)],
+                g_relay_newly_rejected[static_cast<int>(NonCanonical::kMisplacedPadding)],
+                g_relay_newly_rejected[static_cast<int>(NonCanonical::kNonZeroTrailingBits)],
+                g_relay_newly_rejected[static_cast<int>(NonCanonical::kCanonical)]);
+    // Every class must actually occur, or the comparison above proves less than it claims.
+    for (auto k : {NonCanonical::kContentAfterPadding, NonCanonical::kBadLength, NonCanonical::kMisplacedPadding,
+                   NonCanonical::kNonZeroTrailingBits}) {
+        check(g_relay_newly_rejected[static_cast<int>(k)] > 0,
+              "relay: newly rejected class " + std::to_string(static_cast<int>(k)) + " never occurred");
+    }
     if (g_failures != 0) {
         std::fprintf(stderr, "test_base64_equivalence: %d FAILURE(S)\n", g_failures);
         return 1;

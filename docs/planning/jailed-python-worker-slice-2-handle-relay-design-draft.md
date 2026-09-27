@@ -250,6 +250,10 @@ opaque, host-minted integer id and relays every operation.
    see §4 item 2 for the cap this design adds explicitly here too), respond
    `{"ok": true, "sent": <bytes actually accepted>}"` — Python's own `socket.send()` contract already
    permits a short write, so this is not a new semantic, just relayed faithfully.
+   *(As implemented: the codec is `relay_base64.hpp` over `core/base64.hpp` (ADR-203), and since
+   [ADR-205](../../decisions/ADR-205-strict-relay-base64.md) it decodes strictly — only canonical padded
+   base64 is accepted in either direction; anything else is a malformed frame, denied `net.socket_closed`
+   host-side and raised as `RuntimeError` worker-side.)*
 3. **`connect_recv`** (payload `{socket_id, bufsize}`): same id lookup; `bufsize` clamped to a fixed
    ceiling (`kMaxRelayChunkBytes`, §4 item 2) regardless of what the guest asked for (mirrors
    `net_egress_proxy.hpp`'s own `kHardResponseCeilingBytes` "the host's own ceiling applies regardless

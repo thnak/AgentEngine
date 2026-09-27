@@ -45,3 +45,8 @@ agentengine_add_test(test_json_schema_codec LIBS agentengine::core agentengine_w
 # backends/native_jail/relay_base64.hpp.
 agentengine_add_test(test_base64_equivalence LIBS agentengine::core agentengine_warnings)
 target_include_directories(test_base64_equivalence PRIVATE "${PROJECT_SOURCE_DIR}/src")
+
+# ---- ADR-205 -- `base64::decode_strict`, the native-jail HandleRelay wire's decode rule: canonical padded base64 and
+# nothing else (round trips, the last quantum exhaustively, every short string over small pools and seeded fuzz
+# against a reference written from the rule's definition, and a malformed corpus). Std only.
+agentengine_add_test(test_base64_strict LIBS agentengine::core agentengine_warnings)

@@ -7,9 +7,10 @@
 // Std only, header-inline and layer V (tools/layers.toml): every layer may include it, from the L1 native-jail
 // relay to the L4 protocol headers, without a link dependency.
 //
-// One encoder. Exactly two decoders, because the old copies decoded two different ways and both are kept as they
-// were (ADR-203 §4); each is named by what it does. Neither reports why it failed: each caller maps `nullopt` to
-// its own error, exactly as its old copy did.
+// One encoder. Exactly two decoders, each named by what it does: `decode_lenient` (the Message JSON codec and A2A,
+// kept as ADR-203 §4 found it) and `decode_strict` (the native-jail HandleRelay wire, ADR-205: canonical padded
+// base64 only; it replaced ADR-203's `decode_stop_at_padding`, whose only caller was the relay). Neither reports why
+// it failed: each caller maps `nullopt` to its own error.
 
 #include <cstddef>
 #include <cstdint>
@@ -66,20 +67,23 @@ namespace detail {
     return -1;
 }
 
-enum class PaddingRule { kSkipWithLineBreaks, kStop };
+// kSkipWithLineBreaks: '=', '\n' and '\r' are skipped wherever they appear; leftover bits are not checked.
+// kRejectWithZeroTail: every character must be in the alphabet ('=' included in "not"), and the bits left over after
+// the last whole byte must be zero (ADR-205). `decode_strict` strips the trailing padding before calling it.
+enum class PaddingRule { kSkipWithLineBreaks, kRejectWithZeroTail };
 
-// The one decode loop. The two rules differ only in what the loop does on '=' (and on '\n'/'\r').
-[[nodiscard]] inline std::optional<std::vector<std::byte>> decode(std::string_view text, PaddingRule rule) {
+// The one decode loop. The two rules differ only in what the loop does on '=', '\n' and '\r', and in the tail check.
+// `capacity` is the output size to reserve. Callers compute it from the text as received, padding included, because
+// `decode_strict` passes the text with its padding stripped and `stripped.size() / 4 * 3` would be one or two bytes
+// short, forcing a reallocation of a full relay chunk (ADR-205 red team).
+[[nodiscard]] inline std::optional<std::vector<std::byte>> decode(std::string_view text, PaddingRule rule,
+                                                                  std::size_t capacity) {
     std::vector<std::byte> out;
-    out.reserve(text.size() / 4 * 3);
+    out.reserve(capacity);
     std::uint32_t buffer = 0;
     int bits = 0;
     for (char c : text) {
-        if (rule == PaddingRule::kStop) {
-            if (c == '=') break;
-        } else if (c == '=' || c == '\n' || c == '\r') {
-            continue;
-        }
+        if (rule == PaddingRule::kSkipWithLineBreaks && (c == '=' || c == '\n' || c == '\r')) continue;
         int const v = decode_char(c);
         if (v < 0) return std::nullopt;
         buffer = (buffer << 6) | static_cast<std::uint32_t>(v);
@@ -88,6 +92,11 @@ enum class PaddingRule { kSkipWithLineBreaks, kStop };
             bits -= 8;
             out.push_back(static_cast<std::byte>((buffer >> bits) & 0xFF));
         }
+    }
+    // The low `bits` bits of `buffer` are the leftover ones: 0, 2 or 4 of them for any input `decode_strict` passes on
+    // (no padding, one '=' or two stripped). The strict rule requires them to be zero.
+    if (rule == PaddingRule::kRejectWithZeroTail && (buffer & ((std::uint32_t{1} << bits) - 1)) != 0) {
+        return std::nullopt;
     }
     return out;
 }
@@ -108,14 +117,24 @@ enum class PaddingRule { kSkipWithLineBreaks, kStop };
 // a trailing partial group is dropped, any length is accepted, and the result is nullopt only for a character
 // outside the alphabet.
 [[nodiscard]] inline std::optional<std::vector<std::byte>> decode_lenient(std::string_view text) {
-    return detail::decode(text, detail::PaddingRule::kSkipWithLineBreaks);
+    return detail::decode(text, detail::PaddingRule::kSkipWithLineBreaks, text.size() / 4 * 3);
 }
 
-// Stop-at-padding decode (the native-jail HandleRelay wire): decoding ends at the FIRST '=' and everything after it
-// is ignored unread, whatever it is; before it, every character must be in the alphabet ('\n' and '\r' included in
-// "not"), else nullopt. A trailing partial group is dropped and any length is accepted.
-[[nodiscard]] inline std::optional<std::vector<std::byte>> decode_stop_at_padding(std::string_view text) {
-    return detail::decode(text, detail::PaddingRule::kStop);
+// Strict decode (the native-jail HandleRelay wire, ADR-205): canonical padded base64 (RFC 4648 §4, no line breaks)
+// and nothing else. Accepted exactly when `text == encode(b)` for some bytes `b`, and then returns `b`:
+//   - the length is a multiple of 4 (the empty string is valid and decodes to no bytes);
+//   - every character is in the standard alphabet, except that the last one or two may be '=';
+//   - nothing follows the padding, and there are at most two '=';
+//   - the bits the padding leaves over in the last data character are zero (`QQ==` is accepted, `QR==` is not).
+// Anything else gives nullopt, never a partial result.
+[[nodiscard]] inline std::optional<std::vector<std::byte>> decode_strict(std::string_view text) {
+    // The length check also keeps the padding probe below in bounds: a non-empty text here has at least four
+    // characters, so `text[text.size() - 2]` exists. Do not loosen it without re-checking that read.
+    if (text.size() % 4 != 0) return std::nullopt;
+    std::size_t padding = 0;
+    if (!text.empty() && text.back() == '=') padding = text[text.size() - 2] == '=' ? 2 : 1;
+    return detail::decode(text.substr(0, text.size() - padding), detail::PaddingRule::kRejectWithZeroTail,
+                          text.size() / 4 * 3 - padding);
 }
 
 }  // namespace agentengine::base64

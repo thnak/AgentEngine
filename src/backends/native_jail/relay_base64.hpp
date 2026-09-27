@@ -11,9 +11,13 @@
 // which would have coupled the native-jail worker-mediation TUs to the content model. core/base64.hpp
 // is a std-only, layer-V header with no such coupling, so that reason is gone.
 //
-// The decode rule is this wire's own and is unchanged: decoding STOPS at the first '=' and ignores
-// everything after it, and '\n'/'\r' are not skipped (the Message JSON and A2A codecs decode leniently;
-// ADR-203 §4 keeps both rules, byte for byte, as `decode_stop_at_padding` and `decode_lenient`).
+// The decode rule is this wire's own and is STRICT (decisions/ADR-205-strict-relay-base64.md): only
+// canonical padded base64 -- exactly what `encode` produces -- is accepted; a bad length, a character
+// outside the alphabet (line breaks included), '=' anywhere but the last one or two positions, anything
+// after the padding, and non-zero leftover bits are all rejected whole. Until ADR-205 the wire stopped at
+// the first '=' and ignored the rest (`QQ==!!garbage` decoded to `A`); both sides of the relay only ever
+// produce `encode` output, so no legitimate frame changed. The Message JSON and A2A codecs still decode
+// leniently (`base64::decode_lenient`); they are protocol-facing and out of ADR-205's scope.
 
 #include <cstddef>
 #include <optional>
@@ -34,11 +38,12 @@ namespace agentengine::native_jail::relay_base64 {
     return agentengine::base64::encode(bytes);
 }
 
-// Returns nullopt on malformed input (a character outside the alphabet before the first '=') -- callers
-// treat that as a protocol violation (RT1's own "never trust an unparseable frame" posture), not a value
-// to silently truncate.
+// Returns nullopt on anything but canonical padded base64 (`base64::decode_strict`) -- callers treat
+// that as a protocol violation (RT1's own "never trust an unparseable frame" posture): the host denies
+// the one connect_send/file_write call, the worker raises RuntimeError to the guest. Never a partial
+// value.
 [[nodiscard]] inline std::optional<std::vector<std::byte>> decode(std::string_view text) {
-    return agentengine::base64::decode_stop_at_padding(text);
+    return agentengine::base64::decode_strict(text);
 }
 
 }  // namespace agentengine::native_jail::relay_base64
