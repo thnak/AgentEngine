@@ -217,8 +217,11 @@ tests add 707 lines and the oracles 558.
   it, so it is not an escape, but a strict rule (reject non-`=` content after padding) would match the banner's
   "never trust an unparseable frame" posture. Changing it changes what the host accepts from the jailed worker, so it
   is a decision, not a refactor; control B2's harness shows exactly which inputs would move.
+  **Resolved by [ADR-205](ADR-205-strict-relay-base64.md) (owner decision, 2026-09-27):** the relay now decodes
+  strictly (`base64::decode_strict`, canonical padded base64 only) and `decode_stop_at_padding` is removed.
 - **Both decoders accept non-canonical encodings** (a dropped 1-character tail group, non-zero leftover bits). Shared
-  by every old copy; unchanged.
+  by every old copy; unchanged. (For the relay, resolved by ADR-205: `decode_strict` rejects both. `decode_lenient`
+  is unchanged.)
 - **`parse_orphan_identity` accepts leading zeros** (`ae_des_007_1` is pid 7). Shared by both old copies; harmless
   (the pid is still range-checked and liveness-checked) and unchanged.
 - **Thin wrappers kept.** `a2a::detail::base64_*`, `mcp::client_detail::base64_encode` and `relay_base64::*` each
