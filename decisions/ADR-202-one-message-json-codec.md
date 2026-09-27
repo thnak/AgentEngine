@@ -1,6 +1,7 @@
 # ADR-202 — One Message/ContentItem JSON codec with two named profiles, not two drifted copies
 
-- **Status**: **Proposed — design + implementation + proof (2026-09-27).** Red team not yet run.
+- **Status**: **Proposed — design + implementation + proof (2026-09-27); red team round 1 (same day): no BLOCKER or
+  MAJOR, 1 MINOR and 3 NOTEs, all addressed in the text (§10). Verified live against DeepSeek (§6).**
 - **Date**: 2026-09-27
 - **Origin**: GitHub issue #120 (S3), the structure audit after issue #115 closed.
 - **Touches**: `include/agentengine/core/message_json.hpp` (new, declarations and the `Profile` type),
@@ -47,7 +48,8 @@ Design A.
 
 - **One codec.** `core/message_json.hpp` declares, in namespace `agentengine::message_json`, `role_to_wire_string`,
   `role_from_wire_string`, `origin_to_wire_string`, `origin_from_wire_string`, `content_item_to_json`,
-  `content_item_from_json`, `message_to_json` and `message_from_json`, each decoder and encoder taking a `Profile`.
+  `content_item_from_json`, `message_to_json` and `message_from_json`; the four item and message functions take a
+  `Profile`, the four wire-string functions do not (they do not differ between the copies).
   The bodies are in `src/core/message_json.cpp`, compiled once into the static library `agentengine_message_json`.
   The header includes only `core/content.hpp`, `core/json_value.hpp`, `core/error.hpp` and std, and is layer V in
   `tools/layers.toml` (as `rt/message_codec.hpp` already was); the `.cpp` is also V.
@@ -127,7 +129,11 @@ inline them; each call is one out-of-line call per message or item, not per toke
 time from prefix and suffix instead of being literals; the strings are equal. Name lookup for existing callers is
 unchanged: the new functions live in `agentengine::message_json`, which is an associated namespace only of `Profile`,
 so no existing one-argument call can find them through ADL. The old `detail` namespaces are removed; nothing in the
-tree used them.
+tree used them. Two things out-of-tree code could have relied on are gone: the helpers in those public `detail`
+namespaces (`recording_detail::base64_*`, `blob_ref_*`; all of `rt::message_codec_detail`), which such code would now
+fail to compile against, and header-only use: a program that includes `rt/message_codec.hpp`, `agent_session.hpp` or
+`chat_recording.hpp` and calls the codec must link `agentengine::core` (as with ADR-199/200/201), or it gets an
+undefined `message_json::` symbol.
 
 ## 5. The I3 argument
 
@@ -148,8 +154,11 @@ in-flight request cannot leak an approval id into a store that outlives the requ
 The recording profile keeps them because a recording is evidence, not state: a replayed request must render the same
 fences (I5) and the audit must show which approval reached the model (I4). `ReplayChatClient` replays the response side
 only and does not feed recorded requests back into a live session (chat_recording.hpp's note on the missing
-`chat_request_from_json`), and `AgentSession` clears both marks on every item when it builds a request, so a mark read
-from a recording cannot reach a live request either.
+`chat_request_from_json`), and `AgentSession` clears both marks on every top-level item when it builds a request
+(`src/rt/agent_session_core.cpp`), so a mark read from a recording cannot reach a live request as a top-level item.
+It does not clear marks on a `ToolResult`'s nested children, and `ReplayChatClient` decodes responses through the
+recording profile, so a replayed response can carry nested marks; this is unchanged by this ADR and harmless, because
+the serializers and `needs_system_channel_fence` consult the marks only on top-level `role::system` text items.
 
 The `Profile` type is what keeps this from eroding: there is no way to ask for "state with marks", and the
 differential and I3 tests fail if the state profile's behaviour moves (§6, positive control).
@@ -214,6 +223,10 @@ differential and I3 tests fail if the state profile's behaviour moves (§6, posi
 - **Lints.** `tools/naming_lint.py` (the one new type, `message_json::Profile`, carries an `ae-naming-lint: allow`),
   `tools/milestone_status_lint.py`, `tools/layering_lint.py` (no new violations, 8 baselined edges remain) and
   `tools/layering_lint.py --self-test`: all pass.
+- **Live.** On this branch, with `AGENTENGINE_WITH_HTTPS=ON`, against DeepSeek (`deepseek-flash`, `api.deepseek.com/v1`):
+  `test_rt_agent_session_live_multitool_e2e` and `test_rt_agent_session_hitl_live_e2e` (session state, approval
+  suspend and resume), `test_eval_trial_driver_live_e2e` and `test_eval_summarizer_live_e2e` (recordings): 4/4 pass,
+  every check run, none skipped. Observation only; the equivalence claim rests on the differential test.
 - **Link.** `dumpbin /symbols` over all 15 static libraries of the build: none has an undefined reference to a `message_json` symbol (control: the same query finds `agentengine_rt_session`'s reference to `admit_call`), so no library needs a `PUBLIC` link; `agentengine_message_json.lib` defines the 15 external `message_json` symbols. Every consumer reaches it through `agentengine::core`.
 
 ## 7. Size
@@ -258,3 +271,33 @@ decision, not a refactor:
   stands.
 
 Owner: decide whether recordings should carry attribution, and if so how stored design hashes migrate.
+
+## 10. Red team round 1 (2026-09-27)
+
+An independent pass with its own harnesses (g++-14; the worktree untouched), each clean probe with a positive control:
+
+- **I3.** Every encoding mutated at every object and array position, at every depth, with 34 probe keys (including
+  `approval`, `deliver_as_instructions`, `attribution`, `kind`) and 29 wrong values, one a `content` array holding a
+  marked child: 1,156,948 decodes, none through the state profile with a mark set, and no state encoding containing
+  either key; the recording profile restored marks in about 110,000. Control: the state read guard forced true moved
+  112,929 lines. All 10 attempts to build a third `Profile` (`{}`, default, private id, designated init,
+  `optional{in_place}`, `construct_at`, an inheriting derived class, ...) fail to compile; copying between the two
+  factory values (the control) compiles.
+- **Equivalence, independently of this ADR's oracles.** One harness compiled against `origin/main`'s include tree and
+  against this branch, over unicode and control characters, embedded NUL, `SIZE_MAX`, 2^53+1, ±1e300, inf, NaN,
+  negatives, duplicate keys, empty arrays, a wrong type for every field, 300 base64 corruptions and out-of-range enums:
+  1,158,537 output lines byte-identical, including 419,582 errors (code, message, `failure_class`, `native_code`) and
+  4,005 D3 throws. Controls: the D3 fix moved exactly 4,005 lines; recording writing attribution moved 76,718. Both
+  oracles match `origin/main` exactly once their disclosed edits are reverted, and the test's totals reproduce.
+- **Name lookup and link.** Signatures and `noexcept` unchanged; the new overloads are reachable only qualified or by
+  ADL on `Profile`; no compiled library references a `message_json` symbol (`nm -u`, control finds 1 in a consumer).
+- **Layering.** Lint and self-test pass; injecting an L2 include into the header or the `.cpp` is flagged.
+- **Consumers.** `eval_tier1_screen.hpp`'s hash input is byte-identical for the whole corpus, attributed messages
+  included; the state-codec call sites are textually unchanged.
+- **MINOR — out-of-tree breakage not disclosed (fixed).** §4 now says the public `detail` helpers are gone and that
+  header-only use needs `agentengine::core`.
+- **NOTE — §5 overstated how marks are cleared (fixed).** Only top-level items are cleared; §5 now says so and why
+  nested marks are harmless.
+- **NOTE — §3 wording (fixed).** The wire-string functions take no `Profile`.
+- **NOTE — link order.** A future compiled library that calls a wrapper needs its own link to the codec (§3 already
+  says this).
