@@ -1,6 +1,7 @@
 # ADR-203 — One base64 codec and one orphan process-identity check, not four and two copies
 
-- **Status**: **Proposed — design + implementation + proof (2026-09-27); red team not yet run.**
+- **Status**: **Proposed — design + implementation + proof (2026-09-27); red team round 1 (same day): no BLOCKER or
+  MAJOR, 1 MINOR and 2 NOTEs, all addressed (§9).**
 - **Date**: 2026-09-27
 - **Origin**: GitHub issue #120 (S8, "duplicated helpers"), the structure audit after issue #115 closed. Follows
   ADR-202, which merged two of the five base64 copies into one private copy in `src/core/message_json.cpp`.
@@ -128,7 +129,8 @@ liveness check; controls P1-P4 remove each and the test fails.
 
 ## 6. Evidence
 
-- **Oracles, extracted by script** from `aa2573f` (the `codec-merge-s3` head this branch starts from) with
+- **Oracles, extracted by script** from `aa2573f` (the `codec-merge-s3` head; its tree is identical to `3bb0730`, the
+  squash-merge of #127 this branch sits on) with
   `git show`, located by marker lines, copied byte for byte and wrapped in a renamed namespace (the only edit, stated
   in each banner): `tests/support/oracle_base64.hpp` (A2A `types.hpp` lines 116-187, MCP `client.hpp` 143-173,
   `relay_base64.hpp` 22-92) and `tests/support/oracle_process_identity.hpp` (Docker lines 728-734 and 753-929, both
@@ -221,5 +223,38 @@ tests add 707 lines and the oracles 558.
   (the pid is still range-checked and liveness-checked) and unchanged.
 - **Thin wrappers kept.** `a2a::detail::base64_*`, `mcp::client_detail::base64_encode` and `relay_base64::*` each
   have in-tree callers; they could be replaced by direct `agentengine::base64::` calls in a follow-up.
-- **Not compiled here:** `tools/containerd_shell_chat.cpp` (needs an `AGENTENGINE_WITH_HTTPS` Linux build; it uses
-  only the containerd surface's class API, which did not change).
+- `tools/containerd_shell_chat.cpp` was not compiled by the implementation; the red team compiled it clean with
+  g++-14 `-std=c++23 -fsyntax-only -DAGENTENGINE_WITH_HTTPS=1` (§9).
+
+## 9. Red team round 1 (2026-09-27)
+
+An independent pass against old code it extracted itself (`git show 3bb0730:<path>`), each clean probe with a positive
+control; the worktree untouched.
+
+- **base64.** 19,571,409 checks per run, 0 failures, under g++-14 (`-O2 -Werror`, and again with `-funsigned-char`)
+  and MSVC `/W4 /WX`: every string of length 0-5 over 17 chosen characters (alphabet, `=`, LF, CR, space, tab, NUL,
+  0x80, 0xFF, `-_.`), all 65,536 byte pairs alone and around padding, 300,000 random strings; A2A errors compared by
+  code, message and class. Encoders: all 1- and 2-byte inputs, 1/17 of the 3-byte space, 100,000 random buffers, empty,
+  `relay encode(nullptr, 0)`; all six old/new paths byte-identical. Controls (all fail): stop-at-padding skipping CR/LF
+  (103,986), strict after `=` (370,824), lenient skipping space (45,566), the MCP encoder with a signed-char bug
+  (884,406), a dropped `=` (98,573), the A2A wrapper hiding errors (1,931,483).
+- **Process identity.** Token-identical to both old copies after comments, apart from the disclosed prefix,
+  `current_pid()` and the Windows branches (under the same `#ifdef _WIN32`). Parse corpus of 8 prefixes × 33 segment
+  kinds (2^31/2^32/2^63/2^64 overflow, signs, whitespace, leading zeros, hex, exponent, full-width and Arabic-Indic
+  digits, NUL) × 33 × 7 tails plus 400,000 random names; identity checks on this process, pids 0/−1/`LONG_MIN`/1/2/4,
+  a live forked child, the same child as a zombie and reaped: 1,384,062 checks (g++), 922,670 (MSVC), 0 failures.
+  Controls: wrong prefix (8,313), widened pid bound (18,932), `kUnknown` treated as gone (20 / 24), pid ≤ 0 dead (20).
+  The merged `ProcessMatch`/`OrphanIdentity` types: no `using namespace` of either detail namespace exists, every call
+  passes plain `long`/`uint64_t`, both reap sites still destroy only on `== kGoneOrReplaced`.
+- **Includes.** The only include removed (`<cstdint>` from `relay_base64.hpp`) returns through `core/base64.hpp`; every
+  changed header and a sample of includers compile standalone under g++-14 `-Werror` and MSVC.
+- **Layering.** Lint and self-test pass; an injected V→L0 and L1→L4 include are flagged; removing the `base64.hpp = V`
+  entry flags two edges.
+- **MINOR — wrong base commit named in §6 (fixed).**
+- **NOTE — `std::numeric_limits<...>::max()` after `<windows.h>` fails without `NOMINMAX` (fixed).** Pre-existing in
+  the Docker header (hidden by the project-wide `NOMINMAX`); now `(std::numeric_limits<std::int32_t>::max)()`, which
+  compiles the same call either way.
+- **NOTE — `tools/containerd_shell_chat.cpp` compiles (residual closed, §8).**
+- **Opinion on the relay decoder (§8).** Not a security issue: the worker already controls every decoded byte, no
+  second parser reads the field, and the size cap applies before decoding. Rejecting content after `=` fits the "never
+  trust an unparseable frame" posture and is cheap; do it as its own ADR-noted change.

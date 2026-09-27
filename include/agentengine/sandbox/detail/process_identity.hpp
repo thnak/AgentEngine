@@ -200,7 +200,7 @@ struct OrphanIdentity {
         // from naming a container that on a shared host) got misclassified "confirmed dead" and destroyed. Rejecting
         // anything outside a real pid's possible 32-bit range closes this before the value ever reaches a liveness
         // check, not after.
-        if (pid <= 0 || pid > std::numeric_limits<std::int32_t>::max()) return std::nullopt;
+        if (pid <= 0 || pid > (std::numeric_limits<std::int32_t>::max)()) return std::nullopt;
         std::uint64_t const key = std::stoull(key_str);
         return OrphanIdentity{pid, key};
     } catch (...) {
