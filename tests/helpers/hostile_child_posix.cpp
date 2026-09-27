@@ -11,8 +11,10 @@
 //                             creations actually succeeded, then idle.
 //   fail <code>            -- exit immediately with <code> (a clean, ordinary nonzero exit -- not
 //                             a resource-limit kill, not a crash).
-//   flood                  -- write output continuously (never exits on its own) -- M2 Phase C
-//                             task C3's unbounded-output probe (008 SS2 item 2 / SS7).
+//   flood [bytes]          -- write output continuously (never exits on its own) -- M2 Phase C
+//                             task C3's unbounded-output probe (008 SS2 item 2 / SS7). With
+//                             <bytes>, write that many (rounded up to 256) and exit 0: the positive
+//                             control's shape, which must show more output gets through, not how fast.
 //   probe_env               -- dump every visible environment variable as "ENV name=value" lines,
 //                             then "ENV_DONE count=<n>". M2 Phase C task C5's env axis probe
 //                             (008 SS9 G3, no ambient authority).
@@ -107,9 +109,9 @@ int mode_fail(int code) {
     return code;
 }
 
-int mode_flood() {
+int mode_flood(long long bytes) {
     std::string chunk(256, 'A');
-    for (;;) {
+    for (long long written = 0; bytes <= 0 || written < bytes; written += 256) {
         fwrite(chunk.data(), 1, chunk.size(), stdout);
         fflush(stdout);
     }
@@ -256,7 +258,7 @@ int main(int argc, char** argv) {
     if (mode == "sleep" && argc >= 3) return mode_sleep(std::atoi(argv[2]));
     if (mode == "spawn" && argc >= 4) return mode_spawn(std::atoi(argv[2]), argv[3]);
     if (mode == "fail" && argc >= 3) return mode_fail(std::atoi(argv[2]));
-    if (mode == "flood") return mode_flood();
+    if (mode == "flood") return mode_flood(argc >= 3 ? std::atoll(argv[2]) : 0);
     if (mode == "probe_env") return mode_probe_env();
     if (mode == "probe_net" && argc >= 3) return mode_probe_net(std::atoi(argv[2]));
     if (mode == "probe_proc" && argc >= 3)
