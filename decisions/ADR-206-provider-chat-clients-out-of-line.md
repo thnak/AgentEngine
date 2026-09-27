@@ -172,7 +172,8 @@ code (§7).
 
 ## 7. Residuals
 
-- **No CI job compiles this code.** Both headers are wrapped in `#ifdef AGENTENGINE_WITH_HTTPS`, and no CI leg
+- **No CI job compiles this code** (closed 2026-09-27: `.github/workflows/ci.yml` now configures the Linux leg and
+  the MSVC ASan leg with `AGENTENGINE_WITH_HTTPS=ON`). Both headers are wrapped in `#ifdef AGENTENGINE_WITH_HTTPS`, and no CI leg
   configures with it on (MSVC Release, clang-cl, gcc-14 and the fuzz leg all use the default `OFF`). This predates
   the change: the clients, their translation tests and every live test have never been built by CI. This change is
   proven by local MSVC and g++-14 builds only (§5). Adding an HTTPS leg (it fetches mbedTLS and the CA bundle) is

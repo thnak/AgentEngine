@@ -362,7 +362,7 @@ int main() {
     {
         auto approve_ok = [](std::string const& id) {
             ae::ApprovedLessonRegistry reg;
-            return reg.approve("p", "lesson", ae::LessonApproval{id, "t"}).has_value();
+            return reg.approve("p", "lesson", ae::LessonApproval{id, "t", ""}).has_value();
         };
         auto session_accepts = [](std::string const& id) {
             AgentSession<CapturingClient, NoSessionState, LessonProvider> s;
@@ -421,7 +421,7 @@ int main() {
         bool reserved_refused = true;
         for (Case const& c : reserved) {
             ae::ApprovedLessonRegistry reserved_reg;
-            auto const r = reserved_reg.approve("p", "lesson", ae::LessonApproval{c.id, "t"});
+            auto const r = reserved_reg.approve("p", "lesson", ae::LessonApproval{c.id, "t", ""});
             auto const a = reserved_reg.approve("p", "lesson", ae::LessonApproval{"alice", "t", c.id});
             reserved_refused = reserved_refused && !r && r.error().code == "memory.approval_reserved_id" && !a;
         }
