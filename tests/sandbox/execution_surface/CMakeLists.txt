@@ -136,3 +136,7 @@ set_tests_properties(test_docker_seed_ownership PROPERTIES TIMEOUT 180 RESOURCE_
 # it parses names and checks this process and pids that do not exist. The containerd half is POSIX only, as that
 # header is.
 agentengine_add_test(test_process_identity_equivalence LIBS agentengine::core agentengine_warnings)
+
+# ADR-207 (#120 S7): fails to compile if docker_execution_surface.hpp or process_identity.hpp includes an OS header
+# again. Needs no Docker daemon.
+agentengine_add_test(test_docker_header_no_os_headers LIBS agentengine::core agentengine_warnings)

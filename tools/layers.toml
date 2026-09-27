@@ -66,6 +66,7 @@
 "include/agentengine/core/worktree_mount_fs.hpp"         = { layer = "L1", reason = "OS path canonicalization against a mount root (ADR-014)" }
 "include/agentengine/core/worktree_mount_fs_posix.hpp"   = { layer = "L1", reason = "POSIX half of the mount path canonicalization (ADR-014)" }
 "include/agentengine/core/ledger.hpp"                    = { layer = "L1", reason = "identity-scoped worktree checkpoint/branch ledger (ADR-102)" }
+"include/agentengine/core/ledger_impl.hpp"               = { layer = "L1", reason = "Ledger<Store>'s member bodies (ADR-207), same layer as ledger.hpp" }
 "include/agentengine/core/file_worktree_object_store.hpp" = { layer = "L1", reason = "durable on-disk worktree object store" }
 
 # --- rt/: vocabulary codec (V) ------------------------------------------------------------------
@@ -117,6 +118,7 @@
 
 # --- src/ -----------------------------------------------------------------------------------------
 "src/core/message_json.cpp"            = { layer = "V",  reason = "implements core/message_json.hpp (V); must include only V" }
+"src/core/ledger.cpp"                  = { layer = "L1", reason = "implements core/ledger.hpp (L1) and instantiates it (ADR-207)" }
 "src/core/worktree_digest.cpp"         = { layer = "L1", reason = "worktree digests (025), implements the L1 worktree" }
 "src/core/worktree_digest_posix.cpp"   = { layer = "L1", reason = "worktree digests (025), POSIX half" }
 "src/core/worktree_mount_fs.cpp"       = { layer = "L1", reason = "implements core/worktree_mount_fs.hpp (L1)" }
