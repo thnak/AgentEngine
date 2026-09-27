@@ -1,7 +1,9 @@
 # ADR-199 — `AgentSession`'s non-template core: compile the turn loop once, not once per session type per file
 
-- **Status**: **Proposed — design + implementation + proof (2026-09-26); red team round 1 (same day): 1 MAJOR + 4 MINOR,
-  all fixed or recorded (§8).**
+- **Status**: **Judged (2026-09-27, project-owner sign-off).** Re-checked on `main` before sign-off. Both §8 fixes
+  that only a throwaway probe had proved now have checked-in tests (see "Re-check before sign-off" at the end).
+  Original status: Proposed — design + implementation + proof (2026-09-26); red team round 1 (same day): 1 MAJOR + 4
+  MINOR, all fixed or recorded (§8).
 - **Date**: 2026-09-26
 - **Origin**: GitHub issue #115 (E3), the build-time investigation after red-team round 4.
 - **Touches**: `include/agentengine/rt/agent_session.hpp` (now the thin template),
@@ -159,3 +161,37 @@ Every moved body matched line for line. Findings:
   - The headers the core includes contain no `#if` or `assert`, so NDEBUG and the HTTPS define cannot change what the
     library and a consumer see.
   - The core and three gateway tests compile clean under g++-14 and clang++-20 with `-Wall -Wextra -Werror`.
+
+## Re-check before sign-off (2026-09-27)
+
+On `main` at 29357c3: full `dev` build with `/W4 /WX`, no warnings; `ctest -LE live-network` with Docker running,
+363/363 pass. §3's mechanism is unchanged: `AgentSession` is `final`, the six hooks are private pure virtuals of the
+core and private overrides in the template, `bound_on_turn_end` takes `TurnView const&`, and `agentengine_rt_session`
+builds with `/bigobj`. The three files have changed by 6 lines since this ADR merged. The §5 compile-fail gate
+(`sandbox_tool_provider_rejects_fork_from`) passes, and its ctest entry requires a diagnostic naming the rejection.
+
+Mutations of moved bodies in `src/rt/agent_session_core.cpp`, each caught and then reverted:
+
+- Admission lets a caller through that `principal_admitted_for` rejects: `test_rt_agent_session_tier3_authority`
+  fails ("T3: a cross-tenant authority principal is denied").
+- `should_retry_stream()`'s `bound_model_route()` switch inverted: `test_rt_agent_session_stream_retry` fails (P1).
+- `set_unattended_approvals` accepts an unattributable operator id: `test_unattended_approvals` fails (A9).
+
+**Both §8 fixes had no checked-in test.** The red team proved each with a probe that was not kept, so reverting
+either fix would have passed the suite. Both now have tests:
+
+- **MAJOR, the dangling `TurnView`:** `tests/rt/agent_session/test_rt_agent_session_turn_end_view_lifetime.cpp`. Its
+  provider's `on_turn_end` takes `TurnView const&`, overwrites a region of stack below it (standing in for a provider
+  that awaits a summarizer first), then reads the view. Under g++-14 Release (`-O3`, CI's Linux leg): with the fix,
+  3/3 runs pass. With the hook reverted to take `TurnView` by value, 3/3 runs fail 7 checks: the view's size and
+  contents are garbage. Without the stack overwrite the reverted build still passed, because the dead slot held the
+  right bytes; so the overwrite is what makes the test able to fail. On MSVC the test passes either way, because the
+  parameter lives in the caller's coroutine frame (§8), so the Linux leg is where it can catch a revert.
+- **MINOR, reachable internals:** two compile-fail gates sharing one positive control,
+  `agent_session_rejects_derivation` (deriving from `AgentSession` must not compile) and
+  `agent_session_rejects_hook_call` (calling `bound_model_route()` from outside must not compile). Controls: with
+  `final` removed, the derivation gate fails and the other passes; with the template's hooks made public, the
+  hook-call gate fails and the other passes.
+
+A g++-14 ASan build of the new test did not compile: `-Wmaybe-uninitialized` in `agentengine::error`'s move
+constructor, promoted by `-Werror`. That is unrelated to this change, and CI has no g++ ASan leg.
