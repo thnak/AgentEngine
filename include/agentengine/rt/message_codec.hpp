@@ -9,7 +9,8 @@
 // that including it did not pull in chat_client.hpp. Both copies are now one codec, core/message_json.hpp, which
 // depends only on the content model, JSON and error headers; the functions below keep their names and signatures
 // as thin wrappers over its STATE profile:
-//   - `Message::attribution` is written and read (ADR-066 §7: it did not previously survive the round trip).
+//   - `Message::attribution` is written and read (ADR-066 §7: it did not previously survive the round trip). The
+//     recording profile carries it too since ADR-204, so this is no longer a difference between the two.
 //   - ContentItem's `approval` (ADR-191) and `deliver_as_instructions` (ADR-192) are neither written nor read. I3:
 //     only AgentSession may set them, when it builds a request, "so no provider, plugin or stored history can
 //     grant it" (content.hpp); a checkpoint or snapshot is stored history. message_json.hpp's `Profile` has the

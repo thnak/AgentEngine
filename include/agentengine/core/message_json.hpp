@@ -26,14 +26,11 @@ namespace agentengine::message_json {
 // - `recording()` -- chat-call recordings (core/chat_recording.hpp: RecordingChatClient, ReplayChatClient)
 //   and the eval screen's prompt hash (eval/eval_tier1_screen.hpp). Writes and reads ContentItem's ADR-191
 //   `approval` and ADR-192 `deliver_as_instructions` delivery marks: a replayed request must render the same
-//   fences (I5) and the audit must show which approval reached the model (I4). Neither writes nor reads
-//   `Message::attribution` (ADR-202 §9 leaves that as an open decision: adding it would change the recording
-//   format and every stored eval design hash). Error codes `recording.*`.
+//   fences (I5) and the audit must show which approval reached the model (I4). Error codes `recording.*`.
 //
 // - `state()` -- durable engine state that is read back into a live session or workflow: workflow
 //   checkpoints (rt/workflow_run_state_record.hpp), the AgentSession snapshot (rt/agent_session.hpp),
-//   workflow_as_chat_client.hpp. Writes and reads `Message::attribution` (ADR-066). Error codes
-//   `rt.message_codec.*`.
+//   workflow_as_chat_client.hpp. Error codes `rt.message_codec.*`.
 //   I3: the delivery marks are NEITHER written NOR read. content.hpp: they are set ONLY by `AgentSession` when
 //   it builds a request, after re-verifying the text against its host-owned approved-lesson registry, "so no
 //   provider, plugin or stored history can grant it". Stored state is exactly that: a checkpoint or snapshot
@@ -43,6 +40,12 @@ namespace agentengine::message_json {
 //   -- stored data deciding how the model is told to trust text, which I3 forbids. Not writing them keeps the
 //   state format free of a field no reader may honour. tests/core/chat/test_message_json_equivalence.cpp
 //   holds the positive control.
+//
+// Both profiles write (when present) and read `Message::attribution` (ADR-066), identically: state since ADR-066
+// §7, recordings since ADR-204 (the I4 gap ADR-202 §9 left open). It is not a profile difference, so there is no
+// query for it -- a query that answers the same for both values would only invite flipping it back for one. It
+// is provenance data, not a mark: no consumer decides authority from it (ADR-204 §5), so reading it back from a
+// stored file needs no I3 guard.
 class Profile {  // ae-naming-lint: allow Profile — #120 S3 (ADR-202) codec profile, internal to the Message JSON codec
 public:
     [[nodiscard]] static constexpr Profile recording() noexcept { return Profile{id::recording}; }
@@ -50,8 +53,6 @@ public:
 
     // ADR-191 `approval` and ADR-192 `deliver_as_instructions`: written (when set) and read.
     [[nodiscard]] constexpr bool carries_delivery_marks() const noexcept { return id_ == id::recording; }
-    // ADR-066 `Message::attribution`: written (when present) and read.
-    [[nodiscard]] constexpr bool carries_attribution() const noexcept { return id_ == id::state; }
     // A present but non-string "kind" is a `missing_field` error. The recording copy never checked the type and
     // reads it with `as_string()`, which throws std::bad_variant_access (ADR-202 §4, D3) -- kept, not fixed here.
     [[nodiscard]] constexpr bool rejects_non_string_kind() const noexcept { return id_ == id::state; }

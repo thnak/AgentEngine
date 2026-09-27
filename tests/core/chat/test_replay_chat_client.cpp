@@ -18,6 +18,8 @@
 //      fail_error() carrying the recorded detail text (plus a light check of the "cancelled"/
 //      "deadline_exceeded" mappings, since they're cheap to prove alongside).
 //  (7) chat_stream() against a UNARY-mode recording fails immediately, no item ever pushed.
+//  (9) ADR-204: a recording file carrying `Message::attribution` replays it (response) and keeps it
+//      (request) -- as data only.
 //  (8) check()/g_failures throughout -- NOT assert() (RelWithDebInfo strips asserts, CLAUDE.md task
 //      guidance).
 //
@@ -26,6 +28,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <thread>
@@ -345,6 +348,47 @@ int main() {
         check(!saw_final, "(7) no is_final chunk is ever observed");
         check(s.terminal() == stream_terminal::failed,
               "(7) the stream fails closed immediately rather than silently returning an empty success");
+    }
+
+    // ---- (9) ADR-204: a recording FILE carrying attribution replays it, as data only -----------------
+    // Written and read back through the real file codec, then served by ReplayChatClient: the response
+    // message's attribution comes back exactly as recorded (I4: the replay says which provider the
+    // recorded turn attributed it to), and nothing else about the reply changes. Attribution is data:
+    // no consumer decides authority from it (ADR-204 §5), so replaying it grants nothing.
+    {
+        ChatCallRecording rec;
+        rec.mode = recording_mode::unary;
+        rec.response = make_full_response();
+        rec.response->message.attribution = ContributorProvenance{4, "memory"};
+        Message attributed_request;
+        attributed_request.role = role::system;
+        attributed_request.content.push_back(make_text_item("remembered"));
+        attributed_request.attribution = ContributorProvenance{1, "rag"};
+        rec.request.messages.push_back(attributed_request);
+
+        std::filesystem::path const path =
+            std::filesystem::temp_directory_path() / "ae_test_replay_chat_client_attribution.json";
+        check(write_chat_call_recording(path, rec).has_value(), "(9) the attributed recording writes");
+        auto loaded = read_chat_call_recording(path);
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+        check(loaded.has_value(), "(9) the attributed recording reads back");
+        if (loaded.has_value()) {
+            check(loaded->request.messages.size() == 1 &&
+                      loaded->request.messages[0].attribution == attributed_request.attribution,
+                  "(9) the recorded request keeps its attribution");
+            ReplayChatClient client(*loaded);
+            EffectContext ctx = make_ctx();
+            auto result = run_task_sync<agentengine::result<ChatResponse>>(client.chat(ChatRequest{}, ctx));
+            check(result.has_value(), "(9) the replay succeeds");
+            if (result.has_value()) {
+                check(result->message.attribution == rec.response->message.attribution,
+                      "(9) the replayed response carries the recorded attribution");
+                check(result->message.content == rec.response->message.content &&
+                          result->message.message_id == rec.response->message.message_id,
+                      "(9) the replayed response is otherwise the recorded one");
+            }
+        }
     }
 
     if (g_failures == 0) {

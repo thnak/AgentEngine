@@ -7,6 +7,8 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <string>
 #include <vector>
 
 #include "agentengine/core/chat_recording.hpp"
@@ -298,6 +300,66 @@ void test_file_round_trip() {
           "G1-R8: missing-file failure is failure_class::fatal");
 }
 
+// ADR-204: a recording carries `Message::attribution` -- on the request's messages (which context provider
+// contributed which message, I4) and on the response message -- through the envelope and a real file; a recording
+// written before ADR-204 (no "attribution" member) reads back with none, never a fabricated default.
+void test_attribution_file_round_trip() {
+    ChatCallRecording rec;
+    rec.mode = recording_mode::unary;
+    Message from_memory;
+    from_memory.role = role::system;
+    from_memory.content.push_back(make_text("remembered fact"));
+    from_memory.attribution = ContributorProvenance{2, "memory"};
+    Message from_user;
+    from_user.role = role::user;
+    from_user.content.push_back(make_text("hi"));  // no attribution: stays absent
+    rec.request.messages = {from_memory, from_user};
+    ChatResponse r;
+    r.message.role = role::assistant;
+    r.message.content.push_back(make_text("hello"));
+    r.message.attribution = ContributorProvenance{0, "history"};
+    rec.response = r;
+
+    std::string const text = json::dump(chat_call_recording_to_json(rec));
+    check(text.find(R"("attribution":{"contributor_index":2,"contributor_type":"memory"})") != std::string::npos,
+          "ADR-204: the recorded request names the contributing provider");
+
+    std::filesystem::path const path =
+        std::filesystem::temp_directory_path() / "ae_test_chat_recording_codec_attribution.json";
+    check(write_chat_call_recording(path, rec).has_value(), "ADR-204: attributed recording writes");
+    auto back = read_chat_call_recording(path);
+    check(back.has_value(), "ADR-204: attributed recording reads back");
+    if (back) {
+        check(back->request.messages.size() == 2 && back->request.messages[0].attribution == from_memory.attribution,
+              "ADR-204: request message attribution survives the file round trip");
+        check(back->request.messages.size() == 2 && !back->request.messages[1].attribution.has_value(),
+              "ADR-204: an unattributed request message reads back with none");
+        check(back->response.has_value() && back->response->message.attribution == r.message.attribution,
+              "ADR-204: response message attribution survives the file round trip");
+    }
+
+    // A recording as written before ADR-204: the same envelope with no "attribution" member anywhere.
+    std::string const old_text =
+        R"({"mode":"unary","request":{"messages":[{"role":"system","message_id":"","content":[{"kind":"text",)"
+        R"("text":"remembered fact","origin":"assistant","tainted":false}]}]},"response":{"message":{"role":)"
+        R"("assistant","message_id":"","content":[{"kind":"text","text":"hello","origin":"assistant",)"
+        R"("tainted":false}]}}})";
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << old_text;
+    }
+    auto old = read_chat_call_recording(path);
+    check(old.has_value(), "ADR-204: a pre-ADR-204 recording still reads");
+    if (old) {
+        check(old->request.messages.size() == 1 && !old->request.messages[0].attribution.has_value(),
+              "ADR-204: a pre-ADR-204 request message reads back with no attribution");
+        check(old->response.has_value() && !old->response->message.attribution.has_value(),
+              "ADR-204: a pre-ADR-204 response message reads back with no attribution");
+    }
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
 } // namespace
 
 int main() {
@@ -309,6 +371,7 @@ int main() {
     test_streaming_recording_round_trip_preserves_chunk_order_and_boundaries();
     test_streaming_failure_recording_round_trip();
     test_file_round_trip();
+    test_attribution_file_round_trip();
 
     if (g_failures == 0) {
         std::fprintf(stderr, "OK: all chat_recording codec checks passed\n");

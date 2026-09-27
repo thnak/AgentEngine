@@ -82,7 +82,7 @@ Design A.
 
 | Profile | Callers | `approval`, `deliver_as_instructions` | `Message::attribution` | Non-string `"kind"` | Error codes |
 |---|---|---|---|---|---|
-| `recording()` | `core/chat_recording.hpp` wrappers: `RecordingChatClient` (writes recordings), `ReplayChatClient` (reads them), `eval_tier1_screen.hpp` (hashes `message_to_json` output), `tools/cli_chat.cpp`, `tools/test_driver/live_backend.hpp` | written when set (omitted when empty/false); read | neither written nor read | throws `std::bad_variant_access` (as before, D3) | `recording.*` |
+| `recording()` | `core/chat_recording.hpp` wrappers: `RecordingChatClient` (writes recordings), `ReplayChatClient` (reads them), `eval_tier1_screen.hpp` (hashes `message_to_json` output), `tools/cli_chat.cpp`, `tools/test_driver/live_backend.hpp` | written when set (omitted when empty/false); read | neither written nor read (superseded by ADR-204: written when present, read when an object, as `state()`) | throws `std::bad_variant_access` (as before, D3) | `recording.*` |
 | `state()` | `rt/message_codec.hpp` wrappers: workflow checkpoints (`workflow_run_state_record.hpp`), the turn-delta record (`agent_session.hpp`), `workflow_as_chat_client.hpp`, the AG-UI projection (`protocol/agui/projection.hpp`), the test driver | **neither written nor read (I3)** | written when present; read when an object | `contract` error `rt.message_codec.missing_field` | `rt.message_codec.*` |
 
 ## 4. Behaviour — the differences found, and how each is kept
@@ -96,8 +96,8 @@ compared by hand), and confirmed by the differential test (§6), whose oracles a
 | D1 | Delivery marks on encode | writes `"approval"` when non-empty and `"deliver_as_instructions": true` when set, after `"tainted"` | writes neither | `carries_delivery_marks()` |
 | D2 | Delivery marks on decode | reads `approval` when a string, `deliver_as_instructions` via `opt_bool` | reads neither; they stay `""`/`false` | `carries_delivery_marks()` |
 | D3 | `"kind"` present but not a string | `require()` checks presence only; `as_string()` then throws `std::bad_variant_access` out of the decoder | `contract` error "missing field: kind" | `rejects_non_string_kind()` |
-| D4 | `Message::attribution` on encode | not written | written after `"content"` when present: `{contributor_index, contributor_type}` | `carries_attribution()` |
-| D5 | `Message::attribution` on decode | ignored | read when an object; `opt_u64`/`opt_string` fields | `carries_attribution()` |
+| D4 | `Message::attribution` on encode (removed by ADR-204) | not written | written after `"content"` when present: `{contributor_index, contributor_type}` | `carries_attribution()` |
+| D5 | `Message::attribution` on decode (removed by ADR-204) | ignored | read when an object; `opt_u64`/`opt_string` fields | `carries_attribution()` |
 | D6 | Error codes | `recording.` + suffix | `rt.message_codec.` + suffix | `error_code_prefix()` |
 
 D6 covers every error the codec returns: `missing_field` (missing `"kind"`, and a `blob_ref` payload without
@@ -253,6 +253,9 @@ oracles 809.
 - **Remaining base64 copies** (`a2a/types.hpp`, `mcp/client.hpp`, `relay_base64.hpp`) are #120 S8.
 
 ## 9. Open decision for the owner: recordings do not carry `Message::attribution` (I4)
+
+**Superseded by ADR-204** (owner decision, 2026-09-27): recordings carry attribution; `carries_attribution()` is removed.
+The text below is kept as the question was posed.
 
 The #120 audit noted that a chat-call recording drops `Message::attribution`, so the recorded request of a turn whose
 context came from a context provider does not say which provider contributed which message — an I4 ("every effect is
