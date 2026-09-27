@@ -115,6 +115,15 @@ NNN-*.md           the RFC specs (authoritative)
   it. Supporting two revisions means two constants and two suites, not a runtime `if`.
 - **Never let a protocol type leak into the core.** L4 translates to L2 vocabulary at the boundary;
   `agentengine::core` contains no `mcp::` or `a2a::` type.
+- **Includes point down the layers.** `tools/layering_lint.py` checks every `#include` in
+  `include/agentengine/` and `src/` against the layer map in `tools/layers.toml` (V shared
+  vocabulary, L0–L4 as in the specification §3, TEST). A file may include only its own layer, a
+  lower one, or V; V includes only V. Run `python tools/layering_lint.py` (and `--self-test`); CI
+  runs both. A new file needs a layer: a directory default covers most, otherwise add a `[files]`
+  entry with a one-line reason. Edges that already broke the rule are listed in
+  `tools/layering_baseline.txt`. The lint fails on any new edge and on any baseline line whose edge
+  is gone, so the baseline only shrinks: fix an edge, delete its line, and never add one. A
+  deliberate seam gets `// ae-layering-lint: allow <reason>` on or above the include instead.
 
 ## Build & test — machine safety
 

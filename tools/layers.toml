@@ -1,0 +1,128 @@
+# Layer map for tools/layering_lint.py (issue #120 S10).
+#
+# AgentEngineSpecification.md §3: "a layer may depend only on layers below it". Layers, low to high:
+#
+#   V     shared vocabulary. Every layer may include it; it may include only V and the std library.
+#   L0    runtime substrate: agentengine::rt:: task/channel/mutex/pool/stores, PAL.
+#   L1    trust & isolation: capability model, sandbox seam and backends, worktree, plugin ABI.
+#   L2    agent core: Agent, AgentSession, tool plane, ChatClient plane, context providers, middleware.
+#   L3    orchestration: workflows, multi-agent fan-out, projects, evaluation harness.
+#   L4    protocol surfaces: MCP, A2A, AG-UI.
+#   TEST  test support. Exempt as an includer; nothing outside TEST may include it.
+#
+# A file's layer comes from what the file IS (its banner, what it defines, the RFC/ADR it names),
+# not from what it happens to include today. Directory defaults apply by longest matching prefix;
+# a [files] entry overrides the default and must say why in one line. Every scanned file must end
+# up with a layer, and every [files] entry must name a file that exists.
+
+[directories]
+"include/agentengine/core"     = { layer = "L2",   reason = "CONVENTIONS.md layout: core/ is the L2 agent core" }
+"include/agentengine/rt"       = { layer = "L0",   reason = "agentengine::rt:: is the L0 substrate (spec §3); its L2/L3 residents are overridden below" }
+"include/agentengine/pal"      = { layer = "L0",   reason = "platform abstraction (spec §3 L0: vendored socket PAL, ADR-037)" }
+"include/agentengine/detail"   = { layer = "L0",   reason = "private low-level primitives (sha256)" }
+"include/agentengine/trust"    = { layer = "L1",   reason = "CONVENTIONS.md layout: trust/ is L1" }
+"include/agentengine/sandbox"  = { layer = "L1",   reason = "CONVENTIONS.md layout: sandbox/ is the L1 sandbox seam" }
+"include/agentengine/plugin"   = { layer = "L1",   reason = "CONVENTIONS.md layout: plugin/ is the L1 WASM component host" }
+"include/agentengine/tools"    = { layer = "L2",   reason = "built-in Tool<> conformers (009 §7) on the L2 tool plane" }
+"include/agentengine/workflow" = { layer = "L3",   reason = "CONVENTIONS.md layout: workflow/ is L3 orchestration" }
+"include/agentengine/eval"     = { layer = "L3",   reason = "evaluation harness (022, ADR-195) that drives whole agent sessions from above" }
+"include/agentengine/protocol" = { layer = "L4",   reason = "CONVENTIONS.md layout: protocol/ is L4; provider clients are overridden below" }
+"include/agentengine/testing"  = { layer = "TEST", reason = "test-only support" }
+"src/core"                     = { layer = "L2",   reason = "translation units for include/agentengine/core (L2)" }
+"src/rt"                       = { layer = "L0",   reason = "translation units for include/agentengine/rt (L0 by default)" }
+"src/trust"                    = { layer = "L1",   reason = "translation units for include/agentengine/trust" }
+"src/sandbox"                  = { layer = "L1",   reason = "translation units for include/agentengine/sandbox" }
+"src/backends"                 = { layer = "L1",   reason = "sandbox backends (CONVENTIONS.md layout: src/backends)" }
+"src/backends/vulkan_vector_index" = { layer = "L2", reason = "a VectorIndex conformer (ADR-180), part of the L2 retrieval plane, not a sandbox backend" }
+
+[files]
+# --- core/: shared vocabulary (V) ---------------------------------------------------------------
+"include/agentengine/core/error.hpp"        = { layer = "V", reason = "result<T>/error, the error model every layer uses (001 §6)" }
+"include/agentengine/core/json_value.hpp"   = { layer = "V", reason = "dependency-free JSON value type used by every layer" }
+"include/agentengine/core/yaml_value.hpp"   = { layer = "V", reason = "YAML-subset value parser, the JSON value's sibling" }
+"include/agentengine/core/fixed_string.hpp" = { layer = "V", reason = "structural string NTTP helper, pure language utility" }
+"include/agentengine/core/tainted.hpp"      = { layer = "V", reason = "Tainted<T> type-level taint marker (003 §2, 007 §4) every layer must see" }
+"include/agentengine/core/content.hpp"      = { layer = "V", reason = "the one content model shared by core, sandbox and every protocol (003)" }
+"include/agentengine/core/run_event.hpp"    = { layer = "V", reason = "the run event vocabulary (013 §1), pure data carried by EffectContext and projected by every surface" }
+
+# --- core/: runtime substrate (L0) --------------------------------------------------------------
+"include/agentengine/core/task.hpp"   = { layer = "L0", reason = "ae::task<T>, an alias of rt::task<T> (ADR-037)" }
+"include/agentengine/core/stream.hpp" = { layer = "L0", reason = "ae::stream<T> over rt::channel, the substrate's stream (README L0: channel/stream backend)" }
+
+# --- core/: trust & isolation (L1) --------------------------------------------------------------
+"include/agentengine/core/effect_context.hpp"            = { layer = "L1", reason = "the I4 attribution/capability parameter carried into every effect (007)" }
+"include/agentengine/core/fs_walk.hpp"                   = { layer = "L1", reason = "fail-closed host directory walks; direct OS filesystem access" }
+"include/agentengine/core/sharing_mode.hpp"              = { layer = "L1", reason = "worktree sub-worktree sharing modes (025 §3)" }
+"include/agentengine/core/worktree.hpp"                  = { layer = "L1", reason = "worktree umbrella (025): the sandbox's filesystem, part of the isolation environment" }
+"include/agentengine/core/worktree_types.hpp"            = { layer = "L1", reason = "worktree object-store vocabulary (025 §2)" }
+"include/agentengine/core/worktree_ref_store.hpp"        = { layer = "L1", reason = "worktree Ref persistence (025 §2)" }
+"include/agentengine/core/worktree_sub.hpp"              = { layer = "L1", reason = "sub-worktrees (025 §3)" }
+"include/agentengine/core/worktree_merge.hpp"            = { layer = "L1", reason = "worktree three-way merge (025 §4)" }
+"include/agentengine/core/worktree_diff.hpp"             = { layer = "L1", reason = "worktree tree diffing (025 §3)" }
+"include/agentengine/core/worktree_mount.hpp"            = { layer = "L1", reason = "capability-gated worktree mounts for sandboxes (025 §5)" }
+"include/agentengine/core/worktree_mount_fs.hpp"         = { layer = "L1", reason = "OS path canonicalization against a mount root (ADR-014)" }
+"include/agentengine/core/worktree_mount_fs_posix.hpp"   = { layer = "L1", reason = "POSIX half of the mount path canonicalization (ADR-014)" }
+"include/agentengine/core/ledger.hpp"                    = { layer = "L1", reason = "identity-scoped worktree checkpoint/branch ledger (ADR-102)" }
+"include/agentengine/core/file_worktree_object_store.hpp" = { layer = "L1", reason = "durable on-disk worktree object store" }
+
+# --- rt/: vocabulary codec (V) ------------------------------------------------------------------
+"include/agentengine/rt/message_codec.hpp" = { layer = "V", reason = "JSON codec for the V content model; depends only on V" }
+
+# --- rt/: trust & isolation (L1) ----------------------------------------------------------------
+"include/agentengine/rt/async_quota.hpp"       = { layer = "L1", reason = "identity-scoped quota enforcement (ADR-102), keyed by trust/identity_authority" }
+"include/agentengine/rt/spawn_cost_budget.hpp" = { layer = "L1", reason = "agent.spawn cost budget, the rt:: replacement for trust::SpawnCostBudgetActor (026 §9)" }
+
+# --- rt/: agent core (L2) -----------------------------------------------------------------------
+"include/agentengine/rt/agent_session.hpp"            = { layer = "L2", reason = "rt::AgentSession, the L2 session" }
+"include/agentengine/rt/agent_session_core.hpp"       = { layer = "L2", reason = "AgentSession's non-template turn loop (ADR-199)" }
+"include/agentengine/rt/agent_session_trust.hpp"      = { layer = "L2", reason = "AgentSession's I3 enforcement helpers and response drain" }
+"include/agentengine/rt/agent_spawn.hpp"              = { layer = "L2", reason = "agent.spawn tool (026 §5)" }
+"include/agentengine/rt/agent_spawn_child_run.hpp"    = { layer = "L2", reason = "agent.spawn nested child session run" }
+"include/agentengine/rt/background_job_runner.hpp"    = { layer = "L2", reason = "tool-plane background task runner (ADR-181, 006 §6b)" }
+"include/agentengine/rt/bounded_reflection.hpp"       = { layer = "L2", reason = "single-agent bounded reflection loop (ADR-168)" }
+"include/agentengine/rt/delegated_run_guard.hpp"      = { layer = "L2", reason = "ADR-193 §9 rule for charging a delegated run's spend" }
+"include/agentengine/rt/effect_journal.hpp"           = { layer = "L2", reason = "tool-effect intent/outcome journal (019 §3)" }
+"include/agentengine/rt/interaction_codec.hpp"        = { layer = "L2", reason = "JSON codec for the L2 Interaction record" }
+"include/agentengine/rt/request_authority_bridge.hpp" = { layer = "L2", reason = "bearer claims to AgentSession's RequestAuthority (ADR-061 §31.2)" }
+"include/agentengine/rt/standing_effect_registry.hpp" = { layer = "L2", reason = "AgentSession's standing-effect bookkeeping" }
+
+# --- rt/: orchestration (L3) --------------------------------------------------------------------
+"include/agentengine/rt/agent_workflow_executor.hpp"     = { layer = "L3", reason = "an AgentSession as a workflow executor node (OQ-19)" }
+"include/agentengine/rt/multi_agent.hpp"                 = { layer = "L3", reason = "host-authored multi-agent fan-out over sessions" }
+"include/agentengine/rt/project_archive.hpp"             = { layer = "L3", reason = "Project registry archive tail (030)" }
+"include/agentengine/rt/project_manifest.hpp"            = { layer = "L3", reason = "Project manifest and lifecycle (030)" }
+"include/agentengine/rt/project_registry.hpp"            = { layer = "L3", reason = "Project registry (030)" }
+"include/agentengine/rt/project_supervisor.hpp"          = { layer = "L3", reason = "Project pause/restore over member sessions and workflows (030 §4)" }
+"include/agentengine/rt/workflow_as_chat_client.hpp"     = { layer = "L3", reason = "a whole workflow exposed as a ChatClient (issue #35)" }
+"include/agentengine/rt/workflow_as_executor.hpp"        = { layer = "L3", reason = "a whole workflow as one executor of another workflow" }
+"include/agentengine/rt/workflow_checkpoint_manager.hpp" = { layer = "L3", reason = "workflow checkpoint convenience wrapper (ADR-149)" }
+"include/agentengine/rt/workflow_run_state_record.hpp"   = { layer = "L3", reason = "workflow checkpoint record (014 §5)" }
+"include/agentengine/rt/workflow_supervisor.hpp"         = { layer = "L3", reason = "rt::WorkflowSupervisor, the workflow runtime (014)" }
+"include/agentengine/rt/workflow_time_travel.hpp"        = { layer = "L3", reason = "workflow time travel (014 §5)" }
+
+# --- trust/, sandbox/: residents that are really L2 ---------------------------------------------
+"include/agentengine/trust/delegated_approval_policy.hpp"  = { layer = "L2", reason = "a reference PolicyDecider for the tool pipeline (ADR-151)" }
+"include/agentengine/trust/policy_reachability.hpp"        = { layer = "L2", reason = "analysis of an agent's ceiling against its tools' descriptors (007 G6)" }
+"include/agentengine/sandbox/mandatory_sandbox_provider.hpp" = { layer = "L2", reason = "a ContextProvider plus RunCommandTool wired over SandboxRuntime (ADR-102 phase 4)" }
+
+# --- protocol/: model-provider clients are L2 ChatClient-plane conformers, not protocol surfaces ---
+"include/agentengine/protocol/openai/chat_client.hpp"    = { layer = "L2", reason = "OpenAI ChatClient backend (004 §3): an outbound provider, not a served surface" }
+"include/agentengine/protocol/anthropic/chat_client.hpp" = { layer = "L2", reason = "Anthropic ChatClient backend (004 §3): an outbound provider, not a served surface" }
+"include/agentengine/protocol/openai/embedder.hpp"       = { layer = "L2", reason = "Embedder conformer (ADR-063 §2.5)" }
+"include/agentengine/protocol/qdrant/vector_index.hpp"   = { layer = "L2", reason = "RemoteVectorIndex conformer (ADR-180 §2.5)" }
+
+# --- src/ -----------------------------------------------------------------------------------------
+"src/core/worktree_digest.cpp"         = { layer = "L1", reason = "worktree digests (025), implements the L1 worktree" }
+"src/core/worktree_digest_posix.cpp"   = { layer = "L1", reason = "worktree digests (025), POSIX half" }
+"src/core/worktree_mount_fs.cpp"       = { layer = "L1", reason = "implements core/worktree_mount_fs.hpp (L1)" }
+"src/core/worktree_mount_fs_posix.cpp" = { layer = "L1", reason = "implements core/worktree_mount_fs_posix.hpp (L1)" }
+"src/rt/agent_session_core.cpp"        = { layer = "L2", reason = "implements rt/agent_session_core.hpp (L2)" }
+"src/rt/workflow_supervisor.cpp"       = { layer = "L3", reason = "implements rt/workflow_supervisor.hpp (L3)" }
+"src/backends/native_jail/session_shell_wiring.hpp"      = { layer = "L2", reason = "builds the session's shell Tool<>s over the mediated shell runner" }
+"src/backends/native_jail/sandbox_tool_provider.hpp"     = { layer = "L2", reason = "a ContextProvider contributing the sandbox tools" }
+"src/backends/native_jail/memory_mount_materializer.hpp" = { layer = "L2", reason = "materializes the L2 memory worktree into a jail mount (ADR-153)" }
+"src/backends/native_jail/memory_notes_materializer.hpp" = { layer = "L2", reason = "agent.notes harvest into L2 MemoryItems (ADR-156)" }
+"src/backends/native_jail/skill_mount_materializer.hpp"  = { layer = "L2", reason = "materializes SkillsProvider mounts into a jail" }
+"src/backends/native_process/native_providers.hpp"       = { layer = "L2", reason = "ContextProvider/tool conformers for native process execution (ADR-071)" }
+"src/backends/native_process/native_capability_announcer.hpp" = { layer = "L2", reason = "composes the native providers into a ContextProvider" }
+"src/backends/wasm/wasm_tool_bridge.hpp"                 = { layer = "L2", reason = "turns WASM component exports into tool-plane ToolDescriptors" }

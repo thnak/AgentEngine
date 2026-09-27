@@ -1,0 +1,18 @@
+# Layering-lint baseline (tools/layering_lint.py, issue #120 S10).
+#
+# Include edges that broke the layer rule when the lint landed. The lint fails on any violation
+# not listed here and on any line here whose edge no longer exists, so this file only shrinks:
+# fix the include, then delete its line. Never add a line for a new edge.
+#
+# Format: includer -> included  # category: note
+# Categories: (a) wrong-direction dependency to fix; (b) the includer should be split or moved;
+# (c) deliberate seam that should become an inline `ae-layering-lint: allow <reason>`.
+
+include/agentengine/core/content.hpp -> include/agentengine/core/json_schema.hpp  # a: V content model pulls the L2 schema machinery only for AE_JSON_SCHEMA(BlobRef); register it next to the tool plane instead
+include/agentengine/trust/agent_spawn_capability.hpp -> include/agentengine/core/agent_registry.hpp  # a: L1 child-capability minting takes the whole L2 AgentMetadata; pass the target's CapabilitySet/ceiling instead
+include/agentengine/trust/secret_quarantine.hpp -> include/agentengine/core/context_provider.hpp  # b: split QuarantineToolProvider (L2) out of the L1 QuarantineSecretStore
+include/agentengine/trust/secret_quarantine.hpp -> include/agentengine/core/json_schema.hpp  # b: split QuarantineSecretTool's schema (L2) out of the L1 store
+include/agentengine/trust/secret_quarantine.hpp -> include/agentengine/core/tool.hpp  # b: split QuarantineSecretTool (L2) out of the L1 store
+include/agentengine/trust/secret_quarantine.hpp -> include/agentengine/core/tool_descriptor.hpp  # b: split QuarantineToolProvider (L2) out of the L1 store
+src/backends/native_jail/agent_tools_codegen.hpp -> include/agentengine/core/tool_pipeline.hpp  # c: CodeAct agent.tools stubs are generated from the tool plane's ToolDescriptor (026 §4)
+src/backends/native_jail/tool_bridge.hpp -> include/agentengine/core/tool_pipeline.hpp  # c: sandboxed call_tool reaches the real tool pipeline under sandbox-scoped authority (010 §6)
