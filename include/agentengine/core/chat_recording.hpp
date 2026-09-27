@@ -127,9 +127,10 @@ using message_json::detail::opt_u64;
 // The recording profile of the one Message JSON codec (core/message_json.hpp, ADR-202): every ContentItem variant
 // alternative, plus ADR-191's `approval` and ADR-192's `deliver_as_instructions` (recorded so a replayed request
 // renders the same fences, I5, and the audit shows which approval reached the model, I4; each omitted when unset, so
-// older recordings are unchanged). `Message::attribution` is neither written nor read -- the eval screen hashes
-// prompts as `message_to_json` renders them (ADR-195 §8); whether recordings should carry it is ADR-202 §9's open
-// decision.
+// older recordings are unchanged). `Message::attribution` is written when present and read when an object (ADR-204,
+// closing ADR-202 §9's I4 gap: a recorded request says which context provider contributed which message). An older
+// recording without it reads back with none. The eval screen hashes prompts as `message_to_json` renders them
+// (ADR-195 §8), so an attributed prompt's design hash changed at ADR-204; an unattributed one's did not.
 
 [[nodiscard]] inline json::Value content_item_to_json(ContentItem const& item) {
     return message_json::content_item_to_json(item, message_json::Profile::recording());

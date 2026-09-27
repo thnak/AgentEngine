@@ -573,7 +573,8 @@ struct TurnDeltaRecord {
     // #include "agentengine/rt/message_codec.hpp") explains the ADL hazard: Message lives in
     // namespace agentengine directly, so an unqualified call is ambiguous in any TU that also
     // includes core/chat_recording.hpp's own same-named function (the recording profile of the same codec,
-    // core/message_json.hpp, ADR-202 -- it drops `attribution`, so the qualification also picks the right profile).
+    // core/message_json.hpp, ADR-202 -- it would write the delivery marks, so the qualification also picks the right
+    // profile).
     for (Message const& m : rec.messages) messages.push_back(agentengine::rt::message_to_json(m));
     return json::Value::make_object({
         {"session_id", json::Value::make_string(rec.session_id)},

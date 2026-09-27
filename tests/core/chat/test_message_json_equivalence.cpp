@@ -10,8 +10,12 @@
 //    recording decoder throws std::bad_variant_access on a non-string "kind", ADR-202 §4 D3, and still does).
 //    Inputs: a hand-built corpus of every variant, origin, role and field state, a malformed-JSON corpus, and a
 //    seeded, bounded fuzz loop that mutates valid encodings.
+//    ADR-204 changed exactly one recording behaviour on purpose: `Message::attribution` is now written and read,
+//    as the state profile does. The recording comparison therefore expects the oracle unmodified for every item,
+//    every message without attribution and every error/throw, and for an attributed message the oracle plus the
+//    `attribution` member exactly where and as the old state codec wrote/read it (`expected_recording_*`).
 // 2. I3. The state profile neither writes nor reads `approval` / `deliver_as_instructions`; the recording profile
-//    does both (the control).
+//    does both (the control). Both profiles round-trip `Message::attribution` (ADR-204).
 // 3. Self-control. The harness reports a difference when handed two codecs that really differ (the two oracles).
 
 #include <cstddef>
@@ -140,10 +144,48 @@ void diff_encode_item(ae::ContentItem const& x, std::string const& label) {
           "direct state == wrapper: " + label);
 }
 
+// ADR-204: the recording profile now writes and reads `Message::attribution` exactly as the state profile does.
+// The recording oracle predates that, so for a message that carries attribution the expected recording encoding is
+// the old recording encoding plus the `attribution` member in the position -- and with the value -- the old state
+// codec gives it (after "content", the last member). A message without attribution is compared with the oracle
+// unmodified: byte-identical, as before ADR-204.
+Value expected_recording_encoding(ae::Message const& m) {
+    Value old_rec = oldrec::message_to_json(m);
+    if (!m.attribution.has_value()) return old_rec;
+    Value const old_st = oldst::message_to_json(m);
+    std::vector<std::pair<std::string, Value>> o = old_rec.as_object();
+    Value const* attribution = old_st.find("attribution");
+    check(attribution != nullptr && old_st.as_object().back().first == "attribution",
+          "oracle: the old state codec writes attribution last");
+    if (attribution != nullptr) o.emplace_back("attribution", *attribution);
+    return Value::make_object(std::move(o));
+}
+
+// Likewise on decode: a message JSON with a top-level "attribution" member decodes through the recording profile to
+// what the recording oracle gives, with `attribution` set exactly as the old state decoder reads it. Every other
+// outcome -- errors (class, code, message), throws (D3), and values from JSON without "attribution" -- must equal the
+// oracle unmodified.
+Outcome<ae::Message> expected_recording_decode(Value const& j, Outcome<ae::Message> oracle) {
+    if (oracle.st != Outcome<ae::Message>::state::ok || !j.is_object() || j.find("attribution") == nullptr) return oracle;
+    auto const st = capture<ae::Message>([&] { return oldst::message_from_json(j); });
+    check(st.st == Outcome<ae::Message>::state::ok, "oracle: old state decoder succeeds where old recording does");
+    if (st.st == Outcome<ae::Message>::state::ok) oracle.value->attribution = st.value->attribution;
+    return oracle;
+}
+
+struct AttributionCounts {
+    std::size_t encode_plain = 0, encode_attributed = 0, decode_plain = 0, decode_attributed = 0;
+} g_attr_counts;
+
 void diff_encode_message(ae::Message const& m, std::string const& label) {
     g_counts.encode += 2;
     std::string const new_rec = ae::json::dump(ae::message_to_json(m));
-    std::string const old_rec = ae::json::dump(oldrec::message_to_json(m));
+    std::string const old_rec = ae::json::dump(expected_recording_encoding(m));
+    (m.attribution.has_value() ? g_attr_counts.encode_attributed : g_attr_counts.encode_plain) += 1;
+    if (m.attribution.has_value()) {
+        check(new_rec != ae::json::dump(oldrec::message_to_json(m)),
+              "encode message recording (ADR-204): attribution written: " + label);
+    }
     check(new_rec == old_rec, "encode message recording: " + label + "\n  new " + new_rec + "\n  old " + old_rec);
     std::string const new_st = ae::json::dump(ae::rt::message_to_json(m));
     std::string const old_st = ae::json::dump(oldst::message_to_json(m));
@@ -165,7 +207,9 @@ void diff_decode_item(Value const& j, std::string const& label) {
 
 void diff_decode_message(Value const& j, std::string const& label) {
     auto const nr = capture<ae::Message>([&] { return ae::message_from_json(j); });
-    auto const orr = capture<ae::Message>([&] { return oldrec::message_from_json(j); });
+    bool const has_attribution = j.is_object() && j.find("attribution") != nullptr;
+    (has_attribution ? g_attr_counts.decode_attributed : g_attr_counts.decode_plain) += 1;
+    auto const orr = expected_recording_decode(j, capture<ae::Message>([&] { return oldrec::message_from_json(j); }));
     tally(nr);
     check(same(nr, orr), "decode message recording: " + label + " new=" + describe(nr) + " old=" + describe(orr) +
                              " json=" + ae::json::dump(j));
@@ -760,19 +804,42 @@ void run_i3() {
     auto rc_msg = ae::message_from_json(ae::message_to_json(msg));
     check(rc_msg.has_value() && rc_msg->content == msg.content, "control: recording message decode restores marks");
 
-    // Attribution is the state profile's, and only its.
-    ae::Message attributed{ae::role::user, {}, "m-2", ae::ContributorProvenance{2, "memory"}};
+    // Attribution (ADR-204): both profiles carry it, identically -- it is data (I4), never a mark.
+    ae::Message attributed{ae::role::user, {lesson}, "m-2", ae::ContributorProvenance{2, "memory"}};
     auto st_attr = ae::rt::message_from_json(ae::rt::message_to_json(attributed));
     check(st_attr.has_value() && st_attr->attribution == attributed.attribution, "state round-trips attribution");
-    check(ae::json::dump(ae::message_to_json(attributed)).find("attribution") == std::string::npos,
-          "recording encode omits attribution");
-    auto rc_attr = ae::message_from_json(ae::rt::message_to_json(attributed));
-    check(rc_attr.has_value() && !rc_attr->attribution.has_value(), "recording decode ignores attribution");
+    auto rc_attr = ae::message_from_json(ae::message_to_json(attributed));
+    check(rc_attr.has_value() && rc_attr->attribution == attributed.attribution,
+          "ADR-204: recording round-trips attribution");
+    check(rc_attr.has_value() && *rc_attr == attributed, "ADR-204: recording round-trips the whole message");
+    auto rc_from_st = ae::message_from_json(ae::rt::message_to_json(attributed));
+    check(rc_from_st.has_value() && rc_from_st->attribution == attributed.attribution,
+          "ADR-204: recording decode reads the state encoding's attribution");
+    auto st_from_rc = ae::rt::message_from_json(ae::message_to_json(attributed));
+    check(st_from_rc.has_value() && st_from_rc->attribution == attributed.attribution &&
+              st_from_rc->content.size() == 1 && st_from_rc->content[0].approval.empty() &&
+              !st_from_rc->content[0].deliver_as_instructions,
+          "ADR-204 + I3: state decode of a recording keeps attribution and still drops the marks");
+    // Byte-level: the recording encoding's attribution member is the state encoding's, in the same (last) position.
+    std::string const rec_attr = ae::json::dump(ae::message_to_json(attributed));
+    std::string const st_attr_text = ae::json::dump(ae::rt::message_to_json(attributed));
+    std::string const member = R"(,"attribution":{"contributor_index":2,"contributor_type":"memory"}})";
+    check(rec_attr.ends_with(member) && st_attr_text.ends_with(member),
+          "ADR-204: both profiles write attribution last, byte-identical\n  rec " + rec_attr + "\n  st  " + st_attr_text);
+    // Absent attribution stays absent (omit-when-absent), and an old recording without it reads back with none.
+    ae::Message plain{ae::role::user, {lesson}, "m-3", std::nullopt};
+    std::string const rec_plain = ae::json::dump(ae::message_to_json(plain));
+    check(rec_plain.find("attribution") == std::string::npos, "ADR-204: recording omits absent attribution");
+    check(rec_plain == ae::json::dump(oldrec::message_to_json(plain)),
+          "ADR-204: an unattributed message encodes byte-identically to the pre-ADR-204 recording codec");
+    auto old_file = ae::message_from_json(oldrec::message_to_json(attributed));  // old writer dropped it
+    check(old_file.has_value() && !old_file->attribution.has_value(),
+          "ADR-204: an old recording (no attribution member) reads back with no attribution");
 
     // The two profiles are the only two, and differ where documented.
     using ae::message_json::Profile;
-    static_assert(Profile::recording().carries_delivery_marks() && !Profile::recording().carries_attribution());
-    static_assert(!Profile::state().carries_delivery_marks() && Profile::state().carries_attribution());
+    static_assert(Profile::recording().carries_delivery_marks());
+    static_assert(!Profile::state().carries_delivery_marks());
     static_assert(Profile::recording() != Profile::state());
     static_assert(Profile::recording().error_code_prefix() == "recording.");
     static_assert(Profile::state().error_code_prefix() == "rt.message_codec.");
@@ -798,6 +865,15 @@ void run_self_control() {
     auto f = capture<ae::ContentItem>([&] { return oldst::content_item_from_json(k); });
     check(e.st == Outcome<ae::ContentItem>::state::threw && f.st == Outcome<ae::ContentItem>::state::err,
           "self-control: old recording throws on non-string kind, old state returns an error");
+    // ADR-204's adjusted expectation is not the oracle itself: for an attributed message it differs from the old
+    // recording encoding and decoding, so the attributed comparisons would fail if the new codec still dropped it.
+    ae::Message const attributed{ae::role::user, {}, "m", ae::ContributorProvenance{7, "rag"}};
+    check(ae::json::dump(expected_recording_encoding(attributed)) != ae::json::dump(oldrec::message_to_json(attributed)),
+          "self-control: the ADR-204 expected encoding differs from the old recording encoding when attributed");
+    Value const attributed_json = oldst::message_to_json(attributed);
+    auto const old_decode = capture<ae::Message>([&] { return oldrec::message_from_json(attributed_json); });
+    check(!same(expected_recording_decode(attributed_json, old_decode), old_decode),
+          "self-control: the ADR-204 expected decode differs from the old recording decode when attributed");
 }
 
 }  // namespace
@@ -817,6 +893,10 @@ int main() {
                 "checks: %d\n",
                 g_counts.encode, g_counts.decode, g_counts.decode_ok, g_counts.decode_err, g_counts.decode_threw,
                 fuzz_cases, g_checks);
+    std::printf("recording messages (ADR-204): encoded %zu without / %zu with attribution; decoded %zu without / %zu "
+                "with an \"attribution\" member\n",
+                g_attr_counts.encode_plain, g_attr_counts.encode_attributed, g_attr_counts.decode_plain,
+                g_attr_counts.decode_attributed);
     if (g_failures != 0) {
         std::fprintf(stderr, "%d failure(s)\n", g_failures);
         return 1;

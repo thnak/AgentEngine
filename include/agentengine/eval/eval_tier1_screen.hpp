@@ -53,8 +53,11 @@
 // public; only `run_tier1_screen` counts); graders are hashed (a `GraderFn` is code, so the host names its
 // version in `suite_version`, on trust); `extra_capabilities` are hashed (host capabilities, not design
 // data); every prompt field is hashed (the prompt is hashed as `message_to_json` renders it, which omits
-// `Message::attribution` and tool-call provenance). Arm S (§3.0 item 4 / §3.7) is not built, so a `cleared`
-// outcome covers items 2 and 3 only and says so (`steering_manifest_run`).
+// tool-call provenance). `Message::attribution` IS hashed since ADR-204 (recordings carry it): a prompt without it
+// hashes exactly as before, but a design hash stored before ADR-204 over a prompt WITH attribution no longer
+// matches -- re-run a saved screen whose prompts carry attribution to get its new digest (ADR-204 §4). Arm S
+// (§3.0 item 4 / §3.7) is not built, so a `cleared` outcome covers items 2 and 3 only and says so
+// (`steering_manifest_run`).
 
 // ADR-191 proportionality review (2026-09-24): the output of this screen is advice to a human approver, and the log
 // can be rewritten by anyone who can write its store (§8) -- so machinery that only hardened the log further was

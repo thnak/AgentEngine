@@ -1683,6 +1683,38 @@ int main() {
                  "instructions, and the human-worded form");
     }
 
+    // ---- T43: ADR-204 -- recordings carry Message::attribution, and the design hash follows the recording codec ----
+    // kPreAdr204Digest is `tier1_preregistration_digest(spec())` computed at b0cbda6, the last commit before
+    // ADR-204, when the recording profile dropped attribution. A prompt without attribution must still hash to it
+    // byte for byte (no stored design hash over an unattributed prompt moves); the same spec with attributed prompts
+    // hashed to it too back then (attribution was dropped) and must now differ -- the migration ADR-204 records.
+    {
+        std::string const kPreAdr204Digest = "c33d2d2610da0a677c7d3a57050b5843935b794097ea88f8709914083f1c49fa";
+        auto const plain = ev::tier1_preregistration_digest(spec());
+        std::cout << "  T43 digest(spec()) = " << (plain ? *plain : std::string("<error>")) << "\n";
+        AE_CHECK(plain.has_value() && *plain == kPreAdr204Digest,
+                 "T43: a design whose prompts carry no attribution hashes exactly as before ADR-204");
+        auto attributed = spec();
+        attributed.probes[0].task_prompt.attribution = ae::ContributorProvenance{1, "memory"};
+        for (auto& t : attributed.gross_harm.tasks) t.task_prompt.attribution = ae::ContributorProvenance{0, "history"};
+        auto const attr_digest = ev::tier1_preregistration_digest(attributed);
+        AE_CHECK(attr_digest.has_value() && *attr_digest != kPreAdr204Digest,
+                 "T43: a design whose prompts carry attribution hashes differently from before ADR-204 (migration)");
+        auto const plain_json = ev::tier1_preregistration_json(spec());
+        auto const attr_json = ev::tier1_preregistration_json(attributed);
+        // Exactly the attribution objects were added: removing them from the attributed design gives the plain one.
+        std::string stripped = attr_json ? *attr_json : std::string{};
+        for (std::string const& needle : {std::string(R"(,"attribution":{"contributor_index":1,"contributor_type":"memory"})"),
+                                         std::string(R"(,"attribution":{"contributor_index":0,"contributor_type":"history"})")}) {
+            for (auto pos = stripped.find(needle); pos != std::string::npos; pos = stripped.find(needle)) {
+                stripped.erase(pos, needle.size());
+            }
+        }
+        AE_CHECK(plain_json.has_value() && attr_json.has_value() && *attr_json != *plain_json &&
+                     stripped == *plain_json,
+                 "T43: the attributed design is the plain design plus each prompt's attribution object, nothing else");
+    }
+
     std::cout << (g_failures == 0 ? "test_eval_tier1_screen: OK\n" : "test_eval_tier1_screen: FAIL\n");
     return g_failures == 0 ? 0 : 1;
 }

@@ -1,9 +1,10 @@
 // #120 S3 (ADR-202): the one Message/ContentItem <-> JSON codec's bodies (include/agentengine/core/message_json.hpp).
 // Moved from the two copies it replaces -- core/chat_recording.hpp's `recording_detail` codec and
 // rt/message_codec.hpp's `message_codec_detail` codec -- which agreed line for line apart from what
-// `message_json::Profile` now selects: the delivery marks, `Message::attribution`, the error-code prefix and the
-// "kind" type check. ADR-202 §4 lists each difference; tests/core/chat/test_message_json_equivalence.cpp compares
-// this file against verbatim copies of both old codecs.
+// `message_json::Profile` now selects: the delivery marks, the error-code prefix and the "kind" type check
+// (`Message::attribution` was a fourth difference until ADR-204 made both profiles carry it). ADR-202 §4 lists
+// each difference; tests/core/chat/test_message_json_equivalence.cpp compares this file against verbatim copies
+// of both old codecs.
 
 #include "agentengine/core/message_json.hpp"
 
@@ -280,11 +281,13 @@ json::Value message_to_json(Message const& m, Profile profile) {
     content.reserve(m.content.size());
     for (auto const& item : m.content) content.push_back(message_json::content_item_to_json(item, profile));
     obj.emplace_back("content", json::Value::make_array(std::move(content)));
-    // State profile only (ADR-066 §7 residual). Omit-when-absent, matching `Data::schema_id`'s convention above --
-    // `nullopt` means "never routed through assemble_context()" (content.hpp's own `Message::attribution` comment),
-    // which must round-trip back to `nullopt`, not a zeroed/default `ContributorProvenance`. The recording profile
-    // never writes it: its output is hashed by the eval screen (ADR-195 §8) and must not change (ADR-202 §9).
-    if (profile.carries_attribution() && m.attribution.has_value()) {
+    // Both profiles (ADR-066 §7 residual for state; ADR-204 for recordings, closing the I4 gap ADR-202 §9 left
+    // open). Omit-when-absent, matching `Data::schema_id`'s convention above -- `nullopt` means "never routed
+    // through assemble_context()" (content.hpp's own `Message::attribution` comment), which must round-trip back to
+    // `nullopt`, not a zeroed/default `ContributorProvenance`. Omitting it also keeps an unattributed message's
+    // recording encoding, and so the eval screen's design hash over it (ADR-195 §8), byte-identical to before
+    // ADR-204; an attributed prompt's hash changes (ADR-204 §4).
+    if (m.attribution.has_value()) {
         std::vector<std::pair<std::string, json::Value>> attribution_obj;
         attribution_obj.emplace_back("contributor_index",
                                      json::Value::make_number(static_cast<double>(m.attribution->contributor_index)));
@@ -307,13 +310,13 @@ result<Message> message_from_json(json::Value const& j, Profile profile) {
             m.content.push_back(std::move(*item));
         }
     }
-    if (profile.carries_attribution()) {
-        if (json::Value const* attribution = j.find("attribution"); attribution != nullptr && attribution->is_object()) {
-            ContributorProvenance provenance;
-            provenance.contributor_index = static_cast<std::size_t>(detail::opt_u64(*attribution, "contributor_index"));
-            provenance.contributor_type = detail::opt_string(*attribution, "contributor_type");
-            m.attribution = provenance;
-        }
+    // Both profiles (ADR-204). Restored as data only: no consumer decides authority or permission from it
+    // (ADR-204 §5), so a recording or checkpoint that asserts a contributor grants nothing.
+    if (json::Value const* attribution = j.find("attribution"); attribution != nullptr && attribution->is_object()) {
+        ContributorProvenance provenance;
+        provenance.contributor_index = static_cast<std::size_t>(detail::opt_u64(*attribution, "contributor_index"));
+        provenance.contributor_type = detail::opt_string(*attribution, "contributor_type");
+        m.attribution = provenance;
     }
     return m;
 }
