@@ -34,6 +34,7 @@
 "src/sandbox"                  = { layer = "L1",   reason = "translation units for include/agentengine/sandbox" }
 "src/backends"                 = { layer = "L1",   reason = "sandbox backends (CONVENTIONS.md layout: src/backends)" }
 "src/backends/vulkan_vector_index" = { layer = "L2", reason = "a VectorIndex conformer (ADR-180), part of the L2 retrieval plane, not a sandbox backend" }
+"src/protocol"                 = { layer = "L2",   reason = "translation units for the L2 model-provider clients under include/agentengine/protocol (ADR-206)" }
 
 [files]
 # --- core/: shared vocabulary (V) ---------------------------------------------------------------
@@ -110,6 +111,7 @@
 # --- protocol/: model-provider clients are L2 ChatClient-plane conformers, not protocol surfaces ---
 "include/agentengine/protocol/openai/chat_client.hpp"    = { layer = "L2", reason = "OpenAI ChatClient backend (004 §3): an outbound provider, not a served surface" }
 "include/agentengine/protocol/anthropic/chat_client.hpp" = { layer = "L2", reason = "Anthropic ChatClient backend (004 §3): an outbound provider, not a served surface" }
+"include/agentengine/protocol/provider_chat_wire.hpp"    = { layer = "L2", reason = "HTTP plumbing shared by the two ChatClient backends above (ADR-206)" }
 "include/agentengine/protocol/openai/embedder.hpp"       = { layer = "L2", reason = "Embedder conformer (ADR-063 §2.5)" }
 "include/agentengine/protocol/qdrant/vector_index.hpp"   = { layer = "L2", reason = "RemoteVectorIndex conformer (ADR-180 §2.5)" }
 
