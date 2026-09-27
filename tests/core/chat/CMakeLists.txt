@@ -27,6 +27,12 @@ if(AGENTENGINE_WITH_HTTPS)
   agentengine_add_test(test_system_channel_taint_fence
     LIBS agentengine::core agentengine::provider_http_client agentengine_warnings)
 
+  # ---- ADR-206 (#120 S6): the two backends' HTTP status -> error mappings became one shared function.
+  # Differential against verbatim copies of both old ones, every status 0..999 x a body corpus, with a
+  # self-control. Offline.
+  agentengine_add_test(test_provider_chat_wire_equivalence
+    LIBS agentengine::core agentengine::provider_http_client agentengine_warnings)
+
   # ---- ADR-019: genuinely incremental streaming (Phase C/D2's last self-contained residual) -------
   # Asserts time-to-first-item against a drip server, which is the one currency that distinguishes
   # incremental delivery from replay-after-buffering, plus a byte-by-byte feed of the framing

@@ -686,7 +686,15 @@ if(AGENTENGINE_WITH_HTTPS)
   # Reuses agentengine::net_egress_proxy's resolve_and_validate/perform_https_exchange directly
   # (provider_http_client.hpp's own top comment) -- HTTPS only, so this only exists under the same
   # AGENTENGINE_WITH_HTTPS gate net_egress_proxy's own HTTPS half is behind.
-  add_library(agentengine_provider_http_client STATIC src/sandbox/provider_http_client.cpp)
+  #
+  # ADR-206 (#120 S6): the OpenAI and Anthropic ChatClient backends' non-template code is compiled here too.
+  # Every target that uses either client already links this library (the clients call the exchange above), so
+  # no consumer needs a CMake change; a separate library would need a link cycle back to this one.
+  add_library(agentengine_provider_http_client STATIC
+    src/sandbox/provider_http_client.cpp
+    src/protocol/provider_chat_wire.cpp
+    src/protocol/openai/chat_client.cpp
+    src/protocol/anthropic/chat_client.cpp)
   target_link_libraries(agentengine_provider_http_client PUBLIC agentengine::net_egress_proxy)
   target_link_libraries(agentengine_provider_http_client PRIVATE agentengine_warnings)
   add_library(agentengine::provider_http_client ALIAS agentengine_provider_http_client)
