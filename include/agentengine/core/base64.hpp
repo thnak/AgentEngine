@@ -73,9 +73,13 @@ namespace detail {
 enum class PaddingRule { kSkipWithLineBreaks, kRejectWithZeroTail };
 
 // The one decode loop. The two rules differ only in what the loop does on '=', '\n' and '\r', and in the tail check.
-[[nodiscard]] inline std::optional<std::vector<std::byte>> decode(std::string_view text, PaddingRule rule) {
+// `capacity` is the output size to reserve. Callers compute it from the text as received, padding included, because
+// `decode_strict` passes the text with its padding stripped and `stripped.size() / 4 * 3` would be one or two bytes
+// short, forcing a reallocation of a full relay chunk (ADR-205 red team).
+[[nodiscard]] inline std::optional<std::vector<std::byte>> decode(std::string_view text, PaddingRule rule,
+                                                                  std::size_t capacity) {
     std::vector<std::byte> out;
-    out.reserve(text.size() / 4 * 3);
+    out.reserve(capacity);
     std::uint32_t buffer = 0;
     int bits = 0;
     for (char c : text) {
@@ -113,7 +117,7 @@ enum class PaddingRule { kSkipWithLineBreaks, kRejectWithZeroTail };
 // a trailing partial group is dropped, any length is accepted, and the result is nullopt only for a character
 // outside the alphabet.
 [[nodiscard]] inline std::optional<std::vector<std::byte>> decode_lenient(std::string_view text) {
-    return detail::decode(text, detail::PaddingRule::kSkipWithLineBreaks);
+    return detail::decode(text, detail::PaddingRule::kSkipWithLineBreaks, text.size() / 4 * 3);
 }
 
 // Strict decode (the native-jail HandleRelay wire, ADR-205): canonical padded base64 (RFC 4648 §4, no line breaks)
@@ -124,10 +128,13 @@ enum class PaddingRule { kSkipWithLineBreaks, kRejectWithZeroTail };
 //   - the bits the padding leaves over in the last data character are zero (`QQ==` is accepted, `QR==` is not).
 // Anything else gives nullopt, never a partial result.
 [[nodiscard]] inline std::optional<std::vector<std::byte>> decode_strict(std::string_view text) {
+    // The length check also keeps the padding probe below in bounds: a non-empty text here has at least four
+    // characters, so `text[text.size() - 2]` exists. Do not loosen it without re-checking that read.
     if (text.size() % 4 != 0) return std::nullopt;
     std::size_t padding = 0;
     if (!text.empty() && text.back() == '=') padding = text[text.size() - 2] == '=' ? 2 : 1;
-    return detail::decode(text.substr(0, text.size() - padding), detail::PaddingRule::kRejectWithZeroTail);
+    return detail::decode(text.substr(0, text.size() - padding), detail::PaddingRule::kRejectWithZeroTail,
+                          text.size() / 4 * 3 - padding);
 }
 
 }  // namespace agentengine::base64

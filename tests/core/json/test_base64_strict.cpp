@@ -87,6 +87,11 @@ void round_trip(Bytes const& b, std::string const& label) {
     auto const got = b64::decode_strict(enc);
     ++g_accepted;
     check(got.has_value() && *got == b, "round trip " + label + " '" + printable(enc) + "'");
+    // The output is reserved from the padded length, so it is never reallocated: a reserve one or two bytes short
+    // (computed from the stripped text) would double a full relay chunk's buffer (ADR-205 §8, red team MINOR).
+    check(got.has_value() && got->capacity() == b.size(),
+          "round trip " + label + ": output reserved exactly, capacity " +
+              std::to_string(got ? got->capacity() : 0) + " for " + std::to_string(b.size()) + " bytes");
 }
 
 Bytes random_bytes(std::mt19937_64& rng, std::size_t n) {
@@ -112,7 +117,8 @@ void for_each_string(std::string_view pool, std::size_t len, F&& f) {
 }  // namespace
 
 int main() {
-    // 1. Round trips.
+    // 1. Round trips (including the relay's full 1 MiB chunk, which ends in "==").
+    round_trip(Bytes(std::size_t{1} << 20, std::byte{0x5A}), "1 MiB relay chunk");
     for (std::size_t n = 0; n <= 64; ++n) {
         round_trip(Bytes(n, std::byte{0x00}), "zeros len " + std::to_string(n));
         round_trip(Bytes(n, std::byte{0xFF}), "0xFF len " + std::to_string(n));

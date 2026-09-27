@@ -120,7 +120,8 @@ includes `<signal.h>` and `<sys/types.h>` on POSIX through the shared header, an
 ## 5. Security notes
 
 The relay is a sandbox wire: the host side (`native_jail_handle_relay.cpp`) decodes `data_base64` supplied by the
-jailed worker, and the worker decodes the host's replies. Its decode rule is now `decode_stop_at_padding`, which is
+jailed worker, and the worker decodes the host's replies. (Superseded for the relay by ADR-205: it now decodes with
+`decode_strict`, and `decode_stop_at_padding` is removed.) Its decode rule is now `decode_stop_at_padding`, which is
 the old loop with the same branch; the differential test compares it with the old code on every corpus and fuzz input
 (§6), and control B1/B2 show that either way of loosening it fails the test. The host still bounds the base64 text
 length before decoding (unchanged). The orphan check keeps every fail-closed answer: pid ≤ 0 is "alive" and has no

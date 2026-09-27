@@ -1,6 +1,7 @@
 # ADR-205 — The HandleRelay wire decodes base64 strictly
 
-- **Status**: **Proposed — design + implementation + proof (2026-09-27); red team not yet run.**
+- **Status**: **Proposed — design + implementation + proof (2026-09-27); red team round 1 (same day): no BLOCKER or
+  MAJOR, 1 MINOR and 4 NOTEs, all addressed (§8).**
 - **Date**: 2026-09-27
 - **Origin**: project-owner decision (2026-09-27) on the question ADR-203 §8 left open, following ADR-203 §9's red-team
   opinion ("not a security issue … rejecting content after `=` fits the 'never trust an unparseable frame' posture and
@@ -89,7 +90,9 @@ before.
   `net.socket_closed` to `OSError`, so the guest's `send()`/`write()` raises. Fail closed, per call.
 - **Worker** (`python_worker_mediation.cpp`, `Internal_connect_recv` and `Internal_file_read`). On `nullopt` it raises
   `RuntimeError("internal error: malformed base64 in relayed recv() data" / "... file read data")` to the guest and
-  returns no bytes. The host is the only producer here, so this fires only on a host bug or a corrupted frame.
+  returns no bytes. The host is the only producer here, so this fires only on a host bug or a corrupted frame. The
+  data is lost in that case, not merely withheld: the host has already done the `recv`/`ReadFile`, so those bytes are
+  consumed and the file position has moved.
 
 Before this change, a frame the old rule accepted partly (`QQ==!!garbage`) made the host send or write the partial
 bytes (`A`) and report success; it is now denied. The only way to produce such a frame is a worker that does not use
@@ -151,3 +154,38 @@ its own encoder, i.e. a compromised jailed process, which is exactly the case th
   with the message "malformed base64 in … payload". A dedicated code would be more precise but changes the worker
   protocol; not done.
 - **Red team not yet run.**
+
+## 8. Red team round 1 (2026-09-27)
+
+An independent pass; the worktree untouched; each clean probe with a positive control.
+
+- **Correctness.** Reference: Python 3.12 `b64decode(s, validate=True)` accepted only when `b64encode` of the result
+  gives back `s`. Against the C++ (g++-14 `-Werror`, ASan+UBSan, no recovery) on 19,637,701 inputs (every string of
+  length 0-4 over 20 characters including `=`, CR, LF, space, NUL, 0x80, 0xFF, `-_!.`, tab; length 5-8 over 8; 300,000
+  seeded fuzz): 216,636 accepted, 0 mismatches in decision or bytes; `relay_base64::decode` equals `decode_strict` on
+  every input. Controls: no leftover-bits check (7,660 failures), no length check (46,613), always stripping one `=`
+  (31,879). Python's own `strict_mode=True` disagrees with "canonical" on 16,066 inputs (no leftover-bits check), which
+  is why §3 defines the rule by re-encoding.
+- **Huge inputs.** A 200 MiB input decodes cleanly under the sanitizers; the cap arithmetic holds (1,048,576-1,048,578
+  bytes encode to exactly `kMaxRelayBase64Chars` = 1,398,104 and pass; 1,048,579 bytes give 1,398,108 and are refused).
+- **Producer audit** (§4) reproduced independently: only the four encoder call sites and `""` write `data_base64`; no
+  tracked `.py` uses `base64` or `binascii`; `_ae_internal` exposes no raw query.
+- **Reject path, host side.** Decode runs after the id lookup and the cap and before `send_some`/`WriteFile`: nothing is
+  sent or written, no counter moves, the socket or file entry stays. The guest's id maps and the host's
+  `live_sockets`/`open_files` still agree (neither side marks anything closed), and the handle stays reachable through
+  `connect_close`/`file_close` and the destructors, so nothing leaks; `net.socket_closed` is only a misleading name (§7).
+- **Removed rule.** No code reference to `decode_stop_at_padding` remains.
+- **MINOR — output under-reserved for padded input (fixed).** `decode_strict` passed the stripped text down, so the
+  reserve was one or two bytes short whenever there was padding; a full 1 MiB relay chunk (ending in `==`) reallocated
+  to 2,097,150 bytes and copied 1 MiB. The reserve is now computed from the text as received. `test_base64_strict` now
+  checks that every round trip's output capacity equals its size, including a 1 MiB chunk; control (the old reserve):
+  289 failures, among them the 1 MiB chunk at capacity 2,097,150. Both base64 tests pass under MSVC and g++-14 (-O0,
+  -O3), and the base64, native-jail, Message JSON, A2A and MCP client tests (19) pass under MSVC.
+- **NOTE — the length check also bounds a read (fixed).** `text[text.size() - 2]` is in bounds only because of the
+  `% 4` check; a comment at the check now says so.
+- **NOTE — a worker-side reject loses data (fixed).** §5 now says so.
+- **NOTE — ADR-203 describes `decode_stop_at_padding` in the present tense (fixed).** ADR-203 §5 now carries a
+  pointer to this ADR.
+- **NOTE — the untested host reject path.** The red team agrees a production test hook is not worth adding. A cleaner
+  option, left as a follow-up: move the cap check, decode and deny into one internal free function that both handlers
+  call and a unit test can drive.
