@@ -23,9 +23,12 @@
 // There is no bench build yet (bench/README.md, RFC 023). Build and run by hand, Release, no sanitizer:
 //   MSVC:   cl /nologo /std:c++latest /EHsc /O2 /DNOMINMAX /DWIN32_LEAN_AND_MEAN
 //             /I include /I tests bench\docker_image_digest_resolution.cpp
-//           (NOMINMAX is not optional: this pulls in windows.h, whose `max` macro otherwise eats
-//            std::max_element below. The CMake build defines it for every target; a hand build must too.)
+//             src\sandbox\docker_execution_surface.cpp src\sandbox\process_identity.cpp
+//           (NOMINMAX is not optional: the two src\ files pull in windows.h, whose `max` macro otherwise eats
+//            std::max_element. The CMake build defines it for every target; a hand build must too.)
 //   g++-14: g++-14 -std=c++23 -O2 -pthread -I include -I tests bench/docker_image_digest_resolution.cpp
+//             src/sandbox/docker_execution_surface.cpp src/sandbox/process_identity.cpp
+//   The two src/ files hold the Docker surface's bodies since ADR-207 (#120 S7).
 //
 // REQUIRES a reachable Docker daemon and `alpine:latest` present locally (it is not pulled here -- a pull
 // would dominate every number and measure the network instead of the daemon).

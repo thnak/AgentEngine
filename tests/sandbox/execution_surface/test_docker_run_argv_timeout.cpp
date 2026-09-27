@@ -20,8 +20,9 @@
 #include <cstdio>
 #include <string>
 
-#include <tlhelp32.h>
 #include <windows.h>
+// after <windows.h>, which it needs
+#include <tlhelp32.h>
 
 namespace {
 

@@ -124,6 +124,17 @@ target_compile_features(agentengine_message_json PRIVATE cxx_std_23)
 target_link_libraries(agentengine_message_json PRIVATE agentengine_warnings)
 target_link_libraries(agentengine_core INTERFACE agentengine_message_json)
 
+# ---- Chat-call recordings (src/core/) -- ADR-207, issue #120 S7 -----------------------------------------------------
+# core/chat_recording.hpp's bodies, compiled once. A library of its own rather than a second source of
+# agentengine_message_json: that one holds the V-layer codec, and this file is L2 (tools/layers.toml). It calls the
+# codec, so it names it as a PUBLIC dependency, which puts it after this library on a single-pass linker's line.
+add_library(agentengine_chat_recording STATIC src/core/chat_recording.cpp)
+target_include_directories(agentengine_chat_recording PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_compile_features(agentengine_chat_recording PRIVATE cxx_std_23)
+target_link_libraries(agentengine_chat_recording PRIVATE agentengine_warnings)
+target_link_libraries(agentengine_chat_recording PUBLIC agentengine_message_json)
+target_link_libraries(agentengine_core INTERFACE agentengine_chat_recording)
+
 # ---- Tool-call pipeline (src/core/) -- ADR-201, issue #120 S5 --------------------------------------
 # core/tool_pipeline.hpp's function bodies (006 §3: admit, approve, invoke, audit, background tasks), compiled
 # once here instead of in each of the ~206 files that include the header. Moved verbatim; the header keeps every
@@ -172,6 +183,18 @@ if(MSVC)
 endif()
 # No PUBLIC link dependencies: the object references no symbol from another agentengine library (ADR-200 §8).
 target_link_libraries(agentengine_core INTERFACE agentengine_rt_workflow)
+
+# ---- Docker execution surface and the orphan process-identity check (src/sandbox/) -- ADR-207, #120 S7 ------------
+# docker_execution_surface.hpp's and sandbox/detail/process_identity.hpp's non-template bodies, compiled once here.
+# Out of line they also take <windows.h> and the POSIX process headers with them: neither header includes an OS
+# header any more. Linked through agentengine::core like the libraries above, so no consumer needs a CMake change.
+add_library(agentengine_docker_surface STATIC
+  src/sandbox/docker_execution_surface.cpp
+  src/sandbox/process_identity.cpp)
+target_include_directories(agentengine_docker_surface PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_compile_features(agentengine_docker_surface PRIVATE cxx_std_23)
+target_link_libraries(agentengine_docker_surface PRIVATE agentengine_warnings)
+target_link_libraries(agentengine_core INTERFACE agentengine_docker_surface)
 
 # ---- Egress proxy (src/sandbox/) -- Windows + Linux ---------------------------------------------
 # Implements decisions/ADR-011-first-party-egress-proxy.md (008 §10 Q3, M2 Phase F task F1): the
@@ -823,10 +846,15 @@ endif()
 # 180-4 implementation rather than pulling in a new mandatory third-party dependency -- see that
 # file's own top comment for why (mbedTLS is vendored but off by default behind
 # AGENTENGINE_WITH_HTTPS, and OpenSSL/AF_ALG were both considered and rejected).
+#
+# src/core/ledger.cpp (ADR-207, #120 S7, both platforms): Ledger<Store>'s bodies, explicitly instantiated for the two
+# stores, so no file that includes core/ledger.hpp compiles them again. It lives here because every ledger user
+# already links this library (InMemoryWorktreeObjectStore calls compute_digest), so no consumer changes.
 if(WIN32)
   add_library(agentengine_worktree_store STATIC
     src/core/worktree_digest.cpp
-    src/core/worktree_mount_fs.cpp)
+    src/core/worktree_mount_fs.cpp
+    src/core/ledger.cpp)
   target_link_libraries(agentengine_worktree_store PUBLIC agentengine::core)
   target_link_libraries(agentengine_worktree_store PRIVATE agentengine_warnings bcrypt)
   add_library(agentengine::worktree_store ALIAS agentengine_worktree_store)
@@ -841,7 +869,8 @@ endif()
 if(NOT WIN32)
   add_library(agentengine_worktree_store STATIC
     src/core/worktree_digest_posix.cpp
-    src/core/worktree_mount_fs_posix.cpp)
+    src/core/worktree_mount_fs_posix.cpp
+    src/core/ledger.cpp)
   target_link_libraries(agentengine_worktree_store PUBLIC agentengine::core)
   target_link_libraries(agentengine_worktree_store PRIVATE agentengine_warnings)
   add_library(agentengine::worktree_store ALIAS agentengine_worktree_store)

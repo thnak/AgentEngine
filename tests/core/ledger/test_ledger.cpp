@@ -144,6 +144,18 @@ int main() {
     auto blob_denied_r = ledger.get_blob_safe(*blob1_r, unrelated);
     check(!blob_denied_r.has_value() && blob_denied_r.error().code == "ledger.blob_access_denied",
           "get_blob_safe() fails closed for an unrelated identity");
+    // A digest nobody wrote has no ACL entry: authorized_for() refuses it before the store is asked, so even the
+    // owner gets a policy denial, not a store miss. No test pinned this branch until ADR-207's control C1 showed that
+    // flipping it went unnoticed (the store miss that followed still failed the read, with a different class).
+    Digest const never_written(64, 'a');
+    auto unknown_blob_r = ledger.get_blob_safe(never_written, owner);
+    check(!unknown_blob_r.has_value() && unknown_blob_r.error().code == "ledger.blob_access_denied" &&
+              unknown_blob_r.error().klass == failure_class::policy,
+          "get_blob_safe() on a digest nobody wrote is a policy denial, even for the owner");
+    auto unknown_tree_r = ledger.get_tree_safe(never_written, owner);
+    check(!unknown_tree_r.has_value() && unknown_tree_r.error().code == "ledger.tree_access_denied" &&
+              unknown_tree_r.error().klass == failure_class::policy,
+          "get_tree_safe() on a digest nobody wrote is a policy denial, even for the owner");
 
     // ---- [3] branch_from(): a real child inherits read access to the parent's head. --------------
     auto child_r = drive(ledger.branch_from(root, child_identity, child_branch_quota));
