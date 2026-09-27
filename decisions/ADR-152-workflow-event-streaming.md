@@ -235,9 +235,20 @@ level a concurrent session had recently tightened):
 
 ## Status
 
-**Proposed — implemented, red-teamed twice (design draft before any code existed, plus two
+**Judged (2026-09-27, project-owner sign-off; issue #82).**
+
+Before sign-off, the claims were checked again on `main` at 598b8c1, after `WorkflowSupervisor`'s
+bodies moved to `src/rt/workflow_supervisor.cpp` (ADR-200) and `drive()` became `block_on()`
+(ADR-175). Every mechanism named in §4 is still there: `multiplex_sink<T>::push()` still drops on
+overflow and never blocks, and `set_run_event_tap()`, `agent_turn_sink` and `moderator_delta_sink`
+are all present. `test_rt_workflow_event_stream` passes (53 checks, ADR-157 added W10-W13), as do
+examples 25 and 27. The §6 #9 liveness control was re-run: with `push()` changed to wait for room
+instead of dropping, the test hung and was killed at 60 s. Reverted and passing again. The
+spec now describes the stream: 013 §1.1 and 014 §7.
+
+History: Proposed — implemented, red-teamed twice (design draft before any code existed, plus two
 structural gaps closed during implementation), the single most severe claim (§6 #9) adversarially
 verified post-fix (mutation-tested, not merely re-reasoned about), 35/35 new test checks passing,
 a real live-model run (§6 #11) proving the bridge end to end against OpenRouter, the full project
 building clean and 308/309 `ctest` passing repo-wide (the one failure pre-existing and unrelated —
-§6 #12), pending project-owner sign-off.**
+§6 #12).

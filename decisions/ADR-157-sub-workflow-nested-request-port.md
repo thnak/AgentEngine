@@ -193,7 +193,7 @@ Full design: `docs/planning/sub-workflow-nested-request-port-design-draft.md`.
 | 4 | A terminally-failing inner run (never completes) folds as an ordinary `ok=false` reply, routed through the existing `EdgeFailurePolicy` machinery unchanged. | CORRECT | S4 |
 | 5 | A sub_workflow suspension in the same round as an unrelated executor's routing failure does not silently orphan the live nested interaction — `open_interactions()` still discloses it even though the round's own status is a failure. | CORRECT | S5 |
 | 6 | A restored `WorkflowSupervisor` (pending_sub_workflows_ never persisted) fails closed (`invalid`) on a stale pending-sub-workflow interaction_id — never silently misroutes the raw human answer as the sub-workflow's own completed output. | CORRECT | S6 |
-| 7 | The generalized OQ-19 quarantine is genuinely load-bearing: with it bypassed, two GENUINE duplicate deliveries (direct edges, not fan_in-merged) to the same sub_workflow executor_index reliably crash. With it in place, the same scenario never crashes and never produces genuine concurrent overlap. | CORRECT (adversarially verified) | 20/20 segfaults with the quarantine bypassed (direct-edge duplicates); 15/15 clean with it restored, confirmed via atomic-counter instrumentation that zero overlap occurs |
+| 7 | The generalized OQ-19 quarantine is genuinely load-bearing: with it bypassed, two GENUINE duplicate deliveries (direct edges, not fan_in-merged) to the same sub_workflow executor_index reliably crash. With it in place, the same scenario never crashes and never produces genuine concurrent overlap. | CORRECT (adversarially verified) | 20/20 segfaults with the quarantine bypassed (direct-edge duplicates); 15/15 clean with it restored, confirmed via atomic-counter instrumentation that zero overlap occurs. **2026-09-27:** since ADR-175 the bypass no longer crashes (the duplicate waits on `run_mutex_`, then re-drives the inner). The control is now S7's inner-run count: 10/10 fail bypassed, 10/10 pass restored (see Status) |
 | 8 | A bounded, real nesting shape (2 levels, 3-wide fan-out at the middle level, each branch its own independently-bound inner supervisor) completes in bounded wall-clock time. | CORRECT | S8 |
 | 9 | The example (`examples/27_sub_workflow_nested_request_port.cpp`) proves the same properties end-to-end against a realistic "approval pipeline wrapped inside a publishing workflow" scenario, mirroring MAF's `sub_workflow_request_interception.py` in spirit. | CORRECT | Run directly: suspends, resumes, completes with the inner's real resolution routed through the outer's own downstream node |
 | 10 | Every pre-existing test still passes; the wider repo-wide suite is unaffected except for one test that needed updating to match the intentionally-changed `check_workflow_executable()` contract. | CORRECT | Full `ctest -C Debug`: 310/312 passed. `test_workflow_agent_executor_gate`'s own G6 case asserted the OLD "sub_workflow refused unconditionally by the contexts-aware overload" behavior this ADR deliberately changes — updated to assert the new, intentional contract, confirmed passing. The two failures are both pre-existing and unrelated: `test_reference_agent_task_corpus` (the same long-documented matplotlib/pandas environment gap named in ADR-149's own row) and `test_rt_spawn_cost_budget` (confirmed genuinely flaky by direct rerun — 2/3 clean, 1/3 fails on its own T2 concurrency assertion under real 8-thread contention — a pre-existing, unrelated subsystem this pass never touches). |
@@ -265,8 +265,26 @@ item 3, claims 18-23):
 
 ## Status
 
-**Proposed — implemented across three passes, ALL FOUR originally-named residuals now closed,
-issue #42 fully closed, pending project-owner sign-off.**
+**Judged (2026-09-27, project-owner sign-off; issue #82).**
+
+Before sign-off, the claims were checked again on `main` at 598b8c1. `test_rt_workflow_sub_workflow`,
+`test_rt_workflow_event_stream`, `test_rt_thread_pool`, `test_workflow_agent_executor_gate` and
+example 27 all pass. Three mutation controls still hold:
+- Disabling the event forwarding in `ScopedForwardedEventSink` fails W10-W12 (claim 23).
+- Making `WorkflowSupervisor` ignore its `worker_budget` fails S12 (claims 15/16).
+- Blocking in `multiplex_sink::push()` hangs W9 (ADR-152).
+
+**Claim 7's control no longer held, and it has been replaced.** With the quarantine bypassed, the
+test passed 30/30 runs and saw no concurrent overlap, where it used to crash 20/20. The cause is
+ADR-175: `drive()` is now `block_on()`, so the duplicate delivery waits on the inner supervisor's
+own `run_mutex_` instead of re-entering it. There is no crash to find any more. The duplicate still
+drives the SAME inner a second time in the same round, which is what the quarantine is there to
+stop. S7 now counts inner runs and requires exactly one. Measured: 10/10 runs pass with the
+quarantine in place. With it bypassed, 10/10 runs fail, in every one of the 5 trials. Claim 7's
+row below keeps its original evidence, with this note beside it.
+
+History: Proposed — implemented across three passes, ALL FOUR originally-named residuals now closed,
+issue #42 fully closed.
 
 Red-teamed three times total across this ADR's lifetime — once before any code existed (the
 original mechanism, §2), and once more specifically for the event-forwarding follow-up (fresh
