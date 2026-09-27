@@ -129,7 +129,7 @@ Full findings and resolution: `docs/planning/workflow-mid-run-cancellation-desig
 | 4 | A body that does NOT check the token runs to its own natural completion for that one call, even after `cancel()` was called mid-call — genuinely cooperative, not accidentally preemptive. | CORRECT | C4 |
 | 5 | A run that never calls `cancel()` completes with its ordinary status, every round, byte-for-byte unaffected by the mechanism's mere presence. | CORRECT | C5 |
 | 6 | `cancellation_token()` returns a handle a caller can hold independently of `EffectContext`; it observes the SAME request `cancel()` made. | CORRECT | C6 |
-| 7 | Claims 1-4's own checks are genuinely load-bearing, not vacuous — adversarially verified by mutation. | CORRECT (adversarially verified) | Temporarily short-circuited the round-loop check (`if (false && cancel_source_.stop_requested())`). Rebuilt and reran: 8 of 17 checks failed exactly as expected (every check whose correctness depends on cancellation actually taking effect) while the checks independent of it (C1's "landed" observation, C5, C6) kept passing. Reverted; rebuilt; reran — clean, 17/17 passing again. |
+| 7 | Claims 1-4's own checks are genuinely load-bearing, not vacuous — adversarially verified by mutation. | CORRECT (adversarially verified) | Temporarily short-circuited the round-loop check (`if (false && cancel_source_.stop_requested())`). Rebuilt and reran: 8 of 17 checks failed exactly as expected (every check whose correctness depends on cancellation actually taking effect) while the checks independent of it (C1's "landed" observation, C5, C6) kept passing. Reverted; rebuilt; reran — clean, 17/17 passing again. **2026-09-27 re-check:** 6 of 17 fail (C1 ×3, C2, C3, C4 outcome checks), not 8; see Status. |
 | 8 | Every pre-existing test still passes; the wider repo-wide suite is unaffected. | CORRECT | Full `ctest -C Debug`: see Status. |
 | 9 | The full project builds clean, including under `-Werror`/`/WX`. | CORRECT | Full `cmake --build` (Debug, Visual Studio 18 2026, MSVC), zero errors |
 
@@ -149,9 +149,28 @@ Full findings and resolution: `docs/planning/workflow-mid-run-cancellation-desig
 
 ## Status
 
-**Proposed — implemented, independently red-teamed once (design draft before any code existed,
-revised against both MUST-FIX findings), the central mechanism adversarially verified by mutation,
-pending project-owner sign-off.** 17/17 checks passing in `test_rt_workflow_cancellation.cpp`. Full
+**Judged (2026-09-27, project-owner sign-off).**
+
+Before sign-off, the claims were checked again on `main` at 71cf40c, after `WorkflowSupervisor`'s
+bodies moved to `src/rt/workflow_supervisor.cpp` (ADR-200) and `drive()` became `block_on()`
+(ADR-175). The mechanism in §4 is unchanged. `cancel_source_`, `cancel()` and `cancellation_token()`
+are all present, `workflow_status::cancelled` is still handled in both `status_tag()` functions, and
+the round-loop check and the per-delivery `ctx.cancellation` wiring are still in place.
+`test_rt_workflow_cancellation` passed 17/17 in each of 3 runs. Two mutation controls:
+- **Claim 7's own (the round-loop check made `if (false && ...)`):** 6 of 17 checks fail. Those six
+  are C1's three outcome checks, C2, C3's result check and C4's completion check, which are every
+  check that needs cancellation to take effect. The ADR recorded 8. The test has not changed since
+  (only moved into `tests/workflow/`), so that count does not reproduce. The two extra were probably
+  C3's and C4's "cancel() landed" observations, which by design do not depend on the round-loop check.
+- **New (the `ctx.cancellation` wiring removed):** C3 fails and the other 16 pass, which isolates
+  claim 3.
+
+Both were reverted, and the test passes 17/17 again. §5's deferrals still stand: nothing propagates an outer `cancel()`
+into bound `sub_workflow` instances, and cancellation is not persisted through checkpoint/restore.
+
+History: Proposed — implemented, independently red-teamed once (design draft before any code existed,
+revised against both MUST-FIX findings), the central mechanism adversarially verified by mutation.
+17/17 checks passing in `test_rt_workflow_cancellation.cpp`. Full
 project building clean (zero errors, MSVC/Visual Studio 18, Debug). Full repo-wide `ctest`:
 317/318 passing (the one failure pre-existing and confirmed unrelated — the long-documented
 matplotlib/pandas environment gap; `test_rt_spawn_cost_budget` did not fail this run).
