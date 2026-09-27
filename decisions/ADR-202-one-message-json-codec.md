@@ -55,7 +55,7 @@ Design A.
   `tools/layers.toml` (as `rt/message_codec.hpp` already was); the `.cpp` is also V.
 - **Exactly two profiles.** `message_json::Profile` is a class with a private constructor and two factories,
   `Profile::recording()` and `Profile::state()`. It stores only which of the two it is; the behaviours are read-only
-  queries derived from that (`carries_delivery_marks()`, `carries_attribution()`, `rejects_non_string_kind()`,
+  queries derived from that (`carries_delivery_marks()`, `carries_attribution()` (removed by ADR-204), `rejects_non_string_kind()`,
   `error_code_prefix()`). No caller can build a third combination. The I3 reasoning is written at the definition.
 - **Bodies moved, not rewritten.** The two copies were line-for-line the same apart from §4's differences; the `.cpp`
   is that common text (the recording copy's spelling, which was shorter) with a `profile` check at each difference.

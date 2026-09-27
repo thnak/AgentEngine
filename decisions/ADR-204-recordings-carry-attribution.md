@@ -1,6 +1,7 @@
 # ADR-204 — Chat-call recordings carry `Message::attribution`
 
-- **Status**: **Proposed — design + implementation + proof (2026-09-27); red team not yet run.**
+- **Status**: **Proposed — design + implementation + proof (2026-09-27); red team round 1 (same day): no BLOCKER or
+  MAJOR, 2 MINOR and 3 NOTEs, all addressed in the text (§8).**
 - **Date**: 2026-09-27
 - **Origin**: project-owner decision (2026-09-27) on ADR-202 §9's open question.
 - **Touches**: `include/agentengine/core/message_json.hpp` (`Profile::carries_attribution()` removed, comments),
@@ -89,8 +90,9 @@ for `.attribution` / `->attribution`):
 | `core/context_assembly.hpp` (`assemble_context`) | **Writes** `{index, contributor.name}` on every contributed message and tool, unconditionally — overwriting whatever the message carried. | Producer; reads nothing. |
 | `src/core/message_json.cpp` | Encodes and decodes it (both profiles). | Codec. |
 | `eval/eval_trial.hpp` `message_is_memory_attributed` | Measures whether each recorded request carried the lesson in a message attributed to the `memory` contributor (`delivered`). | An eval measurement, not an authority or permission decision. Its input is the trial's own in-memory sink (`trial_result.recordings`), never a decoded file, and the trial composes its providers through `ComposedContextProvider`, so every request message was stamped by `assemble_context()` this turn. Unchanged by this ADR. |
+| `Message::operator==` (defaulted, so it compares `attribution`), used by `context_assembly.hpp`'s `std::ranges::find(session_ctx.history, m)` | Decides whether a contributed message is a verbatim copy of history: a copy keeps `origin=user`, anything else is downgraded to `external`. | Trust-relevant, but fails safe: contributors' messages are compared before they are stamped, so an attribution a history message carries (from a checkpoint or a replayed response) can only make a match less likely, i.e. more downgrading. A contributor could already copy a history message verbatim, attribution included. No widening. |
 
-Nothing else reads it: no capability check, policy, approval, fence or serializer (`protocol/*` do not mention it;
+Nothing else reads it, directly or through equality: no capability check, policy, approval, fence or serializer (`protocol/*` do not mention it;
 `system_channel_fence.hpp` and the approved-lesson path consult `origin`, `tainted` and the marks, not attribution),
 and `tools/` only mentions ADR-066 in comments. `content.hpp` defines it as provenance.
 
@@ -174,4 +176,43 @@ current turn. Recorded as a residual (§7).
 - **Stored design hashes over attributed prompts** stop matching (§4); re-run those evals. None exists in the repo.
 - **`ReplayChatClient` replays a recorded response's attribution into a session's history.** Data only (§5); a genuine
   recording always replays `nullopt` there.
+- **A recorded attribution is the last stamp the message carried, not necessarily this turn's.** It is current only
+  for messages that went through `assemble_context()`. On the plain single-provider path, history messages go into
+  the request unchanged, so a recorded request can show an attribution restored from a checkpoint or a replayed
+  response, with a `contributor_index` from an earlier turn (ADR-066: valid within one turn only) or, from a crafted
+  file, any value. For I4 audit, read it as provenance as last stamped.
+- **Out-of-range numbers are undefined behaviour.** `opt_u64` casts `double` to `uint64_t` unchecked, so
+  `{"attribution":{"contributor_index":-1}}` is UB (UBSan: "-1 is outside the range of representable values"). This
+  already existed for the state profile and for the recording profile's other numeric fields (citation spans, sizes,
+  usage); this ADR adds one more path to it. Nothing indexes by `contributor_index`, so no out-of-bounds access
+  follows. A range-checked read is a separate follow-up, since it changes decode results.
 - ADR-202's other residuals (D3 throw, AG-UI projection uses the state profile, link-time replacement) are unchanged.
+
+## 8. Red team round 1 (2026-09-27)
+
+An independent pass against `b0cbda6` and `a575f30` with its own harnesses; the worktree untouched.
+
+- **Consumer audit.** The only readers of attribution in `include/`, `src/`, `tools/` and `examples/` are the codec,
+  `assemble_context` (which writes it), `eval_trial::message_is_memory_attributed`, and `Message::operator==` (MINOR 1).
+  Nothing indexes by `contributor_index`. `ReplayChatClient` is not used by eval, tools or examples, and nothing
+  rebuilds a `ChatRequest` from a recording. Eval: `delivered_via_recall` keys on `ToolResult::call_id`, not
+  attribution; `delivered` reads it only after `assemble_context()` has overwritten every stamp, even with a crafted
+  replayed response; `--analyze <dir>` parses `actions.jsonl` as raw JSON and decodes no messages. A file-sourced
+  attribution cannot change an eval verdict.
+- **Byte identity.** 6,000 generated messages (all 9 variants, nested `ToolResult`, marks, indices up to 2^53+1 and
+  `SIZE_MAX`) plus 12 bodies × 23 malformed attributions × 2 positions: state encode/decode identical on 42,922
+  records; 2,966 unattributed recording encodings byte-identical; 3,034 attributed encodings equal to the old recording
+  encoding plus the state member, last; recording decodes (15,332 ok, 168 errors, 42 D3 throws) identical but for
+  attribution, which equals what the old state decoder read in all 15,332. Control: the recording profile not reading
+  attribution gives 6,264 failures.
+- **Hash.** The new test compiled against `b0cbda6`'s codec gives the pinned T43 hash, so the pin is the pre-change
+  value, not self-referential; the attributed-prompt checks fail there, as they should.
+- **I3.** 0 state encodings or decodes carry a mark; control: 3,482 recording encodings and 5,345 decodes do. Still two
+  profiles, private constructor.
+- **MINOR 1 — `Message::operator==` missing from §5 (fixed).** Added to the table: trust-relevant, fails safe.
+- **MINOR 2 — a recorded attribution is not always this turn's (fixed).** §7 now says so.
+- **NOTE — out-of-range numbers are UB (recorded).** §7 residual; pre-existing, one more path.
+- **NOTE — the eval metric that reads attribution is `delivered`, not `delivered_via_recall`.** §5 already names
+  `delivered`.
+- **NOTE — ADR-202 still lists `carries_attribution()` among the `Profile` queries (fixed).** Marked as removed by
+  this ADR.
