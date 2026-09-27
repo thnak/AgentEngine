@@ -4,11 +4,11 @@
 // `connect_send`/`connect_recv` payloads carry arbitrary guest bytes across the worker_query wire,
 // which is JSON text (core/json_value.hpp strings are not a byte-safe transport on their own).
 //
-// Deliberately a fresh, narrow implementation rather than reusing
-// `agentengine::rt::message_codec_detail::base64_encode/decode` -- that pair's own file header
-// argues explicitly for duplicating a small, already-proven codec over pulling in an unrelated
-// module's dependency chain (there, `core/content.hpp`/`core/chat_client.hpp`; here, this file would
-// otherwise become the ONE thing coupling the native-jail worker-mediation TUs to `rt/`). Shared by
+// Deliberately a fresh, narrow implementation rather than reusing the Message JSON codec's base64
+// (src/core/message_json.cpp, ADR-202; formerly duplicated in rt/message_codec.hpp and
+// core/chat_recording.hpp) -- that one is private to its translation unit, and reaching it would
+// make this file the ONE thing coupling the native-jail worker-mediation TUs to the content-model
+// codec. Consolidating the remaining base64 copies is #120 S8, not done here. Shared by
 // both sides of the relay (native_jail_backend.cpp, the host; python_worker_mediation.cpp, the
 // worker) so the encoding is not implemented twice within this same directory.
 

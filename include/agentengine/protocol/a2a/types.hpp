@@ -115,8 +115,8 @@ enum class a2a_role { unspecified, user, agent };  // ae-naming-lint: allow a2a_
 
 namespace detail {
 
-// The same base64 idiom `core/chat_recording.hpp`'s own `recording_detail::base64_encode`/
-// `base64_decode` already establish for the one non-text `ContentItem` payload -- reproduced here
+// The same base64 idiom the Message JSON codec's own `base64_encode`/`base64_decode` (src/core/message_json.cpp,
+// ADR-202; formerly `core/chat_recording.hpp`'s `recording_detail`) already establish for the one non-text `ContentItem` payload -- reproduced here
 // rather than pulled in through an unrelated recording-codec header for what is otherwise a
 // self-contained, dependency-free six-line table lookup (CONVENTIONS' own "core... no third-party
 // dependency" posture extends to not manufacturing cross-feature header coupling for one function).
