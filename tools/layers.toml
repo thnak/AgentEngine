@@ -45,6 +45,7 @@
 "include/agentengine/core/content.hpp"      = { layer = "V", reason = "the one content model shared by core, sandbox and every protocol (003)" }
 "include/agentengine/core/run_event.hpp"    = { layer = "V", reason = "the run event vocabulary (013 §1), pure data carried by EffectContext and projected by every surface" }
 "include/agentengine/core/message_json.hpp" = { layer = "V", reason = "the one Message/ContentItem JSON codec (ADR-202) for the V content model; includes only V" }
+"include/agentengine/core/base64.hpp"       = { layer = "V", reason = "the one base64 codec (ADR-203), std only; used from the L1 native-jail relay to the L4 protocols" }
 
 # --- core/: runtime substrate (L0) --------------------------------------------------------------
 "include/agentengine/core/task.hpp"   = { layer = "L0", reason = "ae::task<T>, an alias of rt::task<T> (ADR-037)" }

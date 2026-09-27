@@ -28,9 +28,11 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
+#include "agentengine/core/base64.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_value.hpp"
 
@@ -115,73 +117,20 @@ enum class a2a_role { unspecified, user, agent };  // ae-naming-lint: allow a2a_
 
 namespace detail {
 
-// The same base64 idiom the Message JSON codec's own `base64_encode`/`base64_decode` (src/core/message_json.cpp,
-// ADR-202; formerly `core/chat_recording.hpp`'s `recording_detail`) already establish for the one non-text `ContentItem` payload -- reproduced here
-// rather than pulled in through an unrelated recording-codec header for what is otherwise a
-// self-contained, dependency-free six-line table lookup (CONVENTIONS' own "core... no third-party
-// dependency" posture extends to not manufacturing cross-feature header coupling for one function).
-inline constexpr std::string_view base64_alphabet =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
+// A2A `raw` parts carry bytes as base64 (core/base64.hpp since ADR-203, #120 S8; this file had its own copy
+// before). Decoding is lenient, as it always was here: '=', '\n' and '\r' are skipped anywhere, a trailing partial
+// group is dropped, and only a character outside the alphabet is an error, `a2a.bad_base64`.
 [[nodiscard]] inline std::string base64_encode(std::vector<std::byte> const& bytes) {
-    std::string out;
-    out.reserve((bytes.size() + 2) / 3 * 4);
-    std::size_t i = 0;
-    while (i + 3 <= bytes.size()) {
-        std::uint32_t n = (static_cast<std::uint32_t>(bytes[i]) << 16) |
-                           (static_cast<std::uint32_t>(bytes[i + 1]) << 8) |
-                           static_cast<std::uint32_t>(bytes[i + 2]);
-        out += base64_alphabet[(n >> 18) & 0x3F];
-        out += base64_alphabet[(n >> 12) & 0x3F];
-        out += base64_alphabet[(n >> 6) & 0x3F];
-        out += base64_alphabet[n & 0x3F];
-        i += 3;
-    }
-    std::size_t const remaining = bytes.size() - i;
-    if (remaining == 1) {
-        std::uint32_t n = static_cast<std::uint32_t>(bytes[i]) << 16;
-        out += base64_alphabet[(n >> 18) & 0x3F];
-        out += base64_alphabet[(n >> 12) & 0x3F];
-        out += "==";
-    } else if (remaining == 2) {
-        std::uint32_t n = (static_cast<std::uint32_t>(bytes[i]) << 16) |
-                           (static_cast<std::uint32_t>(bytes[i + 1]) << 8);
-        out += base64_alphabet[(n >> 18) & 0x3F];
-        out += base64_alphabet[(n >> 12) & 0x3F];
-        out += base64_alphabet[(n >> 6) & 0x3F];
-        out += '=';
-    }
-    return out;
+    return agentengine::base64::encode(bytes);
 }
 
 [[nodiscard]] inline result<std::vector<std::byte>> base64_decode(std::string_view text) {
-    auto decode_char = [](char c) -> int {
-        if (c >= 'A' && c <= 'Z') return c - 'A';
-        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-        if (c >= '0' && c <= '9') return c - '0' + 52;
-        if (c == '+') return 62;
-        if (c == '/') return 63;
-        return -1;
-    };
-    std::vector<std::byte> out;
-    out.reserve(text.size() / 4 * 3);
-    std::uint32_t buffer = 0;
-    int bits = 0;
-    for (char c : text) {
-        if (c == '=' || c == '\n' || c == '\r') continue;
-        int const v = decode_char(c);
-        if (v < 0) {
-            return std::unexpected(
-                error{failure_class::contract, "invalid base64 character", "a2a.bad_base64"});
-        }
-        buffer = (buffer << 6) | static_cast<std::uint32_t>(v);
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out.push_back(static_cast<std::byte>((buffer >> bits) & 0xFF));
-        }
+    auto bytes = agentengine::base64::decode_lenient(text);
+    if (!bytes) {
+        return std::unexpected(
+            error{failure_class::contract, "invalid base64 character", "a2a.bad_base64"});
     }
-    return out;
+    return std::move(*bytes);
 }
 
 }  // namespace detail
