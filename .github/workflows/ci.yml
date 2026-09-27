@@ -35,6 +35,14 @@
 # variable expands to, keeping the static CRT and dropping only that flag, so windows-clang-cl's
 # ASanUBSan leg IS cached now. windows-shell-fuzz still is not -- it has no second build_type leg to
 # share a cache with, so see its own Configure step (mozilla/sccache issues #955/#1266/#1603).
+#
+# AGENTENGINE_WITH_HTTPS (2026-09-27, ADR-206 §7): ON in the Linux leg and the MSVC ASan leg, OFF in the other
+# three. Until then no leg turned it on, so the OpenAI and Anthropic chat clients, the provider HTTP client, the
+# TLS client, the embedder, the Qdrant index and their tests (about 60, plus the live-network ones) were built by no CI job
+# at all. The OFF legs keep the default configuration built; the ASan leg runs the provider parsers, which read
+# bytes from a remote server, under AddressSanitizer. It costs two downloads at configure time (the pinned mbedTLS
+# release and the dated CA bundle, both SHA-256 checked, CMakeLists.txt). `live-network` tests are excluded by
+# label: they need a real key and egress, and without a key they only report a skip.
 
 name: CI
 
@@ -108,12 +116,17 @@ jobs:
           # AGENTENGINE_FAST_TESTS (#115 E4, #120 S2) on the ASan leg only: tests, examples and test
           # tools build at /Od, which cuts the optimizer time that dominates a cold build. The Release
           # leg keeps it OFF, so MSVC's optimizer still compiles all of them on every commit.
+          #
+          # AGENTENGINE_WITH_HTTPS on the ASan leg only (see the file header): the provider clients and their
+          # tests are built and run under ASan; the Release leg keeps the default OFF configuration.
+          $https = "OFF"
           if ("${{ matrix.build_type }}" -eq "ASan") {
             $flags = "/fsanitize=address /Z7"
             $fastTests = "ON"
+            $https = "ON"
           }
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="$flags" `
-            -DAGENTENGINE_FAST_TESTS="$fastTests" `
+            -DAGENTENGINE_FAST_TESTS="$fastTests" -DAGENTENGINE_WITH_HTTPS="$https" `
             -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
       - name: Build
@@ -176,7 +189,7 @@ jobs:
           # this is not the third red run in a row for the same reason.
           # No -C Release: Ninja (switched to above, 2026-09-04) is single-config, unlike the old
           # default VS-generator build this flag used to select a config out of.
-          ctest --test-dir build -j 4 --output-on-failure --timeout 180 `
+          ctest --test-dir build -j 4 --output-on-failure --timeout 180 -LE live-network `
             -E '^(test_composed_sandbox_providers_live|test_sandbox_runtime|test_docker_orphan_reap|test_mandatory_sandbox_provider|test_task_branch_tools|test_task_branch_concurrent_dispatch|test_docker_run_argv_timeout|test_docker_non_ascii_path|test_docker_isolation|test_docker_seed_ownership|test_execution_surface_image_identity)$'
 
   windows-clang-cl:
@@ -421,7 +434,9 @@ jobs:
     # Bounds a hang. Without this a stuck ctest runs to GitHub's 6-hour
     # default -- the MSVC ASan leg has done exactly that, reporting one
     # timeout and then sitting for an hour until a human cancelled it.
-    timeout-minutes: 45
+    # 60, not 45, since AGENTENGINE_WITH_HTTPS (file header): a cold-cache build now also compiles mbedTLS and
+    # every HTTPS-only target.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -442,6 +457,7 @@ jobs:
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14 \
+            -DAGENTENGINE_WITH_HTTPS=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
       - name: Build
@@ -540,7 +556,7 @@ jobs:
       # root would silently flip that signal.
       - name: Test
         run: |
-          ctest --test-dir build -j 4 --output-on-failure --timeout 180 \
+          ctest --test-dir build -j 4 --output-on-failure --timeout 180 -LE live-network \
             -E '^(test_containerd_execution_surface|test_composed_containerd_providers_live|test_containerd_isolation)$'
 
       # `if: always()`: a GitHub Actions step only runs if every prior step in the job succeeded,
