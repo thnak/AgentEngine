@@ -21,8 +21,9 @@
 //       misroutes the raw human answer as the sub-workflow's own completed output.
 // S7 -- the OQ-19-quarantine-generalization concurrency proof (finding 1): two edges converging on
 //       the SAME sub_workflow executor_index in one round -- only one dispatch happens, across
-//       repeated trials, no crash. Adversarially verified: temporarily bypassing the quarantine
-//       reproduces a real crash/hang, confirming the fix is load-bearing.
+//       repeated trials, no crash, and the inner graph runs exactly once. Adversarially verified
+//       (ADR-157): bypassing the quarantine once crashed; since ADR-175 made drive() block_on(), the
+//       duplicate instead waits and re-drives the same inner, which the run count catches.
 // S8 -- bounded 2-level nesting completes in bounded wall-clock time (a real, CLAUDE.md-compliant
 //       bounded test, not a claim about unbounded nesting).
 // S9 -- binding a non-sub_workflow-kind executor_id is silently refused (the node stays unbound,
@@ -127,9 +128,11 @@ template <class T>
 // ("sleeps 15ms to widen the race window") for its structurally identical hazard.
 std::atomic<int>  g_inflight{0};
 std::atomic<bool> g_overlap_observed{false};
+std::atomic<int>  g_inner_planner_runs{0};
 [[nodiscard]] std::vector<ExecutorBody> inner_bodies_with_port_slow() {
     return {
         [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+            g_inner_planner_runs.fetch_add(1);
             if (g_inflight.fetch_add(1) > 0) g_overlap_observed.store(true);
             std::this_thread::sleep_for(std::chrono::milliseconds(15));
             g_inflight.fetch_sub(1);
@@ -371,7 +374,13 @@ void s7_quarantine_generalization_proof() {
         inner->initialize(inner_graph_with_port(), inner_bodies_with_port_slow());
         sup.bind_sub_workflow("sub", inner);
 
+        g_inner_planner_runs.store(0);
         WorkflowResult r1 = drive(sup.run_workflow(RunWorkflow{text_message("go")}));
+        // The positive control since ADR-175: drive() is block_on(), so without the quarantine the
+        // second delivery no longer races the first -- it waits on inner's run_mutex_ and then drives
+        // the SAME inner a second time. Only this count tells the two apart.
+        check(g_inner_planner_runs.load() == 1,
+              "S7: the quarantined duplicate never reaches the inner graph -- it runs exactly once per round");
         check(r1.status == workflow_status::executor_failed || r1.status == workflow_status::suspended,
               "S7: two GENUINE duplicate deliveries to the SAME sub_workflow executor_index -- no "
               "crash or hang; the round reaches an honest terminal state either way");

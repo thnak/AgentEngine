@@ -1,6 +1,6 @@
 # 014 — Workflow and Orchestration
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-04 by ADR-169** (§4 — resolving a request port requires caller admission; holding an `interaction_id` is not authority) · **Depends on:** 001, 002, 005, 013, 018, 019 · **Gate:** §8
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-04 by ADR-169** (§4 — resolving a request port requires caller admission; holding an `interaction_id` is not authority) · **Amended 2026-09-27 by ADR-152/ADR-157** (§7 — the live view has a fine-grained sibling, the workflow event stream; issue #82) · **Depends on:** 001, 002, 005, 013, 018, 019 · **Gate:** §8
 
 ## Goal
 
@@ -148,6 +148,19 @@ admission is the run, not the individual port: a workflow whose concurrent ports
 The graph is data: it renders (Mermaid/DOT), it validates, it diffs across versions, and a running
 workflow exposes a live view of executor states, in-flight messages, and round number. A workflow
 that cannot be drawn is a workflow nobody can review.
+
+A running workflow is visible at two grains:
+
+- **The live view** (`enable_live_view()`) is one summary per superstep: which executors ran, what
+  was in flight, the round number.
+- **The event stream** (`enable_event_stream()`, `ADR-152`) reports each routing, fan-out/fan-in,
+  request-port, checkpoint and merge decision as the supervisor makes it. It also forwards each
+  node's own streaming output live (an agent node's per-token `RunEvent`s, a moderator's deltas),
+  including from inside `sub_workflow` nodes (`ADR-157`), tagged with the path of nested node ids.
+  The vocabulary, its two delivery mechanisms and what a consumer may rely on are in 013 §1.1.
+
+Both are observation only. Nothing a consumer reads from either may feed a routing or permission
+decision (I2/I3).
 
 ## 8. Promotion gate
 

@@ -1,6 +1,6 @@
 # 013 — UI and Streaming Surfaces
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-04 by ADR-170** (§1 — the `SandboxExec*` producer is named, and its payload carries `backend`/`stage`/`ok`/`error_code`) · **Amended 2026-09-21 by ADR-177** (§1, §2.1 — `ModelOutputDiscarded`: a consumer is told that model output it already received is void) · **Amended 2026-09-25 by ADR-183** (§1 — `ApprovalResolved` pairs with `ApprovalRequested` and precedes the resumed round's `ToolCallStarted`) · **Depends on:** 001, 003, 006, 012, 019 · **Gate:** §6
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-04 by ADR-170** (§1 — the `SandboxExec*` producer is named, and its payload carries `backend`/`stage`/`ok`/`error_code`) · **Amended 2026-09-21 by ADR-177** (§1, §2.1 — `ModelOutputDiscarded`: a consumer is told that model output it already received is void) · **Amended 2026-09-25 by ADR-183** (§1 — `ApprovalResolved` pairs with `ApprovalRequested` and precedes the resumed round's `ToolCallStarted`) · **Amended 2026-09-27 by ADR-152/ADR-157** (§1.1 — the workflow event stream, a second vocabulary beside the run event stream; issue #82) · **Depends on:** 001, 003, 006, 012, 019 · **Gate:** §6
 
 ## Goal
 
@@ -109,6 +109,52 @@ maintain per surface.
 - **Sensitive-content aware**: events carry the same taint and capture policy as telemetry (016);
   a surface configured for metadata-only never sees content it should not.
 - **Replayable**: an event stream replayed from a recording drives a UI identically.
+
+### 1.1 The workflow event stream
+
+A workflow run is not a session run, and the list above is not its vocabulary. `StateChanged` is not
+how a workflow's progress is seen. A `WorkflowSupervisor` (014) has its own stream, opened with
+`enable_event_stream()`, whose events are `WorkflowEvent{kind, round, payload}`
+(`workflow/workflow_event.hpp`; `ADR-152`, extended by `ADR-157`):
+
+```
+workflow_run_started · workflow_run_suspended · workflow_run_resumed
+workflow_run_completed · workflow_run_failed
+superstep_started · superstep_completed
+executor_dispatched · executor_completed
+message_routed · fan_out_dispatched · fan_in_aggregated · route_selected
+request_port_opened · request_port_resolved
+checkpoint_saved · merge_completed · merge_conflict
+agent_turn_event · moderator_stream_delta
+```
+
+It has two parts, and they differ in the properties above:
+
+- **Structural events** (every kind but the last two) come from the supervisor's own round loop, one
+  writer, in order. They ride the same credit-controlled stream as the run event stream. Every way a
+  run ends, including the early-return paths of `run_workflow`/`resume_workflow`/`continue_workflow`,
+  emits one of the `workflow_run_*` terminal events. The run is over when that event arrives, not
+  when the stream closes.
+- **Per-node events** (`agent_turn_event`, `moderator_stream_delta`) come live from whichever worker
+  thread is running the node, several at once in a fan-out round. `agent_turn_event` wraps the node's
+  own `RunEvent` unchanged, so it keeps that event's taint. These events carry `executor_id`,
+  `attempt` (a retry is a new attempt) and `path`: the ids of the `sub_workflow` nodes between the top-level
+  supervisor and the node, empty for a node the top level dispatched itself. `ADR-157` forwards a
+  nested workflow's per-node events to the outer stream this way. A consumer keys per-node state on
+  `{path, executor_id, round, attempt}`. **These events are not backpressured: they are dropped when
+  the consumer falls behind** (a bounded buffer, 1024 by default, with a drop counter). A slow UI
+  must never stall a worker thread doing workflow compute. That thread-pool liveness hazard is why
+  `ADR-152` split the stream in two.
+
+Both parts are observation only (I2/I3). No engine code feeds a `WorkflowEvent` back into routing,
+policy or authorization, and a consumer must not either.
+
+**There is no snapshot.** The stream has one consumer. A second `enable_event_stream()` call replaces
+the first, and a consumer that attaches mid-run sees only what happens from then on. It has to
+rebuild the run's state itself, from the supervisor's own accessors (`open_interactions()`, the
+checkpoint, 014 §5) plus the events that follow. The engine offers no workflow `StateSnapshot`, and no
+§2 projection of `WorkflowEvent` onto AG-UI exists yet. A host that shows a workflow in a UI maps
+these events itself.
 
 ## 2. AG-UI projection
 
