@@ -272,15 +272,19 @@ int main() {
 
         // Positive control: same probe, a materially looser (never literally unbounded --
         // drain_pipe_bounded's own safety floor forbids that by design) output_bytes cap.
+        // The positive control floods a fixed 256 KiB and exits, under a generous wall budget. It used
+        // to flood forever under wall_ms = 300 and count what arrived in that window, which failed
+        // under ASan on a loaded CI runner when process start-up ate most of the 300 ms (#120). It
+        // only has to show that more gets through with the looser cap, not how fast.
         LinuxNativeJailBackend positive_backend;
         SandboxSpec positive_spec = contained_spec;
         positive_spec.limits.output_bytes = 2ull * 1024 * 1024;
-        positive_spec.limits.wall_ms = 300;
+        positive_spec.limits.wall_ms = 30000;  // a backstop; the child exits once it has written
         auto positive_handle = positive_backend.create(positive_spec, ctx);
         AE_CHECK(positive_handle.has_value(),
                   "C3-Linux unbounded-output positive control: create() with a loose cap succeeds");
         if (positive_handle.has_value()) {
-            ExecRequest req{.language = "native", .source = hostile_child_cmd("flood")};
+            ExecRequest req{.language = "native", .source = hostile_child_cmd("flood 262144")};
             auto outcome = positive_backend.exec(*positive_handle, req, ctx);
             AE_CHECK(outcome.has_value(),
                       "C3-Linux unbounded-output positive control: exec() returns a result");
