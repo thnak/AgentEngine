@@ -1,5 +1,5 @@
 // This file MUST NOT compile (decisions/ADR-158-tool-concurrency-exclusivity-policy.md §4, MUST-FIX
-// 1) — see tests/CMakeLists.txt's try_compile() gate. `Parallelizable` (unconditional: safe
+// 1) — see tests/compile_fail/CMakeLists.txt's compile-fail gate. `Parallelizable` (unconditional: safe
 // alongside every other tool) and `ExclusivityGroup<Name>` (narrower: safe alongside everyone
 // EXCEPT its own group) are two different, contradictory concurrency claims about the same tool —
 // declaring both must fail to compile, not silently accept one or the other.

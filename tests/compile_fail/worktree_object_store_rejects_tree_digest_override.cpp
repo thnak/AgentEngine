@@ -1,5 +1,5 @@
 // This file MUST NOT compile (025-Worktree-and-Virtual-Filesystem.md §2, Milestone 3 Phase A3) --
-// see tests/CMakeLists.txt's try_compile() gate. Same claim as the companion
+// see tests/compile_fail/CMakeLists.txt's compile-fail gate. Same claim as the companion
 // worktree_object_store_rejects_blob_digest_override.cpp, proven independently for `put_tree`
 // rather than assumed to follow from `put_blob`'s own proof: `InMemoryWorktreeObjectStore::
 // put_tree` (core/worktree.hpp) takes ONLY the `Tree` value -- `put_tree(tree) -> digest` -- and

@@ -1,5 +1,5 @@
 // This file MUST NOT compile (ADR-102 §3 C1 -- decisions/ADR-102-identity-native-sandbox-
-// implementation-phase-1.md) -- see tests/CMakeLists.txt's try_compile() gate. `IdentityHandle`
+// implementation-phase-1.md) -- see tests/compile_fail/CMakeLists.txt's compile-fail gate. `IdentityHandle`
 // deliberately has no public constructor: construction is friend-gated to `IdentityAuthority` only
 // (mint_root()/derive_child()/adopt()), matching the identical "no ambient-authority shortcut"
 // discipline `CapabilitySet::grant_root()` already enforces for capabilities. This file's only
