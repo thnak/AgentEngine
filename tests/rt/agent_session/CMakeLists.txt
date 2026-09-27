@@ -172,6 +172,10 @@ agentengine_add_test(test_rt_agent_session_ack_policy LIBS agentengine::core age
 # directly (STATE/WIN/FORK/REDACT/INT) -- supersedes all five.
 agentengine_add_test(test_rt_agent_session_lifecycle LIBS agentengine::core agentengine_warnings)
 
+# ADR-199 §8 (red team MAJOR): a provider's on_turn_end(TurnView const&) reads a view that is still alive.
+# Catches a revert of the hook's `TurnView const&` on g++ (the Linux leg); MSVC hides the dangling reference.
+agentengine_add_test(test_rt_agent_session_turn_end_view_lifetime LIBS agentengine::core agentengine_warnings)
+
 # ---- ADR-037 Phase 2, Slice 2 -- agentengine::rt::AgentSession's snapshot/checkpoint surface,
 # built against rt::SessionStore instead of quark::FenceToken/snapshot_sequential.
 agentengine_add_test(test_rt_agent_session_snapshot LIBS agentengine::core agentengine_warnings)

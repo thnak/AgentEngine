@@ -187,6 +187,29 @@ agentengine_compile_fail_test(sandbox_tool_provider_rejects_fork_from
   EXPECT "ComposedContextProvider|deleted operator '='"
   LIBS agentengine::mediated_shell_runner)
 
+# ---- ADR-199 §8 compile-fail proofs (AgentSession is sealed) --------------------------------------
+# The red team's "reachable internals" MINOR was fixed by making every AgentSessionCore member private,
+# AgentSession<...> its only friend, and AgentSession `final`, and proved with a throwaway probe. These
+# check it in: deriving from AgentSession, and calling one of its hooks from outside, must not compile.
+# One positive control, the same session type minus the forbidden line, serves both.
+agentengine_compile_fail_control(compile_fail_agent_session_sealed_positive_control
+  SOURCE agent_session_sealed_positive_control.cpp
+  LIBS agentengine::core)
+agentengine_compile_fail_test(agent_session_rejects_derivation
+  SOURCE agent_session_rejects_derivation.cpp
+  CONTROL compile_fail_agent_session_sealed_positive_control
+  # cl: C3246 "cannot inherit from '...' as it has been declared as 'final'";
+  # gcc: "cannot derive from 'final' base"; clang: "base 'AgentSession' is marked 'final'".
+  EXPECT "final"
+  LIBS agentengine::core)
+agentengine_compile_fail_test(agent_session_rejects_hook_call
+  SOURCE agent_session_rejects_hook_call.cpp
+  CONTROL compile_fail_agent_session_sealed_positive_control
+  # cl: C2248 "...bound_model_route': cannot access private member"; gcc: "'...bound_model_route() const'
+  # is private within this context"; clang: "'bound_model_route' is a private member".
+  EXPECT "bound_model_route"
+  LIBS agentengine::core)
+
 # ---- ADR-158 compile-fail proofs (tool concurrency-exclusivity policy, MUST-FIX 1 / §5) ---------
 # `Tool<Derived, Policies...>` (core/tool.hpp) must reject, at compile time: (1) a tool declaring
 # both `Parallelizable` and `ExclusivityGroup<Name>` -- two different, contradictory concurrency
