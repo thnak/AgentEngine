@@ -1,7 +1,8 @@
 # ADR-207 — The Docker surface, the process-identity check, chat recordings and `Ledger<Store>`: bodies compiled once in `src/`
 
-- **Status**: **Proposed — design + implementation + proof (2026-09-27); red team round 1 (same day): no BLOCKER or
-  MAJOR, 2 MINOR, both fixed (§8).**
+- **Status**: **Judged (2026-09-27, project-owner sign-off).** Re-checked on `main` before sign-off: controls C1, C3 and
+  C4 re-run and caught (see "Re-check before sign-off" at the end). Original status: Proposed — design + implementation
+  + proof (2026-09-27); red team round 1 (same day): no BLOCKER or MAJOR, 2 MINOR, both fixed (§8).
 - **Date**: 2026-09-27
 - **Origin**: GitHub issue #120 (S7), the structure audit after issue #115 closed.
 - **Touches**: `include/agentengine/sandbox/docker_execution_surface.hpp` + `src/sandbox/docker_execution_surface.cpp`
@@ -249,3 +250,22 @@ Checked and found correct by the reviewer:
 - the hygiene test's guard macros exist on both platforms;
 - the positive controls' logic;
 - the line counts.
+
+## Re-check before sign-off (2026-09-27)
+
+On `main` at f37912a: full `dev` build with `/W4 /WX`, no warnings; `ctest -LE live-network` with Docker 29.7.2 running,
+363/363 pass (the two `*_no_process_creation` probes skipped as always, `test_external_skill_discovery` excluded).
+
+The five headers are unchanged since the merge (598b8c1). `test_ledger.cpp.obj` still defines 5 `Ledger<>` members and
+references 14, as in §5. The 18 `DockerCliBackend` symbols `test_sandbox_runtime.cpp.obj` defines are all the nested
+`Instance` struct and its containers, none of the moved members. `test_chat_recording_codec.cpp.obj` defines no moved
+recording function and references 4.
+
+Controls re-run:
+
+- C1, no ACL entry means readable: `test_ledger`'s unknown-digest checks fail.
+- C3, a dead pid is the same process: `test_process_identity_equivalence` fails, and so does `test_docker_orphan_reap`
+  against the real daemon ("the confirmed-dead-pid container WAS reaped").
+- C4, `error_to_json` records `"x"`: `test_chat_recording_codec` fails (G1-R4, G1-R6).
+
+Reverted; the tests pass.

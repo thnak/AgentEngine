@@ -1,7 +1,9 @@
 # ADR-204 — Chat-call recordings carry `Message::attribution`
 
-- **Status**: **Proposed — design + implementation + proof (2026-09-27); red team round 1 (same day): no BLOCKER or
-  MAJOR, 2 MINOR and 3 NOTEs, all addressed in the text (§8).**
+- **Status**: **Judged (2026-09-27, project-owner sign-off).** Re-checked on `main` before sign-off: controls A and B
+  re-run and caught (see "Re-check before sign-off" at the end). Original status: Proposed — design + implementation +
+  proof (2026-09-27); red team round 1 (same day): no BLOCKER or MAJOR, 2 MINOR and 3 NOTEs, all addressed in the text
+  (§8).
 - **Date**: 2026-09-27
 - **Origin**: project-owner decision (2026-09-27) on ADR-202 §9's open question.
 - **Touches**: `include/agentengine/core/message_json.hpp` (`Profile::carries_attribution()` removed, comments),
@@ -216,3 +218,16 @@ An independent pass against `b0cbda6` and `a575f30` with its own harnesses; the 
   `delivered`.
 - **NOTE — ADR-202 still lists `carries_attribution()` among the `Profile` queries (fixed).** Marked as removed by
   this ADR.
+
+## Re-check before sign-off (2026-09-27)
+
+On `main` at f37912a: full `dev` build with `/W4 /WX`, no warnings; `ctest -LE live-network` with Docker 29.7.2 running,
+363/363 pass (the two `*_no_process_creation` probes skipped as always, `test_external_skill_discovery` excluded).
+
+Controls re-run on `src/core/message_json.cpp`:
+
+- A, the recording profile stops writing `attribution`: `test_message_json_equivalence`, `test_chat_recording_codec`
+  ("request message attribution survives the file round trip") and `test_replay_chat_client` (case 9) all fail.
+- B, it stops reading `attribution`: the same three fail.
+
+Reverted; the tests pass.

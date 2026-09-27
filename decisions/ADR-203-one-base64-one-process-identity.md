@@ -1,7 +1,8 @@
 # ADR-203 — One base64 codec and one orphan process-identity check, not four and two copies
 
-- **Status**: **Proposed — design + implementation + proof (2026-09-27); red team round 1 (same day): no BLOCKER or
-  MAJOR, 1 MINOR and 2 NOTEs, all addressed (§9).**
+- **Status**: **Judged (2026-09-27, project-owner sign-off).** Re-checked on `main` before sign-off: controls B4 and P1
+  re-run and caught (see "Re-check before sign-off" at the end). Original status: Proposed — design + implementation +
+  proof (2026-09-27); red team round 1 (same day): no BLOCKER or MAJOR, 1 MINOR and 2 NOTEs, all addressed (§9).
 - **Date**: 2026-09-27
 - **Origin**: GitHub issue #120 (S8, "duplicated helpers"), the structure audit after issue #115 closed. Follows
   ADR-202, which merged two of the five base64 copies into one private copy in `src/core/message_json.cpp`.
@@ -262,3 +263,20 @@ control; the worktree untouched.
 - **Opinion on the relay decoder (§8).** Not a security issue: the worker already controls every decoded byte, no
   second parser reads the field, and the size cap applies before decoding. Rejecting content after `=` fits the "never
   trust an unparseable frame" posture and is cheap; do it as its own ADR-noted change.
+
+## Re-check before sign-off (2026-09-27)
+
+On `main` at f37912a: full `dev` build with `/W4 /WX`, no warnings; `ctest -LE live-network` with Docker 29.7.2 running,
+363/363 pass (the two `*_no_process_creation` probes skipped as always, `test_external_skill_discovery` excluded).
+
+Controls re-run on the shared code:
+
+- B4, the encoder drops the `=` after a 2-byte tail: `test_base64_equivalence` fails (`old a2a gave 'Tpo=', core gave
+  'Tpo'`), and so does `test_base64_strict`.
+- P1, an unreadable start key gives `kGoneOrReplaced` (fail open): `test_process_identity_equivalence` fails (`docker
+  check_process_identity pid 0 new=kGoneOrReplaced old=kUnknown`).
+
+Controls B1 and B2 target the old stop-at-padding relay rule, which ADR-205 replaced with `decode_strict`. They were not
+re-run; ADR-205's controls cover that code now.
+
+Reverted; the tests pass.

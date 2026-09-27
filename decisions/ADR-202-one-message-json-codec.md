@@ -1,7 +1,9 @@
 # ADR-202 — One Message/ContentItem JSON codec with two named profiles, not two drifted copies
 
-- **Status**: **Proposed — design + implementation + proof (2026-09-27); red team round 1 (same day): no BLOCKER or
-  MAJOR, 1 MINOR and 3 NOTEs, all addressed in the text (§10). Verified live against DeepSeek (§6).**
+- **Status**: **Judged (2026-09-27, project-owner sign-off).** Re-checked on `main` before sign-off: I3 controls A and B
+  re-run and caught (see "Re-check before sign-off" at the end). Original status: Proposed — design + implementation +
+  proof (2026-09-27); red team round 1 (same day): no BLOCKER or MAJOR, 1 MINOR and 3 NOTEs, all addressed in the text
+  (§10). Verified live against DeepSeek (§6).
 - **Date**: 2026-09-27
 - **Origin**: GitHub issue #120 (S3), the structure audit after issue #115 closed.
 - **Touches**: `include/agentengine/core/message_json.hpp` (new, declarations and the `Profile` type),
@@ -304,3 +306,16 @@ An independent pass with its own harnesses (g++-14; the worktree untouched), eac
 - **NOTE — §3 wording (fixed).** The wire-string functions take no `Profile`.
 - **NOTE — link order.** A future compiled library that calls a wrapper needs its own link to the codec (§3 already
   says this).
+
+## Re-check before sign-off (2026-09-27)
+
+On `main` at f37912a: full `dev` build with `/W4 /WX`, no warnings; `ctest -LE live-network` with Docker 29.7.2 running,
+363/363 pass (the two `*_no_process_creation` probes skipped as always, `test_external_skill_discovery` excluded).
+
+Controls re-run on `src/core/message_json.cpp`:
+
+- A, the state profile reads `approval`/`deliver_as_instructions`: `test_message_json_equivalence` fails, e.g. `decode
+  item state: corpus item #2 [from recording encoding]`.
+- B, the state profile writes them: it fails on `encode item state: ...`.
+
+Reverted; the test passes.

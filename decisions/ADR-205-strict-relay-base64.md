@@ -1,7 +1,8 @@
 # ADR-205 — The HandleRelay wire decodes base64 strictly
 
-- **Status**: **Proposed — design + implementation + proof (2026-09-27); red team round 1 (same day): no BLOCKER or
-  MAJOR, 1 MINOR and 4 NOTEs, all addressed (§8).**
+- **Status**: **Judged (2026-09-27, project-owner sign-off).** Re-checked on `main` before sign-off: controls C2 and C3
+  re-run and caught (see "Re-check before sign-off" at the end). Original status: Proposed — design + implementation +
+  proof (2026-09-27); red team round 1 (same day): no BLOCKER or MAJOR, 1 MINOR and 4 NOTEs, all addressed (§8).
 - **Date**: 2026-09-27
 - **Origin**: project-owner decision (2026-09-27) on the question ADR-203 §8 left open, following ADR-203 §9's red-team
   opinion ("not a security issue … rejecting content after `=` fits the 'never trust an unparseable frame' posture and
@@ -189,3 +190,17 @@ An independent pass; the worktree untouched; each clean probe with a positive co
 - **NOTE — the untested host reject path.** The red team agrees a production test hook is not worth adding. A cleaner
   option, left as a follow-up: move the cap check, decode and deny into one internal free function that both handlers
   call and a unit test can drive.
+
+## Re-check before sign-off (2026-09-27)
+
+On `main` at f37912a: full `dev` build with `/W4 /WX`, no warnings; `ctest -LE live-network` with Docker 29.7.2 running,
+363/363 pass (the two `*_no_process_creation` probes skipped as always, `test_external_skill_discovery` excluded).
+
+Controls re-run on `decode_strict`:
+
+- C2, no leftover-bits check: both tests fail (`'QR=='` and `'AAB='` accepted).
+- C3, no length check: both tests fail (`'=='` and `'A'` accepted). Dropping the length check alone also underflows the
+  capacity argument (`text.size() / 4 * 3 - padding`). The tests then crash (0xc0000409) instead of failing a check,
+  which proves nothing about the rule, so the recorded C3 also passes `text.size()` as the capacity.
+
+Reverted; both tests pass.
