@@ -1,6 +1,6 @@
 # ADR-208 — Test driver P5: one sandboxed real tool, and recorded tool doubles that replay it offline
 
-- **Status**: **Proposed — design revised after red-team pass 1; implemented, all P5 checks and the scenario pass (2026-09-26). The positive-control mutant run (11 mutants, §8) was interrupted and has not completed: not yet Judged.**
+- **Status**: **Proposed — implemented and proven (2026-09-28): every P5 check and the scenario pass, and all 11 positive controls fail their claim (§9). Not yet Judged.**
 - **Date**: 2026-09-26
 - **Origin**: ADR-182 §12 R5 ("recorded tool doubles for real tools become P5"), §12 C-2 (real tools only when
   sandboxed), §11 Q2 (no effectful real tools in live mode); GitHub #109.
@@ -224,3 +224,26 @@ same session name keep their own files; close and exit remove the directories), 
 probes read nothing outside), G7 (a planted directory link and a tree deeper than MAX_PATH are removed without
 following the link), D8, D10 (64 KiB result, non-UTF-8 result, 16 MiB quota, call cap), G2 (cancel). Scenario
 `tests/scenarios/scripted_shell_roundtrip.json` replays in ctest with no sandbox.
+
+## 9. Positive controls (2026-09-28, on main after the build-optimization series)
+
+Each mutant was applied to `tools/test_driver/test_driver.hpp`, the named check (or the checked-in scenario, replayed by
+`agentengine_scenario_runner`) was seen to fail, and the header was restored from a copy. The tree was verified clean
+afterwards and the driver test and all 13 scenarios pass.
+
+| Claim | Mutant | Seen to fail |
+|---|---|---|
+| D2 | the double checks only the tool name, not the arguments | P5 D2 (and D3) |
+| D8 | the double no longer re-emits the recorded `sandbox_exec_*` events | `scripted_shell_roundtrip`: event 5 differs |
+| D9 | replay drops the derived grant | `scripted_shell_roundtrip`: the call is refused before the double, so model call 1's request differs |
+| C1/D6 | every driver uses one fixed directory under the root, and accepts it existing | P5 D6 (both drivers read the other's file) |
+| G7 | removal follows a directory link | P5 G7 (the file outside the root is deleted) |
+| G3 | the provider's copy keeps the real tools and the sandbox | P5 G3 |
+| D10 | no 64 KiB result cap | P5 D10 (size) |
+| D10 | no UTF-8 check | P5 D10 (UTF-8) |
+| D10 | grant and ceiling without the quota | P5 D10 (quota: the copy succeeds) |
+| D10 | no per-session call cap | P5 D10 (call cap) |
+| G2 | no cancel check | P5 G2 |
+
+D1 is structural: the scenario runner does not link the mediated shell, so a replay that built a sandbox would not link.
+D3 and D4 are controlled by the tampered scenarios in the test itself.
