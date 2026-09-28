@@ -24,6 +24,10 @@
 //            tools and limits; capabilities, unknown tools, untrusted files, unknown extension keys,
 //            path-shaped names and shadowing a compiled-in name are refused; the real git check refuses
 //            an untracked or modified file in a scratch repository and accepts a committed one.
+//   P5   -- (ADR-208) real tools: a shell session writes and reads in its own scratch, records every call,
+//            and replays offline with doubles (no sandbox); tampered arguments, results, exec events and
+//            exchange counts fail the replay; refusals, per-driver directories, containment, link-safe
+//            removal and the caps each have a check.
 //   C2   -- (Windows form) 200 send/observe cycles polling snapshot and events from the MCP thread
 //            while the worker runs; every run settles with the expected text. TSan on Linux is the
 //            stronger form (named in ADR-182 §13).
@@ -33,11 +37,13 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <vector>
 
 #include "agentengine/pal/env.hpp"
 #include "test_driver/fixture_trust.hpp"
+#include "test_driver/shell_sandbox.hpp"
 #include "test_driver/test_driver.hpp"
 
 namespace td = agentengine::test_driver;
@@ -109,6 +115,26 @@ void push(td::Driver& d, std::string const& id, Value turns) {
 }
 
 Value text_turn(std::string text) { return td::obj({{"text", td::str(std::move(text))}}); }
+
+// o with key replaced (or added).
+Value set_field(Value const& o, std::string const& key, Value v) {
+    td::Members m;
+    bool done = false;
+    for (auto const& [k, x] : o.as_object()) {
+        if (k == key) {
+            m.emplace_back(k, v);
+            done = true;
+        } else {
+            m.emplace_back(k, x);
+        }
+    }
+    if (!done) m.emplace_back(key, std::move(v));
+    return td::obj(std::move(m));
+}
+
+Value tool_turn(std::string tool, Value args) {
+    return td::obj({{"tool_calls", td::arr({td::obj({{"name", td::str(std::move(tool))}, {"arguments", std::move(args)}})})}});
+}
 
 Value call_turn(std::vector<std::pair<std::string, std::string>> calls) {  // (tool, text arg)
     std::vector<Value> cs;
@@ -895,7 +921,7 @@ int main() {
         std::string const head = "apiVersion: agentengine.dev/v1\nkind: Agent\nmetadata:\n  id: t\n  description: A test agent.\n";
         write("terse", head + "spec:\n  instructions: Answer in one word.\n  tools:\n    - echo\n  limits:\n    max_turns: 1\n");
         write("grabby", head + "spec:\n  tools:\n    - echo\n  capabilities:\n    net_out: [\"example.com\"]\n");
-        write("ghost", head + "spec:\n  tools:\n    - run_shell\n");
+        write("ghost", head + "spec:\n  tools:\n    - execute_code\n");
         write("dirty", head + "spec:\n  tools:\n    - echo\n");
         write("basic", head + "spec:\n  tools:\n    - fail\n");
         write("no_gate", head + "spec:\n  tools:\n    - gated_echo\nx-test-driver:\n  suspend_for_approval: false\n");
@@ -1061,6 +1087,306 @@ int main() {
                   "P4 git (§22): with the edit hidden by --assume-unchanged, only the committed bytes are used");
         }
         fs::remove_all(repo, ec);
+    }
+
+    // ---- P5: real tools and recorded tool doubles (ADR-208) --------------------------------------------------
+    {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        fs::path const base = fs::temp_directory_path() / "ae_test_driver_p5";
+        fs::remove_all(base, ec);
+        fs::path const sandbox_root = base / "sandbox";
+        fs::path const scen_root = base / "scenarios";
+        fs::create_directories(scen_root, ec);
+        int factory_calls = 0;
+        auto config = [&](fs::path const& root) {
+            td::DriverConfig c;
+            c.scenarios_root = scen_root;
+            c.sandbox_root = root;
+            c.sandbox_factory = [&factory_calls](fs::path const& dir) {
+                ++factory_calls;
+                return td::make_shell_sandbox(dir);
+            };
+            return c;
+        };
+        auto session_dirs = [](fs::path const& root) {
+            std::vector<fs::path> out;
+            std::error_code e;
+            for (auto const& drv : fs::directory_iterator(root, e)) {
+                for (auto const& s : fs::directory_iterator(drv.path(), e)) out.push_back(s.path());
+            }
+            return out;
+        };
+        auto finished = [&](td::Driver& d, std::string const& id) { return events_of_kind(d, id, "tool_call_finished"); };
+        auto result_of = [](Value const& ev) {
+            Value const* pl = ev.find("payload");
+            return pl ? td::get_string(*pl, "result").value_or("") : std::string{};
+        };
+        auto errored = [](Value const& ev) {
+            Value const* pl = ev.find("payload");
+            return pl != nullptr && td::get_bool(*pl, "is_error") == true;
+        };
+
+        // REC: a run_shell write, a read_sandbox_file read, recorded with its exec events.
+        {
+            td::Driver d(config(sandbox_root));
+            std::string const id = start(d, "shell");
+            check(!id.empty() && factory_calls == 1, "P5: a shell session starts with one sandbox from the host factory");
+            push(d, id, td::arr({tool_turn("run_shell", td::obj({{"source", td::str("echo hello > a.txt")}})),
+                                 tool_turn("read_sandbox_file", td::obj({{"path", td::str("a.txt")}})),
+                                 text_turn("done")}));
+            (void)call(d, "session_send", sid(id, {{"text", td::str("write and read")}}));
+            Value w = wait(d, id, "idle");
+            auto fin = finished(d, id);
+            check(fin.size() == 2 && !errored(fin[0]) && !errored(fin[1]) && result_of(fin[1]).find("hello") != std::string::npos,
+                  "P5: run_shell writes a.txt in the session's scratch and read_sandbox_file reads it back");
+            check(events_of_kind(d, id, "sandbox_exec_started").size() == 1 &&
+                      events_of_kind(d, id, "sandbox_exec_finished").size() == 1,
+                  "P5: run_shell's sandbox_exec pair is in the event stream");
+            Value const* snap = w.find("snapshot");
+            Value const* tc = snap ? snap->find("tool_calls") : nullptr;
+            check(tc && td::get_string(*tc, "mode") == "recorded" && td::get_u64(*tc, "made") == 2u,
+                  "P5: the snapshot counts two recorded real-tool calls");
+            auto dirs = session_dirs(sandbox_root);
+            check(dirs.size() == 1 && fs::exists(dirs[0] / "a.txt"), "P5: the file is in <root>/d-*/<session>/");
+
+            CallResult fk = call(d, "session_fork", sid(id));
+            check(fk.is_error && fk.error_code == "test.fork_unsupported", "P5 D5: a real-tool session cannot be forked");
+
+            CallResult ex = call(d, "scenario_export", sid(id, {{"name", td::str("p5_roundtrip")}}));
+            check(!ex.is_error, "P5: the real-tool session exports");
+            CallResult cl = call(d, "session_close", sid(id));
+            check(td::get_bool(cl.body, "scratch_removed") == true && !fs::exists(dirs.empty() ? fs::path{} : dirs[0]),
+                  "P5 D6: session_close removes the session's scratch directory");
+        }
+        check(fs::is_directory(sandbox_root) && fs::is_empty(sandbox_root, ec),
+              "P5 D6: the driver removes its own directory when it exits");
+
+        auto scenario = td::read_scenario_file(scen_root / "p5_roundtrip.json");
+        Value const* tx = scenario ? scenario->find("tool_exchanges") : nullptr;
+        check(tx && tx->is_array() && tx->as_array().size() == 2, "P5: the scenario records both real-tool calls");
+        if (scenario) {
+            int const before = factory_calls;
+            td::ReplayReport const r = td::replay_scenario(*scenario);
+            check(r.passed, "P5 D1/D8: the scenario replays offline with doubles, the whole event stream compared" +
+                                (r.problems.empty() ? std::string{} : ": " + r.problems[0]));
+            check(factory_calls == before && fs::is_empty(sandbox_root, ec), "P5 D1: the replay built no sandbox");
+
+            std::string const text = agentengine::json::dump(*scenario);
+            std::size_t const tx_at = text.find("\"tool_exchanges\"");
+            auto tampered = [&](std::string const& from, std::string const& to) -> std::optional<Value> {
+                std::string t = text;
+                std::size_t const pos = t.find(from, tx_at);
+                if (tx_at == std::string::npos || pos == std::string::npos) return std::nullopt;
+                t.replace(pos, from.size(), to);
+                auto v = agentengine::json::parse(t);
+                return v ? std::optional<Value>(*v) : std::nullopt;
+            };
+            auto fails_with = [](std::optional<Value> const& sc, std::string const& needle) {
+                if (!sc) return false;
+                td::ReplayReport const rr = td::replay_scenario(*sc);
+                bool const hit = !rr.passed && !rr.problems.empty() && rr.problems[0].find(needle) != std::string::npos;
+                if (!rr.problems.empty()) std::fprintf(stderr, "  .. %s\n", rr.problems[0].substr(0, 160).c_str());
+                return hit;
+            };
+            check(fails_with(tampered("echo hello > a.txt", "echo bye > a.txt"), "): test.replay_mismatch at tool call 0: the call differs"),
+                  "P5 D2: a recorded call whose arguments differ fails as test.replay_mismatch at tool call 0");
+            check(fails_with(tampered("hello", "HELLO"), ""), "P5 D3: an edited recorded result fails the replay");
+            // D4: drop the second exchange, or the whole list.
+            {
+                std::optional<Value> fewer;
+                if (tx != nullptr) {
+                    std::vector<Value> one{tx->as_array()[0]};
+                    fewer = set_field(*scenario, "tool_exchanges", td::arr(one));
+                }
+                check(fails_with(fewer, "): test.replay_mismatch at tool call 1: the call differs"),
+                      "P5 D4: a real-tool call the recording does not have fails the replay");
+                std::optional<Value> more;
+                if (tx != nullptr) {
+                    std::vector<Value> three = tx->as_array();
+                    three.push_back(tx->as_array()[1]);
+                    more = set_field(*scenario, "tool_exchanges", td::arr(three));
+                }
+                check(fails_with(more, "never made"), "P5 D4: a recorded call the replay never made fails it");
+                check(fails_with(set_field(*scenario, "tool_exchanges", Value{}), "test.real_tools_disabled"),
+                      "P5 D4: without its recording a real-tool scenario cannot replay (no sandbox in a replay)");
+                check(fails_with(set_field(*scenario, "segments", td::arr({td::obj({})})), "cannot have segments"),
+                      "P5 D5: a scenario with both segments and tool_exchanges is refused");
+            }
+            // D8: drop the recorded exec events and the replay's event stream no longer matches.
+            check(fails_with(tampered("\"exec_events\":[{", "\"exec_events\":[],\"x\":[{"), "event"),
+                  "P5 D8: a double that does not re-emit the sandbox_exec pair fails the event comparison");
+        }
+
+        // D5: no sandbox root, no real tools; fixtures_list says so.
+        {
+            td::Driver d;
+            CallResult r = call(d, "session_start", td::obj({{"fixture", td::str("shell")}}));
+            check(r.is_error && r.error_code == "test.real_tools_disabled",
+                  "P5 D5: without --sandbox-root a real-tool fixture is refused");
+            CallResult fl = call(d, "fixtures_list");
+            bool shell_unavailable = false;
+            if (Value const* fx = fl.body.find("fixtures"); fx && fx->is_array()) {
+                for (Value const& f : fx->as_array()) {
+                    if (td::get_string(f, "name") == "shell") shell_unavailable = td::get_bool(f, "available") == false;
+                }
+            }
+            check(shell_unavailable, "P5 D5: fixtures_list shows the shell fixture as unavailable");
+        }
+
+        // G3: a copy of the provider (what fork_from makes) never carries the real tools or the sandbox.
+        {
+            td::DriverHistoryProvider p;
+            fs::path const dir = base / "g3";
+            fs::create_directories(dir, ec);
+            auto sb = td::make_shell_sandbox(dir);
+            p.set_real_tools(td::real_tool_standins(), sb ? *sb : nullptr);
+            td::DriverHistoryProvider const q(p);
+            td::DriverHistoryProvider r;
+            r = p;
+            check(p.has_real_tools() && !q.has_real_tools() && !r.has_real_tools(),
+                  "P5 G3: a copied provider (fork_from's copy) has no real tools and no sandbox");
+        }
+
+        // D6: two drivers on one root never share or remove each other's scratch.
+        {
+            fs::path const shared = base / "shared";
+            td::Driver a(config(shared));
+            td::Driver b(config(shared));
+            std::string const ia = start(a, "shell");
+            std::string const ib = start(b, "shell");
+            check(ia == ib, "P5 D6 setup: both drivers name their first session the same (" + ia + ")");
+            auto write_read = [&](td::Driver& d, std::string const& id, std::string const& word) {
+                push(d, id, td::arr({tool_turn("run_shell", td::obj({{"source", td::str("echo " + word + " > f.txt")}})),
+                                     text_turn("ok")}));
+                (void)call(d, "session_send", sid(id, {{"text", td::str("write")}}));
+                (void)wait(d, id, "idle");
+            };
+            auto read_back = [&](td::Driver& d, std::string const& id) {
+                push(d, id, td::arr({tool_turn("read_sandbox_file", td::obj({{"path", td::str("f.txt")}})), text_turn("ok")}));
+                (void)call(d, "session_send", sid(id, {{"text", td::str("read")}}));
+                (void)wait(d, id, "idle");
+                auto fin = finished(d, id);
+                return fin.empty() ? std::string{} : result_of(fin.back());
+            };
+            write_read(a, ia, "alpha");
+            write_read(b, ib, "bravo");
+            check(read_back(a, ia).find("alpha") != std::string::npos, "P5 D6: driver A reads its own file");
+            (void)call(a, "session_close", sid(ia));
+            check(read_back(b, ib).find("bravo") != std::string::npos,
+                  "P5 D6: driver B still reads its own file after A closed its session of the same name");
+        }
+
+        // D7 + G7: containment through the driver, and removal that never follows a link out of the scratch.
+        {
+            fs::path const root = base / "contain";
+            fs::path const outside = base / "outside";
+            fs::create_directories(outside, ec);
+            { std::ofstream(outside / "keep.txt") << "OUTSIDE-SECRET"; }
+            { std::ofstream(base / "secret.txt") << "OUTSIDE-SECRET"; }
+            td::Driver d(config(root));
+            std::string const id = start(d, "shell");
+            auto dirs = session_dirs(root);
+            fs::path const scratch = dirs.empty() ? fs::path{} : dirs[0];
+            std::vector<std::string> const probes{
+                "cat ../secret.txt", "cat ../../secret.txt", "cat ../../../secret.txt", "cat " + (base / "secret.txt").generic_string(),
+                "cat NUL", "cat CON", "cat COM1", "cat CONIN$", "cd ..; cat ../secret.txt", "cp ../../../secret.txt x; cat x"};
+            std::vector<Value> turns;
+            for (std::string const& p : probes) turns.push_back(tool_turn("run_shell", td::obj({{"source", td::str(p)}})));
+            turns.push_back(text_turn("done"));
+            push(d, id, td::arr(turns));
+            (void)call(d, "session_send", sid(id, {{"text", td::str("probe")}}));
+            (void)wait(d, id, "idle", 60000);
+            bool leaked = false;
+            auto fin = finished(d, id);
+            for (Value const& ev : fin) leaked = leaked || result_of(ev).find("OUTSIDE-SECRET") != std::string::npos;
+            check(fin.size() == probes.size() && !leaked,
+                  "P5 D7: ../, absolute paths and device names never read outside the scratch (" + std::to_string(fin.size()) + " probes)");
+
+            // A link to a directory outside, planted by the host (the guest cannot make links), and a deep tree.
+            bool linked = false;
+            if (!scratch.empty()) {
+                fs::create_directory_symlink(outside, scratch / "out_link", ec);
+                linked = !ec;
+#ifdef _WIN32
+                if (!linked) {
+                    std::string const cmd = "cmd /c mklink /J \"" + (scratch / "out_link").string() + "\" \"" + outside.string() + "\" >NUL 2>&1";
+                    linked = std::system(cmd.c_str()) == 0;
+                }
+                std::wstring deep = L"\\\\?\\" + fs::absolute(scratch).wstring();
+                for (int i = 0; i < 60; ++i) deep += L"\\level_" + std::to_wstring(1000 + i);
+                fs::create_directories(fs::path(deep), ec);
+                check(!ec && deep.size() > 400, "P5 G7 setup: a directory tree deeper than MAX_PATH exists in scratch");
+#endif
+            }
+            check(linked, "P5 G7 setup: a directory link to outside the root is planted in the scratch");
+            CallResult cl = call(d, "session_close", sid(id));
+            check(td::get_bool(cl.body, "scratch_removed") == true && !fs::exists(fs::symlink_status(scratch, ec)),
+                  "P5 G7: the scratch (with the link and the deep tree) is removed");
+            check(fs::exists(outside / "keep.txt"), "P5 G7: removal did not follow the link: the outside file is intact");
+        }
+
+        // D10: caps. Planted files stand for what a model could write within its quota.
+        {
+            fs::path const root = base / "caps";
+            td::Driver d(config(root));
+            std::string const id = start(d, "shell");
+            auto dirs = session_dirs(root);
+            fs::path const scratch = dirs.empty() ? fs::path{} : dirs[0];
+            { std::ofstream(scratch / "big.txt", std::ios::binary) << std::string(100 * 1024, 'x'); }
+            { std::ofstream(scratch / "bin.dat", std::ios::binary) << std::string("\xFF\xFE\x80 not text", 12); }
+            {
+                std::ofstream f(scratch / "huge.bin", std::ios::binary);
+                std::string const mb(1024 * 1024, 'y');
+                for (int i = 0; i < 17; ++i) f << mb;
+            }
+            push(d, id, td::arr({tool_turn("read_sandbox_file", td::obj({{"path", td::str("big.txt")}})),
+                                 tool_turn("read_sandbox_file", td::obj({{"path", td::str("bin.dat")}})),
+                                 tool_turn("run_shell", td::obj({{"source", td::str("cp big.txt copy.txt")}})),
+                                 text_turn("done")}));
+            (void)call(d, "session_send", sid(id, {{"text", td::str("caps")}}));
+            (void)wait(d, id, "idle", 60000);
+            auto fin = finished(d, id);
+            check(fin.size() == 3 && errored(fin[0]) && result_of(fin[0]).find("read less") != std::string::npos,
+                  "P5 D10: a result over 64 KiB is replaced by an error before the model sees it");
+            check(fin.size() == 3 && errored(fin[1]) && result_of(fin[1]).find("UTF-8") != std::string::npos,
+                  "P5 D10: a result that is not UTF-8 is replaced by an error");
+            check(fin.size() == 3 && result_of(fin[2]).find("No space left") != std::string::npos && !fs::exists(scratch / "copy.txt"),
+                  "P5 D10: over the 16 MiB quota, a write is refused (" + (fin.size() == 3 ? result_of(fin[2]).substr(0, 120) : std::string{}) + ")");
+        }
+        {
+            // The call cap and the cancel check, on the wrapper itself (a fake inner tool counts real calls).
+            auto log = std::make_shared<td::RealToolLog>(std::nullopt);
+            int inner_calls = 0;
+            agentengine::ToolDescriptor fake = td::real_tool_standins()[0];
+            fake.invoke = [&inner_calls](Value const&, agentengine::EffectContext&) -> agentengine::result<Value> {
+                ++inner_calls;
+                return td::obj({{"ok", td::boolean(true)}});
+            };
+            agentengine::ToolDescriptor const wrapped = td::recording_tool(fake, log, nullptr);
+            agentengine::EffectContext ctx;
+            bool capped = false;
+            for (std::size_t i = 0; i <= td::kMaxRealToolCalls; ++i) {
+                auto r = wrapped.invoke(td::obj({}), ctx);
+                if (!r) capped = r.error().code == "test.real_tool_call_cap";
+            }
+            check(capped && inner_calls == static_cast<int>(td::kMaxRealToolCalls),
+                  "P5 D10: past the per-session call cap the real tool is not called");
+            auto log2 = std::make_shared<td::RealToolLog>(std::nullopt);
+            agentengine::ToolDescriptor const wrapped2 = td::recording_tool(fake, log2, nullptr);
+            std::stop_source stop;
+            agentengine::EffectContext cctx;
+            cctx.cancellation = stop.get_token();
+            stop.request_stop();
+            int const before = inner_calls;
+            auto r = wrapped2.invoke(td::obj({}), cctx);
+            check(!r && r.error().code == "test.real_tool_canceled" && inner_calls == before,
+                  "P5 G2: after cancel no real-tool call runs");
+            check(td::valid_utf8("plain \xC3\xA9 text") && !td::valid_utf8("\xFF") && !td::valid_utf8("\xC3") &&
+                      !td::valid_utf8("\xED\xA0\x80"),
+                  "P5: the UTF-8 check accepts text and refuses stray, truncated and surrogate bytes");
+        }
+        fs::remove_all(base, ec);
     }
 
     // ---- C2 (Windows form): observe from the MCP thread while the worker runs -------------------------------

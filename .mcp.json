@@ -3,7 +3,7 @@
     "agentengine-test": {
       "type": "stdio",
       "command": "build/agentengine_test_driver",
-      "args": []
+      "args": ["--sandbox-root", "build/test-driver-sandbox"]
     }
   }
 }

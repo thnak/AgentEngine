@@ -115,10 +115,14 @@ public:
     // `shared_python_runner()` already uses for Python (`tools/cli_chat.cpp:240`,
     // `cfg.mount_roots[kWorkMount] = scratch.wstring()`). The caller owns creating the directory
     // on disk; this function only wraps it in a mediated adapter.
-    [[nodiscard]] static result<std::unique_ptr<SessionShellSandbox>> create(std::filesystem::path host_root) {
+    // `wall_clock_budget` (ADR-208 G1): per `run_shell` call; the default is the runner's own. A host that
+    // must bound how long a cancel or close can wait (the test driver) passes a smaller one.
+    [[nodiscard]] static result<std::unique_ptr<SessionShellSandbox>> create(
+        std::filesystem::path host_root,
+        std::chrono::milliseconds wall_clock_budget = native_jail::mediated_shell::kDefaultShellWallClockBudget) {
         auto adapter = native_jail::mediated_shell::MediatedFileSystemAdapter::create(std::move(host_root));
         if (!adapter) return std::unexpected(adapter.error());
-        return std::unique_ptr<SessionShellSandbox>(new SessionShellSandbox(std::move(*adapter)));
+        return std::unique_ptr<SessionShellSandbox>(new SessionShellSandbox(std::move(*adapter), wall_clock_budget));
     }
 
     // The real, live `ToolDescriptor` for `run_shell` -- built via `make_tool_descriptor_with_invoke`
@@ -141,8 +145,11 @@ public:
     [[nodiscard]] FileSystemAdapter* filesystem_adapter() noexcept { return &fs_; }
 
 private:
-    explicit SessionShellSandbox(native_jail::mediated_shell::MediatedFileSystemAdapter fs)
-        : fs_(std::move(fs)), registry_(), state_(), shell_(fs_, registry_, kShellWorkMount) {}
+    SessionShellSandbox(native_jail::mediated_shell::MediatedFileSystemAdapter fs,
+                        std::chrono::milliseconds wall_clock_budget)
+        : fs_(std::move(fs)), registry_(), state_(),
+          shell_(fs_, registry_, kShellWorkMount, native_jail::kDefaultOutputCapBytes,
+                 wall_clock_budget) {}
 
     [[nodiscard]] result<RunShellReply> run(RunShellArgs const& args, EffectContext& ctx) {
         // ADR-170 (GitHub issue #64): the second real producer of `sandbox_exec_started`/`finished`.

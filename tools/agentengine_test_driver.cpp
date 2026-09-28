@@ -15,6 +15,8 @@
 //   --scenarios-root <dir>   where scenario_export writes / scenario_replay reads (default tests/scenarios)
 //   --fixtures-root <dir>    file fixtures, 015 Agent YAML; each must be git-tracked and unmodified
 //                            (default tests/fixtures/test_driver; ADR-182 §21)
+//   --sandbox-root <dir>     enables real tools (ADR-208): the driver makes its own directory under it, and
+//                            one scratch directory per real-tool session. Unset = real tools refused.
 // Every flag is a HOST decision, fixed for the process: no tool argument can turn live mode on, pick
 // the key, or change the budget (ADR-182 §12 C-3). Live mode needs an AGENTENGINE_WITH_HTTPS build.
 
@@ -33,6 +35,7 @@
 #endif
 
 #include "test_driver/fixture_trust.hpp"
+#include "test_driver/shell_sandbox.hpp"
 #include "test_driver/test_driver.hpp"
 #ifdef AGENTENGINE_WITH_HTTPS
 #include "test_driver/live_backend.hpp"
@@ -81,6 +84,7 @@ struct Args {
     unsigned    max_calls = 40;
     std::string scenarios_root = "tests/scenarios";
     std::string fixtures_root = "tests/fixtures/test_driver";
+    std::string sandbox_root;
 };
 
 bool parse_args(int argc, char** argv, Args& a) {
@@ -107,6 +111,8 @@ bool parse_args(int argc, char** argv, Args& a) {
             if (!value(a.scenarios_root)) return false;
         } else if (f == "--fixtures-root") {
             if (!value(a.fixtures_root)) return false;
+        } else if (f == "--sandbox-root") {
+            if (!value(a.sandbox_root)) return false;
         } else if (f == "--live-max-calls") {
             std::string n;
             if (!value(n)) return false;
@@ -129,6 +135,10 @@ int main(int argc, char** argv) {
     config.scenarios_root = args.scenarios_root;
     config.fixtures_root = args.fixtures_root;
     config.fixture_reader = agentengine::test_driver::git_committed_fixture;
+    if (!args.sandbox_root.empty()) {
+        config.sandbox_root = args.sandbox_root;
+        config.sandbox_factory = agentengine::test_driver::make_shell_sandbox;
+    }
     if (args.allow_live) {
 #ifdef AGENTENGINE_WITH_HTTPS
         std::string key = args.key_file.empty() ? std::string{} : read_key_file(args.key_file);

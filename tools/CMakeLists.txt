@@ -29,12 +29,15 @@ target_link_libraries(agentengine_mcp_conformance_client
 # never installed or linked by anything else.
 add_executable(agentengine_test_driver agentengine_test_driver.cpp)
 target_include_directories(agentengine_test_driver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(agentengine_test_driver PRIVATE agentengine::core agentengine_warnings)
+target_link_libraries(agentengine_test_driver PRIVATE agentengine::core agentengine::mediated_shell_runner agentengine_warnings)
 # ADR-182 §16: replays checked-in scenarios with the scripted model (no network); tests/CMakeLists.txt
 # registers one ctest per tests/scenarios/*.json.
 add_executable(agentengine_scenario_runner agentengine_scenario_runner.cpp)
 target_include_directories(agentengine_scenario_runner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(agentengine_scenario_runner PRIVATE agentengine::core agentengine_warnings)
+# ADR-208: the driver builds real sandboxes (the mediated shell); the runner only replays recorded doubles,
+# so it sees the shell's headers (run_shell's declared shape) but does NOT link it (ADR-208 G6).
+target_include_directories(agentengine_scenario_runner PRIVATE ${PROJECT_SOURCE_DIR}/src)
 if(MSVC)
   # Both include the whole AgentSession surface and exceed MSVC's default section limit (C1128).
   target_compile_options(agentengine_test_driver PRIVATE /bigobj)

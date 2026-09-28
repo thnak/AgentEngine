@@ -82,6 +82,25 @@ uses only a file that git tracks with no uncommitted change, and `fixtures_list`
 refused, with the reason. A fixture can't grant capabilities or name any other tool. The driver takes
 `--fixtures-root <dir>` to look elsewhere, and the scenario runner takes the same flag.
 
+**Real tools (ADR-208).** The `shell` fixture has `run_shell` and `read_sandbox_file`, which act on real
+files. A file fixture gets them by naming them in `spec.tools`. What bounds them:
+
+- `run_shell` is the engine's mediated shell. It runs a fixed set of built-in commands (`cd`, `ls`, `cat`,
+  `echo`, `mkdir`, `cp`, `mv`, `rm`, `export`) inside one scratch directory per session and never starts a
+  program.
+- They work only when the driver was started with `--sandbox-root <dir>`. The checked-in `.mcp.json` uses
+  `build/test-driver-sandbox`. Each driver makes its own directory there, and each session gets a fresh one
+  under it that is removed when the session closes.
+- The driver decides the permissions: read and write in that directory only, with a 16 MiB and 1,024-file
+  quota. A session may make 64 real-tool calls, each `run_shell` call runs for at most 2 s, and a result
+  over 64 KiB or not valid UTF-8 comes back as an error.
+- They can't be used by a live fixture, and a session that has them can't be forked.
+
+Every real-tool call is recorded, and `scenario_export` writes the calls into the scenario as
+`tool_exchanges`. Replay doesn't run the real tools: each recorded call is served back, and a call with
+other arguments fails the replay with `test.replay_mismatch at tool call N`. The scenario runner can't
+build a sandbox at all, so CI needs none. `tests/scenarios/scripted_shell_roundtrip.json` is an example.
+
 ## 3. Live exploration (engine on DeepSeek, Claude tester drives)
 
 Live mode needs an HTTPS build of the driver and a key file. The key file is never committed

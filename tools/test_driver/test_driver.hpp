@@ -11,8 +11,9 @@
 //   - fixture files (P4, added in §21): a fixture file is a 015 Agent document under a host-fixed
 //     root, accepted only when the host's trust check passes (git-tracked and unmodified), resolved
 //     only against the test tools below, and never able to grant a capability (§12 C-3);
-//   - real tools. The only tools are the in-process test doubles below, so an approval the tester
-//     gives authorizes nothing outside this process (§12 C-2);
+//   - real tools, until ADR-208 (P5): the mediated `run_shell` and `read_sandbox_file`, confined to a
+//     per-session scratch directory under a host-fixed root, recorded at the invoke seam, and replayed
+//     offline by doubles that serve the recording (§12 C-2, R5);
 //   - scenario export, assert, fork, live mode (later phases).
 //
 // Threading (ADR-182 §3.6, §12 R1). The MCP thread never touches an `AgentSession` directly. Each
@@ -33,6 +34,7 @@
 #include <sstream>
 #include <functional>
 #include <future>
+#include <random>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -56,6 +58,11 @@
 #include "agentengine/rt/message_codec.hpp"
 #include "agentengine/rt/thread_pool.hpp"
 #include "agentengine/testing/scripted_chat_client.hpp"
+#include "agentengine/tools/read_sandbox_file.hpp"
+// Only for `RunShellTool`, run_shell's declared shape (ADR-208 §2.3). Nothing here constructs a sandbox:
+// that is `DriverConfig::sandbox_factory`'s job, so a binary that never sets it (the scenario runner)
+// does not link the mediated shell at all (ADR-208 G6).
+#include "backends/native_jail/session_shell_wiring.hpp"
 
 namespace agentengine::test_driver {
 
@@ -72,6 +79,13 @@ inline constexpr std::size_t kMaxEventsPerResult = 200;
 inline constexpr std::uint64_t kMaxTurnsPerRun = 32;
 inline constexpr std::size_t kMaxForkDepth = 8;
 inline constexpr auto kJobTimeout = std::chrono::seconds(10);
+// ADR-208 G1/G2: what one driver session may do with its real tools.
+inline constexpr std::uint64_t kRealToolReadCapBytes = 1u << 20;   // FsRead size cap
+inline constexpr std::uint64_t kRealToolQuotaBytes = 16u << 20;    // FsWrite quota
+inline constexpr std::uint32_t kRealToolFileCap = 1024;            // FsWrite file count
+inline constexpr std::size_t kMaxRealToolCalls = 64;               // per session
+inline constexpr std::size_t kMaxRealToolResultBytes = 64u * 1024u;
+inline constexpr std::chrono::milliseconds kRealToolWallClock{2000};  // per run_shell call
 
 // ---- JSON helpers ----------------------------------------------------------------------------------
 
@@ -175,6 +189,11 @@ struct Fixture {
          "Like basic, but a REAL model answers (live mode; needs --allow-live). Every call is recorded.",
          {"echo", "gated_echo", "fail"}, true, true},
         {"no_tools_live", "Like no_tools, with a REAL model (live mode; needs --allow-live).", {}, true, true},
+        {"shell",
+         "run_shell (the mediated shell, confined to this session's own scratch directory; needs the driver "
+         "started with --sandbox-root), read_sandbox_file and echo. Real-tool calls are recorded and replay "
+         "offline (ADR-208).",
+         {"run_shell", "read_sandbox_file", "echo"}, true},
     };
     return all;
 }
@@ -193,6 +212,260 @@ struct Fixture {
         if (!ok) return false;
     }
     return true;
+}
+
+// ---- Real tools (ADR-208, P5) ------------------------------------------------------------------------
+//
+// A session whose fixture names a real tool gets the grant below and nothing else (I2: derived by the driver,
+// never declared by a fixture), plus, when recording, a sandbox from `DriverConfig::sandbox_factory` over its
+// own scratch directory. Every real-tool call passes through `recording_tool`, which captures its arguments,
+// its outcome and the `sandbox_exec_*` events it emitted. A replay builds `double_tool`s instead: same
+// descriptor, no sandbox, and each call must match the recording or the replay fails (like C8).
+
+[[nodiscard]] inline bool is_real_tool(std::string_view n) { return n == "run_shell" || n == "read_sandbox_file"; }
+
+// The real tools' declared shape (name, description, schema, ceiling, approval, effect class). The
+// read_sandbox_file entry is the real tool: it acts only through `ctx.sandbox_fs`. run_shell's invoke is the
+// unreachable stub; the live descriptor comes from the session's sandbox.
+[[nodiscard]] inline std::vector<ToolDescriptor> real_tool_standins() {
+    return {make_tool_descriptor<RunShellTool>(), make_tool_descriptor<tools::ReadSandboxFile>()};
+}
+
+[[nodiscard]] inline CapabilitySet real_tool_grant() {
+    return CapabilitySet::grant_root(
+        {Capability{cap::FsRead{std::string(kShellWorkMount), "", kRealToolReadCapBytes}},
+         Capability{cap::FsWrite{std::string(kShellWorkMount), "", kRealToolQuotaBytes, kRealToolFileCap}}});
+}
+
+// Admission binds each declared requirement with `contains()`, and an uncapped declaration never fits under a
+// capped grant (capability.hpp: a capped parent and an uncapped request read as widening). run_shell declares
+// uncapped `FsRead<"work">`/`FsWrite<"work">`, so the driver narrows a real tool's declared ceiling to exactly
+// the capped grant above: narrower than the tool's own declaration, never wider (I2). The shell then enforces
+// the quota and size cap from the held grant (its gap-12 lookups). ADR-208 §7.
+[[nodiscard]] inline ToolDescriptor with_granted_ceiling(ToolDescriptor d) {
+    for (Capability& c : d.capability_ceiling) {
+        if (auto const* r = std::get_if<cap::FsRead>(&c); r != nullptr && r->mount_id == kShellWorkMount) {
+            c = Capability{cap::FsRead{r->mount_id, r->path_prefix, kRealToolReadCapBytes}};
+        } else if (auto const* w = std::get_if<cap::FsWrite>(&c); w != nullptr && w->mount_id == kShellWorkMount) {
+            c = Capability{cap::FsWrite{w->mount_id, w->path_prefix, kRealToolQuotaBytes, kRealToolFileCap}};
+        }
+    }
+    return d;
+}
+
+// One session's sandbox, as the driver sees it. Built only by `DriverConfig::sandbox_factory`.
+class RealToolSandbox {
+public:
+    virtual ~RealToolSandbox() = default;
+    [[nodiscard]] virtual ToolDescriptor run_shell() = 0;
+    [[nodiscard]] virtual FileSystemAdapter* filesystem() = 0;
+};
+using RealToolSandboxFactory = std::function<result<std::shared_ptr<RealToolSandbox>>(std::filesystem::path const&)>;
+
+struct ExecEventRecord {
+    run_event_kind kind = run_event_kind::sandbox_exec_started;
+    std::string    backend;
+    std::string    stage;
+    bool           ok = true;
+    std::string    error_code;
+};
+
+// One real-tool call as recorded, and as a double serves it back.
+struct ToolExchange {
+    std::string                  tool_name;
+    std::string                  arguments;  // json::dump of the call's arguments
+    bool                         is_error = false;
+    Value                        result;     // when !is_error
+    failure_class                klass = failure_class::fatal;
+    std::string                  code;
+    std::string                  message;
+    std::vector<ExecEventRecord> exec_events;
+};
+
+struct ToolMismatch {
+    std::size_t call_index = 0;
+    std::string expected;
+    std::string actual;
+};
+
+// Record mode: the exchanges so far. Replay mode: the recording and how far it has been served. Called from
+// the session's worker; the monitor's reads come from the MCP thread, hence the mutex.
+class RealToolLog {
+public:
+    explicit RealToolLog(std::optional<std::vector<ToolExchange>> doubles) : doubles_(std::move(doubles)) {}
+
+    [[nodiscard]] bool replaying() const { return doubles_.has_value(); }
+    [[nodiscard]] std::size_t calls() const {
+        std::lock_guard lock(mu_);
+        return replaying() ? served_ : recorded_.size();
+    }
+    void record(ToolExchange x) {
+        std::lock_guard lock(mu_);
+        recorded_.push_back(std::move(x));
+    }
+    [[nodiscard]] std::vector<ToolExchange> recorded() const {
+        std::lock_guard lock(mu_);
+        return recorded_;
+    }
+    [[nodiscard]] std::size_t expected() const { return doubles_ ? doubles_->size() : 0; }
+    [[nodiscard]] std::optional<ToolMismatch> mismatch() const {
+        std::lock_guard lock(mu_);
+        return mismatch_;
+    }
+    // The recorded exchange for the next call, or why there is none. A mismatch is terminal, like C8's.
+    [[nodiscard]] std::variant<ToolExchange, error> serve(std::string const& tool, std::string const& arguments) {
+        std::lock_guard lock(mu_);
+        std::size_t const n = served_++;
+        auto diverged = [&](std::string expected) {
+            if (!mismatch_) mismatch_ = ToolMismatch{n, std::move(expected), tool + " " + arguments};
+            return error{failure_class::contract,
+                         "test.replay_mismatch at tool call " + std::to_string(n) + ": the call differs from the recording",
+                         "test.replay_mismatch"};
+        };
+        if (mismatch_) return diverged("(an earlier tool call already diverged)");
+        if (n >= doubles_->size()) return diverged("(no recorded call)");
+        ToolExchange const& x = (*doubles_)[n];
+        if (x.tool_name != tool || x.arguments != arguments) return diverged(x.tool_name + " " + x.arguments);
+        return x;
+    }
+
+private:
+    mutable std::mutex                        mu_;
+    std::optional<std::vector<ToolExchange>>  doubles_;
+    std::vector<ToolExchange>                 recorded_;
+    std::size_t                               served_ = 0;
+    std::optional<ToolMismatch>               mismatch_;
+};
+
+[[nodiscard]] inline bool valid_utf8(std::string_view s) {
+    std::size_t i = 0;
+    while (i < s.size()) {
+        auto const c = static_cast<unsigned char>(s[i]);
+        std::size_t n = 0;
+        std::uint32_t cp = 0;
+        if (c < 0x80) { ++i; continue; }
+        if ((c & 0xE0) == 0xC0) { n = 1; cp = c & 0x1F; }
+        else if ((c & 0xF0) == 0xE0) { n = 2; cp = c & 0x0F; }
+        else if ((c & 0xF8) == 0xF0) { n = 3; cp = c & 0x07; }
+        else return false;
+        for (std::size_t k = 1; k <= n; ++k) {
+            if (i + k >= s.size()) return false;
+            auto const cc = static_cast<unsigned char>(s[i + k]);
+            if ((cc & 0xC0) != 0x80) return false;
+            cp = (cp << 6) | (cc & 0x3F);
+        }
+        std::uint32_t const min = n == 1 ? 0x80 : n == 2 ? 0x800 : 0x10000;
+        if (cp < min || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return false;
+        i += n + 1;
+    }
+    return true;
+}
+
+// Record mode (ADR-208 §2.4, G1, G2, M1): refuses once the session is cancelled or its call cap is spent,
+// captures the call's sandbox_exec_* events at the sink, replaces an oversized or non-UTF-8 result with an
+// error before the model or any event sees it, and records the outcome the session actually got.
+[[nodiscard]] inline ToolDescriptor recording_tool(ToolDescriptor d, std::shared_ptr<RealToolLog> log,
+                                                   std::shared_ptr<RealToolSandbox> keep_alive) {
+    ToolDescriptor::InvokeFn inner = std::move(d.invoke);
+    std::string const name = d.name;
+    d.invoke = [inner = std::move(inner), log, keep_alive, name](Value const& args, EffectContext& ctx) -> result<Value> {
+        ToolExchange x;
+        x.tool_name = name;
+        x.arguments = json::dump(args);
+        result<Value> out = [&]() -> result<Value> {
+            if (ctx.cancellation.stop_requested()) {
+                return std::unexpected(error{failure_class::resource,
+                                             "the session was cancelled; no further real-tool calls run",
+                                             "test.real_tool_canceled"});
+            }
+            if (log->calls() >= kMaxRealToolCalls) {
+                return std::unexpected(error{failure_class::resource,
+                                             "this session has used all " + std::to_string(kMaxRealToolCalls) +
+                                                 " of its real-tool calls",
+                                             "test.real_tool_call_cap"});
+            }
+            auto previous = ctx.sandbox_exec_sink;
+            ctx.sandbox_exec_sink = [&x, &previous](run_event_kind k, run_event_payload::SandboxExec p) {
+                x.exec_events.push_back(ExecEventRecord{k, p.backend, p.stage, p.ok, p.error_code});
+                if (previous) previous(k, std::move(p));
+            };
+            result<Value> r = inner(args, ctx);
+            ctx.sandbox_exec_sink = std::move(previous);
+            return r;
+        }();
+        if (out) {
+            std::string const text = json::dump(*out);
+            if (text.size() > kMaxRealToolResultBytes) {
+                out = std::unexpected(error{failure_class::resource,
+                                            "the tool result is over " + std::to_string(kMaxRealToolResultBytes) +
+                                                " bytes; read less at a time",
+                                            "test.real_tool_output_too_large"});
+            } else if (!valid_utf8(text)) {
+                out = std::unexpected(error{failure_class::contract, "the tool result is not valid UTF-8 text",
+                                            "test.real_tool_output_not_utf8"});
+            }
+        }
+        if (out) {
+            x.result = *out;
+        } else {
+            x.is_error = true;
+            x.klass = out.error().klass;
+            x.code = out.error().code;
+            x.message = out.error().message;
+        }
+        log->record(std::move(x));
+        return out;
+    };
+    return d;
+}
+
+// Replay mode (ADR-208 §2.5): the same descriptor, whose invoke serves the recording and touches nothing.
+[[nodiscard]] inline ToolDescriptor double_tool(ToolDescriptor d, std::shared_ptr<RealToolLog> log) {
+    std::string const name = d.name;
+    d.invoke = [log, name](Value const& args, EffectContext& ctx) -> result<Value> {
+        auto served = log->serve(name, json::dump(args));
+        if (auto const* e = std::get_if<error>(&served)) return std::unexpected(*e);
+        ToolExchange const& x = std::get<ToolExchange>(served);
+        std::size_t k = 0;
+        for (ExecEventRecord const& ev : x.exec_events) {
+            run_event_payload::SandboxExec p;
+            p.exec_id = "double_" + std::to_string(++k);
+            p.backend = ev.backend;
+            p.stage = ev.stage;
+            p.ok = ev.ok;
+            p.error_code = ev.error_code;
+            ctx.sandbox_exec_sink(ev.kind, std::move(p));
+        }
+        if (x.is_error) return std::unexpected(error{x.klass, x.message, x.code});
+        return x.result;
+    };
+    return d;
+}
+
+// Removes `path` and everything under it without following a link (ADR-208 G7): a symbolic link or junction
+// is removed as an entry, never descended into. On Windows the walk uses the \\?\ form, so a deep tree the
+// mediated shell made (it uses that form too) is not left behind by MAX_PATH. Returns false if anything is left.
+[[nodiscard]] inline bool remove_tree_no_follow(std::filesystem::path path) {
+    std::error_code ec;
+#ifdef _WIN32
+    path = std::filesystem::absolute(path, ec);
+    if (ec) return false;
+    if (!path.native().starts_with(L"\\\\?\\")) path = std::filesystem::path(L"\\\\?\\" + path.native());
+#endif
+    auto const st = std::filesystem::symlink_status(path, ec);
+    if (st.type() == std::filesystem::file_type::not_found) return true;
+    if (ec) return false;
+    bool ok = true;
+    if (st.type() == std::filesystem::file_type::directory) {
+        std::vector<std::filesystem::path> children;
+        for (std::filesystem::directory_iterator it(path, ec), end; !ec && it != end; it.increment(ec)) {
+            children.push_back(it->path());
+        }
+        if (ec) ok = false;
+        for (std::filesystem::path const& c : children) ok = remove_tree_no_follow(c) && ok;
+    }
+    std::filesystem::remove(path, ec);
+    return ok && !ec;
 }
 
 // ---- File fixtures (ADR-182 §21, P4) ------------------------------------------------------------------
@@ -297,11 +570,14 @@ struct FixtureLoad {
     return FixtureLoad{std::move(f), {}, {}};
 }
 
-// The name-keyed registry a file fixture's spec.tools resolves against: the test tools and nothing else.
+// The name-keyed registry a file fixture's spec.tools resolves against: the test tools and the real tools'
+// stand-ins (ADR-208), nothing else. Naming a real tool is how a fixture asks for one; the driver decides
+// the grant and the sandbox.
 [[nodiscard]] inline ToolRegistry const& test_tool_registry() {
     static ToolRegistry const registry = [] {
         ToolRegistry r;
         for (ToolDescriptor const& d : all_test_tool_descriptors()) (void)r.register_tool(d.name, d, tool_provenance::native);
+        for (ToolDescriptor const& d : real_tool_standins()) (void)r.register_tool(d.name, d, tool_provenance::native);
         return r;
     }();
     return registry;
@@ -311,18 +587,45 @@ struct FixtureLoad {
 
 class DriverHistoryProvider {
 public:
-    void set_tools(std::vector<ToolDescriptor> tools) { tools_ = std::move(tools); }
+    DriverHistoryProvider() = default;
+    // `AgentSession::fork_from` copies the provider. A copy gets the test tools only: never the real tools,
+    // their sandbox or its filesystem view, so no fork can alias a session's scratch (ADR-208 G3, ADR-096 C2).
+    DriverHistoryProvider(DriverHistoryProvider const& o) : tools_(o.tools_) {}
+    DriverHistoryProvider& operator=(DriverHistoryProvider const& o) {
+        if (this != &o) {
+            tools_ = o.tools_;
+            real_tools_.clear();
+            sandbox_fs_ = nullptr;
+            sandbox_.reset();
+        }
+        return *this;
+    }
+    DriverHistoryProvider(DriverHistoryProvider&&) = default;
+    DriverHistoryProvider& operator=(DriverHistoryProvider&&) = default;
 
-    [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext&) {
+    void set_tools(std::vector<ToolDescriptor> tools) { tools_ = std::move(tools); }
+    void set_real_tools(std::vector<ToolDescriptor> tools, std::shared_ptr<RealToolSandbox> sandbox) {
+        real_tools_ = std::move(tools);
+        sandbox_ = std::move(sandbox);
+        sandbox_fs_ = sandbox_ ? sandbox_->filesystem() : nullptr;
+    }
+    [[nodiscard]] bool has_real_tools() const { return !real_tools_.empty() || sandbox_ != nullptr; }
+
+    [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext& ctx) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
         c.tools = tools_;
+        c.tools.insert(c.tools.end(), real_tools_.begin(), real_tools_.end());
+        if (sandbox_fs_ != nullptr) ctx.sandbox_fs = sandbox_fs_;
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
 
 private:
-    std::vector<ToolDescriptor> tools_;
+    std::vector<ToolDescriptor>      tools_;
+    std::vector<ToolDescriptor>      real_tools_;
+    std::shared_ptr<RealToolSandbox> sandbox_;
+    FileSystemAdapter*               sandbox_fs_ = nullptr;
 };
 
 // ---- The model behind a session: scripted (default) or live (ADR-182 §3.3) ---------------------------
@@ -633,6 +936,13 @@ struct DriverConfig {
     // wires git_committed_fixture (fixture_trust.hpp), which returns the COMMITTED blob, never the working
     // file (§22). Empty = read the working file (no symlinks), which only the scenario runner and tests use.
     std::function<result<std::string>(std::filesystem::path const&)> fixture_reader;
+    // ADR-208: real tools. Both empty = a fixture naming a real tool is refused (test.real_tools_disabled).
+    // The driver creates its own directory under `sandbox_root`, and one directory per session under that.
+    std::filesystem::path  sandbox_root;
+    RealToolSandboxFactory sandbox_factory;
+    // Replay only, set by replay_scenario from the scenario file, never by a tool argument (ADR-208 G4): a
+    // real-tool session serves these instead of building a sandbox.
+    std::optional<std::vector<ToolExchange>> tool_doubles;
 };
 
 // ---- Event → JSON ----------------------------------------------------------------------------------
@@ -946,6 +1256,9 @@ struct DriverSession {
     // each segment in turn, forking between them, then this session's own turns and steps.
     std::vector<Value>               segments;
     std::string                      nondeterministic_reason;  // non-empty = cannot be exported
+    // Real-tool sessions only (ADR-208): the recording or the doubles, and the scratch directory to remove.
+    std::shared_ptr<RealToolLog>     real;
+    std::filesystem::path            sandbox_dir;
     std::uint64_t                    action_mark = 0;  // monitor seq at the last send/resolve/cancel
     std::uint64_t                    next_call_id = 1;
     // Declared LAST so it is destroyed FIRST: its destructor finishes every queued job while the
@@ -1177,6 +1490,77 @@ template <class V>
 // Rewrites every string that starts with "<session_id>:" to start with "<S>:", recursively. Run and
 // interaction ids carry the session id as their prefix; nothing else in the event stream depends on
 // which driver session produced it (ADR-182 §12 R6).
+// ADR-208: a recorded real-tool call in a scenario file. `arguments` and `result` are JSON values, compared
+// and served as json::dump of each; exec events keep what the event stream shows (no exec_id).
+[[nodiscard]] inline Value exchange_to_json(ToolExchange const& x) {
+    std::vector<Value> evs;
+    for (ExecEventRecord const& e : x.exec_events) {
+        evs.push_back(obj({{"kind", str(std::string(kind_name(e.kind)))},
+                           {"backend", str(e.backend)},
+                           {"stage", str(e.stage)},
+                           {"ok", boolean(e.ok)},
+                           {"error_code", str(e.error_code)}}));
+    }
+    auto args = json::parse(x.arguments);
+    Members m{{"tool_name", str(x.tool_name)}, {"arguments", args ? *args : str(x.arguments)}};
+    if (x.is_error) {
+        m.emplace_back("error", obj({{"class", str(std::string(failure_class_name(x.klass)))},
+                                     {"code", str(x.code)},
+                                     {"message", str(x.message)}}));
+    } else {
+        m.emplace_back("result", x.result);
+    }
+    m.emplace_back("exec_events", arr(std::move(evs)));
+    return obj(std::move(m));
+}
+
+[[nodiscard]] inline result<ToolExchange> exchange_from_json(Value const& v) {
+    auto bad = [](std::string m) {
+        return std::unexpected(error{failure_class::contract, std::move(m), "test.bad_scenario"});
+    };
+    ToolExchange x;
+    auto name = get_string(v, "tool_name");
+    if (!name) return bad("no tool_name");
+    x.tool_name = *name;
+    Value const* a = v.find("arguments");
+    if (a == nullptr) return bad("no arguments");
+    x.arguments = json::dump(*a);
+    Value const* r = v.find("result");
+    Value const* e = v.find("error");
+    if ((r == nullptr) == (e == nullptr)) return bad("needs exactly one of result and error");
+    if (r != nullptr) {
+        x.result = *r;
+    } else {
+        x.is_error = true;
+        auto klass = failure_class_from(get_string(*e, "class").value_or(""));
+        if (!klass) return bad("unknown error class");
+        x.klass = *klass;
+        x.code = get_string(*e, "code").value_or("");
+        x.message = get_string(*e, "message").value_or("");
+        if (x.code.empty()) return bad("an error needs a code");
+    }
+    if (Value const* evs = v.find("exec_events"); evs != nullptr) {
+        if (!evs->is_array()) return bad("exec_events must be a list");
+        for (Value const& ev : evs->as_array()) {
+            ExecEventRecord rec;
+            std::string const kind = get_string(ev, "kind").value_or("");
+            if (kind == kind_name(run_event_kind::sandbox_exec_started)) {
+                rec.kind = run_event_kind::sandbox_exec_started;
+            } else if (kind == kind_name(run_event_kind::sandbox_exec_finished)) {
+                rec.kind = run_event_kind::sandbox_exec_finished;
+            } else {
+                return bad("exec event kind '" + kind + "' is not a sandbox_exec event");
+            }
+            rec.backend = get_string(ev, "backend").value_or("");
+            rec.stage = get_string(ev, "stage").value_or("");
+            rec.ok = get_bool(ev, "ok").value_or(true);
+            rec.error_code = get_string(ev, "error_code").value_or("");
+            x.exec_events.push_back(std::move(rec));
+        }
+    }
+    return x;
+}
+
 [[nodiscard]] inline Value normalize_ids(Value const& v, std::string const& session_id) {
     std::string const prefix = session_id + ":";
     switch (v.kind()) {
@@ -1208,6 +1592,14 @@ class Driver {
 public:
     Driver() = default;
     explicit Driver(DriverConfig config) : config_(std::move(config)) {}
+    Driver(Driver const&) = delete;
+    Driver& operator=(Driver const&) = delete;
+    // Sessions first (each drains its jobs and drops its sandbox), then this driver's own scratch directory
+    // (ADR-208 C1, G7). A killed driver leaves that directory behind (disk only; ADR-208 residual).
+    ~Driver() {
+        sessions_.clear();
+        if (!own_scratch_.empty()) (void)remove_tree_no_follow(own_scratch_);
+    }
 
     // One JSON-RPC message in, zero or one JSON-RPC message out (notifications get no reply). Every
     // reply passes the secret canary filter (ADR-182 §12 R8, P6): a reply containing a canary string
@@ -1584,6 +1976,16 @@ private:
                                                    {"actual", str(mm->actual)},
                                                    {"actual_request", mm->actual_request}}));
         }
+        if (s.real) {
+            m.emplace_back("tool_calls", obj({{"mode", str(s.real->replaying() ? "double" : "recorded")},
+                                              {"made", num(static_cast<double>(s.real->calls()))},
+                                              {"recorded", num(static_cast<double>(s.real->expected()))}}));
+            if (std::optional<ToolMismatch> const tm = s.real->mismatch()) {
+                m.emplace_back("tool_replay_mismatch", obj({{"call_index", num(static_cast<double>(tm->call_index))},
+                                                            {"expected", str(tm->expected)},
+                                                            {"actual", str(tm->actual)}}));
+            }
+        }
         if (st == run_state::running) {
 #ifdef AGENTENGINE_TEST_DRIVER_C2_RACE
             // C2 positive control only (ADR-182 §8): reads the session's history from the MCP thread
@@ -1612,6 +2014,45 @@ private:
         return obj(std::move(m));
     }
 
+    // ---- real tools (ADR-208) ----
+
+    [[nodiscard]] static bool uses_real_tools(Fixture const& f) {
+        return std::any_of(f.tools.begin(), f.tools.end(), [](std::string const& t) { return is_real_tool(t); });
+    }
+    [[nodiscard]] bool real_tools_available() const {
+        return config_.tool_doubles.has_value() ||
+               (!config_.sandbox_root.empty() && static_cast<bool>(config_.sandbox_factory));
+    }
+
+    // `<sandbox_root>/d-<16 hex>/<session id>`, empty. The first call creates this driver's own directory
+    // with an exclusive create, so two drivers on one root never share or remove each other's (ADR-208 C1).
+    [[nodiscard]] result<std::filesystem::path> session_scratch(std::string const& session_id) {
+        auto fail = [](std::string m) {
+            return std::unexpected(error{failure_class::resource, std::move(m), "test.sandbox_failed"});
+        };
+        std::error_code ec;
+        if (own_scratch_.empty()) {
+            if (std::filesystem::is_symlink(std::filesystem::symlink_status(config_.sandbox_root, ec))) {
+                return fail("the sandbox root is a link; give the driver a real directory");
+            }
+            std::filesystem::create_directories(config_.sandbox_root, ec);
+            std::random_device rd;
+            for (int attempt = 0; attempt < 8 && own_scratch_.empty(); ++attempt) {
+                std::uint64_t const r = (static_cast<std::uint64_t>(rd()) << 32) ^ static_cast<std::uint64_t>(rd());
+                char hex[17];
+                std::snprintf(hex, sizeof hex, "%016llx", static_cast<unsigned long long>(r));
+                std::filesystem::path const candidate = config_.sandbox_root / ("d-" + std::string(hex));
+                // create_directory is false (no error) when the name exists: another driver's, so try again.
+                if (std::filesystem::create_directory(candidate, ec) && !ec) own_scratch_ = candidate;
+            }
+            if (own_scratch_.empty()) return fail("cannot create this driver's directory under the sandbox root");
+        }
+        std::filesystem::path const dir = own_scratch_ / session_id;
+        if (!remove_tree_no_follow(dir)) return fail("a leftover scratch directory for " + session_id + " could not be removed");
+        if (!std::filesystem::create_directory(dir, ec) || ec) return fail("cannot create the session's scratch directory");
+        return dir;
+    }
+
     // ---- tools ----
 
     ToolResultJson t_fixtures_list(Value const&) {
@@ -1624,7 +2065,9 @@ private:
                                {"tools", arr(std::move(tools))},
                                {"suspend_for_approval", boolean(f.suspend_for_approval)},
                                {"live", boolean(f.live)},
-                               {"available", boolean(!f.live || static_cast<bool>(config_.live_backend_factory))},
+                               {"available", boolean((!f.live || static_cast<bool>(config_.live_backend_factory)) &&
+                                                     (!uses_real_tools(f) || real_tools_available()))},
+                               {"real_tools", boolean(uses_real_tools(f))},
                                {"source", str(f.source)}}));
         }
         // File fixtures (§21): every <name>.yaml under the host's root, with whether it would load now.
@@ -1648,7 +2091,8 @@ private:
                 m.emplace_back("tools", arr(std::move(tools)));
                 m.emplace_back("suspend_for_approval", boolean(load.fixture->suspend_for_approval));
                 m.emplace_back("has_instructions", boolean(!load.fixture->instructions.empty()));
-                m.emplace_back("available", boolean(true));
+                m.emplace_back("available", boolean(!uses_real_tools(*load.fixture) || real_tools_available()));
+                m.emplace_back("real_tools", boolean(uses_real_tools(*load.fixture)));
             } else {
                 m.emplace_back("available", boolean(false));
                 m.emplace_back("refused", obj({{"code", str(load.code)}, {"message", str(load.message)}}));
@@ -1688,6 +2132,16 @@ private:
         if (sessions_.size() >= kMaxSessions) {
             return err("test.too_many_sessions", "close a session first (max " + std::to_string(kMaxSessions) + ")");
         }
+        // ADR-208: real tools only sandboxed (or as doubles in a replay), never in live mode (ADR-182 §11 Q2).
+        bool const wants_real = uses_real_tools(*fixture);
+        if (wants_real && fixture->live) {
+            return err("test.bad_fixture", "a live fixture cannot have real tools (ADR-208, ADR-182 §11 Q2)");
+        }
+        if (wants_real && !real_tools_available()) {
+            return err("test.real_tools_disabled", "fixture " + fixture->name +
+                                                       " uses real tools; the driver must be started with "
+                                                       "--sandbox-root (a host decision)");
+        }
 
         auto ds = std::make_unique<DriverSession>();
         ds->id = "s" + std::to_string(next_session_++);
@@ -1707,6 +2161,8 @@ private:
             ds->script.emplace();
             backend = std::make_shared<ScriptedBackend>(*ds->script);
         }
+        // The grant a real-tool session holds, the same in record and replay (ADR-208 G5, D9).
+        if (wants_real) ds->held = real_tool_grant();
         session.emplace_chat_client(std::move(backend), ds->requests, ds->exchanges, ds->expectations, ds->id);
         session.set_capabilities(&ds->held);
         session.set_suspend_for_approval(fixture->suspend_for_approval);
@@ -1716,6 +2172,34 @@ private:
                 tools.push_back(d);
         }
         session.history_provider().set_tools(std::move(tools));
+        if (wants_real) {
+            auto named = [&](std::string const& n) {
+                return std::find(fixture->tools.begin(), fixture->tools.end(), n) != fixture->tools.end();
+            };
+            ds->real = std::make_shared<RealToolLog>(config_.tool_doubles);
+            std::vector<ToolDescriptor> real;
+            std::shared_ptr<RealToolSandbox> sandbox;
+            if (config_.tool_doubles) {
+                for (ToolDescriptor const& d : real_tool_standins())
+                    if (named(d.name)) real.push_back(double_tool(with_granted_ceiling(d), ds->real));
+            } else {
+                auto dir = session_scratch(ds->id);
+                if (!dir) return err("test.sandbox_failed", dir.error().message);
+                auto made = config_.sandbox_factory(*dir);
+                if (!made || !*made) {
+                    (void)remove_tree_no_follow(*dir);
+                    return err("test.sandbox_failed", made ? "the sandbox factory returned nothing" : made.error().message);
+                }
+                sandbox = *made;
+                ds->sandbox_dir = *dir;
+                for (ToolDescriptor const& d : real_tool_standins()) {
+                    if (!named(d.name)) continue;
+                    real.push_back(recording_tool(with_granted_ceiling(d.name == "run_shell" ? sandbox->run_shell() : d),
+                                                  ds->real, sandbox));
+                }
+            }
+            session.history_provider().set_real_tools(std::move(real), std::move(sandbox));
+        }
         // Installed once, before any job runs (ADR-182 §12 R1).
         std::shared_ptr<SessionMonitor> monitor = ds->monitor;
         session.set_run_event_tap([monitor](RunEvent const& ev) { monitor->on_event(ev); });
@@ -1741,6 +2225,11 @@ private:
             return err("test.session_suspended",
                        "fork only an idle session: fork_from drops open interactions, so a fork of a suspended "
                        "session could never be resumed (resolve or cancel first, or fork before the send)");
+        }
+        if (src->real) {
+            return err("test.fork_unsupported",
+                       "a session with real tools cannot be forked: the fork would share or have to copy its scratch "
+                       "directory (ADR-208 §2.2)");
         }
         if (src->segments.size() >= kMaxForkDepth) {
             return err("test.fork_too_deep", "a fork chain is capped at " + std::to_string(kMaxForkDepth) + " forks");
@@ -2043,7 +2532,11 @@ private:
             s.monitor->set_state(run_state::running);
             (void)s.pool->submit(cancel_suspended_job(&s));
         }
+        std::filesystem::path const scratch = s.sandbox_dir;
         sessions_.erase(it);  // ~DriverSession: the pool finishes queued jobs first (§12 R10)
+        // The sandbox is gone with the session; its directory goes now (ADR-208 G7).
+        last_scratch_removed_.reset();
+        if (!scratch.empty()) last_scratch_removed_ = remove_tree_no_follow(scratch);
         return ToolError{};
     }
 
@@ -2052,6 +2545,9 @@ private:
         if (!id) return err("test.bad_arguments", "session_id is required");
         ToolError const e = close_session(*id);
         if (!e.code.empty()) return e;
+        if (last_scratch_removed_) {
+            return obj({{"closed", boolean(true)}, {"scratch_removed", boolean(*last_scratch_removed_)}});
+        }
         return obj({{"closed", boolean(true)}});
     }
 
@@ -2149,6 +2645,7 @@ private:
                                        s->id)},
         });
 
+        if (s->real) scenario = with_field(scenario, "tool_exchanges", tool_exchanges_json(*s->real));
         std::error_code ec;
         std::filesystem::create_directories(config_.scenarios_root, ec);
         std::filesystem::path const path = config_.scenarios_root / (name + ".json");
@@ -2175,10 +2672,18 @@ private:
 
     ToolResultJson t_scenario_replay(Value const& args);  // defined after replay_scenario()
 
+    [[nodiscard]] static Value tool_exchanges_json(RealToolLog const& log) {
+        std::vector<Value> out;
+        for (ToolExchange const& x : log.recorded()) out.push_back(exchange_to_json(x));
+        return arr(std::move(out));
+    }
+
     DriverConfig config_;
     std::map<std::string, std::unique_ptr<DriverSession>, std::less<>> sessions_;
     std::uint64_t next_session_ = 1;
     std::uint64_t secret_leaks_blocked_ = 0;
+    std::filesystem::path own_scratch_;         // ADR-208: this driver's directory under the sandbox root
+    std::optional<bool>   last_scratch_removed_;
 };
 
 
@@ -2258,6 +2763,20 @@ struct ReplayFixtures {
     DriverConfig replay_config;
     replay_config.fixtures_root = fixtures.root;
     replay_config.fixture_reader = fixtures.reader;
+    // ADR-208: recorded real-tool calls become doubles, handed to the driver through its host config only.
+    if (Value const* tx = scenario.find("tool_exchanges"); tx != nullptr && !tx->is_null()) {
+        if (!tx->is_array()) return fail("tool_exchanges must be a list");
+        if (Value const* sg = scenario.find("segments"); sg != nullptr && sg->is_array() && !sg->as_array().empty()) {
+            return fail("a scenario with tool_exchanges cannot have segments (a real-tool session is never forked)");
+        }
+        std::vector<ToolExchange> doubles;
+        for (Value const& v : tx->as_array()) {
+            auto x = exchange_from_json(v);
+            if (!x) return fail("tool exchange " + std::to_string(doubles.size()) + ": " + x.error().message);
+            doubles.push_back(std::move(*x));
+        }
+        replay_config.tool_doubles = std::move(doubles);
+    }
     Driver d(std::move(replay_config));
     std::uint64_t id = 1;
     Call started = call(d, "session_start", obj({{"fixture", str(*fixture)}}), id);
@@ -2311,6 +2830,14 @@ struct ReplayFixtures {
             // C8: the engine asked the model something other than what was recorded. Everything after this
             // point would diff too, so name the cause and stop.
             if (Value const* snap = w.body.find("snapshot"); snap != nullptr) {
+                // ADR-208 D2: a real-tool call the recording does not have. Checked first: the double refused the call,
+                // so the next model request differs too, and this is the cause.
+                if (Value const* tm = snap->find("tool_replay_mismatch"); tm != nullptr) {
+                    return at + " (" + op + "): test.replay_mismatch at tool call " +
+                           std::to_string(get_u64(*tm, "call_index").value_or(0)) + ": the call differs from the recording" +
+                           "\n  expected: " + clip(get_string(*tm, "expected").value_or("?")) +
+                           "\n  actual:   " + clip(get_string(*tm, "actual").value_or("?"));
+                }
                 if (Value const* mm = snap->find("replay_mismatch"); mm != nullptr) {
                     Value const* req = mm->find("actual_request");
                     return at + " (" + op + "): test.replay_mismatch at model call " +
@@ -2379,6 +2906,15 @@ struct ReplayFixtures {
                                       " recorded model turn(s) were never requested: the replay made fewer model calls");
         }
         report.requests_checked += static_cast<std::size_t>(get_u64(snap.body, "requests_checked").value_or(0));
+        // ADR-208 D4: every recorded real-tool call must have been made.
+        if (Value const* tc = snap.body.find("tool_calls"); tc != nullptr && get_string(*tc, "mode") == "double") {
+            std::uint64_t const made = get_u64(*tc, "made").value_or(0);
+            std::uint64_t const recorded = get_u64(*tc, "recorded").value_or(0);
+            if (made < recorded) {
+                report.problems.push_back(where + std::to_string(recorded - made) +
+                                          " recorded tool call(s) were never made: the replay made fewer tool calls");
+            }
+        }
         return snap.body;
     };
 

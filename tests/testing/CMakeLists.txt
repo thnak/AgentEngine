@@ -11,5 +11,5 @@ agentengine_add_test(test_scripted_chat_client_and_approval_payload
 # handle_line() with the exact JSON-RPC lines the stdio binary receives.
 add_executable(test_agentengine_test_driver test_agentengine_test_driver.cpp)
 target_include_directories(test_agentengine_test_driver PRIVATE ${PROJECT_SOURCE_DIR}/tools)
-target_link_libraries(test_agentengine_test_driver PRIVATE agentengine::core agentengine_warnings)
+target_link_libraries(test_agentengine_test_driver PRIVATE agentengine::core agentengine::mediated_shell_runner agentengine_warnings)
 add_test(NAME test_agentengine_test_driver COMMAND test_agentengine_test_driver)
