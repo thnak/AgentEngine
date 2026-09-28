@@ -1,13 +1,13 @@
 # ADR-208 — Test driver P5: one sandboxed real tool, and recorded tool doubles that replay it offline
 
-- **Status**: **Proposed — implemented and proven (2026-09-28): every P5 check and the scenario pass, and all 11 positive controls fail their claim (§9). Not yet Judged.**
+- **Status**: **Judged with conditions (2026-09-28, fresh `general-purpose` judge, §10); both conditions met the same day: the D3 test now edits a recorded result and has its own controls, and the ADR text is corrected.**
 - **Date**: 2026-09-26
 - **Origin**: ADR-182 §12 R5 ("recorded tool doubles for real tools become P5"), §12 C-2 (real tools only when
   sandboxed), §11 Q2 (no effectful real tools in live mode); GitHub #109.
 - **Touches**: `tools/test_driver/test_driver.hpp` (fixture fields, `make_session`, a driver-owned sandbox holder,
   the recording/double wrapper, export and replay), `tools/agentengine_test_driver.cpp` and
   `tools/agentengine_scenario_runner.cpp` (`--sandbox-root`), `CMakeLists.txt` (link
-  `agentengine::mediated_shell_runner`), `tests/test_agentengine_test_driver.cpp`, one new scenario and one new file
+  `agentengine::mediated_shell_runner`), `tests/testing/test_agentengine_test_driver.cpp`, one new scenario and one new file
   fixture.
 - **Invariants**: I2 (the grant is host-derived, never from a tool argument or a fixture's own claim), I3 (the tester's
   approval is model-derived and is made harmless by scope, ADR-182 C-2), I5 (a real tool's output is nondeterminism
@@ -71,11 +71,13 @@ The run-time refusal of §2.2 replaces the compile-time one.
 - `exec_events` is the list of `sandbox_exec_*` events the real tool emitted during that call (stage, outcome, error
   code; the `exec_id` is dropped as ADR-182 R6 already does). They are captured from the driver's event tap between
   the wrapper's entry and exit, which is safe because such a tool is never parallel-dispatched
-  (`captures_session_state`, ADR-160).
+  (`captures_session_state`, ADR-160). *(Superseded by §6 M1: the wrapper swaps `ctx.sandbox_exec_sink` for the
+  call; `captures_session_state` is false for `read_sandbox_file`.)*
 - Test tools are not recorded: they are deterministic and replay live, as today.
 - `scenario_export` writes the exchanges as `tool_exchanges` next to `model_turns`. A session whose recording is
   incomplete (a call ended by cancel mid-invoke, an exchange over the size cap) is marked non-exportable with the
-  existing `nondeterministic_reason`.
+  existing `nondeterministic_reason`. *(Superseded by §6 G1: an over-size or non-UTF-8 result is replaced by an
+  error before the model sees it and is recorded as that error, so the session stays exportable.)*
 
 ### 2.5 Replay: a double serves the recording and touches nothing
 
@@ -123,7 +125,8 @@ The run-time refusal of §2.2 replaces the compile-time one.
 
 - **Disk use in scratch is not capped** by the mediated shell itself; a scripted or live model can write large files.
   The driver caps the number of `run_shell` calls per session (the ordinary tool-call limits) but not bytes. To be
-  checked by the red team.
+  checked by the red team. *(Superseded by §6 G1: no such ordinary limit existed; the grant is now capped and the
+  driver has its own call cap.)*
 - The recording holds whatever the tool returned. A tool reading a host file into its result would put that file into
   a scenario; with only the mediated shell over an empty per-session scratch, nothing outside the session can reach
   the result.
@@ -143,7 +146,7 @@ tool-call limits" (no such cap exists), §2.4's reliance on `captures_session_st
 
 - **C1 (Critical): two drivers sharing a root reused and deleted each other's directories** (session ids `s1, s2, …`
   repeat per process). *Revision:* each driver process creates its **own** directory under the root with an exclusive
-  create, `d<pid>-<16 random hex>`, retried on collision; sessions live under it as `<session id>`. A driver only ever
+  create, `d-<16 random hex>`, retried on collision; sessions live under it as `<session id>`. A driver only ever
   removes paths under its own directory. No startup sweep (a killed driver leaves its directory: disk only, residual).
 - **G1: disk, memory and CPU were unbounded.** *Revision:* the derived grant is capped:
   `FsWrite{"work", "", quota 16 MiB, 1,024 files}` and `FsRead{"work", "", size cap 1 MiB}` (the shell enforces both);
@@ -165,7 +168,9 @@ tool-call limits" (no such cap exists), §2.4's reliance on `captures_session_st
   claim D9 (below).
 - **G6: D1 could not fail.** *Revision:* the sandbox is built only by a factory in `DriverConfig`. The driver binary
   and the in-process tests set it; the scenario runner does not, and **does not link the mediated shell**, so a replay
-  that tried to build a sandbox would not link. The in-process test counts factory calls (D1).
+  that tried to build a sandbox would not link. The in-process test also counts factory calls, but that count cannot
+  fail: `replay_scenario` builds a fresh `DriverConfig` with no factory, so the test's factory is unreachable from a
+  replay. The link-time guarantee is D1's real evidence (judge, §10).
 - **G7: cleanup could follow links.** *Revision:* removal refuses a root that is a link; it removes only
   `<own dir>/<session id>` and walks the tree itself with `symlink_status`, removing a link (or junction) as an entry
   and never descending into it. Removal failures are reported in `session_close`'s result. Tests plant a link to a
@@ -181,11 +186,11 @@ Revised claims (replacing §4's table where they differ):
 
 | # | Claim | Positive control |
 |---|---|---|
-| D1 | replay builds no sandbox: the factory is never called, and the runner does not link one | factory called in replay → count check fails |
+| D1 | replay builds no sandbox: the runner does not link one, and a replay's config has no factory | structural (link); no runtime mutant can reach it |
 | D2 | argument drift fails with `test.replay_mismatch at tool call N` | argument check removed → D2 fails |
-| D3 | an edited recorded result fails the replay | (the edit is the control) |
+| D3 | an edited recorded result fails the replay at the next model call (C8) | C8 request check off → D3 fails; D2's mutant → D3 still passes |
 | D4 | unconsumed or missing exchanges fail the replay | (the edit is the control) |
-| D5 | refusals: no `--sandbox-root`, live + real tools, fork of a real-tool session, doubles + segments | each refusal removed → its check fails |
+| D5 | refusals: no `--sandbox-root`, live + real tools, fork of a real-tool session, doubles + segments | each refusal has a check, except live + real tools: no live fixture can name a real tool (file fixtures are never live, no compiled live fixture has one), so that refusal is unreachable today and holds structurally |
 | D6 | per-process and per-session directories; two drivers on one root never touch each other's; removal never leaves the root through a link | shared-name directories → two-driver check fails |
 | D7 | the mediated FS refuses `../`, absolute paths and device names through the driver | (engine claims re-run) |
 | D8 | the `sandbox_exec_*` pair replays, so the whole event stream compares | re-emission removed → scenario fails |
@@ -219,8 +224,9 @@ Revised claims (replacing §4's table where they differ):
 
 ## 8. Evidence
 
-`tests/test_agentengine_test_driver.cpp` P5 (all pass): REC (write, read back, exec pair, counts, `<root>/d-*/<session>`),
-D1 (replay builds no sandbox; the runner does not link the shell), D2, D3, D4 (fewer, more and no exchanges), D5 (no
+`tests/testing/test_agentengine_test_driver.cpp` P5 (all pass): REC (write, read back, exec pair, counts,
+`<root>/d-*/<session>`), D1 (replay builds no sandbox; the runner does not link the shell), D2, D3 (an edited
+`read_sandbox_file` result fails as `test.replay_mismatch at model call 2`: the C8 digest is what catches it), D4 (fewer, more and no exchanges), D5 (no
 root, fork, segments + exchanges, `fixtures_list`), G3 (a copied provider has no real tools), D6 (two drivers with the
 same session name keep their own files; close and exit remove the directories), D7 (ten `../`, absolute and device-name
 probes read nothing outside), G7 (a planted directory link and a tree deeper than MAX_PATH are removed without
@@ -235,7 +241,9 @@ afterwards and the driver test and all 13 scenarios pass.
 
 | Claim | Mutant | Seen to fail |
 |---|---|---|
-| D2 | the double checks only the tool name, not the arguments | P5 D2 (and D3) |
+| D2 | the double checks only the tool name, not the arguments | P5 D2 |
+| D3 | the C8 request check always accepts (`if (true) return std::nullopt;`) | P5 D3 (and the C8 checks) |
+| D3 (independence) | the D2 mutant above | P5 D3 still passes, so D3 no longer repeats D2 |
 | D8 | the double no longer re-emits the recorded `sandbox_exec_*` events | `scripted_shell_roundtrip`: event 5 differs |
 | D9 | replay drops the derived grant | `scripted_shell_roundtrip`: the call is refused before the double, so model call 1's request differs |
 | C1/D6 | every driver uses one fixed directory under the root, and accepts it existing | P5 D6 (both drivers read the other's file) |
@@ -248,4 +256,37 @@ afterwards and the driver test and all 13 scenarios pass.
 | G2 | no cancel check | P5 G2 |
 
 D1 is structural: the scenario runner does not link the mediated shell, so a replay that built a sandbox would not link.
-D3 and D4 are controlled by the tampered scenarios in the test itself.
+D4 is controlled by the tampered scenarios in the test itself. The two D3 rows were added after the judge (§10): the
+first D3 test edited the first `hello` after `tool_exchanges`, which is exchange 0's arguments, so it only repeated D2.
+
+## 10. Judge (2026-09-28, fresh `general-purpose` agent, no prior context)
+
+Verdict: **Judged with conditions.** Nothing Critical; the grant is host-only as claimed. The judge re-ran the driver
+test and all 12 scenarios (13/13), ran the D2 mutant itself (restoring the header by sha256), and replayed scratch
+copies of `scripted_shell_roundtrip.json` with one recorded `result` edited: both failed at the next model call, so D3
+held in the code. I2/I3 hold: the grant is a host constant, the root and factory come only from the command line, a
+fixture can only name tools, doubles are reachable only through `replay_scenario` (whose config has no factory and no
+root), and `with_granted_ceiling` only narrows. Every red-team revision (C1, G1–G7, M1, M2) was found in code. The
+red team's parallel-dispatch concern does not apply: a batch runs in parallel only when every tool is `Parallelizable`,
+and neither real tool is.
+
+Conditions, both met on 2026-09-28:
+
+1. **B1: the D3 test edited the wrong field** (exchange 0's arguments), so it repeated D2. *Fixed:* it edits exchange
+   1's recorded `content` and expects `test.replay_mismatch at model call 2`; controls in §9.
+2. **B2: ADR text did not match the code** (the `d<pid>-` directory name, D1's unreachable control, a claimed control
+   for the unreachable live + real refusal, superseded §2.4/§5 text left unmarked, §8 not naming C8 as D3's evidence).
+   *Fixed* in §2.4, §5, §6 and §8.
+
+Residuals the judge accepted, added to §5/§7's:
+
+- **B3: stray `tool_exchanges` are ignored** when the fixture names no real tool (D4 runs only in double mode). The
+  C8 digest catches it in practice, because the tool list in the request differs.
+- **B4: `read_sandbox_file` has no read-size cap of its own** (the 1 MiB `FsRead` cap is enforced by the shell only).
+  Memory is still bounded by the 16 MiB quota, and the 64 KiB result cap replaces anything larger before the model
+  sees it.
+- Not tested: that `make_shell_sandbox` passes the 1 MiB read cap and the 2 s budget through; G2 relies on the engine
+  passing the run's stop token as `ctx.cancellation` (documented at `agent_session_core.hpp`), tested only at the
+  wrapper.
+- The engine gap behind `with_granted_ceiling` (a quota-capped grant cannot admit a tool declaring an uncapped
+  `FsRead`/`FsWrite`) needs an engine follow-up.

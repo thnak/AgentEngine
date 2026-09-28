@@ -1191,7 +1191,10 @@ int main() {
             };
             check(fails_with(tampered("echo hello > a.txt", "echo bye > a.txt"), "): test.replay_mismatch at tool call 0: the call differs"),
                   "P5 D2: a recorded call whose arguments differ fails as test.replay_mismatch at tool call 0");
-            check(fails_with(tampered("hello", "HELLO"), ""), "P5 D3: an edited recorded result fails the replay");
+            // D3 edits only exchange 1's result (the read), so the arguments check cannot catch it: the
+            // double serves the edited text and the engine's next request to the model differs (C8).
+            check(fails_with(tampered("\"content\":\"hello", "\"content\":\"HELLO"), "test.replay_mismatch at model call 2"),
+                  "P5 D3: an edited recorded result fails the replay at the next model call");
             // D4: drop the second exchange, or the whole list.
             {
                 std::optional<Value> fewer;
