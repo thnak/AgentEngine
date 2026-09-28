@@ -203,12 +203,14 @@ Revised claims (replacing §4's table where they differ):
   narrower than the tool's own declaration, never wider (I2), and the shell still enforces the quota from the held
   grant (D10). *Engine follow-up (not this ADR):* a quota-capped grant is unusable for any tool declaring an uncapped
   `FsRead`/`FsWrite` unless its host narrows the ceiling the same way.
-- **The mediated shell has two defects, found while recording the scenario (engine, not driver; for another session):**
-  1. `mkdir notes; cd notes; echo draft > plan.txt; pwd; ls` in one script returns `ok: true` with empty output and
-     leaves no `notes` directory; the same steps without `cd` work, and `cd notes && pwd` on an existing directory
-     works. A silent success that did nothing.
-  2. A newline is not a statement separator: `echo one\necho two` prints `one echo two`, and `mkdir c\necho y > c/d.txt`
-     runs as one `mkdir` with extra arguments. The tool's description says "a shell command or script".
+- **The mediated shell has defects, found while recording the scenario (engine, not driver), filed as GitHub #140 and
+  #141** (re-checked on main at 02680b4 through the driver's `shell` fixture, with disk state checked on the host):
+  - #140: a `>` redirect resolves against the mount root, not the working directory; `cd /` is ignored; a `cd` to a
+    missing directory reports success, and can leave the working directory on a path that does not exist. Hence
+    `mkdir notes; cd notes; echo draft > plan.txt` "succeeds" without leaving `notes/plan.txt`. All effects stay
+    inside the scratch: correctness, not containment.
+  - #141: only the last statement's stdout is returned, and a newline is not a statement separator (`echo one`,
+    newline, `echo two` prints `one echo two`).
   The checked-in scenario avoids both constructs so it does not lock either in.
 - **The replay reports the tool mismatch before the model-request mismatch.** When a double refuses a call, the next
   model request differs too (C8), but the tool call is the cause, so it is named first.
