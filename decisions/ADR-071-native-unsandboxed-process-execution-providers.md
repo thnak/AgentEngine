@@ -301,6 +301,27 @@ absent from the build graph — a host that never opts in sees zero footprint fr
    re-derived path) — named explicitly in `native_worktree_bridge.hpp`'s own header comment and
    here, matching this project's disclosure norm for ADR-041's accepted Windows ACE-leak residual
    rather than overclaiming a hard boundary.
+
+   **Addendum (2026-09-29, GitHub issue #144): the script-string case, which this item did not
+   name.** The TOCTOU window above is not the only way out. `validate_argv_path()` checks only an
+   argument that contains a path separator; an argument with none returns early. A shell parses its
+   own command string, so a script passed as ONE separator-free argument (`["/c", "cd .. && type
+   secret.txt"]`) passes validation unchanged, and the shell leaves the worktree with no race at all.
+   R-S7 tested only the separate-argument form (`["/c", "type", "../../escape.txt"]`), which is
+   rejected. The same holds for `python -c`, `node -e` and `bash -c`. For those programs, argv
+   validation guards only arguments the program treats as paths; it cannot see inside a script.
+   **What is actually enforced:** the child *starts* in `mount_root`, and no separate path-shaped
+   argument names a location outside it. The child is not confined. It can reach any path the host
+   user can, which the `UNSANDBOXED` label, the `native_exec` capability and
+   `approval_mode::always_require` already put in front of the host and the approver. Accepted as a
+   residual, not fixed: closing it would mean parsing every shell's grammar, which this ADR's own
+   design rejects. Evidence: `test_native_providers` **R-S8** runs `cmd /c "cd .. && type <file>"`
+   and reads a marker file from the worktree's parent. Control C1 (same `type` without `cd ..`)
+   proves the file is not in the worktree. Control C2 (separator-bearing form) proves validation is
+   still on. A planted mutant that rejects any `..` fails R-S8, so the test pins the residual and
+   will flag the day it closes. The four `traits::*::tool_description` strings in
+   `native_providers.hpp` said "confined to the run's worktree directory"; they now say the program
+   *starts* there and is not confined to it.
 4. **Did the argv-shape heuristic itself introduce a false positive that would have blocked
    legitimate use, or a false negative that would have let something through?** A real false
    positive was found live-wiring `NativeShellProvider` to `cmd.exe`: `"/c"` (an ordinary Windows
@@ -382,6 +403,9 @@ residuals.
 
 **Residual risks:**
 - The TOCTOU gap named in §6 item 3 — real, honestly disclosed, not eliminated.
+- The script-string case named in §6 item 3's 2026-09-29 addendum (issue #144): a separator-free
+  script argument to a shell or interpreter passes argv validation and runs outside the worktree.
+  Real, pinned by R-S8, not eliminated.
 - A host that wires a `Native*Provider` with an overly broad `owned_patterns` (e.g. `"*"` — though
   `native_exec_pattern_covers` treats a bare `"*"` grant identically to any other prefix grant, it
   is a deliberately wide one the HOST chose) has, by its own configuration, made an intentionally

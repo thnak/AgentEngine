@@ -27,7 +27,11 @@
 // src/backends/native_jail/worktree_mount_sync.hpp's `materialize_mount()` before wiring this
 // provider in -- this file does not re-implement that materialization, it consumes its output) and
 // every path-shaped argv entry is validated against it via native_worktree_bridge.hpp before ever
-// reaching a spawned child's command line.
+// reaching a spawned child's command line. That is the WHOLE of the confinement: the child starts in
+// `mount_root` and no separate argument names a path outside it. The child itself is not confined --
+// a script string with no separator (`cd .. && type secret`) passes validation and the shell walks out
+// (ADR-071 §6 item 3, GitHub issue #144; pinned by test_native_providers R-S8). The tool descriptions
+// below say "starts in", never "confined to".
 
 #include <algorithm>
 #include <string>
@@ -196,7 +200,7 @@ private:
             if (!validated.has_value()) return std::unexpected(validated.error());
         }
 
-        // Step 4: spawn, worktree-confined (cwd), resource-capped from the matched grant's own
+        // Step 4: spawn with the worktree as cwd (a starting point, not a confinement), resource-capped from the matched grant's own
         // scalar caps -- never from a caller-supplied override.
         NativeExecRequest req;
         req.program_path = it->resolved_path;
@@ -255,16 +259,20 @@ struct Shell {
     static constexpr std::string_view tool_name = "native_shell_run";
     static constexpr std::string_view tool_description =
         "Run a native, UNSANDBOXED shell executable installed on this host (e.g. cmd.exe, "
-        "powershell.exe) -- confined to the run's worktree directory, resource-capped per the "
-        "operator's grant. Only programs the operator has explicitly authorized are callable.";
+        "powershell.exe). It STARTS in the run's worktree directory but is not confined to it: a "
+        "command can reach any path this host's user can, and only separate path-shaped arguments are "
+        "checked, never a script string the shell parses itself. Resource-capped per the operator's "
+        "grant. Only programs the operator has explicitly authorized are callable.";
 };
 struct Bash {
     static constexpr std::string_view provider_name = "native_bash";
     static constexpr std::string_view family_label = "bash";
     static constexpr std::string_view tool_name = "native_bash_run";
     static constexpr std::string_view tool_description =
-        "Run a native, UNSANDBOXED bash/sh executable installed on this host -- confined to the "
-        "run's worktree directory, resource-capped per the operator's grant. Only programs the "
+        "Run a native, UNSANDBOXED bash/sh executable installed on this host. It STARTS in the "
+        "run's worktree directory but is not confined to it: a command can reach any path this "
+        "host's user can, and only separate path-shaped arguments are checked, never a script string "
+        "the shell parses itself. Resource-capped per the operator's grant. Only programs the "
         "operator has explicitly authorized are callable.";
 };
 struct Python {
@@ -273,7 +281,9 @@ struct Python {
     static constexpr std::string_view tool_name = "native_python_run";
     static constexpr std::string_view tool_description =
         "Run the HOST's installed Python interpreter (its own packages/venvs) -- UNSANDBOXED, "
-        "confined to the run's worktree directory, resource-capped per the operator's grant. "
+        "starting in the run's worktree directory but not confined to it (the program can reach any "
+        "path this host's user can; only separate path-shaped arguments are checked), resource-capped "
+        "per the operator's grant. "
         "Distinct from the engine's own embedded, mediated code interpreter: this is a native host "
         "process with none of that interpreter's import/open/socket mediation. Only programs the "
         "operator has explicitly authorized are callable.";
@@ -283,9 +293,10 @@ struct Node {
     static constexpr std::string_view family_label = "Node.js";
     static constexpr std::string_view tool_name = "native_node_run";
     static constexpr std::string_view tool_description =
-        "Run the HOST's installed Node.js executable -- UNSANDBOXED, confined to the run's worktree "
-        "directory, resource-capped per the operator's grant. Only programs the operator has "
-        "explicitly authorized are callable.";
+        "Run the HOST's installed Node.js executable -- UNSANDBOXED, starting in the run's worktree "
+        "directory but not confined to it (the program can reach any path this host's user can; only "
+        "separate path-shaped arguments are checked), resource-capped per the operator's grant. Only "
+        "programs the operator has explicitly authorized are callable.";
 };
 }  // namespace traits
 

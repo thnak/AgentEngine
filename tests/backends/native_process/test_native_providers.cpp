@@ -1,9 +1,10 @@
 // Design -> red-team -> prove -> judge for decisions/ADR-071-native-unsandboxed-process-execution-
 // providers.md's src/backends/native_process/native_providers.hpp: NativeShellProvider/
 // NativeBashProvider/NativePythonProvider/NativeNodeProvider end to end -- concept satisfaction,
-// capability-gated discovery, worktree-confined dispatch, and the fail-closed defaults ADR-070's
-// Delegated Decision Seam pattern requires (explicit opt-in, fails closed when unset, narrows
-// already-possessed authority only, host code only, always audited). Every negative-result claim
+// capability-gated discovery, dispatch that starts in the worktree (R-S8 pins what that does NOT
+// confine), and the fail-closed defaults ADR-070's Delegated Decision Seam pattern requires
+// (explicit opt-in, fails closed when unset, narrows already-possessed authority only, host code
+// only, always audited). Every negative-result claim
 // below is paired with a positive control (022 §5).
 
 #include <windows.h>
@@ -210,6 +211,62 @@ int main() {
                       "R-S7: a '..'-escaping argv entry is rejected before ever reaching the spawned "
                       "child, end to end through the real tool closure");
         }
+    }
+
+    // ---- R-S8: the DISCLOSED residual (ADR-071 §6 item 3, GitHub issue #144) ------------------
+    // validate_argv_path() checks only arguments that contain a path separator. A shell script passed
+    // as ONE argument with none in it (`cd .. && type <file>`) passes unchanged, and the shell walks
+    // out of the worktree on its own. This test PINS that residual, so the tool descriptions'
+    // "starts in, not confined to" wording stays true: if a later change closes the gap, this check
+    // fails and the descriptions and ADR-071 §6 item 3 must be updated with it.
+    //
+    // The secret sits in the worktree's PARENT, never inside it. Control C1 proves that: the same
+    // `type` run without `cd ..` finds nothing. Control C2 proves the separator-bearing form of the
+    // same read is still rejected, so R-S8 passes because of the script-string shape, not because
+    // validation is off.
+    {
+        std::filesystem::path const outside_name = "ae_native_providers_test_outside_144.txt";
+        std::filesystem::path const outside_file = worktree_path.parent_path() / outside_name;
+        std::string const marker = "MARKER-144-outside-the-worktree";
+        { std::ofstream(outside_file) << marker << "\n"; }
+
+        NativeShellProvider provider({"cmd"}, mount_root, "workdir");
+        EffectContext ctx{};
+        ctx.capabilities = std::make_shared<CapabilitySet>(CapabilitySet::grant_root(
+            {Capability{cap::NativeExec{"cmd", "workdir", 10000, 10000, std::nullopt}}}));
+        SessionContext sc{"s8", principal, empty_history};
+        auto contribution = on_context_of(provider, sc, ctx);
+        AE_CHECK(contribution.has_value() && contribution->tools.size() == 1, "R-S8 setup");
+        if (contribution.has_value() && contribution->tools.size() == 1) {
+            auto run = [&](std::vector<std::string> const& argv) {
+                std::vector<json::Value> items;
+                for (auto const& a : argv) items.push_back(json::Value::make_string(a));
+                return contribution->tools[0].invoke(
+                    json::Value::make_object({{"program", json::Value::make_string("cmd")},
+                                              {"args", json::Value::make_array(std::move(items))}}),
+                    ctx);
+            };
+            auto stdout_of = [](result<json::Value> const& r) -> std::string {
+                if (!r.has_value()) return {};
+                auto reply = schema::from_json<NativeProcessRunReply>(*r);
+                return reply.has_value() ? reply->stdout_text : std::string{};
+            };
+
+            auto escaped = run({"/c", "cd .. && type " + outside_name.string()});
+            AE_CHECK(escaped.has_value(),
+                     "R-S8: a separator-free script string passes argv validation and runs");
+            AE_CHECK(stdout_of(escaped).find(marker) != std::string::npos,
+                     "R-S8: ... and the shell reads a file OUTSIDE the worktree (the disclosed residual)");
+
+            auto c1 = run({"/c", "type " + outside_name.string()});
+            AE_CHECK(stdout_of(c1).find(marker) == std::string::npos,
+                     "R-S8 C1: without `cd ..` the same read finds nothing -- the file is not in the worktree");
+
+            auto c2 = run({"/c", "type", "../" + outside_name.string()});
+            AE_CHECK(!c2.has_value(),
+                     "R-S8 C2: the separator-bearing form of the same read is still rejected");
+        }
+        std::filesystem::remove(outside_file, ec);
     }
 
     _putenv_s("PATH", saved_path.c_str());
