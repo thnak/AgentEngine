@@ -47,6 +47,11 @@ inline constexpr std::size_t kMaxTokens = 50'000;
 inline constexpr std::size_t kMaxNestingDepth = 32;                    // shared across if/for, sum not max
 inline constexpr std::size_t kBytesPerNodeUpperBound = 256;
 inline constexpr std::size_t kArenaBytes = kMaxTokens * kBytesPerNodeUpperBound;
+// GitHub issue #147. The most `ParseArena` (mediated_shell_parser.hpp) will hand out past `kArenaBytes`
+// before an allocation throws. Past the arena the parse is already failing (`shell.arena_exhausted`, at the
+// next checkpoint); this only bounds the overshoot BETWEEN checkpoints, which is one token's atoms or one
+// node plus a container doubling -- well under one arena. It is a bound, not a budget.
+inline constexpr std::size_t kArenaSpillBytes = kArenaBytes;
 
 enum class word_atom_kind { literal, var_ref, quoted };
 
