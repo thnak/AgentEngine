@@ -76,6 +76,17 @@ struct ReadSandboxFile : Tool<ReadSandboxFile, Capabilities<>, Approval<approval
 
         auto bytes = ctx.sandbox_fs->read_file(args.path);
         if (!bytes) return std::unexpected(bytes.error());
+        // GitHub issue #149: the grant's own size cap, enforced the way `cat` enforces it
+        // (`shell.cat_exceeds_size_cap`, mediated_shell_dispatch.cpp) and `mount_read()` does
+        // (worktree_mount.hpp). Checked after the read, for the same stated reason: `FileSystemAdapter` has
+        // no size probe, so the size is only known once the bytes are in memory. What the cap guards -- an
+        // oversized file reaching a tool result, and from there the model's context -- is closed; the read
+        // itself is not pre-empted, so peak memory for one call is the file's size, as it is for `cat`.
+        if (granted->size_cap_bytes.has_value() && bytes->size() > *granted->size_cap_bytes) {
+            return std::unexpected(error{failure_class::policy,
+                                          "the requested file exceeds this capability's size cap",
+                                          "read_sandbox_file.exceeds_size_cap"});
+        }
 
         Reply reply;
         reply.content.assign(reinterpret_cast<char const*>(bytes->data()), bytes->size());
