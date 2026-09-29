@@ -32,6 +32,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 #include "agentengine/core/error.hpp"
 
@@ -48,13 +49,29 @@ namespace detail {
 
 }  // namespace detail
 
+// What the walk does with a symbolic link it meets (GitHub issue #142). There is deliberately no
+// default: each call site states whether the tree it walks is one it trusts to point outside itself.
+//
+//   * `skip`   -- the link is never followed and never visited, whatever it points at (a file, a
+//                 directory, nothing). Classified with `symlink_status`, so a dangling link or one whose
+//                 target this process cannot stat is still just a link, not an error. The right answer
+//                 for any tree something untrusted wrote -- a sandbox's drained working directory,
+//                 where `python -m venv` alone plants `.venv/bin/python -> /usr/bin/python3`.
+//   * `follow` -- the pre-#142 behaviour: a link to a regular file is visited as that file. Only for a
+//                 tree the host itself authored; a link there can still name any path this process can
+//                 read.
+enum class symlink_policy { skip, follow };
+
 // Every REGULAR FILE under `root`, recursively. A non-regular entry is skipped; a status query that
 // itself fails is an error rather than a skip, because "could not tell what this is" and "this is a
-// directory" are not the same answer.
+// directory" are not the same answer. Under `symlink_policy::skip`, every link's path is appended to
+// `skipped_links` when that is non-null, so a caller can say what it left out rather than dropping it
+// silently.
 template <class Visit>
 [[nodiscard]] agentengine::result<void> for_each_regular_file_recursive(
         std::filesystem::path const& root, std::filesystem::directory_options options,
-        std::string_view what, std::string_view failure_code, Visit&& visit) {
+        symlink_policy links, std::string_view what, std::string_view failure_code, Visit&& visit,
+        std::vector<std::filesystem::path>* skipped_links = nullptr) {
     std::error_code ec;
     std::filesystem::recursive_directory_iterator it(root, options, ec);
     if (ec) return std::unexpected(detail::walk_error(what, failure_code, ec));
@@ -62,6 +79,20 @@ template <class Visit>
     std::filesystem::recursive_directory_iterator const walk_end;
     while (it != walk_end) {
         std::filesystem::directory_entry const& entry = *it;
+        if (links == symlink_policy::skip) {
+            std::error_code link_ec;
+            bool const is_link = entry.is_symlink(link_ec);
+            if (link_ec) return std::unexpected(detail::walk_error(what, failure_code, link_ec));
+            if (is_link) {
+                if (skipped_links != nullptr) skipped_links->push_back(entry.path());
+                // A link to a directory is not descended into either: `options` never carries
+                // `follow_directory_symlink` at a `skip` site, and this says so rather than relying on it.
+                it.disable_recursion_pending();
+                it.increment(ec);
+                if (ec) return std::unexpected(detail::walk_error(what, failure_code, ec));
+                continue;
+            }
+        }
         std::error_code kind_ec;
         bool const regular = entry.is_regular_file(kind_ec);
         if (kind_ec) return std::unexpected(detail::walk_error(what, failure_code, kind_ec));

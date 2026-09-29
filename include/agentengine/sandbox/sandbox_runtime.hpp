@@ -94,6 +94,9 @@ struct SandboxRunOutcome {
                                             // `result<>` error
     agentengine::Checkpoint checkpoint;    // the REAL Ledger checkpoint committing whatever the run
                                             // changed
+    // GitHub issue #142: symbolic links the run left in the working directory, root-relative. They are
+    // not in `checkpoint`'s tree (it has no link kind); this is where a caller learns what was left out.
+    std::vector<std::string> skipped_symlinks;
 };
 
 template <class Store = agentengine::InMemoryWorktreeObjectStore>
@@ -173,7 +176,8 @@ public:
         // 6. A REAL, full recursive scan (not a write()-tracked drain -- the surface's own writes were
         //    never staged through this object's own write() calls) captures every byte the surface
         //    actually produced.
-        auto tree = co_await io_fs_.scan_and_drain_into_tree(*ledger_, author);
+        std::vector<std::string> skipped_symlinks;
+        auto tree = co_await io_fs_.scan_and_drain_into_tree(*ledger_, author, &skipped_symlinks);
         if (!tree.has_value()) co_return std::unexpected(tree.error());
 
         // 7. Commit through the REAL Ledger -- quota-checked (StorageBytes, sized by the run's REAL
@@ -187,7 +191,7 @@ public:
         // orphan-reclaim mechanism simply never fired on this path. Fixed to match.
         (void)co_await ledger_->reap_pending_abandons();
 
-        co_return SandboxRunOutcome{*exec_r, *cp};
+        co_return SandboxRunOutcome{*exec_r, *cp, std::move(skipped_symlinks)};
     }
 
     // Closes this design's own disclosed §5/ADR-099 residual -- "Ledger::reset_to() is real and proven,

@@ -120,6 +120,8 @@ namespace skill_source_detail {
     // returned an EMPTY bundle with no error. The increment threw, too. See fs_walk.hpp.
     return fs_walk::for_each_regular_file_recursive(
         dir, std::filesystem::directory_options::skip_permission_denied,
+        // Host-authored skill bundle: links keep their pre-#142 meaning (see fs_walk::symlink_policy).
+        fs_walk::symlink_policy::follow,
         "failed to walk skill bundle directory", "skill.disk_read_failed",
         [&](std::filesystem::directory_entry const& entry) -> result<void> {
             std::ifstream in(entry.path(), std::ios::binary);

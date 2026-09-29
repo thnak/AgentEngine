@@ -180,9 +180,17 @@ public:
     // collecting every file's bytes first, then checking `would_accept_blob_write()` for the whole
     // set, then writing -- so a rejection partway through never leaves earlier files durably
     // persisted with no Tree/Checkpoint ever referencing them.
+    //
+    // Symbolic links are never followed and never committed (GitHub issue #142). This directory is what a
+    // sandboxed command left behind, so a link in it is model-controlled: following one read whatever it
+    // named, and `read_real_file()`'s containment check then failed the WHOLE scan for any link leaving
+    // the root -- `python -m venv` alone made every later commit fail, and whether it failed told the
+    // container whether a host path existed. The `Tree` has no link kind, so a link is left out, and its
+    // root-relative path is appended to `skipped_symlinks` (when non-null) for the caller to report.
     template <class Store>
     [[nodiscard]] agentengine::rt::task<agentengine::result<agentengine::Tree>> scan_and_drain_into_tree(
-            agentengine::Ledger<Store>& ledger, agentengine::IdentityHandle author) {
+            agentengine::Ledger<Store>& ledger, agentengine::IdentityHandle author,
+            std::vector<std::string>* skipped_symlinks = nullptr) {
         agentengine::rt::AsyncMutex::Guard commit_guard = co_await commit_lock_->lock();
 
         // This walks a directory a container was writing to moments ago, so a file vanishing
@@ -192,10 +200,11 @@ public:
         // coroutine whose declared contract is `result<Tree>`. See fs_walk.hpp for the measurements
         // behind that; this is issue #71's class.
         std::vector<std::pair<std::string, std::vector<std::byte>>> collected;
+        std::vector<std::filesystem::path> links;
         std::error_code exists_ec;
         if (std::filesystem::exists(host_root_, exists_ec) && !exists_ec) {
             auto walked = agentengine::fs_walk::for_each_regular_file_recursive(
-                host_root_, std::filesystem::directory_options::none,
+                host_root_, std::filesystem::directory_options::none, agentengine::fs_walk::symlink_policy::skip,
                 "failed to scan the sandbox working directory", "real_io.scan_walk_failed",
                 [&](std::filesystem::directory_entry const& entry) -> agentengine::result<void> {
                     // `relative()` (weakly-canonical, symlink-following) rather than
@@ -215,8 +224,15 @@ public:
                     if (!bytes.has_value()) return std::unexpected(bytes.error());
                     collected.emplace_back(std::move(rel), std::move(*bytes));
                     return agentengine::result<void>{};
-                });
+                },
+                &links);
             if (!walked.has_value()) co_return std::unexpected(walked.error());
+        }
+        if (skipped_symlinks != nullptr) {
+            // `lexically_relative`, not `relative`: resolving the link is exactly what must not happen.
+            for (auto const& link : links) {
+                skipped_symlinks->push_back(link.lexically_relative(host_root_).generic_string());
+            }
         }
         for (auto const& [rel, bytes] : collected) {
             if (!ledger.would_accept_blob_write(bytes, author)) {

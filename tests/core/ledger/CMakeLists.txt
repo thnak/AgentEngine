@@ -9,6 +9,11 @@ agentengine_add_test(test_fs_walk LIBS agentengine::core agentengine_warnings)
 agentengine_add_test(test_real_io_materialize_wipe_failure
   LIBS agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
 
+# GitHub issue #142: the sandbox scan never follows a symbolic link. No daemon, no network -- real temp
+# directories only; needs symlink permission (prints SKIP without it).
+agentengine_add_test(test_real_io_scan_symlinks
+  LIBS agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+
 # ---- ADR-102 Phase 2 -- Ledger<Store>/BranchHandle/Checkpoint (core/ledger.hpp) ------------------
 # Built on the real agentengine::WorktreeObjectStore/InMemoryWorktreeObjectStore/compute_digest --
 # needs agentengine::worktree_store (real SHA-256 via Windows CNG/BCrypt or the Linux FIPS 180-4
