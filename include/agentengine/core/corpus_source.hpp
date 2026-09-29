@@ -540,6 +540,9 @@ public:
         // See fs_walk.hpp for both measurements.
         auto walked = fs_walk::for_each_regular_file_recursive(
             root_, std::filesystem::directory_options::skip_permission_denied,
+            // Host-authored corpus folder: links keep their pre-#142 meaning. Not a containment boundary --
+            // see fs_walk::symlink_policy.
+            fs_walk::symlink_policy::follow,
             "failed to walk corpus source directory", "corpus_source.disk_read_failed",
             [&](std::filesystem::directory_entry const& entry) -> result<void> {
             std::ifstream in(entry.path(), std::ios::binary);
@@ -782,6 +785,9 @@ public:
         // --- Walk once, whole-file hash every entry -- identical to mount() ----------------------------
         auto walked = fs_walk::for_each_regular_file_recursive(
             root_, std::filesystem::directory_options::skip_permission_denied,
+            // Host-authored corpus folder: links keep their pre-#142 meaning. Not a containment boundary --
+            // see fs_walk::symlink_policy.
+            fs_walk::symlink_policy::follow,
             "failed to walk corpus source directory", "corpus_source.disk_read_failed",
             [&](std::filesystem::directory_entry const& entry) -> result<void> {
             std::ifstream in(entry.path(), std::ios::binary);

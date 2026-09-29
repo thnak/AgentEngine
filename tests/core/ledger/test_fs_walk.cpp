@@ -25,6 +25,9 @@
 //         out of these callers is what ADR-174's red-team reproduced as a process kill.
 //   F5 -- the non-recursive entry point sees the top level only, and reports directories, so the two
 //         helpers are genuinely different rather than one wrapping the other.
+//   F6 -- GitHub issue #142: `symlink_policy::skip` visits no link (to a file, a directory, or nothing)
+//         and reports each one; the same tree under `follow` visits the file link (positive control).
+//         Needs permission to create symbolic links; where that is missing it prints SKIP, not ok.
 //
 // Needs no daemon, no network and no credentials.
 
@@ -35,6 +38,7 @@
 #include <fstream>
 #include <set>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -75,7 +79,7 @@ int main() {
     {
         std::set<std::string> seen;
         auto r = fsw::for_each_regular_file_recursive(
-            root, std::filesystem::directory_options::none, "walk failed", "test.walk_failed",
+            root, std::filesystem::directory_options::none, fsw::symlink_policy::skip, "walk failed", "test.walk_failed",
             [&](std::filesystem::directory_entry const& e) -> result<void> {
                 seen.insert(e.path().filename().string());
                 return result<void>{};
@@ -92,7 +96,7 @@ int main() {
     {
         std::size_t visits = 0;
         auto r = fsw::for_each_regular_file_recursive(
-            root / "no-such-directory", std::filesystem::directory_options::none,
+            root / "no-such-directory", std::filesystem::directory_options::none, fsw::symlink_policy::skip,
             "walk failed", "test.walk_failed",
             [&](std::filesystem::directory_entry const&) -> result<void> {
                 ++visits;
@@ -116,7 +120,7 @@ int main() {
     {
         std::size_t visits = 0;
         auto r = fsw::for_each_regular_file_recursive(
-            root, std::filesystem::directory_options::none, "walk failed", "test.walk_failed",
+            root, std::filesystem::directory_options::none, fsw::symlink_policy::skip, "walk failed", "test.walk_failed",
             [&](std::filesystem::directory_entry const&) -> result<void> {
                 ++visits;
                 return std::unexpected(agentengine::error{agentengine::failure_class::policy,
@@ -133,7 +137,7 @@ int main() {
         bool returned_error = false;
         try {
             auto r = fsw::for_each_regular_file_recursive(
-                root, std::filesystem::directory_options::none, "walk failed", "test.walk_failed",
+                root, std::filesystem::directory_options::none, fsw::symlink_policy::skip, "walk failed", "test.walk_failed",
                 [&](std::filesystem::directory_entry const&) -> result<void> {
                     // Pull the rest of the tree out from under the live iterator. The raw
                     // `operator++` a range-for uses throws filesystem_error here.
@@ -173,6 +177,68 @@ int main() {
               "F5: it reports the top-level file AND the directory");
         check(seen.count("inner.txt") == 0,
               "F5: ... and does not descend, so it is genuinely a different walk");
+    }
+
+    // ---- F6 (GitHub issue #142): `symlink_policy::skip` never follows or visits a link, and says which it
+    // left out; `follow` (the positive control) does visit the same link, so the difference is the policy.
+    {
+        std::filesystem::path const outside = std::filesystem::temp_directory_path() / "ae_test_fs_walk_outside";
+        std::filesystem::remove_all(root, cleanup);
+        std::filesystem::remove_all(outside, cleanup);
+        put_file(root / "real.txt", "r");
+        put_file(outside / "secret.txt", "outside the walked root");
+        put_file(outside / "dir" / "inside_linked_dir.txt", "d");
+
+        std::error_code link_ec;
+        std::filesystem::create_symlink(outside / "secret.txt", root / "link.txt", link_ec);
+        std::error_code dir_link_ec;
+        std::filesystem::create_directory_symlink(outside / "dir", root / "dirlink", dir_link_ec);
+        std::error_code dangling_ec;
+        std::filesystem::create_symlink(root / "does-not-exist", root / "dangling", dangling_ec);
+
+        if (link_ec || dir_link_ec || dangling_ec) {
+            // Windows without Developer Mode or SeCreateSymbolicLinkPrivilege. Reported, not passed: F6 is
+            // then unproven on this machine, and the Linux build is where it runs.
+            std::printf("[SKIP] F6: cannot create symbolic links here (%s) -- F6 NOT PROVEN on this run\n",
+                        (link_ec ? link_ec : dir_link_ec ? dir_link_ec : dangling_ec).message().c_str());
+        } else {
+            std::set<std::string> seen;
+            std::vector<std::filesystem::path> skipped;
+            auto r = fsw::for_each_regular_file_recursive(
+                root, std::filesystem::directory_options::none, fsw::symlink_policy::skip, "walk failed",
+                "test.walk_failed",
+                [&](std::filesystem::directory_entry const& e) -> result<void> {
+                    seen.insert(e.path().filename().string());
+                    return result<void>{};
+                },
+                &skipped);
+            check(r.has_value(), "F6: a skip walk over links to a file, a directory and nothing succeeds -- "
+                                 "a dangling link is not an error");
+            check(seen == std::set<std::string>{"real.txt"},
+                  "F6: ... and visits only the real file: not the file link, not through the directory link");
+            std::set<std::string> skipped_names;
+            for (auto const& p : skipped) skipped_names.insert(p.filename().string());
+            check(skipped_names == std::set<std::string>{"link.txt", "dirlink", "dangling"},
+                  "F6: ... and reports all three links it left out");
+
+            // The dangling link comes out first: under `follow`, a link-following status query on it is an
+            // error that stops the walk before it reaches link.txt (measured on Windows), which would make
+            // this control fail for a reason unrelated to the claim.
+            std::filesystem::remove(root / "dangling", cleanup);
+            std::set<std::string> followed;
+            auto control = fsw::for_each_regular_file_recursive(
+                root, std::filesystem::directory_options::none, fsw::symlink_policy::follow, "walk failed",
+                "test.walk_failed",
+                [&](std::filesystem::directory_entry const& e) -> result<void> {
+                    followed.insert(e.path().filename().string());
+                    return result<void>{};
+                });
+            check(control.has_value(), "F6 (positive control): the `follow` walk over the same links succeeds");
+            check(followed.count("link.txt") == 1,
+                  "F6 (positive control): the SAME tree walked with `follow` visits link.txt, so `skip` is what "
+                  "excluded it");
+        }
+        std::filesystem::remove_all(outside, cleanup);
     }
 
     std::filesystem::remove_all(root, cleanup);

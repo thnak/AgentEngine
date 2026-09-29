@@ -109,9 +109,12 @@ struct RunCommandReply {
     std::string image;
     std::string image_digest;
     std::string image_digest_kind;
+    // GitHub issue #142: symbolic links the command left behind, root-relative, which were NOT committed
+    // (the checkpoint's tree has no link kind). Empty when there were none.
+    std::vector<std::string> skipped_symlinks;
 };
 AE_JSON_SCHEMA(RunCommandReply, ok, exit_code, stdout_text, tree_digest, turn_index, image, image_digest,
-               image_digest_kind)
+               image_digest_kind, skipped_symlinks)
 
 // ADR-119: now declares a real `Capabilities<cap::decl::RunCommand>` ceiling -- see this file's own
 // top comment for the double-gate shape this creates (the identity/quota model is unchanged and
@@ -804,6 +807,7 @@ public:
                     reply.stdout_text = std::move(outcome->exec.stdout_text);
                     reply.tree_digest = outcome->checkpoint.tree;
                     reply.turn_index = outcome->checkpoint.turn_index;
+                    reply.skipped_symlinks = std::move(outcome->skipped_symlinks);
                     return reply;
                 })));
         }
