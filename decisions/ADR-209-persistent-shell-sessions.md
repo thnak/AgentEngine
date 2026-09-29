@@ -21,7 +21,9 @@
 
 ## 1. The problem
 
-Every shell path is one-shot. Tier 0's `run_command` → `SandboxRuntime::run()` (`sandbox_runtime.hpp:116`):
+*(Corrected 2026-09-29: the mediated `run_shell` is not one-shot — it keeps a session-scoped `ExecState{cwd, env}`
+per 010 §3a, with no live process; see §5a. The paths below are the ones with no persistent shell state.)*
+Tier 0's `run_command` → `SandboxRuntime::run()` (`sandbox_runtime.hpp:116`):
 materialize head → **destroy and recreate the container** (`docker_execution_surface.cpp:953-961`) → one `sh -c` →
 drain → scan → commit. `NativeShellProvider` spawns one process per call at `mount_root` with a fixed minimal
 environment. `cd`, `export`, virtualenvs and background servers never outlive a call; the sandbox pays a container
@@ -127,6 +129,25 @@ never crosses principals.
   on U+2018–U+201B). Never used host-side (no `docker exec -w`, no native spawn cwd, no host env block, no grant check).
 - Not replayed: `IFS`, `ENV`, `BASH_ENV`, `LD_*`, `PS*`, `SHELLOPTS`, `BASHOPTS`, `PROMPT_COMMAND`.
 - Caps: `cwd` ≤ 4 KiB; ≤ 64 variables / 32 KiB. In memory, bounded LRU. Never restored: processes, functions, aliases.
+
+### 5a. OPEN — reconciliation with 010 §3a `ExecState` (found after pass 3, 2026-09-29)
+
+010 §3a already specifies a session-scoped `ExecState{cwd, env}` (`include/agentengine/sandbox/runner.hpp:17`), held
+by the sandbox and shared **by reference** by every `Runner`, so a `cd` in the shell is the `os.getcwd()` of the next
+`execute_code` and vice versa. The mediated `run_shell` implements it (`session_shell_wiring.hpp:103`: "cwd/env
+survive across calls"). §1's "every shell path is one-shot" was wrong for the mediated shell, and this ADR's §5
+snapshot is a second, parallel `{cwd, env}` carrier — which the spec forbids ("exactly one notion of the current
+directory of this session"). The spec wins until amended. To decide before building:
+
+- **(a) Adopt:** the live shell's snapshot *is* the session's `ExecState` — read on open, written after every command
+  — when the live provider and the interpreter serve the same worktree. Needs a path mapping (the container sees
+  `/workspace`, the interpreter's mount is `/work`) and a rule for values the other side cannot represent.
+- **(b) Scope:** amend 010 §3a so "every `Runner`" means every runner over the same execution environment; a live
+  container shell has its own `ExecState`, and a session using both says so.
+
+Recommendation: (a) when both are configured for one worktree, since it is the property 010 §3a calls "one machine";
+(b) only if the path mapping proves lossy. Either way, 010 §3a's own open item — background processes "not fully
+specified here — see Q6" — is what §6 below answers for the live tier, and 010 must cite this ADR.
 
 ## 6. Background processes
 
