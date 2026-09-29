@@ -958,6 +958,9 @@ struct DriverConfig {
     // Host-only, like the rest of this struct; empty in the driver binary.
     std::function<std::shared_ptr<ModelBackend>(std::string const& executor_id, std::shared_ptr<ModelBackend>)>
         workflow_backend_wrapper;
+    // ADR-210 §10: runs on the job thread after a run/resume call returns and before its events are drained. The
+    // driver's tests delay it to prove `settled` is signalled only after the drain. Host-only; empty in the binary.
+    std::function<void()> workflow_before_drain;
 };
 
 // ---- Event → JSON ----------------------------------------------------------------------------------
@@ -1748,11 +1751,20 @@ namespace workflow_fixture_detail {
     auto bad = [&](std::string m) {
         return std::unexpected(error{failure_class::contract, "workflow fixture " + f.name + ": " + m, "test.bad_fixture"});
     };
-    if (auto ok = workflow::validate_workflow(f.graph); !ok) return bad(ok.error().message);
     if (!f.graph.bound.max_rounds || *f.graph.bound.max_rounds > kMaxWorkflowRounds) {
         return bad("max_rounds must be set and at most " + std::to_string(kMaxWorkflowRounds));
     }
     if (f.graph.bound.deadline_ms) return bad("a wall-clock deadline would make the run nondeterministic");
+    // ADR-210 §10: the structural stream is drained only after each call returns, so a call must never emit more
+    // than its capacity (the supervisor's push would block the job forever). A generous per-round estimate, checked
+    // with a 4x margin.
+    std::size_t const per_round = f.graph.executors.size() * 4 + f.graph.edges.size() * 2 + 8;
+    if (per_round * *f.graph.bound.max_rounds * 4 > kWorkflowStructuralCapacity) {
+        return bad("the graph could emit more structural events than the driver buffers (" +
+                   std::to_string(per_round * *f.graph.bound.max_rounds) + " estimated, at most " +
+                   std::to_string(kWorkflowStructuralCapacity / 4) + ")");
+    }
+    if (auto ok = workflow::validate_workflow(f.graph); !ok) return bad(ok.error().message);
     std::vector<ToolDescriptor> const known = all_test_tool_descriptors();
     for (workflow::Executor const& e : f.graph.executors) {
         if (e.kind == workflow::executor_kind::sub_workflow) return bad("sub-workflows are not supported");
@@ -2012,6 +2024,7 @@ struct DriverWorkflow {
     std::vector<Value>                          script_log;  // steps for scenario_export
     std::string                                 nondeterministic_reason;
     bool                                        ran = false;
+    std::function<void()>                       before_drain;  // DriverConfig::workflow_before_drain
     std::unique_ptr<rt::ThreadPool>             pool = std::make_unique<rt::ThreadPool>(1);
 
     DriverWorkflow() = default;
@@ -2031,6 +2044,7 @@ struct DriverWorkflow {
 
 // Drains both queues (every step has been joined: the call returned) and records how the call ended.
 inline void finish_workflow_call(DriverWorkflow& w, rt::WorkflowResult const& r) {
+    if (w.before_drain) w.before_drain();
     while (std::optional<workflow::WorkflowEvent> ev = w.stream->next()) w.monitor->on_event(*ev);
     workflow_state const s = w.sup->open_interactions().empty() ? workflow_state::finished : workflow_state::suspended;
     w.monitor->finish_call(s, workflow_result_json(r), w.stream->multiplexed_dropped_count());
@@ -3284,6 +3298,7 @@ private:
         auto w = std::make_unique<DriverWorkflow>();
         w->id = "w" + std::to_string(next_workflow_++);
         w->fixture = f->name;
+        w->before_drain = config_.workflow_before_drain;
         std::vector<rt::ExecutorBody> bodies;
         std::vector<EffectContext> contexts;
         std::vector<Value> executors;
@@ -3810,6 +3825,23 @@ struct ReplayFixtures {
     std::vector<Value> want_events;
     if (Value const* ev = expected->find("events"); ev != nullptr && ev->is_array()) want_events = ev->as_array();
     compare_list(want_events, actual, "structural");
+    // Every agent step of the fixture must have its log in the file, and no other (ADR-210 §10).
+    {
+        std::vector<std::string> want_steps;
+        if (Value const* se = expected->find("step_events"); se != nullptr && se->is_object()) {
+            for (auto const& [step, _] : se->as_object()) want_steps.push_back(step);
+        }
+        std::vector<std::string> got_steps;
+        Call s0 = call(d, "workflow_snapshot", with_wid({}), id);
+        if (Value const* ss = s0.body.find("steps"); ss != nullptr && ss->is_array()) {
+            for (Value const& s : ss->as_array()) got_steps.push_back(get_string(s, "executor_id").value_or(""));
+        }
+        std::sort(want_steps.begin(), want_steps.end());
+        std::sort(got_steps.begin(), got_steps.end());
+        if (want_steps != got_steps) {
+            report.problems.push_back("the scenario's step logs do not name exactly the fixture's agent steps");
+        }
+    }
     if (Value const* se = expected->find("step_events"); se != nullptr && se->is_object()) {
         for (auto const& [step, list] : se->as_object()) {
             Call got = call(d, "workflow_events", with_wid({{"executor_id", str(step)}}), id);

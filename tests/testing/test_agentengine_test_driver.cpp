@@ -1879,9 +1879,14 @@ int main() {
                 CallResult push_running = call(d, "workflow_script_push", wid(w, {{"executor_id", td::str("draft")}, {"turns", td::arr({text_turn("x")})}}));
                 CallResult list_running = call(d, "request_port_list", wid(w));
                 CallResult snap_running = call(d, "workflow_snapshot", wid(w));
+                CallResult resolve_running = call(d, "request_port_resolve",
+                                                  wid(w, {{"interaction_id", td::str(kPort1)}, {"text", td::str("x")}}));
+                CallResult run_running = call(d, "workflow_run", wid(w, {{"text", td::str("again")}}));
                 check(push_running.is_error && push_running.error_code == "test.workflow_running" &&
                           list_running.is_error && td::get_bool(snap_running.body, "partial") == true,
                       "W11: while running, script push and port listing are refused and the snapshot is partial");
+                check(resolve_running.is_error && resolve_running.error_code == "test.workflow_running" && run_running.is_error,
+                      "W11: while running, request_port_resolve and a second workflow_run are refused");
                 CallResult c1 = call(d, "workflow_cancel", wid(w));
                 open_gate();
                 Value s = wsettle(d, w);
@@ -1889,6 +1894,9 @@ int main() {
                 check(!c1.is_error && td::get_string(s, "state") == "finished" && ex.is_error && ex.error_code == "test.nondeterministic",
                       "W8: a cancel while running finishes the workflow and makes it non-exportable (status " +
                           result_of(s, "status") + ")");
+                CallResult after = call(d, "request_port_resolve", wid(w, {{"interaction_id", td::str(kPort1)}, {"text", td::str("x")}}));
+                CallResult rerun = call(d, "workflow_run", wid(w, {{"text", td::str("again")}}));
+                check(after.is_error && rerun.is_error, "W8: after a cancel while running, the workflow never runs again");
             }
             // W9: close and driver exit with a run in flight or suspended return and leave nothing running.
             {
@@ -1913,6 +1921,53 @@ int main() {
                 opener.join();
                 double const secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
                 check(secs < 15.0, "W9: driver exit with a workflow in flight returns (" + std::to_string(secs) + " s)");
+            }
+        }
+
+        // W12: `settled` is signalled only after every event is drained. The seam delays the drain; a driver that
+        // signalled first would let this wait return with the logs still empty.
+        {
+            td::DriverConfig c = wcfg;
+            c.workflow_before_drain = [] { std::this_thread::sleep_for(std::chrono::milliseconds(150)); };
+            td::Driver d(c);
+            std::string const w = wstart(d, "wf_review");
+            wpush(d, w, "draft", td::arr({tool_turn("echo", td::obj({{"text", td::str("x")}})), text_turn("draft")}));
+            (void)call(d, "workflow_run", wid(w, {{"text", td::str("go")}}));
+            Value s = wsettle(d, w);
+            auto kinds = structural_kinds(d, w);
+            CallResult dev = call(d, "workflow_events", wid(w, {{"executor_id", td::str("draft")}}));
+            Value const* evs = dev.body.find("events");
+            check(td::get_string(s, "state") == "suspended" && count_of(kinds, "request_port_opened") == 1 &&
+                      evs != nullptr && evs->as_array().size() >= 8,
+                  "W12: with the drain delayed, settled still sees the whole structural log and draft's own log");
+        }
+        // W8 (§10): a graph that could overflow the structural buffer is refused.
+        {
+            td::WorkflowFixture big = td::workflow_fixtures()[0];
+            for (int i = 0; i < 200; ++i) {
+                agentengine::workflow::Executor e = big.graph.executors[0];
+                e.id = "pad" + std::to_string(i);
+                big.graph.executors.push_back(e);
+            }
+            big.graph.bound.max_rounds = 16;
+            auto b = td::check_workflow_fixture(big);
+            check(!b && b.error().message.find("structural events") != std::string::npos,
+                  "W8: a fixture whose worst case exceeds the structural buffer is refused");
+        }
+        // W4 (§10): a scenario missing a step's log (or naming another) is refused.
+        {
+            auto sc = td::read_scenario_file(wbase / "wf_review_approve.json");
+            if (sc) {
+                Value const* exp = sc->find("expected");
+                Value const* se = exp ? exp->find("step_events") : nullptr;
+                td::Members kept;
+                if (se != nullptr)
+                    for (auto const& [k, v] : se->as_object())
+                        if (k != "publish") kept.emplace_back(k, v);
+                Value edited = set_field(*sc, "expected", set_field(*exp, "step_events", td::obj(std::move(kept))));
+                td::ReplayReport const r = td::replay_scenario(edited);
+                check(!r.passed && !r.problems.empty() && r.problems[0].find("step logs") != std::string::npos,
+                      "W4: a scenario that drops a step's log fails the replay instead of skipping that step");
             }
         }
 

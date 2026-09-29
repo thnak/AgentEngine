@@ -1,6 +1,6 @@
 # ADR-210 — Test driver: the workflow tool group (drive a `WorkflowSupervisor` run, answer its request ports)
 
-- **Status**: **Proposed — implemented and proven (2026-09-29): every W check and both scenarios pass, and all 13 positive controls fail their claim (§9). Not yet Judged.** §7 supersedes §2–§4 where they differ; §8 supersedes §7 R2 (no pump).
+- **Status**: **Judged with conditions (2026-09-29, fresh `general-purpose` judge, §10); both conditions met the same day: a deterministic test (and control) for draining before `settled`, and W11 now exercises resolve and run while running.** §7 supersedes §2–§4 where they differ; §8 supersedes §7 R2 (no pump).
 - **Date**: 2026-09-29
 - **Origin**: ADR-182 §3.4 ("`workflow_start`, `workflow_wait_for`, `request_port_list`, `request_port_resolve`
   over `WorkflowSupervisor`, with the same shape"), ADR-182 §11 Q1 (workflows after the session phases), the
@@ -32,11 +32,11 @@ Same shape as the session group. Every workflow tool takes `workflow_id` (driver
 | `workflow_start {fixture}` | builds the graph and a fresh supervisor from a compiled workflow fixture; returns `workflow_id` and the executor list (id, kind) |
 | `workflow_script_push {workflow_id, executor_id, turns}` | appends scripted model turns to one agent step (same turn shape as `model_script_push`, including `request_digest`) |
 | `workflow_run {workflow_id, text}` | starts `run_workflow` with a text message on the driver's worker; returns at once |
-| `workflow_wait_for {workflow_id, until}` | `settled` \| `suspended` \| `event` (kind, optional `executor_id`); ≤ 60 s |
+| `workflow_wait_for {workflow_id, until}` | `settled` (default) \| `suspended` \| `finished`; ≤ 60 s (no `event` wait: events are drained only after each call, §8) |
 | `request_port_list {workflow_id}` | open interactions: `interaction_id`, port executor id, the ask's text |
 | `request_port_resolve {workflow_id, interaction_id, text, routes?, caller?}` | `resume_workflow`; returns at once |
 | `workflow_snapshot {workflow_id}` | status, rounds, output, partial, failed executor, unopened ports, open interactions, per-step script and C8 counters |
-| `workflow_events {workflow_id, since?}` | the structural event log (below) |
+| `workflow_events {workflow_id, since_seq?, limit?, executor_id?}` | the structural event log, or one step's own log |
 | `workflow_cancel {workflow_id}` / `workflow_close {workflow_id}` | cancel; close and discard |
 | `scenario_export {workflow_id, name}` | the existing tool, extended to take a workflow |
 
@@ -283,3 +283,48 @@ seen to fail; the header was restored from a copy and its sha256 checked.
 
 W9 has no control (smoke only; §8).
 
+
+## 10. Judge (2026-09-29, fresh `general-purpose` agent, no prior context)
+
+Verdict: **Judged with conditions.** No I1/I2/I3 hole: step sessions are built outside `sessions_`, `caller` only
+becomes the `ResumeWorkflow` principal under `set_require_caller(true)` with a driver-fixed owner, the tenant is a
+constant, routes are data the engine validates, `workflow_backend_wrapper` is host-only, and a fixture is a compiled
+name. Every §7 revision was found in code, and §8's drain-after-each-call replaces the pump soundly. The judge
+rebuilt, ran the driver test and ctest (15/15), and ran two controls itself (W12 as listed, W3), plus the real
+ordering mutant (drain after signalling), which failed W5 in only 1 of 3 runs.
+
+Conditions, both met on 2026-09-29:
+
+1. **The drain-before-`settled` order had no deterministic test.** *Fixed:* a host-only seam,
+   `DriverConfig::workflow_before_drain`, runs after the call returns and before the drain; the new W12 check delays
+   it 150 ms and still sees the whole structural log and draft's own log at `settled`. Control: `finish_call` moved
+   before the seam and drain → W12 fails every time.
+2. **W11 claimed more than it tested.** *Fixed:* inside the gated running window the test now also calls
+   `request_port_resolve` (refused `test.workflow_running`) and a second `workflow_run` (refused). Control: the
+   running check removed from resolve → W11 fails.
+
+Also fixed (recommended):
+
+- **The structural capacity is now guarded.** `check_workflow_fixture` refuses a graph whose worst case,
+  `(executors × 4 + edges × 2 + 8) × max_rounds`, is over a quarter of the 8,192 buffer (checked before graph
+  validation). Control: the guard removed → the W8 over-capacity check fails.
+- **Replay checks the set of step logs:** a scenario whose `step_events` do not name exactly the fixture's agent
+  steps fails. Control: the check removed → the W4 dropped-log check fails.
+- **A running cancel is final:** after it, resolve and run are refused (W8).
+- **§2.1** now lists `until: settled | suspended | finished` and `workflow_events {since_seq, limit, executor_id}`.
+
+Added controls (same method as §9):
+
+| Claim | Mutant | Seen to fail |
+|---|---|---|
+| W12 (order) | `settled` signalled before the seam and drain | W12 delayed drain |
+| W8 (capacity) | the capacity guard removed | W8 over-capacity fixture |
+| W4 (step set) | the step-set check removed | W4 dropped step log |
+| W11 | resolve not refused while running | W11 resolve and run while running |
+
+Residuals the judge accepted: W9 is smoke only (no ASan on this Windows build); the engine defects are recorded,
+not fixed (a resolve consumes the port before validating its routes; `workflow_run_failed` is logged on a
+still-suspended run; a mixed route is accepted; same-round deliveries to one port share an interaction id; a cancel
+during an agent step ends `executor_failed`); the step-event queue is fixed at 1,024 (drops counted, export
+refused); workflow fixtures are compiled only; gated tools are refused in steps; nested sub-workflow ports are out of
+scope.
