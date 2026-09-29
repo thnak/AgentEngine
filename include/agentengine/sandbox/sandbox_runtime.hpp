@@ -48,6 +48,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -115,11 +116,19 @@ public:
     // sequence -- two concurrent `run()` calls on the SAME instance (sharing one `io_fs_` staging
     // directory and, if passed the same `surface`, one execution surface) could interleave mid-turn.
     // Fixed by taking `exclusivity_` for the whole call.
+    //
+    // `executed` (GitHub issue #145): when non-null, it is set to the command's own outcome the moment the
+    // command has run (step 4), BEFORE the steps that can still fail after it (clear, drain, scan, commit).
+    // `run()` itself stays fail-closed -- a commit that failed is still an error, never a success a caller
+    // could mistake for a committed turn -- but a caller holding `executed` can tell the model that the
+    // command really ran and what it printed, instead of only "storage quota exhausted". Left untouched when
+    // the command never ran (a quota refusal, a surface that refused the command).
     template <ExecutionSurface Surface>
     [[nodiscard]] agentengine::rt::task<agentengine::result<SandboxRunOutcome>> run(
         Surface& surface, std::string command, agentengine::IdentityHandle author,
         agentengine::rt::AsyncQuota<RunCost>& run_quota,
-        agentengine::rt::AsyncQuota<StorageBytes>& storage_quota) {
+        agentengine::rt::AsyncQuota<StorageBytes>& storage_quota,
+        std::optional<agentengine::SurfaceRunOutcome>* executed = nullptr) {
         agentengine::rt::AsyncMutex::Guard guard = co_await exclusivity_->lock();
 
         // 0. Gate BEFORE the real command ever executes -- see RunCost's own comment above for why
@@ -168,6 +177,7 @@ public:
             (void)co_await run_quota.refund(1);
             co_return std::unexpected(exec_r.error());
         }
+        if (executed != nullptr) *executed = *exec_r;
 
         // 5. Pull whatever the surface produced back onto real disk at staging_root -- into an EMPTY
         //    directory. Staging still holds step 2's materialized head, and a drain only adds (GitHub

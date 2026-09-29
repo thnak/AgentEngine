@@ -113,6 +113,11 @@ set_tests_properties(test_sandbox_runtime PROPERTIES RESOURCE_LOCK docker_daemon
 agentengine_add_test(test_sandbox_runtime_deletions
   LIBS agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
 
+# GitHub issue #145: a commit that fails after the command ran still tells the model the command ran, with
+# its exit code and output. In-test ExecutionSurface, NO daemon -- not for ci.yml's exclusion lists.
+agentengine_add_test(test_run_command_commit_failure
+  LIBS agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+
 # ---- ADR-174 (GitHub issue #68) -- the root-owned ustar seed archive, OFFLINE half.
 # Needs no daemon, no network and no privileges: it asserts the ARCHIVE BYTES (uid/gid 0, the POSIX
 # ustar magic, the reader-recomputed checksum, block padding and terminators, the symlink and cap

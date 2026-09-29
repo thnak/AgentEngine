@@ -404,6 +404,22 @@ public:
     }
 
 private:
+    // GitHub issue #145. A `run()` that failed AFTER the command executed (clear, drain, scan or commit --
+    // e.g. `StorageBytes` exhausted) used to reach the model as that failure alone, so the model could not
+    // tell that `git push` or `curl -X POST` had really happened, or see what it printed. The error stays an
+    // error -- same class, same code, still `is_error` on the wire, never a reply a caller could read as a
+    // committed turn -- and its message now says the command ran, with its exit code and output. Unchanged
+    // when the command never ran (`executed` empty).
+    [[nodiscard]] static agentengine::error with_executed_output(
+            agentengine::error failure, std::optional<agentengine::SurfaceRunOutcome> const& executed) {
+        if (!executed.has_value()) return failure;
+        failure.message += "\n\nThe command DID run before this failure, so any effect outside the workspace "
+                           "happened; its workspace changes were NOT committed. exit_code=" +
+                           std::to_string(executed->exit_code) + "\n--- command output ---\n" +
+                           executed->stdout_text;
+        return failure;
+    }
+
     // ADR-176 §14 -- where a tool reply's image provenance comes from, so that no tool body has to
     // remember. PRIVATE: these were briefly public by accident of where they were written, which would
     // have made `provider.stamp_image_provenance(anything)` part of this class's API for no reason.
@@ -788,9 +804,12 @@ public:
                                           -> agentengine::result<RunCommandReply> {
                     agentengine::IdentityHandle caller =
                         agentengine::IdentityAuthority::bootstrap().adopt(ctx.principal);
-                    auto outcome = agentengine::rt::block_on(
-                        runtime_->run(*surface_, args.command, caller, *run_quota_, *storage_quota_));
-                    if (!outcome.has_value()) return std::unexpected(outcome.error());
+                    std::optional<agentengine::SurfaceRunOutcome> executed;
+                    auto outcome = agentengine::rt::block_on(runtime_->run(
+                        *surface_, args.command, caller, *run_quota_, *storage_quota_, &executed));
+                    if (!outcome.has_value()) {
+                        return std::unexpected(with_executed_output(outcome.error(), executed));
+                    }
                     // ADR-176 §14: the three image fields are left default-empty HERE and filled by
                     // `with_image_provenance()` after this body returns -- same value, same ordering as
                     // the hand-written `bound_image()` call this replaced, but no longer this body's job
@@ -931,9 +950,10 @@ public:
                 agentengine::failure_class::contract, "unknown task-branch handle: " + handle_id,
                 "mandatory_sandbox_provider.task_branch_unknown_handle"});
         }
+        std::optional<agentengine::SurfaceRunOutcome> executed;
         auto outcome = co_await it->second.run(*surface_, std::move(command), requested_by,
-                                                  *run_quota_, *storage_quota_);
-        if (!outcome.has_value()) co_return std::unexpected(outcome.error());
+                                                  *run_quota_, *storage_quota_, &executed);
+        if (!outcome.has_value()) co_return std::unexpected(with_executed_output(outcome.error(), executed));
         BoundImage img = bound_image();  // issue #80 -- after the run, for the reason run_command's own says
         co_return TaskBranchRunReply{outcome->exec.exit_code, outcome->exec.stdout_text,
                                        std::move(img.reference), std::move(img.digest),
