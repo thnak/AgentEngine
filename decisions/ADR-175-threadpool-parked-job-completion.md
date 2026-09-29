@@ -1,8 +1,8 @@
 # ADR-175 — Who resumes a parked coroutine, and who owns a lock while its holder is parked?
 
-- **Status**: Proposed — revision 3 implemented. Red-teamed in four rounds (§8): round 1 broke revision 1,
+- **Status**: Judged — revision 3 implemented. Red-teamed in four rounds (§8): round 1 broke revision 1,
   round 2 broke revision 2, round 3 found four must-fix defects in the implementation, round 4 found three
-  more (one of them pre-existing in HEAD). All fixed and re-proven. Pending project-owner sign-off.
+  more (one of them pre-existing in HEAD). All fixed and re-proven. **Judged 2026-09-29 (project-owner sign-off).**
 - **Date**: 2026-09-14
 - **Closes**: GitHub issue #78, and the hazard class it belongs to.
 - **Revises** ADR-064 §7's `ThreadPool::run_job()` fix and ADR-123's owner-thread check
