@@ -6,9 +6,18 @@
 // so before the fix, a file the command removed was still in staging from step 2, and the scan committed it
 // again. `rm f` reported success and `f` stayed in history.
 //
-// `AdditiveDrainSurface` below is an `ExecutionSurface` with exactly `docker cp`'s drain semantics, so the
-// defect is reproducible deterministically with no daemon. The live-Docker half of the proof is
-// test_sandbox_runtime.cpp's [11].
+// The fix is in `drain_to()`'s contract (execution_surface.hpp): afterwards `host_dir` holds EXACTLY the
+// surface's view. A copy-out surface meets it by calling `clear_directory_contents()` before copying; a
+// bind-mounting surface already meets it. The first fix wiped staging in `run()` instead, which destroyed
+// a bind-mounting surface's whole output -- test_composed_containerd_providers_live caught it on Linux CI.
+// Both shapes are exercised here with no daemon:
+//
+//   `CopyOutSurface`  -- a private "container" directory, copied back with `docker cp`'s additive
+//                        semantics after `clear_directory_contents()`, exactly as DockerExecutionSurface.
+//   `InPlaceSurface`  -- the command works directly in `host_dir` and `drain_to()` is a no-op, exactly as
+//                        ContainerdExecutionSurface's bind mount.
+//
+// The live halves are test_sandbox_runtime.cpp's [11] (Docker) and test_composed_containerd_providers_live.
 //
 //   D1 -- the seed turn commits {keep.txt, gone.txt, dir/inner.txt}. Everything after it is measured
 //         against this, so it comes first.
@@ -16,9 +25,12 @@
 //         (the clear did not throw away what the surface returned).
 //   D3 -- deleting a whole directory removes every entry under it.
 //   D4 -- a turn that deletes nothing still commits the same set (no over-deletion).
+//   D5 -- with `InPlaceSurface`, a turn that writes one file and deletes another commits exactly that:
+//         the written file present, the deleted one absent. Nothing between run and scan may wipe staging.
 //
-// Positive control: with the staging clear removed from `run()` (a planted mutant, run by hand, recorded
-// in the fixing commit), D2 and D3 fail on this exact double.
+// Positive controls (planted mutants, run by hand, recorded in the fixing commit): with
+// `clear_directory_contents()` reduced to `return {};`, D2 and D3 fail; with a wipe of staging put back
+// into `run()` before the drain, D5 fails.
 //
 // Needs no daemon, no network and no privileges.
 
@@ -57,13 +69,31 @@ template <class T>
     return t.take_value();
 }
 
-// A surface whose "container" is a private directory. `reset()` replaces it with a copy of host_dir,
-// `run()` understands three commands, and `drain_to()` copies it OVER host_dir without removing anything --
-// `docker cp container:/workspace/. host_dir` semantics.
-//   "write <path> <content>" | "rm <path>" | "rmdir <path>" (recursive) | "noop"
-class AdditiveDrainSurface {
+// "write <path> <content>" | "rm <path>" | "rmdir <path>" (recursive) | "noop", applied under `root`.
+[[nodiscard]] result<SurfaceRunOutcome> apply(fs::path const& root, std::string const& command) {
+    std::error_code ec;
+    if (command.rfind("write ", 0) == 0) {
+        auto const rest = command.substr(6);
+        auto const sp = rest.find(' ');
+        fs::path const p = root / rest.substr(0, sp);
+        fs::create_directories(p.parent_path(), ec);
+        std::ofstream(p, std::ios::binary) << rest.substr(sp + 1);
+    } else if (command.rfind("rm ", 0) == 0) {
+        fs::remove(root / command.substr(3), ec);
+    } else if (command.rfind("rmdir ", 0) == 0) {
+        fs::remove_all(root / command.substr(6), ec);
+    } else if (command != "noop") {
+        return std::unexpected(error{failure_class::contract, "unknown command: " + command, "test.cmd"});
+    }
+    return SurfaceRunOutcome{ec ? 1 : 0, {}};
+}
+
+// A surface whose "container" is a private directory. `reset()` replaces it with a copy of host_dir, and
+// `drain_to()` empties host_dir then copies the box OVER it without removing anything --
+// DockerExecutionSurface's `clear_directory_contents()` + `docker cp container:/workspace/. host_dir`.
+class CopyOutSurface {
 public:
-    explicit AdditiveDrainSurface(fs::path box) : box_(std::move(box)) {}
+    explicit CopyOutSurface(fs::path box) : box_(std::move(box)) {}
 
     [[nodiscard]] result<void> reset(fs::path const& host_dir) {
         std::error_code ec;
@@ -74,25 +104,11 @@ public:
         return {};
     }
 
-    [[nodiscard]] result<SurfaceRunOutcome> run(std::string const& command) {
-        std::error_code ec;
-        if (command.rfind("write ", 0) == 0) {
-            auto const rest = command.substr(6);
-            auto const sp = rest.find(' ');
-            fs::path const p = box_ / rest.substr(0, sp);
-            fs::create_directories(p.parent_path(), ec);
-            std::ofstream(p, std::ios::binary) << rest.substr(sp + 1);
-        } else if (command.rfind("rm ", 0) == 0) {
-            fs::remove(box_ / command.substr(3), ec);
-        } else if (command.rfind("rmdir ", 0) == 0) {
-            fs::remove_all(box_ / command.substr(6), ec);
-        } else if (command != "noop") {
-            return std::unexpected(error{failure_class::contract, "unknown command: " + command, "test.cmd"});
-        }
-        return SurfaceRunOutcome{ec ? 1 : 0, {}};
-    }
+    [[nodiscard]] result<SurfaceRunOutcome> run(std::string const& command) { return apply(box_, command); }
 
     [[nodiscard]] result<void> drain_to(fs::path const& host_dir) {
+        auto cleared = clear_directory_contents(host_dir, "test.drain_clear");
+        if (!cleared.has_value()) return std::unexpected(cleared.error());
         std::error_code ec;
         fs::create_directories(host_dir, ec);
         fs::copy(box_, host_dir, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
@@ -103,7 +119,23 @@ public:
 private:
     fs::path box_;
 };
-static_assert(ExecutionSurface<AdditiveDrainSurface>);
+static_assert(ExecutionSurface<CopyOutSurface>);
+
+// The command works directly in the directory `reset()` was given, and `drain_to()` has nothing to do --
+// ContainerdExecutionSurface's bind mount at /workspace.
+class InPlaceSurface {
+public:
+    [[nodiscard]] result<void> reset(fs::path const& host_dir) {
+        dir_ = host_dir;
+        return {};
+    }
+    [[nodiscard]] result<SurfaceRunOutcome> run(std::string const& command) { return apply(dir_, command); }
+    [[nodiscard]] result<void> drain_to(fs::path const&) { return {}; }
+
+private:
+    fs::path dir_;
+};
+static_assert(ExecutionSurface<InPlaceSurface>);
 
 [[nodiscard]] std::vector<std::string> committed_names(Ledger<>& ledger, Checkpoint const& cp, IdentityHandle who) {
     std::vector<std::string> out;
@@ -141,7 +173,7 @@ int main() {
     fs::remove_all(box, ec);
 
     SandboxRuntime runtime(ledger, std::move(*root), staging);
-    AdditiveDrainSurface surface(box);
+    CopyOutSurface surface(box);
     auto turn = [&](std::string const& cmd) {
         return drive(runtime.run(surface, cmd, owner, *run_quota, *storage_quota));
     };
@@ -165,7 +197,7 @@ int main() {
             check(std::find(names.begin(), names.end(), "gone.txt") == names.end(),
                   "D2: gone.txt is ABSENT from the committed tree (was resurrected before #143's fix); got " + show(names));
             check(std::find(names.begin(), names.end(), "keep.txt") != names.end(),
-                  "D2: ... and keep.txt is still there -- the clear kept what the surface returned");
+                  "D2: ... and keep.txt is still there -- the drain kept what the surface returned");
         }
     }
 
@@ -185,6 +217,32 @@ int main() {
         auto r = turn("noop");
         check(r.has_value() && committed_names(ledger, r->checkpoint, owner) == std::vector<std::string>{"keep.txt"},
               "D4: a turn that deletes nothing commits the same set");
+    }
+
+    // ---- D5: a bind-mount-shaped surface keeps its output, deletions included.
+    {
+        auto root5 = drive(ledger.create_root_branch(owner, "in-place"));
+        check(root5.has_value(), "D5 setup: a second root branch");
+        if (root5.has_value()) {
+            fs::path const staging5 = fs::temp_directory_path() / "ae_test_runtime_deletions_staging_inplace";
+            fs::remove_all(staging5, ec);
+            SandboxRuntime runtime5(ledger, std::move(*root5), staging5);
+            InPlaceSurface in_place;
+            auto in = [&](std::string const& cmd) {
+                return drive(runtime5.run(in_place, cmd, owner, *run_quota, *storage_quota));
+            };
+            (void)in("write old.txt o");
+            auto r = in("write made.txt m");
+            auto d = in("rm old.txt");
+            check(r.has_value() && d.has_value(), "D5: the in-place turns succeed");
+            if (d.has_value()) {
+                auto const names = committed_names(ledger, d->checkpoint, owner);
+                check(names == std::vector<std::string>{"made.txt"},
+                      "D5: the in-place surface's output is committed (made.txt) and its deletion holds "
+                      "(old.txt gone); got " + show(names));
+            }
+            fs::remove_all(staging5, ec);
+        }
     }
 
     fs::remove_all(staging, ec);

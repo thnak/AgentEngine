@@ -704,9 +704,9 @@ private:
 // container is a LIVE bind mount of the real host directory (never a copy), so `reset()`'s copy-in and
 // `drain_to()`'s copy-out both disappear entirely for the common case (draining to the SAME directory
 // that was mounted) -- writes inside the container land on real host disk the whole time it runs.
-// `execution_surface.hpp`'s own concept comment ("`T::drain_to(host_dir)` -- pull everything the
-// surface's own view currently holds back onto real disk") is satisfied TRIVIALLY by this conformer,
-// by construction -- a real degree of freedom the concept always had that `DockerExecutionSurface`
+// `execution_surface.hpp`'s own concept comment ("`T::drain_to(host_dir)` -- make `host_dir` hold
+// EXACTLY what the surface's own view currently holds") is satisfied TRIVIALLY by this conformer,
+// by construction, deletions included -- a real degree of freedom the concept always had that `DockerExecutionSurface`
 // being the only conformer ever built never had reason to expose.
 //
 // The bind-mount-vs.-`SandboxRuntime::run()`'s materialize()-before-reset() ORDERING HAZARD this
@@ -894,7 +894,7 @@ public:
     // is a true no-op -- the bytes are already there. For the general `ExecutionSurface` contract
     // (draining to a DIFFERENT directory than the one mounted -- not exercised by
     // `SandboxRuntime::run()` itself, disclosed rather than silently assumed identical), falls back to
-    // a real recursive host-side copy.
+    // a real recursive host-side copy -- into an emptied host_dir, since a copy only adds (issue #143).
     [[nodiscard]] agentengine::result<void> drain_to(std::filesystem::path const& host_dir) {
         if (!instance_) {
             return std::unexpected(agentengine::error{agentengine::failure_class::contract,
@@ -902,6 +902,8 @@ public:
                                                         "containerd_execution_surface.not_reset"});
         }
         if (host_dir == mounted_at_) return agentengine::result<void>{};
+        auto cleared = clear_directory_contents(host_dir, "containerd_execution_surface.drain_clear_failed");
+        if (!cleared.has_value()) return std::unexpected(cleared.error());
         std::error_code ec;
         std::filesystem::create_directories(host_dir, ec);
         std::filesystem::copy(mounted_at_, host_dir,

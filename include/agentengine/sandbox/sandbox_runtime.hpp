@@ -169,13 +169,11 @@ public:
             co_return std::unexpected(exec_r.error());
         }
 
-        // 5. Pull whatever the surface produced back onto real disk at staging_root -- into an EMPTY
-        //    directory. Staging still holds step 2's materialized head, and a drain only adds (GitHub
-        //    issue #143): without the clear, a file the command deleted survived on disk, step 6 found it,
-        //    and step 7 committed it again. A failed clear is handled like a failed drain: the command
-        //    ran, so RunCost stays spent.
-        auto cleared = co_await io_fs_.clear_for_drain();
-        if (!cleared.has_value()) co_return std::unexpected(cleared.error());
+        // 5. Make staging_root hold exactly what the surface's view holds. Staging still holds step 2's
+        //    materialized head, so a file the command deleted is gone afterward only because
+        //    `drain_to()`'s contract requires it (GitHub issue #143, execution_surface.hpp). Not wiped
+        //    here: for a bind-mounting surface staging IS the command's output, and wiping it destroyed
+        //    that output.
         auto drain_r = surface.drain_to(io_fs_.host_root());
         if (!drain_r.has_value()) co_return std::unexpected(drain_r.error());
 

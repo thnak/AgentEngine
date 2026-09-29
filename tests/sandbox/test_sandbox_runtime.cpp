@@ -34,8 +34,8 @@
 //   [10] With ResetCost exhausted, reset_to_turn() is rejected (async_quota.exhausted) and the
 //        branch's real head tree digest does not change at all.
 //   [11] GitHub issue #143: a file a command deletes (`rm`) is absent from the committed tree, and the
-//        file beside it is kept -- the drain lands in an emptied staging directory, not on top of the
-//        materialized head.
+//        file beside it is kept -- `DockerExecutionSurface::drain_to()` empties staging before its
+//        additive `docker cp`, instead of landing on top of the materialized head.
 
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 #include "agentengine/sandbox/sandbox_runtime.hpp"
