@@ -133,12 +133,84 @@ void test_real_adapter_reads_a_real_file() {
     std::filesystem::remove_all(scratch);
 }
 
+// GitHub issue #149: `read_sandbox_file` looked the grant up but never used its `size_cap_bytes`, so a
+// file past the cap was read and returned whole while the shell's `cat` refused the same file
+// (`shell.cat_exceeds_size_cap`). The cap is what keeps an oversized file out of a tool result and so
+// out of the model's context.
+//
+//   A -- a file LARGER than the granted cap is refused, with the policy code, and no content is returned.
+//   B -- a file of EXACTLY the cap is returned (the bound is `>`, not `>=`; no off-by-one over-refusal).
+//   C -- the SAME oversized file is returned under an uncapped grant: the cap alone decides A.
+//   D -- a cap on a narrower path prefix does not apply to a file outside it (the grant found is the one
+//        that covers THIS path, not the first FsRead in the set).
+void test_size_cap_is_enforced() {
+    std::string const scratch = (std::filesystem::temp_directory_path() / "ae_sandbox_fs_cap_test").string();
+    std::filesystem::remove_all(scratch);
+    std::filesystem::create_directories(scratch + "/small");
+    auto const write = [&](std::string const& rel, std::size_t n) {
+        std::ofstream f(scratch + "/" + rel, std::ios::binary);
+        f << std::string(n, 'x');
+    };
+    write("big.txt", 2000);
+    write("exact.txt", 1000);
+    write("small/under.txt", 2000);  // in a directory whose grant has NO cap
+
+    auto adapter = agentengine::native_jail::mediated_shell::MediatedFileSystemAdapter::create(scratch);
+    check(adapter.has_value(), "setup: MediatedFileSystemAdapter::create succeeds (cap test)");
+    if (!adapter) return;
+
+    auto const mount = std::string(agentengine::tools::kSandboxWorkMount);
+    {
+        agentengine::CapabilitySet const capped =
+            agentengine::CapabilitySet::grant_root({agentengine::cap::FsRead{mount, "", std::uint64_t{1000}}});
+        auto ctx = make_ctx(capped);
+        ctx.sandbox_fs = &*adapter;
+
+        auto over = ReadSandboxFile::invoke(ReadSandboxFile::Args{"big.txt"}, ctx);
+        check(!over.has_value(), "A: a 2000-byte file under a 1000-byte FsRead cap is refused");
+        if (!over) {
+            check(over.error().code == "read_sandbox_file.exceeds_size_cap",
+                  "A: ... with read_sandbox_file.exceeds_size_cap");
+            check(over.error().klass == agentengine::failure_class::policy, "A: ... as a policy failure");
+        }
+
+        auto exact = ReadSandboxFile::invoke(ReadSandboxFile::Args{"exact.txt"}, ctx);
+        check(exact.has_value() && exact->content.size() == 1000,
+              "B: a file of exactly the cap (1000) is returned in full");
+    }
+    {
+        agentengine::CapabilitySet const uncapped =
+            agentengine::CapabilitySet::grant_root({agentengine::cap::FsRead{mount, "", std::nullopt}});
+        auto ctx = make_ctx(uncapped);
+        ctx.sandbox_fs = &*adapter;
+        auto big = ReadSandboxFile::invoke(ReadSandboxFile::Args{"big.txt"}, ctx);
+        check(big.has_value() && big->content.size() == 2000,
+              "C (control): the same 2000-byte file under an UNCAPPED grant is returned -- the cap decides A");
+    }
+    {
+        // Two grants: a capped one on "" would also cover small/under.txt, so put the uncapped grant on
+        // "small" FIRST. find_fs_read returns the first grant that covers the path; the point is that a
+        // cap on a grant that does not cover the path is not applied to it.
+        agentengine::CapabilitySet const two = agentengine::CapabilitySet::grant_root(
+            {agentengine::cap::FsRead{mount, "small", std::nullopt},
+             agentengine::cap::FsRead{mount, "elsewhere", std::uint64_t{10}}});
+        auto ctx = make_ctx(two);
+        ctx.sandbox_fs = &*adapter;
+        auto under = ReadSandboxFile::invoke(ReadSandboxFile::Args{"small/under.txt"}, ctx);
+        check(under.has_value() && under->content.size() == 2000,
+              "D: a cap on a grant whose prefix does not cover the path is not applied to it");
+    }
+
+    std::filesystem::remove_all(scratch);
+}
+
 }  // namespace
 
 int main() {
     test_default_is_nullptr_no_sandbox();
     test_capability_denied_never_touches_adapter();
     test_real_adapter_reads_a_real_file();
+    test_size_cap_is_enforced();
 
     if (g_failures == 0) {
         std::printf("test_effect_context_sandbox_fs: all checks passed\n");
