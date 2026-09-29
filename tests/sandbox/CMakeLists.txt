@@ -106,6 +106,14 @@ agentengine_add_test(test_sandbox_runtime
   LIBS agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
 set_tests_properties(test_sandbox_runtime PROPERTIES RESOURCE_LOCK docker_daemon)
 
+# GitHub issue #143: a file the command deletes is absent from the committed checkpoint. Drives the real
+# SandboxRuntime::run() against two in-test ExecutionSurfaces -- a copy-out one (Docker's shape) and an
+# in-place one (containerd's bind mount) -- so it needs NO daemon and must not be added to ci.yml's
+# daemon-requiring exclusion lists. The live halves are test_sandbox_runtime's [11] and
+# test_composed_containerd_providers_live.
+agentengine_add_test(test_sandbox_runtime_deletions
+  LIBS agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+
 # ---- ADR-174 (GitHub issue #68) -- the root-owned ustar seed archive, OFFLINE half.
 # Needs no daemon, no network and no privileges: it asserts the ARCHIVE BYTES (uid/gid 0, the POSIX
 # ustar magic, the reader-recomputed checksum, block padding and terminators, the symlink and cap

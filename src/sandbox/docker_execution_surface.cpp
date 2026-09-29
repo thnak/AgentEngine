@@ -1065,6 +1065,10 @@ agentengine::result<void> DockerExecutionSurface::drain_to(std::filesystem::path
             "cannot create the host directory to drain into: " + mkdir_ec.message(),
             "docker_execution_surface.host_dir_create_failed", mkdir_ec.value()});
     }
+    // `docker cp` only adds, so empty host_dir first: a file the command deleted must not survive here
+    // for the caller's scan to commit again (issue #143, execution_surface.hpp's drain_to() contract).
+    auto cleared = clear_directory_contents(host_dir, "docker_execution_surface.drain_clear_failed");
+    if (!cleared.has_value()) return std::unexpected(cleared.error());
     // Same "/." convention in the other direction: copies /workspace's CONTENTS onto host_dir.
     auto copied = docker_.copy_from_container(*instance_, "/workspace/.", host_dir);
     if (!copied.has_value()) return std::unexpected(copied.error());

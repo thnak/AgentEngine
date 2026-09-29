@@ -41,6 +41,7 @@
 
 #include <concepts>
 #include <filesystem>
+#include <system_error>
 #include <string>
 #include <string_view>
 
@@ -64,12 +65,51 @@ struct SurfaceRunOutcome {
 //                          process. A non-zero `SurfaceRunOutcome::exit_code` is a normal, meaningful
 //                          result (the contained command failed), not a `result<>` error -- only a
 //                          failure to even ATTEMPT execution (the surface itself is broken) is.
-// T::drain_to(host_dir) -- pull everything the surface's own view currently holds back onto real
-//                          disk at `host_dir`, overwriting whatever was there. The caller is
-//                          responsible for scanning `host_dir` afterward (`RealIoFileSystem::
-//                          scan_and_drain_into_tree()`) to turn real bytes into a real, committed
-//                          `Tree` -- this concept's own job ends at "the bytes are back on real
-//                          disk."
+// T::drain_to(host_dir) -- make `host_dir` hold EXACTLY what the surface's own view currently holds:
+//                          every file in the view is on real disk at `host_dir`, and nothing else
+//                          is. A file the command deleted must be gone from `host_dir` afterward
+//                          (GitHub issue #143): the caller scans `host_dir` (`RealIoFileSystem::
+//                          scan_and_drain_into_tree()`) and commits what it finds, so a leftover
+//                          file is a deletion undone. How a conformer gets there is its own
+//                          business: one that copies out (`docker cp` only ever adds) empties
+//                          `host_dir` first with `clear_directory_contents()` below; one whose view
+//                          IS `host_dir` (a bind mount) is already exact and does nothing. That
+//                          difference is why the caller must not wipe `host_dir` itself -- doing so
+//                          destroyed a bind-mounted command's output (#143's first fix, caught by
+//                          test_composed_containerd_providers_live).
+// Removes everything inside `dir` and keeps `dir` itself, for a copy-out `drain_to()` (see above).
+// Keeping the directory matters: it may be a mount point or held open elsewhere. A missing `dir` is
+// already empty. Any entry that cannot be removed is an error, never a silent success -- a surviving
+// file is a file the next scan commits.
+[[nodiscard]] inline agentengine::result<void> clear_directory_contents(std::filesystem::path const& dir,
+                                                                        std::string_view error_code) {
+    std::error_code ec;
+    std::filesystem::directory_iterator it(dir, ec);
+    if (ec) {
+        if (ec == std::errc::no_such_file_or_directory) return {};
+        return std::unexpected(agentengine::error{agentengine::failure_class::fatal,
+                                                  "cannot list " + dir.string() + " to empty it: " + ec.message(),
+                                                  std::string(error_code), ec.value()});
+    }
+    for (std::filesystem::directory_iterator const end; it != end; it.increment(ec)) {
+        if (ec) break;
+        std::error_code rm_ec;
+        std::filesystem::remove_all(it->path(), rm_ec);
+        if (rm_ec) {
+            return std::unexpected(agentengine::error{
+                agentengine::failure_class::fatal,
+                "cannot remove " + it->path().string() + " while emptying " + dir.string() + ": " + rm_ec.message(),
+                std::string(error_code), rm_ec.value()});
+        }
+    }
+    if (ec) {
+        return std::unexpected(agentengine::error{agentengine::failure_class::fatal,
+                                                  "cannot list " + dir.string() + " to empty it: " + ec.message(),
+                                                  std::string(error_code), ec.value()});
+    }
+    return {};
+}
+
 template <class T>
 concept ExecutionSurface = requires(T& t, std::filesystem::path const& host_dir,
                                        std::string const& command) {
