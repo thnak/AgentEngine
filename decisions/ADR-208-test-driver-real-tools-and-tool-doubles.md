@@ -290,3 +290,23 @@ Residuals the judge accepted, added to §5/§7's:
   wrapper.
 - The engine gap behind `with_granted_ceiling` (a quota-capped grant cannot admit a tool declaring an uncapped
   `FsRead`/`FsWrite`) needs an engine follow-up.
+
+## 11. Follow-ups after the judge (2026-09-29)
+
+- **B3 fixed in the driver.** A replay whose scenario has `tool_exchanges` but whose fixture names no real tool is
+  refused (`test.bad_fixture`, "names no real tool") instead of leaving the exchanges unchecked. Check "P5 D4 (B3)";
+  control: the refusal removed → it fails.
+- **D1's in-process count relabelled** "P5 D1 (smoke)", since it cannot fail (§6 G6). D1 stays structural.
+- **The 1 MiB read cap and the 2 s wall clock are now tested through the driver.** A 1.5 MiB file is refused by
+  `cat`; a nested-loop script (40,000 reads of ~1 MB) stops at about 2 s. Controls: the read cap removed from the
+  grant and ceiling → the first fails; `make_shell_sandbox` not passing `kRealToolWallClock` (10 s default) → the
+  second fails.
+- **Cancel end to end.** A `session_cancel` during a real-tool call stops the next one. The wrapper's cancel check
+  removed does *not* make it fail: the engine's loop ends the run on cancel before the next dispatch, so the wrapper's
+  check is a second layer, covered by its own unit check. Control for the end-to-end check: no cancel → the second
+  call runs and it fails.
+- **Engine issues filed:** #147 (the mediated shell parser calls `std::terminate` in Debug builds on a valid script of
+  ~13,000 statements; MSVC iterator-debugging proxies allocate from the fixed arena inside `noexcept` moves; also, the
+  grammar rejects POSIX `for x in a; do …; done`), #148 (the admission gap behind `with_granted_ceiling`), #149
+  (`read_sandbox_file` ignores the granted `FsRead` size cap, B4; verified through the driver: it reads a 1.5 MiB file
+  that `cat` refuses).

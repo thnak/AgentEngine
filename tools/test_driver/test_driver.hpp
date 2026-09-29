@@ -2142,6 +2142,12 @@ private:
                                                        " uses real tools; the driver must be started with "
                                                        "--sandbox-root (a host decision)");
         }
+        // ADR-208 §10 B3: recorded real-tool calls for a fixture with no real tool would never be checked.
+        if (!wants_real && config_.tool_doubles && !config_.tool_doubles->empty()) {
+            return err("test.bad_fixture", "fixture " + fixture->name +
+                                               " names no real tool, but the scenario records real-tool calls "
+                                               "(tool_exchanges) that the replay could not check");
+        }
 
         auto ds = std::make_unique<DriverSession>();
         ds->id = "s" + std::to_string(next_session_++);

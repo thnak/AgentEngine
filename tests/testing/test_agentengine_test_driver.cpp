@@ -1170,7 +1170,10 @@ int main() {
             td::ReplayReport const r = td::replay_scenario(*scenario);
             check(r.passed, "P5 D1/D8: the scenario replays offline with doubles, the whole event stream compared" +
                                 (r.problems.empty() ? std::string{} : ": " + r.problems[0]));
-            check(factory_calls == before && fs::is_empty(sandbox_root, ec), "P5 D1: the replay built no sandbox");
+            // Smoke only: a replay's config has no factory, so this count cannot move. D1 itself is structural
+            // (the scenario runner does not link the mediated shell; ADR-208 §10).
+            check(factory_calls == before && fs::is_empty(sandbox_root, ec),
+                  "P5 D1 (smoke): the replay left the sandbox root empty");
 
             std::string const text = agentengine::json::dump(*scenario);
             std::size_t const tx_at = text.find("\"tool_exchanges\"");
@@ -1215,6 +1218,8 @@ int main() {
                       "P5 D4: without its recording a real-tool scenario cannot replay (no sandbox in a replay)");
                 check(fails_with(set_field(*scenario, "segments", td::arr({td::obj({})})), "cannot have segments"),
                       "P5 D5: a scenario with both segments and tool_exchanges is refused");
+                check(fails_with(set_field(*scenario, "fixture", td::str("basic")), "names no real tool"),
+                      "P5 D4 (B3): recorded real-tool calls for a fixture with no real tool are refused, not ignored");
             }
             // D8: drop the recorded exec events and the replay's event stream no longer matches.
             check(fails_with(tampered("\"exec_events\":[{", "\"exec_events\":[],\"x\":[{"), "event"),
@@ -1356,6 +1361,66 @@ int main() {
                   "P5 D10: a result that is not UTF-8 is replaced by an error");
             check(fin.size() == 3 && result_of(fin[2]).find("No space left") != std::string::npos && !fs::exists(scratch / "copy.txt"),
                   "P5 D10: over the 16 MiB quota, a write is refused (" + (fin.size() == 3 ? result_of(fin[2]).substr(0, 120) : std::string{}) + ")");
+        }
+        auto slow_script = [] {
+            std::string words;
+            for (int i = 0; i < 200; ++i) words += " w" + std::to_string(i);
+            // This grammar takes no ';' before do/done (`for x in a b do ... done`).
+            return "for a in" + words + " do for b in" + words + " do cat one.txt done done";
+        };
+        // D10 (judge §10): the 1 MiB read cap and the 2 s wall clock reach the shell.
+        {
+            fs::path const root = base / "limits";
+            td::Driver d(config(root));
+            std::string const id = start(d, "shell");
+            auto dirs = session_dirs(root);
+            fs::path const scratch = dirs.empty() ? fs::path{} : dirs[0];
+            { std::ofstream(scratch / "mid.txt", std::ios::binary) << std::string(1536 * 1024, 'm'); }
+            { std::ofstream(scratch / "one.txt", std::ios::binary) << std::string(1000 * 1024, 'o'); }
+            // 40,000 reads of ~1 MB: far past the 10 s default if it ran to the end. The budget is checked
+            // between statements. Nested loops keep the script small (a long flat script trips #147 in Debug).
+            std::string const slow = slow_script() + "; echo finished";
+            push(d, id, td::arr({tool_turn("run_shell", td::obj({{"source", td::str("cat mid.txt")}})),
+                                 tool_turn("run_shell", td::obj({{"source", td::str(slow)}})), text_turn("done")}));
+            auto const t0 = std::chrono::steady_clock::now();
+            (void)call(d, "session_send", sid(id, {{"text", td::str("limits")}}));
+            (void)wait(d, id, "idle", 60000);
+            auto const secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            auto fin = finished(d, id);
+            std::string const r0 = fin.size() == 2 ? result_of(fin[0]) : std::string{};
+            std::string const r1 = fin.size() == 2 ? result_of(fin[1]) : std::string{};
+            std::fprintf(stderr, "  .. read cap: %s\n  .. wall clock (%.1f s): %s\n", r0.substr(0, 160).c_str(), secs,
+                         r1.substr(0, 160).c_str());
+            check(fin.size() == 2 && r0.find("\"ok\":false") != std::string::npos && r0.find("mmmm") == std::string::npos,
+                  "P5 D10: a 1.5 MiB file is refused by the shell's 1 MiB read cap");
+            check(fin.size() == 2 && r1.find("finished") == std::string::npos && r1.find("bounds") == std::string::npos &&
+                      secs >= 1.5 && secs < 8.0,
+                  "P5 D10: a long script stops at the 2 s wall clock, not the 10 s default");
+        }
+        // G2 end to end: a cancel during one real-tool call stops the next. The engine's loop already ends the
+        // run on cancel before dispatching it; the wrapper's own cancel check (below) is a second layer.
+        {
+            fs::path const root = base / "cancel";
+            td::Driver d(config(root));
+            std::string const id = start(d, "shell");
+            auto dirs0 = session_dirs(root);
+            if (!dirs0.empty()) std::ofstream(dirs0[0] / "one.txt", std::ios::binary) << std::string(1000 * 1024, 'o');
+            std::string const slow = slow_script();
+            push(d, id, td::arr({tool_turn("run_shell", td::obj({{"source", td::str(slow)}})),
+                                 tool_turn("run_shell", td::obj({{"source", td::str("echo second > second.txt")}})),
+                                 text_turn("done")}));
+            (void)call(d, "session_send", sid(id, {{"text", td::str("cancel me")}}));
+            (void)call(d, "session_wait_for", sid(id, {{"until", td::str("event")}, {"kind", td::str("sandbox_exec_started")},
+                                                       {"timeout_ms", td::num(10000)}}));
+            (void)call(d, "session_cancel", sid(id));
+            (void)wait(d, id, "settled", 30000);
+            auto dirs = session_dirs(root);
+            bool const second_ran = !dirs.empty() && fs::exists(dirs[0] / "second.txt");
+            auto fin = finished(d, id);
+            std::fprintf(stderr, "  .. cancel: %zu finished, first: %s\n", fin.size(),
+                         fin.empty() ? "" : result_of(fin[0]).substr(0, 120).c_str());
+            check(!dirs.empty() && !second_ran && fin.size() == 1 && result_of(fin[0]).find("bounds") == std::string::npos,
+                  "P5 G2: a session_cancel during a real-tool call stops the next real-tool call (engine loop)");
         }
         {
             // The call cap and the cancel check, on the wrapper itself (a fake inner tool counts real calls).
