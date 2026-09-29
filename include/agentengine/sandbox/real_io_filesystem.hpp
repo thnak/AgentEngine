@@ -34,7 +34,6 @@
 #include <mutex>
 #include <set>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -302,9 +301,24 @@ public:
         // rollback was supposed to have erased; and `commit()` recursively scans `host_root_` and
         // commits everything it finds under the caller's identity, so those same files re-enter
         // durable history attributed to an author who never wrote them (I4).
-        auto wiped = wipe_root_locked("could not clear the sandbox working directory before materializing: ",
-                                      "real_io.materialize_wipe_failed", "real_io.materialize_root_create_failed");
-        if (!wiped.has_value()) co_return std::unexpected(wiped.error());
+        std::error_code ec;
+        std::filesystem::remove_all(host_root_, ec);
+        if (ec) {
+            co_return std::unexpected(agentengine::error{
+                agentengine::failure_class::fatal,
+                "could not clear the sandbox working directory before materializing: " + ec.message(),
+                "real_io.materialize_wipe_failed", ec.value()});
+        }
+        // This was the throwing overload, so a failure here unwound out of a `task<result<void>>`
+        // instead of failing closed through it -- the defect class audited in issue #71.
+        std::error_code mkroot_ec;
+        std::filesystem::create_directories(host_root_, mkroot_ec);
+        if (mkroot_ec) {
+            co_return std::unexpected(agentengine::error{
+                agentengine::failure_class::fatal,
+                "could not recreate the sandbox working directory: " + mkroot_ec.message(),
+                "real_io.materialize_root_create_failed", mkroot_ec.value()});
+        }
 
         for (auto const& entry : tree->entries) {
             auto bytes = ledger.get_blob_safe(entry.digest, caller);
@@ -325,51 +339,7 @@ public:
         co_return agentengine::result<void>{};
     }
 
-    // GitHub issue #143. Empties the working directory so an execution surface can drain into it.
-    //
-    // `SandboxRuntime::run()` used to drain straight into the directory it had materialized the head
-    // into. A drain only ever ADDS (`docker cp` copies over what is there and removes nothing), so a file
-    // the command deleted was still on disk from the materialize, the scan found it, and the new
-    // checkpoint committed it again -- `rm f` reported success and `f` stayed in history. Clearing first
-    // makes the directory hold exactly what the surface returned, which is what the scan must commit.
-    //
-    // Same failure discipline as `materialize()`'s own wipe: a clear that did not happen is an error, never
-    // a success, because a surviving file here is a file the next scan commits. `touched_` is cleared with
-    // it, since every path it names is gone.
-    [[nodiscard]] agentengine::rt::task<agentengine::result<void>> clear_for_drain() {
-        agentengine::rt::AsyncMutex::Guard commit_guard = co_await commit_lock_->lock();
-        std::lock_guard<std::mutex> guard(*sync_mutex_);
-        auto wiped = wipe_root_locked("could not clear the sandbox working directory before draining into it: ",
-                                      "real_io.drain_wipe_failed", "real_io.drain_root_create_failed");
-        if (!wiped.has_value()) co_return std::unexpected(wiped.error());
-        touched_.clear();
-        co_return agentengine::result<void>{};
-    }
-
 private:
-    // Removes `host_root_` and recreates it empty. The caller holds `sync_mutex_`. Error codes are the
-    // caller's, so each call site keeps the codes its own tests and callers already match on.
-    [[nodiscard]] agentengine::result<void> wipe_root_locked(std::string_view what, char const* wipe_code,
-                                                             char const* create_code) {
-        std::error_code ec;
-        std::filesystem::remove_all(host_root_, ec);
-        if (ec) {
-            return std::unexpected(agentengine::error{agentengine::failure_class::fatal,
-                                                      std::string(what) + ec.message(), wipe_code, ec.value()});
-        }
-        // Non-throwing overload: a failure must fail closed through `result<>`, not unwind out of the
-        // coroutine that called this (issue #71's class).
-        std::error_code mkroot_ec;
-        std::filesystem::create_directories(host_root_, mkroot_ec);
-        if (mkroot_ec) {
-            return std::unexpected(agentengine::error{
-                agentengine::failure_class::fatal,
-                "could not recreate the sandbox working directory: " + mkroot_ec.message(), create_code,
-                mkroot_ec.value()});
-        }
-        return agentengine::result<void>{};
-    }
-
     std::filesystem::path host_root_;
     std::unique_ptr<std::mutex> sync_mutex_;
     std::set<std::string> touched_;

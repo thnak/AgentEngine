@@ -107,9 +107,10 @@ agentengine_add_test(test_sandbox_runtime
 set_tests_properties(test_sandbox_runtime PROPERTIES RESOURCE_LOCK docker_daemon)
 
 # GitHub issue #143: a file the command deletes is absent from the committed checkpoint. Drives the real
-# SandboxRuntime::run() against an in-test ExecutionSurface with `docker cp`'s additive drain semantics, so
-# it needs NO daemon and must not be added to ci.yml's daemon-requiring exclusion lists. The live-Docker
-# half is test_sandbox_runtime's [11].
+# SandboxRuntime::run() against two in-test ExecutionSurfaces -- a copy-out one (Docker's shape) and an
+# in-place one (containerd's bind mount) -- so it needs NO daemon and must not be added to ci.yml's
+# daemon-requiring exclusion lists. The live halves are test_sandbox_runtime's [11] and
+# test_composed_containerd_providers_live.
 agentengine_add_test(test_sandbox_runtime_deletions
   LIBS agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
 
