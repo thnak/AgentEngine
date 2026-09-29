@@ -182,6 +182,9 @@ struct BioCtx {
 };
 constexpr int kBioTimeoutMs = 2000;
 constexpr int kDrainPollTimeoutMs = 100;
+// Issue #159: waits in case (B) are bounded by this, and only a genuine hang should reach it -- the server's
+// own path holds a few kBioTimeoutMs waits, and a sanitizer build is several times slower than Release.
+constexpr auto kServerHangGuard = std::chrono::seconds(60);
 
 int bio_send(void* ctx, unsigned char const* buf, std::size_t len) {
     auto* c = static_cast<BioCtx*>(ctx);
@@ -253,6 +256,19 @@ public:
         std::lock_guard<std::mutex> lock(finished_mu_);
         return finished_at_;
     }
+    // GitHub issue #159. How far `serve_one()` got. `finished_at_` used to be stamped only at the end of
+    // the write loop, so an exit before it -- or a server simply slower than the test's poll -- left it
+    // unset, and J3-R3/R4/R5 then read `completed_fully_`/`chunks_sent_` at their DEFAULTS (false, 0),
+    // which satisfy all three. Measured with a planted 8s pre-handshake delay: J3's poll failed and
+    // R3-R5 all reported ok for a server that had not finished its handshake.
+    enum class exit_reason { running, setup_failed, handshake_failed, write_failed, completed };
+    [[nodiscard]] exit_reason exit() const { return exit_.load(); }
+    [[nodiscard]] bool handshake_done() const { return handshake_done_.load(); }
+    // The only exits after which R3-R5 measure anything: the write loop actually ran.
+    [[nodiscard]] bool reached_write_loop() const {
+        auto const e = exit_.load();
+        return e == exit_reason::write_failed || e == exit_reason::completed;
+    }
 
 private:
     void run(std::stop_token st) {
@@ -284,6 +300,20 @@ private:
     }
 
     void serve_one(agentengine::pal::fd_t fd) {
+        // Every return below -- early or not -- records the exit and stamps `finished_at_`, so the test's
+        // poll ends on ANY exit instead of only the one at the bottom (issue #159).
+        exit_reason reason = exit_reason::setup_failed;
+        struct Stamp {
+            SlowDripServer& self;
+            exit_reason& reason;
+            ~Stamp() {
+                {
+                    std::lock_guard<std::mutex> lock(self.finished_mu_);
+                    self.finished_at_ = std::chrono::steady_clock::now();
+                }
+                self.exit_.store(reason);
+            }
+        } stamp{*this, reason};
         BioCtx ctx{fd, kBioTimeoutMs};
         mbedtls_ssl_config conf;
         mbedtls_ssl_context ssl;
@@ -308,10 +338,13 @@ private:
             int const ret = mbedtls_ssl_handshake(&ssl);
             if (ret == 0) break;
             if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
+            reason = exit_reason::handshake_failed;
             mbedtls_ssl_free(&ssl);
             mbedtls_ssl_config_free(&conf);
             return;
         }
+
+        handshake_done_.store(true);
 
         char drain[512];
         for (int i = 0; i < 20; ++i) {
@@ -333,11 +366,8 @@ private:
         }
         if (ok_all) ok_all = write_all(ssl, "0\r\n\r\n");
 
-        {
-            std::lock_guard<std::mutex> lock(finished_mu_);
-            finished_at_ = std::chrono::steady_clock::now();
-        }
         completed_fully_.store(ok_all);
+        reason = ok_all ? exit_reason::completed : exit_reason::write_failed;
 
         mbedtls_ssl_close_notify(&ssl);
         mbedtls_ssl_free(&ssl);
@@ -356,6 +386,8 @@ private:
     std::jthread thread_;
     std::atomic<bool> completed_fully_{false};
     std::atomic<int> chunks_sent_{0};
+    std::atomic<exit_reason> exit_{exit_reason::running};
+    std::atomic<bool> handshake_done_{false};
     mutable std::mutex finished_mu_;
     std::optional<std::chrono::steady_clock::time_point> finished_at_;
 };
@@ -584,10 +616,16 @@ int main() {
             std::chrono::steady_clock::time_point t_cancel_requested;
             {
                 stream<ChatResponseUpdate> s = client.chat_stream(request_asking("hi"), ctx);
-                // A brief grace period to let the TLS handshake actually start before cancelling --
-                // NOT waiting for any item (the whole point is cancelling before the slow send is
-                // anywhere near done).
-                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                // Cancel once the TLS handshake is done -- NOT waiting for any item (the whole point is
+                // cancelling before the slow send is anywhere near done). This used to be a fixed 20ms
+                // sleep, which on a slow build (MSVC ASan) could land anywhere relative to the handshake
+                // (GitHub issue #159). The wait is a hang guard, not a timing assertion.
+                auto const handshake_deadline = std::chrono::steady_clock::now() + kServerHangGuard;
+                while (!server.handshake_done() && server.exit() == SlowDripServer::exit_reason::running &&
+                       std::chrono::steady_clock::now() < handshake_deadline) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                }
+                check(server.handshake_done(), "J3: the slow server completed its TLS handshake before the cancel");
                 t_cancel_requested = std::chrono::steady_clock::now();
                 s.cancel();
                 // `s` is dropped here too (destructor), matching the realistic "caller just stops
@@ -599,14 +637,24 @@ int main() {
             // consulted it, and the fprintf uses `t_released`/`t_cancel_requested` directly -- the
             // comment described a use that did not exist. Removed rather than silenced.
 
-            // Poll (bounded, generous) for the server's write loop to finish one way or the other.
-            bool observed = false;
-            for (int i = 0; i < 100 && !observed; ++i) {
-                if (server.finished_at().has_value()) observed = true;
-                else std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            // Wait for the server to stop, on ANY exit path. After the cancel its own path still holds
+            // up to two kBioTimeoutMs waits (the request drain, then a write), and a slow build adds to
+            // both, so this is a deadline that only a genuine hang reaches -- not a speed assertion. The
+            // old fixed 100 x 50ms loop (~5-6s) was reachable by a merely slow server (issue #159).
+            auto const finish_deadline = std::chrono::steady_clock::now() + kServerHangGuard;
+            while (server.exit() == SlowDripServer::exit_reason::running &&
+                   std::chrono::steady_clock::now() < finish_deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
-            check(observed, "J3: the slow server's write loop finished (one way or another) within "
-                             "the test's own generous poll budget");
+            check(server.exit() != SlowDripServer::exit_reason::running,
+                  "J3: the slow server stopped (any exit) before the hang guard");
+            // R3-R5 read what the WRITE LOOP recorded. If it never ran, those values are still their
+            // defaults and would satisfy all three while measuring nothing -- exactly what happened in
+            // CI (issue #159). So a server that stopped anywhere else fails here, loudly, instead.
+            std::string const reached_msg =
+                "J3: the slow server reached its write loop, so R3-R5 below measure a real teardown (exit "
+                "reason " + std::to_string(static_cast<int>(server.exit())) + ")";
+            check(server.reached_write_loop(), reached_msg.c_str());
             check(!server.completed_fully(),
                   "J3-R3 (ADR-017, was the FINDING, now inverted): the server's slow send did NOT run "
                   "to completion -- cancelling ~20ms in tears the underlying TLS connection down, so "
