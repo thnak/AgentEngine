@@ -1,0 +1,195 @@
+// GitHub issue #143: a file a sandboxed command deletes must be absent from the checkpoint `run()` commits.
+//
+// `SandboxRuntime::run()` materializes the head into staging (step 2), seeds the surface from it (step 3),
+// runs the command (step 4), drains the surface back into staging (step 5), scans staging (step 6) and
+// commits (step 7). A real drain only ADDS -- `docker cp` copies over what is there and removes nothing --
+// so before the fix, a file the command removed was still in staging from step 2, and the scan committed it
+// again. `rm f` reported success and `f` stayed in history.
+//
+// `AdditiveDrainSurface` below is an `ExecutionSurface` with exactly `docker cp`'s drain semantics, so the
+// defect is reproducible deterministically with no daemon. The live-Docker half of the proof is
+// test_sandbox_runtime.cpp's [11].
+//
+//   D1 -- the seed turn commits {keep.txt, gone.txt, dir/inner.txt}. Everything after it is measured
+//         against this, so it comes first.
+//   D2 -- a turn that deletes gone.txt commits a tree WITHOUT gone.txt, and keep.txt is still there
+//         (the clear did not throw away what the surface returned).
+//   D3 -- deleting a whole directory removes every entry under it.
+//   D4 -- a turn that deletes nothing still commits the same set (no over-deletion).
+//
+// Positive control: with the staging clear removed from `run()` (a planted mutant, run by hand, recorded
+// in the fixing commit), D2 and D3 fail on this exact double.
+//
+// Needs no daemon, no network and no privileges.
+
+#include "agentengine/sandbox/execution_surface.hpp"
+#include "agentengine/sandbox/sandbox_runtime.hpp"
+
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
+
+using namespace agentengine;
+namespace fs = std::filesystem;
+
+namespace {
+
+int g_checks = 0;
+int g_failed = 0;
+
+void check(bool cond, std::string const& what) {
+    ++g_checks;
+    if (cond) {
+        std::printf("[ok]   %s\n", what.c_str());
+    } else {
+        ++g_failed;
+        std::printf("[FAIL] %s\n", what.c_str());
+    }
+}
+
+template <class T>
+[[nodiscard]] T drive(agentengine::rt::task<T> t) {
+    while (!t.done()) t.resume();
+    return t.take_value();
+}
+
+// A surface whose "container" is a private directory. `reset()` replaces it with a copy of host_dir,
+// `run()` understands three commands, and `drain_to()` copies it OVER host_dir without removing anything --
+// `docker cp container:/workspace/. host_dir` semantics.
+//   "write <path> <content>" | "rm <path>" | "rmdir <path>" (recursive) | "noop"
+class AdditiveDrainSurface {
+public:
+    explicit AdditiveDrainSurface(fs::path box) : box_(std::move(box)) {}
+
+    [[nodiscard]] result<void> reset(fs::path const& host_dir) {
+        std::error_code ec;
+        fs::remove_all(box_, ec);
+        fs::create_directories(box_, ec);
+        fs::copy(host_dir, box_, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
+        if (ec) return std::unexpected(error{failure_class::fatal, "seed copy failed: " + ec.message(), "test.seed"});
+        return {};
+    }
+
+    [[nodiscard]] result<SurfaceRunOutcome> run(std::string const& command) {
+        std::error_code ec;
+        if (command.rfind("write ", 0) == 0) {
+            auto const rest = command.substr(6);
+            auto const sp = rest.find(' ');
+            fs::path const p = box_ / rest.substr(0, sp);
+            fs::create_directories(p.parent_path(), ec);
+            std::ofstream(p, std::ios::binary) << rest.substr(sp + 1);
+        } else if (command.rfind("rm ", 0) == 0) {
+            fs::remove(box_ / command.substr(3), ec);
+        } else if (command.rfind("rmdir ", 0) == 0) {
+            fs::remove_all(box_ / command.substr(6), ec);
+        } else if (command != "noop") {
+            return std::unexpected(error{failure_class::contract, "unknown command: " + command, "test.cmd"});
+        }
+        return SurfaceRunOutcome{ec ? 1 : 0, {}};
+    }
+
+    [[nodiscard]] result<void> drain_to(fs::path const& host_dir) {
+        std::error_code ec;
+        fs::create_directories(host_dir, ec);
+        fs::copy(box_, host_dir, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
+        if (ec) return std::unexpected(error{failure_class::fatal, "drain copy failed: " + ec.message(), "test.drain"});
+        return {};
+    }
+
+private:
+    fs::path box_;
+};
+static_assert(ExecutionSurface<AdditiveDrainSurface>);
+
+[[nodiscard]] std::vector<std::string> committed_names(Ledger<>& ledger, Checkpoint const& cp, IdentityHandle who) {
+    std::vector<std::string> out;
+    auto tree = ledger.get_tree_safe(cp.tree, who);
+    if (!tree.has_value()) return {"<tree unreadable>"};
+    for (auto const& e : tree->entries) out.push_back(e.name);
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+[[nodiscard]] std::string show(std::vector<std::string> const& v) {
+    std::string s = "{";
+    for (auto const& n : v) s += (s.size() > 1 ? ", " : "") + n;
+    return s + "}";
+}
+
+}  // namespace
+
+int main() {
+    IdentityAuthority& authority = IdentityAuthority::bootstrap();
+    IdentityHandle owner = authority.mint_root("sandbox-runtime-deletions-owner");
+    Ledger<> ledger;
+    auto storage_quota = agentengine::rt::AsyncQuota<StorageBytes>::mint_root(authority, owner, 10'000'000);
+    auto run_quota = agentengine::rt::AsyncQuota<RunCost>::mint_root(authority, owner, 100);
+    auto root = drive(ledger.create_root_branch(owner));
+    if (!storage_quota || !run_quota || !root) {
+        std::printf("[FAIL] setup (quota or root branch)\n");
+        return EXIT_FAILURE;
+    }
+
+    fs::path const staging = fs::temp_directory_path() / "ae_test_runtime_deletions_staging";
+    fs::path const box = fs::temp_directory_path() / "ae_test_runtime_deletions_box";
+    std::error_code ec;
+    fs::remove_all(staging, ec);
+    fs::remove_all(box, ec);
+
+    SandboxRuntime runtime(ledger, std::move(*root), staging);
+    AdditiveDrainSurface surface(box);
+    auto turn = [&](std::string const& cmd) {
+        return drive(runtime.run(surface, cmd, owner, *run_quota, *storage_quota));
+    };
+
+    // ---- D1: the seed.
+    (void)turn("write keep.txt k");
+    (void)turn("write gone.txt g");
+    auto seed = turn("write dir/inner.txt i");
+    check(seed.has_value(), "D1: the seed turns succeed");
+    if (!seed.has_value()) return EXIT_FAILURE;
+    std::vector<std::string> const all{"dir/inner.txt", "gone.txt", "keep.txt"};
+    check(committed_names(ledger, seed->checkpoint, owner) == all,
+          "D1: the seed checkpoint holds " + show(all) + ", got " + show(committed_names(ledger, seed->checkpoint, owner)));
+
+    // ---- D2: delete one file.
+    {
+        auto r = turn("rm gone.txt");
+        check(r.has_value() && r->exec.exit_code == 0, "D2: the deleting turn succeeds");
+        if (r.has_value()) {
+            auto const names = committed_names(ledger, r->checkpoint, owner);
+            check(std::find(names.begin(), names.end(), "gone.txt") == names.end(),
+                  "D2: gone.txt is ABSENT from the committed tree (was resurrected before #143's fix); got " + show(names));
+            check(std::find(names.begin(), names.end(), "keep.txt") != names.end(),
+                  "D2: ... and keep.txt is still there -- the clear kept what the surface returned");
+        }
+    }
+
+    // ---- D3: delete a directory.
+    {
+        auto r = turn("rmdir dir");
+        check(r.has_value(), "D3: the directory-deleting turn succeeds");
+        if (r.has_value()) {
+            auto const names = committed_names(ledger, r->checkpoint, owner);
+            check(names == std::vector<std::string>{"keep.txt"},
+                  "D3: every entry under the deleted directory is gone; got " + show(names));
+        }
+    }
+
+    // ---- D4: no over-deletion.
+    {
+        auto r = turn("noop");
+        check(r.has_value() && committed_names(ledger, r->checkpoint, owner) == std::vector<std::string>{"keep.txt"},
+              "D4: a turn that deletes nothing commits the same set");
+    }
+
+    fs::remove_all(staging, ec);
+    fs::remove_all(box, ec);
+    std::printf("\n%d checks, %d failed\n", g_checks, g_failed);
+    if (g_failed == 0) std::printf("ALL PASS\n");
+    return g_failed == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+}

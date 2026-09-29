@@ -33,6 +33,9 @@
 //        (ledger.no_such_checkpoint) and fully refunds the ResetCost unit it consumed.
 //   [10] With ResetCost exhausted, reset_to_turn() is rejected (async_quota.exhausted) and the
 //        branch's real head tree digest does not change at all.
+//   [11] GitHub issue #143: a file a command deletes (`rm`) is absent from the committed tree, and the
+//        file beside it is kept -- the drain lands in an emptied staging directory, not on top of the
+//        materialized head.
 
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 #include "agentengine/sandbox/sandbox_runtime.hpp"
@@ -244,6 +247,32 @@ int main() {
             if (head_before.has_value() && head_after.has_value()) {
                 check(*head_before == *head_after,
                       "branch's real head tree digest did not change on ResetCost rejection");
+            }
+        }
+    }
+
+    // [11] GitHub issue #143, against a REAL container: a file the command deletes is absent from the
+    // checkpoint. Before the fix `docker cp`'s additive drain landed on top of the materialized head, so
+    // the deleted file was still in staging and the scan committed it again.
+    {
+        auto seeded = drive(runtime.run(surface, "echo -n doomed > doomed.txt && echo -n kept > kept.txt", owner,
+                                        run_quota, storage_quota));
+        check(seeded.has_value(), "[11] seeding doomed.txt and kept.txt succeeds");
+        auto deleted = drive(runtime.run(surface, "rm doomed.txt", owner, run_quota, storage_quota));
+        check(deleted.has_value(), "[11] the rm turn succeeds");
+        if (deleted.has_value()) {
+            check(deleted->exec.exit_code == 0, "[11] rm exits 0 inside the container");
+            auto tree = ledger.get_tree_safe(deleted->checkpoint.tree, owner);
+            check(tree.has_value(), "[11] the rm turn's committed tree is readable");
+            if (tree.has_value()) {
+                bool doomed = false;
+                bool kept = false;
+                for (auto const& e : tree->entries) {
+                    doomed = doomed || e.name == "doomed.txt";
+                    kept = kept || e.name == "kept.txt";
+                }
+                check(!doomed, "[11] doomed.txt is ABSENT from the committed tree (#143: it was resurrected)");
+                check(kept, "[11] kept.txt is still in the committed tree");
             }
         }
     }
