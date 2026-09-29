@@ -53,6 +53,8 @@ std::string stamp(Value& scenario, td::ReplayReport const& report) {
     if (Value const* segs = scenario.find("segments"); segs != nullptr && segs->is_array() && !segs->as_array().empty()) {
         return "a forked scenario is not stamped; re-export it";
     }
+    // ADR-210: a workflow scenario is always exported with digests (every step's turns); nothing to stamp.
+    if (td::get_string(scenario, "target") == "workflow") return "a workflow scenario is not stamped; re-export it";
     // The only acceptable problem is the missing digests themselves.
     bool const only_missing = report.problems.size() == 1 && report.turns_without_digest != 0;
     if (!report.passed && !only_missing) return "the replay failed, so its requests are not trusted";

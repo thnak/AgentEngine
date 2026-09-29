@@ -28,11 +28,17 @@
 //            and replays offline with doubles (no sandbox); tampered arguments, results, exec events and
 //            exchange counts fail the replay; refusals, per-driver directories, containment, link-safe
 //            removal and the caps each have a check.
+//   W    -- (ADR-210) workflows: fixture rules; the review loop's routes; the engine's own answers to a bad
+//            resolve and a foreign caller; per-step C8 digests naming the step; forced opposite interleavings
+//            export identically; drops, cancel, one run, refusals while running, an empty step grant.
 //   C2   -- (Windows form) 200 send/observe cycles polling snapshot and events from the MCP thread
 //            while the worker runs; every run settles with the expected text. TSan on Linux is the
 //            stronger form (named in ADR-182 §13).
 
 #include <cstdio>
+#include <mutex>
+#include <thread>
+#include <condition_variable>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -1455,6 +1461,483 @@ int main() {
                   "P5: the UTF-8 check accepts text and refuses stray, truncated and surrogate bytes");
         }
         fs::remove_all(base, ec);
+    }
+
+    // ---- W: the workflow tool group (ADR-210) ----------------------------------------------------------------
+    {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        fs::path const wbase = fs::temp_directory_path() / "ae_test_driver_wf";
+        fs::remove_all(wbase, ec);
+        fs::create_directories(wbase, ec);
+        td::DriverConfig wcfg;
+        wcfg.scenarios_root = wbase;
+        auto wid = [](std::string const& id, td::Members extra = {}) {
+            td::Members m{{"workflow_id", td::str(id)}};
+            for (auto& kv : extra) m.push_back(std::move(kv));
+            return td::obj(std::move(m));
+        };
+        auto wstart = [&](td::Driver& d, std::string const& fixture) {
+            CallResult r = call(d, "workflow_start", td::obj({{"fixture", td::str(fixture)}}));
+            return td::get_string(r.body, "workflow_id").value_or("");
+        };
+        auto wpush = [&](td::Driver& d, std::string const& w, std::string const& step, Value turns) {
+            CallResult r = call(d, "workflow_script_push", wid(w, {{"executor_id", td::str(step)}, {"turns", std::move(turns)}}));
+            check(!r.is_error, "W setup: workflow_script_push to " + step + " accepted (" + r.error_code + ")");
+        };
+        auto wsettle = [&](td::Driver& d, std::string const& w) {
+            CallResult r = call(d, "workflow_wait_for", wid(w, {{"until", td::str("settled")}, {"timeout_ms", td::num(30000)}}));
+            Value const* snap = r.body.find("snapshot");
+            return snap != nullptr ? *snap : Value{};
+        };
+        auto result_of = [](Value const& snap, std::string const& key) {
+            Value const* r = snap.find("last_result");
+            return r != nullptr ? td::get_string(*r, key).value_or("") : std::string{};
+        };
+        auto open_ports = [&](td::Driver& d, std::string const& w) {
+            std::vector<std::string> ids;
+            CallResult r = call(d, "request_port_list", wid(w));
+            if (Value const* o = r.body.find("open"); o != nullptr && o->is_array()) {
+                for (Value const& x : o->as_array()) ids.push_back(td::get_string(x, "interaction_id").value_or(""));
+            }
+            return ids;
+        };
+        auto resolve = [&](td::Driver& d, std::string const& w, std::string const& ix, std::string const& text,
+                           std::vector<std::string> routes, std::string const& caller = {}) {
+            std::vector<Value> rs;
+            for (auto& r : routes) rs.push_back(td::str(r));
+            td::Members m{{"interaction_id", td::str(ix)}, {"text", td::str(text)}, {"routes", td::arr(std::move(rs))}};
+            if (!caller.empty()) m.emplace_back("caller", td::str(caller));
+            CallResult r = call(d, "request_port_resolve", wid(w, std::move(m)));
+            check(!r.is_error, "W setup: request_port_resolve accepted (" + r.error_code + ")");
+            return wsettle(d, w);
+        };
+        auto structural_kinds = [&](td::Driver& d, std::string const& w) {
+            std::vector<std::string> kinds;
+            CallResult r = call(d, "workflow_events", wid(w, {{"limit", td::num(200)}}));
+            if (Value const* e = r.body.find("events"); e != nullptr && e->is_array()) {
+                for (Value const& x : e->as_array()) kinds.push_back(td::get_string(x, "kind").value_or(""));
+            }
+            return kinds;
+        };
+        auto count_of = [](std::vector<std::string> const& v, std::string const& k) {
+            return static_cast<std::size_t>(std::count(v.begin(), v.end(), k));
+        };
+
+        // Fixture rules (W7): every compiled fixture passes; a gated tool, a real tool, a deadline or no bound is refused.
+        {
+            bool all_ok = true;
+            for (td::WorkflowFixture const& f : td::workflow_fixtures()) all_ok = all_ok && td::check_workflow_fixture(f).has_value();
+            check(all_ok, "W7: every compiled workflow fixture meets the fixture rules");
+            td::WorkflowFixture gated = td::workflow_fixtures()[0];
+            gated.agent_tools["draft"] = {"gated_echo"};
+            auto g = td::check_workflow_fixture(gated);
+            check(!g && g.error().message.find("needs approval") != std::string::npos,
+                  "W7: an agent step naming a gated tool is refused (its approval could never reach the tester)");
+            td::WorkflowFixture real = td::workflow_fixtures()[0];
+            real.agent_tools["draft"] = {"run_shell"};
+            auto rr = td::check_workflow_fixture(real);
+            check(!rr && rr.error().message.find("real tool") != std::string::npos, "W7: a real tool in a step is refused");
+            td::WorkflowFixture timed = td::workflow_fixtures()[0];
+            timed.graph.bound.deadline_ms = 1000;
+            check(!td::check_workflow_fixture(timed), "W7: a wall-clock deadline is refused (nondeterministic)");
+            td::WorkflowFixture unbounded = td::workflow_fixtures()[0];
+            unbounded.graph.bound.max_rounds = 64;
+            check(!td::check_workflow_fixture(unbounded), "W8: a fixture over the round cap is refused");
+        }
+
+        // W1: the review loop. approve runs publish; revise runs draft again and reopens the port.
+        std::string const kPort1 = "wf_review:run:1:port:review:1";
+        {
+            td::Driver d(wcfg);
+            std::string const w = wstart(d, "wf_review");
+            check(!w.empty(), "W1: wf_review starts");
+            wpush(d, w, "draft", td::arr({tool_turn("echo", td::obj({{"text", td::str("outline")}})), text_turn("draft v1")}));
+            wpush(d, w, "publish", td::arr({text_turn("published v1")}));
+            check(!call(d, "workflow_run", wid(w, {{"text", td::str("write a note")}})).is_error, "W1: workflow_run starts the run");
+            Value s1 = wsettle(d, w);
+            auto ports = open_ports(d, w);
+            check(td::get_string(s1, "state") == "suspended" && ports.size() == 1 && ports[0] == kPort1,
+                  "W1: the run suspends at the review port; request_port_list shows exactly its id (" +
+                      (ports.empty() ? std::string("none") : ports[0]) + ")");
+            CallResult listed = call(d, "request_port_list", wid(w));
+            Value const* open = listed.body.find("open");
+            check(open != nullptr && !open->as_array().empty() &&
+                      td::get_string(open->as_array()[0], "ask").value_or("").find("draft v1") != std::string::npos &&
+                      td::get_string(open->as_array()[0], "port") == "review",
+                  "W1: the ask is draft's output, and the port is named");
+            // W11: nothing may start while... (it is suspended, not running: a second run is refused for another reason)
+            CallResult again = call(d, "workflow_run", wid(w, {{"text", td::str("again")}}));
+            check(again.is_error && again.error_code == "test.workflow_already_run", "W11: a workflow runs once");
+            Value s2 = resolve(d, w, kPort1, "ship it", {"approve"});
+            check(td::get_string(s2, "state") == "finished" && result_of(s2, "status") == "completed" &&
+                      result_of(s2, "output") == "published v1",
+                  "W1: route approve runs publish and the run completes with its output (" + result_of(s2, "output") + ")");
+            auto kinds = structural_kinds(d, w);
+            check(count_of(kinds, "request_port_opened") == 1 && count_of(kinds, "request_port_resolved") == 1 &&
+                      count_of(kinds, "route_selected") == 1,
+                  "W1: the structural log shows one port opened, resolved and routed");
+            CallResult draft_ev = call(d, "workflow_events", wid(w, {{"executor_id", td::str("draft")}}));
+            Value const* dev = draft_ev.body.find("events");
+            bool has_tool = false;
+            if (dev != nullptr) {
+                for (Value const& e : dev->as_array()) has_tool = has_tool || td::get_string(e, "kind") == "tool_call_finished";
+            }
+            check(has_tool, "W1: draft's own log has its echo call (the step's run events are kept per step)");
+            CallResult ex = call(d, "scenario_export", wid(w, {{"name", td::str("wf_review_approve")}}));
+            check(!ex.is_error, "W4: the workflow exports (" + ex.error_code + ")");
+            // W7: a step's session is not a driver session.
+            CallResult reach = call(d, "session_send", sid("wf_review/draft", {{"text", td::str("hi")}}));
+            check(reach.is_error && reach.error_code == "test.unknown_session", "W7: a step's session is unreachable by session tools");
+        }
+        {
+            td::Driver d(wcfg);
+            std::string const w = wstart(d, "wf_review");
+            wpush(d, w, "draft", td::arr({text_turn("draft v1"), text_turn("draft v2")}));
+            wpush(d, w, "publish", td::arr({text_turn("published v2")}));
+            (void)call(d, "workflow_run", wid(w, {{"text", td::str("write")}}));
+            (void)wsettle(d, w);
+            Value s2 = resolve(d, w, kPort1, "tighten it", {"revise"});
+            auto ports = open_ports(d, w);
+            check(td::get_string(s2, "state") == "suspended" && ports.size() == 1 && ports[0] != kPort1,
+                  "W1: route revise runs draft again and the port reopens with a new, round-qualified id (" +
+                      (ports.empty() ? std::string("none") : ports[0]) + ")");
+            Value s3 = resolve(d, w, ports.empty() ? std::string{} : ports[0], "ok", {"approve"});
+            check(result_of(s3, "status") == "completed" && result_of(s3, "output") == "published v2",
+                  "W1: the second answer approves and the run completes");
+        }
+
+        // W2: the engine decides a bad resolve; the driver passes it through unchanged.
+        {
+            td::Driver d(wcfg);
+            std::string const w = wstart(d, "wf_review");
+            wpush(d, w, "draft", td::arr({text_turn("draft")}));
+            wpush(d, w, "publish", td::arr({text_turn("done")}));
+            (void)call(d, "workflow_run", wid(w, {{"text", td::str("go")}}));
+            (void)wsettle(d, w);
+            auto before = structural_kinds(d, w);
+            Value s = resolve(d, w, "wf_review:run:1:port:review:9", "x", {"approve"});
+            auto after = structural_kinds(d, w);
+            check(result_of(s, "status") == "invalid" && td::get_string(s, "state") == "suspended" && open_ports(d, w).size() == 1,
+                  "W2: an unknown id is invalid and the port stays open");
+            check(count_of(after, "workflow_run_failed") == count_of(before, "workflow_run_failed") + 1,
+                  "W2: ... and the engine logs one workflow_run_failed while the run stays suspended (engine finding)");
+            Value bad = resolve(d, w, kPort1, "x", {"bogus"});
+            check(result_of(bad, "status") == "routing_failed" && result_of(bad, "failed_executor") == "review" &&
+                      td::get_string(bad, "state") == "finished",
+                  "W2: an invented-only route consumes the port and ends routing_failed at review");
+        }
+        {
+            td::Driver d(wcfg);
+            std::string const w = wstart(d, "wf_review");
+            wpush(d, w, "draft", td::arr({text_turn("draft")}));
+            wpush(d, w, "publish", td::arr({text_turn("done")}));
+            (void)call(d, "workflow_run", wid(w, {{"text", td::str("go")}}));
+            (void)wsettle(d, w);
+            Value mixed = resolve(d, w, kPort1, "x", {"approve", "bogus"});
+            check(result_of(mixed, "status") == "completed",
+                  "W2: a mixed route (one declared case plus an invented one) is accepted by the engine");
+        }
+        {
+            td::Driver d(wcfg);
+            std::string const w = wstart(d, "wf_two_ports");
+            (void)call(d, "workflow_run", wid(w, {{"text", td::str("in")}}));
+            (void)wsettle(d, w);
+            auto ports = open_ports(d, w);
+            check(ports.size() == 2, "W2: two ports open in the same round (" + std::to_string(ports.size()) + ")");
+            std::string p1;
+            std::string p2;
+            for (auto const& p : ports) (p.find(":port:p1:") != std::string::npos ? p1 : p2) = p;
+            Value first = resolve(d, w, p1, "x", {"bogus"});
+            check(result_of(first, "status") == "suspended" && td::get_string(first, "state") == "suspended",
+                  "W2: with two ports, a bad route on p1 is stored and the run stays suspended");
+            Value second = resolve(d, w, p2, "y", {});
+            check(result_of(second, "status") == "routing_failed" && result_of(second, "failed_executor") == "p1",
+                  "W2: ... and the failure surfaces on p2's resolve, naming p1");
+        }
+        {
+            td::Driver d(wcfg);
+            std::string const w = wstart(d, "wf_two_ports");
+            (void)call(d, "workflow_run", wid(w, {{"text", td::str("in")}}));
+            (void)wsettle(d, w);
+            std::string p1;
+            std::string p2;
+            for (auto const& p : open_ports(d, w)) (p.find(":port:p1:") != std::string::npos ? p1 : p2) = p;
+            (void)resolve(d, w, p1, "a", {"go"});
+            Value done = resolve(d, w, p2, "b", {});
+            check(result_of(done, "status") == "completed" && result_of(done, "output").find(">join") != std::string::npos,
+                  "W1: both ports answered, each routed to its own branch, fan-in to join (" + result_of(done, "output") + ")");
+            CallResult ex = call(d, "scenario_export", wid(w, {{"name", td::str("wf_two_ports_go")}}));
+            check(!ex.is_error, "W4: a workflow with no agent steps exports too");
+        }
+
+        // W3: another caller is refused by the engine's admission; the port stays open; the owner then answers.
+        {
+            td::Driver d(wcfg);
+            std::string const w = wstart(d, "wf_review");
+            wpush(d, w, "draft", td::arr({text_turn("draft")}));
+            wpush(d, w, "publish", td::arr({text_turn("done")}));
+            (void)call(d, "workflow_run", wid(w, {{"text", td::str("go")}}));
+            (void)wsettle(d, w);
+            Value denied = resolve(d, w, kPort1, "x", {"approve"}, "mallory");
+            check(result_of(denied, "status") == "admission_denied" && td::get_string(denied, "state") == "suspended" &&
+                      open_ports(d, w).size() == 1 && td::get_u64(denied, "admission_denied") == 1u,
+                  "W3: another caller is admission_denied, the port stays open and the denial is counted");
+            CallResult bad_id = call(d, "request_port_resolve",
+                                     wid(w, {{"interaction_id", td::str(kPort1)}, {"text", td::str("x")}, {"caller", td::str("ab")}}));
+            check(bad_id.is_error && bad_id.error_code == "test.bad_arguments", "W3: a caller that is not an attributable id is refused");
+            Value ok = resolve(d, w, kPort1, "x", {"approve"});
+            check(result_of(ok, "status") == "completed", "W3: the owner then resolves the same port");
+        }
+
+        // W4: the exported scenario replays; a changed request names the step it came from.
+        {
+            auto sc = td::read_scenario_file(wbase / "wf_review_approve.json");
+            check(sc.has_value(), "W4: the exported workflow scenario reads back");
+            if (sc) {
+                td::ReplayReport const r = td::replay_scenario(*sc);
+                check(r.passed && r.requests_checked == 3,
+                      "W4: it replays: structural stream, per-step logs and result match, 3 requests checked (" +
+                          (r.problems.empty() ? std::to_string(r.requests_checked) : r.problems[0]) + ")");
+                std::string const text = agentengine::json::dump(*sc);
+                auto tampered = [&](std::string const& from, std::string const& to) -> std::optional<Value> {
+                    std::string t = text;
+                    std::size_t const pos = t.find(from);
+                    if (pos == std::string::npos) return std::nullopt;
+                    t.replace(pos, from.size(), to);
+                    auto v = agentengine::json::parse(t);
+                    return v ? std::optional<Value>(*v) : std::nullopt;
+                };
+                auto first_problem = [](std::optional<Value> const& s) {
+                    if (!s) return std::string("(tamper did not apply)");
+                    td::ReplayReport const rr = td::replay_scenario(*s);
+                    return rr.problems.empty() ? std::string("(passed)") : rr.problems[0];
+                };
+                std::string const p_pub = first_problem(tampered("\"text\":\"ship it\"", "\"text\":\"ship them\""));
+                check(p_pub.find("test.replay_mismatch at publish model call 0") != std::string::npos,
+                      "W4: a changed answer changes publish's request, and the failure names publish (" + p_pub.substr(0, 90) + ")");
+                std::string const p_draft = first_problem(tampered("\"text\":\"write a note\"", "\"text\":\"write a poem\""));
+                check(p_draft.find("test.replay_mismatch at draft model call 0") != std::string::npos,
+                      "W4: a changed run input changes draft's request, and the failure names draft (" + p_draft.substr(0, 90) + ")");
+                std::string const p_route = first_problem(tampered("\"routes\":[\"approve\"]", "\"routes\":[\"revise\"]"));
+                check(p_route.find("differs") != std::string::npos || p_route.find("replay_mismatch") != std::string::npos,
+                      "W4: a changed route fails the replay (" + p_route.substr(0, 90) + ")");
+            }
+            auto two = td::read_scenario_file(wbase / "wf_two_ports_go.json");
+            check(two && td::replay_scenario(*two).passed, "W4: the two-port scenario replays");
+        }
+
+        // W5: forced opposite interleavings of the two parallel steps export identically.
+        {
+            struct Latch {
+                std::mutex              m;
+                std::condition_variable cv;
+                bool                    first_called = false;
+            };
+            class LatchBackend final : public td::ModelBackend {
+            public:
+                LatchBackend(std::shared_ptr<td::ModelBackend> inner, std::shared_ptr<Latch> latch, bool first)
+                    : inner_(std::move(inner)), latch_(std::move(latch)), first_(first) {}
+                agentengine::ChatClientCapabilities capabilities() const override { return inner_->capabilities(); }
+                agentengine::rt::task<agentengine::result<agentengine::ChatResponse>> chat(agentengine::ChatRequest const& r,
+                                                                                          agentengine::EffectContext& ctx) override {
+                    if (!first_) {
+                        std::unique_lock lock(latch_->m);
+                        latch_->cv.wait_for(lock, std::chrono::seconds(5), [&] { return latch_->first_called; });
+                    }
+                    auto out = co_await inner_->chat(r, ctx);
+                    if (first_) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                        {
+                            std::lock_guard lock(latch_->m);
+                            latch_->first_called = true;
+                        }
+                        latch_->cv.notify_all();
+                    }
+                    co_return out;
+                }
+                agentengine::stream<agentengine::ChatResponseUpdate> chat_stream(agentengine::ChatRequest const& r,
+                                                                                 agentengine::EffectContext& ctx) override {
+                    return inner_->chat_stream(r, ctx);
+                }
+
+            private:
+                std::shared_ptr<td::ModelBackend> inner_;
+                std::shared_ptr<Latch>            latch_;
+                bool                              first_;
+            };
+            auto run_ordered = [&](std::string const& first_step, std::string const& name) {
+                td::DriverConfig c = wcfg;
+                auto latch = std::make_shared<Latch>();
+                c.workflow_backend_wrapper = [latch, first_step](std::string const& step, std::shared_ptr<td::ModelBackend> inner) {
+                    return std::shared_ptr<td::ModelBackend>(std::make_shared<LatchBackend>(std::move(inner), latch, step == first_step));
+                };
+                td::Driver d(c);
+                std::string const w = wstart(d, "wf_fanout");
+                for (std::string const step : {"a", "b"}) {
+                    wpush(d, w, step, td::arr({tool_turn("echo", td::obj({{"text", td::str(step + "-note")}})), text_turn(step + " done")}));
+                }
+                (void)call(d, "workflow_run", wid(w, {{"text", td::str("split this")}}));
+                Value s = wsettle(d, w);
+                CallResult ex = call(d, "scenario_export", wid(w, {{"name", td::str(name)}, {"overwrite", td::boolean(true)}}));
+                check(result_of(s, "status") == "completed" && !ex.is_error,
+                      "W5 setup: the fan-out run completes and exports with " + first_step + " first");
+                auto sc = td::read_scenario_file(wbase / (name + ".json"));
+                return sc ? td::without_field(*sc, "name") : Value{};
+            };
+            Value const ab = run_ordered("a", "wf_fanout_ab");
+            Value const ba = run_ordered("b", "wf_fanout_ba");
+            check(!ab.is_null() && agentengine::json::dump(ab) == agentengine::json::dump(ba),
+                  "W5: a-first and b-first runs export the same scenario (per-step logs, structural stream, result)");
+            auto sc = td::read_scenario_file(wbase / "wf_fanout_ab.json");
+            check(sc && td::replay_scenario(*sc).passed, "W5: and it replays");
+        }
+
+        // W6: a step that emits more events than the step-event queue holds makes the workflow non-exportable.
+        {
+            td::Driver d(wcfg);
+            std::string const w = wstart(d, "wf_fanout");
+            std::vector<Value> flood;  // 4 turns x 190 echo calls: well past the step-event queue's 1,024
+            for (int turn = 0; turn < 4; ++turn) {
+                std::vector<std::pair<std::string, std::string>> many;
+                for (int i = 0; i < 190; ++i) many.emplace_back("echo", "n" + std::to_string(turn * 190 + i));
+                flood.push_back(call_turn(many));
+            }
+            flood.push_back(text_turn("a done"));
+            wpush(d, w, "a", td::arr(std::move(flood)));
+            wpush(d, w, "b", td::arr({text_turn("b done")}));
+            (void)call(d, "workflow_run", wid(w, {{"text", td::str("flood")}}));
+            Value s = wsettle(d, w);
+            CallResult ex = call(d, "scenario_export", wid(w, {{"name", td::str("wf_flood")}}));
+            check(td::get_u64(s, "events_dropped").value_or(0) > 0 && ex.is_error && ex.error_code == "test.events_dropped",
+                  "W6: dropped step events are counted and the workflow cannot be exported (dropped " +
+                      std::to_string(td::get_u64(s, "events_dropped").value_or(0)) + ")");
+        }
+
+        // W8 + W11: cancel. While suspended: the driver's outcome, exportable, never runnable again.
+        {
+            td::Driver d(wcfg);
+            std::string const w = wstart(d, "wf_review");
+            wpush(d, w, "draft", td::arr({text_turn("draft")}));
+            (void)call(d, "workflow_run", wid(w, {{"text", td::str("go")}}));
+            (void)wsettle(d, w);
+            CallResult c = call(d, "workflow_cancel", wid(w));
+            Value s = wsettle(d, w);
+            check(!c.is_error && td::get_string(s, "state") == "finished" && td::get_string(s, "driver_outcome") == "cancelled_by_driver",
+                  "W8: a cancel while suspended finishes the workflow as cancelled_by_driver");
+            CallResult r = call(d, "request_port_resolve", wid(w, {{"interaction_id", td::str(kPort1)}, {"text", td::str("x")}}));
+            check(r.is_error && r.error_code == "test.workflow_cancelled", "W8: a cancelled workflow cannot be resolved");
+            CallResult ex = call(d, "scenario_export", wid(w, {{"name", td::str("wf_cancel_suspended")}}));
+            auto sc = td::read_scenario_file(wbase / "wf_cancel_suspended.json");
+            check(!ex.is_error && sc && td::replay_scenario(*sc).passed, "W8: a cancel while suspended exports and replays");
+        }
+        // While running: non-exportable; run, resolve and push are refused while running (W11).
+        {
+            struct Gate {
+                std::mutex m;
+                std::condition_variable cv;
+                bool open = false;
+            };
+            auto gate = std::make_shared<Gate>();
+            class GateBackend final : public td::ModelBackend {
+            public:
+                GateBackend(std::shared_ptr<td::ModelBackend> inner, std::shared_ptr<Gate> g) : inner_(std::move(inner)), g_(std::move(g)) {}
+                agentengine::ChatClientCapabilities capabilities() const override { return inner_->capabilities(); }
+                agentengine::rt::task<agentengine::result<agentengine::ChatResponse>> chat(agentengine::ChatRequest const& r,
+                                                                                          agentengine::EffectContext& ctx) override {
+                    {
+                        std::unique_lock lock(g_->m);
+                        g_->cv.wait_for(lock, std::chrono::seconds(10), [&] { return g_->open; });
+                    }
+                    co_return co_await inner_->chat(r, ctx);
+                }
+                agentengine::stream<agentengine::ChatResponseUpdate> chat_stream(agentengine::ChatRequest const& r,
+                                                                                 agentengine::EffectContext& ctx) override {
+                    return inner_->chat_stream(r, ctx);
+                }
+
+            private:
+                std::shared_ptr<td::ModelBackend> inner_;
+                std::shared_ptr<Gate>             g_;
+            };
+            td::DriverConfig c = wcfg;
+            c.workflow_backend_wrapper = [gate](std::string const&, std::shared_ptr<td::ModelBackend> inner) {
+                return std::shared_ptr<td::ModelBackend>(std::make_shared<GateBackend>(std::move(inner), gate));
+            };
+            auto open_gate = [&] {
+                {
+                    std::lock_guard lock(gate->m);
+                    gate->open = true;
+                }
+                gate->cv.notify_all();
+            };
+            {
+                td::Driver d(c);
+                std::string const w = wstart(d, "wf_review");
+                wpush(d, w, "draft", td::arr({text_turn("draft")}));
+                (void)call(d, "workflow_run", wid(w, {{"text", td::str("go")}}));
+                CallResult push_running = call(d, "workflow_script_push", wid(w, {{"executor_id", td::str("draft")}, {"turns", td::arr({text_turn("x")})}}));
+                CallResult list_running = call(d, "request_port_list", wid(w));
+                CallResult snap_running = call(d, "workflow_snapshot", wid(w));
+                check(push_running.is_error && push_running.error_code == "test.workflow_running" &&
+                          list_running.is_error && td::get_bool(snap_running.body, "partial") == true,
+                      "W11: while running, script push and port listing are refused and the snapshot is partial");
+                CallResult c1 = call(d, "workflow_cancel", wid(w));
+                open_gate();
+                Value s = wsettle(d, w);
+                CallResult ex = call(d, "scenario_export", wid(w, {{"name", td::str("wf_cancel_running")}}));
+                check(!c1.is_error && td::get_string(s, "state") == "finished" && ex.is_error && ex.error_code == "test.nondeterministic",
+                      "W8: a cancel while running finishes the workflow and makes it non-exportable (status " +
+                          result_of(s, "status") + ")");
+            }
+            // W9: close and driver exit with a run in flight or suspended return and leave nothing running.
+            {
+                gate->open = false;
+                std::thread opener;
+                auto t0 = std::chrono::steady_clock::now();
+                {
+                    td::Driver d(c);
+                    std::string const w1 = wstart(d, "wf_review");
+                    wpush(d, w1, "draft", td::arr({text_turn("draft")}));
+                    (void)call(d, "workflow_run", wid(w1, {{"text", td::str("go")}}));
+                    std::string const w2 = wstart(d, "wf_two_ports");
+                    (void)call(d, "workflow_run", wid(w2, {{"text", td::str("in")}}));
+                    (void)wsettle(d, w2);
+                    CallResult closed = call(d, "workflow_close", wid(w2));
+                    check(!closed.is_error, "W9: closing a suspended workflow returns");
+                    opener = std::thread([&] {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                        open_gate();
+                    });
+                }  // ~Driver with w1 in flight
+                opener.join();
+                double const secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+                check(secs < 15.0, "W9: driver exit with a workflow in flight returns (" + std::to_string(secs) + " s)");
+            }
+        }
+
+        // W8 caps: at most kMaxWorkflows open.
+        {
+            td::Driver d(wcfg);
+            for (std::size_t i = 0; i < td::kMaxWorkflows; ++i) (void)wstart(d, "wf_two_ports");
+            CallResult over = call(d, "workflow_start", td::obj({{"fixture", td::str("wf_two_ports")}}));
+            check(over.is_error && over.error_code == "test.too_many_workflows", "W8: at most 4 open workflows");
+            CallResult file = call(d, "workflow_start", td::obj({{"fixture", td::str("basic")}}));
+            check(file.is_error && file.error_code == "test.unknown_fixture", "W7: a session fixture (or file) is not a workflow fixture");
+        }
+
+        // W10: every step's grant is empty.
+        {
+            td::Driver d(wcfg);
+            std::string const w = wstart(d, "wf_fanout");
+            wpush(d, w, "a", td::arr({text_turn("a")}));
+            wpush(d, w, "b", td::arr({text_turn("b")}));
+            (void)call(d, "workflow_run", wid(w, {{"text", td::str("x")}}));
+            Value s = wsettle(d, w);
+            check(td::get_u64(s, "steps_with_grant") == 2u && td::get_u64(s, "step_grant_kinds") == 0u,
+                  "W10: both steps ran under the workflow's grant, and it holds nothing");
+        }
+        fs::remove_all(wbase, ec);
     }
 
     // ---- C2 (Windows form): observe from the MCP thread while the worker runs -------------------------------

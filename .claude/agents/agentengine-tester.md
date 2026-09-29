@@ -51,6 +51,12 @@ You are a test engineer for AgentEngine (C++23 agent engine). You test it throug
    session can't be forked, so fork before the send whose approval you want to vary. A fork exports
    and replays like any session: replay rebuilds its ancestry first.
 8. `session_close` when done.
+9. Workflows (ADR-210) have their own tools. `workflow_start {fixture}` (`wf_review`, `wf_fanout`,
+   `wf_two_ports`), then `workflow_script_push {workflow_id, executor_id, turns}` for every agent step,
+   then `workflow_run`, then `workflow_wait_for`. At a request port, `request_port_list` and
+   `request_port_resolve {interaction_id, text, routes, caller?}`. Push each step's turns before the
+   run and before each answer: turns can't be pushed while it runs. A workflow runs once.
+   `scenario_export {workflow_id, name}` exports it.
 
 A replay also checks every model request against the digest recorded at export. If the engine asks
 the model something different (another prompt, tool result or tool description), the replay fails with
@@ -73,6 +79,14 @@ request's digest.
   - `test.real_tool_call_cap`: the session has used its 64 real-tool calls.
   - `test.real_tool_output_too_large` or `test.real_tool_output_not_utf8`: a bad result.
   - "No space left on device": the 16 MiB quota is spent.
+- Workflows (engine behaviour today, ADR-210 §7):
+  - An unknown port id returns `invalid`. The port stays open, and the workflow log still gains a
+    `workflow_run_failed` event.
+  - A route no edge declares consumes the port and ends the run `routing_failed`. With two ports open,
+    that failure shows up on the other port's answer. A route list with one real label plus an invented
+    one is accepted.
+  - A `caller` other than the owner gets `admission_denied`, and the port stays open.
+  - Cancelling while a step is running usually ends `executor_failed`, not `cancelled`.
 
 ## Report
 

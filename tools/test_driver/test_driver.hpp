@@ -14,6 +14,8 @@
 //   - real tools, until ADR-208 (P5): the mediated `run_shell` and `read_sandbox_file`, confined to a
 //     per-session scratch directory under a host-fixed root, recorded at the invoke seam, and replayed
 //     offline by doubles that serve the recording (§12 C-2, R5);
+//   - workflows, until ADR-210: `workflow_*` and `request_port_*` drive one `rt::WorkflowSupervisor` over a
+//     compiled fixture graph, each agent step a hidden scripted session with an empty grant;
 //   - scenario export, assert, fork, live mode (later phases).
 //
 // Threading (ADR-182 §3.6, §12 R1). The MCP thread never touches an `AgentSession` directly. Each
@@ -33,6 +35,7 @@
 #include <fstream>
 #include <sstream>
 #include <functional>
+#include <limits>
 #include <future>
 #include <random>
 #include <map>
@@ -55,8 +58,10 @@
 #include "agentengine/core/tool_registry.hpp"
 #include "agentengine/core/yaml_value.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/agent_workflow_executor.hpp"
 #include "agentengine/rt/message_codec.hpp"
 #include "agentengine/rt/thread_pool.hpp"
+#include "agentengine/rt/workflow_supervisor.hpp"
 #include "agentengine/testing/scripted_chat_client.hpp"
 #include "agentengine/tools/read_sandbox_file.hpp"
 // Only for `RunShellTool`, run_shell's declared shape (ADR-208 §2.3). Nothing here constructs a sandbox:
@@ -101,6 +106,12 @@ using Members = std::vector<std::pair<std::string, Value>>;
 [[nodiscard]] inline Value with_field(Value const& o, std::string key, Value v) {
     Members m = o.as_object();
     m.emplace_back(std::move(key), std::move(v));
+    return obj(std::move(m));
+}
+[[nodiscard]] inline Value without_field(Value const& o, std::string_view key) {
+    Members m;
+    for (auto const& [k, v] : o.as_object())
+        if (k != key) m.emplace_back(k, v);
     return obj(std::move(m));
 }
 
@@ -943,6 +954,10 @@ struct DriverConfig {
     // Replay only, set by replay_scenario from the scenario file, never by a tool argument (ADR-208 G4): a
     // real-tool session serves these instead of building a sandbox.
     std::optional<std::vector<ToolExchange>> tool_doubles;
+    // ADR-210: wraps each workflow step's scripted backend (the driver's tests force an interleaving with it).
+    // Host-only, like the rest of this struct; empty in the driver binary.
+    std::function<std::shared_ptr<ModelBackend>(std::string const& executor_id, std::shared_ptr<ModelBackend>)>
+        workflow_backend_wrapper;
 };
 
 // ---- Event → JSON ----------------------------------------------------------------------------------
@@ -1588,6 +1603,453 @@ template <class V>
     return id;
 }
 
+// ---- Workflows (ADR-210) -----------------------------------------------------------------------------
+//
+// A driven workflow is one `rt::WorkflowSupervisor` over a compiled fixture graph. Each agent step is a
+// driver `Session` with its own scripted model, request log and C8 expectations; no session tool can
+// reach it (I1). The run's owner and every step's (empty) grant are driver constants (I2). A port answer
+// is a user message plus the caller's routes, which the engine alone admits or rejects (I3, ADR-169).
+// Events are drained after each run/resume call returns: the structural stream's capacity is set above
+// anything a fixture can emit, so the supervisor never blocks, and every step has been joined by then
+// (ADR-210 §7 R1-R3, §8).
+
+inline constexpr std::size_t   kMaxWorkflows = 4;
+inline constexpr std::size_t   kWorkflowWorkers = 2;
+inline constexpr std::uint32_t kMaxWorkflowRounds = 16;
+inline constexpr std::size_t   kWorkflowStructuralCapacity = 8192;
+inline constexpr std::size_t   kMaxResolveRoutes = 16;
+inline constexpr std::string_view kWorkflowOwnerId = "test-driver:workflow-owner";
+inline constexpr std::string_view kWorkflowTenant = "test";
+
+[[nodiscard]] inline Principal workflow_principal(std::string id) {
+    Principal p;
+    p.id = std::move(id);
+    p.tenant_id = std::string(kWorkflowTenant);
+    return p;
+}
+
+struct WorkflowFixture {
+    std::string          name;
+    std::string          description;
+    workflow::Workflow   graph;
+    // Agent steps: executor id -> the test tools that step's session gets.
+    std::map<std::string, std::vector<std::string>> agent_tools;
+    // Function steps: executor id -> body (deterministic, no effects).
+    std::map<std::string, rt::ExecutorBody> functions;
+};
+
+namespace workflow_fixture_detail {
+
+[[nodiscard]] inline workflow::Executor node(std::string id, workflow::executor_kind kind) {
+    workflow::Executor e;
+    e.id = std::move(id);
+    e.kind = kind;
+    e.input_type = "T";
+    e.output_type = "T";
+    return e;
+}
+[[nodiscard]] inline workflow::Edge edge(std::string from, std::string to, workflow::edge_kind kind,
+                                         std::string label = {}) {
+    workflow::Edge e;
+    e.from = std::move(from);
+    e.to = std::move(to);
+    e.kind = kind;
+    e.case_label = std::move(label);
+    return e;
+}
+// Joins every text item of the input and appends ">name": what ran, in what order, is visible in the output.
+[[nodiscard]] inline rt::ExecutorBody appender(std::string name) {
+    return [name = std::move(name)](Message const& in, EffectContext&) -> result<rt::ExecutorOutcome> {
+        std::string out;
+        for (ContentItem const& c : in.content) {
+            if (auto const* t = std::get_if<Text>(&c.value)) {
+                if (!out.empty()) out += "+";
+                out += t->text;
+            }
+        }
+        return rt::ExecutorOutcome{user_message(out + ">" + name)};
+    };
+}
+
+}  // namespace workflow_fixture_detail
+
+[[nodiscard]] inline std::vector<WorkflowFixture> const& workflow_fixtures() {
+    using namespace workflow_fixture_detail;
+    using workflow::edge_kind;
+    using workflow::executor_kind;
+    static std::vector<WorkflowFixture> const all = [] {
+        std::vector<WorkflowFixture> v;
+        {
+            WorkflowFixture f;
+            f.name = "wf_review";
+            f.description = "draft (agent, echo) -> review (request port) -> route 'approve' runs publish (agent), "
+                            "'revise' runs draft again. Output: publish.";
+            f.graph.id = f.name;
+            f.graph.executors = {node("draft", executor_kind::agent), node("review", executor_kind::request_port),
+                                 node("publish", executor_kind::agent)};
+            f.graph.edges = {edge("draft", "review", edge_kind::direct),
+                             edge("review", "publish", edge_kind::switch_case, "approve"),
+                             edge("review", "draft", edge_kind::switch_case, "revise")};
+            f.graph.start = "draft";
+            f.graph.output_selection = {"publish"};
+            f.graph.bound.max_rounds = 12;
+            f.agent_tools = {{"draft", {"echo"}}, {"publish", {}}};
+            v.push_back(std::move(f));
+        }
+        {
+            WorkflowFixture f;
+            f.name = "wf_fanout";
+            f.description = "split (function) fans out to a and b (agents, echo, run in parallel), fan-in to join "
+                            "(function). Output: join.";
+            f.graph.id = f.name;
+            f.graph.executors = {node("split", executor_kind::function), node("a", executor_kind::agent),
+                                 node("b", executor_kind::agent), node("join", executor_kind::function)};
+            f.graph.edges = {edge("split", "a", edge_kind::fan_out), edge("split", "b", edge_kind::fan_out),
+                             edge("a", "join", edge_kind::fan_in), edge("b", "join", edge_kind::fan_in)};
+            f.graph.start = "split";
+            f.graph.output_selection = {"join"};
+            f.graph.bound.max_rounds = 8;
+            f.agent_tools = {{"a", {"echo"}}, {"b", {"echo"}}};
+            f.functions = {{"split", appender("split")}, {"join", appender("join")}};
+            v.push_back(std::move(f));
+        }
+        {
+            WorkflowFixture f;
+            f.name = "wf_two_ports";
+            f.description = "split (function) fans out to two request ports in the same round: p1 (route 'go' runs "
+                            "left, 'halt' runs halt) and p2 (runs right). left and right fan in to join. No agents.";
+            f.graph.id = f.name;
+            f.graph.executors = {node("split", executor_kind::function), node("p1", executor_kind::request_port),
+                                 node("p2", executor_kind::request_port), node("left", executor_kind::function),
+                                 node("halt", executor_kind::function), node("right", executor_kind::function),
+                                 node("join", executor_kind::function)};
+            f.graph.edges = {edge("split", "p1", edge_kind::fan_out), edge("split", "p2", edge_kind::fan_out),
+                             edge("p1", "left", edge_kind::switch_case, "go"),
+                             edge("p1", "halt", edge_kind::switch_case, "halt"),
+                             edge("p2", "right", edge_kind::direct),
+                             edge("left", "join", edge_kind::fan_in), edge("right", "join", edge_kind::fan_in)};
+            f.graph.start = "split";
+            f.graph.output_selection = {"join", "halt"};
+            f.graph.bound.max_rounds = 8;
+            f.functions = {{"split", appender("split")}, {"left", appender("left")}, {"halt", appender("halt")},
+                           {"right", appender("right")}, {"join", appender("join")}};
+            v.push_back(std::move(f));
+        }
+        return v;
+    }();
+    return all;
+}
+
+// The rules every workflow fixture must meet (ADR-210 §2.2, §7, §8): a valid, bounded graph; every agent step
+// names only test tools that never need approval (an approval inside a step never reaches the tester: steps run
+// with suspend_for_approval off, so a gated call is denied); no real tools; every function step has a body. Checked at workflow_start and
+// by the driver's tests on every compiled fixture.
+[[nodiscard]] inline result<void> check_workflow_fixture(WorkflowFixture const& f) {
+    auto bad = [&](std::string m) {
+        return std::unexpected(error{failure_class::contract, "workflow fixture " + f.name + ": " + m, "test.bad_fixture"});
+    };
+    if (auto ok = workflow::validate_workflow(f.graph); !ok) return bad(ok.error().message);
+    if (!f.graph.bound.max_rounds || *f.graph.bound.max_rounds > kMaxWorkflowRounds) {
+        return bad("max_rounds must be set and at most " + std::to_string(kMaxWorkflowRounds));
+    }
+    if (f.graph.bound.deadline_ms) return bad("a wall-clock deadline would make the run nondeterministic");
+    std::vector<ToolDescriptor> const known = all_test_tool_descriptors();
+    for (workflow::Executor const& e : f.graph.executors) {
+        if (e.kind == workflow::executor_kind::sub_workflow) return bad("sub-workflows are not supported");
+        if (!e.capability_ceiling.empty()) return bad("step " + e.id + " declares capabilities");
+        if (e.kind == workflow::executor_kind::function && !f.functions.contains(e.id)) {
+            return bad("function step " + e.id + " has no body");
+        }
+        if (e.kind != workflow::executor_kind::agent) continue;
+        auto tools = f.agent_tools.find(e.id);
+        if (tools == f.agent_tools.end()) return bad("agent step " + e.id + " names no tool list");
+        for (std::string const& t : tools->second) {
+            if (is_real_tool(t)) return bad("step " + e.id + " names the real tool " + t + " (ADR-208 tools are "
+                                            "sessions only)");
+            auto d = std::find_if(known.begin(), known.end(), [&](ToolDescriptor const& k) { return k.name == t; });
+            if (d == known.end()) return bad("step " + e.id + " names an unknown tool " + t);
+            if (d->approval != approval_mode::never_require) {
+                return bad("step " + e.id + " names " + t + ", which needs approval: no approval inside a workflow step "
+                           "can reach the tester, so the call could only ever be denied (ADR-210 §2.2, §8)");
+            }
+        }
+    }
+    return {};
+}
+
+[[nodiscard]] inline std::string_view workflow_event_kind_name(workflow::workflow_event_kind k) noexcept {
+    using K = workflow::workflow_event_kind;
+    switch (k) {
+        case K::workflow_run_started: return "workflow_run_started";
+        case K::workflow_run_suspended: return "workflow_run_suspended";
+        case K::workflow_run_resumed: return "workflow_run_resumed";
+        case K::workflow_run_completed: return "workflow_run_completed";
+        case K::workflow_run_failed: return "workflow_run_failed";
+        case K::superstep_started: return "superstep_started";
+        case K::superstep_completed: return "superstep_completed";
+        case K::executor_dispatched: return "executor_dispatched";
+        case K::executor_completed: return "executor_completed";
+        case K::message_routed: return "message_routed";
+        case K::fan_out_dispatched: return "fan_out_dispatched";
+        case K::fan_in_aggregated: return "fan_in_aggregated";
+        case K::route_selected: return "route_selected";
+        case K::request_port_opened: return "request_port_opened";
+        case K::request_port_resolved: return "request_port_resolved";
+        case K::checkpoint_saved: return "checkpoint_saved";
+        case K::merge_completed: return "merge_completed";
+        case K::merge_conflict: return "merge_conflict";
+        case K::agent_turn_event: return "agent_turn_event";
+        case K::moderator_stream_delta: return "moderator_stream_delta";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] inline std::string_view edge_kind_name(workflow::edge_kind k) noexcept {
+    switch (k) {
+        case workflow::edge_kind::direct: return "direct";
+        case workflow::edge_kind::fan_out: return "fan_out";
+        case workflow::edge_kind::fan_in: return "fan_in";
+        case workflow::edge_kind::switch_case: return "switch_case";
+        case workflow::edge_kind::multi_selection: return "multi_selection";
+        case workflow::edge_kind::chain: return "chain";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] inline Value strings_json(std::vector<std::string> const& v) {
+    std::vector<Value> out;
+    for (std::string const& s : v) out.push_back(str(s));
+    return arr(std::move(out));
+}
+
+// The structural payload, field by field (AgentTurn and ModeratorDelta go to the step logs instead).
+[[nodiscard]] inline Value workflow_payload_json(workflow::WorkflowEventPayload const& p) {
+    namespace wp = workflow::workflow_event_payload;
+    return std::visit(
+        overloaded{
+            [](wp::Empty const&) { return obj({}); },
+            [](wp::RunFailed const& x) { return obj({{"status", str(x.status_tag)}}); },
+            [](wp::ExecutorRef const& x) { return obj({{"executor_id", str(x.executor_id)}}); },
+            [](wp::ExecutorResult const& x) { return obj({{"executor_id", str(x.executor_id)}, {"ok", boolean(x.ok)}}); },
+            [](wp::MessageRouted const& x) {
+                return obj({{"from", str(x.from_executor_id)}, {"to", str(x.to_executor_id)},
+                            {"edge", str(std::string(edge_kind_name(x.kind)))}, {"case_label", str(x.case_label)}});
+            },
+            [](wp::FanOut const& x) { return obj({{"from", str(x.from_executor_id)}, {"to", strings_json(x.to_executor_ids)}}); },
+            [](wp::FanIn const& x) { return obj({{"to", str(x.to_executor_id)}, {"from", strings_json(x.from_executor_ids)}}); },
+            [](wp::RouteSelected const& x) {
+                return obj({{"executor_id", str(x.executor_id)}, {"chosen", strings_json(x.chosen_cases)},
+                            {"available", strings_json(x.available_cases)}});
+            },
+            [](wp::PortRef const& x) {
+                return obj({{"executor_id", str(x.executor_id)}, {"interaction_id", str(x.interaction_id)}});
+            },
+            [](wp::CheckpointSaved const& x) { return obj({{"round", num(x.round)}}); },
+            [](wp::MergeRef const& x) { return obj({{"executor_id", str(x.executor_id)}}); },
+            [](wp::SuperstepBounds const& x) { return obj({{"executors", strings_json(x.executor_ids)}}); },
+            [](wp::AgentTurn const& x) { return obj({{"executor_id", str(x.executor_id)}}); },
+            [](wp::ModeratorDelta const& x) { return obj({{"executor_id", str(x.executor_id)}}); },
+        },
+        p);
+}
+
+[[nodiscard]] inline Value workflow_result_json(rt::WorkflowResult const& r) {
+    std::vector<Value> partial;
+    for (rt::ExecutorOutput const& o : r.partial) {
+        partial.push_back(obj({{"executor_id", str(o.executor_id)}, {"round", num(o.round)},
+                               {"text", str(content_text(o.payload.content))}}));
+    }
+    std::vector<std::string> open;
+    for (Interaction const& ix : r.open_interactions) open.push_back(ix.interaction_id);
+    return obj({{"status", str(rt::workflow_status_tag(r.status))},
+                {"rounds", num(r.rounds)},
+                {"output", str(content_text(r.output.content))},
+                {"partial", arr(std::move(partial))},
+                {"failed_executor", str(r.failed_executor)},
+                {"open_interactions", strings_json(open)},
+                {"unopened_ports", strings_json(r.unopened_ports)}});
+}
+
+enum class workflow_state { ready, running, suspended, finished };
+[[nodiscard]] inline std::string_view workflow_state_name(workflow_state s) noexcept {
+    switch (s) {
+        case workflow_state::ready: return "ready";
+        case workflow_state::running: return "running";
+        case workflow_state::suspended: return "suspended";
+        case workflow_state::finished: return "finished";
+    }
+    return "?";
+}
+
+// One agent step: a driver session the workflow drives, never a driver session the tester can address.
+struct WorkflowStep {
+    std::string                          executor_id;
+    std::string                          session_id;  // "<fixture>/<executor>": fixed, so request digests repeat
+    std::optional<testing::ScriptedChatClient> script;
+    std::shared_ptr<RequestLog>          requests = std::make_shared<RequestLog>();
+    std::shared_ptr<ExchangeLog>         exchanges = std::make_shared<ExchangeLog>();
+    std::shared_ptr<RequestExpectations> expectations = std::make_shared<RequestExpectations>();
+    std::uint64_t                        next_call_id = 1;
+    std::unique_ptr<Session>             session = std::make_unique<Session>();
+};
+
+class WorkflowMonitor {
+public:
+    void on_event(workflow::WorkflowEvent const& ev) {
+        namespace wp = workflow::workflow_event_payload;
+        std::lock_guard lock(mutex_);
+        if (auto const* t = std::get_if<wp::AgentTurn>(&ev.payload)) {
+            step_events_[t->executor_id].push_back(obj({{"attempt", num(t->attempt)},
+                                                        {"kind", str(std::string(kind_name(t->inner.kind)))},
+                                                        {"payload", payload_json(t->inner.payload)}}));
+            return;
+        }
+        if (auto const* d = std::get_if<wp::ModeratorDelta>(&ev.payload)) {
+            step_events_[d->executor_id].push_back(obj({{"attempt", num(d->attempt)},
+                                                        {"kind", str("moderator_stream_delta")},
+                                                        {"text", str(d->text_delta)}}));
+            return;
+        }
+        events_.push_back(obj({{"seq", num(static_cast<double>(next_seq_++))},
+                               {"kind", str(std::string(workflow_event_kind_name(ev.kind)))},
+                               {"round", num(ev.round)},
+                               {"payload", workflow_payload_json(ev.payload)}}));
+    }
+    void set_state(workflow_state s) {
+        {
+            std::lock_guard lock(mutex_);
+            state_ = s;
+        }
+        cv_.notify_all();
+    }
+    // After a run/resume call returned and its events were drained.
+    void finish_call(workflow_state s, Value result, std::uint64_t dropped) {
+        {
+            std::lock_guard lock(mutex_);
+            state_ = cancelled_ ? workflow_state::finished : s;
+            last_result_ = std::move(result);
+            dropped_ = dropped;
+        }
+        cv_.notify_all();
+    }
+    void mark_cancelled(std::string driver_outcome) {
+        {
+            std::lock_guard lock(mutex_);
+            cancelled_ = true;
+            if (!driver_outcome.empty()) driver_outcome_ = std::move(driver_outcome);
+            if (state_ != workflow_state::running) state_ = workflow_state::finished;
+        }
+        cv_.notify_all();
+    }
+    [[nodiscard]] workflow_state state() const {
+        std::lock_guard lock(mutex_);
+        return state_;
+    }
+    [[nodiscard]] bool cancelled() const {
+        std::lock_guard lock(mutex_);
+        return cancelled_;
+    }
+    [[nodiscard]] std::string driver_outcome() const {
+        std::lock_guard lock(mutex_);
+        return driver_outcome_;
+    }
+    [[nodiscard]] std::optional<Value> last_result() const {
+        std::lock_guard lock(mutex_);
+        return last_result_;
+    }
+    [[nodiscard]] std::uint64_t dropped() const {
+        std::lock_guard lock(mutex_);
+        return dropped_;
+    }
+    [[nodiscard]] std::vector<Value> events_since(std::uint64_t since, std::size_t limit) const {
+        std::lock_guard lock(mutex_);
+        std::vector<Value> out;
+        for (Value const& e : events_) {
+            if (get_u64(e, "seq").value_or(0) <= since) continue;
+            out.push_back(e);
+            if (out.size() >= limit) break;
+        }
+        return out;
+    }
+    [[nodiscard]] std::vector<Value> step_events(std::string const& executor_id) const {
+        std::lock_guard lock(mutex_);
+        auto it = step_events_.find(executor_id);
+        return it == step_events_.end() ? std::vector<Value>{} : it->second;
+    }
+    [[nodiscard]] std::size_t event_count() const {
+        std::lock_guard lock(mutex_);
+        return events_.size();
+    }
+    [[nodiscard]] bool wait(std::function<bool(workflow_state)> const& pred, std::chrono::milliseconds timeout) {
+        std::unique_lock lock(mutex_);
+        return cv_.wait_for(lock, timeout, [&] { return pred(state_); });
+    }
+
+private:
+    mutable std::mutex                        mutex_;
+    std::condition_variable                   cv_;
+    std::vector<Value>                        events_;
+    std::map<std::string, std::vector<Value>> step_events_;
+    std::uint64_t                             next_seq_ = 1;
+    std::uint64_t                             dropped_ = 0;
+    workflow_state                            state_ = workflow_state::ready;
+    bool                                      cancelled_ = false;
+    std::string                               driver_outcome_;
+    std::optional<Value>                      last_result_;
+};
+
+// One driven workflow. Members are destroyed bottom-up: the pool first (it finishes the job in flight,
+// which the destructor has already cancelled), then the stream, the supervisor (joins its own pool), and
+// only then the step sessions its bodies reference (ADR-210 §7 R10).
+struct DriverWorkflow {
+    std::string                                 id;
+    std::string                                 fixture;
+    std::vector<std::unique_ptr<WorkflowStep>>  steps;
+    std::shared_ptr<CapabilitySet>              grant = std::make_shared<CapabilitySet>(CapabilitySet::grant_root({}));
+    std::unique_ptr<rt::WorkflowSupervisor>     sup;
+    std::optional<workflow::WorkflowEventStream> stream;
+    std::shared_ptr<WorkflowMonitor>            monitor = std::make_shared<WorkflowMonitor>();
+    std::vector<Value>                          script_log;  // steps for scenario_export
+    std::string                                 nondeterministic_reason;
+    bool                                        ran = false;
+    std::unique_ptr<rt::ThreadPool>             pool = std::make_unique<rt::ThreadPool>(1);
+
+    DriverWorkflow() = default;
+    DriverWorkflow(DriverWorkflow const&) = delete;
+    DriverWorkflow& operator=(DriverWorkflow const&) = delete;
+    ~DriverWorkflow() {
+        if (sup) sup->cancel();
+        pool.reset();
+    }
+
+    [[nodiscard]] WorkflowStep* step(std::string_view executor_id) {
+        for (auto& s : steps)
+            if (s->executor_id == executor_id) return s.get();
+        return nullptr;
+    }
+};
+
+// Drains both queues (every step has been joined: the call returned) and records how the call ended.
+inline void finish_workflow_call(DriverWorkflow& w, rt::WorkflowResult const& r) {
+    while (std::optional<workflow::WorkflowEvent> ev = w.stream->next()) w.monitor->on_event(*ev);
+    workflow_state const s = w.sup->open_interactions().empty() ? workflow_state::finished : workflow_state::suspended;
+    w.monitor->finish_call(s, workflow_result_json(r), w.stream->multiplexed_dropped_count());
+}
+
+[[nodiscard]] inline rt::task<void> workflow_run_job(DriverWorkflow* w, std::string text) {
+    rt::WorkflowResult r =
+        co_await w->sup->run_workflow(rt::RunWorkflow{user_message(std::move(text)),
+                                                      workflow_principal(std::string(kWorkflowOwnerId))});
+    finish_workflow_call(*w, r);
+    co_return;
+}
+
+[[nodiscard]] inline rt::task<void> workflow_resume_job(DriverWorkflow* w, rt::ResumeWorkflow request) {
+    rt::WorkflowResult r = co_await w->sup->resume_workflow(std::move(request));
+    finish_workflow_call(*w, r);
+    co_return;
+}
+
 class Driver {
 public:
     Driver() = default;
@@ -1597,6 +2059,7 @@ public:
     // Sessions first (each drains its jobs and drops its sandbox), then this driver's own scratch directory
     // (ADR-208 C1, G7). A killed driver leaves that directory behind (disk only; ADR-208 residual).
     ~Driver() {
+        workflows_.clear();
         sessions_.clear();
         if (!own_scratch_.empty()) (void)remove_tree_no_follow(own_scratch_);
     }
@@ -1681,6 +2144,7 @@ public:
         std::vector<std::string> ids;
         for (auto const& [id, _] : sessions_) ids.push_back(id);
         for (std::string const& id : ids) (void)close_session(id);
+        workflows_.clear();
     }
 
 private:
@@ -1756,6 +2220,7 @@ private:
     // Deterministic order (MCP 2026-07-28 asks tools/list to be stable).
     [[nodiscard]] static Value tool_list() {
         Value const sid = prop("string", "Session handle returned by session_start.");
+        Value const wid = prop("string", "Workflow handle returned by workflow_start.");
         Value turn_schema = obj({
             {"type", str("object")},
             {"properties",
@@ -1858,14 +2323,69 @@ private:
                      "(scripted or live) become the script, your send/resolve/cancel steps are replayed, and "
                      "the whole normalized event stream is the expected result. Session must not be running.",
                      schema({{"session_id", sid},
+                             {"workflow_id", prop("string", "Export a workflow instead of a session (ADR-210).")},
                              {"name", prop("string", "[a-z0-9_-]{1,64}")},
                              {"description", prop("string", "What this scenario checks.")},
                              {"overwrite", prop("boolean", "Replace an existing scenario of that name.")}},
-                            {"session_id", "name"})),
+                            {"name"})),
             tool_def("scenario_replay",
                      "Replay a saved scenario with the scripted model (no network): each model request must match "
                      "its recorded digest (else test.replay_mismatch), then the event stream is diffed.",
                      schema({{"name", prop("string", "Scenario name.")}}, {"name"})),
+            tool_def("workflow_start",
+                     "Start a workflow from a compiled workflow fixture (fixtures_list: workflows). Returns its "
+                     "workflow_id and executors. Push each agent step's turns with workflow_script_push first.",
+                     schema({{"fixture", prop("string", "Workflow fixture name.")}}, {"fixture"})),
+            tool_def("workflow_script_push",
+                     "Append scripted model turns to one agent step (same turn shape as model_script_push). Only "
+                     "while the workflow is ready or suspended; a step with no turns left fails the run.",
+                     schema({{"workflow_id", wid},
+                             {"executor_id", prop("string", "An agent step of this workflow.")},
+                             {"turns", obj({{"type", str("array")}, {"items", obj({{"type", str("object")}})}})}},
+                            {"workflow_id", "executor_id", "turns"})),
+            tool_def("workflow_run",
+                     "Start the workflow's one run with a user message; returns at once. Then workflow_wait_for.",
+                     schema({{"workflow_id", wid}, {"text", prop("string", "Input message text.")}},
+                            {"workflow_id", "text"})),
+            tool_def("workflow_wait_for",
+                     "Wait (<= 60 s) until: settled (not running, default) | suspended | finished.",
+                     schema({{"workflow_id", wid},
+                             {"until", prop("string", "settled | suspended | finished")},
+                             {"timeout_ms", prop("integer", "Default 10000, max 60000.")}},
+                            {"workflow_id"})),
+            tool_def("workflow_snapshot",
+                     "State, the last run/resume result (status, rounds, output, partial, failed executor, open "
+                     "interactions, unopened ports), per-step script and request counters.",
+                     schema({{"workflow_id", wid}}, {"workflow_id"})),
+            tool_def("workflow_events",
+                     "The structural event log (seq > since_seq), or one agent step's own event log (executor_id).",
+                     schema({{"workflow_id", wid},
+                             {"since_seq", prop("integer", "Default 0.")},
+                             {"limit", prop("integer", "Default and max 200.")},
+                             {"executor_id", prop("string", "An agent step: its own run events instead.")}},
+                            {"workflow_id"})),
+            tool_def("request_port_list", "Open request-port interactions: id, port, and the ask's text.",
+                     schema({{"workflow_id", wid}}, {"workflow_id"})),
+            tool_def("request_port_resolve",
+                     "Answer an open request port with a user message; routes select among the port's declared "
+                     "switch_case edges (the engine decides). caller defaults to the run's owner; another id is "
+                     "refused by the engine (admission). Returns at once.",
+                     schema({{"workflow_id", wid},
+                             {"interaction_id", prop("string", "From request_port_list.")},
+                             {"text", prop("string", "The answer.")},
+                             {"routes", obj({{"type", str("array")}, {"items", obj({{"type", str("string")}})}})},
+                             {"caller", prop("string", "Optional principal id of who answers.")}},
+                            {"workflow_id", "interaction_id", "text"})),
+            tool_def("workflow_cancel",
+                     "Cancel the workflow; it never runs again. A cancel while running makes it non-exportable.",
+                     schema({{"workflow_id", wid}}, {"workflow_id"})),
+            tool_def("workflow_close", "Cancel anything in flight and discard the workflow.",
+                     schema({{"workflow_id", wid}}, {"workflow_id"})),
+            tool_def("workflow_model_requests", "What one agent step sent the model on each call, with digests.",
+                     schema({{"workflow_id", wid},
+                             {"executor_id", prop("string", "An agent step.")},
+                             {"since_index", prop("integer", "Default 0.")}},
+                            {"workflow_id", "executor_id"})),
         });
     }
 
@@ -1886,6 +2406,17 @@ private:
             {"model_requests", &Driver::t_model_requests},
             {"scenario_export", &Driver::t_scenario_export},
             {"scenario_replay", &Driver::t_scenario_replay},
+            {"workflow_start", &Driver::t_workflow_start},
+            {"workflow_script_push", &Driver::t_workflow_script_push},
+            {"workflow_run", &Driver::t_workflow_run},
+            {"workflow_wait_for", &Driver::t_workflow_wait_for},
+            {"workflow_snapshot", &Driver::t_workflow_snapshot},
+            {"workflow_events", &Driver::t_workflow_events},
+            {"request_port_list", &Driver::t_request_port_list},
+            {"request_port_resolve", &Driver::t_request_port_resolve},
+            {"workflow_cancel", &Driver::t_workflow_cancel},
+            {"workflow_close", &Driver::t_workflow_close},
+            {"workflow_model_requests", &Driver::t_workflow_model_requests},
         };
         return h;
     }
@@ -2099,7 +2630,14 @@ private:
             }
             out.push_back(obj(std::move(m)));
         }
+        std::vector<Value> wfs;
+        for (WorkflowFixture const& f : workflow_fixtures()) {
+            std::vector<Value> steps;
+            for (workflow::Executor const& x : f.graph.executors) steps.push_back(str(x.id));
+            wfs.push_back(obj({{"name", str(f.name)}, {"description", str(f.description)}, {"executors", arr(std::move(steps))}}));
+        }
         return obj({{"fixtures", arr(std::move(out))},
+                    {"workflows", arr(std::move(wfs))},
                     {"live_model", str(config_.live_backend_factory ? config_.live_description
                                                                     : std::string("disabled (start with --allow-live)"))}});
     }
@@ -2561,8 +3099,11 @@ private:
         ToolError e;
         DriverSession* s = find_session(args, e);
         if (s == nullptr) return e;
-        std::size_t const since = static_cast<std::size_t>(get_u64(args, "since_index").value_or(0));
-        auto const [first_index, reqs] = s->requests->snapshot();
+        return requests_json(*s->requests, s->id, static_cast<std::size_t>(get_u64(args, "since_index").value_or(0)));
+    }
+
+    [[nodiscard]] static Value requests_json(RequestLog& log, std::string const& session_id, std::size_t since) {
+        auto const [first_index, reqs] = log.snapshot();
         std::vector<Value> out;
         for (std::size_t k = 0; k < reqs.size() && out.size() < 50; ++k) {
             std::size_t const i = first_index + k;
@@ -2589,16 +3130,17 @@ private:
             std::vector<Value> tools;
             for (ToolDescriptor const& t : reqs[k].tools) tools.push_back(str(std::string(t.name)));
             out.push_back(obj({{"index", num(static_cast<double>(i))},
-                               {"digest", str(request_digest(reqs[k], s->id))},
+                               {"digest", str(request_digest(reqs[k], session_id))},
                                {"messages", arr(std::move(messages))},
                                {"tools", arr(std::move(tools))}}));
         }
-        return obj({{"requests", arr(std::move(out))}, {"total", num(static_cast<double>(s->requests->total()))}});
+        return obj({{"requests", arr(std::move(out))}, {"total", num(static_cast<double>(log.total()))}});
     }
 
     // ---- scenarios (ADR-182 §16) ----
 
     ToolResultJson t_scenario_export(Value const& args) {
+        if (args.find("workflow_id") != nullptr) return t_workflow_export(args);
         ToolError e;
         DriverSession* s = find_session(args, e);
         if (s == nullptr) return e;
@@ -2652,6 +3194,17 @@ private:
         });
 
         if (s->real) scenario = with_field(scenario, "tool_exchanges", tool_exchanges_json(*s->real));
+        ToolResultJson written = write_scenario(name, scenario, args);
+        if (auto* we = std::get_if<ToolError>(&written)) return *we;
+        Value const* path = std::get<Value>(written).find("written");
+        return obj({{"written", path != nullptr ? *path : Value{}},
+                    {"steps", num(static_cast<double>(n_steps))},
+                    {"model_turns", num(static_cast<double>(n_turns))},
+                    {"events", num(static_cast<double>(n_events))}});
+    }
+
+    // Writes <scenarios_root>/<name>.json after the secret-canary check (ADR-182 §12 R8).
+    ToolResultJson write_scenario(std::string const& name, Value const& scenario, Value const& args) {
         std::error_code ec;
         std::filesystem::create_directories(config_.scenarios_root, ec);
         std::filesystem::path const path = config_.scenarios_root / (name + ".json");
@@ -2670,10 +3223,389 @@ private:
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         if (!out) return err("test.write_failed", "cannot write " + path.generic_string());
         out << text << "\n";
-        return obj({{"written", str(path.generic_string())},
-                    {"steps", num(static_cast<double>(n_steps))},
-                    {"model_turns", num(static_cast<double>(n_turns))},
-                    {"events", num(static_cast<double>(n_events))}});
+        return obj({{"written", str(path.generic_string())}});
+    }
+
+    // ---- workflows (ADR-210) ----
+
+    DriverWorkflow* find_workflow(Value const& args, ToolError& e) {
+        auto id = get_string(args, "workflow_id");
+        if (!id) {
+            e = err("test.bad_arguments", "workflow_id is required");
+            return nullptr;
+        }
+        auto it = workflows_.find(*id);
+        if (it == workflows_.end()) {
+            e = err("test.unknown_workflow", "no workflow " + *id + " (workflow_start returns one)");
+            return nullptr;
+        }
+        return it->second.get();
+    }
+
+    // A step's session is built here, never by make_session: it has no entry in sessions_, no slot under
+    // kMaxSessions and no pool of its own; the workflow's supervisor is the only thing that runs it (I1).
+    [[nodiscard]] std::unique_ptr<WorkflowStep> make_step(WorkflowFixture const& f, std::string const& executor_id) {
+        auto step = std::make_unique<WorkflowStep>();
+        step->executor_id = executor_id;
+        step->session_id = f.name + "/" + executor_id;
+        Session& session = *step->session;
+        Fixture const defaults;
+        session.initialize(step->session_id, workflow_principal("test-driver/" + step->session_id), defaults.token_budget,
+                           kMaxTurnsPerRun);
+        session.set_static_instructions("You are the '" + executor_id + "' step of the " + f.name + " workflow.");
+        step->script.emplace();
+        std::shared_ptr<ModelBackend> backend = std::make_shared<ScriptedBackend>(*step->script);
+        if (config_.workflow_backend_wrapper) backend = config_.workflow_backend_wrapper(executor_id, std::move(backend));
+        session.emplace_chat_client(std::move(backend), step->requests, step->exchanges, step->expectations,
+                                    step->session_id);
+        session.set_suspend_for_approval(false);
+        std::vector<std::string> const& names = f.agent_tools.at(executor_id);
+        std::vector<ToolDescriptor> tools;
+        for (ToolDescriptor const& d : all_test_tool_descriptors()) {
+            if (std::find(names.begin(), names.end(), d.name) != names.end()) tools.push_back(d);
+        }
+        session.history_provider().set_tools(std::move(tools));
+        return step;
+    }
+
+    ToolResultJson t_workflow_start(Value const& args) {
+        auto name = get_string(args, "fixture");
+        if (!name) return err("test.bad_arguments", "fixture is required");
+        auto const& all = workflow_fixtures();
+        auto f = std::find_if(all.begin(), all.end(), [&](WorkflowFixture const& x) { return x.name == *name; });
+        if (f == all.end()) {
+            // Never a file (ADR-210 §7 M7): workflow fixtures are compiled only.
+            return err("test.unknown_fixture", "no workflow fixture " + *name + " (fixtures_list shows them)");
+        }
+        if (auto ok = check_workflow_fixture(*f); !ok) return err(ok.error().code, ok.error().message);
+        if (workflows_.size() >= kMaxWorkflows) {
+            return err("test.too_many_workflows", "close a workflow first (max " + std::to_string(kMaxWorkflows) + ")");
+        }
+        auto w = std::make_unique<DriverWorkflow>();
+        w->id = "w" + std::to_string(next_workflow_++);
+        w->fixture = f->name;
+        std::vector<rt::ExecutorBody> bodies;
+        std::vector<EffectContext> contexts;
+        std::vector<Value> executors;
+        for (workflow::Executor const& e : f->graph.executors) {
+            EffectContext ctx;
+            ctx.capabilities = w->grant;  // empty for every step (ADR-210 §7 R7, W10)
+            contexts.push_back(std::move(ctx));
+            std::string kind;
+            switch (e.kind) {
+                case workflow::executor_kind::agent: {
+                    w->steps.push_back(make_step(*f, e.id));
+                    bodies.emplace_back(rt::agent_session_as_executor_body(*w->steps.back()->session));
+                    kind = "agent";
+                    break;
+                }
+                case workflow::executor_kind::function:
+                    bodies.push_back(f->functions.at(e.id));
+                    kind = "function";
+                    break;
+                default:
+                    bodies.emplace_back();
+                    kind = "request_port";
+                    break;
+            }
+            executors.push_back(obj({{"executor_id", str(e.id)}, {"kind", str(kind)}}));
+        }
+        w->sup = std::make_unique<rt::WorkflowSupervisor>(kWorkflowWorkers);
+        w->sup->set_principal(workflow_principal(std::string(kWorkflowOwnerId)));
+        w->sup->set_require_caller(true);
+        w->sup->initialize(f->graph, std::move(bodies), std::move(contexts));
+        w->stream = w->sup->enable_event_stream(std::pmr::get_default_resource(),
+                                                stream_config<workflow::WorkflowEvent>{kWorkflowStructuralCapacity});
+        std::string const id = w->id;
+        workflows_.emplace(id, std::move(w));
+        return obj({{"workflow_id", str(id)}, {"fixture", str(f->name)}, {"executors", arr(std::move(executors))}});
+    }
+
+    ToolResultJson t_workflow_script_push(Value const& args) {
+        ToolError e;
+        DriverWorkflow* w = find_workflow(args, e);
+        if (w == nullptr) return e;
+        workflow_state const st = w->monitor->state();
+        if (st == workflow_state::running) {
+            return err("test.workflow_running", "push turns only while the workflow is ready or suspended");
+        }
+        if (st == workflow_state::finished) return err("test.workflow_finished", "the workflow has finished");
+        auto executor = get_string(args, "executor_id");
+        WorkflowStep* step = executor ? w->step(*executor) : nullptr;
+        if (step == nullptr) return err("test.unknown_step", "executor_id must name an agent step of this workflow");
+        Value const* turns = args.find("turns");
+        if (turns == nullptr || !turns->is_array() || turns->as_array().empty()) {
+            return err("test.bad_arguments", "turns must be a non-empty array");
+        }
+        std::vector<testing::ScriptedTurn> parsed;
+        std::vector<std::optional<std::string>> digests;
+        for (Value const& t : turns->as_array()) {
+            std::optional<std::string> digest;
+            auto turn = parse_turn(t, step->next_call_id, digest);
+            if (auto* bad = std::get_if<ToolError>(&turn)) return *bad;
+            parsed.push_back(std::move(std::get<testing::ScriptedTurn>(turn)));
+            digests.push_back(std::move(digest));
+        }
+        if (auto pushed = step->script->push(std::move(parsed)); !pushed) {
+            return err(pushed.error().code, pushed.error().message);
+        }
+        step->expectations->push(std::move(digests));
+        return obj({{"executor_id", str(step->executor_id)},
+                    {"script_pending", num(static_cast<double>(step->script->pending()))}});
+    }
+
+    ToolResultJson t_workflow_run(Value const& args) {
+        ToolError e;
+        DriverWorkflow* w = find_workflow(args, e);
+        if (w == nullptr) return e;
+        auto text = get_string(args, "text");
+        if (!text) return err("test.bad_arguments", "text is required");
+        if (w->monitor->cancelled()) return err("test.workflow_cancelled", "the workflow was cancelled");
+        // One run per workflow (ADR-210 §7 R5): a second run_workflow would wipe open ports and reuse the steps.
+        if (w->ran) return err("test.workflow_already_run", "a workflow runs once; start a new one");
+        w->ran = true;
+        w->script_log.push_back(obj({{"op", str("run")}, {"text", str(*text)}}));
+        w->monitor->set_state(workflow_state::running);
+        (void)w->pool->submit(workflow_run_job(w, *text));
+        return obj({{"started", boolean(true)}});
+    }
+
+    ToolResultJson t_workflow_wait_for(Value const& args) {
+        ToolError e;
+        DriverWorkflow* w = find_workflow(args, e);
+        if (w == nullptr) return e;
+        std::string const until = get_string(args, "until").value_or("settled");
+        std::uint64_t const timeout = std::min(get_u64(args, "timeout_ms").value_or(kDefaultWaitMs), kMaxWaitMs);
+        std::function<bool(workflow_state)> pred;
+        if (until == "settled") {
+            pred = [](workflow_state s) { return s != workflow_state::running; };
+        } else if (until == "suspended") {
+            pred = [](workflow_state s) { return s == workflow_state::suspended; };
+        } else if (until == "finished") {
+            pred = [](workflow_state s) { return s == workflow_state::finished; };
+        } else {
+            return err("test.bad_arguments", "until must be settled | suspended | finished");
+        }
+        bool const matched = w->monitor->wait(pred, std::chrono::milliseconds(timeout));
+        return obj({{"matched", boolean(matched)}, {"timed_out", boolean(!matched)}, {"snapshot", workflow_snapshot(*w)}});
+    }
+
+    // While running, only the monitor is read: the supervisor's accessors are not locked (ADR-210 §7 R4).
+    [[nodiscard]] Value workflow_snapshot(DriverWorkflow& w) {
+        workflow_state const st = w.monitor->state();
+        Members m{{"workflow_id", str(w.id)},
+                  {"fixture", str(w.fixture)},
+                  {"state", str(std::string(workflow_state_name(st)))},
+                  {"events", num(static_cast<double>(w.monitor->event_count()))},
+                  {"events_dropped", num(static_cast<double>(w.monitor->dropped()))}};
+        if (auto r = w.monitor->last_result()) m.emplace_back("last_result", *r);
+        if (std::string const d = w.monitor->driver_outcome(); !d.empty()) m.emplace_back("driver_outcome", str(d));
+        if (!w.nondeterministic_reason.empty()) m.emplace_back("nondeterministic_reason", str(w.nondeterministic_reason));
+        if (st == workflow_state::running) {
+            m.emplace_back("partial", boolean(true));
+            return obj(std::move(m));
+        }
+        m.emplace_back("admission_denied", num(static_cast<double>(w.sup->admission_denied_count())));
+        std::vector<Value> steps;
+        for (auto const& s : w.steps) {
+            Members sm{{"executor_id", str(s->executor_id)},
+                       {"script_pending", num(static_cast<double>(s->script->pending()))},
+                       {"model_calls", num(static_cast<double>(s->requests->total()))},
+                       {"requests_checked", num(static_cast<double>(s->expectations->checked()))}};
+            if (auto mm = s->expectations->mismatch()) {
+                sm.emplace_back("replay_mismatch", obj({{"call_index", num(static_cast<double>(mm->call_index))},
+                                                        {"expected", str(mm->expected)},
+                                                        {"actual", str(mm->actual)}}));
+            }
+            steps.push_back(obj(std::move(sm)));
+        }
+        m.emplace_back("steps", arr(std::move(steps)));
+        // W10: what each step's session actually runs under (the adapter sets it from its context on every call).
+        std::size_t with_grant = 0;
+        std::size_t kinds_held = 0;
+        for (auto const& s : w.steps) {
+            CapabilitySet const* c = s->session->capabilities();
+            if (c == nullptr) continue;
+            ++with_grant;
+            for (int k = 0; k < 64; ++k) kinds_held += c->contains_kind(static_cast<capability_kind>(k)) ? 1 : 0;
+        }
+        m.emplace_back("steps_with_grant", num(static_cast<double>(with_grant)));
+        m.emplace_back("step_grant_kinds", num(static_cast<double>(kinds_held)));
+        return obj(std::move(m));
+    }
+
+    ToolResultJson t_workflow_snapshot(Value const& args) {
+        ToolError e;
+        DriverWorkflow* w = find_workflow(args, e);
+        if (w == nullptr) return e;
+        return workflow_snapshot(*w);
+    }
+
+    ToolResultJson t_workflow_events(Value const& args) {
+        ToolError e;
+        DriverWorkflow* w = find_workflow(args, e);
+        if (w == nullptr) return e;
+        if (auto executor = get_string(args, "executor_id")) {
+            if (w->step(*executor) == nullptr) return err("test.unknown_step", "no agent step " + *executor);
+            return obj({{"executor_id", str(*executor)}, {"events", arr(w->monitor->step_events(*executor))}});
+        }
+        std::uint64_t const since = get_u64(args, "since_seq").value_or(0);
+        std::size_t const limit =
+            static_cast<std::size_t>(std::min<std::uint64_t>(get_u64(args, "limit").value_or(kMaxEventsPerResult), kMaxEventsPerResult));
+        return obj({{"events", arr(w->monitor->events_since(since, limit))}});
+    }
+
+    ToolResultJson t_request_port_list(Value const& args) {
+        ToolError e;
+        DriverWorkflow* w = find_workflow(args, e);
+        if (w == nullptr) return e;
+        if (w->monitor->state() == workflow_state::running) {
+            return err("test.workflow_running", "wait until the workflow settles");
+        }
+        std::vector<Value> out;
+        for (rt::WorkflowSupervisor::InteractionAsk const& a : w->sup->open_interaction_asks()) {
+            std::string const& id = a.interaction.interaction_id;
+            std::string port;
+            if (auto at = id.find(":port:"); at != std::string::npos) {
+                port = id.substr(at + 6);
+                if (auto last = port.rfind(':'); last != std::string::npos) port.resize(last);
+            }
+            out.push_back(obj({{"interaction_id", str(id)}, {"port", str(port)}, {"ask", str(content_text(a.ask.content))}}));
+        }
+        return obj({{"open", arr(std::move(out))}});
+    }
+
+    // The answer is a user message and the tester's routes, passed as given: the engine alone admits the
+    // caller (ADR-169) and decides what the routes select (I3). The driver fixes nothing up (W2).
+    ToolResultJson t_request_port_resolve(Value const& args) {
+        ToolError e;
+        DriverWorkflow* w = find_workflow(args, e);
+        if (w == nullptr) return e;
+        workflow_state const st = w->monitor->state();
+        if (st == workflow_state::running) return err("test.workflow_running", "wait until the workflow settles");
+        if (w->monitor->cancelled()) return err("test.workflow_cancelled", "the workflow was cancelled");
+        if (st != workflow_state::suspended) return err("test.workflow_not_suspended", "no request port is open");
+        auto ix = get_string(args, "interaction_id");
+        auto text = get_string(args, "text");
+        if (!ix || !text) return err("test.bad_arguments", "interaction_id and text are required");
+        std::vector<std::string> routes;
+        if (Value const* r = args.find("routes"); r != nullptr) {
+            if (!r->is_array() || r->as_array().size() > kMaxResolveRoutes) {
+                return err("test.bad_arguments", "routes must be a list of at most " + std::to_string(kMaxResolveRoutes) + " strings");
+            }
+            for (Value const& v : r->as_array()) {
+                if (!v.is_string() || v.as_string().empty() || v.as_string().size() > 64) {
+                    return err("test.bad_arguments", "each route is a string of 1-64 characters");
+                }
+                routes.push_back(v.as_string());
+            }
+        }
+        std::string caller(kWorkflowOwnerId);
+        if (auto c = get_string(args, "caller")) {
+            if (c->size() > 128 || !agentengine::is_attributable_id(*c)) {
+                return err("test.bad_arguments", "caller must be an attributable id: at most 128 bytes, no control "
+                                                 "characters, not only invisible characters");
+            }
+            caller = *c;
+        }
+        Members step{{"op", str("resolve")}, {"interaction_id", str(*ix)}, {"text", str(*text)}, {"routes", strings_json(routes)}};
+        if (caller != kWorkflowOwnerId) step.emplace_back("caller", str(caller));
+        w->script_log.push_back(obj(std::move(step)));
+        w->monitor->set_state(workflow_state::running);
+        (void)w->pool->submit(workflow_resume_job(
+            w, rt::ResumeWorkflow{*ix, user_message(*text), std::move(routes), workflow_principal(caller)}));
+        return obj({{"started", boolean(true)}});
+    }
+
+    // ADR-210 §7 C1: a cancel mid-run lands at a timing-dependent point, so that workflow cannot be exported.
+    // A cancel while ready or suspended is the driver's own outcome, labelled as such. Either way it never runs
+    // again (the supervisor's cancel is permanent).
+    ToolResultJson t_workflow_cancel(Value const& args) {
+        ToolError e;
+        DriverWorkflow* w = find_workflow(args, e);
+        if (w == nullptr) return e;
+        workflow_state const st = w->monitor->state();
+        if (st == workflow_state::finished) return err("test.workflow_finished", "the workflow has finished");
+        w->sup->cancel();
+        if (st == workflow_state::running) {
+            w->nondeterministic_reason = "cancelled while a run was in flight: where the cancel lands is timing "
+                                         "(ADR-210 §7 C1)";
+            w->monitor->mark_cancelled("");
+        } else {
+            w->script_log.push_back(obj({{"op", str("cancel")}}));
+            w->monitor->mark_cancelled("cancelled_by_driver");
+        }
+        return obj({{"cancelled", boolean(true)}, {"state_was", str(std::string(workflow_state_name(st)))}});
+    }
+
+    ToolResultJson t_workflow_close(Value const& args) {
+        ToolError e;
+        DriverWorkflow* w = find_workflow(args, e);
+        if (w == nullptr) return e;
+        std::string const id = w->id;
+        workflows_.erase(id);  // ~DriverWorkflow: cancel, finish the job, then tear down in order
+        return obj({{"closed", boolean(true)}});
+    }
+
+    ToolResultJson t_workflow_model_requests(Value const& args) {
+        ToolError e;
+        DriverWorkflow* w = find_workflow(args, e);
+        if (w == nullptr) return e;
+        auto executor = get_string(args, "executor_id");
+        WorkflowStep* step = executor ? w->step(*executor) : nullptr;
+        if (step == nullptr) return err("test.unknown_step", "executor_id must name an agent step of this workflow");
+        if (w->monitor->state() == workflow_state::running) return err("test.workflow_running", "wait until the workflow settles");
+        return requests_json(*step->requests, step->session_id,
+                             static_cast<std::size_t>(get_u64(args, "since_index").value_or(0)));
+    }
+
+    // Format 3 (ADR-210 §2.5): per-step model turns, the steps, and the expected structural stream, each
+    // step's own log and the final result. The cross-step interleaving is never compared.
+    ToolResultJson t_workflow_export(Value const& args) {
+        ToolError e;
+        DriverWorkflow* w = find_workflow(args, e);
+        if (w == nullptr) return e;
+        if (config_.scenarios_root.empty()) return err("test.export_disabled", "the driver was started without a scenarios root");
+        std::string const name = get_string(args, "name").value_or("");
+        if (!valid_scenario_name(name)) return err("test.bad_name", "name must match [a-z0-9_-]{1,64}");
+        if (w->monitor->state() == workflow_state::running) return err("test.workflow_running", "wait until the workflow settles");
+        if (!w->nondeterministic_reason.empty()) {
+            return err("test.nondeterministic", "cannot replay this workflow: " + w->nondeterministic_reason);
+        }
+        if (w->monitor->dropped() != 0) {
+            return err("test.events_dropped", "step events were dropped; the expected logs are incomplete");
+        }
+        if (w->script_log.empty()) return err("test.nothing_to_export", "the workflow has no steps yet");
+        Members turns;
+        Members step_events;
+        for (auto const& s : w->steps) {
+            if (s->exchanges->overflow() || s->exchanges->unrecordable()) {
+                return err("test.not_recordable", "step " + s->executor_id + "'s model exchanges were not all captured");
+            }
+            std::vector<Value> t;
+            for (ModelExchange const& x : s->exchanges->exchanges()) t.push_back(exchange_to_turn(x));
+            turns.emplace_back(s->executor_id, arr(std::move(t)));
+            step_events.emplace_back(s->executor_id, arr(w->monitor->step_events(s->executor_id)));
+        }
+        std::vector<Value> events;
+        for (Value const& ev : w->monitor->events_since(0, std::numeric_limits<std::size_t>::max())) {
+            events.push_back(without_field(ev, "seq"));
+        }
+        Members expected{{"state", str(std::string(workflow_state_name(w->monitor->state())))},
+                         {"result", w->monitor->last_result().value_or(Value{})},
+                         {"events", arr(std::move(events))},
+                         {"step_events", obj(std::move(step_events))}};
+        if (std::string const d = w->monitor->driver_outcome(); !d.empty()) expected.emplace_back("driver_outcome", str(d));
+        Value scenario = obj({{"format", num(3)},
+                              {"target", str("workflow")},
+                              {"name", str(name)},
+                              {"description", str(get_string(args, "description").value_or(""))},
+                              {"fixture", str(w->fixture)},
+                              {"recorded_with", obj({{"fixture", str(w->fixture)}, {"model", str("scripted")}})},
+                              {"model_turns", obj(std::move(turns))},
+                              {"steps", arr(w->script_log)},
+                              {"expected", obj(std::move(expected))}});
+        return write_scenario(name, scenario, args);
     }
 
     ToolResultJson t_scenario_replay(Value const& args);  // defined after replay_scenario()
@@ -2687,6 +3619,8 @@ private:
     DriverConfig config_;
     std::map<std::string, std::unique_ptr<DriverSession>, std::less<>> sessions_;
     std::uint64_t next_session_ = 1;
+    std::map<std::string, std::unique_ptr<DriverWorkflow>, std::less<>> workflows_;
+    std::uint64_t next_workflow_ = 1;
     std::uint64_t secret_leaks_blocked_ = 0;
     std::filesystem::path own_scratch_;         // ADR-208: this driver's directory under the sandbox root
     std::optional<bool>   last_scratch_removed_;
@@ -2752,7 +3686,184 @@ struct ReplayFixtures {
     std::function<result<std::string>(std::filesystem::path const&)> reader;
 };
 
+// ADR-210 §2.5: replays a format 3 workflow scenario in a fresh driver. Each step's recorded turns are pushed
+// to that step, the run/resolve/cancel steps are re-issued, and the structural stream, every step's own log
+// and the final result are compared. The interleaving across steps is never compared (§3).
+[[nodiscard]] inline ReplayReport replay_workflow_scenario(Value const& scenario) {
+    using replay_detail::call;
+    using replay_detail::Call;
+    using replay_detail::clip;
+    ReplayReport report;
+    auto fail = [&](std::string m) {
+        report.problems.push_back(std::move(m));
+        return report;
+    };
+    if (get_u64(scenario, "format") != 3u) return fail("a workflow scenario must be format 3");
+    auto fixture = get_string(scenario, "fixture");
+    if (!fixture) return fail("scenario has no fixture");
+    Value const* turns = scenario.find("model_turns");
+    if (turns != nullptr && !turns->is_null() && !turns->is_object()) return fail("model_turns must map step ids to turns");
+    Value const* expected = scenario.find("expected");
+    if (expected == nullptr || !expected->is_object()) return fail("scenario has no expected block");
+
+    Driver d{DriverConfig{}};
+    std::uint64_t id = 1;
+    Call started = call(d, "workflow_start", obj({{"fixture", str(*fixture)}}), id);
+    if (started.is_error) return fail("workflow_start failed: " + json::dump(started.body));
+    std::string const wid = get_string(started.body, "workflow_id").value_or("");
+    auto with_wid = [&](Members extra) {
+        Members m{{"workflow_id", str(wid)}};
+        for (auto& kv : extra) m.push_back(std::move(kv));
+        return obj(std::move(m));
+    };
+
+    std::size_t turns_total = 0;
+    std::size_t turns_undigested = 0;
+    if (turns != nullptr && turns->is_object()) {
+        for (auto const& [step, list] : turns->as_object()) {
+            if (!list.is_array()) return fail("model_turns." + step + " must be a list");
+            for (Value const& t : list.as_array()) {
+                ++turns_total;
+                if (get_string(t, "request_digest").value_or("").empty()) ++turns_undigested;
+            }
+            if (list.as_array().empty()) continue;
+            Call pushed = call(d, "workflow_script_push", with_wid({{"executor_id", str(step)}, {"turns", list}}), id);
+            if (pushed.is_error) return fail("workflow_script_push to " + step + " failed: " + json::dump(pushed.body));
+        }
+    }
+
+    // A step whose request diverged names itself (W4): the first step, in the fixture's order, with a mismatch.
+    auto mismatch_in = [&](Value const& snap) -> std::optional<std::string> {
+        Value const* steps = snap.find("steps");
+        if (steps == nullptr || !steps->is_array()) return std::nullopt;
+        for (Value const& s : steps->as_array()) {
+            Value const* mm = s.find("replay_mismatch");
+            if (mm == nullptr) continue;
+            return "test.replay_mismatch at " + get_string(s, "executor_id").value_or("?") + " model call " +
+                   std::to_string(get_u64(*mm, "call_index").value_or(0)) + ": the engine's request differs from the "
+                   "recording (expected " + get_string(*mm, "expected").value_or("?") + ", got " +
+                   get_string(*mm, "actual").value_or("?") + ")";
+        }
+        return std::nullopt;
+    };
+
+    Value const* steps = scenario.find("steps");
+    if (steps == nullptr || !steps->is_array()) return fail("scenario has no steps");
+    std::size_t index = 0;
+    for (Value const& step : steps->as_array()) {
+        std::string const op = get_string(step, "op").value_or("");
+        std::string const at = "step " + std::to_string(index);
+        Call r;
+        if (op == "run") {
+            r = call(d, "workflow_run", with_wid({{"text", str(get_string(step, "text").value_or(""))}}), id);
+        } else if (op == "resolve") {
+            Members m{{"interaction_id", str(get_string(step, "interaction_id").value_or(""))},
+                      {"text", str(get_string(step, "text").value_or(""))}};
+            if (Value const* routes = step.find("routes"); routes != nullptr) m.emplace_back("routes", *routes);
+            if (auto caller = get_string(step, "caller")) m.emplace_back("caller", str(*caller));
+            r = call(d, "request_port_resolve", with_wid(std::move(m)), id);
+        } else if (op == "cancel") {
+            r = call(d, "workflow_cancel", with_wid({}), id);
+        } else {
+            return fail(at + ": unknown op '" + op + "'");
+        }
+        if (r.is_error) {
+            return fail(at + " (" + op + ") was refused: " + clip(json::dump(r.body)) +
+                        " -- the replay has diverged before this step");
+        }
+        Call w = call(d, "workflow_wait_for", with_wid({{"until", str("settled")}, {"timeout_ms", num(60000)}}), id);
+        if (get_bool(w.body, "timed_out").value_or(true)) return fail(at + " (" + op + "): the workflow did not settle within 60 s");
+        if (Value const* snap = w.body.find("snapshot"); snap != nullptr) {
+            if (auto mm = mismatch_in(*snap)) return fail(at + " (" + op + "): " + *mm);
+        }
+        ++index;
+    }
+
+    // The structural stream, in full.
+    std::vector<Value> actual;
+    for (std::uint64_t since = 0;;) {
+        Call page = call(d, "workflow_events", with_wid({{"since_seq", num(static_cast<double>(since))}}), id);
+        Value const* evs = page.body.find("events");
+        if (evs == nullptr || !evs->is_array() || evs->as_array().empty()) break;
+        for (Value const& e : evs->as_array()) {
+            since = get_u64(e, "seq").value_or(since);
+            actual.push_back(without_field(e, "seq"));
+        }
+    }
+    auto compare_list = [&](std::vector<Value> const& want, std::vector<Value> const& got, std::string const& what) {
+        std::size_t const n = std::min(want.size(), got.size());
+        for (std::size_t i = 0; i < n; ++i) {
+            std::string const a = json::dump(want[i]);
+            std::string const b = json::dump(got[i]);
+            if (a != b) {
+                report.problems.push_back(what + " event " + std::to_string(i) + " differs\n  expected: " + clip(a) +
+                                          "\n  actual:   " + clip(b));
+                return;
+            }
+        }
+        report.events_compared += n;
+        if (want.size() != got.size()) {
+            report.problems.push_back(what + " event count differs: expected " + std::to_string(want.size()) +
+                                      ", actual " + std::to_string(got.size()));
+        }
+    };
+    std::vector<Value> want_events;
+    if (Value const* ev = expected->find("events"); ev != nullptr && ev->is_array()) want_events = ev->as_array();
+    compare_list(want_events, actual, "structural");
+    if (Value const* se = expected->find("step_events"); se != nullptr && se->is_object()) {
+        for (auto const& [step, list] : se->as_object()) {
+            Call got = call(d, "workflow_events", with_wid({{"executor_id", str(step)}}), id);
+            std::vector<Value> got_list;
+            if (Value const* g = got.body.find("events"); g != nullptr && g->is_array()) got_list = g->as_array();
+            compare_list(list.is_array() ? list.as_array() : std::vector<Value>{}, got_list, "step " + step);
+        }
+    }
+    Call snap = call(d, "workflow_snapshot", with_wid({}), id);
+    std::string const want_state = get_string(*expected, "state").value_or("");
+    std::string const got_state = get_string(snap.body, "state").value_or("");
+    if (want_state != got_state) report.problems.push_back("final state differs: expected " + want_state + ", actual " + got_state);
+    Value const* want_result = expected->find("result");
+    Value const* got_result = snap.body.find("last_result");
+    std::string const wr = want_result ? json::dump(*want_result) : "null";
+    std::string const gr = got_result ? json::dump(*got_result) : "null";
+    if (wr != gr) report.problems.push_back("final result differs\n  expected: " + clip(wr) + "\n  actual:   " + clip(gr));
+    std::string const want_driver = get_string(*expected, "driver_outcome").value_or("");
+    std::string const got_driver = get_string(snap.body, "driver_outcome").value_or("");
+    if (want_driver != got_driver) {
+        report.problems.push_back("driver outcome differs: expected '" + want_driver + "', actual '" + got_driver + "'");
+    }
+    if (Value const* ss = snap.body.find("steps"); ss != nullptr && ss->is_array()) {
+        for (Value const& s : ss->as_array()) {
+            report.requests_checked += static_cast<std::size_t>(get_u64(s, "requests_checked").value_or(0));
+            if (auto left = get_u64(s, "script_pending"); left && *left != 0) {
+                report.problems.push_back(std::to_string(*left) + " recorded model turn(s) of step " +
+                                          get_string(s, "executor_id").value_or("?") + " were never requested");
+            }
+            std::string const step_id = get_string(s, "executor_id").value_or("");
+            for (std::size_t since_index = 0;;) {
+                Call page = call(d, "workflow_model_requests",
+                                 with_wid({{"executor_id", str(step_id)}, {"since_index", num(static_cast<double>(since_index))}}), id);
+                Value const* reqs = page.body.find("requests");
+                if (reqs == nullptr || !reqs->is_array() || reqs->as_array().empty()) break;
+                for (Value const& q : reqs->as_array()) {
+                    report.observed_request_digests.push_back(step_id + ":" + get_string(q, "digest").value_or(""));
+                    since_index = static_cast<std::size_t>(get_u64(q, "index").value_or(since_index)) + 1;
+                }
+            }
+        }
+    }
+    (void)call(d, "workflow_close", with_wid({}), id);
+    report.turns_without_digest = turns_undigested;
+    if (turns_undigested != 0) {
+        report.problems.push_back(std::to_string(turns_undigested) + " of " + std::to_string(turns_total) +
+                                  " recorded model turn(s) carry no request_digest, so their requests were not checked");
+    }
+    report.passed = report.problems.empty();
+    return report;
+}
+
 [[nodiscard]] inline ReplayReport replay_scenario(Value const& scenario, ReplayFixtures const& fixtures = {}) {
+    if (get_string(scenario, "target") == "workflow") return replay_workflow_scenario(scenario);
     using replay_detail::call;
     using replay_detail::Call;
     using replay_detail::clip;

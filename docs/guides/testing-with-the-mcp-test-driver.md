@@ -101,6 +101,31 @@ Every real-tool call is recorded, and `scenario_export` writes the calls into th
 other arguments fails the replay with `test.replay_mismatch at tool call N`. The scenario runner can't
 build a sandbox at all, so CI needs none. `tests/scenarios/scripted_shell_roundtrip.json` is an example.
 
+**Workflows (ADR-210).** `fixtures_list` also lists workflow fixtures, compiled into the driver:
+`wf_review` (draft, then a review port whose route `approve` runs publish and `revise` runs draft again),
+`wf_fanout` (two agent steps in parallel, then a join) and `wf_two_ports` (two ports open at once).
+
+1. `workflow_start {fixture}` returns a `workflow_id` and the steps.
+2. `workflow_script_push {workflow_id, executor_id, turns}` for every agent step, before the run and before
+   each answer. A step that runs out of turns fails the whole run.
+3. `workflow_run {workflow_id, text}`, then `workflow_wait_for` (default `settled`).
+4. At a port: `request_port_list` shows the open ids and what each port asks. Answer with
+   `request_port_resolve {workflow_id, interaction_id, text, routes}`. `routes` pick among the port's own
+   case labels, and the engine decides what they do: an invented label ends the run `routing_failed`.
+   `caller` defaults to the run's owner; any other caller is refused by the engine (`admission_denied`)
+   and the port stays open.
+5. `workflow_snapshot` shows the last result (status, output, partial, failed step, open ports) and each
+   step's script and request counters. `workflow_events` gives the workflow's own event log, or one step's
+   run events with `executor_id`.
+
+A workflow runs once. `workflow_cancel` ends it for good. After a cancel while it was suspended it can
+still be exported. After a cancel while it was running it can't, because where the cancel lands depends
+on timing. `scenario_export {workflow_id, name}` writes a scenario that replays each step's model answers
+and checks each step's own requests. It compares the workflow's event log, each step's event log and the
+result, but not the order in which parallel steps interleave. Workflow steps can't have approval-gated or
+real tools, and no session tool reaches a step's session. `tests/scenarios/workflow_review_approve.json`
+is an example.
+
 ## 3. Live exploration (engine on DeepSeek, Claude tester drives)
 
 Live mode needs an HTTPS build of the driver and a key file. The key file is never committed
