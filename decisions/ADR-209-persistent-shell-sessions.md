@@ -341,3 +341,22 @@ principal + identity-key comparison + per-principal replay (#6, #14), admission-
 budget documented and no prewarm (#11), tar design dropped (#12), `pwsh`-only native + monotone `live_session` flag + I6
 parity (#13), `%b` with builtin probe and NUL rejection + env denylist (#15), `turn_index` keys (#16), `docker pause`
 measured or disclosed (#8).
+
+## 14. Prior-art check (2026-09-29) — open items for the next revision
+
+From `docs/research/2026-09-29-persistent-shell-sandbox-landscape.md` and `docs/research/2026-09-29-new-sandbox-types-2026.md`:
+
+1. **Out-of-band completion signal.** Daytona and Cloudflare sessions write the command to a file, source it in the
+   live shell, and signal completion with an exit-code file written after output is flushed — so printing cannot fake
+   completion and no quoting is needed. Cheaper and sturdier than §7's in-band trailer; adopt for the sh transport
+   unless the prove phase finds a reason not to.
+2. **`PerRun` has no direct precedent.** Every live-shell product found ties a shell to an explicit session (Anthropic
+   bash tool, SWE-ReX, OpenHands, Daytona, Cloudflare, `PSSession`). Keep `PerRun` as the default (owner decision) but
+   say so, and keep `PerSession` first-class.
+3. **Native identity boundary.** Every comparable native sandbox (Codex's Windows sandbox, `srt`, the Windows agent
+   workspace, MXC session isolation) runs the agent under a separate low-privilege identity; §9's held `pwsh` in a Job
+   Object has none. Evaluate Microsoft Execution Containers (preview, Build 2026) as the native tier's isolation layer
+   before building §9 — it is OS-provided, so it does not conflict with the no-second-local-isolation decision.
+4. Confirms §10: whole-process restore exists only at the VM-snapshot level (E2B, Firecracker, Perplexity SPACE);
+   container checkpointing breaks live shells (gVisor, Docker checkpoint, Kata has none). Timeout behaviour in most
+   products is "stop waiting, leave it running"; §7's kill-then-restore-cwd/env is stricter than all of them.
