@@ -1,7 +1,7 @@
 # ADR-212 — `Deterministic`: a tool's declared output equality, separate from `EffectClass`
 
-**Status:** Proposed — design (§3), corrected by one independent red-team pass (§4), implemented and
-proven (§6). **Awaiting project-owner judgment.**
+**Status:** **Judged (2026-09-30, project-owner sign-off).** Design (§3), corrected by one independent
+red-team pass (§4), implemented and proven (§6).
 
 **Relates to:** GitHub issue #81. `006-Tool-and-Function-Plane.md` §1 (tool declaration).
 `019-Durability-and-Long-Running-Agents.md` §3/§6 (`EffectClass`, re-execution on rewind).
