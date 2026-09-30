@@ -36,13 +36,15 @@ namespace agentengine::native_jail::mediated_shell {
 // So exhaustion is NOT an exception here. Past the block, an allocation is served from the heap in an exact-
 // size chunk, `exhausted()` latches, and the lexer and parser poll it at every loop step and fail the parse
 // with `shell.arena_exhausted`. Nothing aborts in any build type, and the overshoot is bounded: at most
-// `kArenaSpillBytes` of heap, after which `do_allocate` throws (fail closed, and unreachable from a script
-// within `kMaxSourceBytes`/`kMaxTokens`, since a step between two polls allocates far less than that).
+// `kArenaSpillBytes` of heap in all, and no single spill allocation over `kArenaSpillChunkBytes`. Either limit
+// throws `bad_alloc`, which is safe because only small allocations come from `noexcept` code; a large one is
+// a container growing, which `parse()` catches.
 // A chunk is never freed individually, matching the monotonic contract; all are freed with the arena.
 class ParseArena final : public std::pmr::memory_resource {
 public:
-    ParseArena(std::byte* block, std::size_t size, std::size_t spill_cap) noexcept
-        : block_(block), size_(size), spill_cap_(spill_cap) {}
+    ParseArena(std::byte* block, std::size_t size, std::size_t spill_cap,
+               std::size_t spill_chunk_cap = kArenaSpillChunkBytes) noexcept
+        : block_(block), size_(size), spill_cap_(spill_cap), spill_chunk_cap_(spill_chunk_cap) {}
     ParseArena(ParseArena const&) = delete;
     ParseArena& operator=(ParseArena const&) = delete;
     ~ParseArena() override {
@@ -67,7 +69,7 @@ private:
             return p;
         }
         exhausted_ = true;
-        if (bytes > spill_cap_ - spilled_) throw std::bad_alloc();
+        if (bytes > spill_chunk_cap_ || bytes > spill_cap_ - spilled_) throw std::bad_alloc();
         // Room for the record BEFORE allocating, so a throw here leaks nothing. Geometric, never
         // `reserve(size() + 1)`: that reallocates the whole list on every spill, and the first version of
         // this did -- 24,000 spills requested 4.6 GB of heap for a 96 KB script.
@@ -84,6 +86,7 @@ private:
     std::size_t size_;
     std::size_t used_ = 0;
     std::size_t spill_cap_;
+    std::size_t spill_chunk_cap_;
     std::size_t spilled_ = 0;
     bool exhausted_ = false;
     std::vector<Spill> spill_;

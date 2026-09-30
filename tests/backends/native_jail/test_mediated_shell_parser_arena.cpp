@@ -13,7 +13,7 @@
 // This file therefore tests the CONTRACT that removes the hazard, which holds in every build type:
 //
 //   A -- `ParseArena` past its block does not throw, latches `exhausted()`, and stays aligned (A1, A2, A4);
-//        the spill it allows is capped (A3) and freed with the arena (A5).
+//        the spill it allows is capped in total (A3) and per allocation (A7), and freed with the arena (A5).
 //   P -- through `parse()`: an ordinary script still parses (P1); a script that needs more than the arena
 //        fails with `shell.arena_exhausted` and class `resource` in every build (P2); a matrix of shapes
 //        each returns either a script or one of the documented bound errors, never anything else and
@@ -214,6 +214,32 @@ int main() {
         }
         check(a != nullptr, "A3 (control): the first spill inside the cap succeeds");
         check(second_threw && b == nullptr, "A3: a spill that would exceed the cap throws bad_alloc (the bound holds)");
+    }
+
+    {
+        // A7: one LARGE allocation past the block is refused, not spilled. A container's growth step can be
+        // most of an arena on its own (libstdc++ doubles: a 340,000-atom word asked for 12.6 MB in one go), so
+        // the total cap alone let a single step overshoot by that much -- P4 failed on gcc-14 CI. Refusing it
+        // is safe because it comes from a throwing context; the noexcept debug-proxy allocations are tiny, and
+        // must still succeed afterwards, or refusing the big one would reintroduce the abort.
+        alignas(64) static std::byte block[256];
+        ParseArena arena(block, sizeof block, std::size_t{64} << 20, 4096);
+        bool threw = false;
+        try {
+            (void)arena.allocate(8192, 8);  // over the 4096 per-allocation cap, far under the total
+        } catch (std::bad_alloc const&) {
+            threw = true;
+        }
+        check(threw, "A7: a single spill allocation over the per-allocation cap throws bad_alloc");
+        check(arena.exhausted() && arena.spilled_bytes() == 0,
+              "A7: ... it latches exhausted() and takes nothing from the spill");
+        void* from_noexcept = nullptr;
+        auto tiny = [&]() noexcept { from_noexcept = arena.allocate(24, 8); };
+        tiny();
+        check(from_noexcept != nullptr,
+              "A7: a small noexcept allocation after the refusal still succeeds (no abort reintroduced)");
+        void* at_cap = arena.allocate(4096, 8);
+        check(at_cap != nullptr, "A7 (control): an allocation exactly at the per-allocation cap spills");
     }
 
     {
