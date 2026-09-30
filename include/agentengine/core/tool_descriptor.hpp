@@ -123,7 +123,25 @@ struct ToolDescriptor {
     // per-call concurrency class. `exclusivity_group`/`parallelizable` together are the only two
     // ways a `ToolDescriptor` opts into anything other than the default fully-sequential class.
     bool parallelizable = false;
+
+    // decisions/ADR-212-deterministic-tool-output-declaration.md: `true` only when the tool declared
+    // `Deterministic` and `make_tool_descriptor<ToolT>()` built this descriptor around `ToolT::invoke`.
+    // Hand-built descriptors (MCP bridge, WASM, providers) leave it `false`: no source they are built
+    // from can express the claim (ADR-212 §3.4). Code that replaces `invoke` on an existing descriptor
+    // must clear it unless the wrapper returns the inner success value unchanged (§3.5). The engine
+    // never reads it; hosts use `rerun_comparable()` below. Appended last, this struct's own
+    // established convention.
+    bool deterministic = false;
 };
+
+// ADR-212 §3.3: whether a host may re-run this call on another node and compare the two successful
+// replies with `schema::json_value_equal`. `Tool<>` already rejects `Deterministic` without `pure` at
+// compile time; this repeats the rule for hand-built descriptors, which never pass through `Tool<>`,
+// and excludes session-state-capturing tools, whose hidden input a verifying node does not have.
+[[nodiscard]] inline bool rerun_comparable(ToolDescriptor const& d) noexcept {
+    return d.deterministic && d.effect_class == agentengine::effect_class::pure &&
+           !d.captures_session_state;
+}
 
 template <class ToolT>
 [[nodiscard]] ToolDescriptor make_tool_descriptor() {
@@ -136,6 +154,7 @@ template <class ToolT>
     d.effect_class = ToolT::declared_effect_class();
     d.exclusivity_group = ToolT::declared_exclusivity_group();
     d.parallelizable = ToolT::kHasParallelizable;
+    d.deterministic = ToolT::declared_deterministic();
     d.args_schema_json = ToolT::args_schema();
     d.reply_schema_json = ToolT::reply_schema();
     if (auto parsed = json::parse(d.args_schema_json)) {
@@ -173,6 +192,9 @@ template <class ToolT, class InvokeFn>
     d.effect_class = ToolT::declared_effect_class();
     d.exclusivity_group = ToolT::declared_exclusivity_group();
     d.parallelizable = ToolT::kHasParallelizable;
+    // ADR-212 §3.4: `custom_invoke` is not the code `Deterministic` describes, and it reads session
+    // state a verifying node does not have, so the claim does not carry over.
+    d.deterministic = false;
     d.args_schema_json = ToolT::args_schema();
     d.reply_schema_json = ToolT::reply_schema();
     if (auto parsed = json::parse(d.args_schema_json)) {

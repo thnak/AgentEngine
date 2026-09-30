@@ -775,6 +775,8 @@ public:
             // a wrapper never wraps a wrapper. A descriptor with no invoke is declaration-only;
             // wrapping it would turn a tool that was never callable into one that throws.
             if (!td.invoke) continue;
+            // ADR-212 §3.5: capping can make two different replies equal, so the claim does not survive.
+            td.deterministic = false;
             ToolDescriptor::InvokeFn inner = std::move(td.invoke);
             std::string tool_name = td.name;
             td.invoke = [inner = std::move(inner), tool_name = std::move(tool_name)](

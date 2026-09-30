@@ -54,6 +54,14 @@ struct ExclusivityGroup {  // ae-naming-lint: allow ExclusivityGroup — ADR-158
 // default every other undeclared policy in this file already has.
 struct Backgroundable {};  // ae-naming-lint: allow Backgroundable — 006 §6b names this concept normatively; 027 has not been updated to list it
 
+// decisions/ADR-212-deterministic-tool-output-declaration.md: "running this again returns the same
+// thing" -- orthogonal to `EffectClass` below, which says whether running it again is safe. Two
+// successful calls with equal Args, reading equal content through their granted capabilities, return
+// replies whose `schema::to_json` values are `json_value_equal` (ADR-212 §3.2). A declaration only: the
+// engine never reads it; `rerun_comparable()` (tool_descriptor.hpp) is the query a host uses. Requires
+// an explicit `EffectClass<pure>` (the static_assert in `Tool<>`, §3.3).
+struct Deterministic {};
+
 // Milliseconds, not a std::chrono duration NTTP: chrono durations typically keep their `rep` as a
 // private data member, which disqualifies them as C++20 structural types (the same constraint
 // ADR-009 hit for `cap::decl::*`) -- a plain integer avoids that portability question entirely,
@@ -97,10 +105,14 @@ struct policy_approval<Approval<M>> {
 
 template <class Policy>
 struct policy_effect_class {
+    static constexpr bool declared = false;
+    static constexpr effect_class value = effect_class::at_most_once;
     static std::optional<effect_class> get() { return std::nullopt; }
 };
 template <effect_class C>
 struct policy_effect_class<EffectClass<C>> {
+    static constexpr bool declared = true;
+    static constexpr effect_class value = C;
     static std::optional<effect_class> get() { return C; }
 };
 
@@ -123,6 +135,16 @@ struct policy_backgroundable<Backgroundable> {
 // this project's own "reject outright, never silently narrow" precedent, e.g.
 // `reject_embedded_nul()`) -- both as `static constexpr` values usable inside a fold in a
 // `static_assert`, not merely at runtime.
+// ADR-212: constexpr, like `policy_is_parallelizable` below, because `Tool<>`'s static_assert reads it.
+template <class Policy>
+struct policy_is_deterministic {
+    static constexpr bool value = false;
+};
+template <>
+struct policy_is_deterministic<Deterministic> {
+    static constexpr bool value = true;
+};
+
 template <class Policy>
 struct policy_is_parallelizable {
     static constexpr bool value = false;
@@ -197,6 +219,32 @@ struct Tool {
                   "ADR-158: a tool may declare at most one ExclusivityGroup<Name> -- see "
                   "decisions/ADR-158-tool-concurrency-exclusivity-policy.md §5");
 
+    // ADR-212 §3.3: `Deterministic` is only ever checked by running the call again, and only a
+    // `pure` tool may be re-run freely on another node: `at_most_once` needs operator acknowledgement
+    // (019 §6), and an `idempotent` re-run is only safe under the original idempotency key, which a
+    // verifying node does not get (effect_context.hpp's `idempotency_key` note) -- and would only
+    // replay the stored first reply if it did. So the claim needs an explicitly declared `pure`; the
+    // undeclared default is `at_most_once`. Same lambda-fold idiom as above; last declared
+    // `EffectClass` wins, matching `declared_effect_class()`.
+    static constexpr bool kHasDeterministic = [] {
+        bool has = false;
+        ([&has] {
+            if (tool_detail::policy_is_deterministic<Policies>::value) has = true;
+        }(), ...);
+        return has;
+    }();
+    static constexpr effect_class kEffectClass = [] {
+        effect_class cls = effect_class::at_most_once;
+        ([&cls] {
+            if (tool_detail::policy_effect_class<Policies>::declared)
+                cls = tool_detail::policy_effect_class<Policies>::value;
+        }(), ...);
+        return cls;
+    }();
+    static_assert(!kHasDeterministic || kEffectClass == effect_class::pure,
+                  "ADR-212: a Deterministic tool must declare EffectClass<effect_class::pure> -- see "
+                  "decisions/ADR-212-deterministic-tool-output-declaration.md §3.3");
+
     [[nodiscard]] static std::string args_schema() {
         return schema::json_schema_of<typename Derived::Args>();
     }
@@ -250,6 +298,9 @@ struct Tool {
         }(), ...);
         return backgroundable;
     }
+
+    // ADR-212: `false` unless the tool declared `Deterministic`.
+    [[nodiscard]] static constexpr bool declared_deterministic() noexcept { return kHasDeterministic; }
 
     // decisions/ADR-158-tool-concurrency-exclusivity-policy.md §4: `std::nullopt` if the tool
     // declared no `ExclusivityGroup<Name>` (including every tool that instead declares bare

@@ -137,6 +137,7 @@ word is free, and we take it. §5 records the collision so nobody re-imports the
 | **`Principal`** | The authenticated identity a run executes on behalf of (007) | **ours** |
 | **`EffectContext`** | The mandatory attribution parameter carried into every effect (007, I4) | **ours** |
 | **`EffectClass<C>`** / `effect_class` | A tool's declared repeat-safety for exactly-once effects — `pure` / `idempotent` / `at_most_once` (006 §1, 019 §3, §6) | **ours** |
+| **`Deterministic`** | A tool's declared output equality: equal `Args` and equal content read through its capabilities give `json_value_equal` replies. Orthogonal to `EffectClass`; requires `EffectClass<pure>` (006 §1, ADR-212) | **ours** |
 | **`Handoff`** | `Handoff<Writer>` exposes another agent as a tool that transfers control of the run to it (002 §4) | MAF (`HandoffBuilder`, verified: `agent_framework_orchestrations/_handoff.py`) |
 | **`Sandbox`** / **`Profile`** | An isolation boundary instance / a named backend + limits configuration (008) | **ours** |
 | **`Worktree`** | The session's content-addressed virtual disk (025) | **ours** |

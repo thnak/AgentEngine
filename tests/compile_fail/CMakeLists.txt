@@ -231,6 +231,27 @@ agentengine_compile_fail_test(tool_rejects_duplicate_exclusivity_group
   EXPECT "at most one ExclusivityGroup"
   LIBS agentengine::core)
 
+# ---- ADR-212 compile-fail proofs (Deterministic needs an explicit EffectClass<pure>, §3.3) -------
+# `Tool<Derived, Policies...>` must reject `Deterministic` with no `EffectClass` (the default is
+# at_most_once), with `at_most_once`, and with `idempotent` (a verifying node has no idempotency key).
+# tests/core/tools/test_tool_deterministic.cpp compiles `Deterministic` with `pure` in either tag
+# order and is the CONTROL, the same arrangement as the ADR-158 pair above.
+agentengine_compile_fail_test(tool_rejects_deterministic_without_effect_class
+  SOURCE tool_rejects_deterministic_without_effect_class.cpp
+  CONTROL test_tool_deterministic
+  EXPECT "must declare EffectClass"
+  LIBS agentengine::core)
+agentengine_compile_fail_test(tool_rejects_deterministic_at_most_once
+  SOURCE tool_rejects_deterministic_at_most_once.cpp
+  CONTROL test_tool_deterministic
+  EXPECT "must declare EffectClass"
+  LIBS agentengine::core)
+agentengine_compile_fail_test(tool_rejects_deterministic_idempotent
+  SOURCE tool_rejects_deterministic_idempotent.cpp
+  CONTROL test_tool_deterministic
+  EXPECT "must declare EffectClass"
+  LIBS agentengine::core)
+
 # ---- ADR-071 compile-fail proof (native-execution family distinctness) -------------------------
 # `NativeCapabilityAnnouncer<Ps...>` (src/backends/native_process/native_capability_announcer.hpp)
 # must reject composing two providers sharing the same declared family name (e.g. two

@@ -57,6 +57,16 @@ struct WebSearch : Tool<WebSearch,
   `include/agentengine/core/tool.hpp` and `tool_pipeline.hpp`; `authorize_reexecution()`'s three-way
   gate in `tool_pipeline.hpp`; all three cases covered end-to-end, including the undeclared-default
   case, by `tests/core/tools/test_effect_reexecution.cpp`.
+- **`Deterministic` declares output equality**, which `EffectClass` does not: a `pure` tool may still
+  sample, read a clock or iterate an unordered container. The claim is that two successful calls with
+  equal `Args`, reading equal content through their granted capabilities, return replies whose
+  `schema::to_json` values are `json_value_equal`. It is a declaration only — the engine never reads
+  it — and exists so a host can re-run a call elsewhere and compare (`rerun_comparable()`). It
+  requires an explicit `EffectClass<effect_class::pure>`: `at_most_once` may not be re-run and an
+  `idempotent` re-run on another node has no idempotency key, so `Tool<>` rejects any other pairing
+  at compile time. Absent by default. Tools from MCP servers and WASM plugins cannot express it and
+  are never deterministic. `decisions/ADR-212-deterministic-tool-output-declaration.md`;
+  `tests/core/tools/test_tool_deterministic.cpp` and three `tests/compile_fail/` gates.
 
 ## 2. Tool sources
 
