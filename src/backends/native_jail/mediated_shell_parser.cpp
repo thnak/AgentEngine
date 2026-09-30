@@ -20,6 +20,11 @@ result<void> too_large(char const* code) {
 result<void> malformed(std::string message) {
     return std::unexpected(error{failure_class::contract, std::move(message), "shell.parse_error"});
 }
+// The one error for "this script needs more than the arena" -- from a checkpoint, from `parse()`'s final
+// check, or from a real allocation failure. Same code in every build type (issue #147).
+error arena_exhausted_error() {
+    return error{failure_class::resource, "shell script exceeds this parser's bounded arena", "shell.arena_exhausted"};
+}
 
 bool is_word_delimiter(char c) {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == ';' || c == '&' || c == '|' || c == '<' ||
@@ -39,7 +44,7 @@ struct Token {
 // token) -- an adversarial 10 MB input is rejected here, before any AST node is ever allocated.
 class Lexer {
 public:
-    Lexer(std::string_view src, std::pmr::memory_resource* mr) : src_(src), mr_(mr) {}
+    Lexer(std::string_view src, ParseArena* arena) : src_(src), mr_(arena), arena_(arena) {}
 
     result<std::vector<Token>> lex() {
         if (src_.size() > kMaxSourceBytes) return std::unexpected(too_large("shell.source_too_large").error());
@@ -51,6 +56,7 @@ public:
                 break;
             }
             if (tokens.size() >= kMaxTokens) return std::unexpected(too_large("shell.too_many_tokens").error());
+            if (arena_->exhausted()) return std::unexpected(arena_exhausted_error());
             char c = src_[pos_];
             if (c == ';') { tokens.push_back({token_kind::semi, {}}); ++pos_; continue; }
             if (c == '|') {
@@ -117,6 +123,7 @@ private:
         };
         bool consumed_anything = false;
         while (pos_ < src_.size() && !is_word_delimiter(src_[pos_])) {
+            if (arena_->exhausted()) return std::unexpected(arena_exhausted_error());
             consumed_anything = true;
             char c = src_[pos_];
             if (c == '\'') {
@@ -179,6 +186,7 @@ private:
 
     std::string_view src_;
     std::pmr::memory_resource* mr_;
+    ParseArena* arena_;
     std::size_t pos_ = 0;
 };
 
@@ -188,7 +196,7 @@ private:
 // error return -- still decrements.
 class Parser {
 public:
-    Parser(std::vector<Token> tokens, std::pmr::memory_resource* mr) : tokens_(std::move(tokens)), mr_(mr) {}
+    Parser(std::vector<Token> tokens, ParseArena* arena) : tokens_(std::move(tokens)), mr_(arena), arena_(arena) {}
 
     result<ScriptNode> parse_script() {
         std::pmr::vector<StatementNode*> statements(mr_);
@@ -209,6 +217,10 @@ private:
         ~DepthGuard() { --*depth; }
     };
 
+    // Polled at the head of every loop that consumes tokens and every production, so an exhausted arena
+    // ends the parse within a step instead of continuing into the spill (issue #147).
+    [[nodiscard]] bool arena_full() const noexcept { return arena_->exhausted(); }
+
     bool at(token_kind k) const { return tokens_[pos_].kind == k; }
     bool at_word(std::string_view literal) const {
         if (!at(token_kind::word)) return false;
@@ -228,6 +240,7 @@ private:
     }
 
     result<StatementNode*> parse_statement() {
+        if (arena_full()) return std::unexpected(arena_exhausted_error());
         if (at_word("if")) {
             auto n = parse_if();
             if (!n) return std::unexpected(n.error());
@@ -279,6 +292,7 @@ private:
         advance();
         std::pmr::vector<Word> items(mr_);
         while (at(token_kind::word) && !at_word("do")) {
+            if (arena_full()) return std::unexpected(arena_exhausted_error());
             items.push_back(Word{tokens_[pos_].atoms});
             advance();
         }
@@ -322,6 +336,7 @@ private:
         std::pmr::vector<bool> is_and(mr_);
         pipelines.push_back(std::move(*first));
         for (;;) {
+            if (arena_full()) return std::unexpected(arena_exhausted_error());
             bool and_next;
             if (at(token_kind::amp_amp)) and_next = true;
             else if (at(token_kind::pipe_pipe)) and_next = false;
@@ -341,6 +356,7 @@ private:
         if (!first) return std::unexpected(first.error());
         commands.push_back(std::move(*first));
         while (at(token_kind::pipe)) {
+            if (arena_full()) return std::unexpected(arena_exhausted_error());
             advance();
             auto next = parse_simple_command();
             if (!next) return std::unexpected(next.error());
@@ -389,6 +405,7 @@ private:
         std::pmr::vector<Redirect> redirects(mr_);
 
         while (at(token_kind::word) && !at_reserved_keyword()) {
+            if (arena_full()) return std::unexpected(arena_exhausted_error());
             Word w{tokens_[pos_].atoms};
             if (words.empty()) {
                 if (auto assign = try_split_assignment(w, mr_)) {
@@ -403,6 +420,7 @@ private:
         }
         while ((at(token_kind::word) && !at_reserved_keyword()) || at(token_kind::redirect_in) ||
                at(token_kind::redirect_out) || at(token_kind::redirect_append)) {
+            if (arena_full()) return std::unexpected(arena_exhausted_error());
             if (at(token_kind::word)) {
                 words.push_back(Word{tokens_[pos_].atoms});
                 advance();
@@ -423,6 +441,7 @@ private:
 
     std::vector<Token> tokens_;
     std::pmr::memory_resource* mr_;
+    ParseArena* arena_;
     std::size_t pos_ = 0;
     std::size_t depth_ = 0;
 };
@@ -432,29 +451,31 @@ private:
 result<ParsedScript> parse(std::string_view source) {
     ParsedScript out;
     out.arena_storage = std::make_unique<std::byte[]>(kArenaBytes);
-    // `null_memory_resource()` upstream: once the fixed arena is exhausted, an allocation THROWS
-    // rather than silently growing onto the ordinary heap -- exactly the bounded-arena property
-    // ADR-001 §2.5.6 required, carried forward as a design finding. Caught below and turned into an
-    // ordinary `result<>` error at this function's own boundary (CONVENTIONS.md: no exceptions for
-    // control flow) -- everything upstream of this one catch stays exception-free.
-    out.resource = std::make_unique<std::pmr::monotonic_buffer_resource>(
-        out.arena_storage.get(), kArenaBytes, std::pmr::null_memory_resource());
+    // A bounded arena that does not THROW on exhaustion (ParseArena, mediated_shell_parser.hpp; issue #147):
+    // an allocation past the block spills, latches `exhausted()`, and the lexer/parser fail the parse at their
+    // next poll. The bound ADR-001 §2.5.6 required still holds -- the parse fails, and the spill is capped --
+    // but no allocation site can be the one that aborts the process.
+    out.resource = std::make_unique<ParseArena>(out.arena_storage.get(), kArenaBytes, kArenaSpillBytes);
 
+    // The one remaining catch is for the spill CAP and a real heap failure -- both throw from a throwing
+    // context in every build type this parser is used in. Everything upstream stays exception-free
+    // (CONVENTIONS.md: no exceptions for control flow).
     try {
         Lexer lexer(source, out.resource.get());
         auto tokens = lexer.lex();
         if (!tokens) return std::unexpected(tokens.error());
+        // A script that only just fit is not an error; one that needed the spill is, even if no poll caught it.
+        if (out.resource->exhausted()) return std::unexpected(arena_exhausted_error());
 
         Parser parser(std::move(*tokens), out.resource.get());
         auto script = parser.parse_script();
         if (!script) return std::unexpected(script.error());
+        if (out.resource->exhausted()) return std::unexpected(arena_exhausted_error());
 
         out.script = std::move(*script);
         return out;
     } catch (std::bad_alloc const&) {
-        return std::unexpected(error{failure_class::resource,
-                                      "shell script exceeds this parser's bounded arena",
-                                      "shell.arena_exhausted"});
+        return std::unexpected(arena_exhausted_error());
     }
 }
 

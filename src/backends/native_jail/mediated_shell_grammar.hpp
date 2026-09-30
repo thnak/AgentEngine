@@ -47,6 +47,16 @@ inline constexpr std::size_t kMaxTokens = 50'000;
 inline constexpr std::size_t kMaxNestingDepth = 32;                    // shared across if/for, sum not max
 inline constexpr std::size_t kBytesPerNodeUpperBound = 256;
 inline constexpr std::size_t kArenaBytes = kMaxTokens * kBytesPerNodeUpperBound;
+// GitHub issue #147. The most `ParseArena` (mediated_shell_parser.hpp) will hand out past `kArenaBytes`
+// before an allocation throws. Past the arena the parse is already failing (`shell.arena_exhausted`, at the
+// next checkpoint); this only bounds the overshoot BETWEEN checkpoints. It is a bound, not a budget.
+inline constexpr std::size_t kArenaSpillBytes = kArenaBytes;
+// The largest SINGLE allocation `ParseArena` serves from the spill; a larger one throws `bad_alloc`. The
+// spill exists for the small allocations made from `noexcept` code (MSVC's debug container proxies, 16
+// bytes each). A large request is always a container growing, which may throw and is caught by `parse()`.
+// Without this, one growth step was the overshoot: a 340,000-atom word's atom vector doubling to 262,144
+// elements asked for 12.6 MB in one allocation on libstdc++, and got it (block + spill = 25.4 MB).
+inline constexpr std::size_t kArenaSpillChunkBytes = std::size_t{64} << 10;
 
 enum class word_atom_kind { literal, var_ref, quoted };
 
