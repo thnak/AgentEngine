@@ -187,6 +187,18 @@ std::string match_name(int m) {
     return "?";
 }
 
+// The raw per-pid reads (liveness, start key, start ticks) are compared new, old, new: a pid that exits or
+// is reused between two reads changes the value, and once a child is reaped Windows hands its pid out
+// again at once. The old read must equal one of the new reads either side of it, so one change in the
+// middle is tolerated while an implementation that differs from the oracle still fails every time.
+template <class New, class Old>
+bool agree_across_reuse(New read_new, Old read_old) {
+    auto const before = read_new();
+    auto const oracle = read_old();
+    if (oracle == before) return true;
+    return oracle == read_new();
+}
+
 // Returns the new docker result so callers can also assert the expected value.
 int diff_identity(long pid, std::uint64_t key, std::string const& label) {
     ++g_identity_checks;
@@ -195,8 +207,10 @@ int diff_identity(long pid, std::uint64_t key, std::string const& label) {
     int const got_shared = static_cast<int>(pi::check_process_identity(pid, key));
     check(got == want, "docker check_process_identity " + label + " new=" + match_name(got) + " old=" + match_name(want));
     check(got_shared == want, "shared check_process_identity " + label);
-    check(docker::process_is_alive(pid) == old_docker::process_is_alive(pid), "docker process_is_alive " + label);
-    check(docker::process_start_key_for(pid) == old_docker::process_start_key_for(pid),
+    check(agree_across_reuse([&] { return docker::process_is_alive(pid); }, [&] { return old_docker::process_is_alive(pid); }),
+          "docker process_is_alive " + label);
+    check(agree_across_reuse([&] { return docker::process_start_key_for(pid); },
+                             [&] { return old_docker::process_start_key_for(pid); }),
           "docker process_start_key_for " + label);
 #ifndef _WIN32
     ++g_identity_checks;
@@ -204,11 +218,16 @@ int diff_identity(long pid, std::uint64_t key, std::string const& label) {
     int const got_ctr = static_cast<int>(ctr::check_process_identity(pid, key));
     check(got_ctr == want_ctr, "ctr check_process_identity " + label + " new=" + match_name(got_ctr) +
                                    " old=" + match_name(want_ctr));
-    check(ctr::process_is_alive(pid) == old_ctr::process_is_alive(pid), "ctr process_is_alive " + label);
-    check(ctr::process_start_key_for(pid) == old_ctr::process_start_key_for(pid), "ctr process_start_key_for " + label);
-    check(ctr::read_process_start_ticks(pid) == old_ctr::read_process_start_ticks(pid),
+    check(agree_across_reuse([&] { return ctr::process_is_alive(pid); }, [&] { return old_ctr::process_is_alive(pid); }),
+          "ctr process_is_alive " + label);
+    check(agree_across_reuse([&] { return ctr::process_start_key_for(pid); },
+                             [&] { return old_ctr::process_start_key_for(pid); }),
+          "ctr process_start_key_for " + label);
+    check(agree_across_reuse([&] { return ctr::read_process_start_ticks(pid); },
+                             [&] { return old_ctr::read_process_start_ticks(pid); }),
           "ctr read_process_start_ticks " + label);
-    check(docker::read_process_start_ticks(pid) == old_docker::read_process_start_ticks(pid),
+    check(agree_across_reuse([&] { return docker::read_process_start_ticks(pid); },
+                             [&] { return old_docker::read_process_start_ticks(pid); }),
           "docker read_process_start_ticks " + label);
 #endif
     return got;
