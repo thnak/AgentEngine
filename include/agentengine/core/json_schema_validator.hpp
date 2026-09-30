@@ -148,6 +148,10 @@ namespace detail {
 
 }  // namespace detail
 
+// decisions/ADR-212-deterministic-tool-output-declaration.md §3.2 defines a `Deterministic` tool's
+// "same reply" as this equality, so a host comparing two replies needs it outside `detail`.
+using detail::json_value_equal;
+
 // Checks the SCHEMA DOCUMENT ITSELF for structural validity -- 015 §7 G2's own gate ("a negative
 // corpus including cyclic $ref is rejected with precise diagnostics"). Unlike `validate_instance()`
 // below, this has no instance to bound recursion against, so cycle detection here is load-bearing,

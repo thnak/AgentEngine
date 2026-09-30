@@ -44,6 +44,11 @@ agentengine_add_test(test_tool_pipeline LIBS agentengine::core agentengine_warni
 # matching Parallelizable's own existing state -- 006 §8 G4 is still deferred). Header-only.
 agentengine_add_test(test_tool_exclusivity_group LIBS agentengine::core agentengine_warnings)
 
+# ---- ADR-212 (issue #81): the Deterministic tag, ToolDescriptor::deterministic, rerun_comparable()
+# and the declarative by-name path carrying it. Header-only. Positive control for the two
+# tool_rejects_deterministic_* compile-fail gates.
+agentengine_add_test(test_tool_deterministic LIBS agentengine::core agentengine_warnings)
+
 # ---- ADR-160: 006 §8 G4's parallel-batch scheduler -- partition_batch() in isolation, no I/O, no --
 # AgentSession. Header-only (core/tool_pipeline.hpp).
 agentengine_add_test(test_tool_batch_partition LIBS agentengine::core agentengine_warnings)

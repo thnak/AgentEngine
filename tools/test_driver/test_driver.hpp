@@ -377,6 +377,8 @@ private:
 // error before the model or any event sees it, and records the outcome the session actually got.
 [[nodiscard]] inline ToolDescriptor recording_tool(ToolDescriptor d, std::shared_ptr<RealToolLog> log,
                                                    std::shared_ptr<RealToolSandbox> keep_alive) {
+    // `d.deterministic` is kept (ADR-212 §3.5): a success passes through unchanged, and anything
+    // replaced here becomes an error, which is never compared.
     ToolDescriptor::InvokeFn inner = std::move(d.invoke);
     std::string const name = d.name;
     d.invoke = [inner = std::move(inner), log, keep_alive, name](Value const& args, EffectContext& ctx) -> result<Value> {
@@ -433,6 +435,8 @@ private:
 // Replay mode (ADR-208 §2.5): the same descriptor, whose invoke serves the recording and touches nothing.
 [[nodiscard]] inline ToolDescriptor double_tool(ToolDescriptor d, std::shared_ptr<RealToolLog> log) {
     std::string const name = d.name;
+    // ADR-212 §3.5: a replay serves the recording, not the tool, so it cannot stand in for a re-run.
+    d.deterministic = false;
     d.invoke = [log, name](Value const& args, EffectContext& ctx) -> result<Value> {
         auto served = log->serve(name, json::dump(args));
         if (auto const* e = std::get_if<error>(&served)) return std::unexpected(*e);
