@@ -24,12 +24,17 @@
 //       kept, and the next check point retries it.
 //   P13 the destructor releases a held environment.
 //   P14 composed: inside ComposedContextProvider the run-end hook still reaches the provider (C10).
+//   P10b a delegate on_behalf_of the owner is refused in the owner's OPEN shell (C6: owner-only RunCost).
+//   P15 C4: a real AgentSession run CANCELED between turns keeps every shell_exec that returned.
+//   P16 C4: a run whose next model call FAILS keeps the shell_exec before it.
 //
 // Positive controls (planted by hand, recorded in ADR-209 §15): dropping check_lifetime() from on_run_end
 // fails P3 and P14; an open hook that does not charge LiveShellOpen fails P6; dropping the lost-shell
-// fallback mapping fails P8; dropping reset_to_turn()'s snapshot mapping fails P7.
+// fallback mapping fails P8; dropping reset_to_turn()'s snapshot mapping fails P7; run_live() without the RunCost
+// gate fails P10/P10b (C6); run_live() that "defers" its commit (never commits) fails P15/P16 (C4).
 
 #include "agentengine/core/composed_context_provider.hpp"
+#include "agentengine/rt/agent_session.hpp"
 #include "agentengine/sandbox/live_shell_sandbox_provider.hpp"
 
 #include <algorithm>
@@ -209,8 +214,9 @@ template <class Provider>
 // Calls shell_exec through the real descriptor (schema parse included). Returns the reply or the error.
 template <class Provider>
 [[nodiscard]] result<ShellExecReply> shell(Provider& p, std::string const& command, std::string const& who = "owner",
-                                           bool restart = false) {
+                                           bool restart = false, std::string const& on_behalf_of = {}) {
     EffectContext ctx = ctx_for(who);
+    ctx.principal.on_behalf_of = on_behalf_of;
     auto tool = shell_tool(p, ctx);
     if (!tool.has_value()) return std::unexpected(error{failure_class::contract, "no shell_exec tool", "test.no_tool"});
     std::vector<std::pair<std::string, json::Value>> members{{"command", json::Value::make_string(command)}};
@@ -284,6 +290,90 @@ public:
     task<result<ContextContribution>> on_context(SessionContext&, EffectContext&) { co_return ContextContribution{}; }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
 };
+
+// ---- C4: a real AgentSession, a scripted model. ---------------------------------------------------------------------
+rt::AgentSessionCore* g_cancel_target = nullptr;
+struct NoArgs {
+    int unused = 0;
+};
+AE_JSON_SCHEMA(NoArgs, unused)
+struct CancelTool : Tool<CancelTool, Capabilities<>, EffectClass<effect_class::pure>> {
+    static constexpr std::string_view name = "cancel_tool";
+    static constexpr std::string_view description = "Cancels the run.";
+    using Args = NoArgs;
+    using Reply = NoArgs;
+    static result<Reply> invoke(Args a, EffectContext&) {
+        if (g_cancel_target != nullptr) g_cancel_target->cancel();
+        return a;
+    }
+};
+class CancelProvider {
+public:
+    static constexpr std::string_view name = "cancel_provider";
+    task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext&) {
+        ContextContribution c;
+        c.messages.assign(sc.history.begin(), sc.history.end());
+        c.tools = ToolTable::from_tools<CancelTool>().descriptors();
+        co_return c;
+    }
+    task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
+};
+
+struct Step {
+    std::optional<Message> message;
+    std::optional<error> failure;
+};
+class Client {
+public:
+    Client() : state_(std::make_shared<State>()) {}
+    struct State {
+        std::vector<Step> script;
+        std::size_t calls = 0;
+    };
+    void set_script(std::vector<Step> s) { state_->script = std::move(s); }
+    [[nodiscard]] ChatClientCapabilities capabilities() const { return {}; }
+    task<result<ChatResponse>> chat(ChatRequest, EffectContext&) {
+        std::size_t const idx = state_->calls < state_->script.size() ? state_->calls : state_->script.size() - 1;
+        ++state_->calls;
+        Step const& s = state_->script[idx];
+        if (s.failure) co_return std::unexpected(*s.failure);
+        co_return ChatResponse{*s.message, Usage{1, 1, 0, 0, 0.0}};
+    }
+    [[nodiscard]] stream<ChatResponseUpdate> chat_stream(ChatRequest, EffectContext&) { return {}; }
+
+private:
+    std::shared_ptr<State> state_;
+};
+
+[[nodiscard]] Message tool_calls(std::vector<std::pair<std::string, std::string>> calls) {
+    Message m;
+    m.role = role::assistant;
+    int n = 0;
+    for (auto& [tool, args] : calls) {
+        ContentItem item;
+        item.origin = content_origin::assistant;
+        ToolCall c;
+        c.call_id = "c" + std::to_string(++n);
+        c.tool_name = tool;
+        c.arguments_json = args;
+        c.provenance = call_provenance::vendor_structured;
+        item.value = c;
+        m.content.push_back(item);
+    }
+    return m;
+}
+[[nodiscard]] Message user_text(std::string t) {
+    Message m;
+    m.role = role::user;
+    ContentItem item;
+    item.origin = content_origin::user;
+    item.value = Text{std::move(t)};
+    m.content.push_back(item);
+    return m;
+}
+
+using LiveComposed = ComposedContextProvider<PerRunProvider, CancelProvider>;
+using LiveSession = rt::AgentSession<Client, rt::NoSessionState, LiveComposed>;
 
 }  // namespace
 
@@ -437,6 +527,16 @@ int main() {
         check(!r.has_value() && r.error().code == "async_quota.unauthorized_spender" && w.counters->opens == 0 &&
                   w.counters->execs == 0,
               "P10: a non-owner principal is refused before anything opens or runs");
+        // P10b: a delegate acting on_behalf_of the owner is a different identity -- and would pass the Ledger's
+        // ancestry-aware ACL -- so the owner-only RunCost is what refuses it (C6's control: drop that gate and the
+        // delegate's command runs).
+        // The owner's shell is OPEN first, so no open (and no owner-only LiveShellOpen charge) stands in the way.
+        auto own = shell(p, "noop");
+        int const execs_before = w.counters->execs;
+        auto d = shell(p, "write delegated.txt x", "delegate", false, "owner");
+        check(own.has_value() && !d.has_value() && d.error().code == "async_quota.unauthorized_spender" &&
+                  w.counters->execs == execs_before,
+              "P10b: a delegate on_behalf_of the owner is refused before anything runs in the owner's open shell (C6)");
     }
 
     // ---- P11
@@ -499,6 +599,53 @@ int main() {
         check(r.has_value() && r->ok && w.counters->opens == 1, "P14 setup: shell_exec through the composition");
         run_end(composed);
         check(w.counters->closes == 1, "P14: run end reaches a COMPOSED live shell and releases it");
+    }
+
+    // ---- P15, P16 (C4): nothing a returned shell_exec reported is lost on any run exit.
+    {
+        CapabilitySet const held = CapabilitySet::grant_root({Capability{cap::RunCommand{}}});
+        auto head_has = [](World& w, std::string const& branch, std::string const& name) {
+            auto head = w.ledger.head_checkpoint(branch, w.owner);
+            return head.has_value() && tree_has(w.ledger, head->tree, w.owner, name);
+        };
+        // P15: shell_exec, then the run is CANCELED between turns.
+        {
+            World w("p15");
+            PerRunProvider live;
+            check(w.bind(live).has_value(), "P15 setup: bind");
+            std::string const branch = *live.branch_name();
+            LiveSession s;
+            s.initialize("p15", Principal{"owner", ""});
+            s.set_capabilities(&held);
+            check(s.history_provider().engage(std::tuple<PerRunProvider, CancelProvider>{std::move(live), CancelProvider{}}).has_value(),
+                  "P15 setup: engage");
+            s.emplace_chat_client().set_script(
+                {Step{tool_calls({{"shell_exec", R"({"command":"write kept.txt k"})"}, {"cancel_tool", R"({"unused":0})"}}), {}},
+                 Step{tool_calls({{"shell_exec", R"({"command":"write never.txt n"})"}}), {}}});
+            g_cancel_target = &s;
+            auto r = drive(s.start_run(rt::StartRun{user_text("go")}));
+            g_cancel_target = nullptr;
+            check(!r.has_value() && head_has(w, branch, "kept.txt") && !head_has(w, branch, "never.txt"),
+                  "P15: a run canceled between turns keeps every shell_exec that returned (C4)");
+            check(w.counters->closes == 1, "P15: ... and its run end released the shell");
+        }
+        // P16: shell_exec, then the next model call FAILS the run.
+        {
+            World w("p16");
+            PerRunProvider live;
+            check(w.bind(live).has_value(), "P16 setup: bind");
+            std::string const branch = *live.branch_name();
+            LiveSession s;
+            s.initialize("p16", Principal{"owner", ""});
+            s.set_capabilities(&held);
+            check(s.history_provider().engage(std::tuple<PerRunProvider, CancelProvider>{std::move(live), CancelProvider{}}).has_value(),
+                  "P16 setup: engage");
+            s.emplace_chat_client().set_script(
+                {Step{tool_calls({{"shell_exec", R"({"command":"write kept.txt k"})"}}), {}},
+                 Step{std::nullopt, error{failure_class::transient, "backend down", "test.backend_down"}}});
+            auto r = drive(s.start_run(rt::StartRun{user_text("go")}));
+            check(!r.has_value() && head_has(w, branch, "kept.txt"), "P16: a run that FAILS after a shell_exec keeps its write (C4)");
+        }
     }
 
     std::printf("\n%d checks, %d failed\n", g_checks, g_failed);

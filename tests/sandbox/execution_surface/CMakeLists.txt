@@ -147,3 +147,9 @@ agentengine_add_test(test_docker_header_no_os_headers LIBS agentengine::core age
 # REQUIRES a running Docker daemon reachable via docker on PATH -- in ci.yml's daemon exclusion lists.
 agentengine_add_test(test_docker_persistent_shell_surface LIBS agentengine::core agentengine_warnings)
 set_tests_properties(test_docker_persistent_shell_surface PROPERTIES TIMEOUT 600 RESOURCE_LOCK docker_daemon)
+
+# ADR-209 step 8 (issue #146): LiveShellSandboxProvider over DockerPersistentShellSurface end to end -- C1 (venv), C2,
+# C3, C7, C12, C16 live. REQUIRES a running Docker daemon -- in ci.yml's daemon exclusion lists.
+agentengine_add_test(test_live_shell_sandbox_provider_live
+  LIBS agentengine::core agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+set_tests_properties(test_live_shell_sandbox_provider_live PROPERTIES TIMEOUT 620 RESOURCE_LOCK docker_daemon)

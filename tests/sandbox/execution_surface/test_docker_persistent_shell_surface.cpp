@@ -14,7 +14,8 @@
 //       and host memory bounded; a NUL is refused before anything runs; a 64 KiB command runs.
 //   V4  `exit` in a command loses the shell (shell_lost), the container stays, and a re-open works.
 //   V5  deadline (C7): a command past its deadline is reported timed_out + shell_lost, its output so far is
-//       returned, PID 1 (the keeper) is still alive, and files written before the kill are drained.
+//       returned, PID 1 (the keeper) is still alive, no process the command started is still running (a killed
+//       one may remain a zombie until the keeper's next reap tick), and files written before the kill are drained.
 //   V6  the model's own `kill -KILL -1` loses the shell, never the container (PID 1 survives).
 //   V7  pid exhaustion (C7): a fork bomb at the pids limit past its deadline ends as container_lost (the kill
 //       exec cannot start) or, if a pid frees up for it, shell_lost with PID 1 alive -- never a hang, never a
@@ -29,8 +30,11 @@
 //
 // Positive controls (planted by hand, recorded in ADR-209 §15): PID 1 = `sleep infinity` (the Tier 0 shape)
 // fails V6b -- it does NOT fail V6, because busybox `sh -c` execs its last command and the kernel shields any
-// PID 1 from an in-namespace SIGKILL, so reaping is what the keeper adds; reusing the container in open() fails V8; sourcing without the
-// `sh -n` pre-check fails V3's unbalanced-quote case (the shell exits).
+// PID 1 from an in-namespace SIGKILL, so reaping is what the keeper adds; reusing the container in open() fails V8;
+// sourcing without the `sh -n` pre-check fails V3's unbalanced-quote case (the shell exits); killing only the host-side
+// `docker exec` client (no in-container `kill -KILL -1`) fails V5's survivor check; passing the snapshot cwd as the
+// server's `-w` fails V10. A fork-bomb tail of `sleep 60` made V7 flaky (`sleep` itself can fail to fork); it is a
+// builtin busy loop now.
 
 #include "agentengine/sandbox/docker_persistent_shell_surface.hpp"
 
@@ -195,6 +199,12 @@ int main() {
         check(r.has_value() && r->output.find("started") != std::string::npos,
               "V5: ... with the output it printed before the kill (" + (r ? show(r->output) : "error") + ")");
         check(container_running(id), "V5: PID 1 survived the in-container kill (the container still runs)");
+        // Count LIVE `sleep`s only: a killed one is a zombie ([sleep]) until the keeper's next reap tick (<= 5 s).
+        auto ps = docker_cli_detail::run_argv(
+            {"docker", "exec", id, "sh", "-c", "ps -o stat= -o comm= | awk '$1 !~ /^Z/ && $2 == \"sleep\"' | wc -l"}, 30);
+        check(ps.exit_code == 0 && ps.stdout_text.find_first_not_of(" \t") != std::string::npos &&
+                  ps.stdout_text[ps.stdout_text.find_first_not_of(" \t")] == '0',
+              "V5: no process the command started survives the timeout (C7; got " + show(ps.stdout_text) + ")");
         fs::path const drained = fs::temp_directory_path() / "ae_test_dps_drain";
         fs::remove_all(drained, ec);
         auto d = surface.drain_to(drained);
@@ -224,7 +234,9 @@ int main() {
     {
         auto re = surface.open(host, nullptr);
         std::string const id = surface.container_id();
-        auto r = x("bomb() { bomb | bomb & }; bomb; sleep 60", 5s);
+        // The tail is a builtin busy loop, not `sleep 60`: under pid exhaustion `sleep` itself can fail to fork and
+        // end the command early, which made this check flaky (measured during ADR-209 step 8).
+        auto r = x("bomb() { bomb | bomb & }; bomb; while :; do :; done", 5s);
         check(re.has_value() && r.has_value() && r->timed_out, "V7: a fork bomb runs into its deadline");
         bool const outcome_ok = r.has_value() && ((r->container_lost && !container_exists(id)) ||
                                                   (r->shell_lost && !r->container_lost && container_running(id)));
