@@ -62,6 +62,17 @@ struct Backgroundable {};  // ae-naming-lint: allow Backgroundable — 006 §6b 
 // an explicit `EffectClass<pure>` (the static_assert in `Tool<>`, §3.3).
 struct Deterministic {};
 
+// decisions/ADR-217-capped-grant-admits-grant-enforcing-tools.md: "this tool enforces the quantity
+// caps of the capability it is bound to (or of the held grant, via `CapabilitySet::find_fs_read`/
+// `find_fs_write`/`find_net_out`), never a number from its own declaration." With it, admission binds
+// each ceiling entry with `CapabilitySet::bind_clamped()`, so a quota- or size-capped grant admits the
+// tool and the per-call handle carries the grant's cap. Without it (the default) admission keeps
+// `bind()`'s exact `contains()` rule and a capped grant refuses an uncapped declaration -- because a
+// tool that enforces its own declared number (or none) would otherwise run past the grant's cap. Only
+// declare it for a tool whose invoke really reads its caps from the grant; for a
+// `make_tool_descriptor_with_invoke` tool, that is the custom invoke.
+struct EnforcesGrantedCaps {};  // ae-naming-lint: allow EnforcesGrantedCaps — ADR-217 policy tag; 027 has not been updated to list it
+
 // Milliseconds, not a std::chrono duration NTTP: chrono durations typically keep their `rep` as a
 // private data member, which disqualifies them as C++20 structural types (the same constraint
 // ADR-009 hit for `cap::decl::*`) -- a plain integer avoids that portability question entirely,
@@ -142,6 +153,16 @@ struct policy_is_deterministic {
 };
 template <>
 struct policy_is_deterministic<Deterministic> {
+    static constexpr bool value = true;
+};
+
+// ADR-217.
+template <class Policy>
+struct policy_enforces_granted_caps {
+    static constexpr bool value = false;
+};
+template <>
+struct policy_enforces_granted_caps<EnforcesGrantedCaps> {
     static constexpr bool value = true;
 };
 
@@ -301,6 +322,15 @@ struct Tool {
 
     // ADR-212: `false` unless the tool declared `Deterministic`.
     [[nodiscard]] static constexpr bool declared_deterministic() noexcept { return kHasDeterministic; }
+
+    // ADR-217: `false` unless the tool declared `EnforcesGrantedCaps`.
+    [[nodiscard]] static constexpr bool declared_enforces_granted_caps() noexcept {
+        bool has = false;
+        ([&has] {
+            if (tool_detail::policy_enforces_granted_caps<Policies>::value) has = true;
+        }(), ...);
+        return has;
+    }
 
     // decisions/ADR-158-tool-concurrency-exclusivity-policy.md §4: `std::nullopt` if the tool
     // declared no `ExclusivityGroup<Name>` (including every tool that instead declares bare

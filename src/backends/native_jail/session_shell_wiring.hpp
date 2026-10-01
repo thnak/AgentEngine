@@ -78,8 +78,13 @@ AE_JSON_SCHEMA(RunShellReply, ok, stdout_text, stderr_text)
 // (ADR-028, below) runs `SessionShellSandbox::run()` instead; this body exists only so a caller who
 // mistakenly reaches it directly (bypassing the real descriptor) fails loudly rather than silently
 // running against no real sandbox at all.
+//
+// ADR-217: `EnforcesGrantedCaps` -- every mediated-shell file operation looks up the HELD grant's own
+// FsRead/FsWrite (`require_fs_read`/`require_fs_write` in mediated_shell_dispatch.cpp, gap-12) and
+// enforces its `size_cap_bytes` (`cat`) and `quota_bytes`/`file_count_cap` (mkdir, cp, redirects), never
+// a number from this declaration. So a capped grant admits run_shell, and the cap holds at use.
 struct RunShellTool : Tool<RunShellTool, Capabilities<cap::decl::FsRead<"work">, cap::decl::FsWrite<"work">>,
-                            EffectClass<effect_class::at_most_once>> {
+                            EffectClass<effect_class::at_most_once>, EnforcesGrantedCaps> {
     static constexpr std::string_view name = "run_shell";
     static constexpr std::string_view description =
         "Run a shell command or script inside this session's own sandboxed working directory. "

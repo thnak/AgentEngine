@@ -289,7 +289,8 @@ Residuals the judge accepted, added to §5/§7's:
   passing the run's stop token as `ctx.cancellation` (documented at `agent_session_core.hpp`), tested only at the
   wrapper.
 - The engine gap behind `with_granted_ceiling` (a quota-capped grant cannot admit a tool declaring an uncapped
-  `FsRead`/`FsWrite`) needs an engine follow-up.
+  `FsRead`/`FsWrite`) needs an engine follow-up. *(2026-10-01: addressed by ADR-217, Proposed — `run_shell`
+  declares `EnforcesGrantedCaps` and `with_granted_ceiling` is removed from the driver.)*
 
 ## 11. Follow-ups after the judge (2026-09-29)
 
