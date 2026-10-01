@@ -124,6 +124,31 @@ coroutine without marshaling (`winrt::resume_foreground(dispatcherQueue)`
 or equivalent) has a host bug, not an engine defect. Stated plainly so it doesn't get discovered by
 a flaky WinUI reference app: this has to be documented, not assumed away.
 
+**Hosting inside another runtime: who runs a woken AgentEngine coroutine** (`decisions/ADR-219`,
+GitHub issue #79). A parked AgentEngine coroutine — one waiting on an `rt::AsyncMutex` or an
+`rt::channel<T>` — is woken by whichever thread releases the lock or pushes the item. Who then
+*runs* it depends on what drives it:
+
+| Driven by | Woken coroutine runs on |
+|---|---|
+| `rt::block_on()` (and every `rt::ThreadPool` job) | the thread blocked in that `block_on()` (ADR-175) |
+| the host's executor, inside an `rt::ScopedResumer` | wherever the host's `rt::Resumer::post()` sends its `ParkedContinuation` |
+| anything else (raw `task<T>::resume()`, a host coroutine awaiting an `rt::task`, with no scope) | **the waking thread itself**, inline |
+
+The third row is the hazard: when the waking thread belongs to another runtime — a QuarkCpp worker
+lane that drops a `Guard`, a UI thread, an IOCP completion thread that pushes an item — it runs the
+AgentEngine continuation under *its* scheduling rules (AeroCoWorker hit exactly this: the
+continuation ran on a Quark lane, and its `block_on` was refused there). **The host rule:** a host
+that drives AgentEngine coroutines from its own executor opens an `rt::ScopedResumer` around each
+drive (one scope per logical task; it mints a fresh holder id) with a `Resumer` that enqueues onto
+that executor; `post()` must only enqueue — it runs on the waker's thread and must not block on its
+own executor. A host that does not do this must never release an AgentEngine `Guard`, or complete an
+AgentEngine awaitable (push, close, cancel), from a foreign runtime's thread. A dropped
+`ParkedContinuation` is resumed inline by the drop — never lost, since an `AsyncMutex` waiter already
+holds the lock — and one whose coroutine the host destroyed while it was queued does nothing (the lock
+granted to it is released). The contract in full is on `rt::Resumer` in
+`include/agentengine/rt/resume_home.hpp`.
+
 **Secondary local observers on one run — a partial answer to 013 Q2.** 013 Q2 flags that a
 best-effort, at-most-once, per-subscriber drop-on-full pub-sub primitive (historical: Quark's
 `Topic<M>`, ADR-019, before ADR-037 removed Quark as a dependency) is the wrong shape for A2A's

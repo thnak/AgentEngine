@@ -190,6 +190,11 @@ controls in 016 apply to recordings as strictly as to telemetry.
 | Sandbox execution (interpreter) | Out-of-process backend, awaited asynchronously | isolation requires a boundary |
 | Blocking/foreign C tool | `rt::ThreadPool::submit()`, per invocation | the one axis stackless cannot serve |
 
+A coroutine parked on an `rt::AsyncMutex` or `rt::channel<T>` resumes where its driver says: on the
+thread of the `block_on()` driving it (ADR-175), through a host `rt::Resumer` when a host executor
+drives it inside an `rt::ScopedResumer` (ADR-219), and otherwise inline on the thread that woke it —
+which, when AgentEngine is hosted inside another runtime, can be that runtime's thread (020 §3a).
+
 **Rule:** nothing that can block for more than a bounded budget runs inline on the session's own
 call stack. A tool that lies about being `Fast` is a defect caught by the drain-budget test (023).
 (Historical: this section originally described "session activation"/"pool actor" as Quark's own

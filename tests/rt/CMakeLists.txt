@@ -59,6 +59,11 @@ agentengine_add_test(test_rt_thread_pool LIBS agentengine::core agentengine_warn
 # plus every red-team finding against the intermediate designs. Memory-capped, self-watchdogged.
 agentengine_add_test(test_rt_parked_task_home LIBS agentengine::core agentengine_warnings TIMEOUT 300)
 
+# ---- decisions/ADR-219 (issue #79) -- a host's Resumer: a coroutine driven from a host's own executor
+# (ScopedResumer) is handed back to it when an AsyncMutex/channel<T> wakes it, never resumed on the
+# waker's foreign thread. Plain std::thread fake executor. Memory-capped, self-watchdogged.
+agentengine_add_test(test_rt_host_resumer LIBS agentengine::core agentengine_warnings TIMEOUT 300)
+
 # ---- ADR-037 Phase 1 -- agentengine::rt::CircuitBreaker, a self-contained reimplementation of
 # quark::CircuitBreaker's algorithm (include/agentengine/rt/circuit_breaker.hpp), standalone and NOT
 # yet wired into core/model_call_gateway.hpp.
