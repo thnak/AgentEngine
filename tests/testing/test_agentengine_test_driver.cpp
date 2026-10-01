@@ -1230,6 +1230,56 @@ int main() {
             // D8: drop the recorded exec events and the replay's event stream no longer matches.
             check(fails_with(tampered("\"exec_events\":[{", "\"exec_events\":[],\"x\":[{"), "event"),
                   "P5 D8: a double that does not re-emit the sandbox_exec pair fails the event comparison");
+
+            // ---- D11 (ADR-182 §25): a recording cannot make a double claim what the real tool does not do ----
+            // A consistent forgery: read_sandbox_file's exchange AND the expected event stream both claim an
+            // exec (the real tool never runs one). Nothing else differs, so only the shape check can refuse it.
+            {
+                std::optional<Value> forged;
+                Value const* exp = scenario->find("expected");
+                Value const* evs = exp ? exp->find("events") : nullptr;
+                if (tx != nullptr && tx->as_array().size() == 2 && evs != nullptr && evs->is_array()) {
+                    std::vector<Value> xs = tx->as_array();
+                    if (Value const* ex0 = xs[0].find("exec_events")) xs[1] = set_field(xs[1], "exec_events", *ex0);
+                    std::vector<Value> pair;
+                    for (Value const& e : evs->as_array()) {
+                        if (td::get_string(e, "kind").value_or("").starts_with("sandbox_exec_")) pair.push_back(e);
+                    }
+                    std::vector<Value> out;
+                    double seq = 1;
+                    for (Value const& e : evs->as_array()) {
+                        out.push_back(set_field(e, "seq", td::num(seq++)));
+                        Value const* pl = e.find("payload");
+                        if (td::get_string(e, "kind") == "tool_call_started" && pl != nullptr &&
+                            td::get_string(*pl, "tool_name") == "read_sandbox_file") {
+                            for (Value const& p : pair) out.push_back(set_field(p, "seq", td::num(seq++)));
+                        }
+                    }
+                    if (pair.size() == 2) {
+                        forged = set_field(set_field(*scenario, "tool_exchanges", td::arr(xs)), "expected",
+                                           set_field(*exp, "events", td::arr(out)));
+                    }
+                }
+                check(fails_with(forged, "read_sandbox_file runs no sandbox exec"),
+                      "P5 D11: a recording cannot give read_sandbox_file a sandbox exec, even with the events to match");
+            }
+            check(fails_with(tampered("\"backend\":\"mediated-shell\"", "\"backend\":\"native-jail\""),
+                             "backend 'mediated-shell'"),
+                  "P5 D11: a recorded run_shell exec on another backend is refused");
+            check(fails_with(tampered("\"content\":\"hello", "\"host_path\":\"C:/x\",\"content\":\"hello"),
+                             "is not a read_sandbox_file reply"),
+                  "P5 D11: a recorded result the real tool's Reply cannot express is refused");
+            check(fails_with(tampered("\"kind\":\"sandbox_exec_finished\",\"backend\":\"mediated-shell\",\"stage\":\"exec\",\"ok\":true,\"error_code\":\"\"",
+                                      "\"kind\":\"sandbox_exec_finished\",\"backend\":\"mediated-shell\",\"stage\":\"exec\",\"ok\":false,\"error_code\":\"sandbox.exec.abandoned\""),
+                             "must be the call's own error"),
+                  "P5 D11: a failed exec recorded under a successful result is refused");
+            check(!td::double_exchange_problem(td::ToolExchange{"run_shell", "{}", false,
+                                                                td::obj({{"ok", td::boolean(true)},
+                                                                         {"stdout_text", td::str("")},
+                                                                         {"stderr_text", td::str("")}}),
+                                                                {}, {}, {}, {}})
+                       .has_value(),
+                  "P5 D11: a run_shell result with no exec events (a call refused before the shell) is accepted");
         }
 
         // D5: no sandbox root, no real tools; fixtures_list says so.

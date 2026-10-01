@@ -13,7 +13,8 @@
 //     only against the test tools below, and never able to grant a capability (§12 C-3);
 //   - real tools, until ADR-208 (P5): the mediated `run_shell` and `read_sandbox_file`, confined to a
 //     per-session scratch directory under a host-fixed root, recorded at the invoke seam, and replayed
-//     offline by doubles that serve the recording (§12 C-2, R5);
+//     offline by doubles that serve the recording (§12 C-2, R5); a recording a real tool could not have
+//     produced (wrong reply shape, exec events it never emits) is refused (ADR-182 §25);
 //   - workflows, until ADR-210: `workflow_*` and `request_port_*` drive one `rt::WorkflowSupervisor` over a
 //     compiled fixture graph, each agent step a hidden scripted session with an empty grant;
 //   - scenario export, assert, fork, live mode (later phases).
@@ -51,6 +52,7 @@
 #include "agentengine/core/agent_yaml_compiler.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/json_schema.hpp"
+#include "agentengine/core/json_schema_validator.hpp"
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/core/run_event.hpp"
 #include "agentengine/core/tool.hpp"
@@ -455,6 +457,44 @@ private:
         return x.result;
     };
     return d;
+}
+
+// ADR-182 §25 (I3, I4): what a double may serve is bounded by the real tool, never by the recording. The
+// descriptor (capabilities, effect class, approval) is already the compiled stand-in's; this checks the
+// recorded outcome against what the real tool can produce: a result its typed Reply round-trips, and only the
+// `sandbox_exec_*` events its real code emits (run_shell: one "mediated-shell"/"exec" pair, from
+// SessionShellSandbox::run's SandboxExecScope; read_sandbox_file: none). Returns why the exchange is refused.
+template <class ToolT>
+[[nodiscard]] inline bool reply_round_trips(Value const& v) {
+    auto r = schema::from_json<typename ToolT::Reply>(v);
+    return r.has_value() && schema::json_value_equal(schema::to_json(*r), v);
+}
+
+[[nodiscard]] inline std::optional<std::string> double_exchange_problem(ToolExchange const& x) {
+    bool const shell = x.tool_name == "run_shell";
+    if (!shell && x.tool_name != "read_sandbox_file") return "'" + x.tool_name + "' is not a real tool";
+    if (!x.is_error && !(shell ? reply_round_trips<RunShellTool>(x.result)
+                               : reply_round_trips<tools::ReadSandboxFile>(x.result))) {
+        return "the recorded result is not a " + x.tool_name + " reply";
+    }
+    if (x.exec_events.empty()) return std::nullopt;
+    if (!shell) return "read_sandbox_file runs no sandbox exec, but sandbox_exec events are recorded";
+    if (x.exec_events.size() != 2 || x.exec_events[0].kind != run_event_kind::sandbox_exec_started ||
+        x.exec_events[1].kind != run_event_kind::sandbox_exec_finished) {
+        return "run_shell records exactly one sandbox_exec_started/finished pair";
+    }
+    for (ExecEventRecord const& e : x.exec_events) {
+        if (e.backend != "mediated-shell" || e.stage != "exec") {
+            return "run_shell's exec is backend 'mediated-shell', stage 'exec', not '" + e.backend + "'/'" + e.stage + "'";
+        }
+    }
+    if (!x.exec_events[0].ok || !x.exec_events[0].error_code.empty()) return "a started exec carries no outcome";
+    ExecEventRecord const& fin = x.exec_events[1];
+    if (fin.ok != fin.error_code.empty()) return "a finished exec is ok with no code, or failed with one";
+    if (!fin.ok && (!x.is_error || x.code != fin.error_code)) {
+        return "a failed exec ('" + fin.error_code + "') must be the call's own error";
+    }
+    return std::nullopt;
 }
 
 // Removes `path` and everything under it without following a link (ADR-208 G7): a symbolic link or junction
@@ -2742,6 +2782,13 @@ private:
             std::vector<ToolDescriptor> real;
             std::shared_ptr<RealToolSandbox> sandbox;
             if (config_.tool_doubles) {
+                // ADR-182 §25: every recorded call must be one a real tool this fixture names could have made.
+                for (std::size_t i = 0; i < config_.tool_doubles->size(); ++i) {
+                    ToolExchange const& x = (*config_.tool_doubles)[i];
+                    auto problem = double_exchange_problem(x);
+                    if (!problem && !named(x.tool_name)) problem = "fixture " + fixture->name + " does not name " + x.tool_name;
+                    if (problem) return err("test.bad_scenario", "tool exchange " + std::to_string(i) + ": " + *problem);
+                }
                 for (ToolDescriptor const& d : real_tool_standins())
                     if (named(d.name)) real.push_back(double_tool(with_granted_ceiling(d), ds->real));
             } else {
