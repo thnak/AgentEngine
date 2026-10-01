@@ -2,7 +2,8 @@
 
 - **Status**: **Proposed — design pass + red-team pass 1 (2026-09-25), revised (§12). Owner
   delegated Q1–Q4 (§11). P1 and P2 (§13) and driver phase 1 (§14) implemented and proven,
-  including an end-to-end run by a headless Claude tester. Live mode (§15) built early: a Claude tester drove the engine's agent running on live DeepSeek, 4/4. Scenario export/replay (§16) done: 7 checked-in scenarios (4 recorded from live DeepSeek) replay offline as ctests, 100/100 each. C9 (Inspector CLI) and C2 under TSan (§17) proven with controls; headless recipe written.** Where §12
+  including an end-to-end run by a headless Claude tester. Live mode (§15) built early: a Claude tester drove the engine's agent running on live DeepSeek, 4/4. Scenario export/replay (§16) done: 7 checked-in scenarios (4 recorded from live DeepSeek) replay offline as ctests, 100/100 each. C9 (Inspector CLI) and C2 under TSan (§17) proven with controls; headless recipe written. §19–§24 and ADR-208/ADR-210 close the rest of GitHub #109
+  (reconciled in §25); §26 bounds a P5 double's recording by the real tool.** Where §12
   and an earlier section disagree, §12 wins.
 - **Date**: 2026-09-25
 - **Origin**: live-provider tests drive a real `rt::AgentSession` by sending a free-form prompt and
@@ -1128,3 +1129,78 @@ not `approver_id`. A blank or multi-line approver was passed to the asynchronous
 it and marked the run failed. The driver now refuses such an approver with `test.bad_arguments` using the
 session's own rule (`is_attributable_id`). PC checks that a blank and a two-line approver are refused and the
 interaction is still listed; with the check removed, PC fails there and at every later step.
+
+## 25. GitHub #109 reconciled against the tree, and C7 re-checked (2026-10-01)
+
+Every item #109 still lists as open was checked against the code on `f19bbbd`:
+
+| #109 item | Where it was done | Evidence in the tree |
+|---|---|---|
+| C7, regression detection | §23, §24 (ADR-196) | `tests/scenarios/scripted_per_call_decisions.json`; `test_agentengine_test_driver` PC |
+| `call_refs` (per-call decisions) | ADR-196 §2, §23 | built as `interaction_resolve {call_decisions, approver_id}` (the `call_refs` name of §3.4/§3.7 was not kept); the driver refuses an unlisted call id and a bad approver before resuming |
+| P5, tool doubles | ADR-208 (Judged with conditions, both met) | `double_tool`/`recording_tool`/`RealToolLog` in `test_driver.hpp`; checks P5 D1–D10; `scripted_shell_roundtrip.json` |
+| Sandboxed real tools in fixtures | ADR-208 §2.1–§2.3 | `run_shell` (mediated) and `read_sandbox_file`, file fixtures via `spec.tools`, host-only `--sandbox-root` |
+| Workflow tool group | ADR-210 (Judged with conditions, both met) | `workflow_*`/`request_port_*` tools; checks W1–W12; `workflow_review_approve.json`, `workflow_two_ports_go.json` |
+
+**C7 re-checked on the current engine.** BUG-2 was planted again in `src/rt/agent_session_core.cpp`
+(`resolve_interaction`'s approval tail: when the round's own `approved` is false, a call the interaction never
+asked about is settled `tool.approval_denied`). The file was backed up with `cp`, and restored the same way, with
+its sha256 checked. With the mutant, `ctest -L scenario` gave 13/14. Only the C7 scenario failed:
+
+```
+FAIL tests/scenarios/scripted_per_call_decisions.json (0 events compared, 0 model requests checked)
+  step 1 (resolve): test.replay_mismatch at model call 1: the engine's request differs from the recording
+  (expected fnv1a64:a97be5db11188bed, got fnv1a64:b54cbae0d66e8b4a)
+```
+
+After the restore it was 14/14 again. One thing was still missing, and §26 adds it.
+
+## 26. P5 doubles serve only what the real tool could have done (2026-10-01; GitHub #109)
+
+Recorded results are data, never authority (I3). A double cannot claim a capability, effect class or approval
+mode: its descriptor is the compiled stand-in's (`real_tool_standins()`, ADR-208 §2.5), and the scenario's
+exchanges hold no such fields. The recording still controlled two things the real tool never decides:
+
+- **Effect records (I4).** `exec_events` were checked only for their kind. A recording could make the double emit a
+  `sandbox_exec_*` pair for `read_sandbox_file`, which runs no exec, or name another backend
+  (`native-jail` instead of `mediated-shell`). If the scenario's expected events were edited to match, the replay
+  passed and the corpus asserted an effect that never happens.
+- **The reply.** A recorded result was served as-is, even one the tool's typed `Reply` cannot express (an extra
+  field, a wrong type).
+
+**Decision.** At `session_start` in double mode, the driver checks every exchange against the real tool
+(`double_exchange_problem`) and refuses the session with `test.bad_scenario` (`tool exchange N: …`) if one does not fit:
+
+- the tool is a real tool the fixture names;
+- a success result round-trips through that tool's `Reply` (`schema::from_json`, then `to_json`, compared with
+  `json_value_equal`);
+- `read_sandbox_file` records no exec events. `run_shell` records none (a call refused before the shell: cancel,
+  call cap, bad arguments) or exactly the pair `SessionShellSandbox::run`'s `SandboxExecScope` emits: started then
+  finished, both `mediated-shell`/`exec`, the started one with no outcome;
+- a finished exec has `ok` exactly when it has no error code, and a failed exec is the call's own error, with the
+  same code. A successful exec under an error result is allowed: the recording wrapper replaces an oversized or
+  non-UTF-8 result after the exec succeeded (ADR-208 G1).
+
+The `mediated-shell` and `exec` literals repeat `session_shell_wiring.hpp`. If the engine renames them, the P5 REC
+recording no longer replays (D1/D8), so drift is caught.
+
+**Evidence** (`test_agentengine_test_driver`, 496/496 checks; `ctest -L scenario` 14/14):
+
+| Check | Tamper | Refused with |
+|---|---|---|
+| P5 D11 (forgery) | `read_sandbox_file`'s exchange **and** the expected events both gain the exec pair, seqs renumbered | `read_sandbox_file runs no sandbox exec` |
+| P5 D11 | `run_shell`'s exec backend `native-jail` | `backend 'mediated-shell'` |
+| P5 D11 | a `host_path` field added to the `read_sandbox_file` result | `is not a read_sandbox_file reply` |
+| P5 D11 | a finished exec `ok:false`, `sandbox.exec.abandoned`, under a success result | `must be the call's own error` |
+| P5 D11 | `run_shell` success with no exec events | accepted (not over-strict) |
+
+**Positive control.** With the check removed at the call site (header backed up and restored with `cp`, sha256
+checked), all four refusals fail. The forgery check fails with **no problem reported at all**: the forged
+scenario replays green, so before this section the gap was real. The other three are still caught, but later and
+for another reason (an event diff, or C8 at model call 2), so a forger who also fixed the events and the digests
+would get past those.
+
+**Residuals.** A recorded error's `class`, `code` and `message` are free data: the real tools return errors
+with several codes, and the driver does not list them. They reach the model and the event stream as recorded,
+and C8 and the event diff compare them. Arguments are compared as recorded and are not checked against the
+tool's `Args`. A mismatch fails at that call anyway (D2).

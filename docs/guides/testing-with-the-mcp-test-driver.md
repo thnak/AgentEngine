@@ -101,6 +101,17 @@ Every real-tool call is recorded, and `scenario_export` writes the calls into th
 other arguments fails the replay with `test.replay_mismatch at tool call N`. The scenario runner can't
 build a sandbox at all, so CI needs none. `tests/scenarios/scripted_shell_roundtrip.json` is an example.
 
+A recorded call can only say what the real tool could have done (ADR-182 §26). The tool's permissions,
+effect class and approval mode come from the driver, never from the file. Replay refuses a scenario
+(`test.bad_scenario`, `tool exchange N: …`) when a recorded call has any of these:
+
+- a result the tool's reply type can't express;
+- `sandbox_exec_*` events for `read_sandbox_file`, which runs no exec;
+- a `run_shell` exec on any backend other than `mediated-shell`;
+- a failed exec under a successful result.
+
+When you hand-edit a scenario, edit only what the real tool could have returned.
+
 **Workflows (ADR-210).** `fixtures_list` also lists workflow fixtures, compiled into the driver:
 `wf_review` (draft, then a review port whose route `approve` runs publish and `revise` runs draft again),
 `wf_fanout` (two agent steps in parallel, then a join) and `wf_two_ports` (two ports open at once).
