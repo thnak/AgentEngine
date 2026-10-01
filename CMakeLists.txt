@@ -423,7 +423,8 @@ if(AGENTENGINE_WITH_NATIVE_PROCESS)
     add_library(agentengine_native_process_backend STATIC
       src/backends/native_process/native_process_spawn.cpp
       src/backends/native_process/native_path_scan.cpp
-      src/backends/native_process/native_worktree_bridge.cpp)
+      src/backends/native_process/native_worktree_bridge.cpp
+      src/backends/native_process/native_shell_session.cpp)
     target_include_directories(agentengine_native_process_backend PUBLIC
       "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_link_libraries(agentengine_native_process_backend PUBLIC

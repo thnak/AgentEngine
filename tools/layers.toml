@@ -134,4 +134,5 @@
 "src/backends/native_jail/skill_mount_materializer.hpp"  = { layer = "L2", reason = "materializes SkillsProvider mounts into a jail" }
 "src/backends/native_process/native_providers.hpp"       = { layer = "L2", reason = "ContextProvider/tool conformers for native process execution (ADR-071)" }
 "src/backends/native_process/native_capability_announcer.hpp" = { layer = "L2", reason = "composes the native providers into a ContextProvider" }
+"src/backends/native_process/native_shell_session_provider.hpp" = { layer = "L2", reason = "ADR-209 §9: the held native pwsh ContextProvider" }
 "src/backends/wasm/wasm_tool_bridge.hpp"                 = { layer = "L2", reason = "turns WASM component exports into tool-plane ToolDescriptors" }
