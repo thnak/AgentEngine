@@ -61,8 +61,8 @@ enum class workflow_event_kind {  // ae-naming-lint: allow workflow_event_kind â
     checkpoint_saved, merge_completed, merge_conflict,
     agent_turn_event, moderator_stream_delta,
     // Issue #155: a `resume_workflow()` that was REFUSED -- an unknown or already-answered interaction id, a
-    // caller the admission gate denied, or routes that are not a valid choice at the port. Nothing in the
-    // run changed. Before #155 these were pushed as
+    // caller the admission gate denied, routes that are not a valid choice at the port, or an answer to a
+    // run that was cancelled (issue #156). Nothing in the run changed. Before #155 these were pushed as
     // `workflow_run_failed`, which a consumer reads as the run ending while it was still suspended.
     // Appended last so every existing enumerator keeps its value.
     request_port_rejected,
@@ -119,7 +119,7 @@ struct PortRef {
 
 // Issue #155: `request_port_rejected`. `executor_id` is the port's id when the interaction was found, empty
 // when it was not (an unknown id names no port). `reason` is one of "unknown_interaction",
-// "admission_denied", "invalid_routes".
+// "admission_denied", "invalid_routes", "cancelled".
 struct PortRejected {
     std::string executor_id;
     std::string interaction_id;

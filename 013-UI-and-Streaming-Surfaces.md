@@ -136,7 +136,7 @@ It has two parts, and they differ in the properties above:
   `continue_workflow`, emits one of the `workflow_run_*` terminal events. The run is over when that
   event arrives, not when the stream closes. A `resume_workflow` that is refused (an unknown or
   already-answered interaction id, a caller the admission gate denies, routes that are not a valid
-  choice at the port) changes nothing and emits `request_port_rejected`
+  choice at the port, a run that was cancelled) changes nothing and emits `request_port_rejected`
   with a reason, never a `workflow_run_*` event: the run it was refused is still where it was (issue
   #155).
 - **Per-node events** (`agent_turn_event`, `moderator_stream_delta`) come live from whichever worker

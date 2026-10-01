@@ -55,6 +55,76 @@ void WorkflowSupervisor::bind_sub_workflow(std::string const& executor_id, std::
     valid_ = valid_base_ && sub_workflow_kind_nodes_are_bound();
 }
 
+void WorkflowSupervisor::cancel() noexcept {
+    std::stop_source source;
+    {
+        std::lock_guard<std::mutex> lock(cancel_mutex_);
+        source = cancel_source_;
+    }
+    source.request_stop();
+    // Issue #156 (ADR-214): settle a SUSPENDED run here, if no entry point holds the run lock. One that
+    // does observes the cancel itself (refuse_if_cancelled(), execute()'s round checks, the suspended-
+    // result check in each public wrapper) and settles the run before it returns.
+    AsyncMutex::Guard guard = run_mutex_.try_lock();
+    if (!guard.held()) {
+        // A run is in flight: a bound inner may be running a nested sub-run right now -- cancel it too, so it
+        // stops at its own next check instead of finishing first. (An inner that is idle gets a request on a
+        // source its next run replaces: harmless.)
+        for (auto const& [idx, inner] : sub_workflows_) {
+            (void)idx;
+            if (inner) inner->cancel();
+        }
+        return;
+    }
+    try {
+        if (!run_cancelled_ && (!ports_.empty() || !pending_sub_workflows_.empty())) {
+            (void)finish(workflow_status::cancelled, std::chrono::steady_clock::now());
+        }
+    } catch (...) {
+        // Allocation failure while closing: the stop request stands, and the next entry point settles the run.
+    }
+}
+
+bool WorkflowSupervisor::cancel_requested() const noexcept {
+    std::lock_guard<std::mutex> lock(cancel_mutex_);
+    return cancel_source_.stop_requested();
+}
+
+void WorkflowSupervisor::begin_cancel_epoch() noexcept {
+    {
+        std::lock_guard<std::mutex> lock(cancel_mutex_);
+        cancel_source_ = std::stop_source{};
+    }
+    run_cancelled_ = false;
+}
+
+void WorkflowSupervisor::close_run_for_cancel() noexcept {
+    for (auto const& [id, pending] : pending_sub_workflows_) {
+        (void)id;
+        auto const it = sub_workflows_.find(pending.executor_index);
+        if (it != sub_workflows_.end() && it->second) it->second->cancel();
+    }
+    pending_sub_workflows_.clear();
+    ports_.clear();
+    state_.pending.clear();
+    state_.held_fan_in.clear();
+    run_cancelled_ = true;
+}
+
+std::optional<WorkflowResult> WorkflowSupervisor::refuse_if_cancelled() {
+    if (!run_cancelled_) {
+        if (!cancel_requested() || !run_is_live()) return std::nullopt;
+        return finish(workflow_status::cancelled, std::chrono::steady_clock::now());
+    }
+    WorkflowResult r{workflow_status::cancelled};
+    r.rounds          = rounds_;
+    r.output          = state_.selected_output;
+    r.partial         = state_.partial;
+    r.failed_executor = state_.failed_executor;
+    r.unopened_ports  = state_.unopened_ports;
+    return r;
+}
+
 std::vector<agentengine::Interaction> WorkflowSupervisor::open_interactions() const {
     std::vector<agentengine::Interaction> out;
     for (auto const& p : ports_) {
@@ -96,6 +166,18 @@ task<WorkflowResult> WorkflowSupervisor::run_workflow(RunWorkflow request) {
         co_return WorkflowResult{workflow_status::invalid};
     }
 
+    // Issue #156 (ADR-214): a fresh stop source per run -- a cancel aimed at an earlier run (or a late one
+    // that arrived after it ended) can no longer cancel this one, which is what made cancel() permanent.
+    begin_cancel_epoch();
+    // ...and an outside token the caller linked (RunWorkflow::cancellation) reaches it: registering on an
+    // already-stopped token runs the callback at once, so a caller cancelled before this call is honoured.
+    std::stop_source run_source;
+    {
+        std::lock_guard<std::mutex> lock(cancel_mutex_);
+        run_source = cancel_source_;
+    }
+    std::stop_callback const linked_cancel(request.cancellation,
+                                           [run_source]() mutable noexcept { run_source.request_stop(); });
     ++run_counter_;
     run_id_ = graph_.id + ":run:" + std::to_string(run_counter_);
     state_  = RunState{};
@@ -116,6 +198,11 @@ task<WorkflowResult> WorkflowSupervisor::resume_workflow(ResumeWorkflow request)
     AsyncMutex::Guard guard = co_await run_mutex_.lock();  // I1 -- see file banner
     agentengine::Usage const before = total_usage_;
     WorkflowResult r = co_await resume_workflow_locked(std::move(request));
+    // Issue #156: a cancel that landed while this call held the lock (so cancel() could not settle the run
+    // itself) and left it suspended -- e.g. one of several ports answered -- settles it now.
+    if (r.status == workflow_status::suspended && cancel_requested()) {
+        r = finish(workflow_status::cancelled, std::chrono::steady_clock::now());
+    }
     r.usage = usage_added_since(before);
     co_return r;
 }
@@ -124,6 +211,9 @@ task<WorkflowResult> WorkflowSupervisor::continue_workflow(ContinueWorkflow requ
     AsyncMutex::Guard guard = co_await run_mutex_.lock();  // I1 -- see file banner
     agentengine::Usage const before = total_usage_;
     WorkflowResult r = co_await continue_workflow_locked(std::move(request));
+    if (r.status == workflow_status::suspended && cancel_requested()) {  // issue #156, as in resume_workflow()
+        r = finish(workflow_status::cancelled, std::chrono::steady_clock::now());
+    }
     r.usage = usage_added_since(before);
     co_return r;
 }
@@ -144,6 +234,14 @@ task<WorkflowResult> WorkflowSupervisor::resume_workflow_locked(ResumeWorkflow r
         push_structural_event(workflow_event_kind::workflow_run_failed,
                                RunFailed{workflow_status_tag(workflow_status::invalid)});
         co_return WorkflowResult{workflow_status::invalid};
+    }
+    // Issue #156: an answer to a cancelled run is refused and changes nothing; a cancel still pending on a
+    // suspended run settles it first (closing every interaction, this one included).
+    if (std::optional<WorkflowResult> cancelled = refuse_if_cancelled()) {
+        push_structural_event(workflow_event_kind::request_port_rejected,
+                              agentengine::workflow::workflow_event_payload::PortRejected{
+                                  {}, request.interaction_id, "cancelled"});
+        co_return std::move(*cancelled);
     }
 
     // ADR-157 (issues #33/#38): checked FIRST, before ports_ at all -- see the design draft's
@@ -338,6 +436,8 @@ task<WorkflowResult> WorkflowSupervisor::continue_workflow_locked(ContinueWorkfl
                                RunFailed{workflow_status_tag(workflow_status::invalid)});
         co_return WorkflowResult{workflow_status::invalid};
     }
+    // Issue #156: a cancelled run never moves again.
+    if (std::optional<WorkflowResult> cancelled = refuse_if_cancelled()) co_return std::move(*cancelled);
     push_structural_event(workflow_event_kind::workflow_run_resumed);
     co_return co_await execute();
 }
@@ -379,6 +479,7 @@ RunStateRecord WorkflowSupervisor::to_record() const {
     }
     rec.stall_streak = stall_streak_;
     rec.resets_used  = resets_used_;
+    rec.cancelled    = run_cancelled_;  // issue #156
     rec.held_fan_in.reserve(state_.held_fan_in.size());
     for (auto const& h : state_.held_fan_in) {
         std::vector<std::uint64_t> awaiting;
@@ -423,6 +524,10 @@ void WorkflowSupervisor::restore_from_record(RunStateRecord const& rec) {
         state_.held_fan_in.push_back(HeldFanIn{static_cast<std::size_t>(h.executor_index), h.payload,
                                                  h.seeded, std::move(awaiting)});
     }
+    // Issue #156: the restored run is a different run from whatever this instance held -- its own stop source --
+    // and a run that was checkpointed after it ended `cancelled` stays cancelled.
+    begin_cancel_epoch();
+    run_cancelled_ = rec.cancelled;
 }
 
 task<void> WorkflowSupervisor::run_executor_job(
@@ -496,7 +601,7 @@ task<void> WorkflowSupervisor::run_sub_workflow_job(
     std::shared_ptr<WorkflowSupervisor> inner, agentengine::Message payload,
     std::shared_ptr<ExecuteReply> out,
     std::shared_ptr<agentengine::workflow::multiplex_sink<agentengine::workflow::WorkflowEvent>> sink,
-    std::vector<std::string> path_prefix) {
+    std::vector<std::string> path_prefix, std::stop_token cancellation) {
     if (!inner) {
         *out = ExecuteReply{agentengine::Message{}, {}, false, agentengine::failure_class::contract,
                              false, std::nullopt, agentengine::Usage{}};
@@ -505,7 +610,8 @@ task<void> WorkflowSupervisor::run_sub_workflow_job(
     WorkflowResult r;
     {
         ScopedForwardedEventSink const guard(*inner, std::move(sink), std::move(path_prefix));
-        r = drive(inner->run_workflow(RunWorkflow{payload}));
+        // Issue #156 (ADR-214): the outer run's cancel is linked into the nested run it dispatches.
+        r = drive(inner->run_workflow(RunWorkflow{payload, std::nullopt, std::move(cancellation)}));
     }
     if (r.status == workflow_status::completed) {
         // GitHub issue #35 follow-up (ADR-163): a sub_workflow that completes SYNCHRONOUSLY within
@@ -586,7 +692,7 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
         // synchronously) still runs to completion before this is rechecked -- see cancel_source_
         // 's own comment and the design draft §4 for why that is an inherited, not new,
         // characteristic.
-        if (cancel_source_.stop_requested()) {
+        if (cancel_requested()) {
             status = workflow_status::cancelled;
             break;
         }
@@ -699,7 +805,7 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
                 // cancellation wired on, rather than one more explicit parameter on
                 // run_executor_job() alongside sink/executor_id/round/attempt/path_prefix.
                 agentengine::EffectContext ctx = contexts_[idx];
-                ctx.cancellation                = cancel_source_.get_token();
+                ctx.cancellation                = cancellation_token();
                 in_flight.push_back(pool_.submit(run_executor_job(
                     bodies_[idx], exec_deliveries[i].payload, std::move(ctx), slot, event_sink,
                     graph_.executors[idx].id, this_round, attempt, event_path_prefix_)));
@@ -732,6 +838,9 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
                 }
             }
             todo = std::move(retry_next);
+            // Issue #156: no retry once the workflow is cancelled -- the failure may well be the cancel itself
+            // (an agent step's `run.canceled`), and the round is about to end `cancelled` anyway.
+            if (!todo.empty() && cancel_requested()) todo.clear();
         }
 
         // ADR-157 (issues #33/#38): sub_workflow dispatch -- deliberately sequential AFTER
@@ -800,7 +909,7 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
                     sub_in_flight.push_back(pool_.submit(run_sub_workflow_job(
                         sub_workflows_.count(idx) ? sub_workflows_.at(idx) : nullptr,
                         sub_workflow_deliveries[i].payload, slot, event_sink,
-                        std::move(child_path))));
+                        std::move(child_path), cancellation_token())));
                 }
                 std::vector<std::size_t> sub_retry_next;
                 for (std::size_t k = 0; k < sub_in_flight.size(); ++k) {
@@ -826,6 +935,7 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
                     }
                 }
                 sub_todo = std::move(sub_retry_next);
+                if (!sub_todo.empty() && cancel_requested()) sub_todo.clear();  // issue #156, as above
             }
         }
 
@@ -887,6 +997,20 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
         }
         if (merge_failed) {
             status = workflow_status::merge_conflict;
+            for (auto const& d : port_deliveries) {
+                state_.unopened_ports.push_back(graph_.executors[d.executor_index].id);
+            }
+            break;
+        }
+
+        // Issue #156 (ADR-214): a cancel observed anywhere in this round ends the run `cancelled`, decided
+        // BEFORE routing -- so a step the cancel itself made fail (an agent step's session ends `run.canceled`
+        // once `ctx.cancellation` fires) is not reported as `executor_failed`/`routing_failed` by the default
+        // `fail` edge policy, which is what a host used to get depending on timing. The round's successful
+        // outputs were folded into `partial` above (and branch merges ran) exactly as in any other round;
+        // ports reached this round never open. A merge conflict above still wins: it needs a human regardless.
+        if (cancel_requested()) {
+            status = workflow_status::cancelled;
             for (auto const& d : port_deliveries) {
                 state_.unopened_ports.push_back(graph_.executors[d.executor_index].id);
             }
@@ -1036,6 +1160,9 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
         }
     }
 
+    // Issue #156: a cancel that arrived after this round's check but before the run suspended -- the run
+    // ends `cancelled` and finish() closes the interactions it just opened.
+    if (status == workflow_status::suspended && cancel_requested()) status = workflow_status::cancelled;
     co_return finish(status, entered_at);
 }
 
@@ -1044,6 +1171,8 @@ WorkflowResult WorkflowSupervisor::finish(workflow_status status,
     state_.elapsed_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(
                              std::chrono::steady_clock::now() - entered_at)
                              .count();
+    // Issue #156: a run ending `cancelled` -- wherever that was decided -- closes every open interaction.
+    if (status == workflow_status::cancelled) close_run_for_cancel();
     WorkflowResult r{};
     r.status          = status;
     r.rounds          = rounds_;

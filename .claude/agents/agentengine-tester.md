@@ -85,7 +85,8 @@ request's digest.
   - A route no edge declares (alone or mixed with real labels), or routes that do not pick exactly one
     switch case, return `invalid_routes`: the port stays open and can be answered again.
   - A `caller` other than the owner gets `admission_denied`, and the port stays open.
-  - Cancelling while a step is running usually ends `executor_failed`, not `cancelled`.
+  - Cancelling while a step is running ends `cancelled` (ADR-214), including when an agent step fails
+    because of the cancel; cancelling while suspended closes the open ports.
 
 ## Report
 

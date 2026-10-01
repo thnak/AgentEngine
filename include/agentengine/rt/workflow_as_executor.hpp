@@ -159,7 +159,9 @@ template <class T>
 [[nodiscard]] inline agentengine::result<ExecutorOutcome> run_once(WorkflowSupervisor& inner,
                                                                      agentengine::Message const& in,
                                                                      agentengine::EffectContext& ctx) {
-    WorkflowResult r = drive(inner.run_workflow(RunWorkflow{in}));
+    // Issue #156 (ADR-214): the outer workflow's cancel (`ctx.cancellation`) is linked into the inner run, so a
+    // wrapped workflow stops at its own next check instead of running to completion first.
+    WorkflowResult r = drive(inner.run_workflow(RunWorkflow{in, std::nullopt, ctx.cancellation}));
     if (r.status == workflow_status::completed) {
         ExecutorOutcome outcome{r.output};
         outcome.usage = r.usage;

@@ -1,6 +1,6 @@
 # 014 — Workflow and Orchestration
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-04 by ADR-169** (§4 — resolving a request port requires caller admission; holding an `interaction_id` is not authority) · **Amended 2026-09-27 by ADR-152/ADR-157** (§7 — the live view has a fine-grained sibling, the workflow event stream; issue #82) · **Depends on:** 001, 002, 005, 013, 018, 019 · **Gate:** §8
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-10-01** (§2 cancellation, ADR-214 Proposed; §4 one interaction per delivery and answers checked before acceptance, issues #155/#157) · **Amended 2026-09-04 by ADR-169** (§4 — resolving a request port requires caller admission; holding an `interaction_id` is not authority) · **Amended 2026-09-27 by ADR-152/ADR-157** (§7 — the live view has a fine-grained sibling, the workflow event stream; issue #82) · **Depends on:** 001, 002, 005, 013, 018, 019 · **Gate:** §8
 
 ## Goal
 
@@ -58,6 +58,14 @@ change ADR-032 did not make as a drive-by). Full trace, including the pre-ADR-03
   by the shuffle test (§8 G3).
 - **Termination** is by output selection, by an explicit terminal executor, or by bound
   (`MaxRounds`, deadline, budget). An unbounded workflow does not run — the bound is required.
+- **Cancellation** (`ADR-159`, amended by `ADR-214`, issue #156) ends a run `cancelled` wherever it
+  lands. In a round, the in-flight steps finish cooperatively (an agent step's session sees the
+  cancel and ends its own run), no failed step is retried, and the round ends `cancelled` before
+  routing — a step failure the cancel caused is reported as the cancel, not as an executor failure.
+  While suspended, the run ends `cancelled` at once and its open interactions (including a nested
+  sub-workflow's) are closed; a later answer or continue is refused. A cancel applies to the run in
+  progress, not to the supervisor: the next run starts with a fresh cancellation, and a caller that is
+  itself cancellable links its own token into the run it starts.
 
 ## 3. Patterns
 

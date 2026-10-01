@@ -180,6 +180,7 @@
 #include <future>
 #include <memory>
 #include <memory_resource>
+#include <mutex>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -346,6 +347,9 @@ enum class workflow_status {
     // round loop observed it at the same round-boundary point every other bound is already checked.
     // An honest, expected, non-error termination -- the same shape bound_max_rounds/bound_max_stalls
     // already are, never a fault.
+    // Issue #156 (ADR-214): no longer only at the round boundary -- a cancel observed anywhere in a round
+    // (including one an agent step turned into its own `run.canceled` failure) or while suspended ends the
+    // run here too; see WorkflowSupervisor::cancel().
     cancelled,
     // ADR-169 (GitHub issue #65): the caller named on this request is not admitted for this
     // supervisor's owning principal (or omitted an identity a `require_caller()` supervisor demands).
@@ -414,6 +418,13 @@ enum class workflow_status {
 struct RunWorkflow {
     agentengine::Message input;
     std::optional<agentengine::Principal> caller = std::nullopt;
+    // Issue #156 (ADR-214): an outside cancellation linked into THIS run. Every `run_workflow()` gets a fresh
+    // stop source (cancel() is per run), so a cancel issued before the call takes the run lock cannot reach
+    // the run it starts -- a caller that is itself cancellable (an adapter running the workflow under its own
+    // `EffectContext::cancellation`, an outer workflow dispatching a nested one) passes its token here: if it
+    // is already stopped the run is cancelled before its first round, and a later stop cancels it like
+    // `cancel()`. A default (stateless) token links nothing. Appended last; existing initializers unchanged.
+    std::stop_token cancellation = {};
 };
 
 // ae-naming-lint: allow ContinueWorkflow — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
@@ -611,15 +622,41 @@ public:
     // flight on another -- std::stop_source::request_stop() is specified thread-safe with no
     // external synchronization needed (the same guarantee std::jthread's own built-in stop
     // mechanism relies on, already used by this codebase's own ThreadPool). Idempotent (a second
-    // call is a harmless no-op, matching request_stop()'s own contract) and requires no lock: it
-    // never touches state_/ports_/rounds_ or anything else run_mutex_ (I1) protects -- a pure
-    // out-of-band signal the round loop polls on its own schedule, exactly like
-    // core/stream.hpp's ADR-017 stop_source/stop_token precedent this mechanism reuses.
-    void cancel() noexcept { cancel_source_.request_stop(); }
+    // call is a harmless no-op, matching request_stop()'s own contract). It never WAITS for a run: the
+    // stop request is out-of-band, as in core/stream.hpp's ADR-017 stop_source/stop_token precedent.
+    // (Before issue #156 it never touched run state at all; it now settles a suspended run itself, but
+    // only after `run_mutex_.try_lock()` succeeds -- when an entry point holds the lock, it leaves the run
+    // to that entry point. Settling pushes events, so like every entry point it blocks if the host has
+    // enabled the event stream and stopped draining a full one -- ADR-214 §5 R2.)
+    //
+    // Issue #156 (decisions/ADR-214) -- what a cancel does, wherever it lands:
+    //   - In a round: the round's in-flight steps finish (cooperatively -- an agent step's session sees
+    //     `ctx.cancellation` and ends `run.canceled`), no failed step is retried, and the run ends
+    //     `cancelled`. A step that failed in that round is NOT reported as `executor_failed`: the
+    //     workflow's own cancel is the cause, and the run says so. Successful steps' outputs are kept in
+    //     `partial`; ports reached in that round are listed in `unopened_ports`.
+    //   - While suspended (no entry point running): settled HERE, on the calling thread -- the run ends
+    //     `cancelled` (a `workflow_run_failed{cancelled}` event), every open interaction is closed, and a
+    //     pending nested sub-workflow is cancelled with it. If an entry point holds the run lock at that
+    //     instant, it observes the cancel instead and settles the run the same way before returning.
+    //   - Afterwards: `resume_workflow()`/`continue_workflow()` on that run return `cancelled` and change
+    //     nothing (a resume pushes `request_port_rejected`, reason "cancelled").
+    //   - PER RUN, not permanent (the pre-#156 behavior, where every later run on this supervisor ended
+    //     `cancelled`, is gone): `run_workflow()` (and `restore_from_record()`, which adopts another run)
+    //     gives the new run a FRESH stop source, so a cancel aimed at an earlier run -- or a late one that
+    //     arrived after it finished -- cannot reach it. The same contract `AgentSession::cancel()` has
+    //     (ADR-178). Consequence: a cancel issued BEFORE `run_workflow()` takes the run lock does not
+    //     cancel that run; cancel after it has started.
+    //   - Bound `sub_workflow` inners are cancelled too, so a nested run in flight stops at its own next
+    //     check instead of running to completion first.
+    void cancel() noexcept;
 
     // A caller can hold this independently (or hand it to unrelated code that wants to observe the
     // same cancellation) -- mirrors stream_producer<T>::stop_token()'s own exposed-handle shape.
+    // Issue #156: the token of the CURRENT run (see cancel()): one taken before `run_workflow()` starts a
+    // new run observes only the run it was taken during.
     [[nodiscard]] std::stop_token cancellation_token() const noexcept {
+        std::lock_guard<std::mutex> lock(cancel_mutex_);
         return cancel_source_.get_token();
     }
 
@@ -960,12 +997,28 @@ private:
         std::shared_ptr<WorkflowSupervisor> inner, agentengine::Message payload,
         std::shared_ptr<ExecuteReply> out,
         std::shared_ptr<agentengine::workflow::multiplex_sink<agentengine::workflow::WorkflowEvent>> sink,
-        std::vector<std::string> path_prefix);
+        std::vector<std::string> path_prefix, std::stop_token cancellation);
 
     task<WorkflowResult> execute();
 
     [[nodiscard]] WorkflowResult finish(workflow_status status,
                                         std::chrono::steady_clock::time_point entered_at);
+
+    // Issue #156 (ADR-214) helpers. All but `cancel_requested()` run under `run_mutex_`.
+    [[nodiscard]] bool cancel_requested() const noexcept;
+    // A fresh stop source for a new run (see cancel_source_).
+    void begin_cancel_epoch() noexcept;
+    // Closes every open interaction of a run that is ending `cancelled`: ports_ are dropped, each pending
+    // nested sub-workflow's inner is cancelled (which settles it the same way) and dropped, and the
+    // run's undelivered messages are discarded -- a cancelled run never moves again.
+    void close_run_for_cancel() noexcept;
+    // Something of the current run can still move: an open interaction or undelivered messages.
+    [[nodiscard]] bool run_is_live() const noexcept {
+        return !ports_.empty() || !pending_sub_workflows_.empty() || !state_.pending.empty();
+    }
+    // Called by every entry point after admission: a run that was cancelled (or has a cancel pending and
+    // something live) answers `cancelled` without moving. `std::nullopt` means "proceed".
+    [[nodiscard]] std::optional<WorkflowResult> refuse_if_cancelled();
 
     [[nodiscard]] agentengine::Interaction mint_interaction(std::size_t executor_index) const;
 
@@ -1293,14 +1346,22 @@ private:
     // ADR-017's own stop_source/stop_token precedent (core/stream.hpp), reused here rather than a
     // bespoke CancellationToken type. Always present (default-constructed, never requested) --
     // cancel()/cancellation_token() need no null check, matching multiplex_sink_'s own "always
-    // valid" shape. Never touches state_/ports_/rounds_ or anything else run_mutex_ (I1) protects;
-    // request_stop()/stop_requested() are specified thread-safe with no external synchronization,
-    // so this is genuinely callable from a different thread than whichever one is driving execute()
-    // right now, unlike every other member near it. Not part of RunStateRecord -- like
-    // nesting_depth_/event_path_prefix_, a restored instance's cancel_source_ is always
-    // unrequested; a caller wanting a restored run to stay cancelled must call cancel() again after
+    // valid" shape. request_stop()/stop_requested() are specified thread-safe with no external
+    // synchronization, so this is genuinely callable from a different thread than whichever one is
+    // driving execute() right now. Not part of RunStateRecord -- like nesting_depth_/
+    // event_path_prefix_, a restored instance's cancel_source_ is always unrequested (#156: restore
+    // replaces it); a caller wanting a restored run to stay cancelled must call cancel() again after
     // restore.
+    //
+    // Issue #156 (ADR-214): ONE SOURCE PER RUN -- replaced (never reset; std::stop_source cannot be) by
+    // `run_workflow()` and `restore_from_record()`. `cancel_mutex_` guards the HANDLE (copy/assign), not
+    // the stop-state: `cancel()` may run on another thread at the instant a new run replaces it, the race
+    // AgentSession's own ADR-178 `cancel_mutex_` closes the same way.
+    mutable std::mutex cancel_mutex_;
     std::stop_source cancel_source_;
+    // Issue #156: the current run ended `cancelled`. Set by `finish(cancelled)`, cleared with the source.
+    // Under `run_mutex_` like every other run-state member.
+    bool run_cancelled_ = false;
     // Scratch state for push_fan_in_aggregated_events() -- see route_from()'s own comment. Cleared
     // by execute() before each routing loop that calls route_from(), drained (and re-cleared) by
     // push_fan_in_aggregated_events() right after. Never holds state across a co_await suspension

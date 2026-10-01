@@ -3542,8 +3542,9 @@ private:
     }
 
     // ADR-210 §7 C1: a cancel mid-run lands at a timing-dependent point, so that workflow cannot be exported.
-    // A cancel while ready or suspended is the driver's own outcome, labelled as such. Either way it never runs
-    // again (the supervisor's cancel is permanent).
+    // A cancel while ready or suspended is the driver's own outcome, labelled as such. Either way the driver
+    // never runs it again (its monitor refuses; the supervisor's own cancel is per run since ADR-214, and a
+    // cancel while suspended now ends that run `cancelled` and closes its ports in the engine too).
     ToolResultJson t_workflow_cancel(Value const& args) {
         ToolError e;
         DriverWorkflow* w = find_workflow(args, e);

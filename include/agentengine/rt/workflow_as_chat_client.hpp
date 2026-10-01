@@ -363,7 +363,10 @@ inline void run_worker(std::shared_ptr<agentengine::rt::WorkflowSupervisor> inne
             producer.fail(envelope.error());
             return;
         }
-        r = drive(inner->run_workflow(agentengine::rt::RunWorkflow{*envelope}));
+        // Issue #156 (ADR-214): `run_workflow()` gives each run a fresh stop source, so the bridge above
+        // (which may already have fired, for a caller cancelled before this call started) cannot reach a run
+        // that starts after it -- the caller's token is linked into the new run instead.
+        r = drive(inner->run_workflow(agentengine::rt::RunWorkflow{*envelope, std::nullopt, ctx.cancellation}));
         add_spent(r.usage);
     } else {
         std::vector<ResumeSignal> signals = find_resume_signals(request.messages, open);

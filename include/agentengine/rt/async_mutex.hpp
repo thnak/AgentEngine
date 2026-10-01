@@ -182,6 +182,18 @@ public:
 
     [[nodiscard]] LockAwaiter lock() noexcept { return LockAwaiter{this}; }
 
+    // Issue #156: non-blocking acquisition from plain (non-coroutine) code -- the lock if it is free right
+    // now, else an empty Guard (`held() == false`); never waits and never queues. Used by
+    // `WorkflowSupervisor::cancel()` to settle a SUSPENDED run on the spot when no entry point is running.
+    // The Guard releases exactly like one from `lock()`, handing the mutex to a waiter that queued meanwhile.
+    [[nodiscard]] Guard try_lock() noexcept {
+        std::lock_guard lock(m_);
+        if (held_) return Guard{};
+        held_ = true;
+        owner_.store(current_holder_id(), std::memory_order_release);
+        return Guard{this};
+    }
+
     // ADR-123 -- a real, disclosed reentrant-self-deadlock hazard (AgentSession::fork_from(), agent_
     // session.hpp's own comment) needed a way to ask "does the CALLING thread already own this mutex"
     // without adding a second, incompatible locking discipline (a recursive mutex would silently change
