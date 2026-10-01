@@ -276,3 +276,10 @@ target_link_libraries(agentengine_example_32_chat_stream_session_loop PRIVATE
   agentengine::core agentengine_warnings)
 add_test(NAME example_32_chat_stream_session_loop
   COMMAND agentengine_example_32_chat_stream_session_loop)
+
+# 33: issue #28 items 5+6 -- a Magentic-style cyclic run with the typed live-event stream and the full
+# multi-visit transcript (ADR-213). Fully offline.
+add_executable(agentengine_example_33_magentic_transcript 33_magentic_transcript.cpp)
+target_link_libraries(agentengine_example_33_magentic_transcript PRIVATE
+  agentengine::core agentengine_warnings)
+add_test(NAME example_33_magentic_transcript COMMAND agentengine_example_33_magentic_transcript)

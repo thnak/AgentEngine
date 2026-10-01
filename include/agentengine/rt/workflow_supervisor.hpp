@@ -432,6 +432,10 @@ struct WorkflowResult {
     std::uint32_t   rounds = 0;
     agentengine::Message output{};
     std::vector<ExecutorOutput> partial{};
+    // ADR-213 (issue #28 item 6): EVERY completed visit, in completion order (a cyclic graph revisits an
+    // executor many times; `partial` keeps only its latest). Empty unless `enable_transcript()` was called.
+    std::vector<ExecutorOutput> transcript{};
+    bool            transcript_truncated = false;  // the `enable_transcript()` cap was hit; later visits dropped
     std::string     failed_executor{};
     std::vector<agentengine::Interaction> open_interactions{};
     std::vector<std::string> unopened_ports{};
@@ -449,9 +453,8 @@ struct WorkflowResult {
 // many rounds) has no "round order" left to extract by the time a run completes. This is therefore
 // NOT a full multi-visit transcript -- it is exactly what `partial` actually contains, honestly
 // named: the most recent message each executor produced. A genuine multi-visit transcript needs a
-// per-round hook into `execute()`'s dispatch loop (right where `record_partial()` currently
-// overwrites) -- the SAME mechanism a follow-on ADR/issue #29's per-executor event multiplexing needs to
-// build anyway, so it is deferred there rather than building a second, throwaway hook here.
+// per-round hook into `execute()`'s dispatch loop -- which ADR-213 added: `enable_transcript()` fills
+// `WorkflowResult::transcript` with every visit, in order. This helper stays the "latest per executor" view.
 using Transcript = std::vector<agentengine::Message>;
 
 [[nodiscard]] inline Transcript latest_outputs_of(WorkflowResult const& r) {
@@ -720,6 +723,16 @@ public:
     // blocking channel the structural bucket rides, precisely because a ThreadPool worker thread
     // doing real workflow compute must never be able to stall on a lagging consumer (see the design
     // draft §2 for the full red-teamed reasoning this split exists to satisfy).
+    // ADR-213 (issue #28 item 6): record every executor visit, in order, into `WorkflowResult::transcript`
+    // -- a Magentic-style cyclic run revisits the manager and participants many times, and `partial` only
+    // keeps each one's latest. Off by default (zero cost). Bounded: once `max_entries` visits are recorded
+    // further ones are dropped and `transcript_truncated` is set. Call before running; not checkpointed, so a
+    // run restored from a checkpoint records only the visits made since the restore.
+    void enable_transcript(std::size_t max_entries = 1024) noexcept {
+        transcript_enabled_ = true;
+        transcript_cap_     = max_entries;
+    }
+
     [[nodiscard]] agentengine::workflow::WorkflowEventStream enable_event_stream(
         std::pmr::memory_resource* mr,
         agentengine::stream_config<agentengine::workflow::WorkflowEvent> cfg = {}) {
@@ -806,6 +819,8 @@ private:
     struct RunState {
         std::vector<Delivery>       pending;
         std::vector<ExecutorOutput> partial;
+        std::vector<ExecutorOutput> transcript;   // ADR-213; in-memory only, never checkpointed
+        bool                        transcript_truncated = false;
         agentengine::Message        selected_output;
         std::string                 failed_executor;
         std::vector<std::string>    unopened_ports;
@@ -1041,6 +1056,9 @@ private:
     void record_partial(std::vector<ExecutorOutput>& partial, std::size_t executor_index,
                         std::uint32_t round, agentengine::Message const& payload) const;
 
+    // ADR-213: appends one visit to the transcript when enabled; stops (and flags truncation) at the cap.
+    void record_visit(std::size_t executor_index, std::uint32_t round, agentengine::Message const& payload);
+
     // GitHub issue #35 follow-up -- the one place `total_usage_` is ever mutated. `agentengine::Usage`
     // (core/content.hpp) is a plain aggregate with no `operator+=` of its own, so this is
     // field-by-field, over every real field that struct declares.
@@ -1224,6 +1242,8 @@ private:
     // Structural bucket: same single-writer channel shape live_view_producer_ already uses --
     // invalid until enable_event_stream() is called.
     agentengine::stream_producer<agentengine::workflow::WorkflowEvent> workflow_event_producer_;
+    bool        transcript_enabled_ = false;  // ADR-213
+    std::size_t transcript_cap_     = 0;
     // Multiplexed bucket: never null (constructed once, up front) so run_executor_job's per-
     // delivery wiring never needs a null check on THIS -- workflow_event_stream_enabled_ below is
     // the actual gate on whether it's ever handed to a delivery at all. shared_ptr (not a plain

@@ -197,3 +197,6 @@ if(WIN32)
   agentengine_add_test(test_rt_workflow_supervisor_merge_on_join
     LIBS agentengine::core agentengine::worktree_store agentengine_warnings)
 endif()
+
+# ADR-213 / issue #28 item 6: the opt-in multi-visit transcript.
+agentengine_add_test(test_workflow_transcript LIBS agentengine::core agentengine_warnings)

@@ -225,6 +225,8 @@ task<WorkflowResult> WorkflowSupervisor::resume_workflow_locked(ResumeWorkflow r
             WorkflowResult r{workflow_status::suspended};
             r.rounds            = rounds_;
             r.partial           = state_.partial;
+            r.transcript        = state_.transcript;
+            r.transcript_truncated = state_.transcript_truncated;
             r.output            = state_.selected_output;
             r.open_interactions = open_interactions();
             co_return r;
@@ -264,6 +266,8 @@ task<WorkflowResult> WorkflowSupervisor::resume_workflow_locked(ResumeWorkflow r
             WorkflowResult r{workflow_status::suspended};
             r.rounds            = rounds_;
             r.partial           = state_.partial;
+            r.transcript        = state_.transcript;
+            r.transcript_truncated = state_.transcript_truncated;
             r.output            = state_.selected_output;
             r.open_interactions = open_interactions();
             co_return r;
@@ -303,6 +307,8 @@ task<WorkflowResult> WorkflowSupervisor::resume_workflow_locked(ResumeWorkflow r
         WorkflowResult r{workflow_status::suspended};
         r.rounds            = rounds_;
         r.partial           = state_.partial;
+            r.transcript        = state_.transcript;
+            r.transcript_truncated = state_.transcript_truncated;
         r.output            = state_.selected_output;
         r.open_interactions = open_interactions();
         co_return r;
@@ -536,6 +542,7 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
                                       false, std::nullopt, p.usage};
             accumulate_usage(p.usage);  // GitHub issue #35 follow-up -- see OpenPort::usage's comment
             record_partial(state_.partial, p.executor_index, rounds_ - 1, p.response);
+            record_visit(p.executor_index, rounds_ - 1, p.response);
             if (is_output_selected(p.executor_index)) state_.selected_output = p.response;
             route_result const rr = route_from(p.executor_index, reply, next);
             if (rr == route_result::ok) continue;
@@ -850,6 +857,7 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
             if (!replies[i].ok) continue;
             accumulate_usage(replies[i].usage);  // GitHub issue #35 follow-up
             record_partial(state_.partial, idx, rounds_ - 1, replies[i].payload);
+            record_visit(idx, rounds_ - 1, replies[i].payload);
             if (is_output_selected(idx)) {
                 state_.selected_output = replies[i].payload;
             }
@@ -1037,6 +1045,8 @@ WorkflowResult WorkflowSupervisor::finish(workflow_status status,
     r.rounds          = rounds_;
     r.output          = state_.selected_output;
     r.partial         = state_.partial;
+    r.transcript      = state_.transcript;
+    r.transcript_truncated = state_.transcript_truncated;
     r.failed_executor = state_.failed_executor;
     // ADR-157 (issues #33/#38): UNCONDITIONAL, not gated behind `status == suspended` anymore.
     // A sub_workflow node can suspend (added to pending_sub_workflows_) and then a DIFFERENT
@@ -1350,6 +1360,16 @@ void WorkflowSupervisor::record_partial(std::vector<ExecutorOutput>& partial, st
         return;
     }
     partial.push_back(ExecutorOutput{id, round, payload});
+}
+
+void WorkflowSupervisor::record_visit(std::size_t executor_index, std::uint32_t round,
+                                      agentengine::Message const& payload) {
+    if (!transcript_enabled_) return;
+    if (state_.transcript.size() >= transcript_cap_) {
+        state_.transcript_truncated = true;
+        return;
+    }
+    state_.transcript.push_back(ExecutorOutput{graph_.executors[executor_index].id, round, payload});
 }
 
 void WorkflowSupervisor::add_usage(agentengine::Usage& to, agentengine::Usage const& delta) noexcept {
