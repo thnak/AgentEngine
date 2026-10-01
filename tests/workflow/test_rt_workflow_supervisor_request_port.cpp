@@ -38,6 +38,10 @@
 //   IQ6 -- WorkflowSupervisor::open_interactions() (the live accessor) and
 //          WorkflowResult::open_interactions (the reply field) stay in agreement through a partial
 //          resume (E3's shape) and a rejected double-resolve (E2's shape).
+//   (E5/IQ3/IQ5 were changed by issue #155: an undeclared or unusable route is now REFUSED at resolve
+//    time -- `invalid_routes`, port still open -- instead of consuming the port and ending the run.)
+//   IQ8 -- issue #155: with two ports open, a bad or mixed route on one is refused immediately; every
+//          refused resolve is a `request_port_rejected` event, never `workflow_run_failed`.
 //   IQ7 -- issue #157: two same-round deliveries to ONE port open two interactions with distinct ids,
 //          each answerable independently; the run completes.
 //
@@ -356,13 +360,18 @@ int main() {
             WorkflowResult r2 = drive(
                 sup.resume_workflow(ResumeWorkflow{id, text_message("x"), {"admin_override"}}));
 
-            check(r2.status == workflow_status::routing_failed && r2.failed_executor == "review",
-                  "E5 (I3): a label the graph never declared as a case selects no edge -- the run "
-                  "reports routing_failed, naming the port as the executor whose routing contract "
-                  "failed, rather than completing with an empty result");
+            check(r2.status == workflow_status::invalid_routes,
+                  "E5 (I3, #155): a label the graph never declared as a case selects no edge -- the "
+                  "resolve is REFUSED (invalid_routes) before the port is consumed, rather than "
+                  "completing with an empty result or ending the run");
             check(*publish_calls == 0 && *discard_calls == 0,
                   "E5 (I3): neither branch ran -- an invented label has no more authority than an "
                   "invented model route would");
+            check(sup.open_interactions().size() == 1 && sup.open_interactions().front().interaction_id == id,
+                  "E5 (#155): the port is still open under the same id");
+            WorkflowResult r3 = drive(sup.resume_workflow(ResumeWorkflow{id, text_message("x"), {"approve"}}));
+            check(r3.status == workflow_status::completed && *publish_calls == 1 && *discard_calls == 0,
+                  "E5 (#155): the corrected answer to the same interaction completes the run");
         }
     }
 
@@ -474,11 +483,15 @@ int main() {
         check(r1.status == workflow_status::suspended, "IQ3: the run reaches the switch_case port and suspends");
         std::string const id = r1.open_interactions.empty() ? std::string{} : r1.open_interactions.front().interaction_id;
 
+        // Issue #155: a routing answer matching no declared case label is refused at resolve time --
+        // it no longer consumes the port and ends the run routing_failed later.
         WorkflowResult r2 = drive(
             sup.resume_workflow(ResumeWorkflow{id, text_message("unrouted"), {"neither_label"}}));
-        check(r2.status == workflow_status::routing_failed,
-              "IQ3: a routing answer matching no declared case label ends the run routing_failed");
-        check(r2.failed_executor == "port", "IQ3: the result names the PORT as the routing contract that failed");
+        check(r2.status == workflow_status::invalid_routes,
+              "IQ3 (#155): a routing answer matching no declared case label is refused (invalid_routes)");
+        check(r2.failed_executor.empty() && r2.open_interactions.size() == 1 &&
+                  r2.open_interactions.front().interaction_id == id,
+              "IQ3 (#155): nothing failed -- the port is still open under the same id");
 
         agentengine::rt::ExecutorOutput const* p_start = nullptr;
         for (auto const& out : r2.partial) {
@@ -486,10 +499,23 @@ int main() {
         }
         check(p_start != nullptr && text_of(p_start->payload) == "in>start",
               "IQ3 -- CORE CLAIM: the executor that completed BEFORE the port (start) still has its "
-              "partial result after a routing failure discovered only at resume time");
+              "partial result in the refused resolve's reply");
         check(text_of(r2.output) == "in>start",
-              "IQ3: the last output-selected payload survives the routing failure unchanged -- the "
-              "partial-results promise holds across a suspend/resume boundary too");
+              "IQ3: the last output-selected payload is unchanged by the refusal");
+
+        // A selection of BOTH switch cases is refused the same way (the run would otherwise end
+        // routing_failed: a switch_case fires exactly one edge).
+        WorkflowResult both = drive(
+            sup.resume_workflow(ResumeWorkflow{id, text_message("both"), {"approve", "reject"}}));
+        check(both.status == workflow_status::invalid_routes && sup.open_interactions().size() == 1,
+              "IQ3 (#155): routes firing two switch_case edges are refused and the port stays open");
+        WorkflowResult none = drive(sup.resume_workflow(ResumeWorkflow{id, text_message("none"), {}}));
+        check(none.status == workflow_status::invalid_routes && sup.open_interactions().size() == 1,
+              "IQ3 (#155): no route at a switch_case port is refused and the port stays open");
+
+        WorkflowResult r3 = drive(sup.resume_workflow(ResumeWorkflow{id, text_message("ok"), {"approve"}}));
+        check(r3.status == workflow_status::completed,
+              "IQ3 (#155): a valid answer to the same interaction then completes the run");
     }
 
     // ---- IQ4: a port and a FAILING sibling reached in the SAME fan-out round -- the round's ----
@@ -564,16 +590,91 @@ int main() {
         std::string const id = r1.open_interactions.empty() ? std::string{} : r1.open_interactions.front().interaction_id;
 
         // Spurious routes naming labels the graph never declared (there are no case labels here at
-        // all -- the one outgoing edge is plain `direct`).
+        // all -- the one outgoing edge is plain `direct`). Issue #155: refused, not silently ignored --
+        // a label that selects nothing is an authoring mistake by the answerer, and ignoring it hid
+        // the mistake (a mixed list on a switch port used to complete with the bad label dropped).
         WorkflowResult r2 = drive(sup.resume_workflow(
             ResumeWorkflow{id, text_message("payload"), {"admin_override", "sink", "port", "not_a_real_label"}}));
-        check(r2.status == workflow_status::completed,
-              "IQ5 -- CORE CLAIM: a spurious `routes` vector on a port whose only outgoing edge is "
-              "`direct` is harmless -- the edge fires exactly as it always would, routes carries no "
-              "authority here");
-        check(text_of(r2.output) == "payload>sink",
-              "IQ5: the response reached 'sink' via the one declared direct edge, unaffected by the "
-              "routes content");
+        check(r2.status == workflow_status::invalid_routes && sup.open_interactions().size() == 1,
+              "IQ5 -- CORE CLAIM (#155): a `routes` vector naming labels the port's edges never declared "
+              "is refused, routes carry no authority here, and the port stays open");
+        WorkflowResult r3 = drive(sup.resume_workflow(ResumeWorkflow{id, text_message("payload"), {}}));
+        check(r3.status == workflow_status::completed && text_of(r3.output) == "payload>sink",
+              "IQ5: the same interaction answered without routes reaches 'sink' via the one declared "
+              "direct edge");
+    }
+
+    // ---- IQ8 (issue #155): a bad route is refused at resolve time even with a SECOND port open, ----
+    // ---- a mixed list (one valid label + one invented) is refused, and every refusal is pushed  ----
+    // ---- as request_port_rejected -- never workflow_run_failed -- with the run unchanged.       ----
+    //
+    //          .-> p1 --(switch "go")--> j1 -.
+    //   fan --                                >-> join
+    //          '-> p2 ----------------------'
+    {
+        Workflow wf;
+        wf.id        = "iq8-two-ports-bad-route";
+        wf.executors = {node_desc("fan"), port_desc("p1"), port_desc("p2"), node_desc("j1"), node_desc("join")};
+        wf.edges.push_back(Edge{"fan", "p1", edge_kind::fan_out, {}});
+        wf.edges.push_back(Edge{"fan", "p2", edge_kind::fan_out, {}});
+        wf.edges.push_back(Edge{"p1", "j1", edge_kind::switch_case, "go"});
+        wf.edges.push_back(Edge{"j1", "join", edge_kind::fan_in, {}});
+        wf.edges.push_back(Edge{"p2", "join", edge_kind::fan_in, {}});
+        wf.start            = "fan";
+        wf.output_selection = {"join"};
+        wf.bound.max_rounds = 8;
+        check(validate_workflow(wf).has_value(), "IQ8: the two-port graph validates");
+
+        std::vector<ExecutorBody> bodies = {appender("fan"), {}, {}, appender("j1"), appender("join")};
+        WorkflowSupervisor sup;
+        sup.initialize(wf, bodies);
+        agentengine::workflow::WorkflowEventStream stream = sup.enable_event_stream(std::pmr::get_default_resource());
+        auto drain = [&stream] {
+            std::vector<agentengine::workflow::WorkflowEvent> out;
+            while (auto ev = stream.next()) out.push_back(std::move(*ev));
+            return out;
+        };
+
+        WorkflowResult r1 = drive(sup.run_workflow(RunWorkflow{text_message("in")}));
+        std::string p1, p2;
+        for (auto const& i : r1.open_interactions) (i.interaction_id.find(":port:p1:") != std::string::npos ? p1 : p2) = i.interaction_id;
+        check(r1.status == workflow_status::suspended && !p1.empty() && !p2.empty(), "IQ8 setup: both ports open");
+        (void)drain();
+
+        auto only_rejections = [](std::vector<agentengine::workflow::WorkflowEvent> const& evs, std::string const& reason) {
+            bool rejected = false;
+            for (auto const& e : evs) {
+                if (e.kind == agentengine::workflow::workflow_event_kind::workflow_run_failed) return false;
+                if (e.kind != agentengine::workflow::workflow_event_kind::request_port_rejected) return false;
+                auto const* p = std::get_if<agentengine::workflow::workflow_event_payload::PortRejected>(&e.payload);
+                rejected = p != nullptr && p->reason == reason;
+            }
+            return rejected;
+        };
+
+        WorkflowResult bad = drive(sup.resume_workflow(ResumeWorkflow{p1, text_message("a"), {"bogus"}}));
+        check(bad.status == workflow_status::invalid_routes && sup.open_interactions().size() == 2,
+              "IQ8 -- CORE CLAIM (#155): with two ports open, a bad route on p1 is refused NOW and both "
+              "ports stay open (it used to be stored, and fail the run on p2's answer)");
+        check(only_rejections(drain(), "invalid_routes"),
+              "IQ8: the refusal is ONE request_port_rejected event (reason invalid_routes), no workflow_run_failed");
+
+        WorkflowResult mixed = drive(sup.resume_workflow(ResumeWorkflow{p1, text_message("a"), {"go", "bogus"}}));
+        check(mixed.status == workflow_status::invalid_routes && sup.open_interactions().size() == 2,
+              "IQ8 (#155): a mixed list (a declared case plus an invented one) is refused too");
+        (void)drain();
+
+        WorkflowResult unknown = drive(sup.resume_workflow(ResumeWorkflow{"no-such-id", text_message("a"), {}}));
+        check(unknown.status == workflow_status::invalid && only_rejections(drain(), "unknown_interaction"),
+              "IQ8 (#155): an unknown id is invalid and pushed as request_port_rejected (unknown_interaction), "
+              "not workflow_run_failed");
+
+        WorkflowResult r2 = drive(sup.resume_workflow(ResumeWorkflow{p2, text_message("b"), {}}));
+        check(r2.status == workflow_status::suspended && r2.open_interactions.size() == 1,
+              "IQ8: answering p2 validly leaves only p1 open -- the earlier refusals left nothing behind");
+        WorkflowResult r3 = drive(sup.resume_workflow(ResumeWorkflow{p1, text_message("a"), {"go"}}));
+        check(r3.status == workflow_status::completed && all_text_of(r3.output) == "b+a>j1>join",
+              "IQ8: the corrected p1 answer completes the run through both branches");
     }
 
     // ---- IQ6: open_interactions() (live accessor) and WorkflowResult::open_interactions (the ----

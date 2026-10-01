@@ -94,6 +94,16 @@ answered on its own (issue #157). An id is `<run>:port:<port id>:<round>`; a sec
 delivery to that port takes the first free `:<k>` suffix (`k ≥ 1`), so a port reached once per round
 keeps the unsuffixed id. No two interactions that are open at the same time share an id.
 
+**An answer is checked before it is accepted** (issue #155). The routes a response names are validated
+against the port's outgoing edges *before* the port is consumed: every label must be the case label
+of a `switch_case`/`multi_selection` edge out of that port (an undeclared label is refused whether it
+is alone or mixed with valid ones, and on a port with no labelled edges any label is undeclared), and
+when the port has `switch_case` edges the routes must select exactly one of them. A refused answer —
+like an unknown or already-answered id, or a caller the admission gate denies — changes nothing: the
+port stays open under the same id, the run stays suspended, and the refusal is reported as itself
+(`invalid_routes`; on the event stream, `request_port_rejected`, never a run-failed event). A typo in
+a route is therefore corrected by answering again, not by losing the run.
+
 A suspended workflow **holds no resources**: it is checkpointed, its activations passivate, and it
 resumes on the response, on a durable reminder (the runtime's durable reminders — formerly Quark's;
 carried over intact by ADR-037's `rt::` migration), or never — an abandoned workflow is

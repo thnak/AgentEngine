@@ -139,7 +139,7 @@ task<WorkflowResult> WorkflowSupervisor::resume_workflow_locked(ResumeWorkflow r
     // which on a switch_case/multi_selection edge decides where the run goes next. Ids are not
     // secrets: they cross `WorkflowResult::open_interactions` to the host, and per ADR-061 the
     // host owning the inbound transport is exactly the layer relaying an untrusted caller.
-    if (!admit_caller(request.caller)) co_return deny_admission();
+    if (!admit_caller(request.caller)) co_return deny_admission(request.interaction_id);
     if (!valid_) {
         push_structural_event(workflow_event_kind::workflow_run_failed,
                                RunFailed{workflow_status_tag(workflow_status::invalid)});
@@ -202,12 +202,21 @@ task<WorkflowResult> WorkflowSupervisor::resume_workflow_locked(ResumeWorkflow r
         // refusal happened at the inner's gate and is counted there, which is where a host
         // debugging it needs to look. The structural event IS pushed, so the outer's own event
         // stream still shows the run stopping and why.
+        //
+        // Issue #155: the same holds for routes the inner port refused (`invalid_routes`) -- the inner run is
+        // still suspended at that port, so the outer interaction must stay open for a corrected answer. Both
+        // are pushed as `request_port_rejected`, not `workflow_run_failed`: the outer run did not end.
         if (inner_result.status == workflow_status::admission_denied) {
             pending_sub_workflows_[request.interaction_id] = pending;
-            push_structural_event(
-                workflow_event_kind::workflow_run_failed,
-                RunFailed{workflow_status_tag(workflow_status::admission_denied)});
+            push_structural_event(workflow_event_kind::request_port_rejected,
+                                  agentengine::workflow::workflow_event_payload::PortRejected{
+                                      {}, request.interaction_id, "admission_denied"});
             co_return WorkflowResult{workflow_status::admission_denied};
+        }
+        if (inner_result.status == workflow_status::invalid_routes) {
+            pending_sub_workflows_[request.interaction_id] = pending;
+            co_return reject_resolve(workflow_status::invalid_routes, graph_.executors[pending.executor_index].id,
+                                     request.interaction_id, "invalid_routes");
         }
         if (inner_result.status == workflow_status::suspended) {
             // Suspended again -- mint a fresh outer interaction, re-track, report suspended
@@ -277,12 +286,15 @@ task<WorkflowResult> WorkflowSupervisor::resume_workflow_locked(ResumeWorkflow r
         if (p.interaction.interaction_id == request.interaction_id) { port = &p; break; }
     }
     if (port == nullptr || port->resolved) {
-        push_structural_event(workflow_event_kind::workflow_run_failed,
-                               RunFailed{workflow_status_tag(workflow_status::invalid)});
-        WorkflowResult r{workflow_status::invalid};
-        r.rounds            = rounds_;
-        r.open_interactions = open_interactions();
-        co_return r;
+        // Issue #155: a refusal, not a run outcome -- `request_port_rejected`, never `workflow_run_failed`.
+        co_return reject_resolve(workflow_status::invalid, {}, request.interaction_id, "unknown_interaction");
+    }
+    // Issue #155: the routes are checked against the port's outgoing edges BEFORE the port is consumed. A bad
+    // route used to be stored here and only checked when every port was answered and the run moved on, so a
+    // typo ended the run `routing_failed` (or, with a second port open, ended it on that OTHER port's answer).
+    if (!port_routes_valid(port->executor_index, request.routes)) {
+        co_return reject_resolve(workflow_status::invalid_routes, graph_.executors[port->executor_index].id,
+                                 request.interaction_id, "invalid_routes");
     }
 
     port->resolved = true;
@@ -1424,13 +1436,58 @@ bool WorkflowSupervisor::sub_workflow_kind_nodes_are_bound() const {
     return true;
 }
 
-WorkflowResult WorkflowSupervisor::deny_admission() {
+WorkflowResult WorkflowSupervisor::deny_admission(std::optional<std::string> resolving) {
     ++admission_denied_count_;
-    push_structural_event(
-        agentengine::workflow::workflow_event_kind::workflow_run_failed,
-        agentengine::workflow::workflow_event_payload::RunFailed{
-            workflow_status_tag(workflow_status::admission_denied)});
+    if (resolving.has_value()) {
+        // Issue #155: deliberately no executor id -- naming the port behind an id would be a lookup done on
+        // behalf of a caller the gate just refused.
+        push_structural_event(agentengine::workflow::workflow_event_kind::request_port_rejected,
+                              agentengine::workflow::workflow_event_payload::PortRejected{
+                                  {}, std::move(*resolving), "admission_denied"});
+    } else {
+        push_structural_event(
+            agentengine::workflow::workflow_event_kind::workflow_run_failed,
+            agentengine::workflow::workflow_event_payload::RunFailed{
+                workflow_status_tag(workflow_status::admission_denied)});
+    }
     return WorkflowResult{workflow_status::admission_denied};
+}
+
+WorkflowResult WorkflowSupervisor::reject_resolve(workflow_status status, std::string executor_id,
+                                                  std::string interaction_id, char const* reason) {
+    push_structural_event(agentengine::workflow::workflow_event_kind::request_port_rejected,
+                          agentengine::workflow::workflow_event_payload::PortRejected{
+                              std::move(executor_id), std::move(interaction_id), reason});
+    WorkflowResult r{status};
+    r.rounds            = rounds_;
+    r.partial           = state_.partial;
+    r.output            = state_.selected_output;
+    r.open_interactions = open_interactions();
+    return r;
+}
+
+bool WorkflowSupervisor::port_routes_valid(std::size_t port_index, std::vector<std::string> const& routes) const {
+    using agentengine::workflow::edge_kind;
+    std::string const& port_id = graph_.executors[port_index].id;
+    for (std::string const& route : routes) {
+        bool declared = false;
+        for (auto const& edge : graph_.edges) {
+            if (edge.from != port_id) continue;
+            if (edge.kind != edge_kind::switch_case && edge.kind != edge_kind::multi_selection) continue;
+            if (edge.case_label == route) { declared = true; break; }
+        }
+        if (!declared) return false;
+    }
+    ExecuteReply probe{};
+    probe.routes = routes;
+    std::size_t switch_edges = 0;
+    std::size_t switch_fired = 0;
+    for (auto const& edge : graph_.edges) {
+        if (edge.from != port_id || edge.kind != edge_kind::switch_case) continue;
+        ++switch_edges;
+        if (edge_fires(edge, probe)) ++switch_fired;
+    }
+    return switch_edges == 0 || switch_fired == 1;
 }
 
 void WorkflowSupervisor::propagate_admission_to_children() {

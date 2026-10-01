@@ -124,6 +124,9 @@ template <class T>
         // handled anyway rather than left to the `return "unknown"` fallthrough, because "cannot
         // happen today" is not a property the compiler or a future caller is obliged to preserve.
         case workflow_status::admission_denied: return "admission_denied";
+        // Issue #155: a refused resolve's status. Unreachable from `run_once()` (it never resumes) --
+        // handled for the same exhaustive-switch reason as the two cases above.
+        case workflow_status::invalid_routes:   return "invalid_routes";
     }
     return "unknown";
 }

@@ -60,6 +60,12 @@ enum class workflow_event_kind {  // ae-naming-lint: allow workflow_event_kind â
     request_port_opened, request_port_resolved,
     checkpoint_saved, merge_completed, merge_conflict,
     agent_turn_event, moderator_stream_delta,
+    // Issue #155: a `resume_workflow()` that was REFUSED -- an unknown or already-answered interaction id, a
+    // caller the admission gate denied, or routes that are not a valid choice at the port. Nothing in the
+    // run changed. Before #155 these were pushed as
+    // `workflow_run_failed`, which a consumer reads as the run ending while it was still suspended.
+    // Appended last so every existing enumerator keeps its value.
+    request_port_rejected,
 };
 
 namespace workflow_event_payload {
@@ -111,6 +117,15 @@ struct PortRef {
     std::string interaction_id;
 };
 
+// Issue #155: `request_port_rejected`. `executor_id` is the port's id when the interaction was found, empty
+// when it was not (an unknown id names no port). `reason` is one of "unknown_interaction",
+// "admission_denied", "invalid_routes".
+struct PortRejected {
+    std::string executor_id;
+    std::string interaction_id;
+    std::string reason;
+};
+
 struct CheckpointSaved {
     std::uint32_t round = 0;
 };
@@ -159,7 +174,8 @@ using WorkflowEventPayload = std::variant<
     workflow_event_payload::FanIn, workflow_event_payload::RouteSelected,
     workflow_event_payload::PortRef, workflow_event_payload::CheckpointSaved,
     workflow_event_payload::MergeRef, workflow_event_payload::SuperstepBounds,
-    workflow_event_payload::AgentTurn, workflow_event_payload::ModeratorDelta>;
+    workflow_event_payload::AgentTurn, workflow_event_payload::ModeratorDelta,
+    workflow_event_payload::PortRejected>;
 
 struct WorkflowEvent {  // ae-naming-lint: allow WorkflowEvent â€” mirrors RunEvent's own project-normative naming (core/run_event.hpp)
     workflow_event_kind  kind  = workflow_event_kind::workflow_run_started;

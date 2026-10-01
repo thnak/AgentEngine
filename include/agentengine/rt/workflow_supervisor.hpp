@@ -357,6 +357,14 @@ enum class workflow_status {
     // on this path, so it is not a run OUTCOME in the sense every other enumerator here is: it is a
     // refusal to start/resume at all.
     admission_denied,
+    // Issue #155: `ResumeWorkflow::routes` does not name a valid choice among the request port's outgoing
+    // edges -- a label no switch_case/multi_selection edge out of the port carries (alone, or mixed in with
+    // valid ones), or a set that would fire zero or several of the port's switch_case edges. Checked BEFORE
+    // the port is marked resolved, so like `invalid` (an unknown id) and `admission_denied` this is a refusal,
+    // not a run outcome: the port stays open, nothing in the run changed, and the same interaction can be
+    // answered again with a corrected route. Before #155 the answer was stored first and the routes checked
+    // when the run moved on, so a typo consumed the port and ended the run `routing_failed`.
+    invalid_routes,
 };
 
 // ADR-152 (issue #29): the plain-string form of `workflow_status` used ONLY for
@@ -377,6 +385,7 @@ enum class workflow_status {
         case workflow_status::invalid:           return "invalid";
         case workflow_status::cancelled:         return "cancelled";
         case workflow_status::admission_denied:  return "admission_denied";
+        case workflow_status::invalid_routes:    return "invalid_routes";
     }
     return "invalid";
 }
@@ -1114,7 +1123,26 @@ private:
     // either: `admission_denied_count_` is bumped and a structural event IS pushed, because I4 makes
     // a refused attempt an event the host must be able to see -- the asymmetry is deliberate, the
     // host learns everything, the denied caller learns nothing.
-    [[nodiscard]] WorkflowResult deny_admission();
+    //
+    // Issue #155: `resolving` names the interaction a denied `resume_workflow()` tried to answer. A refused
+    // resolve is pushed as `request_port_rejected` (reason "admission_denied"), not `workflow_run_failed`:
+    // the run it was refused access to is still suspended, untouched. A denied `run_workflow()`/
+    // `continue_workflow()` (no `resolving`) keeps the `workflow_run_failed` it always had -- the requested
+    // run did not start.
+    [[nodiscard]] WorkflowResult deny_admission(std::optional<std::string> resolving = std::nullopt);
+
+    // Issue #155: the one refusal path for a resolve that changes nothing (unknown or already-answered id,
+    // invalid routes). Pushes `request_port_rejected` and returns `status` with the still-open interactions,
+    // the same reply shape `invalid` always had.
+    [[nodiscard]] WorkflowResult reject_resolve(workflow_status status, std::string executor_id,
+                                                std::string interaction_id, char const* reason);
+
+    // Issue #155: are `routes` a valid answer at request port `port_index`? Every label must be the
+    // `case_label` of some switch_case/multi_selection edge out of the port (an unknown label, alone or mixed
+    // with valid ones, is refused -- including on a port with no labelled edges at all, where any label is
+    // unknown), and when the port has switch_case edges the routes must fire exactly one of them -- the same
+    // rule `route_from()` would apply once the run moves on, checked BEFORE the port is consumed.
+    [[nodiscard]] bool port_routes_valid(std::size_t port_index, std::vector<std::string> const& routes) const;
 
     // A bound sub-workflow that the host gave NO owner of its own inherits this one's -- recursively,
     // bounded by `kMaxNestingDepth`. Called from `set_principal()`/`set_require_caller()` AND from

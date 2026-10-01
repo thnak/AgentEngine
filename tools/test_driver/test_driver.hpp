@@ -1816,6 +1816,7 @@ namespace workflow_fixture_detail {
         case K::merge_conflict: return "merge_conflict";
         case K::agent_turn_event: return "agent_turn_event";
         case K::moderator_stream_delta: return "moderator_stream_delta";
+        case K::request_port_rejected: return "request_port_rejected";
     }
     return "unknown";
 }
@@ -1865,6 +1866,10 @@ namespace workflow_fixture_detail {
             [](wp::SuperstepBounds const& x) { return obj({{"executors", strings_json(x.executor_ids)}}); },
             [](wp::AgentTurn const& x) { return obj({{"executor_id", str(x.executor_id)}}); },
             [](wp::ModeratorDelta const& x) { return obj({{"executor_id", str(x.executor_id)}}); },
+            [](wp::PortRejected const& x) {
+                return obj({{"executor_id", str(x.executor_id)}, {"interaction_id", str(x.interaction_id)},
+                            {"reason", str(x.reason)}});
+            },
         },
         p);
 }

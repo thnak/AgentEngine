@@ -37,7 +37,8 @@
 //         item 5, so the inner gate genuinely runs and attribution stays with the real caller); an
 //         un-owned child inherits the parent's owner in BOTH bind/configure orderings; a child given
 //         its OWN distinct owner keeps it and is not overwritten.
-//   A12 -- I4: a denial pushes a real `workflow_run_failed` event tagged "admission_denied" into the
+//   A12 -- I4: a denied resolve pushes a real `request_port_rejected` event (reason "admission_denied";
+//         issue #155 -- it was `workflow_run_failed` before, which read as the run ending) into the
 //         host's event stream. The host learns everything; the denied caller learns nothing.
 //
 // MACHINE SAFETY (CLAUDE.md): every graph here is 2-3 nodes with `bound.max_rounds` set; no sleeps,
@@ -559,15 +560,23 @@ void a12_denial_is_audited() {
 
     std::vector<WorkflowEvent> const evs = drain_all(stream);
     bool found_tagged_denial = false;
+    bool run_failed_pushed   = false;
     for (auto const& e : evs) {
-        if (e.kind != workflow_event_kind::workflow_run_failed) continue;
-        if (auto const* p = std::get_if<payload::RunFailed>(&e.payload)) {
-            if (p->status_tag == std::string("admission_denied")) found_tagged_denial = true;
+        if (e.kind == workflow_event_kind::workflow_run_failed) run_failed_pushed = true;
+        if (e.kind != workflow_event_kind::request_port_rejected) continue;
+        if (auto const* p = std::get_if<payload::PortRejected>(&e.payload)) {
+            if (p->reason == "admission_denied" && p->interaction_id == id && p->executor_id.empty()) {
+                found_tagged_denial = true;
+            }
         }
     }
+    // Issue #155 changed the event kind: a refused RESOLVE leaves the run suspended, so it is pushed as
+    // `request_port_rejected`, not `workflow_run_failed` (which read as the run ending).
     check(found_tagged_denial,
-          "A12: the denial reaches the host's event stream as workflow_run_failed tagged "
-          "'admission_denied' -- the host learns everything, the denied caller learns nothing (I4)");
+          "A12: the denial reaches the host's event stream as request_port_rejected (reason "
+          "'admission_denied', naming the id tried, not the port behind it) -- the host learns "
+          "everything, the denied caller learns nothing (I4)");
+    check(!run_failed_pushed, "A12 (#155): and no workflow_run_failed -- the run is still suspended");
 }
 
 }  // namespace
