@@ -1829,6 +1829,7 @@ namespace workflow_fixture_detail {
         case workflow::edge_kind::switch_case: return "switch_case";
         case workflow::edge_kind::multi_selection: return "multi_selection";
         case workflow::edge_kind::chain: return "chain";
+        case workflow::edge_kind::switch_default: return "switch_default";
     }
     return "unknown";
 }
@@ -1855,6 +1856,12 @@ namespace workflow_fixture_detail {
             [](wp::FanOut const& x) { return obj({{"from", str(x.from_executor_id)}, {"to", strings_json(x.to_executor_ids)}}); },
             [](wp::FanIn const& x) { return obj({{"to", str(x.to_executor_id)}, {"from", strings_json(x.from_executor_ids)}}); },
             [](wp::RouteSelected const& x) {
+                // ADR-215: "took_default" only when set, so a scenario exported before it existed still
+                // compares equal for every switch without a default.
+                if (x.took_default) {
+                    return obj({{"executor_id", str(x.executor_id)}, {"chosen", strings_json(x.chosen_cases)},
+                                {"available", strings_json(x.available_cases)}, {"took_default", boolean(true)}});
+                }
                 return obj({{"executor_id", str(x.executor_id)}, {"chosen", strings_json(x.chosen_cases)},
                             {"available", strings_json(x.available_cases)}});
             },

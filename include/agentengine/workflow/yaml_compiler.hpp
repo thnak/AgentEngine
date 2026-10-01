@@ -24,9 +24,10 @@
 // (a list -- one `edge_kind::fan_out` `Edge` per target, since `graph.hpp`'s own `Edge` struct is
 // single-target; an N-target fan-out is N separate `Edge` records sharing one `from`, by design of
 // that struct, not this compiler's own invention), `fan_in_to` (single target, `edge_kind::fan_in`).
-// `switch_case`/`multi_selection`/`chain`/per-edge `on_failure` policy are NOT built -- 015 §3's own
-// example never uses them, and extending the YAML shape to cover them is real, separate follow-up
-// work, not a drive-by here.
+// `switch_case` and its default (ADR-215, issue #34): `case: <label>` / `default: true` on a `to` edge.
+// `multi_selection`/`chain`/per-edge `on_failure` policy are NOT built -- 015 §3's own example never
+// uses them, and extending the YAML shape to cover them is real, separate follow-up work, not a
+// drive-by here.
 
 #include <cctype>
 #include <cstdint>
@@ -151,6 +152,32 @@ namespace json = agentengine::json;
                   "yaml_compiler.ambiguous_edge_form"});
     }
 
+    // ADR-215 (issue #34): a switch, declaratively -- `case: <label>` on a `to` edge is a `switch_case` edge,
+    // `default: true` on a `to` edge is the switch's default (`switch_default`). Exactly what
+    // `WorkflowBuilder::connect_case`/`connect_default` emit, checked by the same validator (I6). Either key
+    // on a fan-out/fan-in form, both on one edge, or a malformed value is refused, never ignored.
+    json::Value const* case_field    = node.find("case");
+    json::Value const* default_field = node.find("default");
+    if ((case_field != nullptr || default_field != nullptr) && to_field == nullptr) {
+        return std::unexpected(error{failure_class::contract,
+                                      "edge from '" + from + "': \"case\"/\"default\" apply only to a \"to\" edge",
+                                      "yaml_compiler.switch_on_non_direct_edge"});
+    }
+    if (case_field != nullptr && default_field != nullptr) {
+        return std::unexpected(error{failure_class::contract,
+                                      "edge from '" + from + "' declares both \"case\" and \"default\"",
+                                      "yaml_compiler.case_and_default"});
+    }
+    if (case_field != nullptr && !case_field->is_string()) {
+        return std::unexpected(error{failure_class::contract, "edge \"case\" must be a string",
+                                      "yaml_compiler.bad_edge_case"});
+    }
+    if (default_field != nullptr && !(default_field->is_bool() && default_field->as_bool())) {
+        return std::unexpected(error{failure_class::contract,
+                                      "edge \"default\" must be true (omit it for a non-default edge)",
+                                      "yaml_compiler.bad_edge_default"});
+    }
+
     if (to_field) {
         if (!to_field->is_string()) {
             return std::unexpected(error{failure_class::contract, "edge \"to\" must be a string",
@@ -160,6 +187,12 @@ namespace json = agentengine::json;
         e.from = from;
         e.to   = to_field->as_string();
         e.kind = edge_kind::direct;
+        if (case_field != nullptr) {
+            e.kind       = edge_kind::switch_case;
+            e.case_label = case_field->as_string();
+        } else if (default_field != nullptr) {
+            e.kind = edge_kind::switch_default;
+        }
         out.push_back(std::move(e));
     } else if (fan_out_field) {
         if (!fan_out_field->is_array()) {

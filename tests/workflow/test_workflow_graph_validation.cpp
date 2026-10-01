@@ -217,6 +217,47 @@ int main() {
         ok.edges[0].case_label = "needs_review";
         check(validate_workflow(ok).has_value(), "A5: a labelled switch/case edge validates");
 
+        // ADR-215 (issue #34): a switch's default case.
+        auto with_default = [] {
+            Workflow wf = baseline();
+            wf.edges[0].kind       = edge_kind::switch_case;
+            wf.edges[0].case_label = "needs_review";
+            wf.executors.push_back(Executor{.id = "archive", .kind = executor_kind::function, .input_type = "Draft",
+                                             .output_type = "Verdict", .worktree_mode = sharing_mode::branch,
+                                             .capability_ceiling = {}});
+            wf.edges.push_back(Edge{"writer", "archive", edge_kind::switch_default, {}});
+            return wf;
+        };
+        check(validate_workflow(with_default()).has_value(),
+              "A5 (ADR-215): a switch with one unlabelled default edge validates");
+
+        Workflow two_defaults = with_default();
+        two_defaults.edges.push_back(Edge{"writer", "critic", edge_kind::switch_default, {}});
+        check_rejected(validate_workflow(two_defaults), "workflow.duplicate_switch_default",
+                       "A5 (ADR-215): a second default edge on the same source is rejected -- at most one "
+                       "default per switch");
+
+        Workflow lonely = baseline();
+        lonely.executors.push_back(Executor{.id = "archive", .kind = executor_kind::function, .input_type = "Draft",
+                                             .output_type = "Verdict", .worktree_mode = sharing_mode::branch,
+                                             .capability_ceiling = {}});
+        lonely.edges.push_back(Edge{"writer", "archive", edge_kind::switch_default, {}});
+        check_rejected(validate_workflow(lonely), "workflow.switch_default_without_cases",
+                       "A5 (ADR-215): a default edge on a source with no switch_case edge is rejected");
+
+        Workflow labelled_default = with_default();
+        labelled_default.edges.back().case_label = "otherwise";
+        check_rejected(validate_workflow(labelled_default), "workflow.unexpected_case_label",
+                       "A5 (ADR-215): a default edge carrying a case label is rejected (a default is the "
+                       "absence of a match, it has no label)");
+
+        Workflow other_source = with_default();
+        other_source.edges.push_back(Edge{"critic", "critic", edge_kind::switch_case, "again"});
+        other_source.executors[1].output_type = "Draft";  // critic -> critic needs Draft -> Draft
+        other_source.executors[1].input_type  = "Draft";
+        check(validate_workflow(other_source).has_value(),
+              "A5 (ADR-215): defaults are per source -- another source's switch is unaffected");
+
         Workflow multi = baseline();
         multi.edges[0].kind = edge_kind::multi_selection;
         multi.edges[0].case_label = "reviewers";

@@ -110,6 +110,9 @@ struct RouteSelected {
     std::string              executor_id;
     std::vector<std::string> chosen_cases;
     std::vector<std::string> available_cases;
+    // ADR-215 (issue #34): no case matched and the switch's default edge was taken. The default has no
+    // label, so it never appears in `chosen_cases`/`available_cases`. Appended last.
+    bool                     took_default = false;
 };
 
 struct PortRef {

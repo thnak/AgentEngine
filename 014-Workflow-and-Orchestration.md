@@ -1,6 +1,6 @@
 # 014 — Workflow and Orchestration
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-10-01** (§2 cancellation, ADR-214 Proposed; §4 one interaction per delivery and answers checked before acceptance, issues #155/#157) · **Amended 2026-09-04 by ADR-169** (§4 — resolving a request port requires caller admission; holding an `interaction_id` is not authority) · **Amended 2026-09-27 by ADR-152/ADR-157** (§7 — the live view has a fine-grained sibling, the workflow event stream; issue #82) · **Depends on:** 001, 002, 005, 013, 018, 019 · **Gate:** §8
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-10-01** (§1 switch/case default, ADR-215 Proposed, issue #34; §2 cancellation, ADR-214 Proposed; §4 one interaction per delivery and answers checked before acceptance, issues #155/#157) · **Amended 2026-09-04 by ADR-169** (§4 — resolving a request port requires caller admission; holding an `interaction_id` is not authority) · **Amended 2026-09-27 by ADR-152/ADR-157** (§7 — the live view has a fine-grained sibling, the workflow event stream; issue #82) · **Depends on:** 001, 002, 005, 013, 018, 019 · **Gate:** §8
 
 ## Goal
 
@@ -17,8 +17,16 @@ Quark actors; ADR-037 removed Quark as AgentEngine's runtime — see
 ```
 Workflow = { executors[], edges[], start, output_selection, policies }
 Executor = an agent | a function | a sub-workflow | a request port
-Edge     = direct | fan-out | fan-in | switch/case | multi-selection | chain
+Edge     = direct | fan-out | fan-in | switch/case (+ optional default) | multi-selection | chain
 ```
+
+- **Switch/case selects exactly one case; a default catches "none".** A source's `switch_case` edges
+  are matched against the routes its reply names. Exactly one match fires that case. More than one
+  match ends the run `routing_failed`, default or not. Zero matches also end it `routing_failed`,
+  unless the source declares a **default** (`switch_default`, ADR-215, issue #34): then the default
+  edge fires instead. A default carries no label. A source has at most one, and only alongside at
+  least one `switch_case` edge (`validate_workflow`). Natively it is `WorkflowBuilder::connect_default`
+  (beside `connect_case`); declaratively it is `default: true` on a `to` edge (015 §3).
 
 - **Executors are typed by their input and output message types.** An edge that connects
   incompatible types fails to build — at compile time for the C++ form, at load for the declarative
@@ -106,7 +114,9 @@ keeps the unsuffixed id. No two interactions that are open at the same time shar
 against the port's outgoing edges *before* the port is consumed: every label must be the case label
 of a `switch_case`/`multi_selection` edge out of that port (an undeclared label is refused whether it
 is alone or mixed with valid ones, and on a port with no labelled edges any label is undeclared), and
-when the port has `switch_case` edges the routes must select exactly one of them. A refused answer —
+when the port has `switch_case` edges the routes must select exactly one of them (or none, if the port
+has a switch default — ADR-215; a default answers "no case chosen", it never absorbs an undeclared
+label). A refused answer —
 like an unknown or already-answered id, or a caller the admission gate denies — changes nothing: the
 port stays open under the same id, the run stays suspended, and the refusal is reported as itself
 (`invalid_routes`; on the event stream, `request_port_rejected`, never a run-failed event). A typo in

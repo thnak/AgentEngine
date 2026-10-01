@@ -1,6 +1,6 @@
 # 015 — Declarative Agent and Workflow Format
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 002, 006, 014 · **Gate:** §7
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-10-01** (§3 switch `case`/`default` edge keys, ADR-215 Proposed, issue #34) · **Depends on:** 002, 006, 014 · **Gate:** §7
 
 ## Goal
 
@@ -76,6 +76,20 @@ spec:
   limits: { max_rounds: 20, deadline: 15m }
   output_from: writer
 ```
+
+A switch (014 §1) is written as `to` edges carrying `case: <label>`, plus at most one carrying
+`default: true` for the "no case matched" branch (ADR-215, issue #34):
+
+```yaml
+  edges:
+    - { from: triage, to: billing,  case: billing }
+    - { from: triage, to: tech,     case: tech }
+    - { from: triage, to: frontdesk, default: true }
+```
+
+These compile to exactly the `Workflow` that `WorkflowBuilder::connect_case`/`connect_default` build
+(I6). `case`/`default` on a `fan_out_to`/`fan_in_to` edge, both keys on one edge, a non-string `case`
+and a `default` other than `true` are all load errors.
 
 ## 4. Schema and validation
 

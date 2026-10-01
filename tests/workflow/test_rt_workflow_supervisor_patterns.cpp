@@ -14,6 +14,9 @@
 //          ZERO declared labels, or where it matches MORE THAN ONE, both fail the RUN with
 //          `routing_failed` -- never `executor_failed` -- because the executor body itself succeeded;
 //          this is a routing/authoring problem, not an execution failure.
+//   DF  -- ADR-215 (issue #34): a switch's default case fires iff ZERO cases matched; one match never
+//          takes it; more than one match is still routing_failed (RF-2 unchanged); the event stream
+//          records the default being taken.
 //   MS  -- multi_selection fires a caller-chosen SUBSET: more than one label, but fewer than all
 //          declared edges.
 //   CY  -- a switch_case loop back to an earlier node (Reflection/Critic shape), bounded by
@@ -30,6 +33,9 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <functional>
+#include <memory>
+#include <memory_resource>
 #include <string>
 #include <thread>
 #include <vector>
@@ -331,6 +337,88 @@ int main() {
               "RF-2: a switch_case node whose returned route matches MORE THAN ONE declared label "
               "(route_from()'s own `switch_fired != 1` check) also ends the run with `routing_failed` "
               "-- the reverse authoring mistake from RF-1, same outcome");
+    }
+
+    // ---- DF-1..DF-4 (ADR-215, issue #34): a switch's DEFAULT case -------------------------------------
+    //
+    //   classify --"billing"--> billing
+    //            --"tech"-----> tech
+    //            ==(default)==> human
+    //
+    // DF-1: zero cases matched -> the default fires (RF-1's shape, now with a default: not a failure).
+    // DF-2: exactly one case matched -> that case fires, the default does NOT.
+    // DF-3: more than one matched -> STILL routing_failed, default or not (RF-2's rule kept).
+    // DF-4: the event stream says the default was taken (RouteSelected::took_default, a message_routed of
+    //       kind switch_default), and a WorkflowBuilder-authored graph behaves identically.
+    {
+        auto build = [] {
+            Workflow wf;
+            wf.id        = "df";
+            wf.executors = {node_desc("classify"), node_desc("billing"), node_desc("tech"), node_desc("human")};
+            wf.edges.push_back(Edge{"classify", "billing", edge_kind::switch_case, "billing"});
+            wf.edges.push_back(Edge{"classify", "human", edge_kind::switch_default, {}});
+            wf.edges.push_back(Edge{"classify", "tech", edge_kind::switch_case, "tech"});
+            wf.start            = "classify";
+            wf.output_selection = {"billing", "tech", "human"};
+            wf.bound.max_rounds = 8;
+            return wf;
+        };
+        check(validate_workflow(build()).has_value(), "DF setup: a switch with a default validates");
+
+        struct Counts {
+            std::shared_ptr<std::atomic<int>> billing = std::make_shared<std::atomic<int>>(0);
+            std::shared_ptr<std::atomic<int>> tech    = std::make_shared<std::atomic<int>>(0);
+            std::shared_ptr<std::atomic<int>> human   = std::make_shared<std::atomic<int>>(0);
+        };
+        auto run = [&](std::vector<std::string> routes, Counts const& c,
+                       agentengine::workflow::WorkflowEventStream* stream_out = nullptr) {
+            WorkflowSupervisor sup;
+            sup.initialize(build(),
+                           {router_node("classify", [routes](std::string const&) { return routes; }),
+                            counting(c.billing, appender("billing")), counting(c.tech, appender("tech")),
+                            counting(c.human, appender("human"))});
+            if (stream_out != nullptr) *stream_out = sup.enable_event_stream(std::pmr::get_default_resource());
+            return drive(sup.run_workflow(RunWorkflow{text_message("in")}));
+        };
+
+        Counts zero;
+        agentengine::workflow::WorkflowEventStream stream;
+        WorkflowResult r0 = run({"no-such-case"}, zero, &stream);
+        check(r0.status == workflow_status::completed && all_text_of(r0.output) == "in>classify>human",
+              "DF-1 -- CORE CLAIM (#34): when ZERO cases match, the default case fires and the run completes "
+              "(without a default this is RF-1's routing_failed)");
+        check(zero.human->load() == 1 && zero.billing->load() == 0 && zero.tech->load() == 0,
+              "DF-1: only the default's target ran");
+        bool took_default = false, routed_default = false;
+        while (auto ev = stream.next()) {
+            if (auto const* p = std::get_if<agentengine::workflow::workflow_event_payload::RouteSelected>(&ev->payload)) {
+                took_default = took_default || (p->took_default && p->chosen_cases.empty() && p->available_cases.size() == 2);
+            }
+            if (auto const* p = std::get_if<agentengine::workflow::workflow_event_payload::MessageRouted>(&ev->payload)) {
+                routed_default = routed_default || (p->kind == edge_kind::switch_default && p->to_executor_id == "human");
+            }
+        }
+        check(took_default && routed_default,
+              "DF-4: the event stream records the default being taken (RouteSelected.took_default, and a "
+              "message_routed of kind switch_default to its target)");
+
+        Counts none_given;
+        WorkflowResult rn = run({}, none_given);
+        check(rn.status == workflow_status::completed && none_given.human->load() == 1,
+              "DF-1: no route at all also takes the default");
+
+        Counts one;
+        WorkflowResult r1 = run({"tech"}, one);
+        check(r1.status == workflow_status::completed && all_text_of(r1.output) == "in>classify>tech" &&
+                  one.human->load() == 0,
+              "DF-2: exactly one matching case fires that case; the default does NOT fire alongside it");
+
+        Counts two;
+        WorkflowResult r2 = run({"billing", "tech"}, two);
+        check(r2.status == workflow_status::routing_failed && r2.failed_executor == "classify" &&
+                  two.human->load() == 0,
+              "DF-3 -- CORE CLAIM (#34): MORE THAN ONE matching case is still routing_failed with a default "
+              "present -- the default covers 'nothing matched', never an ambiguous match (RF-2 unchanged)");
     }
 
     // ---- MS-1: multi_selection fires a caller-chosen SUBSET -- more than one, fewer than all -------

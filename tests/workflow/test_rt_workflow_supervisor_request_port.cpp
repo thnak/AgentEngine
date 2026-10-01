@@ -42,6 +42,8 @@
 //    time -- `invalid_routes`, port still open -- instead of consuming the port and ending the run.)
 //   IQ8 -- issue #155: with two ports open, a bad or mixed route on one is refused immediately; every
 //          refused resolve is a `request_port_rejected` event, never `workflow_run_failed`.
+//   IQ9 -- ADR-215 (issue #34): a port switch with a default -- no route takes the default, an
+//          undeclared label is still refused.
 //   IQ7 -- issue #157: two same-round deliveries to ONE port open two interactions with distinct ids,
 //          each answerable independently; the run completes.
 //
@@ -728,6 +730,34 @@ int main() {
               "IQ6: once BOTH ports are resolved the run advances past suspended");
         check(r4.open_interactions.empty(), "IQ6: no open interactions remain in the final reply");
         check(sup.open_interactions().empty(), "IQ6: the live accessor agrees -- empty at the end too");
+    }
+
+    // ---- IQ9 (ADR-215, issue #34): a port whose switch has a DEFAULT case. An answer with no route ----
+    // ---- takes the default; an undeclared label is still refused (a default catches "nothing      ----
+    // ---- chosen", not a typo); two cases is still refused.                                        ----
+    {
+        auto build = [] {
+            Workflow wf;
+            wf.id        = "iq9-port-default";
+            wf.executors = {port_desc("review"), node_desc("publish"), node_desc("rework")};
+            wf.edges.push_back(Edge{"review", "publish", edge_kind::switch_case, "approve"});
+            wf.edges.push_back(Edge{"review", "rework", edge_kind::switch_default, {}});
+            wf.start            = "review";
+            wf.output_selection = {"publish", "rework"};
+            wf.bound.max_rounds = 4;
+            return wf;
+        };
+        check(validate_workflow(build()).has_value(), "IQ9: a port switch with a default validates");
+        WorkflowSupervisor sup;
+        sup.initialize(build(), {{}, appender("publish"), appender("rework")});
+        WorkflowResult r1 = drive(sup.run_workflow(RunWorkflow{text_message("in")}));
+        std::string const id = r1.open_interactions.empty() ? std::string{} : r1.open_interactions.front().interaction_id;
+        WorkflowResult typo = drive(sup.resume_workflow(ResumeWorkflow{id, text_message("x"), {"aprove"}}));
+        check(typo.status == workflow_status::invalid_routes && sup.open_interactions().size() == 1,
+              "IQ9: an undeclared label is refused even with a default -- the default is not a typo catcher");
+        WorkflowResult r2 = drive(sup.resume_workflow(ResumeWorkflow{id, text_message("fix it"), {}}));
+        check(r2.status == workflow_status::completed && all_text_of(r2.output) == "fix it>rework",
+              "IQ9 -- CORE CLAIM (#34): an answer naming no case takes the port's default case");
     }
 
     // ---- IQ7 (issue #157): two deliveries reach ONE request port in the SAME round -- each gets  ----

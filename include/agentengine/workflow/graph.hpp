@@ -77,7 +77,8 @@ template <DeclaredMessage T>
 
 // -- The two closed enumerations of 014 §1 -----------------------------------------------------
 
-// `Edge = direct | fan-out | fan-in | switch/case | multi-selection | chain` (014 §1), verbatim.
+// `Edge = direct | fan-out | fan-in | switch/case | multi-selection | chain` (014 §1), verbatim, plus
+// switch/case's optional default case (ADR-215, issue #34).
 enum class edge_kind {
     direct,           // one source, one target
     fan_out,          // one source, many targets, all fired
@@ -86,6 +87,14 @@ enum class edge_kind {
     multi_selection,  // one source, many targets, a caller-chosen SUBSET fired
     chain,            // sugar for a run of `direct` edges; kept distinct because §3's Sequential
                       // pattern names it, and a rendered graph (§7) should say what was authored
+    // ADR-215 (issue #34): a switch's default case -- fires iff ZERO of the same source's
+    // `switch_case` edges matched the reply's routes. Unlabelled; at most one per source, and only on a
+    // source that has at least one `switch_case` edge (validate_workflow). More than one matched case is
+    // still a routing failure, default or not (RF-2's rule is unchanged). A separate enumerator rather
+    // than a flag on `switch_case`, so every exhaustive switch over edge kinds (the supervisor's routing,
+    // the renderers, the event consumers) has to decide what a default edge means instead of silently
+    // counting it as one more case.
+    switch_default,
 };
 
 // `Executor = an agent | a function | a sub-workflow | a request port` (014 §1), verbatim.
@@ -411,6 +420,31 @@ struct Workflow {
         }
     }
 
+    // ADR-215 (issue #34): a switch's default case. At most one per source (two defaults would make "the"
+    // default ambiguous -- the same reason §6's policy must agree across a source's edges), and only on a
+    // source that has a switch to default FROM: a default with no `switch_case` sibling would be a plain
+    // direct edge spelled as a fallback, which is a mis-authored graph, not something to run.
+    for (std::size_t i = 0; i < wf.edges.size(); ++i) {
+        if (wf.edges[i].kind != edge_kind::switch_default) continue;
+        bool has_case = false;
+        for (std::size_t j = 0; j < wf.edges.size(); ++j) {
+            if (wf.edges[j].from != wf.edges[i].from) continue;
+            if (wf.edges[j].kind == edge_kind::switch_case) has_case = true;
+            if (j > i && wf.edges[j].kind == edge_kind::switch_default) {
+                return fail("executor '" + wf.edges[i].from + "' declares more than one switch default edge ('" +
+                                wf.edges[i].from + "' -> '" + wf.edges[i].to + "' and '" + wf.edges[j].from +
+                                "' -> '" + wf.edges[j].to + "'); a switch has at most one default case",
+                            "workflow.duplicate_switch_default");
+            }
+        }
+        if (!has_case) {
+            return fail("edge '" + wf.edges[i].from + "' -> '" + wf.edges[i].to +
+                            "' is a switch default, but '" + wf.edges[i].from +
+                            "' has no switch_case edge for it to be the default of",
+                        "workflow.switch_default_without_cases");
+        }
+    }
+
     // §6's policy decides what happens to the SOURCE executor, so every edge out of one executor
     // must agree on it. Checked as its own pass (rather than inside the loop above) so the message
     // can name both conflicting edges.
@@ -609,6 +643,20 @@ public:
                       "message type is not the target executor's input message type (014 §1)");
         wf_.edges.push_back(Edge{from.id, to.id, kind, std::move(case_label), std::move(on_failure)});
         return *this;
+    }
+
+    // ADR-215 (issue #34): switch ergonomics. `connect_case` adds one `switch_case` edge selected by
+    // `case_label`; `connect_default` adds the source's default case, taken iff no case matched. Both are
+    // `connect()` underneath, so the compile-time type check and the shared validator apply unchanged.
+    template <class FromIn, class FromOut, class ToIn, class ToOut>
+    WorkflowBuilder& connect_case(TypedExecutor<FromIn, FromOut> const& from, TypedExecutor<ToIn, ToOut> const& to,
+                                  std::string case_label, EdgeFailurePolicy on_failure = {}) {
+        return connect(from, to, edge_kind::switch_case, std::move(case_label), std::move(on_failure));
+    }
+    template <class FromIn, class FromOut, class ToIn, class ToOut>
+    WorkflowBuilder& connect_default(TypedExecutor<FromIn, FromOut> const& from, TypedExecutor<ToIn, ToOut> const& to,
+                                     EdgeFailurePolicy on_failure = {}) {
+        return connect(from, to, edge_kind::switch_default, {}, std::move(on_failure));
     }
 
     WorkflowBuilder& start_at(std::string executor_id) {

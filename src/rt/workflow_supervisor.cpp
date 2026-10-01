@@ -1327,9 +1327,16 @@ WorkflowSupervisor::route_result WorkflowSupervisor::route_from(std::size_t from
     std::vector<std::string> fan_out_targets;
     std::vector<std::string> available_cases;
     std::vector<std::string> chosen_cases;
+    // ADR-215 (issue #34): the source's switch default, if any (validate_workflow allows at most one). It is
+    // decided AFTER every case has been matched, so it is skipped in the loop below.
+    agentengine::workflow::Edge const* default_edge = nullptr;
 
     for (auto const& edge : graph_.edges) {
         if (edge.from != from_id) continue;
+        if (edge.kind == edge_kind::switch_default) {
+            default_edge = &edge;
+            continue;
+        }
         if (edge.kind == edge_kind::switch_case) ++switch_edges;
         if (edge.kind == edge_kind::switch_case || edge.kind == edge_kind::multi_selection) {
             available_cases.push_back(edge.case_label);
@@ -1358,6 +1365,18 @@ WorkflowSupervisor::route_result WorkflowSupervisor::route_from(std::size_t from
         next.push_back(Delivery{target, reply.payload});
     }
 
+    // ADR-215 (issue #34): the default case fires iff the source has cases and NONE matched. Exactly one
+    // match never takes it; more than one match is still routing_failed below (RF-2), default or not.
+    bool const took_default = default_edge != nullptr && switch_edges > 0 && switch_fired == 0;
+    if (took_default) {
+        std::size_t const target = index_of(default_edge->to);
+        push_structural_event(
+            agentengine::workflow::workflow_event_kind::message_routed,
+            agentengine::workflow::workflow_event_payload::MessageRouted{
+                from_id, graph_.executors[target].id, edge_kind::switch_default, {}});
+        next.push_back(Delivery{target, reply.payload});
+    }
+
     if (!fan_out_targets.empty()) {
         push_structural_event(
             agentengine::workflow::workflow_event_kind::fan_out_dispatched,
@@ -1367,10 +1386,10 @@ WorkflowSupervisor::route_result WorkflowSupervisor::route_from(std::size_t from
         push_structural_event(
             agentengine::workflow::workflow_event_kind::route_selected,
             agentengine::workflow::workflow_event_payload::RouteSelected{
-                from_id, std::move(chosen_cases), std::move(available_cases)});
+                from_id, std::move(chosen_cases), std::move(available_cases), took_default});
     }
 
-    if (switch_edges > 0 && switch_fired != 1) return route_result::routing_failed;
+    if (switch_edges > 0 && switch_fired != 1 && !took_default) return route_result::routing_failed;
     return route_result::ok;
 }
 
@@ -1541,6 +1560,10 @@ bool WorkflowSupervisor::edge_fires(agentengine::workflow::Edge const& edge,
                 if (route == edge.case_label) return true;
             }
             return false;
+        case edge_kind::switch_default:
+            // ADR-215: never by itself -- whether a default fires depends on its SIBLING cases, which
+            // route_from()/port_routes_valid() decide after matching them all.
+            return false;
     }
     return false;
 }
@@ -1611,12 +1634,17 @@ bool WorkflowSupervisor::port_routes_valid(std::size_t port_index, std::vector<s
     probe.routes = routes;
     std::size_t switch_edges = 0;
     std::size_t switch_fired = 0;
+    bool        has_default  = false;
     for (auto const& edge : graph_.edges) {
-        if (edge.from != port_id || edge.kind != edge_kind::switch_case) continue;
+        if (edge.from != port_id) continue;
+        if (edge.kind == edge_kind::switch_default) has_default = true;
+        if (edge.kind != edge_kind::switch_case) continue;
         ++switch_edges;
         if (edge_fires(edge, probe)) ++switch_fired;
     }
-    return switch_edges == 0 || switch_fired == 1;
+    // ADR-215: no case selected is a valid answer when the port's switch has a default (route_from() takes
+    // it). An undeclared label is still refused above -- a default catches "nothing chosen", not a typo.
+    return switch_edges == 0 || switch_fired == 1 || (switch_fired == 0 && has_default);
 }
 
 void WorkflowSupervisor::propagate_admission_to_children() {
