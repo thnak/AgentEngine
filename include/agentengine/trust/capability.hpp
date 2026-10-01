@@ -194,6 +194,16 @@ struct NativeExec {
     std::optional<std::uint64_t> cpu_ms_cap;
     std::optional<std::uint64_t> wall_ms_cap;
     std::optional<std::uint64_t> memory_bytes_cap;
+    // ADR-209 §9 -- a HELD native shell (`NativeShellSessionProvider`) is a widening of this grant: longer life,
+    // background processes across commands, no per-call cwd/argv check. The opt-in is this monotone flag, NOT
+    // "the caps below are set": `cap_covers` treats an unset parent cap as uncapped, so any attenuated grant
+    // could set them to UINT64_MAX. A child may set `live_session` only if its parent has it
+    // (`subsumes_payload` below). A live grant missing either cap is refused WHERE IT IS USED (the provider
+    // contributes no tool and the per-command re-check refuses) -- an aggregate cannot reject it at
+    // construction.
+    bool live_session = false;
+    std::optional<std::uint64_t> session_wall_ms_cap;  // the held shell's whole life, wall clock
+    std::optional<std::uint32_t> max_processes;        // the Job Object's active-process limit
 };
 // docs/planning/sandbox-spec-capability-enforcement-design-draft.md §3 — deliberately its own kind
 // rather than reusing FsRead/FsWrite (those are mount_id-keyed, resolved through a Worktree/
@@ -442,10 +452,17 @@ struct TaskBranch {};
 struct TaskBranchCommit {};
 // ADR-119 — fieldless, matching TaskBranch/TaskBranchCommit's own shape immediately above.
 struct RunCommand {};
-template <agentengine::fixed_string ProgramPattern, agentengine::fixed_string WorktreeMount>
+// ADR-209 §9: `LiveSession` and its two caps (0 = unset) carry the held-shell opt-in into a declared ceiling, so
+// a CRTP grant and a declarative one (`parse_native_exec_grant`, trust/native_exec_grant.hpp) can express the
+// same thing (I6). Defaulted, so every existing two-argument declaration is unchanged.
+template <agentengine::fixed_string ProgramPattern, agentengine::fixed_string WorktreeMount, bool LiveSession = false,
+          std::uint64_t SessionWallMsCap = 0, std::uint32_t MaxProcesses = 0>
 struct NativeExec {
     static constexpr std::string_view program_pattern = std::string_view{ProgramPattern};
     static constexpr std::string_view worktree_mount = std::string_view{WorktreeMount};
+    static constexpr bool live_session = LiveSession;
+    static constexpr std::uint64_t session_wall_ms_cap = SessionWallMsCap;
+    static constexpr std::uint32_t max_processes = MaxProcesses;
 };
 
 }  // namespace cap::decl
@@ -516,11 +533,18 @@ template <std::uint32_t MaxConcurrent>
     return cap::TaskBranchCommit{};
 }
 [[nodiscard]] inline Capability to_capability(cap::decl::RunCommand const&) { return cap::RunCommand{}; }
-template <agentengine::fixed_string ProgramPattern, agentengine::fixed_string WorktreeMount>
-[[nodiscard]] inline Capability to_capability(cap::decl::NativeExec<ProgramPattern, WorktreeMount> const&) {
+template <agentengine::fixed_string ProgramPattern, agentengine::fixed_string WorktreeMount, bool LiveSession,
+          std::uint64_t SessionWallMsCap, std::uint32_t MaxProcesses>
+[[nodiscard]] inline Capability to_capability(
+    cap::decl::NativeExec<ProgramPattern, WorktreeMount, LiveSession, SessionWallMsCap, MaxProcesses> const&) {
     return cap::NativeExec{std::string(std::string_view{ProgramPattern}),
-                            std::string(std::string_view{WorktreeMount}), std::nullopt, std::nullopt,
-                            std::nullopt};
+                            std::string(std::string_view{WorktreeMount}),
+                            std::nullopt,
+                            std::nullopt,
+                            std::nullopt,
+                            LiveSession,
+                            SessionWallMsCap == 0 ? std::nullopt : std::optional<std::uint64_t>{SessionWallMsCap},
+                            MaxProcesses == 0 ? std::nullopt : std::optional<std::uint32_t>{MaxProcesses}};
 }
 
 // Named `capability_detail`, not the more obvious `detail` -- `agentengine::trust::detail` already
@@ -666,7 +690,11 @@ template <class T>
            parent.worktree_mount_id == requested.worktree_mount_id &&
            cap_covers(parent.cpu_ms_cap, requested.cpu_ms_cap) &&
            cap_covers(parent.wall_ms_cap, requested.wall_ms_cap) &&
-           cap_covers(parent.memory_bytes_cap, requested.memory_bytes_cap);
+           cap_covers(parent.memory_bytes_cap, requested.memory_bytes_cap) &&
+           // ADR-209 §9: monotone -- a grant without the held-shell opt-in never yields one with it.
+           (parent.live_session || !requested.live_session) &&
+           cap_covers(parent.session_wall_ms_cap, requested.session_wall_ms_cap) &&
+           cap_covers(parent.max_processes, requested.max_processes);
 }
 // docs/planning/sandbox-spec-capability-enforcement-design-draft.md -- attenuation between two
 // HOST-AUTHORED grants (e.g. deriving a narrower SandboxMount from a broader one); this is NOT the
