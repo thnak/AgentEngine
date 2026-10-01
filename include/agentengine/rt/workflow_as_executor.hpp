@@ -124,6 +124,9 @@ template <class T>
         // handled anyway rather than left to the `return "unknown"` fallthrough, because "cannot
         // happen today" is not a property the compiler or a future caller is obliged to preserve.
         case workflow_status::admission_denied: return "admission_denied";
+        // Issue #155: a refused resolve's status. Unreachable from `run_once()` (it never resumes) --
+        // handled for the same exhaustive-switch reason as the two cases above.
+        case workflow_status::invalid_routes:   return "invalid_routes";
     }
     return "unknown";
 }
@@ -156,7 +159,9 @@ template <class T>
 [[nodiscard]] inline agentengine::result<ExecutorOutcome> run_once(WorkflowSupervisor& inner,
                                                                      agentengine::Message const& in,
                                                                      agentengine::EffectContext& ctx) {
-    WorkflowResult r = drive(inner.run_workflow(RunWorkflow{in}));
+    // Issue #156 (ADR-214): the outer workflow's cancel (`ctx.cancellation`) is linked into the inner run, so a
+    // wrapped workflow stops at its own next check instead of running to completion first.
+    WorkflowResult r = drive(inner.run_workflow(RunWorkflow{in, std::nullopt, ctx.cancellation}));
     if (r.status == workflow_status::completed) {
         ExecutorOutcome outcome{r.output};
         outcome.usage = r.usage;

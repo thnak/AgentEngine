@@ -1,5 +1,9 @@
 # ADR-159: mid-run cancellation for `WorkflowSupervisor` (GitHub issue #37)
 
+> **Amended by ADR-214 (Proposed, 2026-10-01, issue #156):** a cancel is no longer checked only at the
+> round boundary — one observed anywhere in a round, or while suspended, ends the run `cancelled`
+> (closing open interactions), and `cancel()` is per run rather than permanent.
+
 ## 1. The question
 
 MAF's `workflow_cancellation.py` sample cancels a running workflow mid-execution and the run stops

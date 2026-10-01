@@ -111,7 +111,9 @@ build a sandbox at all, so CI needs none. `tests/scenarios/scripted_shell_roundt
 3. `workflow_run {workflow_id, text}`, then `workflow_wait_for` (default `settled`).
 4. At a port: `request_port_list` shows the open ids and what each port asks. Answer with
    `request_port_resolve {workflow_id, interaction_id, text, routes}`. `routes` pick among the port's own
-   case labels, and the engine decides what they do: an invented label ends the run `routing_failed`.
+   case labels, and the engine checks them before taking the answer: an undeclared label (alone or mixed
+   with real ones), or a set that does not pick exactly one switch case, is refused (`invalid_routes`)
+   and the port stays open for a corrected answer.
    `caller` defaults to the run's owner; any other caller is refused by the engine (`admission_denied`)
    and the port stays open.
 5. `workflow_snapshot` shows the last result (status, output, partial, failed step, open ports) and each

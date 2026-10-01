@@ -28,7 +28,11 @@ void check(bool cond, char const* what) {
 namespace yaml = agentengine::yaml;
 namespace wf   = agentengine::workflow;
 
+struct Ticket {};
+
 }  // namespace
+
+AE_WORKFLOW_MESSAGE(Ticket, "Ticket");
 
 int main() {
     // --- W-1: 015 §3's OWN example document, LITERALLY -- compiles, but validate_workflow() -------
@@ -225,6 +229,82 @@ spec:
         auto bad = wf::compile_workflow_document(*yaml::parse(make_doc("30x")));
         check(!bad.has_value() && bad.error().code == "yaml_compiler.bad_duration_unit",
               "W-6: an unrecognized duration unit (\"30x\") is rejected, never silently ignored");
+    }
+
+    // --- W-7 (ADR-215, issue #34): a switch with a default case, declaratively -- `case:`/`default:` --
+    // --- on a `to` edge -- compiles to EXACTLY the Workflow the C++ builder's connect_case/          ---
+    // --- connect_default produce (I6), and malformed switch keys are refused, never ignored.         ---
+    {
+        std::string const doc = R"YAML(apiVersion: agentengine.dev/v1
+kind: Workflow
+metadata: { id: triage }
+spec:
+  start: classify
+  executors:
+    - { id: classify, input_type: Ticket, output_type: Ticket }
+    - { id: billing,  input_type: Ticket, output_type: Ticket }
+    - { id: tech,     input_type: Ticket, output_type: Ticket }
+    - { id: human,    input_type: Ticket, output_type: Ticket }
+  edges:
+    - { from: classify, to: billing, case: billing }
+    - { from: classify, to: tech,    case: tech }
+    - { from: classify, to: human,   default: true }
+  limits: { max_rounds: 8 }
+  output_from: human
+)YAML";
+        auto parsed = yaml::parse(doc);
+        std::optional<wf::Workflow> compiled;
+        if (parsed) {
+            if (auto c = wf::compile_workflow_document(*parsed)) compiled = std::move(*c);
+        }
+        check(compiled.has_value() && wf::validate_workflow(*compiled).has_value(),
+              "W-7: the switch-with-default document parses, compiles and validates");
+
+        using T = wf::TypedExecutor<Ticket, Ticket>;
+        T const classify{.id = "classify", .capability_ceiling = {}};
+        T const billing{.id = "billing", .capability_ceiling = {}};
+        T const tech{.id = "tech", .capability_ceiling = {}};
+        T const human{.id = "human", .capability_ceiling = {}};
+        auto native = wf::WorkflowBuilder("triage")
+                          .add(classify)
+                          .add(billing)
+                          .add(tech)
+                          .add(human)
+                          .connect_case(classify, billing, "billing")
+                          .connect_case(classify, tech, "tech")
+                          .connect_default(classify, human)
+                          .start_at("classify")
+                          .select_output("human")
+                          .max_rounds(8)
+                          .build();
+        check(native.has_value() && compiled.has_value() && *native == *compiled,
+              "W-7 -- CORE CLAIM (I6): the declarative switch-with-default and the native "
+              "connect_case/connect_default graph are the SAME Workflow (operator==)");
+        if (compiled.has_value()) {
+            check(compiled->edges.size() == 3 && compiled->edges[2].kind == wf::edge_kind::switch_default &&
+                      compiled->edges[2].case_label.empty() && compiled->edges[0].kind == wf::edge_kind::switch_case &&
+                      compiled->edges[0].case_label == "billing",
+                  "W-7: `case:` compiles to switch_case with its label, `default: true` to switch_default");
+        }
+
+        auto reject = [](char const* edge_line) {
+            std::string d = std::string(
+                "spec:\n  start: a\n  executors:\n    - { id: a, input_type: T, output_type: T }\n"
+                "    - { id: b, input_type: T, output_type: T }\n  edges:\n") + edge_line +
+                "\n  limits: { max_rounds: 2 }\n";
+            auto p = yaml::parse(d);
+            if (!p) return std::string("(did not parse)");
+            auto c = wf::compile_workflow_document(*p);
+            return c ? std::string("(compiled)") : c.error().code;
+        };
+        check(reject("    - { from: a, to: b, case: x, default: true }") == "yaml_compiler.case_and_default",
+              "W-7: an edge with both `case` and `default` is refused");
+        check(reject("    - { from: a, fan_out_to: [b], default: true }") == "yaml_compiler.switch_on_non_direct_edge",
+              "W-7: `default` on a fan-out edge is refused, not ignored");
+        check(reject("    - { from: a, to: b, default: false }") == "yaml_compiler.bad_edge_default",
+              "W-7: `default: false` is refused (omit the key for a non-default edge)");
+        check(reject("    - { from: a, to: b, case: [x] }") == "yaml_compiler.bad_edge_case",
+              "W-7: a non-string `case` is refused");
     }
 
     if (g_failures == 0) {

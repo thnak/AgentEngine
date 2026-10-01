@@ -80,13 +80,13 @@ request's digest.
   - `test.real_tool_output_too_large` or `test.real_tool_output_not_utf8`: a bad result.
   - "No space left on device": the 16 MiB quota is spent.
 - Workflows (engine behaviour today, ADR-210 §7):
-  - An unknown port id returns `invalid`. The port stays open, and the workflow log still gains a
-    `workflow_run_failed` event.
-  - A route no edge declares consumes the port and ends the run `routing_failed`. With two ports open,
-    that failure shows up on the other port's answer. A route list with one real label plus an invented
-    one is accepted.
+  - An unknown port id returns `invalid`. The port stays open, and the workflow log gains a
+    `request_port_rejected` event (reason `unknown_interaction`), not `workflow_run_failed`.
+  - A route no edge declares (alone or mixed with real labels), or routes that do not pick exactly one
+    switch case, return `invalid_routes`: the port stays open and can be answered again.
   - A `caller` other than the owner gets `admission_denied`, and the port stays open.
-  - Cancelling while a step is running usually ends `executor_failed`, not `cancelled`.
+  - Cancelling while a step is running ends `cancelled` (ADR-214), including when an agent step fails
+    because of the cancel; cancelling while suspended closes the open ports.
 
 ## Report
 

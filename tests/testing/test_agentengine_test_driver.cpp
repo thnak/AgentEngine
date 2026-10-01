@@ -1620,12 +1620,16 @@ int main() {
             auto after = structural_kinds(d, w);
             check(result_of(s, "status") == "invalid" && td::get_string(s, "state") == "suspended" && open_ports(d, w).size() == 1,
                   "W2: an unknown id is invalid and the port stays open");
-            check(count_of(after, "workflow_run_failed") == count_of(before, "workflow_run_failed") + 1,
-                  "W2: ... and the engine logs one workflow_run_failed while the run stays suspended (engine finding)");
+            // Issue #155: a refused resolve is logged as request_port_rejected, not workflow_run_failed.
+            check(count_of(after, "workflow_run_failed") == count_of(before, "workflow_run_failed") &&
+                      count_of(after, "request_port_rejected") == count_of(before, "request_port_rejected") + 1,
+                  "W2: ... and the engine logs one request_port_rejected (no workflow_run_failed) while the run stays suspended");
             Value bad = resolve(d, w, kPort1, "x", {"bogus"});
-            check(result_of(bad, "status") == "routing_failed" && result_of(bad, "failed_executor") == "review" &&
-                      td::get_string(bad, "state") == "finished",
-                  "W2: an invented-only route consumes the port and ends routing_failed at review");
+            check(result_of(bad, "status") == "invalid_routes" && td::get_string(bad, "state") == "suspended" &&
+                      open_ports(d, w).size() == 1,
+                  "W2 (#155): an invented-only route is refused (invalid_routes) and the port stays open");
+            Value fixed = resolve(d, w, kPort1, "x", {"approve"});
+            check(result_of(fixed, "status") == "completed", "W2 (#155): the corrected answer to the same port completes");
         }
         {
             td::Driver d(wcfg);
@@ -1635,8 +1639,8 @@ int main() {
             (void)call(d, "workflow_run", wid(w, {{"text", td::str("go")}}));
             (void)wsettle(d, w);
             Value mixed = resolve(d, w, kPort1, "x", {"approve", "bogus"});
-            check(result_of(mixed, "status") == "completed",
-                  "W2: a mixed route (one declared case plus an invented one) is accepted by the engine");
+            check(result_of(mixed, "status") == "invalid_routes" && td::get_string(mixed, "state") == "suspended",
+                  "W2 (#155): a mixed route (one declared case plus an invented one) is refused by the engine");
         }
         {
             td::Driver d(wcfg);
@@ -1649,11 +1653,12 @@ int main() {
             std::string p2;
             for (auto const& p : ports) (p.find(":port:p1:") != std::string::npos ? p1 : p2) = p;
             Value first = resolve(d, w, p1, "x", {"bogus"});
-            check(result_of(first, "status") == "suspended" && td::get_string(first, "state") == "suspended",
-                  "W2: with two ports, a bad route on p1 is stored and the run stays suspended");
+            check(result_of(first, "status") == "invalid_routes" && td::get_string(first, "state") == "suspended" &&
+                      open_ports(d, w).size() == 2,
+                  "W2 (#155): with two ports, a bad route on p1 is refused at once and both ports stay open");
             Value second = resolve(d, w, p2, "y", {});
-            check(result_of(second, "status") == "routing_failed" && result_of(second, "failed_executor") == "p1",
-                  "W2: ... and the failure surfaces on p2's resolve, naming p1");
+            check(result_of(second, "status") == "suspended" && open_ports(d, w).size() == 1,
+                  "W2 (#155): ... and p2's valid answer is not failed by p1's earlier bad one");
         }
         {
             td::Driver d(wcfg);

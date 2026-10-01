@@ -118,6 +118,7 @@ template <class T>
         case workflow_event_kind::merge_conflict: return "merge_conflict";
         case workflow_event_kind::agent_turn_event: return "agent_turn_event";
         case workflow_event_kind::moderator_stream_delta: return "moderator_stream_delta";
+        case workflow_event_kind::request_port_rejected: return "request_port_rejected";
     }
     return "?";
 }

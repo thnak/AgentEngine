@@ -121,6 +121,11 @@ namespace detail {
                 out << "    " << from << " -. \"" << detail::escape_label(edge.case_label) << "\" .-> "
                     << to << "\n";
                 break;
+            case edge_kind::switch_default:
+                // ADR-215: the switch's default case. A thick arrow, so it reads as different from a case
+                // an author happened to label "(default)".
+                out << "    " << from << " == \"(default)\" ==> " << to << "\n";
+                break;
         }
         if (edge.on_failure.kind == edge_failure_policy::fallback) {
             out << "    " << from << " -. \"on failure\" .-> " << detail::node_token(idx.at(edge.on_failure.fallback))
@@ -200,6 +205,9 @@ namespace detail {
                 break;
             case edge_kind::multi_selection:
                 out << " [label=\"" << detail::escape_label(edge.case_label) << "\", style=dashed];\n";
+                break;
+            case edge_kind::switch_default:
+                out << " [label=\"(default)\", style=bold];\n";  // ADR-215, see render_mermaid()
                 break;
         }
         if (edge.on_failure.kind == edge_failure_policy::fallback) {

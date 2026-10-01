@@ -123,18 +123,22 @@ workflow_run_completed · workflow_run_failed
 superstep_started · superstep_completed
 executor_dispatched · executor_completed
 message_routed · fan_out_dispatched · fan_in_aggregated · route_selected
-request_port_opened · request_port_resolved
+request_port_opened · request_port_resolved · request_port_rejected
 checkpoint_saved · merge_completed · merge_conflict
 agent_turn_event · moderator_stream_delta
 ```
 
 It has two parts, and they differ in the properties above:
 
-- **Structural events** (every kind but the last two) come from the supervisor's own round loop, one
-  writer, in order. They ride the same credit-controlled stream as the run event stream. Every way a
-  run ends, including the early-return paths of `run_workflow`/`resume_workflow`/`continue_workflow`,
-  emits one of the `workflow_run_*` terminal events. The run is over when that event arrives, not
-  when the stream closes.
+- **Structural events** (every kind but the two per-node ones) come from the supervisor's own round
+  loop, one writer, in order. They ride the same credit-controlled stream as the run event stream.
+  Every way a run ends, including the early-return paths of `run_workflow`/`resume_workflow`/
+  `continue_workflow`, emits one of the `workflow_run_*` terminal events. The run is over when that
+  event arrives, not when the stream closes. A `resume_workflow` that is refused (an unknown or
+  already-answered interaction id, a caller the admission gate denies, routes that are not a valid
+  choice at the port, a run that was cancelled) changes nothing and emits `request_port_rejected`
+  with a reason, never a `workflow_run_*` event: the run it was refused is still where it was (issue
+  #155).
 - **Per-node events** (`agent_turn_event`, `moderator_stream_delta`) come live from whichever worker
   thread is running the node, several at once in a fan-out round. `agent_turn_event` wraps the node's
   own `RunEvent` unchanged, so it keeps that event's taint. These events carry `executor_id`,

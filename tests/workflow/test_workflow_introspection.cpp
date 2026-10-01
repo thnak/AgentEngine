@@ -66,6 +66,7 @@ int main() {
         Edge{"gate", "router", edge_kind::direct, {}, {}},
         Edge{"router", "a", edge_kind::switch_case, "go_a", {}},
         Edge{"router", "b", edge_kind::multi_selection, "go_b", {}},
+        Edge{"router", "recover", edge_kind::switch_default, {}, {}},  // ADR-215
         Edge{"a", "merge", edge_kind::fan_in, {}, {}},
         Edge{"b", "merge", edge_kind::fan_in, {}, {}},
         Edge{"merge", "weird \"id\" here", edge_kind::fan_out, {},
@@ -105,6 +106,9 @@ int main() {
           "G0: the switch_case edge carries its case label");
     check(contains(mermaid, "-. \"go_b\" .->"),
           "G0: the multi_selection edge is dashed and carries its case label (distinct from switch_case)");
+    check(contains(mermaid, "== \"(default)\" ==>") && contains(dot, "[label=\"(default)\", style=bold]"),
+          "G0 (ADR-215): a switch's default edge renders as its own thick/bold '(default)' edge in both "
+          "formats, distinct from any labelled case");
     check(contains(mermaid, "\"fan-in\""), "G0: fan_in edges are labelled");
     check(contains(mermaid, "\"fan-out\""), "G0: fan_out edges are labelled");
     check(contains(mermaid, "\"on failure\""),

@@ -39,6 +39,8 @@
 //        boundary, not just claimed -- a genuinely bounded test (small worker_budget=1 per level,
 //        matching CLAUDE.md's own machine-safety discipline: proving a cap works must never itself
 //        risk the resource it caps).
+// S14 -- issue #155: routes the INNER port refuses come back as invalid_routes on the outer, and the
+//        outer interaction (and the inner port) stay open for a corrected answer.
 //
 // MACHINE SAFETY (CLAUDE.md): every loop below is bounded.
 //
@@ -212,6 +214,31 @@ void s3_basic_nested_suspend_resume_complete() {
     check(text_of(r2.output) == "approved>sink",
           "S3: the final output carries the inner's real resolution, routed through the outer's "
           "own sink node -- genuine end-to-end composition, not a stub");
+}
+
+// ---- S14 (issue #155): routes the INNER port refuses keep the OUTER interaction open ------------------
+void s14_inner_invalid_routes_keeps_outer_interaction_open() {
+    WorkflowSupervisor sup;
+    sup.initialize(outer_graph(), outer_bodies());
+    auto inner = std::make_shared<WorkflowSupervisor>();
+    inner->initialize(inner_graph_with_port(), inner_bodies_with_port());
+    sup.bind_sub_workflow("sub", inner);
+
+    WorkflowResult r1 = drive(sup.run_workflow(RunWorkflow{text_message("go")}));
+    std::string const id = r1.open_interactions.empty() ? std::string{} : r1.open_interactions.at(0).interaction_id;
+    check(r1.status == workflow_status::suspended && !id.empty(), "S14 setup: the outer run suspends on the inner port");
+
+    // The inner port's only outgoing edge set is empty (a terminal port), so any label is unknown there.
+    WorkflowResult bad = drive(sup.resume_workflow(ResumeWorkflow{id, text_message("x"), {"bogus"}}));
+    check(bad.status == workflow_status::invalid_routes,
+          "S14 (#155): the inner port's refusal surfaces on the outer as invalid_routes");
+    check(sup.open_interactions().size() == 1 && sup.open_interactions().front().interaction_id == id &&
+              inner->open_interactions().size() == 1,
+          "S14 (#155): the outer interaction survives under the same id and the inner port is still open -- "
+          "an attempt that changed nothing must not destroy the pending sub-workflow entry");
+    WorkflowResult ok = drive(sup.resume_workflow(ResumeWorkflow{id, text_message("approved"), {}}));
+    check(ok.status == workflow_status::completed && text_of(ok.output) == "approved>sink",
+          "S14 (#155): the corrected answer to the same outer interaction completes the nested run");
 }
 
 // ---- S4: a terminally-failing inner run (bound_max_rounds trip, never completes) ------------------
@@ -797,6 +824,7 @@ int main() {
     s10_duplicate_inner_binding_is_refused();
     s12_worker_budget_bounds_real_thread_count();
     s13_nesting_depth_cap_boundary();
+    s14_inner_invalid_routes_keeps_outer_interaction_open();
 
     std::fprintf(stderr, g_failures == 0 ? "test_rt_workflow_sub_workflow: ALL PASS\n"
                                           : "test_rt_workflow_sub_workflow: FAIL\n");

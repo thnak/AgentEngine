@@ -90,6 +90,10 @@ struct RunStateRecord {
     std::uint32_t resets_used  = 0;
     // GitHub issue #52 fix, generalized by issue #62: see HeldFanInRecord's own comment.
     std::vector<HeldFanInRecord> held_fan_in;
+    // Issue #156 (ADR-214): the run ended `cancelled`. Without it a checkpoint of a cancelled run (whose
+    // undelivered messages and ports are already discarded) restored and continued would report
+    // `completed`. Optional on read (default false), the same additive-field precedent as above.
+    bool cancelled = false;
 };
 
 // interaction_to_json()/interaction_from_json() live in interaction_codec.hpp -- shared with
@@ -275,6 +279,7 @@ struct RunStateRecord {
         {"stall_streak", agentengine::json::Value::make_number(static_cast<double>(rec.stall_streak))},
         {"resets_used", agentengine::json::Value::make_number(static_cast<double>(rec.resets_used))},
         {"held_fan_in", agentengine::json::Value::make_array(std::move(held_fan_in))},
+        {"cancelled", agentengine::json::Value::make_bool(rec.cancelled)},
     });
 }
 
@@ -345,6 +350,10 @@ struct RunStateRecord {
     if (agentengine::json::Value const* resets_used = v.find("resets_used");
         resets_used != nullptr && resets_used->is_number()) {
         rec.resets_used = static_cast<std::uint32_t>(resets_used->as_number());
+    }
+    // Issue #156: optional on read -- absent means the run was not cancelled.
+    if (agentengine::json::Value const* cancelled = v.find("cancelled"); cancelled != nullptr && cancelled->is_bool()) {
+        rec.cancelled = cancelled->as_bool();
     }
     // GitHub issue #52 fix: optional on read -- a pre-fix checkpoint has no such field, and "no
     // outstanding holds" is the correct value for one, matching stall_streak/resets_used's own

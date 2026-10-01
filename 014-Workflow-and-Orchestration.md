@@ -1,6 +1,6 @@
 # 014 — Workflow and Orchestration
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-04 by ADR-169** (§4 — resolving a request port requires caller admission; holding an `interaction_id` is not authority) · **Amended 2026-09-27 by ADR-152/ADR-157** (§7 — the live view has a fine-grained sibling, the workflow event stream; issue #82) · **Depends on:** 001, 002, 005, 013, 018, 019 · **Gate:** §8
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-10-01** (§1 switch/case default, ADR-215 Proposed, issue #34; §2 cancellation, ADR-214 Proposed; §4 one interaction per delivery and answers checked before acceptance, issues #155/#157) · **Amended 2026-09-04 by ADR-169** (§4 — resolving a request port requires caller admission; holding an `interaction_id` is not authority) · **Amended 2026-09-27 by ADR-152/ADR-157** (§7 — the live view has a fine-grained sibling, the workflow event stream; issue #82) · **Depends on:** 001, 002, 005, 013, 018, 019 · **Gate:** §8
 
 ## Goal
 
@@ -17,8 +17,16 @@ Quark actors; ADR-037 removed Quark as AgentEngine's runtime — see
 ```
 Workflow = { executors[], edges[], start, output_selection, policies }
 Executor = an agent | a function | a sub-workflow | a request port
-Edge     = direct | fan-out | fan-in | switch/case | multi-selection | chain
+Edge     = direct | fan-out | fan-in | switch/case (+ optional default) | multi-selection | chain
 ```
+
+- **Switch/case selects exactly one case; a default catches "none".** A source's `switch_case` edges
+  are matched against the routes its reply names. Exactly one match fires that case. More than one
+  match ends the run `routing_failed`, default or not. Zero matches also end it `routing_failed`,
+  unless the source declares a **default** (`switch_default`, ADR-215, issue #34): then the default
+  edge fires instead. A default carries no label. A source has at most one, and only alongside at
+  least one `switch_case` edge (`validate_workflow`). Natively it is `WorkflowBuilder::connect_default`
+  (beside `connect_case`); declaratively it is `default: true` on a `to` edge (015 §3).
 
 - **Executors are typed by their input and output message types.** An edge that connects
   incompatible types fails to build — at compile time for the C++ form, at load for the declarative
@@ -58,6 +66,14 @@ change ADR-032 did not make as a drive-by). Full trace, including the pre-ADR-03
   by the shuffle test (§8 G3).
 - **Termination** is by output selection, by an explicit terminal executor, or by bound
   (`MaxRounds`, deadline, budget). An unbounded workflow does not run — the bound is required.
+- **Cancellation** (`ADR-159`, amended by `ADR-214`, issue #156) ends a run `cancelled` wherever it
+  lands. In a round, the in-flight steps finish cooperatively (an agent step's session sees the
+  cancel and ends its own run), no failed step is retried, and the round ends `cancelled` before
+  routing — a step failure the cancel caused is reported as the cancel, not as an executor failure.
+  While suspended, the run ends `cancelled` at once and its open interactions (including a nested
+  sub-workflow's) are closed; a later answer or continue is refused. A cancel applies to the run in
+  progress, not to the supervisor: the next run starts with a fresh cancellation, and a caller that is
+  itself cancellable links its own token into the run it starts.
 
 ## 3. Patterns
 
@@ -87,7 +103,24 @@ A **request port** is an executor that emits `InputRequired` (001 §2) and suspe
 until a response arrives. It is the same mechanism as tool approval and A2A `INPUT_REQUIRED` — one
 shape, four surfaces (013 §5). Multiple request ports open concurrently in different branches
 produce multiple concurrent `Interaction` records (001 §2) on the same run — the case that makes
-`interaction_id` a set rather than a singleton, resolving OQ-4.
+`interaction_id` a set rather than a singleton, resolving OQ-4. The set has one member per
+*delivery*, not per port: two messages reaching the same request port in the same round (a fan-out
+whose branches both lead into one review port) open two interactions with two distinct ids, each
+answered on its own (issue #157). An id is `<run>:port:<port id>:<round>`; a second same-round
+delivery to that port takes the first free `:<k>` suffix (`k ≥ 1`), so a port reached once per round
+keeps the unsuffixed id. No two interactions that are open at the same time share an id.
+
+**An answer is checked before it is accepted** (issue #155). The routes a response names are validated
+against the port's outgoing edges *before* the port is consumed: every label must be the case label
+of a `switch_case`/`multi_selection` edge out of that port (an undeclared label is refused whether it
+is alone or mixed with valid ones, and on a port with no labelled edges any label is undeclared), and
+when the port has `switch_case` edges the routes must select exactly one of them (or none, if the port
+has a switch default — ADR-215; a default answers "no case chosen", it never absorbs an undeclared
+label). A refused answer —
+like an unknown or already-answered id, or a caller the admission gate denies — changes nothing: the
+port stays open under the same id, the run stays suspended, and the refusal is reported as itself
+(`invalid_routes`; on the event stream, `request_port_rejected`, never a run-failed event). A typo in
+a route is therefore corrected by answering again, not by losing the run.
 
 A suspended workflow **holds no resources**: it is checkpointed, its activations passivate, and it
 resumes on the response, on a durable reminder (the runtime's durable reminders — formerly Quark's;

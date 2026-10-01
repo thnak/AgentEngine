@@ -1804,6 +1804,7 @@ namespace workflow_fixture_detail {
         case K::merge_conflict: return "merge_conflict";
         case K::agent_turn_event: return "agent_turn_event";
         case K::moderator_stream_delta: return "moderator_stream_delta";
+        case K::request_port_rejected: return "request_port_rejected";
     }
     return "unknown";
 }
@@ -1816,6 +1817,7 @@ namespace workflow_fixture_detail {
         case workflow::edge_kind::switch_case: return "switch_case";
         case workflow::edge_kind::multi_selection: return "multi_selection";
         case workflow::edge_kind::chain: return "chain";
+        case workflow::edge_kind::switch_default: return "switch_default";
     }
     return "unknown";
 }
@@ -1842,6 +1844,12 @@ namespace workflow_fixture_detail {
             [](wp::FanOut const& x) { return obj({{"from", str(x.from_executor_id)}, {"to", strings_json(x.to_executor_ids)}}); },
             [](wp::FanIn const& x) { return obj({{"to", str(x.to_executor_id)}, {"from", strings_json(x.from_executor_ids)}}); },
             [](wp::RouteSelected const& x) {
+                // ADR-215: "took_default" only when set, so a scenario exported before it existed still
+                // compares equal for every switch without a default.
+                if (x.took_default) {
+                    return obj({{"executor_id", str(x.executor_id)}, {"chosen", strings_json(x.chosen_cases)},
+                                {"available", strings_json(x.available_cases)}, {"took_default", boolean(true)}});
+                }
                 return obj({{"executor_id", str(x.executor_id)}, {"chosen", strings_json(x.chosen_cases)},
                             {"available", strings_json(x.available_cases)}});
             },
@@ -1853,6 +1861,10 @@ namespace workflow_fixture_detail {
             [](wp::SuperstepBounds const& x) { return obj({{"executors", strings_json(x.executor_ids)}}); },
             [](wp::AgentTurn const& x) { return obj({{"executor_id", str(x.executor_id)}}); },
             [](wp::ModeratorDelta const& x) { return obj({{"executor_id", str(x.executor_id)}}); },
+            [](wp::PortRejected const& x) {
+                return obj({{"executor_id", str(x.executor_id)}, {"interaction_id", str(x.interaction_id)},
+                            {"reason", str(x.reason)}});
+            },
         },
         p);
 }
@@ -3525,8 +3537,9 @@ private:
     }
 
     // ADR-210 §7 C1: a cancel mid-run lands at a timing-dependent point, so that workflow cannot be exported.
-    // A cancel while ready or suspended is the driver's own outcome, labelled as such. Either way it never runs
-    // again (the supervisor's cancel is permanent).
+    // A cancel while ready or suspended is the driver's own outcome, labelled as such. Either way the driver
+    // never runs it again (its monitor refuses; the supervisor's own cancel is per run since ADR-214, and a
+    // cancel while suspended now ends that run `cancelled` and closes its ports in the engine too).
     ToolResultJson t_workflow_cancel(Value const& args) {
         ToolError e;
         DriverWorkflow* w = find_workflow(args, e);

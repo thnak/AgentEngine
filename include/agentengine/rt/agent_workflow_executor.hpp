@@ -100,7 +100,8 @@ template <class T>
 // carries empty `routes` -- an agent-kind node reaches its outgoing edges via `direct`/`fan_out`/
 // `fan_in` (which fire unconditionally) exactly like a plain function node; a `switch_case`/
 // `multi_selection` edge OUT of an agent-kind node can never fire, since nothing here ever proposes a
-// route label. A real "model output selects a route" capability is separate, not-yet-built work.
+// route label (so a `switch_default` sibling, ADR-215, is always the edge taken). A real "model output
+// selects a route" capability is separate, not-yet-built work.
 template <class ChatClientT, class StateT, class HistoryProviderT>
 [[nodiscard]] AgentExecutorBodyTag agent_session_as_executor_body(
         AgentSession<ChatClientT, StateT, HistoryProviderT>& session) {
