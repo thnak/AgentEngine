@@ -71,12 +71,19 @@
 // Ownership is the HOLDER ID of the task the lock was granted to, recorded under `m_` at the moment of
 // granting (fast path, or hand-off pop) -- not the OS thread that happens to resume it, which after a
 // posted or inline hand-off can be running somebody else entirely.
+//
+// ADR-219 (issue #79) -- A HOST'S RESUMER. A waiter that parks inside a `ScopedResumer` (a host driving
+// AgentEngine coroutines from its own executor) is handed to that host's `Resumer` as a
+// `ParkedContinuation` instead of being resumed on the releasing thread. The hand-off runs inside the
+// trampoline below, outside `m_`: a host resumer that runs the continuation inline (or drops it, which
+// resumes it) re-enters `unlock()` as a pending release, not as a nested drain.
 
 #include <algorithm>
 #include <atomic>
 #include <coroutine>
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <utility>
 
@@ -153,6 +160,7 @@ public:
                 self->owner_.store(record.holder, std::memory_order_release);
                 return false;
             }
+            ticket_ = record.ticket;  // ADR-219: null unless a host resumer drives this coroutine
             self->waiters_.push_back(std::move(record));
             handle_ = h;
             parked = true;
@@ -170,14 +178,30 @@ public:
         // See file banner's CANCELLATION SAFETY note: if this awaiter is destroyed while still
         // genuinely parked (the owning task dropped before ever being resumed), remove our own
         // registration so a later unlock() never resumes an already-destroyed frame.
+        //
+        // ADR-219 self red-team finding 1: if the registration is already gone, the lock was GRANTED to this
+        // waiter and its continuation handed to a host resumer, where it may wait indefinitely. Destroying
+        // the frame then left the lock held by a dead task forever, and the queued continuation resuming a
+        // destroyed frame. If this destruction claims the continuation first, it never runs, and the lock
+        // granted to it is released here. (A homed or homeless waiter has no claim: ADR-175 §6's residual.)
         ~LockAwaiter() {
             if (!parked) return;
-            std::lock_guard lock(self->m_);
-            auto& q = self->waiters_;
-            auto it = std::find_if(q.begin(), q.end(),
-                                   [this](detail::ParkedResumer const& r) { return r.handle == handle_; });
-            if (it != q.end()) q.erase(it);
+            bool release_grant = false;
+            {
+                std::lock_guard lock(self->m_);
+                auto& q = self->waiters_;
+                auto it = std::find_if(q.begin(), q.end(),
+                                       [this](detail::ParkedResumer const& r) { return r.handle == handle_; });
+                if (it != q.end()) {
+                    q.erase(it);
+                } else {
+                    release_grant = detail::abandon_woken(ticket_);
+                }
+            }
+            if (release_grant) self->unlock();
         }
+
+        std::shared_ptr<detail::ResumerTicket> ticket_{};
     };
 
     [[nodiscard]] LockAwaiter lock() noexcept { return LockAwaiter{this}; }
@@ -218,7 +242,9 @@ private:
     // once already sees itself as holder.
     //
     // A homed waiter is posted to its home here and an empty record is returned: nothing is left for the
-    // caller to run. A homeless waiter is returned for the caller's trampoline to resume inline -- and so
+    // caller to run. A waiter a host resumer drives (ADR-219) is returned for the trampoline to hand over
+    // with `detail::wake()` -- never from under `m_`, since that calls host code. A homeless waiter is
+    // returned for the caller's trampoline to resume inline -- and so
     // is a homed waiter whose home has CLOSED (its block_on() returned; ADR-175 round 4 finding 1: resuming
     // those inside post() nested each one in the previous one's unlock() and overflowed the stack). Such a
     // waiter parked under a block_on() it did not belong to -- a foreign awaitable's bare handle resume --
@@ -276,7 +302,8 @@ private:
         // file banner) queued up another hand-off while we were inside it. Every iteration reuses THIS one
         // stack frame. A successor posted to its home ends the loop.
         for (;;) {
-            detail::wake(std::move(next));  // no home: inline, on behalf of its own holder id
+            // No home: inline, on behalf of its own holder id -- or, with a host resumer, handed to it.
+            detail::wake(std::move(next));
             std::lock_guard lock(m_);
             if (!pending_release_) {
                 draining_ = false;

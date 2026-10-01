@@ -122,7 +122,9 @@ struct channel_state {
     // from the consumer itself -- takes this handle, clears the slot, and resumes it directly -- see
     // file banner for why this is not a cv wait.
     // ADR-175: the parked consumer's handle plus its home and holder id (rt/resume_home.hpp) -- a homed
-    // consumer is posted back to its block_on() rather than resumed on the producer's thread.
+    // consumer is posted back to its block_on() rather than resumed on the producer's thread. ADR-219: a
+    // consumer that parked inside a host's `ScopedResumer` is handed to that host's `Resumer` instead. Every
+    // wake-up below runs `detail::wake()` after releasing `m`, so a host resumer never runs under it.
     detail::ParkedResumer waiting_consumer;
 
     explicit channel_state(std::size_t cap) noexcept : capacity(cap) {}
@@ -385,6 +387,7 @@ private:
             if (!state->queue.empty() || state->terminal != channel_terminal::open) {
                 return false;
             }
+            ticket_                 = record.ticket;  // ADR-219: null unless a host resumer drives it
             state->waiting_consumer = std::move(record);
             handle_ = h;
             parked = true;
@@ -407,11 +410,20 @@ private:
             return std::nullopt;
         }
 
+        // ADR-219 self red-team finding 1: already woken and handed to a host resumer -- claim the queued
+        // continuation so it never resumes this destroyed frame. Nothing to undo: an item it would have
+        // taken stays in the queue for the next reader.
         ~next_awaiter() {
             if (!parked) return;  // never suspended here, or resumed the ordinary way -- nothing to do
             std::lock_guard lock(state->m);
-            if (state->waiting_consumer.handle == handle_) state->waiting_consumer = {};
+            if (state->waiting_consumer.handle == handle_) {
+                state->waiting_consumer = {};
+            } else {
+                (void)detail::abandon_woken(ticket_);
+            }
         }
+
+        std::shared_ptr<detail::ResumerTicket> ticket_{};
     };
 
 public:

@@ -111,7 +111,9 @@ public:
     void resume() {
         auto& p = h_.promise();
         if (p.raw_holder_ == 0) p.raw_holder_ = mint_holder_id();
-        ScopedExecution const raw(nullptr, p.raw_holder_);
+        // ADR-219: a host resumer, unlike a block_on() home, is kept: it never closes, and it is how a host
+        // driving this task from its own executor gets the task's continuations back.
+        ScopedExecution const raw(nullptr, p.raw_holder_, detail::current_execution().resumer);
         h_.resume();
     }
     void start() { resume(); }
@@ -219,7 +221,9 @@ public:
     void resume() {
         auto& p = h_.promise();
         if (p.raw_holder_ == 0) p.raw_holder_ = mint_holder_id();
-        ScopedExecution const raw(nullptr, p.raw_holder_);
+        // ADR-219: a host resumer, unlike a block_on() home, is kept: it never closes, and it is how a host
+        // driving this task from its own executor gets the task's continuations back.
+        ScopedExecution const raw(nullptr, p.raw_holder_, detail::current_execution().resumer);
         h_.resume();
     }
     void start() { resume(); }
