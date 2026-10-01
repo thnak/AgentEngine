@@ -452,6 +452,15 @@ public:
     [[nodiscard]] agentengine::result<agentengine::Digest> head_tree_digest(
             std::string const& branch_name, agentengine::IdentityHandle caller) const;
 
+    // ADR-209 §4 step 2: the branch's CURRENT head checkpoint, read-only, gated exactly like
+    // `head_tree_digest()` (on the head tree). A live shell syncs on `self_digest` rather than on the tree:
+    // `reset_to()` appends a NEW checkpoint that may hold the very tree the head already had, and a sync on
+    // the tree would miss that reset. A branch that has never committed (a fresh root) has no stored
+    // checkpoint; its head is reported as `{self_digest = "", tree = <empty tree>, turn_index = 0}`, which is
+    // distinct from every committed checkpoint's `self_digest`.
+    [[nodiscard]] agentengine::result<Checkpoint> head_checkpoint(std::string const& branch_name,
+                                                                      agentengine::IdentityHandle caller) const;
+
     // Read-only checkpoint-history introspection -- deliberately NOT a "resolve a branch by name into
     // a mutation-capable handle" capability, which would reopen the object-possession security
     // property this Ledger's real public API deliberately preserves. Gated on the SPECIFIC

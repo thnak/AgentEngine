@@ -244,10 +244,14 @@ constexpr std::size_t kOutputSafetyCapBytes = 1u << 20;  // 1 MiB, merged stdout
 // caller streamed to disk has none of them: no thread, no pipe, no signal handling, no deadlock to
 // reason about, and peak memory independent of tree size. Callers that pass nullptr get
 // byte-identical behaviour to before, `hStdInput` null included.
+// ADR-209 §7: `timed_out`, when non-null, is set true iff the WALL-CLOCK deadline (not the output cap) stopped
+// the child -- a live shell must tell "the command is still running in the container" apart from "it printed
+// too much", because only the first needs the in-container kill.
 [[nodiscard]] SurfaceRunOutcome run_argv(std::vector<std::string> const& argv,
                                          int timeout_seconds = kProcessTimeoutSeconds,
                                          std::size_t output_cap = kOutputSafetyCapBytes,
-                                         std::filesystem::path const* stdin_file = nullptr);
+                                         std::filesystem::path const* stdin_file = nullptr,
+                                         bool* timed_out = nullptr);
 #else
 // POSIX counterpart to the Windows-side `path_to_utf8()` -- a pure passthrough, not a real conversion:
 // POSIX paths are already just byte sequences (by this codebase's own established convention, e.g.
@@ -281,10 +285,14 @@ constexpr std::size_t kOutputSafetyCapBytes = 1u << 20;  // 1 MiB, merged stdout
 // the Windows sibling's comment for why a file rather than a pipe this process feeds. `addopen` does
 // the work in the CHILD after fork, so there is no parent-side descriptor to leak, close or set
 // FD_CLOEXEC on. Callers that pass nullptr get byte-identical behaviour to before.
+// ADR-209 §7: `timed_out`, when non-null, is set true iff the WALL-CLOCK deadline (not the output cap) stopped
+// the child -- a live shell must tell "the command is still running in the container" apart from "it printed
+// too much", because only the first needs the in-container kill.
 [[nodiscard]] SurfaceRunOutcome run_argv(std::vector<std::string> const& argv,
                                          int timeout_seconds = kProcessTimeoutSeconds,
                                          std::size_t output_cap = kOutputSafetyCapBytes,
-                                         std::filesystem::path const* stdin_file = nullptr);
+                                         std::filesystem::path const* stdin_file = nullptr,
+                                         bool* timed_out = nullptr);
 #endif
 using detail::process_identity::current_pid;
 
@@ -476,8 +484,13 @@ public:
     // own comment. Every existing `create()`/`create(image)` call site keeps compiling and now gets
     // containment it did not have before; nothing has to opt in to be safe, and loosening is an
     // explicit field assignment a reader can see.
+    //
+    // ADR-209 §7: `init_script`, when non-empty, replaces the default `mkdir -p /workspace && sleep
+    // infinity` as PID 1's `sh -c` script -- the live shell's non-forking pause-and-reap keeper. It is this
+    // engine's own constant, never caller or model input.
     [[nodiscard]] agentengine::result<Instance> create(std::string const& image = "alpine:latest",
-                                                          ContainerIsolation const& isolation = {});
+                                                          ContainerIsolation const& isolation = {},
+                                                          std::string const& init_script = {});
 
     // Real `docker cp <host_path> <container>:<container_path>`.
     [[nodiscard]] agentengine::result<void> copy_to_container(Instance const& inst,

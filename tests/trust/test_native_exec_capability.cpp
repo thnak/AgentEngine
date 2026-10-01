@@ -10,7 +10,9 @@
 #include <iostream>
 #include <string>
 
+#include "agentengine/core/json_value.hpp"
 #include "agentengine/trust/capability.hpp"
+#include "agentengine/trust/native_exec_grant.hpp"
 
 using namespace agentengine;
 
@@ -34,26 +36,26 @@ int main() {
     // ---- N1: exact-name grant covers only that exact request -----------------------------------
     {
         auto root = CapabilitySet::grant_root({
-            Capability{cap::NativeExec{"node", "workdir", std::nullopt, std::nullopt, std::nullopt}},
+            Capability{cap::NativeExec{"node", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}},
         });
-        AE_CHECK(root.contains(cap::NativeExec{"node", "workdir", std::nullopt, std::nullopt, std::nullopt}),
+        AE_CHECK(root.contains(cap::NativeExec{"node", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}),
                   "N1 (positive control): an exact-name request against an exact-name grant is allowed");
-        AE_CHECK(!root.contains(cap::NativeExec{"python3", "workdir", std::nullopt, std::nullopt, std::nullopt}),
+        AE_CHECK(!root.contains(cap::NativeExec{"python3", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}),
                   "N1: a request for a DIFFERENT, ungranted program name is denied");
     }
 
     // ---- N2: a prefix grant ("python*") covers matching concrete names, nothing else -----------
     {
         auto root = CapabilitySet::grant_root({
-            Capability{cap::NativeExec{"python*", "workdir", std::nullopt, std::nullopt, std::nullopt}},
+            Capability{cap::NativeExec{"python*", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}},
         });
-        AE_CHECK(root.contains(cap::NativeExec{"python3.11", "workdir", std::nullopt, std::nullopt, std::nullopt}),
+        AE_CHECK(root.contains(cap::NativeExec{"python3.11", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}),
                   "N2 (positive control): a concrete name matching the granted prefix is allowed");
-        AE_CHECK(root.contains(cap::NativeExec{"python", "workdir", std::nullopt, std::nullopt, std::nullopt}),
+        AE_CHECK(root.contains(cap::NativeExec{"python", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}),
                   "N2: the bare prefix itself (no suffix) also matches");
-        AE_CHECK(!root.contains(cap::NativeExec{"node", "workdir", std::nullopt, std::nullopt, std::nullopt}),
+        AE_CHECK(!root.contains(cap::NativeExec{"node", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}),
                   "N2: a name NOT matching the granted prefix is denied");
-        AE_CHECK(!root.contains(cap::NativeExec{"pythonic_evil", "other_mount", std::nullopt, std::nullopt, std::nullopt}),
+        AE_CHECK(!root.contains(cap::NativeExec{"pythonic_evil", "other_mount", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}),
                   "N2: matching the name prefix but requesting a DIFFERENT worktree mount is denied");
     }
 
@@ -62,12 +64,12 @@ int main() {
     // executable on PATH, but only entries covered by an ALREADY-HELD grant may become invocable.
     {
         auto root = CapabilitySet::grant_root({
-            Capability{cap::NativeExec{"node", "workdir", std::nullopt, std::nullopt, std::nullopt}},
+            Capability{cap::NativeExec{"node", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}},
         });
         std::vector<std::string> const path_scan_results = {"node", "python3", "bash", "curl", "rm"};
         std::vector<std::string> invocable;
         for (auto const& name : path_scan_results) {
-            if (root.contains(cap::NativeExec{name, "workdir", std::nullopt, std::nullopt, std::nullopt})) {
+            if (root.contains(cap::NativeExec{name, "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt})) {
                 invocable.push_back(name);
             }
         }
@@ -79,17 +81,17 @@ int main() {
     // ---- R-N4: no re-widening -- a REQUESTED pattern must never itself carry a wildcard ---------
     {
         auto root = CapabilitySet::grant_root({
-            Capability{cap::NativeExec{"python*", "workdir", std::nullopt, std::nullopt, std::nullopt}},
+            Capability{cap::NativeExec{"python*", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}},
         });
-        AE_CHECK(!root.contains(cap::NativeExec{"*", "workdir", std::nullopt, std::nullopt, std::nullopt}),
+        AE_CHECK(!root.contains(cap::NativeExec{"*", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}),
                   "R-N4: requesting a bare '*' against a prefix grant is denied, not treated as "
                   "'covered by the prefix'");
-        AE_CHECK(!root.contains(cap::NativeExec{"py*", "workdir", std::nullopt, std::nullopt, std::nullopt}),
+        AE_CHECK(!root.contains(cap::NativeExec{"py*", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}),
                   "R-N4: requesting a DIFFERENT, broader wildcard is denied");
         // Positive control: attenuate() to the identical grant (re-request of the same pattern,
         // the shape every other exact-string kind in this file already permits) still succeeds.
         auto identical = root.attenuate(
-            {Capability{cap::NativeExec{"python*", "workdir", std::nullopt, std::nullopt, std::nullopt}}});
+            {Capability{cap::NativeExec{"python*", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}}});
         AE_CHECK(identical.has_value(),
                   "R-N4 (positive control): re-attenuating to the SAME pattern still succeeds");
     }
@@ -97,16 +99,16 @@ int main() {
     // ---- N5: attenuate() narrows a wildcard grant down to one concrete invocation --------------
     {
         auto root = CapabilitySet::grant_root({
-            Capability{cap::NativeExec{"python*", "workdir", 30000, 30000, 512ull * 1024 * 1024}},
+            Capability{cap::NativeExec{"python*", "workdir", 30000, 30000, 512ull * 1024 * 1024, false, std::nullopt, std::nullopt}},
         });
         auto narrowed = root.attenuate(
-            {Capability{cap::NativeExec{"python3.11", "workdir", 5000, 5000, 64ull * 1024 * 1024}}});
+            {Capability{cap::NativeExec{"python3.11", "workdir", 5000, 5000, 64ull * 1024 * 1024, false, std::nullopt, std::nullopt}}});
         AE_CHECK(narrowed.has_value(), "N5: narrowing a prefix grant to a concrete invocation succeeds");
         if (narrowed.has_value()) {
-            AE_CHECK(!narrowed->contains(cap::NativeExec{"node", "workdir", std::nullopt, std::nullopt, std::nullopt}),
+            AE_CHECK(!narrowed->contains(cap::NativeExec{"node", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}),
                       "N5: the narrowed set does not carry the parent's wider (unrelated-name) reach");
             auto over_budget = narrowed->attenuate(
-                {Capability{cap::NativeExec{"python3.11", "workdir", 999999, std::nullopt, std::nullopt}}});
+                {Capability{cap::NativeExec{"python3.11", "workdir", 999999, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}}});
             AE_CHECK(!over_budget.has_value(),
                       "N5: a further attenuation exceeding the already-narrowed cpu_ms_cap is rejected");
         }
@@ -115,9 +117,9 @@ int main() {
     // ---- R-N6: mismatched worktree_mount_id is rejected even for a matching program name -------
     {
         auto root = CapabilitySet::grant_root({
-            Capability{cap::NativeExec{"node", "trusted_workdir", std::nullopt, std::nullopt, std::nullopt}},
+            Capability{cap::NativeExec{"node", "trusted_workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}},
         });
-        AE_CHECK(!root.contains(cap::NativeExec{"node", "different_mount", std::nullopt, std::nullopt, std::nullopt}),
+        AE_CHECK(!root.contains(cap::NativeExec{"node", "different_mount", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}),
                   "R-N6: a request naming the granted program but a DIFFERENT worktree mount is denied "
                   "-- worktree confinement cannot be bypassed by keeping the program name and "
                   "changing the mount");
@@ -141,7 +143,7 @@ int main() {
 
     // ---- N8: kind derivation and kind-only lookup round-trip -------------------------------------
     {
-        Capability const c = cap::NativeExec{"bash", "workdir", std::nullopt, std::nullopt, std::nullopt};
+        Capability const c = cap::NativeExec{"bash", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt};
         AE_CHECK(capability_kind_of(c) == capability_kind::native_exec,
                   "N8: capability_kind_of() correctly tags a NativeExec instance");
         auto root = CapabilitySet::grant_root({c});
@@ -154,11 +156,90 @@ int main() {
         cap::decl::NativeExec<"node", "workdir"> const tag{};
         Capability const converted = to_capability(tag);
         auto root = CapabilitySet::grant_root({converted});
-        AE_CHECK(root.contains(cap::NativeExec{"node", "workdir", std::nullopt, std::nullopt, std::nullopt}),
+        AE_CHECK(root.contains(cap::NativeExec{"node", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}),
                   "N9: cap::decl::NativeExec<\"node\", \"workdir\"> converts to a covering runtime grant");
-        AE_CHECK(!root.contains(cap::NativeExec{"python3", "workdir", std::nullopt, std::nullopt, std::nullopt}),
+        AE_CHECK(!root.contains(cap::NativeExec{"python3", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}),
                   "N9: the converted grant does not cover an undeclared program name (I2 -- no "
                   "ambient native-exec access)");
+    }
+
+    // ---- ADR-209 §9 / C13: the held-native-shell opt-in -----------------------------------------------
+    auto grant = [](bool live, std::optional<std::uint64_t> wall, std::optional<std::uint32_t> procs) {
+        cap::NativeExec g{"pwsh", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt};
+        g.live_session = live;
+        g.session_wall_ms_cap = wall;
+        g.max_processes = procs;
+        return g;
+    };
+    std::uint64_t const kMax64 = static_cast<std::uint64_t>(-1);
+    std::uint32_t const kMax32 = static_cast<std::uint32_t>(-1);
+
+    // N10: monotone. A parent WITHOUT live_session never yields a child with it -- not even one setting both
+    // caps to their maximum, which is the attenuated grant "caps set as the opt-in" would have let through.
+    {
+        auto root = CapabilitySet::grant_root({Capability{grant(false, std::nullopt, std::nullopt)}});
+        AE_CHECK(!root.attenuate({Capability{grant(true, kMax64, kMax32)}}).has_value(),
+                 "N10: a one-shot grant cannot be attenuated into a live one, even with UINT64_MAX caps");
+        AE_CHECK(!root.contains(grant(true, 1000, 1)), "N10: a one-shot grant does not contain a live request");
+        AE_CHECK(root.contains(grant(false, std::nullopt, std::nullopt)),
+                 "N10 (positive control): the same grant still covers the one-shot request");
+    }
+    // N11: a live parent: narrower caps OK, wider caps refused, dropping live OK.
+    {
+        auto root = CapabilitySet::grant_root({Capability{grant(true, 3600000, 64)}});
+        AE_CHECK(root.attenuate({Capability{grant(true, 60000, 8)}}).has_value(), "N11: narrower live caps attenuate");
+        AE_CHECK(!root.attenuate({Capability{grant(true, 7200000, 8)}}).has_value(),
+                 "N11: a longer session_wall_ms_cap is refused");
+        AE_CHECK(!root.attenuate({Capability{grant(true, 60000, 128)}}).has_value(),
+                 "N11: a larger max_processes is refused");
+        AE_CHECK(!root.attenuate({Capability{grant(true, std::nullopt, 8)}}).has_value(),
+                 "N11: an uncapped session_wall_ms_cap under a capped parent is refused");
+        AE_CHECK(root.contains(grant(false, 1000, 1)), "N11: a live grant also covers a one-shot request");
+    }
+    // N12: use-site validation -- a live grant missing either cap is unusable.
+    {
+        AE_CHECK(!trust::live_session_grant_usable(grant(false, 1000, 1)), "N12: no opt-in -> unusable");
+        AE_CHECK(!trust::live_session_grant_usable(grant(true, std::nullopt, std::nullopt)),
+                 "N12: opt-in with no caps -> unusable");
+        AE_CHECK(!trust::live_session_grant_usable(grant(true, 1000, std::nullopt)), "N12: no max_processes -> unusable");
+        AE_CHECK(!trust::live_session_grant_usable(grant(true, std::nullopt, 4)), "N12: no session cap -> unusable");
+        AE_CHECK(!trust::live_session_grant_usable(grant(true, 0, 4)), "N12: a zero session cap -> unusable");
+        AE_CHECK(trust::live_session_grant_usable(grant(true, 1000, 4)), "N12 (positive control): opt-in + both caps");
+        // ADR-209 §15.5: a session cap that would wrap negative as a signed duration bounds nothing.
+        AE_CHECK(!trust::live_session_grant_usable(grant(true, UINT64_MAX, 4)), "N12: a session cap above 2^62 ms -> unusable");
+        AE_CHECK(trust::live_session_grant_usable(grant(true, trust::kMaxLiveSessionWallMs, 4)),
+                 "N12 (positive control): a session cap of exactly 2^62 ms is usable");
+    }
+    // N13: I6 -- the declarative grant parses to exactly what the CRTP declaration converts to.
+    {
+        auto doc = json::parse(R"({"program":"pwsh","worktree_mount":"workdir","live_session":true,)"
+                               R"("session_wall_ms_cap":3600000,"max_processes":64})");
+        auto parsed = doc ? trust::parse_native_exec_grant(*doc) : result<cap::NativeExec>(std::unexpected(doc.error()));
+        Capability const crtp = to_capability(cap::decl::NativeExec<"pwsh", "workdir", true, 3600000, 64>{});
+        auto const* c = std::get_if<cap::NativeExec>(&crtp);
+        bool const equal = parsed.has_value() && c != nullptr && parsed->program_pattern == c->program_pattern &&
+                           parsed->worktree_mount_id == c->worktree_mount_id && parsed->live_session == c->live_session &&
+                           parsed->session_wall_ms_cap == c->session_wall_ms_cap &&
+                           parsed->max_processes == c->max_processes && parsed->cpu_ms_cap == c->cpu_ms_cap &&
+                           parsed->wall_ms_cap == c->wall_ms_cap && parsed->memory_bytes_cap == c->memory_bytes_cap;
+        AE_CHECK(equal, "N13: a declarative live grant equals the CRTP cap::decl::NativeExec<..., true, ...> grant");
+        Capability const plain = to_capability(cap::decl::NativeExec<"node", "workdir">{});
+        auto const* p = std::get_if<cap::NativeExec>(&plain);
+        AE_CHECK(p != nullptr && !p->live_session && !p->session_wall_ms_cap && !p->max_processes,
+                 "N13: a two-argument declaration is still a one-shot grant");
+        auto refused = [](char const* text) {
+            auto d = json::parse(text);
+            return d.has_value() && !trust::parse_native_exec_grant(*d).has_value();
+        };
+        AE_CHECK(refused(R"({"program":"pwsh","worktree_mount":"w","live_sesion":true})"),
+                 "N13: a misspelt key is refused, never ignored");
+        AE_CHECK(refused(R"({"program":"pwsh","worktree_mount":"w","live_session":"yes"})"), "N13: a non-bool flag is refused");
+        AE_CHECK(refused(R"({"program":"pwsh","worktree_mount":"w","max_processes":-1})"), "N13: a negative cap is refused");
+        AE_CHECK(refused(R"({"program":"pwsh","worktree_mount":"w","max_processes":4294967296})"),
+                 "N13: a max_processes past 2^32-1 is refused");
+        AE_CHECK(refused(R"({"program":"pwsh"})"), "N13: a missing worktree_mount is refused");
+        AE_CHECK(!refused(R"({"program":"pwsh","worktree_mount":"w"})"),
+                 "N13 (positive control): a minimal well-formed grant parses");
     }
 
     if (g_failures != 0) {

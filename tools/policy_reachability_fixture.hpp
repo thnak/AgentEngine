@@ -17,6 +17,8 @@
 //     the enumerator reaches both outcomes, not just the happy path.
 //   - broad-agent: four more tools/kinds (fs_write, secret, net_out, clock) together, ceiling
 //     covering all four -- breadth across capability kinds beyond fs_read/entropy.
+//   - native-live-declarative / native-live-crtp / native-oneshot-only (ADR-209 §9, I6): a held native
+//     shell's grant from YAML and from a CRTP declaration both GRANTED; a one-shot grant DENIED.
 //
 // `add_over_broad_positive_control()` is a separate, additive function (not part of the clean set --
 // see its own comment below) supplying the exit criterion's own demanded positive control
@@ -35,6 +37,8 @@
 #include <vector>
 
 #include "agentengine/core/agent_registry.hpp"
+#include "agentengine/core/yaml_value.hpp"
+#include "agentengine/trust/native_exec_grant.hpp"
 #include "agentengine/trust/policy_reachability.hpp"
 
 namespace agentengine::policy_reachability_fixture {
@@ -138,6 +142,23 @@ struct ClockTool : Tool<ClockTool, Capabilities<cap::decl::Clock<0>>> {
     static result<Reply> invoke(Args, EffectContext&) { return Reply{0}; }
 };
 
+// ADR-209 §9 (I6): a tool requiring a HELD native shell -- the `live_session` opt-in plus both caps.
+struct LiveShellArgs {
+    std::string command;
+};
+AE_JSON_SCHEMA(LiveShellArgs, command)
+struct LiveShellReply {
+    int exit_code = 0;
+};
+AE_JSON_SCHEMA(LiveShellReply, exit_code)
+struct LiveShellTool : Tool<LiveShellTool, Capabilities<cap::decl::NativeExec<"pwsh", "workdir", true, 3600000, 64>>> {
+    static constexpr std::string_view name = "native-live-shell";
+    static constexpr std::string_view description = "Run a command in a held native shell.";
+    using Args = LiveShellArgs;
+    using Reply = LiveShellReply;
+    static result<Reply> invoke(Args, EffectContext&) { return Reply{0}; }
+};
+
 // -- one fixture agent registered through the real path, for round-trip parity -------------------
 
 struct EchoAgent : Agent<EchoAgent, ChatClientId<"anthropic:claude-opus-5">, Tools<EchoTool>,
@@ -199,6 +220,38 @@ inline void build_reference_fixture(std::vector<trust::ReachabilityAgent>& agent
         oracle.push_back({"broad-agent", "now", capability_kind::clock, true});
     }
 
+    // ADR-209 §9 (I6): the held-native-shell grant, three ways. A DECLARATIVE grant (YAML, through
+    // trust::parse_native_exec_grant) and the equivalent CRTP declaration (cap::decl::NativeExec<..., true, ...>)
+    // both reach GRANTED; a one-shot grant for the same program and mount (no `live_session`) reaches DENIED --
+    // the opt-in is monotone, so a grant without it never yields a held shell.
+    {
+        auto doc = yaml::parse(
+            "program: pwsh\nworktree_mount: workdir\nlive_session: true\nsession_wall_ms_cap: 3600000\n"
+            "max_processes: 64\n");
+        auto grant = doc ? trust::parse_native_exec_grant(*doc)
+                         : agentengine::result<cap::NativeExec>(std::unexpected(doc.error()));
+        if (!grant) {
+            std::fprintf(stderr, "policy_reachability_fixture: the declarative live grant failed to parse: %s\n",
+                         grant.error().message.c_str());
+            std::abort();
+        }
+        std::vector<ToolDescriptor> tools{make_tool_descriptor<LiveShellTool>()};
+        agents.push_back(trust::ReachabilityAgent{"native-live-declarative", {Capability{*grant}}, tools});
+        oracle.push_back({"native-live-declarative", "native-live-shell", capability_kind::native_exec, true});
+    }
+    {
+        std::vector<ToolDescriptor> tools{make_tool_descriptor<LiveShellTool>()};
+        std::vector<Capability> ceiling{
+            to_capability(cap::decl::NativeExec<"pwsh", "workdir", true, 3600000, 64>{})};
+        agents.push_back(trust::ReachabilityAgent{"native-live-crtp", ceiling, tools});
+        oracle.push_back({"native-live-crtp", "native-live-shell", capability_kind::native_exec, true});
+    }
+    {
+        std::vector<ToolDescriptor> tools{make_tool_descriptor<LiveShellTool>()};
+        std::vector<Capability> ceiling{to_capability(cap::decl::NativeExec<"pwsh", "workdir">{})};
+        agents.push_back(trust::ReachabilityAgent{"native-oneshot-only", ceiling, tools});
+        oracle.push_back({"native-oneshot-only", "native-live-shell", capability_kind::native_exec, false});
+    }
 }
 
 // over-broad-agent: EchoTool (Entropy-only) plus an UNUSED NetOut grant -- the exit criterion's own

@@ -196,6 +196,10 @@ agentengine_add_test(test_rt_agent_session_schedule_wakeup_tool LIBS agentengine
 # test_agent_session_suspend_approval(.cpp).
 agentengine_add_test(test_rt_agent_session_suspend_approval LIBS agentengine::core agentengine_warnings)
 
+# ---- ADR-209 step 3 (issue #146, claim C11): the optional release-only on_run_end hook -- fires once per run
+# that emitted run_started and completed, never on suspension or a refusal; reaches a composed provider.
+agentengine_add_test(test_rt_agent_session_run_end_hook LIBS agentengine::core agentengine_warnings)
+
 # ---- OQ-21 (core/tool_call_hook.hpp) prove phase -- the tool-call hook stage wired into a real
 # rt::AgentSession round: deny-before-approval, rewrite-reaches-dispatch-and-downgrades-provenance,
 # a no-hook regression/positive control, and the interaction_reason::hook_decision suspend/resume

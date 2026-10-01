@@ -982,8 +982,51 @@ private:
     // the state-changed event AND state.
 
     void emit_run_event(run_event_kind kind, RunEventPayload payload = run_event_payload::Empty{}) {
+        note_run_lifecycle(kind, payload);
         emit_run_event_for(effect_context_.run_id, kind, std::move(payload));
     }
+
+    // ADR-209 §8.1: the on_run_end fire point is "this run emitted run_started", so the core tracks it from
+    // the one place every lifecycle event already passes. Touches state only for run_started and the three
+    // terminal kinds, which the round loop emits on its own thread (never a parallel tool worker).
+    void note_run_lifecycle(run_event_kind kind, RunEventPayload const& payload) {
+        switch (kind) {
+            case run_event_kind::run_started:
+                run_in_flight_ = true;
+                pending_run_end_.reset();
+                break;
+            case run_event_kind::run_finished:
+            case run_event_kind::run_failed:
+            case run_event_kind::run_canceled: {
+                if (!run_in_flight_) break;  // a refusal's run_failed for a run that never started
+                run_in_flight_ = false;
+                run_end_reason reason = run_end_reason::final_answer;
+                if (kind == run_event_kind::run_canceled) {
+                    reason = run_end_reason::canceled;
+                } else if (kind == run_event_kind::run_failed) {
+                    auto const* f = std::get_if<run_event_payload::RunFailed>(&payload);
+                    reason = (f != nullptr && f->error_code == "run.max_turns_exceeded") ? run_end_reason::max_turns
+                                                                                         : run_end_reason::failed;
+                }
+                pending_run_end_ = reason;
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    // Called by start_run()/resolve_interaction() (the two public entry points) after their body returns,
+    // still under session_mutex_: fires bound_on_run_end() once for a run that completed during the call.
+    // `threw` marks a run whose coroutine threw while it was in flight.
+    task<std::monostate> fire_run_end_if_completed(bool threw);
+    task<result<AgentResponse>> start_run_locked(StartRun request, std::chrono::steady_clock::time_point now);
+    task<result<AgentResponse>> resolve_interaction_locked(ResolveInteraction request,
+                                                           std::chrono::steady_clock::time_point now);
+
+    // ADR-209 §8.1 state (see note_run_lifecycle()).
+    bool run_in_flight_ = false;
+    std::optional<run_end_reason> pending_run_end_;
     void emit_run_event_for(std::string const& run_id, run_event_kind kind,
                              RunEventPayload payload = run_event_payload::Empty{});
 
@@ -1396,6 +1439,8 @@ private:
     virtual task<result<ChatResponse>> run_model_call(ChatRequest const& request, EffectContext& ctx) = 0;
     virtual task<result<ContextContribution>> bound_on_context(SessionContext& session_ctx, EffectContext& ctx) = 0;
     virtual task<std::monostate> bound_on_turn_end(TurnView const& turn, EffectContext& ctx) = 0;
+    // ADR-209 §8.1: the provider's optional release-only run-end hook; a no-op when it has none.
+    virtual task<std::monostate> bound_on_run_end(RunEndView const& view, EffectContext& ctx) = 0;
     // Gap-audit finding 20: drops Reasoning items another backend produced; a no-op when the client names none.
     virtual void bound_filter_cross_provider_reasoning(ContextContribution& contribution) = 0;
     [[nodiscard]] virtual bool bound_has_chat_client() const noexcept = 0;

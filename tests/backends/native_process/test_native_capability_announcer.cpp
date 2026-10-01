@@ -71,10 +71,10 @@ int main() {
 
     EffectContext ctx{};
     ctx.capabilities = std::make_shared<CapabilitySet>(CapabilitySet::grant_root({
-        Capability{cap::NativeExec{"cmd", "workdir", std::nullopt, std::nullopt, std::nullopt}},
-        Capability{cap::NativeExec{"bash", "workdir", std::nullopt, std::nullopt, std::nullopt}},
-        Capability{cap::NativeExec{"python", "workdir", std::nullopt, std::nullopt, std::nullopt}},
-        Capability{cap::NativeExec{"node", "workdir", std::nullopt, std::nullopt, std::nullopt}},
+        Capability{cap::NativeExec{"cmd", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}},
+        Capability{cap::NativeExec{"bash", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}},
+        Capability{cap::NativeExec{"python", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}},
+        Capability{cap::NativeExec{"node", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}},
     }));
     SessionContext sc{"announcer-test", principal, empty_history};
 
@@ -108,7 +108,7 @@ int main() {
 
         EffectContext ctx2{};  // only cmd granted, NOT python
         ctx2.capabilities = std::make_shared<CapabilitySet>(CapabilitySet::grant_root(
-            {Capability{cap::NativeExec{"cmd", "workdir", std::nullopt, std::nullopt, std::nullopt}}}));
+            {Capability{cap::NativeExec{"cmd", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}}}));
         SessionContext sc2{"announcer-test-2", principal, empty_history};
         auto contribution2 = test_support::run_task_sync<result<ContextContribution>>(
             announcer2.on_context(sc2, ctx2));

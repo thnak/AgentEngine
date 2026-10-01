@@ -21,4 +21,10 @@ if(AGENTENGINE_WITH_NATIVE_PROCESS AND WIN32)
 
   agentengine_add_test(test_native_capability_announcer
     LIBS agentengine::core agentengine::native_process_backend agentengine_warnings)
+
+  # ADR-209 step 7 (issue #146): the held native pwsh -- a real pwsh in a real Job Object. Exits 77 (SKIP) when no
+  # pwsh is on PATH. Memory-capped, watchdog-guarded.
+  agentengine_add_test(test_native_shell_session_provider
+    LIBS agentengine::core agentengine::native_process_backend agentengine_warnings)
+  set_tests_properties(test_native_shell_session_provider PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 360)
 endif()

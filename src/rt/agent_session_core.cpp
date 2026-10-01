@@ -101,6 +101,23 @@ task<result<AgentResponse>> AgentSessionCore::start_run(
         std::chrono::steady_clock::time_point now) {
     AsyncMutex::Guard guard = co_await session_mutex_.lock();  // I1 -- see file banner
     drain_background_completions_locked();  // Slice 3 -- see file banner
+    // ADR-209 §8.1: the body runs under the lock; the run-end hook fires afterwards, still under it, once for a
+    // run that completed during this call. An exception is caught only to fire the hook, then rethrown.
+    std::exception_ptr thrown;
+    std::optional<result<AgentResponse>> r;
+    try {
+        r.emplace(co_await start_run_locked(std::move(request), now));
+    } catch (...) {
+        thrown = std::current_exception();
+    }
+    (void)co_await fire_run_end_if_completed(thrown != nullptr);
+    if (thrown) std::rethrow_exception(thrown);
+    co_return std::move(*r);
+}
+
+task<result<AgentResponse>> AgentSessionCore::start_run_locked(
+        StartRun request,
+        std::chrono::steady_clock::time_point now) {
 
     // ADR-061 §20.4: branches on session MODE first, rather than widening a shared condition to
     // `caller.has_value() || authority.has_value()` -- the shape that broke once already (X3): a
@@ -275,6 +292,42 @@ task<result<AgentResponse>> AgentSessionCore::resolve_interaction(
         std::chrono::steady_clock::time_point now) {
     AsyncMutex::Guard guard = co_await session_mutex_.lock();  // I1 -- see file banner
     drain_background_completions_locked();  // Slice 3 -- see file banner
+    // ADR-209 §8.1: the same wrapper as start_run(). The CodeAct and hook resolvers are reached only from
+    // here, so a run they complete fires the hook here too; a refusal before anything ran fires nothing,
+    // because the hook keys on a run that emitted run_started, not on admission.
+    std::exception_ptr thrown;
+    std::optional<result<AgentResponse>> r;
+    try {
+        r.emplace(co_await resolve_interaction_locked(std::move(request), now));
+    } catch (...) {
+        thrown = std::current_exception();
+    }
+    (void)co_await fire_run_end_if_completed(thrown != nullptr);
+    if (thrown) std::rethrow_exception(thrown);
+    co_return std::move(*r);
+}
+
+task<std::monostate> AgentSessionCore::fire_run_end_if_completed(bool threw) {
+    if (threw && run_in_flight_) {
+        run_in_flight_ = false;
+        pending_run_end_ = run_end_reason::exception;
+    }
+    if (!pending_run_end_.has_value()) co_return std::monostate{};
+    RunEndView const view{*pending_run_end_};
+    pending_run_end_.reset();
+    // ADR-209 §8.1: a release that fails is reported as a run event, never silent -- so the sandbox sink is
+    // bracketed around the hook exactly as around a tool call (ADR-170), on the run that just completed.
+    effect_context_.sandbox_exec_sink = [this](run_event_kind kind, run_event_payload::SandboxExec p) {
+        emit_run_event(kind, std::move(p));
+    };
+    (void)co_await bound_on_run_end(view, effect_context_);
+    effect_context_.sandbox_exec_sink = [](run_event_kind, run_event_payload::SandboxExec) {};
+    co_return std::monostate{};
+}
+
+task<result<AgentResponse>> AgentSessionCore::resolve_interaction_locked(
+        ResolveInteraction request,
+        std::chrono::steady_clock::time_point now) {
 
     // ADR-061 §20.4: same mode-branch shape as start_run() -- see that function's own comment.
     if (require_authority_) {
@@ -633,6 +686,9 @@ void AgentSessionCore::fork_core_from(AgentSessionCore const& source, std::strin
     // a fresh fork inherits none of the source's (or *this*'s own prior) outstanding background
     // work. Same fix category as clear_core_state()'s own comment below.
     standing_effects_registry_.reset();
+    // ADR-209 §15.5: a fork has no run of its own in flight (its interactions were cleared above).
+    run_in_flight_ = false;
+    pending_run_end_.reset();
 }
 
 void AgentSessionCore::clear_core_state() {
@@ -679,6 +735,8 @@ void AgentSessionCore::clear_core_state() {
     // the drain loop's own find_if() already no-ops on an unknown handle_id, same as a canceled
     // one).
     standing_effects_registry_.reset();
+    run_in_flight_ = false;  // ADR-209 §15.5: a reused session must not carry a stale in-flight run
+    pending_run_end_.reset();
 }
 
 // agent_session.hpp:1721
@@ -749,6 +807,11 @@ void AgentSessionCore::restore_from_record(AgentSessionRecord const& rec) {
         }
         if (digits) interaction_counter_ = std::max(interaction_counter_, n);
     }
+    // ADR-209 §15.5: no run is in flight in a restored session. A restored interaction cannot resume its round (it
+    // is closed with nothing run, ADR-196 §7, and no terminal event), so its run never fires on_run_end; a held
+    // environment is then released by its provider's ceilings or destructor, never left by stale state here.
+    run_in_flight_ = false;
+    pending_run_end_.reset();
 }
 
 // agent_session.hpp:1796
@@ -1595,8 +1658,14 @@ task<result<AgentResponse>> AgentSessionCore::run_rounds_body() {
 
         // ADR-061 §20.7: effect_context_.principal, not principal_ -- per-request, not session-level.
     SessionContext session_ctx{session_id_, effect_context_.principal, history_};
+        // ADR-209 §15.5: a provider that releases a held environment from on_context (a lifetime ceiling hit at a
+        // turn start) reports it as a run event of this run -- bracketed exactly like a tool call (ADR-170).
+        effect_context_.sandbox_exec_sink = [this](run_event_kind kind, run_event_payload::SandboxExec p) {
+            emit_run_event(kind, std::move(p));
+        };
         result<ContextContribution> contribution =
             co_await bound_on_context(session_ctx, effect_context_);
+        effect_context_.sandbox_exec_sink = [](run_event_kind, run_event_payload::SandboxExec) {};
         if (!contribution) {
             emit_run_event(run_event_kind::run_failed,
                             run_event_payload::RunFailed{contribution.error().code, contribution.error().message,

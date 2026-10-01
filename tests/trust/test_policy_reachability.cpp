@@ -44,7 +44,7 @@ int main() {
     std::vector<ReachabilityAgent> agents;
     std::vector<ReachabilityOracleEntry> oracle;
     policy_reachability_fixture::build_reference_fixture(agents, oracle);
-    check(oracle.size() == 7, "clean reference fixture declares exactly 7 {agent,tool,kind} oracle entries");
+    check(oracle.size() == 10, "clean reference fixture declares exactly 10 {agent,tool,kind} oracle entries");
 
     auto find_cell = [](ReachabilityReport const& report, std::string_view agent_name, std::string_view tool_name,
                          capability_kind kind, bool tainted) -> ReachabilityCell const* {
@@ -67,8 +67,8 @@ int main() {
     {
         ReachabilityReport const report = enumerate_policy_reachability(agents, oracle);
 
-        // 7 declared (agent,tool,kind) requirement pairs x 2 taint states.
-        check(report.cells.size() == 14, "14 cells enumerated (7 declared requirements x 2 taint states)");
+        // 10 declared (agent,tool,kind) requirement pairs x 2 taint states.
+        check(report.cells.size() == 20, "20 cells enumerated (10 declared requirements x 2 taint states)");
         check(count_findings(report, finding_kind::taint_variant) == 0,
               "no taint_variant findings -- admission is taint-invariant today");
         check(count_findings(report, finding_kind::oracle_mismatch) == 0,
@@ -90,6 +90,17 @@ int main() {
             check(false, "reader-agent-too-narrow/read-data/fs_read cell exists");
         }
 
+        // ADR-209 §9 (I6): the declarative and the CRTP live grant reach the same GRANTED decision; a one-shot
+        // grant for the same program and mount is DENIED (live_session is monotone).
+        {
+            auto const* decl = find_cell(report, "native-live-declarative", "native-live-shell", capability_kind::native_exec, false);
+            auto const* crtp = find_cell(report, "native-live-crtp", "native-live-shell", capability_kind::native_exec, false);
+            auto const* oneshot = find_cell(report, "native-oneshot-only", "native-live-shell", capability_kind::native_exec, false);
+            check(decl != nullptr && crtp != nullptr && decl->granted && crtp->granted,
+                  "I6: a declarative and a CRTP held-shell grant both reach GRANTED");
+            check(oneshot != nullptr && !oneshot->granted, "a one-shot NativeExec grant never reaches a held shell");
+        }
+
         // taint-invariance, spot-checked per-cell too (not just the aggregate count above).
         auto const* c_false = find_cell(report, "echo-agent-registered", "echo", capability_kind::entropy, false);
         auto const* c_true = find_cell(report, "echo-agent-registered", "echo", capability_kind::entropy, true);
@@ -99,10 +110,10 @@ int main() {
 
     // -- 2. the exit criterion's own demanded positive control: over_broad_grant --------------------
     policy_reachability_fixture::add_over_broad_positive_control(agents, oracle);
-    check(oracle.size() == 8, "adding the positive control brings the oracle to 8 entries");
+    check(oracle.size() == 11, "adding the positive control brings the oracle to 11 entries");
     {
         ReachabilityReport const report = enumerate_policy_reachability(agents, oracle);
-        check(report.cells.size() == 16, "16 cells enumerated (8 declared requirements x 2 taint states)");
+        check(report.cells.size() == 22, "22 cells enumerated (11 declared requirements x 2 taint states)");
         check(count_findings(report, finding_kind::oracle_mismatch) == 0, "still no oracle_mismatch findings");
         check(count_findings(report, finding_kind::taint_variant) == 0, "still no taint_variant findings");
         check(count_findings(report, finding_kind::uncovered_by_oracle) == 0, "still no uncovered_by_oracle findings");

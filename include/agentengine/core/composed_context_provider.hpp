@@ -256,6 +256,16 @@ public:
         co_return std::monostate{};
     }
 
+    // ADR-209 §8.1: forwarded to every wrapped provider that has the optional release-only hook. Without
+    // this a composed live shell would be unreachable at run end (the host cannot name it), and only its
+    // destructor would ever release it.
+    task<std::monostate> on_run_end(RunEndView view, EffectContext& ctx) {
+        for (auto& contributor : contributors_) {
+            if (contributor.on_run_end) (void)co_await contributor.on_run_end(view, ctx);
+        }
+        co_return std::monostate{};
+    }
+
 private:
     // Shared by both constructors and `engage()`: builds into a LOCAL vector first, returned only
     // once every `Ms`'s descriptor has been constructed without throwing -- a strong exception

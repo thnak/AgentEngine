@@ -100,7 +100,7 @@ int main() {
         NativeShellProvider provider({"cmd"}, mount_root, "workdir");
         EffectContext ctx{};
         ctx.capabilities = std::make_shared<CapabilitySet>(CapabilitySet::grant_root(
-            {Capability{cap::NativeExec{"cmd", "workdir", std::nullopt, std::nullopt, std::nullopt}}}));
+            {Capability{cap::NativeExec{"cmd", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}}}));
         SessionContext sc{"s2", principal, empty_history};
         AE_CHECK(provider.is_available(ctx), "T2: is_available() is true with a held, matching grant");
         auto contribution = on_context_of(provider, sc, ctx);
@@ -122,7 +122,7 @@ int main() {
         NativeShellProvider provider({"cmd"}, mount_root, "workdir");  // owns "cmd" only
         EffectContext ctx{};
         ctx.capabilities = std::make_shared<CapabilitySet>(CapabilitySet::grant_root(
-            {Capability{cap::NativeExec{"node", "workdir", std::nullopt, std::nullopt, std::nullopt}}}));
+            {Capability{cap::NativeExec{"node", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}}}));
         AE_CHECK(!provider.is_available(ctx),
                   "R-T3: a real grant for a DIFFERENT (unowned) pattern does not make this provider "
                   "available");
@@ -134,7 +134,7 @@ int main() {
         NativeShellProvider provider({"cmd"}, mount_root, "workdir");
         EffectContext ctx{};
         ctx.capabilities = std::make_shared<CapabilitySet>(CapabilitySet::grant_root(
-            {Capability{cap::NativeExec{"cmd", "OTHER_MOUNT", std::nullopt, std::nullopt, std::nullopt}}}));
+            {Capability{cap::NativeExec{"cmd", "OTHER_MOUNT", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}}}));
         AE_CHECK(!provider.is_available(ctx),
                   "R-T4: a program-name match against the WRONG worktree_mount_id is not available");
     }
@@ -144,7 +144,7 @@ int main() {
         NativeShellProvider provider({"cmd"}, mount_root, "workdir");
         EffectContext ctx{};
         ctx.capabilities = std::make_shared<CapabilitySet>(CapabilitySet::grant_root(
-            {Capability{cap::NativeExec{"cmd", "workdir", 10000, 10000, std::nullopt}}}));
+            {Capability{cap::NativeExec{"cmd", "workdir", 10000, 10000, std::nullopt, false, std::nullopt, std::nullopt}}}));
         SessionContext sc{"s5", principal, empty_history};
         auto contribution = on_context_of(provider, sc, ctx);
         AE_CHECK(contribution.has_value() && contribution->tools.size() == 1,
@@ -175,7 +175,7 @@ int main() {
         NativeShellProvider provider({"cmd"}, mount_root, "workdir");
         EffectContext granted_ctx{};
         granted_ctx.capabilities = std::make_shared<CapabilitySet>(CapabilitySet::grant_root(
-            {Capability{cap::NativeExec{"cmd", "workdir", std::nullopt, std::nullopt, std::nullopt}}}));
+            {Capability{cap::NativeExec{"cmd", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}}}));
         SessionContext sc{"s6", principal, empty_history};
         auto contribution = on_context_of(provider, sc, granted_ctx);
         AE_CHECK(contribution.has_value() && contribution->tools.size() == 1, "R-S6 setup");
@@ -196,7 +196,7 @@ int main() {
         NativeShellProvider provider({"cmd"}, mount_root, "workdir");
         EffectContext ctx{};
         ctx.capabilities = std::make_shared<CapabilitySet>(CapabilitySet::grant_root(
-            {Capability{cap::NativeExec{"cmd", "workdir", std::nullopt, std::nullopt, std::nullopt}}}));
+            {Capability{cap::NativeExec{"cmd", "workdir", std::nullopt, std::nullopt, std::nullopt, false, std::nullopt, std::nullopt}}}));
         SessionContext sc{"s7", principal, empty_history};
         auto contribution = on_context_of(provider, sc, ctx);
         AE_CHECK(contribution.has_value() && contribution->tools.size() == 1, "R-S7 setup");
@@ -233,7 +233,7 @@ int main() {
         NativeShellProvider provider({"cmd"}, mount_root, "workdir");
         EffectContext ctx{};
         ctx.capabilities = std::make_shared<CapabilitySet>(CapabilitySet::grant_root(
-            {Capability{cap::NativeExec{"cmd", "workdir", 10000, 10000, std::nullopt}}}));
+            {Capability{cap::NativeExec{"cmd", "workdir", 10000, 10000, std::nullopt, false, std::nullopt, std::nullopt}}}));
         SessionContext sc{"s8", principal, empty_history};
         auto contribution = on_context_of(provider, sc, ctx);
         AE_CHECK(contribution.has_value() && contribution->tools.size() == 1, "R-S8 setup");

@@ -201,6 +201,15 @@ reference** into whichever `Runner` (§1a) executes.
   everything else in it. Two sessions never share an `ExecState` any more than they share a heap.
 - **Background/long-running shell processes** (a dev server started with `&`, a watcher) are a real
   consequence of a persistent shell and are not fully specified here — see Q6.
+- **Scope (amended by ADR-209 §15.3, 2026-10-01).** "Every `Runner`" means every runner over the **same
+  execution environment** — the session's mediated sandbox (`ShellRunner`, `execute_code`). A live container
+  shell (`LiveShellSandboxProvider`, ADR-209) runs in its own container on its own Ledger branch, and a held native
+  PowerShell (`NativeShellSessionProvider`) runs on the host: each is a separate environment with its own `{cwd,
+  env}` carrier (`ShellSnapshot`, replayed only inside that shell), because sharing one `cwd` across two different
+  filesystems would name a directory the other side does not have. A session that composes a live tier with the
+  mediated shell therefore has one current directory per environment, never a shared one, and neither ever writes
+  the other's. Background processes in the live tiers are ADR-209 §6's (committed by the next `shell_exec`), not
+  Q6/006 §6b's `Backgroundable` path: `shell_exec` is not `Backgroundable`.
 
 ## 4. Worktree and artifacts
 
