@@ -339,7 +339,10 @@ template <class... Policies>
                                                              std::vector<ToolDescriptor> const& tools) {
     for (ToolDescriptor const& tool : tools) {
         for (Capability const& requirement : tool.capability_ceiling) {
-            if (!ceiling.contains(requirement)) {
+            // ADR-217: the pipeline's own admission rule. At run time `invoke_agent_tool` binds the
+            // tool under `attenuate(ceiling)`, so a grant-enforcing tool admitted here is bound to
+            // (and enforces) the ceiling's caps; every other tool keeps the exact `contains()` rule.
+            if (!ceiling_entry_admitted(ceiling, tool, requirement)) {
                 return std::unexpected(error{
                     failure_class::policy,
                     "tool '" + tool.name + "' declares a capability the agent's ceiling does not cover",

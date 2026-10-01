@@ -695,6 +695,50 @@ template <class T>
     return true;
 }
 
+// decisions/ADR-217-capped-grant-admits-grant-enforcing-tools.md -- the quantity axes of a kind are
+// its `std::optional` caps (the `cap_covers` fields above, where `nullopt` = no limit). `cap_meet`
+// is the tighter of two such caps; `clamp_quantities` lowers every quantity cap of `requested` to the
+// parent's wherever the parent's is tighter, and leaves every SCOPE axis (mount, path prefix, host
+// list, method list, program pattern, profile...) exactly as requested. The result is never wider than
+// `requested` on any axis, so `subsumes_payload(parent, clamped)` then decides the scope axes with the
+// unchanged rules above and can only pass the quantity axes. Kinds without an optional quantity cap
+// use the identity overload, so for them a clamped bind is exactly `contains()`.
+template <class T>
+[[nodiscard]] std::optional<T> cap_meet(std::optional<T> const& a, std::optional<T> const& b) {
+    if (!a.has_value()) return b;
+    if (!b.has_value()) return a;
+    return (std::min)(*a, *b);  // parenthesized: windows.h min macro
+}
+template <class T>
+[[nodiscard]] T clamp_quantities(T const&, T requested) {
+    return requested;
+}
+[[nodiscard]] inline cap::FsRead clamp_quantities(cap::FsRead const& parent, cap::FsRead requested) {
+    requested.size_cap_bytes = cap_meet(parent.size_cap_bytes, requested.size_cap_bytes);
+    return requested;
+}
+[[nodiscard]] inline cap::FsWrite clamp_quantities(cap::FsWrite const& parent, cap::FsWrite requested) {
+    requested.quota_bytes    = cap_meet(parent.quota_bytes, requested.quota_bytes);
+    requested.file_count_cap = cap_meet(parent.file_count_cap, requested.file_count_cap);
+    return requested;
+}
+[[nodiscard]] inline cap::NetOut clamp_quantities(cap::NetOut const& parent, cap::NetOut requested) {
+    requested.byte_cap = cap_meet(parent.byte_cap, requested.byte_cap);
+    return requested;
+}
+[[nodiscard]] inline cap::Exec clamp_quantities(cap::Exec const& parent, cap::Exec requested) {
+    requested.cpu_ms_cap       = cap_meet(parent.cpu_ms_cap, requested.cpu_ms_cap);
+    requested.wall_ms_cap      = cap_meet(parent.wall_ms_cap, requested.wall_ms_cap);
+    requested.memory_bytes_cap = cap_meet(parent.memory_bytes_cap, requested.memory_bytes_cap);
+    return requested;
+}
+[[nodiscard]] inline cap::NativeExec clamp_quantities(cap::NativeExec const& parent, cap::NativeExec requested) {
+    requested.cpu_ms_cap       = cap_meet(parent.cpu_ms_cap, requested.cpu_ms_cap);
+    requested.wall_ms_cap      = cap_meet(parent.wall_ms_cap, requested.wall_ms_cap);
+    requested.memory_bytes_cap = cap_meet(parent.memory_bytes_cap, requested.memory_bytes_cap);
+    return requested;
+}
+
 struct InvocationTicket {
     std::atomic<bool> live{true};
 };
@@ -986,6 +1030,47 @@ public:
                 error{failure_class::policy, "capability not held", "capability.not_granted"});
         }
         return BoundCapability(requirement, std::make_shared<capability_detail::InvocationTicket>());
+    }
+
+    // decisions/ADR-217-capped-grant-admits-grant-enforcing-tools.md. The capability a
+    // grant-enforcing tool's ceiling entry binds to: `requirement` itself when `contains()` already
+    // admits it (so every call that bound before binds to the identical capability), otherwise
+    // `requirement` with its quantity caps lowered to the first granted capability whose scope covers
+    // it (`capability_detail::clamp_quantities`). The result is subsumed by a granted capability AND
+    // by `requirement` -- never wider than either on any axis. `nullopt` when no granted capability's
+    // scope (mount, prefix, hosts, methods, program, ...) covers the requirement.
+    //
+    // Deliberately NOT what `contains()`/`attenuate()` answer: `attenuate()` turns its argument into a
+    // new, reusable grant, so it must keep reading an uncapped request as asking for unlimited. This
+    // is only for binding one call of a tool that enforces the bound/held caps itself
+    // (`ToolDescriptor::enforces_granted_caps`).
+    [[nodiscard]] std::optional<Capability> clamped_binding(Capability const& requirement) const {
+        if (contains(requirement)) return requirement;
+        for (Capability const& c : granted_) {
+            if (c.index() != requirement.index()) continue;
+            std::optional<Capability> clamped = std::visit(
+                [&c]<class T>(T const& requested) -> std::optional<Capability> {
+                    T const& parent  = std::get<T>(c);
+                    T        reduced = capability_detail::clamp_quantities(parent, requested);
+                    if (!capability_detail::subsumes_payload(parent, reduced)) return std::nullopt;
+                    return Capability{std::move(reduced)};
+                },
+                requirement);
+            if (clamped.has_value()) return clamped;
+        }
+        return std::nullopt;
+    }
+
+    // `bind()` for a grant-enforcing tool's ceiling entry (ADR-217): mints the per-invocation handle
+    // around `clamped_binding(requirement)`, so the handle carries the grant's cap, not the tool's
+    // uncapped declaration. Same error as `bind()` when nothing covers the requirement's scope.
+    [[nodiscard]] result<BoundCapability> bind_clamped(Capability const& requirement) const {
+        auto binding = clamped_binding(requirement);
+        if (!binding.has_value()) {
+            return std::unexpected(
+                error{failure_class::policy, "capability not held", "capability.not_granted"});
+        }
+        return BoundCapability(std::move(*binding), std::make_shared<capability_detail::InvocationTicket>());
     }
 
     [[nodiscard]] std::size_t size() const noexcept { return granted_.size(); }

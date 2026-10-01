@@ -248,21 +248,9 @@ struct Fixture {
          Capability{cap::FsWrite{std::string(kShellWorkMount), "", kRealToolQuotaBytes, kRealToolFileCap}}});
 }
 
-// Admission binds each declared requirement with `contains()`, and an uncapped declaration never fits under a
-// capped grant (capability.hpp: a capped parent and an uncapped request read as widening). run_shell declares
-// uncapped `FsRead<"work">`/`FsWrite<"work">`, so the driver narrows a real tool's declared ceiling to exactly
-// the capped grant above: narrower than the tool's own declaration, never wider (I2). The shell then enforces
-// the quota and size cap from the held grant (its gap-12 lookups). ADR-208 §7.
-[[nodiscard]] inline ToolDescriptor with_granted_ceiling(ToolDescriptor d) {
-    for (Capability& c : d.capability_ceiling) {
-        if (auto const* r = std::get_if<cap::FsRead>(&c); r != nullptr && r->mount_id == kShellWorkMount) {
-            c = Capability{cap::FsRead{r->mount_id, r->path_prefix, kRealToolReadCapBytes}};
-        } else if (auto const* w = std::get_if<cap::FsWrite>(&c); w != nullptr && w->mount_id == kShellWorkMount) {
-            c = Capability{cap::FsWrite{w->mount_id, w->path_prefix, kRealToolQuotaBytes, kRealToolFileCap}};
-        }
-    }
-    return d;
-}
+// run_shell declares uncapped `FsRead<"work">`/`FsWrite<"work">` and `EnforcesGrantedCaps`, so admission binds
+// it under the capped grant above with `bind_clamped()` and the shell enforces the quota and size cap from the
+// held grant (its gap-12 lookups). ADR-217 replaced ADR-208 §7's `with_granted_ceiling` driver workaround.
 
 // One session's sandbox, as the driver sees it. Built only by `DriverConfig::sandbox_factory`.
 class RealToolSandbox {
@@ -2743,7 +2731,7 @@ private:
             std::shared_ptr<RealToolSandbox> sandbox;
             if (config_.tool_doubles) {
                 for (ToolDescriptor const& d : real_tool_standins())
-                    if (named(d.name)) real.push_back(double_tool(with_granted_ceiling(d), ds->real));
+                    if (named(d.name)) real.push_back(double_tool(d, ds->real));
             } else {
                 auto dir = session_scratch(ds->id);
                 if (!dir) return err("test.sandbox_failed", dir.error().message);
@@ -2756,7 +2744,7 @@ private:
                 ds->sandbox_dir = *dir;
                 for (ToolDescriptor const& d : real_tool_standins()) {
                     if (!named(d.name)) continue;
-                    real.push_back(recording_tool(with_granted_ceiling(d.name == "run_shell" ? sandbox->run_shell() : d),
+                    real.push_back(recording_tool(d.name == "run_shell" ? sandbox->run_shell() : d,
                                                   ds->real, sandbox));
                 }
             }

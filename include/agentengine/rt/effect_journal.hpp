@@ -32,6 +32,10 @@
 // matching outcome yet" (a read, not a decision); deciding what to DO about one is F3's own,
 // separately-scoped, design->red-team->prove->judge work.
 
+#include <cstddef>
+#include <cstdint>
+#include <initializer_list>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -39,7 +43,6 @@
 #include <vector>
 
 #include "agentengine/core/error.hpp"
-#include "agentengine/core/json_value.hpp"
 #include "agentengine/core/tool_pipeline.hpp"  // IdempotencyKey
 #include "agentengine/rt/append_log_store.hpp"
 
@@ -60,45 +63,160 @@ struct EffectJournalEntry {
     friend bool operator==(EffectJournalEntry const&, EffectJournalEntry const&) = default;
 };
 
-[[nodiscard]] inline agentengine::json::Value effect_journal_entry_to_json(
-    EffectJournalEntry const& e) {
-    return agentengine::json::Value::make_object({
-        {"idempotency_key", agentengine::json::Value::make_string(e.idempotency_key)},
-        {"tool_name", agentengine::json::Value::make_string(e.tool_name)},
-        {"call_id", agentengine::json::Value::make_string(e.call_id)},
-        {"phase", agentengine::json::Value::make_string(
-                       e.phase == effect_journal_phase::intent ? "intent" : "outcome")},
-        {"outcome_ok", agentengine::json::Value::make_bool(e.outcome_ok)},
-    });
+// ---- Record layout (#51) ------------------------------------------------------------------------
+// Each journal record is a fixed little-endian, length-prefixed byte layout -- no JSON, no scanner,
+// no escaping, no Value tree built and thrown away per entry. Nothing outside this header ever reads
+// the journal, so there is no external format to honour. The layout (version 1):
+//
+//   offset  size  field
+//   0       1     magic   0xAE  (never '{', so a pre-#51 JSON record is told apart, see below)
+//   1       1     version 0x01
+//   2       1     phase   0 = intent, 1 = outcome
+//   3       1     outcome_ok 0/1 (always 0 for an intent)
+//   4       4     u32 LE length of idempotency_key, then that many bytes
+//   ..      4     u32 LE length of tool_name, then that many bytes
+//   ..      4     u32 LE length of call_id, then that many bytes
+//   (end)         the record ends exactly here; trailing bytes are rejected
+//
+// Decoding is a bounded sequential read: every length is checked against the bytes that remain
+// AND against `effect_journal_max_field_bytes` before anything is copied, so a torn, truncated or
+// garbage record (this is read on crash-resume) is a clean `rt.effect_journal.entry.*` error,
+// never an out-of-bounds read or a huge allocation.
+//
+// PRE-#51 RECORDS ARE REFUSED, NOT MIGRATED. 024 §2 promises persisted formats stay readable
+// across upgrades only from 1.0 on ("Pre-1.0: everything may break"); this engine is pre-1.0, and
+// no production code path writes this journal yet (only tests call `journal_effect_*`, see
+// ADR-181's §0 correction). A record that starts with '{' gets its own error code,
+// `rt.effect_journal.entry.legacy_json_format`, so an operator holding such a journal sees exactly
+// why it no longer reads instead of a generic "malformed". Bump `effect_journal_format_version` and
+// add a decode branch (024 §2's forward migration) for any future layout change.
+inline constexpr std::byte     effect_journal_magic{0xAE};
+inline constexpr std::uint8_t  effect_journal_format_version = 1;
+// Generous for an idempotency key / tool name / call id, small enough that a garbage length can
+// never ask for a big allocation.
+inline constexpr std::uint32_t effect_journal_max_field_bytes = 64u * 1024u;
+
+namespace effect_journal_detail {
+[[nodiscard]] inline error malformed(std::string message,
+                                     std::string code = "rt.effect_journal.entry.malformed") {
+    return error{failure_class::contract, std::move(message), std::move(code)};
 }
 
-[[nodiscard]] inline agentengine::result<EffectJournalEntry> effect_journal_entry_from_json(
-    agentengine::json::Value const& v) {
-    agentengine::json::Value const* key_v     = v.find("idempotency_key");
-    agentengine::json::Value const* tool_v    = v.find("tool_name");
-    agentengine::json::Value const* call_v    = v.find("call_id");
-    agentengine::json::Value const* phase_v   = v.find("phase");
-    agentengine::json::Value const* outcome_v = v.find("outcome_ok");
-    if (key_v == nullptr || !key_v->is_string() || tool_v == nullptr || !tool_v->is_string() ||
-        call_v == nullptr || !call_v->is_string() || phase_v == nullptr || !phase_v->is_string() ||
-        outcome_v == nullptr || !outcome_v->is_bool()) {
-        return std::unexpected(agentengine::error{agentengine::failure_class::contract,
-                                                    "malformed EffectJournalEntry",
-                                                    "rt.effect_journal.entry.malformed"});
+inline void put_u32_le(std::vector<std::byte>& out, std::uint32_t v) {
+    for (int i = 0; i < 4; ++i) out.push_back(static_cast<std::byte>((v >> (8 * i)) & 0xFFu));
+}
+
+// Reads sequentially from [pos, data.size()); every read is bounds-checked first.
+struct reader {
+    std::span<std::byte const> data;
+    std::size_t                pos = 0;
+
+    [[nodiscard]] std::size_t remaining() const noexcept { return data.size() - pos; }
+
+    [[nodiscard]] result<std::uint8_t> u8(char const* what) {
+        if (remaining() < 1) {
+            return std::unexpected(malformed(std::string("truncated EffectJournalEntry: missing ") + what));
+        }
+        return static_cast<std::uint8_t>(data[pos++]);
     }
-    std::string const& phase_str = phase_v->as_string();
-    if (phase_str != "intent" && phase_str != "outcome") {
-        return std::unexpected(agentengine::error{agentengine::failure_class::contract,
-                                                    "unknown effect_journal_phase: " + phase_str,
-                                                    "rt.effect_journal.entry.malformed"});
+
+    [[nodiscard]] result<std::string> str(char const* what) {
+        if (remaining() < 4) {
+            return std::unexpected(
+                malformed(std::string("truncated EffectJournalEntry: missing length of ") + what));
+        }
+        std::uint32_t len = 0;
+        for (int i = 0; i < 4; ++i) {
+            len |= static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(data[pos + i])) << (8 * i);
+        }
+        pos += 4;
+        if (len > effect_journal_max_field_bytes) {
+            return std::unexpected(malformed(std::string("EffectJournalEntry ") + what +
+                                             " length exceeds the field limit"));
+        }
+        if (len > remaining()) {
+            return std::unexpected(malformed(std::string("truncated EffectJournalEntry: ") + what +
+                                             " length runs past the end of the record"));
+        }
+        std::string out(len, '\0');
+        for (std::uint32_t i = 0; i < len; ++i) out[i] = static_cast<char>(data[pos + i]);
+        pos += len;
+        return out;
+    }
+};
+}  // namespace effect_journal_detail
+
+// Encodes one entry. Fails (contract) only if a string field exceeds
+// `effect_journal_max_field_bytes` -- the writer refuses what the reader would refuse.
+[[nodiscard]] inline result<std::vector<std::byte>> encode_effect_journal_entry(
+    EffectJournalEntry const& e) {
+    for (std::string const* field : {&e.idempotency_key, &e.tool_name, &e.call_id}) {
+        if (field->size() > effect_journal_max_field_bytes) {
+            return std::unexpected(effect_journal_detail::malformed(
+                "EffectJournalEntry field exceeds the field limit",
+                "rt.effect_journal.entry.field_too_large"));
+        }
+    }
+    std::vector<std::byte> out;
+    out.reserve(4 + 12 + e.idempotency_key.size() + e.tool_name.size() + e.call_id.size());
+    out.push_back(effect_journal_magic);
+    out.push_back(static_cast<std::byte>(effect_journal_format_version));
+    out.push_back(static_cast<std::byte>(e.phase == effect_journal_phase::intent ? 0 : 1));
+    out.push_back(static_cast<std::byte>(
+        e.phase == effect_journal_phase::outcome && e.outcome_ok ? 1 : 0));
+    for (std::string const* field : {&e.idempotency_key, &e.tool_name, &e.call_id}) {
+        effect_journal_detail::put_u32_le(out, static_cast<std::uint32_t>(field->size()));
+        for (char c : *field) out.push_back(static_cast<std::byte>(c));
+    }
+    return out;
+}
+
+// Decodes one record. Never reads out of bounds; every failure is a `contract` error with a
+// stable `rt.effect_journal.entry.*` code.
+[[nodiscard]] inline result<EffectJournalEntry> decode_effect_journal_entry(
+    std::span<std::byte const> bytes) {
+    using effect_journal_detail::malformed;
+    if (bytes.empty()) return std::unexpected(malformed("empty EffectJournalEntry record"));
+    if (bytes[0] != effect_journal_magic) {
+        if (bytes[0] == std::byte{'{'}) {
+            return std::unexpected(malformed(
+                "EffectJournalEntry record is in the pre-#51 JSON format, which is no longer "
+                "read; this journal was written by an older pre-1.0 engine and must be discarded",
+                "rt.effect_journal.entry.legacy_json_format"));
+        }
+        return std::unexpected(malformed("EffectJournalEntry record has a bad magic byte"));
+    }
+    effect_journal_detail::reader r{bytes, 1};
+    auto version = r.u8("version");
+    if (!version) return std::unexpected(version.error());
+    if (*version != effect_journal_format_version) {
+        return std::unexpected(malformed("unsupported EffectJournalEntry format version " +
+                                             std::to_string(*version),
+                                         "rt.effect_journal.entry.unsupported_version"));
+    }
+    auto phase = r.u8("phase");
+    if (!phase) return std::unexpected(phase.error());
+    if (*phase > 1) return std::unexpected(malformed("unknown effect_journal_phase byte"));
+    auto ok = r.u8("outcome_ok");
+    if (!ok) return std::unexpected(ok.error());
+    if (*ok > 1 || (*phase == 0 && *ok != 0)) {
+        return std::unexpected(malformed("invalid EffectJournalEntry outcome_ok byte"));
     }
     EffectJournalEntry out;
-    out.idempotency_key = key_v->as_string();
-    out.tool_name         = tool_v->as_string();
-    out.call_id            = call_v->as_string();
-    out.phase                = phase_str == "intent" ? effect_journal_phase::intent
-                                                        : effect_journal_phase::outcome;
-    out.outcome_ok            = outcome_v->as_bool();
+    out.phase      = *phase == 0 ? effect_journal_phase::intent : effect_journal_phase::outcome;
+    out.outcome_ok = *ok == 1;
+    auto key = r.str("idempotency_key");
+    if (!key) return std::unexpected(key.error());
+    auto tool = r.str("tool_name");
+    if (!tool) return std::unexpected(tool.error());
+    auto call = r.str("call_id");
+    if (!call) return std::unexpected(call.error());
+    if (r.remaining() != 0) {
+        return std::unexpected(malformed("EffectJournalEntry record has trailing bytes"));
+    }
+    out.idempotency_key = std::move(*key);
+    out.tool_name       = std::move(*tool);
+    out.call_id         = std::move(*call);
     return out;
 }
 
@@ -112,11 +230,9 @@ namespace effect_journal_detail {
 template <AppendLogStore StoreT>
 [[nodiscard]] result<void> append_entry(StoreT& store, std::string_view session_id,
                                           EffectJournalEntry const& entry) {
-    std::string const text = agentengine::json::dump(effect_journal_entry_to_json(entry));
-    std::vector<std::byte> bytes;
-    bytes.reserve(text.size());
-    for (char c : text) bytes.push_back(static_cast<std::byte>(c));
-    auto appended = store.append(effect_journal_log_id(session_id), std::move(bytes));
+    auto bytes = encode_effect_journal_entry(entry);
+    if (!bytes) return std::unexpected(bytes.error());
+    auto appended = store.append(effect_journal_log_id(session_id), std::move(*bytes));
     if (!appended) return std::unexpected(appended.error());
     return {};
 }
@@ -155,12 +271,7 @@ template <AppendLogStore StoreT>
     std::vector<EffectJournalEntry> entries;
     entries.reserve(raw->size());
     for (std::vector<std::byte> const& bytes : *raw) {
-        std::string text;
-        text.reserve(bytes.size());
-        for (std::byte b : bytes) text.push_back(static_cast<char>(b));
-        auto parsed = agentengine::json::parse(text);
-        if (!parsed) return std::unexpected(parsed.error());
-        auto entry = effect_journal_entry_from_json(*parsed);
+        auto entry = decode_effect_journal_entry(bytes);
         if (!entry) return std::unexpected(entry.error());
         entries.push_back(std::move(*entry));
     }

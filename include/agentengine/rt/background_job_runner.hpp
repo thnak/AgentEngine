@@ -397,7 +397,7 @@ public:
         std::vector<BoundCapability> bound;
         bound.reserve(tool.capability_ceiling.size());
         for (Capability const& requirement : tool.capability_ceiling) {
-            auto handle = spec.capabilities.bind(requirement);
+            auto handle = bind_ceiling_entry(spec.capabilities, tool, requirement);  // ADR-217
             if (!handle) {
                 for (auto const& b : bound) b.revoke();
                 return std::unexpected(error{failure_class::policy, "required capability not held",

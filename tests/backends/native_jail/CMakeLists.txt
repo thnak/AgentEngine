@@ -124,6 +124,12 @@ agentengine_add_test(test_session_shell_wiring
   LIBS agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store
     agentengine_warnings)
 
+# ---- ADR-217 (GitHub #148): a capped FsRead/FsWrite grant admits a tool declaring an uncapped ceiling
+# and EnforcesGrantedCaps; the handle carries the grant's cap and the real run_shell enforces it at use.
+agentengine_add_test(test_capped_grant_admission
+  LIBS agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store
+    agentengine_warnings)
+
 # ---- Milestone 3 Phase E4: hostile-corpus/mediation proof (010 §9 G2/G7), platform-adapted
 # (2026-08-28, ADR-103): SH7-SH10's backslash-leaf payloads have genuinely different, correctly
 # adapted expected outcomes per platform (Windows: rejected escape; Linux: harmless in-mount

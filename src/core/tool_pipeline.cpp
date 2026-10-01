@@ -168,10 +168,13 @@ result<AdmittedCall> admit_call(ToolTable const& table, CapabilitySet const& hel
     // ADR-009's CapabilitySet::bind() performs both atomically (contains-check, then mint a fresh
     // per-invocation ticket) -- there is no observable difference from doing them as two separate
     // steps within one synchronous call (no concurrent caller could interleave between them here).
+    // ADR-217: `bind_ceiling_entry` is that same bind, except that a tool declaring
+    // `EnforcesGrantedCaps` binds with `bind_clamped()` -- a capped grant admits its uncapped
+    // declaration and the handle carries the grant's cap, which the tool enforces at use.
     std::vector<BoundCapability> bound;
     bound.reserve(tool->capability_ceiling.size());
     for (Capability const& requirement : tool->capability_ceiling) {
-        auto handle = held.bind(requirement);
+        auto handle = bind_ceiling_entry(held, *tool, requirement);  // ADR-217
         if (!handle) {
             // No leaked capability: the error names neither what's missing nor what IS held.
             error e{failure_class::policy, "required capability not held", "tool.capability_not_held"};
@@ -443,7 +446,7 @@ result<void> background_task(ToolTable const& table, CapabilitySet const& held,
     std::vector<BoundCapability> bound;
     bound.reserve(tool->capability_ceiling.size());
     for (Capability const& requirement : tool->capability_ceiling) {
-        auto handle = held.bind(requirement);
+        auto handle = bind_ceiling_entry(held, *tool, requirement);  // ADR-217
         if (!handle) {
             error e{failure_class::policy, "required capability not held", "tool.capability_not_held"};
             return std::unexpected(e);

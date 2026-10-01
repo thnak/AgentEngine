@@ -132,7 +132,33 @@ struct ToolDescriptor {
     // never reads it; hosts use `rerun_comparable()` below. Appended last, this struct's own
     // established convention.
     bool deterministic = false;
+
+    // decisions/ADR-217-capped-grant-admits-grant-enforcing-tools.md: `true` only when the tool
+    // declared `EnforcesGrantedCaps` (core/tool.hpp) -- its invoke enforces the quantity caps of the
+    // grant it is bound under, not numbers from its own declaration. Admission then binds each ceiling
+    // entry with `CapabilitySet::bind_clamped()` (see `bind_ceiling_entry()` below). `false` (every
+    // hand-built descriptor, every tool that did not declare it) keeps the exact `contains()` rule.
+    // Code that replaces `invoke` on an existing descriptor must clear it unless the new invoke either
+    // performs every effect through the inner invoke (a recording wrapper) or performs none (a replay
+    // double) -- the same rule ADR-212 §3.5 gives `deterministic`.
+    // Appended last, this struct's own established convention.
+    bool enforces_granted_caps = false;
 };
+
+// ADR-217: the one admission rule for a tool's ceiling entry, shared by the synchronous pipeline, the
+// background pipeline, the background job runner and the policy-reachability tool, so the static
+// analysis and the runtime cannot disagree. `bind()` (exact `contains()`) unless the tool declared
+// `EnforcesGrantedCaps`, then `bind_clamped()`.
+[[nodiscard]] inline result<BoundCapability> bind_ceiling_entry(CapabilitySet const&  held,
+                                                                ToolDescriptor const& tool,
+                                                                Capability const&     requirement) {
+    return tool.enforces_granted_caps ? held.bind_clamped(requirement) : held.bind(requirement);
+}
+[[nodiscard]] inline bool ceiling_entry_admitted(CapabilitySet const& held, ToolDescriptor const& tool,
+                                                 Capability const& requirement) {
+    return tool.enforces_granted_caps ? held.clamped_binding(requirement).has_value()
+                                      : held.contains(requirement);
+}
 
 // ADR-212 §3.3: whether a host may re-run this call on another node and compare the two successful
 // replies with `schema::json_value_equal`. `Tool<>` already rejects `Deterministic` without `pure` at
@@ -155,6 +181,7 @@ template <class ToolT>
     d.exclusivity_group = ToolT::declared_exclusivity_group();
     d.parallelizable = ToolT::kHasParallelizable;
     d.deterministic = ToolT::declared_deterministic();
+    d.enforces_granted_caps = ToolT::declared_enforces_granted_caps();
     d.args_schema_json = ToolT::args_schema();
     d.reply_schema_json = ToolT::reply_schema();
     if (auto parsed = json::parse(d.args_schema_json)) {
@@ -195,6 +222,9 @@ template <class ToolT, class InvokeFn>
     // ADR-212 §3.4: `custom_invoke` is not the code `Deterministic` describes, and it reads session
     // state a verifying node does not have, so the claim does not carry over.
     d.deterministic = false;
+    // ADR-217: carried over -- the tag describes the invoke the descriptor runs, and a tool built only
+    // through this factory (e.g. `RunShellTool`) declares it for its custom invoke.
+    d.enforces_granted_caps = ToolT::declared_enforces_granted_caps();
     d.args_schema_json = ToolT::args_schema();
     d.reply_schema_json = ToolT::reply_schema();
     if (auto parsed = json::parse(d.args_schema_json)) {

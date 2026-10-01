@@ -69,7 +69,7 @@ struct ReachabilityCell {
     std::string tool_name;
     capability_kind kind;
     bool tainted = false;
-    bool granted = false;  // the reached decision: CapabilitySet::contains(requirement)
+    bool granted = false;  // the reached decision: ceiling_entry_admitted() (ADR-217), the pipeline's rule
     Capability requirement;
 };
 
@@ -182,8 +182,11 @@ struct ReachabilityReport {
                 // contains()/subsumes() takes no taint parameter at all (file-top comment) -- asked
                 // twice, once per taint state, to keep that fact explicit at the call site rather
                 // than assumed once and copied into both cells.
-                bool const decision_untainted = granted.contains(requirement);
-                bool const decision_tainted = granted.contains(requirement);
+                // ADR-217: the runtime's own admission rule (`ceiling_entry_admitted`), so a tool
+                // declaring `EnforcesGrantedCaps` is reported reachable exactly when the pipeline
+                // would bind it -- never under-reported against a capped ceiling.
+                bool const decision_untainted = ceiling_entry_admitted(granted, tool, requirement);
+                bool const decision_tainted = ceiling_entry_admitted(granted, tool, requirement);
 
                 for (bool tainted : {false, true}) {
                     bool const decision = tainted ? decision_tainted : decision_untainted;
