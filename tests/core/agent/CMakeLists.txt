@@ -31,6 +31,12 @@ agentengine_add_test(test_agent_tool_invocation LIBS agentengine::core agentengi
 
 agentengine_add_test(test_agent_registry_sandbox_backend_registry LIBS agentengine::core agentengine_warnings)
 
+# ---- decisions/ADR-226 (issue #46, 002 §2.1 as amended): the run bridge -- make_agent_session<A>() /
+# bind_agent_session() (core/agent_session_bridge.hpp) drive real start_run()s against the strict
+# ScriptedChatClient; each declared policy is shown enforced at run time, with a positive control, and
+# an equivalent 015 document is shown to run identically (I6). No network.
+agentengine_add_test(test_agent_session_bridge LIBS agentengine::core agentengine_warnings)
+
 if(AGENTENGINE_BUILD_PYTHON_RUNNER)
   set(AE_PYTHON_TEST_ENV "PATH=${AGENTENGINE_PYTHON_DLL_DIR};$ENV{PATH}")
 

@@ -1,18 +1,22 @@
-// AgentEngine "get started" examples, 1 of 4 -- the smallest possible agent turn.
+// AgentEngine "get started" examples, 1 of 4 -- the smallest possible agent, declared and run.
 //
 // Mirrors Microsoft Agent Framework's samples/01-get-started/01_hello_agent: build an agent, send
-// it one message, print what comes back. AgentEngine's equivalent of MAF's `AIAgent` is
-// `agentengine::rt::AgentSession<ChatClientT>` (agentengine/rt/agent_session.hpp, ADR-037's
-// Quark-free replacement for the old, Quark-actor-based `agentengine::AgentSession`) -- driven here
-// by resuming its returned `agentengine::rt::task<T>` directly, the same "safe because nothing here
-// genuinely suspends on an external wake" idiom every rt:: test file's own `drive<T>()` uses; no
-// actor engine of any kind is needed for a single request/reply turn (see 04_first_workflow.cpp for
-// the workflow case).
+// it one message, print what comes back. In AgentEngine an agent is a TYPE (002 §1): `Joker` below
+// declares its model binding, its tools, its capability ceiling and its turn bound as CRTP policy tags
+// on `Agent<Joker, ...>`, and `make_agent_session<Joker>()` (core/agent_session_bridge.hpp,
+// decisions/ADR-226, 002 §2.1) compiles and validates that declaration with `register_agent<Joker>()`
+// and turns it into a running `rt::AgentSession` -- so the policy set the type declares is the policy set
+// the session enforces. Nothing below re-states a policy by hand.
 //
-// The ChatClient below is a small deterministic fake (`JokerChatClient`), not a real OpenAI/
-// Anthropic backend, so this example builds and runs completely offline with no API key and no
-// network access. `tools/cli_chat.cpp` shows how a real network-backed ChatClient is wired up
-// instead (needs AGENTENGINE_OPENROUTER_API_KEY and a build configured with AGENTENGINE_WITH_HTTPS).
+// What the run shows: the model (a deterministic fake) first calls the declared `roll_die` tool, then
+// answers using the tool's result -- one real model -> tool -> model round trip through the engine's
+// ten-step tool pipeline (006 §3).
+//
+// Offline on purpose: `JokerChatClient` is a small deterministic stand-in for a real backend, so this
+// example builds and runs with no API key and no network access. To run the same agent against a real
+// model, construct a real ChatClient (protocol/openai/chat_client.hpp, needs AGENTENGINE_WITH_HTTPS)
+// and pass it to `make_agent_session<Joker>()` instead, with its API-key `cap::Secret` in
+// `AgentSessionOptions::chat_client_grants`; `tools/cli_chat.cpp` shows a real client being wired up.
 //
 // Run: ./agentengine_example_01_hello_agent
 
@@ -20,15 +24,15 @@
 #include <memory_resource>
 #include <string>
 
+#include "agentengine/core/agent.hpp"
+#include "agentengine/core/agent_session_bridge.hpp"
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/content.hpp"
-#include "agentengine/core/tool_call_extraction.hpp"
-#include "agentengine/rt/agent_session.hpp"
-#include "agentengine/trust/principal.hpp"
+#include "agentengine/core/json_schema.hpp"
+#include "agentengine/core/json_value.hpp"
+#include "agentengine/core/tool.hpp"
 
 using namespace agentengine;
-using agentengine::rt::AgentSession;
-using agentengine::rt::StartRun;
 
 namespace {
 
@@ -42,82 +46,108 @@ void check(bool cond, char const* what) {
     }
 }
 
-// The whole "model": always answers with the same pirate joke, regardless of what it's asked --
-// deterministic on purpose, so this example is a real, repeatable, offline proof rather than a demo
-// that only works against a live network call.
+// ---- a tool (006 §1): typed arguments and reply, a static invoke, no capabilities needed --------------
+struct RollArgs {
+    int sides = 6;
+};
+AE_JSON_SCHEMA(RollArgs, sides)
+struct RollReply {
+    int value = 0;
+};
+AE_JSON_SCHEMA(RollReply, value)
+
+struct RollDie : Tool<RollDie> {
+    static constexpr std::string_view name        = "roll_die";
+    static constexpr std::string_view description = "Roll a die with the given number of sides.";
+    using Args  = RollArgs;
+    using Reply = RollReply;
+    // Deterministic for a repeatable example: a fair die is someone else's problem.
+    static result<Reply> invoke(Args args, EffectContext&) { return Reply{args.sides > 3 ? 4 : 1}; }
+};
+
+// ---- the agent (002 §2): policies are types; register_agent<Joker>() compiles and validates them ------
+struct Joker : Agent<Joker, ChatClientId<"demo:joker">, Tools<RollDie>, MaxTurns<4>, TokenBudget<1'000>> {
+    static constexpr std::string_view name         = "joker";
+    static constexpr std::string_view instructions = "Roll a die, then tell a pirate joke that uses the number.";
+};
+
+// ---- the "model": calls roll_die once, then tells a joke built from the tool's result -------------------
+// The tool's reply reaches the model as JSON ({"value":4}); this reads it back the typed way.
+std::string rolled_value(ChatRequest const& request) {
+    for (Message const& m : request.messages) {
+        for (ContentItem const& item : m.content) {
+            if (auto const* r = std::get_if<ToolResult>(&item.value)) {
+                for (ContentItem const& part : r->content) {
+                    auto const* d = std::get_if<Data>(&part.value);
+                    if (!d) continue;
+                    auto parsed = json::parse(d->json);
+                    if (!parsed) continue;
+                    if (auto reply = schema::from_json<RollReply>(*parsed)) return std::to_string(reply->value);
+                }
+            }
+        }
+    }
+    return {};
+}
+
 class JokerChatClient {
 public:
-    [[nodiscard]] ChatClientCapabilities capabilities() const { return {}; }
+    [[nodiscard]] ChatClientCapabilities capabilities() const {
+        ChatClientCapabilities c;
+        c.tool_calling = true;
+        return c;
+    }
 
-    task<result<ChatResponse>> chat(ChatRequest const&, EffectContext&) {
+    task<result<ChatResponse>> chat(ChatRequest const& request, EffectContext&) {
+        Message reply{};
+        reply.role = role::assistant;
         ContentItem item{};
         item.origin = content_origin::assistant;
-        item.value  = Text{"Why did the pirate take so long to learn the alphabet? "
-                            "Because he kept getting stuck at C."};
-
-        Message reply{};
-        reply.role       = role::assistant;
-        reply.message_id = "m-joke";
-        reply.content.push_back(item);
-        co_return ChatResponse{reply, Usage{1, 1, 0, 0, 0.0}};
+        std::string const rolled = rolled_value(request);
+        if (rolled.empty()) {
+            ToolCall call;
+            call.call_id        = "call-1";
+            call.tool_name      = "roll_die";
+            call.arguments_json = R"({"sides":6})";
+            call.provenance     = call_provenance::vendor_structured;
+            item.value          = std::move(call);
+        } else {
+            item.value = Text{"The die says " + rolled + ". Why did the pirate take so long to learn the "
+                              "alphabet? Because he kept getting stuck at C."};
+        }
+        reply.content.push_back(std::move(item));
+        co_return ChatResponse{reply, Usage{10, 10, 0, 0, 0.0}};
     }
 
     stream<ChatResponseUpdate> chat_stream(ChatRequest const&, EffectContext&) {
-        stream_config<ChatResponseUpdate> cfg;
-        cfg.capacity = 32;
-        auto pair = make_stream<ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
-        ChatResponseUpdate upd;
-        upd.delta.origin = content_origin::assistant;
-        upd.delta.value  = Text{"Why did the pirate take so long to learn the alphabet? "
-                                 "Because he kept getting stuck at C."};
-        upd.is_final = true;
-        upd.usage    = Usage{1, 1, 0, 0, 0.0};
-        auto pushed  = pair.producer.push(upd);
-        (void)pushed;
+        // Unused here (the session calls chat() unless streaming is switched on); the concept needs it.
+        auto pair = make_stream<ChatResponseUpdate>(std::pmr::get_default_resource());
         pair.producer.close();
         return std::move(pair.consumer);
     }
 };
 static_assert(ChatClient<JokerChatClient>, "JokerChatClient must satisfy the ChatClient concept");
 
-[[nodiscard]] Message user_message(std::string text) {
-    ContentItem item{};
-    item.origin = content_origin::user;
-    item.value  = Text{std::move(text)};
-    Message m{};
-    m.role = role::user;
-    m.content.push_back(item);
-    return m;
-}
-
-// Drives an agentengine::rt::task<T> to completion. Safe here: JokerChatClient::chat() never
-// suspends on anything external (it co_returns immediately), so one resume() loop resolves the
-// whole run -- the same "safe because nothing here genuinely suspends" reasoning every rt:: test
-// file's own drive<T>() relies on.
-template <class T>
-T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
-}
-
 }  // namespace
 
 int main() {
-    // AgentSession<ChatClientT> with only one template argument uses the default HistoryProviderT
-    // (HistoryProvider<Window<0>>, an unbounded window) and NoSessionState -- everything a one-shot
-    // hello-world agent needs.
-    using HelloAgent = AgentSession<JokerChatClient>;
-    HelloAgent session;
-    session.initialize("s-hello", Principal{"p-demo", ""});
-    session.emplace_chat_client();
-
-    auto r = drive(session.start_run(StartRun{user_message("Tell me a joke about a pirate.")}));
-    check(r.has_value(), "the agent answers the single turn");
-    if (r.has_value()) {
-        std::string const reply = text_of(r->message);
-        std::printf("%s\n", reply.c_str());
-        check(!reply.empty(), "the reply carries text");
+    // The caller supplies the client and whatever authority it holds (AgentSessionOptions::grants -- none
+    // needed by roll_die); the agent's declaration supplies everything else.
+    auto agent = make_agent_session<Joker>(JokerChatClient{});
+    check(agent.has_value(), "make_agent_session<Joker>() validates the declaration and binds a session");
+    if (!agent.has_value()) {
+        std::fprintf(stderr, "bind failed: %s (%s)\n", agent.error().message.c_str(), agent.error().code.c_str());
+        return 1;
     }
+
+    auto reply = agent->ask("Tell me a joke about a pirate.");
+    check(reply.has_value(), "the agent answers");
+    if (reply.has_value()) {
+        std::printf("%s\n", reply->c_str());
+        check(reply->find("4") != std::string::npos, "the answer used the declared tool's result");
+    }
+    check(agent->session().max_turns() == std::optional<std::uint64_t>{4},
+          "the session's turn bound is the one Joker declared (MaxTurns<4>)");
 
     std::fprintf(stderr,
                  g_failures == 0 ? "example_01_hello_agent: OK\n" : "example_01_hello_agent: FAIL\n");
