@@ -57,12 +57,17 @@ struct Researcher : Agent<Researcher,
         "Research the question. Cite sources. Hand off to the writer when you have enough.";
 };
 
-auto session = engine.create_session("user-42");
-auto stream  = session.run_stream<Researcher>("Compare WASI 0.2 and 0.3.");
+AgentSessionOptions opts;
+opts.grants = {/* the authority the caller holds; narrowed to Researcher's Capabilities<...> */};
+auto researcher = make_agent_session<Researcher>(std::move(chat_client), opts);  // validates, then binds
+auto stream     = researcher->ask_stream("Compare WASI 0.2 and 0.3.");
 ```
 
-The same agent is expressible in YAML and compiles to **byte-identical metadata** — that equivalence
-is a tested invariant, not a convention.
+`make_agent_session<A>()` (ADR-226) runs `register_agent<A>()`'s validation and returns a running
+session whose tools, turn and token bounds, approval floor and capability ceiling are the ones `A`
+declares — `examples/01_hello_agent.cpp` runs one end to end, offline. The same agent is expressible in
+YAML and compiles to **byte-identical metadata**, and the same bridge (`bind_agent_session()`) runs the
+compiled document — that equivalence is a tested invariant, not a convention.
 
 For a single-provider script that doesn't need the full `Agent<>` policy surface, a smaller facade
 sits over the same `AgentSession` wiring — one credential, a `ModelCallGateway`-wrapped client by

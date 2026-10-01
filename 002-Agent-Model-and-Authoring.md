@@ -65,25 +65,44 @@ nothing. There is no vtable, no RTTI, and no null check per turn.
 
 ### 2.1 Running an agent
 
+**Amended by `decisions/ADR-226-agent-run-bridge.md` (2026-10-01, issue #46).** A session is bound to
+one agent when it is created; the caller supplies the model client and the authority it holds, the
+agent's declaration supplies everything else:
+
 ```cpp
-Engine engine{EngineConfig::from_file("agentengine.toml")};
-engine.register_agent<Researcher>();
-engine.start();
+#include "agentengine/core/agent_session_bridge.hpp"
 
-auto session = engine.create_session("user-42");
+AgentSessionOptions opts;
+opts.session_id = "user-42";
+opts.grants     = {cap::NetOut{"api.search.example:443:https", ...}};   // what the caller holds
+opts.chat_client_grants = {cap::Secret{"anthropic-key", {}}};          // the client's own credential
 
-// non-streaming
-result<AgentResponse> r = block_on(session.run<Researcher>("Compare WASI 0.2 and 0.3."));
+auto researcher = make_agent_session<Researcher>(AnthropicChatClient<Store>{...}, opts);
+if (!researcher) { /* a 002 §6 validation failure, or an override that would widen a bound */ }
 
-// streaming — credit-controlled, backpressure to the provider
-auto stream = session.run_stream<Researcher>("Compare WASI 0.2 and 0.3.");
-while (auto update = block_on(stream.next())) { render(*update); }
+// non-streaming -- the whole AgentResponse (usage, structured output)
+result<AgentResponse> r = researcher->run("Compare WASI 0.2 and 0.3.");
+
+// streaming -- text deltas, backpressured
+auto stream = researcher->ask_stream("Compare WASI 0.2 and 0.3.");
 ```
 
-`session.run<A>()` calls `AgentSession::start_run<A>()`, an `rt::task<result<AgentResponse>>`
-coroutine (001 §1; historical: this was `Ask<StartRun,...>` to a Quark session actor before
-ADR-037 removed Quark as a dependency). The typed `SessionRef` keeps the same always-typed,
-never-stringly discipline (historical: originally Quark's `ActorRef<A>` discipline).
+`make_agent_session<A>()` runs `register_agent<A>()` (§6) and binds the compiled metadata to an
+`rt::AgentSession<ChatClientT, NoSessionState, AgentToolSurface<>>`; `bind_agent_session(meta, client,
+opts)` is the same bridge over an `AgentMetadata` value, which is how a 015 document compiled by
+`compile_agent_document()` runs (I6). The policy set A declares is the policy set the session enforces
+— instructions, `Tools<...>` (the only tools offered or callable), `MaxTurns`/`TokenBudget`, `Approval`
+(a floor over the declared tools), `Concurrency`, `OutputSchema` — and the session's capabilities are
+the caller's grants **narrowed** to A's `Capabilities<...>` ceiling, never the ceiling itself (I2).
+ADR-226 §3 lists, field by field, what is enforced and what is only recorded.
+
+The `Engine` / `engine.create_session()` / `session.run<A>()` shape this section previously showed is
+**not** built, deliberately (ADR-226 §1): `engine.start()` started a Quark actor engine ADR-037 removed;
+`create_session()` followed by `run<A>()` decouples a session from its agent, which makes the session's
+held authority, tool set and budgets a per-run choice over a shared history (and would force the
+session to type-erase its `ChatClientT`); and an `Engine` holding credentials loaded from a config file
+on behalf of whichever agent runs next is ambient authority (I2). Where a host wants a registry of
+agents, it is a map from names to `make_agent_session<A>` calls — host code, outside the engine.
 
 ## 3. The policy vocabulary
 
@@ -100,7 +119,7 @@ class template cannot share one identifier in the same namespace. `ChatClientId`
 | `Capabilities<Cs...>` | Capability ceiling (007) | empty |
 | `MaxTurns<N>` | Turn-loop bound | 16 |
 | `TokenBudget<N>` | Cumulative token ceiling per run | unbounded |
-| `Approval<Mode>` | `NeverRequire` / `AlwaysRequire` / `PolicyDriven` | `PolicyDriven` |
+| `Approval<Mode>` | `NeverRequire` / `AlwaysRequire` / `PolicyDriven` — a floor over the declared tools: `AlwaysRequire` gates every tool; the other two leave each tool's own `Approval` as declared, never loosen it (ADR-226 §3) | `PolicyDriven` |
 | `Concurrency<Mode>` | Tool-batch concurrency (001 §4) | `Sequential` |
 | `Retry<Policy>` | Transient-failure retry shape | bounded exponential |
 | `Memory<Ms...>` | Memory/context providers (005) | none |
