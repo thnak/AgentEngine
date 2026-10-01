@@ -49,7 +49,7 @@ const copy = {
         AgentEngine has exactly one internal notion of "this run is genuinely waiting on someone
         or something outside itself": a real, checkpointable{" "}
         <code>Interaction{"{interaction_id, run_id, reason, opened_at_ns, expires_at_ns}"}</code>{" "}
-        record, tagged by a five-value <code>interaction_reason</code> enum. Every mechanism on
+        record, tagged by a six-value <code>interaction_reason</code> enum. Every mechanism on
         this page — tool approval, an external dispatch hook, <code>agent.ask()</code>, a workflow{" "}
         <code>request_port</code>, a whole workflow projected through <code>chat_stream()</code>,
         a Magentic plan review — opens one of these, and resolves through one of exactly two calls:{" "}
@@ -140,15 +140,16 @@ const copy = {
         <code>ToolCall</code>. This is the literal intersection of chat_client, workflow, and
         streaming: the adapter honestly reports{" "}
         <code>capabilities().streaming == false</code>, since it never streams token-level deltas
-        from inside the wrapped graph. Named gap, not silently papered over:{" "}
-        <strong>an outer <code>AgentSession</code> bound to this adapter sees the ask, but nothing
-        answers it from that position today</strong>. The ask reaches the outer session's own
-        caller as an ordinary final answer — proven safe, not corrupted — but that caller has no
-        reference to the specific <code>WorkflowChatClient</code> instance underneath, so it can't
-        drive the resume call this page's own examples show. Composing{" "}
-        <code>WorkflowChatClient</code> as a sub-agent inside another agent's tool set — exactly the
-        MAF-parity use case that motivated building it — is not yet reachable; only a direct caller
-        can currently answer a paused interaction.
+        from inside the wrapped graph. <strong>Bound as an outer <code>AgentSession</code>'s
+        backend, the pause comes back as an <code>Interaction</code> after all</strong> (issue
+        #44): the session asks the adapter's own state — never the response content — whether the
+        workflow is waiting, and if so suspends with a <code>client_input</code> interaction (
+        <code>run.suspended_for_client_input</code>, before any <code>set_output_schema()</code>{" "}
+        check). The outer caller reads the ask with <code>client_input_ask(id)</code> and answers
+        with the ordinary <code>resolve_interaction()</code> — text, or a response message plus{" "}
+        <code>routes</code>. The answer reaches the workflow out of band, so nothing a model writes
+        into the conversation can answer or route the port; a refused route comes back as a
+        refusal with the interaction still open, and <code>cancel()</code> cancels the workflow.
       </>
     ),
     chatClientNote: (
@@ -159,10 +160,12 @@ const copy = {
     ),
     chatClientGapNote: (
       <>
-        answer-routing through an intermediate AgentSession is unbuilt — tracking issue{" "}
+        answer-routing through an intermediate AgentSession: ADR-230 (Proposed — implemented and
+        tested, pending sign-off), issue{" "}
         <a href={`${REPO_URL}/issues/44`} target="_blank" rel="noreferrer">
           #44
         </a>
+        ; a nested sub_workflow's own ask still surfaces as an empty placeholder
       </>
     ),
 
@@ -276,10 +279,10 @@ const copy = {
         via Magentic's <code>require_plan_signoff()</code>, if the payload has a real schema.{" "}
         <strong>The workflow itself needs to be reusable as an ordinary model backend, and a
         direct caller answers its paused interactions:</strong>{" "}
-        <code>WorkflowChatClient</code>. It also surfaces asks safely when bound as an outer{" "}
-        <code>AgentSession</code>'s own backend, but that outer session's own caller can't yet
-        answer them from there (issue #44). None of these are mutually exclusive — a real
-        deployment composes several.
+        <code>WorkflowChatClient</code>. Bound as an outer <code>AgentSession</code>'s own
+        backend, its asks become that session's <code>client_input</code> interactions, which the
+        outer caller answers with <code>resolve_interaction()</code> (issue #44, ADR-230,
+        Proposed). None of these are mutually exclusive — a real deployment composes several.
       </>
     ),
   },
@@ -292,7 +295,7 @@ const copy = {
         AgentEngine có đúng một khái niệm nội bộ cho "lần chạy này thực sự đang chờ ai đó hoặc thứ
         gì đó bên ngoài chính nó": một bản ghi{" "}
         <code>Interaction{"{interaction_id, run_id, reason, opened_at_ns, expires_at_ns}"}</code>{" "}
-        thật, có thể checkpoint, được gắn thẻ bởi một enum <code>interaction_reason</code> năm giá
+        thật, có thể checkpoint, được gắn thẻ bởi một enum <code>interaction_reason</code> sáu giá
         trị. Mọi cơ chế trên trang này — phê duyệt tool, một hook điều phối ra ngoài,{" "}
         <code>agent.ask()</code>, một node <code>request_port</code> của workflow, cả một workflow
         được chiếu qua <code>chat_stream()</code>, một lần duyệt kế hoạch Magentic — đều mở một
@@ -384,15 +387,18 @@ const copy = {
         <code>Custom</code> từ <code>chat_stream()</code>, không bao giờ là <code>ToolCall</code>.
         Đây chính là giao điểm của chat_client, workflow, và streaming: adapter báo cáo trung thực{" "}
         <code>capabilities().streaming == false</code>, vì nó không bao giờ stream delta cấp token
-        từ bên trong đồ thị được bọc. Một khoảng trống được nêu thẳng, không giấu đi:{" "}
-        <strong>một <code>AgentSession</code> bên ngoài gắn với adapter này thấy được câu hỏi,
-        nhưng hiện tại không có gì trả lời được nó từ vị trí đó</strong>. Câu hỏi đến tay caller
-        của session bên ngoài như một câu trả lời cuối cùng bình thường — an toàn, không bị hỏng —
-        nhưng caller đó không có tham chiếu tới đúng instance <code>WorkflowChatClient</code> bên
-        dưới, nên không thể thực hiện lệnh gọi resume mà các ví dụ trên trang này minh họa. Việc
-        ghép <code>WorkflowChatClient</code> làm sub-agent bên trong tập tool của một agent khác —
-        chính use case ngang tầm MAF đã thúc đẩy việc xây dựng nó — hiện chưa thể đạt tới; chỉ một
-        caller trực tiếp mới trả lời được một interaction đang tạm dừng.
+        từ bên trong đồ thị được bọc. <strong>Khi được gắn làm backend của một{" "}
+        <code>AgentSession</code> bên ngoài, sự tạm dừng lại trở về dưới dạng một{" "}
+        <code>Interaction</code></strong> (issue #44): session hỏi chính trạng thái của adapter —
+        không bao giờ đọc nội dung phản hồi — xem workflow có đang chờ không, và nếu có thì tạm
+        dừng với một interaction <code>client_input</code> (
+        <code>run.suspended_for_client_input</code>, trước mọi kiểm tra{" "}
+        <code>set_output_schema()</code>). Caller bên ngoài đọc câu hỏi bằng{" "}
+        <code>client_input_ask(id)</code> và trả lời bằng <code>resolve_interaction()</code> thông
+        thường — dạng text, hoặc một message phản hồi kèm <code>routes</code>. Câu trả lời tới
+        workflow qua một kênh riêng, nên không gì một model viết vào hội thoại có thể trả lời hay
+        định tuyến port đó; một route bị từ chối trở về như một lời từ chối với interaction vẫn
+        mở, và <code>cancel()</code> hủy luôn workflow.
       </>
     ),
     chatClientNote: (
@@ -403,10 +409,12 @@ const copy = {
     ),
     chatClientGapNote: (
       <>
-        định tuyến câu trả lời qua một AgentSession trung gian chưa được xây dựng — issue theo dõi{" "}
+        định tuyến câu trả lời qua một AgentSession trung gian: ADR-230 (Proposed — đã hiện thực và
+        kiểm thử, chờ phê duyệt), issue{" "}
         <a href={`${REPO_URL}/issues/44`} target="_blank" rel="noreferrer">
           #44
         </a>
+        ; câu hỏi riêng của một sub_workflow lồng nhau vẫn chỉ là một placeholder rỗng
       </>
     ),
 
@@ -524,9 +532,10 @@ const copy = {
         <code>request_port</code> — có kiểu, qua <code>require_plan_signoff()</code> của Magentic,
         nếu payload có một schema thật. <strong>Bản thân workflow cần dùng lại được như một
         backend model bình thường, và một caller trực tiếp trả lời các interaction đang tạm
-        dừng của nó:</strong> <code>WorkflowChatClient</code>. Nó cũng phơi bày câu hỏi an toàn
-        khi được gắn làm backend của một <code>AgentSession</code> bên ngoài, nhưng caller của
-        session bên ngoài đó chưa thể trả lời từ vị trí đó (issue #44). Không cái nào loại trừ lẫn
+        dừng của nó:</strong> <code>WorkflowChatClient</code>. Khi được gắn làm backend của một{" "}
+        <code>AgentSession</code> bên ngoài, các câu hỏi của nó trở thành interaction{" "}
+        <code>client_input</code> của session đó, và caller bên ngoài trả lời bằng{" "}
+        <code>resolve_interaction()</code> (issue #44, ADR-230, Proposed). Không cái nào loại trừ lẫn
         nhau — một deployment thật thường kết hợp nhiều cái.
       </>
     ),
@@ -663,7 +672,7 @@ export function ApiHitlReference() {
               <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.chatClientHeading}</h3>
               <p>{t.chatClientBody}</p>
               <ApiDiagnosticNote kind="see also">{t.chatClientNote}</ApiDiagnosticNote>
-              <ApiDiagnosticNote status="stub" kind="gap">{t.chatClientGapNote}</ApiDiagnosticNote>
+              <ApiDiagnosticNote status="design" kind="ADR-230">{t.chatClientGapNote}</ApiDiagnosticNote>
             </div>
           </RevealItem>
           <RevealItem>

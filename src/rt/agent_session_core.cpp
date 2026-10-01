@@ -15,6 +15,10 @@ void AgentSessionCore::cancel() noexcept {
         source = cancel_source_;
     }
     source.request_stop();
+    // ADR-230: a session suspended on a `client_input` interaction has no run in flight for the stop above to
+    // reach; the client's own cancel ends what it holds open (a wrapped workflow ends `cancelled`, ADR-214). A
+    // no-op for a client without the seam; harmless when nothing is open (a workflow cancel is per run).
+    bound_cancel_client_interactions();
 }
 
 // agent_session.hpp:852
@@ -150,6 +154,26 @@ task<result<AgentResponse>> AgentSessionCore::start_run(
             "a round is already suspended awaiting approval, an agent.ask() answer, or an "
             "external tool-call hook decision -- resolve it before starting a new run",
             "run.approval_pending"});
+    }
+
+    // ADR-230 (issue #44): a bound client that holds an interaction open is mid-conversation. A fresh call would
+    // either be refused by it or -- worse -- let it read an "answer" out of history, which model output can write.
+    // So a fresh run waits until the host answers (resolve_interaction) or abandons (cancel()) it. Interactions
+    // the client no longer holds (it was cancelled) are closed here first; if a cancel ended them, the suspended
+    // run they belonged to gets its terminal run_canceled now.
+    if (std::optional<std::vector<ClientInteractionAsk>> const client_pending = bound_pending_client_interactions();
+        client_pending.has_value()) {
+        bool const canceled_while_suspended = effect_context_.cancellation.stop_requested();
+        if (close_client_inputs(client_pending, /*close_all=*/false) > 0 && canceled_while_suspended) {
+            (void)finish_canceled();
+        }
+        if (!client_pending->empty()) {
+            co_return std::unexpected(error{
+                failure_class::contract,
+                "the bound chat client is waiting on the host for an interaction (a paused workflow request port) "
+                "-- answer it with resolve_interaction(), or cancel() to abandon it, before starting a new run",
+                "run.client_input_pending"});
+        }
     }
 
     run_counter_ += 1;
@@ -313,6 +337,17 @@ task<result<AgentResponse>> AgentSessionCore::resolve_interaction(
         co_return std::unexpected(error{failure_class::contract,
                                          "call_decisions apply only to an approval interaction",
                                          "session.resolve_interaction.call_decisions_not_applicable"});
+    }
+    // ADR-230: a client answer (and its routes) is authority over the client's conversation -- it is accepted
+    // only for the interaction kind that asks for one, never silently ignored on another.
+    if (request.client_answer && it->reason != interaction_reason::client_input) {
+        co_return std::unexpected(error{failure_class::contract,
+                                         "client_answer applies only to a client_input interaction",
+                                         "session.resolve_interaction.client_answer_not_applicable"});
+    }
+    if (it->reason == interaction_reason::client_input) {
+        std::string const client_input_id = it->interaction_id;  // copied: the callee erases `*it`
+        co_return co_await resolve_client_input(request, client_input_id);
     }
     if (it->reason == interaction_reason::codeact_ask && !request.answer.has_value()) {
         co_return std::unexpected(error{failure_class::contract,
@@ -589,6 +624,8 @@ void AgentSessionCore::fork_core_from(AgentSessionCore const& source, std::strin
     pending_hook_decisions_.clear();
     pending_codeact_asks_.clear();
     suspended_rounds_.clear();
+    pending_client_inputs_.clear();    // ADR-230
+    answering_client_input_.reset();
     run_tokens_consumed_ = 0;
     run_usage_ = agentengine::Usage{};
     admission_denied_count_ = 0;
@@ -624,6 +661,8 @@ void AgentSessionCore::clear_core_state() {
     // from this list entirely (this function's own preceding comment) -- not reintroduced here.
     pending_hook_decisions_.clear();
     suspended_rounds_.clear();  // ADR-196
+    pending_client_inputs_.clear();    // ADR-230
+    answering_client_input_.reset();
     token_budget_ = std::nullopt;
     run_tokens_consumed_ = 0;
     run_usage_ = agentengine::Usage{};
@@ -695,6 +734,8 @@ void AgentSessionCore::restore_from_record(AgentSessionRecord const& rec) {
     pending_hook_decisions_.clear();
     pending_codeact_asks_.clear();
     suspended_rounds_.clear();
+    pending_client_inputs_.clear();    // ADR-230: a restored client_input resolves to round_not_recorded
+    answering_client_input_.reset();
     interaction_counter_ = 0;
     std::string const id_prefix = session_id_ + ":interaction:";
     for (Interaction const& i : open_interactions_) {
@@ -1424,8 +1465,123 @@ std::unexpected<error> AgentSessionCore::finish_canceled() {
     return std::unexpected(error{failure_class::fatal, "the run was canceled", "run.canceled"});
 }
 
-// agent_session.hpp:2803
+// ADR-230 (issue #44) -------------------------------------------------------------------------------------------
+
+namespace {
+// The code a refused client answer returns -- the interaction stays open and can be answered again.
+constexpr char const* kClientAnswerRefused = "session.resolve_interaction.answer_refused";
+
+[[nodiscard]] bool client_holds(std::optional<std::vector<ClientInteractionAsk>> const& pending,
+                                std::string const& client_interaction_id) {
+    if (!pending) return false;
+    return std::any_of(pending->begin(), pending->end(), [&](ClientInteractionAsk const& a) {
+        return a.client_interaction_id == client_interaction_id;
+    });
+}
+}  // namespace
+
+std::size_t AgentSessionCore::close_client_inputs(std::optional<std::vector<ClientInteractionAsk>> const& pending,
+                                                  bool close_all) {
+    std::vector<std::string> to_close;
+    for (auto const& [id, rec] : pending_client_inputs_) {
+        if (close_all || !client_holds(pending, rec.client_interaction_id)) to_close.push_back(id);
+    }
+    // An open client_input interaction with no record (restored from an AgentSessionRecord) is never resolvable.
+    for (Interaction const& i : open_interactions_) {
+        if (i.reason == interaction_reason::client_input && !pending_client_inputs_.contains(i.interaction_id)) {
+            to_close.push_back(i.interaction_id);
+        }
+    }
+    for (std::string const& id : to_close) {
+        pending_client_inputs_.erase(id);
+        (void)resolve_interaction_record(id);
+    }
+    return to_close.size();
+}
+
 task<result<AgentResponse>> AgentSessionCore::run_rounds() {
+    result<AgentResponse> r = co_await run_rounds_body();
+    answering_client_input_.reset();  // whatever happened, the answer was for this call only
+    bool const left_open_on_purpose =
+        !r.has_value() && (r.error().code == kSuspendedForClientInput || r.error().code == kClientAnswerRefused);
+    if (!left_open_on_purpose) {
+        // The run is over (or suspended for a different reason, which a client never holds an interaction
+        // across): nothing the client holds may outlive it.
+        std::optional<std::vector<ClientInteractionAsk>> const pending = bound_pending_client_interactions();
+        if (pending.has_value()) {
+            if (!pending->empty()) bound_cancel_client_interactions();
+            (void)close_client_inputs(pending, /*close_all=*/true);
+        }
+    }
+    co_return r;
+}
+
+task<result<AgentResponse>> AgentSessionCore::resolve_client_input(ResolveInteraction const& request,
+                                                                   std::string const& interaction_id) {
+    auto const rec_it = pending_client_inputs_.find(interaction_id);
+    if (rec_it == pending_client_inputs_.end()) {
+        // Restored from an AgentSessionRecord (which carries no ask): the same treatment ADR-196 §7 gives any other
+        // record-less interaction -- closed, nothing runs. The client's conversation is abandoned with it, so a
+        // later start_run() is not refused forever.
+        bound_cancel_client_interactions();
+        (void)close_client_inputs(std::nullopt, /*close_all=*/true);
+        co_return std::unexpected(error{
+            failure_class::contract,
+            "this interaction has no recorded ask in this session (restored or replaced) -- closed, nothing ran",
+            "session.resolve_interaction.round_not_recorded"});
+    }
+    if (request.answer.has_value() == request.client_answer.has_value()) {
+        co_return std::unexpected(error{
+            failure_class::contract,
+            "resolving a client_input interaction takes exactly one of `answer` (text) or `client_answer`",
+            request.answer.has_value() ? "session.resolve_interaction.ambiguous_answer"
+                                       : "session.resolve_interaction.answer_required"});
+    }
+
+    std::string const client_id = rec_it->second.client_interaction_id;
+    // A cancel() while suspended: the run ends now, whatever the client managed to settle.
+    if (effect_context_.cancellation.stop_requested()) {
+        bound_cancel_client_interactions();
+        (void)close_client_inputs(std::nullopt, /*close_all=*/true);
+        co_return finish_canceled();
+    }
+    std::optional<std::vector<ClientInteractionAsk>> const pending = bound_pending_client_interactions();
+    if (!client_holds(pending, client_id)) {
+        (void)close_client_inputs(pending, /*close_all=*/false);
+        co_return std::unexpected(error{failure_class::contract,
+                                         "the bound chat client no longer waits on this interaction -- closed",
+                                         "session.resolve_interaction.stale"});
+    }
+
+    AnsweringClientInput answering;
+    answering.interaction_id        = interaction_id;
+    answering.client_interaction_id = client_id;
+    answering.approver_id           = request.approver_id;
+    answering.turn_index_before     = effect_context_.turn_index;
+    answering.to_client.client_interaction_id = client_id;
+    if (request.client_answer) {
+        answering.to_client.response = request.client_answer->response;
+        answering.to_client.routes   = request.client_answer->routes;
+    } else {
+        ContentItem item;
+        item.origin  = content_origin::user;
+        item.tainted = false;  // the host's own answer, not model output
+        item.value   = Text{*request.answer};
+        answering.to_client.response.role = role::user;
+        answering.to_client.response.content.push_back(std::move(item));
+    }
+    // History records the answer as the user's turn, whatever role the client's copy carries.
+    answering.answer      = answering.to_client.response;
+    answering.answer.role = role::user;
+    answering_client_input_ = std::move(answering);
+
+    // The answered call is the next turn of the suspended run (the suspension returned before the loop advanced).
+    ++effect_context_.turn_index;
+    co_return co_await run_rounds();
+}
+
+// agent_session.hpp:2803
+task<result<AgentResponse>> AgentSessionCore::run_rounds_body() {
     CapabilitySet const empty_caps = CapabilitySet::grant_root({});
     // ADR-061 §20.6: per-request, not session-level -- effect_context_.capabilities is freshly
     // written by apply_dispatch_authority() at the top of every real entry point (start_run(),
@@ -1557,6 +1713,30 @@ task<result<AgentResponse>> AgentSessionCore::run_rounds() {
         // after this line, and `tool_table` above already took the copy of the tools it keeps.
         // This used to deep-copy the whole assembled history into the request once per turn.
         ChatRequest request{std::move(contribution->messages), std::move(contribution->tools)};
+        // ADR-230 (issue #44): the host's answer to a `client_input` interaction rides out of band, on this call
+        // only -- never in `messages`, which model output and history can write. Set here and nowhere else.
+        bool const answering_this_call = answering_client_input_.has_value() && !answering_client_input_->sent;
+        if (answering_this_call) {
+            request.client_interaction_answers.push_back(answering_client_input_->to_client);
+            answering_client_input_->sent = true;
+        }
+        // ADR-230: the client kept the interaction open after being handed the answer -- refused (a workflow's
+        // invalid route, issue #155), not consumed. The interaction stays open, the history is untouched, and the
+        // turn this call used is given back, so the host can answer again.
+        auto const refuse_client_answer = [this](std::string const& why) -> std::unexpected<error> {
+            AnsweringClientInput const refused = std::move(*answering_client_input_);
+            answering_client_input_.reset();
+            effect_context_.turn_index = refused.turn_index_before;
+            emit_run_event(run_event_kind::warning,
+                           run_event_payload::Warning{"the bound chat client refused the answer to interaction " +
+                                                      refused.interaction_id + " (" + why +
+                                                      "); it is still open"});
+            emit_run_event(run_event_kind::input_required, run_event_payload::InteractionRef{refused.interaction_id});
+            return std::unexpected(error{failure_class::contract,
+                                         "the bound chat client refused this answer: " + why +
+                                             " -- the interaction is still open",
+                                         kClientAnswerRefused});
+        };
         // ADR-191/192: the ONE place `ContentItem::approval` and `deliver_as_instructions` are granted -- after
         // every provider has contributed and history is in, just before the request leaves. Both are cleared on
         // every item first, so nothing a provider, a plugin or a stored message carries survives; then granted only
@@ -1641,6 +1821,12 @@ task<result<AgentResponse>> AgentSessionCore::run_rounds() {
                            effect_context_.cancellation.stop_requested())) {
             co_return finish_canceled();  // ADR-178: a call the run's own cancel cut short is not a failure
         }
+        // ADR-230: decided by the client's own state, never by the error's text.
+        if (!response && answering_this_call &&
+            client_holds(bound_pending_client_interactions(), answering_client_input_->client_interaction_id)) {
+            co_return refuse_client_answer(response.error().message +
+                                           (response.error().code.empty() ? "" : " [" + response.error().code + "]"));
+        }
         if (!response) {
             emit_run_event(run_event_kind::run_failed,
                             run_event_payload::RunFailed{response.error().code, response.error().message, "run.chat_failed"});
@@ -1668,6 +1854,28 @@ task<result<AgentResponse>> AgentSessionCore::run_rounds() {
         // real and stays charged (attributable); the response is dropped, so no tool it asked for runs.
         if (effect_context_.cancellation.stop_requested()) co_return finish_canceled();
 
+        // ADR-230 (issue #44): what the bound client itself says it is waiting on now -- its own host-side state,
+        // read after the call completed. nullopt for every client without the seam, and then nothing below runs.
+        // A look-alike ask in the response CONTENT (a model echoing the `agentengine.workflow_request_port`
+        // shape) is never consulted: it can neither open an interaction nor hide one.
+        std::optional<std::vector<ClientInteractionAsk>> const client_pending = bound_pending_client_interactions();
+        // Where this turn's messages start in history: the host's answer (if this call carried one the client
+        // took) is the turn's first message, the response its last.
+        std::size_t const turn_first_index = history_.size();
+        if (answering_this_call) {
+            if (client_holds(client_pending, answering_client_input_->client_interaction_id)) {
+                co_return refuse_client_answer("the call completed without the client taking the answer");
+            }
+            AnsweringClientInput const taken = std::move(*answering_client_input_);
+            answering_client_input_.reset();
+            pending_client_inputs_.erase(taken.interaction_id);
+            (void)resolve_interaction_record(taken.interaction_id);
+            emit_run_event(run_event_kind::input_resolved,
+                           run_event_payload::InteractionRef{taken.interaction_id,
+                                                             taken.approver_id.value_or(std::string{})});
+            history_.push_back(taken.answer);
+        }
+
         // ADR-196 §7 (issue #111 A2/A3): the engine owns call identity. A call id repeated within this response
         // is renamed before anything records it, so every approval, decision, hook answer, audit record and tool
         // result addresses exactly one call. Announced, so the rename is attributable (I4).
@@ -1680,10 +1888,41 @@ task<result<AgentResponse>> AgentSessionCore::run_rounds() {
         std::size_t const response_msg_index = history_.size();
         history_.push_back(response->message);
 
+        // ADR-230 (issue #44): the client is waiting on the host -- suspend, BEFORE the tool-call loop (nothing in a
+        // paused response is dispatched) and BEFORE output-schema validation (a pause is not a final answer). One
+        // `client_input` interaction per pending client interaction: those already open keep their ids, ones the
+        // client no longer holds close, new ones open. Every one still open is announced again, so a consumer of
+        // this run sees the whole set it can answer.
+        if (client_pending.has_value() && !client_pending->empty()) {
+            (void)co_await bound_on_turn_end(
+                TurnView{std::span<Message const>{history_.data() + turn_first_index,
+                                                  history_.size() - turn_first_index}},
+                effect_context_);
+            emit_run_event(run_event_kind::turn_finished, run_event_payload::Turn{effect_context_.turn_index});
+            (void)close_client_inputs(client_pending, /*close_all=*/false);
+            for (ClientInteractionAsk const& ask : *client_pending) {
+                bool const known = std::any_of(pending_client_inputs_.begin(), pending_client_inputs_.end(),
+                                               [&](auto const& kv) {
+                                                   return kv.second.client_interaction_id == ask.client_interaction_id;
+                                               });
+                if (known) continue;
+                Interaction const& opened = open_interaction(effect_context_.run_id, interaction_reason::client_input);
+                pending_client_inputs_[opened.interaction_id] = PendingClientInput{ask.client_interaction_id, ask.ask};
+            }
+            for (Interaction const& i : open_interactions_) {
+                if (i.reason != interaction_reason::client_input) continue;
+                emit_run_event(run_event_kind::input_required, run_event_payload::InteractionRef{i.interaction_id});
+            }
+            co_return std::unexpected(error{failure_class::contract,
+                                             "round suspended: the bound chat client is waiting on the host",
+                                             kSuspendedForClientInput});
+        }
+
         std::vector<ToolCall> const calls = tool_calls_of(response->message);
         if (calls.empty()) {
             (void)co_await bound_on_turn_end(
-                TurnView{std::span<Message const>{history_.data() + response_msg_index, 1}},
+                TurnView{std::span<Message const>{history_.data() + turn_first_index,
+                                                  history_.size() - turn_first_index}},
                 effect_context_);
             emit_run_event(run_event_kind::turn_finished,
                             run_event_payload::Turn{effect_context_.turn_index});

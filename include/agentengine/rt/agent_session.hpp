@@ -496,6 +496,20 @@ private:
             (void)contribution;
         }
     }
+    // ADR-230: `if constexpr` on `InteractiveChatClient`, so a client without the seam reports nullopt and the
+    // session behaves exactly as before.
+    [[nodiscard]] std::optional<std::vector<agentengine::ClientInteractionAsk>> bound_pending_client_interactions()
+        override {
+        if constexpr (agentengine::InteractiveChatClient<ChatClientT>) {
+            if (chat_client_) return chat_client_->pending_client_interactions();
+        }
+        return std::nullopt;
+    }
+    void bound_cancel_client_interactions() noexcept override {
+        if constexpr (agentengine::InteractiveChatClient<ChatClientT>) {
+            if (chat_client_) chat_client_->cancel_client_interactions();
+        }
+    }
     [[nodiscard]] bool bound_has_chat_client() const noexcept override { return chat_client_.has_value(); }
     [[nodiscard]] model_route bound_model_route() const noexcept override {
         // Nested exactly as run_model_call() and the former start_run() warning branched.

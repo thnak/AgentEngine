@@ -113,6 +113,14 @@ struct ApprovalCallDecision {  // ae-naming-lint: allow ApprovalCallDecision —
     bool        approved = false;
 };
 
+// ADR-230 (issue #44): the host's full answer to a `client_input` interaction -- the response message the bound
+// client's interaction receives (a workflow request port's response) and, where it has them, its route choice.
+// `ResolveInteraction::answer` is the text-only shorthand (a user message, no routes).
+struct ClientInputAnswer {  // ae-naming-lint: allow ClientInputAnswer — ADR-230
+    Message                  response;
+    std::vector<std::string> routes{};
+};
+
 // ae-naming-lint: allow ResolveInteraction — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct ResolveInteraction {
     std::string interaction_id;
@@ -140,6 +148,16 @@ struct ResolveInteraction {
     // `approval_resolved` this resolve emits (I4). Unset means an anonymous decision, recorded as such (the event's
     // `approver_id` is empty). When set it must be non-blank with no control characters.
     std::optional<std::string> approver_id = std::nullopt;
+    // ADR-230 (issue #44): for a `client_input` interaction only -- the answer handed to the bound client out of
+    // band (`ChatRequest::client_interaction_answers`). Give this OR `answer` (text shorthand), not both. Refused
+    // for every other reason. Appended last.
+    std::optional<ClientInputAnswer> client_answer = std::nullopt;
+};
+
+// ADR-230: what a `client_input` interaction is waiting on -- read with `AgentSession::client_input_ask()`.
+struct PendingClientInput {  // ae-naming-lint: allow PendingClientInput — ADR-230
+    std::string client_interaction_id;  // the bound client's own id for it (never shown to the model)
+    Message     ask;                    // what the client asked, as the client's host-side state reported it
 };
 
 struct AgentResponse {
@@ -556,6 +574,10 @@ public:
     // The run ends `run.canceled` (`failure_class::fatal`) after a `run_canceled` event; nothing the
     // canceled round had not yet committed is appended to history. A no-op when no run is in flight: the
     // next `start_run()` gets a FRESH source, so a stale cancel can never poison it.
+    // ADR-230: also cancels whatever the bound client holds open (`InteractiveChatClient`) -- a session suspended
+    // on a `client_input` interaction has no run in flight, so the client's own cancel is how the wrapped workflow
+    // ends `cancelled` (ADR-214) now rather than at the next call. The session's interaction closes at its next
+    // entry point: a resolve of it ends `run.canceled`; a start_run() closes it and runs.
     void cancel() noexcept;
     [[nodiscard]] std::stop_token cancellation_token() const noexcept {
         std::lock_guard<std::mutex> lock(cancel_mutex_);
@@ -753,6 +775,17 @@ public:
     [[nodiscard]] std::size_t pending_codeact_ask_count() const noexcept {
         return pending_codeact_asks_.size();
     }
+
+    // ADR-230 (issue #44): the ask behind an open `client_input` interaction -- what the bound client (a
+    // `WorkflowChatClient`'s request port) is waiting on, as the client's own host-side state reported it when
+    // this session suspended. nullopt for any other id. The caller answers with `resolve_interaction()` carrying
+    // `answer` or `client_answer`.
+    [[nodiscard]] std::optional<Message> client_input_ask(std::string const& interaction_id) const {
+        auto const it = pending_client_inputs_.find(interaction_id);
+        if (it == pending_client_inputs_.end()) return std::nullopt;
+        return it->second.ask;
+    }
+    [[nodiscard]] std::size_t pending_client_input_count() const noexcept { return pending_client_inputs_.size(); }
 
     // decisions/ADR-029-suspend-for-human-approval.md §6 / ADR-070: closes the named gap that
     // `Interaction::expires_at_ns` is stored but nothing ever checks it. `interaction.hpp`'s own
@@ -1099,7 +1132,20 @@ private:
     // ADR-178: the one way a canceled run ends. `run_canceled` is the terminal event 013 already names.
     [[nodiscard]] std::unexpected<error> finish_canceled();
 
+    // ADR-230: every caller's way into the turn loop. Runs `run_rounds_body()`, then settles `client_input`
+    // interactions: a run that ended any way other than suspending for one (or refusing an answer to one) leaves
+    // none open -- any the client still holds are abandoned (`cancel_client_interactions()`), so a later fresh call
+    // never meets a client still paused on a conversation this session gave up on.
     task<result<AgentResponse>> run_rounds();
+    task<result<AgentResponse>> run_rounds_body();
+
+    // ADR-230: `resolve_interaction()`'s `client_input` branch. Caller holds session_mutex_ and has run admission.
+    task<result<AgentResponse>> resolve_client_input(ResolveInteraction const& request,
+                                                     std::string const& interaction_id);
+    // ADR-230: closes every open `client_input` interaction whose client id the client no longer reports (all of
+    // them when `pending` is nullopt or `close_all`). Returns how many it closed.
+    std::size_t close_client_inputs(std::optional<std::vector<ClientInteractionAsk>> const& pending,
+                                    bool close_all);
 
 
 public:
@@ -1127,6 +1173,13 @@ public:
     // approval` interaction instead and returns `kSuspendedForApproval` (see that function's own
     // comment for why a hook-decision resume is never itself an approval).
     static constexpr char const* kSuspendedForHookDecision = "run.suspended_for_hook_decision";
+
+    // ADR-230 (issue #44): the same "never fold, never fabricate" sentinel shape, for a round whose bound chat client
+    // reports (by its own host-side state, `InteractiveChatClient`) that it is waiting on the host -- a
+    // `WorkflowChatClient` whose workflow paused on a request_port. One `client_input` interaction is open per
+    // pending client interaction (`client_input_ask()` reads each ask). Returned BEFORE output-schema validation:
+    // a pause is not a final answer.
+    static constexpr char const* kSuspendedForClientInput = "run.suspended_for_client_input";
 
 private:
     std::string                                       session_id_;
@@ -1187,6 +1240,21 @@ private:
     // here, not newly introduced.
     std::unordered_map<std::string, agentengine::PendingHookDecisionRound> pending_hook_decisions_;
     std::unordered_map<std::string, SuspendedRoundRecord>                  suspended_rounds_;  // ADR-196
+    // ADR-230: same guard/keying discipline as the two maps above -- one entry per open `client_input`
+    // interaction, erased with it.
+    std::unordered_map<std::string, PendingClientInput>                    pending_client_inputs_;
+    // ADR-230: the one host answer the next model call carries (set by resolve_client_input(), consumed by the
+    // very next request run_rounds_body() builds), and what to do once the client has taken or refused it.
+    struct AnsweringClientInput {
+        std::string                interaction_id;         // ours
+        std::string                client_interaction_id;  // the client's
+        Message                    answer;                 // folded into history once the client takes it
+        std::optional<std::string> approver_id;
+        std::uint64_t              turn_index_before = 0;  // restored when the client refuses the answer
+        ClientInteractionAnswer    to_client;              // exactly what the client is handed
+        bool                       sent = false;           // only the first model call after the resolve carries it
+    };
+    std::optional<AnsweringClientInput>                                    answering_client_input_;
     // ADR-061 §26.1: the session-level capability grant -- single source of truth, a shared_ptr (not
     // a raw pointer kept in sync with a separate alias field, §24.3's design, superseded) so it can be
     // copied directly into EffectContext::capabilities without constructing a second aliasing wrapper
@@ -1332,6 +1400,11 @@ private:
     virtual void bound_filter_cross_provider_reasoning(ContextContribution& contribution) = 0;
     [[nodiscard]] virtual bool bound_has_chat_client() const noexcept = 0;
     [[nodiscard]] virtual model_route bound_model_route() const noexcept = 0;
+    // ADR-230: the bound client's own report of the interactions it holds open (`InteractiveChatClient`); nullopt
+    // when the client type has no such seam (every real backend, every mock) -- then none of ADR-230 runs.
+    [[nodiscard]] virtual std::optional<std::vector<ClientInteractionAsk>> bound_pending_client_interactions() = 0;
+    // ADR-230: abandon them. Any thread; a no-op for a client without the seam.
+    virtual void bound_cancel_client_interactions() noexcept = 0;
 
 public:
     virtual ~AgentSessionCore() = default;

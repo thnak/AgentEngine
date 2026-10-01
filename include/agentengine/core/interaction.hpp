@@ -52,7 +52,12 @@ namespace agentengine {
 // treating the hook's own answer as an approval. Like `codeact_ask`, a `hook_decision` interaction's
 // state (`AgentSession::pending_hook_decisions_`) is keyed to one specific suspended round -- the
 // admission check has a matching arm for this reason too.
-enum class interaction_reason { input, auth, approval, codeact_ask, hook_decision };  // ae-naming-lint: allow interaction_reason — 001 §2 names this concept normatively; 027 has not been updated to list it
+// ADR-230 amendment (issue #44): adds `client_input` -- a run suspended because the bound chat client ITSELF
+// reports an interaction it holds open (`InteractiveChatClient`, core/chat_client.hpp: a `WorkflowChatClient`
+// whose wrapped workflow paused on a request_port). Resolved with `ResolveInteraction::answer`/`client_answer`,
+// which the session hands to the client out of band. Like `codeact_ask`/`hook_decision`, its state is keyed to
+// one suspended conversation (the client's), so `start_run()` refuses while one is open.
+enum class interaction_reason { input, auth, approval, codeact_ask, hook_decision, client_input };  // ae-naming-lint: allow interaction_reason — 001 §2 names this concept normatively; 027 has not been updated to list it
 
 struct Interaction {  // ae-naming-lint: allow Interaction — 001 §2 names this concept normatively; 027 has not been updated to list it
     std::string        interaction_id;
