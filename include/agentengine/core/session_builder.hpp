@@ -492,6 +492,17 @@ public:
             session_->start_run(agentengine::rt::StartRun{detail::user_message(std::move(text))}));
     }
 
+    // decisions/ADR-234 (issue #60): drive any session coroutine `fn(session)` under the SAME `ask_mutex_`
+    // serialization and the same `rt::block_on()` drive as `ask()`/`run()`. The harness (core/harness.hpp)
+    // uses it for its bounded-reflection run (several `start_run()`s that must not interleave with another
+    // caller's `ask()`) and for `resolve_interaction()`; going through the raw `session()` accessor instead
+    // would bypass `ask_mutex_` (the hazard `ask()`'s own comment names).
+    template <class Fn>
+    [[nodiscard]] auto drive(Fn&& fn) {
+        std::lock_guard<std::mutex> guard(*ask_mutex_);
+        return agentengine::rt::block_on(std::forward<Fn>(fn)(*session_));
+    }
+
     // unified-streaming-design-draft.md §4 (Piece D), Rev 7. Drives the run exactly as `ask()` does
     // (`rt::block_on()` since decisions/ADR-175; the design's bounded single `resume()` is superseded,
     // see `ask()`'s comment) -- just moved onto a background thread, because this call will legitimately
