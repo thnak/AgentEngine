@@ -283,3 +283,10 @@ add_executable(agentengine_example_33_magentic_transcript 33_magentic_transcript
 target_link_libraries(agentengine_example_33_magentic_transcript PRIVATE
   agentengine::core agentengine_warnings)
 add_test(NAME example_33_magentic_transcript COMMAND agentengine_example_33_magentic_transcript)
+
+# 34: issue #45 -- review points: MAF's with_request_info() for the Sequential and Concurrent patterns
+# (workflow/review_points.hpp). A scripted reviewer approves, revises and amends. Fully offline.
+add_executable(agentengine_example_34_request_info_review 34_request_info_review.cpp)
+target_link_libraries(agentengine_example_34_request_info_review PRIVATE
+  agentengine::core agentengine_warnings)
+add_test(NAME example_34_request_info_review COMMAND agentengine_example_34_request_info_review)

@@ -182,6 +182,11 @@ agentengine_add_test(test_rt_workflow_cancellation LIBS agentengine::core agente
 # validate_workflow() the C++ WorkflowBuilder form uses (I6) -----------------------------------
 agentengine_add_test(test_workflow_yaml_compiler LIBS agentengine::core agentengine_warnings)
 
+# ---- Issue #45: review points (workflow\review_points.hpp) -- MAF's with_request_info() for the
+# Sequential/Concurrent patterns, expanded into ordinary request_port nodes; structural equality with
+# hand-wired graphs, YAML parity (I6), and end-to-end runs through rt::WorkflowSupervisor ----------------
+agentengine_add_test(test_workflow_review_points LIBS agentengine::core agentengine_warnings)
+
 # ---- Workflow executor worktree scoping (014 §1 <-> 025 §3, ADR-032) ---------------------------
 # Builds real Blob/Tree fixtures via put_blob/put_tree, same real-crypto (compute_digest)
 # dependency as A1/B1/B2/B3's own tests above.
