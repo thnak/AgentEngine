@@ -192,6 +192,7 @@ target_link_libraries(agentengine_core INTERFACE agentengine_rt_workflow)
 # Docker surface's persistent mode and by the native pwsh session provider.
 add_library(agentengine_docker_surface STATIC
   src/sandbox/docker_execution_surface.cpp
+  src/sandbox/docker_persistent_shell_surface.cpp
   src/sandbox/persistent_shell.cpp
   src/sandbox/process_identity.cpp)
 target_include_directories(agentengine_docker_surface PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")

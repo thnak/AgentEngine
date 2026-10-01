@@ -140,3 +140,10 @@ agentengine_add_test(test_process_identity_equivalence LIBS agentengine::core ag
 # ADR-207 (#120 S7): fails to compile if docker_execution_surface.hpp or process_identity.hpp includes an OS header
 # again. Needs no Docker daemon.
 agentengine_add_test(test_docker_header_no_os_headers LIBS agentengine::core agentengine_warnings)
+
+# ---- ADR-209 step 4 (issue #146) -- DockerPersistentShellSurface, the live-shell conformer: persistence,
+# framing (C8), deadline + in-container kill with PID 1 surviving (C7), pid exhaustion, fresh container per open
+# (C16), injection-safe replay (C9), no snapshot value in a host argv (C14). Watchdog + memory cap inside.
+# REQUIRES a running Docker daemon reachable via docker on PATH -- in ci.yml's daemon exclusion lists.
+agentengine_add_test(test_docker_persistent_shell_surface LIBS agentengine::core agentengine_warnings)
+set_tests_properties(test_docker_persistent_shell_surface PROPERTIES TIMEOUT 600 RESOURCE_LOCK docker_daemon)

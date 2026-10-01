@@ -204,8 +204,10 @@ std::wstring build_command_line(std::vector<std::string> const& argv) {
 SurfaceRunOutcome run_argv(std::vector<std::string> const& argv,
                            int timeout_seconds,
                            std::size_t output_cap,
-                           std::filesystem::path const* stdin_file) {
+                           std::filesystem::path const* stdin_file,
+                           bool* timed_out) {
     SurfaceRunOutcome out;
+    if (timed_out != nullptr) *timed_out = false;
     if (argv.empty()) { out.exit_code = -1; return out; }
     SECURITY_ATTRIBUTES sa{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
     HANDLE read_h = nullptr;
@@ -278,7 +280,7 @@ SurfaceRunOutcome run_argv(std::vector<std::string> const& argv,
     char buf[4096];
     for (;;) {
         if (out.stdout_text.size() >= output_cap) { stopped_early = true; break; }
-        if (std::chrono::steady_clock::now() >= deadline) { stopped_early = true; break; }
+        if (std::chrono::steady_clock::now() >= deadline) { stopped_early = true; if (timed_out != nullptr) *timed_out = true; break; }
         DWORD available = 0;
         if (!PeekNamedPipe(read_h, nullptr, 0, nullptr, &available, nullptr)) break;  // pipe closed/error -- natural EOF
         if (available == 0) {
@@ -414,8 +416,10 @@ SurfaceRunOutcome run_capture(std::string const& command,
 SurfaceRunOutcome run_argv(std::vector<std::string> const& argv,
                            int timeout_seconds,
                            std::size_t output_cap,
-                           std::filesystem::path const* stdin_file) {
+                           std::filesystem::path const* stdin_file,
+                           bool* timed_out) {
     SurfaceRunOutcome out;
+    if (timed_out != nullptr) *timed_out = false;
     if (argv.empty()) { out.exit_code = -1; return out; }
     std::array<int, 2> pipe_fds{-1, -1};
     if (::pipe(pipe_fds.data()) != 0) { out.exit_code = -1; return out; }
@@ -451,7 +455,7 @@ SurfaceRunOutcome run_argv(std::vector<std::string> const& argv,
     for (;;) {
         if (out.stdout_text.size() >= output_cap) { stopped_early = true; break; }
         auto const now = std::chrono::steady_clock::now();
-        if (now >= deadline) { stopped_early = true; break; }
+        if (now >= deadline) { stopped_early = true; if (timed_out != nullptr) *timed_out = true; break; }
         struct pollfd pfd{pipe_fds[0], POLLIN, 0};
         int const timeout_ms = static_cast<int>(
             std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
@@ -460,7 +464,7 @@ SurfaceRunOutcome run_argv(std::vector<std::string> const& argv,
             if (errno == EINTR) continue;
             break;
         }
-        if (rc == 0) { stopped_early = true; break; }
+        if (rc == 0) { stopped_early = true; if (timed_out != nullptr) *timed_out = true; break; }
         if ((pfd.revents & (POLLIN | POLLHUP | POLLERR)) == 0) continue;
         ssize_t const n = ::read(pipe_fds[0], buf, sizeof(buf));
         if (n <= 0) break;
@@ -593,7 +597,8 @@ agentengine::result<ContainerIsolation> container_isolation_from(
 namespace agentengine {
 
 agentengine::result<DockerCliBackend::Instance> DockerCliBackend::create(std::string const& image,
-                                                      ContainerIsolation const& isolation) {
+                                                      ContainerIsolation const& isolation,
+                                                      std::string const& init_script) {
     if (auto safe = docker_cli_reject_argv_value(image, "image"); !safe.has_value())
         return std::unexpected(safe.error());
     // A discoverable NAME (distinct from the docker-assigned `container_id` this method returns
@@ -627,7 +632,8 @@ agentengine::result<DockerCliBackend::Instance> DockerCliBackend::create(std::st
                                       "--name", name};
     for (std::string& flag : docker_isolation_argv(isolation)) argv.push_back(std::move(flag));
     argv.push_back(image);
-    argv.insert(argv.end(), {"sh", "-c", "mkdir -p /workspace && sleep infinity"});
+    argv.insert(argv.end(),
+                {"sh", "-c", init_script.empty() ? std::string("mkdir -p /workspace && sleep infinity") : init_script});
     auto r = docker_cli_detail::run_argv(argv);
     if (r.exit_code != 0) {
         return std::unexpected(agentengine::error{

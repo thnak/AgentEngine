@@ -116,6 +116,10 @@ agentengine_add_test(test_sandbox_runtime_deletions
 
 # ADR-209 step 2 (issue #146): Ledger::head_checkpoint() and SandboxRuntime::run_live() against an in-test
 # PersistentShellSurface. NO daemon -- not for ci.yml's exclusion lists.
+# ADR-209 (issue #146): the live shell's shared core offline -- snapshot diff/caps, sh and pwsh replay quoting,
+# the Docker client-reply parser's bounds. NO daemon.
+agentengine_add_test(test_persistent_shell_core LIBS agentengine::core agentengine_warnings)
+
 agentengine_add_test(test_sandbox_runtime_live
   LIBS agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
 
