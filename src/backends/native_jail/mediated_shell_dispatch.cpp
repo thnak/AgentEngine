@@ -41,6 +41,23 @@ std::string resolve_against_cwd(std::string const& cwd, std::string const& path)
     return cwd + (path.empty() ? "" : "/") + path;
 }
 
+// Issue #141: a script's output is every statement's output, in order -- not just the last one's. The
+// verdict (`klass`) stays the LAST statement's, since that is what `&&`/`||` and the caller branch on.
+// Error messages carry no trailing newline, so a second stderr chunk is separated from the first by one.
+void append_chunk(std::string& acc, std::string const& next) {
+    if (next.empty()) return;
+    if (!acc.empty() && acc.back() != '\n') acc += '\n';
+    acc += next;
+}
+
+void append_outcome(ExecOutcome& acc, ExecOutcome&& next) {
+    acc.stdout_text += next.stdout_text;
+    append_chunk(acc.stderr_text, next.stderr_text);
+    next.stdout_text = std::move(acc.stdout_text);
+    next.stderr_text = std::move(acc.stderr_text);
+    acc = std::move(next);
+}
+
 result<void> require_capability(EffectContext const& ctx, Capability requested, char const* denial_message) {
     if (!ctx.capabilities || !ctx.capabilities->contains(requested)) {
         return std::unexpected(error{failure_class::policy, denial_message, "shell.capability_denied"});
@@ -130,8 +147,19 @@ result<ExecOutcome> run_builtin(std::string const& name, std::vector<std::string
     if (name == "cd") {
         if (argv.size() < 2) return std::unexpected(error{failure_class::contract, "cd: missing operand", "shell.cd_missing_operand"});
         std::string target = resolve_against_cwd(state.cwd, argv[1]);
+        // `cd /` resolves to the mount root (""); an empty path is the root, not a missing operand. A
+        // path that does not exist, or is not a directory, fails the statement and leaves cwd as it was
+        // (issue #140): listing it is the adapter-neutral probe for both.
+        if (target.empty()) {  // `cd /`: the root itself always exists; canonicalize("") has no path to open
+            state.cwd.clear();
+            return out;
+        }
         auto canon = fs.canonicalize(target);
         if (!canon) return std::unexpected(canon.error());
+        if (auto listing = fs.list_directory(*canon); !listing) {
+            return std::unexpected(error{failure_class::contract, "cd: " + argv[1] + ": not a directory",
+                                          "shell.cd_not_a_directory"});
+        }
         state.cwd = *canon;  // ADR-001 §2.5.3: cwd always holds the adapter's canonical output.
         return out;
     }
@@ -286,6 +314,7 @@ result<ExecOutcome> evaluate_pipeline(PipelineNode const& pipeline, CommandRegis
                                        EffectContext& ctx, LocalScope const& locals) {
     ExecOutcome last{};
     std::string piped;
+    std::string stderr_so_far;  // earlier commands' stderr is not piped, but must still reach the caller
     bool have_piped = false;
     for (auto const& cmd : pipeline.commands) {
         LocalScope command_locals = locals;
@@ -330,14 +359,16 @@ result<ExecOutcome> evaluate_pipeline(PipelineNode const& pipeline, CommandRegis
             last = ExecOutcome{};
             last.klass = exec_outcome_class::policy_violation;
             last.stderr_text = outcome.error().message;
+            append_chunk(stderr_so_far, last.stderr_text);
             piped = last.stdout_text;
             have_piped = true;
             continue;
         }
         last = *outcome;
+        append_chunk(stderr_so_far, last.stderr_text);
 
         if (output_redirect) {
-            std::string const& target = output_redirect->first;
+            std::string const target = resolve_against_cwd(state.cwd, output_redirect->first);
             auto req = require_fs_write(ctx, fs, mount_id, target,
                                          "redirect: no capability grants write access to this path",
                                          /*enforce_quota=*/true);
@@ -352,6 +383,7 @@ result<ExecOutcome> evaluate_pipeline(PipelineNode const& pipeline, CommandRegis
         piped = last.stdout_text;
         have_piped = true;
     }
+    last.stderr_text = std::move(stderr_so_far);
     return last;
 }
 
@@ -367,7 +399,7 @@ result<ExecOutcome> evaluate_and_or(AndOrNode const& node, CommandRegistry const
         if (!should_run) continue;
         auto next = evaluate_pipeline(node.pipelines[i + 1], registry, fs, mount_id, state, ctx, locals);
         if (!next) return std::unexpected(next.error());
-        last = *next;
+        append_outcome(last, std::move(*next));
     }
     return last;
 }
@@ -400,8 +432,12 @@ result<ExecOutcome> evaluate_statement(StatementNode const& stmt, CommandRegistr
                 auto cond = evaluate_pipeline(node.cond, registry, fs, mount_id, state, ctx, locals);
                 if (!cond) return std::unexpected(cond.error());
                 bool succeeded = cond->klass == exec_outcome_class::ok;
-                return evaluate_statements(succeeded ? node.then_body : node.else_body, registry, fs, mount_id,
-                                            state, ctx, locals, deadline);
+                auto body = evaluate_statements(succeeded ? node.then_body : node.else_body, registry, fs,
+                                                 mount_id, state, ctx, locals, deadline);
+                if (!body) return std::unexpected(body.error());
+                ExecOutcome combined = std::move(*cond);
+                append_outcome(combined, std::move(*body));
+                return combined;
             } else {  // ForNode
                 ExecOutcome last{};
                 for (auto const& item_word : node.items) {
@@ -409,7 +445,7 @@ result<ExecOutcome> evaluate_statement(StatementNode const& stmt, CommandRegistr
                     loop_locals[std::string(node.var.begin(), node.var.end())] = expand_word(item_word, state, locals);
                     auto r = evaluate_statements(node.body, registry, fs, mount_id, state, ctx, loop_locals, deadline);
                     if (!r) return std::unexpected(r.error());
-                    last = *r;
+                    append_outcome(last, std::move(*r));
                 }
                 return last;
             }
@@ -426,7 +462,7 @@ result<ExecOutcome> evaluate_statements(std::pmr::vector<StatementNode*> const& 
     for (auto const* stmt : statements) {
         auto r = evaluate_statement(*stmt, registry, fs, mount_id, state, ctx, locals, deadline);
         if (!r) return std::unexpected(r.error());  // fail-fast: the first error stops the whole script
-        last = *r;
+        append_outcome(last, std::move(*r));
     }
     return last;
 }

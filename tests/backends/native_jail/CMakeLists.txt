@@ -100,6 +100,11 @@ agentengine_add_test(test_mediated_shell_runner_smoke
     agentengine_warnings
   TIMEOUT 60)
 
+# GitHub issues #140/#141: multi-statement output, newline separators, cwd-relative redirects, cd failures.
+agentengine_add_test(test_mediated_shell_multistatement
+  LIBS agentengine::core agentengine::mediated_shell_runner agentengine_warnings
+  TIMEOUT 60)
+
 # GitHub issue #147: exhausting the parser's arena fails the parse with shell.arena_exhausted in every build
 # type instead of aborting a Debug build. Pure parser -- no filesystem, no daemon, no privileges.
 agentengine_add_test(test_mediated_shell_parser_arena

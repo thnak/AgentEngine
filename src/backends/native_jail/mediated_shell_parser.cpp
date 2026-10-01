@@ -58,7 +58,9 @@ public:
             if (tokens.size() >= kMaxTokens) return std::unexpected(too_large("shell.too_many_tokens").error());
             if (arena_->exhausted()) return std::unexpected(arena_exhausted_error());
             char c = src_[pos_];
-            if (c == ';') { tokens.push_back({token_kind::semi, {}}); ++pos_; continue; }
+            // A newline outside quotes separates statements exactly like ';' (issue #141); a newline inside
+            // quotes never reaches here -- lex_word() consumes it as part of the quoted atom.
+            if (c == ';' || c == '\n') { tokens.push_back({token_kind::semi, {}}); ++pos_; continue; }
             if (c == '|') {
                 if (pos_ + 1 < src_.size() && src_[pos_ + 1] == '|') {
                     tokens.push_back({token_kind::pipe_pipe, {}});
@@ -101,7 +103,7 @@ private:
     void skip_whitespace_and_comments() {
         for (;;) {
             while (pos_ < src_.size() &&
-                   (src_[pos_] == ' ' || src_[pos_] == '\t' || src_[pos_] == '\n' || src_[pos_] == '\r')) {
+                   (src_[pos_] == ' ' || src_[pos_] == '\t' || src_[pos_] == '\r')) {
                 ++pos_;
             }
             if (pos_ < src_.size() && src_[pos_] == '#') {
@@ -262,6 +264,7 @@ private:
         advance();  // 'if'
         auto cond = parse_pipeline();
         if (!cond) return std::unexpected(cond.error());
+        skip_separators();
         if (!at_word("then")) return std::unexpected(malformed("expected 'then' after 'if' condition").error());
         advance();
         auto then_body = parse_command_list_until({"else", "fi"});
@@ -297,6 +300,7 @@ private:
             advance();
         }
         if (items.empty()) return std::unexpected(malformed("expected at least one item after 'for NAME in'").error());
+        skip_separators();
         if (!at_word("do")) return std::unexpected(malformed("expected 'do' after 'for NAME in items'").error());
         advance();
         auto body = parse_command_list_until({"done"});
@@ -342,6 +346,7 @@ private:
             else if (at(token_kind::pipe_pipe)) and_next = false;
             else break;
             advance();
+            skip_separators();  // a line may end in '&&'/'||' and continue on the next
             auto next = parse_pipeline();
             if (!next) return std::unexpected(next.error());
             is_and.push_back(and_next);
@@ -358,6 +363,7 @@ private:
         while (at(token_kind::pipe)) {
             if (arena_full()) return std::unexpected(arena_exhausted_error());
             advance();
+            skip_separators();  // ...and in '|'
             auto next = parse_simple_command();
             if (!next) return std::unexpected(next.error());
             commands.push_back(std::move(*next));
