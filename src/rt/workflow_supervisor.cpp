@@ -1075,8 +1075,24 @@ WorkflowResult WorkflowSupervisor::finish(workflow_status status,
 
 agentengine::Interaction WorkflowSupervisor::mint_interaction(std::size_t executor_index) const {
     agentengine::Interaction i{};
-    i.interaction_id = run_id_ + ":port:" + graph_.executors[executor_index].id + ":" +
-                       std::to_string(rounds_ == 0 ? 0 : rounds_ - 1);
+    std::string const base = run_id_ + ":port:" + graph_.executors[executor_index].id + ":" +
+                             std::to_string(rounds_ == 0 ? 0 : rounds_ - 1);
+    // Issue #157 (014 §4, OQ-4: `interaction_id` is a SET): two same-round deliveries to one request port
+    // are two interactions and must have two ids. The base id alone named only the run, the port and the
+    // round, so the second delivery got the first one's id and could never be answered. Every id still
+    // held -- an unresolved or resolved-but-not-yet-folded port, or a pending nested sub-workflow -- is
+    // checked, and a collision takes the first free `:<k>` suffix (k >= 1). The first delivery keeps the
+    // unsuffixed id, so a single delivery per port per round (every graph that worked before) keeps its id
+    // byte for byte. Checking the live set, rather than trusting the suffix alone, also covers an executor id
+    // that itself ends in `:<digits>` and could otherwise spell another port's suffixed id.
+    auto const taken = [this](std::string const& id) {
+        for (auto const& p : ports_) {
+            if (p.interaction.interaction_id == id) return true;
+        }
+        return pending_sub_workflows_.count(id) != 0;
+    };
+    i.interaction_id = base;
+    for (std::size_t k = 1; taken(i.interaction_id); ++k) i.interaction_id = base + ":" + std::to_string(k);
     i.run_id = run_id_;
     i.reason = agentengine::interaction_reason::input;
     return i;

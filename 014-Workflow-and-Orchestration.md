@@ -87,7 +87,12 @@ A **request port** is an executor that emits `InputRequired` (001 §2) and suspe
 until a response arrives. It is the same mechanism as tool approval and A2A `INPUT_REQUIRED` — one
 shape, four surfaces (013 §5). Multiple request ports open concurrently in different branches
 produce multiple concurrent `Interaction` records (001 §2) on the same run — the case that makes
-`interaction_id` a set rather than a singleton, resolving OQ-4.
+`interaction_id` a set rather than a singleton, resolving OQ-4. The set has one member per
+*delivery*, not per port: two messages reaching the same request port in the same round (a fan-out
+whose branches both lead into one review port) open two interactions with two distinct ids, each
+answered on its own (issue #157). An id is `<run>:port:<port id>:<round>`; a second same-round
+delivery to that port takes the first free `:<k>` suffix (`k ≥ 1`), so a port reached once per round
+keeps the unsuffixed id. No two interactions that are open at the same time share an id.
 
 A suspended workflow **holds no resources**: it is checkpointed, its activations passivate, and it
 resumes on the response, on a durable reminder (the runtime's durable reminders — formerly Quark's;

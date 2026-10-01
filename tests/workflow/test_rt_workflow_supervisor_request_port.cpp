@@ -38,6 +38,8 @@
 //   IQ6 -- WorkflowSupervisor::open_interactions() (the live accessor) and
 //          WorkflowResult::open_interactions (the reply field) stay in agreement through a partial
 //          resume (E3's shape) and a rejected double-resolve (E2's shape).
+//   IQ7 -- issue #157: two same-round deliveries to ONE port open two interactions with distinct ids,
+//          each answerable independently; the run completes.
 //
 // MACHINE SAFETY (CLAUDE.md): bounded round counts throughout; the one real sleep (IQ1) is 200ms,
 // tens-of-ms scale like the rest of this migration's timing checks, not unbounded.
@@ -625,6 +627,64 @@ int main() {
               "IQ6: once BOTH ports are resolved the run advances past suspended");
         check(r4.open_interactions.empty(), "IQ6: no open interactions remain in the final reply");
         check(sup.open_interactions().empty(), "IQ6: the live accessor agrees -- empty at the end too");
+    }
+
+    // ---- IQ7 (issue #157): two deliveries reach ONE request port in the SAME round -- each gets  ----
+    // ---- its own interaction id, each is answerable independently, and the run completes.       ----
+    //
+    //            .-> x -.
+    //   split --         >-> port -> after
+    //            '-> y -'
+    {
+        Workflow wf;
+        wf.id        = "iq7-same-round-collision";
+        wf.executors = {node_desc("split"), node_desc("x"), node_desc("y"), port_desc("port"), node_desc("after")};
+        wf.edges.push_back(Edge{"split", "x", edge_kind::fan_out, {}});
+        wf.edges.push_back(Edge{"split", "y", edge_kind::fan_out, {}});
+        wf.edges.push_back(Edge{"x", "port", edge_kind::direct, {}});
+        wf.edges.push_back(Edge{"y", "port", edge_kind::direct, {}});
+        wf.edges.push_back(Edge{"port", "after", edge_kind::direct, {}});
+        wf.start            = "split";
+        wf.output_selection = {"after"};
+        wf.bound.max_rounds = 8;
+        check(validate_workflow(wf).has_value(), "IQ7: the fan-out-into-one-port graph validates");
+
+        auto after_calls = std::make_shared<int>(0);
+        std::vector<ExecutorBody> bodies = {appender("split"), appender("x"), appender("y"), {},
+                                            counting_appender("after", after_calls)};
+        WorkflowSupervisor sup;
+        sup.initialize(wf, bodies);
+
+        WorkflowResult r1 = drive(sup.run_workflow(RunWorkflow{text_message("go")}));
+        check(r1.status == workflow_status::suspended && r1.open_interactions.size() == 2,
+              "IQ7: both same-round deliveries to the port open an interaction (2 open)");
+        auto const asks = sup.open_interaction_asks();
+        std::string id_x, id_y;
+        for (auto const& a : asks) {
+            if (all_text_of(a.ask) == "go>split>x") id_x = a.interaction.interaction_id;
+            if (all_text_of(a.ask) == "go>split>y") id_y = a.interaction.interaction_id;
+        }
+        check(!id_x.empty() && !id_y.empty() && id_x != id_y,
+              "IQ7 -- CORE CLAIM (#157): the two asks carry DISTINCT interaction ids (014 §4, OQ-4: the "
+              "open interactions are a set, one per delivery)");
+        std::string const base = sup.run_id() + ":port:port:2";
+        check((id_x == base && id_y == base + ":1") || (id_y == base && id_x == base + ":1"),
+              "IQ7: the first delivery keeps the unsuffixed id (unchanged for every one-delivery graph); "
+              "the second takes the first free ':1' suffix");
+
+        WorkflowResult r2 = drive(sup.resume_workflow(ResumeWorkflow{id_y, text_message("answer-y"), {}}));
+        check(r2.status == workflow_status::suspended && r2.open_interactions.size() == 1 &&
+                  r2.open_interactions.front().interaction_id == id_x,
+              "IQ7: answering y's interaction leaves exactly x's open");
+        WorkflowResult again = drive(sup.resume_workflow(ResumeWorkflow{id_y, text_message("again"), {}}));
+        check(again.status == workflow_status::invalid && sup.open_interactions().size() == 1,
+              "IQ7: y's id, once answered, fails closed and does not touch x's interaction");
+        WorkflowResult r3 = drive(sup.resume_workflow(ResumeWorkflow{id_x, text_message("answer-x"), {}}));
+        check(r3.status == workflow_status::completed,
+              "IQ7 -- CORE CLAIM (#157): x's interaction is answerable after y's, and the run completes");
+        check(*after_calls == 2,
+              "IQ7: each answer was delivered downstream -- 'after' ran once per answered interaction");
+        check(sup.open_interactions().empty(), "IQ7: nothing is left open");
     }
 
     if (g_failures == 0) {
