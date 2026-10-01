@@ -17,6 +17,8 @@
 //   E7  composed: the hook reaches a provider wrapped in ComposedContextProvider (the only way the host can
 //       release a composed provider), once per run.
 //   E8  a provider without the hook compiles and runs unchanged (the hook is optional).
+//   E9  the hook's `sandbox_exec_sink` is bound (step 5): a release failure it reports is a run event of the run
+//       that completed, not dropped by the default no-op sink.
 //
 // Positive controls (planted by hand, recorded in ADR-209 §15): firing on "admission passed" instead of on
 // run_started (fire in the wrapper whenever the body returned) fails E2; firing when the run suspended fails
@@ -102,8 +104,11 @@ public:
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
-    task<std::monostate> on_run_end(RunEndView view, EffectContext&) {
+    task<std::monostate> on_run_end(RunEndView view, EffectContext& ctx) {
         fired().push_back(view.reason);
+        // E9: what a live shell does when its release fails.
+        ctx.sandbox_exec_sink(run_event_kind::sandbox_exec_finished,
+                              run_event_payload::SandboxExec{"rel-1", "live-shell", "release", false, "test.rm_failed"});
         co_return std::monostate{};
     }
 };
@@ -331,6 +336,29 @@ int main() {
         s.emplace_chat_client().set_script({Step{text("plain"), {}, false}});
         auto r = drive(s.start_run(StartRun{user("hi")}));
         check(r.has_value() && fired().empty(), "E8: a provider without the hook runs unchanged");
+    }
+
+    // ---- E9
+    {
+        fired().clear();
+        Session s;
+        s.initialize("e9", Principal{"p", ""});
+        s.set_capabilities(&held);
+        std::vector<RunEvent> events;
+        s.set_run_event_tap([&](RunEvent const& e) { events.push_back(e); });
+        s.emplace_chat_client().set_script({Step{text("done"), {}, false}});
+        auto r = drive(s.start_run(StartRun{user("hi")}));
+        std::string run_id;
+        bool release_reported = false;
+        for (auto const& e : events) {
+            if (e.kind == run_event_kind::run_started) run_id = e.run_id;
+            if (e.kind == run_event_kind::sandbox_exec_finished) {
+                auto const* p = std::get_if<run_event_payload::SandboxExec>(&e.payload);
+                release_reported = p != nullptr && p->stage == "release" && !p->ok && e.run_id == run_id;
+            }
+        }
+        check(r.has_value() && release_reported,
+              "E9: a sandbox event the hook reports becomes a run event of the run that completed");
     }
 
     std::fprintf(stderr, g_failures == 0 ? "ALL PASS\n" : "%d FAILED\n", g_failures);

@@ -1,0 +1,507 @@
+// ADR-209 build step 5 (GitHub issue #146): `LiveShellSandboxProvider` -- the `shell_exec` tool, lifetimes,
+// ceilings, the open budget, snapshots and the provider's reset mapping -- driven through the real tool
+// descriptor against an in-test `PersistentShellSurface`. NO daemon (the live-Docker half is C1-C17, step 8).
+//
+//   P1  unbound: no tool; `bind_sandbox` refuses a zero ceiling (`live_shell.limits_required`) and stays unbound.
+//   P2  the first shell_exec opens and commits; the next one at the same head does not re-open; cwd persists.
+//   P3  lifetime::PerRun: on_run_end releases the environment; the next shell_exec re-opens and replays the cwd
+//       the last command left (the snapshot keyed by the head checkpoint).
+//   P4  lifetime::PerSession: on_run_end keeps it -- until `max_runs` completed runs, the engine's ceiling.
+//   P5  `max_idle` (checked by on_context) and `max_alive` (checked by shell_exec) release the environment
+//       whatever the policy says.
+//   P6  `restart` re-opens and is charged to LiveShellOpen; once that budget is spent a restart is refused with
+//       a named error, nothing runs and RunCost is refunded (C10's "uncharged restarts" control).
+//   P7  the provider's reset_to_turn(n) re-opens with turn n's files AND cwd -- including when turn n's tree
+//       equals the head's (C5's two plants).
+//   P8  a lost shell re-opens with the LAST COMPLETED command's cwd (the provider maps the new checkpoint to
+//       the prior head's snapshot).
+//   P9  a commit failing after the command ran is a reply (ok=false, commit_error, output intact) and the
+//       next command reports the discard (C17).
+//   P10 a principal that is not the quota owner is refused before anything runs (C6).
+//   P11 copy (fork): a child branch, no live environment; the copy opens its own on first use and the
+//       original's environment is untouched (I1).
+//   P12 a failed release is reported (a `sandbox_exec_finished` "release" event, ok=false), the environment is
+//       kept, and the next check point retries it.
+//   P13 the destructor releases a held environment.
+//   P14 composed: inside ComposedContextProvider the run-end hook still reaches the provider (C10).
+//
+// Positive controls (planted by hand, recorded in ADR-209 §15): dropping check_lifetime() from on_run_end
+// fails P3 and P14; an open hook that does not charge LiveShellOpen fails P6; dropping the lost-shell
+// fallback mapping fails P8; dropping reset_to_turn()'s snapshot mapping fails P7.
+
+#include "agentengine/core/composed_context_provider.hpp"
+#include "agentengine/sandbox/live_shell_sandbox_provider.hpp"
+
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+
+using namespace agentengine;
+namespace fs = std::filesystem;
+using namespace std::chrono_literals;
+
+namespace {
+
+int g_checks = 0;
+int g_failed = 0;
+void check(bool cond, std::string const& what) {
+    ++g_checks;
+    if (cond) {
+        std::printf("[ok]   %s\n", what.c_str());
+    } else {
+        ++g_failed;
+        std::printf("[FAIL] %s\n", what.c_str());
+    }
+}
+
+template <class T>
+[[nodiscard]] T drive(agentengine::rt::task<T> t) {
+    while (!t.done()) t.resume();
+    return t.take_value();
+}
+
+struct Counters {
+    int opens = 0;
+    int execs = 0;
+    int closes = 0;
+    int close_failures_left = 0;
+    int boxes = 0;
+    std::vector<ShellSnapshot> replayed;
+    fs::path root;
+};
+
+// The step-2 fake, with shared counters so a test can see every instance a factory made.
+// Commands: "write <p> <c>" | "rm <p>" | "cd <d>" | "export K=V" | "noop" | "lose".
+class FakeLiveSurface {
+public:
+    explicit FakeLiveSurface(std::shared_ptr<Counters> c)
+        : c_(std::move(c)), box_(c_->root / ("box" + std::to_string(++c_->boxes))) {}
+
+    [[nodiscard]] result<void> open(fs::path const& host_dir, ShellSnapshot const* snap) {
+        ++c_->opens;
+        std::error_code ec;
+        fs::remove_all(box_, ec);
+        fs::create_directories(box_, ec);
+        fs::copy(host_dir, box_, fs::copy_options::recursive, ec);
+        if (ec) return std::unexpected(error{failure_class::fatal, "seed failed: " + ec.message(), "test.seed"});
+        cwd_ = "/workspace";
+        env_.clear();
+        if (snap != nullptr) {
+            c_->replayed.push_back(*snap);
+            if (!snap->cwd.empty()) cwd_ = snap->cwd;
+            for (auto const& [k, v] : snap->env_set) env_[k] = v;
+        }
+        live_ = true;
+        held_ = true;
+        return {};
+    }
+
+    [[nodiscard]] result<LiveExecOutcome> exec(std::string const& command, std::chrono::milliseconds) {
+        if (!live_) return std::unexpected(error{failure_class::contract, "no live shell", "test.not_live"});
+        ++c_->execs;
+        LiveExecOutcome out;
+        out.exit_code = 0;
+        std::error_code ec;
+        if (command.rfind("write ", 0) == 0) {
+            auto const rest = command.substr(6);
+            auto const sp = rest.find(' ');
+            std::ofstream(box_ / rest.substr(0, sp), std::ios::binary) << rest.substr(sp + 1);
+        } else if (command.rfind("rm ", 0) == 0) {
+            fs::remove(box_ / command.substr(3), ec);
+        } else if (command.rfind("cd ", 0) == 0) {
+            cwd_ = command.substr(3);
+        } else if (command.rfind("export ", 0) == 0) {
+            auto const kv = command.substr(7);
+            env_[kv.substr(0, kv.find('='))] = kv.substr(kv.find('=') + 1);
+        } else if (command == "lose") {
+            live_ = false;
+            out.shell_lost = true;
+            out.exit_code = -1;
+            out.output = "partial";
+            return out;
+        }
+        out.output = "ran: " + command + " in " + cwd_;
+        out.output_bytes = out.output.size();
+        ShellSnapshot snap;
+        snap.cwd = cwd_;
+        for (auto const& [k, v] : env_) snap.env_set.emplace_back(k, v);
+        out.snapshot = snap;
+        return out;
+    }
+
+    [[nodiscard]] result<void> drain_to(fs::path const& host_dir) {
+        auto cleared = clear_directory_contents(host_dir, "test.drain_clear");
+        if (!cleared.has_value()) return std::unexpected(cleared.error());
+        std::error_code ec;
+        fs::create_directories(host_dir, ec);
+        fs::copy(box_, host_dir, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
+        if (ec) return std::unexpected(error{failure_class::fatal, "drain failed: " + ec.message(), "test.drain"});
+        return {};
+    }
+
+    [[nodiscard]] result<void> close() {
+        if (!held_) return {};
+        if (c_->close_failures_left > 0) {
+            --c_->close_failures_left;
+            live_ = false;
+            return std::unexpected(error{failure_class::fatal, "docker rm failed", "test.close_failed"});
+        }
+        ++c_->closes;
+        live_ = false;
+        held_ = false;
+        return {};
+    }
+    [[nodiscard]] bool is_live() const { return live_; }
+
+private:
+    std::shared_ptr<Counters> c_;
+    fs::path box_;
+    bool live_ = false;
+    bool held_ = false;
+    std::string cwd_;
+    std::map<std::string, std::string> env_;
+};
+static_assert(PersistentShellSurface<FakeLiveSurface>);
+
+struct ManualClock {
+    std::shared_ptr<std::chrono::steady_clock::time_point> now =
+        std::make_shared<std::chrono::steady_clock::time_point>(std::chrono::steady_clock::time_point{} + 1h);
+    void advance(std::chrono::milliseconds d) const { *now += d; }
+    [[nodiscard]] LiveShellClock fn() const {
+        auto p = now;
+        return [p] { return *p; };
+    }
+};
+
+struct Recorded {
+    std::vector<run_event_payload::SandboxExec> events;
+};
+
+[[nodiscard]] EffectContext ctx_for(std::string const& principal_id, Recorded* rec = nullptr) {
+    EffectContext ctx;
+    ctx.principal.id = principal_id;
+    if (rec != nullptr) {
+        ctx.sandbox_exec_sink = [rec](run_event_kind, run_event_payload::SandboxExec p) {
+            rec->events.push_back(std::move(p));
+        };
+    }
+    return ctx;
+}
+
+template <class Provider>
+[[nodiscard]] std::optional<ToolDescriptor> shell_tool(Provider& p, EffectContext& ctx) {
+    static std::vector<Message> const no_history;
+    SessionContext sc{"live-shell-test", ctx.principal, no_history};
+    auto contribution = drive(p.on_context(sc, ctx));
+    if (!contribution.has_value()) return std::nullopt;
+    for (auto& d : contribution->tools) {
+        if (d.name == "shell_exec") return d;
+    }
+    return std::nullopt;
+}
+
+// Calls shell_exec through the real descriptor (schema parse included). Returns the reply or the error.
+template <class Provider>
+[[nodiscard]] result<ShellExecReply> shell(Provider& p, std::string const& command, std::string const& who = "owner",
+                                           bool restart = false) {
+    EffectContext ctx = ctx_for(who);
+    auto tool = shell_tool(p, ctx);
+    if (!tool.has_value()) return std::unexpected(error{failure_class::contract, "no shell_exec tool", "test.no_tool"});
+    std::vector<std::pair<std::string, json::Value>> members{{"command", json::Value::make_string(command)}};
+    if (restart) members.emplace_back("restart", json::Value::make_bool(true));
+    json::Value const args = json::Value::make_object(std::move(members));
+    auto out = tool->invoke(args, ctx);
+    if (!out.has_value()) return std::unexpected(out.error());
+    return schema::from_json<ShellExecReply>(*out);
+}
+
+template <class Provider>
+void run_end(Provider& p, Recorded* rec = nullptr) {
+    EffectContext ctx = ctx_for("owner", rec);
+    (void)drive(p.on_run_end(RunEndView{run_end_reason::final_answer}, ctx));
+}
+
+struct World {
+    IdentityAuthority& authority = IdentityAuthority::bootstrap();
+    IdentityHandle owner = authority.adopt(Principal{.id = "owner"});
+    Ledger<> ledger;
+    agentengine::rt::AsyncQuota<BranchCost> branch_q = *agentengine::rt::AsyncQuota<BranchCost>::mint_root(authority, owner, 100);
+    agentengine::rt::AsyncQuota<RunCost> run_q = *agentengine::rt::AsyncQuota<RunCost>::mint_root(authority, owner, 1000);
+    agentengine::rt::AsyncQuota<StorageBytes> storage_q =
+        *agentengine::rt::AsyncQuota<StorageBytes>::mint_root(authority, owner, 100'000'000);
+    agentengine::rt::AsyncQuota<LiveShellOpen> open_q =
+        *agentengine::rt::AsyncQuota<LiveShellOpen>::mint_root(authority, owner, 1000);
+    agentengine::rt::AsyncQuota<ResetCost> reset_q = *agentengine::rt::AsyncQuota<ResetCost>::mint_root(authority, owner, 100);
+    std::shared_ptr<Counters> counters = std::make_shared<Counters>();
+    ManualClock clock;
+    fs::path dir;
+    int seq = 0;
+
+    explicit World(std::string const& name) : dir(fs::temp_directory_path() / ("ae_test_lssp_" + name)) {
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+        fs::create_directories(dir, ec);
+        counters->root = dir;
+    }
+    ~World() {
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+    }
+
+    template <class Lifetime = lifetime::PerRun>
+    [[nodiscard]] result<void> bind(LiveShellSandboxProvider<FakeLiveSurface, InMemoryWorktreeObjectStore, Lifetime>& p,
+                                    LiveShellLimits limits = {1h, 10h, 100},
+                                    agentengine::rt::AsyncQuota<LiveShellOpen>* open = nullptr,
+                                    agentengine::rt::AsyncQuota<StorageBytes>* storage = nullptr) {
+        auto root = drive(ledger.create_root_branch(owner, "b" + std::to_string(++seq)));
+        if (!root.has_value()) return std::unexpected(root.error());
+        auto c = counters;
+        return p.bind_sandbox(ledger, std::move(*root), owner, dir / ("staging" + std::to_string(seq)), branch_q, run_q,
+                              storage != nullptr ? *storage : storage_q, open != nullptr ? *open : open_q, limits,
+                              [c] { return FakeLiveSurface(c); }, 10s, Lifetime{}, clock.fn());
+    }
+};
+
+using PerRunProvider = LiveShellSandboxProvider<FakeLiveSurface>;
+using PerSessionProvider = LiveShellSandboxProvider<FakeLiveSurface, InMemoryWorktreeObjectStore, lifetime::PerSession>;
+
+[[nodiscard]] bool tree_has(Ledger<>& ledger, std::string const& tree_digest, IdentityHandle who, std::string const& name) {
+    auto tree = ledger.get_tree_safe(tree_digest, who);
+    if (!tree.has_value()) return false;
+    return std::any_of(tree->entries.begin(), tree->entries.end(), [&](auto const& e) { return e.name == name; });
+}
+
+// A provider the plain AgentSession-shaped composition can hold next to it.
+class PlainProvider {
+public:
+    static constexpr std::string_view name = "plain";
+    task<result<ContextContribution>> on_context(SessionContext&, EffectContext&) { co_return ContextContribution{}; }
+    task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
+};
+
+}  // namespace
+
+int main() {
+    static_assert(ContextProvider<PerRunProvider> && HasOnRunEnd<PerRunProvider>);
+
+    // ---- P1
+    {
+        World w("p1");
+        PerRunProvider p;
+        EffectContext ctx = ctx_for("owner");
+        check(!shell_tool(p, ctx).has_value(), "P1: an unbound provider contributes no tool");
+        auto refused = w.bind(p, LiveShellLimits{0ms, 1h, 1});
+        check(!refused.has_value() && refused.error().code == "live_shell.limits_required" && !p.is_bound(),
+              "P1: a zero ceiling is refused and nothing is bound");
+    }
+
+    // ---- P2, P3
+    {
+        World w("p2");
+        PerRunProvider p;
+        check(w.bind(p).has_value(), "P2 setup: bind");
+        auto a = shell(p, "write a.txt A");
+        check(a.has_value() && a->ok && a->reopened && w.counters->opens == 1 &&
+                  tree_has(w.ledger, a->tree_digest, w.owner, "a.txt"),
+              "P2: the first shell_exec opens and commits before returning");
+        (void)shell(p, "cd /workspace/sub");
+        auto b = shell(p, "noop");
+        check(b.has_value() && !b->reopened && w.counters->opens == 1 && b->output.find("in /workspace/sub") != std::string::npos,
+              "P2: later commands at the same head reuse the shell and its cwd");
+
+        run_end(p);
+        check(w.counters->closes == 1 && !p.holds_environment(), "P3: PerRun releases at run end");
+        auto c = shell(p, "noop");
+        check(c.has_value() && c->reopened && w.counters->opens == 2 && !w.counters->replayed.empty() &&
+                  w.counters->replayed.back().cwd == "/workspace/sub" && c->output.find("in /workspace/sub") != std::string::npos,
+              "P3: the next run re-opens and replays the last command's cwd");
+    }
+
+    // ---- P4
+    {
+        World w("p4");
+        PerSessionProvider p;
+        check(w.bind(p, LiveShellLimits{1h, 10h, 2}).has_value(), "P4 setup: bind");
+        (void)shell(p, "noop");
+        run_end(p);
+        check(w.counters->closes == 0 && p.holds_environment(), "P4: PerSession keeps the shell across a run end");
+        (void)shell(p, "noop");
+        check(w.counters->opens == 1, "P4: ... and the next run reuses it");
+        run_end(p);
+        check(w.counters->closes == 1 && !p.holds_environment(), "P4: max_runs (2) releases it whatever the policy says");
+    }
+
+    // ---- P5
+    {
+        World w("p5");
+        PerSessionProvider p;
+        check(w.bind(p, LiveShellLimits{5min, 30min, 100}).has_value(), "P5 setup: bind");
+        (void)shell(p, "noop");
+        w.clock.advance(6min);
+        EffectContext ctx = ctx_for("owner");
+        (void)shell_tool(p, ctx);  // on_context
+        check(w.counters->closes == 1 && !p.holds_environment(), "P5: max_idle releases at on_context");
+        (void)shell(p, "noop");
+        for (int i = 0; i < 8; ++i) {
+            w.clock.advance(4min);
+            (void)shell(p, "noop");
+        }
+        check(w.counters->opens >= 3 && w.counters->closes >= 2,
+              "P5: max_alive releases a busy shell at shell_exec and the command runs in a fresh one");
+    }
+
+    // ---- P6
+    {
+        World w("p6");
+        auto small_open = *agentengine::rt::AsyncQuota<LiveShellOpen>::mint_root(w.authority, w.owner, 3);
+        PerRunProvider p;
+        check(w.bind(p, LiveShellLimits{1h, 10h, 100}, &small_open).has_value(), "P6 setup: bind");
+        (void)shell(p, "noop");                                // open 1
+        auto r1 = shell(p, "noop", "owner", true);             // open 2
+        auto r2 = shell(p, "noop", "owner", true);             // open 3
+        check(r1.has_value() && r1->reopened && r2.has_value() && r2->reopened && small_open.remaining() == 0,
+              "P6: restart re-opens and is charged to LiveShellOpen");
+        std::uint64_t const run_before = w.run_q.remaining();
+        int const execs_before = w.counters->execs;
+        auto refused = shell(p, "write never.txt x", "owner", true);
+        check(!refused.has_value() && refused.error().code == "async_quota.exhausted" &&
+                  w.counters->execs == execs_before && w.run_q.remaining() == run_before,
+              "P6: once spent, a restart is refused, nothing runs, RunCost is refunded");
+    }
+
+    // ---- P7
+    {
+        World w("p7");
+        PerSessionProvider p;
+        check(w.bind(p).has_value(), "P7 setup: bind");
+        (void)shell(p, "write keep.txt k");
+        auto at_a = shell(p, "cd /workspace/a");  // turn n: cwd /workspace/a
+        (void)shell(p, "write later.txt l");
+        (void)shell(p, "cd /workspace/b");
+        auto reset = drive(p.reset_to_turn(at_a->turn_index, w.owner, w.reset_q));
+        check(reset.has_value(), "P7 setup: reset_to_turn");
+        auto after = shell(p, "noop");
+        check(after.has_value() && after->reopened && after->output.find("in /workspace/a") != std::string::npos &&
+                  !tree_has(w.ledger, after->tree_digest, w.owner, "later.txt") &&
+                  tree_has(w.ledger, after->tree_digest, w.owner, "keep.txt"),
+              "P7: reset_to_turn(n) re-opens with turn n's files and cwd");
+        // Equal tree: two cwd-only commands, then reset to the first.
+        auto x = shell(p, "cd /workspace/x");
+        (void)shell(p, "cd /workspace/y");
+        auto reset2 = drive(p.reset_to_turn(x->turn_index, w.owner, w.reset_q));
+        auto again = shell(p, "noop");
+        check(reset2.has_value() && again.has_value() && again->reopened && again->output.find("in /workspace/x") != std::string::npos,
+              "P7: ... also when turn n's tree equals the head's (sync on the checkpoint)");
+    }
+
+    // ---- P8
+    {
+        World w("p8");
+        PerSessionProvider p;
+        check(w.bind(p).has_value(), "P8 setup: bind");
+        (void)shell(p, "cd /workspace/kept");
+        auto lost = shell(p, "lose");
+        check(lost.has_value() && lost->shell_lost && lost->ok, "P8 setup: the shell is lost, the workspace committed");
+        auto next = shell(p, "noop");
+        check(next.has_value() && next->reopened && next->output.find("in /workspace/kept") != std::string::npos,
+              "P8: the re-open replays the last COMPLETED command's cwd");
+    }
+
+    // ---- P9
+    {
+        World w("p9");
+        auto tiny = *agentengine::rt::AsyncQuota<StorageBytes>::mint_root(w.authority, w.owner, 1);
+        PerSessionProvider p;
+        check(w.bind(p, LiveShellLimits{1h, 10h, 100}, nullptr, &tiny).has_value(), "P9 setup: bind");
+        auto r = shell(p, "write big.txt payload");
+        check(r.has_value() && !r->ok && r->commit_error.rfind("async_quota.exhausted:", 0) == 0 &&
+                  r->output.find("write big.txt") != std::string::npos && r->exit_code == 0,
+              "P9: a failed commit is a reply with ok=false, the code, and the command's output");
+        auto next = shell(p, "noop");
+        check(next.has_value() && next->reopened && next->unrecorded_changes_discarded,
+              "P9: the next command re-opens and reports the discard");
+    }
+
+    // ---- P10
+    {
+        World w("p10");
+        PerRunProvider p;
+        check(w.bind(p).has_value(), "P10 setup: bind");
+        auto r = shell(p, "write intruder.txt x", "someone-else");
+        check(!r.has_value() && r.error().code == "async_quota.unauthorized_spender" && w.counters->opens == 0 &&
+                  w.counters->execs == 0,
+              "P10: a non-owner principal is refused before anything opens or runs");
+    }
+
+    // ---- P11
+    {
+        World w("p11");
+        PerSessionProvider p;
+        check(w.bind(p).has_value(), "P11 setup: bind");
+        (void)shell(p, "write parent.txt p");
+        int const opens_before = w.counters->opens;
+        PerSessionProvider child = p;
+        check(child.is_bound() && child.branch_name() != nullptr && p.branch_name() != nullptr &&
+                  *child.branch_name() != *p.branch_name() && !child.holds_environment(),
+              "P11: a copy gets a child branch and no live environment");
+        auto c = shell(child, "write child.txt c");
+        check(c.has_value() && c->reopened && w.counters->opens == opens_before + 1 &&
+                  tree_has(w.ledger, c->tree_digest, w.owner, "parent.txt"),
+              "P11: the copy opens its own environment, seeded from the parent's head");
+        auto pp = shell(p, "noop");
+        check(pp.has_value() && !pp->reopened && !tree_has(w.ledger, pp->tree_digest, w.owner, "child.txt"),
+              "P11: the original's environment and branch are untouched");
+    }
+
+    // ---- P12
+    {
+        World w("p12");
+        PerRunProvider p;
+        check(w.bind(p).has_value(), "P12 setup: bind");
+        (void)shell(p, "noop");
+        w.counters->close_failures_left = 1;
+        Recorded rec;
+        run_end(p, &rec);
+        bool const reported = std::any_of(rec.events.begin(), rec.events.end(), [](auto const& e) {
+            return e.stage == "release" && !e.ok && e.error_code == "test.close_failed";
+        });
+        check(reported && p.release_failures() == 1 && p.holds_environment(),
+              "P12: a failed release is reported as a run event and the handle is kept");
+        EffectContext ctx = ctx_for("owner");
+        (void)shell_tool(p, ctx);
+        check(w.counters->closes == 1 && !p.holds_environment(), "P12: the next check point retries and releases");
+    }
+
+    // ---- P13
+    {
+        World w("p13");
+        {
+            PerSessionProvider p;
+            check(w.bind(p).has_value(), "P13 setup: bind");
+            (void)shell(p, "noop");
+        }
+        check(w.counters->closes == 1, "P13: the destructor releases a held environment");
+    }
+
+    // ---- P14
+    {
+        World w("p14");
+        PerRunProvider live;
+        check(w.bind(live).has_value(), "P14 setup: bind");
+        ComposedContextProvider<PerRunProvider, PlainProvider> composed{std::tuple{std::move(live), PlainProvider{}}};
+        auto r = shell(composed, "noop");
+        check(r.has_value() && r->ok && w.counters->opens == 1, "P14 setup: shell_exec through the composition");
+        run_end(composed);
+        check(w.counters->closes == 1, "P14: run end reaches a COMPOSED live shell and releases it");
+    }
+
+    std::printf("\n%d checks, %d failed\n", g_checks, g_failed);
+    if (g_failed == 0) std::printf("ALL PASS\n");
+    return g_failed == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+}

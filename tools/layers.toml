@@ -108,6 +108,8 @@
 "include/agentengine/trust/delegated_approval_policy.hpp"  = { layer = "L2", reason = "a reference PolicyDecider for the tool pipeline (ADR-151)" }
 "include/agentengine/trust/policy_reachability.hpp"        = { layer = "L2", reason = "analysis of an agent's ceiling against its tools' descriptors (007 G6)" }
 "include/agentengine/sandbox/mandatory_sandbox_provider.hpp" = { layer = "L2", reason = "a ContextProvider plus RunCommandTool wired over SandboxRuntime (ADR-102 phase 4)" }
+"include/agentengine/sandbox/live_shell_sandbox_provider.hpp" = { layer = "L2", reason = "ADR-209: a ContextProvider contributing shell_exec over SandboxRuntime::run_live()" }
+"include/agentengine/sandbox/live_shell_lifetime.hpp" = { layer = "L2", reason = "ADR-209 §8: live-shell lifetimes name run_end_reason from the L2 context-provider hook" }
 
 # --- protocol/: model-provider clients are L2 ChatClient-plane conformers, not protocol surfaces ---
 "include/agentengine/protocol/openai/chat_client.hpp"    = { layer = "L2", reason = "OpenAI ChatClient backend (004 §3): an outbound provider, not a served surface" }

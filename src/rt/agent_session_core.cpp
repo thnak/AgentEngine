@@ -291,7 +291,13 @@ task<std::monostate> AgentSessionCore::fire_run_end_if_completed(bool threw) {
     if (!pending_run_end_.has_value()) co_return std::monostate{};
     RunEndView const view{*pending_run_end_};
     pending_run_end_.reset();
+    // ADR-209 §8.1: a release that fails is reported as a run event, never silent -- so the sandbox sink is
+    // bracketed around the hook exactly as around a tool call (ADR-170), on the run that just completed.
+    effect_context_.sandbox_exec_sink = [this](run_event_kind kind, run_event_payload::SandboxExec p) {
+        emit_run_event(kind, std::move(p));
+    };
     (void)co_await bound_on_run_end(view, effect_context_);
+    effect_context_.sandbox_exec_sink = [](run_event_kind, run_event_payload::SandboxExec) {};
     co_return std::monostate{};
 }
 

@@ -123,6 +123,11 @@ agentengine_add_test(test_persistent_shell_core LIBS agentengine::core agentengi
 agentengine_add_test(test_sandbox_runtime_live
   LIBS agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
 
+# ADR-209 step 5 (issue #146): LiveShellSandboxProvider -- shell_exec, lifetimes, ceilings, the open budget,
+# snapshots, the reset mapping, fork, release retry, composition. In-test surface, NO daemon.
+agentengine_add_test(test_live_shell_sandbox_provider
+  LIBS agentengine::core agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+
 # GitHub issue #145: a commit that fails after the command ran still tells the model the command ran, with
 # its exit code and output. In-test ExecutionSurface, NO daemon -- not for ci.yml's exclusion lists.
 agentengine_add_test(test_run_command_commit_failure

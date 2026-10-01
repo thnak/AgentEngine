@@ -2,8 +2,8 @@
 // Implements decisions/ADR-209-persistent-shell-sessions.md §4-§5, §7 -- the shared core of a LIVE shell:
 // the `PersistentShellSurface` concept a held-container surface conforms to (`SandboxRuntime::run_live()`
 // drives it), the per-command outcome, and the cwd/env SNAPSHOT that survives a re-open as data (§5).
-// Both the sandboxed tier (`DockerExecutionSurface`'s persistent mode) and the native tier
-// (`NativeShellSessionProvider`, pwsh) use the snapshot type and its helpers; only the transport differs.
+// Both the sandboxed tier (`DockerPersistentShellSurface`) and the native tier (`NativeShellSessionProvider`,
+// pwsh) use the snapshot type and its helpers; only the transport differs.
 //
 // I3, the whole reason the snapshot is shaped this way: a cwd and an environment the shell reports are
 // MODEL-DERIVED DATA. They are only ever replayed back INTO a shell as quoted literals (sh single quotes,
@@ -36,6 +36,13 @@ struct ShellSnapshot {
 
     friend bool operator==(ShellSnapshot const&, ShellSnapshot const&) = default;
 };
+
+// ADR-209 §8: the quota Kind charged once per live-shell OPEN (first use, desync, reset, a lost shell or
+// container, `restart`), sandboxed and native alike. Host-sized like `RunCost`: `AsyncQuota` has no refill,
+// so the host sizes it for the session. Owner-only, like every `AsyncQuota` (`async_quota.unauthorized_spender`).
+// An open that was charged and then failed is NOT refunded: the attempt itself created (and destroyed) an
+// environment, which is what this budget bounds.
+struct LiveShellOpen {};
 
 // ADR-209 §5's caps. A snapshot is held in memory per checkpoint (bounded LRU, the provider's job), so each
 // one is bounded too.
