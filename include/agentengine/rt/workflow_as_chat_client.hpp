@@ -91,6 +91,16 @@
 // CURRENT `open_interactions()` set on every call (so a stale answer to an already-resolved interaction
 // is silently skipped, not a special case -- it simply never matches).
 //
+// ANSWER ROUTING (decisions/ADR-230, issue #44) -- this type is also an `InteractiveChatClient`
+// (core/chat_client.hpp): `pending_client_interactions()` reports the open asks from the supervisor's own
+// state and `cancel_client_interactions()` abandons them. An `AgentSession` bound to it never reads the ask
+// item above out of content; it suspends as a `client_input` interaction and hands its caller's answer back
+// OUT OF BAND on `ChatRequest::client_interaction_answers`. When that field is non-empty it is the ONLY source
+// of answers for the call (history is not scanned), an answer naming no open interaction is refused and never
+// starts a fresh run, and `routes` reach `ResumeWorkflow` (issue #155: a refused route comes back as
+// `answer_refused.<status>` with the port still open). The history-signal path above remains for direct
+// callers, narrowed to caller-authored (`user`/`system` origin) items -- see `caller_authored()`.
+//
 // EffectContext -- SANITIZED WHOLE-STRUCT COPY, crossing the thread boundary exactly once, before
 // detaching. Mirrors `tool_pipeline.hpp::background_task()`'s own real, established pattern (copy-THEN-
 // SANITIZE, not copy-and-trust) rather than a hand-picked field list -- `bound_capabilities`/
@@ -115,6 +125,7 @@
 //
 // `inner` must already be `initialize()`d before being wrapped.
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <memory>
@@ -248,15 +259,28 @@ inline constexpr char const* kResponseTypeId = "agentengine.workflow_request_por
     return item;
 }
 
-// One matched resume signal found in the caller's own request.messages.
+// One matched resume signal found in the caller's own request.messages (or, ADR-230, handed over out of band
+// on `ChatRequest::client_interaction_answers`).
 struct ResumeSignal {
-    std::string          interaction_id;
-    agentengine::Message response;
+    std::string              interaction_id;
+    agentengine::Message     response;
+    std::vector<std::string> routes{};  // ADR-230: the answer's route choice (issue #155), empty = none
 };
 
 // Scans `messages` for a Custom response-signal item naming an interaction_id currently in `open` --
 // a stale answer to an already-resolved interaction (or a malformed payload) is silently skipped, not a
 // special case: it simply never matches. See file banner's "SUSPENDED INTERACTIONS" paragraph.
+//
+// ADR-230 (issue #44) red team: interaction ids are request-port executor ids (predictable), so a model that
+// can get a look-alike response item into the history -- a wrapped agent's output passed through as this
+// adapter's completed answer, which a caller then sends back as history -- could pre-answer a port before it
+// ever opens. Only an item the CALLER authored counts: `origin` user or system. Model output (`assistant`),
+// tool output and external content never answer anything. This is defence in depth for the direct-caller
+// path; an `AgentSession` caller never reaches this scan at all (it answers out of band).
+[[nodiscard]] inline bool caller_authored(agentengine::ContentItem const& item) {
+    return item.origin == agentengine::content_origin::user || item.origin == agentengine::content_origin::system;
+}
+
 [[nodiscard]] inline std::vector<ResumeSignal> find_resume_signals(
     std::vector<agentengine::Message> const& messages,
     std::vector<agentengine::Interaction> const& open) {
@@ -265,6 +289,7 @@ struct ResumeSignal {
         for (agentengine::ContentItem const& item : m.content) {
             auto const* custom = std::get_if<agentengine::Custom>(&item.value);
             if (custom == nullptr || custom->type_id != kResponseTypeId) continue;
+            if (!caller_authored(item)) continue;  // ADR-230: see above
             auto parsed = agentengine::json::parse(custom->payload_json);
             if (!parsed) continue;
             agentengine::json::Value const* interaction_id_v = parsed->find("interaction_id");
@@ -283,7 +308,21 @@ struct ResumeSignal {
             if (!is_open) continue;
             auto response_msg = agentengine::rt::message_from_json(*response_v);
             if (!response_msg) continue;
-            out.push_back(ResumeSignal{interaction_id, std::move(*response_msg)});
+            // ADR-230: optional "routes": [string...]; a malformed one makes the whole signal malformed (skipped).
+            std::vector<std::string> routes;
+            if (agentengine::json::Value const* routes_v = parsed->find("routes"); routes_v != nullptr) {
+                if (!routes_v->is_array()) continue;
+                bool well_formed = true;
+                for (agentengine::json::Value const& rv : routes_v->as_array()) {
+                    if (!rv.is_string()) {
+                        well_formed = false;
+                        break;
+                    }
+                    routes.push_back(rv.as_string());
+                }
+                if (!well_formed) continue;
+            }
+            out.push_back(ResumeSignal{interaction_id, std::move(*response_msg), std::move(routes)});
         }
     }
     return out;
@@ -357,6 +396,15 @@ inline void run_worker(std::shared_ptr<agentengine::rt::WorkflowSupervisor> inne
     std::vector<agentengine::Interaction> open = inner->open_interactions();
     agentengine::rt::WorkflowResult r;
 
+    if (open.empty() && !request.client_interaction_answers.empty()) {
+        // ADR-230: an answer is never a fresh conversation -- the interaction it names is already gone (resolved,
+        // or the run was cancelled), and starting a new run in its place would act on a stale answer.
+        producer.fail(agentengine::error{
+            agentengine::failure_class::contract,
+            "workflow chat call: an answer names an interaction, but none is open",
+            "chat_client.workflow_chat_client.answer_not_open"});
+        return;
+    }
     if (open.empty()) {
         auto envelope = build_history_envelope(request.messages, ctx);
         if (!envelope) {
@@ -369,7 +417,28 @@ inline void run_worker(std::shared_ptr<agentengine::rt::WorkflowSupervisor> inne
         r = drive(inner->run_workflow(agentengine::rt::RunWorkflow{*envelope, std::nullopt, ctx.cancellation}));
         add_spent(r.usage);
     } else {
-        std::vector<ResumeSignal> signals = find_resume_signals(request.messages, open);
+        // ADR-230 (issue #44): host answers handed over out of band are the ONLY answers this call considers when
+        // present -- the history is not scanned at all, so nothing a model wrote there can answer or route the
+        // interaction. Every one must name a currently-open interaction, or the call is refused before any resume.
+        std::vector<ResumeSignal> signals;
+        if (!request.client_interaction_answers.empty()) {
+            for (agentengine::ClientInteractionAnswer const& a : request.client_interaction_answers) {
+                bool const is_open = std::any_of(open.begin(), open.end(), [&](agentengine::Interaction const& oi) {
+                    return oi.interaction_id == a.client_interaction_id;
+                });
+                if (!is_open) {
+                    producer.fail(agentengine::error{
+                        agentengine::failure_class::contract,
+                        "workflow chat call: an answer names interaction '" + a.client_interaction_id +
+                            "', which is not open",
+                        "chat_client.workflow_chat_client.answer_not_open"});
+                    return;
+                }
+                signals.push_back(ResumeSignal{a.client_interaction_id, a.response, a.routes});
+            }
+        } else {
+            signals = find_resume_signals(request.messages, open);
+        }
         if (signals.empty()) {
             producer.fail(agentengine::error{
                 agentengine::failure_class::contract,
@@ -396,8 +465,22 @@ inline void run_worker(std::shared_ptr<agentengine::rt::WorkflowSupervisor> inne
             }
             if (!still_present) continue;  // resolved by an earlier signal in this same loop
             r = drive(inner->resume_workflow(
-                agentengine::rt::ResumeWorkflow{sig.interaction_id, sig.response, {}}));
+                agentengine::rt::ResumeWorkflow{sig.interaction_id, sig.response, sig.routes}));
             add_spent(r.usage);  // every iteration's spend, not only the last one's (ADR-193 §9)
+            // ADR-230 / issue #155: a refusal changes nothing in the run -- the port stays open and can be answered
+            // again (with a corrected route). Reported as such, not as a failed run.
+            if (r.status == agentengine::rt::workflow_status::invalid_routes ||
+                r.status == agentengine::rt::workflow_status::admission_denied ||
+                r.status == agentengine::rt::workflow_status::invalid) {
+                charge_undelivered();
+                producer.fail(agentengine::error{
+                    agentengine::failure_class::contract,
+                    "workflow chat call: the workflow refused the answer to interaction '" + sig.interaction_id +
+                        "' (" + agentengine::rt::workflow_status_tag(r.status) + ")",
+                    std::string("chat_client.workflow_chat_client.answer_refused.") +
+                        agentengine::rt::workflow_status_tag(r.status)});
+                return;
+            }
         }
     }
 
@@ -471,6 +554,32 @@ public:
         return agentengine::ChatClientCapabilities{.streaming = false, .tool_calling = false};
     }
 
+    // ADR-230 (issue #44): `InteractiveChatClient` (core/chat_client.hpp) -- what the wrapped workflow is waiting
+    // on, read from the supervisor's own state, never from anything a call returned. Waits for a call in flight
+    // to finish (an `AgentSession` asks only after its call's stream completed, when the worker is exiting).
+    [[nodiscard]] std::vector<agentengine::ClientInteractionAsk> pending_client_interactions() const {
+        std::lock_guard<std::mutex> guard(*call_mutex_);
+        std::vector<agentengine::ClientInteractionAsk> out;
+        for (agentengine::rt::WorkflowSupervisor::InteractionAsk const& a : inner_->open_interaction_asks()) {
+            out.push_back(agentengine::ClientInteractionAsk{a.interaction.interaction_id, a.ask});
+        }
+        return out;
+    }
+
+    // ADR-230: abandon the paused conversation -- the wrapped run ends `cancelled` (ADR-214: settled here when it
+    // is suspended; observed by the entry point when one is running). Never waits for a call in flight: when no
+    // call or query holds `call_mutex_` it cancels under it (so the settle cannot race a read of the supervisor's
+    // open interactions); otherwise the call in flight is being cancelled through its own
+    // `EffectContext::cancellation` bridge as well, and this only adds the supervisor's own idempotent stop.
+    void cancel_client_interactions() const noexcept {
+        if (call_mutex_->try_lock()) {
+            std::lock_guard<std::mutex> guard(*call_mutex_, std::adopt_lock);
+            inner_->cancel();
+            return;
+        }
+        inner_->cancel();
+    }
+
     // ONLY method -- see file banner's "DELIBERATELY NO chat()" paragraph. Returns synchronously,
     // exactly like every other real chat_stream() conformer in this codebase; the whole read-then-act
     // algorithm runs on a detached worker thread this call spawns.
@@ -499,5 +608,8 @@ private:
 static_assert(agentengine::ChatClient<WorkflowChatClient>,
               "WorkflowChatClient must satisfy the real ChatClient concept (004 §1) via chat_stream() "
               "alone -- checked directly here, not deferred to per-instantiation tests.");
+static_assert(agentengine::InteractiveChatClient<WorkflowChatClient>,
+              "ADR-230: an AgentSession bound to a WorkflowChatClient surfaces its request ports as client_input "
+              "interactions -- only if this type keeps the InteractiveChatClient seam.");
 
 }  // namespace agentengine::rt

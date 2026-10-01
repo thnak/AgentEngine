@@ -60,8 +60,8 @@ export const hitlSections: Record<Lang, HitlSection[]> = {
 // The one shared primitive -- core/interaction.hpp, verbatim (trimmed comments).
 // ------------------------------------------------------------------------------------------------
 
-export const interactionRecordSnippet = `// core/interaction.hpp:55-68 -- the ONE record every mechanism below opens
-enum class interaction_reason { input, auth, approval, codeact_ask, hook_decision };
+export const interactionRecordSnippet = `// core/interaction.hpp -- the ONE record every mechanism below opens
+enum class interaction_reason { input, auth, approval, codeact_ask, hook_decision, client_input };
 
 struct Interaction {
     std::string        interaction_id;
@@ -121,7 +121,7 @@ export const hitlMatrixRows: Record<Lang, HitlMatrixRow[]> = {
       mechanism: "WorkflowChatClient",
       layer: "Workflow, projected as ChatClient",
       reason: "same request_port suspension, re-encoded as a Custom ChatResponseUpdate",
-      resumeCall: "a Custom item on the NEXT chat_stream() call",
+      resumeCall: "direct: ChatRequest::client_interaction_answers on the NEXT chat_stream(); behind an AgentSession: a client_input interaction + resolve_interaction() (ADR-230)",
       page: "Workflow & Orchestration →",
     },
     {
@@ -165,7 +165,7 @@ export const hitlMatrixRows: Record<Lang, HitlMatrixRow[]> = {
       mechanism: "WorkflowChatClient",
       layer: "Workflow, được chiếu thành ChatClient",
       reason: "cùng một sự đình chỉ request_port, mã hóa lại thành một ChatResponseUpdate kiểu Custom",
-      resumeCall: "một item Custom trên lệnh gọi chat_stream() KẾ TIẾP",
+      resumeCall: "trực tiếp: ChatRequest::client_interaction_answers trên lệnh gọi chat_stream() KẾ TIẾP; sau một AgentSession: một interaction client_input + resolve_interaction() (ADR-230)",
       page: "Workflow & Điều phối →",
     },
     {
@@ -197,6 +197,7 @@ export const hitlExampleRows: Record<Lang, HitlExampleRow[]> = {
     { what: "examples/22_magentic_plan_signoff_checkpoint.cpp", mechanism: "Plan sign-off suspended across a SIMULATED process restart (issue #28)", status: "Real, runnable" },
     { what: "examples/28_workflow_as_chat_client.cpp", mechanism: "WorkflowChatClient's Custom-typed request_port bridge (issue #35)", status: "Real, runnable" },
     { what: "examples/31_workflow_chat_client_session_loop.cpp", mechanism: "The same bridge driven as a real session loop across two request_port nodes", status: "Real, runnable" },
+    { what: "tests/workflow/test_rt_workflow_chat_client_outer_session.cpp", mechanism: "An outer AgentSession's caller answering the workflow's request_port via client_input + resolve_interaction() (issue #44, ADR-230)", status: "Real, test-only — no standalone example yet" },
     { what: "tests/rt/agent_session/test_agent_session_suspend_codeact_ask.cpp", mechanism: "agent.ask() abort-and-replay", status: "Real, test-only — no standalone example yet" },
     { what: "tests/rt/agent_session/test_rt_agent_session_tool_call_hook.cpp", mechanism: "ToolCallHook external dispatch", status: "Real, test-only — no standalone example yet" },
   ],
@@ -208,6 +209,7 @@ export const hitlExampleRows: Record<Lang, HitlExampleRow[]> = {
     { what: "examples/22_magentic_plan_signoff_checkpoint.cpp", mechanism: "Plan sign-off bị đình chỉ qua một lần khởi động lại MÔ PHỎNG (issue #28)", status: "Thật, chạy được" },
     { what: "examples/28_workflow_as_chat_client.cpp", mechanism: "Cầu nối request_port kiểu Custom của WorkflowChatClient (issue #35)", status: "Thật, chạy được" },
     { what: "examples/31_workflow_chat_client_session_loop.cpp", mechanism: "Cùng cầu nối đó, chạy như một vòng lặp phiên thật qua hai node request_port", status: "Thật, chạy được" },
+    { what: "tests/workflow/test_rt_workflow_chat_client_outer_session.cpp", mechanism: "Caller của một AgentSession bên ngoài trả lời request_port của workflow qua client_input + resolve_interaction() (issue #44, ADR-230)", status: "Thật, chỉ có test — chưa có ví dụ độc lập" },
     { what: "tests/rt/agent_session/test_agent_session_suspend_codeact_ask.cpp", mechanism: "agent.ask() abort-and-replay", status: "Thật, chỉ có test — chưa có ví dụ độc lập" },
     { what: "tests/rt/agent_session/test_rt_agent_session_tool_call_hook.cpp", mechanism: "Điều phối bên ngoài của ToolCallHook", status: "Thật, chỉ có test — chưa có ví dụ độc lập" },
   ],

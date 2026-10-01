@@ -165,6 +165,10 @@ agentengine_add_test(test_rt_workflow_as_executor LIBS agentengine::core agenten
 # red-team rounds: docs/planning/workflow-as-chatclient-adapter-design-draft.md.
 agentengine_add_test(test_rt_workflow_as_chat_client LIBS agentengine::core agentengine_warnings)
 
+# ---- GitHub issue #44 / ADR-230: an outer AgentSession bound to a WorkflowChatClient surfaces the workflow's
+# paused request_port as a client_input interaction its own caller answers (out of band, never via model output).
+agentengine_add_test(test_rt_workflow_chat_client_outer_session LIBS agentengine::core agentengine_warnings)
+
 # ---- ADR-153 (issue #29): WorkflowSupervisor's fine-grained, genuinely-live per-executor event
 # stream. Design draft: docs/planning/workflow-event-stream-design-draft.md.
 agentengine_add_test(test_rt_workflow_event_stream LIBS agentengine::core agentengine_warnings)

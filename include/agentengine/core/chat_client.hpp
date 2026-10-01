@@ -67,6 +67,27 @@ struct ChatClientCapabilities {  // ae-naming-lint: allow ChatClientCapabilities
 // surveyed backend can express both.
 enum class reasoning_effort { off, low, medium, high };  // ae-naming-lint: allow reasoning_effort — 004 §2's amendment names this concept normatively; 027 has not been updated to list it
 
+// decisions/ADR-230 (GitHub issue #44): a chat client whose own HOST-SIDE state can hold an interaction open
+// across calls -- `rt::WorkflowChatClient`, whose wrapped workflow suspends on a `request_port`. The ask is
+// reported by the client object itself (`pending_client_interactions()`, below), never read out of response
+// content, and the answer travels out of band on `ChatRequest::client_interaction_answers`, never in
+// `messages` -- so nothing a model writes (a look-alike `Custom` item, a JSON-shaped text) can open, answer or
+// route one (I3).
+struct ClientInteractionAsk {  // ae-naming-lint: allow ClientInteractionAsk — ADR-230
+    std::string client_interaction_id;  // the client's own id (a workflow interaction id)
+    Message     ask;                    // what is being asked (a workflow request port's ask message)
+};
+
+// ADR-230: the host's answer to one `ClientInteractionAsk`. Built only by host code -- `AgentSession` builds one
+// from a `ResolveInteraction` the host sent; a direct caller builds it itself. `routes` are the answer's route
+// choice where the client's interaction has them (a workflow request port's outgoing switch_case /
+// multi_selection edges, issue #155); a client that has no notion of routes refuses non-empty ones.
+struct ClientInteractionAnswer {  // ae-naming-lint: allow ClientInteractionAnswer — ADR-230
+    std::string              client_interaction_id;
+    Message                  response;
+    std::vector<std::string> routes{};
+};
+
 struct ChatRequest {  // ae-naming-lint: allow ChatRequest — pre-existing M0 scaffolding, reconcile at owning milestone
     std::vector<Message> messages;
     // 006's real per-run tool table entry — the exact type ContextContribution.tools already reuses
@@ -97,6 +118,12 @@ struct ChatRequest {  // ae-naming-lint: allow ChatRequest — pre-existing M0 s
     // (Qualified: the member name deliberately matches the enum's, so the type must be spelled with
     // its namespace here -- the member would otherwise hide the type inside the class scope.)
     std::optional<agentengine::reasoning_effort> reasoning_effort{};
+    // ADR-230 (issue #44): host answers to interactions the bound client itself holds open (see
+    // `ClientInteractionAnswer`). Set only by host code -- `AgentSession::run_rounds()` from a host
+    // `ResolveInteraction`, never from model output, history or a context provider (a turn middleware sees a
+    // `ContextContribution`, never this request). A client that does not hold interactions ignores it; one that
+    // does answers ONLY these when non-empty and never reads an answer out of `messages`. Appended last.
+    std::vector<ClientInteractionAnswer> client_interaction_answers{};
 };
 
 struct ChatResponse {
@@ -288,6 +315,20 @@ template <class T>
 // ae-naming-lint: allow ModelCallGatewayStreamLike — mirrors ModelCallGatewayLike's own suppression, same file
 concept ModelCallGatewayStreamLike = requires(T gateway, ChatRequest request, EffectContext& ctx) {
     { gateway.call_stream(request, ctx) } -> std::same_as<stream<ChatResponseUpdate>>;
+};
+
+// ADR-230 (issue #44): optional, duck-typed like `HasProducerChatClientId` below -- a client that can hold an
+// interaction open across calls. `AgentSession` detects it with `if constexpr`; every other client (every real
+// backend, every mock) is unaffected. Both members are host-side state reads/writes on the client object, never
+// derived from what a call returned:
+//   - `pending_client_interactions()`: what the client is waiting on right now, by its own state. Called by the
+//     session after each completed model call, never during one.
+//   - `cancel_client_interactions()`: abandon them (callable from any thread, never blocks on a call in flight).
+template <class T>
+// ae-naming-lint: allow InteractiveChatClient — ADR-230
+concept InteractiveChatClient = requires(T const& client) {
+    { client.pending_client_interactions() } -> std::same_as<std::vector<ClientInteractionAsk>>;
+    { client.cancel_client_interactions() } noexcept;
 };
 
 // Gap-audit finding 20 / 003 §8 Q2 ("a Reasoning item is included in a turn's assembled context only

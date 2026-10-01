@@ -187,3 +187,12 @@ workflow-family `ctest` suite (32/32) both clean; `examples/28_workflow_as_chat_
 directly, `OK`. Two real implementation bugs — a wrong assumption about `output_selection` merge
 semantics with no `fan_in` edge, and an invalid `max_rounds=0` construction — were found and fixed
 during this "prove" phase itself, by the tests catching them, not by further review.
+
+**Amended by ADR-230 (2026-10-01, issue #44, Proposed):** the two compositions §4a/§9 item 1 descoped for the
+request_port case — (a) a caller behind an outer `AgentSession` answering the pause, (b) an outer session with
+`set_output_schema()` armed — now have an implemented answer-routing mechanism. The outer session reads the
+pause from the adapter's own state (`InteractiveChatClient`), suspends as a `client_input` interaction before
+schema validation, and hands the caller's `resolve_interaction()` answer to the adapter out of band
+(`ChatRequest::client_interaction_answers`), never through history. ADR-230 also narrowed this ADR's legacy
+history-scan resume signal to caller-authored (`user`/`system` origin) items, after its red team found a
+model-planted answer could pre-answer a port whose id it predicted.

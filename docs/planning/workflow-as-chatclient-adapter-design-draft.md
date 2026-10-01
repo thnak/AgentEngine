@@ -375,6 +375,25 @@ armed, are **descoped** for the request_port case until a real answer-routing me
 intermediate `AgentSession` is designed — this adapter is proven safe only for a caller that talks to it
 directly, or an outer `AgentSession` with no output-schema contract of its own.
 
+> **Update (2026-10-01, issue #44, `decisions/ADR-230-workflow-chat-client-answer-routing.md`, Proposed):
+> both descoped compositions above now have a designed, implemented and tested answer-routing mechanism.**
+> The outer `AgentSession` never reads the `Custom` ask out of response content; it asks the bound client's
+> own host-side state (`InteractiveChatClient::pending_client_interactions()`, `core/chat_client.hpp`) after
+> every completed model call and, when the client is waiting, suspends the round as a typed
+> `interaction_reason::client_input` interaction (`run.suspended_for_client_input`, `input_required`,
+> `AgentSession::client_input_ask()`) — BEFORE the tool-call loop and BEFORE output-schema validation, so an
+> armed `set_output_schema()` surfaces the pause instead of failing it. The outer session's caller answers
+> with the ordinary `resolve_interaction()` (`answer` text, or `client_answer` = response `Message` + routes);
+> the session hands the answer to the client OUT OF BAND on `ChatRequest::client_interaction_answers`, which
+> the adapter treats as the ONLY answers for that call (the history is not scanned), so a model-written
+> look-alike — even caller-origin, even naming the predictable `<workflow>:run:<n>:port:<id>:<round>` id —
+> cannot answer or route a port. A route refusal (issue #155) comes back as
+> `session.resolve_interaction.answer_refused` with the interaction still open; `cancel()` on the outer
+> session cancels the workflow (ADR-214). The legacy direct-caller history scan additionally ignores
+> `assistant`/`tool`/`external`-origin response items. Proof: `tests/workflow/
+> test_rt_workflow_chat_client_outer_session.cpp` (O1-O8). Still out of scope: a nested `sub_workflow`'s own
+> ask (the honestly-empty placeholder above is surfaced as such).
+
 ### 4b. `chat_stream()` — rewritten after red-team round 2 (§10 round 2 finding 2)
 
 **The first pass's "thin wrapper: drive `chat()` to completion, then push" description is not
@@ -824,7 +843,8 @@ this revision). What remains is not open design work — it is either a delibera
 boundary, or plain implementation/testing follow-through:
 
 1. **Deliberate scope boundary, not a defect — THREE descoped compositions, (c) STRENGTHENED after round
-   8.** This adapter is proven safe only for a caller talking to it directly, OR an outer `AgentSession`
+   8.** *(Update: (c) was closed by ADR-163; (a) and (b) by ADR-230 / issue #44 — see the note at the end of
+   §4a.)* This adapter is proven safe only for a caller talking to it directly, OR an outer `AgentSession`
    with no `set_output_schema()` armed of its own (§4a/§4b, §10 round 1 finding 1, round 2 finding 1):
    (a) "sub-agent inside another agent's own tool set" (issue #35's own References section) — no designed
    answer-routing mechanism for the request_port case; (b) an outer session with a structured-output
