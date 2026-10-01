@@ -284,6 +284,17 @@ construction (one approval gate for the whole `run_skill_script` dispatcher, not
 same shape of gap, one level down, from the load-before-use gap ADR-024 already found and built
 `MountedSkillsState` to close.
 
+**Amendment (host pre-mount, `decisions/ADR-224-host-premounted-builtin-skills.md`, Proposed).** A
+*host* may also mount a skill, before the run's first model call, from its own configuration — in
+practice the §8f built-in skill paired with a tool the host itself declares into the session
+(`core/skill_premount.hpp`: `run_shell`/`run_command` → `shell-pipelines`, `execute_code` →
+`using-the-code-interpreter`). It is opt-in per host (nothing in the engine does it), never driven by
+model output, and grants nothing a model mount would not. Every mount records its origin
+(`skill_mount_origin::model` via `mount()`, `::host` via `mount_by_host()`); the first mount of a name
+fixes it, and the injected body of a host-mounted skill is introduced as host-mounted, so a skill the
+model did not choose is never presented as one it did. The origin is attribution only and must never
+feed a permission decision.
+
 **Skill names are labels, not identifiers.** Skills are namespaced per origin so a skill fetched
 from a remote source can never shadow a local one — a shadowing attack is otherwise trivial.
 
@@ -349,7 +360,7 @@ Python (026 §1's whole point):
 | `using-codeact` | Worked `agent.*` examples (026 §5) — filtering large results in-process instead of round-tripping every row through the model |
 | `reading-large-content` | When to use §7's content-reading tool's preview-then-page pattern instead of asking for a whole file, tying directly to 006 §7's token-budget rule |
 | `producing-structured-output` | Shaping a final response against a declared schema (003 §5) reliably |
-| `shell-pipelines` | `ShellRunner`'s grammar (010 §2) — composing pipes/redirects idiomatically within its documented subset |
+| `shell-pipelines` | `ShellRunner`'s grammar (010 §2) as the mediated `run_shell` tool runs it — statements, pipes/redirects, `&&`/`||`, `if`/`for`, the ten builtins, what persists and what stops a script — and how `run_command`'s real `sh` differs (checked claim by claim by `test_shell_pipelines_skill_grammar`, issue #47) |
 
 These ship in this repo, not as a separate download, and are mounted by default subject to the same
 per-session grant model as any skill (§8c) — "built-in" means "shipped and trusted by default," not

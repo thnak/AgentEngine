@@ -124,6 +124,13 @@ agentengine_add_test(test_session_shell_wiring
   LIBS agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store
     agentengine_warnings)
 
+# ---- GitHub issue #47: the shell-pipelines built-in skill (core/builtin_skills.hpp) checked claim by
+# claim against the real mediated shell run_shell runs, under tools/cli_chat.cpp's mediated-tier grants;
+# every ```sh example in the skill is also run. A shell change that makes the skill wrong fails here.
+agentengine_add_test(test_shell_pipelines_skill_grammar
+  LIBS agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store
+    agentengine_warnings)
+
 # ---- Milestone 3 Phase E4: hostile-corpus/mediation proof (010 §9 G2/G7), platform-adapted
 # (2026-08-28, ADR-103): SH7-SH10's backslash-leaf payloads have genuinely different, correctly
 # adapted expected outcomes per platform (Windows: rejected escape; Linux: harmless in-mount

@@ -65,6 +65,22 @@
 // directory, with millisecond offsets. The terminal keeps the conversation, plus a `* <tool>` line
 // when a tool starts (a container can take seconds; silence reads as a hang) and a `!` line when one
 // fails. `AGENTENGINE_CLI_CHAT_VERBOSE=1` puts the full trace back on screen alongside the log.
+//
+// SHELL TOOLS: TWO TRUST TIERS, CHOSEN BY `--shell` (GitHub issue #47; `cli_chat_plan.hpp` holds the
+// decision and its tests). `--shell=mediated` (the DEFAULT) offers `run_shell`
+// (src/backends/native_jail/session_shell_wiring.hpp): an engine-native shell over the same "work"
+// directory `execute_code` uses, a fixed builtin set, no process creation, `cd` persisting between
+// calls -- and nothing beyond the FsRead/FsWrite grants on "work" this CLI already mints, so it adds
+// no authority (I2). `--shell=container` offers `run_command` instead: a real `sh` in a fresh Docker
+// container per call, approval-gated as described above, and `cap::RunCommand` is minted ONLY in this
+// tier. `--shell=both` offers both; `--shell=none` neither. `--help` prints the same.
+//
+// HOST PRE-MOUNTED SKILLS (decisions/ADR-224, core/skill_premount.hpp): before the first model call,
+// this CLI mounts the built-in skill paired with each tool it offers -- `shell-pipelines` for
+// `run_shell`/`run_command`, `using-the-code-interpreter` for `execute_code` (which also makes
+// `execute_code` callable from the first turn, since that skill is what unlocks it here). That is a
+// host action, recorded as one (`skill_mount_origin::host`), labelled as one in the system prompt, and
+// logged; the model's own `mount_skill` path cannot produce it. `--no-premount-skills` turns it off.
 
 #ifdef AGENTENGINE_WITH_HTTPS
 
@@ -97,6 +113,7 @@
 #include "agentengine/core/mounted_skills_state.hpp"
 #include "agentengine/core/recording_chat_client.hpp"
 #include "agentengine/core/run_event.hpp"
+#include "agentengine/core/skill_premount.hpp"
 #include "agentengine/core/skill_provider.hpp"
 #include "agentengine/core/skill_tool_scoping.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
@@ -113,8 +130,10 @@
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
 #include "backends/native_jail/mediated_python_runner.hpp"
+#include "backends/native_jail/session_shell_wiring.hpp"
 #include "backends/native_jail/skill_mount_materializer.hpp"
 #include "backends/native_jail/tool_bridge.hpp"
+#include "cli_chat_plan.hpp"
 
 using namespace agentengine;
 
@@ -354,6 +373,15 @@ private:
     return dir;
 }
 
+// The host directory behind this session's "work" mount -- ONE directory, shared by `execute_code`'s
+// interpreter and `run_shell`'s mediated shell, so a file one writes the other reads (issue #47). Both
+// reach it only through the FsRead/FsWrite grants on "work" minted in main(); sharing the directory
+// shares no authority either tool lacked. Materialized skills live OUTSIDE it (main()'s
+// `skills_scratch`), so neither tool can rewrite a skill's files through "work".
+[[nodiscard]] std::filesystem::path cli_workspace_dir() {
+    return std::filesystem::temp_directory_path() / "agentengine_cli_chat_workspace";
+}
+
 // ---- The real execute_code tool: wired to MediatedPythonRunner, not a stand-in --------------------
 
 struct ExecuteCodeArgs {
@@ -399,8 +427,7 @@ AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
     static native_jail::MediatedPythonRunner runner = [&] {
         native_jail::MediatedPythonConfig cfg;
         cfg.python_home = AE_PYTHON_HOME;
-        std::filesystem::path const scratch =
-            std::filesystem::temp_directory_path() / "agentengine_cli_chat_workspace";
+        std::filesystem::path const scratch = cli_workspace_dir();
         std::error_code ec;
         std::filesystem::create_directories(scratch, ec);
         cfg.mount_roots[kWorkMount] = scratch.wstring();
@@ -697,12 +724,9 @@ public:
         // and appended into the SAME text -- never a separate message. Unlike MAF's `load_skill` (an
         // ephemeral tool-result message that can be lost to history compaction), this is reliably
         // present on every subsequent turn as long as the skill stays mounted -- see
-        // mounted_skills_state.hpp's own top comment.
-        for (auto const& mounted_name : mounted_skills_.all()) {
-            auto body = skills_.body_of(mounted_name);
-            if (!body) continue;
-            combined_system_text += "\nMounted skill '" + mounted_name + "':\n" + *body;
-        }
+        // mounted_skills_state.hpp's own top comment. ADR-224: a skill the HOST pre-mounted is
+        // introduced as host-mounted (`render_mounted_skill_bodies`), never as one the model mounted.
+        combined_system_text += render_mounted_skill_bodies(skills_, mounted_skills_);
 
         ContextContribution contribution;
         if (!combined_system_text.empty()) {
@@ -757,6 +781,12 @@ public:
             contribution.tools.push_back(std::move(td));
         }
 
+        // Issue #47: `run_shell`, the mediated tier -- present only when `bind_shell()` was called
+        // (`--shell=mediated|both`), and like `run_command` a session-level tool, outside skill
+        // scoping. Its descriptor's closure reaches this session's one `SessionShellSandbox`, whose
+        // ExecState is what makes `cd` persist from call to call.
+        if (shell_) contribution.tools.push_back(shell_->tool_descriptor());
+
         // See `require_approval_for()`. Applied to the WHOLE contribution rather than to the
         // run_command half alone, so raising a CodeAct or skill-gated tool later needs no new code
         // here. `invoke_tool()`'s step 5 and `AgentSession`'s own suspend-for-approval check both read
@@ -799,6 +829,24 @@ public:
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
 
     [[nodiscard]] MountedSkillsState const& mounted_skills() const noexcept { return mounted_skills_; }
+
+    // Host-only, configuration-time (issue #47): hands this session its mediated shell. Never called
+    // for `--shell=container|none`, and then no `run_shell` is declared at all.
+    void bind_shell(std::unique_ptr<SessionShellSandbox> shell) { shell_ = std::move(shell); }
+
+    // Host-only, configuration-time (ADR-224): mounts `skills` with `skill_mount_origin::host`, checked
+    // against the same resolved names `real_mount_skill()` checks a model's request against, so the
+    // host cannot mount something the model could not. Call after `configure()` (which supplies those
+    // names) and before the first StartRun. Never reachable from a tool call.
+    [[nodiscard]] SkillPremountReport premount_skills(std::vector<std::string> const& skills) {
+        std::vector<std::string> resolvable;
+        resolvable.reserve(mount_roots_.size());
+        for (auto const& [mount_id, host_dir] : mount_roots_) {
+            (void)host_dir;
+            resolvable.push_back(mount_id);
+        }
+        return premount_skills_by_host(mounted_skills_, skills, resolvable);
+    }
 
     // Mutable, matching `AgentSession::history_provider()`'s own real accessor pattern one layer up --
     // `main()`/`run_interactive()` needs this to call `bind_sandbox()` once, at session-configuration
@@ -906,6 +954,11 @@ private:
             return std::unexpected(error{failure_class::contract, "unknown skill: " + a.skill_name,
                                           "skill.unknown_name"});
         }
+        // ADR-224: a skill the host already pre-mounted stays host-attributed -- `mount()` is a no-op
+        // for an already-mounted name -- and the reply says so rather than claiming this call did it.
+        if (mounted_skills_.origin_of(a.skill_name) == skill_mount_origin::host) {
+            return MountSkillReply{true, "already mounted by the host: " + a.skill_name};
+        }
         mounted_skills_.mount(a.skill_name);
         return MountSkillReply{true, "mounted: " + a.skill_name};
     }
@@ -923,6 +976,10 @@ private:
     // session that never calls `run_command_provider().bind_sandbox(...)` (e.g. a future caller of
     // this class that skips it) gets zero execution capability from this provider, never a crash.
     agentengine::MandatorySandboxProvider<agentengine::DockerExecutionSurface> run_command_provider_;
+    // Issue #47: this session's mediated shell, or null when `--shell` did not select it. Owned here
+    // (heap, never moved -- SessionShellSandbox's own requirement) so its ExecState lives exactly as
+    // long as the session.
+    std::unique_ptr<SessionShellSandbox> shell_;
 };
 static_assert(ContextProvider<ToolDeclaringHistoryProvider>);
 
@@ -973,7 +1030,8 @@ template <class Inner>
 // person wants to read before their first message, so it goes to the action log unless -- verbose.
 void print_skills_banner(std::ostream& out,
                           std::vector<native_jail::MaterializedSkillMount> const& materialized,
-                          SkillsProvider<>& startup_skills, MountedSkillsState const& mounted_skills) {
+                          SkillsProvider<>& startup_skills, MountedSkillsState const& mounted_skills,
+                          cli_chat::ToolPlan const& plan) {
     out << "Skills RESOLVED at /skills/<name> -- every one's files are unconditionally readable "
                  "from turn 1 (009 §8b, unaffected by mount state):\n";
     for (auto const& source : demo_skill_sources()) {
@@ -1005,26 +1063,32 @@ void print_skills_banner(std::ostream& out,
         }
     }
 
-    out << "Currently MOUNTED skills (agent-triggered via mount_skill -- 009 §8c Phase 3): ";
+    out << "Currently MOUNTED skills (by the host before the run -- ADR-224 -- or by the agent via "
+           "mount_skill -- 009 §8c Phase 3): ";
     auto const& mounted = mounted_skills.all();
     if (mounted.empty()) {
         out << "(none -- nothing is pre-mounted; the agent must call mount_skill)\n";
     } else {
-        for (std::size_t i = 0; i < mounted.size(); ++i) out << (i ? ", " : "") << mounted[i];
+        for (std::size_t i = 0; i < mounted.size(); ++i) {
+            bool const by_host = mounted_skills.origin_of(mounted[i]) == skill_mount_origin::host;
+            out << (i ? ", " : "") << mounted[i] << (by_host ? " [host]" : " [agent]");
+        }
         out << "\n";
     }
 
     out << "Tools declared+invocable right now (mount_skill is always available; others unlock "
-                 "once their owning skill is mounted): ";
+                 "once their owning skill is mounted; shell tools per --shell): ";
     auto const universe = ToolTable::from_tools<ExecuteCodeTool, MountSkillTool>();
     auto const scoped = scope_tools_to_mounted_skills(
         universe, startup_skills.allowed_tool_names_for(mounted), {std::string(MountSkillTool::name)});
-    if (scoped.descriptors().empty()) {
+    std::vector<std::string> names;
+    for (auto const& d : scoped.descriptors()) names.push_back(d.name);
+    if (plan.offer_run_shell) names.emplace_back("run_shell");
+    if (plan.offer_run_command) names.emplace_back("run_command (approval required)");
+    if (names.empty()) {
         out << "(none)\n";
     } else {
-        for (std::size_t i = 0; i < scoped.descriptors().size(); ++i) {
-            out << (i ? ", " : "") << scoped.descriptors()[i].name;
-        }
+        for (std::size_t i = 0; i < names.size(); ++i) out << (i ? ", " : "") << names[i];
         out << "\n";
     }
 }
@@ -1180,7 +1244,8 @@ template <class Inner>
                                     CapabilitySet held,
                                     std::vector<native_jail::MaterializedSkillMount> const& materialized,
                                     SkillsProvider<>& startup_skills,
-                                    std::filesystem::path const& log_dir) {
+                                    std::filesystem::path const& log_dir,
+                                    cli_chat::ToolPlan const& plan) {
     // ADR-037: real per-token streaming needs the session's own execution to genuinely run
     // concurrently with a caller draining its event stream. Previously a real, single-worker
     // `quark::Engine` (`quark::TestKit` runs everything "on the calling thread... no threads, no
@@ -1306,8 +1371,11 @@ template <class Inner>
     // `run_command` runs a real shell command in a real container. `ExecuteCodeTool`/`MountSkillTool`
     // stay unguarded: mounting a skill is not an effect, and `execute_code` is already mediated by the
     // interpreter's own gates (010 §1a) -- approving every line of Python would train the human to
-    // type `y` without reading, which is worse than not asking.
-    actor.history_provider().require_approval_for({"run_command"});
+    // type `y` without reading, which is worse than not asking. `run_shell` (issue #47) stays
+    // unguarded for the same reason: it reaches exactly what `execute_code` reaches (the "work"
+    // grants), through a mediated builtin set with no process creation. The list itself comes from
+    // `cli_chat::plan_tools()`, where it is tested.
+    actor.history_provider().require_approval_for(plan.approval_required);
 
     // The blocking-decider shape (006 §4): `invoke_tool()`'s step 5 calls this synchronously, with the
     // canonical JSON of the EXACT arguments about to execute -- so what the human sees is what runs,
@@ -1382,18 +1450,55 @@ template <class Inner>
     // of MandatorySandboxProvider/SandboxRuntime (ADR-102 Phases 1-4) anywhere in this codebase.
     // `cli_ledger`/`owner`/the three quotas were minted above, before `actor`, for a real lifetime-
     // ordering reason (see that block's own comment).
-    actor.history_provider().run_command_provider().bind_sandbox(
-        cli_ledger, std::move(*root_branch), owner, sandbox_staging_root, *branch_quota, *run_quota,
-        *storage_quota);
+    // Issue #47: only in the container tier. Unbound, the provider contributes no `run_command` at all
+    // (its own documented "no sandbox bound" state), and main() minted no `cap::RunCommand` either.
+    if (plan.offer_run_command) {
+        actor.history_provider().run_command_provider().bind_sandbox(
+            cli_ledger, std::move(*root_branch), owner, sandbox_staging_root, *branch_quota, *run_quota,
+            *storage_quota);
+    }
+
+    // Issue #47: the mediated tier. Rooted at the SAME directory as `execute_code`'s "work" mount, and
+    // authorized by the same FsRead/FsWrite grants -- no new grant is minted for it (I2).
+    if (plan.offer_run_shell) {
+        std::filesystem::path const workspace = cli_workspace_dir();
+        std::error_code mkdir_ec;
+        std::filesystem::create_directories(workspace, mkdir_ec);
+        auto shell = SessionShellSandbox::create(workspace);
+        if (!shell) {
+            std::cerr << "FATAL: failed to create the run_shell sandbox: " << shell.error().message << "\n";
+            return 1;
+        }
+        actor.history_provider().bind_shell(std::move(*shell));
+        log.write("run_shell bound to " + workspace.string());
+    }
+
+    // ADR-224: host pre-mounts, AFTER configure() (which supplied the resolvable skill names) and
+    // BEFORE the first StartRun. Every outcome goes to the action log -- this is a host action and is
+    // recorded as one.
+    if (!plan.premount_skills.empty()) {
+        SkillPremountReport const report = actor.history_provider().premount_skills(plan.premount_skills);
+        for (std::string const& s : report.mounted) log.write("host pre-mounted skill " + s);
+        for (std::string const& s : report.already_mounted) log.write("host pre-mount: " + s + " already mounted");
+        for (std::string const& s : report.not_resolvable) {
+            log.write("host pre-mount SKIPPED " + s + ": not among this session's resolved skills");
+        }
+    }
 
     {
         std::ostringstream banner;
         print_skills_banner(banner, materialized, startup_skills,
-                            actor.history_provider().mounted_skills());
+                            actor.history_provider().mounted_skills(), plan);
         log.write("startup state --\n" + banner.str());
         if (verbose_ui()) std::cout << banner.str();
     }
     std::cout << "Logs: " << log_dir.string() << "\n";
+    std::cout << "Shell tools: "
+              << (plan.offer_run_shell && plan.offer_run_command ? "run_shell + run_command"
+                  : plan.offer_run_shell                         ? "run_shell (mediated)"
+                  : plan.offer_run_command                       ? "run_command (container, asks first)"
+                                                                 : "none")
+              << "  (--help for options)\n";
     std::cout << "\nType a message and press Enter. Type 'exit' or 'quit' to stop.\n\n";
 
     std::string line;
@@ -1569,10 +1674,46 @@ template <class Inner>
 // each.
 constexpr char const* kSessionId = "cli-chat-session";
 
-int main() {
+// The session's root grant -- the same for every provider except the secret's name. FsRead/FsWrite on
+// "work" back both `execute_code` and `run_shell` (issue #47: the mediated shell gets nothing else);
+// FsRead on each materialized skill mount backs reading skill files; `cap::RunCommand` (ADR-119's
+// ceiling on `run_command`) is minted ONLY when the plan offers `run_command`, so the default
+// mediated tier holds no container-execution authority at all.
+[[nodiscard]] static CapabilitySet make_session_grants(
+    char const* secret_name, std::vector<native_jail::MaterializedSkillMount> const& materialized,
+    cli_chat::ToolPlan const& plan) {
+    std::vector<Capability> grants = {
+        Capability{cap::Secret{secret_name, std::chrono::seconds{0}}},
+        Capability{cap::FsRead{kWorkMount, "", std::nullopt}},
+        Capability{cap::FsWrite{kWorkMount, "", std::nullopt, std::nullopt}}};
+    if (plan.mint_run_command_capability) grants.push_back(Capability{cap::RunCommand{}});
+    for (auto const& [mount_id, host_dir] : materialized) {
+        (void)host_dir;
+        grants.push_back(Capability{cap::FsRead{mount_id, "", std::nullopt}});
+    }
+    return CapabilitySet::grant_root(std::move(grants));
+}
+
+int main(int argc, char** argv) {
     // Issue #48, first statement on purpose: the console decodes bytes when they reach it, so this
     // has to happen before the very first write -- including the orphan-sweep report just below.
     console_utf8();
+
+    // Issue #47: `--shell` picks the shell tool's trust tier, `--no-premount-skills` turns off the
+    // host's skill pre-mount (cli_chat_plan.hpp). Parsed before anything else runs, so `--help` and a
+    // bad argument cost nothing -- no sweep, no credentials, no network.
+    std::vector<std::string_view> args;
+    for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
+    auto const options = cli_chat::parse_args(args);
+    if (!options) {
+        std::cerr << options.error().message << "\n\n" << cli_chat::help_text();
+        return 2;
+    }
+    if (options->help) {
+        std::cout << cli_chat::help_text();
+        return 0;
+    }
+    cli_chat::ToolPlan const plan = cli_chat::plan_tools(*options);
 
     // SECOND on purpose, and for the same reason one line up. `action_log()` builds its file on FIRST
     // USE, and the first use is the orphan sweep immediately below -- so resolving this AFTER the
@@ -1628,8 +1769,12 @@ int main() {
     // of ToolDeclaringHistoryProvider's/BuiltinSkillsProvider's own instances inside CliSession -- all
     // three resolve the identical, deterministic builtin skill source, so their outputs agree.
     SkillsProvider<> startup_skills(demo_skill_sources());
+    // A SIBLING of the work directory, not inside it (ADR-224 red team, finding F4): materialized
+    // under "work", a skill's files were writable through the "work" FsWrite grant -- by
+    // execute_code before issue #47, and by run_shell after it -- although each skill's own mount is
+    // read-only. Outside "work", the only grant that reaches them is the read-only one per skill.
     std::filesystem::path const skills_scratch =
-        std::filesystem::temp_directory_path() / "agentengine_cli_chat_workspace" / "skills";
+        std::filesystem::temp_directory_path() / "agentengine_cli_chat_skills";
     auto materialized =
         native_jail::materialize_skill_mounts(startup_skills, skills_scratch, {kWorkMount});
     if (!materialized) {
@@ -1662,19 +1807,7 @@ int main() {
 
         InMemorySecretStore store;
         store.set(kOpenAiSecretName, *key_env);
-        std::vector<Capability> grants = {
-            Capability{cap::Secret{kOpenAiSecretName, std::chrono::seconds{0}}},
-            Capability{cap::FsRead{kWorkMount, "", std::nullopt}},
-            Capability{cap::FsWrite{kWorkMount, "", std::nullopt, std::nullopt}},
-            // ADR-119: run_command now carries a real Capabilities<> ceiling on top of its unchanged
-            // IdentityAuthority/Grant<T>/AsyncQuota<T> gate -- see run_command_provider().bind_sandbox()
-            // below, which this session actually uses.
-            Capability{cap::RunCommand{}}};
-        for (auto const& [mount_id, host_dir] : *materialized) {
-            (void)host_dir;
-            grants.push_back(Capability{cap::FsRead{mount_id, "", std::nullopt}});
-        }
-        CapabilitySet held = CapabilitySet::grant_root(std::move(grants));
+        CapabilitySet held = make_session_grants(kOpenAiSecretName, *materialized, plan);
 
         // Trailing args beyond `caps`/`store`/`kOpenAiPathPrefix` are every one of OpenAIChatClient's
         // own defaults spelled out verbatim (chat_client.hpp's own constructor), EXCEPT two:
@@ -1694,7 +1827,7 @@ int main() {
             std::nullopt, sandbox::ProviderTransport::tls, /*scan_response_format_leaks=*/true,
             /*session_id=*/std::string{});
         return run_interactive(std::move(chat_client), std::move(sink), kSessionId, std::move(held),
-                                *materialized, startup_skills, dump_dir);
+                                *materialized, startup_skills, dump_dir, plan);
     }
 
     if (provider == "openrouter") {
@@ -1711,18 +1844,7 @@ int main() {
 
         InMemorySecretStore store;
         store.set(kOpenRouterSecretName, *key_env);
-        std::vector<Capability> grants = {
-            Capability{cap::Secret{kOpenRouterSecretName, std::chrono::seconds{0}}},
-            Capability{cap::FsRead{kWorkMount, "", std::nullopt}},
-            Capability{cap::FsWrite{kWorkMount, "", std::nullopt, std::nullopt}},
-            // ADR-119: run_command now carries a real Capabilities<> ceiling on top of its unchanged
-            // IdentityAuthority/Grant<T>/AsyncQuota<T> gate.
-            Capability{cap::RunCommand{}}};
-        for (auto const& [mount_id, host_dir] : *materialized) {
-            (void)host_dir;
-            grants.push_back(Capability{cap::FsRead{mount_id, "", std::nullopt}});
-        }
-        CapabilitySet held = CapabilitySet::grant_root(std::move(grants));
+        CapabilitySet held = make_session_grants(kOpenRouterSecretName, *materialized, plan);
 
         // Same shape as the "openai" branch above, except `x_title` (dashboard app grouping) and
         // `session_id` (`x-session-id`, OpenRouter's own prompt-cache sticky-routing key -- NOT
@@ -1734,7 +1856,7 @@ int main() {
             std::nullopt, sandbox::ProviderTransport::tls, /*scan_response_format_leaks=*/true,
             /*session_id=*/kSessionId);
         return run_interactive(std::move(chat_client), std::move(sink), kSessionId, std::move(held),
-                                *materialized, startup_skills, dump_dir);
+                                *materialized, startup_skills, dump_dir, plan);
     }
 
     // provider == "anthropic"
@@ -1751,18 +1873,7 @@ int main() {
 
     InMemorySecretStore store;
     store.set(kAnthropicSecretName, *key_env);
-    std::vector<Capability> grants = {
-        Capability{cap::Secret{kAnthropicSecretName, std::chrono::seconds{0}}},
-        Capability{cap::FsRead{kWorkMount, "", std::nullopt}},
-        Capability{cap::FsWrite{kWorkMount, "", std::nullopt, std::nullopt}},
-        // ADR-119: run_command now carries a real Capabilities<> ceiling on top of its unchanged
-        // IdentityAuthority/Grant<T>/AsyncQuota<T> gate.
-        Capability{cap::RunCommand{}}};
-    for (auto const& [mount_id, host_dir] : *materialized) {
-        (void)host_dir;
-        grants.push_back(Capability{cap::FsRead{mount_id, "", std::nullopt}});
-    }
-    CapabilitySet held = CapabilitySet::grant_root(std::move(grants));
+    CapabilitySet held = make_session_grants(kAnthropicSecretName, *materialized, plan);
 
     // Trailing args beyond `caps`/`store`/`kAnthropicPathPrefix`/`kAnthropicApiVersion` are every one
     // of AnthropicChatClient's own defaults spelled out verbatim (that constructor has no per-client
@@ -1774,7 +1885,7 @@ int main() {
         kAnthropicApiVersion, sandbox::resolve_host, std::string{}, std::string{}, std::string{},
         kSessionId, std::string{}, sandbox::ProviderTransport::tls, /*session_id=*/kSessionId);
     return run_interactive(std::move(chat_client), std::move(sink), kSessionId, std::move(held),
-                            *materialized, startup_skills, dump_dir);
+                            *materialized, startup_skills, dump_dir, plan);
 }
 
 #else   // AGENTENGINE_WITH_HTTPS
