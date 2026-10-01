@@ -139,10 +139,16 @@ struct ContextProviderDescriptor {
     // hand-building a descriptor (there is no public setter; a hand-built `ContextProviderDescriptor`
     // that bypasses the factory gets an empty name, same fail-... shape `ToolDescriptor::
     // effect_class`'s own comment documents for a hand-built descriptor bypassing ITS factory).
+    // ADR-209 §8.1: OPTIONAL -- empty unless the provider has `on_run_end` (`HasOnRunEnd`). Release-only;
+    // forwarded by `ComposedContextProvider::on_run_end()` because a composed provider is unreachable by the
+    // host (`assemble_context` never calls it).
+    using OnRunEndFn = std::function<task<std::monostate>(RunEndView, EffectContext&)>;
+
     std::string   name;
     ContextBudget budget;
     OnContextFn   on_context;
     OnTurnEndFn   on_turn_end;
+    OnRunEndFn    on_run_end;
 };
 
 // `provider` is moved into a `shared_ptr` so the SAME instance backs both closures — a stateful
@@ -162,6 +168,9 @@ template <class ProviderT>
     d.budget      = budget;
     d.on_context  = [shared](SessionContext& sc, EffectContext& ec) { return shared->on_context(sc, ec); };
     d.on_turn_end = [shared](TurnView tv, EffectContext& ec) { return shared->on_turn_end(tv, ec); };
+    if constexpr (HasOnRunEnd<ProviderT>) {
+        d.on_run_end = [shared](RunEndView v, EffectContext& ec) { return shared->on_run_end(v, ec); };
+    }
     return d;
 }
 

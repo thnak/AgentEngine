@@ -104,4 +104,29 @@ concept ContextProvider = requires(T provider, SessionContext& session_ctx, Effe
     { provider.on_turn_end(turn, ctx) } -> std::same_as<task<std::monostate>>;
 };
 
+// decisions/ADR-209-persistent-shell-sessions.md §8.1 -- how a run that STARTED (emitted `run_started`)
+// ended. There is deliberately no `suspended` value: a run paused on an approval, an `agent.ask()` or a hook
+// decision is not over, and the hook below never fires for it.
+enum class run_end_reason {
+    final_answer,  // run_finished
+    max_turns,     // run_failed with run.max_turns_exceeded
+    failed,        // any other run_failed
+    canceled,      // run_canceled
+    exception,     // the run's coroutine threw
+};
+
+struct RunEndView {
+    run_end_reason reason = run_end_reason::final_answer;
+};
+
+// ADR-209 §8.1: an OPTIONAL, RELEASE-ONLY hook. A provider that has it is told, once, that a run which
+// emitted `run_started` has completed (never on `suspended`, never on a refusal before `run_started`), so it
+// can release what it held for the run (a live shell's container). It must never commit or otherwise make
+// work durable: nothing reaching it can be lost by its absence, which is why it is optional and why
+// `ContextProvider` does not require it.
+template <class T>
+concept HasOnRunEnd = requires(T provider, RunEndView view, EffectContext& ctx) {
+    { provider.on_run_end(view, ctx) } -> std::same_as<task<std::monostate>>;
+};
+
 } // namespace agentengine

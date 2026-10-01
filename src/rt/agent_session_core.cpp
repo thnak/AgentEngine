@@ -97,6 +97,23 @@ task<result<AgentResponse>> AgentSessionCore::start_run(
         std::chrono::steady_clock::time_point now) {
     AsyncMutex::Guard guard = co_await session_mutex_.lock();  // I1 -- see file banner
     drain_background_completions_locked();  // Slice 3 -- see file banner
+    // ADR-209 §8.1: the body runs under the lock; the run-end hook fires afterwards, still under it, once for a
+    // run that completed during this call. An exception is caught only to fire the hook, then rethrown.
+    std::exception_ptr thrown;
+    std::optional<result<AgentResponse>> r;
+    try {
+        r.emplace(co_await start_run_locked(std::move(request), now));
+    } catch (...) {
+        thrown = std::current_exception();
+    }
+    (void)co_await fire_run_end_if_completed(thrown != nullptr);
+    if (thrown) std::rethrow_exception(thrown);
+    co_return std::move(*r);
+}
+
+task<result<AgentResponse>> AgentSessionCore::start_run_locked(
+        StartRun request,
+        std::chrono::steady_clock::time_point now) {
 
     // ADR-061 §20.4: branches on session MODE first, rather than widening a shared condition to
     // `caller.has_value() || authority.has_value()` -- the shape that broke once already (X3): a
@@ -251,6 +268,36 @@ task<result<AgentResponse>> AgentSessionCore::resolve_interaction(
         std::chrono::steady_clock::time_point now) {
     AsyncMutex::Guard guard = co_await session_mutex_.lock();  // I1 -- see file banner
     drain_background_completions_locked();  // Slice 3 -- see file banner
+    // ADR-209 §8.1: the same wrapper as start_run(). The CodeAct and hook resolvers are reached only from
+    // here, so a run they complete fires the hook here too; a refusal before anything ran fires nothing,
+    // because the hook keys on a run that emitted run_started, not on admission.
+    std::exception_ptr thrown;
+    std::optional<result<AgentResponse>> r;
+    try {
+        r.emplace(co_await resolve_interaction_locked(std::move(request), now));
+    } catch (...) {
+        thrown = std::current_exception();
+    }
+    (void)co_await fire_run_end_if_completed(thrown != nullptr);
+    if (thrown) std::rethrow_exception(thrown);
+    co_return std::move(*r);
+}
+
+task<std::monostate> AgentSessionCore::fire_run_end_if_completed(bool threw) {
+    if (threw && run_in_flight_) {
+        run_in_flight_ = false;
+        pending_run_end_ = run_end_reason::exception;
+    }
+    if (!pending_run_end_.has_value()) co_return std::monostate{};
+    RunEndView const view{*pending_run_end_};
+    pending_run_end_.reset();
+    (void)co_await bound_on_run_end(view, effect_context_);
+    co_return std::monostate{};
+}
+
+task<result<AgentResponse>> AgentSessionCore::resolve_interaction_locked(
+        ResolveInteraction request,
+        std::chrono::steady_clock::time_point now) {
 
     // ADR-061 §20.4: same mode-branch shape as start_run() -- see that function's own comment.
     if (require_authority_) {

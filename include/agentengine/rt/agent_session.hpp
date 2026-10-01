@@ -483,6 +483,14 @@ private:
     task<std::monostate> bound_on_turn_end(TurnView const& turn, EffectContext& ctx) override {
         return history_provider_.on_turn_end(turn, ctx);
     }
+    task<std::monostate> bound_on_run_end(RunEndView const& view, EffectContext& ctx) override {
+        if constexpr (agentengine::HasOnRunEnd<HistoryProviderT>) {
+            return history_provider_.on_run_end(view, ctx);
+        } else {
+            return no_run_end_hook();
+        }
+    }
+    static task<std::monostate> no_run_end_hook() { co_return std::monostate{}; }
     void bound_filter_cross_provider_reasoning(ContextContribution& contribution) override {
         // `if constexpr` on `HasProducerChatClientId`, never a runtime branch, so a client that names no identity
         // (every mock) is unaffected.

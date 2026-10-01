@@ -129,6 +129,13 @@ struct ContextContribution {
 };
 ```
 
+A provider MAY also declare `ae::task<std::monostate> on_run_end(RunEndView, EffectContext&)`
+(decisions/ADR-209 §8.1): optional and **release-only**. The session calls it once when a run that
+emitted `run_started` completes (`final_answer`, `max_turns`, `failed`, `canceled`, `exception`) —
+never on suspension, never on a refusal — still under the session lock, and `ComposedContextProvider`
+forwards it to every wrapped provider that has it. It must never be where work becomes durable: a
+provider that needs it to commit something has a lost-work bug on every path that never reaches it.
+
 `ContextContribution` deliberately mirrors MAF's `AIContext` (`Instructions` / `Messages` / `Tools`
 — `docs/research/2026-maf-provider-concepts.md` §1): a provider is not limited to injecting text. A
 retrieval provider that exposes an on-demand search tool rather than always dumping results into
