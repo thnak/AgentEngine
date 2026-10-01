@@ -1,6 +1,8 @@
 # ADR-209 — Persistent shell sessions: a live shell per run, sandboxed and native, with developer-chosen lifetimes
 
-- **Status**: **Proposed — design revision 4 (2026-09-28), after red-team passes 1–3 (§13). Pass 3 judged the transaction model structurally sound. Not built.**
+- **Status**: **Proposed — revision 5 (2026-10-01): implemented (GitHub issue #146, build steps 2–8), every claim
+  run with its positive control, self red-team done (§15). Awaiting the project owner's Judge (step 9).** Revision 4
+  (2026-09-28) was the design after red-team passes 1–3 (§13); where building it forced a change, §15.2 records it.
 - **Date**: 2026-09-28
 - **Origin**: project-owner request (2026-09-28): a shell whose `cd`, environment and working state survive from one
   command to the next, for the sandboxed path and natively, on one shared core. Owner decisions in the same
@@ -130,7 +132,7 @@ never crosses principals.
 - Not replayed: `IFS`, `ENV`, `BASH_ENV`, `LD_*`, `PS*`, `SHELLOPTS`, `BASHOPTS`, `PROMPT_COMMAND`.
 - Caps: `cwd` ≤ 4 KiB; ≤ 64 variables / 32 KiB. In memory, bounded LRU. Never restored: processes, functions, aliases.
 
-### 5a. OPEN — reconciliation with 010 §3a `ExecState` (found after pass 3, 2026-09-29)
+### 5a. Reconciliation with 010 §3a `ExecState` (found after pass 3, 2026-09-29) — DECIDED in §15.3: option (b)
 
 010 §3a already specifies a session-scoped `ExecState{cwd, env}` (`include/agentengine/sandbox/runner.hpp:17`), held
 by the sandbox and shared **by reference** by every `Runner`, so a `cd` in the shell is the `os.getcwd()` of the next
@@ -158,6 +160,9 @@ torn file set; `docker pause` for the drain is investigated in the prove phase (
 the last command of a run are lost at close. Disclosed (§12).
 
 ## 7. Framing and deadlines
+
+*(Revision 5: the in-band trailer below was replaced by §14 item 1's out-of-band file transport, and the static
+pause binary by a builtins-only `sh` keeper — §15.2 items 1–2. Kept as written for the record.)*
 
 - **sh:** `{ eval "$(printf '%b' '<\0ddd-escaped command>')"; } </dev/null >"$D/o" 2>&1; printf '\n\036<N> %d %s\036\n' "$?" "$(pwd)"`
   — `$D` is a `mktemp -d` (0700) directory made at shell start and marked `readonly`; `printf` must be a builtin (probed at open, so a 64 KiB
@@ -233,6 +238,10 @@ first use. A live container is never shared between two provider instances (I1).
 
 ## 9. Native live shell
 
+*(Revision 5: "`pwsh` only" became "the PowerShell family — `pwsh` or Windows PowerShell", with a containment probe at
+every open that refuses a build whose children escape the Job Object; the Store/MSIX `pwsh` measurably does — §15.2
+item 12.)*
+
 - **`pwsh` only.** `bash` on this platform can resolve to WSL, whose Linux processes are outside the Job Object
   (pass 2 #13); Git Bash is a possible later addition once proven inside the job. `cmd.exe` cannot be framed. This does **not**
   close the WSL escape: from inside `pwsh`, `wsl.exe -e …` still starts Linux processes outside the job (pass 3 #9) —
@@ -294,7 +303,7 @@ first use. A live container is never shared between two provider instances (I1).
 4. Disk outside `/workspace` is bounded only by the container lifetime (`PerRun`) and the host's storage driver.
 5. The framing trailer is forgeable by the command; only the model's own view is affected.
 6. Native: no worktree confinement; out-of-job spawns (WMI, Task Scheduler, `wsl.exe`); revocation effective at the
-   next command.
+   next command or check point (§15.5 M4), never mid-command; no identity boundary (§14 item 3 not evaluated).
 7. A `PerSession` shell in an untouched session lives until the session object is destroyed.
 8. The Ledger tree holds regular files only: after §4.1, symlinks are skipped and listed; empty dirs and modes are
    lost. All of these vanish on any re-open (venv interpreter links included).
@@ -303,6 +312,9 @@ first use. A live container is never shared between two provider instances (I1).
 11. `StorageBytes` is charged per full tree, not delta; `exclusivity_` is held for a command's deadline; cancellation
     cannot interrupt a running command (both inherited from Tier 0).
 12. A reset issued directly on the Ledger (not through the provider) restores files but not cwd/env.
+13. Lifetime ceilings are checked lazily, at `shell_exec`/`on_context`/`on_run_end`/destroy, never by a host timer
+    (§15.5): an idle environment keeps running, bounded by its container/job limits but not in wall time, until the
+    next check point.
 
 ## 13. Red-team history
 
@@ -360,3 +372,164 @@ From `docs/research/2026-09-29-persistent-shell-sandbox-landscape.md` and `docs/
 4. Confirms §10: whole-process restore exists only at the VM-snapshot level (E2B, Firecracker, Perplexity SPACE);
    container checkpointing breaks live shells (gVisor, Docker checkpoint, Kata has none). Timeout behaviour in most
    products is "stop waiting, leave it running"; §7's kill-then-restore-cwd/env is stricter than all of them.
+
+## 15. Revision 5 — implementation (2026-10-01, GitHub issue #146)
+
+### 15.1 What was built
+
+Branch `adr209-persistent-shell-impl`, one commit per build step (prerequisites #142–#145 verified on `main`):
+
+| Step | What | Tests (all green) |
+|---|---|---|
+| 2 | `Ledger::head_checkpoint()`, `SandboxRuntime::run_live()`, the shared core (`persistent_shell.hpp`: `ShellSnapshot`, `LiveExecOutcome`, `PersistentShellSurface`, replay) | `test_sandbox_runtime_live` (H1–H2, R1–R10) |
+| 3 | release-only `on_run_end` (`HasOnRunEnd`, `RunEndView`, `bound_on_run_end`, descriptor + `ComposedContextProvider` forwarding) | `test_rt_agent_session_run_end_hook` (E1–E9) |
+| 4 | `DockerPersistentShellSurface` | `test_persistent_shell_core` (offline), `test_docker_persistent_shell_surface` (daemon, V1–V10, V6b) |
+| 5 | `LiveShellSandboxProvider`, `ShellLifetime` (`lifetime::PerRun`/`PerSession`), `LiveShellLimits`, `AsyncQuota<LiveShellOpen>`, the reset mapping | `test_live_shell_sandbox_provider` (P1–P16) |
+| 6 | `cap::NativeExec::{live_session, session_wall_ms_cap, max_processes}`, `cap::decl::NativeExec` params, `trust::parse_native_exec_grant`, reachability fixture | `test_native_exec_capability` (N10–N13), `test_policy_reachability` |
+| 7 | `NativePwshSession`, `NativeShellSessionProvider` | `test_native_shell_session_provider` (W0–W7, N1–N8; real processes) |
+| 8 | claims C1–C17 | `test_live_shell_sandbox_provider_live` (daemon, L0–L7) plus the above |
+
+### 15.2 Design changes the implementation forced
+
+1. **Out-of-band file transport (§14 item 1 adopted; replaces §7's `printf %b`/`eval`/trailer).** A server loop in
+   the container reads a nonce from a FIFO, checks `c.<nonce>` with `/bin/sh -n` (a syntax error in a *sourced*
+   file would kill the shell), sources it with fd 3 closed and stdin from `/dev/null`, and publishes
+   `rc`/`pwd`/`environ` as `x.<nonce>` by rename. The client is one `docker exec -i` per command with the command on
+   **stdin** (never argv: no `execve` limit, no quoting). Its reply is `AE1 <xlen> <olen> <blen>` followed by the
+   three parts, parsed with every length bounded. A missing or malformed header is `shell_lost`. A syntax error is
+   exit 2 and the shell survives (V3). The native tier uses the same model (files, `[ScriptBlock]::Create`, base64).
+2. **PID 1 is a builtins-only `sh` keeper, not a static bind-mounted binary.** It opens a FIFO read-write on fd 3,
+   unlinks it, and loops `read -t 5` + `wait`: it never forks after start (§7 (c)), reaps every ≤5 s (b), and, as a
+   namespace init with no SIGKILL handler, survives a SIGKILL from inside (a). There is no binary to ship or mount. The
+   server refuses an `sh` without `read -t` (the keeper would spin) with exit 98. **Measured while planting:** busybox
+   `sh -c` execs its last command, so the Tier 0 shape `sleep infinity` *also* survives the in-container SIGKILL; what
+   it lacks is reaping (20 zombies). V6b, not V6, is the keeper's discriminating check.
+3. **sh replay is POSIX single quoting** (`'` becomes `'\''`), not `printf '%b'` octal literals: simpler, and exactly
+   injection-safe (nothing is special inside single quotes). The pwsh replay stays base64.
+4. **Timeout:** `docker exec <id> sh -c 'kill -KILL -1'`, then `shell_lost`; the partial output is fetched after the
+   kill; if that exec cannot start, `docker rm -f` and `container_lost`. A killed process stays a zombie until the
+   keeper's next tick (V5 counts live processes only).
+5. **The snapshot is a diff against the open-time environment.** The denylist was widened to `PWD`, `OLDPWD`,
+   `SHLVL`, `_`, `CDPATH`, `PSModulePath` and the prefixes `LD_`, `PS`, `BASH_FUNC_`, `DYLD_`; non-identifier names
+   never enter. A cwd over 4 KiB is dropped, never cut (a cut path names another directory).
+6. **A new class `DockerPersistentShellSurface`.** `DockerExecutionSurface` is unchanged apart from `run_argv`
+   reporting a deadline kill and `DockerCliBackend::create` taking an optional PID 1 script.
+7. **`shell_exec`'s static ceiling is `cap::decl::RunCommand`**, the same authority as Tier 0's `run_command` (run a
+   command in this session's own sandbox), held differently. The dynamic gate is unchanged: owner-only `RunCost`.
+8. **`ShellExecReply` has 16 fields** (`AE_JSON_SCHEMA`'s limit): the cwd is not echoed (the command can print it),
+   `commit_error` is `"<code>: <message>"`, and truncation is `output_bytes > output.size()`.
+9. **A charged `LiveShellOpen` is not refunded when the open then fails.** The attempt created and destroyed an
+   environment, which is what that budget bounds. `RunCost` *is* refunded (nothing ran).
+10. **`on_run_end` runs with the sandbox event sink bound** (bracketed like a tool call, ADR-170), so a failed release
+    is a `sandbox_exec_finished{stage:"release", ok:false}` event of the run that completed (E9), emitted after that
+    run's `run_finished`. Releases checked from `on_context()` have no sink and are counted in `release_failures()`.
+11. **There was no declarative capability path at all.** `trust::parse_native_exec_grant()` is now the one place a
+    YAML/JSON document becomes a `cap::NativeExec` (unknown keys, wrong types and out-of-range numbers are refused);
+    `trust::live_session_grant_usable()` is §9's use-site rule. The reachability fixture holds a declarative and a
+    CRTP live grant (both GRANTED) and a one-shot grant (DENIED), giving I6 parity.
+12. **Native: the PowerShell family plus a containment probe.** MEASURED: the Store/MSIX `pwsh` 7.6 starts every child
+    process OUTSIDE the Job Object it runs in (`IsProcessInJob` false; the active-process limit never applied; a
+    `Start-Process` child survived `TerminateJobObject`), with no breakaway flag set. Windows PowerShell 5.1 is
+    contained. Every open therefore starts a probe child and refuses the shell (`native_shell_session.job_not_enforced`)
+    unless the probe is inside the job; the host chooses `pwsh` or `powershell`. `max_processes` counts the shell and
+    must be ≥2 for the probe; the job's `ActiveProcesses` also counts the console host. The minimal environment gained
+    a fixed `PATHEXT` (no `cmd`/`ping` by bare name otherwise); output is forced to UTF-8 and a BOM is stripped.
+13. **Native snapshots are "the last one"** (the native tier has no checkpoints); a re-open replays it.
+14. **The native per-command re-check is `contains(the grant the running session was opened under)`.** A narrowed
+    grant (smaller `session_wall_ms_cap`/`max_processes`/memory) is treated as a revocation: refuse and kill the job (N4).
+15. **§14 item 3 (Microsoft Execution Containers) was not evaluated.** The native tier ships with no identity boundary
+    (the shell runs as the host user), as disclosed in §12 item 6.
+16. **Empty directories vanish on a re-open** (§12 item 8), found live: a `cd` into an empty directory created by an
+    earlier command falls back to `/workspace` after a re-open, because the Ledger tree has no directory entries.
+17. **`reset_to_turn(n)` uses the existing `Ledger::checkpoint_at(n)`** (ADR-102) to map the appended checkpoint to
+    turn *n*'s snapshot (snapshots are keyed by checkpoint `self_digest` in a table bounded to 256).
+
+### 15.3 §5a decided: option (b), scoped
+
+§5a recommended (a), "when both serve one worktree". As built, they never do: the live sandbox tier owns its own
+`SandboxRuntime`, branch and container (§3: "two sandboxes, two branches, nothing shared"), and the native tier runs
+on the host. A shared `cwd` would name a directory the other environment does not have. 010 §3a is amended: "every
+`Runner`" means every runner over the same execution environment; each live tier keeps its own `{cwd, env}`
+(`ShellSnapshot`); background processes in the live tiers are governed by §6, not 006 §6b.
+
+### 15.4 Claims, tests, positive controls
+
+Every control below was planted and observed to fail the named check, then removed.
+
+| # | Checked by | Control and result |
+|---|---|---|
+| C1 | L1 (venv in `python:3.12-alpine`, 4 links skipped and listed, both commits ok), L0, V2, P2 | Tier 0 pair: export not carried (L0); scan following links: the venv commit fails (L1) |
+| C2 | L2 (one container, 5 commands across turns) | re-open per command: L2 fails |
+| C3 | L3, R3, P9 | uncleared staging: the deleted file comes back (L3) |
+| C4 | P15 (real `AgentSession`, cancel between turns), P16 (model failure) | `run_live` deferring its commit: P15/P16 fail |
+| C5 | P7 (incl. an equal tree), R4 | no reset mapping: P7 fails; no lost-shell mapping: P8 fails |
+| C6 | R10, P10, P10b (a delegate in the owner's OPEN shell) | no `RunCost` gate: P10/P10b fail |
+| C7 | V5 (incl. no live survivor), V6, V6b, V7, L6 | `sleep infinity` keeper: V6b (not V6, §15.2 item 2); host-side-only kill: V5's survivor check. *Not run:* the `sleep & wait` keeper plant (the keeper never forks, by construction) |
+| C8 | V3, P1–P3 | no `sh -n`: V3. *Not run:* an uncapped-read plant (the reply parser's bounds are unit-tested in `test_persistent_shell_core`) |
+| C9 | Q1–Q3, V9 (sh), W6 (pwsh) | `\'` escaping: Q1; quote-literal pwsh replay: W6 (the broken replay does not parse, so nothing is restored) |
+| C10 | P3–P6, P12, P14, E7 | no run-end check: P3/P4/P12/P14; uncharged open: P6 |
+| C11 | E1–E9 | no sink bracket: E9 |
+| C12 | L5 (measurement) | a mid-write drain committed 4–5 of the first 10 lines a 1 line/s writer produced; torn sets are real; `docker pause` was not implemented, so §12 item 2 stands |
+| C13 | N1, N10–N13, reachability | no monotone clause: N10 and the reachability oracle; `live_session` alone as the tool gate: N1; no per-command re-check: N3/N4 |
+| C14 | V10 (argv log), W7 | snapshot cwd as `-w`: V10; snapshot cwd as the native spawn cwd: W7 |
+| C15 | V7 (64-pid container), W5 (job process limit) | no job process limit: W5 (12 of 12 started). *Not run for Docker:* removing the container's pids limit under a fork bomb would load the shared Docker VM other work uses (CLAUDE.md machine safety) |
+| C16 | L4, V8 | container reuse: L4 and V8 |
+| C17 | R5, P9 | commit failure returned as an error: R5 |
+| — | W0 | no containment probe: the Store `pwsh` opens with children outside the job |
+
+Also found while proving: V7 was flaky (a `sleep 60` tail can itself fail to fork under pid exhaustion and end the
+command early); the tail is now a builtin busy loop.
+
+### 15.5 Adversarial self red-team (2026-10-01) — findings and fixes
+
+A hostile, read-only review of the finished code (container escape, quota bypass, I2 widening via the native
+session, leaked processes). No FATAL finding. Five MAJOR, all fixed. Each fix has a test, and each test was shown
+to fail with its fix planted back out:
+
+| # | Finding | Fix | Test | Control → result |
+|---|---|---|---|---|
+| M1 (I8) | A command the surface refused *after* `run_live` opened the environment (a NUL, or >256 KiB, on first use or `restart`) returned before the provider bookkept the open. No ceiling, policy or destructor check saw the container as held, and its background processes outlived every run. The "create" audit event was also missing (I4). | `open_hook` marks the attempt; `shell_exec` bookkeeps any open that left a live surface, before returning the refusal. | P17 | old bookkeeping (`outcome->reopened` only) → P17 ×2 |
+| M2 (I8, C7) | The timeout kill ran the container's own `sh`, which the command (root in its container) can replace. A fake `sh` exiting 0 made the host report `shell_lost` and drain, while every process kept running. | After the in-container kill, the host checks with `docker top <id> -o pid,stat` (ps on the Docker host; nothing runs in the container) that only PID 1 is alive (zombies excluded, 5 tries). If not, `docker rm -f` and `container_lost`. | V11 (`#!/bin/busybox true` planted at `/usr/local/bin/sh`, then a busy loop) | trust the kill's exit status → V11 fails |
+| M3 (I2) | The native shell was spawned with `bInheritHandles=TRUE` and no handle list. Every inheritable handle in the host (another session's `docker exec` pipes, sockets) was duplicated into a shell that lives for hours. native_jail_backend.cpp records this exact defect as fixed. | `STARTUPINFOEXW` + `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` = {NUL in, NUL out}. | W8 (a host pipe holding a secret, opened by handle value from pwsh) | no `EXTENDED_STARTUPINFO_PRESENT` → W8 reads the secret |
+| M4 (I2) | Revocation was only checked inside `exec()`. A revoked grant stops the tool being offered, so no `exec()` comes, and an idle shell with its background processes kept running under a revoked grant. | `on_context` and `on_run_end` end a held shell whose opening grant is no longer contained in what the context holds (`end_if_revoked`). | N9 (both hooks), N4 (narrowing now caught at `on_context`; the next command runs in a fresh shell bounded by the narrower grant) | no `on_context` check → N4, N9, N11 fail |
+| M5 (I8) | `cpu_ms_cap` was carried in the grant and compared by the re-check, but never applied to the held shell. | Applied as `JOB_OBJECT_LIMIT_JOB_TIME` (best-effort: job_object_limits.hpp's measured finding) AND checked from the host (`JobObjectBasicAccountingInformation`, user + kernel) after every command and at every check point. Unreadable accounting fails closed. It is a budget **per shell**: a re-open, charged to `LiveShellOpen`, starts a fresh one. | N12 (3000 ms cap, an 8 s spin) | both removed → N12 fails; host check alone → passes; kernel limit alone → passed in the run measured (it killed the shell), but it is not relied on |
+
+MINOR findings:
+
+- **Fixed.** Another identity could end the opener's native shell: the coverage check ran before the principal
+  check. The principal check now runs first. N10 (a grantless stranger); control: old order → N10/N11.
+- **Fixed.** A revoked shell's snapshot was replayed into the next shell. It is now dropped on revocation, and a
+  snapshot only replays into a shell the same principal opens. N11.
+- **Fixed.** Release events from `on_context` were dropped (no-op sink). The turn-start `on_context` call is now
+  bracketed like a tool call. E10; control: no bracket → E10. (`resume_tool_table`'s `on_context`, on an
+  approval resume, is still unbracketed: a release there is counted in `release_failures()` only.)
+- **Fixed.** A lost container whose removal failed was marked closed and forgotten. `container_lost` now goes
+  through `release()`, which keeps the handle and retries. P18; control: `timers_.closed()` → P18 ×2.
+- **Fixed.** A `session_wall_ms_cap`/`wall_ms_cap` above INT64_MAX wrapped negative. Live grants above 2^62 ms are
+  unusable (`trust::kMaxLiveSessionWallMs`), and `wall_ms_cap` saturates. N12 in test_native_exec_capability;
+  control: the bound removed → fails.
+- **Fixed.** The env denylist is now case-insensitive and covers .NET injection points (`DOTNET_*`, `CORECLR_*`,
+  `COR_*`, `COMPLUS_*`). S2; control: prefixes removed → S2.
+- **Fixed.** The native provider was movable while its tool descriptor captured `this`. It is now non-movable.
+- **Fixed, without a discriminating test.** `run_in_flight_`/`pending_run_end_` are reset in `clear_core_state`,
+  `fork_core_from` and `restore_from_record`. No test discriminates it: a fork is a fresh object, and a restored
+  interaction is closed with nothing run and no terminal event (ADR-196 §7). So a restored suspended run never fires
+  `on_run_end`, and its environment is released by the ceilings or the destructor.
+- **Disclosed, not fixed.**
+  - Run-end events are emitted after `run_finished`/`run_failed`/`run_canceled` (§15.2 item 10).
+  - The live sandbox provider stays movable (`ComposedContextProvider` engages it by value). Its descriptor captures
+    `this`, so it must not be moved while a suspended round holds a descriptor.
+  - W0 proves the probe refuses a real escaping build (the Store `pwsh`), not a planted one.
+
+**Ceilings are checked lazily** (red-team cross-cutting note, disclosed as §12 residual 13). `max_idle`, `max_alive`,
+`max_runs`, PerRun and `session_wall_ms_cap` are evaluated at `shell_exec`, `on_context`, `on_run_end` and destroy.
+No host timer enforces them. A run suspended on an approval that never comes, or a PerSession shell nobody touches,
+keeps its environment and background processes until the next check point or the provider's destruction. Bounded
+meanwhile: the container's pids/memory/CPU limits, or the job's process, memory and (now) CPU limits. Not bounded:
+wall time. A host reaper thread is the follow-on.
+
+### 15.6 CI
+
+`test_docker_persistent_shell_surface` and `test_live_shell_sandbox_provider_live` need a daemon and are in both of
+`ci.yml`'s exclusion regexes. `test_native_shell_session_provider` is built only with
+`AGENTENGINE_WITH_NATIVE_PROCESS=ON`, which no CI leg sets; it exits 77 (ctest SKIP) when no `powershell` is on PATH.
