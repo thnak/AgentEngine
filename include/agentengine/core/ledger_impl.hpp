@@ -373,6 +373,32 @@ agentengine::result<agentengine::Digest> Ledger<Store>::head_tree_digest(
 }
 
 template <class Store>
+agentengine::result<Checkpoint> Ledger<Store>::head_checkpoint(std::string const& branch_name,
+                                                                 agentengine::IdentityHandle caller) const {
+    std::lock_guard<std::mutex> g(mutex_);
+    auto it = branches_.find(branch_name);
+    if (it == branches_.end()) {
+        return std::unexpected(agentengine::error{agentengine::failure_class::contract,
+                                                      "unknown branch", "ledger.unknown_branch"});
+    }
+    BranchState const& state = it->second;
+    if (!authorized_for(tree_acl_, state.head_tree_digest, caller)) {
+        return std::unexpected(agentengine::error{
+            agentengine::failure_class::policy,
+            "caller is not authorized to read this branch's head tree digest",
+            "ledger.tree_access_denied"});
+    }
+    auto cp_it = state.checkpoints.find(state.head_turn_index);
+    if (cp_it != state.checkpoints.end() && cp_it->second.self_digest == state.head_self_digest) {
+        return cp_it->second;
+    }
+    // A fresh root (never committed), or a child whose head was inherited from its parent by
+    // `branch_from()` and so has no checkpoint entry of its own yet: report the head as it stands.
+    return Checkpoint{state.head_self_digest, state.head_tree_digest, {}, state.created_by_id,
+                      state.head_turn_index};
+}
+
+template <class Store>
 agentengine::result<Checkpoint> Ledger<Store>::checkpoint_at(std::string const& branch_name,
                                                                 std::uint64_t turn_index,
                                                                 agentengine::IdentityHandle caller) const {

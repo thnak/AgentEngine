@@ -188,8 +188,11 @@ target_link_libraries(agentengine_core INTERFACE agentengine_rt_workflow)
 # docker_execution_surface.hpp's and sandbox/detail/process_identity.hpp's non-template bodies, compiled once here.
 # Out of line they also take <windows.h> and the POSIX process headers with them: neither header includes an OS
 # header any more. Linked through agentengine::core like the libraries above, so no consumer needs a CMake change.
+# ADR-209: persistent_shell.cpp is the live shell's shared core (snapshot diff and replay scripts), used by the
+# Docker surface's persistent mode and by the native pwsh session provider.
 add_library(agentengine_docker_surface STATIC
   src/sandbox/docker_execution_surface.cpp
+  src/sandbox/persistent_shell.cpp
   src/sandbox/process_identity.cpp)
 target_include_directories(agentengine_docker_surface PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_compile_features(agentengine_docker_surface PRIVATE cxx_std_23)

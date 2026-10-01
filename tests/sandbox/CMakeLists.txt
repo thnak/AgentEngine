@@ -114,6 +114,11 @@ set_tests_properties(test_sandbox_runtime PROPERTIES RESOURCE_LOCK docker_daemon
 agentengine_add_test(test_sandbox_runtime_deletions
   LIBS agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
 
+# ADR-209 step 2 (issue #146): Ledger::head_checkpoint() and SandboxRuntime::run_live() against an in-test
+# PersistentShellSurface. NO daemon -- not for ci.yml's exclusion lists.
+agentengine_add_test(test_sandbox_runtime_live
+  LIBS agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+
 # GitHub issue #145: a commit that fails after the command ran still tells the model the command ran, with
 # its exit code and output. In-test ExecutionSurface, NO daemon -- not for ci.yml's exclusion lists.
 agentengine_add_test(test_run_command_commit_failure

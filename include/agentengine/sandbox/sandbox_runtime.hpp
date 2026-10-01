@@ -44,6 +44,7 @@
 // `Ledger<>&` constructor argument) still resolves to the same `InMemoryWorktreeObjectStore` default it
 // was hardcoded to before.
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -60,6 +61,7 @@
 #include "agentengine/rt/async_quota.hpp"
 #include "agentengine/rt/task.hpp"
 #include "agentengine/sandbox/execution_surface.hpp"
+#include "agentengine/sandbox/persistent_shell.hpp"
 #include "agentengine/sandbox/real_io_filesystem.hpp"
 #include "agentengine/trust/identity_authority.hpp"
 
@@ -98,6 +100,30 @@ struct SandboxRunOutcome {
     // GitHub issue #142: symbolic links the run left in the working directory, root-relative. They are
     // not in `checkpoint`'s tree (it has no link kind); this is where a caller learns what was left out.
     std::vector<std::string> skipped_symlinks;
+};
+
+// ADR-209 §4: what `run_live()` returns for one `shell_exec`. A VALUE whenever the command was handed to the
+// shell -- a commit that failed afterwards is `commit_error`, not an error result, because the model must
+// learn that the command really ran (a `git push`, a `curl -X POST`) and see what it printed (pass 3 #7).
+struct LiveRunOutcome {
+    agentengine::LiveExecOutcome exec;
+    // The checkpoint committing what the command changed. Absent iff `commit_error` is set.
+    std::optional<agentengine::Checkpoint> checkpoint;
+    // The command ran; its workspace changes were NOT recorded (drain, scan or commit failed, or the
+    // container was lost). The live shell is desynced and the next command re-opens from the head.
+    std::optional<agentengine::error> commit_error;
+    // The head the command ran against (its snapshot is what a lost shell falls back to).
+    agentengine::Checkpoint prior_head;
+    bool reopened = false;
+    std::vector<std::string> skipped_symlinks;
+};
+
+// ADR-209 §4 step 2: the caller-held sync state of ONE live shell. `run_live()` re-opens whenever the shell is
+// not live, `desynced` is set, or the head checkpoint (`self_digest`, not the tree -- a reset can append a
+// checkpoint whose tree equals the current one) differs from `synced_checkpoint`.
+struct LiveShellSync {
+    std::optional<agentengine::Digest> synced_checkpoint;
+    bool desynced = true;
 };
 
 template <class Store = agentengine::InMemoryWorktreeObjectStore>
@@ -206,6 +232,100 @@ public:
         (void)co_await ledger_->reap_pending_abandons();
 
         co_return SandboxRunOutcome{*exec_r, *cp, std::move(skipped_symlinks)};
+    }
+
+    // ADR-209 §4 -- `run()`'s live-surface sibling: the command runs in a HELD shell whose cwd/env/processes
+    // persist, and its effect is committed before this returns, exactly as `run()` commits (§2: no dirty state
+    // between tool calls). Under `exclusivity_`:
+    //   1. charge `RunCost` (owner-only, so only the quota owner can ever reach a live shell -- §4 step 1);
+    //   2. sync check against the head CHECKPOINT; on a miss, `open_hook(head)` (charges `LiveShellOpen` and
+    //      names the snapshot to replay) then materialize head + `surface.open()` -- a fresh environment;
+    //   3. run the command with `deadline`;
+    //   4. drain (the surface empties staging first: issue #143) -> scan -> commit.
+    // `open_hook` is `(Checkpoint const& head) -> task<result<std::optional<ShellSnapshot>>>`. A refusal
+    // there, a failed open or a command the surface refused up front refunds `RunCost`: nothing ran.
+    template <agentengine::PersistentShellSurface Surface, class OpenHook>
+    [[nodiscard]] agentengine::rt::task<agentengine::result<LiveRunOutcome>> run_live(
+        Surface& surface, std::string command, agentengine::IdentityHandle author,
+        agentengine::rt::AsyncQuota<RunCost>& run_quota, agentengine::rt::AsyncQuota<StorageBytes>& storage_quota,
+        LiveShellSync& sync, OpenHook open_hook, std::chrono::milliseconds deadline) {
+        agentengine::rt::AsyncMutex::Guard guard = co_await exclusivity_->lock();
+
+        auto run_consumed = co_await run_quota.try_consume(1, author);
+        if (!run_consumed.has_value()) co_return std::unexpected(run_consumed.error());
+
+        auto head = ledger_->head_checkpoint(branch_.name(), author);
+        if (!head.has_value()) {
+            (void)co_await run_quota.refund(1);
+            co_return std::unexpected(head.error());
+        }
+
+        LiveRunOutcome out;
+        out.prior_head = *head;
+        bool const in_sync = surface.is_live() && !sync.desynced && sync.synced_checkpoint.has_value() &&
+                             *sync.synced_checkpoint == head->self_digest;
+        if (!in_sync) {
+            sync.desynced = true;
+            agentengine::result<std::optional<agentengine::ShellSnapshot>> replay = co_await open_hook(*head);
+            if (!replay.has_value()) {
+                (void)co_await run_quota.refund(1);
+                co_return std::unexpected(replay.error());
+            }
+            auto materialized = co_await io_fs_.materialize(*ledger_, head->tree, author);
+            if (!materialized.has_value()) {
+                (void)co_await run_quota.refund(1);
+                co_return std::unexpected(materialized.error());
+            }
+            auto opened = surface.open(io_fs_.host_root(), replay->has_value() ? &**replay : nullptr);
+            if (!opened.has_value()) {
+                (void)co_await run_quota.refund(1);
+                co_return std::unexpected(opened.error());
+            }
+            sync.synced_checkpoint = head->self_digest;
+            sync.desynced = false;
+            out.reopened = true;
+        }
+
+        auto exec_r = surface.exec(command, deadline);
+        if (!exec_r.has_value()) {
+            (void)co_await run_quota.refund(1);
+            co_return std::unexpected(exec_r.error());
+        }
+        out.exec = std::move(*exec_r);
+        if (out.exec.shell_lost || out.exec.timed_out) sync.desynced = true;
+
+        auto const unrecorded = [&](agentengine::error e) {
+            sync.desynced = true;
+            out.commit_error = std::move(e);
+        };
+        if (out.exec.container_lost) {
+            unrecorded(agentengine::error{agentengine::failure_class::fatal,
+                                          "the container was lost, so the command's workspace changes could "
+                                          "not be read back and were not recorded",
+                                          "sandbox_runtime.live_container_lost"});
+            co_return out;
+        }
+        auto drain_r = surface.drain_to(io_fs_.host_root());
+        if (!drain_r.has_value()) {
+            unrecorded(drain_r.error());
+            co_return out;
+        }
+        auto tree = co_await io_fs_.scan_and_drain_into_tree(*ledger_, author, &out.skipped_symlinks);
+        if (!tree.has_value()) {
+            unrecorded(tree.error());
+            co_return out;
+        }
+        auto cp = co_await ledger_->commit(branch_, *tree, author, storage_quota);
+        if (!cp.has_value()) {
+            unrecorded(cp.error());
+            co_return out;
+        }
+        (void)co_await ledger_->reap_pending_abandons();
+        // The shell's state now corresponds to the new head -- unless it was lost, in which case
+        // `desynced` (set above) forces the next command to re-open whatever the checkpoint says.
+        sync.synced_checkpoint = cp->self_digest;
+        out.checkpoint = *cp;
+        co_return out;
     }
 
     // Closes this design's own disclosed §5/ADR-099 residual -- "Ledger::reset_to() is real and proven,
