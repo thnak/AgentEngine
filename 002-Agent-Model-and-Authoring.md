@@ -104,6 +104,41 @@ session to type-erase its `ChatClientT`); and an `Engine` holding credentials lo
 on behalf of whichever agent runs next is ambient authority (I2). Where a host wants a registry of
 agents, it is a map from names to `make_agent_session<A>` calls — host code, outside the engine.
 
+### 2.2 Running an agent with the harness
+
+**Added by `decisions/ADR-234-harness-composition.md` (2026-10-01, issue #60).** The counterpart of Microsoft
+Agent Framework's `AsHarnessAgent()` / `create_harness_agent()`: one call that runs an agent with an
+opinionated default stack. It is the §2.1 bridge plus pieces, not a different way to build a session — every
+§2.1 guarantee (declared tools only, the caller's grants narrowed to the ceiling, narrowing-only overrides,
+the approval floor) holds because the same bridge runs.
+
+```cpp
+#include "agentengine/core/harness.hpp"
+
+HarnessOptions harness;                                   // every default below is on unless disabled
+harness.reflection_evaluator = my_evaluator;              // opt-in: bounded re-runs until satisfied
+auto writer = make_harness_session<Writer>(client, opts, std::move(harness));
+// or, for a 015 document:  bind_harness_session(meta, client, opts, std::move(harness));
+// compaction is a type:     make_harness_session<Writer, HistoryProvider<Window<20>>>(client, opts);
+auto r = writer->run("...");                              // run.suspended_for_approval -> writer->resolve({...})
+```
+
+| Piece | Default | Switch |
+|---|---|---|
+| Harness instructions (before the agent's) | on | `disable_harness_instructions`, `harness_instructions` |
+| Todo list (`TodoProvider`, ADR-166) | on | `disable_todo` |
+| Plan-first gate (`PlanExecuteMode`, ADR-167), covering the agent's declared tools | on | `disable_plan_execute`, `is_planning_safe` |
+| Approval: park for a human instead of deny | on | `disable_approval_suspension` |
+| Telemetry counters + optional sink, capped by `Telemetry<Capture>` | on | `disable_telemetry`, `telemetry_sink` |
+| Compaction | off | `HistoryT` |
+| Skills (host-supplied `SkillsProvider`, advertisement only) | off | `skills` |
+| Bounded reflection (ADR-168), aggregate spend ≤ the agent's `TokenBudget` by default | off | `reflection_evaluator` |
+
+No default needs authority the caller did not pass: the harness's tools need none, the gate and the approval
+posture only deny or delay, and background work (`schedule_wakeup`) appears only with the caller's
+`cap::Schedule` grant inside the ceiling. MAF's default-on file memory, cwd skill scan and web search are not
+copied — each reaches files or the network on no one's grant (I2). ADR-234 §4 has the per-piece reasoning.
+
 ## 3. The policy vocabulary
 
 **Naming:** the binding tag is `ChatClientId<"...">`, not `ChatClient<"...">` — `ChatClient` is
@@ -140,6 +175,12 @@ tool calls until it opens — `core/plan_execute_mode.hpp`'s `PlanExecuteMode`, 
 `TodoProvider` (#53) as the plan the gate demands evidence of. 014 §9 Q1's reasoning against routing
 the dominant single-agent path through supervising-actor/typed-edge machinery applies identically
 here, which is why this isn't authored as a degenerate one-node Planner (014 §3) either.
+
+**No `HarnessAgent<A, ...>` policy shape (issue #60, ADR-234 §3).** Whether a deployment parks approvals for
+a human, counts events, or re-runs an agent until a host evaluator is satisfied is how the deployment *runs*
+the agent, not what the agent *is* — and several harness inputs (an evaluator, a telemetry sink, skill
+sources) are host values, not tags. The harness is therefore §2.2's builder over the compiled metadata, which
+also gives a 015 document the identical harness (I6).
 
 **What `SandboxProfile<P>` governs.** It is not one dial over every sandboxed effect an agent can
 reach: 009 §6 hardcodes plugins to run in the `wasm` profile regardless of what an agent declares

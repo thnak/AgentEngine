@@ -290,3 +290,8 @@ add_executable(agentengine_example_34_request_info_review 34_request_info_review
 target_link_libraries(agentengine_example_34_request_info_review PRIVATE
   agentengine::core agentengine_warnings)
 add_test(NAME example_34_request_info_review COMMAND agentengine_example_34_request_info_review)
+
+# decisions/ADR-234 (issue #60): the Harness composition point, offline (testing::ScriptedChatClient).
+add_executable(agentengine_example_35_harness_agent 35_harness_agent.cpp)
+target_link_libraries(agentengine_example_35_harness_agent PRIVATE agentengine::core agentengine_warnings)
+add_test(NAME example_35_harness_agent COMMAND agentengine_example_35_harness_agent)

@@ -212,6 +212,13 @@ template <class ChatClientT>
 // ae-naming-lint: allow AgentBundle — ADR-226 (002 §2.1 run bridge); 027 not yet updated
 using AgentBundle = quickstart::Bundle<ChatClientT, InMemorySecretStore, AgentToolSurface<>>;
 
+// decisions/ADR-234 (issue #60): the same bundle with a caller-chosen `Inner` behind the agent's tool
+// surface -- how the harness (core/harness.hpp) composes ON this bridge instead of a third session-
+// construction path. `AgentBundle<C>` is exactly `AgentBundleWith<C>`.
+template <class ChatClientT, class Inner = HistoryProvider<Window<0>>>
+// ae-naming-lint: allow AgentBundleWith — ADR-234 (harness composes on the ADR-226 bridge); 027 not yet updated
+using AgentBundleWith = quickstart::Bundle<ChatClientT, InMemorySecretStore, AgentToolSurface<Inner>>;
+
 // The caller's grants, narrowed to the agent's ceiling. Each returned entry is covered BOTH by something
 // the caller granted and by something the agent declared:
 //   - a grant the ceiling covers is kept as granted (with its own, possibly tighter, quota/size caps);
@@ -237,6 +244,12 @@ using AgentBundle = quickstart::Bundle<ChatClientT, InMemorySecretStore, AgentTo
 namespace agent_bind_detail {
 
 using OutputValidator = std::function<result<void>(std::string_view)>;
+
+// decisions/ADR-234: a host-code step over the agent's declared descriptors, applied AFTER the agent-level
+// floors below. The bridge's own callers pass none; the harness passes one that may only make a tool MORE
+// gated (core/harness.hpp's plan-gate coverage), never less -- the bridge cannot check that direction for an
+// arbitrary callable, so this stays in `agent_bind_detail`, not on any public signature.
+using DescriptorFilter = std::function<void(std::vector<ToolDescriptor>&)>;
 
 // Bundle's constructor is private; this is the one friend that reaches it (session_builder.hpp).
 struct BundleFactory {
@@ -281,12 +294,13 @@ struct BundleFactory {
     return tools;
 }
 
-template <class ChatClientT>
-[[nodiscard]] result<AgentBundle<ChatClientT>> bind(AgentMetadata const& meta, ChatClientT client,
-                                                    AgentSessionOptions opts, OutputValidator validator,
-                                                    ChatClientRegistry const* registry,
-                                                    SandboxBackendRegistry const* sandbox_registry) {
-    using BundleT  = AgentBundle<ChatClientT>;
+template <class ChatClientT, class Inner = HistoryProvider<Window<0>>>
+[[nodiscard]] result<AgentBundleWith<ChatClientT, Inner>> bind(AgentMetadata const& meta, ChatClientT client,
+                                                               AgentSessionOptions opts, OutputValidator validator,
+                                                               ChatClientRegistry const* registry,
+                                                               SandboxBackendRegistry const* sandbox_registry,
+                                                               DescriptorFilter const& filter = {}) {
+    using BundleT  = AgentBundleWith<ChatClientT, Inner>;
     using SessionT = typename BundleT::SessionT;
 
     // 002 §6 / I6: the same validator for every metadata, native or declarative.
@@ -338,7 +352,9 @@ template <class ChatClientT>
     session->emplace_chat_client(std::move(client));
     session->set_capabilities(capabilities.get());
 
-    if (auto bound = session->history_provider().bind(ToolTable::from_descriptors(declared_descriptors(meta)));
+    std::vector<ToolDescriptor> declared = declared_descriptors(meta);
+    if (filter) filter(declared);
+    if (auto bound = session->history_provider().bind(ToolTable::from_descriptors(std::move(declared)));
         !bound) {
         return std::unexpected(bound.error());
     }
@@ -373,6 +389,24 @@ template <class ChatClientT>
                                         std::move(session));
 }
 
+// `OutputSchema<T>`'s typed validator, or an empty one when `A` declares no schema. Shared by
+// `make_agent_session<A>()` and the harness's `make_harness_session<A>()` (ADR-234).
+template <class A>
+[[nodiscard]] OutputValidator output_validator_for() {
+    using SchemaT = agent_output_schema_t<A>;
+    if constexpr (std::is_void_v<SchemaT>) {
+        return {};
+    } else {
+        return [](std::string_view text) -> result<void> {
+            auto parsed = json::parse(text);
+            if (!parsed) return std::unexpected(parsed.error());
+            auto decoded = schema::from_json<SchemaT>(*parsed);
+            if (!decoded) return std::unexpected(decoded.error());
+            return {};
+        };
+    }
+}
+
 }  // namespace agent_bind_detail
 
 // THE bridge (002 §2.1 as amended, I6): any compiled `AgentMetadata` -- from `register_agent<A>()` or from
@@ -400,19 +434,8 @@ template <class A, class ChatClientT>
     result<AgentMetadata> meta = register_agent<A>(registry, sandbox_registry);
     if (!meta) return std::unexpected(meta.error());
 
-    agent_bind_detail::OutputValidator validator;
-    using SchemaT = agent_output_schema_t<A>;
-    if constexpr (!std::is_void_v<SchemaT>) {
-        validator = [](std::string_view text) -> result<void> {
-            auto parsed = json::parse(text);
-            if (!parsed) return std::unexpected(parsed.error());
-            auto decoded = schema::from_json<SchemaT>(*parsed);
-            if (!decoded) return std::unexpected(decoded.error());
-            return {};
-        };
-    }
-    return agent_bind_detail::bind(*meta, std::move(client), std::move(opts), std::move(validator), registry,
-                                   sandbox_registry);
+    return agent_bind_detail::bind(*meta, std::move(client), std::move(opts),
+                                   agent_bind_detail::output_validator_for<A>(), registry, sandbox_registry);
 }
 
 }  // namespace agentengine

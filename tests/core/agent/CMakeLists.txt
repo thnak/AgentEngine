@@ -37,6 +37,18 @@ agentengine_add_test(test_agent_registry_sandbox_backend_registry LIBS agentengi
 # an equivalent 015 document is shown to run identically (I6). No network.
 agentengine_add_test(test_agent_session_bridge LIBS agentengine::core agentengine_warnings)
 
+# ---- decisions/ADR-234 (issue #60, 002 §2.2): the Harness composition point -- make_harness_session<A>() /
+# bind_harness_session() (core/harness.hpp) compose the default stack (instructions, todo, plan/execute gate,
+# approval suspension, telemetry; opt-in compaction, skills, reflection) on the ADR-226 bridge. Each piece is
+# shown active in a real start_run() with a positive control that disables it, and the session is shown to
+# hold no authority beyond the caller's narrowed grants (I2). ScriptedChatClient only, no network.
+# H11's real SkillsProvider links agentengine::worktree_store, WIN32-only like its neighbours in core/skills.
+if(WIN32)
+  agentengine_add_test(test_harness_session LIBS agentengine::core agentengine::worktree_store agentengine_warnings)
+else()
+  agentengine_add_test(test_harness_session LIBS agentengine::core agentengine_warnings)
+endif()
+
 if(AGENTENGINE_BUILD_PYTHON_RUNNER)
   set(AE_PYTHON_TEST_ENV "PATH=${AGENTENGINE_PYTHON_DLL_DIR};$ENV{PATH}")
 
