@@ -1,6 +1,6 @@
 # 015 — Declarative Agent and Workflow Format
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-10-01** (§3 switch `case`/`default` edge keys, ADR-215 Proposed, issue #34) · **Depends on:** 002, 006, 014 · **Gate:** §7
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-10-01** (§3 switch `case`/`default` edge keys, ADR-215 Proposed, issue #34; §3 `review_points`, issue #45) · **Depends on:** 002, 006, 014 · **Gate:** §7
 
 ## Goal
 
@@ -90,6 +90,21 @@ A switch (014 §1) is written as `to` edges carrying `case: <label>`, plus at mo
 These compile to exactly the `Workflow` that `WorkflowBuilder::connect_case`/`connect_default` build
 (I6). `case`/`default` on a `fan_out_to`/`fan_in_to` edge, both keys on one edge, a non-string `case`
 and a `default` other than `true` are all load errors.
+
+Review points (014 §4, issue #45) are written as `spec.review_points`: a list of step ids (approve/amend
+only) or `{after: <step id>, revisable: true}` entries:
+
+```yaml
+  review_points:
+    - { after: outline, revisable: true }
+    - edit
+```
+
+The compiler expands them with the same `insert_review_points()` the C++ `SequentialWorkflowBuilder`/
+`ConcurrentWorkflowBuilder` `.with_request_info()` use (`workflow/review_points.hpp`), so both surfaces
+produce the identical graph (I6). That graph is exactly the hand-wired one — a `request_port` node plus
+ordinary edges per review point — so writing those nodes and edges out by hand is an equivalent form. A
+malformed entry is a load error; the expansion's own refusals (014 §4) surface unchanged.
 
 ## 4. Schema and validation
 

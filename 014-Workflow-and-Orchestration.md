@@ -1,6 +1,6 @@
 # 014 — Workflow and Orchestration
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-10-01** (§1 switch/case default, ADR-215 Proposed, issue #34; §2 cancellation, ADR-214 Proposed; §4 one interaction per delivery and answers checked before acceptance, issues #155/#157) · **Amended 2026-09-04 by ADR-169** (§4 — resolving a request port requires caller admission; holding an `interaction_id` is not authority) · **Amended 2026-09-27 by ADR-152/ADR-157** (§7 — the live view has a fine-grained sibling, the workflow event stream; issue #82) · **Depends on:** 001, 002, 005, 013, 018, 019 · **Gate:** §8
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-10-01** (§1 switch/case default, ADR-215 Proposed, issue #34; §2 cancellation, ADR-214 Proposed; §4 one interaction per delivery and answers checked before acceptance, issues #155/#157; §4 review points, issue #45) · **Amended 2026-09-04 by ADR-169** (§4 — resolving a request port requires caller admission; holding an `interaction_id` is not authority) · **Amended 2026-09-27 by ADR-152/ADR-157** (§7 — the live view has a fine-grained sibling, the workflow event stream; issue #82) · **Depends on:** 001, 002, 005, 013, 018, 019 · **Gate:** §8
 
 ## Goal
 
@@ -121,6 +121,37 @@ like an unknown or already-answered id, or a caller the admission gate denies �
 port stays open under the same id, the run stays suspended, and the refusal is reported as itself
 (`invalid_routes`; on the event stream, `request_port_rejected`, never a run-failed event). A typo in
 a route is therefore corrected by answering again, not by losing the run.
+
+**Review points: the builder form of "pause after this step"** (issue #45; MAF's
+`SequentialBuilder`/`ConcurrentBuilder.with_request_info()`). A review point is not a new kind of node:
+it is a request port spliced in after a step, plus ordinary edges, by one shared function over the
+graph (`insert_review_points()`, `workflow/review_points.hpp`). For a review point after step *S*: a
+`request_port` *S*`.review` typed with *S*'s output type is appended to `executors`; every edge out of
+*S* now leaves from the port (same target, kind and label, default failure policy); a direct edge
+*S* → *S*`.review` carrying *S*'s own failure policy (§6) takes the place of *S*'s first edge; and if
+*S* was selected as output, the port replaces it. A **revisable** point also turns *S*'s one forward
+edge into the port's switch default (§1) and adds a `switch_case` edge back to *S* labelled
+`revise`. Answering is the ordinary resume: no routes approves — the answer is what flows on, so
+answering with the ask passes *S*'s output through and an edited message amends it; `revise` sends the
+answer back to *S* for another pass (so *S* must take its own output type), bounded by the round bound
+(§2). Revision needs exactly one direct/chain successor: a step that feeds a fan-in (a fan-in edge
+always fires, so it cannot be a default) or has no successor gets an approve/amend point. A step whose
+edges route (switch/case, multi-selection) cannot be reviewed — the reviewer's routes would replace its
+own — and neither can a request port, an unknown step, or one selected twice; these are build
+errors, never a silently different graph.
+
+The C++ surface is `SequentialWorkflowBuilder<Msg>` (participants joined by `chain` edges;
+`.with_request_info({.only, .allow_revision})` — every participant when `only` is empty; the last
+participant's point is approve/amend) and `ConcurrentWorkflowBuilder<In, Out, Result>` (dispatcher
+fan-out, participants, fan-in aggregator; `.with_request_info({ids})` reviews the selected
+participants *before* aggregation, so the fan-in barrier counts the review port as the source and the
+aggregator runs once, after every review is answered). The declarative surface is 015 §3's
+`review_points`, expanded by the same function (I6). Because the expansion is exactly the hand-wired
+graph (proved by structural equality in `tests/workflow/test_workflow_review_points.cpp`), everything
+above about request ports — one interaction per delivery, answers checked first, admission,
+cancellation, checkpoints — holds for review points with no further engine code. Not built: a
+revisable review in front of a fan-in, which MAF's nested approval workflow allows; it needs a fan-in
+edge gated by a route, which the graph does not have.
 
 A suspended workflow **holds no resources**: it is checkpointed, its activations passivate, and it
 resumes on the response, on a durable reminder (the runtime's durable reminders — formerly Quark's;

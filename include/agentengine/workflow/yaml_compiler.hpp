@@ -25,6 +25,7 @@
 // single-target; an N-target fan-out is N separate `Edge` records sharing one `from`, by design of
 // that struct, not this compiler's own invention), `fan_in_to` (single target, `edge_kind::fan_in`).
 // `switch_case` and its default (ADR-215, issue #34): `case: <label>` / `default: true` on a `to` edge.
+// Review points (issue #45): `spec.review_points`, expanded by review_points.hpp's shared function.
 // `multi_selection`/`chain`/per-edge `on_failure` policy are NOT built -- 015 §3's own example never
 // uses them, and extending the YAML shape to cover them is real, separate follow-up work, not a
 // drive-by here.
@@ -37,6 +38,7 @@
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/workflow/graph.hpp"
+#include "agentengine/workflow/review_points.hpp"
 
 namespace agentengine::workflow {
 
@@ -288,6 +290,35 @@ namespace json = agentengine::json;
 
     if (json::Value const* output_from = spec->find("output_from"); output_from && output_from->is_string()) {
         wf.output_selection.push_back(output_from->as_string());
+    }
+
+    // Issue #45: `review_points` -- a list whose entries are a step id (`- draft`) or
+    // `{after: <step id>, revisable: true|false}`. Expanded by the SAME `insert_review_points()`
+    // (review_points.hpp) the C++ pattern builders call, so the two surfaces cannot expand a review point
+    // differently (I6); the expanded graph is exactly the hand-wired one, which stays an equivalent way to
+    // write it. Applied last, after every executor and edge is known. A malformed entry is refused.
+    if (json::Value const* reviews = spec->find("review_points")) {
+        if (!reviews->is_array()) {
+            return std::unexpected(error{failure_class::contract, "\"review_points\" must be an array",
+                                          "yaml_compiler.bad_review_points"});
+        }
+        std::vector<ReviewPoint> points;
+        for (json::Value const& entry : reviews->as_array()) {
+            if (entry.is_string()) {
+                points.push_back(ReviewPoint{entry.as_string(), false});
+                continue;
+            }
+            json::Value const* after     = entry.is_object() ? entry.find("after") : nullptr;
+            json::Value const* revisable = entry.is_object() ? entry.find("revisable") : nullptr;
+            if (after == nullptr || !after->is_string() || (revisable != nullptr && !revisable->is_bool())) {
+                return std::unexpected(error{failure_class::contract,
+                                              "a \"review_points\" entry must be a step id or {after: <id>, "
+                                              "revisable: <bool>}",
+                                              "yaml_compiler.bad_review_point"});
+            }
+            points.push_back(ReviewPoint{after->as_string(), revisable != nullptr && revisable->as_bool()});
+        }
+        return insert_review_points(std::move(wf), points);
     }
 
     return wf;
