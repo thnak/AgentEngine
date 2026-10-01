@@ -511,7 +511,67 @@ struct compiler<A, Agent<A, Policies...>> {
     }
 };
 
+// decisions/ADR-226: the C++ TYPE an agent declared through `OutputSchema<T>`, or `void` -- the bridge
+// (core/agent_session_bridge.hpp) needs `T` itself, not only `output_schema_of`'s schema text, to build
+// the response validator `AgentSession::set_output_schema()` takes. LAST tag wins, matching
+// `output_schema_of` above exactly: an agent that (oddly) declares two `OutputSchema<...>` tags must get
+// a validator for the same `T` whose schema text `AgentMetadata::output_schema_json` carries, never
+// the first one's validator paired with the last one's schema (ADR-226 red-team finding R4).
+template <class... Policies>
+struct output_schema_type_of {
+    using type = void;
+};
+template <class T, class... Rest>
+struct output_schema_type_of<OutputSchema<T>, Rest...> {
+    using rest = typename output_schema_type_of<Rest...>::type;
+    using type = std::conditional_t<std::is_void_v<rest>, T, rest>;
+};
+template <class P, class... Rest>
+struct output_schema_type_of<P, Rest...> : output_schema_type_of<Rest...> {};
+
+template <class Base>
+struct agent_output_schema;
+template <class A, class... Policies>
+struct agent_output_schema<Agent<A, Policies...>> {
+    using type = typename output_schema_type_of<Policies...>::type;
+};
+
 }  // namespace agent_detail
+
+// decisions/ADR-226: `OutputSchema<T>`'s `T` for agent `A`, or `void` when `A` declares none.
+template <class A>
+// ae-naming-lint: allow agent_output_schema_t — ADR-226; 027 not yet updated
+using agent_output_schema_t = typename agent_detail::agent_output_schema<agent_detail::agent_base_t<A>>::type;
+
+// decisions/ADR-226 (002 §6: "Validation is the same code path for declarative agents"): every 002 §6
+// check that can be evaluated from an already-compiled `AgentMetadata` VALUE, in the order
+// `agent_detail::compiler::run()` runs them. `register_agent<A>()` has always run these; a 015
+// document compiled by `compile_agent_document()` never did (that function's own comment leaves
+// validation to its caller, and no caller ran it). `bind_agent_session()` (core/agent_session_bridge.hpp)
+// runs this on EVERY metadata it binds -- native or declarative -- so a declarative agent that would
+// fail registration fails binding with the same diagnostic, and a native `AgentMetadata` someone edited
+// by hand after `register_agent<A>()` returned is re-checked rather than trusted.
+//
+// The one check NOT here: `Stateless<N>`-with-session-state, which needs the agent's C++ type
+// (`std::is_empty_v<A>`) and so can only run in `register_agent<A>()`; a declarative document has no
+// `Stateless` field to get wrong.
+[[nodiscard]] inline result<void> validate_agent_metadata(AgentMetadata const& meta,
+                                                          ChatClientRegistry const* registry = nullptr,
+                                                          SandboxBackendRegistry const* sandbox_registry = nullptr) {
+    using namespace agent_detail;
+    if (auto r = check_chat_client_id(meta.chat_client_id); !r) return r;
+    if (auto r = check_chat_client_credentials(meta.chat_client_id, registry); !r) return r;
+    if (auto r = check_tool_name_collision(meta.tools.descriptors()); !r) return r;
+    CapabilitySet const ceiling = CapabilitySet::grant_root(meta.capability_ceiling);
+    if (auto r = check_capability_ceiling(ceiling, meta.tools.descriptors()); !r) return r;
+    if (auto r = check_sandbox_profile_availability(meta.sandbox_profile, sandbox_registry); !r) return r;
+    if (auto r = check_tool_sandbox_profile_compatibility(); !r) return r;
+    if (auto r = check_output_schema_enforceable(meta.output_schema_json, registry, meta.chat_client_id); !r) {
+        return r;
+    }
+    if (auto r = check_handoff_cycle(); !r) return r;
+    return {};
+}
 
 // 002 §6's entry point: "at register_agent<A>() the engine compiles metadata and validates, failing
 // fast" -- `A` must derive from `Agent<A, Policies...>` for some Policies pack (any other type fails

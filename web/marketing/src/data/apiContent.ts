@@ -478,20 +478,19 @@ struct MyAgent : Agent<MyAgent, ChatClientId<"anthropic:claude-opus-4">, Tools<S
 };
 auto meta = register_agent<MyAgent>();   // same 8 checks below -- most already pass on these defaults`;
 
-// examples/01_hello_agent.cpp:105-125 (trimmed) -- the actually-runnable minimal turn. Note this
-// builds agentengine::rt::AgentSession<ChatClientT> DIRECTLY from a ChatClient type, not from a
-// registered Agent<Derived, Policies...> -- register_agent<A>() (above) validates a policy set,
-// but no example in this repo yet constructs a running AgentSession FROM that validated
-// AgentMetadata. Both surfaces are real; they are just not wired to each other yet.
-export const helloAgentRunSnippet = `// examples/01_hello_agent.cpp:105-125 (trimmed) -- run: ./agentengine_example_01_hello_agent
-using HelloAgent = agentengine::rt::AgentSession<JokerChatClient>;
-HelloAgent session;
-session.initialize("s-hello", Principal{"p-demo", ""});
-session.emplace_chat_client();
+// examples/01_hello_agent.cpp (trimmed) -- the actually-runnable minimal agent. Since ADR-226 (issue
+// #46) the declared Agent<Derived, Policies...> IS what runs: make_agent_session<A>() runs
+// register_agent<A>()'s validation and binds the compiled policy set to a real rt::AgentSession.
+export const helloAgentRunSnippet = `// examples/01_hello_agent.cpp (trimmed) -- run: ./agentengine_example_01_hello_agent
+struct Joker : Agent<Joker, ChatClientId<"demo:joker">, Tools<RollDie>, MaxTurns<4>, TokenBudget<1'000>> {
+    static constexpr std::string_view name         = "joker";
+    static constexpr std::string_view instructions = "Roll a die, then tell a pirate joke that uses the number.";
+};
 
-auto r = drive(session.start_run(StartRun{user_message("Tell me a joke about a pirate.")}));
-// r->message is the assistant's real reply -- JokerChatClient is a small deterministic fake so
-// this builds and runs completely offline, no API key, no network.`;
+auto agent = make_agent_session<Joker>(JokerChatClient{});   // validate the declaration, bind a session
+auto reply = agent->ask("Tell me a joke about a pirate.");   // model -> roll_die -> model, offline
+// JokerChatClient is a small deterministic fake so this builds and runs completely offline,
+// no API key, no network; the session enforces exactly the tools and bounds Joker declares.`;
 
 export const multiTurnSnippet = `// examples/03_multi_turn.cpp:109-135 (trimmed) -- run: ./agentengine_example_03_multi_turn
 using JokeAgent = agentengine::rt::AgentSession<JokerChatClient>;
