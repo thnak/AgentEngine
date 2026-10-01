@@ -649,6 +649,9 @@ void AgentSessionCore::fork_core_from(AgentSessionCore const& source, std::strin
     // a fresh fork inherits none of the source's (or *this*'s own prior) outstanding background
     // work. Same fix category as clear_core_state()'s own comment below.
     standing_effects_registry_.reset();
+    // ADR-209 §15.5: a fork has no run of its own in flight (its interactions were cleared above).
+    run_in_flight_ = false;
+    pending_run_end_.reset();
 }
 
 void AgentSessionCore::clear_core_state() {
@@ -693,6 +696,8 @@ void AgentSessionCore::clear_core_state() {
     // the drain loop's own find_if() already no-ops on an unknown handle_id, same as a canceled
     // one).
     standing_effects_registry_.reset();
+    run_in_flight_ = false;  // ADR-209 §15.5: a reused session must not carry a stale in-flight run
+    pending_run_end_.reset();
 }
 
 // agent_session.hpp:1721
@@ -761,6 +766,11 @@ void AgentSessionCore::restore_from_record(AgentSessionRecord const& rec) {
         }
         if (digits) interaction_counter_ = std::max(interaction_counter_, n);
     }
+    // ADR-209 §15.5: no run is in flight in a restored session. A restored interaction cannot resume its round (it
+    // is closed with nothing run, ADR-196 §7, and no terminal event), so its run never fires on_run_end; a held
+    // environment is then released by its provider's ceilings or destructor, never left by stale state here.
+    run_in_flight_ = false;
+    pending_run_end_.reset();
 }
 
 // agent_session.hpp:1796
@@ -1492,8 +1502,14 @@ task<result<AgentResponse>> AgentSessionCore::run_rounds() {
 
         // ADR-061 §20.7: effect_context_.principal, not principal_ -- per-request, not session-level.
     SessionContext session_ctx{session_id_, effect_context_.principal, history_};
+        // ADR-209 §15.5: a provider that releases a held environment from on_context (a lifetime ceiling hit at a
+        // turn start) reports it as a run event of this run -- bracketed exactly like a tool call (ADR-170).
+        effect_context_.sandbox_exec_sink = [this](run_event_kind kind, run_event_payload::SandboxExec p) {
+            emit_run_event(kind, std::move(p));
+        };
         result<ContextContribution> contribution =
             co_await bound_on_context(session_ctx, effect_context_);
+        effect_context_.sandbox_exec_sink = [](run_event_kind, run_event_payload::SandboxExec) {};
         if (!contribution) {
             emit_run_event(run_event_kind::run_failed,
                             run_event_payload::RunFailed{contribution.error().code, contribution.error().message,

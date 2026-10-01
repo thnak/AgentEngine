@@ -205,6 +205,10 @@ int main() {
         AE_CHECK(!trust::live_session_grant_usable(grant(true, std::nullopt, 4)), "N12: no session cap -> unusable");
         AE_CHECK(!trust::live_session_grant_usable(grant(true, 0, 4)), "N12: a zero session cap -> unusable");
         AE_CHECK(trust::live_session_grant_usable(grant(true, 1000, 4)), "N12 (positive control): opt-in + both caps");
+        // ADR-209 §15.5: a session cap that would wrap negative as a signed duration bounds nothing.
+        AE_CHECK(!trust::live_session_grant_usable(grant(true, UINT64_MAX, 4)), "N12: a session cap above 2^62 ms -> unusable");
+        AE_CHECK(trust::live_session_grant_usable(grant(true, trust::kMaxLiveSessionWallMs, 4)),
+                 "N12 (positive control): a session cap of exactly 2^62 ms is usable");
     }
     // N13: I6 -- the declarative grant parses to exactly what the CRTP declaration converts to.
     {

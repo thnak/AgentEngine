@@ -28,6 +28,12 @@
 //   N6  LiveShellOpen bounds re-opens: once spent, a restart is refused.
 //   N7  lifetime::PerRun ends the shell at run end; the next call re-opens with the last snapshot's cwd.
 //   N8  session_wall_ms_cap is a ceiling: past it, the next check point ends the shell.
+// ADR-209 §15.5 (red-team fixes):
+//   W8  M3: an inheritable pipe handle the host holds is not reachable from the shell (handle list).
+//   N9  M4: a revocation ends an IDLE shell (no further command) at the next on_context / on_run_end.
+//   N10 a grantless other identity is refused as the wrong principal and cannot end the opener's shell.
+//   N11 a revoked shell's snapshot is not replayed into the next one.
+//   N12 M5: the grant's cpu_ms_cap ends a shell that spends it.
 //
 // Positive controls (planted by hand, recorded in ADR-209 §15): dropping the per-command re-check fails N3/N4;
 // using `live_session` alone as the tool gate (no cap check) fails N1; not setting the job's process limit fails W5;
@@ -90,12 +96,23 @@ constexpr std::string_view kShell = "powershell";
     return alive;
 }
 
-[[nodiscard]] cap::NativeExec grant(bool live, std::optional<std::uint64_t> session_ms, std::optional<std::uint32_t> procs) {
+[[nodiscard]] cap::NativeExec grant(bool live, std::optional<std::uint64_t> session_ms, std::optional<std::uint32_t> procs,
+                                    std::optional<std::uint64_t> cpu_ms = std::nullopt) {
     cap::NativeExec g{std::string(kShell), "workdir", std::nullopt, std::nullopt, 512ull << 20, false, std::nullopt, std::nullopt};
     g.live_session = live;
     g.session_wall_ms_cap = session_ms;
     g.max_processes = procs;
+    g.cpu_ms_cap = cpu_ms;
     return g;
+}
+
+[[nodiscard]] DWORD pid_of(result<NativeShellSessionReply> const& r) {
+    if (!r.has_value()) return 0;
+    try {
+        return static_cast<DWORD>(std::stoul(r->output));
+    } catch (...) {
+        return 0;
+    }
 }
 
 struct Ctx {
@@ -287,6 +304,33 @@ int main() {
                   (where ? show(where->output) : std::string("error")) + ")");
     }
 
+    // ---- W8 (ADR-209 §15.5 M3): an inheritable handle the HOST holds is not handed to the shell.
+    {
+        SECURITY_ATTRIBUTES sa{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+        HANDLE rd = nullptr;
+        HANDLE wr = nullptr;
+        bool const piped = CreatePipe(&rd, &wr, &sa, 0) != 0;
+        if (piped) {
+            SetHandleInformation(wr, HANDLE_FLAG_INHERIT, 0);
+            char const secret[] = "AE-SECRET-4711\n";
+            DWORD written = 0;
+            WriteFile(wr, secret, sizeof(secret) - 1, &written, nullptr);
+            CloseHandle(wr);
+        }
+        NativePwshSession s;
+        auto o = s.open(config, nullptr);
+        std::string const handle_text = std::to_string(reinterpret_cast<std::uintptr_t>(rd));
+        auto r = s.exec("try { $p = New-Object System.IO.Pipes.AnonymousPipeClientStream([System.IO.Pipes.PipeDirection]::In, '" +
+                            handle_text + "'); $rd = New-Object System.IO.StreamReader($p); Write-Output ('got:' + $rd.ReadLine()) } "
+                            "catch { Write-Output 'no-handle' }",
+                        15s);
+        check(piped && o.has_value() && r.has_value() && r->output.find("AE-SECRET-4711") == std::string::npos,
+              "W8: a host-side inheritable pipe handle (" + handle_text + ") is not reachable from the shell (" +
+                  (r ? show(r->output) : r.error().message) + ")");
+        s.terminate();
+        if (piped) CloseHandle(rd);
+    }
+
     // ---- provider
     IdentityAuthority& authority = IdentityAuthority::bootstrap();
     IdentityHandle owner = authority.adopt(Principal{.id = "native-owner"});
@@ -341,12 +385,16 @@ int main() {
             } catch (...) {
             }
         }
+        // Since §15.5 (M4) the narrowing is caught at the narrowed context's on_context, before any command: the job
+        // (its background process too) is killed there, and the command then runs in a FRESH shell bounded by the
+        // narrower grant -- never in the one opened under the wider grant.
         Ctx narrowed({Capability{grant(true, 1000, 8)}});
         auto n4 = run(p, narrowed, "Write-Output narrowed");
-        check(!n4.has_value() && n4.error().code == "native_shell_session.grant_revoked" && !p.session()->is_live() &&
-                  bg_pid != 0 && !process_alive(bg_pid),
-              "N4: a narrowed grant is a revocation: refused, and the job (its background process too) is killed");
+        check(n4.has_value() && n4->reopened && bg_pid != 0 && !process_alive(bg_pid),
+              "N4: a narrowed grant is a revocation: the job (its background process too) is killed, and the next "
+              "command runs in a fresh shell under the narrower grant");
 
+        p.terminate();
         auto again = run(p, c, "Write-Output back");
         check(again.has_value() && again->reopened, "N3 setup: the full grant re-opens");
         Ctx revoked({Capability{grant(false, std::nullopt, std::nullopt)}});
@@ -389,6 +437,56 @@ int main() {
         *clock_now += 11min;  // past session_wall_ms_cap (600000 ms)
         (void)tool_of(p, c);  // on_context
         check(!p.holds_shell() && !process_alive(pid), "N8: past session_wall_ms_cap the next check point ends the shell");
+    }
+
+    // ---- N9-N11 (ADR-209 §15.5 M4 and the ordering/snapshot minors)
+    {
+        NativeShellSessionProvider<lifetime::PerSession> p({std::string(kShell)}, root.wstring(), "workdir", open_q, limits,
+                                                         30s, approval_mode::always_require, lifetime::PerSession{},
+                                                         default_live_shell_clock(), std::string(kShell));
+        Ctx c({Capability{grant(true, 600000, 8)}});
+        (void)run(p, c, "Set-Location sub");
+        DWORD const bg = pid_of(run(p, c, "(Start-Process -FilePath ping.exe -ArgumentList '-n','200','127.0.0.1' -NoNewWindow -PassThru).Id"));
+
+        // N10: another identity holding NO grant must not be able to end the opener's shell.
+        Ctx stranger({}, "someone-else");
+        std::vector<std::pair<std::string, json::Value>> m{{"command", json::Value::make_string("Write-Output x")}};
+        auto tool = tool_of(p, c);
+        auto st = tool ? tool->invoke(json::Value::make_object(std::move(m)), stranger.ctx)
+                       : result<json::Value>(std::unexpected(error{failure_class::contract, "no tool", "test.no_tool"}));
+        check(!st.has_value() && st.error().code == "native_shell_session.principal_mismatch" && p.session()->is_live() &&
+                  bg != 0 && process_alive(bg),
+              "N10: a grantless other identity is refused as the wrong principal; the opener's shell keeps running");
+
+        // N9: the grant is revoked and NO further command comes: the next check point (on_context) ends the idle
+        // shell and its background process.
+        Ctx revoked({Capability{grant(false, std::nullopt, std::nullopt)}});
+        (void)tool_of(p, revoked);
+        check(!p.holds_shell() && bg != 0 && !process_alive(bg),
+              "N9: a revocation ends an IDLE shell at the next on_context (its background process too)");
+
+        // N11: the snapshot it left is not replayed into the next shell.
+        auto next = run(p, c, "Write-Output (Get-Location).Path");
+        check(next.has_value() && next->reopened && next->output.find("\\sub") == std::string::npos,
+              "N11: after a revocation the next shell does not replay the revoked one's cwd (" +
+                  (next ? show(next->output) : next.error().message) + ")");
+
+        // N9b: the same at run end.
+        DWORD const bg2 = pid_of(run(p, c, "(Start-Process -FilePath ping.exe -ArgumentList '-n','200','127.0.0.1' -NoNewWindow -PassThru).Id"));
+        (void)drive(p.on_run_end(RunEndView{run_end_reason::final_answer}, revoked.ctx));
+        check(!p.holds_shell() && bg2 != 0 && !process_alive(bg2), "N9: ... and at on_run_end (PerSession would keep it)");
+    }
+
+    // ---- N12 (ADR-209 §15.5 M5): the grant's cpu_ms_cap is enforced on the held shell.
+    {
+        NativeShellSessionProvider<lifetime::PerSession> p({std::string(kShell)}, root.wstring(), "workdir", open_q, limits,
+                                                         30s, approval_mode::always_require, lifetime::PerSession{},
+                                                         default_live_shell_clock(), std::string(kShell));
+        Ctx c({Capability{grant(true, 600000, 8, 3000)}});
+        auto r = run(p, c, "$t = [Diagnostics.Stopwatch]::StartNew(); while ($t.ElapsedMilliseconds -lt 8000) { $null = 1 + 1 }; 'spun'");
+        bool const ended = (r.has_value() && r->shell_lost) || !p.holds_shell();
+        check(ended, "N12: a shell that spends its 3000 ms cpu_ms_cap is ended (" +
+                         (r ? show(r->output) + (r->shell_lost ? " [lost]" : "") : r.error().message) + ")");
     }
 
     fs::remove_all(root, ec);

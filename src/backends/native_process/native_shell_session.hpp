@@ -46,6 +46,10 @@ struct NativeShellSessionConfig {
     std::wstring cwd;               // the worktree root (host-authored)
     std::uint64_t memory_bytes = 0;  // the job's memory cap
     std::uint32_t max_processes = 0;  // the job's active-process limit
+    // Cumulative CPU budget for the whole shell (every process, its whole life). Set as the job's
+    // JOB_OBJECT_LIMIT_JOB_TIME, which is best-effort only (job_object_limits.hpp's measured finding), so the
+    // provider ALSO checks `cpu_ms_used()` from the host after every command and at every check point.
+    std::optional<std::uint64_t> cpu_ms;
     std::size_t output_cap_bytes = 64 * 1024;
     std::chrono::milliseconds startup_deadline{30000};
 };
@@ -83,6 +87,8 @@ public:
     // Observability for tests and audit.
     [[nodiscard]] DWORD shell_pid() const noexcept { return pid_; }
     [[nodiscard]] std::optional<std::uint32_t> active_processes() const noexcept;
+    // User + kernel CPU time every process in the job has used, read from the job's accounting (host side).
+    [[nodiscard]] std::optional<std::uint64_t> cpu_ms_used() const noexcept;
     [[nodiscard]] HANDLE job_handle() const noexcept { return job_ ? job_->native_handle() : nullptr; }
     [[nodiscard]] std::filesystem::path const& private_dir() const noexcept { return dir_; }
 

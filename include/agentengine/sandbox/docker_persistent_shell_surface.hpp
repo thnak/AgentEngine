@@ -176,6 +176,8 @@ private:
         std::string const& command, std::chrono::milliseconds deadline, bool with_base, bool* timed_out,
         std::string* nonce_out);
     void forget_container() noexcept;
+    // Host-side check (`docker top`, nothing run in the container) that only PID 1 is still alive (§15.5 M2).
+    [[nodiscard]] bool only_init_alive();
 
     std::string image_;
     ContainerIsolation isolation_{};

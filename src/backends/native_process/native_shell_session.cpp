@@ -259,6 +259,19 @@ std::optional<std::uint32_t> NativePwshSession::active_processes() const noexcep
     return static_cast<std::uint32_t>(info.ActiveProcesses);
 }
 
+std::optional<std::uint64_t> NativePwshSession::cpu_ms_used() const noexcept {
+    if (!job_) return std::nullopt;
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION info{};
+    if (!QueryInformationJobObject(job_->native_handle(), JobObjectBasicAccountingInformation, &info, sizeof(info),
+                                   nullptr)) {
+        return std::nullopt;
+    }
+    // 100 ns units; includes processes that already exited.
+    auto const total = static_cast<std::uint64_t>(info.TotalUserTime.QuadPart) +
+                       static_cast<std::uint64_t>(info.TotalKernelTime.QuadPart);
+    return total / 10'000u;
+}
+
 void NativePwshSession::kill_job() noexcept {
     if (job_) {
         (void)TerminateJobObject(job_->native_handle(), 1);
@@ -309,20 +322,48 @@ agentengine::result<void> NativePwshSession::open(NativeShellSessionConfig const
     SECURITY_ATTRIBUTES sa{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
     HANDLE nul_in = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
     HANDLE nul_out = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdInput = nul_in;
-    si.hStdOutput = nul_out;
-    si.hStdError = nul_out;
+    // ADR-209 §15.5 M3: `bInheritHandles=TRUE` with no handle list would duplicate EVERY inheritable handle this
+    // host process holds (another session's `docker exec` pipes, sockets) into a shell that lives for hours --
+    // the exact defect native_jail_backend.cpp records as reproduced and fixed. Only the two NUL handles go.
+    if (nul_in == INVALID_HANDLE_VALUE || nul_out == INVALID_HANDLE_VALUE) {
+        if (nul_in != INVALID_HANDLE_VALUE) CloseHandle(nul_in);
+        if (nul_out != INVALID_HANDLE_VALUE) CloseHandle(nul_out);
+        terminate();
+        return std::unexpected(err(failure_class::fatal, "could not open NUL for the shell's standard handles",
+                                   "native_shell_session.open_failed"));
+    }
+    HANDLE inherit_list[2] = {nul_in, nul_out};
+    SIZE_T attr_size = 0;
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &attr_size);
+    std::vector<std::byte> attr_buf(attr_size);
+    auto* attr_list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attr_buf.data());
+    bool const attr_ok = InitializeProcThreadAttributeList(attr_list, 1, 0, &attr_size) != 0;
+    bool const list_ok = attr_ok && UpdateProcThreadAttribute(attr_list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                                              inherit_list, sizeof(inherit_list), nullptr,
+                                                              nullptr) != 0;
+    BOOL created = FALSE;
+    DWORD create_error = 0;
     PROCESS_INFORMATION pi{};
-    std::wstring env = minimal_environment_block();
-    BOOL const created = CreateProcessW(nullptr, mutable_cmd.data(), nullptr, nullptr, TRUE,
-                                        CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW, env.data(),
-                                        config.cwd.c_str(), &si, &pi);
-    DWORD const create_error = created ? 0 : GetLastError();
-    if (nul_in != INVALID_HANDLE_VALUE) CloseHandle(nul_in);
-    if (nul_out != INVALID_HANDLE_VALUE) CloseHandle(nul_out);
+    if (list_ok) {
+        STARTUPINFOEXW si{};
+        si.StartupInfo.cb = sizeof(si);
+        si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        si.StartupInfo.hStdInput = nul_in;
+        si.StartupInfo.hStdOutput = nul_out;
+        si.StartupInfo.hStdError = nul_out;
+        si.lpAttributeList = attr_list;
+        std::wstring env = minimal_environment_block();
+        created = CreateProcessW(nullptr, mutable_cmd.data(), nullptr, nullptr, TRUE,
+                                 EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT |
+                                     CREATE_NO_WINDOW,
+                                 env.data(), config.cwd.c_str(), reinterpret_cast<LPSTARTUPINFOW>(&si), &pi);
+        create_error = created ? 0 : GetLastError();
+    } else {
+        create_error = GetLastError();
+    }
+    if (attr_ok) DeleteProcThreadAttributeList(attr_list);
+    CloseHandle(nul_in);
+    CloseHandle(nul_out);
     if (!created) {
         terminate();
         return std::unexpected(err(failure_class::fatal, "CreateProcessW(pwsh) failed: Win32 error " +
@@ -336,6 +377,7 @@ agentengine::result<void> NativePwshSession::open(NativeShellSessionConfig const
     ResourceLimits limits;
     limits.memory_bytes = config.memory_bytes;
     limits.pids = config.max_processes;
+    limits.cpu_ms = config.cpu_ms.value_or(0);  // best-effort in the kernel; the provider checks it too
     job_.emplace();
     auto made = job_->create(limits);
     auto assigned = made.has_value() ? job_->assign_process(pi.hProcess) : agentengine::result<void>{};

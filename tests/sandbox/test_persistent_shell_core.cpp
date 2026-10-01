@@ -99,6 +99,13 @@ int main() {
         auto s = ps::make_snapshot("/w", after, {});
         check(s.env_set.size() == 1 && s.env_set[0].first == "OK_NAME",
               "S2: denylisted and non-identifier names never enter a snapshot");
+        // ADR-209 §15.5: case-insensitive (Windows names are), and .NET's injection points (pwsh is .NET).
+        Env const dotnet{{"psmodulepath", "C:\\evil"}, {"ld_preload", "/e.so"}, {"DOTNET_STARTUP_HOOKS", "C:\\h.dll"},
+                         {"COR_ENABLE_PROFILING", "1"},  {"COR_PROFILER_PATH", "C:\\p.dll"}, {"CORECLR_PROFILER", "x"},
+                         {"COMPlus_EnableDiagnostics", "1"}, {"OK_NAME", "fine"}};
+        auto s2 = ps::make_snapshot("/w", dotnet, {});
+        check(s2.env_set.size() == 1 && s2.env_set[0].first == "OK_NAME",
+              "S2: lower-case denylisted names and .NET startup-hook/profiler variables never enter a snapshot");
     }
     // ---- S3
     {

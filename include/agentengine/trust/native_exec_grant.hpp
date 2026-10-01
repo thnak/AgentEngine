@@ -86,9 +86,12 @@ namespace agentengine::trust {
 // ADR-209 §9's use-site rule: a held native shell may be offered under `g` only if it opts in AND bounds both
 // the session's life and its process count. A live grant missing either cap is not refused at construction
 // (it is an aggregate); it is refused here, by every use.
+// A cap above 2^62 ms is refused (§15.5): it would not survive the conversion to a signed duration, and a
+// "bound" that large bounds nothing.
+inline constexpr std::uint64_t kMaxLiveSessionWallMs = std::uint64_t{1} << 62;
 [[nodiscard]] inline bool live_session_grant_usable(cap::NativeExec const& g) noexcept {
     return g.live_session && g.session_wall_ms_cap.has_value() && *g.session_wall_ms_cap > 0 &&
-           g.max_processes.has_value() && *g.max_processes > 0;
+           *g.session_wall_ms_cap <= kMaxLiveSessionWallMs && g.max_processes.has_value() && *g.max_processes > 0;
 }
 
 }  // namespace agentengine::trust

@@ -27,18 +27,26 @@ namespace {
 
 bool is_replayable_env_name(std::string_view name) {
     if (!is_identifier(name)) return false;
+    // Compared case-INSENSITIVELY (§15.5): Windows environment names are, so `psmodulepath` is PSModulePath to
+    // pwsh. Over-matching a POSIX name that only differs in case costs nothing but one variable not replayed.
+    std::string upper(name);
+    for (auto& c : upper) {
+        if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+    }
     static constexpr std::string_view kExact[] = {"IFS",     "ENV",      "BASH_ENV", "SHELLOPTS", "BASHOPTS",
                                                   "PROMPT_COMMAND", "PWD", "OLDPWD", "SHLVL",   "_",
-                                                  "CDPATH",  "PSModulePath"};
+                                                  "CDPATH",  "PSMODULEPATH"};
     for (auto const e : kExact) {
-        if (name == e) return false;
+        if (upper == e) return false;
     }
     // `PS*` covers PS1/PS2/PS4 (sh) -- and, deliberately, PSModulePath above is listed too because pwsh
     // reads it to resolve modules; `LD_*` covers LD_PRELOAD/LD_LIBRARY_PATH; `BASH_FUNC_*` is how bash
-    // exports functions through the environment.
-    static constexpr std::string_view kPrefixes[] = {"LD_", "PS", "BASH_FUNC_", "DYLD_"};
+    // exports functions through the environment; `DOTNET_*`/`CORECLR_*`/`COR_*`/`COMPLUS_*` are .NET's
+    // startup-hook and profiler injection points (pwsh is a .NET process).
+    static constexpr std::string_view kPrefixes[] = {"LD_",      "PS",       "BASH_FUNC_", "DYLD_",
+                                                     "DOTNET_",  "CORECLR_", "COR_",       "COMPLUS_"};
     for (auto const p : kPrefixes) {
-        if (starts_with(name, p)) return false;
+        if (starts_with(upper, p)) return false;
     }
     return true;
 }

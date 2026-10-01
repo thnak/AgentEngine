@@ -9,6 +9,8 @@
 #include <cstdio>
 #include <fstream>
 #include <random>
+#include <string_view>
+#include <thread>
 
 #ifndef _WIN32
 #include <sys/stat.h>
@@ -209,6 +211,39 @@ SurfaceRunOutcome DockerPersistentShellSurface::spawn(std::vector<std::string> a
     return docker_cli_detail::run_argv(argv, timeout_seconds, cap, stdin_file, timed_out);
 }
 
+bool DockerPersistentShellSurface::only_init_alive() {
+    // `docker top <id> -o pid,stat` runs `ps` on the Docker host against the container's processes: nothing in
+    // the container is executed. A `SIGKILL`ed process is a zombie (`Z`) until the keeper reaps it on its next
+    // tick, and a zombie runs nothing, so only non-zombies count. A few tries cover the kill still landing.
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        auto top = spawn({"docker", "top", instance_->container_id, "-o", "pid,stat"},
+                         docker_cli_detail::kProcessTimeoutSeconds, 1u << 20);
+        if (top.exit_code != 0) return false;
+        int alive = 0;
+        bool header = true;
+        std::size_t pos = 0;
+        std::string const& text = top.stdout_text;
+        while (pos < text.size()) {
+            std::size_t const eol = text.find('\n', pos);
+            std::string_view line(text.data() + pos, (eol == std::string::npos ? text.size() : eol) - pos);
+            pos = eol == std::string::npos ? text.size() : eol + 1;
+            if (line.find_first_not_of(" \t\r") == std::string_view::npos) continue;
+            if (header) {
+                header = false;
+                continue;
+            }
+            std::size_t const sp = line.find_first_of(" \t", line.find_first_not_of(" \t"));
+            std::string_view const stat =
+                sp == std::string_view::npos ? std::string_view{} : line.substr(line.find_first_not_of(" \t", sp));
+            if (stat.empty() || stat.front() != 'Z') ++alive;
+        }
+        if (header) return false;  // no header: not output we understand
+        if (alive <= 1) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    return false;
+}
+
 void DockerPersistentShellSurface::forget_container() noexcept {
     instance_.reset();
     live_ = false;
@@ -326,6 +361,11 @@ agentengine::result<LiveExecOutcome> DockerPersistentShellSurface::exec(std::str
         live_ = false;
         auto killed = spawn({"docker", "exec", instance_->container_id, "sh", "-c", "kill -KILL -1; exit 0"},
                             docker_cli_detail::kProcessTimeoutSeconds, 4096);
+        // ADR-209 §15.5 M2: that kill ran the CONTAINER's `sh`, which the command (root in its own container)
+        // can have replaced, so its exit status proves nothing. The host checks instead: `docker top` lists the
+        // container's processes from outside it, and anything alive besides PID 1 means the kill did not take,
+        // so the container goes.
+        if (killed.exit_code == 0 && !only_init_alive()) killed.exit_code = -1;
         if (killed.exit_code == 0) {
             auto partial = spawn({"docker", "exec", instance_->container_id, "sh", "-c",
                                   std::string(dps::kPartialOutputScript), "ae", nonce, std::to_string(output_cap_)},

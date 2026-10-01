@@ -27,6 +27,9 @@
 //   P10b a delegate on_behalf_of the owner is refused in the owner's OPEN shell (C6: owner-only RunCost).
 //   P15 C4: a real AgentSession run CANCELED between turns keeps every shell_exec that returned.
 //   P16 C4: a run whose next model call FAILS keeps the shell_exec before it.
+//   P17 (§15.5 M1) an environment opened for a command the surface then refuses is held, counted, audited and
+//       released by the policy -- not invisible to every ceiling.
+//   P18 (§15.5) a lost container whose removal failed stays held and the next check point retries it.
 //
 // Positive controls (planted by hand, recorded in ADR-209 §15): dropping check_lifetime() from on_run_end
 // fails P3 and P14; an open hook that does not charge LiveShellOpen fails P6; dropping the lost-shell
@@ -109,6 +112,16 @@ public:
 
     [[nodiscard]] result<LiveExecOutcome> exec(std::string const& command, std::chrono::milliseconds) {
         if (!live_) return std::unexpected(error{failure_class::contract, "no live shell", "test.not_live"});
+        // What a real surface does with a NUL / oversized command: refused up front, nothing ran (§15.5 M1).
+        if (command == "refuse") return std::unexpected(error{failure_class::policy, "refused", "test.refused"});
+        if (command == "lose_container") {  // a timeout whose in-container kill did not take (§15.5 M2)
+            live_ = false;
+            LiveExecOutcome lost;
+            lost.timed_out = true;
+            lost.shell_lost = true;
+            lost.container_lost = true;
+            return lost;
+        }
         ++c_->execs;
         LiveExecOutcome out;
         out.exit_code = 0;
@@ -646,6 +659,40 @@ int main() {
             auto r = drive(s.start_run(rt::StartRun{user_text("go")}));
             check(!r.has_value() && head_has(w, branch, "kept.txt"), "P16: a run that FAILS after a shell_exec keeps its write (C4)");
         }
+    }
+
+    // ---- P17 (ADR-209 §15.5 M1): a command the surface refuses AFTER this call opened the environment.
+    {
+        World w("p17");
+        PerRunProvider p;
+        check(w.bind(p).has_value(), "P17 setup: bind");
+        Recorded rec;
+        EffectContext ctx = ctx_for("owner", &rec);
+        auto tool = shell_tool(p, ctx);
+        auto r = tool ? tool->invoke(json::Value::make_object({{"command", json::Value::make_string("refuse")}}), ctx)
+                      : result<json::Value>(std::unexpected(error{failure_class::contract, "no tool", "test.no_tool"}));
+        bool const create_audited = std::any_of(rec.events.begin(), rec.events.end(),
+                                                [](auto const& e) { return e.stage == "create" && e.ok; });
+        check(!r.has_value() && r.error().code == "test.refused" && w.counters->opens == 1 && p.holds_environment() &&
+                  create_audited,
+              "P17: the environment opened for a refused command is held, counted and audited");
+        run_end(p);
+        check(w.counters->closes == 1 && !p.holds_environment(), "P17: ... so PerRun releases it at run end");
+    }
+
+    // ---- P18 (§15.5): a lost container whose removal FAILED stays held and is retried.
+    {
+        World w("p18");
+        PerSessionProvider p;
+        check(w.bind(p).has_value(), "P18 setup: bind");
+        (void)shell(p, "noop");
+        w.counters->close_failures_left = 1;
+        auto r = shell(p, "lose_container");
+        check(r.has_value() && r->container_lost && p.holds_environment() && p.release_failures() == 1,
+              "P18: a lost container whose removal failed is still held (not silently forgotten)");
+        EffectContext ctx = ctx_for("owner");
+        (void)shell_tool(p, ctx);
+        check(w.counters->closes == 1 && !p.holds_environment(), "P18: the next check point retries the removal");
     }
 
     std::printf("\n%d checks, %d failed\n", g_checks, g_failed);

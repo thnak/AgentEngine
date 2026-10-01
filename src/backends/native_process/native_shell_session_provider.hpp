@@ -9,12 +9,13 @@
 //   - the opt-in is `cap::NativeExec::live_session`, monotone (trust/capability.hpp), and a live grant missing
 //     either `session_wall_ms_cap` or `max_processes` is refused at every use (`live_session_grant_usable`): the
 //     tool is not even contributed (C13);
-//   - the grant is re-verified before EVERY command against the live EffectContext -- revoked, or narrowed below
-//     what the running session was started with, and the job is killed and the command refused. A command
-//     already running is not interrupted by a revocation alone (there is no revoke callback); the session's
-//     `session_wall_ms_cap` bounds it;
-//   - the Job Object (`max_processes`, the memory cap, KILL_ON_JOB_CLOSE, no breakaway); `session_wall_ms_cap`
-//     is enforced as an extra `max_alive`, and a command's deadline never runs past it;
+//   - the grant is re-verified before EVERY command, and at every on_context/on_run_end (ADR-209 §15.5 M4), against
+//     the live EffectContext -- revoked, or narrowed below what the running session was started with, and the job
+//     is killed (and a command refused). A command already running is not interrupted by a revocation alone (there
+//     is no revoke callback); the session's `session_wall_ms_cap` bounds it;
+//   - the Job Object (`max_processes`, the memory cap, KILL_ON_JOB_CLOSE, no breakaway; the shell is given only its
+//     two NUL handles, §15.5 M3); `session_wall_ms_cap` is enforced as an extra `max_alive`, and a command's
+//     deadline never runs past it; `cpu_ms_cap` is a cumulative per-shell budget (§15.5 M5);
 //   - one principal per shell (I4): the identity that opened it is the only one that may use it; another is
 //     refused (the open budget, `AsyncQuota<LiveShellOpen>`, is owner-only, so only its owner can open one);
 //   - every open is a run event (`sandbox_exec_finished`, stage "create", backend "native-live-shell": ADR-070
@@ -101,14 +102,17 @@ public:
                       !mount_root_.empty();
     }
     ~NativeShellSessionProvider() { terminate(); }
-    NativeShellSessionProvider(NativeShellSessionProvider&&) noexcept = default;
-    NativeShellSessionProvider& operator=(NativeShellSessionProvider&&) noexcept = default;
+    // Not movable (§15.5): the tool descriptor's invoke captures `this`, and a suspended round can still hold
+    // that descriptor, so a moved provider would leave it pointing at the moved-from object.
+    NativeShellSessionProvider(NativeShellSessionProvider&&) = delete;
+    NativeShellSessionProvider& operator=(NativeShellSessionProvider&&) = delete;
     NativeShellSessionProvider(NativeShellSessionProvider const&) = delete;
     NativeShellSessionProvider& operator=(NativeShellSessionProvider const&) = delete;
 
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext&, EffectContext& ctx) {
         ContextContribution contribution;
         check_lifetime(lifetime_event::context, std::nullopt);
+        end_if_revoked(ctx);  // §15.5 M4: a revocation ends an IDLE shell too, not only the next command
         if (!configured_ || !usable_grant(ctx).has_value()) co_return contribution;  // C13: no grant, no tool
         contribution.tools.push_back(make_tool_descriptor());
         co_return contribution;
@@ -116,9 +120,10 @@ public:
 
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
 
-    task<std::monostate> on_run_end(RunEndView view, EffectContext&) {
+    task<std::monostate> on_run_end(RunEndView view, EffectContext& ctx) {
         timers_.run_ended();
         check_lifetime(lifetime_event::run_end, view.reason);
+        end_if_revoked(ctx);
         co_return std::monostate{};
     }
 
@@ -153,13 +158,36 @@ private:
         return std::nullopt;
     }
 
+    // Is the RUNNING shell still covered by what `ctx` holds now? (§9's per-command rule.)
+    [[nodiscard]] bool still_covered(EffectContext& ctx) const {
+        if (!applied_.has_value()) return false;
+        cap::NativeExec requested = *applied_;
+        requested.program_pattern = shell_program_;
+        return usable_grant(ctx).has_value() && ctx.capabilities && ctx.capabilities->contains(requested);
+    }
+
+    // A revoked or narrowed grant ends the shell, and the snapshot it left is not replayed into a later one.
+    void end_if_revoked(EffectContext& ctx) {
+        if (!timers_.is_open() || still_covered(ctx)) return;
+        terminate();
+        last_snapshot_.reset();
+    }
+
     void check_lifetime(lifetime_event event, std::optional<run_end_reason> reason) {
         if (!timers_.is_open()) return;
         auto view = timers_.view(event, reason, clock_());
         bool close = timers_.should_close(lifetime_, view, limits_);
         // §9: the grant's session_wall_ms_cap is an extra ceiling on the shell's whole life.
         if (applied_ && view.alive_for.count() >= static_cast<std::int64_t>(*applied_->session_wall_ms_cap)) close = true;
+        if (cpu_exhausted()) close = true;
         if (close) terminate();
+    }
+
+    // §15.5 M5: the grant's cpu_ms_cap, as a cumulative budget over the shell's whole life, read from the host.
+    [[nodiscard]] bool cpu_exhausted() const {
+        if (!applied_.has_value() || !applied_->cpu_ms_cap.has_value()) return false;
+        auto const used = session_->cpu_ms_used();
+        return !used.has_value() || *used >= *applied_->cpu_ms_cap;  // unreadable accounting fails closed
     }
 
     [[nodiscard]] result<NativeShellSessionReply> exec(NativeShellSessionArgs args, EffectContext& ctx) {
@@ -171,22 +199,22 @@ private:
         auto grant = usable_grant(ctx);
         std::string const who = principal_key(ctx.principal);
 
-        // Per-command re-check (§9): the running session must still be covered by what is held NOW.
         if (timers_.is_open() && applied_.has_value()) {
-            cap::NativeExec requested = *applied_;
-            requested.program_pattern = shell_program_;
-            bool const covered = grant.has_value() && ctx.capabilities && ctx.capabilities->contains(requested);
-            if (!covered) {
-                terminate();
-                return std::unexpected(error{failure_class::policy,
-                                             "the native live-shell grant was revoked or narrowed; the shell and every "
-                                             "process in it were ended",
-                                             "native_shell_session.grant_revoked"});
-            }
+            // One principal per shell, checked FIRST (§15.5): another identity must not be able to end the
+            // opener's shell either, which the revocation branch below would otherwise do on its behalf.
             if (opener_.has_value() && *opener_ != who) {
                 return std::unexpected(error{failure_class::policy,
                                              "this native shell belongs to the identity that opened it",
                                              "native_shell_session.principal_mismatch"});
+            }
+            // Per-command re-check (§9): the running session must still be covered by what is held NOW.
+            if (!still_covered(ctx)) {
+                terminate();
+                last_snapshot_.reset();
+                return std::unexpected(error{failure_class::policy,
+                                             "the native live-shell grant was revoked or narrowed; the shell and every "
+                                             "process in it were ended",
+                                             "native_shell_session.grant_revoked"});
             }
         }
         if (!grant.has_value()) {
@@ -209,7 +237,9 @@ private:
         auto const alive = timers_.view(lifetime_event::shell_exec, std::nullopt, now).alive_for;
         auto deadline = deadline_;
         if (grant->wall_ms_cap.has_value()) {
-            deadline = std::min(deadline, std::chrono::milliseconds(static_cast<std::int64_t>(*grant->wall_ms_cap)));
+            // Saturate before the signed conversion: a cap above 2^62 ms must not wrap negative (§15.5).
+            auto const cap_ms = std::min<std::uint64_t>(*grant->wall_ms_cap, trust::kMaxLiveSessionWallMs);
+            deadline = std::min(deadline, std::chrono::milliseconds(static_cast<std::int64_t>(cap_ms)));
         }
         auto const session_left =
             std::chrono::milliseconds(static_cast<std::int64_t>(*applied_->session_wall_ms_cap)) - alive;
@@ -218,12 +248,18 @@ private:
         auto outcome = session_->exec(args.command, deadline);
         if (!outcome.has_value()) return std::unexpected(outcome.error());
         timers_.used(clock_());
+        if (cpu_exhausted()) {
+            outcome->shell_lost = true;
+            outcome->output += "\n[native shell ended: the grant's cpu_ms_cap is spent]";
+            session_->terminate();
+        }
         if (outcome->shell_lost) {
             timers_.closed();
             opener_.reset();
             applied_.reset();
         } else if (outcome->snapshot.has_value()) {
             last_snapshot_ = outcome->snapshot;
+            snapshot_owner_ = who;
         }
         NativeShellSessionReply reply;
         reply.exit_code = outcome->exit_code;
@@ -250,7 +286,12 @@ private:
         config.cwd = mount_root_;
         config.memory_bytes = grant.memory_bytes_cap.value_or(kDefaultMemoryBytes);
         config.max_processes = *grant.max_processes;
-        auto opened = session_->open(config, last_snapshot_.has_value() ? &*last_snapshot_ : nullptr);
+        // §15.5 M5: the grant's CPU cap applies to the held shell as a cumulative job limit (all processes, the
+        // shell's whole life), as the one-shot providers apply it per process tree.
+        config.cpu_ms = grant.cpu_ms_cap;
+        // A snapshot is replayed only into a shell the same principal opens (§15.5).
+        bool const replay = last_snapshot_.has_value() && snapshot_owner_ == principal_key(ctx.principal);
+        auto opened = session_->open(config, replay ? &*last_snapshot_ : nullptr);
         run_event_payload::SandboxExec audit;
         audit.exec_id = "native-live-shell-" + std::to_string(++opens_);
         audit.backend = "native-live-shell";
@@ -304,6 +345,7 @@ private:
     std::optional<std::string> opener_;
     std::optional<cap::NativeExec> applied_;
     std::optional<ShellSnapshot> last_snapshot_;
+    std::string snapshot_owner_;
     std::string shell_program_;
     std::uint64_t opens_ = 0;
     bool configured_ = false;

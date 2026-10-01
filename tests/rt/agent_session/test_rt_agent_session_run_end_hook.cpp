@@ -19,6 +19,8 @@
 //   E8  a provider without the hook compiles and runs unchanged (the hook is optional).
 //   E9  the hook's `sandbox_exec_sink` is bound (step 5): a release failure it reports is a run event of the run
 //       that completed, not dropped by the default no-op sink.
+//   E10 (§15.5) the same for on_context: a sandbox event a provider reports there (a release at a turn start) is
+//       a run event, not dropped.
 //
 // Positive controls (planted by hand, recorded in ADR-209 §15): firing on "admission passed" instead of on
 // run_started (fire in the wrapper whenever the body returned) fails E2; firing when the run suspended fails
@@ -93,11 +95,17 @@ struct CancelTool : Tool<CancelTool, Capabilities<>, EffectClass<effect_class::p
     }
 };
 
+bool g_context_reports = false;  // E10
+
 // History passthrough + the tools; with the hook.
 class HookedProvider {
 public:
     static constexpr std::string_view name = "hooked";
-    task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext&) {
+    task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext& ctx) {
+        if (g_context_reports) {
+            ctx.sandbox_exec_sink(run_event_kind::sandbox_exec_finished,
+                                  run_event_payload::SandboxExec{"ctx-rel", "live-shell", "release", true, ""});
+        }
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
         c.tools = ToolTable::from_tools<GatedTool, CancelTool>().descriptors();
@@ -359,6 +367,26 @@ int main() {
         }
         check(r.has_value() && release_reported,
               "E9: a sandbox event the hook reports becomes a run event of the run that completed");
+    }
+
+    // ---- E10 (ADR-209 §15.5): a release reported from on_context is a run event too (bracketed like E9).
+    {
+        Session s;
+        s.initialize("e10", Principal{"p", ""});
+        s.set_capabilities(&held);
+        g_context_reports = true;
+        std::vector<RunEvent> events;
+        s.set_run_event_tap([&](RunEvent const& e) { events.push_back(e); });
+        s.emplace_chat_client().set_script({Step{text("done"), {}, false}});
+        auto r = drive(s.start_run(StartRun{user("hi")}));
+        g_context_reports = false;
+        bool reported = false;
+        for (auto const& e : events) {
+            if (e.kind != run_event_kind::sandbox_exec_finished) continue;
+            auto const* p = std::get_if<run_event_payload::SandboxExec>(&e.payload);
+            reported = reported || (p != nullptr && p->exec_id == "ctx-rel");
+        }
+        check(r.has_value() && reported, "E10: a sandbox event reported from on_context becomes a run event");
     }
 
     std::fprintf(stderr, g_failures == 0 ? "ALL PASS\n" : "%d FAILED\n", g_failures);

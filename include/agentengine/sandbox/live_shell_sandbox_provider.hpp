@@ -268,19 +268,26 @@ private:
         if (args.restart.value_or(false)) sync_.desynced = true;
         bool const discard_pending = unrecorded_pending_;
         auto hook = [this, caller](agentengine::Checkpoint const& head) { return open_hook(head, caller); };
+        open_attempted_ = false;
         auto outcome = agentengine::rt::block_on(runtime_->run_live(*surface_, std::move(args.command), caller,
                                                                     *run_quota_, *storage_quota_, sync_, hook,
                                                                     deadline_));
-        if (!outcome.has_value()) return std::unexpected(outcome.error());
         auto const now = clock_();
-        if (outcome->reopened) {
+        // ADR-209 §15.5 M1: an environment this call opened is bookkept even when the command was then refused
+        // (`run_live` returns that refusal as an error after the open). Otherwise no ceiling, policy or
+        // destructor check would ever see it as held (they all start from `timers_.is_open()`).
+        if (open_attempted_ && surface_->is_live()) {
             ++opens_;
             timers_.opened(now);
             release_pending_ = false;
             report(ctx, agentengine::run_event_kind::sandbox_exec_finished, "create", true, {});
         }
+        open_attempted_ = false;
+        if (!outcome.has_value()) return std::unexpected(outcome.error());
         timers_.used(now);
-        if (outcome->exec.container_lost) timers_.closed();  // the surface removed it
+        // The surface tried to remove it. Going through release() (rather than just marking it closed) keeps a
+        // handle whose removal FAILED held and retried at every check point (§15.5).
+        if (outcome->exec.container_lost) release(&ctx);
 
         ShellExecReply reply;
         reply.exit_code = outcome->exec.exit_code;
@@ -327,6 +334,7 @@ private:
         agentengine::Checkpoint head, agentengine::IdentityHandle caller) {
         auto charged = co_await open_quota_->try_consume(1, caller);
         if (!charged.has_value()) co_return std::unexpected(charged.error());
+        open_attempted_ = true;
         co_return find_snapshot(head.self_digest);
     }
 
@@ -450,6 +458,7 @@ private:
     LiveShellTimers timers_;
     bool release_pending_ = false;
     bool unrecorded_pending_ = false;
+    bool open_attempted_ = false;  // set by open_hook() for the duration of one shell_exec (M1)
     std::deque<std::pair<agentengine::Digest, ShellSnapshot>> snapshots_;
     std::uint64_t release_failures_ = 0;
     std::uint64_t opens_ = 0;

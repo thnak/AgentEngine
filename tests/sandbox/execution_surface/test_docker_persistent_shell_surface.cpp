@@ -27,6 +27,8 @@
 //       no spawned argv names /etc and every `-w` is /workspace.
 //
 //   V6b orphans re-parented to PID 1 are reaped (no zombie survives the keeper's tick).
+//   V11 (§15.5 M2) a command that replaced the container's `sh` cannot fake the timeout kill: the host checks
+//       with `docker top` and removes the container (container_lost).
 //
 // Positive controls (planted by hand, recorded in ADR-209 §15): PID 1 = `sleep infinity` (the Tier 0 shape)
 // fails V6b -- it does NOT fail V6, because busybox `sh -c` execs its last command and the kernel shields any
@@ -296,6 +298,19 @@ int main() {
         }
         check(!leaked && !bad_w && !surface.argv_log().empty(),
               "V10: the snapshot cwd never reached a host-side argv; every -w is /workspace");
+    }
+
+    // ---- V11 (ADR-209 §15.5 M2): the command replaces the `sh` the timeout kill runs in the container. The kill
+    // "succeeds" (exit 0) and kills nothing; the host-side `docker top` check must catch it and remove the container.
+    {
+        auto o = surface.open(host, nullptr);
+        std::string const id = surface.container_id();
+        auto r = x("printf '#!/bin/busybox true\\n' > /usr/local/bin/sh && chmod +x /usr/local/bin/sh && "
+                   "(while :; do :; done) & sleep 60",
+                   3s);
+        check(o.has_value() && r.has_value() && r->timed_out, "V11 setup: the command replaced `sh` and ran past its deadline");
+        check(r.has_value() && r->container_lost && !container_exists(id),
+              "V11: a kill that did not take (verified from the host) ends as container_lost, the container removed");
     }
 
     std::string const last = surface.container_id();
