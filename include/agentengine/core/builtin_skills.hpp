@@ -187,44 +187,102 @@ first time rather than assuming a repair pass will catch it -- repair is bounded
 strategy 3 is not always available.
 )SKILL";
 
+// Issue #47 rewrite (2026-10-01): every claim below was checked against the mediated shell as it is
+// today -- src/backends/native_jail/mediated_shell_parser.cpp (grammar; newline separates statements
+// since issue #141) and mediated_shell_dispatch.cpp (the ten builtins, their flags, what stops a script)
+// -- and is exercised by tests/backends/native_jail/test_shell_pipelines_skill_grammar.cpp, which also
+// runs every ```sh block in this text and fails if one no longer parses. Change the shell, change this.
 inline constexpr std::string_view kShellPipelinesSkillMd = R"SKILL(---
 name: shell-pipelines
-description: ShellRunner's small, explicitly non-POSIX-complete grammar -- pipes, redirects, variable assignment/expansion, && / ||, and minimal control flow -- plus its fixed builtin set and how any other command name resolves through the ordinary tool pipeline. Use this before writing a shell command in this environment.
+description: The run_shell tool's small, non-POSIX grammar (statements, pipes, redirects, && / ||, if/for), its ten builtins and their few flags, what persists between calls, and what stops a script -- plus how run_command, a real sh in a container, differs. Use this before writing a shell command in this environment.
 metadata:
-  version: "1"
+  version: "2"
 ---
 # Shell pipelines
 
-The shell tool in this environment is `ShellRunner`, engine-native code that parses a real but
-deliberately SMALL grammar -- it is not a wrapped system shell, and it does not claim POSIX
-conformance. Stay within the documented subset rather than assuming a POSIX shell feature will work.
+`run_shell` is engine-native code, not a system shell. It parses a deliberately SMALL grammar and runs
+a fixed set of builtins against this session's work directory. There are no programs to run: no
+`grep`, `sed`, `find`, `python`, `test` or `[`. When the job needs more than the builtins below, do it
+with `execute_code` (see using-the-code-interpreter) -- it sees the same files.
 
-## What the grammar covers
+## One call, many statements
 
-- Pipes (`|`) and redirects.
-- Variable assignment and expansion.
-- `&&` and `||` for conditional sequencing.
-- Minimal control flow.
+A newline or `;` separates statements. Every statement runs in order and the reply carries ALL of
+their output, stdout and stderr each in order; `ok` is the verdict of the LAST statement. Comments
+start with `#`.
 
-That is the whole surface. A construct outside this list is not a bug to route around with
-cleverness -- it simply is not part of the grammar; do the equivalent work in the code interpreter
-(see using-the-code-interpreter) instead of fighting the shell grammar to express it.
+```sh
+mkdir -p notes
+echo first line > notes/a.txt
+echo second line >> notes/a.txt
+cat notes/a.txt   # prints both lines
+```
 
-## Builtins vs. everything else
+## What persists between calls
 
-A fixed set of ordinary builtins -- `cd`, `pwd`, `ls`, `cat`, `echo`, `export`, `mkdir`, `rm`, `mv`,
-`cp`, and similar -- is implemented directly against the mounted worktree and the capability layer.
-Every other command name resolves ONLY to a registered Runner or a registered Tool -- there is no
-search-path lookup, no arbitrary binary execution. A name that is neither a builtin nor something
-registered produces the same "command not found" a real shell would show, but for a structurally
-different reason: no capability or registration exists for it, not "not found in PATH."
+The current directory does: a `cd` in one call is still in effect in the next. Files persist, of
+course. Variables do NOT persist unless set with `export`, and `export` needs an environment-variable
+grant that a session may not hold -- when it is refused, the whole call fails.
 
-## The same tool, reached two ways
+## The grammar
 
-A command like `grep` in a shell pipeline and the equivalent call through `agent.tools` in Python
-(see using-codeact) resolve to the exact same registered Tool, through the exact same tool pipeline --
-validation, authorization, the works. Do not expect different behavior depending on which frontend
-you reach a tool from; if one works a certain way, the other does too.
+- `a | b` -- pipes. Among the builtins only `cat` (with no file argument) reads its input.
+- `> file` writes stdout to a file, `>> file` appends. There is no `<`, no `2>`, no `&>`: a `2`
+  before `>` is just an argument.
+- `a && b`, `a || b` -- run `b` only if `a` succeeded / failed. A line may end in `&&`, `||` or `|`
+  and continue on the next.
+- `NAME=value cmd ...` -- sets NAME for that one command line. A bare `NAME=value` with no command
+  after it is a parse error.
+- `$NAME` and `${NAME}` expand outside quotes only. Inside `'...'` AND inside `"..."` text is taken
+  literally: `"$NAME"` stays the five characters `$NAME`. An expanded value is never re-split or
+  re-parsed.
+- `if CMD; then ...; else ...; fi` and `for X in a b c; do ...; done`, on one line or several. The
+  condition is a command's success -- there is no `test`, so use a builtin that fails, such as
+  `ls dir` or `cat file`.
+
+```sh
+for f in a b c; do echo item $f; done
+if ls notes; then
+  echo notes exists
+else
+  mkdir notes
+fi
+cat notes/missing.txt || echo no such file
+```
+
+Not part of the grammar at all: command substitution (`$(...)` and backticks are plain text), `$?`,
+functions, subshells, here-documents, globbing (`*` is a literal character), and a bare `&` (a parse
+error). A parse error rejects the whole call before anything runs.
+
+## The builtins
+
+| Builtin | Form |
+| --- | --- |
+| `cd DIR` | `cd /` is the work directory's root; paths starting with `/` are relative to it |
+| `pwd` | |
+| `ls [DIR]` | one directory; no flags; directories end in `/` |
+| `cat [FILE]` | one file, or its piped input when no file is given |
+| `echo WORDS...` | no flags: `-n` is printed |
+| `export NAME=value` | needs an environment grant (see above) |
+| `mkdir [-p] DIR` | |
+| `rm [-r] PATH` | only `-r`; `-rf` is read as a path |
+| `mv SRC DST`, `cp SRC DST` | files; one source |
+
+## What stops a script
+
+An ordinary failure -- `cat` of a missing file, an unknown command (`grep: command not found`) -- is
+reported and the next statement still runs; `&&` / `||` branch on it. Two kinds of failure stop the
+whole call instead and return an error -- nothing after them runs, and the output of what ran before
+them is not returned: a refused permission (such as a refused `export`), and a `>` / `>>` redirect
+that cannot be written (for example a path outside the work directory). A script that runs past its
+time budget is cut off the same way, reported as a timeout.
+
+## If your tool is run_command instead
+
+`run_command` is different: a real POSIX `sh -c` in a fresh container for every call. Any program in
+the image works and the full POSIX grammar applies, but NOTHING carries over between calls except
+files -- no `cd`, no variables, no background processes. Chain dependent steps in ONE command
+(`cd build && make`), and expect each call to need approval.
 )SKILL";
 
 namespace builtin_skills_detail {

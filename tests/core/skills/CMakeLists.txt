@@ -39,6 +39,15 @@ if(WIN32)
     LIBS agentengine::core agentengine::worktree_store agentengine_warnings)
 endif()
 
+# ---- ADR-224 (GitHub issue #47): host pre-mounted built-in skills -- MountedSkillsState provenance,
+# premount_skills_by_host(), and end to end through a real rt::AgentSession with a strict scripted model:
+# the pre-mounted body is in the first request under a host heading, with a no-pre-mount control.
+# WIN32-gated with its neighbours (SkillsProvider -> agentengine::worktree_store).
+if(WIN32)
+  agentengine_add_test(test_skill_premount
+    LIBS agentengine::core agentengine::worktree_store agentengine_warnings)
+endif()
+
 # ---- Skills Phase 2: src/backends/native_jail/skill_mount_materializer.hpp -- the bridge that was
 # missing entirely before this session: SkillsProvider::mounted()'s Mounts, materialized to real files
 # on a real host directory via materialize_mount, plus the reserved-mount-id collision guard. Needs

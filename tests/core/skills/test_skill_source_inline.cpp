@@ -129,8 +129,10 @@ int main() {
                       "R3: using-codeact's body actually mentions the agent.* module surface it teaches");
             }
             if (loaded->size() >= 5) {
-                check((*loaded)[4].skill.body.find("ShellRunner") != std::string::npos,
-                      "R3: shell-pipelines' body actually mentions ShellRunner");
+                // Issue #47: the body now names the tool the model actually calls (run_shell), not
+                // the engine-internal ShellRunner type a model never sees.
+                check((*loaded)[4].skill.body.find("run_shell") != std::string::npos,
+                      "R3: shell-pipelines' body actually mentions run_shell");
             }
         }
     }

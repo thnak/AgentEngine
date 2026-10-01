@@ -9,6 +9,13 @@
 agentengine_add_test(test_read_content
   LIBS agentengine::core agentengine::net_egress_proxy agentengine_warnings)
 
+# ---- GitHub issue #47 / ADR-224: tools/cli_chat_plan.hpp, the decision half of tools/cli_chat.cpp's
+# wiring (--shell tier -> tools offered, cap::RunCommand minted or not, approvals, host pre-mounted
+# skills). Header-only, no model/network/interpreter; reaches tools/ the way test_agentengine_test_driver
+# does.
+agentengine_add_test(test_cli_chat_plan LIBS agentengine::core agentengine_warnings)
+target_include_directories(test_cli_chat_plan PRIVATE ${PROJECT_SOURCE_DIR}/tools)
+
 # ---- ExtractPdfText, 009 §7's PDF-text-layer document-extraction candidate (ADR-106, docs/planning/
 # pdf-text-extraction-design-draft.md Revision 7) -- only built when AGENTENGINE_WITH_PDF is
 # explicitly turned ON (root CMakeLists.txt), the same opt-in posture AGENTENGINE_WITH_WASM/
