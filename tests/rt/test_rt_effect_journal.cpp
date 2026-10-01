@@ -19,9 +19,16 @@
 //   J7 -- a SECOND, genuinely interrupted effect (intent only) is correctly distinguished from the
 //         first (already-confirmed) effect by idempotency key.
 //   J8 -- two different sessions' journals, same AppendLogStore instance, never collide.
+//   J9..J18 (#51) -- the fixed little-endian binary record layout: round-trip, and decode hardening
+//         (every truncation, length past end, oversized length, bad phase/outcome/version/magic
+//         byte, trailing bytes, pre-#51 JSON record refused with its own code, encode/decode field
+//         limit symmetry, arbitrary bytes round-trip).
 
+#include <cstddef>
 #include <cstdio>
+#include <span>
 #include <string>
+#include <vector>
 
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/effect_journal.hpp"
@@ -29,7 +36,10 @@
 using agentengine::EffectContext;
 using agentengine::IdempotencyKey;
 using agentengine::derive_idempotency_key;
+using agentengine::rt::EffectJournalEntry;
 using agentengine::rt::InMemoryAppendLogStore;
+using agentengine::rt::decode_effect_journal_entry;
+using agentengine::rt::encode_effect_journal_entry;
 using agentengine::rt::effect_journal_phase;
 using agentengine::rt::journal_effect_intent;
 using agentengine::rt::journal_effect_outcome;
@@ -132,6 +142,117 @@ int main() {
           "J8: writing to the OTHER session's journal leaves 's-journal's own journal at its prior "
           "size (3: intent1, outcome1, intent2 from J2/J4/J7) -- name-scoping by session_id "
           "genuinely isolates the two");
+
+    // ---- J9..J16 (#51): the binary record layout and its decode hardening ---------------------------
+    // The journal is read on crash-resume, so a torn/truncated/garbage record must be a clean error,
+    // never a crash or out-of-bounds read.
+    EffectJournalEntry const sample{"key-1", "fs_write", "call-9", effect_journal_phase::outcome, true};
+    auto encoded = encode_effect_journal_entry(sample);
+    check(encoded.has_value() && !encoded->empty() && (*encoded)[0] == std::byte{0xAE} &&
+              (*encoded)[1] == std::byte{1},
+          "J9: an entry encodes to the binary layout (magic 0xAE, version 1), not JSON");
+    auto decoded = decode_effect_journal_entry(*encoded);
+    check(decoded.has_value() && *decoded == sample, "J9: encode -> decode round-trips exactly");
+
+    // J10: every proper prefix of a valid record (a torn write at any byte) is refused cleanly.
+    bool every_prefix_refused = true;
+    for (std::size_t n = 0; n < encoded->size(); ++n) {
+        auto r = decode_effect_journal_entry(std::span<std::byte const>(encoded->data(), n));
+        if (r.has_value() || r.error().code != "rt.effect_journal.entry.malformed") {
+            every_prefix_refused = false;
+        }
+    }
+    check(every_prefix_refused,
+          "J10: every truncation of a valid record (all proper prefixes) is refused as malformed");
+
+    // J11: a length prefix that runs past the end of the record.
+    {
+        auto bad = *encoded;
+        bad[4] = std::byte{0xFF};  // idempotency_key length low byte: 255 > bytes remaining
+        auto r = decode_effect_journal_entry(bad);
+        check(!r.has_value() && r.error().code == "rt.effect_journal.entry.malformed",
+              "J11: a string length past the end of the record is refused");
+    }
+    // J12: an oversized length (garbage 0xFFFFFFFF) is refused before any allocation.
+    {
+        auto bad = *encoded;
+        for (int i = 4; i < 8; ++i) bad[static_cast<std::size_t>(i)] = std::byte{0xFF};
+        auto r = decode_effect_journal_entry(bad);
+        check(!r.has_value() && r.error().code == "rt.effect_journal.entry.malformed",
+              "J12: a 4 GiB length prefix is refused (field limit), not allocated");
+    }
+    // J13: a bad phase byte, and an intent claiming outcome_ok.
+    {
+        auto bad = *encoded;
+        bad[2] = std::byte{2};
+        auto r = decode_effect_journal_entry(bad);
+        check(!r.has_value() && r.error().code == "rt.effect_journal.entry.malformed",
+              "J13: an unknown phase byte (2) is refused");
+        auto bad2 = *encoded;
+        bad2[2] = std::byte{0};  // intent, but outcome_ok byte is still 1
+        auto r2 = decode_effect_journal_entry(bad2);
+        check(!r2.has_value(), "J13: an intent record carrying outcome_ok=1 is refused");
+        auto bad3 = *encoded;
+        bad3[3] = std::byte{7};
+        check(!decode_effect_journal_entry(bad3).has_value(),
+              "J13: an outcome_ok byte other than 0/1 is refused");
+    }
+    // J14: a bad version byte and a bad magic byte each get a clear error.
+    {
+        auto bad = *encoded;
+        bad[1] = std::byte{2};
+        auto r = decode_effect_journal_entry(bad);
+        check(!r.has_value() && r.error().code == "rt.effect_journal.entry.unsupported_version",
+              "J14: an unknown format version is refused with its own code");
+        auto bad2 = *encoded;
+        bad2[0] = std::byte{0x00};
+        auto r2 = decode_effect_journal_entry(bad2);
+        check(!r2.has_value() && r2.error().code == "rt.effect_journal.entry.malformed",
+              "J14: a bad magic byte is refused");
+    }
+    // J15: trailing bytes after the last field are refused (a record is exactly one entry).
+    {
+        auto bad = *encoded;
+        bad.push_back(std::byte{0});
+        check(!decode_effect_journal_entry(bad).has_value(),
+              "J15: trailing bytes after call_id are refused");
+    }
+    // J16: a pre-#51 JSON record is refused with its own code, and through read_effect_journal too.
+    {
+        InMemoryAppendLogStore legacy_store;
+        std::string const json =
+            R"({"call_id":"c","idempotency_key":"k","outcome_ok":false,"phase":"intent","tool_name":"t"})";
+        std::vector<std::byte> legacy;
+        for (char c : json) legacy.push_back(static_cast<std::byte>(c));
+        (void)legacy_store.append(agentengine::rt::effect_journal_log_id("s-legacy"), std::move(legacy));
+        auto r = read_effect_journal(legacy_store, "s-legacy");
+        check(!r.has_value() && r.error().code == "rt.effect_journal.entry.legacy_json_format",
+              "J16: an old JSON-format journal is refused clearly (legacy_json_format), not misread");
+    }
+    // J17: the writer refuses a field the reader would refuse (symmetry), and a field at the limit
+    // still round-trips.
+    {
+        EffectJournalEntry big = sample;
+        big.call_id.assign(agentengine::rt::effect_journal_max_field_bytes + 1, 'x');
+        auto r = encode_effect_journal_entry(big);
+        check(!r.has_value() && r.error().code == "rt.effect_journal.entry.field_too_large",
+              "J17: an over-limit field is refused at encode time");
+        big.call_id.assign(agentengine::rt::effect_journal_max_field_bytes, 'x');
+        auto ok = encode_effect_journal_entry(big);
+        check(ok.has_value() && decode_effect_journal_entry(*ok).has_value() &&
+                  *decode_effect_journal_entry(*ok) == big,
+              "J17: a field exactly at the limit round-trips");
+    }
+    // J18: arbitrary-byte strings (embedded NUL, quotes, non-UTF-8) round-trip byte-exactly --
+    // no escaping layer to get wrong.
+    {
+        EffectJournalEntry odd{std::string("k\0\"\\\xff", 5), "", "c\n", effect_journal_phase::intent,
+                               false};
+        auto enc = encode_effect_journal_entry(odd);
+        check(enc.has_value() && decode_effect_journal_entry(*enc).has_value() &&
+                  *decode_effect_journal_entry(*enc) == odd,
+              "J18: strings with NUL/quote/backslash/0xFF and an empty string round-trip exactly");
+    }
 
     if (g_failures == 0) {
         std::fprintf(stderr, "All checks passed.\n");
