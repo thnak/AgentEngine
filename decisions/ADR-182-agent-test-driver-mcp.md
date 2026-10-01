@@ -1128,3 +1128,28 @@ not `approver_id`. A blank or multi-line approver was passed to the asynchronous
 it and marked the run failed. The driver now refuses such an approver with `test.bad_arguments` using the
 session's own rule (`is_attributable_id`). PC checks that a blank and a two-line approver are refused and the
 interaction is still listed; with the check removed, PC fails there and at every later step.
+
+## 25. GitHub #109 reconciled against the tree, and C7 re-checked (2026-10-01)
+
+Every item #109 still lists as open was checked against the code on `f19bbbd`:
+
+| #109 item | Where it was done | Evidence in the tree |
+|---|---|---|
+| C7, regression detection | §23, §24 (ADR-196) | `tests/scenarios/scripted_per_call_decisions.json`; `test_agentengine_test_driver` PC |
+| `call_refs` (per-call decisions) | ADR-196 §2, §23 | built as `interaction_resolve {call_decisions, approver_id}` (the `call_refs` name of §3.4/§3.7 was not kept); the driver refuses an unlisted call id and a bad approver before resuming |
+| P5, tool doubles | ADR-208 (Judged with conditions, both met) | `double_tool`/`recording_tool`/`RealToolLog` in `test_driver.hpp`; checks P5 D1–D10; `scripted_shell_roundtrip.json` |
+| Sandboxed real tools in fixtures | ADR-208 §2.1–§2.3 | `run_shell` (mediated) and `read_sandbox_file`, file fixtures via `spec.tools`, host-only `--sandbox-root` |
+| Workflow tool group | ADR-210 (Judged with conditions, both met) | `workflow_*`/`request_port_*` tools; checks W1–W12; `workflow_review_approve.json`, `workflow_two_ports_go.json` |
+
+**C7 re-checked on the current engine.** BUG-2 was planted again in `src/rt/agent_session_core.cpp`
+(`resolve_interaction`'s approval tail: when the round's own `approved` is false, a call the interaction never
+asked about is settled `tool.approval_denied`). The file was backed up with `cp`, and restored the same way, with
+its sha256 checked. With the mutant, `ctest -L scenario` gave 13/14. Only the C7 scenario failed:
+
+```
+FAIL tests/scenarios/scripted_per_call_decisions.json (0 events compared, 0 model requests checked)
+  step 1 (resolve): test.replay_mismatch at model call 1: the engine's request differs from the recording
+  (expected fnv1a64:a97be5db11188bed, got fnv1a64:b54cbae0d66e8b4a)
+```
+
+After the restore it was 14/14 again. One thing was still missing, and §26 adds it.
