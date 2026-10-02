@@ -4,10 +4,10 @@
 #
 # Run from Windows:  wsl -e bash tools/wsl-linux-build.sh [--clang] [--test] [ninja targets...]
 #
-# Speed comes from three choices, measured 2026-10-02 on a 12-core machine (gcc 15, 876 steps):
+# Speed comes from three choices (gcc 15, 876 steps, 2026-10-02):
 #   - the tree is rsync'd onto WSL's own ext4 disk; compiling across /mnt/c (9p) is many times slower;
-#   - ccache (preprocessor fallback, so a comment-only header edit is still a hit):
-#     cold 5:02, warm clean rebuild 10 s;
+#   - ccache (preprocessor fallback, so a comment-only header edit is still a hit): a warm clean
+#     rebuild is seconds, against minutes cold;
 #   - mold for the ~350 test executables that relink after any library change (~15 s for a one-.cpp edit).
 # ccache and mold need no root: if missing, the release binaries are unpacked into ~/.local.
 #
@@ -60,8 +60,8 @@ if [ ! -f "$build/build.ninja" ]; then
         -DCMAKE_LINKER_TYPE=MOLD
 fi
 
-# One compiler process peaks near 1.6 GiB; keep one core free and stay inside WSL's memory share.
-jobs=$(( $(nproc) > 2 ? $(nproc) - 1 : 1 ))
+# CONVENTIONS.md: -j4 max for builds and tests, never -j$(nproc).
+jobs=4
 ninja -C "$build" -j"$jobs" -k 0 "${targets[@]}"
 
 if [ "$run_tests" = 1 ]; then
