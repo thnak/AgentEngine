@@ -136,7 +136,7 @@ int main() {
     ensure_image("python:3.12-alpine");
 
     IdentityAuthority& authority = IdentityAuthority::bootstrap();
-    IdentityHandle owner = authority.adopt(Principal{.id = "live-owner"});
+    IdentityHandle owner = authority.adopt(Principal{.id = "live-owner", .tenant_id = ""});
     Ledger<> ledger;
     auto branch_q = *agentengine::rt::AsyncQuota<BranchCost>::mint_root(authority, owner, 100);
     auto run_q = *agentengine::rt::AsyncQuota<RunCost>::mint_root(authority, owner, 1000);

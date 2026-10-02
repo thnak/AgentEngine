@@ -111,8 +111,8 @@ PER round). This does not block the idea — it fits N independent single-shot c
 fan-out nodes) well — but it means "batch mode" cannot be a blanket accelerator for arbitrary agents.
 **Explicit project-owner direction (2026-08-13): document only, do not implement yet.**
 
-**Resolved 2026-10-02 by `decisions/ADR-235-batch-inference-coalescing.md` (Proposed, awaiting the
-owner's Judge).** The project owner lifted the "document only" direction ("lift it, go through ADR and
+**Resolved 2026-10-02 by `decisions/ADR-235-batch-inference-coalescing.md` (Judged 2026-10-02,
+project-owner sign-off).** The project owner lifted the "document only" direction ("lift it, go through ADR and
 implement"). Vendor limits were re-researched first
 (`docs/research/2026-10-02-batch-inference-provider-limits.md`): every vendor is single-shot, results
 are unordered, custom-id rules differ, and OpenRouter's Batch API is GA. The design was red-teamed

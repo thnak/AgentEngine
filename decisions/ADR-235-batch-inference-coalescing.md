@@ -1,6 +1,6 @@
 # ADR-235: Sending concurrent single-shot model calls from one workflow round to a vendor batch job (OQ-20)
 
-**Status: Proposed (2026-10-02).** Design revised once after an independent red-team (§5: 6 FATAL, 11 MAJOR, all resolved in the design below before any engine code was written). The project owner lifted OQ-20's "document only" direction on
+**Status: Judged (2026-10-02, project-owner sign-off).** Design revised once after an independent red-team (§5: 6 FATAL, 11 MAJOR, all resolved in the design below before any engine code was written). The project owner lifted OQ-20's "document only" direction on
 2026-10-02 ("lift it, go through ADR and implement"). This ADR replaces the design in
 `docs/planning/batch-inference-coalescing-design-draft.md`. Vendor facts are cited from
 `docs/research/2026-10-02-batch-inference-provider-limits.md`.
