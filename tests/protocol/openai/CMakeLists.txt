@@ -81,3 +81,20 @@ if(AGENTENGINE_WITH_HTTPS)
       MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   set_tests_properties(test_ollama_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
 endif()
+
+# ---- decisions/ADR-235 §3.2: the OpenRouter BatchBackend's wire behaviour, offline, against a loopback server
+# replaying OpenRouter's documented batch shapes. Runs unconditionally.
+if(AGENTENGINE_WITH_HTTPS)
+  agentengine_add_test(test_openrouter_batch_backend
+    LIBS agentengine::core agentengine::provider_http_client agentengine_warnings)
+endif()
+
+# ---- decisions/ADR-235 claim C15: a real fan-out round batched through OpenRouter and folded back into a run.
+# Needs AGENTENGINE_OPENROUTER_BATCH_API_KEY (SKIP when unset). A vendor batch can take minutes to hours, so it
+# is labelled live-network-heavy and kept out of the ordinary live-network run.
+if(AGENTENGINE_WITH_HTTPS)
+  agentengine_add_test(test_openrouter_batch_live_e2e
+    LIBS agentengine::core agentengine::provider_http_client agentengine_warnings MbedTLS::mbedtls
+      MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  set_tests_properties(test_openrouter_batch_live_e2e PROPERTIES LABELS "live-network-heavy" TIMEOUT 1500)
+endif()

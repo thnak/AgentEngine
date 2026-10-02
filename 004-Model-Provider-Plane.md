@@ -209,7 +209,12 @@ and hashed-content modes for environments where prompts may not be persisted.
   is classified `Backgroundable` (006 §6b) and completes via 019 §2's existing wake-condition table
   ("Remote task completion"), not a bespoke batch-tracking structure. Opting in is an explicit policy
   choice (it trades latency for cost), gated the same way any other policy is (002 §3's "changes what
-  the agent is" test), not automatic.
+  the agent is" test), not automatic. **Narrowed by ADR-235 (2026-10-02, OQ-20):** for workflow nodes,
+  batch does not ride `StandingEffect`, which is in-memory only and would lose a paid job on restart.
+  It rides a durable batch-item table in the workflow checkpoint, behind a declared `BatchBackend`
+  seam (`core/batch_backend.hpp`) with an OpenRouter conformer. The opt-in stays explicit host policy
+  (`WorkflowSupervisor::enable_batch_coalescing()`). Batching a session's own multi-round tool loop is
+  not offered: no vendor runs a client-side tool loop inside a batch item.
 - ~~**Q2** — Prompt-cache management: providers differ enough that a portable cache-hint abstraction
   may be leakier than exposing per-provider hints.~~ **Resolved, no new hint abstraction — the
   existing context-assembly segmentation already is the boundary a caching backend needs

@@ -159,6 +159,15 @@ template <class T>
 [[nodiscard]] inline agentengine::result<ExecutorOutcome> run_once(WorkflowSupervisor& inner,
                                                                      agentengine::Message const& in,
                                                                      agentengine::EffectContext& ctx) {
+    // ADR-235 (section 3.1, red-team finding 13): a wrapped run that suspends on a vendor batch would be reported as
+    // a failure here and its paid jobs dropped by the next call's fresh run -- refused instead, on every call.
+    if (inner.batch_coalescing_enabled()) {
+        return std::unexpected(agentengine::error{
+            agentengine::failure_class::contract,
+            "workflow_as_executor_body: the wrapped workflow has batch coalescing enabled, which a nested "
+            "workflow cannot be polled for",
+            "rt.workflow_as_executor.batch_unsupported"});
+    }
     // Issue #156 (ADR-214): the outer workflow's cancel (`ctx.cancellation`) is linked into the inner run, so a
     // wrapped workflow stops at its own next check instead of running to completion first.
     WorkflowResult r = drive(inner.run_workflow(RunWorkflow{in, std::nullopt, ctx.cancellation}));

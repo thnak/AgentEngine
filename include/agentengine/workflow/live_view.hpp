@@ -25,7 +25,7 @@
 
 namespace agentengine::workflow {
 
-enum class executor_live_state { pending, ran_ok, ran_failed, port_open };  // ae-naming-lint: allow executor_live_state — 014 §7 names "executor states" normatively; 027 has not been updated to list this vocabulary
+enum class executor_live_state { pending, ran_ok, ran_failed, port_open, batch_pending };  // ae-naming-lint: allow executor_live_state — 014 §7 names "executor states" normatively; 027 has not been updated to list this vocabulary
 
 struct ExecutorLiveState {  // ae-naming-lint: allow ExecutorLiveState — this file's own introspection-record family, mirrors AgentSessionRecord's naming
     std::string          executor_id;

@@ -6,7 +6,7 @@ shape of the project.
 
 **Legend:** 🔴 blocks a v1 decision · 🟠 needed before implementation of its area · 🟡 can wait
 
-**Two open cross-cutting questions as of 2026-09-04: OQ-20, OQ-25.** OQ-26 was raised, answered and
+**One open cross-cutting question as of 2026-10-02: OQ-25** (OQ-20 was resolved that day by ADR-235). OQ-26 was raised, answered and
 closed the same day: both questions it asked turned out to be already decided, and its real content —
 five spec amendments ADR-061 itself committed to and never applied — is now applied to 020/027, with
 the one genuinely reopened item (020 §8 Q2) left where this file's own rule puts a per-RFC question,
@@ -25,44 +25,6 @@ are never promoted here by default.
 ---
 
 ## Open
-
-### OQ-20 — Coalescing concurrent agents onto one vendor batch inference call 🟠
-
-User proposal (2026-08-13): since providers support batch inference, let concurrently-running agents
-share one batch submission to save cost. 004 §8 Q1 already resolved that `batch` rides
-`Backgroundable`/`StandingEffect` (not a bespoke structure) — that prerequisite shipped for TOOL calls
-in M7 Phase B but was never extended to model calls. Full gap analysis, vendor-API research (OpenAI/
-Anthropic batch mechanics, fetched and cited), and six concrete open design questions (batch-eligibility
-granularity, coalescing-coordinator ownership/flush trigger, N-way result fan-out onto the existing
-completion-queue idiom, `custom_id`/principal attribution and a named cross-tenant metadata-leak
-question, poll-ownership/durability, and a caller-visible cost-vs-latency policy surface):
-`docs/planning/batch-inference-coalescing-gap.md`, `docs/research/2026-08-13-vendor-batch-inference-apis.md`.
-**Resolved, red-teamed once:** `docs/planning/batch-inference-coalescing-design-draft.md` — reuses
-`request_port`/`Interaction` (durable) instead of `StandingEffect` (non-durable today) for the
-suspend/resume shape, needs no new message type (`resume_workflow()` already resolves N ports one at
-a time), and surfaced a real, independent gap worth fixing on its own regardless of batch's fate:
-**`WorkflowSupervisor::resume_workflow()` has no caller/admission check at all** — unlike
-`AgentSession::resolve_interaction()`'s own `principal_admitted_for()` check (ADR-029). Five remaining
-punch-list items, none implemented.
-
-**That admission gap is now tracked separately and is NOT parked with this question (2026-09-04):**
-filed as **issue #65**, after re-confirming it against `main` — `ResumeWorkflow`
-(`include/agentengine/rt/workflow_supervisor.hpp:358-362`) still carries no principal, and
-`workflow_supervisor.hpp` still has zero `principal_admitted_for` call sites, while
-`agent_session.hpp:909,1024` gate both of theirs. (The draft's own citation, `:540-570`, has gone
-stale; the function is at `:1041` today.) It is a pre-existing defect in shipped HITL code that batch
-would inherit rather than introduce, so the "document only, do not implement yet" direction governing
-*this* question does not govern *it* — as the design draft's own punch list already said ("worth its
-own, separate small fix regardless"). Note the fix is not a one-liner: `WorkflowSupervisor` has no
-owner `Principal` member to admit against, only per-executor `contexts_`.
-
-**Load-bearing finding, confirmed from real vendor docs, not assumed:** batch mode is structurally
-single-shot — neither OpenAI's nor Anthropic's batch API lets a batched request see a tool result and
-continue the same turn. A multi-round `AgentSession` tool-calling loop would need each round submitted
-as its own batch job, multiplying a turn's latency by however many rounds it takes (often <1h to 24h
-PER round). This does not block the idea — it fits N independent single-shot calls (e.g. workflow
-fan-out nodes) well — but it means "batch mode" cannot be a blanket accelerator for arbitrary agents.
-**Explicit project-owner direction (2026-08-13): document only, do not implement yet.**
 
 ### OQ-25 — Does the tool-calling loop need a per-tool validation-retry bound distinct from `MaxTurns<N>`? 🟡
 
@@ -110,6 +72,57 @@ direction.
 ---
 
 ## Resolved
+
+### OQ-20 — Coalescing concurrent agents onto one vendor batch inference call
+
+User proposal (2026-08-13): since providers support batch inference, let concurrently-running agents
+share one batch submission to save cost. 004 §8 Q1 already resolved that `batch` rides
+`Backgroundable`/`StandingEffect` (not a bespoke structure) — that prerequisite shipped for TOOL calls
+in M7 Phase B but was never extended to model calls. Full gap analysis, vendor-API research (OpenAI/
+Anthropic batch mechanics, fetched and cited), and six concrete open design questions (batch-eligibility
+granularity, coalescing-coordinator ownership/flush trigger, N-way result fan-out onto the existing
+completion-queue idiom, `custom_id`/principal attribution and a named cross-tenant metadata-leak
+question, poll-ownership/durability, and a caller-visible cost-vs-latency policy surface):
+`docs/planning/batch-inference-coalescing-gap.md`, `docs/research/2026-08-13-vendor-batch-inference-apis.md`.
+**Resolved, red-teamed once:** `docs/planning/batch-inference-coalescing-design-draft.md` — reuses
+`request_port`/`Interaction` (durable) instead of `StandingEffect` (non-durable today) for the
+suspend/resume shape, needs no new message type (`resume_workflow()` already resolves N ports one at
+a time), and surfaced a real, independent gap worth fixing on its own regardless of batch's fate:
+**`WorkflowSupervisor::resume_workflow()` has no caller/admission check at all** — unlike
+`AgentSession::resolve_interaction()`'s own `principal_admitted_for()` check (ADR-029). Five remaining
+punch-list items, none implemented.
+
+**That admission gap is now tracked separately and is NOT parked with this question (2026-09-04):**
+filed as **issue #65**, after re-confirming it against `main` — `ResumeWorkflow`
+(`include/agentengine/rt/workflow_supervisor.hpp:358-362`) still carries no principal, and
+`workflow_supervisor.hpp` still has zero `principal_admitted_for` call sites, while
+`agent_session.hpp:909,1024` gate both of theirs. (The draft's own citation, `:540-570`, has gone
+stale; the function is at `:1041` today.) It is a pre-existing defect in shipped HITL code that batch
+would inherit rather than introduce, so the "document only, do not implement yet" direction governing
+*this* question does not govern *it* — as the design draft's own punch list already said ("worth its
+own, separate small fix regardless"). Note the fix is not a one-liner: `WorkflowSupervisor` has no
+owner `Principal` member to admit against, only per-executor `contexts_`.
+
+**Load-bearing finding, confirmed from real vendor docs, not assumed:** batch mode is structurally
+single-shot — neither OpenAI's nor Anthropic's batch API lets a batched request see a tool result and
+continue the same turn. A multi-round `AgentSession` tool-calling loop would need each round submitted
+as its own batch job, multiplying a turn's latency by however many rounds it takes (often <1h to 24h
+PER round). This does not block the idea — it fits N independent single-shot calls (e.g. workflow
+fan-out nodes) well — but it means "batch mode" cannot be a blanket accelerator for arbitrary agents.
+**Explicit project-owner direction (2026-08-13): document only, do not implement yet.**
+
+**Resolved 2026-10-02 by `decisions/ADR-235-batch-inference-coalescing.md` (Proposed, awaiting the
+owner's Judge).** The project owner lifted the "document only" direction ("lift it, go through ADR and
+implement"). Vendor limits were re-researched first
+(`docs/research/2026-10-02-batch-inference-provider-limits.md`): every vendor is single-shot, results
+are unordered, custom-id rules differ, and OpenRouter's Batch API is GA. The design was red-teamed
+before any code (6 FATAL, 11 MAJOR, all resolved). It batches a workflow round's `batch: true`
+function nodes, only when the host opts in, behind a declared `BatchBackend` seam. It reuses neither
+`StandingEffect` (in-memory) nor `Interaction` (a batch item is not something a caller answers). The
+draft's six questions are answered in ADR-235 §3; issue #65's admission gap is closed by ADR-169, and
+`poll_batches()` admits its caller the same way. Tested by 97 deterministic checks and 10 killed
+mutants, plus a live OpenRouter run (ADR-235 §6). Direct OpenAI/Anthropic/Bedrock/Gemini backends are
+named residuals.
 
 ### OQ-26 — 020 §3/§4/§7/§8 described a first-party HTTP listener ADR-061 had abolished
 

@@ -173,7 +173,7 @@ target_link_libraries(agentengine_core INTERFACE agentengine_rt_session)
 # that included it compiled and optimized the whole superstep loop again. The bodies are compiled once here
 # (moved verbatim); the header keeps the class, declarations and small accessors. Linked through
 # agentengine::core like the libraries above, so no consumer needs a CMake change.
-add_library(agentengine_rt_workflow STATIC src/rt/workflow_supervisor.cpp)
+add_library(agentengine_rt_workflow STATIC src/rt/workflow_supervisor.cpp src/rt/workflow_supervisor_batch.cpp)
 target_include_directories(agentengine_rt_workflow PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_compile_features(agentengine_rt_workflow PRIVATE cxx_std_23)
 target_link_libraries(agentengine_rt_workflow PRIVATE agentengine_warnings)
@@ -722,6 +722,7 @@ if(AGENTENGINE_WITH_HTTPS)
     src/sandbox/provider_http_client.cpp
     src/protocol/provider_chat_wire.cpp
     src/protocol/openai/chat_client.cpp
+    src/protocol/openai/openrouter_batch.cpp
     src/protocol/anthropic/chat_client.cpp)
   target_link_libraries(agentengine_provider_http_client PUBLIC agentengine::net_egress_proxy)
   target_link_libraries(agentengine_provider_http_client PRIVATE agentengine_warnings)
