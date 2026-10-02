@@ -77,6 +77,8 @@ agentengine_fast_build_this_directory()
 # /bigobj) must stay above the add_subdirectory() calls: a subdirectory copies its parent's variables
 # and directory properties when it is added, not later.
 include(AgentEngineTests)
+include(AgentEngineTestPch)
+agentengine_define_test_pch()
 set(AE_TESTS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 
 # ---- nlohmann/json, a test-only dependency ------------------------------------------------------

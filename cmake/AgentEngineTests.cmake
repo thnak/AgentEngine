@@ -48,6 +48,7 @@ endfunction()
 # Set here rather than in each folder file so no test can miss them.
 function(agentengine_add_test_folder folder)
   add_subdirectory(${folder})
+  agentengine_apply_test_pch(${folder})
   get_property(ae_folder_tests DIRECTORY ${folder} PROPERTY TESTS)
   if(ae_folder_tests)
     set_property(TEST ${ae_folder_tests} DIRECTORY ${folder}

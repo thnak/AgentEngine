@@ -16,8 +16,8 @@
       "name": "dev",
       "inherits": "base",
       "displayName": "Development (fast test build)",
-      "description": "Release library; tests, examples and test tools compiled without optimization (#115 E4, #120 S2). For day-to-day work; not a production build.",
-      "cacheVariables": { "AGENTENGINE_FAST_TESTS": "ON" }
+      "description": "Release library; tests, examples and test tools compiled without optimization (#115 E4, #120 S2), plain tests sharing one precompiled header (AGENTENGINE_TEST_PCH). For day-to-day work; not a production build.",
+      "cacheVariables": { "AGENTENGINE_FAST_TESTS": "ON", "AGENTENGINE_TEST_PCH": "ON" }
     },
     {
       "name": "release",
