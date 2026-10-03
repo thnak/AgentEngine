@@ -459,7 +459,9 @@ control. C15 holds live, against OpenRouter.
   stores mapping one ref name to different accounts are not told apart; the vendor answers 404, which fails
   closed after `max_poll_errors`.
 - **OpenRouter silently drops unknown parameters.** `admit()` is therefore text-only. Widening it needs live
-  proof per parameter.
+  proof per parameter. **Left undone by project-owner decision (2026-10-03):** the owner found a blocker
+  that this work cannot fix or get past here, so widening was not attempted and PR #165 merges without it.
+  This is an open follow-up, not a closed one.
 - **OpenRouter has no cancel endpoint.** An abandoned OpenRouter job runs to its terminal state. It is
   released (deleted) on a later poll only once it is terminal.
 - **The spend of abandoned jobs is not known to the engine.** Usage is counted when results are folded.
