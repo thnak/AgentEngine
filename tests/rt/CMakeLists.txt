@@ -168,3 +168,10 @@ endif()
 # run / enter(Resumer) / enter(CompletionThread), usable_cpus and the D5 default, shutdown joining every thread.
 agentengine_add_test(test_rt_lanes LIBS agentengine::core agentengine_warnings TIMEOUT 180)
 agentengine_add_test(test_rt_runtime LIBS agentengine::core agentengine_warnings TIMEOUT 180)
+
+# ---- ADR-237 implementation step 5: structured concurrency (rt/scope.hpp: with_scope / when_all / task_scope -- child
+# strands of the session, join on the owner's strand, failure cancels siblings two-phase, emitted order, the cap, no
+# child outlives its scope), stop callbacks posted to the owning strand (rt/strand_stop_callback.hpp), and holder await
+# chains with AsyncMutex lending / refusal `rt.lock_held_by_ancestor` (rt/await_chain.hpp, rt/async_mutex.hpp).
+agentengine_add_test(test_rt_scope LIBS agentengine::core agentengine_warnings TIMEOUT 180)
+agentengine_add_test(test_rt_lock_chain LIBS agentengine::core agentengine_warnings TIMEOUT 180)

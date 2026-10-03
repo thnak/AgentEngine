@@ -39,11 +39,10 @@
 //      `attempt_timeout`. Racing is a later optimisation behind the same function.
 //   The per-attempt deadline is a reactor timer that stops a stop_source private to the attempt (§4.4,
 //   red-team M5: "each operation gets its own std::stop_source linked to the caller's token; the deadline timer
-//   stops the operation's source"). DEVIATION, documented: M5 posts that stop to the owning strand; strands do
-//   not exist yet, so the timer requests it on the reactor thread. That is safe here because the attempt's source
-//   is private -- the only callback ever registered on it is the TCP awaiter's `Canceler`, which only posts a
-//   cancel to the reactor -- so no engine code runs on the reactor thread (§4.2). When lanes land, this is the
-//   one line that changes.
+//   stops the operation's source"). The timer's completion does not request that stop itself: it POSTS the request
+//   to the home of the coroutine that started the attempt (its strand, for engine work), where it runs
+//   (`detail::HomedCall`, rt/strand_stop_callback.hpp) -- step 5 (§14) closing step 4's recorded deviation, which
+//   requested it on the reactor thread before strands existed.
 //   A caller stop resumes `canceled` (the in-flight connect is cancelled two-phase, rt/tcp.hpp); an attempt that
 //   completed before its cancel landed is reported as connected (round-1 M1's real outcome).
 
@@ -63,6 +62,7 @@
 #include "agentengine/pal/resolver.hpp"
 #include "agentengine/rt/offload.hpp"
 #include "agentengine/rt/reactor_await.hpp"
+#include "agentengine/rt/strand_stop_callback.hpp"
 #include "agentengine/rt/task.hpp"
 #include "agentengine/rt/tcp.hpp"
 
@@ -152,22 +152,26 @@ namespace dns_detail {
     return !host.empty() && host.size() <= 253 && host.find('\0') == std::string::npos;
 }
 
-// The per-attempt deadline: a reactor timer that stops the attempt's private stop_source (see the file
-// comment for why requesting it on the reactor thread is safe here).
+// The per-attempt deadline: a reactor timer whose expiry posts "stop the attempt's private stop_source" to the
+// attempt's home (§4.4 M5; file comment). `arm()` runs on that home, before the timer starts.
 class AttemptDeadline final : public pal::ReactorOp {
 public:
+    void arm() {
+        call_ = detail::HomedCall::arm([source = source_]() mutable { source.request_stop(); });
+    }
     void on_complete(pal::op_status status) noexcept override {
         if (status != pal::op_status::completed) return;  // cancelled (the attempt ended) or reactor shutdown
         fired_.store(true, std::memory_order_release);
-        source_.request_stop();  // runs only the TCP awaiter's Canceler, which posts
+        if (call_) call_->fire();  // reactor thread: only posts; the stop runs on the attempt's home
     }
     [[nodiscard]] bool            fired() const noexcept { return fired_.load(std::memory_order_acquire); }
     [[nodiscard]] std::stop_token token() const noexcept { return source_.get_token(); }
     [[nodiscard]] std::stop_source source() const noexcept { return source_; }
 
 private:
-    std::stop_source  source_;
-    std::atomic<bool> fired_{false};
+    std::stop_source                   source_;
+    std::atomic<bool>                  fired_{false};
+    std::shared_ptr<detail::HomedCall> call_;  // set before the timer starts; read by on_complete only
 };
 
 // Links the caller's token to the attempt's source.
@@ -197,6 +201,7 @@ inline task<ConnectAttempt> connect_attempt(pal::Reactor* reactor, pal::TcpStrea
     DeadlineGuard                     guard{reactor, deadline};
     std::stop_callback<ForwardStop> const link(caller, ForwardStop{deadline->source()});  // fires inline if stopped
     if (limit.count() > 0) {
+        deadline->arm();  // on this coroutine's home (step 5): where the expiry's stop request will run
         reactor->start_timer(deadline, pal::Reactor::clock::now() + limit);
         guard.started = true;
     }

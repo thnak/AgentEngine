@@ -133,6 +133,10 @@ struct ResumerTicket {
     explicit ResumerTicket(std::shared_ptr<Resumer> r) noexcept : resumer(std::move(r)) {}
     std::shared_ptr<Resumer> const resumer;
     std::atomic<int>               state{kPending};
+    // ADR-237 §4.2 (step 5): set for the continuation of `Runtime::enter` only. A host that DROPS such a
+    // continuation (its executor gone) does not get it resumed inline on the dropping thread -- that thread may be
+    // a lane -- it is never resumed, and counted here. Null: ADR-219's inline-resume fallback, unchanged.
+    std::shared_ptr<std::atomic<std::uint64_t>> dropped_counter{};
     [[nodiscard]] bool try_take(int to) noexcept {
         int expected = kPending;
         return state.compare_exchange_strong(expected, to, std::memory_order_acq_rel);
@@ -223,7 +227,7 @@ public:
         : handle_(std::exchange(o.handle_, {})), holder_(o.holder_), ticket_(std::move(o.ticket_)) {}
     ParkedContinuation& operator=(ParkedContinuation&& o) noexcept {
         if (this != &o) {
-            resume();  // never silently overwrite a pending continuation
+            drop_or_resume();  // never silently overwrite a pending continuation
             handle_ = std::exchange(o.handle_, {});
             holder_ = o.holder_;
             ticket_ = std::move(o.ticket_);
@@ -232,7 +236,7 @@ public:
     }
     ParkedContinuation(ParkedContinuation const&)            = delete;
     ParkedContinuation& operator=(ParkedContinuation const&) = delete;
-    ~ParkedContinuation() { resume(); }
+    ~ParkedContinuation() { drop_or_resume(); }
 
     [[nodiscard]] explicit operator bool() const noexcept { return static_cast<bool>(handle_); }
     // The holder id the coroutine runs under when resumed (diagnostic).
@@ -250,6 +254,21 @@ public:
     }
 
 private:
+    // A dropped continuation: resumed inline (ADR-219), or -- for a `Runtime::enter` continuation, whose ticket
+    // carries a counter -- never resumed and reported (ADR-237 §4.2: "a foreign continuation whose home is gone is
+    // never resumed and is reported").
+    void drop_or_resume() noexcept {
+        if (handle_ && ticket_ && ticket_->dropped_counter) {
+            handle_ = {};
+            std::shared_ptr<detail::ResumerTicket> const ticket = std::move(ticket_);
+            if (ticket->try_take(detail::ResumerTicket::kAbandoned)) {
+                ticket->dropped_counter->fetch_add(1, std::memory_order_relaxed);
+            }
+            return;
+        }
+        resume();
+    }
+
     friend void detail::hand_to_resumer(detail::ParkedResumer r) noexcept;
     ParkedContinuation(std::coroutine_handle<> h, std::uint64_t holder,
                        std::shared_ptr<detail::ResumerTicket> ticket) noexcept

@@ -26,6 +26,20 @@
 //   R10 No thread outlives the Runtime: the process's thread count after destruction equals the count before
 //       (Linux /proc/self/task, exact; Windows Toolhelp, at most as many as before -- the OS loader's own pool
 //       threads may exit meanwhile). Mutant: lanes detached instead of joined.
+//   Step 5 (§4.5 rule 3, §4.2, §4.3, §4.5 rule 4):
+//   R11 ROOT ADOPTION: a host destroys the coroutine awaiting enter() while the root holds an AsyncMutex and
+//       sleeps -- no abort: the root is adopted, asked to stop (its scope stop token), finishes promptly, releases the
+//       lock (a later run acquires it), is counted; the foreign coroutine is never continued. Mutant: adoption
+//       disabled (the step-3 abort) -> the process dies.
+//   R12 A host Resumer that DROPS an enter continuation: it is never resumed (not inline on the lane), and counted.
+//       Mutant: ADR-219's inline-resume fallback for enter continuations -> it runs on the lane.
+//   R13 WATCHDOGS (report-only): a run making progress in short slices is never reported; a body blocking its lane
+//       300 ms is one lane-stall report naming its strand; a run parked 600 ms is one stuck-run report naming its
+//       strand group. Mutants: no progress stamp -> the progressing run is reported stuck; report every scan -> the
+//       stall is reported several times.
+//   R14 SHUTDOWN cancels before it joins: a Runtime destroyed while a root sleeps 10 s on its scope stop token
+//       returns promptly, the sleep canceled, and the continuation is still delivered. Mutant: no stop at shutdown
+//       -> 10 s.
 //
 // Coroutines are free functions taking their state by pointer, never immediately-invoked lambda coroutines with
 // captures (ADR-237 §14 step 1). Result containers are declared BEFORE the runtime that writes them (step 2).
@@ -48,6 +62,8 @@
 #include <vector>
 
 #include "agentengine/pal/cpu.hpp"
+#include "agentengine/rt/async_mutex.hpp"
+#include "agentengine/rt/await_chain.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/offload.hpp"
 #include "agentengine/rt/resume_home.hpp"
@@ -460,6 +476,202 @@ void r9_shutdown_drains() {
           "R9 the foreign continuation was still delivered, with the value");
 }
 
+// ---- R11 / R12 / R14 (step 5) --------------------------------------------------------------------------------------
+// A foreign coroutine type the host destroys explicitly (it "drops its awaiter").
+struct Droppable {
+    struct promise_type {
+        Droppable get_return_object() noexcept {
+            return Droppable{std::coroutine_handle<promise_type>::from_promise(*this)};
+        }
+        std::suspend_always initial_suspend() noexcept { return {}; }
+        std::suspend_always final_suspend() noexcept { return {}; }
+        void                return_void() noexcept {}
+        void                unhandled_exception() noexcept { std::terminate(); }
+    };
+    std::coroutine_handle<promise_type> h;
+};
+
+struct AdoptState {
+    std::atomic<bool> locked{false};
+    std::atomic<bool> finished{false};
+    std::atomic<bool> sleep_canceled{false};
+    std::atomic<bool> foreign_continued{false};
+};
+
+task<int> adopt_body(Runtime* rt, AsyncMutex* m, AdoptState* st) {
+    AsyncMutex::Guard g = co_await m->lock();
+    st->locked.store(true);
+    sleep_status const s = co_await sleep_for(rt->reactor(), 10s, scope_stop_token());
+    st->sleep_canceled.store(s == sleep_status::canceled);
+    st->finished.store(true);
+    co_return 1;
+}
+
+Droppable adopt_foreign(Runtime* rt, LoopResumer* r, AsyncMutex* m, AdoptState* st) {
+    (void)co_await rt->enter(adopt_body(rt, m, st), *r);
+    st->foreign_continued.store(true);
+}
+
+task<bool> lock_and_release(AsyncMutex* m) {
+    AsyncMutex::Guard g = co_await m->lock();
+    co_return g.held();
+}
+
+void r11_adoption() {
+    AsyncMutex  m;
+    AdoptState  st;
+    LoopResumer loop;
+    Runtime     rt{config(2)};
+    Droppable   f = adopt_foreign(&rt, &loop, &m, &st);
+    f.h.resume();  // runs to the co_await of enter
+    check(wait_until([&] { return st.locked.load(); }, 5s), "R11 the entered root holds the session lock");
+    auto const t0 = std::chrono::steady_clock::now();
+    f.h.destroy();  // the host drops its awaiter while the engine chain runs (and holds the lock)
+    check(rt.adopted_roots() == 1, "R11 destroying the awaiter of a running enter() adopted the root (no abort)");
+    check(wait_until([&] { return st.finished.load(); }, 5s) && st.sleep_canceled.load(),
+          "R11 the adopted chain was asked to stop and finished normally (its sleep canceled)");
+    check(std::chrono::steady_clock::now() - t0 < 2s, "R11 ... promptly, not after its 10 s sleep");
+    check(wait_until([&] { return rt.adopted_roots_finished() == 1 && rt.roots_in_flight() == 0; }, 5s),
+          "R11 the adopted root is counted finished and no root is left in flight");
+    check(rt.run(lock_and_release(&m)), "R11 a later entry acquires the lock the adopted chain released");
+    check(!st.foreign_continued.load(), "R11 the dropped foreign coroutine was never continued");
+}
+
+class DroppingResumer final : public Resumer {
+public:
+    void post(ParkedContinuation c) override {
+        posts.fetch_add(1);
+        (void)c;  // dropped: the host's executor is gone
+    }
+    std::atomic<int> posts{0};
+};
+
+struct DropState {
+    std::atomic<bool> continued{false};
+};
+
+Droppable drop_foreign(Runtime* rt, DroppingResumer* r, DropState* st) {
+    (void)co_await rt->enter(one(), *r);
+    st->continued.store(true);
+}
+
+void r12_dropped_continuation() {
+    DropState       st;
+    DroppingResumer dropper;
+    Runtime         rt{config(2)};
+    Droppable       f = drop_foreign(&rt, &dropper, &st);
+    f.h.resume();
+    check(wait_until([&] { return dropper.posts.load() == 1 && rt.roots_in_flight() == 0; }, 5s),
+          "R12 the root finished and handed its continuation to the Resumer, which dropped it");
+    std::this_thread::sleep_for(50ms);
+    check(!st.continued.load() && rt.dropped_continuations() == 1,
+          "R12 a dropped enter continuation is never resumed (not inline on the lane) and is counted");
+    f.h.destroy();  // the host's own frame, never resumed
+}
+
+struct ShutdownState {
+    std::atomic<bool> started{false};
+    std::atomic<bool> canceled{false};
+    std::atomic<bool> delivered{false};
+};
+
+task<int> shutdown_body(Runtime* rt, ShutdownState* st) {
+    st->started.store(true);
+    sleep_status const s = co_await sleep_for(rt->reactor(), 10s, scope_stop_token());
+    st->canceled.store(s == sleep_status::canceled);
+    co_return 7;
+}
+
+Foreign shutdown_foreign(Runtime* rt, LoopResumer* r, ShutdownState* st) {
+    (void)co_await rt->enter(shutdown_body(rt, st), *r);
+    st->delivered.store(true);
+}
+
+void r14_shutdown_cancels_roots() {
+    ShutdownState st;
+    LoopResumer   loop;  // outlives the runtime
+    auto          t0 = std::chrono::steady_clock::now();
+    {
+        Runtime rt{config(2)};
+        shutdown_foreign(&rt, &loop, &st).start();  // frees itself
+        (void)wait_until([&] { return st.started.load(); }, 5s);
+        t0 = std::chrono::steady_clock::now();
+    }  // §4.5 rule 4: stop every root, then join it
+    auto const elapsed = std::chrono::steady_clock::now() - t0;
+    check(st.canceled.load() && elapsed < 2s, "R14 shutdown requested stop on the running root (its scope token) "
+                                              "and joined it promptly");
+    check(wait_until([&] { return st.delivered.load(); }, 5s), "R14 ... and its continuation was still delivered");
+}
+
+// ---- R13 (step 5): watchdogs --------------------------------------------------------------------------------------
+task<int> progress_body(Runtime* rt, std::chrono::milliseconds total) {
+    auto const end = std::chrono::steady_clock::now() + total;
+    int        n   = 0;
+    while (std::chrono::steady_clock::now() < end) {
+        (void)co_await sleep_for(rt->reactor(), 5ms);
+        ++n;
+    }
+    co_return n;
+}
+
+task<std::uint64_t> stall_body() {
+    std::this_thread::sleep_for(300ms);  // blocks its lane: what the lane-stall watchdog exists to see
+    co_return current_strand_id();
+}
+
+task<std::uint64_t> parked_body(Runtime* rt) {
+    (void)co_await sleep_for(rt->reactor(), 600ms);  // parked, no progress, no blocked thread
+    co_return Strand::current().group_id();
+}
+
+void r13_watchdogs() {
+    std::mutex             mx;
+    std::vector<LaneStall> stalls;
+    std::vector<StuckRun>  stuck;
+    RuntimeConfig          c = config(2);
+    c.lane_stall_bound       = 60ms;
+    c.on_lane_stall          = [&](LaneStall const& s) {
+        std::lock_guard lock(mx);
+        stalls.push_back(s);
+    };
+    c.stuck_run_bound = 150ms;
+    c.on_stuck_run    = [&](StuckRun const& s) {
+        std::lock_guard lock(mx);
+        stuck.push_back(s);
+    };
+    Runtime rt{c};
+
+    int const slices = rt.run(progress_body(&rt, 400ms));
+    {
+        std::lock_guard lock(mx);
+        check(slices > 10 && stalls.empty() && stuck.empty() && rt.lane_stalls() == 0 && rt.stuck_runs() == 0,
+              "R13 a run that keeps making progress (" + std::to_string(slices) + " short slices) is never reported");
+    }
+
+    std::uint64_t const strand = rt.run(stall_body());
+    {
+        std::lock_guard lock(mx);
+        check(rt.lane_stalls() == 1 && stalls.size() == 1,
+              "R13 a body blocking its lane for 300 ms is reported as a lane stall, once (" +
+                  std::to_string(stalls.size()) + ")");
+        check(!stalls.empty() && stalls[0].strand == strand && stalls[0].running_for >= 60ms,
+              "R13 ... naming its strand and how long it had run");
+    }
+
+    std::size_t const   stuck_before = rt.stuck_runs();
+    std::uint64_t const group        = rt.run(parked_body(&rt));
+    {
+        std::lock_guard lock(mx);
+        std::size_t matching = 0;
+        for (StuckRun const& s : stuck) {
+            if (s.group == group) ++matching;
+        }
+        check(rt.stuck_runs() == stuck_before + 1 && matching == 1,
+              "R13 a run parked 600 ms with no progress is reported as stuck, once, naming its strand group");
+        check(rt.lane_stalls() == 1, "R13 ... and a parked run is not a lane stall");
+    }
+}
+
 // ---- R10 ----------------------------------------------------------------------------------------------------
 std::optional<std::size_t> thread_count() {
 #if defined(_WIN32)
@@ -531,6 +743,10 @@ int main(int argc, char** argv) {
     r8_parsers();
     r8_affinity();
     r9_shutdown_drains();
+    r11_adoption();
+    r12_dropped_continuation();
+    r13_watchdogs();
+    r14_shutdown_cancels_roots();
     std::printf("\n%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

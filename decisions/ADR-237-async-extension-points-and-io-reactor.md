@@ -1081,3 +1081,101 @@ Open after step 3:
 are the Docker-dependent tests, unchanged since step 1); Linux gcc 15 `-Werror` with HTTPS: full tree builds,
 `rt` 77/77 (incl. `test_rt_tls`), `test_https_egress` / `test_provider_http_client` pass; naming and layering
 lints clean.
+
+### Step 5 (2026-10-03): structured concurrency, await chains, root adoption, stop callbacks on strands, watchdogs
+
+Additive: no engine caller is converted yet (`bounded_call_fanout`, `ThreadPool`, `fork_from_async`, the D7 compile
+restriction are later steps). Windows/clang: full tree builds; `rt` 78/78 (incl. the `rt/agent_session`,
+`rt/agent_spawn`, `rt/project` sub-labels); the other AsyncMutex users (`test_agent_session_bridge`,
+`test_session_builder`, `test_composed_context_provider`, `test_approval_resume`, `test_sandbox_tool_provider`,
+`test_tool_batch_parallel_dispatch`, `test_agentengine_test_driver`) pass; `test_mandatory_sandbox_provider`,
+`test_task_branch_tools`, `test_task_branch_concurrent_dispatch` fail only on their real-container checks (Docker
+daemon not running -- the step-1 baseline set).
+
+- `include/agentengine/rt/scope.hpp` -- `rt::task_scope`, `co_await rt::with_scope(fn, ScopeOptions)`, `co_await
+  rt::when_all(tasks...)` (tuple, void -> monostate) and `rt::when_all(std::vector<task<T>>, ScopeOptions)`. A scope
+  opens only on a strand (`rt.scope_off_strand`); each child is a fresh strand of the owner's strand GROUP
+  (`Strand::sibling()`), run in a self-freeing wrapper frame that destroys the child's task -- releasing every guard it
+  held -- before reporting completion; the last child posts the owner back to ITS strand (one post per join). The first
+  exception (or a throwing body) requests stop on the scope's `std::stop_source`; all children are joined, then it is
+  rethrown. `when_all` writes each result into the slot of its position (I5). `max_concurrency` is a semaphore:
+  over-cap children wait unstarted, in spawn order. A scope follows its owner's scope stop token and
+  `ScopeOptions::stop`. Destroying a scope with live children aborts (every build, like step 3's violations).
+- `include/agentengine/rt/await_chain.hpp` -- **how holder chains travel.** Holder ids stay integers in the execution
+  context, strand items and parked records (ADR-175). A plain `co_await` keeps the awaiter's id: callee and awaiter are
+  one logical task (already true: the callee runs in the awaiter's context and parks with its id). A *fork* mints an
+  id and registers `{parent, awaited flag, stop token, loans}` in a process registry: `when_all` and `on_strand`
+  children are always-awaited edges; a `with_scope` child's edge is awaited only while the owner is suspended in its
+  join; `fresh_chains` scopes (job runner / background) and every Runtime root have no parent. Entries live exactly as
+  long as the forked task (structured concurrency keeps every ancestor registered while a descendant can ask). The
+  registry is consulted only on a contended `lock()` and at forks, and skipped when empty. `rt::scope_stop_token()`
+  returns the current task's scope (or root) token -- how a lazily built `when_all` child sees its siblings' cancel.
+- `include/agentengine/rt/async_mutex.hpp` -- the §4.3 lock rules. `lock(lock_entry::lend_safe | mutating)` returns
+  `std::expected<Guard, lock_refusal>`; plain `lock()` is a mutating entry and throws `lock_refused` on refusal (that
+  case was a silent deadlock before). A contended request is classified against the owner, then each lender top-down:
+  awaiting ancestor + lend-safe -> LOAN (a stack; `Guard` carries its depth); descendant of a lender -> that lender's
+  LOAN QUEUE, served before the FIFO; mutating under an awaiting ancestor, or anything under a non-awaiting ancestor ->
+  `rt.lock_held_by_ancestor`; otherwise FIFO as before. Releasing a loan hands the lock to the next loan-queued
+  borrower or back to the LENDER, never to the FIFO head; releasing a guard out of stack order aborts; a borrower that
+  finishes with a loan outstanding aborts (checked where its scope / `on_strand` records it finished).
+  `is_held_by_current_thread()` is unchanged (a borrower is the owner while it holds the loan), so ADR-123's
+  `fork_from` and its tests are untouched; declaring `fork_from_async` lend-safe is the seam conversion's job.
+- `include/agentengine/rt/runtime.hpp` -- **how adoption works.** An `enter` root now runs inside a self-freeing
+  `RootFrame` that owns the engine task and a shared `EnterState`; a CAS on `phase` decides once who owns the end. If
+  the root finishes first, the foreign continuation is handed to the Resumer as before. If the host destroys the
+  awaiting coroutine first, `~EnterAwaiter` wins the CAS, counts the adoption and requests stop on the root's own stop
+  source (its `scope_stop_token()`); the chain is intact, keeps running, finishes normally (locks and tickets released
+  by their destructors), and is joined at shutdown like any root (`adopted_roots()`, `adopted_roots_finished()`). The
+  destructor never touches the Runtime (shared counters), since a finished root may already have released it. The
+  step-3 interim abort is gone. An `enter` continuation that a host Resumer DROPS is no longer resumed inline on the
+  lane: its ticket carries a counter and it is never resumed (`dropped_continuations()`, §4.2). Every `run`/`enter`
+  root is a fresh chain with its own stop source; shutdown now requests stop on every root before joining (§4.5 rule
+  4). `RuntimeConfig::{lane_stall_bound, on_lane_stall, stuck_run_bound, on_stuck_run}`.
+- `include/agentengine/rt/lanes.hpp` -- report-only watchdogs on one joined thread: LANE STALL (a worker inside one
+  slice longer than the bound; once per slice, naming the strand) and STUCK RUN (a root's strand group with no slice
+  started or ended within the bound; once per idle period). Slice timestamps are taken only when a bound is set.
+  `Strand::sibling()`, `Strand::current()`, `Strand::group_id()`. `rt::on_strand` children are registered forks; an
+  `on_strand` awaiter destroyed before it was resumed aborts (step 3's "frame destroyed after its wake was posted"
+  gap, for strand awaiters).
+- `include/agentengine/rt/strand_stop_callback.hpp` -- `rt::StrandStopCallback`: a `std::stop_callback` whose body is
+  posted (`detail::HomedCall`, a one-shot self-freeing frame armed on the registering home) to the registering strand
+  (or block_on home / Resumer), under the registering holder; a callback destroyed before its posted body ran never
+  runs it. `rt/dns.hpp`: the per-attempt connect deadline (step 4's recorded deviation) now posts its stop to the
+  attempt's home through `HomedCall` -- a few lines.
+- `include/agentengine/rt/resume_home.hpp` -- `ResumerTicket::dropped_counter` and `ParkedContinuation`'s drop policy.
+
+Tests: `tests/rt/test_rt_scope.cpp` S1-S9 (29 checks), `tests/rt/test_rt_lock_chain.cpp` C1-C10 (28 checks),
+`tests/rt/test_rt_runtime.cpp` extended with R11 adoption, R12 dropped continuation, R13 watchdogs, R14 shutdown
+cancels roots (59 checks, was 43); same counts on Windows and Linux. Both new tests also check that every registry
+entry was removed.
+
+Mutants (20, each killed on Windows/clang): M1 owner resumed when the first child finishes (S1; the owner then leaves
+with live children and the scope violation fires); M2 a child failure does not stop its siblings (S3: 5012 ms, 0
+canceled); M3 range results out of order (S4); M4 no live-children check (S6: child exits 0, no message); M5 cap
+ignored (S5: max 8); M6 join resumes the owner inline on the last child's slice (S1: wrong strand); M7 a scope does
+not follow its owner's token (S7: 5007 ms); M8 a stop callback runs inline (S9a/b/c: host thread, reactor thread,
+disarm lost); M9 a released loan goes to the FIFO head (C2, C4 x2, C6); M10 a mutating entry may borrow (C1); M11 a
+non-awaiting ancestor is not refused (C5); M12 nested loans do not stack (C6); M13 no loan-outstanding check (C7);
+M14 adoption disabled (R11: the process aborts); M15 a dropped enter continuation resumed inline (R12); M16 no progress
+stamp (R13: the progressing run reported stuck); M17 a stall reported on every scan (R13: 17 reports); M18 shutdown
+joins without stopping roots (R14); M19 lane-stall watchdog silent (R13); M20 the moved DNS deadline never posts its
+stop (`test_rt_dns` D10: 21 s).
+
+Linux (WSL, gcc 15, `-Werror`, Release, own dir `~/ae-scopes`, HTTPS off): full tree builds; `rt` 75/75; the three
+step-5 tests 29/28/59; the AsyncMutex users above (non-Docker) pass. TSan (gcc 15, each test standalone with the
+reactor backends and `usable_cpus.cpp`): `test_rt_scope`, `test_rt_lock_chain`, `test_rt_runtime`, `test_rt_lanes`,
+`test_rt_dns` 5/5 runs each, 0 warnings. Naming and layering lints clean (new names carry `ae-naming-lint: allow`).
+
+Open after step 5:
+- In-flight operation counts along the awaited chain (§4.5 rule 3's enforcement for non-root frames destroyed by
+  `~task()`) are not built: adoption covers the root (`enter`), scope and `on_strand` awaiters abort when destroyed
+  early, but a plain `rt::task` frame destroyed mid-flight by its owner is still destroyed, as before.
+- Existing `std::stop_callback` bodies in engine code (`agent_spawn_child_run.hpp:210`, `WorkflowSupervisor::cancel`,
+  job-runner cascades) are not yet moved onto `StrandStopCallback`; that is the inventory step of the conversion. A
+  `StrandStopCallback` destroyed off its strand does not wait for a body already running (unlike
+  `std::stop_callback`); a post after the lanes stopped is dropped and its small frame leaks.
+- Only an exception cancels siblings; `result<T>` errors are values and cancel nothing (ADR-160 keeps per-call
+  results).
+- The chain registry is one process-wide mutex, taken at forks and on contended locks; unmeasured (§8.2 benches).
+- No engine entry point declares `lock_entry` yet; `session_mutex_` callers use plain `lock()` (mutating).
+- Adoption covers `enter` (`run` cannot be dropped); an adopted root's result is discarded, reported by counters only.

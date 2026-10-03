@@ -25,9 +25,23 @@
 // Runtime from one of its own lanes, or while a CompletionThread made from it is alive, is a checked violation
 // (abort, every build, with a message).
 //
-// Interim, until the later steps of the ADR: the compile-time restriction on a bare `co_await` of an engine
-// task from a foreign coroutine type (D7), and root adoption when a host drops an awaiter (§4.5 rule 3).
-// Destroying a foreign coroutine while its `enter` root still runs is, for now, a checked violation (abort).
+// Step 5 (§14):
+//   - ROOT ADOPTION (§4.5 rule 3). A host that destroys the coroutine awaiting `enter` while the engine root still
+//     runs (it dropped its awaiter) no longer aborts the process: the Runtime ADOPTS the root -- the engine chain
+//     stays intact, so every referent is alive -- requests stop on it, and lets it finish normally, which releases
+//     its locks, quota tickets and refunds through their ordinary destructors. Its result is discarded; the root
+//     still counts toward shutdown (joined like any other) and is counted (`adopted_roots()`). The root runs inside
+//     a small self-freeing frame that owns the engine task, so nothing waits on the dropped awaiter.
+//   - A FOREIGN CONTINUATION WHOSE HOME IS GONE (§4.2): a host Resumer that drops an `enter` continuation (its
+//     executor shut down) does not get it resumed inline on the dropping thread -- a lane, for an enter -- it is
+//     never resumed, and counted (`dropped_continuations()`).
+//   - ROOT STOP TOKENS: each `run`/`enter` root is a fresh await chain (rt/await_chain.hpp) carrying a stop source
+//     of its own: `rt::scope_stop_token()` inside the root returns it; adoption and shutdown request it. Shutdown
+//     is now: stop accepting -> request stop on every root -> wait for them -> pools -> lanes -> reactor.
+//   - WATCHDOGS (§4.3): `RuntimeConfig::lane_stall_bound` / `stuck_run_bound` turn on rt/lanes.hpp's report-only
+//     watchdogs; every root's strand group is watched for a stuck run while the root is in flight.
+// Still interim: the compile-time restriction on a bare `co_await` of an engine task from a foreign coroutine type
+// (D7).
 
 #include <atomic>
 #include <chrono>
@@ -44,12 +58,17 @@
 #include <mutex>
 #include <optional>
 #include <stdexcept>
+#include <stop_token>
 #include <thread>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
+#include <variant>
+#include <vector>
 
 #include "agentengine/pal/cpu.hpp"
 #include "agentengine/pal/reactor.hpp"
+#include "agentengine/rt/await_chain.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/lanes.hpp"
 #include "agentengine/rt/offload.hpp"
@@ -82,6 +101,11 @@ struct RuntimeConfig {
     std::optional<std::chrono::milliseconds> shutdown_deadline{};
     // Called on the destroying thread with the number of roots still running. Must not throw.
     std::function<void(std::size_t roots_still_running)> on_shutdown_overrun{};
+    // §4.3 watchdogs (step 5), report-only, off when unset. Callbacks run on the watchdog thread; must not throw.
+    std::optional<std::chrono::milliseconds> lane_stall_bound{};  // a lane not back at its queue within this
+    std::function<void(LaneStall const&)>    on_lane_stall{};
+    std::optional<std::chrono::milliseconds> stuck_run_bound{};   // a root's strand group without a slice for this
+    std::function<void(StuckRun const&)>     on_stuck_run{};
 };
 
 // ae-naming-lint: allow Runtime — ADR-237 §9 D7: new runtime vocabulary, 027 §4 row added when the ADR is Judged
@@ -127,6 +151,70 @@ template <class T>
     } else {
         return std::move(*h.promise().value_ptr());
     }
+}
+
+// Step 5 counters, shared so that an awaiter destroyed on a host thread, or a continuation dropped by a host after
+// the Runtime is gone, never touches the Runtime itself.
+struct SharedCounters {
+    std::atomic<std::uint64_t> adopted{0};           // enter roots adopted (§4.5 rule 3)
+    std::atomic<std::uint64_t> adopted_finished{0};  // ... that have since finished
+};
+
+// One `enter`: shared by the awaiter and the root frame; the root frame's reference keeps it alive after an
+// adoption (§4.5 rule 3). `phase` decides, exactly once, who the end of the root belongs to.
+template <class T>
+struct EnterState {
+    static constexpr int kRunning  = 0;
+    static constexpr int kFinished = 1;  // the root finished first: the foreign continuation is handed over
+    static constexpr int kAdopted  = 2;  // the awaiter was destroyed first: the Runtime owns the root
+
+    Runtime*                               rt = nullptr;
+    std::shared_ptr<SharedCounters>        counters;
+    Strand                                 strand;
+    std::stop_source                       stop;
+    std::uint64_t                          root_holder = 0;
+    std::coroutine_handle<>                foreign{};
+    std::uint64_t                          foreign_holder = 0;
+    std::shared_ptr<detail::ResumerTicket> ticket;  // copied into the continuation
+    std::optional<std::conditional_t<std::is_void_v<T>, std::monostate, T>> value;
+    std::exception_ptr                     fault;
+    std::atomic<int>                       phase{kRunning};
+};
+
+// The frame an `enter` root runs in: started on the root's strand, frees itself when its body ends (final_suspend
+// never suspends), and owns the engine task -- so an adopted root needs no owner to be destroyed by.
+struct RootFrame {
+    struct promise_type {
+        RootFrame get_return_object() noexcept {
+            return RootFrame{std::coroutine_handle<promise_type>::from_promise(*this)};
+        }
+        std::suspend_always initial_suspend() noexcept { return {}; }
+        std::suspend_never  final_suspend() noexcept { return {}; }
+        void                return_void() noexcept {}
+        void                unhandled_exception() noexcept { std::terminate(); }  // the body catches everything
+    };
+    std::coroutine_handle<promise_type> h;
+};
+
+template <class T>
+void finish_enter(EnterState<T>& st) noexcept;
+
+template <class T>
+RootFrame enter_root(task<T> t, std::shared_ptr<EnterState<T>> st) {
+    {
+        task<T> body = std::move(t);  // destroyed (with every guard its frame held) before the hand-off
+        try {
+            if constexpr (std::is_void_v<T>) {
+                co_await body;
+                st->value.emplace();
+            } else {
+                st->value.emplace(co_await body);
+            }
+        } catch (...) {
+            st->fault = std::current_exception();
+        }
+    }
+    finish_enter(*st);  // the last statement; `st` (this frame's parameter) keeps the state alive through it
 }
 
 }  // namespace runtime_detail
@@ -214,23 +302,23 @@ public:
     T                  await_resume() {
         resumed_ = true;
         if (ct_ != nullptr) ct_->outstanding_.fetch_sub(1, std::memory_order_acq_rel);
-        return runtime_detail::take_result(task_);
+        if (st_->fault) std::rethrow_exception(st_->fault);
+        if constexpr (std::is_void_v<T>) {
+            return;
+        } else {
+            return std::move(*st_->value);
+        }
     }
 
 private:
-    static void root_done(void* ctx) noexcept;
-
-    Runtime*                               rt_;
-    task<T>                                task_;
-    std::shared_ptr<Resumer>               resumer_;
-    CompletionThread*                      ct_;
-    std::coroutine_handle<>                foreign_{};
-    std::uint64_t                          holder_ = 0;
-    std::shared_ptr<detail::ResumerTicket> ticket_;       // handed to the continuation
-    std::shared_ptr<detail::ResumerTicket> ticket_keep_;  // kept to claim a queued continuation (destructor)
-    std::atomic<bool>                      root_finished_{false};
-    bool                                   started_ = false;
-    bool                                   resumed_ = false;
+    Runtime*                                         rt_;
+    task<T>                                          task_;
+    std::shared_ptr<Resumer>                         resumer_;
+    CompletionThread*                                ct_;
+    std::shared_ptr<runtime_detail::EnterState<T>>   st_;
+    std::shared_ptr<detail::ResumerTicket>           ticket_keep_;  // kept to claim a queued continuation
+    bool                                             started_ = false;
+    bool                                             resumed_ = false;
 };
 
 // ae-naming-lint: allow Runtime — ADR-237 §9 D7: new runtime vocabulary, 027 §4 row added when the ADR is Judged
@@ -239,7 +327,9 @@ public:
     explicit Runtime(RuntimeConfig config = {})
         : config_(std::move(config)),
           reactor_(pal::make_default_reactor()),
-          lanes_(config_.lanes == half_of_hardware ? default_lane_count() : config_.lanes),
+          lanes_(config_.lanes == half_of_hardware ? default_lane_count() : config_.lanes,
+                 WatchdogOptions{config_.lane_stall_bound, config_.on_lane_stall, config_.stuck_run_bound,
+                                 config_.on_stuck_run}),
           offload_(OffloadPool::Options{config_.offload_workers, {}, {}}),
           dns_(OffloadPool::Options{config_.dns_workers, {}, {}}) {}
 
@@ -253,6 +343,15 @@ public:
             runtime_detail::violation("rt::Runtime destroyed while a CompletionThread made from it is alive "
                                       "(destroy the CompletionThread first, §4.5 rule 4)");
         }
+        // §4.5 rule 4 (step 5): cancel every root before joining it. Requested outside `m_`: a stop runs its
+        // callbacks inline, and those only signal and post (rt/strand_stop_callback.hpp, reactor cancels).
+        std::vector<std::stop_source> stops;
+        stops.reserve(live_roots_.size());
+        for (auto const& [holder, source] : live_roots_) stops.push_back(source);
+        lock.unlock();
+        for (std::stop_source& s : stops) s.request_stop();
+        stops.clear();
+        lock.lock();
         if (config_.shutdown_deadline) {
             if (!idle_cv_.wait_for(lock, *config_.shutdown_deadline, [this] { return roots_ == 0; })) {
                 std::size_t const still = roots_;
@@ -304,16 +403,44 @@ public:
     [[nodiscard]] T run(Strand const& strand, task<T> t) {
         if (char const* refused = detail::block_on_refusal_code()) throw block_on_refused(refused);  // §4.3
         if (!t.valid() || !strand.valid()) throw std::invalid_argument("rt::Runtime::run: empty task or strand");
-        admit();
+        std::uint64_t const holder = mint_holder_id();  // a fresh await chain (step 5)
+        std::stop_source    stop;
+        admit(holder, stop);
+        try {
+            chain_detail::Registry::instance().add(holder, chain_detail::Link{0, nullptr, stop.get_token(), 0});
+            lanes_.watch_root(strand);
+        } catch (...) {
+            (void)chain_detail::Registry::instance().remove(holder);
+            release_root(holder);
+            throw;
+        }
         runtime_detail::RunSignal signal;
         auto                      h = detail::TaskAccess::handle(t);
         h.promise().link_.on_done     = &runtime_detail::RunSignal::done;
         h.promise().link_.on_done_ctx = &signal;
-        strand.post(h, mint_holder_id());
+        strand.post(h, holder);
         signal.wait();
-        release_root();
+        lanes_.unwatch_root(strand);
+        (void)chain_detail::Registry::instance().remove(holder);
+        release_root(holder);
         return runtime_detail::take_result(t);
     }
+
+    // §4.5 rule 3 (step 5): `enter` roots whose awaiter was destroyed and that the Runtime adopted, and how many of
+    // those have finished since.
+    [[nodiscard]] std::uint64_t adopted_roots() const noexcept {
+        return counters_->adopted.load(std::memory_order_acquire);
+    }
+    [[nodiscard]] std::uint64_t adopted_roots_finished() const noexcept {
+        return counters_->adopted_finished.load(std::memory_order_acquire);
+    }
+    // §4.2 (step 5): `enter` continuations a host Resumer dropped -- never resumed.
+    [[nodiscard]] std::uint64_t dropped_continuations() const noexcept {
+        return dropped_->load(std::memory_order_acquire);
+    }
+    // §4.3 watchdog reports so far (step 5).
+    [[nodiscard]] std::uint64_t lane_stalls() const noexcept { return lanes_.lane_stalls(); }
+    [[nodiscard]] std::uint64_t stuck_runs() const noexcept { return lanes_.stuck_runs(); }
 
     // Case 2 (§9 D7): the engine body runs on a lane; the awaiting (foreign) coroutine is handed to `resumer`
     // when it finishes. `resumer` must outlive the continuation (the shared_ptr overload owns it instead).
@@ -336,15 +463,19 @@ private:
     friend class CompletionThread;
     template <class T>
     friend class EnterAwaiter;
+    template <class T>
+    friend void runtime_detail::finish_enter(runtime_detail::EnterState<T>& st) noexcept;
 
-    void admit() {
+    void admit(std::uint64_t holder, std::stop_source const& stop) {
         std::lock_guard lock(m_);
         if (!accepting_) throw std::logic_error("rt.runtime_closed: the Runtime is shutting down (ADR-237 §4.5)");
+        live_roots_.emplace(holder, stop);
         ++roots_;
     }
     // Last touch on the Runtime from a finishing root: the destructor may proceed once it unlocks.
-    void release_root() noexcept {
+    void release_root(std::uint64_t holder) noexcept {
         std::lock_guard lock(m_);
+        live_roots_.erase(holder);
         --roots_;
         if (roots_ == 0) idle_cv_.notify_all();
     }
@@ -364,11 +495,15 @@ private:
     OffloadPool                   offload_;
     OffloadPool                   dns_;
 
+    std::shared_ptr<runtime_detail::SharedCounters> counters_ = std::make_shared<runtime_detail::SharedCounters>();
+    std::shared_ptr<std::atomic<std::uint64_t>>     dropped_  = std::make_shared<std::atomic<std::uint64_t>>(0);
+
     mutable std::mutex      m_;
     std::condition_variable idle_cv_;
     std::size_t             roots_              = 0;
     std::size_t             completion_threads_ = 0;
     bool                    accepting_          = true;
+    std::unordered_map<std::uint64_t, std::stop_source> live_roots_;  // holder -> its stop (shutdown cancels)
 };
 
 // --- CompletionThread ------------------------------------------------------------------------------------------
@@ -400,39 +535,81 @@ template <class T>
 void EnterAwaiter<T>::await_suspend(std::coroutine_handle<> foreign) {
     if (!task_.valid() || !resumer_) throw std::invalid_argument("rt::Runtime::enter: empty task or resumer");
     // Everything that can throw happens before the root is posted, while nothing refers to `foreign` yet.
-    Strand const strand = rt_->new_strand_group().new_strand();
-    ticket_             = std::make_shared<detail::ResumerTicket>(resumer_);
-    ticket_keep_        = ticket_;
-    rt_->admit();
-    foreign_ = foreign;
-    holder_  = current_holder_id();
+    auto st         = std::make_shared<runtime_detail::EnterState<T>>();
+    st->rt          = rt_;
+    st->counters    = rt_->counters_;
+    st->strand      = rt_->new_strand_group().new_strand();
+    st->root_holder = mint_holder_id();  // a fresh await chain (step 5)
+    st->ticket      = std::make_shared<detail::ResumerTicket>(resumer_);
+    st->ticket->dropped_counter = rt_->dropped_;  // §4.2: a dropped enter continuation is never resumed
+    ticket_keep_                = st->ticket;
+    runtime_detail::RootFrame frame = runtime_detail::enter_root(std::move(task_), st);
+    try {
+        rt_->admit(st->root_holder, st->stop);
+    } catch (...) {
+        frame.h.destroy();
+        throw;
+    }
+    try {
+        chain_detail::Registry::instance().add(st->root_holder,
+                                               chain_detail::Link{0, nullptr, st->stop.get_token(), 0});
+        rt_->lanes_.watch_root(st->strand);
+    } catch (...) {
+        frame.h.destroy();
+        (void)chain_detail::Registry::instance().remove(st->root_holder);
+        rt_->release_root(st->root_holder);
+        throw;
+    }
+    st->foreign        = foreign;
+    st->foreign_holder = current_holder_id();
     if (ct_ != nullptr) ct_->outstanding_.fetch_add(1, std::memory_order_acq_rel);
-    auto h                        = detail::TaskAccess::handle(task_);
-    h.promise().link_.on_done     = &EnterAwaiter::root_done;
-    h.promise().link_.on_done_ctx = this;
-    started_                      = true;
-    strand.post(h, mint_holder_id());
+    st_      = st;
+    started_ = true;
+    Strand const strand = st->strand;
+    strand.post(frame.h, st->root_holder);
     // Nothing in this awaiter may be touched from here on: the continuation may already be running.
 }
 
+namespace runtime_detail {
+
+// The end of an `enter` root, on its lane (the last statement of `enter_root`). Exactly one of: hand the foreign
+// continuation to the host's Resumer (the awaiter is still there), or -- the awaiter was destroyed and the root
+// adopted -- just finish. Then release the root: the last touch on the Runtime.
 template <class T>
-void EnterAwaiter<T>::root_done(void* ctx) noexcept {
-    auto* const self = static_cast<EnterAwaiter*>(ctx);
-    Runtime* const        rt = self->rt_;
-    detail::ParkedResumer r{self->foreign_, {}, self->holder_, std::move(self->ticket_), {}};
-    self->root_finished_.store(true, std::memory_order_release);
-    // `self` may be destroyed from here on (the host resumes the foreign coroutine on its own thread).
-    detail::hand_to_resumer(std::move(r));
-    rt->release_root();
+void finish_enter(EnterState<T>& st) noexcept {
+    Runtime* const      rt     = st.rt;
+    std::uint64_t const holder = st.root_holder;
+    (void)chain_detail::Registry::instance().remove(holder);
+    rt->lanes_.unwatch_root(st.strand);
+    detail::ParkedResumer r{st.foreign, {}, st.foreign_holder, st.ticket, {}};
+    int expected = EnterState<T>::kRunning;
+    if (st.phase.compare_exchange_strong(expected, EnterState<T>::kFinished, std::memory_order_acq_rel)) {
+        // The awaiter may be destroyed from here on (the host resumes the foreign coroutine on its own thread);
+        // `st` stays alive through this frame's own reference.
+        detail::hand_to_resumer(std::move(r));
+    } else {
+        st.counters->adopted_finished.fetch_add(1, std::memory_order_acq_rel);  // §4.5 rule 3: adopted, done
+    }
+    rt->release_root(holder);
 }
 
+}  // namespace runtime_detail
+
+// The host destroyed the coroutine awaiting this `enter` (it dropped its awaiter). Touches only the shared state and
+// its own fields -- never the Runtime, which may already be gone if the root finished.
 template <class T>
 EnterAwaiter<T>::~EnterAwaiter() {
     if (!started_ || resumed_) return;
-    if (!root_finished_.load(std::memory_order_acquire)) {
-        // §4.5 rule 3 (root adoption) is a later step; until then this would destroy a running engine chain.
-        runtime_detail::violation("a coroutine awaiting rt::Runtime::enter was destroyed while its engine task "
-                                  "was still running");
+    int expected = runtime_detail::EnterState<T>::kRunning;
+    if (st_->phase.compare_exchange_strong(expected, runtime_detail::EnterState<T>::kAdopted,
+                                           std::memory_order_acq_rel)) {
+        // §4.5 rule 3: the engine chain is still running. It is adopted -- it keeps running, intact, in its own
+        // frame -- and asked to stop; it finishes normally, releasing what it holds, and the Runtime joins it at
+        // shutdown like any other root. Nothing will continue the foreign coroutine.
+        st_->counters->adopted.fetch_add(1, std::memory_order_acq_rel);
+        st_->stop.request_stop();  // callbacks only signal and post (rt/strand_stop_callback.hpp)
+        if (ct_ != nullptr) ct_->outstanding_.fetch_sub(1, std::memory_order_acq_rel);
+        return;
     }
     // Finished, its continuation queued at the host and never run: claim it so it never touches this frame.
     (void)detail::abandon_woken(ticket_keep_);
