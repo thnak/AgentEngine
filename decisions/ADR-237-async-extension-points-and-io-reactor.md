@@ -878,4 +878,10 @@ items are implementation-checklist work with named gates.
   exists).
 - Regression: full suite (`ctest -LE live-network`, Windows/clang) — every failure is a Docker-dependent
   test on a machine without Docker running (13), unchanged from before this step; `rt` label 69/69.
-  Layering and naming lints clean. Not yet run: Linux build (`tools/wsl-linux-build.sh`), TSan.
+  Layering and naming lints clean.
+- Linux (WSL, gcc 15, `-Werror`): builds; the test's first version **segfaulted** there (R5) and passed on
+  Windows by luck — immediately-invoked lambda coroutines read their captures through a closure destroyed
+  before the lazily started body ran. A test bug, not an engine bug, but exactly the lifetime class §4.5
+  is about; the test now uses free coroutines. Then 26/26, three runs.
+- TSan (gcc 15, the test plus the backend): one data race, again in the test (R8's waiter read the
+  `unique_ptr` main was resetting); fixed; 5/5 runs clean.

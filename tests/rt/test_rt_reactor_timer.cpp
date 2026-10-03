@@ -77,6 +77,23 @@ task<Observed> nap(pal::Reactor& r, std::chrono::milliseconds d, std::stop_token
     co_return o;
 }
 
+// Coroutines are free functions taking their state by pointer: an immediately-invoked lambda coroutine would
+// read its captures through a closure object destroyed at the end of the full expression, before the lazily
+// started body runs (a real use-after-free on gcc/Linux, found by this test's first version).
+task<void> nap_into(pal::Reactor* r, std::chrono::milliseconds d, Observed* out, std::atomic<bool>* finished) {
+    *out = co_await nap(*r, d);
+    finished->store(true, std::memory_order_release);
+}
+
+task<void> nap_then_flag(pal::Reactor* r, std::chrono::milliseconds d, std::atomic<bool>* ran) {
+    (void)co_await sleep_for(*r, d);
+    ran->store(true, std::memory_order_release);
+}
+
+task<sleep_status> nap_status(pal::Reactor* r, std::chrono::milliseconds d, std::stop_token stop) {
+    co_return co_await sleep_for(*r, d, std::move(stop));
+}
+
 // A host Resumer with its own worker thread (as in test_rt_host_resumer.cpp).
 class ThreadResumer final : public Resumer {
 public:
@@ -236,10 +253,7 @@ int main() {
         auto             resumer = std::make_shared<ThreadResumer>();
         std::atomic<bool> finished{false};
         Observed          o;
-        auto              t = [&]() -> task<void> {
-            o = co_await nap(*reactor, 20ms);
-            finished.store(true, std::memory_order_release);
-        }();
+        auto              t = nap_into(reactor.get(), 20ms, &o, &finished);
         {
             ScopedResumer scope(resumer);
             t.resume();  // raw drive under a host resumer: parks on the reactor
@@ -257,10 +271,7 @@ int main() {
     {
         std::uint64_t const before = reactor->homeless_refusals();
         std::atomic<bool>   ran{false};
-        auto                t = [&]() -> task<void> {
-            (void)co_await sleep_for(*reactor, 10ms);
-            ran.store(true, std::memory_order_release);
-        }();
+        auto                t = nap_then_flag(reactor.get(), 10ms, &ran);
         t.resume();  // homeless: no block_on, no ScopedResumer
         check(wait_until([&] { return reactor->homeless_refusals() == before + 1; }, 5s),
               "R6: the homeless wake-up was refused and counted");
@@ -274,7 +285,8 @@ int main() {
     {
         auto resumer = std::make_shared<ThreadResumer>();
         {
-            auto t = [&]() -> task<void> { (void)co_await sleep_for(*reactor, 30ms); }();
+            std::atomic<bool> ran{false};
+            auto              t = nap_then_flag(reactor.get(), 30ms, &ran);
             ScopedResumer scope(resumer);
             t.resume();
         }  // frame destroyed while the timer is pending
@@ -288,8 +300,9 @@ int main() {
         auto               doomed = pal::make_default_reactor();
         std::atomic<bool>  done{false};
         Observed           o;
-        std::thread        waiter([&] {
-            o = block_on(nap(*doomed, 60s));
+        pal::Reactor*      raw = doomed.get();  // the waiter must not read the unique_ptr main resets (TSan)
+        std::thread        waiter([&o, &done, raw] {
+            o = block_on(nap(*raw, 60s));
             done.store(true, std::memory_order_release);
         });
         std::this_thread::sleep_for(50ms);
@@ -304,11 +317,7 @@ int main() {
     // R9 ------------------------------------------------------------------------------------------------
     {
         std::stop_source src;
-        auto t = [&]() -> task<sleep_status> {
-            sleep_status s = co_await sleep_for(*reactor, 1ms, src.get_token());
-            co_return s;
-        };
-        sleep_status s = block_on(t());
+        sleep_status s = block_on(nap_status(reactor.get(), 1ms, src.get_token()));
         src.request_stop();  // after expiry: must not rewrite history
         check(s == sleep_status::expired, "R9: a stop after expiry leaves the outcome `expired`");
     }
