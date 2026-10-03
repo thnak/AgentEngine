@@ -146,3 +146,10 @@ target_link_libraries(process_child_helper PRIVATE agentengine_warnings)
 agentengine_add_test(test_rt_reactor_process LIBS agentengine::core agentengine_warnings TIMEOUT 300
   DEFINITIONS "AE_PROCESS_CHILD_HELPER=\"$<TARGET_FILE:process_child_helper>\"")
 add_dependencies(test_rt_reactor_process process_child_helper)
+
+# ---- ADR-237 implementation step 3: lanes and strands (rt/lanes.hpp) -- I1 structural per strand, FIFO within a
+# strand, round-robin across sessions then strands, priority across strands only, block_on refused on lanes, the
+# strand as the home of engine work, final_suspend posting across strands -- and rt::Runtime (rt/runtime.hpp):
+# run / enter(Resumer) / enter(CompletionThread), usable_cpus and the D5 default, shutdown joining every thread.
+agentengine_add_test(test_rt_lanes LIBS agentengine::core agentengine_warnings TIMEOUT 180)
+agentengine_add_test(test_rt_runtime LIBS agentengine::core agentengine_warnings TIMEOUT 180)

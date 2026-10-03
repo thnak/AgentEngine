@@ -465,7 +465,7 @@ inline void JobBase::run() noexcept {
 }
 
 inline void JobBase::deliver() noexcept {
-    if (!parked_.home && !parked_.ticket) {
+    if (!parked_.homed()) {
         // Homeless: resuming here would run the coroutine on a worker (or the stopping thread). Refused.
         pool_->note_homeless_refusal();
         return;

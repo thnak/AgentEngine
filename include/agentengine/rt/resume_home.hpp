@@ -43,6 +43,32 @@
 // rule says: per drive, not per mutex and not per lock() call. Unused, it adds one pointer to each parked
 // record and one null test at park and at wake time (ADR-219 §6 measures about +10% on a chain of homeless
 // hand-offs, nothing measurable elsewhere).
+//
+// decisions/ADR-237 §4.2/§4.3 (step 3) -- A STRAND. The fourth kind of home, and the one engine work uses: a
+// lane worker (rt/lanes.hpp) runs each continuation of a strand under an execution context that names the
+// strand, and a coroutine that parks during that slice records the strand; its waker posts it back to the
+// strand -- never resumes it inline, never on the waker's thread. ADR-219 rejected "home in the promise"
+// because leaf awaiters see only a type-erased `coroutine_handle<>`. The strand answers that for engine work
+// without RTTI and without templating every awaiter: the only thing that resumes a strand's continuation is a
+// lane worker, and it sets the context around exactly that resumption, so for the whole slice every
+// coroutine running on that thread IS part of that strand's chain (the continuation and whatever it
+// symmetrically transfers into). The context is therefore exact for engine work -- the residual ADR-219 §6
+// describes (a host coroutine resumed by the host's own runtime, with no scope) cannot arise, because the
+// "host runtime" of engine work is the lane pool. What the `rt::task` promise carries is the other half:
+// the strand its AWAITER ran on, so `final_suspend` can tell a same-strand join from a cross-strand one
+// (rt/task.hpp). Foreign coroutine types keep the thread-local ScopedResumer fallback, unchanged.
+//
+// PRECEDENCE when a coroutine parks (`capture_parked`), highest first:
+//   1. strand        -- engine work on a lane. A ScopedResumer or raw `task<T>::resume()` opened INSIDE a
+//                       strand slice keeps the strand: a continuation of a strand that came back through a
+//                       host Resumer would run on a host thread concurrently with the strand's next
+//                       continuation, breaking I1. So inside a slice the strand wins.
+//   2. block_on home -- ADR-175. Cannot coexist with a strand (block_on is refused on lanes, §4.3); kept above
+//                       the host Resumer as ADR-219 already decided ("a block_on() inside the scope still
+//                       owns what parks under it").
+//   3. host Resumer  -- ADR-219, the fallback for foreign coroutine types.
+//   4. homeless      -- refused by reactor and offload wake-ups (§4.2); resumed inline by AsyncMutex/channel
+//                       as before ADR-175.
 
 #include <atomic>
 #include <condition_variable>
@@ -66,6 +92,33 @@ class Resumer;
 namespace detail {
 
 class CallerHome;
+
+// ADR-237 §4.3: a strand seen as a home -- where a parked engine coroutine is posted when it wakes. The one
+// implementation is rt/lanes.hpp's strand core; this base exists so the wake path here needs no include of
+// the scheduler (the same type-erasure level as `Resumer`: one indirect call per wake-up). `post` only
+// enqueues; it never runs the coroutine on the caller's thread. Shared ownership: a parked record holds a
+// strong reference, so a strand outlives every continuation queued for it.
+class StrandHome : public std::enable_shared_from_this<StrandHome> {
+public:
+    virtual ~StrandHome() = default;
+    // `priority`: a cancel/approval resume -- picked before other strands, never reordered within this one.
+    virtual void post(std::coroutine_handle<> h, std::uint64_t holder, bool priority) noexcept = 0;
+    // A process-unique id (diagnostic; 0 is never used).
+    [[nodiscard]] std::uint64_t id() const noexcept { return id_; }
+
+    StrandHome(StrandHome const&)            = delete;
+    StrandHome& operator=(StrandHome const&) = delete;
+
+protected:
+    StrandHome() noexcept : id_(mint_strand_id()) {}
+
+private:
+    [[nodiscard]] static std::uint64_t mint_strand_id() noexcept {
+        static std::atomic<std::uint64_t> next{1};
+        return next.fetch_add(1, std::memory_order_relaxed);
+    }
+    std::uint64_t id_;
+};
 
 // ADR-219: what one park inside a ScopedResumer records -- allocated per park, only on that path, and shared
 // by the parked record, the awaiter and the continuation. One allocation carries both:
@@ -100,6 +153,10 @@ struct ExecutionContext {
     // the enclosing ScopedResumer or ParkedContinuation::resume() frame, which outlives every use. Ignored
     // while `slot` is set: a block_on() inside a host drive owns what parks under it.
     std::shared_ptr<Resumer> const* resumer = nullptr;
+    // ADR-237 §4.3: the strand whose continuation this thread is running -- set only by a lane worker, and
+    // kept by scopes nested inside its slice. Highest precedence (file comment). The lane worker holds a
+    // strong reference for the duration of the slice.
+    StrandHome* strand = nullptr;
 };
 
 [[nodiscard]] inline ExecutionContext& current_execution() noexcept {
@@ -121,14 +178,16 @@ struct ExecutionContext {
 }
 
 // RAII: coroutines resumed on this thread until destruction belong to `holder` and park back to `slot`
-// (nullptr: homeless, or to `resumer` if one is given -- ADR-219). The previous context is restored on
-// destruction.
+// (nullptr: homeless, or to `resumer` if one is given -- ADR-219; to `strand`, above both -- ADR-237 §4.3).
+// The previous context is restored on destruction.
 // ae-naming-lint: allow ScopedExecution — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class ScopedExecution {
 public:
     ScopedExecution(detail::HomeSlot* slot, std::uint64_t holder,
-                    std::shared_ptr<Resumer> const* resumer = nullptr) noexcept
-        : saved_(std::exchange(detail::current_execution(), detail::ExecutionContext{slot, holder, resumer})) {}
+                    std::shared_ptr<Resumer> const* resumer = nullptr,
+                    detail::StrandHome* strand = nullptr) noexcept
+        : saved_(std::exchange(detail::current_execution(),
+                               detail::ExecutionContext{slot, holder, resumer, strand})) {}
     ~ScopedExecution() { detail::current_execution() = saved_; }
     ScopedExecution(ScopedExecution const&) = delete;
     ScopedExecution& operator=(ScopedExecution const&) = delete;
@@ -250,8 +309,9 @@ class ScopedResumer {
 public:
     explicit ScopedResumer(std::shared_ptr<Resumer> resumer)
         : ScopedResumer(std::move(resumer), mint_holder_id()) {}
+    // ADR-237 §4.3: opened inside a strand slice, the strand is kept and takes precedence (file comment).
     ScopedResumer(std::shared_ptr<Resumer> resumer, std::uint64_t holder) noexcept
-        : resumer_(std::move(resumer)), scope_(nullptr, holder, &resumer_) {}
+        : resumer_(std::move(resumer)), scope_(nullptr, holder, &resumer_, detail::current_execution().strand) {}
     ScopedResumer(ScopedResumer const&)            = delete;
     ScopedResumer& operator=(ScopedResumer const&) = delete;
 
@@ -340,15 +400,23 @@ struct ParkedResumer {
     std::shared_ptr<CallerHome> home{};
     std::uint64_t               holder = 0;
     std::shared_ptr<ResumerTicket> ticket{};  // ADR-219: set only when `home` is not
+    std::shared_ptr<StrandHome>    strand{};  // ADR-237 §4.3: when set, the only home set
+
+    // False for a homeless record, which a waker that must not run it inline (the reactor thread, an offload
+    // worker) refuses (ADR-237 §4.2).
+    [[nodiscard]] bool homed() const noexcept { return strand || home || ticket; }
 };
 
 // Called by an awaiter's await_suspend() BEFORE it registers anything: the allocation of a first-park home
 // (or of an ADR-219 ticket) may throw, and an exception from await_suspend() is only safe while nothing yet
 // refers to the handle. Runs on the thread executing the coroutine, which is the thread that owns `slot`.
+// Precedence (file comment): strand > block_on home > host Resumer > homeless.
 [[nodiscard]] inline ParkedResumer capture_parked(std::coroutine_handle<> h) {
     ExecutionContext const& ctx = current_execution();
-    ParkedResumer r{h, {}, current_holder_id(), {}};
-    if (ctx.slot != nullptr) {
+    ParkedResumer r{h, {}, current_holder_id(), {}, {}};
+    if (ctx.strand != nullptr) {
+        r.strand = ctx.strand->shared_from_this();  // ADR-237 §4.3: engine work goes back to its strand
+    } else if (ctx.slot != nullptr) {
         if (!ctx.slot->home) ctx.slot->home = std::make_shared<CallerHome>();
         r.home = ctx.slot->home;
     } else if (ctx.resumer != nullptr && *ctx.resumer) {
@@ -379,12 +447,18 @@ inline void hand_to_resumer(ParkedResumer r) noexcept {
     }
 }
 
-// Called by a waker AFTER releasing its primitive's lock. A homed coroutine is posted to its home (which
-// resumes it inline if it has closed); one a host resumer drives is handed to that resumer (ADR-219); a
-// homeless one is resumed inline as before ADR-175, on behalf of its own recorded holder and with no home,
-// so it neither adopts the waker's identity nor parks back to the waker's block_on().
+// Called by a waker AFTER releasing its primitive's lock. A strand-homed coroutine is posted to its strand
+// (ADR-237 §4.3; only enqueues); a homed coroutine is posted to its home (which resumes it inline if it has
+// closed); one a host resumer drives is handed to that resumer (ADR-219); a homeless one is resumed inline as
+// before ADR-175, on behalf of its own recorded holder and with no home, so it neither adopts the waker's
+// identity nor parks back to the waker's block_on().
 inline void wake(ParkedResumer r) noexcept {
     if (!r.handle) return;
+    if (r.strand) {
+        std::shared_ptr<StrandHome> const strand = std::move(r.strand);
+        strand->post(r.handle, r.holder, false);
+        return;
+    }
     if (r.home) {
         std::shared_ptr<CallerHome> const home = std::move(r.home);
         home->post(r.handle, r.holder);
