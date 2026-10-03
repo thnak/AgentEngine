@@ -12,6 +12,9 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <mutex>
+#include <shared_mutex>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -123,17 +126,27 @@ concept WorktreeObjectStoreWithBlobSize =
 // Quark's own `Store` seam uses for a different shape of persistence) is a tracked follow-up, not
 // built in this pass -- see docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md
 // Phase A.
+//
+// Safe to call from several threads at once: every member takes `mutex_` (shared for reads, exclusive
+// for writes). Workflow executors running in one round share a bare store with
+// `make_merge_on_join_hook` (workflow/worktree_scoping.hpp), outside any Ledger's lock, so
+// unsynchronized maps here were a real data race (seen as heap corruption under MSVC ASan in
+// test_rt_workflow_supervisor_merge_on_join's J2). The mutex sits behind a unique_ptr for the same
+// reason as FileWorktreeObjectStore's: `Ledger<Store>` moves its store into place, and std::shared_mutex
+// cannot move. A moved-from store must not be used again.
 // ae-naming-lint: allow InMemoryWorktreeObjectStore — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class InMemoryWorktreeObjectStore {
 public:
     [[nodiscard]] result<Digest> put_blob(std::span<std::byte const> bytes) {
         auto digest = compute_digest(bytes);
         if (!digest) return std::unexpected(digest.error());
+        std::unique_lock lock(*mutex_);
         blobs_.try_emplace(*digest, bytes.begin(), bytes.end());
         return *digest;
     }
 
     [[nodiscard]] result<std::vector<std::byte>> get_blob(Digest const& digest) const {
+        std::shared_lock lock(*mutex_);
         auto it = blobs_.find(digest);
         if (it == blobs_.end()) {
             return std::unexpected(error{failure_class::contract,
@@ -144,6 +157,7 @@ public:
     }
 
     [[nodiscard]] result<std::uint64_t> blob_size(Digest const& digest) const {
+        std::shared_lock lock(*mutex_);
         auto it = blobs_.find(digest);
         if (it == blobs_.end()) {
             return std::unexpected(error{failure_class::contract,
@@ -157,11 +171,13 @@ public:
         std::ranges::sort(tree.entries, {}, &TreeEntry::name);
         auto digest = compute_digest(canonical_tree_bytes(tree));
         if (!digest) return std::unexpected(digest.error());
+        std::unique_lock lock(*mutex_);
         trees_.insert_or_assign(*digest, std::move(tree));
         return *digest;
     }
 
     [[nodiscard]] result<Tree> get_tree(Digest const& digest) const {
+        std::shared_lock lock(*mutex_);
         auto it = trees_.find(digest);
         if (it == trees_.end()) {
             return std::unexpected(error{failure_class::contract,
@@ -175,10 +191,17 @@ public:
     // only actually proven by watching this NOT grow on a duplicate put, not by digest equality
     // alone -- two equal digests could still coincidentally be backed by two map entries if a bug
     // used `insert` instead of dedup-on-key, so this is exercised directly rather than inferred).
-    [[nodiscard]] std::size_t blob_count() const { return blobs_.size(); }
-    [[nodiscard]] std::size_t tree_count() const { return trees_.size(); }
+    [[nodiscard]] std::size_t blob_count() const {
+        std::shared_lock lock(*mutex_);
+        return blobs_.size();
+    }
+    [[nodiscard]] std::size_t tree_count() const {
+        std::shared_lock lock(*mutex_);
+        return trees_.size();
+    }
 
 private:
+    mutable std::unique_ptr<std::shared_mutex> mutex_ = std::make_unique<std::shared_mutex>();
     std::unordered_map<Digest, std::vector<std::byte>> blobs_;
     std::unordered_map<Digest, Tree>                   trees_;
 };
