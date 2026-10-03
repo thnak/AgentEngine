@@ -119,6 +119,11 @@ template <class T>
         case workflow_event_kind::agent_turn_event: return "agent_turn_event";
         case workflow_event_kind::moderator_stream_delta: return "moderator_stream_delta";
         case workflow_event_kind::request_port_rejected: return "request_port_rejected";
+        case workflow_event_kind::batch_submitted: return "batch_submitted";
+        case workflow_event_kind::batch_fallback: return "batch_fallback";
+        case workflow_event_kind::batch_item_resolved: return "batch_item_resolved";
+        case workflow_event_kind::batch_poll_failed: return "batch_poll_failed";
+        case workflow_event_kind::batch_abandoned: return "batch_abandoned";
     }
     return "?";
 }

@@ -117,6 +117,7 @@
 "include/agentengine/protocol/provider_chat_wire.hpp"    = { layer = "L2", reason = "HTTP plumbing shared by the two ChatClient backends above (ADR-206)" }
 "include/agentengine/protocol/openai/embedder.hpp"       = { layer = "L2", reason = "Embedder conformer (ADR-063 §2.5)" }
 "include/agentengine/protocol/qdrant/vector_index.hpp"   = { layer = "L2", reason = "RemoteVectorIndex conformer (ADR-180 §2.5)" }
+"include/agentengine/protocol/openai/openrouter_batch_backend.hpp" = { layer = "L2", reason = "BatchBackend conformer (ADR-235 §3.2): an outbound provider, not a served surface" }
 
 # --- src/ -----------------------------------------------------------------------------------------
 "src/core/message_json.cpp"            = { layer = "V",  reason = "implements core/message_json.hpp (V); must include only V" }
@@ -127,6 +128,7 @@
 "src/core/worktree_mount_fs_posix.cpp" = { layer = "L1", reason = "implements core/worktree_mount_fs_posix.hpp (L1)" }
 "src/rt/agent_session_core.cpp"        = { layer = "L2", reason = "implements rt/agent_session_core.hpp (L2)" }
 "src/rt/workflow_supervisor.cpp"       = { layer = "L3", reason = "implements rt/workflow_supervisor.hpp (L3)" }
+"src/rt/workflow_supervisor_batch.cpp" = { layer = "L3", reason = "implements rt/workflow_supervisor.hpp's batch coalescing (ADR-235)" }
 "src/backends/native_jail/session_shell_wiring.hpp"      = { layer = "L2", reason = "builds the session's shell Tool<>s over the mediated shell runner" }
 "src/backends/native_jail/sandbox_tool_provider.hpp"     = { layer = "L2", reason = "a ContextProvider contributing the sandbox tools" }
 "src/backends/native_jail/memory_mount_materializer.hpp" = { layer = "L2", reason = "materializes the L2 memory worktree into a jail mount (ADR-153)" }

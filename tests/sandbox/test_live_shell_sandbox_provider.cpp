@@ -248,7 +248,7 @@ void run_end(Provider& p, Recorded* rec = nullptr) {
 
 struct World {
     IdentityAuthority& authority = IdentityAuthority::bootstrap();
-    IdentityHandle owner = authority.adopt(Principal{.id = "owner"});
+    IdentityHandle owner = authority.adopt(Principal{.id = "owner", .tenant_id = ""});
     Ledger<> ledger;
     agentengine::rt::AsyncQuota<BranchCost> branch_q = *agentengine::rt::AsyncQuota<BranchCost>::mint_root(authority, owner, 100);
     agentengine::rt::AsyncQuota<RunCost> run_q = *agentengine::rt::AsyncQuota<RunCost>::mint_root(authority, owner, 1000);

@@ -91,6 +91,11 @@ These compile to exactly the `Workflow` that `WorkflowBuilder::connect_case`/`co
 (I6). `case`/`default` on a `fan_out_to`/`fan_in_to` edge, both keys on one edge, a non-string `case`
 and a `default` other than `true` are all load errors.
 
+A function executor can carry `batch: true` (014 §1, ADR-235). It compiles to `Executor::batch`, the
+same field the C++ form sets (I6); a non-boolean value is the load error `yaml_compiler.bad_batch`, and
+`batch` on a non-function executor fails the shared validator. The flag only marks the node eligible.
+Batching itself is host opt-in (`enable_batch_coalescing()`), never something a document can turn on.
+
 Review points (014 §4, issue #45) are written as `spec.review_points`: a list of step ids (approve/amend
 only) or `{after: <step id>, revisable: true}` entries:
 

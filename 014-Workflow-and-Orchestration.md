@@ -38,6 +38,13 @@ Edge     = direct | fan-out | fan-in | switch/case (+ optional default) | multi-
   with the supervising actor owning them; ADR-037 removed Quark — `AgentEngineSpecification.md` §7).
 - **Messages between executors are the content model** (003), so an agent node and a function node
   are interchangeable at an edge.
+- **A function executor may be marked `batch` (ADR-235, OQ-20).** Its body must be a
+  `BatchableModelCall`: one model call split into build, call and complete. When the host has called
+  `enable_batch_coalescing()`, the round's `batch` deliveries are built, admitted by their declared
+  `BatchBackend`, grouped by backend and calling context, and sent as vendor batch jobs after the
+  round's synchronous wave. Without that opt-in a `batch` node runs synchronously, unchanged. `batch`
+  on any other executor kind fails validation. Batching is single-shot: no tool loop runs inside an
+  item, so the flag fits independent fan-out calls, not an agent's multi-round turn.
 
 **Worktree scoping across executors, the policy+minting half — resolved by ADR-032
 (2026-08-11):** every `Executor` (`workflow/graph.hpp`) declares its own `worktree_mode`
@@ -174,6 +181,14 @@ an invalid token, and carrying no other interaction's id back to the refused cal
 admission is the run, not the individual port: a workflow whose concurrent ports genuinely belong to
 *different* principals needs per-interaction ownership, which `ADR-169` §9 names as unbuilt.
 
+**A pending vendor batch item is a third way a run waits on the outside (ADR-235 §3.0),** beside
+an unanswered port and a pending sub-workflow. One predicate, `awaiting_outside()`, covers all three:
+no entry point drives the superstep loop while it holds, so answering the last port while batch items
+are pending keeps the run suspended. A batch item is not an `Interaction`: it is never listed by
+`open_interactions()` and never answered through `resume_workflow()`. It is resolved only by
+`poll_batches(PollBatches{caller})`, which admits its caller like every other entry point. A run that
+ends in any state but `suspended` abandons its pending items; their jobs are cancelled on a later poll.
+
 ## 5. Checkpointing, resume, and time-travel
 
 - **Checkpoint at superstep boundaries**: executor states, in-flight messages, workflow state,
@@ -186,6 +201,10 @@ admission is the run, not the individual port: a workflow whose concurrent ports
   state — the debugging feature that makes multi-agent systems tractable. Retention is policy;
   every rewind is audited, because rewinding a workflow that already had external effects is a
   correctness hazard the operator must own.
+- **Pending vendor batch items are checkpointed; their results are not (ADR-235 §3.4).** A checkpoint
+  carries each pending item's executor, input, group key, job id and custom id, plus abandoned jobs
+  still owed a cancel. A restored run re-polls; a job id goes back only to a backend with the same
+  group key, and fails closed otherwise.
 - **Effects are not rewound.** Re-running forward re-executes tools; idempotency keys (019) are the
   mechanism that keeps that from double-charging someone. The spec states this loudly because the
   alternative — pretending rewind is safe — is how time-travel becomes a footgun.

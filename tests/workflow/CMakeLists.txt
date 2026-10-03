@@ -209,3 +209,11 @@ endif()
 
 # ADR-213 / issue #28 item 6: the opt-in multi-visit transcript.
 agentengine_add_test(test_workflow_transcript LIBS agentengine::core agentengine_warnings)
+
+# ---- decisions/ADR-235 (OQ-20): vendor batch coalescing on rt::WorkflowSupervisor -- claims C1-C14, C16-C21
+# against testing::ScriptedBatchBackend (C15, the live OpenRouter run, is in tests/protocol/openai/).
+agentengine_add_test(test_rt_workflow_batch_coalescing LIBS agentengine::core agentengine_warnings)
+# decisions/ADR-236: recording and replaying a batched run's backend calls and clock (I5) -- claims R1-R10.
+# R11 replays a real OpenRouter run recorded by tools/batch_infer.cpp (tests/fixtures/batch/).
+agentengine_add_test(test_rt_workflow_batch_replay LIBS agentengine::core agentengine_warnings
+  DEFINITIONS AE_TEST_FIXTURE_DIR="${AE_TESTS_SOURCE_DIR}/fixtures/batch")

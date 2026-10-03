@@ -393,6 +393,16 @@ inline void run_worker(std::shared_ptr<agentengine::rt::WorkflowSupervisor> inne
         return true;
     };
 
+    // ADR-235 (section 3.1, red-team finding 13): a run suspended on a vendor batch has no ask to surface and no
+    // way to be polled through this adapter -- and the next call would start a fresh run over it. Refused on
+    // every call (the host can opt the inner in at any time), not silently mishandled.
+    if (inner->batch_coalescing_enabled()) {
+        producer.fail(agentengine::error{
+            agentengine::failure_class::contract,
+            "workflow chat call: the wrapped workflow has batch coalescing enabled, which this adapter cannot poll",
+            "chat_client.workflow_chat_client.batch_unsupported"});
+        return;
+    }
     std::vector<agentengine::Interaction> open = inner->open_interactions();
     agentengine::rt::WorkflowResult r;
 

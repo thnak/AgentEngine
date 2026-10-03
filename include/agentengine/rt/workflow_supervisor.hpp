@@ -181,6 +181,7 @@
 #include <memory>
 #include <memory_resource>
 #include <mutex>
+#include <map>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -202,6 +203,8 @@
 #include "agentengine/rt/task.hpp"
 #include "agentengine/rt/thread_pool.hpp"
 #include "agentengine/rt/workflow_run_state_record.hpp"  // RunStateRecord + codec (014 §5)
+// ADR-235 (OQ-20): the vendor batch seam a `BatchableModelCall` body carries. Depends only on core/.
+#include "agentengine/core/batch_backend.hpp"
 // ADR-169 (issue #65): `Principal` + `principal_admitted_for()`, the one shared ownership predicate
 // 018 §2 requires at every actor boundary. Depends only on core/error.hpp -- no cycle with rt/.
 #include "agentengine/trust/principal.hpp"
@@ -270,6 +273,121 @@ public:
 
 private:
     Impl impl_;
+};
+
+// ADR-235 (OQ-20) §3.1: the body of a `batch: true` function node -- ONE model call, split into the three
+// steps a vendor batch item needs apart: `build` the request, `call` it (the synchronous path), and
+// `complete` the node's outcome from the response. Called as an `ExecutorBody` it is an ordinary synchronous
+// body (`build` -> `call` -> `complete`), so every fallback in ADR-235 reuses the node's own code; the
+// supervisor recognizes it structurally (`target<BatchableModelCall>()`, the same way OQ-19 recognizes
+// `AgentExecutorBodyTag`) to send the built request to `backend` instead when the host has opted in.
+//
+// `build` must be deterministic in its input: a delivery whose batch item fails is rebuilt and sent
+// synchronously in a later round. `backend` is constructed by host code with the same endpoint and
+// credential reference as `call`'s client -- it grants nothing the synchronous path does not already have.
+// ae-naming-lint: allow BatchableModelCall — ADR-235
+class BatchableModelCall {
+public:
+    using Build    = std::function<agentengine::result<agentengine::ChatRequest>(agentengine::Message const&,
+                                                                                  agentengine::EffectContext&)>;
+    using Call     = std::function<agentengine::result<agentengine::ChatResponse>(agentengine::ChatRequest const&,
+                                                                                   agentengine::EffectContext&)>;
+    using Complete = std::function<agentengine::result<ExecutorOutcome>(agentengine::Message const& input,
+                                                                         agentengine::ChatResponse const& response)>;
+
+    BatchableModelCall(Build build, Call call, Complete complete, std::shared_ptr<agentengine::BatchBackend> backend)
+        : build_(std::move(build)), call_(std::move(call)), complete_(std::move(complete)), backend_(std::move(backend)) {}
+
+    // The synchronous path: what this node does whenever it is not batched.
+    agentengine::result<ExecutorOutcome> operator()(agentengine::Message const& in, agentengine::EffectContext& ctx) const {
+        auto request = build(in, ctx);
+        if (!request) return std::unexpected(request.error());
+        return call_request(in, *request, ctx);
+    }
+
+    [[nodiscard]] agentengine::result<agentengine::ChatRequest> build(agentengine::Message const& in,
+                                                                      agentengine::EffectContext& ctx) const {
+        if (!build_) return std::unexpected(missing("build"));
+        return build_(in, ctx);
+    }
+
+    // `call` + `finish` on an already-built request -- the synchronous fallback sends exactly the request that
+    // was admitted, never a rebuilt one (ADR-235 §3.3 step 5).
+    [[nodiscard]] agentengine::result<ExecutorOutcome> call_request(agentengine::Message const& in,
+                                                                   agentengine::ChatRequest const& request,
+                                                                   agentengine::EffectContext& ctx) const {
+        if (!call_) return std::unexpected(missing("call"));
+        auto response = call_(request, ctx);
+        if (!response) return std::unexpected(response.error());
+        return finish(in, *response);
+    }
+
+    // `complete`, with the response's own usage added to the outcome -- one accounting rule for the batched
+    // and the synchronous path alike.
+    [[nodiscard]] agentengine::result<ExecutorOutcome> finish(agentengine::Message const& in,
+                                                              agentengine::ChatResponse const& response) const {
+        if (!complete_) return std::unexpected(missing("complete"));
+        auto outcome = complete_(in, response);
+        if (!outcome) return outcome;
+        add_usage(outcome->usage, response.usage);
+        return outcome;
+    }
+
+    [[nodiscard]] std::shared_ptr<agentengine::BatchBackend> const& backend() const noexcept { return backend_; }
+
+private:
+    [[nodiscard]] static agentengine::error missing(char const* what) {
+        return agentengine::error{agentengine::failure_class::contract,
+                                  std::string("BatchableModelCall has no ") + what + " step",
+                                  "rt.batchable_model_call.incomplete"};
+    }
+    static void add_usage(agentengine::Usage& into, agentengine::Usage const& u) noexcept {
+        into.input_tokens += u.input_tokens;
+        into.output_tokens += u.output_tokens;
+        into.cached_input_tokens += u.cached_input_tokens;
+        into.reasoning_tokens += u.reasoning_tokens;
+        into.cache_write_tokens += u.cache_write_tokens;
+        into.cost_estimate += u.cost_estimate;
+    }
+
+    Build                                      build_;
+    Call                                       call_;
+    Complete                                   complete_;
+    std::shared_ptr<agentengine::BatchBackend> backend_;
+};
+
+// ADR-235 §3.1: what the host decides when it opts a run into vendor batching (`enable_batch_coalescing`).
+// ae-naming-lint: allow batch_fallback_policy — ADR-235
+enum class batch_fallback_policy {
+    sync,  // run the call synchronously instead, at full price, with a `batch_fallback` event
+    fail,  // fail the node (class `contract`, never retried); its edge's failure policy routes it
+};
+
+// ae-naming-lint: allow BatchPolicy — ADR-235
+struct BatchPolicy {
+    // A delivery that cannot be batched: the backend refused the request, its group is below the minimum,
+    // or the vendor refused the submit.
+    batch_fallback_policy on_unbatchable = batch_fallback_policy::sync;
+    // A batch item the vendor reports errored/expired/canceled, or one ADR-235 §3.5 resolves as expired.
+    batch_fallback_policy on_item_failure = batch_fallback_policy::sync;
+    // Smallest group worth sending as a batch (the backend's own `min_items` applies too).
+    std::size_t min_group_size = 1;
+    // Longest a job may stay pending before it is cancelled and its items resolved as expired. Bounds a
+    // vendor that never ends a job (Azure documents that it does not expire them).
+    std::chrono::nanoseconds max_wait = std::chrono::hours{25};
+    // Consecutive non-transient poll failures of one job before its items fail closed (a 404 after the
+    // vendor's retention, a revoked key). Transient failures never count.
+    std::uint32_t max_poll_errors = 5;
+    // A job younger than this is never failed closed by poll errors: they are reported, not counted. OpenRouter
+    // answered 404 "not found" to a poll 5s after a successful submit and found the job 10s later (measured
+    // 2026-10-02), so without it a host polling quickly would fail a live, paid job over the vendor's own lag.
+    std::chrono::nanoseconds poll_error_grace = std::chrono::minutes{2};
+    // Wall-clock nanoseconds since the epoch. Injectable (I5); defaults to the system clock.
+    std::function<std::int64_t()> now_ns = [] {
+        return static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                             std::chrono::system_clock::now().time_since_epoch())
+                                             .count());
+    };
 };
 
 // ae-naming-lint: allow ExecuteReply — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
@@ -441,6 +559,25 @@ struct ResumeWorkflow {
     std::optional<agentengine::Principal> caller = std::nullopt;
 };
 
+// ADR-235 §3.5: drive the vendor batch jobs a suspended run is waiting on -- poll each, and once every item
+// is resolved (and nothing else is outstanding) fold them and continue the run. The host calls this on its
+// own schedule, or when a vendor webhook says a job finished; the engine never polls on its own. Admitted
+// exactly like its three siblings (ADR-169).
+// ae-naming-lint: allow PollBatches — ADR-235
+struct PollBatches {
+    std::optional<agentengine::Principal> caller = std::nullopt;
+};
+
+// ADR-235 §3.4: one vendor job a suspended run is waiting on -- what a host needs to schedule polls, or to
+// match a vendor webhook to this run.
+// ae-naming-lint: allow PendingBatchJob — ADR-235
+struct PendingBatchJob {
+    std::string   job_id;
+    std::string   group_key;
+    std::size_t   item_count = 0;
+    std::int64_t  submitted_at_ns = 0;
+};
+
 struct ExecutorOutput {
     std::string           executor_id;
     std::uint32_t         round = 0;
@@ -465,6 +602,13 @@ struct WorkflowResult {
     // so a caller never has to difference two reads of the cumulative `usage()` (which a fresh run resets, and
     // which another caller can advance in between -- `WorkflowChatClient` charged a wrapped delta that way).
     agentengine::Usage usage{};
+    // ADR-235: the vendor batch jobs this run is suspended on (empty unless it is), the job ids it abandoned
+    // and still owes a vendor cancel (done by the next `poll_batches()`), results a poll returned that matched
+    // no pending item of this run (ignored), and failed polls -- the last two counted by this call only.
+    std::vector<PendingBatchJob> pending_batches{};
+    std::vector<std::string>     abandoned_batches{};
+    std::uint32_t                unmatched_batch_results = 0;
+    std::uint32_t                batch_poll_errors = 0;
 };
 
 // ADR-149 (issue #28 item 6), REVISED SCOPE -- ADR-149 §3 finding 8 (a red-team pass found this
@@ -796,6 +940,23 @@ public:
 
     task<WorkflowResult> continue_workflow(ContinueWorkflow request);
 
+    // ---- ADR-235 (OQ-20): vendor batch coalescing --------------------------------------------------
+    //
+    // The host's opt-in (ADR-070's Delegated Decision Seam): until this is called, a `batch: true` node runs
+    // synchronously exactly as if it were not marked. Refused for a NESTED supervisor (one bound as a
+    // sub_workflow): a nested run suspended on a batch has no way to be polled through its parent (ADR-235
+    // §5 finding 4). Host configuration -- like the checkpoint hook it is not checkpointed, so a restored
+    // supervisor is opted in again before `poll_batches()` will act. Call before running, not mid-run.
+    [[nodiscard]] agentengine::result<void> enable_batch_coalescing(BatchPolicy policy = {});
+    [[nodiscard]] bool batch_coalescing_enabled() const noexcept { return batch_policy_.has_value(); }
+
+    // The jobs the current run is waiting on. Unlocked, like `open_interactions()`.
+    [[nodiscard]] std::vector<PendingBatchJob> pending_batches() const;
+
+    // See `PollBatches`. Returns `suspended` while anything is still outstanding; otherwise the outcome of the
+    // continued run. `invalid` when nothing is pending, coalescing is not enabled, or the graph is invalid.
+    task<WorkflowResult> poll_batches(PollBatches request);
+
 private:
     // Both bodies below run with `run_mutex_` held by their public wrapper above.
     task<WorkflowResult> resume_workflow_locked(ResumeWorkflow request);
@@ -828,6 +989,36 @@ private:
     struct Delivery {
         std::size_t           executor_index;
         agentengine::Message  payload;
+        // ADR-235: this delivery already went through a vendor batch (or its submit failed) -- it runs
+        // synchronously and is never resubmitted. Checkpointed (DeliveryRecord::no_batch).
+        bool                  no_batch = false;
+    };
+
+    // ADR-235 §3.3/§3.4: one delivery sent to a vendor batch job. `state` and `reply` are IN MEMORY ONLY:
+    // `to_record()` writes every unfolded item as pending, so a restored run re-polls the vendor rather than
+    // trusting a resolved output out of a record (§5 finding 19).
+    enum class batch_item_state { pending, resolved, fallback };
+    struct BatchItem {
+        std::size_t          executor_index = 0;
+        agentengine::Message input;
+        std::string          group_key;
+        std::string          job_id;
+        std::string          custom_id;
+        std::int64_t         submitted_at_ns = 0;
+        batch_item_state     state = batch_item_state::pending;
+        ExecuteReply         reply{};  // meaningful when `state == resolved` (ok, or a classified failure)
+    };
+    struct AbandonedBatch {
+        std::string job_id;
+        std::size_t executor_index = 0;
+        std::string group_key;
+    };
+    // One chunk waiting for submission at the end of the round that built it (§3.3 step 7).
+    struct BatchChunk {
+        agentengine::BatchBackend*                 backend = nullptr;
+        agentengine::EffectContext                 ctx;
+        std::vector<Delivery>                      deliveries;
+        std::vector<agentengine::ChatRequest>      requests;
     };
 
     // GitHub issue #52 fix, GENERALIZED by issue #62 (2026-09-03): a `fan_in` target with 2+
@@ -1028,10 +1219,53 @@ private:
     // nested sub-workflow's inner is cancelled (which settles it the same way) and dropped, and the
     // run's undelivered messages are discarded -- a cancelled run never moves again.
     void close_run_for_cancel() noexcept;
-    // Something of the current run can still move: an open interaction or undelivered messages.
+    // Something of the current run can still move: an open interaction, an unfolded batch item, or
+    // undelivered messages.
     [[nodiscard]] bool run_is_live() const noexcept {
-        return !ports_.empty() || !pending_sub_workflows_.empty() || !state_.pending.empty();
+        return !ports_.empty() || !pending_sub_workflows_.empty() || !batch_items_.empty() || !state_.pending.empty();
     }
+
+    // ---- ADR-235 §3.0: the ONE "waiting on the outside world" predicate ----------------------------------
+    // True while an unanswered port, a pending nested sub-workflow, or a pending vendor batch item remains.
+    // `execute()` is never entered while it holds: every entry point (resume_workflow, continue_workflow,
+    // poll_batches) checks it and stays `suspended` instead, and the end-of-round suspend decision reads it.
+    // Before ADR-235 each site checked its own subset of these, which is how a third suspend source would
+    // have let an unanswered port be folded with its own ask as the answer (§5 findings 1-3).
+    [[nodiscard]] bool awaiting_outside() const noexcept;
+    // `finish()` with any status but `suspended`, and a fresh `run_workflow()`: every unfolded batch item's job
+    // moves to `abandoned_batches_` -- a run that cannot use a paid job never keeps it live (§3.0, §3.7).
+    void abandon_batch_items();
+    // The `suspended` result every entry point returns while `awaiting_outside()` holds.
+    [[nodiscard]] WorkflowResult suspended_result() const;
+    void fill_batch_fields(WorkflowResult& r) const;
+
+    // §3.1: every `batch: true` node's body is a `BatchableModelCall` with a backend, and none is the
+    // designated stall reporter.
+    [[nodiscard]] bool batch_bodies_are_batchable() const;
+    [[nodiscard]] BatchableModelCall const* batchable_body(std::size_t executor_index) const;
+    // §3.3: pulls batch candidates out of `exec_deliveries`. Unbatchable ones go back in, each with a one-off
+    // body (sync) or a pre-set failed reply (fail); batchable ones come out as chunks for `submit_batch_chunks`.
+    void gather_batch_candidates(std::vector<Delivery>& exec_deliveries,
+                                 std::vector<std::optional<ExecutorBody>>& body_override,
+                                 std::vector<std::optional<ExecuteReply>>& preset,
+                                 std::vector<BatchChunk>& chunks);
+    // §3.3 step 7: submits every chunk. A chunk whose submit fails is handled by `on_unbatchable`: re-enqueued
+    // with `no_batch` into `deferred` (sync), or appended to `exec_deliveries`/`replies` as a failed reply
+    // (fail). Returns the executor indices now waiting on a batch (live view).
+    std::vector<std::size_t> submit_batch_chunks(std::vector<BatchChunk>& chunks,
+                                                 std::vector<Delivery>& exec_deliveries,
+                                                 std::vector<ExecuteReply>& replies,
+                                                 std::vector<Delivery>& deferred);
+    // §3.5 helpers, under `run_mutex_`.
+    task<WorkflowResult> poll_batches_locked(PollBatches request);
+    void cancel_abandoned_batches();
+    void resolve_batch_item(BatchItem& item, agentengine::BatchItemResult const& result);
+    void resolve_batch_item_failed(BatchItem& item, agentengine::batch_item_status status,
+                                   agentengine::failure_class klass, std::string const& detail, bool honour_policy);
+    // execute()'s prologue fold of resolved items (§3.5 step 4). Returns a terminal status to finish with, or
+    // nullopt to continue into the round loop.
+    std::optional<workflow_status> fold_batch_items(std::vector<Delivery>& next);
+    [[nodiscard]] agentengine::EffectContext batch_context(std::size_t executor_index);
     // Called by every entry point after admission: a run that was cancelled (or has a cancel pending and
     // something live) answers `cancelled` without moving. `std::nullopt` means "proceed".
     [[nodiscard]] std::optional<WorkflowResult> refuse_if_cancelled();
@@ -1245,6 +1479,20 @@ private:
     agentengine::workflow::Workflow         graph_;
     std::vector<ExecutorBody>               bodies_;
     std::vector<agentengine::EffectContext> contexts_;
+    // ---- ADR-235 (OQ-20) ----------------------------------------------------------------------------------
+    // Host configuration (set by enable_batch_coalescing(); never reset by initialize()/restore_from_record()).
+    std::optional<BatchPolicy> batch_policy_;
+    // The current run's unfolded batch items -- checkpointed as pending (see BatchItem).
+    std::vector<BatchItem>     batch_items_;
+    // Jobs owed a best-effort vendor cancel/release. Survives a fresh `run_workflow()` (it is not run state:
+    // the jobs are still paid for); checkpointed.
+    std::vector<AbandonedBatch> abandoned_batches_;
+    // Consecutive non-transient poll failures per job id. In memory only: a restored run starts counting
+    // again, which can only delay a fail-closed, never skip one.
+    std::map<std::string, std::uint32_t> batch_poll_failures_;
+    // Per-call counters reported in WorkflowResult (reset at the top of each poll_batches()).
+    std::uint32_t batch_unmatched_this_call_ = 0;
+    std::uint32_t batch_poll_errors_this_call_ = 0;
     // ADR-169 (issue #65) -- see set_principal()/set_require_caller()/admission_denied_count() for
     // the full contract. Host configuration, never reset by initialize() or restore_from_record().
     agentengine::Principal principal_{};

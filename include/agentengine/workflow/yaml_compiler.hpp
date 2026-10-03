@@ -88,6 +88,18 @@ namespace json = agentengine::json;
     if (json::Value const* it = node.find("input_type"); it && it->is_string()) ex.input_type = it->as_string();
     if (json::Value const* ot = node.find("output_type"); ot && ot->is_string()) ex.output_type = ot->as_string();
 
+    // ADR-235 (I6): `batch: true` is the same `Executor::batch` the C++ form sets. A present but non-boolean
+    // value is refused, never coerced -- an author who wrote `batch: "yes"` meant something, and guessing
+    // would quietly change which calls leave zero-data-retention.
+    if (json::Value const* b = node.find("batch"); b != nullptr) {
+        if (!b->is_bool()) {
+            return std::unexpected(error{failure_class::contract,
+                                         "executor '" + ex.id + "' has a non-boolean batch value",
+                                         "yaml_compiler.bad_batch"});
+        }
+        ex.batch = b->as_bool();
+    }
+
     // OQ-19 (docs/planning/agent-as-workflow-executor-design-draft.md §5 item 3): `Executor::
     // capability_ceiling` (graph.hpp) has no YAML counterpart yet -- parsing a capability LIST from
     // YAML needs the same per-kind registry work `agent_yaml_compiler.hpp`'s own `spec.capabilities`
