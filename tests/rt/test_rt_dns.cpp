@@ -443,9 +443,12 @@ int main() {
                   "D10: ... after the 300 ms per-attempt deadline (" + std::to_string(ms) + " ms)");
             check(o.resumed_on == home, "D10: resumed on its home");
         } else {
-            std::printf("[note] D10: the black hole answered at once on this host (%s, %lld ms); deadline not exercised\n",
-                        o.c.attempts.empty() ? "no attempt" : "attempt failed fast", static_cast<long long>(ms));
-            check(!o.c.ok() || o.c.attempts.size() == 1, "D10: (fallback) one attempt, reported");
+            // A host whose stack refuses the black hole at once never exercises the deadline -- but the call must
+            // still end within the bound: an OS connect timeout (~21 s on Windows, minutes on Linux) is a failure.
+            std::printf("[note] D10: the black hole did not hang on this host (%s, %lld ms); deadline not exercised\n",
+                        o.c.attempts.empty() ? "no attempt" : "attempt failed", static_cast<long long>(ms));
+            check(!o.c.ok() && o.c.attempts.size() == 1 && dt < 2500ms,
+                  "D10: (fallback) one failed attempt, within the per-attempt bound (" + std::to_string(ms) + " ms)");
         }
         // The fallback to the next address after a timeout needs the black hole and the good listener on ONE port
         // (connect_resolved takes one port): only the Windows layout (TEST-NET + 127.0.0.1) has that; on Linux the
@@ -454,9 +457,12 @@ int main() {
         ConnectOptions opts2;
         opts2.attempt_timeout = 300ms;
         opts2.resolver        = scripted(log, answer_of({black_hole, pal::IpAddress::loopback_v4()}));
+        auto const      t2 = std::chrono::steady_clock::now();
         ObservedConnect o2 = block_on(observe_connect(reactor.get(), &dns, "hole.example", good.port, allow_all(), {}, opts2));
-        check(o2.c.ok() && o2.c.address == pal::IpAddress::loopback_v4() && o2.c.attempts.size() == 2,
-              "D10: after the first address fails, the next accepted address connects");
+        auto const      d2 = std::chrono::steady_clock::now() - t2;
+        check(o2.c.ok() && o2.c.address == pal::IpAddress::loopback_v4() && o2.c.attempts.size() == 2 && d2 < 2500ms,
+              "D10: after the first address times out, the next accepted address connects (" +
+                  std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(d2).count()) + " ms)");
 #else
         for (auto f : fillers) pal::close_fd(f);
 #endif

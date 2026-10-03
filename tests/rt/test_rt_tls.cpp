@@ -680,7 +680,14 @@ int main() {
               "L3: a certificate for another host name is rejected (" + hs.message + ")");
         check((hs.verify_flags & MBEDTLS_X509_BADCERT_CN_MISMATCH) != 0, "L3: ... for the name mismatch");
         check(!c.tls->handshake_done(), "L3: the stream is not usable");
-        TlsResult r = block_on(read_of(c.tls.get(), 16));
+        std::stop_source  bound;  // so a mutant that lets the handshake through fails here instead of hanging
+        std::atomic<bool> done{false};
+        TlsResult         r;
+        {
+            StopAfter s(bound, 2s, c.tls.get(), &done);
+            r = block_on(read_of(c.tls.get(), 16, bound.get_token()));
+            done.store(true);
+        }
         check(r.error == tls_error::closed, "L3: a later read reports `closed`");
     }
 
