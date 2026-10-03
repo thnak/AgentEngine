@@ -847,6 +847,19 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
         // once `++rounds_` DOES run a few lines down.
         std::uint32_t const this_round = static_cast<std::uint32_t>(rounds_) + 1;
 
+        // ADR-236 §3: a cancel requested since the top of the round -- for instance by a batch replay's divergence
+        // hook during the batch gather above -- dispatches nothing. Each undispatched delivery gets a failed reply
+        // (never folded), and the cancel check after the wave ends the run `cancelled` before routing, as for a
+        // cancel observed mid-wave (issue #156). Without this, a divergence the host stopped on still ran this
+        // round's synchronous fallbacks: live model calls in what was meant to be an offline replay.
+        if (!todo.empty() && cancel_requested()) {
+            for (std::size_t const i : todo) {
+                replies[i] = ExecuteReply{agentengine::Message{}, {}, false, agentengine::failure_class::transient,
+                                          false, std::nullopt, agentengine::Usage{}};
+            }
+            todo.clear();
+        }
+
         for (std::uint32_t attempt = 0; !todo.empty(); ++attempt) {
             // ---- decision 5, first half: ISSUE every job before awaiting any ----------------
             std::vector<std::future<JobOutcome>>        in_flight;
@@ -1026,7 +1039,9 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
         // is only ever this round's fold/routing away from the checkpoint below that records it.
         std::vector<Delivery>    batch_deferred;
         std::vector<std::size_t> batch_waiting;
-        if (!batch_chunks.empty()) {
+        // ADR-236 §3: never submit (and pay for) a job for a round that is already cancelled -- it would only be
+        // abandoned and cancelled on the next poll.
+        if (!batch_chunks.empty() && !cancel_requested()) {
             batch_waiting = submit_batch_chunks(batch_chunks, exec_deliveries, replies, batch_deferred);
         }
 

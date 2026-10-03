@@ -356,6 +356,7 @@ Each negative claim has a positive control.
 | C20 | A throwing `build`, `admit`, `submit`, `poll` or `complete` is classified, not propagated | an exception escapes `execute()` or `poll_batches()` |
 | C21 | A batch node feeding a multi-source `fan_in` target dispatches that target once, with every source's contribution, as on the synchronous path | the target runs twice, or runs early |
 | C22 | Non-transient poll errors on a job younger than `poll_error_grace` are reported but never fail it closed; past the grace, `max_poll_errors` consecutive ones do | a young job fails closed, or an aged one never does |
+| C23 | (added by ADR-236 §3.1) A cancel requested during a round's batch gather dispatches nothing and submits no job; the run ends `cancelled` with nothing pending or abandoned | a synchronous call runs, or a job is submitted |
 
 ## 5. Red-team (independent adversarial pass on the first draft, 2026-10-02)
 
@@ -469,8 +470,8 @@ control. C15 holds live, against OpenRouter.
 - **A model listed as batch-capable may still be refused.** OpenRouter lists `openai/gpt-4o-mini:batch` but
   refused it for this account (§6). The refusal costs one round of latency (`on_unbatchable = sync`)
   and nothing else; the engine does not try to predict it.
-- **`tools/batch_infer.cpp` still targets the beta path `/api/beta/batches`.** It is a standalone tool
-  that predates the GA API, and nothing in the engine uses it. Moving it to `/api/v1` is left for a
-  separate change.
-- **No recorded seam for replaying batch results (I5).** The clock is injectable; result replay is future
-  work.
+- ~~**`tools/batch_infer.cpp` still targets the beta path `/api/beta/batches`.**~~ **Closed by ADR-236 §4**
+  (2026-10-03): the tool now drives this ADR's `OpenRouterBatchBackend` on the GA path.
+- ~~**No recorded seam for replaying batch results (I5).**~~ **Closed by ADR-236** (2026-10-03):
+  `BatchRecorder` / `BatchReplayer` record and replay every backend call and clock reading as one checked
+  stream.

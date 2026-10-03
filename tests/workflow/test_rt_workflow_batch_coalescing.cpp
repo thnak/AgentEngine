@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <functional>
 #include <memory>
 #include <regex>
 #include <string>
@@ -176,6 +177,32 @@ struct FanGraph {
     for (auto x : v) n += x == k ? 1 : 0;
     return n;
 }
+
+// Forwards to a scripted backend and calls `on_admit` after the n-th admit -- a cancel arriving mid-gather.
+class CancelOnAdmit final : public BatchBackend {
+public:
+    CancelOnAdmit(std::shared_ptr<ScriptedBatchBackend> inner, int nth, std::function<void()> on_admit)
+        : inner_(std::move(inner)), nth_(nth), on_admit_(std::move(on_admit)) {}
+    [[nodiscard]] std::string group_key() const override { return inner_->group_key(); }
+    [[nodiscard]] BatchLimits limits() const override { return inner_->limits(); }
+    [[nodiscard]] result<std::size_t> admit(ChatRequest const& r) const override {
+        auto out = inner_->admit(r);
+        if (++seen_ == nth_ && on_admit_) on_admit_();
+        return out;
+    }
+    [[nodiscard]] result<std::string> submit(std::vector<BatchItemRequest> const& items, EffectContext& c) override {
+        return inner_->submit(items, c);
+    }
+    [[nodiscard]] result<BatchPoll> poll(std::string const& job, EffectContext& c) override { return inner_->poll(job, c); }
+    [[nodiscard]] result<void> cancel(std::string const& job, EffectContext& c) override { return inner_->cancel(job, c); }
+    [[nodiscard]] result<void> release(std::string const& job, EffectContext& c) override { return inner_->release(job, c); }
+
+private:
+    std::shared_ptr<ScriptedBatchBackend> inner_;
+    int                                   nth_;
+    std::function<void()>                 on_admit_;
+    mutable int                           seen_ = 0;
+};
 
 }  // namespace
 
@@ -422,6 +449,35 @@ int main() {
         WorkflowResult r3 = drive(sup.poll_batches(PollBatches{}));
         check(r3.status == workflow_status::executor_failed && g.calls->sync == 0 && sup.pending_batches().empty(),
               "C22 control: the 3rd consecutive aged failure fails the items closed (never re-run synchronously)");
+    }
+
+    // ---- C23 (ADR-236 §3): a cancel arriving during the batch gather stops the round before it spends ----
+    // Nothing dispatches synchronously and no job is submitted; the run ends `cancelled`. Positive control: the
+    // same graph without the cancel submits one job.
+    {
+        for (bool const cancel_mid_gather : {false, true}) {
+            auto scripted = std::make_shared<ScriptedBatchBackend>();
+            auto calls    = std::make_shared<Calls>();
+            WorkflowSupervisor sup;
+            auto backend = std::make_shared<CancelOnAdmit>(scripted, 2, [&sup, cancel_mid_gather] {
+                if (cancel_mid_gather) sup.cancel();
+            });
+            FanGraph g(true);
+            sup.initialize(g.wf, {appender("start"), model_node("w1", backend, calls), model_node("w2", backend, calls),
+                                  model_node("w3", backend, calls), appender("agg")});
+            (void)sup.enable_batch_coalescing();
+            WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("x")}));
+            if (!cancel_mid_gather) {
+                check(r.status == workflow_status::suspended && scripted->submitted().size() == 1,
+                      "C23 control: without the cancel the round submits one job");
+                continue;
+            }
+            check(r.status == workflow_status::cancelled, "C23: the run ends cancelled");
+            check(scripted->submitted().empty(), "C23: no vendor job was submitted for the cancelled round");
+            check(calls->sync == 0, "C23: no synchronous model call was dispatched");
+            check(r.pending_batches.empty() && sup.to_record().abandoned_batches.empty(),
+                  "C23: nothing is left pending or abandoned");
+        }
     }
 
     // ---- C11: cancel() settles a batch-only suspension; the next poll cancels the job ----------------
