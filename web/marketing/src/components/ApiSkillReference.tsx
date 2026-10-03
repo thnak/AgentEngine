@@ -4,6 +4,7 @@ import {
   inlineSkillSourceEagerParseSnippet,
   inlineSkillSourceExampleSnippet,
   inlineSkillSourceFailureConstructorSnippet,
+  inlineSkillSourceMembers,
   inlineSkillSourceShapeSnippet,
   minimalSkillSnippet,
   skillCollisionSnippet,
@@ -95,7 +96,7 @@ const copy = {
       <>006 §6 — <code>ToolTable</code> accepts this identical runtime-configuration shape for tools.</>
     ),
     s2Eyebrow: "InlineSkillSource, in full",
-    s2Heading: "The whole class is eleven lines — here's every one of them",
+    s2Heading: "Two constructors, two accessors, no logic — the whole class",
     s2Body: (
       <>
         <code>InlineSkillSource</code> is deliberately the simplest possible{" "}
@@ -108,6 +109,23 @@ const copy = {
         get that exact failure back, unchanged, from <code>load_skills()</code>.{" "}
         <code>builtin_skills.hpp</code>'s five generic skills and the PDF-tool catalog's{" "}
         <code>extracting-document-text</code> skill both take this path.
+      </>
+    ),
+    s2MembersColumns: ["Member", "Returns", "Contract"],
+    s2RulesNote: (
+      <>
+        <strong>What is checked, and where.</strong> <code>InlineSkillSource</code> checks nothing;
+        the checks run when a <code>SkillsProvider</code> resolves its sources, and any one of them
+        fails the <em>whole</em> resolve, so nothing is mounted. A skill name must be unique across
+        every source <em>and</em> within one source: two skills of the same name in a single{" "}
+        <code>InlineSkillSource</code> fail with{" "}
+        <code>skill.name_collision_across_sources</code>, naming that origin twice. Every{" "}
+        <code>relative_path</code> must be a valid POSIX relative path. A malformed{" "}
+        <code>SKILL.md</code> is caught earlier, by <code>parse_skill_md</code>, before the class
+        ever sees it. Nothing checks that <code>files</code> contains <code>SKILL.md</code> or that
+        its bytes match the parsed skill: the bundle is mounted exactly as given. The class is an
+        ordinary copyable value; <code>make_skill_source_descriptor</code> moves it into a{" "}
+        <code>shared_ptr</code>, so every copy of the descriptor shares one instance.
       </>
     ),
     s2ExampleIntro: (
@@ -459,7 +477,7 @@ const copy = {
       <>006 §6 — <code>ToolTable</code> chấp nhận đúng hình dạng cấu hình lúc chạy này cho tool.</>
     ),
     s2Eyebrow: "InlineSkillSource, đầy đủ",
-    s2Heading: "Toàn bộ lớp chỉ có mười một dòng — đây là từng dòng một",
+    s2Heading: "Hai constructor, hai accessor, không có logic — toàn bộ lớp",
     s2Body: (
       <>
         <code>InlineSkillSource</code> cố ý là kiểu tuân theo <code>SkillSource</code> đơn
@@ -472,6 +490,24 @@ const copy = {
         một thất bại và nhận lại đúng thất bại đó, không đổi, từ <code>load_skills()</code>.
         Năm skill tích hợp sẵn của <code>builtin_skills.hpp</code> và skill{" "}
         <code>extracting-document-text</code> của danh mục PDF-tool đều đi theo đường này.
+      </>
+    ),
+    s2MembersColumns: ["Thành viên", "Trả về", "Hợp đồng"],
+    s2RulesNote: (
+      <>
+        <strong>Cái gì được kiểm tra, và ở đâu.</strong> <code>InlineSkillSource</code> không kiểm
+        tra gì cả; việc kiểm tra diễn ra khi một <code>SkillsProvider</code> resolve các nguồn của
+        nó, và chỉ cần một kiểm tra thất bại là <em>toàn bộ</em> lần resolve thất bại, không có gì
+        được mount. Tên skill phải là duy nhất trên mọi nguồn <em>và</em> trong cùng một nguồn: hai
+        skill trùng tên trong một <code>InlineSkillSource</code> thất bại với{" "}
+        <code>skill.name_collision_across_sources</code>, nêu tên origin đó hai lần. Mọi{" "}
+        <code>relative_path</code> phải là đường dẫn tương đối POSIX hợp lệ. Một{" "}
+        <code>SKILL.md</code> sai định dạng bị bắt sớm hơn, bởi <code>parse_skill_md</code>, trước
+        khi lớp này nhìn thấy nó. Không có gì kiểm tra rằng <code>files</code> chứa{" "}
+        <code>SKILL.md</code> hay bytes của nó khớp với skill đã parse: bundle được mount đúng như
+        được đưa vào. Lớp này là một giá trị copy được bình thường;{" "}
+        <code>make_skill_source_descriptor</code> chuyển nó vào một <code>shared_ptr</code>, nên mọi
+        bản sao của descriptor dùng chung một instance.
       </>
     ),
     s2ExampleIntro: (
@@ -879,6 +915,24 @@ export function ApiSkillReference() {
 
           <RevealItem>
             <CodePanel filename="skill_source.hpp">{highlightCpp(inlineSkillSourceShapeSnippet)}</CodePanel>
+          </RevealItem>
+
+          <RevealItem>
+            <div style={{ marginTop: 20 }}>
+              <ApiTable
+                columns={[...t.s2MembersColumns]}
+                templateColumns="minmax(0, 2.2fr) minmax(0, 1fr) minmax(0, 2.6fr)"
+                rows={inlineSkillSourceMembers[lang].map((m) => [
+                  <code key="sig" style={{ overflowWrap: "anywhere" }}>{m.sig}</code>,
+                  m.returns,
+                  m.contract,
+                ])}
+              />
+            </div>
+          </RevealItem>
+
+          <RevealItem>
+            <p className="gs-note" style={{ marginTop: 20 }}>{t.s2RulesNote}</p>
           </RevealItem>
 
           <RevealItem>
