@@ -1,11 +1,13 @@
 # ADR-237 — Every extension point is asynchronous: the I/O reactor, the threading model, and the seam contract
 
-**Status:** **Draft (2026-10-03). Design, revised after one adversarial red-team round (§11: 6
-MUST-FIX, 7 REAL GAP, all answered in the design or listed as open decisions). Not implemented.** Written at the project
+**Status:** **Draft (2026-10-03). Design, revised after two adversarial red-team rounds (§11: round 1,
+6 MUST-FIX + 7 REAL GAP; §12: round 2, 5 MUST-FIX + 7 REAL GAP; all answered in the design). Not
+implemented.** Written at the project
 owner's direction ("every component can be written to call the network, sandbox and shell included —
 everything should be asynchronous"; conversion clean and complete, not piecemeal; the codebase is
 pre-production, so shapes may be redone rather than preserved). Owner decisions recorded in §9
-(2026-10-03). Next step: a second red-team round against the revised §4 and §9 before any code.
+(2026-10-03). Next step: a short third red-team round against the sections amended in §12 only, then
+implementation.
 
 **Relates to:** 001 §1/§5/§8, 004 §1, 006 §1/§3/§5/§6b, 008 §2, 018 §4, 020 §3a, 023 (numeric budgets),
 027 §4/§5, CONVENTIONS. ADR-037 (the `rt` substrate; named "the minimal executor" as its largest
@@ -145,12 +147,20 @@ compile.
 **`final_suspend` posts across homes.** Today `FinalAwaiter` transfers directly to the awaiting coroutine
 (`rt/task.hpp:66,157`). Under strands that is wrong whenever the child and the awaiter have different
 homes (a child session's `start_run` finishing into the parent's tool body; the last `when_all` child
-resuming the parent). Rule: symmetric transfer only when the homes are equal; otherwise post the awaiter
-to its own home.
+resuming the parent). Rule: symmetric transfer only when child and awaiter run on the **same strand**
+(not merely the same lane pool — sibling and parent strands share lanes, and transferring across strands
+would run the parent while its strand may be running something else, breaking I1); otherwise post the
+awaiter to its own strand and return `noop_coroutine()`. Recursion stays bounded: at most one post per
+cross-strand join (red-team round 2, G-a).
+
+**A foreign continuation whose home is gone** (its `Resumer` or `CompletionThread` destroyed before the
+engine task completed) is never resumed — not on a lane, not anywhere — and is reported; its frame
+follows the orphan rule of §4.5 rule 3. "A closed home is posted to a lane" above applies to engine
+homes only.
 
 ### 4.3 Lanes, I1 and the session strand
 
-A **lane** is a FIFO of ready continuations served by the lane workers. A parked coroutine is not on any
+A **lane** is a queue of ready strands served by the lane workers (round-robin across strands, FIFO within one — see "Scheduling" below). A parked coroutine is not on any
 lane; it costs its frame and its operation record, nothing else (023: zero threads per suspended run).
 
 I1 today is a runtime `AsyncMutex` (`session_mutex_`, `agent_session_core.hpp:1430`) held across every
@@ -166,13 +176,21 @@ Parallel tool batches (ADR-160) become **child strands** under the session's tas
 builds it; results are appended in emitted order after the join (006 §5, I5). The bounded `jthread`
 fan-out (`rt/bounded_call_fanout.hpp`) is deleted; the concurrency cap becomes a semaphore on the scope.
 
-**Holder identity and re-entry (red-team G1).** Holder ids move to the promise with an **ancestor
-chain**. `when_all` children are distinct holders whose chain includes the round that spawned them.
-`AsyncMutex::lock()` fails immediately with `rt.lock_held_by_ancestor` when the current holder is an
-ancestor of the requester — the session → workflow → agent node → tool → back-into-the-parent cycle
-(ADR-057, `agent_spawn`, workflow-as-chat-client) becomes a diagnosable error instead of a run parked
-forever with no blocked thread to see. A stuck-run watchdog (no progress on a strand past a configured
-bound) reports anything the ancestor check cannot see.
+**Holder identity and re-entry (red-team G1, revised after round 2 M4).** Holder ids move to the
+promise with an **await chain**: a link exists only along an *awaited* (joined) edge — a coroutine that
+`co_await`s another, or a `when_all`/`with_scope` child of the scope's owner. Background jobs and tasks
+spawned into a job runner's scope start a **fresh** chain (they are not awaited by the round that started
+them, so they wait for the lock like any other caller). Lock rules on `AsyncMutex`:
+- **Lending.** When the holder is suspended *awaiting* the requester's chain, it lends the lock to that
+  descendant — exclusively: one borrower at a time, so `when_all` siblings never hold it together (I1).
+  This keeps today's deliberately re-entrant `fork_from` of one's own session working
+  (`rt/agent_session.hpp:351-356`, ADR-123/175) and generalises it.
+- **Refusal.** When the holder is an ancestor that is *not* awaiting the requester (or the lock is
+  already lent to another descendant), `lock()` fails with `rt.lock_held_by_ancestor` — the session →
+  workflow → agent node → tool → back-into-the-parent cycle becomes a diagnosable error, not a run parked
+  forever with no blocked thread to see.
+- Everyone else waits, as today. A **stuck-run watchdog** (no progress on a strand past a configured
+  bound) reports what neither rule sees.
 
 `block_on` on a lane worker is refused with `rt.block_on_on_lane` (it would park a worker waiting for work
 that may need that worker — the ADR-175 §6 "parked pool job holds its worker" deadlock). Today nothing
@@ -181,8 +199,15 @@ refusal applies on offload workers. `block_on` is not the only way to block a la
 `future::get` (`workflow_supervisor.cpp:647,825`), condition-variable waits, a `std::mutex` held across a
 `co_await` (undefined once the coroutine can resume on another thread), and slow sinks. These are removed
 from engine code by the conversion, and a **lane-stall watchdog** (a lane worker that has not returned to
-its queue within a bound) reports what review misses. Lanes are FIFO; cancellation and approval resumes
-are posted with priority over ordinary continuations so a CPU-heavy tool cannot delay a cancel.
+its queue within a bound) reports what review misses.
+
+**Scheduling (revised after round 2, G-d).** Each lane serves **strands round-robin**, not one global
+FIFO, so a 50-child batch in one session cannot starve other sessions. Within a strand, order is strictly
+FIFO — priority never reorders a strand's own continuations (that would break I1's ordering). Cancellation
+and approval resumes get priority **across** strands only: the lane picks a strand with a pending
+cancel/approval first. A body that is already running cannot be preempted; a cancel waits for its next
+suspension point, which is why CPU-heavy work belongs in `rt::offload` (§4.6) and why §8.2 gate 3 is
+measured under load.
 
 ### 4.4 Cancellation and deadlines
 
@@ -204,10 +229,19 @@ are posted with priority over ordinary continuations so a CPU-heavy tool cannot 
 - The awaiter then resumes with an `error` value — errors are values (001 §6). Which `failure_class` a cancellation
   carries: `failure_class::canceled` for a requested stop, `resource` + `deadline_exceeded` for a
   deadline (§9 D6).
-- **Completion vs. cancellation race.** Each operation record has a single atomic state
-  (`pending → completed | canceled`); whichever transition wins posts the continuation exactly once; the
-  loser is a no-op. The record is owned by the awaiting frame and outlives every handler that can reference
-  it (§4.5 rule 3).
+- **One serial context per I/O object (revised after round 2, M2).** *Initiation*, completion
+  handling and cancellation of every operation on a given socket, pipe, process or timer run on the same
+  serial context — an Asio strand per I/O object (or the reactor thread). A lane never calls into an I/O
+  object directly: `await_suspend` posts the initiation to the object's strand. This removes the race of
+  a lane starting `async_write` on a TLS socket while the reactor thread handles that socket's read
+  completion or cancels it (Asio: shared I/O objects are unsafe).
+- **Sticky cancel.** "Cancel requested" is a flag in the operation record, set by the posted cancel and
+  checked at initiation: a stop that lands after the `stop_callback` is registered but before the backend
+  holds the operation still cancels it (immediately, as `canceled`), instead of being lost and letting the
+  operation run to its natural end.
+- **Exactly-once resume.** The continuation is posted exactly once, from the backend completion (§ first
+  bullet); the cancel path never posts it. The record is shared between frame and backend (refcount) and
+  freed by whichever releases last.
 - **Deadlines are timers.** `EffectContext::deadline` (`effect_context.hpp:54`) is enforced by racing the
   operation against a reactor timer that fires the same cancellation, not by a check before the call.
   `ModelCallGateway` backoff becomes `co_await rt::sleep_until(t, stop)`.
@@ -229,13 +263,21 @@ are posted with priority over ordinary continuations so a CPU-heavy tool cannot 
    red-team M2).** `~task()` destroys frames unconditionally today (`rt/task.hpp:95,205`), and two
    contracts *rely* on drop-to-cancel (ADR-017: dropping a `stream` cancels it; ADR-219: a host may drop
    a parked coroutine). The design therefore:
-   - counts in-flight operations in the promise; destroying a non-done frame with a non-zero count is a
-     checked contract violation (debug: abort with a diagnostic; release: the frame is handed to a
-     process-wide reaper scope that cancels and joins it, and the violation is reported) — never a
-     silent use-after-free;
-   - **revokes drop-to-cancel** for ADR-017 streams and ADR-219 parked coroutines: cancellation is
-     `request_stop` + await completion; dropping is legal only after completion. Both ADRs get an
-     amendment note;
+   - counts in-flight operations **along the whole awaited chain** (a leaf's operation increments every
+     frame up to the root that is awaiting it), because `~task()` runs on the *outer* frame while the
+     operation usually sits several awaits deep (round 2, M1). Destroying a non-done frame whose chain
+     count is non-zero is a contract violation with one behaviour in every build: the frame is
+     **orphaned** — never resumed again, its `continuation_` cleared, the operation canceled; when the
+     backend completion arrives, the operation record is released and **the frame is leaked, not
+     destroyed** (its locals may reference the dead parent's `EffectContext`, tool object or buffers, so
+     running their destructors is as unsafe as resuming it). The violation is reported with the frame's
+     origin. Debug builds additionally abort. A reaper that "cancels and joins" was rejected: it resumes
+     or destroys a frame whose referents are gone;
+   - **revokes drop-to-cancel for parked engine coroutines** (ADR-219): cancellation is `request_stop`
+     + await completion; dropping a parked task is the orphan case above. **Dropping a `stream` consumer
+     stays legal** and remains a stop request (ADR-017, `core/stream.hpp:163`), because under rule 3a
+     the consumer handle owns no in-flight operation — the producer lives in a scope the caller passed in
+     and is joined there (round 2, G-e). ADR-219 gets an amendment note;
    - offers scopes only as `co_await rt::with_scope([&](rt::task_scope& s) -> task<…> {…})`, which joins
      every child before returning *or rethrowing* (C++ has no async destructor, so a scope object that
      could be unwound over live children is not offered);
@@ -249,6 +291,10 @@ are posted with priority over ordinary continuations so a CPU-heavy tool cannot 
    in**, never one hidden inside the stream), sandbox providers (today `MandatorySandboxProvider::operator=`
    calls `block_on`, `mandatory_sandbox_provider.hpp:748`, and refunds via `block_on` at `:618-619`),
    and `fork_from` (synchronous `block_on`, `rt/agent_session.hpp:356`), which becomes `fork_from_async`.
+   So that early returns, `break`s and exceptions in tool bodies do not each become a violation, owners
+   are used through scoped helpers shaped like `with_scope` — `co_await rt::with_session(factory, body)`,
+   `co_await rt::with_stream(…)` — which `close()` on every exit path before returning or rethrowing
+   (round 2, G-e).
 4. **Shutdown order is fixed:** cancel all session scopes → join them (bounded by a shutdown deadline,
    overruns are a reported error, not a detach) → stop lanes → stop the reactor. A reactor destroyed while
    operations are pending is a contract violation caught in debug builds.
@@ -257,12 +303,20 @@ are posted with priority over ordinary continuations so a CPU-heavy tool cannot 
    `co_await s.next()`; the 5 ms polling drains are deleted. But `EffectContext::report_progress` and the
    other event sinks are synchronous callables (`effect_context.hpp:115`) called from tool bodies,
    including concurrently from parallel-batch children, and the channel is single-producer. So the run-
-   event path becomes: sinks **enqueue** into a per-session bounded multi-producer queue (never block,
-   never hold `run_event_mutex_` across a push — H-d); one session-scoped task drains it into the
-   consumer-facing stream with real `co_await` back-pressure. Overflow policy is explicit: progress and
-   delta events coalesce (latest wins per call id); lifecycle events (`ToolCallStarted/Completed`,
-   `RunCompleted`, approvals) are never dropped — the queue reserves room for them and, if even that is
-   exhausted, the run fails with a `resource` error rather than losing one.
+   event path is split by who produces the event (revised after round 2, M3):
+   - **Lifecycle events and model/tool deltas** are produced by the pipeline and the model-call path,
+     which are coroutines: they `co_await` a real push into the per-session event stream. Back-pressure
+     suspends the run (no thread is held — H-d gone); nothing is coalesced or dropped, because a
+     `model_delta` is a *fragment* of the transcript (it becomes AG-UI text content,
+     `protocol/agui/projection.hpp`), not a snapshot. A slow or paused consumer pauses the run; it never
+     fails it.
+   - **Synchronous sinks called from tool bodies** (`report_progress`, the delegated sinks) enqueue into a
+     per-session bounded multi-producer queue drained by one session task into the same stream. Only
+     *idempotent snapshot* events (progress percentage, status text) are allowed through this path, and
+     they coalesce latest-wins per call id on overflow. A sink that would need lossless delivery is
+     converted to an awaitable by this ADR.
+   - **I5 placement:** recording taps the events **before** either queue, in production order, so what is
+     recorded never depends on how fast the consumer drains.
 
 ### 4.6 Truly blocking work: `rt::offload`
 
@@ -430,6 +484,14 @@ deferred to C++29). **Decided: Asio (§9 D1).**
   boundaries via the existing epoch interruption); host imports that do I/O inside a guest call cannot
   suspend the guest without Wasmtime's async support (C-API support unverified) and are a named residual.
   The Wasmtime epoch ticker (`wasm_backend.cpp:78`) becomes a reactor timer.
+- **Reactor failure (round 2, G-f).** If the backend fails (IOCP port error, an exception escaping a
+  handler on the reactor thread), every pending operation completes with a `fatal` error, the runtime
+  enters an unhealthy state that refuses new operations, and the watchdog checks reactor liveness — no
+  parked run may wait forever on a reactor that is gone.
+- **Descriptor limits (round 2, G-g).** Linux's default soft `RLIMIT_NOFILE` (commonly 1024) is reached
+  long before 10 000 parked sessions; `EMFILE`/`ENFILE` and Windows handle exhaustion are `resource`
+  errors. The engine never raises the limit itself (a library must not); §8.2 gate 2 states the limit it
+  runs with.
 - **TLS details (red-team minor):** a write canceled mid-record drops the connection; concurrent TLS 1.3
   handshakes need mbedTLS's PSA state thread-safe (`MBEDTLS_THREADING_C` or one handshake at a time) —
   the current config is to be checked.
@@ -517,22 +579,43 @@ Answers given by the project owner on 2026-10-03; where the owner delegated the 
   so the cost a long branch usually carries (other work blocked or conflicting) is lower than the cost
   of `main` living with half-sync, half-async seams; and the old shapes are deleted rather than kept
   alongside, which only works if nothing on `main` still depends on them. `main` is merged *into* the
-  branch regularly so the final merge is not a surprise.
+  branch regularly so the final merge is not a surprise. Process rules for the branch's lifetime (round
+  2): no new synchronous seams land on `main` (they would have to be converted twice); the seam renames
+  (`chat` → `get_response`) are done early on the branch so later `main` merges conflict once, not
+  repeatedly; ADR numbers used on the branch are reserved in `decisions/README.md` on `main` up front;
+  the I7 conformance gates (MCP, CodeAct, A2A, AG-UI) run on the branch before the single merge.
 
 - **D3 — Argument-dependent capability requirements (delegated; recommendation).** The native-process
   providers do not need "any one of N grants" (an `AnyOf<…>` ceiling); they need a requirement that
   depends on the call's **arguments**: running `python3` requires a `NativeExec` grant covering
   `python3` on the provider's mount. Today the tool declares an empty ceiling and matches grants inside
   its own body (`src/backends/native_process/native_providers.hpp:158-181`), outside the pipeline's
-  steps 4/7, so the audit record shows no bound capability for the call. Recommendation: a tool may
-  declare, in addition to its static ceiling, a **per-call requirement** —
-  `std::vector<Capability> required_capabilities(Args const&) const` — evaluated by the pipeline after
-  step 2 (validated, typed arguments), and bound at step 4/7 exactly like the static ceiling
-  (`bind`/`bind_clamped`, ADR-217), so the decision, the binding and the audit are the pipeline's again.
-  I2/I3 hold: the model's argument chooses *which* already-held grant must cover the call; it can only
-  narrow within held authority, never mint or widen it (the ADR-070 boundary), and a requirement no held
-  grant covers is denied at step 4 as today. The static ceiling stays the upper bound — a per-call
-  requirement outside the declared ceiling's kind is a contract error. This replaces the "empty ceiling
+  steps 4/7, so the audit record shows no bound capability for the call. Recommendation (revised after round 2, M5): a tool may declare a **per-call requirement**:
+  - a static **requirement kind** — e.g. `RequirementKind<cap::decl::NativeExec<…mount…>>` — that bounds
+    what the hook may ask for (kind and mount) without binding anything; the AND-of-all static ceiling
+    cannot express this bound and is not reused for it;
+  - `std::vector<Capability> required_capabilities(Args const&) const`.
+
+  Rules, each closing a round-2 finding:
+  1. **Parse once.** The pipeline parses `Args` from the JSON once (today step 2 defers shape checks to
+     `invoke`'s own `from_json`, `src/core/tool_pipeline.cpp:159-165,233`) and passes the *same* object
+     to `required_capabilities` and to `invoke`, so the requirement and the effect cannot see different
+     arguments.
+  2. **Bound set only.** A tool that declares the hook sees only `ctx.bound_capabilities` in `invoke`,
+     never the full held set (`ctx.capabilities`), so the body cannot act under a grant other than the
+     one bound and audited. The ~31 sites that read `ctx.capabilities` are inventoried and moved to the
+     bound set where they belong to such tools.
+  3. **Fail closed.** An empty result, or one outside the declared requirement kind, is a `contract`
+     error — never "nothing to bind, proceed".
+  4. **Bound like a ceiling.** The result is bound at steps 4/7 (`bind`/`bind_clamped`, ADR-217); a
+     requirement no held grant covers is denied there, as today.
+  5. **Approval shows what is bound.** The approver today sees `(caller, tool_name, canonical_args)`
+     (`tool_pipeline.cpp:212-213`); for a tool with the hook the approval request also carries the
+     requirement computed from those same parsed args, so the human approves exactly what will be bound.
+
+  I2/I3: the model's argument selects *which* already-held grant must cover the call — the same as
+  path-scoped grants today; it narrows within held authority and never mints or widens it (the ADR-070
+  boundary). This replaces the "empty ceiling
   + in-body check" exception rather than naming it, and applies equally to the held-shell provider
   (`native_shell_session_provider.hpp:325-326`).
 
@@ -547,7 +630,11 @@ Answers given by the project owner on 2026-10-03; where the owner delegated the 
   same branch — no aliases kept.
 
 - **D5 — Lane workers default to 50% of the device, configurable (owner).** Default lane count =
-  `max(1, hardware_concurrency() / 2)`; `RuntimeConfig::lanes` overrides it. This amends CONVENTIONS'
+  `max(2, usable_cpus() / 2)`, where `usable_cpus()` honours the process's CPU affinity and, on Linux,
+  the cgroup CPU quota — `hardware_concurrency()` alone reports host cores inside a `--cpus=1` container
+  (round 2, G-d; the libstdc++ behaviour is to be verified on the supported toolchains). The floor of 2
+  keeps one CPU-heavy tool from stalling every session on a 2-core machine. `RuntimeConfig::lanes`
+  overrides it. This amends CONVENTIONS'
   "never spawn `hardware_concurrency()` threads": the engine never takes the whole machine by default,
   and the host can always set the number. Offload and DNS pools are separate, small and configurable
   (defaults: 2 each), because they hold threads that block and must not grow with the core count.
@@ -559,7 +646,21 @@ Answers given by the project owner on 2026-10-03; where the owner delegated the 
   ran out of time" are distinguishable by class, not by parsing a code. A canceled run ends `canceled` +
   `run.canceled` (amends ADR-178, which uses `fatal`). A canceled *operation* inside a live run (one
   sibling canceled by `when_all`) carries `canceled` up to whoever awaits it; it ends the run only if
-  that caller lets it. Every `switch` over `failure_class` gains the case (compiler-checked).
+  that caller lets it. "Compiler-checked" is not enough (round 2, G-c): there is one `switch` over
+  `failure_class` (`rt/workflow_supervisor.hpp:305`) and everything else is `==` predicates. The
+  implementation carries a grep inventory of every classification site as evidence, with these rules:
+  - `canceled` never triggers retry, fallback or propagate (`is_retryable`, `rt/multi_agent.hpp:67`,
+    `rt/workflow_supervisor.hpp:1074`; workflow `propagate`/`fallback`, `workflow/graph.hpp:156-164`) —
+    a sibling canceled by `when_all` must not be rerouted to a fallback executor that keeps working.
+  - The deadline class is reconciled everywhere: `deadline_exceeded` is `resource` (today the replay
+    client maps it to `transient`, `core/replay_chat_client.hpp:73`, and "cancelled" to `fatal`, `:82`);
+    whether a `resource` deadline is retryable at all is decided once, not per site.
+  - String-keyed special cases move to the class: `net.cancelled` (`transient` today,
+    `src/sandbox/net_egress_proxy.cpp:98`, special-cased at `src/rt/agent_session_core.cpp:1154`), the
+    eval screen's `"run.canceled"` key (`eval/eval_screen_common.hpp:59`), background "canceled before
+    start" (`policy` today, `rt/background_job_runner.hpp:312`).
+  - Protocol mapping (I7): A2A maps `canceled` to its `canceled` task state (today every failure is
+    `failed`, `protocol/a2a/server.hpp:142-151`); MCP and AG-UI mappings are checked the same way.
 
 - **D7 — An explicit, short host API (owner).** No hidden host-completion thread: the developer states
   where their continuations run, in one call. Sketch:
@@ -578,9 +679,18 @@ Answers given by the project owner on 2026-10-03; where the owner delegated the 
   auto r = co_await runtime.enter(session.start_run(request), completions);
   ```
 
-  `runtime.enter` is the only way to `co_await` an engine task from a foreign coroutine type; a bare
-  `co_await session.start_run(…)` from a non-`ae::task` coroutine is a compile error (the `task`
-  awaiter is restricted to `ae::task` promises), so the choice cannot be forgotten. `runtime.run` is
+  `runtime.enter` is the only way to `co_await` an engine awaitable from a foreign coroutine type; a bare
+  `co_await session.start_run(…)` from a non-`ae::task` coroutine is a compile error, so the choice
+  cannot be forgotten. Implementation (round 2, G-b): `await_suspend` is templated on
+  `coroutine_handle<P>` with an `is_engine_promise<P>` constraint (today it takes a type-erased
+  `coroutine_handle<>`, `rt/task.hpp`). The restriction covers **every** engine awaitable, not only
+  `task`: `stream<T>::next()`, `AsyncMutex::lock()`, `channel::next_async` — hosts consume the run-event
+  and `get_streaming_response` streams through `runtime.enter` as well. The direct-driving API
+  (`start()`/`resume()`/`take_value()`) becomes private to `Runtime`/`block_on` (`SignalTask`,
+  `rt/block_on.hpp:176`, is an engine promise). The ADR-219 tests that drive engine tasks from foreign
+  coroutine types (`tests/rt/test_rt_host_resumer.cpp:248`, `tests/rt/test_rt_parked_task_home.cpp:297`)
+  are rewritten to `runtime.enter`, and 020 §3a's documented `co_await start_run` embedding is amended
+  (§10). `runtime.run` is
   `block_on` at the edge and is refused on lanes/offload workers (§4.3). Names (`Runtime`, `enter`,
   `CompletionThread`) are 027 §4 additions, confirmed with the owner before implementation.
 
@@ -592,7 +702,10 @@ Answers given by the project owner on 2026-10-03; where the owner delegated the 
 - **006 §1:** `invoke` is an instance member; §5 references `when_all` child strands; §6b background via
   the session task scope.
 - **008 §2, 018 §4:** unchanged in signature (already async); add the measured cancellation bound.
-- **020 §3a:** host modes (engine-owned lanes / host-run lanes / `Resumer`), the reactor thread rule.
+- **020 §3a:** host modes (engine-owned lanes / host-run lanes / `Resumer`), the reactor thread rule;
+  the documented `co_await start_run` embedding becomes `co_await runtime.enter(start_run(…), resumer)`
+  (D7).
+- **ADR-219:** amendment note — dropping a parked engine coroutine is no longer a cancel (§4.5 rule 3).
 - **027 §4:** `Reactor`, `lane`, `strand`, `task_scope`, `offload` (none may be named `Executor` — 027 §5
   gives that to the workflow node); remove the stale ambient `MessageContext` row (conflicts with
   CONVENTIONS' "EffectContext is a parameter, not a thread-local").
@@ -631,3 +744,25 @@ thread affinity is not affected; each TLS session has its own DRBG (`tls_client.
 Pre-existing defects the round surfaced (independent of this ADR, worth fixing even if it is rejected):
 G4's inherited pipe handles and allocation-after-`clone`, H-e's drain-after-exit pipe deadlock, and the
 `run_task_sync` frame destruction (H-f).
+
+## 12. Red-team, round 2 (2026-10-03, independent agent, against the revised design)
+
+Verified on branch `adr237-async-design`. The round confirmed four round-1 fixes (two-phase cancel with a
+refcounted record; `when_all` cancel + join; `with_scope` only; a tractable `stop_callback` audit, ~10
+sites) and found that two did not hold (the release-mode reaper; Asio objects touched from two threads).
+
+| # | Severity | Finding (one line) | Disposition |
+|---|---|---|---|
+| R2-M1 | MUST-FIX | The release-mode reaper resumes or destroys a frame whose referents (parent `EffectContext`, tool, buffers, `continuation_`) are gone; the in-flight count sits in the leaf while `~task` runs on the outer frame | §4.5 rule 3: count along the awaited chain; orphan = never resumed, continuation cleared, op canceled, frame **leaked** after the backend completes, reported; debug aborts |
+| R2-M2 | MUST-FIX | Initiation on a lane races the reactor's completion/cancel on the same Asio object; a stop landing before the backend holds the op is lost | §4.4: one serial context (Asio strand) per I/O object for initiation, completion and cancel; sticky cancel flag checked at initiation |
+| R2-M3 | MUST-FIX | Coalescing `model_delta`s garbles the transcript; reserved-room exhaustion fails a healthy run on a slow consumer; I5 recording placement unstated | §4.5 rule 5: lifecycle + deltas use a real `co_await push` (never coalesced, never failing the run); only idempotent snapshots from sync sinks coalesce; recording taps before the queues |
+| R2-M4 | MUST-FIX | The ancestor-lock refusal breaks the deliberately re-entrant `fork_from` of one's own session and background jobs that should simply wait | §4.3: chains follow awaited edges only; exclusive lending to an awaited descendant; refusal only when the ancestor is not awaiting the requester |
+| R2-M5 | MUST-FIX | D3: args parsed twice; `invoke` still sees every held grant; empty requirement fails open; "ceiling stays the upper bound" contradicts the AND ceiling | §9 D3 rewritten: requirement kind, parse once, bound set only, fail closed, approval shows the requirement |
+| G-a | REAL GAP | "Homes equal" must mean strand-equal; a foreign continuation whose home is gone is unspecified | §4.2: same-strand symmetric transfer only; dead foreign home → never resumed, reported, orphan rule |
+| G-b | REAL GAP | D7's compile-time guard leaks through streams, `AsyncMutex`, `channel`, the public direct-driving API; ADR-219 tests and 020 §3a's embedding | §9 D7: restriction on every engine awaitable; direct driving private to `Runtime`; tests rewritten; 020 §3a amended |
+| G-c | REAL GAP | D6 "compiler-checked" is hollow (one `switch`); retry/fallback/propagate, replay mapping, string-keyed codes, A2A state mapping would misclassify | §9 D6: grep inventory as evidence; `canceled` never retries/falls back/propagates; deadline class reconciled; protocol mapping |
+| G-d | REAL GAP | `hardware_concurrency()` ignores cgroup quotas; 2-core box → 1 lane; priority vs strand FIFO; no cross-session fairness | §9 D5 `max(2, usable_cpus()/2)`; §4.3 round-robin across strands, priority across strands only |
+| G-e | REAL GAP | Async `close()` turns every early return/exception into a violation; stream drop-to-cancel is a working contract | §4.5: consumer drop stays a stop request; `with_session`/`with_stream` helpers |
+| G-f | REAL GAP | A failed reactor leaves every parked run waiting forever | §6.3: fail pending ops `fatal`, unhealthy runtime, watchdog |
+| G-g | REAL GAP | `RLIMIT_NOFILE` breaks the 10 000-session gate | §6.3: `resource` classification; gate states its limit; the library never raises it |
+| — | MINOR | Asio must not associate an `immediate_executor` (two queue hops on immediate completion — bench it); grant revocation during long async calls (pre-existing, now longer windows); D2 process risks | Implementation checklist; D2 process rules added to §9 |
