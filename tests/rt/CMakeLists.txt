@@ -136,3 +136,13 @@ agentengine_add_test(test_rt_manual_reactor LIBS agentengine::core agentengine_w
 # rt/tcp.hpp) -- connect/read/write/readiness awaitables resumed on the waiter's home, op-owned buffers,
 # two-phase sticky cancellation reporting the backend's real outcome, descriptor exhaustion as `resource`.
 agentengine_add_test(test_rt_reactor_tcp LIBS agentengine::core agentengine_warnings TIMEOUT 180)
+
+# ---- ADR-237 §6.3 "Processes": child processes on the reactor (pal/reactor_process.hpp, its Asio backend) and
+# rt/process.hpp -- concurrent pipe drains (H-e, gate 4), handle hygiene under 64 concurrent spawns (G4, gate
+# 1d), job/process-group kill on stop and deadline. The child is a tiny, time-bounded helper program.
+add_executable(process_child_helper process_child_helper.cpp)
+target_compile_features(process_child_helper PRIVATE cxx_std_23)
+target_link_libraries(process_child_helper PRIVATE agentengine_warnings)
+agentengine_add_test(test_rt_reactor_process LIBS agentengine::core agentengine_warnings TIMEOUT 300
+  DEFINITIONS "AE_PROCESS_CHILD_HELPER=\"$<TARGET_FILE:process_child_helper>\"")
+add_dependencies(test_rt_reactor_process process_child_helper)

@@ -19,6 +19,7 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <unordered_set>
 #include <utility>
@@ -45,6 +46,10 @@ struct TimerState final : BackendOpState {
 class AsioReactor final : public Reactor {
 public:
     AsioReactor() : work_(asio::make_work_guard(io_)) {
+        {
+            std::lock_guard const lock(live_mutex());
+            live().insert(this);
+        }
         thread_ = std::thread([this] {
             thread_id_.store(std::this_thread::get_id(), std::memory_order_release);
             io_.run();
@@ -54,6 +59,10 @@ public:
     // Shutdown (§4.5 rule 4): cancel every pending operation on the reactor thread, let their completions run,
     // then let run() return and join. No completion is dropped and no thread outlives the reactor.
     ~AsioReactor() override {
+        {
+            std::lock_guard const lock(live_mutex());
+            live().erase(this);
+        }
         asio::post(io_, [this] {
             shutting_down_ = true;
             for (auto const& op : pending_) cancel_on_reactor(op);
@@ -87,6 +96,14 @@ public:
         return std::this_thread::get_id() == thread_id_.load(std::memory_order_acquire);
     }
 
+    // This backend's reactor behind a `pal::Reactor&`, or null for any other implementation (a test's manual
+    // reactor). Without RTTI (CONVENTIONS): a registry of live instances, touched at construction, destruction
+    // and by this lookup only. Used by the process family (reactor_process_asio.cpp, ADR-237 §6.3).
+    [[nodiscard]] static AsioReactor* from(Reactor& r) noexcept {
+        std::lock_guard const lock(live_mutex());
+        return live().contains(&r) ? static_cast<AsioReactor*>(&r) : nullptr;
+    }
+
     // ---- shared by the other I/O families in this directory (reactor thread only, except io()) ----------
     [[nodiscard]] asio::io_context& io() noexcept { return io_; }
     [[nodiscard]] bool shutting_down() const noexcept { return shutting_down_; }
@@ -99,6 +116,15 @@ protected:
     }
 
 private:
+    static std::mutex& live_mutex() noexcept {
+        static std::mutex m;
+        return m;
+    }
+    static std::unordered_set<Reactor const*>& live() noexcept {
+        static std::unordered_set<Reactor const*> s;
+        return s;
+    }
+
     // Reactor thread only. Not started yet: the sticky flag stops it at start. Already completed: nothing.
     void cancel_on_reactor(std::shared_ptr<ReactorOp> const& op) {
         if (!pending_.contains(op)) return;
