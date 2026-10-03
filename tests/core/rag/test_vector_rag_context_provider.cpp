@@ -30,6 +30,7 @@
 #include "agentengine/core/corpus_scope.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_value.hpp"
+#include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/core/vector_index.hpp"
 #include "agentengine/core/vector_rag_context_provider.hpp"
 #include "agentengine/core/worktree.hpp"
@@ -373,6 +374,40 @@ int main() {
             AE_CHECK(!bad_reply.has_value(),
                      "R9: args are validated (reject-not-coerce) before ANY embedder/index work -- a "
                      "genuinely malformed call gets its own distinct schema error");
+        }
+
+        // --- R17: recall goes through the 006 §3 pipeline gated on the CALLER's FsRead, not the
+        // provider's construction-time read_cap_ (ADR-153's must-fix, applied to RAG). Negative and
+        // positive control on the SAME descriptor.
+        if (out.has_value() && !out->tools.empty()) {
+            ae::ToolDescriptor const& recall = out->tools.front();
+            AE_CHECK(recall.captures_session_state,
+                     "R17a: recall is marked captures_session_state (its invoke captures `this`)");
+            AE_CHECK(recall.capability_ceiling.size() == 1 &&
+                         std::holds_alternative<ae::cap::FsRead>(recall.capability_ceiling.front()) &&
+                         std::get<ae::cap::FsRead>(recall.capability_ceiling.front()).mount_id == read_cap.mount_id,
+                     "R17b: recall declares the corpus FsRead as its capability ceiling");
+
+            ae::ToolTable const table = ae::ToolTable::from_descriptors({recall});
+            ae::ToolCallRequest req;
+            req.tool_name = "recall";
+            req.call_id   = "r17-c1";
+            req.arguments = ae::json::Value::make_object(
+                {{"query", ae::json::Value::make_string("dark mode")}});
+
+            ae::EffectContext denied_ctx{};
+            denied_ctx.principal = principal;
+            auto denied = ae::invoke_tool(table, ae::CapabilitySet{}, req, denied_ctx, ae::ApprovalDecider{});
+            AE_CHECK(denied.is_error,
+                     "R17c: recall is DENIED through invoke_tool() when the caller holds no FsRead "
+                     "on the corpus mount");
+
+            ae::EffectContext allowed_ctx{};
+            allowed_ctx.principal = principal;
+            auto allowed = ae::invoke_tool(table, ae::CapabilitySet::grant_root({ae::Capability{read_cap}}),
+                                           req, allowed_ctx, ae::ApprovalDecider{});
+            AE_CHECK(!allowed.is_error,
+                     "R17d: the SAME call SUCCEEDS once the caller holds the matching FsRead");
         }
 
         // --- Embedder failure on the primary retrieval path propagates as a real error -----------
