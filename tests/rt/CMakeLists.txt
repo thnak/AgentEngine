@@ -125,3 +125,9 @@ set_tests_properties(test_console_utf8 PROPERTIES TIMEOUT 60)
 # rt::sleep_until -- resumption on the waiter's home, refusal of homeless wake-ups, two-phase sticky
 # cancellation, shutdown delivering every pending completion.
 agentengine_add_test(test_rt_reactor_timer LIBS agentengine::core agentengine_warnings TIMEOUT 180)
+
+# ---- ADR-237 implementation step 2: rt::offload / rt::OffloadPool (rt/offload.hpp) -- results delivered to
+# the caller's home, cancel before start / while running, by-value inputs, block_on refused on offload
+# workers, shutdown joining running bodies -- and testing::ManualReactor, the virtual-time test reactor (§8.1).
+agentengine_add_test(test_rt_offload LIBS agentengine::core agentengine_warnings TIMEOUT 180)
+agentengine_add_test(test_rt_manual_reactor LIBS agentengine::core agentengine_warnings TIMEOUT 180)
