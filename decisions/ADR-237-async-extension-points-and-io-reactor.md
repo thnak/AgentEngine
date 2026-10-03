@@ -926,8 +926,10 @@ Linux/gcc 15 `-Werror`. Lints clean.
   close-above-2 masks (dropping close-above-2 is killed). TSan 5/5.
 - **Integration fix**: TCP found the Asio reactor with `dynamic_cast`; CONVENTIONS forbids RTTI, so it now
   uses `AsioReactor::from(Reactor&)` (a live-reactor registry added by 2c).
-- **Open after step 2**: the op state machine is now copied three times (sleep, tcp, process) — factor it
-  before more families land; read buffers are not pooled (§6.3 round-3 gap 7); a stream/process handle must
+- **Refactor after step 2**: the op state machine copied into sleep, tcp and process is now one record,
+  `rt/reactor_await.hpp` (`reactor_detail::AwaitedOp<Base>`, `Canceler`). Mutant (drop its homeless
+  refusal) fails the timer, TCP and process tests together.
+- **Open after step 2**: read buffers are not pooled (§6.3 round-3 gap 7); a stream/process handle must
   outlive its awaiters (raw pointer, documented, not enforced); `run_process` must finish before its reactor
   is destroyed (§4.5 rule 4 ordering, documented, not checked); SIGCHLD=`SIG_IGN` hosts get `known = false`
   exit status (untested); a `setsid` grandchild escapes the process group (the jail's job, cgroups);

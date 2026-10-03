@@ -33,6 +33,7 @@
 #include <utility>
 
 #include "agentengine/pal/reactor.hpp"
+#include "agentengine/rt/reactor_await.hpp"
 #include "agentengine/rt/resume_home.hpp"
 
 namespace agentengine::rt {
@@ -45,58 +46,8 @@ enum class sleep_status : std::uint8_t {
 
 namespace sleep_detail {
 
-class SleepOp final : public pal::ReactorOp {
-public:
-    SleepOp(pal::Reactor& reactor, detail::ParkedResumer parked) noexcept
-        : reactor_(&reactor), ticket_(parked.ticket), parked_(std::move(parked)) {}
-
-    // Reactor thread. Only enqueues (ADR-237 §4.2).
-    void on_complete(pal::op_status status) noexcept override {
-        status_.store(status, std::memory_order_relaxed);
-        int expected = kPending;
-        if (!state_.compare_exchange_strong(expected, kWoken, std::memory_order_acq_rel)) return;  // abandoned
-        if (!parked_.home && !parked_.ticket) {
-            // Homeless: resuming here would run the coroutine on the reactor thread. Refused, never resumed.
-            reactor_->note_homeless_refusal();
-            return;
-        }
-        detail::wake(std::move(parked_));
-    }
-
-    // Awaiter destructor while the frame is being destroyed. True if the operation was still pending (its
-    // completion will now do nothing).
-    [[nodiscard]] bool abandon() noexcept {
-        int expected = kPending;
-        if (state_.compare_exchange_strong(expected, kAbandoned, std::memory_order_acq_rel)) return true;
-        // Already woken: a continuation queued at a host Resumer is claimed so it never runs (ADR-219).
-        (void)detail::abandon_woken(ticket_);
-        return false;
-    }
-
-    [[nodiscard]] pal::op_status status() const noexcept { return status_.load(std::memory_order_relaxed); }
-
-private:
-    static constexpr int kPending   = 0;
-    static constexpr int kWoken     = 1;
-    static constexpr int kAbandoned = 2;
-
-    pal::Reactor*                          reactor_;
-    std::shared_ptr<detail::ResumerTicket> ticket_;  // kept for abandon(); parked_ is moved out on wake
-    detail::ParkedResumer                  parked_;
-    std::atomic<int>                       state_{kPending};
-    std::atomic<pal::op_status>            status_{pal::op_status::canceled};
-};
-
-struct Canceler {
-    pal::Reactor*                   reactor;
-    std::shared_ptr<pal::ReactorOp> op;
-    void operator()() const noexcept {
-        try {
-            reactor->cancel(op);
-        } catch (...) {  // NOLINT(bugprone-empty-catch): a failed post leaves the timer to expire on its own
-        }
-    }
-};
+using SleepOp  = reactor_detail::AwaitedOp<>;
+using Canceler = reactor_detail::Canceler;
 
 class SleepAwaiter {
 public:

@@ -5,7 +5,7 @@
 // rewritten on (§6.3). TLS and DNS are not here: connect takes an already-resolved, verified address (ADR-011).
 //
 // Every awaitable follows rt/sleep.hpp's discipline exactly (that header is the reference; the op record
-// below repeats its SleepOp rather than share it, so sleep.hpp stays untouched by this step):
+// is the shared one in rt/reactor_await.hpp):
 //   - the waiter resumes on the home it parked from (ADR-175 block_on home or ADR-219 host Resumer), never on
 //     the reactor thread; a homeless waiter is REFUSED and counted (`Reactor::homeless_refusals`, §4.2);
 //   - a stop request posts a cancel to the reactor; the waiter resumes from the backend's own completion,
@@ -35,6 +35,7 @@
 
 #include "agentengine/pal/reactor.hpp"
 #include "agentengine/pal/reactor_tcp.hpp"
+#include "agentengine/rt/reactor_await.hpp"
 #include "agentengine/rt/resume_home.hpp"
 #include "agentengine/rt/task.hpp"
 
@@ -55,51 +56,10 @@ namespace tcp_detail {
 
 enum class kind : std::uint8_t { connect, read_some, wait_readable, write_some };
 
-// sleep_detail::SleepOp's state machine, on a TcpOp.
-class TcpAwaitOp final : public pal::TcpOp {
-public:
-    TcpAwaitOp(pal::Reactor& reactor, detail::ParkedResumer parked) noexcept
-        : reactor_(&reactor), ticket_(parked.ticket), parked_(std::move(parked)) {}
+// The shared reactor operation record (rt/reactor_await.hpp), on a TcpOp.
+using TcpAwaitOp = reactor_detail::AwaitedOp<pal::TcpOp>;
+using Canceler   = reactor_detail::Canceler;
 
-    // Reactor thread. Only enqueues (ADR-237 §4.2). The backend has already set the result.
-    void on_complete(pal::op_status /*status: also in result().error*/) noexcept override {
-        int expected = kPending;
-        if (!state_.compare_exchange_strong(expected, kWoken, std::memory_order_acq_rel)) return;  // abandoned
-        if (!parked_.home && !parked_.ticket) {
-            reactor_->note_homeless_refusal();  // never resumed on the reactor thread
-            return;
-        }
-        detail::wake(std::move(parked_));
-    }
-
-    [[nodiscard]] bool abandon() noexcept {
-        int expected = kPending;
-        if (state_.compare_exchange_strong(expected, kAbandoned, std::memory_order_acq_rel)) return true;
-        (void)detail::abandon_woken(ticket_);  // ADR-219: claim a continuation queued at a host Resumer
-        return false;
-    }
-
-private:
-    static constexpr int kPending   = 0;
-    static constexpr int kWoken     = 1;
-    static constexpr int kAbandoned = 2;
-
-    pal::Reactor*                          reactor_;
-    std::shared_ptr<detail::ResumerTicket> ticket_;
-    detail::ParkedResumer                  parked_;
-    std::atomic<int>                       state_{kPending};
-};
-
-struct Canceler {
-    pal::Reactor*                   reactor;
-    std::shared_ptr<pal::ReactorOp> op;
-    void operator()() const noexcept {
-        try {
-            reactor->cancel(op);
-        } catch (...) {  // NOLINT(bugprone-empty-catch): a failed post leaves the op to finish on its own
-        }
-    }
-};
 
 class TcpAwaiter {
 public:

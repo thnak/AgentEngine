@@ -46,6 +46,7 @@
 
 #include "agentengine/pal/reactor.hpp"
 #include "agentengine/pal/reactor_process.hpp"
+#include "agentengine/rt/reactor_await.hpp"
 #include "agentengine/rt/resume_home.hpp"
 #include "agentengine/rt/task.hpp"
 
@@ -62,56 +63,10 @@ struct ProcessOpOutcome {
 
 namespace process_detail {
 
-// rt/sleep.hpp's SleepOp state machine, over any pal operation record.
+// The shared reactor operation record (rt/reactor_await.hpp), over any pal operation record.
 template <class Base>
-class AwaitedOp final : public Base {
-public:
-    AwaitedOp(pal::Reactor& reactor, detail::ParkedResumer parked) noexcept
-        : reactor_(&reactor), ticket_(parked.ticket), parked_(std::move(parked)) {}
-
-    // Reactor thread. Only enqueues (ADR-237 §4.2).
-    void on_complete(pal::op_status status) noexcept override {
-        status_.store(status, std::memory_order_relaxed);
-        int expected = kPending;
-        if (!state_.compare_exchange_strong(expected, kWoken, std::memory_order_acq_rel)) return;  // abandoned
-        if (!parked_.home && !parked_.ticket) {
-            reactor_->note_homeless_refusal();  // never resumed on the reactor thread
-            return;
-        }
-        detail::wake(std::move(parked_));
-    }
-
-    [[nodiscard]] bool abandon() noexcept {
-        int expected = kPending;
-        if (state_.compare_exchange_strong(expected, kAbandoned, std::memory_order_acq_rel)) return true;
-        (void)detail::abandon_woken(ticket_);
-        return false;
-    }
-
-    [[nodiscard]] pal::op_status status() const noexcept { return status_.load(std::memory_order_relaxed); }
-
-private:
-    static constexpr int kPending   = 0;
-    static constexpr int kWoken     = 1;
-    static constexpr int kAbandoned = 2;
-
-    pal::Reactor*                          reactor_;
-    std::shared_ptr<detail::ResumerTicket> ticket_;
-    detail::ParkedResumer                  parked_;
-    std::atomic<int>                       state_{kPending};
-    std::atomic<pal::op_status>            status_{pal::op_status::canceled};
-};
-
-struct Canceler {
-    pal::Reactor*                   reactor;
-    std::shared_ptr<pal::ReactorOp> op;
-    void operator()() const noexcept {
-        try {
-            reactor->cancel(op);
-        } catch (...) {  // NOLINT(bugprone-empty-catch): a failed post leaves the op to finish on its own
-        }
-    }
-};
+using AwaitedOp = reactor_detail::AwaitedOp<Base>;
+using Canceler  = reactor_detail::Canceler;
 
 // The awaiter shape shared by every single-operation awaitable. `Derived` supplies fill(op) (inputs, may
 // throw: runs before anything refers to the handle's registration) and start(process, op).
