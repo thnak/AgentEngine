@@ -430,24 +430,34 @@ private:
             state_->note_failure();
         }
         std::optional<decltype(call())> out;
+        std::exception_ptr              thrown;
         try {
             out.emplace(call());
-        } catch (std::exception const& e) {
+        } catch (...) {
+            thrown = std::current_exception();
+        }
+        // The thrown call is recorded and rethrown OUTSIDE the handler above. A rethrow from a handler that holds
+        // its own nested try crashes clang's Windows EH under AddressSanitizer (google/sanitizers#749's family;
+        // CI's clang-cl ASanUBSan leg, 2026-10-03), and nothing here needs to run inside the handler.
+        if (thrown) {
             if (rec) {
+                // The text is copied inside the handler: MSVC's rethrow_exception throws a copy of the stored
+                // exception, so a what() pointer would dangle once the handler exits. A bad_alloc from that copy
+                // leaves the handler for the OUTER try -- no try nested inside a handler.
                 try {
-                    rec->threw = e.what();
+                    try {
+                        std::rethrow_exception(thrown);
+                    } catch (std::exception const& e) {
+                        rec->threw = std::string(e.what());
+                    } catch (...) {
+                        rec->threw_non_standard = true;
+                    }
+                    state_->emit(*rec);
                 } catch (...) {
                     state_->note_failure();
                 }
-                state_->emit(*rec);
             }
-            throw;
-        } catch (...) {
-            if (rec) {
-                rec->threw_non_standard = true;
-                state_->emit(*rec);
-            }
-            throw;
+            std::rethrow_exception(thrown);
         }
         if (rec) {
             try {
