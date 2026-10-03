@@ -202,7 +202,8 @@ endif()
 
 add_library(agentengine_reactor_asio STATIC src/backends/reactor_asio/reactor_asio.cpp
   src/backends/reactor_asio/reactor_tcp_asio.cpp
-  src/backends/reactor_asio/reactor_process_asio.cpp)
+  src/backends/reactor_asio/reactor_process_asio.cpp
+  src/backends/reactor_asio/resolver_getaddrinfo.cpp)
 target_include_directories(agentengine_reactor_asio PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 # SYSTEM: Asio's own headers are third-party code, not answerable to this project's -Werror set.
 target_include_directories(agentengine_reactor_asio SYSTEM PRIVATE "${AE_ASIO_INCLUDE_DIR}")
@@ -746,14 +747,31 @@ if(AGENTENGINE_WITH_HTTPS)
   configure_file("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ca_bundle_embed.cpp.in"
     "${CMAKE_CURRENT_BINARY_DIR}/generated/ca_bundle_embed.cpp" @ONLY)
 
+  # ---- ADR-013's client configuration + the embedded CA bundle, shared by both TLS clients below ----
+  # (src/backends/tls_mbedtls/mbedtls_client_config.cpp, moved verbatim out of tls_client.cpp for ADR-237 §6.3 so
+  # the blocking client and rt::TlsStream cannot drift). Layer L0 (tools/layers.toml).
+  add_library(agentengine_tls_common STATIC
+    src/backends/tls_mbedtls/mbedtls_client_config.cpp
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/ca_bundle_embed.cpp")
+  target_include_directories(agentengine_tls_common PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_include_directories(agentengine_tls_common PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  target_compile_features(agentengine_tls_common PUBLIC cxx_std_23)
+  target_link_libraries(agentengine_tls_common PUBLIC MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  target_link_libraries(agentengine_tls_common PRIVATE agentengine_warnings)
+
   # ---- TLS client (src/sandbox/) -- Windows + Linux ---------------------------------------------
   add_library(agentengine_tls_client STATIC
-    src/sandbox/tls_client.cpp
-    "${CMAKE_CURRENT_BINARY_DIR}/generated/ca_bundle_embed.cpp")
+    src/sandbox/tls_client.cpp)
   target_link_libraries(agentengine_tls_client PUBLIC agentengine::core)
   target_link_libraries(agentengine_tls_client PRIVATE
-    agentengine_warnings MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+    agentengine_warnings agentengine_tls_common MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_library(agentengine::tls_client ALIAS agentengine_tls_client)
+
+  # ---- ADR-237 §6.3: rt::TlsStream, asynchronous TLS on the I/O reactor (include/agentengine/rt/tls.hpp) ----
+  add_library(agentengine_rt_tls STATIC src/backends/tls_mbedtls/tls_stream_mbedtls.cpp)
+  target_link_libraries(agentengine_rt_tls PUBLIC agentengine::core)
+  target_link_libraries(agentengine_rt_tls PRIVATE agentengine_warnings agentengine_tls_common)
+  add_library(agentengine::rt_tls ALIAS agentengine_rt_tls)
 
   # Extends the already-defined agentengine::net_egress_proxy target (above) rather than moving its
   # definition down here -- AGENTENGINE_WITH_HTTPS is resolved after that target already exists,

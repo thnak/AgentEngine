@@ -146,3 +146,18 @@ target_link_libraries(process_child_helper PRIVATE agentengine_warnings)
 agentengine_add_test(test_rt_reactor_process LIBS agentengine::core agentengine_warnings TIMEOUT 300
   DEFINITIONS "AE_PROCESS_CHILD_HELPER=\"$<TARGET_FILE:process_child_helper>\"")
 add_dependencies(test_rt_reactor_process process_child_helper)
+
+# ---- ADR-237 §6.3 "DNS" / §4.6: rt::resolve on the dedicated DNS offload pool (numeric fast path, cancel with the
+# offload residual) and rt::connect_resolved (ADR-011: resolve once, address policy failing closed, connect to the
+# verified address with a per-attempt deadline). No network: lookups beyond "localhost" go through a test seam.
+agentengine_add_test(test_rt_dns LIBS agentengine::core agentengine_warnings TIMEOUT 180)
+
+# ---- ADR-237 §6.3 "TLS": rt::TlsStream (mbedTLS over a reactor TCP stream) -- handshake/echo on the home thread,
+# certificate and hostname verification on by default, cancellation mid-handshake and mid-read, concurrent read +
+# write. Only with AGENTENGINE_WITH_HTTPS (mbedTLS); the loopback TLS peer and its CA are generated at test time.
+if(AGENTENGINE_WITH_HTTPS)
+  agentengine_add_test(test_rt_tls
+    LIBS agentengine::rt_tls agentengine::core agentengine_warnings MbedTLS::mbedtls MbedTLS::mbedx509
+      MbedTLS::mbedcrypto
+    TIMEOUT 300)
+endif()
