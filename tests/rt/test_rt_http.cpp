@@ -929,10 +929,15 @@ int main() {
             stopper.join();
             bool home = !s.resumed_on.empty();
             for (auto id : s.resumed_on) home = home && id == main_id;
+            std::string diag = " [head " + std::to_string(static_cast<int>(s.head.error)) + ", chunks";
+            for (auto const& c : s.chunks) diag += " " + std::to_string(static_cast<int>(c.status)) + "/" +
+                                                   std::to_string(static_cast<int>(c.error));
+            diag += "]";
             check(!s.chunks.empty() && s.chunks.back().status == body_status::error &&
                       s.chunks.back().error == http_error::canceled && took < 1s && home,
                   "H11: a stop mid-body resumes promptly `canceled`, on the home thread (took " +
-                      std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(took).count()) + " ms)");
+                      std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(took).count()) + " ms)" +
+                      diag);
             check(wait_until([&] { return srv.saw_close() == 1; }, 3s), "H11: ... and the server sees the close");
         }
 
