@@ -131,8 +131,9 @@ The Quark dev-box rule applies verbatim to this repo, because the Quark suite ru
 
 - Build with **`-j4` max** (`cmake --build build -j4`); TSan builds `-j1`. Never `-j$(nproc)`.
 - `CMakePresets.json` has two profiles (Ninja; on Windows run from an MSVC dev shell), both `-j4`:
-  `dev` builds tests, examples and test tools without optimization (`AGENTENGINE_FAST_TESTS`) for a faster
-  edit-build-test loop; `release` optimizes everything and is the production build. A change to
+  `dev` builds tests, examples and test tools without optimization (`AGENTENGINE_FAST_TESTS`), with the
+  plain tests sharing one precompiled header (`AGENTENGINE_TEST_PCH`, `tests/support/test_pch.hpp`), for a
+  faster edit-build-test loop; `release` optimizes everything and is the production build. A change to
   engine templates is not done until it passes an optimized build too (CI's MSVC Release leg).
   `cmake --preset dev`, `cmake --build --preset dev`, `ctest --preset dev`.
 - Pin tests and benchmarks to ≤ 4 cores (`taskset -c 0-3` on Linux; the equivalent affinity mask on
