@@ -175,3 +175,19 @@ agentengine_add_test(test_rt_runtime LIBS agentengine::core agentengine_warnings
 # chains with AsyncMutex lending / refusal `rt.lock_held_by_ancestor` (rt/await_chain.hpp, rt/async_mutex.hpp).
 agentengine_add_test(test_rt_scope LIBS agentengine::core agentengine_warnings TIMEOUT 180)
 agentengine_add_test(test_rt_lock_chain LIBS agentengine::core agentengine_warnings TIMEOUT 180)
+
+# ---- ADR-237 §6.3 "HTTP/1.1 + SSE": rt/http_wire.hpp (request building, strict head parsing, framing, SSE decoding)
+# and rt/http.hpp (the async client on the reactor) -- plain HTTP against a scripted loopback server on a test thread:
+# round trips on the home thread, chunked decoding, caps, the smuggling class, CRLF injection, address policy, no
+# redirects, idle/overall deadlines as timers, stop mid-body, the consumer-stall deadline, destroyed frames.
+agentengine_add_test(test_rt_http LIBS agentengine::core agentengine_warnings TIMEOUT 300)
+
+# ---- ADR-237 §6.3: the async HTTP client over TLS (rt/http_tls.hpp, rt::TlsStream) against a loopback mbedTLS peer
+# with an in-memory CA, and the field-level SSE differential against the existing provider parsers (which it links).
+# Only with AGENTENGINE_WITH_HTTPS.
+if(AGENTENGINE_WITH_HTTPS)
+  agentengine_add_test(test_rt_https
+    LIBS agentengine::rt_tls agentengine::provider_http_client agentengine::core agentengine_warnings
+      MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto
+    TIMEOUT 300)
+endif()
