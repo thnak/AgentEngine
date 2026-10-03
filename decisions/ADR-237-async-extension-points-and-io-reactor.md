@@ -390,7 +390,12 @@ Every row of research §7a's "must become async" tables changes to return `ae::t
 `SkillSource::load_skills`, `ChunkingPolicy::chunk`, `ApprovalDecider`/`PolicyDecider`, `ExecutorBody`,
 `MergeOnJoinHook`, MCP `RequestSender`/`InputRequestHandler`, A2A `CardFetcher`/`RunStarter`/client calls,
 `ChildRunner`, `SessionFactory`, `ToolSourceFetch`, `GraderFn`, `OutputValidator`, `SurfaceFactory`,
-`Resolver`. `ChatClient` gains a real `chat()` again (004 §1 lists both) or drops it in favour of
+`Resolver`. Added by `main` after this ADR was drafted (ADR-235/236, merged into the branch 2026-10-03):
+`BatchBackend::submit/poll/cancel/release` (`core/batch_backend.hpp:91-98`, a `virtual` class whose
+methods call the vendor's batch API synchronously) and `WorkflowSupervisor`'s batch callables
+`Build`/`Call`/`Complete` (`rt/workflow_supervisor.hpp:291-295`). `BatchBackend::limits()`/`admit()`
+are local checks and stay synchronous (§5.3). ADR-236's batch recording sink (`Sink`, `DivergenceHook`)
+is an event sink under §5.3's non-blocking rule. `ChatClient` gains a real `chat()` again (004 §1 lists both) or drops it in favour of
 `chat_stream` only — decided in the implementation, not left as a blocking body.
 
 ADR-070's property "unset = today's behaviour" is preserved for the deciders: an unset async decider is
@@ -628,7 +633,9 @@ Answers given by the project owner on 2026-10-03; where the owner delegated the 
   so the cost a long branch usually carries (other work blocked or conflicting) is lower than the cost
   of `main` living with half-sync, half-async seams; and the old shapes are deleted rather than kept
   alongside, which only works if nothing on `main` still depends on them. `main` is merged *into* the
-  branch regularly so the final merge is not a surprise. Process rules for the branch's lifetime (round
+  branch regularly so the final merge is not a surprise. **`main` is frozen while the branch is implemented (owner, 2026-10-03)**, so the
+  regular `main`-into-branch merges are expected to be empty; the last one (ADR-235/236, PCH, object-store
+  lock) was taken on 2026-10-03. If the freeze is lifted, these process rules apply (round
   2): no new synchronous seams land on `main` — enforced by a CI lint on concept/callable signatures, not
   only by review (round 3) (they would have to be converted twice); the seam renames
   (`chat` → `get_response`) are done early on the branch so later `main` merges conflict once, not
