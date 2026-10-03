@@ -1,6 +1,6 @@
 # ADR-236: Recording and replaying a batched run's vendor calls and clock (I5)
 
-**Status: Proposed (2026-10-03).** Closes two ADR-235 §7 residuals: "No recorded seam for replaying batch
+**Status: Judged (2026-10-03, project-owner sign-off).** Closes two ADR-235 §7 residuals: "No recorded seam for replaying batch
 results (I5)" and "`tools/batch_infer.cpp` still targets the beta path". Red-teamed once against the code
 (§5: 0 FATAL, 4 MAJOR, all fixed). One finding needed a small engine change to `WorkflowSupervisor::execute()`
 (§3.1).
