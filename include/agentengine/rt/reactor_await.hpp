@@ -34,7 +34,7 @@ public:
         status_.store(status, std::memory_order_relaxed);
         int expected = kPending;
         if (!state_.compare_exchange_strong(expected, kWoken, std::memory_order_acq_rel)) return;  // abandoned
-        if (!parked_.home && !parked_.ticket) {
+        if (!parked_.homed()) {
             // Homeless: resuming here would run the coroutine on the reactor thread. Refused, never resumed.
             reactor_->note_homeless_refusal();
             return;
@@ -65,6 +65,7 @@ private:
 };
 
 // The stop_callback body: post a cancel. Never throws out of the callback.
+// ae-naming-lint: allow Canceler — ADR-237 §4.4: reactor-internal helper (reactor_detail), 027 §4 row added when the ADR is Judged
 struct Canceler {
     pal::Reactor*                   reactor;
     std::shared_ptr<pal::ReactorOp> op;

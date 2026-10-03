@@ -114,6 +114,15 @@ target_compile_features(agentengine_rt_file_log PRIVATE cxx_std_23)
 target_link_libraries(agentengine_rt_file_log PRIVATE agentengine_warnings)
 target_link_libraries(agentengine_core INTERFACE agentengine_rt_file_log)
 
+# ---- pal::usable_cpus()'s OS half (src/pal/) -- ADR-237 §9 D5 ---------------------------------------------
+# Process affinity and the cgroup CPU quota, for the default lane count (rt/runtime.hpp). Compiled here so
+# <windows.h> stays out of every header that includes the runtime; linked through agentengine::core.
+add_library(agentengine_pal_cpu STATIC src/pal/usable_cpus.cpp)
+target_include_directories(agentengine_pal_cpu PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_compile_features(agentengine_pal_cpu PRIVATE cxx_std_23)
+target_link_libraries(agentengine_pal_cpu PRIVATE agentengine_warnings)
+target_link_libraries(agentengine_core INTERFACE agentengine_pal_cpu)
+
 # ---- Message/ContentItem <-> JSON codec (src/core/) -- ADR-202, issue #120 S3 ----------------------
 # The one codec behind core/chat_recording.hpp (recording profile) and rt/message_codec.hpp (state profile),
 # which were two drifted copies before. Both headers keep their functions as thin wrappers. Linked through

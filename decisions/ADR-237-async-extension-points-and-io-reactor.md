@@ -934,3 +934,110 @@ Linux/gcc 15 `-Werror`. Lints clean.
   is destroyed (§4.5 rule 4 ordering, documented, not checked); SIGCHLD=`SIG_IGN` hosts get `known = false`
   exit status (untested); a `setsid` grandchild escapes the process group (the jail's job, cgroups);
   compile-time rejections in offload and the foreign-reactor paths have no tests.
+
+### Step 3 (2026-10-03): lanes, strands, the strand as home, `rt::Runtime`
+
+Additive: every existing caller and hand-driven test is unchanged (`rt` 75/75 Windows/clang, 72/72 Linux/gcc 15
+`-Werror`; full Windows suite `ctest -LE live-network` 397/410, the 13 failures the same Docker-daemon tests as
+step 1). The D7 compile-time restriction, AsyncMutex lending, seam conversion and deleting
+`ThreadPool`/`block_on`-at-the-edge are later steps.
+
+- `include/agentengine/rt/lanes.hpp` — `LanePool` (fixed `std::jthread` workers, joined; each carries
+  `ScopedBlockOnRefusal("rt.block_on_on_lane")`), `StrandGroup` (a "session" for scheduling), `Strand` (serial: a
+  worker takes one continuation, runs it until it parks or ends, only then may the strand's next run, on any
+  worker; FIFO), `rt::reschedule()`, `rt::on_strand(strand, task)`, `rt::current_strand_id()`. Scheduling as
+  §4.3: round-robin across groups, then across the group's strands; a priority post picks its strand first across
+  strands and is queued behind the strand's own items. One scheduler mutex (a sharded queue is a benchmarked later
+  change). A post after the workers stopped is dropped and counted, never run on the posting thread.
+- `include/agentengine/rt/resume_home.hpp` — `detail::StrandHome` (the fourth kind of home; one virtual `post`,
+  the type-erasure level of `Resumer`), `ExecutionContext::strand`, `ParkedResumer::strand` and `homed()`;
+  `capture_parked`/`wake` post a strand-homed coroutine to its strand. `reactor_await.hpp`, `offload.hpp`,
+  `process.hpp` refuse on `!homed()` instead of `!home && !ticket`.
+- `include/agentengine/rt/task.hpp` — `detail::TaskLink` in both promises (the awaiter's strand and holder, or a
+  root-completion callback), `detail::complete_to` (final_suspend: transfer iff same strand, else post the awaiter
+  to its strand and return `noop_coroutine`), `detail::TaskAccess`; raw `resume()` keeps the current strand.
+- `include/agentengine/rt/runtime.hpp` — `RuntimeConfig{lanes, offload_workers, dns_workers, shutdown_deadline,
+  on_shutdown_overrun}` (`half_of_hardware` = the D5 default), `Runtime` (one `make_default_reactor()`, the lanes,
+  general and DNS `OffloadPool`s; `run(task)`, `run(strand, task)`, `enter(task, Resumer&|shared_ptr<Resumer>|
+  CompletionThread&)`, `new_strand_group()`), `CompletionThread`, `usable_cpus()`, `default_lane_count()`.
+- `include/agentengine/pal/cpu.hpp`, `src/pal/usable_cpus.cpp` (new static lib `agentengine_pal_cpu`, layer L0
+  in `tools/layers.toml`) — `pal::usable_cpus()`: Windows process affinity (whole system mask → every active
+  processor across groups); Linux `sched_getaffinity` capped by cgroup v2 `cpu.max` along the cgroup path (tightest
+  wins) or v1 `cfs_quota/period`, rounded up, at least 1. Parsers in the header, tested on every OS.
+
+Decisions:
+
+- **How the home reaches a type-erased awaiter.** Not a templated `capture_parked<P>`: the strand is a field of
+  the thread's execution context that **only a lane worker sets, around exactly one continuation of that strand**.
+  So for that slice every coroutine on the thread is part of that strand's chain (the continuation and whatever it
+  symmetrically transferred into). ADR-219's objection — leaf awaiters see `coroutine_handle<>`, every coroutine
+  type in a chain must cooperate — was about a context set by *some* driver that a host runtime could bypass; for
+  engine work the only resumer is the lane pool, so the context is exact, and no awaiter changes (sleep, TCP,
+  process, offload, AsyncMutex, channel all go through `capture_parked`/`wake` unchanged). What the promise
+  carries is the other half, the **awaiter's** strand (read from the same context at `co_await`), which
+  `final_suspend` compares with the strand it finishes on. Foreign coroutine types keep the ScopedResumer fallback.
+- **Precedence: strand > block_on home > host Resumer > homeless.** Differs from the order suggested for this step
+  (Resumer above block_on): ADR-219 already put `block_on` above the Resumer ("a block_on() inside the scope still
+  owns what parks under it") and nothing in ADR-237 reverses it; strand and block_on cannot coexist (block_on is
+  refused on lanes). Strand above Resumer because a strand continuation handed to a host Resumer would run on a host
+  thread concurrently with the strand's next continuation (I1); so a `ScopedResumer` or raw `task::resume()` opened
+  inside a strand slice inherits the strand.
+- `on_strand` from a non-strand coroutine (block_on or Resumer home) captures that home and wakes it from the root's
+  completion; from a homeless coroutine it is refused before suspending (`rt.on_strand_homeless`) — resuming it
+  inline would run it on the lane. Each root (`run`, `enter`, `on_strand`) runs under a fresh holder id (await
+  chains are a later step).
+- `enter`'s continuation is handed to the Resumer through an ADR-219 ticket; the `CompletionThread` is a Resumer
+  (what its continuations park on later comes back to it). Destroying a `CompletionThread` with an outstanding
+  `enter`, destroying a `Runtime` from its own lane or while a `CompletionThread` is alive, and destroying a
+  coroutine awaiting `enter` while its root still runs (interim, until §4.5 rule 3 adoption) are checked violations:
+  abort with a message, every build.
+- Shutdown (§4.5 rule 4): stop accepting (`rt.runtime_closed`) → wait for every `run`/`enter` root (the optional
+  deadline only reports) → DNS and offload pools → lanes (drain, join) → reactor (completions delivered; posts to
+  the stopped lanes dropped and counted).
+
+Tests (`tests/rt/test_rt_lanes.cpp` L1–L11, 33 checks; `tests/rt/test_rt_runtime.cpp` R1–R10, 43 checks; same
+counts on both OSes): I1 per strand under 6 lanes with wake-ups also arriving from the reactor thread (max in-flight
+1, the strand moves between workers); FIFO; two strands in parallel; fairness — a 1-strand session against a
+50-strand session gets 50.0% of slices on 1 lane and 33% on 2 (thresholds 40%/25%; per-strand round-robin gives
+2%); priority order C1, C2, A1, B1; block_on refused on lanes; precedence strand > Resumer and block_on > Resumer;
+cross-strand final_suspend; on_strand from block_on and homeless; same-strand await; drain and drop-after-stop;
+`run` on a lane, value and exception; reactor and offload wake-ups back on the strand (not the reactor, host or
+offload thread); `run`/`block_on` refused on a lane; `enter` via Resumer and via CompletionThread (never on a lane);
+the CompletionThread violation in a child process; D5 config; `usable_cpus` under a 1- and 2-CPU affinity mask
+(Linux `sched_setaffinity`, Windows `SetProcessAffinityMask`) plus the cgroup parsers; shutdown waiting for a sleeping
+`enter` root and still delivering it; thread count before/after a Runtime (Linux exact 1/9/1; Windows 4/12/4, checked
+as after ≤ before because OS loader threads may exit).
+
+Mutants (19, each killed on Linux/gcc 15 and Windows/clang): M1 a running strand made ready again (L1 max in-flight
+5–6, L8); M2 LIFO within a strand (L2, L5); M3 one strand at a time pool-wide (L3); M4 every strand its own session
+(L4 2%); M5a priority ignored, M5b priority jumps its own strand (L5); M6 no lane marker (L6, R1, R2, R3, R4, R5,
+R6); M7 Resumer checked before strand (L7); M8 final_suspend always transfers (L8: parent on S2, in-flight 2); M9 a
+strand wake resumes inline (R2/R3 on the reactor/offload thread; L1 crash); M10 `enter` resumes the foreign coroutine
+inline on the lane (R5, R6); M11 no CompletionThread check (R6 child exits 0); M12 `usable_cpus` ignores affinity
+(R8 reports 12); M13 shutdown skips waiting for roots (R9); M14 lanes detached (R10 on Linux, L11); M15 homeless
+`on_strand` not refused (L9); M16 a post after stop runs inline (L11); M17 ScopedResumer drops the strand, M18 raw
+`resume()` drops the strand (L7); M19 the reactor refuses strand-homed waiters (L1, L7, R hangs). The first M1 (only
+"ready while running") crashed instead of failing a check; it was narrowed to a mutant that lets the strand run twice
+without corrupting the queue, and L1 then reports in-flight 5–6.
+
+Linux (WSL, gcc 15, `-Werror`, Release): `rt` 72/72, the two tests 3 runs each. TSan (gcc 15, the two tests plus the
+three reactor backends and `usable_cpus.cpp`): 5/5 runs each, 0 warnings — after two **test** fixes TSan found: the
+host destroyed a foreign coroutine's frame right after the `done` flag its body set, while the body was still
+finishing on the Resumer's thread (now self-destroying); and gcc's ramp function writes to the frame after a
+`suspend_never`-initial coroutine first suspends, which races once the body has been resumed elsewhere (test
+coroutines now start lazily). Engine tasks are lazy, so the second does not reach `rt::task`, but a host coroutine
+type with an eager start awaiting `runtime.enter` has the same race — worth a sentence in 020 §3a. Also the thread
+count now starts after one thread creation (TSan's own helper thread). Lints clean (`Canceler`, from the step-2
+refactor, had no naming-lint allow; added).
+
+Open after step 3:
+- A strand-homed continuation already posted when its frame is destroyed is still resumed (ADR-175 §6's residual,
+  now for strands too; no claim ticket). Only reachable by destroying a running engine chain, which root adoption
+  (§4.5 rule 3) will own.
+- A host `Resumer` that drops an `enter` continuation resumes it inline on the lane (ADR-219's drop fallback); §4.2
+  "reported, never resumed" for a gone foreign home is not implemented.
+- Not built: lane-stall and stuck-run watchdogs, task scopes / `when_all`, holder await chains, the D7 compile-time
+  restriction, `stop_callback` redirection to strands; `run` takes no stop token, so shutdown can only wait.
+- `usable_cpus`: Windows Job-object CPU rate caps are not read; the cgroup quota path is tested only through its
+  parsers (no in-test cgroup on WSL).
+- Scheduler: one mutex and linear removal from ready lists — fine for the tests, unmeasured (§8.2 benches).

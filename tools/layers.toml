@@ -30,6 +30,7 @@
 "include/agentengine/testing"  = { layer = "TEST", reason = "test-only support" }
 "src/core"                     = { layer = "L2",   reason = "translation units for include/agentengine/core (L2)" }
 "src/rt"                       = { layer = "L0",   reason = "translation units for include/agentengine/rt (L0 by default)" }
+"src/pal"                      = { layer = "L0",   reason = "translation units for include/agentengine/pal (ADR-237 §9 D5: usable_cpus)" }
 "src/trust"                    = { layer = "L1",   reason = "translation units for include/agentengine/trust" }
 "src/sandbox"                  = { layer = "L1",   reason = "translation units for include/agentengine/sandbox" }
 "src/backends"                 = { layer = "L1",   reason = "sandbox backends (CONVENTIONS.md layout: src/backends)" }

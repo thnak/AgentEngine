@@ -196,7 +196,7 @@ public:
             to_wake = std::move(*parked_);
             parked_.reset();
         }
-        if (!to_wake.home && !to_wake.ticket) {
+        if (!to_wake.homed()) {
             reactor_->note_homeless_refusal();  // never resumed on the reactor thread
             return;
         }
