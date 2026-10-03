@@ -1275,3 +1275,35 @@ Open after step 5:
 - The chain registry is one process-wide mutex, taken at forks and on contended locks; unmeasured (§8.2 benches).
 - No engine entry point declares `lock_entry` yet; `session_mutex_` callers use plain `lock()` (mutating).
 - Adoption covers `enter` (`run` cannot be dropped); an adopted root's result is discarded, reported by counters only.
+
+### Step 6 (2026-10-03): HTTP/1.1 + SSE on the reactor (built in parallel with step 5 and D6, merged after them)
+
+- `rt/http_wire.hpp` (no I/O: request building, strict head parser, RFC 9112 framing, capped chunked decoder,
+  WHATWG SSE decoder), `rt/http.hpp` (`rt::http_request`, `rt::http_stream` → `HttpBodyReader::next`,
+  `rt::sse_events` → `SseStream::next`), `rt/http_tls.hpp` (`rt::tls_connector()` over `rt::TlsStream`, HTTPS
+  builds only). Connection only via `connect_resolved` with the caller's `AddressPolicy` (fail closed); no
+  redirect followed (ADR-011 C10); `Connection: close` (pooling deferred); body cap min(limit, 16 MiB) on wire
+  bytes, enforced during the read. **Stricter than the blocking client:** CR/LF/NUL/CTL rejected at build time
+  on every path; caller-set Host/Content-Length/Transfer-Encoding/Connection refused; CRLF-only heads, no
+  obs-fold, header byte/count caps; CL+TE, conflicting CLs and non-`chunked` TE refused (smuggling class);
+  truncation reported, incl. HTTPS bodies ended without close_notify.
+- Deadlines are timers: per-operation stop sources stopped by the caller, an overall timer and per-operation
+  idle timers (precedence canceled > deadline_exceeded > idle_timeout); the TLS handshake is idle-bounded
+  (closes step 4's "no handshake deadline" for this client). Consumer-stall deadline (§4.5): a timer after the
+  head and each chunk/event closes the stream; `consumer_stalled` (a resource error), sticky. One read
+  outstanding (`busy`), op-owned buffers.
+- SSE decoder differs from the existing provider framing on multi-line `data:` (joined into one event, per
+  WHATWG); a 400-seed differential against `SseEventFramer` + the Anthropic/OpenAI scans shows identical
+  events on single-data-line streams, which is every real provider stream.
+- Tests: `test_rt_http` (H1–H17, 81 checks, both OSes), `test_rt_https` (S1–S6, 16 checks, Linux HTTPS only).
+  29 mutants: 28 killed on both OSes; "no CR/LF/NUL check on header values" alone is equivalent because the CTL
+  check rejects the same bytes (dropping the CTL check alone, or both, is killed). TSan 5/5, ASan/UBSan 3/3
+  (mbedTLS instrumented; sanitizer trees need `-Wno-error=maybe-uninitialized`, a gcc 15 + TSan false positive
+  on a `stop_token` in a coroutine frame).
+- **Open:** the timer stops are requested on the reactor thread (built before step 5's `StrandStopCallback`
+  existed; the step-4 DNS deadline already moved) — move them onto it; pooled read-ahead (§6.3 gap 7);
+  keep-alive; a Windows HTTPS run of `test_rt_https`; `failure_class` mapping of `http_error` (stop →
+  `canceled`, deadline / stall → `resource`) with the seam conversion; the callers' switch-over (pass the
+  sandbox `io_timeout_ms()`); one 2.5 s H11 run under `ctest -j2` on Linux, in the same run as failures of
+  `test_rt_reactor_process` P8 and `test_rt_agent_session_background_task` — looks like machine load, not
+  reproduced in 19 further runs; H11 now prints the phase if it recurs.
