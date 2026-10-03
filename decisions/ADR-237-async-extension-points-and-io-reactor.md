@@ -1149,8 +1149,8 @@ which is the only time the drain raises it; M7 session ends `run_canceled` on an
 M8 A2A always `FAILED` → D3-11; M9 `fails_over` always true → F4, G16 ×3; M10 `canceled` spelled `"fatal"` →
 `static_assert`, (10); M11 eval drops `canceled` from measurement faults → S5g, S10; M12 inner `cancelled` →
 `contract` → D5d; M13 `run.stream_incomplete` always `transient` → K8; M14 `parent_canceled` → `policy` → R1.
-On Linux (gcc 15): M15 `net.cancelled` back to `transient` → P2 in `test_provider_http_client` (HTTPS). 15 of 15
-mutants killed except the one equivalent (M6).
+On Linux (gcc 15): M15 `net.cancelled` back to `transient` → P2 in `test_provider_http_client` (HTTPS). Of the 15
+mutants, 14 are killed and M6 is equivalent.
 
 Results: Windows (clang, Debug) full suite `ctest -LE live-network` 402/415 — the 13 failures are the
 Docker-daemon tests, unchanged since step 1. Linux (WSL, gcc 15, `-Werror`, Release, HTTPS on, own dir
