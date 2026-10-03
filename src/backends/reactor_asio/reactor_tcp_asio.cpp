@@ -395,7 +395,7 @@ std::optional<IpAddress> parse_ip_address(std::string_view text) noexcept {
 }
 
 std::shared_ptr<TcpStream> make_tcp_stream(Reactor& reactor) {
-    auto* asio_reactor = dynamic_cast<asio_backend::AsioReactor*>(&reactor);
+    auto* asio_reactor = asio_backend::AsioReactor::from(reactor);  // no RTTI (CONVENTIONS)
     if (asio_reactor == nullptr) {
         throw std::invalid_argument("pal::make_tcp_stream: the reactor is not the default (Asio) reactor");
     }
