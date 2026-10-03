@@ -200,7 +200,8 @@ else()
   set(AE_ASIO_INCLUDE_DIR "${AGENTENGINE_ASIO_ROOT}/include")
 endif()
 
-add_library(agentengine_reactor_asio STATIC src/backends/reactor_asio/reactor_asio.cpp)
+add_library(agentengine_reactor_asio STATIC src/backends/reactor_asio/reactor_asio.cpp
+  src/backends/reactor_asio/reactor_process_asio.cpp)
 target_include_directories(agentengine_reactor_asio PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 # SYSTEM: Asio's own headers are third-party code, not answerable to this project's -Werror set.
 target_include_directories(agentengine_reactor_asio SYSTEM PRIVATE "${AE_ASIO_INCLUDE_DIR}")
