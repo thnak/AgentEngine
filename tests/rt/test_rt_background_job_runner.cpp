@@ -237,6 +237,8 @@ int main() {
         s.cascade_from = dead_run.get_token();
         r = runner.submit(s);
         check(!r && r.error().code == "background_job.parent_canceled", "R1: a job for an already-canceled run is refused");
+        check(!r && r.error().klass == ae::failure_class::canceled,
+              "R1 (ADR-237 D6): and the refusal is class canceled -- the parent was stopped, nothing was denied");
     }
 
     // ---- R2: cancel stops a cooperative running tool ---------------------------------------------

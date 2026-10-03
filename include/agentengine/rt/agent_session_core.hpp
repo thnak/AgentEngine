@@ -571,7 +571,7 @@ public:
     // COOPERATIVE at named checkpoints, never preemptive: the top of each round, inside a streaming model
     // call (it abandons the stream and so reaches the transport's blocking read), and after a model call
     // returns but BEFORE its tool calls run. A tool sees the same signal as `EffectContext::cancellation`.
-    // The run ends `run.canceled` (`failure_class::fatal`) after a `run_canceled` event; nothing the
+    // The run ends `run.canceled` (`failure_class::canceled`, ADR-237 D6; ADR-178 had `fatal`) after a `run_canceled` event; nothing the
     // canceled round had not yet committed is appended to history. A no-op when no run is in flight: the
     // next `start_run()` gets a FRESH source, so a stale cancel can never poison it.
     // ADR-230: also cancels whatever the bound client holds open (`InteractiveChatClient`) -- a session suspended

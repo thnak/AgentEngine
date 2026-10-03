@@ -178,7 +178,7 @@ template <class T>
     }
     ctx.charge_delegated_usage(r.usage, 0);
     return std::unexpected(agentengine::error{
-        agentengine::failure_class::contract,
+        inner_run_failure_class(r.status),  // ADR-237 D6: cancelled -> canceled, bound_deadline -> resource
         std::string("workflow_as_executor_body: the wrapped workflow did not complete (status=") +
             status_tag(r.status) + ")",
         std::string("rt.workflow_as_executor.inner_run_not_completed.") + status_tag(r.status)});

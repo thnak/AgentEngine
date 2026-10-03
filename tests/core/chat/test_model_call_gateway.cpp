@@ -250,6 +250,61 @@ int main() {
         }
     }
 
+    // ---- G16 (ADR-237 D6): a canceled attempt is neither retried nor failed over; a resource one is not
+    // ---- retried inside the shared budget. G1 (transient retried) and G2 (contract fails over) are the controls.
+    {
+        ScriptedGatewayBackend primary;
+        primary.outcomes = {
+            ScriptedOutcome::fail(ae::failure_class::canceled),
+            ScriptedOutcome::ok({text_delta("second attempt", /*is_final=*/true, ae::Usage{1, 1, 0, 0, 0.0})}),
+        };
+        ScriptedGatewayBackend fallback;
+        fallback.outcomes = {
+            ScriptedOutcome::ok({text_delta("fallback answer", /*is_final=*/true, ae::Usage{1, 1, 0, 0, 0.0})}),
+        };
+        ae::ModelCallGateway<ScriptedGatewayBackend, ScriptedGatewayBackend> gw(
+            primary, std::make_tuple(fallback), fast_retry_policy(), ae::BreakerConfig{}, &no_jitter);
+        auto ctx = make_ctx();
+        auto r = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+        AE_CHECK(!r.has_value() && r.error().klass == ae::failure_class::canceled,
+                 "G16: a canceled call ends canceled -- the caller gets the class back");
+        AE_CHECK(primary.call_count() == 1, "G16: a canceled attempt is NOT retried, though attempt 2 would succeed");
+        AE_CHECK(fallback.call_count() == 0,
+                 "G16: and is NOT failed over to the fallback tier, which would keep working after the stop");
+    }
+    {
+        ScriptedGatewayBackend primary;
+        primary.outcomes = {
+            ScriptedOutcome::fail(ae::failure_class::canceled),
+            ScriptedOutcome::ok({text_delta("second attempt", /*is_final=*/true, ae::Usage{1, 1, 0, 0, 0.0})}),
+        };
+        ScriptedGatewayBackend fallback;
+        fallback.outcomes = {
+            ScriptedOutcome::ok({text_delta("fallback answer", /*is_final=*/true, ae::Usage{1, 1, 0, 0, 0.0})}),
+        };
+        ae::ModelCallGateway<ScriptedGatewayBackend, ScriptedGatewayBackend> gw(
+            primary, std::make_tuple(fallback), fast_retry_policy(), ae::BreakerConfig{}, &no_jitter);
+        auto ctx = make_ctx();
+        ae::DrainedChatStream drained = ae::drain_chat_stream(gw.call_stream(make_request(), ctx));
+        AE_CHECK(!drained.ok && drained.failure.klass == ae::failure_class::canceled,
+                 "G16 (stream): call_stream() ends canceled");
+        AE_CHECK(primary.call_count() == 1 && fallback.call_count() == 0,
+                 "G16 (stream): neither retried nor failed over");
+    }
+    {
+        ScriptedGatewayBackend primary;
+        primary.outcomes = {
+            ScriptedOutcome::fail(ae::failure_class::resource),
+            ScriptedOutcome::ok({text_delta("second attempt", /*is_final=*/true, ae::Usage{1, 1, 0, 0, 0.0})}),
+        };
+        ae::ModelCallGateway<ScriptedGatewayBackend> gw(primary, std::make_tuple(), fast_retry_policy(),
+                                                          ae::BreakerConfig{}, &no_jitter);
+        auto ctx = make_ctx();
+        auto r = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+        AE_CHECK(!r.has_value() && r.error().klass == ae::failure_class::resource && primary.call_count() == 1,
+                 "G16: a resource failure (a deadline included) is not retried inside the shared budget");
+    }
+
     // ---- G3: circuit breaker trips, next call sheds admission and falls through to fallback -------
     {
         ScriptedGatewayBackend primary;

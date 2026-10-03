@@ -64,9 +64,13 @@ namespace agentengine::rt::multi_agent {
 // layer this file's callers do not have. `contract`/`policy` failures are NEVER retried -- retrying a
 // capability denial can never succeed (`attenuate()` fails closed identically every attempt) and would
 // only burn attempts/`Budget` spend on an unwinnable call (an I2-adjacent hazard, round 2).
+//
+// ADR-237 D6 reconciled the divergence named above: which classes retry is decided once, in core/error.hpp's
+// `is_retryable(failure_class, retry_budget)`. This site states only that each attempt is a fresh child run with
+// a budget of its own (`fresh`), which is why `resource` retries here and not in the gateway; `canceled` never
+// retries anywhere.
 [[nodiscard]] inline bool is_retryable(agentengine::failure_class klass) noexcept {
-    return klass == agentengine::failure_class::transient ||
-           klass == agentengine::failure_class::resource;
+    return agentengine::is_retryable(klass, agentengine::retry_budget::fresh);
 }
 
 // A child's construction is entirely the factory's own responsibility -- session id, chat client,

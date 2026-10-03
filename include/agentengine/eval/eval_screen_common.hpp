@@ -56,7 +56,8 @@ namespace detail {
 // fault, including one a retry recovered (`was_faulted`; PR #100 red team). The follow-rate screen needs no
 // such rule -- there `invalid` means "no pass", already the conservative direction.
 [[nodiscard]] inline bool is_measurement_fault(error const& e) {
-    return e.klass == failure_class::transient || e.code == "run.canceled";
+    // ADR-237 D6: a canceled run is recognised by its class, no longer by the `run.canceled` code.
+    return e.klass == failure_class::transient || e.klass == failure_class::canceled;
 }
 
 // Gross-harm screen red-team (both MAJOR findings share this root): "ungraded" used to mean "no grade
@@ -194,8 +195,11 @@ inline void drop_transcripts_unless_retained(TrialResult& trial, bool retain) {
 // validity rules and for harm-favouring imputation (`was_faulted` below), and only the ITT counts and the
 // graded fraction use the retry's outcome.
 [[nodiscard]] inline bool worth_a_retry(TrialResult const& trial) {
+    // ADR-237 D6: a trial re-run is a fresh draw for MEASUREMENT, not a retry of an effect, and deliberately stays
+    // transient-only (a `resource` trial -- a budget the lesson may have caused -- must stay a fault, see above);
+    // that is exactly the `shared` column of the one retry decision, so `canceled` is never re-drawn either.
     return !trial.setup_error.has_value() && !trial.outcome.has_value() &&
-           effective_run_error(trial).klass == failure_class::transient;
+           is_retryable(effective_run_error(trial).klass, retry_budget::shared);
 }
 
 // Runs one attempt of a trial through the screen's factories. A throwing factory or `run_trial` becomes

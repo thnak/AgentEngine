@@ -419,14 +419,9 @@ struct ExecuteReply {
 
 [[nodiscard]] inline agentengine::Message failure_marker(std::string const& executor_id,
                                                           agentengine::failure_class klass) {
-    auto const* name = "fatal";
-    switch (klass) {
-        case agentengine::failure_class::transient: name = "transient"; break;
-        case agentengine::failure_class::policy:    name = "policy"; break;
-        case agentengine::failure_class::contract:  name = "contract"; break;
-        case agentengine::failure_class::resource:  name = "resource"; break;
-        case agentengine::failure_class::fatal:     name = "fatal"; break;
-    }
+    // ADR-237 D6: core/error.hpp's one spelling. route_from() never builds a marker for `canceled` (it is never
+    // propagated or rerouted), so "(canceled)" appears here only if a future caller does.
+    std::string const name(agentengine::failure_class_to_string(klass));
     agentengine::ContentItem item{};
     item.origin  = agentengine::content_origin::system;
     item.tainted = false;
@@ -511,6 +506,18 @@ enum class workflow_status {
         case workflow_status::invalid_routes:    return "invalid_routes";
     }
     return "invalid";
+}
+
+// ADR-237 D6: the class a wrapped workflow's non-completed run carries to whoever awaited it
+// (workflow_as_executor.hpp, workflow_as_chat_client.hpp). `cancelled` is `canceled` -- so an outer workflow
+// never retries it nor reroutes it to a fallback; `bound_deadline` is `resource` -- a deadline is a budget (001 §5,
+// I8). Every other status keeps the `contract` both adapters used before D6.
+[[nodiscard]] inline agentengine::failure_class inner_run_failure_class(workflow_status s) noexcept {
+    switch (s) {
+        case workflow_status::cancelled:      return agentengine::failure_class::canceled;
+        case workflow_status::bound_deadline: return agentengine::failure_class::resource;
+        default:                              return agentengine::failure_class::contract;
+    }
 }
 
 // ADR-169 (GitHub issue #65): all three request types below carry the SAME additive, defaulted
@@ -1305,9 +1312,10 @@ private:
                                                              std::vector<ExecuteReply> const& replies,
                                                              std::size_t i) noexcept;
 
+    // ADR-237 D6: the class decision is core/error.hpp's `is_retryable`; an edge retry re-invokes the executor
+    // as a fresh attempt (`fresh`), so `resource` retries and `canceled` never does.
     [[nodiscard]] static bool is_retryable(agentengine::failure_class klass) noexcept {
-        return klass == agentengine::failure_class::transient ||
-               klass == agentengine::failure_class::resource;
+        return agentengine::is_retryable(klass, agentengine::retry_budget::fresh);
     }
 
     // GitHub issue #52 fix (renamed from `deliver_once`, which used to no-op on an existing entry --
