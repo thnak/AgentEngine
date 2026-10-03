@@ -125,3 +125,8 @@ set_tests_properties(test_console_utf8 PROPERTIES TIMEOUT 60)
 # rt::sleep_until -- resumption on the waiter's home, refusal of homeless wake-ups, two-phase sticky
 # cancellation, shutdown delivering every pending completion.
 agentengine_add_test(test_rt_reactor_timer LIBS agentengine::core agentengine_warnings TIMEOUT 180)
+
+# ---- ADR-237 implementation step 2: TCP streams on the reactor (pal/reactor_tcp.hpp, its Asio backend,
+# rt/tcp.hpp) -- connect/read/write/readiness awaitables resumed on the waiter's home, op-owned buffers,
+# two-phase sticky cancellation reporting the backend's real outcome, descriptor exhaustion as `resource`.
+agentengine_add_test(test_rt_reactor_tcp LIBS agentengine::core agentengine_warnings TIMEOUT 180)
