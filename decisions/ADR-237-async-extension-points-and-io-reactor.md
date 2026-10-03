@@ -1081,3 +1081,94 @@ Open after step 3:
 are the Docker-dependent tests, unchanged since step 1); Linux gcc 15 `-Werror` with HTTPS: full tree builds,
 `rt` 77/77 (incl. `test_rt_tls`), `test_https_egress` / `test_provider_http_client` pass; naming and layering
 lints clean.
+
+### D6 (2026-10-03): `failure_class::canceled` and the classification sites (built in parallel with steps 5+)
+
+Inventory first, as D6 required: `docs/research/2026-10-03-failure-class-canceled-inventory.md` — 62 sites in
+nine kinds (one spelling and its copies 7, retry predicates 7, fallback/fail-over/propagate 3, other class
+predicates 6, cancellation producers 13, deadline producers 11, protocol mappings 5, `run_canceled` event-kind
+consumers 4, step 1-4 I/O results 6); 33 changed. Branch `adr237-canceled`.
+
+- `include/agentengine/core/error.hpp` — `failure_class::canceled`; `failure_class_to_string` /
+  `failure_class_from_string`, the one spelling (`canceled`, one l; `cancelled` is not a class name, only a
+  legacy `stream_terminal`/`workflow_status` tag); `retry_budget {shared, fresh}` and
+  `is_retryable(failure_class, retry_budget)`, **the one retry decision**. The naming-lint suppression on
+  `failure_class` is gone: 027 §4 now lists `failure_class` and `retry_budget`.
+- Retry sites now call it: the gateway (`shared`), the session's ADR-177 stream retry (`shared`; its
+  `code != "net.cancelled"` exception removed), the eval re-draw (`shared`), `multi_agent::spawn_with_retry`
+  and workflow edge `retry` (`fresh`).
+- Never rerouted: `WorkflowSupervisor::route_from` ends the run at a `canceled` step before the edge-policy
+  `switch` (no marker, no fallback executor); the gateway does not fail a `canceled` tier over to the next
+  (`fails_over`, `call()` and `call_stream()` — not named in D6, found by the inventory).
+- Producers: `run.canceled` (session `finish_canceled` and the drain), `net.cancelled`, replayed/recorded
+  stream cancels, the eval summarizer's cancel, background jobs canceled before start / for a canceled parent
+  / at shutdown, a vendor batch item `canceled`, the test driver's `test.real_tool_canceled`, a wrapped
+  workflow that ended `cancelled`, and the drain's `run.stream_incomplete` when the inner stream ended
+  `canceled` (found by test K8 — a re-classifying wrapper the grep could not see).
+- Deadlines are `resource`: replayed `deadline_exceeded` (was `transient`), batch `max_wait` and vendor
+  `expired` (were `transient`), a wrapped workflow's `bound_deadline` (was `contract`).
+- Spec: 001 §5 (canceled vs out-of-time) and §6 (the class, the refined retry rule), 004 §4, 014 §6, 027 §4;
+  ADR-178's "How does a run end?" row amended with a dated note; `decisions/README.md` rows 177/178.
+
+Decisions:
+
+- **Is a `resource` deadline retryable? Decided once:** never under the budget it exhausted (`shared`), yes
+  by a fresh attempt with its own budget (`fresh`), bounded by the caller's attempt count. This keeps every
+  pre-D6 behaviour — the gateway was transient-only, `multi_agent` and the supervisor transient+resource, a
+  divergence `multi_agent.hpp` had flagged — and states why instead of repeating it per site.
+- **Whose cancel ends the run.** The session ends `run_canceled` iff its own token fired (the old
+  `code == "run.canceled"` test was redundant: the drain raises it only then). A `canceled` failure the run
+  did not ask for ends `run_failed` with `canceled` carried to the caller — D6's "ends the run only if that
+  caller lets it".
+- **Wire values (I7).** A2A: a `canceled` run is `TASK_STATE_CANCELED` (was `FAILED`; A2A v1.0 terminal
+  state, `docs/research/2026-a2a-and-agui-detail.md`), matching what `streaming.hpp` already did for the
+  `run_canceled` event. AG-UI: unchanged — `RUN_ERROR{code: "run.canceled"}`, since AG-UI has no cancel event
+  and `RUN_ERROR` is its sole error shape. MCP: unchanged — no class reaches the wire; a stopped tool is
+  `completed` + `isError`, task `cancelled` only via `tasks/cancel`, `notifications/cancelled` is not for
+  tasks (`docs/research/2026-mcp-protocol-detail.md`). OTel `error.type`: no exporter exists; open.
+- `tool.canceled_no_effect` stays a code check in the background runner: it says "and no effect", which the
+  class does not.
+- Socket I/O timeouts (`net.connect_failed`) stay `transient`: a network condition, not the caller's budget.
+
+Tests (positive controls, each with its control): `test_failure_class` (new; F1 the class x budget table,
+F2 the gateway column, F3 spellings, F4 fail-over; three `static_assert`s); `test_model_call_gateway` G16
+(canceled: one attempt, no fallback tier, `call()` and `call_stream()`; resource not retried in a shared
+budget); `test_replay_chat_client` (6 D6) class per terminal and (10) every class round-trips through the
+recording JSON; `test_rt_agent_session_cancel` K1/K2/K3/K5b assert class `canceled`, K8 the not-our-cancel
+case; `test_rt_agent_session_stream_retry` P5 (class, not code); `test_rt_multi_agent` R3;
+`test_rt_workflow_supervisor_failure_policies` D5a (no fallback), D5b (no propagate), D5c (no retry), D5d
+(inner-run classes); `test_a2a_server` D3-11; `test_rt_background_job_runner` R1; `test_eval_gross_harm_screen`
+S5g by class; `test_provider_http_client` P2 (`net.cancelled` class, HTTPS builds).
+
+Mutants (Windows/clang, each applied alone, rebuilt, restored): M1 `is_retryable(canceled) = true` → killed
+(`test_failure_class` does not compile — `static_assert`; G16, K8, P5, R3, D5c fail); M2 `route_from` canceled
+check removed → D5a, D5b; M3 replay `deadline_exceeded` → `transient` → (6 D6) ×2; M4 replay `cancelled` →
+`fatal` → (6 D6); M5 `finish_canceled` → `fatal` → K1, K2, K3, D3-11; M6 the drain's own `run.canceled` →
+`fatal` → **survives, equivalent**: the session re-classes through `finish_canceled` whenever its token fired,
+which is the only time the drain raises it; M7 session ends `run_canceled` on any `canceled` class → K8;
+M8 A2A always `FAILED` → D3-11; M9 `fails_over` always true → F4, G16 ×3; M10 `canceled` spelled `"fatal"` →
+`static_assert`, (10); M11 eval drops `canceled` from measurement faults → S5g, S10; M12 inner `cancelled` →
+`contract` → D5d; M13 `run.stream_incomplete` always `transient` → K8; M14 `parent_canceled` → `policy` → R1.
+On Linux (gcc 15): M15 `net.cancelled` back to `transient` → P2 in `test_provider_http_client` (HTTPS). 15 of 15
+mutants killed except the one equivalent (M6).
+
+Results: Windows (clang, Debug) full suite `ctest -LE live-network` 402/415 — the 13 failures are the
+Docker-daemon tests, unchanged since step 1. Linux (WSL, gcc 15, `-Werror`, Release, HTTPS on, own dir
+`~/ae-canceled`): full tree builds clean; 350/366 — 15 Docker/containerd sandbox tests (no daemon) and
+`test_json_dump_escape`'s M0 environment check ("an allocation of 1024 MiB is refused" — the memory cap is not
+in force under this WSL; untouched by this change). Naming, layering and milestone-status lints clean (one
+fewer naming-lint suppression).
+
+Open after D6:
+- A canceled attempt still counts as a circuit-breaker failure in the gateway (not the provider's fault;
+  changing it touches half-open probe bookkeeping).
+- `route_from` handles a round's replies in executor order, so when `when_all` cancels siblings after one
+  fails, a canceled sibling can be named `failed_executor` instead of the cause. No in-round sibling cancel
+  exists yet; the structured-concurrency step should route the originating failure first.
+- Not yet mapped to a class: the step 1-4 I/O results (`sleep_status`, `offload_status`, `tcp_error`,
+  `dns_error`/`connect_error` + `timed_out`, `tls_error`, process) — the rule for the seam conversion is a stop →
+  `canceled`, a deadline (incl. `connect_error`'s `timed_out`) → `resource`; the parallel `rt/http*` client and
+  `when_all` must follow it.
+- Re-classifying wrappers (ledger, sandbox runtime, kata) fold inner errors into `fatal`/`policy`; none can be
+  canceled today. OTel `error.type` has no exporter. A canceled tool call raises `RuntimeError` in the Python
+  guest (code-keyed).
