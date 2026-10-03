@@ -45,22 +45,23 @@ const copy = {
         <code>EffectClass&lt;...&gt;</code> policy the day it needs to override one:
       </>
     ),
-    flowSchemaSub: "field names + C++ types only — no description/title/enum (see below)",
+    flowSchemaSub: "field names + C++ types; per-field description via Described<T, \"...\">",
     flowSchemaLabel: "JSON Schema 2020-12 text",
     flowRegisterArrow: "register_agent<A>() compiles every declared tool",
     flowDescriptorSub: "one entry in the immutable per-run ToolTable (006 §6)",
     flowSentArrow: "sent to the model, shaped per backend",
     tableColumns: ["Member", "Type", "Required", "Notes"],
-    noteTitle: "What a field can't carry: a description.",
+    noteTitle: "Field descriptions come from the field's type, not the macro.",
     noteBody: (
       <>
         {" "}C++23 has no compile-time reflection (P2996 lands in C++26), so{" "}
-        <code>AE_JSON_SCHEMA(Type, field1, field2, ...)</code> can only see the bare field{" "}
-        <em>names</em> you list — there is no macro parameter, no doc-comment extraction, and no
-        per-field <code>"description"</code>, <code>"title"</code>, or <code>enum</code> value
-        list in the generated schema. A C++ enum flattens to a plain <code>"integer"</code>. A
-        parameter that needs more explanation than its name and type carries that explanation in
-        the tool's own top-level <code>description</code> string instead.
+        <code>AE_JSON_SCHEMA(Type, field1, field2, ...)</code> only sees the field{" "}
+        <em>names</em> you list and their C++ types. A field's <code>"description"</code> is
+        declared once, on the field itself, by wrapping its type in{" "}
+        <code>Described&lt;T, "..."&gt;</code> (below) — that is the one supported way; don't
+        restate parameter details in the tool's top-level <code>description</code>. The schema
+        still carries no per-field <code>"title"</code> or <code>enum</code> list: a C++ enum
+        flattens to a plain <code>"integer"</code>.
       </>
     ),
     typesEyebrow: "C++ type → JSON Schema type",
@@ -117,16 +118,16 @@ const copy = {
     describedEyebrow: 'tests/core/json/test_json_schema_described.cpp — Described<T, "...">',
     describedHeading: (
       <>
-        A second channel to carry <code>"description"</code>: <code>Described&lt;T, "..."&gt;</code>
+        Describing a field: <code>Described&lt;T, "..."&gt;</code>
       </>
     ),
     describedBody: (
       <>
-        <code>Described&lt;T, "..."&gt;</code> (<code>core/json_schema.hpp</code>) is a separate
-        channel: the description lives on the field's own type, not on the{" "}
-        <code>AE_JSON_SCHEMA</code> macro, so the macro's bare-name limit above doesn't apply to
-        it. The description survives both Anthropic's and OpenAI's <code>translate_tool</code>{" "}
-        byte-for-byte, from a real <code>ToolDescriptor</code>.
+        Wrap a field's type in <code>Described&lt;T, "..."&gt;</code>{" "}
+        (<code>core/json_schema.hpp</code>) and its schema property gets that{" "}
+        <code>"description"</code>; serialization, deserialization and required-detection see
+        through the wrapper. The description survives both Anthropic's and OpenAI's{" "}
+        <code>translate_tool</code> byte-for-byte, from a real <code>ToolDescriptor</code>.
       </>
     ),
     capabilityGatedEyebrow: "examples/06_capabilities_and_denial.cpp — 007 §9, I2",
@@ -174,23 +175,23 @@ const copy = {
         <code>EffectClass&lt;...&gt;</code> vào ngày nào đó cần ghi đè một trong số chúng:
       </>
     ),
-    flowSchemaSub: "chỉ có tên trường + kiểu C++ — không có description/title/enum (xem bên dưới)",
+    flowSchemaSub: "tên trường + kiểu C++; mô tả từng trường qua Described<T, \"...\">",
     flowSchemaLabel: "Văn bản JSON Schema 2020-12",
     flowRegisterArrow: "register_agent<A>() biên dịch mọi tool đã khai báo",
     flowDescriptorSub: "một mục trong ToolTable bất biến theo từng lần chạy (006 §6)",
     flowSentArrow: "gửi tới model, định hình theo từng backend",
     tableColumns: ["Thành viên", "Kiểu", "Bắt buộc", "Ghi chú"],
-    noteTitle: "Một trường không thể mang theo: một mô tả (description).",
+    noteTitle: "Mô tả của trường nằm trên kiểu của trường, không nằm trên macro.",
     noteBody: (
       <>
         {" "}C++23 chưa có reflection tại thời điểm biên dịch (P2996 sẽ có ở C++26), nên{" "}
-        <code>AE_JSON_SCHEMA(Type, field1, field2, ...)</code> chỉ nhìn thấy được các{" "}
-        <em>tên</em> trường trần trụi mà bạn liệt kê — không có tham số macro nào, không có
-        trích xuất doc-comment nào, và không có danh sách giá trị <code>"description"</code>,{" "}
-        <code>"title"</code>, hay <code>enum</code> theo từng trường trong schema được sinh ra.
-        Một enum trong C++ được làm phẳng thành một <code>"integer"</code> đơn thuần. Một
-        tham số cần giải thích nhiều hơn tên và kiểu của nó thì lời giải thích đó nằm trong
-        chuỗi <code>description</code> ở cấp cao nhất của chính tool.
+        <code>AE_JSON_SCHEMA(Type, field1, field2, ...)</code> chỉ nhìn thấy các{" "}
+        <em>tên</em> trường bạn liệt kê cùng kiểu C++ của chúng. <code>"description"</code> của
+        một trường được khai báo một lần, ngay trên trường đó, bằng cách bọc kiểu của nó trong{" "}
+        <code>Described&lt;T, "..."&gt;</code> (bên dưới) — đây là cách duy nhất được hỗ trợ;
+        đừng lặp lại chi tiết tham số trong <code>description</code> cấp cao nhất của tool.
+        Schema vẫn không có <code>"title"</code> hay danh sách <code>enum</code> theo từng
+        trường: một enum C++ được làm phẳng thành <code>"integer"</code>.
       </>
     ),
     typesEyebrow: "Kiểu C++ → Kiểu JSON Schema",
@@ -250,16 +251,16 @@ const copy = {
     describedEyebrow: 'tests/core/json/test_json_schema_described.cpp — Described<T, "...">',
     describedHeading: (
       <>
-        Một kênh khác để mang <code>"description"</code>: <code>Described&lt;T, "..."&gt;</code>
+        Mô tả một trường: <code>Described&lt;T, "..."&gt;</code>
       </>
     ),
     describedBody: (
       <>
-        <code>Described&lt;T, "..."&gt;</code> (<code>core/json_schema.hpp</code>) là một kênh
-        tách biệt: mô tả nằm ngay trên kiểu của trường, không phải trên macro{" "}
-        <code>AE_JSON_SCHEMA</code>, nên giới hạn tên-trần-trụi của macro ở trên không áp dụng
-        cho nó. Mô tả sống sót qua <code>translate_tool</code> của cả Anthropic lẫn OpenAI,
-        byte-for-byte, từ một <code>ToolDescriptor</code> thật.
+        Bọc kiểu của một trường trong <code>Described&lt;T, "..."&gt;</code>{" "}
+        (<code>core/json_schema.hpp</code>) và thuộc tính tương ứng trong schema sẽ có{" "}
+        <code>"description"</code> đó; tuần tự hóa, giải tuần tự hóa và việc xác định trường
+        bắt buộc đều nhìn xuyên qua lớp bọc. Mô tả sống sót qua <code>translate_tool</code> của
+        cả Anthropic lẫn OpenAI, byte-for-byte, từ một <code>ToolDescriptor</code> thật.
       </>
     ),
     capabilityGatedEyebrow: "examples/06_capabilities_and_denial.cpp — 007 §9, I2",
