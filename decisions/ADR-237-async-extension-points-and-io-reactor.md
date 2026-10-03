@@ -885,3 +885,50 @@ items are implementation-checklist work with named gates.
   is about; the test now uses free coroutines. Then 26/26, three runs.
 - TSan (gcc 15, the test plus the backend): one data race, again in the test (R8's waiter read the
   `unique_ptr` main was resetting); fixed; 5/5 runs clean.
+
+### Step 2 (2026-10-03): offload, TCP, processes — three parallel slices, merged into the integration branch
+
+Built in parallel (separate worktrees), each on the step-1 recipe (`src/backends/reactor_asio/asio_reactor.hpp`
+top comment), then merged; the merged tree passes `rt` 73/73 on Windows/clang and the five reactor tests on
+Linux/gcc 15 `-Werror`. Lints clean.
+
+- **2a `rt::offload`** — `include/agentengine/rt/offload.hpp`: `OffloadPool` (fixed workers, joined, never
+  detached), `co_await rt::offload(pool, stop, fn, args...)` → `offload_result<T>` {completed, canceled,
+  faulted}. By-value inputs (`std::ref` and reference returns rejected at compile time). One CAS state
+  machine per job; cancel resumes the caller directly (there is no backend completion to wait for) while the
+  running body stays owned by the pool and its result is discarded and counted. Shutdown resumes queued
+  callers `canceled`, always joins running bodies, and only *reports* a `shutdown_deadline` overrun.
+  `block_on.hpp` gained `ScopedBlockOnRefusal` / `block_on_refused` (§4.3): both overloads throw on a marked
+  thread, nothing else changes. Also `include/agentengine/testing/manual_reactor.hpp` (virtual time,
+  single-threaded; with `sleep_until` use deadlines from `r.now()`, because `await_ready` reads the real
+  clock). Tests: offload 51 checks (O1–O11), ManualReactor 25 (M1–M7); 24 mutants, all killed (two
+  survived at first — `block_on(task<void>)` ignoring the marker, and a setup-time cancel posting — and
+  led to a stronger O8 and to `await_ready` always returning false). TSan 5/5, ASan/UBSan clean. Linux
+  found one more test-only lifetime bug (a result vector declared after the reactor).
+- **2b TCP** — `pal/reactor_tcp.hpp`, `reactor_tcp_asio.cpp`, `rt/tcp.hpp`: connect to an already-resolved
+  numeric address (no DNS in the seam), read_some / write_all / wait_readable (zero-byte readiness, §6.3 G-6).
+  Buffers are owned by the op record, never the frame. Per-op cancellation slots; an in-flight op ending
+  `canceled` closes the stream (§4.4), a pre-start sticky cancel touches nothing; a second op in the same
+  direction is `busy`. EMFILE/ENFILE/WSAEMFILE/WSAENOBUFS → `too_many_open_files`, a `resource` error
+  (§6.3 G-g). Streams may outlive their reactor (an Asio service tears sockets down at shutdown). Tests: 53
+  checks on Linux (52 on Windows, no `RLIMIT_NOFILE`), T1–T15; 12 mutants killed; ASan positive control for
+  buffer ownership (frame-owned buffer → heap-use-after-free inside `recv`). TSan 5/5, ASan 3/3.
+- **2c Processes** — `pal/reactor_process.hpp`, `reactor_process_asio.cpp`, `rt/process.hpp`
+  (`rt::run_process`), helper `tests/rt/process_child_helper.cpp`. Windows: Job at creation
+  (`PROC_THREAD_ATTRIBUTE_JOB_LIST`), exact `HANDLE_LIST`, overlapped named pipes, `object_handle` exit wait.
+  Linux: `pidfd_spawn` (glibc ≥ 2.39) or `posix_spawn` + `pidfd_open`, `O_CLOEXEC` plus close-above-2,
+  own process group, `WNOWAIT` so the pgid is not reused while a group kill may target it, SIGPIPE blocked on
+  the reactor thread; no pidfd → `unsupported`, never a pid-wait fallback. Pipes are read concurrently with
+  the exit wait (closes H-e); "finished" = exit + both EOFs, with a grace period then a group kill when a
+  grandchild holds a pipe (`output_incomplete`). `run_process` uses a small internal join (no `when_all` yet)
+  whose decisions run on the home thread. Tests: 65 checks (P1–P19) on both OSes, incl. gate 4 (16 MiB before
+  exit) and gate 1d (64 concurrent spawns); 12 mutants — all killed except "no `O_CLOEXEC` alone", which
+  close-above-2 masks (dropping close-above-2 is killed). TSan 5/5.
+- **Integration fix**: TCP found the Asio reactor with `dynamic_cast`; CONVENTIONS forbids RTTI, so it now
+  uses `AsioReactor::from(Reactor&)` (a live-reactor registry added by 2c).
+- **Open after step 2**: the op state machine is now copied three times (sleep, tcp, process) — factor it
+  before more families land; read buffers are not pooled (§6.3 round-3 gap 7); a stream/process handle must
+  outlive its awaiters (raw pointer, documented, not enforced); `run_process` must finish before its reactor
+  is destroyed (§4.5 rule 4 ordering, documented, not checked); SIGCHLD=`SIG_IGN` hosts get `known = false`
+  exit status (untested); a `setsid` grandchild escapes the process group (the jail's job, cgroups);
+  compile-time rejections in offload and the foreign-reactor paths have no tests.
