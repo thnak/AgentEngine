@@ -170,6 +170,53 @@ if(WIN32)
 endif()
 target_link_libraries(agentengine_core INTERFACE agentengine_rt_session)
 
+# ---- I/O reactor: pal::Reactor's standalone-Asio backend (src/backends/reactor_asio/) -- ADR-237 §6.2 ----
+# ADR-237 §9 D1: the reactor backend is the one mandatory backend dependency (core headers stay std-only;
+# no Asio type leaves reactor_asio.cpp). Standalone Asio 1.38.2 (Boost Software License 1.0), header-only,
+# fetched as the upstream tag tarball pinned by SHA256 -- the same "no host-machine-dependent build state"
+# posture as the vendored mbedTLS and CA bundle below. Research and version choice:
+# docs/research/2026-10-03-async-reactor-options.md. An offline build points AGENTENGINE_ASIO_ROOT at a local
+# copy (the directory that contains include/asio.hpp) and turns AGENTENGINE_VENDOR_ASIO off.
+option(AGENTENGINE_VENDOR_ASIO "Fetch the pinned, checksummed standalone Asio instead of using a local copy" ON)
+if(AGENTENGINE_VENDOR_ASIO)
+  include(FetchContent)
+  # SOURCE_SUBDIR names a directory that does not exist, so MakeAvailable only downloads and extracts: Asio is
+  # used as headers, not built through its own CMake.
+  FetchContent_Declare(ae_vendored_asio
+    URL "https://github.com/chriskohlhoff/asio/archive/refs/tags/asio-1-38-2.tar.gz"
+    URL_HASH SHA256=9f2648fa483e58a6bf848d970ee0ea650ca19ed7769dfa520ed4f7b8d27af1db
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    SOURCE_SUBDIR ae-headers-only-do-not-build)
+  FetchContent_MakeAvailable(ae_vendored_asio)
+  set(AE_ASIO_INCLUDE_DIR "${ae_vendored_asio_SOURCE_DIR}/include")
+else()
+  set(AGENTENGINE_ASIO_ROOT "${AGENTENGINE_ASIO_ROOT}" CACHE PATH
+    "Root of a local standalone Asio copy (must contain include/asio.hpp)")
+  if(NOT AGENTENGINE_ASIO_ROOT OR NOT EXISTS "${AGENTENGINE_ASIO_ROOT}/include/asio.hpp")
+    message(FATAL_ERROR
+      "AGENTENGINE_VENDOR_ASIO is OFF but AGENTENGINE_ASIO_ROOT ('${AGENTENGINE_ASIO_ROOT}') does not contain "
+      "include/asio.hpp. Either leave AGENTENGINE_VENDOR_ASIO=ON (the default) or pass a real path.")
+  endif()
+  set(AE_ASIO_INCLUDE_DIR "${AGENTENGINE_ASIO_ROOT}/include")
+endif()
+
+add_library(agentengine_reactor_asio STATIC src/backends/reactor_asio/reactor_asio.cpp)
+target_include_directories(agentengine_reactor_asio PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+# SYSTEM: Asio's own headers are third-party code, not answerable to this project's -Werror set.
+target_include_directories(agentengine_reactor_asio SYSTEM PRIVATE "${AE_ASIO_INCLUDE_DIR}")
+target_compile_features(agentengine_reactor_asio PRIVATE cxx_std_23)
+# ASIO_NO_DEPRECATED keeps removed-upstream spellings out; no io_uring (ADR-237 §6.2: excluded).
+target_compile_definitions(agentengine_reactor_asio PRIVATE ASIO_STANDALONE ASIO_NO_DEPRECATED)
+target_link_libraries(agentengine_reactor_asio PRIVATE agentengine_warnings)
+if(WIN32)
+  target_compile_definitions(agentengine_reactor_asio PRIVATE _WIN32_WINNT=0x0A00)
+  target_link_libraries(agentengine_reactor_asio PUBLIC ws2_32 mswsock)
+else()
+  find_package(Threads REQUIRED)
+  target_link_libraries(agentengine_reactor_asio PUBLIC Threads::Threads)
+endif()
+target_link_libraries(agentengine_core INTERFACE agentengine_reactor_asio)
+
 # ---- rt::WorkflowSupervisor (src/rt/) -- ADR-200, issue #120 S1 -----------------------------------
 # WorkflowSupervisor is not a template, but every member body lived in its header, so each of the ~46 files
 # that included it compiled and optimized the whole superstep loop again. The bodies are compiled once here

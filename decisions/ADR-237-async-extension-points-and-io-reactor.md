@@ -858,3 +858,24 @@ cancel while a lender is suspended is safe (the lender cannot resume before `whe
 
 Round 3's verdict was "ready once the six listed items are folded in"; they are, above. The remaining
 items are implementation-checklist work with named gates.
+
+## 14. Implementation record
+
+### Step 1 (2026-10-03): the reactor seam, its Asio backend, `rt::sleep_until`
+
+- `include/agentengine/pal/reactor.hpp` — `pal::Reactor` / `pal::ReactorOp` (std-only): timers, sticky
+  two-phase cancel, `on_reactor_thread()`, homeless-refusal counter.
+- `src/backends/reactor_asio/reactor_asio.cpp` — standalone Asio 1.38.2 (fetched, SHA256-pinned,
+  `AGENTENGINE_ASIO_ROOT` for offline builds), one io_context on one reactor thread that is joined, never
+  detached; every operation is initiated, completed and cancelled on that thread; shutdown cancels and
+  delivers every pending completion before joining. Layer L0 (`tools/layers.toml`).
+- `include/agentengine/rt/sleep.hpp` — `rt::sleep_until` / `sleep_for`: resumes on the waiter's home
+  (ADR-175 `block_on` home or ADR-219 `Resumer`), refuses homeless wake-ups, stop_callback registered before
+  the start, frame destruction abandons the operation.
+- `tests/rt/test_rt_reactor_timer.cpp` — 26 checks (R1–R10, R4b), all passing. Mutants, each killed:
+  A — drop the homeless refusal (R6 fails); B — resume inline on the reactor thread (R1, R2, R5, R10 fail);
+  C — ignore the sticky flag at start (R4b fails; the racing R4 alone did **not** kill it, which is why R4b
+  exists).
+- Regression: full suite (`ctest -LE live-network`, Windows/clang) — every failure is a Docker-dependent
+  test on a machine without Docker running (13), unchanged from before this step; `rt` label 69/69.
+  Layering and naming lints clean. Not yet run: Linux build (`tools/wsl-linux-build.sh`), TSan.

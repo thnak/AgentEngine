@@ -120,3 +120,8 @@ agentengine_add_test(test_console_utf8 LIBS agentengine::core agentengine_warnin
 # Every console wait inside the test is already bounded, but the input half blocks on a real console
 # handle, so a hard ceiling here too: a hung console must fail this leg, never stall it.
 set_tests_properties(test_console_utf8 PROPERTIES TIMEOUT 60)
+
+# ---- ADR-237 implementation step 1: the I/O reactor seam (pal/reactor.hpp), its Asio backend and
+# rt::sleep_until -- resumption on the waiter's home, refusal of homeless wake-ups, two-phase sticky
+# cancellation, shutdown delivering every pending completion.
+agentengine_add_test(test_rt_reactor_timer LIBS agentengine::core agentengine_warnings TIMEOUT 180)
