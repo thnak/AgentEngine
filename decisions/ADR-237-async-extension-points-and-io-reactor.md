@@ -1,13 +1,13 @@
 # ADR-237 — Every extension point is asynchronous: the I/O reactor, the threading model, and the seam contract
 
-**Status:** **Draft (2026-10-03). Design, revised after two adversarial red-team rounds (§11: round 1,
-6 MUST-FIX + 7 REAL GAP; §12: round 2, 5 MUST-FIX + 7 REAL GAP; all answered in the design). Not
-implemented.** Written at the project
+**Status:** **Draft (2026-10-03). Design, revised after three adversarial red-team rounds (§11: round 1,
+6 MUST-FIX + 7 REAL GAP; §12: round 2, 5 MUST-FIX + 7 REAL GAP; §13: round 3, targeted, 3 MUST-FIX + 5
+REAL GAP; all answered in the design). Not implemented.** Written at the project
 owner's direction ("every component can be written to call the network, sandbox and shell included —
 everything should be asynchronous"; conversion clean and complete, not piecemeal; the codebase is
 pre-production, so shapes may be redone rather than preserved). Owner decisions recorded in §9
-(2026-10-03). Next step: a short third red-team round against the sections amended in §12 only, then
-implementation.
+(2026-10-03). Next step: owner review of the round-3 amendments (§13), then implementation on the
+integration branch (D2).
 
 **Relates to:** 001 §1/§5/§8, 004 §1, 006 §1/§3/§5/§6b, 008 §2, 018 §4, 020 §3a, 023 (numeric budgets),
 027 §4/§5, CONVENTIONS. ADR-037 (the `rt` substrate; named "the minimal executor" as its largest
@@ -153,9 +153,10 @@ would run the parent while its strand may be running something else, breaking I1
 awaiter to its own strand and return `noop_coroutine()`. Recursion stays bounded: at most one post per
 cross-strand join (red-team round 2, G-a).
 
-**A foreign continuation whose home is gone** (its `Resumer` or `CompletionThread` destroyed before the
-engine task completed) is never resumed — not on a lane, not anywhere — and is reported; its frame
-follows the orphan rule of §4.5 rule 3. "A closed home is posted to a lane" above applies to engine
+**A foreign continuation whose home is gone** (its `Resumer` destroyed before the engine task
+completed) is never resumed and is reported; the engine chain it was awaiting is **adopted** by the
+runtime (§4.5 rule 3) and finishes normally. A `CompletionThread` cannot vanish this way: its destructor
+joins, and destroying it with work outstanding is a checked violation (round 3). "A closed home is posted to a lane" above applies to engine
 homes only.
 
 ### 4.3 Lanes, I1 and the session strand
@@ -181,14 +182,24 @@ promise with an **await chain**: a link exists only along an *awaited* (joined) 
 `co_await`s another, or a `when_all`/`with_scope` child of the scope's owner. Background jobs and tasks
 spawned into a job runner's scope start a **fresh** chain (they are not awaited by the round that started
 them, so they wait for the lock like any other caller). Lock rules on `AsyncMutex`:
-- **Lending.** When the holder is suspended *awaiting* the requester's chain, it lends the lock to that
-  descendant — exclusively: one borrower at a time, so `when_all` siblings never hold it together (I1).
-  This keeps today's deliberately re-entrant `fork_from` of one's own session working
-  (`rt/agent_session.hpp:351-356`, ADR-123/175) and generalises it.
-- **Refusal.** When the holder is an ancestor that is *not* awaiting the requester (or the lock is
-  already lent to another descendant), `lock()` fails with `rt.lock_held_by_ancestor` — the session →
-  workflow → agent node → tool → back-into-the-parent cycle becomes a diagnosable error, not a run parked
-  forever with no blocked thread to see.
+- **Lending, read-only entry points only (revised after round 3, M1).** When the holder is suspended
+  *awaiting* the requester's chain, it lends the lock to that descendant **only if the entry point is
+  declared lend-safe** — read-only ones: `fork_from_async` (today's deliberately re-entrant `fork_from`,
+  `rt/agent_session.hpp:351-356`, ADR-123/175, only copies), `snapshot_record`, history reads. A mutating
+  entry point (`start_run`, `resolve_interaction`, `start_background_task`, `schedule_wakeup`, `close`)
+  never borrows: a nested round inside the outer round's pending tool call would corrupt the
+  tool_call/tool_result pairing and break I1.
+- **Loan rules (round 3, gap 4).** One borrower at a time; further borrowers under the *same* lender wait
+  in a **loan queue** served before outside FIFO waiters (so `when_all` siblings that each fork queue,
+  rather than one failing at random). Releasing a loan returns the lock **to the lender**, never to the
+  FIFO head — otherwise a queued `resolve_interaction` would take a lock the lender still believes it
+  holds (mutant-tested). A lent guard is bound to the borrower's frame: reaching `final_suspend` with the
+  loan outstanding (e.g. the guard moved into a background scope) is a checked violation. Nested loans
+  form a stack.
+- **Refusal.** A *mutating* entry point requested while an awaiting ancestor holds the lock, or any
+  entry point requested while a non-awaiting ancestor holds it, fails with `rt.lock_held_by_ancestor` —
+  the session → workflow → agent node → tool → back-into-the-parent cycle becomes a diagnosable error,
+  not a run parked forever with no blocked thread to see.
 - Everyone else waits, as today. A **stuck-run watchdog** (no progress on a strand past a configured
   bound) reports what neither rule sees.
 
@@ -201,8 +212,10 @@ refusal applies on offload workers. `block_on` is not the only way to block a la
 from engine code by the conversion, and a **lane-stall watchdog** (a lane worker that has not returned to
 its queue within a bound) reports what review misses.
 
-**Scheduling (revised after round 2, G-d).** Each lane serves **strands round-robin**, not one global
-FIFO, so a 50-child batch in one session cannot starve other sessions. Within a strand, order is strictly
+**Scheduling (revised after rounds 2 and 3).** Each lane serves **sessions round-robin first, then the
+session's strands round-robin** (a session's `when_all` children are strands of that session), not one
+global FIFO — so a 50-child batch gets its session's share, not 50 shares, and cannot starve other
+sessions. Within a strand, order is strictly
 FIFO — priority never reorders a strand's own continuations (that would break I1's ordering). Cancellation
 and approval resumes get priority **across** strands only: the lane picks a strand with a pending
 cancel/approval first. A body that is already running cannot be preempted; a cancel waits for its next
@@ -239,8 +252,9 @@ measured under load.
   checked at initiation: a stop that lands after the `stop_callback` is registered but before the backend
   holds the operation still cancels it (immediately, as `canceled`), instead of being lost and letting the
   operation run to its natural end.
-- **Exactly-once resume.** The continuation is posted exactly once, from the backend completion (§ first
-  bullet); the cancel path never posts it. The record is shared between frame and backend (refcount) and
+- **Exactly-once resume.** The continuation is posted exactly once: from the backend completion when
+  the backend held the operation, or from the initiation path when a sticky cancel means the operation
+  was never started. The cancel request itself never posts it. The record is shared between frame and backend (refcount) and
   freed by whichever releases last.
 - **Deadlines are timers.** `EffectContext::deadline` (`effect_context.hpp:54`) is enforced by racing the
   operation against a reactor timer that fires the same cancellation, not by a check before the call.
@@ -266,15 +280,20 @@ measured under load.
    - counts in-flight operations **along the whole awaited chain** (a leaf's operation increments every
      frame up to the root that is awaiting it), because `~task()` runs on the *outer* frame while the
      operation usually sits several awaits deep (round 2, M1). Destroying a non-done frame whose chain
-     count is non-zero is a contract violation with one behaviour in every build: the frame is
-     **orphaned** — never resumed again, its `continuation_` cleared, the operation canceled; when the
-     backend completion arrives, the operation record is released and **the frame is leaked, not
-     destroyed** (its locals may reference the dead parent's `EffectContext`, tool object or buffers, so
-     running their destructors is as unsafe as resuming it). The violation is reported with the frame's
-     origin. Debug builds additionally abort. A reaper that "cancels and joins" was rejected: it resumes
-     or destroys a frame whose referents are gone;
-   - **revokes drop-to-cancel for parked engine coroutines** (ADR-219): cancellation is `request_stop`
-     + await completion; dropping a parked task is the orphan case above. **Dropping a `stream` consumer
+     count is non-zero is handled at the **root**, not the leaf (revised after round 3, M2):
+     - **The host drops its awaiter** (`runtime.enter` / `runtime.run`, or a dead `Resumer`): the
+       runtime **adopts the whole engine chain** into its own scope, requests stop, and lets it finish
+       normally — every referent is still alive because the chain is intact, so locks
+       (`session_mutex_`, taken at `agent_session_core.cpp:102`), quota tickets, sandbox refunds and
+       shell slots are released by their ordinary destructors. Adopted chains are joined at shutdown
+       and reported. Leaking a frame that holds `session_mutex_` would block every later entry point on
+       that session forever, which is why leaking is not the answer here.
+     - **A non-root frame destroyed by its owner** while its chain has operations in flight can only
+       happen by bypassing `with_scope`/`when_all` — a bug, so it aborts (every build) with the frame's
+       origin. A reaper that "cancels and joins" a detached subframe was rejected (round 2): it resumes
+       or destroys a frame whose referents are gone;
+   - **changes drop-to-cancel for parked engine coroutines** (ADR-219): dropping a parked root task is
+     adoption (above) — the work is stopped and finished cleanly, not torn down. **Dropping a `stream` consumer
      stays legal** and remains a stop request (ADR-017, `core/stream.hpp:163`), because under rule 3a
      the consumer handle owns no in-flight operation — the producer lives in a scope the caller passed in
      and is joined there (round 2, G-e). ADR-219 gets an amendment note;
@@ -308,15 +327,27 @@ measured under load.
      which are coroutines: they `co_await` a real push into the per-session event stream. Back-pressure
      suspends the run (no thread is held — H-d gone); nothing is coalesced or dropped, because a
      `model_delta` is a *fragment* of the transcript (it becomes AG-UI text content,
-     `protocol/agui/projection.hpp`), not a snapshot. A slow or paused consumer pauses the run; it never
-     fails it.
+     `protocol/agui/projection.hpp`), not a snapshot. A slow consumer pauses the run, with three
+     guarantees so that a paused consumer never makes cancellation impossible (round 3, M3):
+     1. the awaited push **races the run's stop token** — a stop resumes the pusher;
+     2. one slot is **reserved for the terminal event** (`run_completed`/`run_failed`/`run_canceled`), so
+        the run can always end; after a stop, non-terminal events go to the recording only;
+     3. a **consumer-stall deadline** (configurable) fails **the stream** with `resource`, not the run;
+        the run continues without that consumer and its events are still recorded.
+     Positive control: cancel a run whose consumer never reads; the run ends within the cancellation
+     bound. This also covers `SessionBuilder::ask_stream`'s session-wide stream
+     (`core/session_builder.hpp:520-531`) and hosts that drain only after the run returns
+     (`tests/core/chat/test_stream_retry_real_transport.cpp:232-236`).
    - **Synchronous sinks called from tool bodies** (`report_progress`, the delegated sinks) enqueue into a
      per-session bounded multi-producer queue drained by one session task into the same stream. Only
      *idempotent snapshot* events (progress percentage, status text) are allowed through this path, and
      they coalesce latest-wins per call id on overflow. A sink that would need lossless delivery is
      converted to an awaitable by this ADR.
-   - **I5 placement:** recording taps the events **before** either queue, in production order, so what is
-     recorded never depends on how fast the consumer drains.
+   - **I5 placement:** recording taps lifecycle events **before** either queue, in pipeline order, so what
+     is recorded never depends on how fast the consumer drains. Progress snapshots from concurrent sync
+     sinks have no deterministic order and are not an I5 seam. Before pushing a call's
+     `tool_call_finished`, the pipeline flushes or drops that call's pending snapshots, so a snapshot is
+     never delivered after its call finished (round 3, minor).
 
 ### 4.6 Truly blocking work: `rt::offload`
 
@@ -484,6 +515,16 @@ deferred to C++29). **Decided: Asio (§9 D1).**
   boundaries via the existing epoch interruption); host imports that do I/O inside a guest call cannot
   suspend the guest without Wasmtime's async support (C-API support unverified) and are a named residual.
   The Wasmtime epoch ticker (`wasm_backend.cpp:78`) becomes a reactor timer.
+- **Operation buffers are owned by the operation record**, never by the frame (round 3, gap 6): the
+  kernel may still own an `OVERLAPPED`'s buffer after the reactor fails, so on reactor failure the
+  records are leaked (not freed) and the frames are resumed with `fatal`.
+- **Streamed reads keep one read outstanding (round 3, gap 7).** The reactor re-arms the next read on the
+  I/O object's strand into a pooled ring buffer, and the session strand is woken once per batch of
+  ready data, not once per chunk — two thread hops per chunk would not meet 023's ≤10 µs / 0-allocation
+  per-chunk budget. Bench in §8.2 gate 8.
+- **TLS context ownership (round 3, minor).** The mbedTLS context is touched only by the awaiting
+  coroutine's operations on its I/O-object strand; "close on cancel" runs after that operation
+  completes, never while another thread is inside `mbedtls_ssl_read`.
 - **Reactor failure (round 2, G-f).** If the backend fails (IOCP port error, an exception escaping a
   handler on the reactor thread), every pending operation completes with a `fatal` error, the runtime
   enters an unhealthy state that refuses new operations, and the watchdog checks reactor liveness — no
@@ -504,8 +545,9 @@ Named here so the red-team pass starts from them, not from scratch:
    thread-local state (holder ids today, any `thread_local` caches, Windows per-module TLS — ADR-175 §6)
    breaks silently. Mitigation: holder/home in the promise; a lint for `thread_local` in `rt/`/`core/`.
 2. **Strand + mutex double-serialisation.** Can a continuation waiting on `session_mutex_` and the strand
-   deadlock with a child strand that needs the parent's mutex? Rule proposed: child strands never take
-   `session_mutex_`; they communicate only through their return values and the sinks of ADR-160 §5.
+   deadlock with a child strand that needs the parent's mutex? Answered by §4.3: child strands take
+   `session_mutex_` only through lend-safe (read-only) entry points, by loan from the awaiting round;
+   mutating entry points are refused with `rt.lock_held_by_ancestor`.
 3. **Lane starvation.** A CPU-heavy tool body that never suspends occupies a lane worker; with 2 workers,
    two such tools stall every other session. Mitigation: per-call CPU budget measured; `rt::offload` for
    known-heavy code; open question whether lanes should be per-session-count adaptive.
@@ -542,7 +584,14 @@ Named here so the red-team pass starts from them, not from scratch:
 1a. **Late completion after cancel:** cancel an IOCP read and destroy nothing until its completion
    arrives; a mutant that posts on cancel-request must be caught (ASan/page-guarded buffer).
 1b. **Drop of a frame with an in-flight op** is the checked violation of §4.5 rule 3, not a UAF.
-1c. **Ancestor lock:** a tool that re-enters its own parent session fails with `rt.lock_held_by_ancestor`.
+1c. **Ancestor lock:** a tool that calls a *mutating* entry point (`start_run`, `resolve_interaction`) on
+   its own parent session fails with `rt.lock_held_by_ancestor`; the same tool's `fork_from_async` of that
+   session succeeds by loan; two parallel siblings that both fork queue and both succeed; a loan released
+   returns to the lender, not to a queued outside waiter (mutant).
+1e. **Dropped host awaiter:** a host drops `runtime.enter(start_run(…))` mid-read; the chain is adopted,
+   finishes, and a later `resolve_interaction` on the same session acquires the lock.
+1f. **Paused consumer:** cancel a run whose event consumer never reads — it ends within the cancellation
+   bound; a stalled stream fails with `resource` while the run completes.
 1d. **Concurrent spawns:** 64 children spawned concurrently each reach end-of-stream at their own exit
    (handle list / `O_CLOEXEC`).
 2. **Zero threads per parked run:** 10 000 sessions parked on I/O with 2 lane workers; OS thread count
@@ -580,7 +629,8 @@ Answers given by the project owner on 2026-10-03; where the owner delegated the 
   of `main` living with half-sync, half-async seams; and the old shapes are deleted rather than kept
   alongside, which only works if nothing on `main` still depends on them. `main` is merged *into* the
   branch regularly so the final merge is not a surprise. Process rules for the branch's lifetime (round
-  2): no new synchronous seams land on `main` (they would have to be converted twice); the seam renames
+  2): no new synchronous seams land on `main` — enforced by a CI lint on concept/callable signatures, not
+  only by review (round 3) (they would have to be converted twice); the seam renames
   (`chat` → `get_response`) are done early on the branch so later `main` merges conflict once, not
   repeatedly; ADR numbers used on the branch are reserved in `decisions/README.md` on `main` up front;
   the I7 conformance gates (MCP, CodeAct, A2A, AG-UI) run on the branch before the single merge.
@@ -601,10 +651,18 @@ Answers given by the project owner on 2026-10-03; where the owner delegated the 
      `invoke`'s own `from_json`, `src/core/tool_pipeline.cpp:159-165,233`) and passes the *same* object
      to `required_capabilities` and to `invoke`, so the requirement and the effect cannot see different
      arguments.
-  2. **Bound set only.** A tool that declares the hook sees only `ctx.bound_capabilities` in `invoke`,
-     never the full held set (`ctx.capabilities`), so the body cannot act under a grant other than the
-     one bound and audited. The ~31 sites that read `ctx.capabilities` are inventoried and moved to the
-     bound set where they belong to such tools.
+  2. **Bound set only — with a dynamic form for authority found at run time (revised after round 3).**
+     A tool with a static hook sees only `ctx.bound_capabilities`, never the full held set
+     (`ctx.capabilities`). Some tools cannot know their requirement from the arguments: the mediated
+     shell looks up `FsRead`/`FsWrite` for paths a script reaches while running
+     (`mediated_shell_dispatch.cpp:62,88,111`, e.g. `for f in *; do cat $f`). Those declare the
+     **dynamic** form instead: `invoke` sees the held set narrowed to the declared requirement kinds and
+     mounts, and every lookup goes through `co_await ctx.authorize(cap)`, which binds and records the
+     binding in the audit (I4) exactly as steps 4/7 would. Neither form gives the body unaudited access
+     to the full held set; the ~31 sites that read `ctx.capabilities` are inventoried and moved to one of
+     the two forms. A tool may declare a **list** of requirement kinds (e.g. a secret and an exec grant).
+     On resume after approval, the requirement is recomputed from the same parsed args and the call is
+     refused if it differs from what the human approved.
   3. **Fail closed.** An empty result, or one outside the declared requirement kind, is a `contract`
      error — never "nothing to bind, proceed".
   4. **Bound like a ceiling.** The result is bound at steps 4/7 (`bind`/`bind_clamped`, ADR-217); a
@@ -690,7 +748,13 @@ Answers given by the project owner on 2026-10-03; where the owner delegated the 
   `rt/block_on.hpp:176`, is an engine promise). The ADR-219 tests that drive engine tasks from foreign
   coroutine types (`tests/rt/test_rt_host_resumer.cpp:248`, `tests/rt/test_rt_parked_task_home.cpp:297`)
   are rewritten to `runtime.enter`, and 020 §3a's documented `co_await start_run` embedding is amended
-  (§10). `runtime.run` is
+  (§10). Scope, sized (round 3): ~131 test files drive tasks with `while (!done()) resume()` and ~132 use
+  `take_value()`; library code drives through `block_on` in `agent_spawn_child_run.hpp:139`,
+  `agent_workflow_executor.hpp:87`, `workflow_as_chat_client.hpp:161`, `workflow_as_executor.hpp:98`,
+  `workflow_supervisor.hpp:960`; `rt::ThreadPool` (`block_on` per job, `thread_pool.hpp:278`) and
+  `multi_agent::parallel` (`future::get`, `multi_agent.hpp:314-333`) are **deleted or converted**, and the
+  ~15 `drive_leaf_task` users go with ADR-064's stopgap. This is the integration branch's largest single
+  cost and is planned as its own step in D2's order. `runtime.run` is
   `block_on` at the edge and is refused on lanes/offload workers (§4.3). Names (`Runtime`, `enter`,
   `CompletionThread`) are 027 §4 additions, confirmed with the owner before implementation.
 
@@ -766,3 +830,24 @@ sites) and found that two did not hold (the release-mode reaper; Asio objects to
 | G-f | REAL GAP | A failed reactor leaves every parked run waiting forever | §6.3: fail pending ops `fatal`, unhealthy runtime, watchdog |
 | G-g | REAL GAP | `RLIMIT_NOFILE` breaks the 10 000-session gate | §6.3: `resource` classification; gate states its limit; the library never raises it |
 | — | MINOR | Asio must not associate an `immediate_executor` (two queue hops on immediate completion — bench it); grant revocation during long async calls (pre-existing, now longer windows); D2 process risks | Implementation checklist; D2 process rules added to §9 |
+
+## 13. Red-team, round 3 (2026-10-03, targeted at the round-2 amendments)
+
+Held: strand-equal `final_suspend` (G-a); one serial context per I/O object + sticky cancel (R2-M2) — an
+I/O-object strand never waits on a session strand, so the two layers cannot deadlock; D5, D6, G-g, D2;
+cancel while a lender is suspended is safe (the lender cannot resume before `when_all` joins).
+
+| # | Severity | Finding (one line) | Disposition |
+|---|---|---|---|
+| R3-1 | MUST-FIX | Lending to *any* awaited descendant lets a tool run `start_run`/`resolve_interaction` on its parent mid-round, corrupting tool_call/tool_result pairing; contradicts gate 1c and §7.2 | §4.3: lend-safe (read-only) entry points only; mutating ones refused; gate 1c and §7.2 reconciled |
+| R3-2 | MUST-FIX | Leaking an orphan frame strands `session_mutex_`, quota tickets, refunds, shell slots forever; unbounded memory under repeated drops | §4.5 rule 3: root adoption (chain intact, finishes normally, joined at shutdown); non-root destruction bypassing scopes aborts; `CompletionThread` joins |
+| R3-3 | MUST-FIX | Awaited push with a paused consumer makes cancel impossible (no room for `run_canceled`); `ask_stream`'s session-wide stream; drain-after-run hosts deadlock | §4.5 rule 5: push races the stop token; reserved terminal slot; consumer-stall deadline fails the stream, not the run; gate 1f |
+| R3-4 | REAL GAP | Loan details: siblings refused at random; released loan could go to the FIFO head; borrowed guard can escape; nesting | §4.3 loan rules: loan queue, return to lender (mutant-tested), frame-bound guards, stack |
+| R3-5 | REAL GAP | "Bound set only" breaks tools whose authority is found at run time (mediated shell) | §9 D3 dynamic form via `ctx.authorize(cap)` (audited); list of requirement kinds; approval recheck on resume |
+| R3-6 | REAL GAP | Reactor failure resumes frames whose buffers the kernel may still own | §6.3: buffers owned by the op record; records leaked on reactor failure |
+| R3-7 | REAL GAP | Two thread hops per streamed chunk vs 023's per-chunk budget | §6.3: one read kept outstanding, pooled ring, one wake per batch; bench |
+| R3-8 | REAL GAP | Fairness per strand gives a 50-child session 50 shares | §4.3: round-robin across sessions first, then strands |
+| — | MINOR | Snapshot after `tool_call_finished`; nondeterministic snapshot order vs I5; exactly-once wording vs sticky cancel; mbedTLS context ownership; D7 scope understated (~131/~132 test files, library `block_on` sites, `ThreadPool`, `multi_agent::parallel`); D2 rule needs a CI lint | All folded into §4.4, §4.5, §6.3, §9 D2/D7 |
+
+Round 3's verdict was "ready once the six listed items are folded in"; they are, above. The remaining
+items are implementation-checklist work with named gates.
