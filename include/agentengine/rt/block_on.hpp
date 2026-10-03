@@ -63,6 +63,14 @@
 // HOLDER. A nested call (a tool closure inside a round that is itself being driven) is a synchronous part
 // of the task already running, and keeps its holder id; `AsyncMutex::is_held_by_current_thread()` depends on
 // that (`AgentSession::fork_from()`'s reentrant case, ADR-123).
+//
+// decisions/ADR-237 §4.3 -- REFUSED ON THREADS THAT MUST NOT BLOCK. A thread that serves a pool of async work
+// (an `rt::offload` worker today, a lane worker later) must not park itself in `block_on()` waiting for work
+// that may need that same thread -- ADR-175 §6's "parked pool job holds its worker" deadlock. Such a thread
+// marks itself with a `ScopedBlockOnRefusal`, and `block_on()` called on it throws `block_on_refused`
+// before driving anything. Unmarked threads -- every thread today except offload workers -- are unaffected.
+// The marker is a thread_local, deliberately: it describes the OS thread, not a logical task, and ADR-237
+// §4.3 is the ADR that admits it to rt/.
 
 #include <atomic>
 #include <coroutine>
@@ -70,6 +78,9 @@
 #include <exception>
 #include <memory>
 #include <optional>
+#include <stdexcept>
+#include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 
@@ -77,6 +88,43 @@
 #include "agentengine/rt/task.hpp"
 
 namespace agentengine::rt {
+
+// Thrown by `block_on()` on a thread marked as one that must not block (ADR-237 §4.3). `code()` names which
+// kind of thread it was, e.g. `rt.block_on_on_offload_worker`.
+// ae-naming-lint: allow block_on_refused — ADR-237 §4.3: new runtime vocabulary, 027 §4 row added when the ADR is Judged
+class block_on_refused : public std::logic_error {
+public:
+    explicit block_on_refused(char const* code)
+        : std::logic_error(std::string(code) + ": block_on() called on a thread that must not block (ADR-237 §4.3)"),
+          code_(code) {}
+    [[nodiscard]] std::string_view code() const noexcept { return code_; }
+
+private:
+    char const* code_;  // a string literal with static storage
+};
+
+namespace detail {
+// The refusal code of the current thread, or nullptr if `block_on()` is allowed on it.
+[[nodiscard]] inline char const*& block_on_refusal_code() noexcept {
+    thread_local char const* code = nullptr;
+    return code;
+}
+}  // namespace detail
+
+// RAII: `block_on()` on this thread throws `block_on_refused(code)` until destruction. `code` must be a string
+// literal. Set by a pool worker for its whole life; nesting restores the previous marker.
+// ae-naming-lint: allow ScopedBlockOnRefusal — ADR-237 §4.3: new runtime vocabulary, 027 §4 row added when the ADR is Judged
+class ScopedBlockOnRefusal {
+public:
+    explicit ScopedBlockOnRefusal(char const* code) noexcept
+        : saved_(std::exchange(detail::block_on_refusal_code(), code)) {}
+    ~ScopedBlockOnRefusal() { detail::block_on_refusal_code() = saved_; }
+    ScopedBlockOnRefusal(ScopedBlockOnRefusal const&)            = delete;
+    ScopedBlockOnRefusal& operator=(ScopedBlockOnRefusal const&) = delete;
+
+private:
+    char const* saved_;
+};
 
 namespace block_on_detail {
 
@@ -277,6 +325,7 @@ decltype(auto) run_to_completion(SignalTask<T>& driver, BlockOnState<T>& state, 
 // naive "resume until done" loop has here that this mechanism avoids.
 template <class T>
 [[nodiscard]] T block_on(agentengine::rt::task<T> t) {
+    if (char const* refused = detail::block_on_refusal_code()) throw block_on_refused(refused);  // ADR-237 §4.3
     detail::HomeSlot slot;
     BlockOnState<T> state(&slot);
     block_on_detail::SignalTask<T> driver = block_on_detail::drive_and_signal(std::move(t), &state);
@@ -284,6 +333,7 @@ template <class T>
 }
 
 inline void block_on(agentengine::rt::task<void> t) {
+    if (char const* refused = detail::block_on_refusal_code()) throw block_on_refused(refused);  // ADR-237 §4.3
     detail::HomeSlot slot;
     BlockOnState<void> state(&slot);
     block_on_detail::SignalTask<void> driver = block_on_detail::drive_and_signal(std::move(t), &state);

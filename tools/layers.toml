@@ -30,9 +30,12 @@
 "include/agentengine/testing"  = { layer = "TEST", reason = "test-only support" }
 "src/core"                     = { layer = "L2",   reason = "translation units for include/agentengine/core (L2)" }
 "src/rt"                       = { layer = "L0",   reason = "translation units for include/agentengine/rt (L0 by default)" }
+"src/pal"                      = { layer = "L0",   reason = "translation units for include/agentengine/pal (ADR-237 §9 D5: usable_cpus)" }
 "src/trust"                    = { layer = "L1",   reason = "translation units for include/agentengine/trust" }
 "src/sandbox"                  = { layer = "L1",   reason = "translation units for include/agentengine/sandbox" }
 "src/backends"                 = { layer = "L1",   reason = "sandbox backends (CONVENTIONS.md layout: src/backends)" }
+"src/backends/reactor_asio"     = { layer = "L0",   reason = "pal::Reactor's Asio backend (ADR-237 §6.2): implements an L0 pal seam, not a sandbox backend" }
+"src/backends/tls_mbedtls"      = { layer = "L0",   reason = "rt::TlsStream's mbedTLS backend and ADR-013's shared client config (ADR-237 §6.3): L0 I/O, used by the L1 blocking client" }
 "src/backends/vulkan_vector_index" = { layer = "L2", reason = "a VectorIndex conformer (ADR-180), part of the L2 retrieval plane, not a sandbox backend" }
 "src/protocol"                 = { layer = "L2",   reason = "translation units for the L2 model-provider clients under include/agentengine/protocol (ADR-206)" }
 

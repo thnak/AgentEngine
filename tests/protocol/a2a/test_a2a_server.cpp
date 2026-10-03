@@ -226,6 +226,42 @@ int main() {
         }
     }
 
+    // --- D3-11 (ADR-237 D6, I7): a run that ended `canceled` -- a real session the host canceled -- is A2A's
+    // --- own terminal TASK_STATE_CANCELED, not FAILED. D3-8 above is the control (a failed run is FAILED). ---
+    {
+        Harness<CannedChatClient> hc{"s-a2a-cancel"};
+        a2a::A2aServer canceled_server(
+            [&hc](art::StartRun req) -> ae::result<a2a::RunOutcome> {
+                hc.session.cancel();  // no run in flight yet: a no-op for the run below (ADR-178 K6) ...
+                ae::result<art::AgentResponse> resp = drive(hc.session.start_run(std::move(req)));
+                if (resp) return a2a::RunOutcome{hc.session.last_run_id(), *resp};
+                return std::unexpected(resp.error());  // ... so the starter forwards the run's own error
+            },
+            "ctx-cancel");
+        // A starter that forwards the session's error verbatim, with the host's cancel landing mid-run.
+        Harness<CannedChatClient> hk{"s-a2a-cancel-2"};
+        bool canceled_once = false;
+        hk.session.set_run_event_tap([&hk, &canceled_once](ae::RunEvent const& ev) {
+            if (ev.kind == ae::run_event_kind::model_call_started && !canceled_once) {
+                canceled_once = true;
+                hk.session.cancel();
+            }
+        });
+        a2a::A2aServer cancel_mid_run_server(
+            [&hk](art::StartRun req) -> ae::result<a2a::RunOutcome> {
+                ae::result<art::AgentResponse> resp = drive(hk.session.start_run(std::move(req)));
+                if (resp) return a2a::RunOutcome{hk.session.last_run_id(), *resp};
+                return std::unexpected(resp.error());
+            },
+            "ctx-cancel-2");
+        auto canceled = cancel_mid_run_server.send_message(text_message("stop me"), kOwner);
+        check(canceled.has_value() && canceled->status.state == a2a::task_state::canceled,
+              "D3-11: a run the host canceled is TASK_STATE_CANCELED (class canceled), not TASK_STATE_FAILED");
+        auto not_canceled = canceled_server.send_message(text_message("fine"), kOwner);
+        check(not_canceled.has_value() && not_canceled->status.state == a2a::task_state::completed,
+              "D3-11 control: the same forwarding starter with a stale (pre-run) cancel completes");
+    }
+
     // --- D3-9/D3-10: ADR-061 §35/§37.3's `authority` parameter, against a REAL Tier-3-mode session --
     {
         Harness<CannedChatClient> h3{"s-a2a-tier3"};

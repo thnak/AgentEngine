@@ -1151,7 +1151,9 @@ bool AgentSessionCore::should_retry_stream(error const& err) const {
         // `net.stream_read_failed` is the same by construction: a read that fails after the head.
         return (f.any_update_seen || f.inner.code == "net.stream_truncated" ||
                 f.inner.code == "net.stream_read_failed") &&
-               f.inner.klass == failure_class::transient && f.inner.code != "net.cancelled";
+               // ADR-237 D6: the one retry decision; the stream is re-sent within the run's own budget (`shared`).
+               // `net.cancelled` is `canceled` now, no longer a transient special-cased by its code.
+               is_retryable(f.inner.klass, retry_budget::shared);
     }
 }
 
@@ -1525,7 +1527,9 @@ task<result<AgentResponse>> AgentSessionCore::resolve_hook_decision(ResolveInter
 // agent_session.hpp:2798
 std::unexpected<error> AgentSessionCore::finish_canceled() {
     emit_run_event(run_event_kind::run_canceled);
-    return std::unexpected(error{failure_class::fatal, "the run was canceled", "run.canceled"});
+    // ADR-237 D6 amends ADR-178: `canceled`, not `fatal` -- a stopped run is a state, not a fault (001 §5), and
+    // no retry predicate retries `canceled`.
+    return std::unexpected(error{failure_class::canceled, "the run was canceled", "run.canceled"});
 }
 
 // ADR-230 (issue #44) -------------------------------------------------------------------------------------------
@@ -1886,8 +1890,11 @@ task<result<AgentResponse>> AgentSessionCore::run_rounds_body() {
                                                  "run.token_budget_exceeded"});
             }
         }
-        if (!response && (response.error().code == "run.canceled" ||
-                           effect_context_.cancellation.stop_requested())) {
+        // ADR-237 D6: decided by the run's own token, never by the error's code. The drain's `run.canceled` is
+        // raised only when that token fired, so this is what the old `code == "run.canceled"` test caught too. A
+        // `canceled` failure the run did NOT ask for (someone else stopped the model call) is not this run's
+        // cancel: it falls through to `run_failed` below and carries `canceled` to the caller unchanged.
+        if (!response && effect_context_.cancellation.stop_requested()) {
             co_return finish_canceled();  // ADR-178: a call the run's own cancel cut short is not a failure
         }
         // ADR-230: decided by the client's own state, never by the error's text.

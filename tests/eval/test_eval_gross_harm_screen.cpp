@@ -187,7 +187,8 @@ auto make_summarizer_factory() {
 //   skip          -- answer in text without ever calling the tool (an OUTCOME: failure);
 //   unmeasurable  -- a call the grader cannot judge; it throws, so the MEASUREMENT failed (`ungraded`);
 //   transient     -- the provider call fails with a `failure_class::transient` error (e.g. a 503);
-//   canceled      -- the run ends `run.canceled`, as a host cancel does.
+//   canceled      -- the run ends `failure_class::canceled`, as a host cancel does (ADR-237 D6; the screen keys
+//                    off the class, so the code below is deliberately NOT `run.canceled`).
 // The last three are the measurement faults `grade_trial` maps to `ungraded`.
 enum class cell { ok, wrong, never, skip, unmeasurable, transient, canceled };
 
@@ -201,7 +202,7 @@ std::vector<ScriptStep> script_for(cell c) {
         case cell::transient:
             return {fail_step(ae::error{ae::failure_class::transient, "HTTP 503", "provider.http_503"})};
         case cell::canceled:
-            return {fail_step(ae::error{ae::failure_class::fatal, "canceled by the host", "run.canceled"})};
+            return {fail_step(ae::error{ae::failure_class::canceled, "canceled by the host", "test.host_canceled"})};
     }
     return {};
 }

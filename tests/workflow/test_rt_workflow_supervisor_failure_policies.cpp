@@ -497,6 +497,86 @@ int main() {
               "the recovery branch cold");
     }
 
+    // ---- D5 (ADR-237 D6): a `canceled` step is never retried, rerouted, or propagated ------------------
+    // A step that ends `canceled` was stopped on request -- e.g. a sibling canceled by `when_all` after another
+    // sibling failed. Rerouting it to a fallback executor would start new work on behalf of something that was
+    // told to stop. D4 above is the positive control for fallback (a `resource` failure IS rerouted), D3 for
+    // propagate, D2 for retry; here the same shapes with a `canceled` failure end the run at the canceled step,
+    // with the run's OWN cancel never requested (that path ends `cancelled` before routing, issue #156).
+    {
+        Workflow wf;
+        wf.id        = "no-fallback-on-canceled";
+        wf.executors = {node_desc("risky"), node_desc("normal"), node_desc("recovery")};
+        wf.edges     = {Edge{"risky", "normal", edge_kind::direct, {}, fallback_policy("recovery")}};
+        wf.start             = "risky";
+        wf.output_selection  = {"normal", "recovery"};
+        wf.bound.max_rounds  = 8;
+        check(validate_workflow(wf).has_value(), "D5a: the fallback graph validates");
+
+        auto normal_calls   = std::make_shared<int>(0);
+        auto recovery_calls = std::make_shared<int>(0);
+        std::vector<ExecutorBody> bodies = {
+            failing("risky", failure_class::canceled, 999, std::make_shared<int>(0)),
+            appender("normal", normal_calls),
+            appender("recovery", recovery_calls),
+        };
+        WorkflowSupervisor sup;
+        sup.initialize(wf, bodies);
+        WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("in")}));
+        check(*recovery_calls == 0,
+              "D5a: a step canceled (e.g. by a sibling's failure) is NOT routed to the fallback executor, which "
+              "would keep working on behalf of a step that was told to stop");
+        check(*normal_calls == 0, "D5a: nor does its normal target run");
+        check(r.status == workflow_status::executor_failed && r.failed_executor == "risky",
+              "D5a: the run ends at the canceled step, which is named (the run itself was not canceled)");
+    }
+    {
+        Workflow wf;
+        wf.id        = "no-propagate-on-canceled";
+        wf.executors = {node_desc("risky"), node_desc("handler")};
+        wf.edges     = {Edge{"risky", "handler", edge_kind::direct, {}, propagate_policy()}};
+        wf.start             = "risky";
+        wf.output_selection  = {"handler"};
+        wf.bound.max_rounds  = 8;
+        auto handler_calls = std::make_shared<int>(0);
+        std::vector<ExecutorBody> bodies = {
+            failing("risky", failure_class::canceled, 999, std::make_shared<int>(0)),
+            appender("handler", handler_calls),
+        };
+        WorkflowSupervisor sup;
+        sup.initialize(wf, bodies);
+        WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("in")}));
+        check(*handler_calls == 0 && r.status == workflow_status::executor_failed,
+              "D5b: a canceled step is not propagated as a failure marker (D3's control: a fatal one is)");
+    }
+    {
+        Workflow wf;
+        wf.id        = "no-retry-on-canceled";
+        wf.executors = {node_desc("stopped"), node_desc("sink")};
+        wf.edges     = {Edge{"stopped", "sink", edge_kind::direct, {}, retry_policy(3)}};
+        wf.start             = "stopped";
+        wf.bound.max_rounds  = 8;
+        auto calls = std::make_shared<int>(0);
+        std::vector<ExecutorBody> bodies = {
+            failing("stopped", failure_class::canceled, 1, calls),  // would succeed on a second attempt
+            appender("sink"),
+        };
+        WorkflowSupervisor sup;
+        sup.initialize(wf, bodies);
+        WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("in")}));
+        check(*calls == 1 && r.status == workflow_status::executor_failed,
+              "D5c: a canceled step is invoked ONCE under retry(3), though a retry would have succeeded "
+              "(D2's control: a transient one is retried)");
+    }
+    // D5d: the class a wrapped workflow's non-completed run carries to the outer one (workflow_as_executor,
+    // workflow_as_chat_client): its cancel is `canceled`, its deadline bound `resource`.
+    check(agentengine::rt::inner_run_failure_class(workflow_status::cancelled) == failure_class::canceled,
+          "D5d: an inner run that ended cancelled carries canceled");
+    check(agentengine::rt::inner_run_failure_class(workflow_status::bound_deadline) == failure_class::resource,
+          "D5d: an inner run that hit its deadline bound carries resource (a deadline is a budget)");
+    check(agentengine::rt::inner_run_failure_class(workflow_status::executor_failed) == failure_class::contract,
+          "D5d: every other non-completed status keeps contract");
+
     if (g_failures == 0) {
         std::printf("test_rt_workflow_supervisor_failure_policies: ALL PASS\n");
         return 0;

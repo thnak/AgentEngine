@@ -612,6 +612,30 @@ int main() {
             check(budget.remaining_spawns() == 5 - 1,
                   "R2: exactly ONE attempt was made -- a contract failure is never retried");
         }
+
+        // R3 (ADR-237 D6): a CANCELED child is never retried -- exactly one attempt, though the second would
+        // succeed. R1 is the control: the same shape failing `resource` is retried by a fresh attempt.
+        {
+            auto shared_attempts = std::make_shared<std::atomic<int>>(0);
+            SessionFactory<FlakyChatClient, agentengine::rt::NoSessionState,
+                           agentengine::HistoryProvider<agentengine::Window<0>>>
+                factory = [shared_attempts](Principal const& p) {
+                    auto s = std::make_unique<ChildSession>();
+                    s->initialize("child", p);
+                    s->emplace_chat_client(shared_attempts, /*fail_times=*/1, failure_class::canceled);
+                    return s;
+                };
+            Budget budget(/*max_spawns=*/5, /*max_tokens=*/10000, /*max_in_flight=*/5);
+            agentengine::RetryPolicy policy;
+            policy.max_attempts = 3;
+            auto res = drive(agentengine::rt::multi_agent::spawn_with_retry(
+                ctx, factory, StartRun{user_message("hi")}, std::vector<agentengine::Capability>{},
+                policy, budget));
+            check(!res.has_value() && res.error().klass == failure_class::canceled,
+                  "R3: a canceled child is not recovered, and its canceled class reaches the caller");
+            check(budget.remaining_spawns() == 5 - 1,
+                  "R3: exactly ONE attempt was made -- a canceled child is never retried");
+        }
     }
 
     if (g_failures == 0) {

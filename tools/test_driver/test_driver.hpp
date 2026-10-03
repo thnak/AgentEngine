@@ -377,7 +377,7 @@ private:
         x.arguments = json::dump(args);
         result<Value> out = [&]() -> result<Value> {
             if (ctx.cancellation.stop_requested()) {
-                return std::unexpected(error{failure_class::resource,
+                return std::unexpected(error{failure_class::canceled,  // ADR-237 D6: stopped on request
                                              "the session was cancelled; no further real-tool calls run",
                                              "test.real_tool_canceled"});
             }
@@ -1405,28 +1405,15 @@ using ToolResultJson = std::variant<Value, ToolError>;
 //   short:   {"text": "...", "tool_calls": [{"name", "arguments" (object|raw string), "call_id"?}]}
 //   exact:   {"content": [{"text": ...} | {"reasoning": ...} | {"tool_call": {"call_id","name","arguments"}}],
 //             "usage": {"input_tokens", "output_tokens"}?}
-//   failure: {"error": {"code", "message", "class"?: transient|policy|contract|resource|fatal}}
+//   failure: {"error": {"code", "message", "class"?: transient|policy|contract|resource|fatal|canceled}}
 // Any shape may carry "request_digest": the digest of the request this turn answers (C8). A model call
 // whose request has another digest fails with test.replay_mismatch instead of consuming the turn.
 // Export writes the exact shape, so item order and raw argument text survive the round trip.
 
-[[nodiscard]] inline std::string_view failure_class_name(failure_class k) noexcept {
-    switch (k) {
-        case failure_class::transient: return "transient";
-        case failure_class::policy: return "policy";
-        case failure_class::contract: return "contract";
-        case failure_class::resource: return "resource";
-        case failure_class::fatal: return "fatal";
-    }
-    return "fatal";
-}
+// ADR-237 D6: core/error.hpp's one spelling, not a copy of it.
+[[nodiscard]] inline std::string_view failure_class_name(failure_class k) noexcept { return failure_class_to_string(k); }
 [[nodiscard]] inline std::optional<failure_class> failure_class_from(std::string_view n) noexcept {
-    if (n == "transient") return failure_class::transient;
-    if (n == "policy") return failure_class::policy;
-    if (n == "contract") return failure_class::contract;
-    if (n == "resource") return failure_class::resource;
-    if (n == "fatal") return failure_class::fatal;
-    return std::nullopt;
+    return failure_class_from_string(n);
 }
 
 template <class V>
@@ -1445,7 +1432,7 @@ template <class V>
     request_digest = get_string(t, "request_digest");
     if (Value const* fe = t.find("error"); fe != nullptr) {
         auto klass = failure_class_from(get_string(*fe, "class").value_or("fatal"));
-        if (!klass) return bad("error.class must be transient|policy|contract|resource|fatal");
+        if (!klass) return bad("error.class must be transient|policy|contract|resource|fatal|canceled");
         return testing::failure_turn(error{*klass, get_string(*fe, "message").value_or("scripted model failure"),
                                            get_string(*fe, "code").value_or("test.scripted_failure")});
     }

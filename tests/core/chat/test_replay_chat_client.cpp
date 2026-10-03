@@ -300,12 +300,18 @@ int main() {
     {
         // Bonus (cheap alongside the above): "cancelled"/"deadline_exceeded" map onto the matching
         // stable error code, not a generic catch-all -- proves terminal_to_error's own dispatch table.
-        for (auto const& [terminal_str, expected_code] :
-             std::vector<std::pair<std::string, std::string>>{
-                 {"cancelled", "replay_chat_client.stream_cancelled"},
-                 {"deadline_exceeded", "replay_chat_client.stream_deadline_exceeded"},
-                 {"failed", "replay_chat_client.stream_failed"},
-                 {"some_unrecognized_value", "replay_chat_client.stream_failed"},
+        // ADR-237 D6: and onto the matching CLASS -- "cancelled" is `canceled` (was `fatal`), "deadline_exceeded"
+        // is `resource` (was `transient`, which let a shared-budget retry re-send an exhausted deadline).
+        struct TerminalCase {
+            std::string   terminal_str;
+            std::string   expected_code;
+            failure_class expected_class;
+        };
+        for (auto const& [terminal_str, expected_code, expected_class] : std::vector<TerminalCase>{
+                 {"cancelled", "replay_chat_client.stream_cancelled", failure_class::canceled},
+                 {"deadline_exceeded", "replay_chat_client.stream_deadline_exceeded", failure_class::resource},
+                 {"failed", "replay_chat_client.stream_failed", failure_class::fatal},
+                 {"some_unrecognized_value", "replay_chat_client.stream_failed", failure_class::fatal},
              }) {
             ChatCallRecording rec;
             rec.mode = recording_mode::streaming;
@@ -325,7 +331,43 @@ int main() {
             check(s.fail_error().code == expected_code,
                   ("(6 bonus) stream_terminal \"" + terminal_str + "\" maps to the expected error code")
                       .c_str());
+            check(s.fail_error().klass == expected_class,
+                  ("(6 D6) stream_terminal \"" + terminal_str + "\" maps to class " +
+                   std::string(failure_class_to_string(expected_class)))
+                      .c_str());
         }
+        // ADR-237 D6: so the shared-budget retry decision (ModelCallGateway's) refuses both a replayed cancel and
+        // a replayed deadline -- the deadline is no longer retried inside the budget it exhausted.
+        check(!is_retryable(replay_chat_client_detail::terminal_to_error("deadline_exceeded", "").klass,
+                            retry_budget::shared),
+              "(6 D6) a replayed deadline is not retried under a shared budget");
+        check(!is_retryable(replay_chat_client_detail::terminal_to_error("cancelled", "").klass, retry_budget::fresh),
+              "(6 D6) a replayed cancel is not retried even by a fresh attempt");
+    }
+
+    // ---- (10) ADR-237 D6: every class round-trips through the recording's error JSON, `canceled` included ----
+    {
+        for (failure_class k : {failure_class::transient, failure_class::policy, failure_class::contract,
+                                failure_class::resource, failure_class::fatal, failure_class::canceled}) {
+            error const e{k, "msg", "test.code", 7};
+            json::Value const j = error_to_json(e);
+            auto back           = error_from_json(j);
+            check(back.has_value() && back->klass == k && back->code == "test.code" && back->native_code == 7,
+                  ("(10) class " + std::string(failure_class_to_string(k)) + " round-trips").c_str());
+        }
+        check(failure_class_to_wire_string(failure_class::canceled) == "canceled",
+              "(10) the wire spelling of canceled is \"canceled\" (one l, A2A's and 027's spelling)");
+        check(!failure_class_from_wire_string("cancelled").has_value(),
+              "(10) \"cancelled\" (two l) is not a class name -- it is only a stream_terminal spelling");
+        // A unary recording whose chat_error is `canceled` replays it verbatim.
+        ChatCallRecording rec;
+        rec.mode       = recording_mode::unary;
+        rec.chat_error = error{failure_class::canceled, "stopped", "test.canceled"};
+        ReplayChatClient client(rec);
+        EffectContext ctx = make_ctx();
+        auto result = run_task_sync<agentengine::result<ChatResponse>>(client.chat(ChatRequest{}, ctx));
+        check(!result.has_value() && result.error().klass == failure_class::canceled,
+              "(10) a recorded canceled chat_error replays as canceled");
     }
 
     // ---- (7) chat_stream() against a UNARY-mode recording fails immediately, pushes nothing --------

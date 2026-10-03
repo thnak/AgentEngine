@@ -27,6 +27,17 @@
 // (never `std::terminate`) and either rethrown at the awaiting `co_await` (mode a) or left probable
 // via `faulted()`/`fault_ptr()` for whatever drives it directly (mode b) — the same ADR-009-style
 // handler-boundary guard `quark::task<>` already established, reproduced here rather than assumed.
+//
+// decisions/ADR-237 §4.2 (step 3) -- FINAL_SUSPEND ACROSS STRANDS. Symmetric transfer to the awaiter is
+// correct only when the child and the awaiter run on the SAME strand: transferring across strands would run
+// the awaiter on the child's lane slice while the awaiter's own strand may be running another continuation
+// (I1). The promise therefore carries the awaiter's home (`detail::TaskLink`): the strand it was running on
+// when it awaited (read from the lane worker's execution context, rt/resume_home.hpp). At final_suspend the
+// child compares it with the strand it is finishing on: equal -- or no strand at all, every pre-lanes caller
+// -- transfers as before; different -- posts the awaiter to its own strand and returns noop_coroutine() (one
+// post per cross-strand join, so recursion stays bounded, round 2 G-a). A root started by `rt::Runtime`
+// (`run`, `enter`) has no awaiting coroutine of this type; its completion is a callback set in the same
+// link, run from the suspended final point as the last touch on the frame.
 
 #include <coroutine>
 #include <cstdint>
@@ -43,6 +54,53 @@ namespace agentengine::rt {
 template <class T = void>
 // ae-naming-lint: allow task — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class task;
+
+namespace detail {
+
+// ADR-237 §4.2: what a task's promise knows about where its awaiter continues.
+struct TaskLink {
+    // The strand the awaiter was running on when it co_awaited this task (null: not on a strand). A raw
+    // pointer: the awaiter is a suspended continuation of that strand, and whoever arranged a cross-strand
+    // await (`rt::on_strand`) holds a strong reference until the join.
+    StrandHome*   awaiter_strand = nullptr;
+    std::uint64_t awaiter_holder = 0;  // the holder id the awaiter resumes under when posted
+    // A root's completion (rt::Runtime): called instead of resuming a continuation. Runs at the suspended
+    // final point; must not touch the frame after handing the result off (the frame may be destroyed at once).
+    void (*on_done)(void* ctx) noexcept = nullptr;
+    void*  on_done_ctx                   = nullptr;
+};
+
+// The final_suspend decision, shared by both specializations (file comment).
+[[nodiscard]] inline std::coroutine_handle<> complete_to(std::coroutine_handle<> continuation,
+                                                       TaskLink const& link) noexcept {
+    if (link.on_done != nullptr) {
+        auto* const fn  = link.on_done;
+        void* const ctx = link.on_done_ctx;
+        fn(ctx);  // last touch: everything it needs was copied out of the frame first
+        return std::noop_coroutine();
+    }
+    if (!continuation) return std::noop_coroutine();
+    StrandHome* const here = current_execution().strand;
+    if (link.awaiter_strand == nullptr || link.awaiter_strand == here) return continuation;  // same strand
+    link.awaiter_strand->post(continuation, link.awaiter_holder, false);  // cross-strand: post, never transfer
+    return std::noop_coroutine();
+}
+
+// Records the awaiter's home in a task's link (both specializations' await_suspend).
+inline void link_awaiter(TaskLink& link) noexcept {
+    link.awaiter_strand = current_execution().strand;
+    link.awaiter_holder = current_holder_id();
+}
+
+// rt::Runtime and rt::on_strand start a task on a strand themselves: they need its frame and its link.
+struct TaskAccess {
+    template <class Task>
+    [[nodiscard]] static auto handle(Task& t) noexcept {
+        return t.h_;
+    }
+};
+
+}  // namespace detail
 
 template <>
 class task<void> {
@@ -62,8 +120,7 @@ public:
             [[nodiscard]] bool await_ready() noexcept { return false; }
             [[nodiscard]] std::coroutine_handle<> await_suspend(
                 std::coroutine_handle<promise_type> h) noexcept {
-                std::coroutine_handle<> cont = h.promise().continuation_;
-                return cont ? cont : std::noop_coroutine();
+                return detail::complete_to(h.promise().continuation_, h.promise().link_);  // ADR-237 §4.2
             }
             void await_resume() noexcept {}
         };
@@ -77,6 +134,7 @@ public:
         std::coroutine_handle<> continuation_{};
         std::exception_ptr fault_{};
         std::uint64_t raw_holder_ = 0;  // ADR-175: this task's holder id when driven by raw resume()
+        detail::TaskLink link_{};       // ADR-237 §4.2: the awaiter's home
     };
 
     task() noexcept = default;
@@ -113,7 +171,9 @@ public:
         if (p.raw_holder_ == 0) p.raw_holder_ = mint_holder_id();
         // ADR-219: a host resumer, unlike a block_on() home, is kept: it never closes, and it is how a host
         // driving this task from its own executor gets the task's continuations back.
-        ScopedExecution const raw(nullptr, p.raw_holder_, detail::current_execution().resumer);
+        // ADR-237 §4.3: and so is a strand -- a task raw-resumed inside a strand slice is part of that slice.
+        ScopedExecution const raw(nullptr, p.raw_holder_, detail::current_execution().resumer,
+                                  detail::current_execution().strand);
         h_.resume();
     }
     void start() { resume(); }
@@ -128,6 +188,7 @@ public:
     [[nodiscard]] bool await_ready() const noexcept { return false; }
     [[nodiscard]] std::coroutine_handle<> await_suspend(std::coroutine_handle<> awaiting) noexcept {
         h_.promise().continuation_ = awaiting;
+        detail::link_awaiter(h_.promise().link_);  // ADR-237 §4.2
         return h_;
     }
     void await_resume() {
@@ -135,6 +196,7 @@ public:
     }
 
 private:
+    friend struct detail::TaskAccess;
     std::coroutine_handle<promise_type> h_{};
 };
 
@@ -153,8 +215,7 @@ public:
             [[nodiscard]] bool await_ready() noexcept { return false; }
             [[nodiscard]] std::coroutine_handle<> await_suspend(
                 std::coroutine_handle<promise_type> h) noexcept {
-                std::coroutine_handle<> cont = h.promise().continuation_;
-                return cont ? cont : std::noop_coroutine();
+                return detail::complete_to(h.promise().continuation_, h.promise().link_);  // ADR-237 §4.2
             }
             void await_resume() noexcept {}
         };
@@ -185,6 +246,7 @@ public:
         std::coroutine_handle<> continuation_{};
         std::exception_ptr fault_{};
         std::uint64_t raw_holder_ = 0;  // ADR-175: this task's holder id when driven by raw resume()
+        detail::TaskLink link_{};       // ADR-237 §4.2: the awaiter's home
         alignas(T) unsigned char store_[sizeof(T)];
         bool has_value_ = false;
     };
@@ -223,7 +285,9 @@ public:
         if (p.raw_holder_ == 0) p.raw_holder_ = mint_holder_id();
         // ADR-219: a host resumer, unlike a block_on() home, is kept: it never closes, and it is how a host
         // driving this task from its own executor gets the task's continuations back.
-        ScopedExecution const raw(nullptr, p.raw_holder_, detail::current_execution().resumer);
+        // ADR-237 §4.3: and so is a strand -- a task raw-resumed inside a strand slice is part of that slice.
+        ScopedExecution const raw(nullptr, p.raw_holder_, detail::current_execution().resumer,
+                                  detail::current_execution().strand);
         h_.resume();
     }
     void start() { resume(); }
@@ -242,6 +306,7 @@ public:
     [[nodiscard]] bool await_ready() const noexcept { return false; }
     [[nodiscard]] std::coroutine_handle<> await_suspend(std::coroutine_handle<> awaiting) noexcept {
         h_.promise().continuation_ = awaiting;
+        detail::link_awaiter(h_.promise().link_);  // ADR-237 §4.2
         return h_;
     }
     [[nodiscard]] T await_resume() {
@@ -251,6 +316,7 @@ public:
     }
 
 private:
+    friend struct detail::TaskAccess;
     std::coroutine_handle<promise_type> h_{};
 };
 

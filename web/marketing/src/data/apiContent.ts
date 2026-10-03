@@ -766,9 +766,9 @@ struct StockPriceTool : Tool<StockPriceTool, Capabilities<>, EffectClass<effect_
 // value get_weather actually returned, and get_time/stock_price must NEVER be called for this
 // prompt -- a real sequential-dependency + distractor-discipline proof, not a toy round trip.`;
 
-// tests/core/json/test_json_schema_described.cpp:36-41 -- Described<T, "..."> is a SEPARATE channel from
-// AE_JSON_SCHEMA's own bare field-name list (the note above): the description lives on the FIELD'S
-// OWN TYPE, not as a macro argument, so it survives exactly where a plain field can't carry one.
+// tests/core/json/test_json_schema_described.cpp:36-41 -- Described<T, "..."> is THE way to give a
+// field a description: it lives on the FIELD'S OWN TYPE, not as an AE_JSON_SCHEMA macro argument
+// (the macro only lists field names).
 // Described<std::optional<T>, "..."> composes correctly too -- still detected as NOT required.
 export const describedFieldSchemaSnippet = `// tests/core/json/test_json_schema_described.cpp:36-41
 struct SearchArgs {
