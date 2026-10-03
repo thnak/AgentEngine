@@ -91,11 +91,11 @@ struct FdGuard {
 // Milestone 5 Phase C2 (net_egress_proxy.hpp's own comment on `perform_http_exchange`/
 // `perform_https_exchange`'s new `stop` parameter): the one check both read loops share -- a plain
 // error, not an exception (CONVENTIONS.md's no-exceptions-for-control-flow rule).
-// `quark::errc::cancelled`'s own comment ("std::stop_token fired") is the established meaning for
-// this failure_class already; reused here rather than inventing a second cancellation vocabulary.
+// ADR-237 D6: a fired stop_token is `failure_class::canceled` (it was `transient` before D6, which made every
+// retry site special-case the `net.cancelled` code -- agent_session_core.cpp's stream-retry predicate did).
 result<std::monostate> check_not_cancelled(std::stop_token const& stop) {
     if (stop.stop_requested()) {
-        return std::unexpected(error{failure_class::transient, "cancelled via stop_token", "net.cancelled"});
+        return std::unexpected(error{failure_class::canceled, "cancelled via stop_token", "net.cancelled"});
     }
     return std::monostate{};
 }

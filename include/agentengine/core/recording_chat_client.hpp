@@ -247,7 +247,7 @@ public:
                         producer.fail(inner_stream.fail_error());
                         break;
                     case stream_terminal::cancelled:
-                        producer.fail(error{failure_class::fatal,
+                        producer.fail(error{failure_class::canceled,  // ADR-237 D6 (was fatal)
                                              "the inner (recorded) chat_stream() call was cancelled",
                                              "recording_chat_client.inner_stream_cancelled"});
                         break;

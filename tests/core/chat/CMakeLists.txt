@@ -128,6 +128,10 @@ agentengine_add_test(test_recording_chat_client LIBS agentengine::core agentengi
 # mechanism with identical chunk boundaries and inter-chunk timing (004 §7 G3).
 agentengine_add_test(test_replay_chat_client LIBS agentengine::core agentengine_warnings)
 
+# ---- ADR-237 §9 D6 -- failure_class::canceled, its one spelling, and the one retry decision
+# (core/error.hpp's is_retryable), plus the gateway's shared-budget column and its fail-over rule.
+agentengine_add_test(test_failure_class LIBS agentengine::core agentengine_warnings)
+
 add_executable(test_stream_delta_coalescing test_stream_delta_coalescing.cpp)
 target_link_libraries(test_stream_delta_coalescing PRIVATE agentengine::core agentengine_warnings)
 if(AGENTENGINE_WITH_HTTPS)

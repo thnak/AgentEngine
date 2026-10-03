@@ -148,7 +148,11 @@ public:
             Task t;
             t.id             = *minted;
             t.context_id     = context_id_;
-            t.status.state   = task_state::failed;
+            // ADR-237 D6 (I7): a run stopped on request is A2A's own terminal `TASK_STATE_CANCELED`
+            // (docs/research/2026-a2a-and-agui-detail.md: COMPLETED, FAILED, CANCELED, REJECTED are the terminal
+            // states), the same state streaming.hpp already gives a `run_canceled` event -- never `FAILED`.
+            t.status.state = outcome.error().klass == agentengine::failure_class::canceled ? task_state::canceled
+                                                                                           : task_state::failed;
             Message failure_msg;
             failure_msg.message_id = t.id + ":failure";
             failure_msg.task_id     = t.id;

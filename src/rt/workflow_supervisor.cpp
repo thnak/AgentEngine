@@ -1348,6 +1348,11 @@ WorkflowSupervisor::route_result WorkflowSupervisor::route_from(std::size_t from
 
     if (!reply.ok) {
         EdgeFailurePolicy const pol    = policy_for(from_index);
+        // ADR-237 D6: a `canceled` step was stopped on request (a sibling's failure, its own caller) -- it is never
+        // propagated as a failure marker nor rerouted to a fallback executor that would keep working on its behalf,
+        // whatever the edge declares; and is_retryable() never retries it. It ends the run like `fail`. (The run's
+        // OWN cancel never gets here: execute() ends the round `cancelled` before routing, issue #156.)
+        if (reply.klass == agentengine::failure_class::canceled) return route_result::workflow_failed;
         agentengine::Message const marker = failure_marker(from_id, reply.klass);
 
         switch (pol.kind) {

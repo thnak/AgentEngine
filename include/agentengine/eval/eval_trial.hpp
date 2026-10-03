@@ -338,7 +338,7 @@ public:
         } else if (terminal == stream_terminal::failed) {
             pair.producer.fail(*rec.stream_error);
         } else {
-            pair.producer.fail(error{failure_class::fatal, "the summarizer's stream was cancelled",
+            pair.producer.fail(error{failure_class::canceled, "the summarizer's stream was cancelled",  // ADR-237 D6 (was fatal)
                                      "eval.summarizer_stream_cancelled"});
         }
         trial_->summarizer_recordings.push_back(std::move(rec));

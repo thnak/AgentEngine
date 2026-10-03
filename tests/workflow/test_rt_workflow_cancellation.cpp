@@ -452,7 +452,7 @@ void c11_cancel_observing_failure_is_not_executor_failed() {
                    {[gate](Message const&, EffectContext& ctx) -> result<ExecutorOutcome> {
                         gate->park();
                         if (ctx.cancellation.stop_requested()) {
-                            return std::unexpected(error{failure_class::fatal, "the run was canceled", "run.canceled"});
+                            return std::unexpected(error{failure_class::canceled, "the run was canceled", "run.canceled"});
                         }
                         return ExecutorOutcome{text_message("not cancelled")};
                     },
