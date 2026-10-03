@@ -1041,3 +1041,43 @@ Open after step 3:
 - `usable_cpus`: Windows Job-object CPU rate caps are not read; the cgroup quota path is tested only through its
   parsers (no in-test cgroup on WSL).
 - Scheduler: one mutex and linear removal from ready lists — fine for the tests, unmeasured (§8.2 benches).
+
+### Step 4 (2026-10-03): DNS and TLS on the reactor (built in parallel with step 3, merged after it)
+
+- **DNS** — `pal/resolver.hpp` + `src/backends/reactor_asio/resolver_getaddrinfo.cpp` (one blocking
+  `getaddrinfo`, numeric `IpAddress` values, no policy); `rt/dns.hpp`: `rt::resolve` runs it on the dedicated
+  DNS `OffloadPool` (§4.6), a numeric host skips DNS, a stop resumes the caller `canceled` while the lookup
+  finishes in the pool and is discarded and counted. `rt::connect_resolved` is ADR-011's rule: resolve once,
+  ask a caller `AddressPolicy` about every address, fail closed (no policy → `no_policy` before any lookup; a
+  throwing policy rejects; none accepted → nothing connected), connect to accepted addresses in order with a
+  per-attempt deadline. No happy-eyeballs; Windows `GetAddrInfoExW` not done (the pool on both OSes).
+  Recorded deviation from M5: the per-attempt deadline requests stop on the reactor thread (it was built
+  before strands landed) — safe because that stop source is private and its only callback posts a cancel;
+  move it onto the strand with the other timer-driven stops.
+- **TLS** — `rt/tls.hpp`, `src/backends/tls_mbedtls/` (`agentengine::rt_tls`, inside `AGENTENGINE_WITH_HTTPS`):
+  `rt::TlsStream` on mbedTLS (D1). The BIO never touches a socket: send appends to an op-owned outgoing
+  buffer, receive serves bytes already read or returns `WANT_READ`; the coroutine flushes and reads through
+  `rt/tcp.hpp`, so mbedTLS runs only on the awaiting coroutine's home. ADR-013's client configuration
+  (vendored CA bundle, verification required, TLS 1.2 floor, hostname check) moved verbatim into
+  `mbedtls_client_config.{hpp,cpp}`, shared with the blocking `tls_client.cpp`, whose behaviour and error
+  codes are unchanged. One op per direction (`busy`); a read and a write may run concurrently; a stop
+  mid-operation cancels the TCP op (two-phase) and closes the stream (not resumable).
+  **§6.3's "config to be checked" answered:** `MBEDTLS_THREADING_C` is off in the vendored build and TSan shows
+  mbedTLS global state (ciphersuite list, ECP, PSA) racing between threads, so every mbedTLS call runs under
+  one process-wide lock, held only for the synchronous call and never across a `co_await`.
+- **Tests** — `test_rt_dns` (D1–D11; 42 checks on Windows, 43 on Linux; lookups beyond `localhost` via a test
+  seam) and `test_rt_tls` (L1–L11, HTTPS only, loopback mbedTLS peer with a CA generated at start-up; 49 on
+  both OSes — the Windows HTTPS build with clang-cl/llvm-mt). 16 mutants, all killed; "no deadline timer"
+  first survived because Windows' ~21 s OS connect timeout satisfied D10's fallback branch — D10 now bounds
+  every path. "Engine lock per thread" is killed by TSan (~1,170 reports). TSan 5/5, ASan 3/3 with mbedTLS
+  instrumented.
+- **Open after step 4** — the blocking `TlsClientSession` does not take the engine lock (its socket wait
+  blocks inside mbedTLS), so it races any concurrent mbedTLS user, a pre-existing hazard that the async
+  path makes reachable; the fix is `MBEDTLS_THREADING_C` (custom threading layer on Windows) — a build
+  decision for the owner. mbedTLS work is serialised process-wide; an alert produced during a read waits for
+  the next write; no handshake deadline; TLS buffers not pooled.
+
+**Integration after steps 3 + 4** (merged tree): Windows `rt` 76/76, full suite 401/414 (the 13 failures
+are the Docker-dependent tests, unchanged since step 1); Linux gcc 15 `-Werror` with HTTPS: full tree builds,
+`rt` 77/77 (incl. `test_rt_tls`), `test_https_egress` / `test_provider_http_client` pass; naming and layering
+lints clean.
