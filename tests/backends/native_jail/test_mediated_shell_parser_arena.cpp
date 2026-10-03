@@ -253,7 +253,8 @@ int main() {
         std::size_t const total_before = g_total_bytes.load();
         bool all_ok = true;
         try {
-            for (int i = 0; i < 24000; ++i) all_ok = all_ok && arena.allocate(8, 8) != nullptr;
+            // `allocate()` is declared returns-nonnull and reports exhaustion by throwing, so the catch is the check.
+            for (int i = 0; i < 24000; ++i) (void)arena.allocate(8, 8);
         } catch (...) {
             all_ok = false;
         }

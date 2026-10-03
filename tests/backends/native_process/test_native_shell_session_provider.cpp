@@ -333,7 +333,7 @@ int main() {
 
     // ---- provider
     IdentityAuthority& authority = IdentityAuthority::bootstrap();
-    IdentityHandle owner = authority.adopt(Principal{.id = "native-owner"});
+    IdentityHandle owner = authority.adopt(Principal{.id = "native-owner", .tenant_id = ""});
     auto open_q = *agentengine::rt::AsyncQuota<LiveShellOpen>::mint_root(authority, owner, 100);
     auto small_q = *agentengine::rt::AsyncQuota<LiveShellOpen>::mint_root(authority, owner, 2);
     LiveShellLimits const limits{10min, 30min, 100};

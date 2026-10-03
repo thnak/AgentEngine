@@ -66,6 +66,14 @@ enum class workflow_event_kind {  // ae-naming-lint: allow workflow_event_kind �
     // `workflow_run_failed`, which a consumer reads as the run ending while it was still suspended.
     // Appended last so every existing enumerator keeps its value.
     request_port_rejected,
+    // ADR-235 (OQ-20): vendor batch coalescing. `batch_submitted`/`batch_poll_failed`/`batch_abandoned` carry a
+    // `BatchJobRef`; `batch_fallback`/`batch_item_resolved` a `BatchItemRef`. Appended last, like
+    // `request_port_rejected`, so every existing enumerator keeps its value.
+    batch_submitted,
+    batch_fallback,
+    batch_item_resolved,
+    batch_poll_failed,
+    batch_abandoned,
 };
 
 namespace workflow_event_payload {
@@ -167,6 +175,24 @@ struct ModeratorDelta {
     std::vector<std::string> path;
 };
 
+// ADR-235: one vendor batch job. `detail` is the vendor's error text for `batch_poll_failed`, and for
+// `batch_abandoned` either empty (the vendor accepted the cancel) or why it could not be cancelled. Never a
+// secret: backends report vendor error messages, and credentials never enter a request body or a URL.
+struct BatchJobRef {
+    std::string              group_key;
+    std::string              job_id;
+    std::vector<std::string> executor_ids;
+    std::string              detail;
+};
+
+// ADR-235: one node's delivery. `status` is a `batch_item_status` tag for `batch_item_resolved`, and the
+// reason the call was not batched for `batch_fallback`.
+struct BatchItemRef {
+    std::string executor_id;
+    std::string job_id;
+    std::string status;
+};
+
 }  // namespace workflow_event_payload
 
 // ae-naming-lint: allow WorkflowEventPayload — mirrors RunEventPayload's own project-normative naming (core/run_event.hpp)
@@ -178,7 +204,8 @@ using WorkflowEventPayload = std::variant<
     workflow_event_payload::PortRef, workflow_event_payload::CheckpointSaved,
     workflow_event_payload::MergeRef, workflow_event_payload::SuperstepBounds,
     workflow_event_payload::AgentTurn, workflow_event_payload::ModeratorDelta,
-    workflow_event_payload::PortRejected>;
+    workflow_event_payload::PortRejected, workflow_event_payload::BatchJobRef,
+    workflow_event_payload::BatchItemRef>;
 
 struct WorkflowEvent {  // ae-naming-lint: allow WorkflowEvent — mirrors RunEvent's own project-normative naming (core/run_event.hpp)
     workflow_event_kind  kind  = workflow_event_kind::workflow_run_started;

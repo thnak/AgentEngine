@@ -1845,6 +1845,11 @@ namespace workflow_fixture_detail {
         case K::agent_turn_event: return "agent_turn_event";
         case K::moderator_stream_delta: return "moderator_stream_delta";
         case K::request_port_rejected: return "request_port_rejected";
+        case K::batch_submitted: return "batch_submitted";
+        case K::batch_fallback: return "batch_fallback";
+        case K::batch_item_resolved: return "batch_item_resolved";
+        case K::batch_poll_failed: return "batch_poll_failed";
+        case K::batch_abandoned: return "batch_abandoned";
     }
     return "unknown";
 }
@@ -1904,6 +1909,13 @@ namespace workflow_fixture_detail {
             [](wp::PortRejected const& x) {
                 return obj({{"executor_id", str(x.executor_id)}, {"interaction_id", str(x.interaction_id)},
                             {"reason", str(x.reason)}});
+            },
+            [](wp::BatchJobRef const& x) {
+                return obj({{"group_key", str(x.group_key)}, {"job_id", str(x.job_id)},
+                            {"executors", strings_json(x.executor_ids)}, {"detail", str(x.detail)}});
+            },
+            [](wp::BatchItemRef const& x) {
+                return obj({{"executor_id", str(x.executor_id)}, {"job_id", str(x.job_id)}, {"status", str(x.status)}});
             },
         },
         p);
@@ -2090,7 +2102,10 @@ struct DriverWorkflow {
 inline void finish_workflow_call(DriverWorkflow& w, rt::WorkflowResult const& r) {
     if (w.before_drain) w.before_drain();
     while (std::optional<workflow::WorkflowEvent> ev = w.stream->next()) w.monitor->on_event(*ev);
-    workflow_state const s = w.sup->open_interactions().empty() ? workflow_state::finished : workflow_state::suspended;
+    // ADR-235: a run can also be suspended on vendor batch jobs, which are not interactions.
+    workflow_state const s = (w.sup->open_interactions().empty() && r.pending_batches.empty())
+                                 ? workflow_state::finished
+                                 : workflow_state::suspended;
     w.monitor->finish_call(s, workflow_result_json(r), w.stream->multiplexed_dropped_count());
 }
 

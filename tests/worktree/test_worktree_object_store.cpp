@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "agentengine/core/worktree.hpp"
@@ -177,6 +178,49 @@ int main() {
                      *abc_digest ==
                          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
                  "A-C8: SHA-256(\"abc\") matches the published FIPS 180-4 known-answer value");
+    }
+
+    // A-C9 (concurrency): several threads write and read ONE store at once, the way a workflow
+    // round's executors and the merge-on-join hook share a bare store. Before the store had its own
+    // lock this corrupted its maps: lost inserts, a crash, or heap corruption under ASan (seen in
+    // test_rt_workflow_supervisor_merge_on_join's J2). Every thread writes distinct blobs and trees,
+    // so the expected counts are exact; each thread also reads back what it wrote while the others
+    // are still writing.
+    {
+        constexpr int kThreads = 8;
+        constexpr int kPerThread = 1500;
+        InMemoryWorktreeObjectStore store;
+        std::vector<int> bad(kThreads, 0);
+        {
+            std::vector<std::jthread> threads;
+            for (int t = 0; t < kThreads; ++t) {
+                threads.emplace_back([&store, &bad, t] {
+                    for (int i = 0; i < kPerThread; ++i) {
+                        auto const content = "t" + std::to_string(t) + "-" + std::to_string(i);
+                        auto blob = store.put_blob(bytes_of(content));
+                        if (!blob) { ++bad[t]; continue; }
+                        auto tree = store.put_tree(Tree{{TreeEntry{content, *blob, false}}});
+                        auto back = store.get_blob(*blob);
+                        auto size = store.blob_size(*blob);
+                        if (!tree || !back || *back != bytes_of(content) || !size || *size != content.size()) {
+                            ++bad[t];
+                            continue;
+                        }
+                        auto tree_back = store.get_tree(*tree);
+                        if (!tree_back || tree_back->entries.size() != 1 || tree_back->entries[0].digest != *blob)
+                            ++bad[t];
+                        (void)store.blob_count();
+                    }
+                });
+            }
+        }
+        int bad_total = 0;
+        for (int b : bad) bad_total += b;
+        AE_CHECK(bad_total == 0, "A-C9: every concurrent write reads back intact while other threads write");
+        AE_CHECK(store.blob_count() == std::size_t{kThreads} * kPerThread,
+                 "A-C9: no blob insert is lost under concurrent writers");
+        AE_CHECK(store.tree_count() == std::size_t{kThreads} * kPerThread,
+                 "A-C9: no tree insert is lost under concurrent writers");
     }
 
     if (g_failures != 0) {

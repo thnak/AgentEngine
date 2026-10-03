@@ -27,7 +27,8 @@ void WorkflowSupervisor::initialize(agentengine::workflow::Workflow graph, std::
     valid_base_ = agentengine::workflow::validate_workflow(graph_).has_value() &&
                   bodies_.size() == graph_.executors.size() &&
                   agentengine::workflow::check_workflow_executable(graph_, contexts_).has_value() &&
-                  agent_kind_bodies_are_structurally_agent_backed();
+                  agent_kind_bodies_are_structurally_agent_backed() &&
+                  batch_bodies_are_batchable();  // ADR-235 §3.1
     valid_ = valid_base_ && sub_workflow_kind_nodes_are_bound();
 }
 
@@ -45,6 +46,9 @@ void WorkflowSupervisor::bind_sub_workflow(std::string const& executor_id, std::
     // was (0 for a freshly-constructed instance), matching every other refusal in this
     // function leaving the CALLER's own state untouched.
     if (!inner || nesting_depth_ + 1 > kMaxNestingDepth) return;
+    // ADR-235 §3.1 / §5 finding 4: a nested run suspended on a vendor batch could never be polled
+    // through this parent -- an inner already opted into batching is refused, never bound.
+    if (inner->batch_coalescing_enabled()) return;
     inner->nesting_depth_ = nesting_depth_ + 1;
     sub_workflows_[idx] = std::move(inner);
     // ADR-169 (issue #65): a child bound AFTER this supervisor was given an owner inherits it
@@ -77,7 +81,7 @@ void WorkflowSupervisor::cancel() noexcept {
         return;
     }
     try {
-        if (!run_cancelled_ && (!ports_.empty() || !pending_sub_workflows_.empty())) {
+        if (!run_cancelled_ && awaiting_outside()) {  // ADR-235 §3.7: a batch-only suspension too
             (void)finish(workflow_status::cancelled, std::chrono::steady_clock::now());
         }
     } catch (...) {
@@ -106,6 +110,7 @@ void WorkflowSupervisor::close_run_for_cancel() noexcept {
     }
     pending_sub_workflows_.clear();
     ports_.clear();
+    batch_items_.clear();  // ADR-235: finish() already moved their jobs to abandoned_batches_
     state_.pending.clear();
     state_.held_fan_in.clear();
     run_cancelled_ = true;
@@ -122,6 +127,7 @@ std::optional<WorkflowResult> WorkflowSupervisor::refuse_if_cancelled() {
     r.partial         = state_.partial;
     r.failed_executor = state_.failed_executor;
     r.unopened_ports  = state_.unopened_ports;
+    fill_batch_fields(r);  // ADR-235: the jobs a cancelled run still owes a vendor cancel
     return r;
 }
 
@@ -180,6 +186,8 @@ task<WorkflowResult> WorkflowSupervisor::run_workflow(RunWorkflow request) {
                                            [run_source]() mutable noexcept { run_source.request_stop(); });
     ++run_counter_;
     run_id_ = graph_.id + ":run:" + std::to_string(run_counter_);
+    abandon_batch_items();  // ADR-235 §3.7: a new run never silently drops the previous run's paid jobs
+    batch_poll_failures_.clear();
     state_  = RunState{};
     ports_.clear();
     pending_sub_workflows_.clear();  // ADR-157 -- a fresh run carries no stale nested interactions
@@ -329,14 +337,7 @@ task<WorkflowResult> WorkflowSupervisor::resume_workflow_locked(ResumeWorkflow r
                 agentengine::workflow::workflow_event_kind::request_port_opened,
                 agentengine::workflow::workflow_event_payload::PortRef{
                     graph_.executors[pending.executor_index].id, fresh.interaction_id});
-            WorkflowResult r{workflow_status::suspended};
-            r.rounds            = rounds_;
-            r.partial           = state_.partial;
-            r.transcript        = state_.transcript;
-            r.transcript_truncated = state_.transcript_truncated;
-            r.output            = state_.selected_output;
-            r.open_interactions = open_interactions();
-            co_return r;
+            co_return suspended_result();
         }
         // completed, or any terminal failure -- construct an ORDINARY, freshly-built OpenPort.
         // OpenPort's own fields mean exactly what they always meant: the derived value
@@ -365,19 +366,11 @@ task<WorkflowResult> WorkflowSupervisor::resume_workflow_locked(ResumeWorkflow r
         // interactions (the one just resolved is already erased above), not just ports_ --
         // otherwise a still-open nested interaction elsewhere would be silently ignored and
         // execute() called prematurely.
-        bool const still_unresolved =
-            !pending_sub_workflows_.empty() ||
-            std::any_of(ports_.begin(), ports_.end(), [](OpenPort const& p) { return !p.resolved; });
-        if (still_unresolved) {
+        // ADR-235 §3.0: one predicate for "still waiting on the outside" -- a pending batch item keeps the
+        // run suspended exactly like an open port or nested interaction does.
+        if (awaiting_outside()) {
             push_structural_event(workflow_event_kind::workflow_run_suspended);
-            WorkflowResult r{workflow_status::suspended};
-            r.rounds            = rounds_;
-            r.partial           = state_.partial;
-            r.transcript        = state_.transcript;
-            r.transcript_truncated = state_.transcript_truncated;
-            r.output            = state_.selected_output;
-            r.open_interactions = open_interactions();
-            co_return r;
+            co_return suspended_result();
         }
         push_structural_event(workflow_event_kind::workflow_run_resumed);
         co_return co_await execute();
@@ -405,23 +398,15 @@ task<WorkflowResult> WorkflowSupervisor::resume_workflow_locked(ResumeWorkflow r
 
     // ADR-157: also checks pending_sub_workflows_ -- a still-open nested interaction must keep
     // the run suspended exactly like an unresolved ordinary port already does.
-    bool const still_unresolved =
-        !pending_sub_workflows_.empty() ||
-        std::any_of(ports_.begin(), ports_.end(), [](OpenPort const& p) { return !p.resolved; });
-    if (still_unresolved) {
+    // ADR-235 §3.0 (§5 finding 2): answering the LAST port while batch items are still pending must not
+    // run execute() -- that would advance the run without the batched nodes' outputs.
+    if (awaiting_outside()) {
         // Re-affirms the run is STILL suspended (other ports/interactions remain open) --
         // distinct from finish()'s own workflow_run_suspended, which only fires once a full
         // execute() pass confirms suspension; this is the "you resolved one of several, the run
         // hasn't moved yet" case.
         push_structural_event(workflow_event_kind::workflow_run_suspended);
-        WorkflowResult r{workflow_status::suspended};
-        r.rounds            = rounds_;
-        r.partial           = state_.partial;
-            r.transcript        = state_.transcript;
-            r.transcript_truncated = state_.transcript_truncated;
-        r.output            = state_.selected_output;
-        r.open_interactions = open_interactions();
-        co_return r;
+        co_return suspended_result();
     }
 
     push_structural_event(workflow_event_kind::workflow_run_resumed);
@@ -444,6 +429,11 @@ task<WorkflowResult> WorkflowSupervisor::continue_workflow_locked(ContinueWorkfl
     }
     // Issue #156: a cancelled run never moves again.
     if (std::optional<WorkflowResult> cancelled = refuse_if_cancelled()) co_return std::move(*cancelled);
+    // ADR-235 §3.0 (§5 finding 3): a restored run still waiting on the outside world -- an unanswered port,
+    // a pending nested run, or a pending batch item -- is reported, never driven. Before ADR-235 this went
+    // straight to execute(), whose prologue folded every port as answered: an unanswered port's own ask
+    // (stored in `response` until the real answer arrives) was routed onward as if a human had given it.
+    if (awaiting_outside()) co_return suspended_result();
     push_structural_event(workflow_event_kind::workflow_run_resumed);
     co_return co_await execute();
 }
@@ -468,7 +458,7 @@ RunStateRecord WorkflowSupervisor::to_record() const {
     rec.rounds      = rounds_;
     rec.pending.reserve(state_.pending.size());
     for (auto const& d : state_.pending) {
-        rec.pending.push_back(DeliveryRecord{static_cast<std::uint64_t>(d.executor_index), d.payload});
+        rec.pending.push_back(DeliveryRecord{static_cast<std::uint64_t>(d.executor_index), d.payload, d.no_batch});
     }
     rec.partial.reserve(state_.partial.size());
     for (auto const& p : state_.partial) {
@@ -494,6 +484,18 @@ RunStateRecord WorkflowSupervisor::to_record() const {
         rec.held_fan_in.push_back(HeldFanInRecord{static_cast<std::uint64_t>(h.executor_index), h.payload,
                                                     h.seeded, std::move(awaiting)});
     }
+    // ADR-235 §3.4: every unfolded item is written as PENDING, whatever this instance already resolved in
+    // memory -- a restored run re-polls the vendor rather than trusting an output out of a record.
+    rec.batch_items.reserve(batch_items_.size());
+    for (BatchItem const& b : batch_items_) {
+        rec.batch_items.push_back(BatchItemRecord{static_cast<std::uint64_t>(b.executor_index), b.input, b.group_key,
+                                                  b.job_id, b.custom_id, b.submitted_at_ns});
+    }
+    rec.abandoned_batches.reserve(abandoned_batches_.size());
+    for (AbandonedBatch const& a : abandoned_batches_) {
+        rec.abandoned_batches.push_back(
+            AbandonedBatchRecord{a.job_id, static_cast<std::uint64_t>(a.executor_index), a.group_key});
+    }
     return rec;
 }
 
@@ -504,7 +506,7 @@ void WorkflowSupervisor::restore_from_record(RunStateRecord const& rec) {
     state_       = RunState{};
     state_.pending.reserve(rec.pending.size());
     for (auto const& d : rec.pending) {
-        state_.pending.push_back(Delivery{static_cast<std::size_t>(d.executor_index), d.payload});
+        state_.pending.push_back(Delivery{static_cast<std::size_t>(d.executor_index), d.payload, d.no_batch});
     }
     state_.partial.reserve(rec.partial.size());
     for (auto const& p : rec.partial) {
@@ -529,6 +531,33 @@ void WorkflowSupervisor::restore_from_record(RunStateRecord const& rec) {
         for (std::uint64_t const idx : h.awaiting_sources) awaiting.push_back(static_cast<std::size_t>(idx));
         state_.held_fan_in.push_back(HeldFanIn{static_cast<std::size_t>(h.executor_index), h.payload,
                                                  h.seeded, std::move(awaiting)});
+    }
+    // ADR-235 §3.4/§3.7: the restored run's pending items are pending again (re-polled), and its owed
+    // cancels are owed again. Whatever THIS instance was still waiting on belongs to the run being replaced:
+    // its jobs are abandoned (and the record's own owed cancels appended), never silently dropped -- except a
+    // job the record itself is still waiting on (restoring this instance's own checkpoint), which must stay live.
+    std::erase_if(batch_items_, [&rec](BatchItem const& b) {
+        return std::any_of(rec.batch_items.begin(), rec.batch_items.end(),
+                           [&b](BatchItemRecord const& r) { return r.job_id == b.job_id && r.group_key == b.group_key; });
+    });
+    abandon_batch_items();
+    batch_poll_failures_.clear();
+    for (BatchItemRecord const& b : rec.batch_items) {
+        BatchItem item;
+        item.executor_index  = static_cast<std::size_t>(b.executor_index);
+        item.input           = b.input;
+        item.group_key       = b.group_key;
+        item.job_id          = b.job_id;
+        item.custom_id       = b.custom_id;
+        item.submitted_at_ns = b.submitted_at_ns;
+        batch_items_.push_back(std::move(item));
+    }
+    for (AbandonedBatchRecord const& a : rec.abandoned_batches) {
+        bool known = false;
+        for (AbandonedBatch const& have : abandoned_batches_) {
+            if (have.job_id == a.job_id && have.group_key == a.group_key) { known = true; break; }
+        }
+        if (!known) abandoned_batches_.push_back(AbandonedBatch{a.job_id, static_cast<std::size_t>(a.executor_index), a.group_key});
     }
     // Issue #156: the restored run is a different run from whatever this instance held -- its own stop source --
     // and a run that was checkpointed after it ended `cancelled` stays cancelled.
@@ -648,10 +677,14 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
     auto const entered_at = std::chrono::steady_clock::now();
     workflow_status status = workflow_status::completed;
 
-    if (!ports_.empty()) {
+    if (!ports_.empty() || !batch_items_.empty()) {
         std::vector<Delivery> next = state_.pending;
         fan_in_edges_this_round_.clear();
         for (auto const& p : ports_) {
+            // ADR-235 §3.0, defence in depth: every entry point refuses to call execute() while a port is
+            // unanswered, so this never fires -- but if it ever did, an unanswered port's `response` is still
+            // its own ASK, and folding it would route the question onward as if it were the answer.
+            if (!p.resolved) continue;
             push_structural_event(
                 agentengine::workflow::workflow_event_kind::request_port_resolved,
                 agentengine::workflow::workflow_event_payload::PortRef{
@@ -672,6 +705,11 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
             co_return finish(status, entered_at);
         }
         ports_.clear();
+        // ADR-235 §3.5 step 4: resolved vendor batch items, folded like a round's own results.
+        if (std::optional<workflow_status> const ended = fold_batch_items(next)) {
+            push_fan_in_aggregated_events();
+            co_return finish(*ended, entered_at);
+        }
         push_fan_in_aggregated_events();
         state_.pending = std::move(next);
     }
@@ -737,6 +775,18 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
                                        std::move(ids)});
         }
 
+        // ADR-235 §3.3 steps 1-5: with the host opted in, `batch: true` deliveries are built and admitted
+        // here, before anything dispatches. Batchable ones leave `exec_deliveries` as chunks submitted at the end
+        // of this round (step 7); unbatchable ones stay, each with a one-off body that sends the request already
+        // admitted (`on_unbatchable = sync`) or a pre-set failed reply (`fail`). A run that never opted in skips
+        // all of this: both vectors stay empty-optional and the round is byte-for-byte what it was.
+        std::vector<std::optional<ExecutorBody>> body_override;
+        std::vector<std::optional<ExecuteReply>> preset;
+        std::vector<BatchChunk>                  batch_chunks;
+        if (batch_policy_) gather_batch_candidates(exec_deliveries, body_override, preset, batch_chunks);
+        body_override.resize(exec_deliveries.size());
+        preset.resize(exec_deliveries.size());
+
         // OQ-19 design draft §5 item 2: two ordinary (non-fan_in) edges converging on the SAME
         // agent-kind node in one round would otherwise submit two concurrent `Delivery` entries
         // for the same `AgentSession` -- `AgentSession::start_run()`'s `session_mutex_.lock()`
@@ -781,6 +831,10 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
                 replies[i] = ExecuteReply{agentengine::Message{}, {}, false,
                                            agentengine::failure_class::contract, false, std::nullopt,
                                            agentengine::Usage{}};
+            } else if (preset[i]) {
+                // ADR-235 §3.3 step 5 (`on_unbatchable = fail`): never enters `todo`, so never retried --
+                // retrying would make exactly the full-price synchronous call the host chose to refuse.
+                replies[i] = *preset[i];
             } else {
                 todo.push_back(i);
             }
@@ -792,6 +846,19 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
         // matching what record_partial()'s own post-increment `rounds_ - 1` will resolve to
         // once `++rounds_` DOES run a few lines down.
         std::uint32_t const this_round = static_cast<std::uint32_t>(rounds_) + 1;
+
+        // ADR-236 §3: a cancel requested since the top of the round -- for instance by a batch replay's divergence
+        // hook during the batch gather above -- dispatches nothing. Each undispatched delivery gets a failed reply
+        // (never folded), and the cancel check after the wave ends the run `cancelled` before routing, as for a
+        // cancel observed mid-wave (issue #156). Without this, a divergence the host stopped on still ran this
+        // round's synchronous fallbacks: live model calls in what was meant to be an offline replay.
+        if (!todo.empty() && cancel_requested()) {
+            for (std::size_t const i : todo) {
+                replies[i] = ExecuteReply{agentengine::Message{}, {}, false, agentengine::failure_class::transient,
+                                          false, std::nullopt, agentengine::Usage{}};
+            }
+            todo.clear();
+        }
 
         for (std::uint32_t attempt = 0; !todo.empty(); ++attempt) {
             // ---- decision 5, first half: ISSUE every job before awaiting any ----------------
@@ -814,7 +881,8 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
                 agentengine::EffectContext ctx = contexts_[idx];
                 ctx.cancellation                = cancellation_token();
                 in_flight.push_back(pool_.submit(run_executor_job(
-                    bodies_[idx], exec_deliveries[i].payload, std::move(ctx), slot, event_sink,
+                    body_override[i] ? *body_override[i] : bodies_[idx], exec_deliveries[i].payload, std::move(ctx),
+                    slot, event_sink,
                     graph_.executors[idx].id, this_round, attempt, event_path_prefix_)));
             }
 
@@ -965,6 +1033,16 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
             }
             exec_deliveries.push_back(std::move(sub_workflow_deliveries[i]));
             replies.push_back(std::move(sub_workflow_replies[i]));
+        }
+
+        // ADR-235 §3.3 step 7: submit AFTER the synchronous wave, just before the round closes, so a paid job
+        // is only ever this round's fold/routing away from the checkpoint below that records it.
+        std::vector<Delivery>    batch_deferred;
+        std::vector<std::size_t> batch_waiting;
+        // ADR-236 §3: never submit (and pay for) a job for a round that is already cancelled -- it would only be
+        // abandoned and cancelled on the next poll.
+        if (!batch_chunks.empty() && !cancel_requested()) {
+            batch_waiting = submit_batch_chunks(batch_chunks, exec_deliveries, replies, batch_deferred);
         }
 
         ++rounds_;
@@ -1122,6 +1200,8 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
             ports_.push_back(OpenPort{interaction, d.executor_index, d.payload, {}, false,
                                        agentengine::Usage{}});
         }
+        // ADR-235: a chunk whose submit failed under `on_unbatchable = sync` runs synchronously next round.
+        for (Delivery& d : batch_deferred) next.push_back(std::move(d));
         state_.pending = std::move(next);
 
         // 014 §5: "Checkpoint at superstep boundaries." Right here -- round N's results are fully
@@ -1153,6 +1233,10 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
                     graph_.executors[d.executor_index].id,
                     agentengine::workflow::executor_live_state::port_open});
             }
+            for (std::size_t const idx : batch_waiting) {  // ADR-235 §3.6
+                ev.executor_states.push_back(agentengine::workflow::ExecutorLiveState{
+                    graph_.executors[idx].id, agentengine::workflow::executor_live_state::batch_pending});
+            }
             ev.in_flight_message_count = state_.pending.size();
             (void)live_view_producer_.push(std::move(ev));
         }
@@ -1162,7 +1246,8 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
         // newly-suspended nested sub-workflow (no ordinary ports_, state_.pending now empty)
         // must still report suspended, not fall through to `completed` (this round loop's own
         // initial status).
-        if (!ports_.empty() || !pending_sub_workflows_.empty()) {
+        // ADR-235 §3.0: and a round that submitted a vendor batch suspends on it, by the same predicate.
+        if (awaiting_outside()) {
             status = workflow_status::suspended;
             break;
         }
@@ -1179,6 +1264,11 @@ WorkflowResult WorkflowSupervisor::finish(workflow_status status,
     state_.elapsed_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(
                              std::chrono::steady_clock::now() - entered_at)
                              .count();
+    // ADR-235 §3.0: a run that ends -- any status but `suspended` -- keeps no live vendor job. Every unfolded
+    // batch item's job is owed a cancel by the next poll_batches(); it is never left running, unreported, for a
+    // run that can no longer use it. Before close_run_for_cancel() (which is noexcept and only clears): this
+    // allocates, and in cancel() a throw here is caught there with nothing changed.
+    if (status != workflow_status::suspended) abandon_batch_items();
     // Issue #156: a run ending `cancelled` -- wherever that was decided -- closes every open interaction.
     if (status == workflow_status::cancelled) close_run_for_cancel();
     WorkflowResult r{};
@@ -1200,6 +1290,7 @@ WorkflowResult WorkflowSupervisor::finish(workflow_status status,
     // change for a graph with no request_port/sub_workflow nodes.
     r.open_interactions = open_interactions();
     r.unopened_ports = state_.unopened_ports;
+    fill_batch_fields(r);  // ADR-235 §3.6
 
     // ADR-152 (issue #29): the one choke point every execute()-driven terminal outcome passes
     // through -- covers the round-loop happy path AND every early `co_return finish(...)` this

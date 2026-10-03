@@ -2127,15 +2127,23 @@ static_assert(SkillSource<InlineSkillSource>);
 // that, every single call.`;
 
 export const inlineSkillSourceExampleSnippet = `// Build one skill entirely in memory, from a string literal -- no SKILL.md file on disk anywhere.
-// Same pattern builtin_skills.hpp uses to ship this engine's own five generic skills.
-auto skill = parse_skill_md(
-    "---\\nname: inline-skill\\ndescription: A programmatically defined skill.\\n---\\nBody.\\n",
-    "inline-skill");                                        // parse_skill_md(text, expected_dir_name)
+// Same steps as builtin_skills.hpp's parse_builtin(), which ships this engine's own generic skills.
+constexpr std::string_view kSkillMd =
+    "---\\nname: inline-skill\\ndescription: A programmatically defined skill.\\n---\\nBody.\\n";
 
+// The second argument is optional: when given, the frontmatter name must equal it (009 §8a's
+// directory-name rule). An inline skill has no directory, so it may be left out.
+auto skill = parse_skill_md(kSkillMd, "inline-skill");
+if (!skill) return std::unexpected(skill.error());   // a malformed manifest fails HERE, not later
+
+// files is mounted exactly as given -- nothing checks it. Put SKILL.md's REAL bytes in it, or the
+// mounted skill's own manifest reads back empty (the body is still served from *skill).
+std::vector<std::byte> bytes(reinterpret_cast<std::byte const*>(kSkillMd.data()),
+                             reinterpret_cast<std::byte const*>(kSkillMd.data()) + kSkillMd.size());
 std::vector<SkillBundleFile> files;
-files.push_back(SkillBundleFile{"SKILL.md", /* the raw bytes of that same text */ {}});
-// A real bundle can push more files here too -- scripts/, references/, assets/ -- there's no
-// requirement that an inline skill be JUST the manifest.
+files.push_back(SkillBundleFile{"SKILL.md", std::move(bytes)});
+// More files may follow -- "scripts/run.py", "references/api.md", ... -- POSIX relative paths;
+// SkillsProvider rejects one that is not a valid relative path when it resolves.
 
 std::vector<SkillSourceResult> supplied;
 supplied.push_back(SkillSourceResult{*skill, files});
@@ -2146,6 +2154,69 @@ source.load_skills();   // == supplied, every time -- deterministic, no state to
 
 // Hand it to SkillsProvider the same way DiskSkillSource would be handed:
 SkillSourceDescriptor descriptor = make_skill_source_descriptor(std::move(source));`;
+
+// InlineSkillSource, member by member -- include/agentengine/core/skill_source.hpp:91-107, and what
+// SkillsProvider (skill_provider.hpp:198-262) does with each value at resolve time.
+export interface MemberSpec {
+  sig: string;
+  returns: string;
+  contract: string;
+}
+
+export const inlineSkillSourceMembers: Record<Lang, MemberSpec[]> = {
+  en: [
+    {
+      sig: "InlineSkillSource(std::string origin_id, std::vector<SkillSourceResult> skills)",
+      returns: "—",
+      contract:
+        "Stores both arguments as given. Never fails and never inspects the skills: no parsing, no validation, no I/O. Every later load_skills() succeeds with a copy of this vector.",
+    },
+    {
+      sig: "InlineSkillSource(std::string origin_id, result<std::vector<SkillSourceResult>> skills)",
+      returns: "—",
+      contract:
+        "Stores the result verbatim, success or error. Built for callers whose own construction-time parsing can fail (builtin_skills.hpp, extract_pdf_text.hpp): an error passed here comes back from every load_skills() call unchanged, same class, code and message.",
+    },
+    {
+      sig: "std::string_view origin_id() const noexcept",
+      returns: "a view of the stored origin id",
+      contract:
+        "Valid while this object lives. make_skill_source_descriptor copies it into SkillSourceDescriptor::origin_id. SkillsProvider uses it only to name both sources in a skill.name_collision_across_sources error; it is not a namespace, and two sources may share one.",
+    },
+    {
+      sig: "result<std::vector<SkillSourceResult>> load_skills() const",
+      returns: "a copy of what the constructor stored",
+      contract:
+        "Same value every call, no side effects, safe to call concurrently (nothing is mutated). The copy includes every file's bytes, so its cost grows with the bundle. SkillsProvider calls it once per resolve and caches the result (ensure_loaded()).",
+    },
+  ],
+  vi: [
+    {
+      sig: "InlineSkillSource(std::string origin_id, std::vector<SkillSourceResult> skills)",
+      returns: "—",
+      contract:
+        "Lưu nguyên hai đối số. Không bao giờ thất bại và không xem xét các skill: không parse, không kiểm tra, không I/O. Mọi lần load_skills() sau đó đều thành công và trả về một bản sao của vector này.",
+    },
+    {
+      sig: "InlineSkillSource(std::string origin_id, result<std::vector<SkillSourceResult>> skills)",
+      returns: "—",
+      contract:
+        "Lưu nguyên result, dù là thành công hay lỗi. Dành cho caller mà bước parse lúc khởi tạo của chính nó có thể thất bại (builtin_skills.hpp, extract_pdf_text.hpp): lỗi truyền vào đây được trả lại y nguyên ở mọi lần gọi load_skills(), cùng class, code và message.",
+    },
+    {
+      sig: "std::string_view origin_id() const noexcept",
+      returns: "một view tới origin id đã lưu",
+      contract:
+        "Hợp lệ khi đối tượng này còn sống. make_skill_source_descriptor sao chép nó vào SkillSourceDescriptor::origin_id. SkillsProvider chỉ dùng nó để nêu tên hai nguồn trong lỗi skill.name_collision_across_sources; nó không phải namespace, và hai nguồn có thể dùng chung một origin id.",
+    },
+    {
+      sig: "result<std::vector<SkillSourceResult>> load_skills() const",
+      returns: "một bản sao của thứ constructor đã lưu",
+      contract:
+        "Cùng một giá trị ở mọi lần gọi, không có side effect, gọi đồng thời vẫn an toàn (không có gì bị thay đổi). Bản sao gồm cả bytes của mọi file, nên chi phí tăng theo kích thước bundle. SkillsProvider gọi nó một lần cho mỗi lần resolve và cache kết quả (ensure_loaded()).",
+    },
+  ],
+};
 
 // The failure-carrying constructor, in isolation -- tests/core/skills/test_skill_source_inline.cpp:56-83 (R1b),
 // trimmed. No real parsing happens here at all; the point is that a failure handed to the

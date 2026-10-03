@@ -134,6 +134,14 @@ struct Executor {
     // already establishes.
     std::vector<agentengine::Capability> capability_ceiling;
 
+    // ADR-235 (OQ-20): this node's single-shot model call MAY be sent to a vendor batch job instead of a
+    // synchronous call, when (and only when) the embedding host has also called
+    // `WorkflowSupervisor::enable_batch_coalescing()`. A graph flag only ever makes a node ELIGIBLE --
+    // whether a run leaves zero-data-retention and trades latency for cost is the host's decision, never
+    // the graph author's alone. Valid on `function` nodes only (validate_workflow): an agent node runs a
+    // tool loop no vendor batch item can express, and ports/sub-workflows make no model call.
+    bool batch = false;
+
     // Hand-written, NOT `= default`: agentengine::Capability's payload structs (trust/capability.hpp)
     // have no operator== of their own yet, so a defaulted comparator here would be silently DELETED
     // the moment capability_ceiling was added as a member, taking Workflow's own defaulted
@@ -143,7 +151,7 @@ struct Executor {
     // silently gapped.
     friend bool operator==(Executor const& a, Executor const& b) noexcept {
         return a.id == b.id && a.kind == b.kind && a.input_type == b.input_type &&
-               a.output_type == b.output_type && a.worktree_mode == b.worktree_mode;
+               a.output_type == b.output_type && a.worktree_mode == b.worktree_mode && a.batch == b.batch;
     }
 };
 
@@ -325,6 +333,16 @@ struct Workflow {
         if (e.input_type.empty() || e.output_type.empty()) {
             return fail("executor '" + e.id + "' has an untyped input or output port",
                         "workflow.untyped_port");
+        }
+    }
+
+    // ADR-235: a batch item is ONE model call with no tool loop (every vendor surveyed in
+    // docs/research/2026-10-02-batch-inference-provider-limits.md), so only a `function` node -- whose body
+    // the supervisor can check is a `BatchableModelCall` -- may declare it.
+    for (auto const& e : wf.executors) {
+        if (e.batch && e.kind != executor_kind::function) {
+            return fail("executor '" + e.id + "' declares batch, which only a function executor may",
+                        "validate.batch_on_non_function");
         }
     }
 

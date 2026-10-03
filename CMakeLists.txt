@@ -128,7 +128,9 @@ target_link_libraries(agentengine_core INTERFACE agentengine_message_json)
 # core/chat_recording.hpp's bodies, compiled once. A library of its own rather than a second source of
 # agentengine_message_json: that one holds the V-layer codec, and this file is L2 (tools/layers.toml). It calls the
 # codec, so it names it as a PUBLIC dependency, which puts it after this library on a single-pass linker's line.
-add_library(agentengine_chat_recording STATIC src/core/chat_recording.cpp)
+# core/batch_recording.hpp (ADR-236) is the same recorded seam for the BatchBackend, built on this codec, so it
+# lives in the same library.
+add_library(agentengine_chat_recording STATIC src/core/chat_recording.cpp src/core/batch_recording.cpp)
 target_include_directories(agentengine_chat_recording PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_compile_features(agentengine_chat_recording PRIVATE cxx_std_23)
 target_link_libraries(agentengine_chat_recording PRIVATE agentengine_warnings)
@@ -173,7 +175,7 @@ target_link_libraries(agentengine_core INTERFACE agentengine_rt_session)
 # that included it compiled and optimized the whole superstep loop again. The bodies are compiled once here
 # (moved verbatim); the header keeps the class, declarations and small accessors. Linked through
 # agentengine::core like the libraries above, so no consumer needs a CMake change.
-add_library(agentengine_rt_workflow STATIC src/rt/workflow_supervisor.cpp)
+add_library(agentengine_rt_workflow STATIC src/rt/workflow_supervisor.cpp src/rt/workflow_supervisor_batch.cpp)
 target_include_directories(agentengine_rt_workflow PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_compile_features(agentengine_rt_workflow PRIVATE cxx_std_23)
 target_link_libraries(agentengine_rt_workflow PRIVATE agentengine_warnings)
@@ -722,6 +724,7 @@ if(AGENTENGINE_WITH_HTTPS)
     src/sandbox/provider_http_client.cpp
     src/protocol/provider_chat_wire.cpp
     src/protocol/openai/chat_client.cpp
+    src/protocol/openai/openrouter_batch.cpp
     src/protocol/anthropic/chat_client.cpp)
   target_link_libraries(agentengine_provider_http_client PUBLIC agentengine::net_egress_proxy)
   target_link_libraries(agentengine_provider_http_client PRIVATE agentengine_warnings)
@@ -1319,11 +1322,10 @@ if(AGENTENGINE_WITH_HTTPS AND NOT WIN32)
     MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
 endif()
 
-# ---- Standalone batch inference (tools/batch_infer.cpp) -- submits N independent prompts to
-# OpenRouter's real Batch API (beta) and polls to completion. See that file's own top comment for
-# why this is scoped OUTSIDE docs/planning/batch-inference-coalescing-gap.md's standing "do not wire
-# vendor batch mode into AgentSession without an ADR" directive: no AgentSession/StandingEffect/
-# workflow dependency at all, so unlike agentengine_cli_chat above it needs no Python embed.
+# ---- Standalone batch inference (tools/batch_infer.cpp) -- submits N independent prompts to OpenRouter's GA
+# Batch API through the engine's own OpenRouterBatchBackend (ADR-235 §3.2) and polls to completion; optionally
+# records every backend call for offline replay (ADR-236). No AgentSession/workflow dependency, so unlike
+# agentengine_cli_chat above it needs no Python embed.
 if(AGENTENGINE_WITH_HTTPS)
   add_executable(agentengine_batch_infer tools/batch_infer.cpp)
   target_link_libraries(agentengine_batch_infer PRIVATE

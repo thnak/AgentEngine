@@ -88,9 +88,9 @@ agentengine::rt::task<agentengine::result<BranchHandle<Store>>> Ledger<Store>::c
     if (!disambiguator.empty()) name += "-" + disambiguator;
     agentengine::Digest empty_tree_digest;
     {
-        // Every store_ access MUST be serialized by THIS Ledger's own mutex_, the same one
-        // guarding branches_ -- InMemoryWorktreeObjectStore has no internal synchronization of
-        // its own.
+        // Every store_ access is serialized by THIS Ledger's own mutex_, the same one guarding
+        // branches_: the store's own lock makes each call safe, but the ACL and branch bookkeeping
+        // around it must change in the same critical section.
         std::lock_guard<std::mutex> g(mutex_);
         auto put = store_.put_tree(agentengine::Tree{});
         if (!put) {

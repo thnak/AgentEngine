@@ -35,6 +35,10 @@ namespace agentengine::rt {
 struct DeliveryRecord {
     std::uint64_t         executor_index = 0;
     agentengine::Message  payload;
+    // ADR-235 §3.3 step 7 / §3.5: this delivery already went through a vendor batch (or failed to be submitted)
+    // and must run synchronously -- never resubmitted. Written only when true and optional on read, so a
+    // record of a run that never batches is byte-identical to one written before ADR-235.
+    bool                  no_batch = false;
 };
 
 // ae-naming-lint: allow ExecutorOutputRecord — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
@@ -69,6 +73,29 @@ struct OpenPortRecord {
     bool                       resolved = false;
 };
 
+// ADR-235 §3.4: one PENDING vendor batch item. Only pending items are ever recorded -- a resolved result
+// lives in memory until `poll_batches()` folds the whole set, so a record never carries a model output that
+// did not come from the vendor (re-polled after a restore instead).
+// ae-naming-lint: allow BatchItemRecord — ADR-235
+struct BatchItemRecord {
+    std::uint64_t        executor_index = 0;
+    agentengine::Message input;
+    std::string          group_key;
+    std::string          job_id;
+    std::string          custom_id;
+    std::int64_t         submitted_at_ns = 0;
+};
+
+// ADR-235 §3.7: a job the run no longer wants (it ended, was cancelled, or was re-run) that a later
+// `poll_batches()` still owes a best-effort vendor cancel/release -- through a backend whose `group_key`
+// matches, never a different one.
+// ae-naming-lint: allow AbandonedBatchRecord — ADR-235
+struct AbandonedBatchRecord {
+    std::string   job_id;
+    std::uint64_t executor_index = 0;
+    std::string   group_key;
+};
+
 // ae-naming-lint: allow RunStateRecord — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct RunStateRecord {
     std::uint64_t  run_counter = 0;
@@ -94,6 +121,10 @@ struct RunStateRecord {
     // undelivered messages and ports are already discarded) restored and continued would report
     // `completed`. Optional on read (default false), the same additive-field precedent as above.
     bool cancelled = false;
+    // ADR-235: pending vendor batch items and jobs still owed a cancel. Optional on read (default empty), and
+    // written only when non-empty, so a record of a run that never batches is unchanged.
+    std::vector<BatchItemRecord>      batch_items;
+    std::vector<AbandonedBatchRecord> abandoned_batches;
 };
 
 // interaction_to_json()/interaction_from_json() live in interaction_codec.hpp -- shared with
@@ -102,10 +133,12 @@ struct RunStateRecord {
 // error code's own dotted suffix, now unified to "rt.interaction.record.malformed").
 
 [[nodiscard]] inline agentengine::json::Value delivery_record_to_json(DeliveryRecord const& d) {
-    return agentengine::json::Value::make_object({
+    std::vector<std::pair<std::string, agentengine::json::Value>> fields{
         {"executor_index", agentengine::json::Value::make_number(static_cast<double>(d.executor_index))},
         {"payload", message_to_json(d.payload)},
-    });
+    };
+    if (d.no_batch) fields.emplace_back("no_batch", agentengine::json::Value::make_bool(true));  // ADR-235
+    return agentengine::json::Value::make_object(std::move(fields));
 }
 [[nodiscard]] inline agentengine::result<DeliveryRecord> delivery_record_from_json(
     agentengine::json::Value const& v) {
@@ -121,7 +154,66 @@ struct RunStateRecord {
     DeliveryRecord d;
     d.executor_index = static_cast<std::uint64_t>(executor_index->as_number());
     d.payload         = std::move(*msg);
+    if (agentengine::json::Value const* nb = v.find("no_batch"); nb != nullptr && nb->is_bool()) d.no_batch = nb->as_bool();
     return d;
+}
+
+// ADR-235 -- see BatchItemRecord / AbandonedBatchRecord.
+[[nodiscard]] inline agentengine::json::Value batch_item_record_to_json(BatchItemRecord const& b) {
+    return agentengine::json::Value::make_object({
+        {"executor_index", agentengine::json::Value::make_number(static_cast<double>(b.executor_index))},
+        {"input", message_to_json(b.input)},
+        {"group_key", agentengine::json::Value::make_string(b.group_key)},
+        {"job_id", agentengine::json::Value::make_string(b.job_id)},
+        {"custom_id", agentengine::json::Value::make_string(b.custom_id)},
+        {"submitted_at_ns", agentengine::json::Value::make_number(static_cast<double>(b.submitted_at_ns))},
+    });
+}
+[[nodiscard]] inline agentengine::result<BatchItemRecord> batch_item_record_from_json(agentengine::json::Value const& v) {
+    agentengine::json::Value const* executor_index  = v.find("executor_index");
+    agentengine::json::Value const* input           = v.find("input");
+    agentengine::json::Value const* group_key       = v.find("group_key");
+    agentengine::json::Value const* job_id          = v.find("job_id");
+    agentengine::json::Value const* custom_id       = v.find("custom_id");
+    agentengine::json::Value const* submitted_at_ns = v.find("submitted_at_ns");
+    if (executor_index == nullptr || !executor_index->is_number() || input == nullptr || group_key == nullptr ||
+        !group_key->is_string() || job_id == nullptr || !job_id->is_string() || custom_id == nullptr ||
+        !custom_id->is_string() || submitted_at_ns == nullptr || !submitted_at_ns->is_number()) {
+        return std::unexpected(agentengine::error{agentengine::failure_class::contract, "malformed BatchItemRecord",
+                                                  "rt.workflow_supervisor.record.malformed"});
+    }
+    agentengine::result<agentengine::Message> msg = message_from_json(*input);
+    if (!msg) return std::unexpected(msg.error());
+    BatchItemRecord b;
+    b.executor_index  = static_cast<std::uint64_t>(executor_index->as_number());
+    b.input           = std::move(*msg);
+    b.group_key       = group_key->as_string();
+    b.job_id          = job_id->as_string();
+    b.custom_id       = custom_id->as_string();
+    b.submitted_at_ns = static_cast<std::int64_t>(submitted_at_ns->as_number());
+    return b;
+}
+
+[[nodiscard]] inline agentengine::json::Value abandoned_batch_record_to_json(AbandonedBatchRecord const& a) {
+    return agentengine::json::Value::make_object({
+        {"job_id", agentengine::json::Value::make_string(a.job_id)},
+        {"executor_index", agentengine::json::Value::make_number(static_cast<double>(a.executor_index))},
+        {"group_key", agentengine::json::Value::make_string(a.group_key)},
+    });
+}
+[[nodiscard]] inline agentengine::result<AbandonedBatchRecord> abandoned_batch_record_from_json(
+    agentengine::json::Value const& v) {
+    agentengine::json::Value const* job_id         = v.find("job_id");
+    agentengine::json::Value const* executor_index = v.find("executor_index");
+    agentengine::json::Value const* group_key      = v.find("group_key");
+    if (job_id == nullptr || !job_id->is_string() || executor_index == nullptr || !executor_index->is_number() ||
+        group_key == nullptr || !group_key->is_string()) {
+        return std::unexpected(agentengine::error{agentengine::failure_class::contract,
+                                                  "malformed AbandonedBatchRecord",
+                                                  "rt.workflow_supervisor.record.malformed"});
+    }
+    return AbandonedBatchRecord{job_id->as_string(), static_cast<std::uint64_t>(executor_index->as_number()),
+                                group_key->as_string()};
 }
 
 [[nodiscard]] inline agentengine::json::Value executor_output_record_to_json(ExecutorOutputRecord const& o) {
@@ -265,7 +357,7 @@ struct RunStateRecord {
     held_fan_in.reserve(rec.held_fan_in.size());
     for (auto const& h : rec.held_fan_in) held_fan_in.push_back(held_fan_in_record_to_json(h));
 
-    return agentengine::json::Value::make_object({
+    std::vector<std::pair<std::string, agentengine::json::Value>> fields{
         {"run_counter", agentengine::json::Value::make_number(static_cast<double>(rec.run_counter))},
         {"run_id", agentengine::json::Value::make_string(rec.run_id)},
         {"rounds", agentengine::json::Value::make_number(static_cast<double>(rec.rounds))},
@@ -280,7 +372,21 @@ struct RunStateRecord {
         {"resets_used", agentengine::json::Value::make_number(static_cast<double>(rec.resets_used))},
         {"held_fan_in", agentengine::json::Value::make_array(std::move(held_fan_in))},
         {"cancelled", agentengine::json::Value::make_bool(rec.cancelled)},
-    });
+    };
+    // ADR-235: written only when non-empty -- see RunStateRecord::batch_items.
+    if (!rec.batch_items.empty()) {
+        std::vector<agentengine::json::Value> items;
+        items.reserve(rec.batch_items.size());
+        for (auto const& b : rec.batch_items) items.push_back(batch_item_record_to_json(b));
+        fields.emplace_back("batch_items", agentengine::json::Value::make_array(std::move(items)));
+    }
+    if (!rec.abandoned_batches.empty()) {
+        std::vector<agentengine::json::Value> items;
+        items.reserve(rec.abandoned_batches.size());
+        for (auto const& a : rec.abandoned_batches) items.push_back(abandoned_batch_record_to_json(a));
+        fields.emplace_back("abandoned_batches", agentengine::json::Value::make_array(std::move(items)));
+    }
+    return agentengine::json::Value::make_object(std::move(fields));
 }
 
 [[nodiscard]] inline agentengine::result<RunStateRecord> run_state_record_from_json(
@@ -365,6 +471,21 @@ struct RunStateRecord {
             auto h = held_fan_in_record_from_json(item);
             if (!h) return std::unexpected(h.error());
             rec.held_fan_in.push_back(std::move(*h));
+        }
+    }
+    // ADR-235: optional on read -- a record without them has no batch items and owes no cancels.
+    if (agentengine::json::Value const* items = v.find("batch_items"); items != nullptr && items->is_array()) {
+        for (agentengine::json::Value const& item : items->as_array()) {
+            auto b = batch_item_record_from_json(item);
+            if (!b) return std::unexpected(b.error());
+            rec.batch_items.push_back(std::move(*b));
+        }
+    }
+    if (agentengine::json::Value const* items = v.find("abandoned_batches"); items != nullptr && items->is_array()) {
+        for (agentengine::json::Value const& item : items->as_array()) {
+            auto a = abandoned_batch_record_from_json(item);
+            if (!a) return std::unexpected(a.error());
+            rec.abandoned_batches.push_back(std::move(*a));
         }
     }
     return rec;
