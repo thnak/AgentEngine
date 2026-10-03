@@ -131,3 +131,8 @@ agentengine_add_test(test_rt_reactor_timer LIBS agentengine::core agentengine_wa
 # workers, shutdown joining running bodies -- and testing::ManualReactor, the virtual-time test reactor (§8.1).
 agentengine_add_test(test_rt_offload LIBS agentengine::core agentengine_warnings TIMEOUT 180)
 agentengine_add_test(test_rt_manual_reactor LIBS agentengine::core agentengine_warnings TIMEOUT 180)
+
+# ---- ADR-237 implementation step 2: TCP streams on the reactor (pal/reactor_tcp.hpp, its Asio backend,
+# rt/tcp.hpp) -- connect/read/write/readiness awaitables resumed on the waiter's home, op-owned buffers,
+# two-phase sticky cancellation reporting the backend's real outcome, descriptor exhaustion as `resource`.
+agentengine_add_test(test_rt_reactor_tcp LIBS agentengine::core agentengine_warnings TIMEOUT 180)
