@@ -540,7 +540,9 @@ deferred to C++29). **Decided: Asio (§9 D1).**
   runs with.
 - **TLS details (red-team minor):** a write canceled mid-record drops the connection; concurrent TLS 1.3
   handshakes need mbedTLS's PSA state thread-safe (`MBEDTLS_THREADING_C` or one handshake at a time) —
-  the current config is to be checked.
+  the current config is to be checked. **Checked 2026-10-09 (step 7): `MBEDTLS_THREADING_C` is required and
+  is turned on; `MBEDTLS_THREADING_C` alone was not enough — the vendored `MBEDTLS_SELF_TEST` also had to be
+  disabled, and the ciphersuite list warmed.**
 
 ## 7. New problems this design creates (to be attacked by red-team)
 
@@ -1074,8 +1076,9 @@ Open after step 3:
 - **Open after step 4** — the blocking `TlsClientSession` does not take the engine lock (its socket wait
   blocks inside mbedTLS), so it races any concurrent mbedTLS user, a pre-existing hazard that the async
   path makes reachable; the fix is `MBEDTLS_THREADING_C` (custom threading layer on Windows) — a build
-  decision for the owner. mbedTLS work is serialised process-wide; an alert produced during a read waits for
-  the next write; no handshake deadline; TLS buffers not pooled.
+  decision for the owner, **taken 2026-10-09 and done in step 7 below, which found it also had to disable
+  `MBEDTLS_SELF_TEST`**. mbedTLS work is serialised process-wide (per stream as of step 7); an alert produced
+  during a read waits for the next write; no handshake deadline; TLS buffers not pooled.
 
 **Integration after steps 3 + 4** (merged tree): Windows `rt` 76/76, full suite 401/414 (the 13 failures
 are the Docker-dependent tests, unchanged since step 1); Linux gcc 15 `-Werror` with HTTPS: full tree builds,
@@ -1307,3 +1310,48 @@ Open after step 5:
   sandbox `io_timeout_ms()`); one 2.5 s H11 run under `ctest -j2` on Linux, in the same run as failures of
   `test_rt_reactor_process` P8 and `test_rt_agent_session_background_task` — looks like machine load, not
   reproduced in 19 further runs; H11 now prints the phase if it recurs.
+
+### Step 7 (2026-10-09): `MBEDTLS_THREADING_C` — mbedTLS made thread-safe, `rt::TlsStream`'s lock becomes per stream
+
+Closes "Open after step 4": the async TLS path serialised every mbedTLS call behind one process-wide lock
+(`tls_detail::engine_mutex()`) because mbedTLS 3.6's TLS 1.3/PSA globals are not thread-safe without
+`MBEDTLS_THREADING_C`, while the blocking `sandbox::TlsClientSession` — whose BIO blocks inside mbedTLS —
+could not take that lock and so raced it anyway. This step moves the locking *into* mbedTLS and deletes the
+engine-wide lock.
+
+- **`MBEDTLS_THREADING_C` + `MBEDTLS_THREADING_ALT`** (`src/backends/tls_mbedtls/agentengine_mbedtls_config.h`,
+  set as `MBEDTLS_USER_CONFIG_FILE` on all three vendored targets **PUBLIC**, so every consumer compiles one
+  configuration). The layer is this project's own `std::mutex` one: `threading_alt.h` defines the type as
+  plain C (a handle on a `std::mutex`), `agentengine_mbedtls_threading.hpp` provides the four callbacks and
+  an idempotent `ensure_threading()`. `MBEDTLS_THREADING_PTHREAD` was rejected — it is POSIX-only and this
+  tree is Windows + Linux. `ensure_threading()` is called from `mbedtls_client::Context` **and** by an
+  autostart object in the same header (a test's raw-mbedTLS loopback peer never builds a Context), so every
+  mbedTLS user in the process is armed before its first call, before `main`.
+- **The finding: `MBEDTLS_THREADING_C` alone was NOT enough — `MBEDTLS_SELF_TEST` had to go.** The vendored
+  3.6.7 `mbedtls_config.h` ships `MBEDTLS_SELF_TEST` ENABLED (its own default), which compiles three
+  process-global counters into `ecp.c` (`add_count`/`dbl_count`/`mul_count`, `library/ecp.c:89-91`) that every
+  EC point operation increments (`INC_MUL_COUNT`, `ecp.c:1041`). `MBEDTLS_THREADING_C` does not guard them, so
+  two concurrent TLS 1.3 handshakes race on `mul_count` exactly where the EC key agreement / ECDSA sign runs.
+  The user config `#undef`s it (nothing in the tree calls a `*_self_test`; it is also work off the hot path).
+  This is the "ECP" race §6.3 named, and it is why THREADING_C by itself was not the whole fix.
+- **One more unguarded lazy table, warmed.** `library/ssl_ciphersuites.c`'s `supported_init` /
+  `supported_ciphersuites` (built by the first `mbedtls_ssl_config_defaults`) is a plain `static`, also not
+  covered by `MBEDTLS_THREADING_C`. `ensure_threading()` builds it once, single-threaded
+  (`mbedtls_ssl_list_ciphersuites()`), so concurrent first handshakes cannot race it.
+- **`rt::TlsStream`'s lock is now per stream** (`tls_stream_mbedtls.cpp`: one `std::mutex` in `Impl`), so two
+  streams no longer serialise against each other; only one stream's concurrent read and write, which share its
+  buffers and flags, are serialised. The public `tls_detail::engine_mutex()` is deleted; both rt tests drop
+  their peer-side locks (mbedTLS is now safe for the peer itself), and `test_rt_tls` gains **L12** — six
+  `TlsStream`s handshake and echo at once, one thread each, every byte intact — the positive control the
+  whole change is measured against.
+- **Evidence.** Windows (MSVC, HTTPS): `test_rt_tls`, `test_rt_https`, `test_provider_http_client`,
+  `test_https_egress` all pass. Linux gcc 15 `-Werror` (HTTPS): builds and both rt tests pass. TSan (gcc 15,
+  mbedTLS instrumented): **with `MBEDTLS_SELF_TEST` on, every report is the `mul_count` race — 145 distinct
+  `SUMMARY`s in the saved run, all `mbedtls_mpi_mul_mod` (test_rt_https alone counts 777)**; with it off,
+  **0**, and `test_rt_tls` + `test_rt_https` pass 3/3 each (they also hung the S4 server-close check before the
+  fix, on the same contention). ASan/UBSan + LSan (gcc 15, HTTPS, mbedTLS instrumented): both rt tests pass,
+  no leak (the mbedTLS global mutexes live behind global handles). Layering and naming lints clean.
+- **Open after step 7 (small):** a Windows HTTPS run of `test_rt_https` (still Linux-only, §14 step 6); the
+  blocking `TlsClientSession` now shares mbedTLS's internal locking, but its own `mbedtls_client::Context` is
+  still built per connection; `mbedtls_threading_free_alt()` is not called (the global mutexes are
+  process-lifetime and reachable from globals — no leak).

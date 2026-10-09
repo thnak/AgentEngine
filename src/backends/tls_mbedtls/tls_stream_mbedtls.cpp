@@ -1,19 +1,23 @@
 // Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §6.3 (TLS on the reactor; "TLS context
 // ownership"; "TLS details") with §4.2/§4.4 -- `rt::TlsStream` (rt/tls.hpp) on mbedTLS, whose trust
 // configuration is ADR-013's (mbedtls_client_config.cpp, shared with the blocking client). The rules -- the
-// BIO, one op per direction, the process-wide engine lock never held across a co_await, close on cancel -- are
+// BIO, one op per direction, the per-stream lock never held across a co_await, close on cancel -- are
 // stated in rt/tls.hpp; this file is their implementation:
 //
-//   - Every mbedTLS call goes through one of the small `step_*` functions below, which take the engine lock,
-//     call mbedTLS once, move the ciphertext it produced out of the stream (to a buffer the TCP write will own)
-//     and return. Coroutines never hold the lock: they `co_await` only outside those functions.
+//   - Every mbedTLS call goes through one of the small `step_*` functions below, which take the stream's own
+//     lock, call mbedTLS once, move the ciphertext it produced out of the stream (to a buffer the TCP write
+//     will own) and return. Coroutines never hold the lock: they `co_await` only outside those functions.
+//     The lock is PER STREAM: mbedTLS's own process-global state is now thread-safe (MBEDTLS_THREADING_C,
+//     agentengine_mbedtls_threading.hpp), so two streams never serialise against each other; this mutex only
+//     guards one stream's buffers and flags, which a concurrent read and write share.
 //   - BIO send appends to `Impl::out` and never blocks; BIO receive serves `Impl::in` (filled from TCP reads'
 //     op-owned buffers, moved in, not copied) and otherwise returns WANT_READ, or 0 at TCP EOF.
 //   - A `Claim` marks the op's direction(s) busy for the op's duration. If the op does not finish normally --
 //     a stop mid-op, a failure, an exception, or the frame destroyed while suspended -- the claim's destructor
 //     fails the stream and closes the TCP stream (§4.4: an interrupted TLS session is not resumable).
-//   - `Impl` is shared by the handle and the coroutines in flight; its mbedTLS context is freed under the engine
-//     lock (freeing touches PSA's key store too).
+//   - `Impl` is shared by the handle and the coroutines in flight; its mbedTLS context is freed when the last
+//     reference goes, with no op in flight (so no lock is needed -- freeing touches only mbedTLS globals,
+//     which are themselves locked internally).
 
 #include "agentengine/rt/tls.hpp"
 
@@ -21,6 +25,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <mutex>
 #include <optional>
 #include <utility>
 
@@ -30,13 +35,6 @@
 namespace agentengine::rt {
 
 namespace mbedtls_client = agentengine::detail::mbedtls_client;
-
-namespace tls_detail {
-std::mutex& engine_mutex() noexcept {
-    static std::mutex m;
-    return m;
-}
-}  // namespace tls_detail
 
 namespace {
 
@@ -48,11 +46,11 @@ enum class phase : std::uint8_t { fresh, handshaking, ready, failed };
 }  // namespace
 
 struct TlsStream::Impl {
-    std::shared_ptr<pal::TcpStream>        tcp;
-    TlsClientOptions                       options;
-    std::optional<mbedtls_client::Context> ctx;  // freed under the engine lock (~Impl)
+    std::mutex                                   mutex;  // guards everything below, one stream at a time
+    std::shared_ptr<pal::TcpStream>              tcp;
+    TlsClientOptions                             options;
+    std::optional<mbedtls_client::Context>       ctx;  // freed when the last Impl reference goes (~Impl)
 
-    // Everything below is guarded by tls_detail::engine_mutex().
     std::vector<std::byte> in;              // ciphertext read from TCP, not yet consumed by mbedTLS
     std::size_t            in_pos = 0;
     bool                   in_eof = false;  // TCP reported EOF
@@ -68,10 +66,7 @@ struct TlsStream::Impl {
     }
     Impl(Impl const&)            = delete;
     Impl& operator=(Impl const&) = delete;
-    ~Impl() {
-        std::lock_guard const lock(tls_detail::engine_mutex());
-        ctx.reset();
-    }
+    ~Impl() { ctx.reset(); }
 
     // Engine lock held.
     void note_engine_call() const {
@@ -135,7 +130,7 @@ struct Step {
 
 // Claims the direction(s) an op needs. Engine lock taken here. `none` on success.
 tls_error claim(Impl& im, bool read, bool write, bool need_ready) {
-    std::lock_guard const lock(tls_detail::engine_mutex());
+    std::lock_guard const lock(im.mutex);
     if (im.closed || im.state == phase::failed) return tls_error::closed;
     if ((read && im.reading) || (write && im.writing)) return tls_error::busy;
     if (need_ready && im.state != phase::ready) return tls_error::invalid_state;
@@ -153,7 +148,7 @@ public:
     Claim(Claim const&)            = delete;
     Claim& operator=(Claim const&) = delete;
     ~Claim() {
-        std::lock_guard const lock(tls_detail::engine_mutex());
+        std::lock_guard const lock(im_->mutex);
         if (read_) im_->reading = false;
         if (write_) im_->writing = false;
         if (!finished_) im_->fail_locked();
@@ -192,7 +187,7 @@ task<TcpResult> flush(Impl* im, Bytes bytes, std::stop_token stop) {
 task<TcpResult> fill(Impl* im, std::stop_token stop) {
     TcpResult r = co_await tcp_read_some(*im->tcp, kTcpReadChunk, std::move(stop));
     if (r.ok() || r.error == pal::tcp_error::eof) {
-        std::lock_guard const lock(tls_detail::engine_mutex());
+        std::lock_guard const lock(im->mutex);
         if (r.error == pal::tcp_error::eof) {
             im->in_eof = true;
         } else if (im->in_pos == im->in.size()) {
@@ -207,9 +202,9 @@ task<TcpResult> fill(Impl* im, std::stop_token stop) {
     co_return r;
 }
 
-// ADR-013's configuration plus this stream's BIO. Takes the engine lock (setup touches the RNG and PSA).
+// ADR-013's configuration plus this stream's BIO. Takes the stream lock (setup touches the RNG and PSA).
 result<void> configure_locked_scope(Impl& im) {
-    std::lock_guard const lock(tls_detail::engine_mutex());
+    std::lock_guard const lock(im.mutex);
     im.note_engine_call();
     auto configured = mbedtls_client::configure(*im.ctx, im.options.hostname, im.options.ca_bundle_pem_override,
                                                 "agentengine-rt-tls");
@@ -242,7 +237,7 @@ task<TlsResult> do_handshake(std::shared_ptr<Impl> im, std::stop_token stop) {
     for (;;) {
         Step s;
         {
-            std::lock_guard const lock(tls_detail::engine_mutex());
+            std::lock_guard const lock(im->mutex);
             im->note_engine_call();
             s.ret     = mbedtls_ssl_handshake(&im->ctx->ssl);
             s.to_send = take_out_locked(*im);
@@ -253,7 +248,7 @@ task<TlsResult> do_handshake(std::shared_ptr<Impl> im, std::stop_token stop) {
             if (!w.ok()) co_return from_tcp(w);
         }
         if (s.ret == 0) {
-            std::lock_guard const lock(tls_detail::engine_mutex());
+            std::lock_guard const lock(im->mutex);
             im->state = phase::ready;
             claimed.finish();
             co_return TlsResult{};
@@ -266,7 +261,7 @@ task<TlsResult> do_handshake(std::shared_ptr<Impl> im, std::stop_token stop) {
         }
         TlsResult r;
         {
-            std::lock_guard const lock(tls_detail::engine_mutex());
+            std::lock_guard const lock(im->mutex);
             ae::error const e = mbedtls_client::handshake_error(im->ctx->ssl, s.ret);
             r.verify_flags    = mbedtls_ssl_get_verify_result(&im->ctx->ssl);
             r.message         = e.message;
@@ -289,7 +284,7 @@ task<TlsResult> do_read(std::shared_ptr<Impl> im, std::size_t max_bytes, std::st
     for (;;) {
         int ret = 0;
         {
-            std::lock_guard const lock(tls_detail::engine_mutex());
+            std::lock_guard const lock(im->mutex);
             im->note_engine_call();
             ret = mbedtls_ssl_read(&im->ctx->ssl, reinterpret_cast<unsigned char*>(plain.data()), plain.size());
         }
@@ -329,7 +324,7 @@ task<TlsResult> do_write(std::shared_ptr<Impl> im, Bytes plain, std::stop_token 
         Step              s;
         std::size_t const len = std::min(kWriteChunk, plain->size() - sent);
         {
-            std::lock_guard const lock(tls_detail::engine_mutex());
+            std::lock_guard const lock(im->mutex);
             im->note_engine_call();
             s.ret = mbedtls_ssl_write(&im->ctx->ssl, reinterpret_cast<unsigned char const*>(plain->data() + sent),
                                       len);
@@ -364,7 +359,7 @@ task<TlsResult> do_close_notify(std::shared_ptr<Impl> im, std::stop_token stop) 
     Claim claimed(im, false, true);
     Step  s;
     {
-        std::lock_guard const lock(tls_detail::engine_mutex());
+        std::lock_guard const lock(im->mutex);
         im->note_engine_call();
         s.ret     = mbedtls_ssl_close_notify(&im->ctx->ssl);
         s.to_send = take_out_locked(*im);
@@ -380,7 +375,7 @@ task<TlsResult> do_close_notify(std::shared_ptr<Impl> im, std::stop_token stop) 
         if (!w.ok()) co_return from_tcp(w);
     }
     {
-        std::lock_guard const lock(tls_detail::engine_mutex());
+        std::lock_guard const lock(im->mutex);
         im->write_shut = true;
     }
     claimed.finish();
@@ -420,21 +415,23 @@ task<TlsResult> TlsStream::close_notify(std::stop_token stop) { return do_close_
 
 void TlsStream::close() noexcept {
     if (!impl_) return;
-    std::lock_guard const lock(tls_detail::engine_mutex());
+    std::lock_guard const lock(impl_->mutex);
     impl_->closed = true;
     if (impl_->tcp) impl_->tcp->close();
 }
 
 bool TlsStream::handshake_done() const noexcept {
-    std::lock_guard const lock(tls_detail::engine_mutex());
-    return impl_ && !impl_->closed && impl_->state == phase::ready;
+    if (!impl_) return false;
+    std::lock_guard const lock(impl_->mutex);
+    return !impl_->closed && impl_->state == phase::ready;
 }
 
 pal::TcpStream& TlsStream::tcp() const noexcept { return *impl_->tcp; }
 
 std::string TlsStream::protocol_version() const {
-    std::lock_guard const lock(tls_detail::engine_mutex());
-    if (!impl_ || impl_->state != phase::ready) return {};
+    if (!impl_) return {};
+    std::lock_guard const lock(impl_->mutex);
+    if (impl_->state != phase::ready) return {};
     return mbedtls_ssl_get_version(&impl_->ctx->ssl);
 }
 

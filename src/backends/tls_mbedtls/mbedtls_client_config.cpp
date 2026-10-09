@@ -17,6 +17,10 @@ extern char const* const kVendoredCaBundlePem;
 namespace agentengine::detail::mbedtls_client {
 
 Context::Context() {
+    // ADR-237 §6.3: arm mbedTLS's threading layer (MBEDTLS_THREADING_C) before the first mbedTLS call.
+    // agentengine_mbedtls_threading.hpp's autostart already ran it before main for this TU; this keeps the
+    // requirement named at the point every TLS stream is built. Idempotent.
+    ensure_threading();
     mbedtls_entropy_init(&entropy);
     mbedtls_ctr_drbg_init(&drbg);
     mbedtls_x509_crt_init(&ca_chain);

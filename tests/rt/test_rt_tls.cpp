@@ -30,6 +30,10 @@
 //       close_notify a write is `invalid_state`.
 //   L11 A stop already requested completes `canceled` without touching the stream (it stays usable); ops before
 //       the handshake are `invalid_state`; an empty host name fails `setup_failed`.
+//   L12 SIX TlsStreams handshake and echo at the same time, each on its own thread, every byte intact -- the
+//       positive control for MBEDTLS_THREADING_C (ADR-237 §6.3): the streams share mbedTLS's process globals
+//       (TLS 1.3 keys live in PSA's store), so with the threading layer off TSan reports the race here, and
+//       the streams must NOT serialise against each other (that was the old process-wide lock's cost).
 //
 // Coroutines are free functions taking their state by pointer, never immediately-invoked lambda coroutines with
 // captures (ADR-237 §14); result containers are declared before the reactor that completes into them.
@@ -182,8 +186,8 @@ private:
 };
 
 // ---- the loopback TLS peer ---------------------------------------------------------------------------------
-// Non-blocking BIO; every mbedTLS call under rt::tls_detail::engine_mutex() (PSA's key store is process-global,
-// rt/tls.hpp), and the readiness waits OUTSIDE it, so the server never holds the lock while it waits.
+// Non-blocking BIO. mbedTLS is thread-safe in this build (MBEDTLS_THREADING_C, ADR-237 §6.3), so the peer
+// needs no lock of its own to run alongside the client; only the readiness waits bound each WANT_*.
 
 bool wait_ready(pal::fd_t fd, bool for_write, int timeout_ms) {
     ::fd_set set;
@@ -213,7 +217,6 @@ public:
     enum class mode { echo, stall, sink_then_send, say_bye };
 
     TlsServer(KeyCert const& kc, mode m, std::size_t n = 0) : mode_(m), n_(n) {
-        std::lock_guard const lock(tls_detail::engine_mutex());
         mbedtls_x509_crt_init(&cert_);
         mbedtls_pk_init(&key_);
         mbedtls_entropy_init(&entropy_);
@@ -236,7 +239,6 @@ public:
         thread_.request_stop();
         thread_.join();
         pal::close_fd(listen_);
-        std::lock_guard const lock(tls_detail::engine_mutex());
         mbedtls_pk_free(&key_);
         mbedtls_x509_crt_free(&cert_);
         mbedtls_ctr_drbg_free(&drbg_);
@@ -264,15 +266,11 @@ private:
         }
     }
 
-    // One mbedTLS call under the engine lock; WANT_* waits for readiness outside it. Returns the final rc.
+    // One mbedTLS call; a WANT_* waits for readiness. Returns the final rc.
     template <class F>
     int retry(pal::fd_t fd, std::stop_token const& st, F&& f) {
         for (;;) {
-            int rc = 0;
-            {
-                std::lock_guard const lock(tls_detail::engine_mutex());
-                rc = f();
-            }
+            int const rc = f();
             if (rc != MBEDTLS_ERR_SSL_WANT_READ && rc != MBEDTLS_ERR_SSL_WANT_WRITE) return rc;
             if (st.stop_requested()) return MBEDTLS_ERR_SSL_TIMEOUT;
             (void)wait_ready(fd, rc == MBEDTLS_ERR_SSL_WANT_WRITE, 10);
@@ -305,17 +303,14 @@ private:
         }
         mbedtls_ssl_config conf;
         mbedtls_ssl_context ssl;
-        {
-            std::lock_guard const lock(tls_detail::engine_mutex());
-            mbedtls_ssl_config_init(&conf);
-            mbedtls_ssl_init(&ssl);
-            mbedtls_ssl_config_defaults(&conf, MBEDTLS_SSL_IS_SERVER, MBEDTLS_SSL_TRANSPORT_STREAM,
-                                        MBEDTLS_SSL_PRESET_DEFAULT);
-            mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &drbg_);
-            mbedtls_ssl_conf_own_cert(&conf, &cert_, &key_);
-            mbedtls_ssl_setup(&ssl, &conf);
-            mbedtls_ssl_set_bio(&ssl, &fd, server_send, server_recv, nullptr);
-        }
+        mbedtls_ssl_config_init(&conf);
+        mbedtls_ssl_init(&ssl);
+        mbedtls_ssl_config_defaults(&conf, MBEDTLS_SSL_IS_SERVER, MBEDTLS_SSL_TRANSPORT_STREAM,
+                                    MBEDTLS_SSL_PRESET_DEFAULT);
+        mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &drbg_);
+        mbedtls_ssl_conf_own_cert(&conf, &cert_, &key_);
+        mbedtls_ssl_setup(&ssl, &conf);
+        mbedtls_ssl_set_bio(&ssl, &fd, server_send, server_recv, nullptr);
         bool gone = false;
         int  rc   = retry(fd, st, [&] { return mbedtls_ssl_handshake(&ssl); });
         if (rc != 0) {
@@ -372,7 +367,6 @@ private:
             }
         }
         if (gone) peer_gone_.fetch_add(1);
-        std::lock_guard const lock(tls_detail::engine_mutex());
         mbedtls_ssl_free(&ssl);
         mbedtls_ssl_config_free(&conf);
     }
@@ -891,6 +885,40 @@ int main() {
         TlsResult hs = block_on(handshake_of(c.tls.get()));
         check(hs.error == tls_error::setup_failed && hs.code == "net.tls_setup_failed",
               "L11: an empty host name fails `setup_failed` (verification is never skipped)");
+    }
+
+    // L12 -----------------------------------------------------------------------------------------------
+    {
+        constexpr int kN = 6;
+        std::vector<std::unique_ptr<TlsServer>> servers;
+        std::vector<std::unique_ptr<Client>>    clients;
+        std::vector<EchoTrip>                   trips(kN);
+        std::vector<std::thread>                threads;
+        servers.reserve(kN);
+        clients.reserve(kN);
+        threads.reserve(kN);
+        for (int i = 0; i < kN; ++i) {
+            servers.push_back(std::make_unique<TlsServer>(leaf, TlsServer::mode::echo));
+            clients.push_back(
+                std::make_unique<Client>(make_client(*reactor, servers.back()->port(), options_for("localhost", root.cert_pem))));
+        }
+        // Connected serially above (TCP + TlsStream construction); the handshakes and echoes -- all mbedTLS
+        // work -- then run at the same time, one thread per stream, so they contend on mbedTLS's globals.
+        for (int i = 0; i < kN; ++i) {
+            threads.emplace_back([&, i] {
+                trips[static_cast<std::size_t>(i)] =
+                    block_on(handshake_and_echo(clients[static_cast<std::size_t>(i)]->tls.get(), "c" + std::to_string(i)));
+            });
+        }
+        for (auto& th : threads) th.join();
+        bool all_ok = true;
+        for (int i = 0; i < kN; ++i) {
+            std::string const want = "c" + std::to_string(i);
+            all_ok = all_ok && trips[static_cast<std::size_t>(i)].hs.ok() &&
+                     trips[static_cast<std::size_t>(i)].echoed == want;
+        }
+        check(all_ok, "L12: " + std::to_string(kN) + " TlsStreams handshake and echo concurrently on " +
+                          std::to_string(kN) + " threads, every byte intact");
     }
 
     reactor.reset();
