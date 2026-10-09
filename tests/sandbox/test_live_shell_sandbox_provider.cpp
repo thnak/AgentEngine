@@ -50,6 +50,7 @@
 #include <string>
 #include <vector>
 
+#include "../support/run_task_sync.hpp"  // ADR-237 §5.2: drive the async tool invoke
 using namespace agentengine;
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
@@ -235,7 +236,7 @@ template <class Provider>
     std::vector<std::pair<std::string, json::Value>> members{{"command", json::Value::make_string(command)}};
     if (restart) members.emplace_back("restart", json::Value::make_bool(true));
     json::Value const args = json::Value::make_object(std::move(members));
-    auto out = tool->invoke(args, ctx);
+    auto out = test_support::run_task_sync<result<json::Value>>(tool->invoke(args, ctx));
     if (!out.has_value()) return std::unexpected(out.error());
     return schema::from_json<ShellExecReply>(*out);
 }
@@ -669,7 +670,7 @@ int main() {
         Recorded rec;
         EffectContext ctx = ctx_for("owner", &rec);
         auto tool = shell_tool(p, ctx);
-        auto r = tool ? tool->invoke(json::Value::make_object({{"command", json::Value::make_string("refuse")}}), ctx)
+        auto r = tool ? test_support::run_task_sync<result<json::Value>>(tool->invoke(json::Value::make_object({{"command", json::Value::make_string("refuse")}}), ctx))
                       : result<json::Value>(std::unexpected(error{failure_class::contract, "no tool", "test.no_tool"}));
         bool const create_audited = std::any_of(rec.events.begin(), rec.events.end(),
                                                 [](auto const& e) { return e.stage == "create" && e.ok; });

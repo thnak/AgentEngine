@@ -13,6 +13,7 @@
 #include "agentengine/trust/capability.hpp"
 #include "agentengine/trust/secret_quarantine.hpp"
 
+#include "../support/run_task_sync.hpp"  // ADR-237 §5.2: drive the async tool invoke
 using namespace agentengine;
 
 namespace {
@@ -195,7 +196,7 @@ void test_agent_initiated_tool_never_grants_and_redacts_verbatim() {
     EffectContext ctx = make_ctx();
     QuarantineSecretArgs const args{"a very specific string the model flagged"};
     json::Value const args_json = schema::to_json(args);
-    auto const reply_json = descriptor.invoke(args_json, ctx);
+    auto const reply_json = test_support::run_task_sync<result<json::Value>>(descriptor.invoke(args_json, ctx));
     AE_CHECK(reply_json.has_value(), "invoking the real closure (not the dead static invoke()) succeeds");
 
     if (reply_json.has_value()) {

@@ -11,6 +11,8 @@
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/core/tool_registry.hpp"
 
+#include "../../support/run_task_sync.hpp"  // ADR-237 §5.2: drive the async tool invoke
+
 namespace {
 
 namespace ae = agentengine;
@@ -78,8 +80,8 @@ ae::EffectContext make_ctx() {
 bool rerun_matches(ae::ToolDescriptor const& d, ae::json::Value const& args) {
     auto ctx1 = make_ctx();
     auto ctx2 = make_ctx();
-    auto first = d.invoke(args, ctx1);
-    auto second = d.invoke(args, ctx2);
+    auto first = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(d.invoke(args, ctx1));
+    auto second = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(d.invoke(args, ctx2));
     return first && second && ae::schema::json_value_equal(*first, *second);
 }
 

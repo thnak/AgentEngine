@@ -307,8 +307,8 @@ public:
         RS* ref_store    = ref_store_;
         Mount mount      = mount_;
         cap::FsRead read_cap = read_cap_;
-        d.invoke = [object_store, ref_store, mount, read_cap](
-                       json::Value const& args_value, EffectContext&) -> result<json::Value> {
+        d.invoke = make_sync_invoke([object_store, ref_store, mount, read_cap](
+                                        json::Value const& args_value, EffectContext&) -> result<json::Value> {
             auto args = schema::from_json<RecallArgs>(args_value);
             if (!args) return std::unexpected(args.error());
             auto ranked = rank_memory_items(*object_store, *ref_store, mount, read_cap, args->query,
@@ -323,7 +323,7 @@ public:
                 reply.results.push_back(memory_detail::memory_item_to_labeled_text(item));
             }
             return schema::to_json(reply);
-        };
+        });
         return d;
     }
 

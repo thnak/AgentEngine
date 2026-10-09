@@ -44,6 +44,7 @@
 #include <string>
 #include <vector>
 
+#include "../support/run_task_sync.hpp"  // ADR-237 §5.2: drive the async tool invoke
 using namespace agentengine;
 
 namespace {
@@ -243,7 +244,7 @@ int main() {
             auto args = json::Value::make_object(
                 {{"command", json::Value::make_string(
                                  "echo -n 'from parent, direct call' > parent.txt && cat parent.txt")}});
-            auto reply = contribution->tools[0].invoke(args, call.ctx);
+            auto reply = test_support::run_task_sync<result<json::Value>>(contribution->tools[0].invoke(args, call.ctx));
             check(reply.has_value(), "a direct run_command invoke() succeeds");
             if (reply.has_value()) {
                 std::string const reply_json = json::dump(*reply);
@@ -373,14 +374,14 @@ int main() {
             auto args_a = json::Value::make_object(
                 {{"command", json::Value::make_string("echo -n 'sibling A only' > sibling_a_only.txt")}});
             check(contribution_a.has_value() && !contribution_a->tools.empty() &&
-                      contribution_a->tools[0].invoke(args_a, call.ctx).has_value(),
+                      test_support::run_task_sync<result<json::Value>>(contribution_a->tools[0].invoke(args_a, call.ctx)).has_value(),
                   "sibling_a's own real command succeeds");
 
             auto contribution_b = drive(sibling_b.history_provider().on_context(call.session_ctx, call.ctx));
             auto args_b = json::Value::make_object(
                 {{"command", json::Value::make_string("echo -n 'sibling B only' > sibling_b_only.txt")}});
             check(contribution_b.has_value() && !contribution_b->tools.empty() &&
-                      contribution_b->tools[0].invoke(args_b, call.ctx).has_value(),
+                      test_support::run_task_sync<result<json::Value>>(contribution_b->tools[0].invoke(args_b, call.ctx)).has_value(),
                   "sibling_b's own real command succeeds");
 
             check(!read_entry(ledger, branch_a, owner, "sibling_b_only.txt").has_value(),

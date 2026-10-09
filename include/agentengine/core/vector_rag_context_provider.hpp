@@ -364,7 +364,7 @@ private:
         // ADR-064 Design B: args are validated FIRST (reject-not-coerce, 006 §3 step 2) regardless of
         // which branch below runs, so a malformed call always gets its own schema error rather than
         // either branch's error masking a genuinely separate contract violation.
-        d.invoke = [this](json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {
+        d.invoke = make_sync_invoke([this](json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {
             (void)this;  // only the `synchronous_leaf` branch below actually touches members; the
                          // other branch's own instantiation would otherwise trip -Wunused-lambda-capture
             auto args = schema::from_json<RagRecallArgs>(args_value);
@@ -440,7 +440,7 @@ private:
                     "task<T>/task<void> and declares synchronous_leaf = true.",
                     "vector_rag_context_provider.recall_tool_requires_synchronous_leaf_embedder"});
             }
-        };
+        });
         return d;
     }
 

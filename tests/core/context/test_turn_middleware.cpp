@@ -72,9 +72,9 @@ ToolDescriptor make_marker_tool(std::string name, std::string marker) {
     ToolDescriptor d;
     d.name        = name;
     d.description = "original description";
-    d.invoke      = [marker](json::Value const&, EffectContext&) -> result<json::Value> {
+    d.invoke      = make_sync_invoke([marker](json::Value const&, EffectContext&) -> result<json::Value> {
         return json::Value::make_string(marker);
-    };
+    });
     return d;
 }
 
@@ -138,7 +138,7 @@ int main() {
                  "redact(1) removed exactly the middle tool, applied at finalize()");
         bool found_a = false, found_c = false;
         for (ToolDescriptor const& t : assembled.combined.tools) {
-            auto reply = t.invoke(json::Value::make_null(), ctx);
+            auto reply = test_support::run_task_sync<result<json::Value>>(t.invoke(json::Value::make_null(), ctx));
             AE_CHECK(reply.has_value(), "a surviving tool's invoke() still succeeds when called");
             if (reply.has_value()) {
                 std::string const marker = reply->as_string();

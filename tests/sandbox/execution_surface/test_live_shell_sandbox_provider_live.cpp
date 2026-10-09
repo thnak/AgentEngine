@@ -36,6 +36,7 @@
 #include <string>
 #include <thread>
 
+#include "../../support/run_task_sync.hpp"  // ADR-237 §5.2: drive the async tool invoke
 using namespace agentengine;
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
@@ -110,7 +111,7 @@ using Provider = LiveShellSandboxProvider<DockerPersistentShellSurface>;
     auto tool = tool_of(p);  // an on_context per call: each is a "turn" boundary as far as the provider can tell
     if (!tool.has_value()) return std::unexpected(error{failure_class::contract, "no tool", "test.no_tool"});
     EffectContext ctx = owner_ctx();
-    auto out = tool->invoke(json::Value::make_object({{"command", json::Value::make_string(command)}}), ctx);
+    auto out = test_support::run_task_sync<result<json::Value>>(tool->invoke(json::Value::make_object({{"command", json::Value::make_string(command)}}), ctx));
     if (!out.has_value()) return std::unexpected(out.error());
     return schema::from_json<ShellExecReply>(*out);
 }

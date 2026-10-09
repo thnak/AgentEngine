@@ -33,6 +33,7 @@
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/json_value.hpp"
+#include "agentengine/core/task.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/trust/capability.hpp"
 
@@ -54,7 +55,10 @@ struct ToolDescriptor {
     std::string args_schema_json;
     std::string reply_schema_json;
 
-    using InvokeFn = std::function<result<json::Value>(json::Value const&, EffectContext&)>;
+    // ADR-237 §5.2: `invoke` is asynchronous -- returns `task<result<json::Value>>` (006 §1's
+    // `ae::task<result<Reply>>`, type-erased). A synchronous caller drives it with
+    // `rt::drive_leaf_task` until the pipeline itself is converted (ADR-237 §5.2 step B).
+    using InvokeFn = std::function<task<result<json::Value>>(json::Value const&, EffectContext&)>;
     InvokeFn invoke;
 
     // ADR-023 §6 point 4 / 007 §4 amendment: `invoke_tool`'s step 5 reads this ONLY for a
@@ -169,6 +173,15 @@ struct ToolDescriptor {
            !d.captures_session_state;
 }
 
+// ADR-237 §5.2 (transitional): lift a synchronous json-level invoke into the (now async) seam, so a
+// hand-built descriptor need not be rewritten as a coroutine before it is migrated to `Tool<>`.
+// Deleted once §5.2's shape-3 descriptors are migrated (ADR-237 §5.2 step D).
+[[nodiscard]] inline ToolDescriptor::InvokeFn make_sync_invoke(
+    std::function<result<json::Value>(json::Value const&, EffectContext&)> fn) {
+    return [fn = std::move(fn)](json::Value const& args, EffectContext& ctx)
+               -> task<result<json::Value>> { co_return fn(args, ctx); };
+}
+
 template <class ToolT>
 [[nodiscard]] ToolDescriptor make_tool_descriptor() {
     ToolDescriptor d;
@@ -188,12 +201,12 @@ template <class ToolT>
         d.args_schema_value = std::move(*parsed);
         d.args_schema_value_cached = true;
     }
-    d.invoke = [](json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {
+    d.invoke = [](json::Value const& args_value, EffectContext& ctx) -> task<result<json::Value>> {
         auto args = schema::from_json<typename ToolT::Args>(args_value);
-        if (!args) return std::unexpected(args.error());
+        if (!args) co_return std::unexpected(args.error());
         auto reply = ToolT::invoke(*args, ctx);
-        if (!reply) return std::unexpected(reply.error());
-        return schema::to_json(*reply);
+        if (!reply) co_return std::unexpected(reply.error());
+        co_return schema::to_json(*reply);
     };
     return d;
 }
@@ -233,12 +246,12 @@ template <class ToolT, class InvokeFn>
     }
     d.captures_session_state = true;
     d.invoke = [custom_invoke = std::move(custom_invoke)](
-                   json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {
+                   json::Value const& args_value, EffectContext& ctx) -> task<result<json::Value>> {
         auto args = schema::from_json<typename ToolT::Args>(args_value);
-        if (!args) return std::unexpected(args.error());
+        if (!args) co_return std::unexpected(args.error());
         auto reply = custom_invoke(*args, ctx);
-        if (!reply) return std::unexpected(reply.error());
-        return schema::to_json(*reply);
+        if (!reply) co_return std::unexpected(reply.error());
+        co_return schema::to_json(*reply);
     };
     return d;
 }

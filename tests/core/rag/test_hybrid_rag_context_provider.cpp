@@ -202,7 +202,7 @@ int main() {
         if (out.has_value() && !out->tools.empty()) {
             ae::json::Value args = ae::json::Value::make_object(
                 {{"query", ae::json::Value::make_string("how do I find dark mode")}});
-            auto invoked = out->tools.front().invoke(args, ctx);
+            auto invoked = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(out->tools.front().invoke(args, ctx));
             AE_CHECK(invoked.has_value(), "H7: recall(query) invoke succeeds synchronously");
             if (invoked.has_value()) {
                 auto const* results = invoked->find("results");

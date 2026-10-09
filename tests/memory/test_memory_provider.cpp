@@ -149,7 +149,8 @@ int main() {
         auto args = ae::json::parse(R"({"query":"CMake"})");
         AE_CHECK(args.has_value(), "setup: recall args parse");
         ae::EffectContext tool_ctx{};
-        auto reply_json = out1->tools.front().invoke(*args, tool_ctx);
+        auto reply_json = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(
+            out1->tools.front().invoke(*args, tool_ctx));
         AE_CHECK(reply_json.has_value(), "G4-R5: invoking the contributed recall tool succeeds");
         auto reply = ae::schema::from_json<ae::RecallReply>(*reply_json);
         AE_CHECK(reply.has_value() && !reply->results.empty() &&

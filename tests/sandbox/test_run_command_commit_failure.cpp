@@ -29,6 +29,7 @@
 #include <string>
 #include <vector>
 
+#include "../support/run_task_sync.hpp"  // ADR-237 §5.2: drive the async tool invoke
 using namespace agentengine;
 namespace fs = std::filesystem;
 
@@ -145,7 +146,7 @@ int main() {
         if (contribution) {
             for (auto const& tool : contribution->tools) {
                 if (tool.name != "run_command") continue;
-                out = tool.invoke(json::Value::make_object({{"command", json::Value::make_string(command)}}), ctx);
+                out = test_support::run_task_sync<result<json::Value>>(tool.invoke(json::Value::make_object({{"command", json::Value::make_string(command)}}), ctx));
             }
         }
         return out;

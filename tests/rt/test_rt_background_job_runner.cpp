@@ -114,13 +114,17 @@ ae::Principal principal(std::string id, std::string tenant = "t1") {
     return p;
 }
 
-ae::ToolDescriptor tool(std::string name, ae::ToolDescriptor::InvokeFn fn,
+// ADR-237 §5.2: the descriptor's `invoke` is async; these helpers author synchronous bodies and
+// lift them with `make_sync_invoke`.
+using SyncInvoke = std::function<ae::result<ae::json::Value>(ae::json::Value const&, ae::EffectContext&)>;
+
+ae::ToolDescriptor tool(std::string name, SyncInvoke fn,
                         ae::effect_class cls = ae::effect_class::idempotent) {
     ae::ToolDescriptor d;
     d.name           = std::move(name);
     d.backgroundable = true;
     d.effect_class   = cls;
-    d.invoke         = std::move(fn);
+    d.invoke         = ae::make_sync_invoke(std::move(fn));
     return d;
 }
 
@@ -146,7 +150,7 @@ ae::result<ae::json::Value> canceled_no_effect() {
 }
 
 // A cooperative loop: counts until canceled, then reports "no effect left half-done".
-ae::ToolDescriptor::InvokeFn counting_loop(std::shared_ptr<std::atomic<int>> counter) {
+SyncInvoke counting_loop(std::shared_ptr<std::atomic<int>> counter) {
     return [counter](ae::json::Value const&, ae::EffectContext& ctx) -> ae::result<ae::json::Value> {
         for (int i = 0; i < 5000; ++i) {  // bounded: 5000 * 1ms at most
             if (ctx.cancellation.stop_requested()) return canceled_no_effect();
@@ -158,7 +162,7 @@ ae::ToolDescriptor::InvokeFn counting_loop(std::shared_ptr<std::atomic<int>> cou
 }
 
 // Ignores cancellation; returns `result` once the gate opens.
-ae::ToolDescriptor::InvokeFn blocking_until(std::shared_ptr<Gate> gate, std::shared_ptr<std::atomic<bool>> entered,
+SyncInvoke blocking_until(std::shared_ptr<Gate> gate, std::shared_ptr<std::atomic<bool>> entered,
                                             bool succeed = true) {
     return [gate, entered, succeed](ae::json::Value const&, ae::EffectContext&) -> ae::result<ae::json::Value> {
         entered->store(true);
@@ -383,7 +387,7 @@ int main() {
         auto run_case = [&](ae::effect_class cls, bool no_effect_code, bool succeed) {
             auto gate    = std::make_shared<Gate>();
             auto entered = std::make_shared<std::atomic<bool>>(false);
-            ae::ToolDescriptor::InvokeFn fn = [gate, entered, no_effect_code, succeed](
+            SyncInvoke fn = [gate, entered, no_effect_code, succeed](
                                                   auto const&, ae::EffectContext&) -> ae::result<ae::json::Value> {
                 entered->store(true);
                 gate->wait();

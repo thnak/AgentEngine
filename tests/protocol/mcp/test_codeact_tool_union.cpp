@@ -14,6 +14,8 @@
 #include "agentengine/protocol/mcp/mcp_tool_bridge.hpp"
 #include "agentengine/protocol/mcp/server.hpp"
 
+#include "../../support/run_task_sync.hpp"  // ADR-237 §5.2: drive the async tool invoke
+
 namespace {
 
 int g_failures = 0;
@@ -206,8 +208,8 @@ int main() {
 
             ae::EffectContext ctx{};
             if (echo_descriptor) {
-                auto called = echo_descriptor->invoke(
-                    json::Value::make_object({{"text", json::Value::make_string("hello")}}), ctx);
+                auto called = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(echo_descriptor->invoke(
+                    json::Value::make_object({{"text", json::Value::make_string("hello")}}), ctx));
                 check(called.has_value(), "U5: invoking the adapted descriptor succeeds");
                 if (called) {
                     auto const* text_field = called->find("text");
@@ -220,8 +222,8 @@ int main() {
             }
 
             if (fails_descriptor) {
-                auto called = fails_descriptor->invoke(
-                    json::Value::make_object({{"noop", json::Value::make_bool(true)}}), ctx);
+                auto called = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(fails_descriptor->invoke(
+                    json::Value::make_object({{"noop", json::Value::make_bool(true)}}), ctx));
                 check(!called.has_value(),
                       "U6: an MCP-side isError:true surfaces as a real pipeline error through the "
                       "adapted descriptor's invoke, never a silently successful empty result");

@@ -1391,3 +1391,43 @@ that edge, never inside engine code.
 - **Open after step 8 (small):** `materialize_skill_mounts`' `rt::block_on` edge goes when the host-side
   drivers move onto the Runtime (D7); `DiskSkillSource` offload when a `SkillSource` gains a pool; the rest of
   §5.1 (tools §5.2, sandbox/egress/secret, stores, deciders, eval, MCP/A2A, `BatchBackend`) is next.
+
+### Step 9 (2026-10-09): tool seam, slice 1 — `ToolDescriptor::invoke` returns `task<...>`
+
+The first slice of §5.2 ("one way to declare a tool"): the **type-erased seam signature** becomes
+asynchronous, while the pipeline that drives it is still synchronous (D2's "seam signatures → callers →
+deletion" order — this is the first of the three).
+
+- **`ToolDescriptor::InvokeFn`** (`core/tool_descriptor.hpp`) →
+  `std::function<task<result<json::Value>>(json::Value const&, EffectContext&)>` — 006 §1's
+  `ae::task<result<Reply>>`, type-erased.
+- **The two factories** keep their inputs unchanged (still the synchronous `ToolT::invoke` / a
+  synchronous `custom_invoke`, so §5.2's shipped tool bodies and the ~30
+  `make_tool_descriptor_with_invoke` call sites are untouched here) and lift them into the async seam
+  internally.
+- **`make_sync_invoke`** (new, transitional): lifts a synchronous json-level closure into the async
+  seam, so the hand-built descriptors (`todo_provider`, `plan_execute_mode`, `memory_provider`, both
+  RAG providers, `native_providers`, `native_shell_session_provider`, `eval_stub_tool`,
+  `mcp_tool_bridge`, `wasm_tool_bridge`) take one wrap rather than a `co_return` rewrite. Deleted once
+  those are migrated to `Tool<>`.
+- **The three synchronous trampolines** drive the async invoke with `rt::drive_leaf_task` — sound
+  because each wrapping coroutine calls a synchronous body and never parks: `tool_pipeline.cpp`'s
+  `run_admitted_call` and `background_task`'s detached worker, and `background_job_runner.hpp`'s
+  `run_job`.
+- **The two descriptor wrappers** (`cli_chat.cpp`'s output-cap wrapper, `test_driver.hpp`'s
+  `recording_tool`) are now coroutines that `co_await` the inner invoke.
+- **Tests**: every direct `.invoke(...)`/`invoke_tool(...)` call site (24 files) drives the task with
+  `test_support::run_task_sync`; hand-built descriptor closures in tests wrap with `make_sync_invoke`.
+- **Build**: `agentengine_scenario_runner` now links `agentengine::mediated_shell_runner` (as the test
+  driver already does). ADR-208 G6 had it link headers only; the coroutine factory now emits the
+  `run_shell` closure eagerly, so the real symbols must resolve.
+- **Evidence.** Windows (MSVC, full tree `/W4 /WX`): the 25 affected tests pass, incl.
+  `test_tool_pipeline`, `test_agentengine_test_driver`, `test_rt_background_job_runner`,
+  `test_native_shell_session_provider`. Linux gcc 15 `-Werror`: full tree builds; the 12 cross-platform
+  tool tests pass.
+- **Open after step 9 (larger):** §5.2's remaining slices — the pipeline itself async (`invoke_tool`/
+  `dispatch_tool_calls`/`background_task` → `task`, callers `co_await`, genuinely-sync edges
+  `rt::block_on`); `Tool<>`'s authoring contract → instance `const task<result<Reply>> invoke`;
+  `ToolTable::from`; delete `make_tool_descriptor_with_invoke`, `make_sync_invoke`, and the 15 sentinel
+  `invoke`s; migrate the ~11 static hand-built descriptors to `Tool<>`; then `drive_leaf_task` /
+  `synchronous_leaf` go.

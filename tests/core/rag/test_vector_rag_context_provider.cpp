@@ -350,7 +350,7 @@ int main() {
             AE_CHECK(args.has_value(), "setup: recall args parse");
             ae::EffectContext tool_ctx{};
             tool_ctx.principal = principal;
-            auto reply = out->tools.front().invoke(*args, tool_ctx);
+            auto reply = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(out->tools.front().invoke(*args, tool_ctx));
             AE_CHECK(reply.has_value(),
                      "R8: invoking recall() with well-formed args against a synchronous_leaf Embedder "
                      "succeeds -- real end-to-end drive_leaf_task()-driven embed + search, not the "
@@ -370,7 +370,7 @@ int main() {
 
             auto bad_args = ae::json::parse(R"({})");
             AE_CHECK(bad_args.has_value(), "setup: malformed recall args parse (missing 'query') as JSON");
-            auto bad_reply = out->tools.front().invoke(*bad_args, tool_ctx);
+            auto bad_reply = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(out->tools.front().invoke(*bad_args, tool_ctx));
             AE_CHECK(!bad_reply.has_value(),
                      "R9: args are validated (reject-not-coerce) before ANY embedder/index work -- a "
                      "genuinely malformed call gets its own distinct schema error");
@@ -746,7 +746,7 @@ int main() {
         auto args = ae::json::parse(R"({"query":"which build system"})");
         AE_CHECK(args.has_value(), "R12 setup: recall args parse");
         ae::EffectContext tool_ctx{};
-        auto reply = out.has_value() ? out->tools.front().invoke(*args, tool_ctx) : ae::result<ae::json::Value>{};
+        auto reply = out.has_value() ? ae::test_support::run_task_sync<ae::result<ae::json::Value>>(out->tools.front().invoke(*args, tool_ctx)) : ae::result<ae::json::Value>{};
         AE_CHECK(reply.has_value(),
                  "R12: recall's invoke succeeds even though `this` now points into shared_ptr-managed "
                  "heap storage, not the original (now moved-from) stack-local provider -- the captured "
@@ -796,7 +796,7 @@ int main() {
         auto args = ae::json::parse(R"({"query":"anything"})");
         AE_CHECK(args.has_value(), "R13 setup: recall args parse");
         ae::EffectContext tool_ctx{};
-        auto reply = out.has_value() ? out->tools.front().invoke(*args, tool_ctx) : ae::result<ae::json::Value>{};
+        auto reply = out.has_value() ? ae::test_support::run_task_sync<ae::result<ae::json::Value>>(out->tools.front().invoke(*args, tool_ctx)) : ae::result<ae::json::Value>{};
         AE_CHECK(reply.has_value(),
                  "R13: recall's invoke against an empty index still succeeds -- zero matches is not "
                  "an error");
@@ -858,7 +858,7 @@ int main() {
         auto args = ae::json::parse(R"({"query":"real query"})");
         AE_CHECK(args.has_value(), "R14 setup: recall args parse");
         ae::EffectContext tool_ctx{};
-        auto reply = out.has_value() ? out->tools.front().invoke(*args, tool_ctx) : ae::result<ae::json::Value>{};
+        auto reply = out.has_value() ? ae::test_support::run_task_sync<ae::result<ae::json::Value>>(out->tools.front().invoke(*args, tool_ctx)) : ae::result<ae::json::Value>{};
         AE_CHECK(reply.has_value(),
                  "R14: recall's invoke succeeds even though the index also holds a stale, unbacked "
                  "entry -- the stale entry is skipped, not surfaced as a whole-call failure");
@@ -931,7 +931,7 @@ int main() {
             threads.emplace_back([&, i]() {
                 ae::EffectContext thread_ctx{};
                 thread_ctx.principal = principal;
-                results[i] = out->tools.front().invoke(*args, thread_ctx);
+                results[i] = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(out->tools.front().invoke(*args, thread_ctx));
             });
         }
         for (auto& t : threads) t.join();
@@ -995,7 +995,7 @@ int main() {
         auto args = ae::json::parse(R"({"query":"anything"})");
         AE_CHECK(args.has_value(), "R16 setup: recall args parse");
         ae::EffectContext tool_ctx{};
-        auto reply = out.has_value() ? out->tools.front().invoke(*args, tool_ctx) : ae::result<ae::json::Value>{};
+        auto reply = out.has_value() ? ae::test_support::run_task_sync<ae::result<ae::json::Value>>(out->tools.front().invoke(*args, tool_ctx)) : ae::result<ae::json::Value>{};
         AE_CHECK(!reply.has_value() &&
                      reply.error().code ==
                          "vector_rag_context_provider.recall_tool_requires_synchronous_leaf_embedder",

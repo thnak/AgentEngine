@@ -77,9 +77,9 @@ struct PingTool : Tool<PingTool, EffectClass<effect_class::pure>> {
     d.name = std::move(name);
     d.description = std::move(description);
     d.effect_class = effect_class::pure;
-    d.invoke = [](json::Value const&, EffectContext&) -> result<json::Value> {
+    d.invoke = make_sync_invoke([](json::Value const&, EffectContext&) -> result<json::Value> {
         return json::Value::make_object({{"echo", json::Value::make_string("ok")}});
-    };
+    });
     return d;
 }
 
@@ -95,7 +95,7 @@ struct PingTool : Tool<PingTool, EffectClass<effect_class::pure>> {
 [[nodiscard]] result<json::Value> call(ContextContribution const& c, std::string const& tool_name,
                                         json::Value args, EffectContext& ctx) {
     for (ToolDescriptor const& d : c.tools) {
-        if (d.name == tool_name) return d.invoke(args, ctx);
+        if (d.name == tool_name) return test_support::run_task_sync<result<json::Value>>(d.invoke(args, ctx));
     }
     return std::unexpected(error{failure_class::contract,
                                   "no such tool in this contribution: " + tool_name,

@@ -74,6 +74,7 @@
 #include "agentengine/core/tool_descriptor.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/agent_session_trust.hpp"  // detail::force_tainted
+#include "agentengine/rt/drive_leaf_task.hpp"      // ADR-237 §5.2: drive the async tool invoke
 #include "agentengine/trust/capability.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secure_random.hpp"
@@ -660,7 +661,13 @@ private:
         // escape (std::terminate would take the host down), so one is converted to a failure.
         result<json::Value> invoked = std::unexpected(error{failure_class::fatal, "not invoked", "background_job.not_invoked"});
         try {
-            invoked = job.spec.tool.invoke(job.spec.request.arguments, ctx);
+            // ADR-237 §5.2: `invoke` is async; drive it on this worker thread.
+            auto drive_invoke = [&]() -> result<json::Value> {
+                auto driven = rt::drive_leaf_task(job.spec.tool.invoke(job.spec.request.arguments, ctx));
+                if (!driven) return std::unexpected(driven.error());
+                return std::move(*driven);
+            };
+            invoked = drive_invoke();
         } catch (std::exception const& e) {
             invoked = std::unexpected(error{failure_class::fatal, std::string("background job tool threw: ") + e.what(),
                                              "background_job.tool_threw"});

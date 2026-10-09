@@ -810,9 +810,9 @@ public:
             ToolDescriptor::InvokeFn inner = std::move(td.invoke);
             std::string tool_name = td.name;
             td.invoke = [inner = std::move(inner), tool_name = std::move(tool_name)](
-                            json::Value const& args, EffectContext& ec) -> result<json::Value> {
-                result<json::Value> reply = inner(args, ec);
-                if (!reply) return reply;
+                            json::Value const& args, EffectContext& ec) -> task<result<json::Value>> {
+                result<json::Value> reply = co_await inner(args, ec);
+                if (!reply) co_return reply;
                 std::size_t withheld = 0;
                 json::Value capped = cap_strings(*reply, max_tool_output_bytes(), withheld);
                 if (withheld > 0) {
@@ -821,7 +821,7 @@ public:
                                         " bytes withheld from the model. Full reply follows.\n" +
                                         json::dump(*reply));
                 }
-                return capped;
+                co_return capped;
             };
         }
         co_return contribution;

@@ -46,7 +46,7 @@ int main() {
     // ---- invoking the descriptor records the call and returns the fixed reply, regardless of args
     ae::EffectContext ctx{};
     auto args1 = ae::json::Value::make_object({{"region", ae::json::Value::make_string("eu-west-1")}});
-    auto reply1 = descriptor.invoke(args1, ctx);
+    auto reply1 = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(descriptor.invoke(args1, ctx));
     AE_CHECK(reply1.has_value(), "invoking the stub tool succeeds");
     AE_CHECK(sink.size() == 1, "exactly one call landed in the sink");
     if (!sink.empty()) {
@@ -63,7 +63,7 @@ int main() {
     // ---- a second call with DIFFERENT arguments still returns the SAME canned reply -- the reply
     // is never derived from the arguments (I3) ------------------------------------------------------
     auto args2 = ae::json::Value::make_object({{"region", ae::json::Value::make_string("us-east-2")}});
-    auto reply2 = descriptor.invoke(args2, ctx);
+    auto reply2 = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(descriptor.invoke(args2, ctx));
     AE_CHECK(reply2.has_value() && reply2->find("ok") != nullptr && reply2->find("ok")->as_bool(),
              "a second call with different arguments returns the identical canned reply");
     AE_CHECK(sink.size() == 2, "two calls in sequence both land in the sink, in order");

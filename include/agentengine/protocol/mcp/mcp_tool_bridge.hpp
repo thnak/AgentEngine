@@ -35,7 +35,7 @@ namespace agentengine::mcp {
         descriptor.reply_schema_json = json::dump(info.output_schema);
 
         std::string const tool_name = info.name;  // captured by value, not a reference into `listed`
-        descriptor.invoke = [client, tool_name](json::Value const& args,
+        descriptor.invoke = make_sync_invoke([client, tool_name](json::Value const& args,
                                                   EffectContext&) -> result<json::Value> {
             auto outcome = client->call_tool(tool_name, args);
             if (!outcome) return std::unexpected(outcome.error());
@@ -63,7 +63,7 @@ namespace agentengine::mcp {
             auto parsed = json::parse(text_field->as_string());
             if (parsed) return *parsed;
             return json::Value::make_string(text_field->as_string());
-        };
+        });
         out.push_back(std::move(descriptor));
     }
     return out;

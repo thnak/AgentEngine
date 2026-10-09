@@ -6,6 +6,8 @@
 
 #include "agentengine/core/tool_pipeline.hpp"
 
+#include "agentengine/rt/drive_leaf_task.hpp"  // ADR-237 §5.2: drive the async invoke from sync steps
+
 namespace agentengine {
 
 std::uint64_t argument_digest(std::string_view canonical_args_json) noexcept {
@@ -233,7 +235,14 @@ AdmittedCallOutcome run_admitted_call(ToolDescriptor const& tool, ToolCallReques
     }
 
     ctx.bound_capabilities = &bound;
-    result<json::Value> invoke_result = tool.invoke(request.arguments, ctx);
+    // ADR-237 §5.2: `invoke` is async. Until the pipeline itself is converted, drive it to
+    // completion synchronously -- the invoked task is a leaf (its body calls a tool and never parks).
+    auto drive_invoke = [&]() -> result<json::Value> {
+        auto driven = rt::drive_leaf_task(tool.invoke(request.arguments, ctx));
+        if (!driven) return std::unexpected(driven.error());
+        return std::move(*driven);
+    };
+    result<json::Value> invoke_result = drive_invoke();
     ctx.bound_capabilities = nullptr;
 
     // -- step 10: account (revoke unconditionally, success or failure) ----------------------------
@@ -484,7 +493,13 @@ result<void> background_task(ToolTable const& table, CapabilitySet const& held,
                          on_complete = std::move(on_complete)]() mutable {
         auto const started = std::chrono::steady_clock::now();
         ctx.bound_capabilities = &bound;
-        result<json::Value> invoke_result = tool->invoke(request.arguments, ctx);
+        // ADR-237 §5.2: drive the async invoke from this detached worker (see the sync site above).
+        auto drive_invoke = [&]() -> result<json::Value> {
+            auto driven = rt::drive_leaf_task(tool->invoke(request.arguments, ctx));
+            if (!driven) return std::unexpected(driven.error());
+            return std::move(*driven);
+        };
+        result<json::Value> invoke_result = drive_invoke();
         ctx.bound_capabilities = nullptr;
         for (auto const& b : bound) b.revoke();  // step 10, unconditional -- same as invoke_tool()
 

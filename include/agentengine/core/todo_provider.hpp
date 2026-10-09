@@ -229,7 +229,7 @@ private:
         d.args_schema_json      = schema::json_schema_of<TodoAddArgs>();
         d.reply_schema_json     = schema::json_schema_of<TodoAddReply>();
         d.captures_session_state = true;
-        d.invoke = [this](json::Value const& args_value, EffectContext&) -> result<json::Value> {
+        d.invoke = make_sync_invoke([this](json::Value const& args_value, EffectContext&) -> result<json::Value> {
             auto args = schema::from_json<TodoAddArgs>(args_value);
             if (!args) return std::unexpected(args.error());
             if (args->title.empty()) {
@@ -252,7 +252,7 @@ private:
             std::uint64_t const id = state_->next_id++;
             state_->items.push_back(todo_detail::TodoItem{id, args->title, false});
             return schema::to_json(TodoAddReply{id});
-        };
+        });
         return d;
     }
 
@@ -264,7 +264,7 @@ private:
         d.args_schema_json      = schema::json_schema_of<TodoIdArgs>();
         d.reply_schema_json     = schema::json_schema_of<TodoOkReply>();
         d.captures_session_state = true;
-        d.invoke = [this](json::Value const& args_value, EffectContext&) -> result<json::Value> {
+        d.invoke = make_sync_invoke([this](json::Value const& args_value, EffectContext&) -> result<json::Value> {
             auto args = schema::from_json<TodoIdArgs>(args_value);
             if (!args) return std::unexpected(args.error());
             // ADR-166 red-team finding 3: fails CLOSED with a real error on an unknown id -- never a
@@ -278,7 +278,7 @@ private:
             }
             return std::unexpected(
                 error{failure_class::contract, "no todo item with that id", "todo.unknown_id"});
-        };
+        });
         return d;
     }
 
@@ -290,7 +290,7 @@ private:
         d.args_schema_json      = schema::json_schema_of<TodoIdArgs>();
         d.reply_schema_json     = schema::json_schema_of<TodoOkReply>();
         d.captures_session_state = true;
-        d.invoke = [this](json::Value const& args_value, EffectContext&) -> result<json::Value> {
+        d.invoke = make_sync_invoke([this](json::Value const& args_value, EffectContext&) -> result<json::Value> {
             auto args = schema::from_json<TodoIdArgs>(args_value);
             if (!args) return std::unexpected(args.error());
             // ADR-166 red-team finding 4: `next_id` is monotonic and never reused (see
@@ -304,7 +304,7 @@ private:
             }
             return std::unexpected(
                 error{failure_class::contract, "no todo item with that id", "todo.unknown_id"});
-        };
+        });
         return d;
     }
 
@@ -317,11 +317,11 @@ private:
         d.args_schema_json      = schema::json_schema_of<TodoNoArgs>();
         d.reply_schema_json     = schema::json_schema_of<TodoListReply>();
         d.captures_session_state = true;
-        d.invoke = [this](json::Value const& args_value, EffectContext&) -> result<json::Value> {
+        d.invoke = make_sync_invoke([this](json::Value const& args_value, EffectContext&) -> result<json::Value> {
             auto args = schema::from_json<TodoNoArgs>(args_value);
             if (!args) return std::unexpected(args.error());
             return schema::to_json(TodoListReply{render(/*remaining_only=*/true)});
-        };
+        });
         return d;
     }
 
@@ -334,11 +334,11 @@ private:
         d.args_schema_json      = schema::json_schema_of<TodoNoArgs>();
         d.reply_schema_json     = schema::json_schema_of<TodoListReply>();
         d.captures_session_state = true;
-        d.invoke = [this](json::Value const& args_value, EffectContext&) -> result<json::Value> {
+        d.invoke = make_sync_invoke([this](json::Value const& args_value, EffectContext&) -> result<json::Value> {
             auto args = schema::from_json<TodoNoArgs>(args_value);
             if (!args) return std::unexpected(args.error());
             return schema::to_json(TodoListReply{render(/*remaining_only=*/false)});
-        };
+        });
         return d;
     }
 

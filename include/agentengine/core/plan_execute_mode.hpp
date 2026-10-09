@@ -173,7 +173,7 @@ private:
         d.args_schema_json      = schema::json_schema_of<PlanReadyArgs>();
         d.reply_schema_json     = schema::json_schema_of<PlanReadyReply>();
         d.captures_session_state = true;
-        d.invoke = [this](json::Value const& args_value, EffectContext&) -> result<json::Value> {
+        d.invoke = make_sync_invoke([this](json::Value const& args_value, EffectContext&) -> result<json::Value> {
             auto args = schema::from_json<PlanReadyArgs>(args_value);
             if (!args) return std::unexpected(args.error());
             // I3: re-checked here, not trusted from the fact the model chose to call this tool at
@@ -186,7 +186,7 @@ private:
             }
             gate_->executing = true;
             return schema::to_json(PlanReadyReply{true});
-        };
+        });
         return d;
     }
 

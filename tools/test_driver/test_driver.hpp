@@ -371,31 +371,29 @@ private:
     // replaced here becomes an error, which is never compared.
     ToolDescriptor::InvokeFn inner = std::move(d.invoke);
     std::string const name = d.name;
-    d.invoke = [inner = std::move(inner), log, keep_alive, name](Value const& args, EffectContext& ctx) -> result<Value> {
+    d.invoke = [inner = std::move(inner), log, keep_alive, name](Value const& args, EffectContext& ctx)
+                   -> task<result<Value>> {
         ToolExchange x;
         x.tool_name = name;
         x.arguments = json::dump(args);
-        result<Value> out = [&]() -> result<Value> {
-            if (ctx.cancellation.stop_requested()) {
-                return std::unexpected(error{failure_class::canceled,  // ADR-237 D6: stopped on request
-                                             "the session was cancelled; no further real-tool calls run",
-                                             "test.real_tool_canceled"});
-            }
-            if (log->calls() >= kMaxRealToolCalls) {
-                return std::unexpected(error{failure_class::resource,
-                                             "this session has used all " + std::to_string(kMaxRealToolCalls) +
-                                                 " of its real-tool calls",
-                                             "test.real_tool_call_cap"});
-            }
-            auto previous = ctx.sandbox_exec_sink;
-            ctx.sandbox_exec_sink = [&x, &previous](run_event_kind k, run_event_payload::SandboxExec p) {
-                x.exec_events.push_back(ExecEventRecord{k, p.backend, p.stage, p.ok, p.error_code});
-                if (previous) previous(k, std::move(p));
-            };
-            result<Value> r = inner(args, ctx);
-            ctx.sandbox_exec_sink = std::move(previous);
-            return r;
-        }();
+        if (ctx.cancellation.stop_requested()) {
+            co_return std::unexpected(error{failure_class::canceled,  // ADR-237 D6: stopped on request
+                                         "the session was cancelled; no further real-tool calls run",
+                                         "test.real_tool_canceled"});
+        }
+        if (log->calls() >= kMaxRealToolCalls) {
+            co_return std::unexpected(error{failure_class::resource,
+                                         "this session has used all " + std::to_string(kMaxRealToolCalls) +
+                                             " of its real-tool calls",
+                                         "test.real_tool_call_cap"});
+        }
+        auto previous = ctx.sandbox_exec_sink;
+        ctx.sandbox_exec_sink = [&x, &previous](run_event_kind k, run_event_payload::SandboxExec p) {
+            x.exec_events.push_back(ExecEventRecord{k, p.backend, p.stage, p.ok, p.error_code});
+            if (previous) previous(k, std::move(p));
+        };
+        result<Value> out = co_await inner(args, ctx);
+        ctx.sandbox_exec_sink = std::move(previous);
         if (out) {
             std::string const text = json::dump(*out);
             if (text.size() > kMaxRealToolResultBytes) {
@@ -417,7 +415,7 @@ private:
             x.message = out.error().message;
         }
         log->record(std::move(x));
-        return out;
+        co_return out;
     };
     return d;
 }
@@ -427,7 +425,7 @@ private:
     std::string const name = d.name;
     // ADR-212 §3.5: a replay serves the recording, not the tool, so it cannot stand in for a re-run.
     d.deterministic = false;
-    d.invoke = [log, name](Value const& args, EffectContext& ctx) -> result<Value> {
+    d.invoke = make_sync_invoke([log, name](Value const& args, EffectContext& ctx) -> result<Value> {
         auto served = log->serve(name, json::dump(args));
         if (auto const* e = std::get_if<error>(&served)) return std::unexpected(*e);
         ToolExchange const& x = std::get<ToolExchange>(served);
@@ -443,7 +441,7 @@ private:
         }
         if (x.is_error) return std::unexpected(error{x.klass, x.message, x.code});
         return x.result;
-    };
+    });
     return d;
 }
 

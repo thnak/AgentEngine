@@ -208,7 +208,7 @@ private:
         // Captures `this`; ADR-160's scheduler and `rerun_comparable()` key off this flag.
         d.captures_session_state = true;
 
-        d.invoke = [this](json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {
+        d.invoke = make_sync_invoke([this](json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {
             (void)this;
             auto args = schema::from_json<RagRecallArgs>(args_value);
             if (!args) return std::unexpected(args.error());
@@ -265,7 +265,7 @@ private:
                     "task<T>/task<void> and declares synchronous_leaf = true.",
                     "hybrid_rag_context_provider.recall_tool_requires_synchronous_leaf_embedder"});
             }
-        };
+        });
         return d;
     }
 

@@ -65,11 +65,11 @@ struct CapturedCall {  // ae-naming-lint: allow CapturedCall — ADR-195 §3.9
     std::string tool_name  = fixture.name;
     json::Value canned_reply = fixture.canned_reply;
     std::vector<CapturedCall>* sink_ptr = &sink;
-    d.invoke = [tool_name, canned_reply, sink_ptr](json::Value const& args_value,
-                                                     EffectContext&) -> result<json::Value> {
+    d.invoke = make_sync_invoke([tool_name, canned_reply, sink_ptr](
+                                    json::Value const& args_value, EffectContext&) -> result<json::Value> {
         sink_ptr->push_back(CapturedCall{tool_name, args_value});
         return canned_reply;
-    };
+    });
     return d;
 }
 

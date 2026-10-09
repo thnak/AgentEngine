@@ -209,7 +209,8 @@ int main() {
     std::vector<ae::json::Value> recall_replies;
     for (int i = 0; i < kRepeats; ++i) {
         ae::EffectContext tool_ctx{};
-        auto reply = runs[0].tools.front().invoke(*args, tool_ctx);
+        auto reply = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(
+            runs[0].tools.front().invoke(*args, tool_ctx));
         AE_CHECK(reply.has_value(), "H3 setup: recall(\"CMake\") repeat " + std::to_string(i) + " succeeds");
         if (reply.has_value()) recall_replies.push_back(*reply);
     }

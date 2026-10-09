@@ -227,7 +227,7 @@ private:
         // SPECIFIC requested program -- ToolDescriptor::capability_ceiling is an AND-of-all list
         // (006 §3), which cannot express "one of these N alternatives" declaratively.
         d.captures_session_state = true;  // captures `this` -> this provider's own construction-time state
-        d.invoke = [this](json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {
+        d.invoke = make_sync_invoke([this](json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {
             auto args = schema::from_json<NativeProcessRunArgs>(args_value);
             if (!args) return std::unexpected(args.error());
             auto outcome = real_run(*args, ctx);
@@ -242,7 +242,7 @@ private:
             reply.stderr_truncated = capped_err.truncated || outcome->stderr_truncated;
             reply.timed_out = outcome->klass == native_exec_outcome_class::timeout;
             return schema::to_json(reply);
-        };
+        });
         return d;
     }
 

@@ -46,10 +46,10 @@ ToolDescriptor make_descriptor(std::string name, std::vector<Capability> ceiling
     d.name              = std::move(name);
     d.description       = "test tool";
     d.capability_ceiling = std::move(ceiling);
-    d.invoke = [](agentengine::json::Value const&,
+    d.invoke = agentengine::make_sync_invoke([](agentengine::json::Value const&,
                   agentengine::EffectContext&) -> agentengine::result<agentengine::json::Value> {
         return agentengine::json::Value{};
-    };
+    });
     return d;
 }
 
