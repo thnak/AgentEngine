@@ -163,7 +163,8 @@ private:
 };
 
 // ---- the loopback HTTPS peer --------------------------------------------------------------------------------
-// Every mbedTLS call under rt::tls_detail::engine_mutex() (rt/tls.hpp), readiness waits outside it.
+// mbedTLS is thread-safe in this build (MBEDTLS_THREADING_C, ADR-237 §6.3), so the peer needs no lock of its
+// own to run alongside the client; only readiness waits bound each WANT_*.
 
 bool wait_ready(pal::fd_t fd, bool for_write, int timeout_ms) {
     ::fd_set set;
@@ -198,7 +199,6 @@ struct Script {
 class HttpsServer {
 public:
     HttpsServer(KeyCert const& kc, Script script) : script_(std::move(script)) {
-        std::lock_guard const lock(tls_detail::engine_mutex());
         mbedtls_x509_crt_init(&cert_);
         mbedtls_pk_init(&key_);
         mbedtls_entropy_init(&entropy_);
@@ -221,7 +221,6 @@ public:
         thread_.request_stop();
         thread_.join();
         pal::close_fd(listen_);
-        std::lock_guard const lock(tls_detail::engine_mutex());
         mbedtls_pk_free(&key_);
         mbedtls_x509_crt_free(&cert_);
         mbedtls_ctr_drbg_free(&drbg_);
@@ -257,11 +256,7 @@ private:
     int retry(pal::fd_t fd, std::stop_token const& st, F&& f) {
         auto const end = std::chrono::steady_clock::now() + 5s;
         for (;;) {
-            int rc = 0;
-            {
-                std::lock_guard const lock(tls_detail::engine_mutex());
-                rc = f();
-            }
+            int const rc = f();
             if (rc != MBEDTLS_ERR_SSL_WANT_READ && rc != MBEDTLS_ERR_SSL_WANT_WRITE) return rc;
             if (st.stop_requested() || std::chrono::steady_clock::now() > end) return MBEDTLS_ERR_SSL_TIMEOUT;
             (void)wait_ready(fd, rc == MBEDTLS_ERR_SSL_WANT_WRITE, 10);
@@ -284,17 +279,14 @@ private:
         }
         mbedtls_ssl_config conf;
         mbedtls_ssl_context ssl;
-        {
-            std::lock_guard const lock(tls_detail::engine_mutex());
-            mbedtls_ssl_config_init(&conf);
-            mbedtls_ssl_init(&ssl);
-            mbedtls_ssl_config_defaults(&conf, MBEDTLS_SSL_IS_SERVER, MBEDTLS_SSL_TRANSPORT_STREAM,
-                                        MBEDTLS_SSL_PRESET_DEFAULT);
-            mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &drbg_);
-            mbedtls_ssl_conf_own_cert(&conf, &cert_, &key_);
-            mbedtls_ssl_setup(&ssl, &conf);
-            mbedtls_ssl_set_bio(&ssl, &fd, server_send, server_recv, nullptr);
-        }
+        mbedtls_ssl_config_init(&conf);
+        mbedtls_ssl_init(&ssl);
+        mbedtls_ssl_config_defaults(&conf, MBEDTLS_SSL_IS_SERVER, MBEDTLS_SSL_TRANSPORT_STREAM,
+                                    MBEDTLS_SSL_PRESET_DEFAULT);
+        mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &drbg_);
+        mbedtls_ssl_conf_own_cert(&conf, &cert_, &key_);
+        mbedtls_ssl_setup(&ssl, &conf);
+        mbedtls_ssl_set_bio(&ssl, &fd, server_send, server_recv, nullptr);
         if (retry(fd, st, [&] { return mbedtls_ssl_handshake(&ssl); }) == 0) {
             std::string                req;
             std::vector<unsigned char> buf(16384);
@@ -327,7 +319,6 @@ private:
                 (void)retry(fd, st, [&] { return mbedtls_ssl_close_notify(&ssl); });
             }
         }
-        std::lock_guard const lock(tls_detail::engine_mutex());
         mbedtls_ssl_free(&ssl);
         mbedtls_ssl_config_free(&conf);
     }
@@ -643,12 +634,9 @@ int main() {
         check(wait_until([&] { return srv.saw_close() == 1; }, 3s), "S5: ... and the connection is closed");
     }
 
-    {
-        std::lock_guard const lock(tls_detail::engine_mutex());
-        mbedtls_pk_free(&root_key);
-        mbedtls_pk_free(&leaf_key);
-        mbedtls_pk_free(&other_key);
-    }
+    mbedtls_pk_free(&root_key);
+    mbedtls_pk_free(&leaf_key);
+    mbedtls_pk_free(&other_key);
     std::printf("\n%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

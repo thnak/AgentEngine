@@ -37,14 +37,15 @@
 //     and one write outstanding). Only write-side ops send: ciphertext a read produces (an alert) waits in the
 //     outgoing buffer for the next write-side op. A TLS 1.3 client's ssl_read produces no other output in
 //     mbedTLS 3.6 (no KeyUpdate, no post-handshake auth; renegotiation is off).
-//   - THE LOCK IS PROCESS-WIDE (`tls_detail::engine_mutex()`), not per stream: mbedTLS 3.6's TLS 1.3 code keeps
-//     its keys in PSA's global key store, which is not thread-safe without MBEDTLS_THREADING_C -- off in the
-//     vendored build (checked 2026-10-03, ADR-237 §6.3 "the current config is to be checked") -- so two streams
-//     handshaking or encrypting on two threads would race inside PSA. Cost: mbedTLS work is serialised across all
-//     TlsStreams of the process (the I/O is not). Enabling MBEDTLS_THREADING_C would let this become per stream;
-//     that is a build-configuration decision, not taken here. Anything else in the process calling mbedTLS
-//     concurrently must take the same lock -- the blocking `sandbox::TlsClientSession` does NOT (its BIO blocks
-//     inside mbedTLS calls, so it cannot hold a shared lock): a pre-existing race, reported, not fixed here.
+//   - THE LOCK IS PER STREAM (one std::mutex in this stream's shared state), not process-wide: mbedTLS 3.6
+//     keeps TLS 1.3 keys and other state in process globals, and the vendored build now makes those
+//     thread-safe itself -- MBEDTLS_THREADING_C with this project's std::mutex-based alt layer
+//     (src/backends/tls_mbedtls/agentengine_mbedtls_threading.hpp), armed before any mbedTLS call by
+//     mbedtls_client::Context and by that header's autostart. So two TlsStreams on two threads never
+//     serialise against each other; only a stream's own read and write, which share its buffers and flags,
+//     are serialised, and only where they touch them. Anything else in the process that calls mbedTLS
+//     concurrently (the blocking `sandbox::TlsClientSession`, a test's loopback peer) is covered by the same
+//     mbedTLS-internal locking and needs no shared lock of its own.
 //
 // CANCELLATION (§4.4): every operation takes a stop token. A stop already requested when an op is called
 // completes it `canceled` without touching anything (the stream stays usable). A stop that lands while the op
@@ -65,7 +66,6 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <span>
 #include <stop_token>
 #include <string>
@@ -153,11 +153,5 @@ public:
 private:
     std::shared_ptr<Impl> impl_;
 };
-
-namespace tls_detail {
-// The process-wide lock every mbedTLS call made by a TlsStream runs under (see CONCURRENCY). Exposed so other
-// in-process mbedTLS users (a test's loopback server) can serialise with it; never hold it across a blocking call.
-[[nodiscard]] std::mutex& engine_mutex() noexcept;
-}  // namespace tls_detail
 
 }  // namespace agentengine::rt

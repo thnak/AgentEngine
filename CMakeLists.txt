@@ -719,6 +719,21 @@ if(AGENTENGINE_WITH_HTTPS)
     add_subdirectory("${AGENTENGINE_MBEDTLS_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/mbedtls_local" EXCLUDE_FROM_ALL)
   endif()
 
+  # ---- ADR-237 §6.3: make mbedTLS itself thread-safe (MBEDTLS_THREADING_C + this project's ALT layer) ----
+  # Without this, mbedTLS's TLS 1.3/PSA global state races between threads, which forced rt::TlsStream to
+  # serialise every mbedTLS call behind one process-wide lock while the blocking TlsClientSession -- whose
+  # BIO blocks inside mbedTLS, so it cannot share that lock -- raced it anyway. The user-config header and
+  # threading_alt.h live in src/backends/tls_mbedtls/; both are applied to the three vendored targets
+  # PUBLIC so that every target compiling any TU that includes an mbedTLS header sees the same
+  # configuration (agentengine_tls_common and the tests included) -- a TU compiled against a different
+  # config would be an ABI mismatch.
+  set(AE_MBEDTLS_THREADING_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/backends/tls_mbedtls")
+  foreach(ae_mbedtls_target mbedcrypto mbedx509 mbedtls)
+    target_include_directories(${ae_mbedtls_target} PUBLIC "${AE_MBEDTLS_THREADING_DIR}")
+    target_compile_definitions(${ae_mbedtls_target} PUBLIC
+      "MBEDTLS_USER_CONFIG_FILE=\"agentengine_mbedtls_config.h\"")
+  endforeach()
+
   # A pinned, checksummed CA root bundle (curl.se's well-known, regularly-refreshed distribution of
   # Mozilla's own root program) -- mbedTLS has no OS-trust-store integration of its own (unlike
   # OpenSSL/Schannel); vendoring one keeps this project's own "no host-machine-dependent build
