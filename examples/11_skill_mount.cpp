@@ -18,6 +18,7 @@
 #include "agentengine/core/mounted_skills_state.hpp"
 #include "agentengine/core/skill_provider.hpp"
 #include "agentengine/core/skill_tool_scoping.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using namespace agentengine;
 
@@ -83,7 +84,7 @@ int main() {
     sources.push_back(
         make_skill_source_descriptor(InlineSkillSource("origin-a", {word_count_skill()})));
     SkillsProvider<> skills(std::move(sources));
-    check(skills.ensure_loaded().has_value(), "the word-counter skill source resolves");
+    check(rt::block_on(skills.ensure_loaded()).has_value(), "the word-counter skill source resolves");
 
     MountedSkillsState mount_state;
     ToolTable const    universe = ToolTable::from_tools<WordCountTool>();

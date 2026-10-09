@@ -1355,3 +1355,39 @@ engine-wide lock.
   blocking `TlsClientSession` now shares mbedTLS's internal locking, but its own `mbedtls_client::Context` is
   still built per connection; `mbedtls_threading_free_alt()` is not called (the global mutexes are
   process-lifetime and reachable from globals — no leak).
+
+### Step 8 (2026-10-09): seam conversion, slice 1 — `ChunkingPolicy::chunk` and `SkillSource::load_skills`
+
+The first slice of §5.1's "seam signatures" phase. The primitives (steps 1–7) are done, so this converts the
+two smallest rows and fixes the pattern the remaining ~18 seams copy: a concept or host callable returns
+`ae::task<...>`; engine coroutines `co_await` it; a genuinely-synchronous host drives it with `rt::block_on` at
+that edge, never inside engine code.
+
+- **`ChunkingPolicy::chunk`** (`core/corpus_source.hpp`) → `task<std::vector<TextChunk>> chunk(std::string) const`
+  (text **by value**: a lazy `task` frame must not hold a caller reference across the await). Callers in
+  `DiskCorpusSource::mount`/`mount_hybrid` `co_await` it (both were already coroutines). The body never parks;
+  it is awaitable but not yet offloaded (a chunker holds no pool — named residual).
+- **`SkillSource::load_skills`** (`core/skill_source.hpp`) → `task<result<std::vector<SkillSourceResult>>>`
+  (`InlineSkillSource`, `DiskSkillSource`, and `SkillSourceDescriptor::load_skills`'s `std::function`). Disk
+  reads stay inline (local, resolve-once, async in name only, owner decision A8).
+- **`SkillsProvider`** (`core/skill_provider.hpp`): `resolve_and_mount()` and `ensure_loaded()` are now
+  coroutines, `on_context` `co_await`s `ensure_loaded`; the cached `loaded_`/`load_error_` pair keeps a second
+  call from re-resolving (it was a *synchronous* entry point before this — that was its whole justification).
+- **Sync edges** now call `rt::block_on`: `native_jail::materialize_skill_mounts`
+  (`src/backends/native_jail/skill_mount_materializer.hpp`, a configuration-time host helper),
+  `cli_chat.cpp`'s `print_skills_banner`, and `examples/11_skill_mount.cpp`.
+- **Tests**: the direct `load_skills()`/`ensure_loaded()`/`chunk()` calls in `test_corpus_source`,
+  `test_skill_source_inline`, `test_skill_source_disk`, `test_external_skill_discovery`,
+  `test_on_demand_skill_mount`, `test_skill_premount`, `test_extract_pdf_text` go through the existing
+  `test_support::run_task_sync` driver (still sound: no seam parks yet). No new test file.
+- **Docs**: `web/marketing/`'s `apiContent.ts` signature/enum snippets updated to the `task<...>` shapes.
+- **Evidence.** Windows (MSVC, full tree `/W4 /WX`): the nine affected tests + `example_11_skill_mount` pass.
+  Linux gcc 15 `-Werror`: `test_skill_source_inline` + `test_skill_source_disk` build and pass — the
+  rag/provider/materializer tests are `if(WIN32)`-gated in this repo (`tests/core/rag`, `tests/core/skills`),
+  so those TUs are compiled only under MSVC. `test_skill_provider_mount` R3 is the positive control — the resolve-once
+  cache still holds across the new `co_await` in `ensure_loaded` (a mutant that drops the `loaded_` guard
+  re-resolves and fails R3). Layering and naming lints clean. `test_extract_pdf_text` is gated behind
+  `AGENTENGINE_WITH_PDF` (no such build exists), so its one-line change is covered by construction, not a run.
+- **Open after step 8 (small):** `materialize_skill_mounts`' `rt::block_on` edge goes when the host-side
+  drivers move onto the Runtime (D7); `DiskSkillSource` offload when a `SkillSource` gains a pool; the rest of
+  §5.1 (tools §5.2, sandbox/egress/secret, stores, deciders, eval, MCP/A2A, `BatchBackend`) is next.

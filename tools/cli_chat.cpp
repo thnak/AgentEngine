@@ -1035,7 +1035,7 @@ void print_skills_banner(std::ostream& out,
     out << "Skills RESOLVED at /skills/<name> -- every one's files are unconditionally readable "
                  "from turn 1 (009 §8b, unaffected by mount state):\n";
     for (auto const& source : demo_skill_sources()) {
-        auto skills = source.load_skills();
+        auto skills = rt::block_on(source.load_skills());
         if (skills) {
             for (auto const& s : *skills) {
                 out << "  - " << s.skill.frontmatter.name << ": "

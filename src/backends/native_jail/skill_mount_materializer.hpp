@@ -21,6 +21,7 @@
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/skill_provider.hpp"
 #include "agentengine/core/worktree.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/mediated_filesystem_adapter.hpp"
 #include "backends/native_jail/worktree_mount_sync.hpp"
@@ -30,9 +31,11 @@ namespace agentengine::native_jail {
 // One (mount_id, host_directory) pair per successfully materialized skill.
 using MaterializedSkillMount = std::pair<std::string, std::wstring>;
 
-// Ensures `provider`'s skills are resolved (`SkillsProvider::ensure_loaded()`), then materializes
-// every mounted skill's current content into its own real subdirectory of `host_root` (one
-// subdirectory per skill, named by `mount_id` == the skill's own bare name), via `materialize_mount`.
+// Ensures `provider`'s skills are resolved (`SkillsProvider::ensure_loaded()`, an ADR-237 §5.1
+// coroutine driven here with `rt::block_on` -- a configuration-time host edge, before any Runtime
+// exists), then materializes every mounted skill's current content into its own real subdirectory of
+// `host_root` (one subdirectory per skill, named by `mount_id` == the skill's own bare name), via
+// `materialize_mount`.
 //
 // Fails closed, with NOTHING created on disk for this call, if any mounted skill's `mount_id`
 // collides with `reserved_mount_ids` (the sandbox's own pre-existing mounts, e.g. {"work", "input",
@@ -44,7 +47,7 @@ template <WorktreeObjectStore ObjectStoreT>
 [[nodiscard]] result<std::vector<MaterializedSkillMount>> materialize_skill_mounts(
     SkillsProvider<ObjectStoreT>& provider, std::filesystem::path const& host_root,
     std::vector<std::string> const& reserved_mount_ids) {
-    if (auto loaded = provider.ensure_loaded(); !loaded) return std::unexpected(loaded.error());
+    if (auto loaded = rt::block_on(provider.ensure_loaded()); !loaded) return std::unexpected(loaded.error());
 
     for (Mount const& mount : provider.mounted()) {
         if (std::ranges::find(reserved_mount_ids, mount.mount_id) != reserved_mount_ids.end()) {

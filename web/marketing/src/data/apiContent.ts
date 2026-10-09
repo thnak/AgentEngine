@@ -2075,7 +2075,7 @@ export const skillSourceConceptSnippet = `// The interface both sources above sa
 template <class T>
 concept SkillSource = requires(T& s) {
     { s.origin_id() } -> std::convertible_to<std::string_view>;
-    { s.load_skills() } -> std::same_as<result<std::vector<SkillSourceResult>>>;
+    { s.load_skills() } -> std::same_as<task<result<std::vector<SkillSourceResult>>>>;
 };
 
 // One file inside a skill's bundle, SKILL.md itself included.
@@ -2095,7 +2095,7 @@ struct SkillSourceResult {
 // because resolving sources happens once per run, never on Tool/ChatClient's hot path.
 struct SkillSourceDescriptor {
     std::string origin_id;
-    std::function<result<std::vector<SkillSourceResult>>()> load_skills;
+    std::function<task<result<std::vector<SkillSourceResult>>>()> load_skills;
 };
 
 template <class SourceT> requires SkillSource<SourceT>
@@ -2115,7 +2115,7 @@ public:
         : origin_id_(std::move(origin_id)), skills_(std::move(skills)) {}
 
     [[nodiscard]] std::string_view origin_id() const noexcept { return origin_id_; }
-    [[nodiscard]] result<std::vector<SkillSourceResult>> load_skills() const { return skills_; }
+    [[nodiscard]] task<result<std::vector<SkillSourceResult>>> load_skills() const { co_return skills_; }
 
 private:
     std::string origin_id_;
@@ -2184,7 +2184,7 @@ export const inlineSkillSourceMembers: Record<Lang, MemberSpec[]> = {
         "Valid while this object lives. make_skill_source_descriptor copies it into SkillSourceDescriptor::origin_id. SkillsProvider uses it only to name both sources in a skill.name_collision_across_sources error; it is not a namespace, and two sources may share one.",
     },
     {
-      sig: "result<std::vector<SkillSourceResult>> load_skills() const",
+      sig: "task<result<std::vector<SkillSourceResult>>> load_skills() const",
       returns: "a copy of what the constructor stored",
       contract:
         "Same value every call, no side effects, safe to call concurrently (nothing is mutated). The copy includes every file's bytes, so its cost grows with the bundle. SkillsProvider calls it once per resolve and caches the result (ensure_loaded()).",
@@ -2210,7 +2210,7 @@ export const inlineSkillSourceMembers: Record<Lang, MemberSpec[]> = {
         "Hợp lệ khi đối tượng này còn sống. make_skill_source_descriptor sao chép nó vào SkillSourceDescriptor::origin_id. SkillsProvider chỉ dùng nó để nêu tên hai nguồn trong lỗi skill.name_collision_across_sources; nó không phải namespace, và hai nguồn có thể dùng chung một origin id.",
     },
     {
-      sig: "result<std::vector<SkillSourceResult>> load_skills() const",
+      sig: "task<result<std::vector<SkillSourceResult>>> load_skills() const",
       returns: "một bản sao của thứ constructor đã lưu",
       contract:
         "Cùng một giá trị ở mọi lần gọi, không có side effect, gọi đồng thời vẫn an toàn (không có gì bị thay đổi). Bản sao gồm cả bytes của mọi file, nên chi phí tăng theo kích thước bundle. SkillsProvider gọi nó một lần cho mỗi lần resolve và cache kết quả (ensure_loaded()).",
@@ -2226,15 +2226,15 @@ export const inlineSkillSourceFailureConstructorSnippet = `result<std::vector<Sk
 
 InlineSkillSource source("failing-origin", failed);
 source.origin_id();                       // == "failing-origin" -- round-trips even on the failure path
-source.load_skills().has_value();         // == false
-source.load_skills().error().code;        // == "test.fixture_parse_failed" -- the EXACT error, unchanged
+(co_await source.load_skills()).has_value();        // == false
+(co_await source.load_skills()).error().code;       // == "test.fixture_parse_failed" -- the EXACT error, unchanged
 
 // Calling load_skills() again returns the identical failure -- no retry, no re-parse attempt:
-source.load_skills().error().code;        // == "test.fixture_parse_failed", still
+(co_await source.load_skills()).error().code;       // == "test.fixture_parse_failed", still
 
 // And it survives make_skill_source_descriptor's type erasure too:
 auto descriptor = make_skill_source_descriptor(std::move(source));
-descriptor.load_skills().error().code;    // == "test.fixture_parse_failed"`;
+(co_await descriptor.load_skills()).error().code;   // == "test.fixture_parse_failed"`;
 
 // A real caller of that second constructor -- tools/extract_pdf_text.hpp:537-548, verbatim. This is
 // the exact shape builtin_skills.hpp's make_builtin_skills_source() also uses (there, the immediately-
@@ -2266,7 +2266,7 @@ public:
     // returns the SAME cached result (009 §8c: "loading is dynamic but
     // snapshotted per run -- a skill loaded mid-run does not retroactively
     // change what earlier turns were permitted to do").
-    [[nodiscard]] result<void> ensure_loaded();
+    [[nodiscard]] task<result<void>> ensure_loaded();
 
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext&, EffectContext&);
 

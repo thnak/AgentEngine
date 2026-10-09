@@ -179,7 +179,7 @@ judge it against what they see in the sky themselves.
     // matching builtin_skills.hpp's own make_builtin_skills_source() convention.
     SkillSourceDescriptor d;
     d.origin_id = "farm-advisory-test";
-    d.load_skills = [resolved]() { return resolved; };
+    d.load_skills = [resolved]() -> task<result<std::vector<SkillSourceResult>>> { co_return resolved; };
     return d;
 }
 

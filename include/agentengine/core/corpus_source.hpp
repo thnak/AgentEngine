@@ -128,9 +128,12 @@ struct TextChunk {
 };
 
 template <class T>
+// ADR-237 §5.1: every seam returns `task<...>`; `chunk` takes its text by value and is awaitable. The
+// default conformer's body never parks (a pure in-memory split), so this is an "async in name only"
+// seam for now -- offloading it would need a pool the policy does not hold (§4.6, named residual).
 // ae-naming-lint: allow ChunkingPolicy — ADR-063: new vocabulary, not yet in 027 §2-4's tables.
-concept ChunkingPolicy = requires(T const& c, std::string const& text) {
-    { c.chunk(text) } -> std::same_as<std::vector<TextChunk>>;
+concept ChunkingPolicy = requires(T const& c, std::string text) {
+    { c.chunk(std::move(text)) } -> std::same_as<task<std::vector<TextChunk>>>;
 };
 
 namespace corpus_source_detail {
@@ -432,7 +435,7 @@ public:
           overlap_words_(static_cast<std::size_t>(static_cast<double>(chunk_size_words_) * overlap_fraction)),
           max_atom_bytes_(max_atom_bytes) {}
 
-    [[nodiscard]] std::vector<TextChunk> chunk(std::string const& text) const {
+    [[nodiscard]] task<std::vector<TextChunk>> chunk(std::string text) const {
         auto lines = corpus_source_detail::split_lines(text);
         auto paragraphs = corpus_source_detail::paragraphs_from_lines(lines);
         std::vector<corpus_source_detail::Atom> atoms;
@@ -440,8 +443,8 @@ public:
             corpus_source_detail::recursive_split_atom(p, chunk_size_words_, atoms);
         }
         atoms = corpus_source_detail::enforce_max_atom_bytes(atoms, chunk_size_words_, max_atom_bytes_);
-        if (atoms.empty()) return {};
-        return corpus_source_detail::merge_atoms_into_chunks(atoms, chunk_size_words_, overlap_words_);
+        if (atoms.empty()) co_return std::vector<TextChunk>{};
+        co_return corpus_source_detail::merge_atoms_into_chunks(atoms, chunk_size_words_, overlap_words_);
     }
 
 private:
@@ -587,7 +590,7 @@ public:
         std::unordered_set<std::string> seen_ids_this_pass;
 
         for (auto const& f : changed_files) {
-            auto chunks = chunker.chunk(f.content);
+            auto chunks = co_await chunker.chunk(f.content);
             out.chunks_seen += chunks.size();
             for (auto& tc : chunks) {
                 auto chunk_bytes = std::as_bytes(std::span{tc.text.data(), tc.text.size()});
@@ -832,7 +835,7 @@ public:
         std::unordered_set<std::string> seen_ids_this_pass;
 
         for (auto const& f : changed_files) {
-            auto chunks = chunker.chunk(f.content);
+            auto chunks = co_await chunker.chunk(f.content);
             out.chunks_seen += chunks.size();
             for (auto& tc : chunks) {
                 auto chunk_bytes = std::as_bytes(std::span{tc.text.data(), tc.text.size()});

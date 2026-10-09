@@ -8,6 +8,7 @@
 
 #include "agentengine/core/builtin_skills.hpp"
 #include "agentengine/core/skill_source.hpp"
+#include "../../support/run_task_sync.hpp"
 
 using namespace agentengine;
 
@@ -39,7 +40,7 @@ int main() {
         InlineSkillSource source("test-origin", supplied);
         check(source.origin_id() == "test-origin", "R1: origin_id() round-trips");
 
-        auto loaded = source.load_skills();
+        auto loaded = test_support::run_task_sync<result<std::vector<SkillSourceResult>>>(source.load_skills());
         check(loaded.has_value() && loaded->size() == 1,
               "R1: load_skills() returns exactly the supplied skill");
         if (loaded && loaded->size() == 1) {
@@ -47,7 +48,7 @@ int main() {
                   "R1: the supplied skill's own name round-trips through load_skills()");
         }
 
-        auto loaded_again = source.load_skills();
+        auto loaded_again = test_support::run_task_sync<result<std::vector<SkillSourceResult>>>(source.load_skills());
         check(loaded_again.has_value() && loaded_again->size() == 1,
               "R1: calling load_skills() a second time is side-effect-free and returns the same data "
               "(no disk, no mutation)");
@@ -64,7 +65,7 @@ int main() {
         check(source.origin_id() == "failing-origin",
               "R1b: origin_id() round-trips even when construction carried a failure");
 
-        auto loaded = source.load_skills();
+        auto loaded = test_support::run_task_sync<result<std::vector<SkillSourceResult>>>(source.load_skills());
         check(!loaded.has_value(), "R1b: load_skills() surfaces the construction-time failure, not an "
                                     "empty or partial skill list");
         if (!loaded) {
@@ -72,12 +73,12 @@ int main() {
                   "R1b: the exact error carried at construction round-trips through load_skills()");
         }
 
-        auto loaded_again = source.load_skills();
+        auto loaded_again = test_support::run_task_sync<result<std::vector<SkillSourceResult>>>(source.load_skills());
         check(!loaded_again.has_value() && loaded_again.error().code == "test.fixture_parse_failed",
               "R1b: the failure is stable across repeated load_skills() calls, same as the success path");
 
         auto descriptor = make_skill_source_descriptor(std::move(source));
-        auto erased_loaded = descriptor.load_skills();
+        auto erased_loaded = test_support::run_task_sync<result<std::vector<SkillSourceResult>>>(descriptor.load_skills());
         check(!erased_loaded.has_value() && erased_loaded.error().code == "test.fixture_parse_failed",
               "R1b: the failure survives make_skill_source_descriptor's type erasure too");
     }
@@ -88,7 +89,7 @@ int main() {
         auto descriptor = make_skill_source_descriptor(InlineSkillSource("erased-origin", empty));
         check(descriptor.origin_id == "erased-origin",
               "R2: make_skill_source_descriptor's origin_id matches the wrapped source's own");
-        auto loaded = descriptor.load_skills();
+        auto loaded = test_support::run_task_sync<result<std::vector<SkillSourceResult>>>(descriptor.load_skills());
         check(loaded.has_value() && loaded->empty(),
               "R2: the type-erased load_skills() closure forwards correctly through the shared_ptr");
     }
@@ -98,7 +99,7 @@ int main() {
         auto descriptor = make_builtin_skills_source();
         check(descriptor.origin_id == "builtin", "R3: make_builtin_skills_source()'s origin_id is 'builtin'");
 
-        auto loaded = descriptor.load_skills();
+        auto loaded = test_support::run_task_sync<result<std::vector<SkillSourceResult>>>(descriptor.load_skills());
         check(loaded.has_value(), "R3: the builtin skill set resolves without error");
         if (loaded) {
             check(loaded->size() == 5,

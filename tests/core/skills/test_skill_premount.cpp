@@ -72,7 +72,7 @@ public:
 
     // Host-only, configuration-time -- the cli_chat `premount_skills()` shape.
     ae::SkillPremountReport host_premount(std::vector<std::string> const& skills) {
-        (void)skills_.ensure_loaded();
+        (void)drive<ae::result<void>>(skills_.ensure_loaded());
         std::vector<std::string> resolvable;
         for (auto const& m : skills_.mounted()) resolvable.push_back(m.mount_id);
         return ae::premount_skills_by_host(mounted_, skills, resolvable);

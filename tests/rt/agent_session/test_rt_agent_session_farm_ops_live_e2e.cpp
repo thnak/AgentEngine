@@ -277,7 +277,7 @@ type. Do not guess either value.
 
     SkillSourceDescriptor d;
     d.origin_id = "farm-ops-test";
-    d.load_skills = [resolved]() { return resolved; };
+    d.load_skills = [resolved]() -> task<result<std::vector<SkillSourceResult>>> { co_return resolved; };
     return d;
 }
 

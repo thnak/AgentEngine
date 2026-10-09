@@ -13,6 +13,7 @@
 #include "agentengine/core/mounted_skills_state.hpp"
 #include "agentengine/core/skill_provider.hpp"
 #include "agentengine/core/skill_tool_scoping.hpp"
+#include "../../support/run_task_sync.hpp"
 
 using namespace agentengine;
 
@@ -85,7 +86,7 @@ int main() {
         sources.push_back(make_skill_source_descriptor(InlineSkillSource(
             "origin-a", {make_skill_with_tool("test-skill", "fake_tool")})));
         SkillsProvider<> skills(std::move(sources));
-        auto loaded = skills.ensure_loaded();
+        auto loaded = test_support::run_task_sync<result<void>>(skills.ensure_loaded());
         check(loaded.has_value(), "R2 setup: the one-skill source resolves cleanly");
 
         MountedSkillsState mount_state;
