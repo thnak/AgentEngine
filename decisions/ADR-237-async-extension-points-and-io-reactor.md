@@ -1857,3 +1857,34 @@ declaration, `friend`, and an out-of-line `invoke` defined where the owner is co
 `ExecuteCodeTool` (`suspend_codeact_ask`), `MountSkillTool`/`ExecuteCodeTool` (`farm_ops`),
 `MountSkillTool` (`farm_advisory`).
 
+### Step 26 (2026-10-10): `make_tool_descriptor_with_invoke` DELETED
+
+Slices 14-15 converted the factory's call sites; this step removes the factory itself, which §5.2 names
+explicitly ("`make_tool_descriptor_with_invoke` and every sentinel `invoke` (16 tools) are deleted"):
+
+- `include/agentengine/core/tool_descriptor.hpp`: the function and its ADR-028 doc block are gone, with a
+  short note recording where the call sites went. The `captures_session_state` field comment and
+  `ToolTable::from()`'s comment no longer describe the factory in the present tense, and the
+  `args_schema_value` caching comment now names the two surviving factories.
+- `core/tool.hpp`: the `EnforcesGrantedCaps` and `CapturesSessionState` tag comments no longer reference
+  the deleted custom-invoke path.
+- `tests/core/tools/test_tool_deterministic.cpp`: its D2 case -- which asserted the factory dropped
+  `Deterministic` -- is deleted with the factory. Nothing replaces it: the behaviour it pinned (a
+  factory-supplied closure is not the code the tag describes) no longer has a path to exist.
+
+**Sentinel `invoke()`s are gone from compiled code.** A grep for
+`dead_static_invoke_path`/`invoke_unreachable`/`must never run` over every `.cpp`/`.hpp` now finds only
+(a) the deliberately-unbuilt `docs/planning/proofs/`, (b) `RunShellTool`'s null-owner failure path, which
+is the live owner-less stand-in contract rather than a poison stub, and (c) one explanatory comment.
+
+Evidence: `cmake --build build-dev` AND `cmake --build build --target agentengine_cli_chat` both clean --
+the second because `tool_descriptor.hpp` is shared and `agentengine_cli_chat` lives in the
+HTTPS + Python-runner tree, so a header change there has to be re-verified there. naming-lint OK;
+layering-lint OK; full suite `ctest -LE live-network` 401/415, the identical 14. `test_tool_deterministic`
+(+ its compile-fail control), `test_tool_batch_partition` and `test_approval_resume` pass.
+
+§5.2 is NOT closed by this. Still open: the transitional zero-argument `make_tool_descriptor<ToolT>()` /
+`from_tools<Ts...>()` static-invoke form (its remaining conformers are mostly tests); `make_sync_invoke`'s
+five production sites (two RAG providers, with §5.1's embedder/index seams; two native-process providers,
+with §9 D3; the WASM bridge, which needs a WASM-enabled build to verify).
+

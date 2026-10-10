@@ -305,16 +305,26 @@ AE_JSON_SCHEMA(MountArgs, skill_name)
 struct MountReply { bool ok = false; };
 AE_JSON_SCHEMA(MountReply, ok)
 
-// Sentinel invoke() -- must never actually run; the real logic is the provider's own closure.
-struct MountTool : agentengine::Tool<MountTool, agentengine::EffectClass<agentengine::effect_class::pure>> {
+// ADR-237 §5.2: instance form. Both tools hold the provider explicitly and reach its private
+// `real_mount`/`real_use_runner` through the `friend` declarations below; each `invoke` is defined
+// out-of-line, where `TestCodeActProvider` is complete. The old static invoke()s were sentinels that
+// must never run -- the instance invoke IS the real path now.
+class TestCodeActProvider;
+
+struct MountTool
+    : agentengine::Tool<MountTool, agentengine::EffectClass<agentengine::effect_class::pure>,
+                        agentengine::CapturesSessionState> {
     static constexpr std::string_view name        = "mount";
     static constexpr std::string_view description = "Mounts a skill (test double).";
     using Args  = MountArgs;
     using Reply = MountReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(
-            agentengine::error{agentengine::failure_class::fatal, "dead path", "test.dead_static_invoke"});
-    }
+
+    explicit MountTool(TestCodeActProvider& provider) : provider_(&provider) {}
+
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const;
+
+private:
+    TestCodeActProvider* provider_;
 };
 
 struct UseRunnerArgs { bool unused = false; };
@@ -323,15 +333,19 @@ struct UseRunnerReply { int tag = 0; };
 AE_JSON_SCHEMA(UseRunnerReply, tag)
 
 struct UseRunnerTool
-    : agentengine::Tool<UseRunnerTool, agentengine::EffectClass<agentengine::effect_class::pure>> {
+    : agentengine::Tool<UseRunnerTool, agentengine::EffectClass<agentengine::effect_class::pure>,
+                        agentengine::CapturesSessionState> {
     static constexpr std::string_view name        = "use_runner";
     static constexpr std::string_view description = "Reads the shared runner's tag (test double).";
     using Args  = UseRunnerArgs;
     using Reply = UseRunnerReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(
-            agentengine::error{agentengine::failure_class::fatal, "dead path", "test.dead_static_invoke"});
-    }
+
+    explicit UseRunnerTool(TestCodeActProvider& provider) : provider_(&provider) {}
+
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const;
+
+private:
+    TestCodeActProvider* provider_;
 };
 
 // The provider under test: same shape as tools/cli_chat.cpp's ToolDeclaringHistoryProvider.
@@ -349,10 +363,8 @@ public:
                                                                               EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools.push_back(agentengine::make_tool_descriptor_with_invoke<MountTool>(
-            [this](MountArgs a, EffectContext& ctx) { return real_mount(std::move(a), ctx); }));
-        c.tools.push_back(agentengine::make_tool_descriptor_with_invoke<UseRunnerTool>(
-            [this](UseRunnerArgs a, EffectContext& ctx) { return real_use_runner(std::move(a), ctx); }));
+        c.tools.push_back(agentengine::make_tool_descriptor(MountTool{*this}));
+        c.tools.push_back(agentengine::make_tool_descriptor(UseRunnerTool{*this}));
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -362,6 +374,10 @@ public:
     }
 
 private:
+    // ADR-237 §5.2: the instance-form tools above reach these.
+    friend struct MountTool;
+    friend struct UseRunnerTool;
+
     [[nodiscard]] agentengine::result<MountReply> real_mount(MountArgs a, EffectContext&) {
         mounted_skills_.mount(a.skill_name);
         return MountReply{true};
@@ -441,6 +457,16 @@ public:
 };
 static_assert(agentengine::ChatClient<CapturingChatClient>,
               "CapturingChatClient must satisfy the ChatClient concept (004 §1)");
+
+// ADR-237 §5.2: out-of-line -- both need `TestCodeActProvider` complete.
+agentengine::task<agentengine::result<MountReply>> MountTool::invoke(MountArgs a, EffectContext& ctx) const {
+    co_return provider_->real_mount(std::move(a), ctx);
+}
+
+agentengine::task<agentengine::result<UseRunnerReply>> UseRunnerTool::invoke(UseRunnerArgs a,
+                                                                            EffectContext& ctx) const {
+    co_return provider_->real_use_runner(std::move(a), ctx);
+}
 
 }  // namespace
 

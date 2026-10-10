@@ -80,12 +80,11 @@ struct ToolDescriptor {
     // The member name is kept as-is: `d.effect_class` is the reading call sites already use.
     agentengine::effect_class effect_class = agentengine::effect_class::at_most_once;
 
-    // Session-scoped-stateful-tools mechanism (ADR-028): `true` only for a descriptor built via
-    // `make_tool_descriptor_with_invoke<ToolT>()` below, whose `invoke` closure captures a
-    // reference into its owning provider's own session-scoped state (e.g. a persistent
-    // interpreter's exec state, mounted-skills tracking) rather than being a pure, ownership-free
-    // static call. `false` (the default) for every ordinary `make_tool_descriptor<ToolT>()` tool,
-    // unaffected. `background_task()` below refuses to background any descriptor with this set —
+    // Session-scoped-stateful-tools mechanism (ADR-028, ADR-237 §5.2): `true` only for a descriptor
+    // whose tool declares `CapturesSessionState` (`core/tool.hpp`), i.e. whose `invoke` reads
+    // session-scoped state (a persistent interpreter's exec state, mounted-skills tracking) rather
+    // than being a pure, ownership-free call. `false` (the default) for every ordinary stateless
+    // tool, unaffected. `background_task()` below refuses to background any descriptor with this set —
     // `start_background_task()` (agent_session.hpp) detaches a real `std::thread` that would then
     // hold a reference into session state with no synchronization against `AgentSession::
     // fork_from()`/`clear_in_process_state()` (neither is part of `protocol`, so neither is
@@ -109,7 +108,7 @@ struct ToolDescriptor {
     // `ToolTable`/session, but the wire-format `translate_tool()` in the OpenAI/Anthropic backends
     // re-parsed it into a fresh `json::Value` on every single `chat()`/`chat_stream()` call that
     // included this tool -- redundant work repeated once per turn per tool, for the whole run.
-    // `make_tool_descriptor<ToolT>()`/`make_tool_descriptor_with_invoke<ToolT>()` below parse it
+    // `make_tool_descriptor<ToolT>()`/`make_tool_descriptor(ToolT{...})` below parse it
     // ONCE, here, at registration time; `args_schema_value_cached` is `false` for any hand-built
     // descriptor that predates this field (memory_provider.hpp/vector_rag_context_provider.hpp/
     // mcp_tool_bridge.hpp/native_providers.hpp all assign `args_schema_json` directly, not through
@@ -215,50 +214,11 @@ template <class ToolT>
     return d;
 }
 
-// ADR-028 -- the general session-scoped-stateful-tools mechanism. Identical to
-// `make_tool_descriptor<ToolT>()` above (same compile-time extraction of `ToolT`'s declared
-// `Capabilities<...>`/`Approval<...>`/`EffectClass<...>`/schemas -- a state-capturing tool is
-// still a real `Tool<Derived, Policies...>` conformer, never a hand-built-from-scratch descriptor
-// that would silently default to an empty capability ceiling and `never_require` approval), except
-// `custom_invoke` runs INSTEAD OF `ToolT::invoke` -- letting the caller supply a callable that
-// captures whatever session-scoped state it needs (typically a non-static member function on the
-// state-owning `ContextProvider`, e.g. `[this](Args a, EffectContext& ctx) { return
-// this->real_invoke(a, ctx); }`). `ToolT::invoke` itself is never called on this path; it may even
-// be left undefined by `ToolT` if every call site uses this factory instead of the plain one.
-template <class ToolT, class InvokeFn>
-[[nodiscard]] ToolDescriptor make_tool_descriptor_with_invoke(InvokeFn custom_invoke) {
-    ToolDescriptor d;
-    d.name = std::string(ToolT::name);
-    d.description = std::string(ToolT::description);
-    d.capability_ceiling = ToolT::declared_capabilities();
-    d.approval = ToolT::declared_approval();
-    d.backgroundable = ToolT::declared_backgroundable();
-    d.effect_class = ToolT::declared_effect_class();
-    d.exclusivity_group = ToolT::declared_exclusivity_group();
-    d.parallelizable = ToolT::kHasParallelizable;
-    // ADR-212 §3.4: `custom_invoke` is not the code `Deterministic` describes, and it reads session
-    // state a verifying node does not have, so the claim does not carry over.
-    d.deterministic = false;
-    // ADR-217: carried over -- the tag describes the invoke the descriptor runs, and a tool built only
-    // through this factory (e.g. `RunShellTool`) declares it for its custom invoke.
-    d.enforces_granted_caps = ToolT::declared_enforces_granted_caps();
-    d.args_schema_json = ToolT::args_schema();
-    d.reply_schema_json = ToolT::reply_schema();
-    if (auto parsed = json::parse(d.args_schema_json)) {
-        d.args_schema_value = std::move(*parsed);
-        d.args_schema_value_cached = true;
-    }
-    d.captures_session_state = true;
-    d.invoke = [custom_invoke = std::move(custom_invoke)](
-                   json::Value const& args_value, EffectContext& ctx) -> task<result<json::Value>> {
-        auto args = schema::from_json<typename ToolT::Args>(args_value);
-        if (!args) co_return std::unexpected(args.error());
-        auto reply = custom_invoke(*args, ctx);
-        if (!reply) co_return std::unexpected(reply.error());
-        co_return schema::to_json(*reply);
-    };
-    return d;
-}
+// ADR-237 §5.2: `make_tool_descriptor_with_invoke` lived here. It is DELETED -- every one of its call
+// sites (production and test) is now an instance-form `Tool<>` conformer registered through the
+// value-taking `make_tool_descriptor(ToolT)` below, so a descriptor's invoke IS the declared code and no
+// closure-over-session-state path remains. Its old implicit `captures_session_state = true` is now the
+// explicit `CapturesSessionState` policy tag (`core/tool.hpp`).
 
 // ADR-237 §5.2: the instance-invoke form. `ToolT` declares a non-static `const`
 // `task<result<Reply>> invoke(Args, EffectContext&)`; the tool object is moved into a descriptor-owned
@@ -325,7 +285,7 @@ public:
     // ADR-237 §5.2: the instance-form registration path. Each argument is a `Tool<>` instance -- a
     // stateless tool is `ToolT{}`, a stateful one carries its injected state by value -- moved into
     // its descriptor (see the value-taking `make_tool_descriptor` above). This is where the former
-    // `make_tool_descriptor_with_invoke` call sites migrate. `from()` with no arguments is an empty
+    // `make_tool_descriptor_with_invoke` call sites went. `from()` with no arguments is an empty
     // table, matching `from_tools<>()`.
     template <class... ToolTs>
     [[nodiscard]] static ToolTable from(ToolTs&&... tools) {

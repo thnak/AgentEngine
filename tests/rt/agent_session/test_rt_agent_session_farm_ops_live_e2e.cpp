@@ -418,7 +418,13 @@ struct MountSkillReply {
 };
 AE_JSON_SCHEMA(MountSkillReply, ok, message)
 
-struct MountSkillTool : Tool<MountSkillTool, EffectClass<effect_class::pure>> {
+// ADR-237 §5.2: instance form. Both tools hold `FarmOpsProvider` and reach its private
+// `real_mount_skill`/`real_execute_code` through the `friend` declarations below; each `invoke` is
+// defined out-of-line, where the provider is complete.
+class FarmOpsProvider;
+
+struct MountSkillTool
+    : Tool<MountSkillTool, EffectClass<effect_class::pure>, CapturesSessionState> {
     static constexpr std::string_view name = "mount_skill";
     static constexpr std::string_view description =
         "Activate a skill you've seen advertised by name and description, so its full instructions "
@@ -427,13 +433,13 @@ struct MountSkillTool : Tool<MountSkillTool, EffectClass<effect_class::pure>> {
         "tools, then wait for your next turn to use them.";
     using Args = MountSkillArgs;
     using Reply = MountSkillReply;
-    // ADR-030: unreachable poison -- real logic lives in FarmOpsProvider::real_mount_skill().
-    static result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(error{failure_class::fatal,
-                                      "MountSkillTool::invoke() must never run directly -- reached "
-                                      "only through FarmOpsProvider::real_mount_skill()",
-                                      "farm_ops.dead_static_invoke_path"});
-    }
+
+    explicit MountSkillTool(FarmOpsProvider& provider) : provider_(&provider) {}
+
+    task<result<Reply>> invoke(Args, EffectContext&) const;
+
+private:
+    FarmOpsProvider* provider_;
 };
 
 // ================= ToolOptimizerProvider (ADR-065) pool -- scheduling/market tools, NEVER always-on:
@@ -581,7 +587,8 @@ struct ExecuteCodeReply {
 };
 AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
 
-struct ExecuteCodeTool : Tool<ExecuteCodeTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct ExecuteCodeTool
+    : Tool<ExecuteCodeTool, Capabilities<>, EffectClass<effect_class::pure>, CapturesSessionState> {
     static constexpr std::string_view name = "execute_code";
     static constexpr std::string_view description =
         "Runs a snippet of real Python code in a sandboxed interpreter and returns what it printed "
@@ -589,14 +596,13 @@ struct ExecuteCodeTool : Tool<ExecuteCodeTool, Capabilities<>, EffectClass<effec
         "right -- irrigation volumes, feed totals, sale values -- rather than computing it yourself.";
     using Args = ExecuteCodeArgs;
     using Reply = ExecuteCodeReply;
-    // ADR-030: unreachable poison -- real logic lives in FarmOpsProvider::real_execute_code(), which
-    // reaches the real, shared, lazily-initialized PythonRunner below.
-    static result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(error{failure_class::fatal,
-                                      "ExecuteCodeTool::invoke() must never run directly -- reached "
-                                      "only through FarmOpsProvider::real_execute_code()",
-                                      "farm_ops.dead_static_invoke_path"});
-    }
+
+    explicit ExecuteCodeTool(FarmOpsProvider& provider) : provider_(&provider) {}
+
+    task<result<Reply>> invoke(Args, EffectContext&) const;
+
+private:
+    FarmOpsProvider* provider_;
 };
 
 // Process-lifetime lazy singleton, exactly mirroring test_python_embed_smoke.cpp's own construction
@@ -693,9 +699,8 @@ public:
             make_tool_descriptor<CheckFieldWeatherTool>(),
             make_tool_descriptor<CheckPestPressureTool>(),
             make_tool_descriptor<CheckAnimalHealthTool>(),
-            make_tool_descriptor<CalculateFeedRationTool>(),
-            make_tool_descriptor_with_invoke<MountSkillTool>(
-                [this](MountSkillArgs a, EffectContext& ctx) { return real_mount_skill(std::move(a), ctx); }),
+            make_tool_descriptor(CalculateFeedRationTool{}),
+            make_tool_descriptor(MountSkillTool{*this}),
         };
         ToolTable const skill_universe = ToolTable::from_descriptors(std::move(skill_universe_descriptors));
         auto const skill_scoped = scope_tools_to_mounted_skills(
@@ -710,14 +715,17 @@ public:
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
 
 private:
+    // ADR-237 §5.2: the instance-form tools above reach these.
+    friend struct MountSkillTool;
+    friend struct ExecuteCodeTool;
+
     [[nodiscard]] ToolTable build_optimizer_agent_tools() {
         std::vector<ToolDescriptor> descriptors = {
             make_tool_descriptor<ScheduleTaskTool>(),
             make_tool_descriptor<CancelTaskTool>(),
             make_tool_descriptor<GetMarketPriceTool>(),
             make_tool_descriptor<PlaceSellOrderTool>(),
-            make_tool_descriptor_with_invoke<ExecuteCodeTool>(
-                [this](ExecuteCodeArgs a, EffectContext& ctx) { return real_execute_code(std::move(a), ctx); }),
+            make_tool_descriptor(ExecuteCodeTool{*this}),
         };
         return ToolTable::from_descriptors(std::move(descriptors));
     }
@@ -791,6 +799,15 @@ static_assert(std::is_default_constructible_v<FarmOpsLiveSession>);
 // is whether the tools its own pool gates (get_market_price, execute_code) actually got invoked, which
 // is only possible if mount_tool ran first (skill_tool_scoping's own enforcement: an unmounted tool is
 // never declared, so the model could not have called it directly).
+
+// ADR-237 §5.2: out-of-line -- both need `FarmOpsProvider` complete.
+task<result<MountSkillReply>> MountSkillTool::invoke(MountSkillArgs a, EffectContext& ctx) const {
+    co_return provider_->real_mount_skill(std::move(a), ctx);
+}
+
+task<result<ExecuteCodeReply>> ExecuteCodeTool::invoke(ExecuteCodeArgs a, EffectContext& ctx) const {
+    co_return provider_->real_execute_code(std::move(a), ctx);
+}
 
 }  // namespace
 

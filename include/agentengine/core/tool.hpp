@@ -69,14 +69,14 @@ struct Deterministic {};
 // tool and the per-call handle carries the grant's cap. Without it (the default) admission keeps
 // `bind()`'s exact `contains()` rule and a capped grant refuses an uncapped declaration -- because a
 // tool that enforces its own declared number (or none) would otherwise run past the grant's cap. Only
-// declare it for a tool whose invoke really reads its caps from the grant; for a
-// `make_tool_descriptor_with_invoke` tool, that is the custom invoke.
+// declare it for a tool whose invoke really reads its caps from the grant -- `RunShellTool` is the
+// shipped example (the mediated shell's own per-operation lookups).
 struct EnforcesGrantedCaps {};  // ae-naming-lint: allow EnforcesGrantedCaps — ADR-217 policy tag; 027 has not been updated to list it
 
 // decisions/ADR-237-async-extension-points-and-io-reactor.md §5.2: "this tool's invoke captures
-// session-scoped state." The explicit declaration `ToolDescriptor::captures_session_state` reads,
-// replacing `make_tool_descriptor_with_invoke`'s implicit `true` for the tools that migrate to
-// `Tool<>`. A tool with it may not be backgrounded (`background_job_runner`) and is not re-run
+// session-scoped state." The explicit declaration `ToolDescriptor::captures_session_state` reads; it is
+// what the now-deleted `make_tool_descriptor_with_invoke` used to set implicitly. A tool with it may not
+// be backgrounded (`background_job_runner`) and is not re-run
 // comparable (`tool_descriptor.hpp`). Deliberately an explicit tag, never derived from "the type is
 // non-empty": deriving it would make every configured tool unbackgroundable (red-team G2), including
 // §5.2's own stateful example.

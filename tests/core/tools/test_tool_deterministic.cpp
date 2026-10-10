@@ -106,11 +106,10 @@ int main() {
           "D2: tag order and a later EffectClass do not change the result");
     check(!counter.deterministic, "D2: an undeclared tool is not deterministic");
     check(!bare.deterministic, "D2: an empty-policy tool is not deterministic");
-    auto with_invoke = ae::make_tool_descriptor_with_invoke<SumTool>(
-        [](SumArgs a, ae::EffectContext&) -> ae::result<SumReply> { return SumReply{a.a + a.b, "w"}; });
-    // ...but not through the session-state factory: its closure is not the code the tag describes.
-    check(!with_invoke.deterministic && with_invoke.captures_session_state,
-          "D2: make_tool_descriptor_with_invoke drops Deterministic");
+    // ADR-237 §5.2: the `...with_invoke` case that used to sit here is gone with the factory it tested.
+    // It asserted that a factory-supplied closure did NOT inherit `Deterministic` (its closure was not
+    // the code the tag describes). No such path exists any more -- a descriptor's invoke is always the
+    // conformer's own declared code -- so there is nothing left to assert.
 
     // D3: a hand-built descriptor defaults to false (MCP bridge, WASM, providers -- ADR-212 §3.4).
     ae::ToolDescriptor hand_built;

@@ -124,20 +124,27 @@ struct ExecuteCodeReply {
 };
 AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
 
-struct ExecuteCodeTool : agentengine::Tool<ExecuteCodeTool,
-                                             agentengine::Capabilities<agentengine::cap::decl::FsRead<"work">,
-                                                                        agentengine::cap::decl::FsWrite<"work">>,
-                                             agentengine::EffectClass<agentengine::effect_class::at_most_once>> {
+// ADR-237 §5.2: instance form -- holds the provider and reaches its private `real_execute_code`
+// through the `friend` declaration below; `invoke` is defined out-of-line.
+class CodeActHistoryProvider;
+
+struct ExecuteCodeTool
+    : agentengine::Tool<ExecuteCodeTool,
+                          agentengine::Capabilities<agentengine::cap::decl::FsRead<"work">,
+                                                     agentengine::cap::decl::FsWrite<"work">>,
+                          agentengine::EffectClass<agentengine::effect_class::at_most_once>,
+                          agentengine::CapturesSessionState> {
     static constexpr std::string_view name = "execute_code";
     static constexpr std::string_view description = "Execute Python code in this session's real interpreter.";
     using Args = ExecuteCodeArgs;
     using Reply = ExecuteCodeReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(agentengine::error{
-            agentengine::failure_class::fatal,
-            "ExecuteCodeTool::invoke() must never run directly in this test -- only through "
-            "CodeActHistoryProvider::real_execute_code()", "test.dead_static_invoke_path"});
-    }
+
+    explicit ExecuteCodeTool(CodeActHistoryProvider& provider) : provider_(&provider) {}
+
+    task<agentengine::result<Reply>> invoke(Args, EffectContext&) const;
+
+private:
+    CodeActHistoryProvider* provider_;
 };
 
 // -- A trivial second tool for B6's multi-call round ------------------------------------------------
@@ -179,8 +186,7 @@ public:
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
         std::vector<agentengine::ToolDescriptor> descriptors = {
-            agentengine::make_tool_descriptor_with_invoke<ExecuteCodeTool>(
-                [this](ExecuteCodeArgs a, EffectContext& ctx) { return real_execute_code(std::move(a), ctx); }),
+            agentengine::make_tool_descriptor(ExecuteCodeTool{*this}),
         };
         if (include_noop_tool_) descriptors.push_back(agentengine::make_tool_descriptor<NoopTool>());
         c.tools = std::move(descriptors);
@@ -189,6 +195,9 @@ public:
     task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) { co_return std::monostate{}; }
 
 private:
+    // ADR-237 §5.2: the instance-form ExecuteCodeTool above reaches this.
+    friend struct ExecuteCodeTool;
+
     // Byte-for-byte the same mapping ADR-057 §9 specifies for `real_execute_code()`
     // (tools/cli_chat.cpp) -- copied here rather than shared, matching this test file's own
     // "no cross-file coupling" precedent for the fixture code around it.
@@ -331,6 +340,12 @@ using Session = AgentSession<ScriptedChatClient, NoSessionState, CodeActHistoryP
     cfg.expose_agent_ask = true;
     if (!work_dir_w.empty()) cfg.mount_roots["work"] = work_dir_w;
     return cfg;
+}
+
+// ADR-237 §5.2: out-of-line -- needs `CodeActHistoryProvider` complete.
+task<agentengine::result<ExecuteCodeReply>> ExecuteCodeTool::invoke(ExecuteCodeArgs a,
+                                                                   EffectContext& ctx) const {
+    co_return provider_->real_execute_code(std::move(a), ctx);
 }
 
 }  // namespace
