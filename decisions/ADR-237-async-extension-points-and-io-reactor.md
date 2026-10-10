@@ -1718,3 +1718,32 @@ Evidence: test_agentengine_test_driver, test_approval_resume, test_agent_yaml_co
 test_agent_tools_codegen, test_tool_optimizer_provider and test_codeact_tool_union pass; full tree
 `/W4 /WX` clean; naming/layering lint OK; full suite 401/415.
 
+### Step 21 (2026-10-10): `mandatory_sandbox_provider` -- five tools to instance form
+
+All five tools this provider contributes (`run_command` plus the four task-branch verbs) are now
+instance-form `Tool<>` conformers, templated on the owning provider type and holding it explicitly (the
+provider is a class template). Each has a non-static `invoke()` defined below the class, reaching a new
+private `dispatch_*()` through a `template <class> friend struct ...;` declaration; `on_context()` now
+registers `make_tool_descriptor(RunCommandTool<MandatorySandboxProvider>{*this})` and its four siblings.
+Each `dispatch_*()` body is the old `on_context()` closure moved verbatim and still wrapped in
+`with_image_provenance()`, so ADR-176 §14's post-body stamping lands in exactly the same place and order.
+(The wrapper's parameters are named `request`/`context` rather than `args`/`ctx` so the moved body's own
+`args`/`ctx` do not shadow an outer parameter, a level-4 warning under `/WX`.) The five static poison
+`invoke()` sentinels are gone.
+
+Field-for-field equivalence with the old `make_tool_descriptor_with_invoke<T>()` factory, checked against
+that factory's own body: same name/description/capability ceiling/approval/backgroundable/effect_class/
+exclusivity_group/parallelizable, `deterministic` false in both (neither tool declares `Deterministic`),
+and `captures_session_state` true in both -- the factory hardcoded it, and the new tools declare
+`CapturesSessionState`, which `make_tool_descriptor` reads through `declared_captures_session_state()`.
+
+Evidence: test_mandatory_sandbox_provider_composed (drives `on_context()` and asserts the contributed set:
+`run_command` absent before `bind_sandbox()`, present on the very first call after it, exactly two tools
+once bound, still correct on a forked composed provider), test_run_command_commit_failure and
+test_task_branch_durability_recovery pass; full tree `/W4 /WX` clean; naming/layering lint OK; full suite
+401/415. The six Docker-gated tests in this area (test_mandatory_sandbox_provider, test_task_branch_tools,
+test_task_branch_concurrent_dispatch, test_sandbox_runtime, test_execution_surface_image_identity,
+test_live_shell_sandbox_provider_live) fail identically to baseline with "is a Docker daemon
+reachable?"/"failed to connect to the docker API" -- compile-verification only in this preset, as before;
+no daemon is available here to exercise the migrated dispatch bodies end to end.
+
