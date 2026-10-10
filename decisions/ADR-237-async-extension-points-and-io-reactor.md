@@ -1623,3 +1623,18 @@ dynamic-schema bridges (`mcp_tool_bridge.hpp`, `wasm_tool_bridge.hpp`, `native_p
 conformers -- their Args/Reply are runtime-derived -- so they lose `make_sync_invoke` and get a direct
 async `invoke` lambda instead.
 
+### Step 15 (2026-10-10): dynamic-schema bridges begin losing `make_sync_invoke`
+
+`eval/eval_stub_tool.hpp` and `protocol/mcp/mcp_tool_bridge.hpp` now build their `invoke` as a direct
+coroutine lambda (`-> task<result<json::Value>>` with `co_return`) instead of wrapping a synchronous body
+in `make_sync_invoke` -- same behavior, one fewer transitional hop, and the tools keep their existing
+`captures_session_state` (false for the eval stub; the WASM bridge below keeps `true`).
+Evidence: test_eval_stub_tool, test_eval_trial_driver/_follow_rate_screen/_gross_harm_screen/
+_tier1_screen and test_codeact_tool_union pass; full tree `/W4 /WX` clean; naming/layering lint OK.
+
+`src/backends/wasm/wasm_tool_bridge.hpp` is the same one-line change but compiles only under
+`AGENTENGINE_WITH_WASM` (OFF in every configured build tree here; enabling it fetches the vendored
+wasmtime release), so it is deliberately LEFT on `make_sync_invoke` until a WASM-enabled build can verify
+it -- not converted unverified. The remaining dynamic-schema sites (`native_providers.hpp`,
+`native_shell_session_provider.hpp`, the two RAG providers) move with D3/§5.1.
+

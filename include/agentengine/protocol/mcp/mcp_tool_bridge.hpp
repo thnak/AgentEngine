@@ -35,17 +35,17 @@ namespace agentengine::mcp {
         descriptor.reply_schema_json = json::dump(info.output_schema);
 
         std::string const tool_name = info.name;  // captured by value, not a reference into `listed`
-        descriptor.invoke = make_sync_invoke([client, tool_name](json::Value const& args,
-                                                  EffectContext&) -> result<json::Value> {
+        descriptor.invoke = [client, tool_name](json::Value const& args,
+                                                EffectContext&) -> task<result<json::Value>> {
             auto outcome = client->call_tool(tool_name, args);
-            if (!outcome) return std::unexpected(outcome.error());
+            if (!outcome) co_return std::unexpected(outcome.error());
             // 011 §3.1: "surfaced to the model for self-correction" -- an MCP-side execution
             // failure becomes a real pipeline error here, never a silently successful empty
             // result; the RPC-level failure case above already took the same path.
             if (outcome->is_error) {
-                return std::unexpected(error{failure_class::contract,
-                                              "MCP tool '" + tool_name + "' returned isError: true",
-                                              "mcp.tool_call_error"});
+                co_return std::unexpected(
+                    error{failure_class::contract,
+                          "MCP tool '" + tool_name + "' returned isError: true", "mcp.tool_call_error"});
             }
             // §3.1's own content-part shape: an array of {"type":"text","text":...} parts (this
             // codebase's own McpServer -- server.hpp's tool_result_content_to_json -- puts a real
@@ -55,15 +55,15 @@ namespace agentengine::mcp {
             // A THIRD-PARTY server's text part need not itself be JSON -- if it doesn't parse,
             // fall back to the raw string rather than failing a call that genuinely succeeded.
             if (!outcome->content.is_array() || outcome->content.as_array().empty()) {
-                return json::Value::make_null();
+                co_return json::Value::make_null();
             }
             json::Value const& first_part = outcome->content.as_array().front();
             json::Value const* text_field = first_part.find("text");
-            if (!text_field || !text_field->is_string()) return json::Value::make_null();
+            if (!text_field || !text_field->is_string()) co_return json::Value::make_null();
             auto parsed = json::parse(text_field->as_string());
-            if (parsed) return *parsed;
-            return json::Value::make_string(text_field->as_string());
-        });
+            if (parsed) co_return *parsed;
+            co_return json::Value::make_string(text_field->as_string());
+        };
         out.push_back(std::move(descriptor));
     }
     return out;
