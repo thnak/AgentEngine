@@ -1484,10 +1484,11 @@ int main() {
             auto log = std::make_shared<td::RealToolLog>(std::nullopt);
             int inner_calls = 0;
             agentengine::ToolDescriptor fake = td::real_tool_standins()[0];
-            fake.invoke = agentengine::make_sync_invoke([&inner_calls](Value const&, agentengine::EffectContext&) -> agentengine::result<Value> {
+            fake.invoke = [&inner_calls](Value const&, agentengine::EffectContext&)
+                -> agentengine::task<agentengine::result<Value>> {
                 ++inner_calls;
-                return td::obj({{"ok", td::boolean(true)}});
-            });
+                co_return td::obj({{"ok", td::boolean(true)}});
+            };
             agentengine::ToolDescriptor const wrapped = td::recording_tool(fake, log, nullptr);
             agentengine::EffectContext ctx;
             bool capped = false;

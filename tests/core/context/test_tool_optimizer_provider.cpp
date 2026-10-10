@@ -77,9 +77,9 @@ struct PingTool : Tool<PingTool, EffectClass<effect_class::pure>> {
     d.name = std::move(name);
     d.description = std::move(description);
     d.effect_class = effect_class::pure;
-    d.invoke = make_sync_invoke([](json::Value const&, EffectContext&) -> result<json::Value> {
-        return json::Value::make_object({{"echo", json::Value::make_string("ok")}});
-    });
+    d.invoke = [](json::Value const&, EffectContext&) -> task<result<json::Value>> {
+        co_return json::Value::make_object({{"echo", json::Value::make_string("ok")}});
+    };
     return d;
 }
 

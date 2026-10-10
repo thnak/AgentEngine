@@ -921,10 +921,11 @@ int main() {
         s.set_turn_middleware_hook([&wrapped](ae::TurnContext& ctx) -> ae::task<ae::result<std::monostate>> {
             for (ae::ToolDescriptor& d : ctx.assembled.combined.tools) {
                 if (d.name != "gated_tool") continue;
-                d.invoke = ae::make_sync_invoke([&wrapped](ae::json::Value const&, ae::EffectContext&) -> ae::result<ae::json::Value> {
+                d.invoke = [&wrapped](ae::json::Value const&, ae::EffectContext&)
+                    -> ae::task<ae::result<ae::json::Value>> {
                     ++wrapped;  // e.g. a dry-run variant for this turn
-                    return ae::json::Value::make_object({{"value", ae::json::Value::make_number(0)}});
-                });
+                    co_return ae::json::Value::make_object({{"value", ae::json::Value::make_number(0)}});
+                };
             }
             co_return std::monostate{};
         });

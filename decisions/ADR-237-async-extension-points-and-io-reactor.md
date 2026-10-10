@@ -1705,3 +1705,16 @@ failure under `-j4` re-ran clean -- a pre-existing flake, not a regression). Rem
 `tests/core/context/test_tool_optimizer_provider.cpp`, `tests/core/agent/test_agent_yaml_compiler.cpp`,
 `tests/python/test_agent_tools_codegen.cpp`.
 
+### Step 20 (2026-10-10): test-side `make_sync_invoke` sweep complete
+
+The remaining five test-side call sites (`test_agentengine_test_driver.cpp`, `test_approval_resume.cpp`,
+`test_tool_optimizer_provider.cpp`, `test_agent_yaml_compiler.cpp`'s two, `test_agent_tools_codegen.cpp`)
+now build their coroutine `invoke` directly. `make_sync_invoke` now appears ONLY at its definition
+(`tool_descriptor.hpp`), inside comments, and at the explicitly-deferred sites: the two RAG providers
+(with §5.1), the two native-process providers (with D3), and the WASM bridge (needs a WASM-enabled build).
+Every other transitional site is gone.
+
+Evidence: test_agentengine_test_driver, test_approval_resume, test_agent_yaml_compiler,
+test_agent_tools_codegen, test_tool_optimizer_provider and test_codeact_tool_union pass; full tree
+`/W4 /WX` clean; naming/layering lint OK; full suite 401/415.
+
