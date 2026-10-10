@@ -1828,3 +1828,32 @@ Evidence: build-dev rebuild clean; `test_skill_premount`, `test_tool_batch_parti
 
 Remaining: 11 more call sites in 7 files, then the factory itself goes.
 
+### Step 25 (2026-10-10): test-side `make_tool_descriptor_with_invoke` sweep, batch 2 (owner-free half)
+
+Three more sites convert -- the fixtures whose real body needs no provider at all:
+
+- `tests/rt/agent_session/test_rt_agent_session_tooling_and_delegation.cpp`: `CounterTool` holds the
+  provider's own session-scoped counter (`int*`) and declares `CapturesSessionState`. Its old static
+  `invoke()` returned the sentinel `-999` purely to prove the factory ran the CALLER's callable -- a
+  proof the instance form makes unnecessary, since the instance invoke *is* the real code.
+  `BackgroundableStatefulTool` declares `Backgroundable` + `CapturesSessionState` itself, so S3's
+  "state-capturing AND backgroundable is refused" check now reads the tool's own declaration.
+  **S4 had to be repointed, not just edited**: it existed to pin the zero-argument
+  `make_tool_descriptor<ToolT>()`'s default (`captures_session_state = false`) and was using
+  `BackgroundableStatefulTool` to do it -- impossible once that type is instance-form. It now uses a new,
+  deliberately-static `StatelessBackgroundableTool`, which dies with the static form.
+- `tests/rt/agent_session/test_rt_agent_session_codeact_ask_max_turns.cpp`: `AskPendingTool`'s
+  ask-pending body becomes its instance `invoke`.
+
+Evidence: build-dev rebuild clean; `test_rt_agent_session_tooling_and_delegation` and
+`test_rt_agent_session_codeact_ask_max_turns` pass. (The first build of this batch FAILED -- S4 was still
+resolving the zero-arg factory for a now-instance-form tool, `tool_descriptor.hpp:211`; that failure is
+what forced the repoint above rather than a silent behaviour change.) naming-lint OK; layering-lint OK;
+full suite 401/415, the identical 14.
+
+Remaining: 7 sites, all owner-holding -- the tool calls a PRIVATE provider method, so it needs a forward
+declaration, `friend`, and an out-of-line `invoke` defined where the owner is complete:
+`MountTool`/`UseRunnerTool` (`tooling_and_delegation`), `SpawnTool` (`spawn_child_run`),
+`ExecuteCodeTool` (`suspend_codeact_ask`), `MountSkillTool`/`ExecuteCodeTool` (`farm_ops`),
+`MountSkillTool` (`farm_advisory`).
+
