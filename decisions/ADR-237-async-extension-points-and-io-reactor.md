@@ -1912,6 +1912,35 @@ declare/invoke cadence over the composed three-provider stack), `test_agent_yaml
 401/415, the identical 14. The `agentengine_cli_chat` target does not include this header and was already
 up to date.
 
-Next-smallest §5.1 candidates, from the same inventory: A2A `CardFetcher`/`RunStarter`, MCP
-`RequestSender`/`InputRequestHandler`, and `GraderFn`/`OutputValidator`.
+### Step 28 (2026-10-10): §5.1 seam conversion, slice 3 -- the A2A client boundary is async
+
+The §5.1 inventory names "A2A `CardFetcher`/`RunStarter`/client calls". This slice takes the client half,
+and takes it as a WHOLE rather than seam-by-seam: `A2aClient` has **no production consumer at all** (only
+`tests/protocol/a2a/test_a2a_client.cpp`), and converting `CardFetcher` alone would have left
+`send_message`/`get_task`/`cancel_task` synchronous over an async transport -- an inconsistency with no
+justification, given that the whole reason these are seams is that reaching a remote peer is a network
+round trip.
+
+- `protocol/a2a/client.hpp`: `RemoteAgentTransport`'s three callables and `CardFetcher` all become
+  `std::function<task<result<...>>(...)>`, and `A2aClient`'s four verbs become coroutines that `co_await`
+  them. Adds the `rt/task.hpp` include -- the `protocol/a2a -> rt` layer edge was already established by
+  `server.hpp`'s own `rt/agent_session.hpp`.
+- `tests/protocol/a2a/test_a2a_client.cpp`: the transport stand-ins and the four hand-rolled
+  `CardFetcher`s become coroutines, and every client verb is driven through the test's existing local
+  `drive()` helper. All seven D4 assertions are unchanged in substance -- the real-server passthrough
+  (D4-1/2/3) and the digest-pinned card cases (D4-4/5/6/7, including the rug-pull detection and the
+  fetcher-failure propagation), which is the point: making the seam async must not move any behaviour.
+
+Deliberately NOT in this slice: `A2aServer`'s own `RunStarter`, also named in the inventory. The server is
+the other role of the same protocol and is a self-contained synchronous component whose verbs drive a
+session run to completion in place, so converting it is a separate change with its own two test files
+(`test_a2a_server.cpp`, `test_task_principal_binding.cpp`) rather than a rider on this one.
+
+Evidence: build-dev rebuild clean; all 7 A2A tests pass (`test_a2a_client`, `test_a2a_server`,
+`test_task_principal_binding`, `test_a2a_types`, `test_a2a_agent_card`, `test_a2a_mapping`,
+`test_a2a_streaming`); naming-lint OK; layering-lint OK; full suite `ctest -LE live-network` 401/415, the
+identical 14.
+
+Next: the server half of A2A (`RunStarter` + `A2aServer`'s verbs), then MCP
+`RequestSender`/`InputRequestHandler`, then `GraderFn`/`OutputValidator`.
 
