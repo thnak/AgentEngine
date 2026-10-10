@@ -300,35 +300,34 @@ struct AskReply {
     bool ok = false;
 };
 AE_JSON_SCHEMA(AskReply, ok)
-struct AskTool : ae::Tool<AskTool, ae::Capabilities<>, ae::EffectClass<ae::effect_class::at_most_once>,
-                          ae::Approval<ae::approval_mode::always_require>> {
-    static constexpr std::string_view name        = "execute_code";
-    static constexpr std::string_view description = "Asks once, then completes.";
-    using Args  = AskArgs;
-    using Reply = AskReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext&) {
-        return std::unexpected(ae::error{ae::failure_class::fatal, "dead path", "test.dead_static_invoke_path"});
-    }
-};
 int& ask_invocations() {
     static int n = 0;
     return n;
 }
+// ADR-237 §5.2: instance form -- the real body IS the instance invoke, and the old poison static
+// `invoke()` sentinel is gone. `CapturesSessionState` preserves what the old
+// `make_tool_descriptor_with_invoke` closure set, so this fixture's descriptor is unchanged.
+struct AskTool : ae::Tool<AskTool, ae::Capabilities<>, ae::EffectClass<ae::effect_class::at_most_once>,
+                          ae::Approval<ae::approval_mode::always_require>, ae::CapturesSessionState> {
+    static constexpr std::string_view name        = "execute_code";
+    static constexpr std::string_view description = "Asks once, then completes.";
+    using Args  = AskArgs;
+    using Reply = AskReply;
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext& ctx) const {
+        ++ask_invocations();
+        if (ctx.codeact_preseeded_answers.empty()) {
+            co_return std::unexpected(ae::error{ae::failure_class::contract, "proceed?", "codeact.ask_pending"});
+        }
+        co_return AskReply{true};
+    }
+};
 class AskProvider {
 public:
     [[nodiscard]] ae::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext& sc,
                                                                             ae::EffectContext&) {
         ae::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = {ae::make_tool_descriptor_with_invoke<AskTool>(
-            [](AskArgs, ae::EffectContext& ctx) -> ae::result<AskReply> {
-                ++ask_invocations();
-                if (ctx.codeact_preseeded_answers.empty()) {
-                    return std::unexpected(
-                        ae::error{ae::failure_class::contract, "proceed?", "codeact.ask_pending"});
-                }
-                return AskReply{true};
-            })};
+        c.tools = {ae::make_tool_descriptor(AskTool{})};
         co_return c;
     }
     ae::task<std::monostate> on_turn_end(ae::TurnView, ae::EffectContext&) { co_return std::monostate{}; }
@@ -356,20 +355,29 @@ bool& two_ask_context_fails() {
     static bool b = false;
     return b;
 }
-struct FreeAskTool : ae::Tool<FreeAskTool, ae::Capabilities<>, ae::EffectClass<ae::effect_class::at_most_once>,
-                              ae::Approval<ae::approval_mode::never_require>> {
-    static constexpr std::string_view name        = "execute_code";
-    static constexpr std::string_view description = "Asks two questions, then acts.";
-    using Args  = AskArgs;
-    using Reply = AskReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext&) {
-        return std::unexpected(ae::error{ae::failure_class::fatal, "dead path", "test.dead_static_invoke_path"});
-    }
-};
 std::vector<std::string>& two_ask_acted_with() {
     static std::vector<std::string> v;
     return v;
 }
+// ADR-237 §5.2: instance form (see `AskTool` above).
+struct FreeAskTool : ae::Tool<FreeAskTool, ae::Capabilities<>, ae::EffectClass<ae::effect_class::at_most_once>,
+                              ae::Approval<ae::approval_mode::never_require>, ae::CapturesSessionState> {
+    static constexpr std::string_view name        = "execute_code";
+    static constexpr std::string_view description = "Asks two questions, then acts.";
+    using Args  = AskArgs;
+    using Reply = AskReply;
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext& ctx) const {
+        auto const& a = ctx.codeact_preseeded_answers;
+        if (a.empty()) {
+            co_return std::unexpected(ae::error{ae::failure_class::contract, "Q1", "codeact.ask_pending"});
+        }
+        if (a.size() == 1) {
+            co_return std::unexpected(ae::error{ae::failure_class::contract, "Q2", "codeact.ask_pending"});
+        }
+        two_ask_acted_with() = a;
+        co_return AskReply{true};
+    }
+};
 class TwoAskProvider {
 public:
     [[nodiscard]] ae::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext& sc,
@@ -379,18 +387,7 @@ public:
         }
         ae::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = {ae::make_tool_descriptor_with_invoke<FreeAskTool>(
-            [](AskArgs, ae::EffectContext& ctx) -> ae::result<AskReply> {
-                auto const& a = ctx.codeact_preseeded_answers;
-                if (a.empty()) {
-                    return std::unexpected(ae::error{ae::failure_class::contract, "Q1", "codeact.ask_pending"});
-                }
-                if (a.size() == 1) {
-                    return std::unexpected(ae::error{ae::failure_class::contract, "Q2", "codeact.ask_pending"});
-                }
-                two_ask_acted_with() = a;
-                return AskReply{true};
-            })};
+        c.tools = {ae::make_tool_descriptor(FreeAskTool{})};
         co_return c;
     }
     ae::task<std::monostate> on_turn_end(ae::TurnView, ae::EffectContext&) { co_return std::monostate{}; }

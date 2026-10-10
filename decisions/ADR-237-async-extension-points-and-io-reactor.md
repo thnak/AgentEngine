@@ -1807,3 +1807,24 @@ rebuild clean; naming-lint OK; layering-lint OK; full suite 401/415, the identic
 Next §5.2 step: delete `make_tool_descriptor_with_invoke` itself and rewrite the ~10 test files that
 exercise it.
 
+### Step 24 (2026-10-10): test-side `make_tool_descriptor_with_invoke` sweep, batch 1
+
+The factory has zero production call sites (step 23) but 15 test-local ones, and deleting it requires
+converting them. This batch takes the first three files (four sites):
+
+- `tests/core/skills/test_skill_premount.cpp`: `MountSkillTool` becomes instance form holding the
+  `MountedSkillsState` it mutates and declares `CapturesSessionState`; the poison static `invoke()` is
+  gone and `PremountProvider` registers `make_tool_descriptor(MountSkillTool{mounted_})`.
+- `tests/core/tools/test_tool_batch_partition.cpp`: `StatefulTool` declares `Parallelizable` +
+  `CapturesSessionState` explicitly -- the same `captures_session_state && parallelizable` combination the
+  factory used to manufacture for ADR-160 §5's MUST-FIX 1 check, now coming from the tool's own
+  declaration. That check is the regression proof the conversion had to preserve.
+- `tests/core/tools/test_approval_resume.cpp`: `AskTool`/`FreeAskTool` become instance form with their
+  real bodies (they read `ctx.codeact_preseeded_answers`), the two helpers they call are declared before
+  them, and both providers register by value.
+
+Evidence: build-dev rebuild clean; `test_skill_premount`, `test_tool_batch_partition`,
+`test_approval_resume` and `test_tool_deterministic` (plus its compile-fail control) all pass, 5/5.
+
+Remaining: 11 more call sites in 7 files, then the factory itself goes.
+

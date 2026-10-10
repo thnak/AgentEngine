@@ -74,19 +74,23 @@ struct CacheFlushTool : agentengine::Tool<CacheFlushTool, agentengine::Exclusivi
     static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
 };
 
-// ADR-160 §5 MUST-FIX 1: a session-state-capturing descriptor built via
-// make_tool_descriptor_with_invoke<T>(), like the real, shipped ScheduleWakeupTool -- if it were
-// EVER declared Parallelizable, partitioning must still force it sequential. `StatefulTool` itself
-// declares Parallelizable (a tool author's mistake this scheduler must guard against structurally,
-// not merely by convention) -- the ONLY way to reach `captures_session_state == true` combined with
-// `parallelizable == true` on a real descriptor, since `make_tool_descriptor_with_invoke<T>()`
-// (unlike the plain factory) sets `captures_session_state = true` unconditionally.
-struct StatefulTool : agentengine::Tool<StatefulTool, agentengine::Parallelizable> {
+// ADR-160 §5 MUST-FIX 1: a session-state-capturing descriptor that is ALSO (mistakenly) declared
+// Parallelizable, like the real, shipped ScheduleWakeupTool -- if it were EVER declared Parallelizable,
+// partitioning must still force it sequential. `StatefulTool` itself declares Parallelizable (a tool
+// author's mistake this scheduler must guard against structurally, not merely by convention) -- the
+// ONLY way to reach `captures_session_state == true` combined with `parallelizable == true` on a real
+// descriptor. ADR-237 §5.2: that combination is declared explicitly through `CapturesSessionState`
+// (what `make_tool_descriptor_with_invoke<T>()` used to set unconditionally), and the tool is
+// registered by value.
+struct StatefulTool : agentengine::Tool<StatefulTool, agentengine::Parallelizable,
+                                        agentengine::CapturesSessionState> {
     static constexpr std::string_view name = "stateful";
     static constexpr std::string_view description = "Session-state-capturing AND (mistakenly) Parallelizable.";
     using Args = NoopArgs;
     using Reply = NoopReply;
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const {
+        co_return NoopReply{true};
+    }
 };
 
 agentengine::ToolCallRequest req(std::string call_id, std::string tool_name) {
@@ -106,10 +110,7 @@ int main() {
         agentengine::make_tool_descriptor<DbWriteTool>(),
         agentengine::make_tool_descriptor<DbCompactTool>(),
         agentengine::make_tool_descriptor<CacheFlushTool>(),
-        agentengine::make_tool_descriptor_with_invoke<StatefulTool>(
-            [](NoopArgs, agentengine::EffectContext&) -> agentengine::result<NoopReply> {
-                return NoopReply{true};
-            }),
+        agentengine::make_tool_descriptor(StatefulTool{}),
     });
 
     // -- ToolDescriptor::parallelizable itself (ADR-160 §5's new field) ---------------------------

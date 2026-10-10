@@ -54,14 +54,24 @@ struct MountSkillReply {
 AE_JSON_SCHEMA(MountSkillReply, ok, message)
 
 // Same shape as tools/cli_chat.cpp's: the model-reachable mount path, reaching `MountedSkillsState::mount()`.
-struct MountSkillTool : ae::Tool<MountSkillTool, ae::EffectClass<ae::effect_class::pure>> {
+// ADR-237 §5.2: instance form -- it holds the state it mutates, so the descriptor IS the real code and
+// the old poison static `invoke()` sentinel is gone.
+struct MountSkillTool
+    : ae::Tool<MountSkillTool, ae::EffectClass<ae::effect_class::pure>, ae::CapturesSessionState> {
     static constexpr std::string_view name = "mount_skill";
     static constexpr std::string_view description = "Activate an advertised skill.";
     using Args = MountSkillArgs;
     using Reply = MountSkillReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext&) {
-        return std::unexpected(ae::error{ae::failure_class::fatal, "unreachable", "test.unreachable"});
+
+    explicit MountSkillTool(ae::MountedSkillsState& mounted) : mounted_(&mounted) {}
+
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
+        mounted_->mount(a.skill_name);
+        co_return MountSkillReply{true, "mounted: " + a.skill_name};
     }
+
+private:
+    ae::MountedSkillsState* mounted_;
 };
 
 // A minimal cli_chat-shaped history provider: one system message = the skills advertisement plus every
@@ -96,11 +106,7 @@ public:
         m.content.push_back(std::move(item));
         c.messages.push_back(std::move(m));
         c.messages.insert(c.messages.end(), sc.history.begin(), sc.history.end());
-        c.tools.push_back(ae::make_tool_descriptor_with_invoke<MountSkillTool>(
-            [this](MountSkillArgs a, ae::EffectContext&) -> ae::result<MountSkillReply> {
-                mounted_.mount(a.skill_name);
-                return MountSkillReply{true, "mounted: " + a.skill_name};
-            }));
+        c.tools.push_back(ae::make_tool_descriptor(MountSkillTool{mounted_}));
         co_return c;
     }
     ae::rt::task<std::monostate> on_turn_end(ae::TurnView, ae::EffectContext&) { co_return std::monostate{}; }
