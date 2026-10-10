@@ -1605,8 +1605,16 @@ behind one `shared_ptr` (the `TodoProvider`/`TodoState` precedent), held by valu
   cadence over the composed 3-provider stack); full tree `/W4 /WX` clean; naming/layering lint OK; full
   suite `ctest -LE live-network` 401/415, the identical 14 baseline failures.
 
+The same slice migrated `trust/secret_quarantine.hpp`'s `QuarantineSecretTool` (ADR-068 §2e) the same
+way -- an instance-form `Tool<..., EffectClass<pure>, CapturesSessionState>` holding the quarantining
+store by pointer (the provider owns it and outlives the descriptor), with its dead static `invoke()`
+poison stub removed. `test_secret_quarantine`'s old "dead static invoke fails safely" case is replaced
+by one asserting the descriptor declares `CapturesSessionState` and keeps `EffectClass<pure>` -- the
+§5.2 replacement for the old factory's implicit `true`. `test_secret_quarantine` and
+`test_rt_agent_session_quarantine_tool` pass; full tree clean, lints OK, suite 401/415.
+
 ### Step 14 open: the remaining `make_tool_descriptor_with_invoke` production sites follow step 13's
-pattern -- `secret_quarantine.hpp` (QuarantineSecretTool), `sandbox/mandatory_sandbox_provider.hpp`
+pattern -- `sandbox/mandatory_sandbox_provider.hpp`
 (RunCommand + the four task-branch tools), `sandbox/live_shell_sandbox_provider.hpp` (ShellExecTool),
 `native_jail/session_shell_wiring.hpp` (RunShellTool), `rt/agent_session_core.cpp` (ScheduleWakeupTool),
 `rt/agent_spawn.hpp` (AgentSpawnTool), `tools/cli_chat.cpp` (ExecuteCodeTool/MountSkillTool). The
