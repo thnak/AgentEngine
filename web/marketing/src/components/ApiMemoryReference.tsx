@@ -18,11 +18,18 @@ import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
 import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
+import { ApiIncludes } from "./ApiIncludes";
 import { ApiTable } from "./ApiTable";
 import { CodePanel } from "./CodePanel";
 import { MemReadPathDiagram } from "./MemReadPathDiagram";
 import { MemWritePathDiagram } from "./MemWritePathDiagram";
 import { RevealGroup, RevealItem } from "./Reveal";
+
+// Verified by devsim/verify-includes: every path here is compiled by the gate.
+const MEMORY_HEADERS = [
+  "agentengine/core/memory_provider.hpp",
+  "agentengine/core/context_provider.hpp",
+];
 import type { Lang } from "../i18n/LanguageContext";
 
 function entriesById(lang: Lang, ids: string[]) {
@@ -74,6 +81,16 @@ function Cite({ path, label }: { path: string; label?: string }) {
 const copy = {
   en: {
     eyebrow: "029 — Memory System · 005 §5",
+    includesNote: (
+      <>
+        Two headers. <code>core/memory_provider.hpp</code> is the whole memory surface —{" "}
+        <code>MemoryProvider</code>, <code>MemoryItem</code>, and the{" "}
+        <code>on_context</code>/<code>on_turn_end</code> hooks;{" "}
+        <code>core/context_provider.hpp</code> is the concept it satisfies, which is what lets a
+        memory provider share the session's <em>one</em> provider slot with a history provider via{" "}
+        <code>ComposedContextProvider</code>.
+      </>
+    ),
     headingPrefix: "Memory that",
     headingHighlight: "never launders authority",
     intro: (
@@ -294,6 +311,16 @@ const copy = {
 
   vi: {
     eyebrow: "029 — Hệ thống bộ nhớ · 005 §5",
+    includesNote: (
+      <>
+        Hai header. <code>core/memory_provider.hpp</code> là toàn bộ bề mặt bộ nhớ —{" "}
+        <code>MemoryProvider</code>, <code>MemoryItem</code>, và các hook{" "}
+        <code>on_context</code>/<code>on_turn_end</code>;{" "}
+        <code>core/context_provider.hpp</code> là concept mà nó thỏa mãn, và đó là thứ cho phép một
+        memory provider chia sẻ <em>một</em> slot provider duy nhất của session với một history
+        provider thông qua <code>ComposedContextProvider</code>.
+      </>
+    ),
     headingPrefix: "Bộ nhớ",
     headingHighlight: "không bao giờ rửa thẩm quyền",
     intro: (
@@ -540,6 +567,13 @@ export function ApiMemoryReference() {
           </span>
           <p style={{ marginTop: 16 }}>{t.intro}</p>
         </div>
+
+        {/* ---- What to include ------------------------------------------------------------------ */}
+        <RevealGroup>
+          <RevealItem>
+            <ApiIncludes headers={MEMORY_HEADERS}>{t.includesNote}</ApiIncludes>
+          </RevealItem>
+        </RevealGroup>
 
         {/* ---- 1. MemoryItem & provenance ------------------------------------------------------ */}
         <RevealGroup>

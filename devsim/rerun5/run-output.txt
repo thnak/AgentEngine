@@ -1,0 +1,48 @@
+﻿== mode: --lifecycle ==
+[1] session=sess-refunds-9001 principal=clerk-77/tenant-backoffice suspend_for_approval=true
+[2] start_run failed closed:  code=run.suspended_for_approval class=contract message=round suspended awaiting human approval
+[2] branched on the suspend sentinel run.suspended_for_approval -- the run suspended, it did not fail
+[3] interaction: id=sess-refunds-9001:interaction:1 run_id=sess-refunds-9001:run:1 reason=approval
+[3] session last_run_id()=sess-refunds-9001:run:1  tool invocations so far=0
+[3] refund_order::invoke() has NOT run -- suspension happens before the effect
+[4] pending amount_cents=120000 threshold=50000 -> ESCALATE TO A HUMAN
+[4b] second start_run refused:  code=run.approval_pending class=contract message=a round is already suspended awaiting approval, an agent.ask() answer, or an external tool-call hook decision -- resolve it before starting a new run
+[4b] run id before=sess-refunds-9001:run:1 after=sess-refunds-9001:run:1 (no new run minted)
+[5] foreign-caller resolve refused:  code=run.admission_denied class=policy message=caller not admitted for this session
+[5] interaction still open after the denial: yes
+[6] resumed: code=OK run_id=sess-refunds-9001:run:1 (same run, never a new one) answer="Refund handled."
+[6] refund_order::invoke() invocations now=1
+[6] open interactions after resume: no
+[7] suspended again: code=run.suspended_for_approval
+[7] pending amount_cents=12000 threshold=50000 -> auto-approve (host policy, no human)
+[7] resolved without a human: converged  invocations now=2
+== exit 0 ==
+
+== mode: --phase1 (suspend, snapshot, exit) ==
+[1] suspended: code=run.suspended_for_approval interaction_id=sess-refunds-9001:interaction:1 run_id=sess-refunds-9001:run:1 reason=approval
+[1] session_id=sess-refunds-9001 principal=clerk-77/tenant-backoffice history=2 messages
+[2] snapshot written via FileSessionStore root=.\rerun5-durable-store
+[2] process exits now; the next run is a FRESH process
+== exit 0 ==
+
+== mode: --phase2 (fresh process: reload) ==
+[1] record loaded: session_id=sess-refunds-9001 principal=clerk-77/tenant-backoffice run_counter=1 turn_index=0 open_interactions=1
+[2] fresh instance before restore: session_id=sess-placeholder
+[2] after restore_from_record: session_id=sess-refunds-9001 principal=clerk-77/tenant-backoffice history=0
+[3] still pending: 1 interaction(s), attributable to clerk-77/tenant-backoffice
+[3]   id=sess-refunds-9001:interaction:1 run_id=sess-refunds-9001:run:1 reason=approval opened_at_ns=0
+[4] resolve on the restored session refused:  code=session.resolve_interaction.round_not_recorded class=contract message=this interaction has no recorded round in this session (restored or replaced) -- closed, nothing ran
+[4] branched on round_not_recorded: yes
+[4] tool invocations across the refusal: 0 -> 0 (nothing ran)
+[4] interactions now open: 0
+[5] a NEW run on the restored session: accepted (the failed resolve closed the unanswerable interaction)
+== exit 0 ==
+
+== mode: --decider (the ApprovalDecider seam, measured) ==
+[1] decider called: tool=refund_order args={"order_id":"88232","amount_cents":12000,"reason":"missing side salad"} -> true (allow in-process)
+[2] below-threshold run: converged, no suspend  open interactions=0  invocations 0->1
+[1] decider called: tool=refund_order args={"order_id":"88231","amount_cents":120000,"reason":"arrived cold"} -> false (deny in-process)
+[3] above-threshold run: converged (denial folded in as a tool error)  open interactions=0  invocations=1
+[4] decider calls=2 saw a real amount_cents=yes
+[4] so: the seam SEES the arguments, but cannot escalate -- there is no third state, and no interaction ever opened. The 'ask a human' threshold is host policy around the suspend (see --lifecycle), not inside this decider.
+== exit 0 ==

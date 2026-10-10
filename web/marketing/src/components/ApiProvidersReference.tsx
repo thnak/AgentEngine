@@ -22,10 +22,22 @@ import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
 import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
+import { ApiIncludes } from "./ApiIncludes";
 import { ApiTable } from "./ApiTable";
 import { CodePanel } from "./CodePanel";
 import { PvCredentialDiagram, PvSseDiagram, PvWireDiagram } from "./PvDiagrams";
 import { RevealGroup, RevealItem } from "./Reveal";
+
+// Verified by devsim/verify-includes: every path here is compiled by the gate. The two vendor
+// clients contribute nothing without -DAGENTENGINE_WITH_HTTPS, which is exactly the gate this page
+// is about -- including them unconditionally is safe, instantiating them is not.
+const PROVIDER_HEADERS = [
+  "agentengine/core/chat_client.hpp",
+  "agentengine/trust/secret.hpp",
+  "agentengine/core/error.hpp",
+  "agentengine/protocol/anthropic/chat_client.hpp",
+  "agentengine/protocol/openai/chat_client.hpp",
+];
 import type { Lang } from "../i18n/LanguageContext";
 
 function entryById(lang: Lang, id: string) {
@@ -80,6 +92,18 @@ function SectionHead({ id, eyebrow, first }: { id: string; eyebrow: string; firs
 const copy = {
   en: {
     eyebrow: "004 — ChatClient plane",
+    includesNote: (
+      <>
+        Five headers. <code>core/chat_client.hpp</code> is the concept every backend satisfies plus{" "}
+        <code>ChatClientCapabilities</code>; <code>trust/secret.hpp</code> is{" "}
+        <code>AgentEngineSecretStore</code>, <code>SecretRef</code> and the{" "}
+        <code>EnvSecretSource</code> that reads the key from the environment;{" "}
+        <code>core/error.hpp</code> is the <code>result</code>/<code>error</code> pair; and the two
+        vendor clients are the backends themselves. The last two sit inside{" "}
+        <code>#ifdef AGENTENGINE_WITH_HTTPS</code> — the include is harmless without the flag, but
+        the class is not there, which is the build gate below.
+      </>
+    ),
     headingPrefix: "Model providers,",
     headingHighlight: "one seam and every conformer behind it",
     intro: (
@@ -130,6 +154,21 @@ const copy = {
         <code>chat()</code> as part of the seam; the concept no longer requires it. This is a case
         where the spec text has not caught up with an executed ADR rather than a case of code
         drifting from a spec — the direction matters, and the header says which one moved.
+      </>
+    ),
+    buildGateLabel: "Read this before anything below compiles",
+    buildGate: (
+      <>
+        Both vendor backends, the provider HTTP client and the TLS stack sit entirely inside{" "}
+        <code>#ifdef AGENTENGINE_WITH_HTTPS</code>, and that CMake option defaults to{" "}
+        <strong>OFF</strong>. On a default configure, nothing on this page is even built — no
+        translation, no streaming, no live tests — and the failure presents as{" "}
+        <code>'anthropic' is not a class or namespace name</code>, which points nowhere near a
+        missing flag. Configure with <code>-DAGENTENGINE_WITH_HTTPS=ON</code> and link{" "}
+        <code>agentengine::provider_http_client</code> before you try any of it. The{" "}
+        <code>ChatClient</code> concept, the capability set, the registry, the gateways and
+        Recording/ReplayChatClient are core and always compiled — which is why the offline half of
+        this page works regardless.
       </>
     ),
 
@@ -274,6 +313,17 @@ const copy = {
   },
   vi: {
     eyebrow: "004 — Bình diện ChatClient",
+    includesNote: (
+      <>
+        Năm header. <code>core/chat_client.hpp</code> là concept mà mọi backend thỏa mãn, cùng{" "}
+        <code>ChatClientCapabilities</code>; <code>trust/secret.hpp</code> là{" "}
+        <code>AgentEngineSecretStore</code>, <code>SecretRef</code> và <code>EnvSecretSource</code>{" "}
+        — thứ đọc khóa từ biến môi trường; <code>core/error.hpp</code> là cặp{" "}
+        <code>result</code>/<code>error</code>; còn hai client nhà cung cấp chính là các backend.
+        Hai header cuối nằm trong <code>#ifdef AGENTENGINE_WITH_HTTPS</code> — việc include vô hại
+        khi thiếu cờ, nhưng class thì không tồn tại, và đó chính là cổng build ở bên dưới.
+      </>
+    ),
     headingPrefix: "Nhà cung cấp model,",
     headingHighlight: "một ranh giới và mọi conformer đứng sau nó",
     intro: (
@@ -325,6 +375,21 @@ const copy = {
         trường hợp văn bản đặc tả chưa bắt kịp một ADR đã được thực thi, chứ không phải mã nguồn
         trôi khỏi đặc tả — chiều của sự lệch pha là quan trọng, và header nói rõ bên nào đã dịch
         chuyển.
+      </>
+    ),
+    buildGateLabel: "Hãy đọc điều này trước khi bất cứ thứ gì bên dưới biên dịch được",
+    buildGate: (
+      <>
+        Cả hai backend nhà cung cấp, provider HTTP client và tầng TLS đều nằm hoàn toàn bên trong{" "}
+        <code>#ifdef AGENTENGINE_WITH_HTTPS</code>, và tùy chọn CMake đó mặc định là{" "}
+        <strong>OFF</strong>. Với cấu hình mặc định, không thứ gì trên trang này được build cả —
+        không dịch chuyển, không streaming, không test trực tiếp — và lỗi hiện ra dưới dạng{" "}
+        <code>'anthropic' is not a class or namespace name</code>, một thông báo không hề chỉ tới một
+        cờ compile bị thiếu. Hãy configure với <code>-DAGENTENGINE_WITH_HTTPS=ON</code> và liên kết{" "}
+        <code>agentengine::provider_http_client</code> trước khi thử bất cứ thứ gì ở đây. Concept{" "}
+        <code>ChatClient</code>, tập capability, registry, các gateway và Recording/ReplayChatClient
+        đều thuộc phần lõi và luôn được biên dịch — đó là lý do nửa ngoại tuyến của trang này vẫn
+        hoạt động bất kể điều trên.
       </>
     ),
 
@@ -507,6 +572,13 @@ export function ApiProvidersReference() {
           </div>
         </div>
 
+        {/* ---- What to include --------------------------------------------------------------- */}
+        <RevealGroup>
+          <RevealItem>
+            <ApiIncludes headers={PROVIDER_HEADERS}>{t.includesNote}</ApiIncludes>
+          </RevealItem>
+        </RevealGroup>
+
         {/* ---- 1. The seam ------------------------------------------------------------------- */}
         <RevealGroup>
           <RevealItem>
@@ -521,6 +593,11 @@ export function ApiProvidersReference() {
           </RevealItem>
           <RevealItem>
             <p className="gs-note" style={{ borderLeftColor: "var(--accent-purple)" }}>{t.s1Note}</p>
+          </RevealItem>
+          <RevealItem>
+            <ApiDiagnosticNote status="stub" kind={t.buildGateLabel}>
+              {t.buildGate}
+            </ApiDiagnosticNote>
           </RevealItem>
           <RevealItem>
             <CiteLink id="chat-client-seam" />

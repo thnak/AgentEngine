@@ -27,8 +27,18 @@ import { highlightCpp } from "../lib/highlightCpp";
 import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
 import { ApiTable } from "./ApiTable";
 import { CodePanel } from "./CodePanel";
+import { ApiIncludes } from "./ApiIncludes";
 import { RevealGroup, RevealItem } from "./Reveal";
 import type { Lang } from "../i18n/LanguageContext";
+
+// Verified by devsim/verify-includes: every path here is compiled by the gate.
+const RUNTIME_HEADERS = [
+  "agentengine/rt/agent_session.hpp",
+  "agentengine/rt/agent_session_core.hpp",
+  "agentengine/core/agent_session_bridge.hpp",
+  "agentengine/core/chat_client.hpp",
+  "agentengine/rt/block_on.hpp",
+];
 
 function entryById(lang: Lang, id: string) {
   const e = runtimeEntries[lang].find((entry) => entry.id === id);
@@ -55,6 +65,19 @@ function CiteLink({ id }: { id: string }) {
 const copy = {
   en: {
     eyebrow: "Agent core — L2",
+    includesNote: (
+      <>
+        Five headers. <code>rt/agent_session.hpp</code> is the session you actually hold;{" "}
+        <code>rt/agent_session_core.hpp</code> carries the vocabulary its members speak (
+        <code>StartRun</code>, <code>ResolveInteraction</code>, <code>SessionCaller</code>, the
+        suspend sentinels, <code>AgentSessionRecord</code>);{" "}
+        <code>core/agent_session_bridge.hpp</code> is <code>make_agent_session&lt;A&gt;()</code>{" "}
+        and <code>AgentSessionOptions</code>; <code>core/chat_client.hpp</code> is the concept a
+        provider must satisfy; and <code>rt/block_on.hpp</code> drives a run from synchronous code.
+        Everything here is <code>agentengine::rt::</code> except the bridge and the concept — which
+        is exactly the split that trips people up.
+      </>
+    ),
     headingPrefix: "AgentSession,",
     headingHighlight: "walked through end to end",
     intro: (
@@ -571,6 +594,19 @@ const copy = {
   },
   vi: {
     eyebrow: "Lõi Agent — L2",
+    includesNote: (
+      <>
+        Năm header. <code>rt/agent_session.hpp</code> là session mà bạn thực sự giữ;{" "}
+        <code>rt/agent_session_core.hpp</code> mang từ vựng mà các thành viên của nó dùng (
+        <code>StartRun</code>, <code>ResolveInteraction</code>, <code>SessionCaller</code>, các
+        sentinel tạm dừng, <code>AgentSessionRecord</code>);{" "}
+        <code>core/agent_session_bridge.hpp</code> là <code>make_agent_session&lt;A&gt;()</code> và{" "}
+        <code>AgentSessionOptions</code>; <code>core/chat_client.hpp</code> là concept mà một nhà
+        cung cấp phải thỏa mãn; và <code>rt/block_on.hpp</code> chạy một run từ code đồng bộ. Mọi
+        thứ ở đây đều thuộc <code>agentengine::rt::</code> trừ bridge và concept — và đó chính xác
+        là sự chia tách khiến người ta vấp.
+      </>
+    ),
     headingPrefix: "AgentSession,",
     headingHighlight: "đi từng bước từ đầu tới cuối",
     intro: (
@@ -1119,6 +1155,13 @@ export function ApiRuntimeReference() {
           </span>
           <p style={{ marginTop: 16 }}>{t.intro}</p>
         </div>
+
+        {/* ---- What to include ------------------------------------------------------------------ */}
+        <RevealGroup>
+          <RevealItem>
+            <ApiIncludes headers={RUNTIME_HEADERS}>{t.includesNote}</ApiIncludes>
+          </RevealItem>
+        </RevealGroup>
 
         {/* ---- 1. The turn loop --------------------------------------------------------------- */}
         <RevealGroup>

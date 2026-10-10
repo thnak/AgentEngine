@@ -9,6 +9,7 @@
 
 import { REPO_URL, SITE_BASE } from "./content";
 import type { Lang } from "../i18n/LanguageContext";
+import type { ApiSidebarSection } from "../components/ApiToc";
 
 export const gh = (path: string) => `${REPO_URL}/blob/main/${path}`;
 
@@ -25,6 +26,76 @@ export interface ApiPage {
   description: string;
   status: ApiStatus;
 }
+
+// Right-rail "on this page" anchors for the first-program page (api/first-app.html) — the ids that
+// page's own sub-headings carry.
+export const firstAppSections: Record<Lang, ApiSidebarSection[]> = {
+  en: [
+    { id: "depend", label: "How to depend on the engine" },
+    { id: "program", label: "The program" },
+    { id: "build-and-run", label: "Build it and run it" },
+    { id: "real-model", label: "Point it at a real model" },
+    { id: "bundle-and-session", label: "The bundle, and the session inside it" },
+    { id: "errors", label: "The error model" },
+    { id: "next-steps", label: "Where to go next" },
+  ],
+  vi: [
+    { id: "depend", label: "Cách phụ thuộc vào engine" },
+    { id: "program", label: "Chương trình" },
+    { id: "build-and-run", label: "Build và chạy" },
+    { id: "real-model", label: "Trỏ vào một model thật" },
+    { id: "bundle-and-session", label: "Bundle, và session nằm trong đó" },
+    { id: "errors", label: "Mô hình lỗi" },
+    { id: "next-steps", label: "Đi tiếp đến đâu" },
+  ],
+};
+
+// Right-rail "on this page" anchors for the orientation page (api/how-it-works.html) — the ids
+// that page's own sub-headings carry. Kept here with the rest of the API section's shared page data
+// rather than in the page component, so that component exports components only (oxlint's
+// react/only-export-components).
+export const howItWorksSections: Record<Lang, ApiSidebarSection[]> = {
+  en: [
+    { id: "lifecycle", label: "One run, end to end" },
+    { id: "authority", label: "How authority reaches an effect" },
+    { id: "invariants", label: "The eight invariants" },
+    { id: "layers", label: "Five layers, one direction" },
+    { id: "ownership", label: "Engine vs host" },
+    { id: "status", label: "What is real today" },
+  ],
+  vi: [
+    { id: "lifecycle", label: "Một run, từ đầu đến cuối" },
+    { id: "authority", label: "Quyền hạn đi tới một hiệu ứng" },
+    { id: "invariants", label: "Tám bất biến" },
+    { id: "layers", label: "Năm lớp, một chiều" },
+    { id: "ownership", label: "Engine và host" },
+    { id: "status", label: "Hôm nay đã có gì" },
+  ],
+};
+
+// Right-rail "on this page" anchors for the worked-example page (api/pizza-order.html).
+export const pizzaOrderSections: Record<Lang, ApiSidebarSection[]> = {
+  en: [
+    { id: "cast", label: "Act 0 — the cast" },
+    { id: "order", label: "Act 1 — the order" },
+    { id: "denial", label: "Act 2 — the denial" },
+    { id: "approval", label: "Act 3 — the human" },
+    { id: "restart", label: "Act 4 — the restart" },
+    { id: "replay", label: "Act 5 — the replay" },
+    { id: "escalation", label: "Act 6 — the escalation" },
+    { id: "proves", label: "What this proves" },
+  ],
+  vi: [
+    { id: "cast", label: "Hồi 0 — dàn diễn viên" },
+    { id: "order", label: "Hồi 1 — đơn hàng" },
+    { id: "denial", label: "Hồi 2 — từ chối" },
+    { id: "approval", label: "Hồi 3 — con người" },
+    { id: "restart", label: "Hồi 4 — khởi động lại" },
+    { id: "replay", label: "Hồi 5 — phát lại" },
+    { id: "escalation", label: "Hồi 6 — leo thang" },
+    { id: "proves", label: "Trang này chứng minh gì" },
+  ],
+};
 
 export const apiGroupLabels: Record<Lang, Record<ApiGroup, string>> = {
   en: {
@@ -51,6 +122,16 @@ export const apiGroupLabels: Record<Lang, Record<ApiGroup, string>> = {
 export const apiPages: Record<Lang, ApiPage[]> = {
   en: [
     {
+      id: "first-app",
+      group: "core",
+      label: "Your first program",
+      href: `${SITE_BASE}/api/first-app.html`,
+      eyebrow: "Start here — a complete program, and the build that produces it",
+      description:
+        "One whole program — includes and main() included — plus the CMake that builds it against a vendored engine, how to point it at a real model, and the result-based error model every call uses.",
+      status: "real",
+    },
+    {
       id: "how-it-works",
       group: "core",
       label: "How AgentEngine works",
@@ -58,6 +139,16 @@ export const apiPages: Record<Lang, ApiPage[]> = {
       eyebrow: "Orientation — 001 §3–§4 · CONVENTIONS.md",
       description:
         "Start here: the lifecycle of a run, how authority reaches an effect, the eight core invariants and what enforces each, and who owns what between the engine and its host.",
+      status: "real",
+    },
+    {
+      id: "pizza-order",
+      group: "core",
+      label: "Worked example: a pizza order",
+      href: `${SITE_BASE}/api/pizza-order.html`,
+      eyebrow: "Worked example — one order, end to end",
+      description:
+        "A customer application followed from greeting to refund: the grant, the denial, the human approval, the restart, the offline replay, and the escalation graph — each act citing the real example behind it.",
       status: "real",
     },
     {
@@ -224,6 +315,36 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
   ],
   vi: [
+    {
+      id: "first-app",
+      group: "core",
+      label: "Chương trình đầu tiên của bạn",
+      href: `${SITE_BASE}/api/first-app.html`,
+      eyebrow: "Bắt đầu từ đây — một chương trình trọn vẹn, và tệp build tạo ra nó",
+      description:
+        "Một chương trình hoàn chỉnh — kể cả các dòng include và hàm main() — cùng CMake để build nó với engine đã vendor, cách trỏ nó vào một model thật, và mô hình lỗi dựa trên result mà mọi lệnh gọi đều dùng.",
+      status: "real",
+    },
+    {
+      id: "how-it-works",
+      group: "core",
+      label: "AgentEngine vận hành thế nào",
+      href: `${SITE_BASE}/api/how-it-works.html`,
+      eyebrow: "Định hướng — 001 §3–§4 · CONVENTIONS.md",
+      description:
+        "Bắt đầu từ đây: vòng đời của một run, cách quyền hạn đi tới một hiệu ứng, tám bất biến cốt lõi cùng cơ chế thực thi từng cái, và phần nào thuộc engine, phần nào thuộc host.",
+      status: "real",
+    },
+    {
+      id: "pizza-order",
+      group: "core",
+      label: "Ví dụ trọn vẹn: một đơn pizza",
+      href: `${SITE_BASE}/api/pizza-order.html`,
+      eyebrow: "Ví dụ trọn vẹn — một đơn hàng, từ đầu đến cuối",
+      description:
+        "Một ứng dụng khách hàng được đi theo từ lời chào tới hoàn tiền: cấp quyền, từ chối, phê duyệt bởi con người, khởi động lại, phát lại ngoại tuyến, và đồ thị leo thang — mỗi hồi đều dẫn nguồn ví dụ thật đứng sau nó.",
+      status: "real",
+    },
     {
       id: "agent",
       group: "core",
@@ -555,9 +676,9 @@ export const toolStaticMembers: Record<Lang, FieldSpec[]> = {
     },
     {
       name: "invoke(Args, EffectContext&)",
-      type: "static result<Reply>",
+      type: "const agentengine::task<result<Reply>>",
       required: true,
-      notes: "Synchronous by design, not a coroutine — ae::task<T> stays deferred until a milestone actually needs concurrent tool calls (tool.hpp:112-114).",
+      notes: "ADR-237 §5.2's form, and the one to write: a NON-STATIC const member returning a coroutine, so a stateless tool is an empty object and a stateful one holds its injected state (registered by value). const because a Parallelizable tool called twice in one batch runs two invokes on the same object concurrently — mutable per-call state belongs in the frame. The older static result<Reply> form is still accepted transitionally and is deleted once every conformer is converted, so new code should not use it.",
     },
     {
       name: "declared_capabilities()",
@@ -605,9 +726,9 @@ export const toolStaticMembers: Record<Lang, FieldSpec[]> = {
     },
     {
       name: "invoke(Args, EffectContext&)",
-      type: "static result<Reply>",
+      type: "const agentengine::task<result<Reply>>",
       required: true,
-      notes: "Đồng bộ (synchronous) theo chủ ý thiết kế, không phải coroutine — ae::task<T> vẫn bị hoãn lại cho đến khi có milestone nào đó thực sự cần các lệnh gọi tool đồng thời (tool.hpp:112-114).",
+      notes: "Dạng của ADR-237 §5.2, và là dạng nên viết: một thành viên const KHÔNG static trả về coroutine, nên một tool không trạng thái là một đối tượng rỗng còn tool có trạng thái thì giữ state được tiêm vào (đăng ký theo giá trị). const vì một tool Parallelizable được gọi hai lần trong cùng một batch sẽ chạy hai invoke trên cùng một đối tượng đồng thời — state thay đổi theo từng lệnh gọi phải nằm trong frame. Dạng static result<Reply> cũ vẫn được chấp nhận trong giai đoạn chuyển tiếp và sẽ bị xóa khi mọi conformer được chuyển đổi, nên code mới không nên dùng nó.",
     },
     {
       name: "declared_capabilities()",
@@ -639,7 +760,14 @@ struct WebSearchTool : agentengine::Tool<WebSearchTool> {
     using Args = SearchArgs;    // AE_JSON_SCHEMA(SearchArgs, query, max_results, after_cursor)
     using Reply = SearchReply;  // AE_JSON_SCHEMA(SearchReply, hits, truncated)
     static result<Reply> invoke(Args args, EffectContext& ctx) { /* ... */ }
-};`;
+};
+
+// WRITE THE STATIC FORM ABOVE, for now. ADR-237 §5.2 is converting invoke to a non-static const
+// coroutine member -- task<result<Reply>> invoke(Args, EffectContext&) const -- and core/tool.hpp
+// already documents that as the target shape. It is not usable yet: the registration path still
+// calls the tool's invoke statically, so a non-static member fails to compile with C2352 ("a call of
+// a non-static member function requires an object") from core/tool_descriptor.hpp. Both spellings
+// compile in the abstract; only this one binds. Convert when the ADR lands, not before.`;
 
 export interface TypeMapping {
   cpp: string;
@@ -714,7 +842,7 @@ export const toolSchemaOutput = `{
   },
   "required": ["hits", "truncated"]
 }
-// json_schema_of<SearchReply>() — pretty-printed here for reading; the real
+// agentengine::schema::json_schema_of<SearchReply>() — pretty-printed here for reading; the real
 // emission is compact, single-line, no whitespace.`;
 
 export const toolDescriptorSnippet = `// One entry in the immutable per-run tool table (006 §6). Type-erased:
@@ -780,6 +908,35 @@ struct StockPriceTool : Tool<StockPriceTool, Capabilities<>, EffectClass<effect_
 // field a description: it lives on the FIELD'S OWN TYPE, not as an AE_JSON_SCHEMA macro argument
 // (the macro only lists field names).
 // Described<std::optional<T>, "..."> composes correctly too -- still detected as NOT required.
+// How a tool CALL is produced. No page showed this, and it is the piece you need the moment you
+// want to test a tool-using agent offline -- it is what every example's scripted client does, and
+// what a real vendor client parses its wire response into. Verified end to end by
+// devsim/verify-toolcall: the synthesised call runs the declared tool exactly once.
+export const fakeToolCallSnippet = `// core/content.hpp -- a ToolCall is one ContentItem's value, and a ChatClient is free to build one.
+// That is how every scripted client in examples/ works, and how you test a tool-using agent with
+// no network and no API key.
+ToolCall call;
+call.call_id        = "call-1";           // correlates this call with the ToolResult it produces
+call.tool_name      = "roll_die";         // must match a declared Tool<>::name, or the pipeline
+                                          // refuses it with tool.unknown_name
+call.arguments_json = R"({"sides":6})";   // the arguments as JSON TEXT -- validated against the
+                                          // tool's own Args schema before invoke() is reached
+call.provenance     = call_provenance::vendor_structured;
+
+ContentItem item{};
+item.origin = content_origin::assistant;
+item.value  = std::move(call);
+
+Message reply{};
+reply.role = role::assistant;
+reply.content.push_back(std::move(item));
+co_return ChatResponse{reply, Usage{10, 10, 0, 0, 0.0}};
+
+// From here the session does the rest, in one turn, with no further help from you: the capability
+// check, the approval gate, the tool's own invoke(), and a ToolResult carrying its reply fed back
+// to the model as the next thing it sees. The model's second chat() call is what turns that reply
+// into an answer -- read it back with text_of()/schema::from_json, the same way examples/01 does.`;
+
 export const describedFieldSchemaSnippet = `// tests/core/json/test_json_schema_described.cpp:36-41
 struct SearchArgs {
     Described<std::string, "The search query text"> query;
@@ -1503,6 +1660,42 @@ std::string const id = session.open_interactions().front().interaction_id;
 auto r2 = drive(session.resolve_interaction(ResolveInteraction{id, /*approved=*/true, std::nullopt}));
 // r2 converges: send_message's invoke() ran for real, through the ordinary capability-checked
 // pipeline -- and it's still the SAME run_id as r1, never a new run (I4).`;
+
+// The two shapes every suspend/resume site needs and the snippets above use without defining: the
+// sentinel CODES you branch on, and the ResolveInteraction struct you answer with. Verbatim from
+// rt/agent_session_core.hpp:1209-1239 (the codes) and :129-160 (the struct).
+export const suspendCodesSnippet = `// One stable string per suspend reason, each a static member of YOUR session type. A suspended run
+// is NOT a failure -- its failure class is "contract" -- so branch on the code, not on whether the
+// result happens to hold a value.
+static_assert(std::string_view(Session::kSuspendedForApproval)     == "run.suspended_for_approval");
+static_assert(std::string_view(Session::kSuspendedForCodeActAsk)   == "run.suspended_for_codeact_ask");
+static_assert(std::string_view(Session::kSuspendedForHookDecision) == "run.suspended_for_hook_decision");
+static_assert(std::string_view(Session::kSuspendedForClientInput)  == "run.suspended_for_client_input");
+
+auto r = drive(session.start_run(StartRun{user_message("refund order 1042")}));
+if (r.has_value()) {
+    // It answered. Nothing was waiting.
+} else if (r.error().code == Session::kSuspendedForApproval) {
+    // Expected, deliberate, and nothing ran: a real Interaction is open, waiting for a human.
+    std::string const id = session.open_interactions().front().interaction_id;
+} else {
+    // A real failure. r.error().klass names its class; r.error().message is for the operator log.
+}
+
+// ResolveInteraction, as declared -- NINE fields. The first three are what almost every call site
+// uses; the rest are reason-specific and defaulted, which is why the positional braces in the
+// examples above are safe to copy.
+struct ResolveInteraction {
+    std::string interaction_id;                                       // 1  required
+    bool        approved = false;                                     // 2  approval only
+    std::optional<SessionCaller> caller = std::nullopt;               // 3  SessionCaller{id, tenant_id}
+    std::optional<std::string>   answer = std::nullopt;               // 4  codeact_ask only
+    std::optional<RequestAuthority> authority = std::nullopt;         // 5  Tier-3 identity+grant bundle
+    std::optional<std::vector<HookDispatchAnswer>>  hook_dispatch_answers;  // 6  hook_decision only
+    std::optional<std::vector<ApprovalCallDecision>> call_decisions;        // 7  per-call decisions
+    std::optional<std::string> approver_id = std::nullopt;            // 8  who decided (I4)
+    std::optional<ClientInputAnswer> client_answer = std::nullopt;    // 9  client_input only
+};`;
 
 // OQ-21 -- a DIFFERENT question from the human-approval flow above, answered through the same
 // suspend/resume machinery: "should an EXTERNAL PROCESS decide (or rewrite) this call", not "did a
@@ -2652,6 +2845,44 @@ export interface WorkflowEdgeKind {
   meaning: string;
 }
 
+export const workflowResultSnippet = `// rt/workflow_supervisor.hpp -- what a run hands back. Read this before writing a handler: the
+// status alone is not enough, and two of these fields are what a fault handler actually needs.
+struct WorkflowResult {
+    workflow_status status = workflow_status::invalid;
+    std::uint32_t   rounds = 0;
+    Message         output{};        // the output selection's result -- EMPTY on a fault, and empty
+                                     // on a starved join that still reports completed
+    std::vector<ExecutorOutput> partial{};     // the LATEST message each executor produced -- one
+                                               // entry per executor id, overwritten on every revisit
+    std::vector<ExecutorOutput> transcript{};  // every visit, in completion order -- empty unless the
+                                               // host called enable_transcript(); see
+                                               // transcript_truncated for the cap
+    std::string     failed_executor{};         // WHICH node caused the stop: executor_failed,
+                                               // merge_conflict, and routing_failed too
+    std::vector<Interaction> open_interactions{};  // what a suspended run is waiting on
+    std::vector<std::string> unopened_ports{};     // request_ports the run never reached
+    Usage           usage{};         // what THIS call spent -- a resume reports only its own delta
+};
+
+// So a handler has more to work with than the status tag:
+auto r = drive(sup.run_workflow(RunWorkflow{text_message("...")}));
+switch (r.status) {
+    case workflow_status::completed:
+        // Still check r.output: a starved fan-in lands here with an empty answer (see the caveat).
+        break;
+    case workflow_status::executor_failed:
+    case workflow_status::merge_conflict:
+        std::fprintf(stderr, "node '%s' failed after %u rounds\\n",
+                     r.failed_executor.c_str(), r.rounds);
+        // r.partial still holds what the other nodes produced -- partial results are preserved
+        break;
+    case workflow_status::suspended:
+        // r.open_interactions names the port(s) to answer
+        break;
+    default:
+        break;
+}`;
+
 export const workflowEdgeKinds: Record<Lang, WorkflowEdgeKind[]> = {
   en: [
     { kind: "direct", meaning: "One source, one target." },
@@ -2660,6 +2891,7 @@ export const workflowEdgeKinds: Record<Lang, WorkflowEdgeKind[]> = {
     { kind: "fan_in", meaning: "Many sources, one target (the aggregator). The superstep model makes this well-defined: the target runs exactly ONCE per round, receiving one ContentItem per contributing branch in graph-declared order -- not once per inbound edge." },
     { kind: "switch_case", meaning: "One source, many targets, exactly one selected by a case label the source executor returns in ExecutorOutcome::routes. The unselected branch's invoke() is never called." },
     { kind: "multi_selection", meaning: "One source, many targets, a caller-chosen SUBSET fired -- the same routes mechanism as switch_case, naming more than one label." },
+    { kind: "switch_default", meaning: "The switch's own default (ADR-215): fires iff ZERO of the same source's switch_case edges matched the reply's routes. Carries no case label -- validate_workflow refuses one -- and a source may have at most one. More than one matching case is still a routing failure, default or not." },
   ],
   vi: [
     { kind: "direct", meaning: "Một nguồn, một đích." },
@@ -2668,6 +2900,7 @@ export const workflowEdgeKinds: Record<Lang, WorkflowEdgeKind[]> = {
     { kind: "fan_in", meaning: "Nhiều nguồn, một đích (bộ tổng hợp — aggregator). Mô hình superstep khiến điều này được định nghĩa rõ ràng: đích chạy đúng MỘT LẦN mỗi vòng, nhận một ContentItem cho mỗi nhánh đóng góp theo đúng thứ tự khai báo trong đồ thị — không phải một lần cho mỗi cạnh đi vào." },
     { kind: "switch_case", meaning: "Một nguồn, nhiều đích, đúng một đích được chọn bởi một nhãn case mà executor nguồn trả về trong ExecutorOutcome::routes. invoke() của nhánh không được chọn không bao giờ được gọi." },
     { kind: "multi_selection", meaning: "Một nguồn, nhiều đích, một TẬP CON do caller chọn được kích hoạt — cùng cơ chế routes như switch_case, chỉ khác là nêu tên nhiều hơn một nhãn." },
+    { kind: "switch_default", meaning: "Nhánh mặc định của switch (ADR-215): kích hoạt khi KHÔNG có cạnh switch_case nào của cùng nguồn đó khớp với routes trong reply. Không mang nhãn case — validate_workflow từ chối nếu có — và một nguồn chỉ được có tối đa một cạnh như vậy. Nhiều hơn một case khớp vẫn là lỗi định tuyến, dù có default hay không." },
   ],
 };
 
@@ -2795,7 +3028,9 @@ wf.bound.max_rounds = 4;              // required -- validate_workflow rejects a
 
 export const workflowGraphSnippet = `// The graph AS DATA -- no execution, no actors, no scheduling.
 // include/agentengine/workflow/graph.hpp
-enum class edge_kind { direct, fan_out, fan_in, switch_case, multi_selection, chain };
+// Seven kinds. switch_default (ADR-215) fires iff ZERO of the same source's switch_case edges
+// matched -- unlabelled, at most one per source, and only on a source that has a case edge.
+enum class edge_kind { direct, fan_out, fan_in, switch_case, multi_selection, chain, switch_default };
 enum class executor_kind { agent, function, sub_workflow, request_port };
 
 struct Executor {
@@ -2807,13 +3042,20 @@ struct Executor {
     // Default is branch, UNCONDITIONALLY -- see the ADR for why "shared
     // for provably-sequential nodes" was rejected as unsound in general.
     sharing_mode  worktree_mode = sharing_mode::branch;
+    // OQ-19: what THIS node needs, declared -- consulted only for agent-kind nodes. The
+    // CapabilitySet it actually runs under is the per-run contexts[i] passed to initialize().
+    std::vector<agentengine::Capability> capability_ceiling;
+    // ADR-235: eligible for a vendor batch job, function-kind nodes only, and only ever
+    // ELIGIBLE -- the host must also call enable_batch_coalescing().
+    bool          batch = false;
 };
 
 struct Edge {
     std::string from;
     std::string to;
     edge_kind   kind = edge_kind::direct;
-    std::string case_label;         // switch_case / multi_selection only
+    std::string case_label;         // switch_case / multi_selection only -- REQUIRED there,
+                                    // and refused ("workflow.unexpected_case_label") elsewhere
     EdgeFailurePolicy on_failure;   // fail (default) | propagate | retry | fallback
 };
 
@@ -2821,6 +3063,9 @@ struct TerminationBound {
     std::optional<std::uint32_t> max_rounds;
     std::optional<std::uint64_t> deadline_ms;
     std::optional<std::uint64_t> token_budget;
+    // ADR-149: the designated stall reporter's own consecutive "stalled" self-reports.
+    std::optional<std::uint32_t> max_stalls;
+    std::optional<std::uint32_t> max_resets;
     // validate_workflow REQUIRES at least one -- "an unbounded workflow does not run" (014 §2).
 };
 
@@ -2858,7 +3103,7 @@ WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("Hello, World
 export const workflowConcurrentSnippet = `// examples/09_concurrent_workflow.cpp -- Concurrent: fan_out to N workers, fan_in to one aggregator.
 Workflow wf;
 wf.id        = "fan-out-fan-in";
-wf.executors = {node("src"), node("upper"), node("lower"), node("title"), node("agg")};
+wf.executors = {node_desc("src"), node_desc("upper"), node_desc("lower"), node_desc("title"), node_desc("agg")};
 for (char const* w : {"upper", "lower", "title"}) {
     wf.edges.push_back(Edge{"src", w, edge_kind::fan_out, {}});
     wf.edges.push_back(Edge{w, "agg", edge_kind::fan_in, {}});
@@ -2875,7 +3120,7 @@ WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("hi")}));
 export const workflowRouterSnippet = `// examples/10_conditional_routing.cpp -- Router: switch_case on a classifier's typed output.
 Workflow wf;
 wf.id        = "triage-router";
-wf.executors = {node("triage"), node("billing"), node("tech")};
+wf.executors = {node_desc("triage"), node_desc("billing"), node_desc("tech")};
 wf.edges.push_back(Edge{"triage", "billing", edge_kind::switch_case, "billing"});
 wf.edges.push_back(Edge{"triage", "tech",    edge_kind::switch_case, "tech"});
 wf.start = "triage";
@@ -2891,20 +3136,29 @@ ExecutorBody triage = [](Message const& in, EffectContext&) -> result<ExecutorOu
 
 export const workflowReflectionSnippet = `// tests/workflow/test_rt_workflow_supervisor_patterns.cpp (CY-1) -- Reflection/critic: a bounded cycle.
 Workflow wf;
-wf.id        = "writer-critic";
-wf.executors = {node("writer"), node("critic"), node("done")};
-wf.edges.push_back(Edge{"writer", "critic", edge_kind::direct,      {}});
+wf.id        = "cy-converge";
+wf.executors = {node_desc("writer"), node_desc("critic"), node_desc("done")};
+wf.edges.push_back(Edge{"writer", "critic", edge_kind::direct,       {}});
 wf.edges.push_back(Edge{"critic", "writer", edge_kind::switch_case, "revise"});
 wf.edges.push_back(Edge{"critic", "done",   edge_kind::switch_case, "approve"});
 wf.start = "writer";
 wf.output_selection.push_back("done");
 wf.bound.max_rounds = 8;   // validate_workflow REQUIRES a bound -- an unbounded cycle does not run
 
-// critic's body: revise twice, then approve
-int revisions = 0;
-ExecutorBody critic = [&revisions](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-    auto const label = (revisions++ < 2) ? "revise" : "approve";
-    return ExecutorOutcome{text_message(all_text_of(in) + ">critic"), {label}};
+// The critic's body, as the test writes it: revise twice, then approve. The counter is a shared_ptr
+// captured BY VALUE, not a local captured by reference -- initialize() takes the body vector by
+// value, so a body is a copy that can outlive the scope that built it.
+auto critic_calls = std::make_shared<std::atomic<int>>(0);
+std::vector<ExecutorBody> bodies = {
+    appender("writer"),
+    [critic_calls](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+        std::string const text = all_text_of(in) + ">critic";
+        if (critic_calls->fetch_add(1) < 2) {
+            return ExecutorOutcome{text_message(text), {"revise"}};
+        }
+        return ExecutorOutcome{text_message(text), {"approve"}};
+    },
+    appender("done"),
 };
 // converges at "done" once approved; a critic that never approves stops CLEANLY at bound.max_rounds
 // (workflow_status::bound_max_rounds -- not a crash, not a hang)`;
@@ -2913,7 +3167,7 @@ export const workflowGroupChatSnippet = `// Same cyclic switch_case shape CY-1 p
 // not a separately proven test, just the same primitives composed differently.
 Workflow wf;
 wf.id        = "panel-debate";
-wf.executors = {node("moderator"), node("alice"), node("bob"), node("carol")};
+wf.executors = {node_desc("moderator"), node_desc("alice"), node_desc("bob"), node_desc("carol")};
 for (char const* p : {"alice", "bob", "carol"}) {
     wf.edges.push_back(Edge{"moderator", p, edge_kind::switch_case, p});
     wf.edges.push_back(Edge{p, "moderator", edge_kind::direct, {}});
@@ -2944,10 +3198,12 @@ export const workflowSequentialBodiesSnippet = `// examples/04_first_workflow.cp
     std::reverse(text.begin(), text.end());
     return text_message(std::move(text));
 }
-// rt::ExecutorBody is exactly std::function<result<ExecutorOutcome>(Message const&,
-// EffectContext&)>, and a Message converts implicitly into an ExecutorOutcome for the common
-// "just pass a message downstream" case -- these bodies need no changes to plug into the graph,
-// only the wiring around them does.`;
+// rt::ExecutorBody is exactly std::function<result<ExecutorOutcome>(Message const&, EffectContext&)>.
+// A PASS-THROUGH body can simply return text_message(...): a Message converts implicitly into an
+// ExecutorOutcome. A ROUTING body must be annotated result<ExecutorOutcome> -- NOT result<Message>.
+// That convenience lives inside std::expected's own converting constructor, and two user-defined
+// conversions do not chain, so writing -> result<Message> on a routing body fails with a C2440 that
+// names std::expected rather than the real cause. Both shapes are compiled by verify-bodyforms.`;
 
 export const workflowConcurrentMergeSnippet = `// examples/09_concurrent_workflow.cpp:62-91 -- how a fan_in delivery is actually read: one
 // ContentItem per contributing branch, in graph-declared order -- and the worker/aggregate bodies
@@ -3223,7 +3479,7 @@ export const workflowEntries: Record<Lang, ApiEntry[]> = {
       tag: "014 §3 — eight patterns, one graph vocabulary",
       title: "Sequential, Concurrent, Handoff, Router, and four more — configurations, not subsystems",
       body:
-        "§3's claim is that its eight named orchestration patterns are configurations of the graph, not eight separate things to build, and test_rt_workflow_supervisor_patterns.cpp is that claim's proof: every row is built from nothing but executors, the six edge kinds above, and a termination bound, then run for real on the superstep engine. A fan-in aggregator is checked on its INVOCATION COUNT (exactly one call, not one per inbound edge) because a merge that silently ran three times would still produce a plausible-looking answer. A router is run against two different inputs through the SAME graph, because one probe can't distinguish a working classifier from a node hardcoded to one branch. An executor that names a route label the graph never declared fails the run with workflow_status::routing_failed rather than being silently ignored (an I3 boundary: a route target is engine-checked structure, never treated as free-form model output to trust).",
+        "§3's claim is that its eight named orchestration patterns are configurations of the graph, not eight separate things to build, and test_rt_workflow_supervisor_patterns.cpp is that claim's proof: every row is built from nothing but executors, the seven edge kinds above, and a termination bound, then run for real on the superstep engine. A fan-in aggregator is checked on its INVOCATION COUNT (exactly one call, not one per inbound edge) because a merge that silently ran three times would still produce a plausible-looking answer. A router is run against two different inputs through the SAME graph, because one probe can't distinguish a working classifier from a node hardcoded to one branch. An executor that names a route label the graph never declared fails the run with workflow_status::routing_failed rather than being silently ignored (an I3 boundary: a route target is engine-checked structure, never treated as free-form model output to trust).",
       cite: "tests/workflow/test_rt_workflow_supervisor_patterns.cpp",
       href: gh("tests/workflow/test_rt_workflow_supervisor_patterns.cpp"),
     },

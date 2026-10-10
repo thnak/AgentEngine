@@ -10,8 +10,15 @@ import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
 import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
+import { ApiIncludes } from "./ApiIncludes";
 import { CodePanel } from "./CodePanel";
 import { RevealGroup, RevealItem } from "./Reveal";
+
+// Verified by devsim/verify-includes: every path here is compiled by the gate.
+const PLUGIN_HEADERS = [
+  "agentengine/plugin/plugin.hpp",
+  "agentengine/sandbox/sandbox.hpp",
+];
 import type { Lang } from "../i18n/LanguageContext";
 
 function entryById(lang: Lang, id: string) {
@@ -41,6 +48,16 @@ const copy = {
     eyebrow: "Plugin ABI — D2",
     headingPrefix: "Every plugin is a",
     headingHighlight: "signed WASM component",
+    includesNote: (
+      <>
+        Two headers, and neither is a build dependency you can skip:{" "}
+        <code>plugin/plugin.hpp</code> is the manifest, the handle and the host-side loading calls,{" "}
+        <code>sandbox/sandbox.hpp</code> is the backend a component is loaded into. The plugin
+        itself is not C++ at all — it is a <code>.wasm</code> component built against the{" "}
+        <code>ae-tool</code> WIT world, so the other half of this page's contract is a{" "}
+        <code>.wit</code> file, not a header.
+      </>
+    ),
     intro: "A plugin is not a shared library or a subprocess — it's a WASI 0.3 Component Model binary that exports exactly two functions and imports only what a manifest declares and an operator grants. One artifact runs bit-identically across the whole target platform set, capability-based by construction rather than by convention.",
     s1Eyebrow: "wit/ae-tool.wit — package ae:tool@1.0.0",
     s1Heading: "One ungated interface, five gated ones, two guest exports",
@@ -132,6 +149,16 @@ const copy = {
     eyebrow: "Plugin ABI — D2",
     headingPrefix: "Mỗi plugin đều là một",
     headingHighlight: "WASM component đã ký",
+    includesNote: (
+      <>
+        Hai header, và không header nào là phụ thuộc build mà bạn bỏ qua được:{" "}
+        <code>plugin/plugin.hpp</code> là manifest, handle và các lệnh gọi nạp phía host;{" "}
+        <code>sandbox/sandbox.hpp</code> là backend mà một component được nạp vào. Bản thân plugin
+        hoàn toàn không phải C++ — nó là một component <code>.wasm</code> được build dựa trên world{" "}
+        <code>ae-tool</code> của WIT, nên nửa còn lại của hợp đồng trên trang này là một tệp{" "}
+        <code>.wit</code>, không phải một header.
+      </>
+    ),
     intro: "Một plugin không phải một shared library hay một subprocess — đó là một binary theo WASI 0.3 Component Model, export đúng hai hàm và chỉ import những gì một manifest khai báo và một operator cấp phát. Một artifact chạy giống hệt nhau từng bit trên toàn bộ tập nền tảng mục tiêu, dựa trên capability ngay từ cấu trúc chứ không phải theo quy ước.",
     s1Eyebrow: "wit/ae-tool.wit — package ae:tool@1.0.0",
     s1Heading: "Một interface không bị kiểm soát, năm interface bị kiểm soát, hai export của guest",
@@ -242,6 +269,13 @@ export function ApiPluginsReference() {
           </span>
           <p style={{ marginTop: 16 }}>{t.intro}</p>
         </div>
+
+        {/* ---- What to include ------------------------------------------------------------------ */}
+        <RevealGroup>
+          <RevealItem>
+            <ApiIncludes headers={PLUGIN_HEADERS}>{t.includesNote}</ApiIncludes>
+          </RevealItem>
+        </RevealGroup>
 
         {/* ---- 1. The WIT world ------------------------------------------------------------------ */}
         <RevealGroup>

@@ -17,8 +17,16 @@ import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
 import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
+import { ApiIncludes } from "./ApiIncludes";
 import { CodePanel } from "./CodePanel";
 import { RevealGroup, RevealItem } from "./Reveal";
+
+// Verified by devsim/verify-includes: every path here is compiled by the gate.
+const STREAMING_HEADERS = [
+  "agentengine/core/chat_client.hpp",
+  "agentengine/core/stream.hpp",
+  "agentengine/core/content.hpp",
+];
 import type { Lang } from "../i18n/LanguageContext";
 
 function entriesById(lang: Lang, ids: string[]) {
@@ -70,6 +78,16 @@ function Cite({ path, label }: { path: string; label?: string }) {
 const copy = {
   en: {
     eyebrow: "013 §1 — UI and Streaming Surfaces · 004 §1",
+    includesNote: (
+      <>
+        Three headers. <code>core/chat_client.hpp</code> is the concept whose{" "}
+        <code>chat_stream()</code> a backend implements, plus{" "}
+        <code>ChatClientCapabilities</code>; <code>core/stream.hpp</code> is{" "}
+        <code>stream&lt;T&gt;</code> and <code>make_stream()</code>, the primitive everything here
+        is about; and <code>core/content.hpp</code> is{" "}
+        <code>ChatResponseUpdate</code>/<code>Text</code>, what actually flows through it.
+      </>
+    ),
     headingPrefix: "Streaming is",
     headingHighlight: "the required shape, not an add-on",
     intro: (
@@ -273,6 +291,16 @@ const copy = {
 
   vi: {
     eyebrow: "013 §1 — Bề mặt UI và Streaming · 004 §1",
+    includesNote: (
+      <>
+        Ba header. <code>core/chat_client.hpp</code> là concept mà backend hiện thực{" "}
+        <code>chat_stream()</code> của nó, cùng <code>ChatClientCapabilities</code>;{" "}
+        <code>core/stream.hpp</code> là <code>stream&lt;T&gt;</code> và{" "}
+        <code>make_stream()</code>, nguyên thủy mà mọi thứ ở đây nói về; còn{" "}
+        <code>core/content.hpp</code> là <code>ChatResponseUpdate</code>/<code>Text</code>, thứ
+        thực sự chảy qua nó.
+      </>
+    ),
     headingPrefix: "Streaming là",
     headingHighlight: "hình dạng bắt buộc, không phải một tính năng thêm",
     intro: (
@@ -496,6 +524,13 @@ export function ApiStreamingReference() {
           </span>
           <p style={{ marginTop: 16 }}>{t.intro}</p>
         </div>
+
+        {/* ---- What to include ------------------------------------------------------------------ */}
+        <RevealGroup>
+          <RevealItem>
+            <ApiIncludes headers={STREAMING_HEADERS}>{t.includesNote}</ApiIncludes>
+          </RevealItem>
+        </RevealGroup>
 
         {/* ---- 1. chat_stream() is required ----------------------------------------------------- */}
         <RevealGroup>

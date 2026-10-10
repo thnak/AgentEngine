@@ -21,9 +21,17 @@ import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
 import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
+import { ApiIncludes } from "./ApiIncludes";
 import { ApiTable } from "./ApiTable";
 import { CodePanel } from "./CodePanel";
 import { RevealGroup, RevealItem } from "./Reveal";
+
+// Verified by devsim/verify-includes: every path here is compiled by the gate.
+const SKILL_HEADERS = [
+  "agentengine/core/skill_provider.hpp",
+  "agentengine/core/context_provider.hpp",
+  "agentengine/core/tool.hpp",
+];
 
 function StatusBadge({ status }: { status: "real" | "design" }) {
   const { lang } = useLang();
@@ -56,6 +64,16 @@ const copy = {
         the format of record — the identical layout Anthropic's own products and Microsoft
         Agent Framework already use. The format, sourcing, and mounting below are real and
         tested; the one piece still design-only is called out in its own section further down.
+      </>
+    ),
+    includesNote: (
+      <>
+        Three headers. <code>core/skill_provider.hpp</code> is the skill surface —{" "}
+        <code>SkillSource</code>, <code>SkillsProvider</code>, and the collision rules;{" "}
+        <code>core/context_provider.hpp</code> is the concept <code>SkillsProvider</code>{" "}
+        satisfies, and therefore what lets it occupy the session's one provider slot;{" "}
+        <code>core/tool.hpp</code> is what a skill's tools are once mounted. A skill itself is not a
+        header at all — it is a <code>SKILL.md</code> directory.
       </>
     ),
     recoLabel: "Recommended default",
@@ -435,6 +453,17 @@ const copy = {
         Microsoft Agent Framework đã dùng. Định dạng, cách lấy nguồn, và cách mount bên dưới
         đều có thật và đã kiểm thử; phần duy nhất vẫn còn ở dạng thiết kế được nêu riêng ở
         phần bên dưới.
+      </>
+    ),
+    includesNote: (
+      <>
+        Ba header. <code>core/skill_provider.hpp</code> là bề mặt skill —{" "}
+        <code>SkillSource</code>, <code>SkillsProvider</code>, và các quy tắc xung đột;{" "}
+        <code>core/context_provider.hpp</code> là concept mà <code>SkillsProvider</code> thỏa mãn,
+        và do đó là thứ cho phép nó chiếm slot provider duy nhất của session;{" "}
+        <code>core/tool.hpp</code> là thứ mà các tool của một skill trở thành sau khi được mount.
+        Bản thân một skill hoàn toàn không phải một header — nó là một thư mục{" "}
+        <code>SKILL.md</code>.
       </>
     ),
     recoLabel: "Mặc định khuyến nghị",
@@ -832,6 +861,13 @@ export function ApiSkillReference() {
           </span>
           <p style={{ marginTop: 16 }}>{t.intro}</p>
         </div>
+
+        {/* ---- What to include ------------------------------------------------------------------ */}
+        <RevealGroup>
+          <RevealItem>
+            <ApiIncludes headers={SKILL_HEADERS}>{t.includesNote}</ApiIncludes>
+          </RevealItem>
+        </RevealGroup>
 
         <RevealGroup>
           <RevealItem>

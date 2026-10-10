@@ -1,6 +1,7 @@
 import {
   capabilityGatedToolDeclSnippet,
   describedFieldSchemaSnippet,
+  fakeToolCallSnippet,
   gh,
   jsonSchemaTypeMapping,
   minimalToolSnippet,
@@ -14,9 +15,18 @@ import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
 import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
+import { ApiIncludes } from "./ApiIncludes";
 import { ApiTable } from "./ApiTable";
 import { CodePanel } from "./CodePanel";
 import { RevealGroup, RevealItem } from "./Reveal";
+
+// Verified by devsim/verify-includes: every path here is compiled by the gate.
+const TOOL_HEADERS = [
+  "agentengine/core/tool.hpp",
+  "agentengine/core/json_schema.hpp",
+  "agentengine/core/tool_call_extraction.hpp",
+  "agentengine/core/error.hpp",
+];
 
 const copy = {
   en: {
@@ -24,6 +34,16 @@ const copy = {
     headingPrefix: "A tool's",
     headingHighlight: "full shape",
     headingSuffix: ", field by field",
+    includesNote: (
+      <>
+        Four headers, and that is the whole tool plane: <code>tool.hpp</code> for the{" "}
+        <code>Tool&lt;&gt;</code> declaration, <code>json_schema.hpp</code> for{" "}
+        <code>AE_JSON_SCHEMA</code> and <code>Described</code>,{" "}
+        <code>tool_call_extraction.hpp</code> for reading a call out of a <code>Message</code>, and{" "}
+        <code>error.hpp</code> for the <code>result</code>/<code>error</code> pair every{" "}
+        <code>invoke</code> returns. Everything on this page compiles against exactly these.
+      </>
+    ),
     intro: (
       <>
         <code>Tool&lt;Derived, Policies...&gt;</code> fixes one declaration surface: a
@@ -43,6 +63,46 @@ const copy = {
         <code>at_most_once</code> effect class) — a minimal tool doesn't write them at all,
         it only adds a <code>Capabilities&lt;...&gt;</code>/<code>Approval&lt;...&gt;</code>/
         <code>EffectClass&lt;...&gt;</code> policy the day it needs to override one:
+      </>
+    ),
+    callEyebrow: "core/content.hpp — the other end of the contract",
+    callHeading: "Producing a tool call: how you test any of this offline",
+    callBody: (
+      <>
+        Declaring a tool is half the contract; the other half is what actually arrives to invoke it.
+        A <code>ToolCall</code> is ordinary data — one <code>ContentItem</code>'s value — so a{" "}
+        <code>ChatClient</code> can synthesise one. That is what every scripted client in{" "}
+        <code>examples/</code> does, and it is how you test a tool-using agent with no network and
+        no API key: point the agent at a client that emits the call you want to exercise.
+      </>
+    ),
+    callNoteKind: "verified",
+    callNote: (
+      <>
+        This recipe is compiled and run as part of the docs' own gate: a synthesised{" "}
+        <code>ToolCall</code> drives the real ten-step pipeline, <code>invoke()</code> runs exactly
+        once, and the value it returns reaches the model's second turn as a <code>ToolResult</code>.
+        Two fields are load-bearing and fail differently: <code>tool_name</code> must match a
+        declared <code>Tool&lt;&gt;::name</code> (else <code>tool.unknown_name</code>), and{" "}
+        <code>arguments_json</code> is validated against the tool's own <code>Args</code> schema
+        before <code>invoke()</code> is reached. <code>provenance</code> defaults to{" "}
+        <code>vendor_structured</code>; <code>text_derived</code> is the lower-trust class, and only
+        ever auto-declassified on 007 §4's closed list.
+      </>
+    ),
+    typesNoteKind: "the macro's four rules",
+    typesNote: (
+      <>
+        <code>AE_JSON_SCHEMA(Type, members...)</code> has four preconditions, and each fails at
+        compile time with a message that does not name the rule. It must sit where{" "}
+        <strong>ADL can find it for the type</strong> — in practice, the same namespace as{" "}
+        <code>Type</code>, not inside a function. It takes <strong>up to 16 members</strong>. Every
+        field type must be one this table lists, a <code>std::optional&lt;T&gt;</code>/
+        <code>std::vector&lt;T&gt;</code> of one, or a nested type carrying its own{" "}
+        <code>AE_JSON_SCHEMA</code> — anything else trips a <code>static_assert</code> naming{" "}
+        <code>json.unsupported_type</code>. And the "required" rule is the field's own type: a
+        missing key is an error unless the field is <code>std::optional&lt;U&gt;</code>, which is
+        why that is the one way to make a parameter optional.
       </>
     ),
     flowSchemaSub: "field names + C++ types; per-field description via Described<T, \"...\">",
@@ -130,6 +190,16 @@ const copy = {
         <code>translate_tool</code> byte-for-byte, from a real <code>ToolDescriptor</code>.
       </>
     ),
+    describedReadNote: (
+      <>
+        <strong>Read one as <code>.value</code>.</strong> A <code>Described&lt;T, "..."&gt;</code>{" "}
+        field is not a <code>T</code> at the call site in the way it looks: it has an implicit
+        conversion to <code>T&amp;</code>, but that does not make the obvious comparison work —{" "}
+        <code>args.order_id == "A-1042"</code> fails to compile with an operator-overload error
+        listing a dozen candidates. Write <code>args.order_id.value == "A-1042"</code>. The
+        generated (de)serialization reaches into <code>.value</code> for the same reason.
+      </>
+    ),
     capabilityGatedEyebrow: "examples/06_capabilities_and_denial.cpp — 007 §9, I2",
     capabilityGatedHeading: (
       <>
@@ -154,6 +224,16 @@ const copy = {
     headingPrefix: "Hình dạng",
     headingHighlight: "đầy đủ",
     headingSuffix: "của một tool, theo từng trường",
+    includesNote: (
+      <>
+        Bốn header, và đó là toàn bộ tool plane: <code>tool.hpp</code> cho khai báo{" "}
+        <code>Tool&lt;&gt;</code>, <code>json_schema.hpp</code> cho <code>AE_JSON_SCHEMA</code> và{" "}
+        <code>Described</code>, <code>tool_call_extraction.hpp</code> để đọc một lệnh gọi ra khỏi
+        một <code>Message</code>, và <code>error.hpp</code> cho cặp <code>result</code>/
+        <code>error</code> mà mọi <code>invoke</code> trả về. Mọi thứ trên trang này biên dịch được
+        chỉ với bốn header đó.
+      </>
+    ),
     intro: (
       <>
         <code>Tool&lt;Derived, Policies...&gt;</code> chốt một bề mặt khai báo duy nhất: một
@@ -173,6 +253,49 @@ const copy = {
         <code>at_most_once</code>) — một tool tối giản không cần viết chúng ra, chỉ thêm policy{" "}
         <code>Capabilities&lt;...&gt;</code>/<code>Approval&lt;...&gt;</code>/
         <code>EffectClass&lt;...&gt;</code> vào ngày nào đó cần ghi đè một trong số chúng:
+      </>
+    ),
+    callEyebrow: "core/content.hpp — đầu còn lại của hợp đồng",
+    callHeading: "Tạo ra một lệnh gọi tool: cách bạn kiểm thử tất cả những thứ này ngoại tuyến",
+    callBody: (
+      <>
+        Khai báo một tool là một nửa hợp đồng; nửa còn lại là thứ thực sự đến để gọi nó. Một{" "}
+        <code>ToolCall</code> chỉ là dữ liệu bình thường — giá trị của một <code>ContentItem</code> —
+        nên một <code>ChatClient</code> hoàn toàn có thể tự tạo ra một cái. Đó là việc mà mọi
+        scripted client trong <code>examples/</code> làm, và cũng là cách bạn kiểm thử một agent có
+        dùng tool mà không cần mạng và không cần API key: trỏ agent vào một client phát ra đúng lệnh
+        gọi mà bạn muốn kiểm chứng.
+      </>
+    ),
+    callNoteKind: "đã kiểm chứng",
+    callNote: (
+      <>
+        Công thức này được biên dịch và chạy như một phần trong cổng kiểm tra của chính tài liệu: một{" "}
+        <code>ToolCall</code> được tạo ra sẽ dẫn dắt pipeline mười bước thật, <code>invoke()</code>{" "}
+        chạy đúng một lần, và giá trị nó trả về tới lượt thứ hai của model dưới dạng một{" "}
+        <code>ToolResult</code>. Hai trường mang tính quyết định và hỏng theo hai cách khác nhau:{" "}
+        <code>tool_name</code> phải khớp một <code>Tool&lt;&gt;::name</code> đã khai báo (nếu không
+        là <code>tool.unknown_name</code>), còn <code>arguments_json</code> được xác thực dựa trên
+        chính schema <code>Args</code> của tool trước khi <code>invoke()</code> được chạm tới.{" "}
+        <code>provenance</code> mặc định là <code>vendor_structured</code>;{" "}
+        <code>text_derived</code> là lớp tin cậy thấp hơn, và chỉ được tự động giải mật khi nằm
+        trong danh sách đóng của 007 §4.
+      </>
+    ),
+    typesNoteKind: "bốn quy tắc của macro",
+    typesNote: (
+      <>
+        <code>AE_JSON_SCHEMA(Type, members...)</code> có bốn điều kiện tiên quyết, và mỗi điều hỏng
+        ngay lúc biên dịch với một thông báo không hề nêu tên quy tắc. Nó phải nằm ở nơi{" "}
+        <strong>ADL tìm thấy được cho kiểu đó</strong> — trên thực tế là cùng namespace với{" "}
+        <code>Type</code>, không phải bên trong một hàm. Nó nhận{" "}
+        <strong>tối đa 16 thành viên</strong>. Mọi kiểu trường phải là một kiểu bảng này liệt kê,
+        hoặc <code>std::optional&lt;T&gt;</code>/<code>std::vector&lt;T&gt;</code> của một kiểu như
+        vậy, hoặc một kiểu lồng nhau mang <code>AE_JSON_SCHEMA</code> riêng — bất cứ thứ gì khác sẽ
+        kích hoạt một <code>static_assert</code> nêu tên <code>json.unsupported_type</code>. Và quy
+        tắc "bắt buộc" chính là kiểu của trường: một khóa thiếu là lỗi trừ khi trường đó là{" "}
+        <code>std::optional&lt;U&gt;</code>, và đó là lý do nó là cách duy nhất để biến một tham số
+        thành tùy chọn.
       </>
     ),
     flowSchemaSub: "tên trường + kiểu C++; mô tả từng trường qua Described<T, \"...\">",
@@ -263,6 +386,17 @@ const copy = {
         cả Anthropic lẫn OpenAI, byte-for-byte, từ một <code>ToolDescriptor</code> thật.
       </>
     ),
+    describedReadNote: (
+      <>
+        <strong>Hãy đọc nó qua <code>.value</code>.</strong> Một trường{" "}
+        <code>Described&lt;T, "..."&gt;</code> không phải là một <code>T</code> theo đúng cách nó
+        trông ở chỗ gọi: nó có một phép chuyển đổi ngầm sang <code>T&amp;</code>, nhưng điều đó
+        không khiến phép so sánh hiển nhiên chạy được — <code>args.order_id == "A-1042"</code> không
+        biên dịch được, mà báo một lỗi nạp chồng toán tử liệt kê cả chục ứng viên. Hãy viết{" "}
+        <code>args.order_id.value == "A-1042"</code>. Phần (de)serialization được sinh ra cũng đi
+        vào <code>.value</code> vì đúng lý do đó.
+      </>
+    ),
     capabilityGatedEyebrow: "examples/06_capabilities_and_denial.cpp — 007 §9, I2",
     capabilityGatedHeading: (
       <>
@@ -303,13 +437,32 @@ export function ApiToolReference() {
 
         <RevealGroup>
           <RevealItem>
+            <ApiIncludes headers={TOOL_HEADERS}>{t.includesNote}</ApiIncludes>
+          </RevealItem>
+        </RevealGroup>
+
+        <RevealGroup>
+          <RevealItem>
             <div className="gs-recommend">
               <span className="gs-recommend-label">{t.recoLabel}</span>
               <p>{t.recoBody}</p>
             </div>
           </RevealItem>
           <RevealItem>
-            <CodePanel filename="web_search_tool.hpp">{highlightCpp(minimalToolSnippet)}</CodePanel>
+            <CodePanel filename="your_tool.hpp — the shape, not a file in this repo">{highlightCpp(minimalToolSnippet)}</CodePanel>
+          </RevealItem>
+          <RevealItem>
+            <div style={{ marginTop: 34, marginBottom: 12 }}>
+              <span className="eyebrow">{t.callEyebrow}</span>
+              <h4 style={{ fontSize: "1.05rem", margin: "8px 0" }}>{t.callHeading}</h4>
+              <p style={{ color: "var(--text-dim)", lineHeight: 1.65 }}>{t.callBody}</p>
+            </div>
+            <CodePanel filename="core/content.hpp">{highlightCpp(fakeToolCallSnippet)}</CodePanel>
+          </RevealItem>
+          <RevealItem>
+            <ApiDiagnosticNote status="stub" kind={t.callNoteKind}>
+              {t.callNote}
+            </ApiDiagnosticNote>
           </RevealItem>
         </RevealGroup>
 
@@ -320,7 +473,7 @@ export function ApiToolReference() {
                 <div className="flow-node-title">Tool&lt;Derived, Policies...&gt;</div>
                 <div className="flow-node-sub">Args/Reply nested types + AE_JSON_SCHEMA(Type, field1, field2, ...)</div>
               </div>
-              <div className="flow-arrow">args_schema() / reply_schema() — json_schema_of&lt;T&gt;()</div>
+              <div className="flow-arrow">args_schema() / reply_schema() — agentengine::schema::json_schema_of&lt;T&gt;()</div>
               <div className="flow-node">
                 <div className="flow-node-title">{t.flowSchemaLabel}</div>
                 <div className="flow-node-sub">{t.flowSchemaSub}</div>
@@ -385,6 +538,11 @@ export function ApiToolReference() {
           <RevealItem>
             <CodePanel filename="test_json_schema_described.cpp">{highlightCpp(describedFieldSchemaSnippet)}</CodePanel>
           </RevealItem>
+          <RevealItem>
+            <ApiDiagnosticNote status="stub" kind="gotcha">
+              {t.describedReadNote}
+            </ApiDiagnosticNote>
+          </RevealItem>
         </RevealGroup>
 
         <RevealGroup>
@@ -402,6 +560,11 @@ export function ApiToolReference() {
                 tt.note,
               ])}
             />
+          </RevealItem>
+          <RevealItem>
+            <ApiDiagnosticNote status="stub" kind={t.typesNoteKind}>
+              {t.typesNote}
+            </ApiDiagnosticNote>
           </RevealItem>
         </RevealGroup>
 
@@ -424,7 +587,7 @@ export function ApiToolReference() {
               </p>
             </RevealItem>
             <RevealItem>
-              <CodePanel filename="SearchReply.schema.json">{toolSchemaOutput}</CodePanel>
+              <CodePanel filename="emitted schema for SearchReply (illustrative name)">{toolSchemaOutput}</CodePanel>
             </RevealItem>
           </RevealGroup>
         </RevealGroup>

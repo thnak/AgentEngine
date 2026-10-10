@@ -349,7 +349,7 @@ export function ApiBuiltinToolsReference() {
           </RevealItem>
 
           <RevealItem>
-            <CodePanel filename="doc_agent.hpp">
+            <CodePanel filename="your_agent.hpp — the shape, not a file in this repo">
               {highlightCpp(firstPartyCatalogExampleSnippet)}
             </CodePanel>
           </RevealItem>

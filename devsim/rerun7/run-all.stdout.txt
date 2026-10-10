@@ -1,0 +1,45 @@
+== variant a: docpipeline-a ==
+[aggregate] one delivery, 3 ContentItem(s), in graph-declared order:
+            [1] doc=Invoice 1042 disputed. Ana Reyes reported on 2026-03-04 that the charge did not match the signed contract.;entities=Invoice,Ana,Reyes
+            [2] doc=Invoice 1042 disputed. Ana Reyes reported on 2026-03-04 that the charge did not match the signed contract.;dates=2026-03-04
+            [3] doc=Invoice 1042 disputed. Ana Reyes reported on 2026-03-04 that the charge did not match the signed contract.;keywords=disputed,charge,contract
+[status] completed after 4 round(s)
+[check] aggregator invoked 1 time(s) -- fan_in is one delivery, not one per edge
+[result] doc=Invoice 1042 disputed. Ana Reyes reported on 2026-03-04 that the charge did not match the signed contract.;entities=Invoice,Ana,Reyes;merged=Invoice,Ana,Reyes,2026-03-04,disputed,charge,contract;summary=3 branches merged, 7 distinct tokens
+
+== variant b: docpipeline-b ==
+[aggregate] one delivery, 3 ContentItem(s), in graph-declared order:
+            [1] doc=Invoice 1042 disputed. Ana Reyes reported on 2026-03-04 that the charge did not match the signed contract.;entities=Invoice,Ana,Reyes
+            [2] doc=Invoice 1042 disputed. Ana Reyes reported on 2026-03-04 that the charge did not match the signed contract.;dates=2026-03-04
+            [3] doc=Invoice 1042 disputed. Ana Reyes reported on 2026-03-04 that the charge did not match the signed contract.;keywords=disputed,charge,contract
+[status] completed after 5 round(s)
+[check] aggregator invoked 1 time(s) -- fan_in is one delivery, not one per edge
+[result] doc=Invoice 1042 disputed. Ana Reyes reported on 2026-03-04 that the charge did not match the signed contract.;entities=Invoice,Ana,Reyes;merged=Invoice,Ana,Reyes,2026-03-04,disputed,charge,contract;route=structured;structured=entities present, table form
+[check] classifier chose 'structured'; sink bodies invoked: 1 (structured)
+
+== variant b: docpipeline-b ==
+[aggregate] one delivery, 3 ContentItem(s), in graph-declared order:
+            [1] doc=the refund arrived late, so we filed a complaint.;entities=
+            [2] doc=the refund arrived late, so we filed a complaint.;dates=
+            [3] doc=the refund arrived late, so we filed a complaint.;keywords=
+[status] completed after 5 round(s)
+[check] aggregator invoked 1 time(s) -- fan_in is one delivery, not one per edge
+[result] doc=the refund arrived late, so we filed a complaint.;entities=;merged=;route=plain;plain=no entities, prose form
+[check] classifier chose 'plain'; sink bodies invoked: 1 (plain)
+
+== failure path: an unbounded graph ==
+
+== failure path: three malformed graphs, each refused by the engine ==
+
+
+
+(refused 3 of 3; each printed error is the engine's own message and code)
+
+== failure path: a classifier naming an undeclared route ==
+[aggregate] one delivery, 3 ContentItem(s), in graph-declared order:
+            [1] doc=Invoice 1042 disputed. Ana Reyes reported on 2026-03-04 that the charge did not match the signed contract.;entities=Invoice,Ana,Reyes
+            [2] doc=Invoice 1042 disputed. Ana Reyes reported on 2026-03-04 that the charge did not match the signed contract.;dates=2026-03-04
+            [3] doc=Invoice 1042 disputed. Ana Reyes reported on 2026-03-04 that the charge did not match the signed contract.;keywords=disputed,charge,contract
+[status] routing_failed after 4 round(s) -- failed_executor='classify'
+
+(variant a exit 0, variant b exit 0, variant b/2 exit 0, broken-graph exit 2, refusals exit 0, bad-route exit 4)

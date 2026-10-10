@@ -1,0 +1,1 @@
+{"session_id":"sess-refunds-durable","principal_id":"principal-ada","principal_tenant_id":"tenant-backoffice","deleted":false,"run_counter":1,"turn_index":0,"open_interactions":[{"interaction_id":"sess-refunds-durable:interaction:1","run_id":"sess-refunds-durable:run:1","reason":"approval","opened_at_ns":0,"expires_at_ns":0}],"require_authority":false}

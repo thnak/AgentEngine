@@ -19,9 +19,17 @@ import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
 import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
+import { ApiIncludes } from "./ApiIncludes";
 import { ApiTable } from "./ApiTable";
 import { CodePanel } from "./CodePanel";
 import { RevealGroup, RevealItem } from "./Reveal";
+
+// Verified by devsim/verify-includes: every path here is compiled by the gate.
+const EVENTS_HEADERS = [
+  "agentengine/core/run_event.hpp",
+  "agentengine/workflow/workflow_event.hpp",
+  "agentengine/rt/agent_session.hpp",
+];
 
 function Cite({ path, label }: { path: string; label?: string }) {
   return (
@@ -40,6 +48,17 @@ function Cite({ path, label }: { path: string; label?: string }) {
 const copy = {
   en: {
     eyebrow: "013 §1 — the real run-event stream",
+    includesNote: (
+      <>
+        Three headers, for two different streams. <code>core/run_event.hpp</code> is the{" "}
+        <code>RunEvent</code> vocabulary a session emits;{" "}
+        <code>workflow/workflow_event.hpp</code> is the separate{" "}
+        <code>WorkflowEvent</code>/<code>WorkflowLiveEvent</code> pair a supervisor emits — note
+        that it lives under <code>workflow/</code>, not <code>rt/</code>; and{" "}
+        <code>rt/agent_session.hpp</code> is what you call{" "}
+        <code>enable_event_stream()</code> on.
+      </>
+    ),
     headingPrefix: "One event stream,",
     headingHighlight: "two places it's emitted from",
     intro: (
@@ -268,6 +287,16 @@ const copy = {
 
   vi: {
     eyebrow: "013 §1 — luồng run-event thật",
+    includesNote: (
+      <>
+        Ba header, cho hai luồng khác nhau. <code>core/run_event.hpp</code> là từ vựng{" "}
+        <code>RunEvent</code> mà một session phát ra;{" "}
+        <code>workflow/workflow_event.hpp</code> là cặp{" "}
+        <code>WorkflowEvent</code>/<code>WorkflowLiveEvent</code> riêng biệt mà một supervisor phát
+        ra — hãy để ý nó nằm dưới <code>workflow/</code>, không phải <code>rt/</code>; còn{" "}
+        <code>rt/agent_session.hpp</code> là thứ bạn gọi <code>enable_event_stream()</code> trên đó.
+      </>
+    ),
     headingPrefix: "Một luồng sự kiện,",
     headingHighlight: "hai nơi phát sinh ra nó",
     intro: (
@@ -517,6 +546,13 @@ export function ApiEventsReference() {
           <p style={{ marginTop: 16 }}>{t.intro}</p>
           <ApiDiagnosticNote>{t.introNote}</ApiDiagnosticNote>
         </div>
+
+        {/* ---- What to include ------------------------------------------------------------------ */}
+        <RevealGroup>
+          <RevealItem>
+            <ApiIncludes headers={EVENTS_HEADERS}>{t.includesNote}</ApiIncludes>
+          </RevealItem>
+        </RevealGroup>
 
         <RevealGroup>
           <RevealItem>
