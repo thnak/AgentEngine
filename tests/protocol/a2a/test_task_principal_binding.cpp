@@ -35,6 +35,15 @@ namespace a2a  = agentengine::a2a;
 namespace mcp  = agentengine::mcp;
 namespace json = agentengine::json;
 
+// ADR-237: `A2aServer::send_message()` and the `RunStarter` seam are asynchronous now, so this test
+// drives their tasks to completion itself -- the same local helper the other A2A tests use, pending
+// the ADR-237 D7 test-driver rewrite.
+template <class T>
+T drive(ae::rt::task<T> t) {
+    while (!t.done()) t.resume();
+    return t.take_value();
+}
+
 struct SlowArgs {
     bool noop;
 };
@@ -205,20 +214,20 @@ int main() {
         // A `RunStarter` standing in for a session owning `p-owner`, applying the exact predicate
         // `AgentSession::handle()` applies -- reused rather than re-derived, so it cannot drift.
         ae::Principal const session_owner{"p-owner", ""};
-        auto starter = [session_owner](ae::rt::StartRun req) -> ae::result<a2a::RunOutcome> {
+        auto starter = [session_owner](ae::rt::StartRun req) -> ae::rt::task<ae::result<a2a::RunOutcome>> {
             // R2's whole point: `caller` is now always present on the protocol path, so this branch
             // is reachable and meaningful. Previously `A2aServer` sent none and the real
             // `AgentSession` skipped admission entirely.
             if (!req.caller.has_value()) {
-                return std::unexpected(
+                co_return std::unexpected(
                     ae::error{ae::failure_class::policy, "no caller asserted", "test.no_caller"});
             }
             ae::Principal const caller{req.caller->id, req.caller->tenant_id};
             if (!ae::principal_admitted_for(caller, session_owner)) {
-                return std::unexpected(
+                co_return std::unexpected(
                     ae::error{ae::failure_class::policy, "admission denied", "test.admission_denied"});
             }
-            return a2a::RunOutcome{"s-bind:run:1", ae::rt::AgentResponse{}};
+            co_return a2a::RunOutcome{"s-bind:run:1", ae::rt::AgentResponse{}};
         };
 
         a2a::A2aServer server(starter, "ctx-bind");
@@ -234,7 +243,7 @@ int main() {
         ae::rt::SessionCaller const stranger{"mallory", ""};
 
         // --- POSITIVE CONTROL: the owner's message really is admitted and produces a task.
-        auto owned = server.send_message(inbound, owner);
+        auto owned = drive(server.send_message(inbound, owner));
         check(owned.has_value() && owned->status.state == a2a::task_state::completed,
               "R2-POS-1 (positive control): the owning caller's message IS admitted and completes");
         std::string const a2a_task_id = owned.has_value() ? owned->id : std::string{};
@@ -242,7 +251,7 @@ int main() {
         // --- NEGATIVE: a stranger is denied by the real admission check. Before this fix
         // --- `A2aServer` passed no caller at all, so this ran with admission SKIPPED.
         {
-            auto denied = server.send_message(inbound, stranger);
+            auto denied = drive(server.send_message(inbound, stranger));
             check(!denied.has_value() || denied->status.state == a2a::task_state::failed,
                   "R2-NEG-1: a non-owning caller's inbound message does NOT execute as the session "
                   "owner -- 018 §2 admission is really applied on the A2A path");

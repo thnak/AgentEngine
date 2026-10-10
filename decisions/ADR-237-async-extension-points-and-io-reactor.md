@@ -1941,6 +1941,33 @@ Evidence: build-dev rebuild clean; all 7 A2A tests pass (`test_a2a_client`, `tes
 `test_a2a_streaming`); naming-lint OK; layering-lint OK; full suite `ctest -LE live-network` 401/415, the
 identical 14.
 
-Next: the server half of A2A (`RunStarter` + `A2aServer`'s verbs), then MCP
-`RequestSender`/`InputRequestHandler`, then `GraderFn`/`OutputValidator`.
+### Step 29 (2026-10-10): §5.1 seam conversion, slice 4 -- the A2A server half
+
+The other half of the inventory's "A2A `CardFetcher`/`RunStarter`/client calls" (step 28 took the client).
+
+- `protocol/a2a/server.hpp`: `RunStarter` becomes `std::function<task<result<RunOutcome>>(rt::StartRun)>`
+  and `A2aServer::send_message()` becomes a coroutine that `co_await`s it. `get_task()`/`cancel_task()`
+  stay synchronous **on purpose**: they are pure in-memory map lookups with no I/O behind them, so there is
+  no seam there to make async -- converting them would be ceremony, not the removal of a blocking call.
+- The one thing worth checking by hand rather than mechanically: `send_message()` takes a
+  `std::lock_guard<std::mutex>` over its task store. `co_await starter_(...)` is the ONLY suspension point
+  and sits deliberately BEFORE the guard, so no mutex is ever held across a suspension. A comment at that
+  line now says so -- the next person to add a `co_await` below the guard would otherwise hold the lock
+  across a resume.
+- Test updates: the `RunStarter` stand-ins (`Harness::starter()` plus the two inline lambdas in
+  `test_a2a_server.cpp`, and the ones in `test_task_principal_binding.cpp` and `test_a2a_client.cpp`)
+  become coroutines, and every `send_message()` call site is driven locally. `test_task_principal_binding.cpp`
+  needed a local `drive()` helper ADDED -- it had none, because it had never driven a task before.
+- Deliberately NOT treated as the risky case it looked like: D3-11's mid-run cancel
+  (`test_a2a_server.cpp`). The cancel lands from `set_run_event_tap` on the SAME thread, inside the run, so
+  there is no cross-thread timing assumption for the async conversion to disturb. Read and verified.
+
+Evidence: build-dev rebuild clean. An earlier attempt failed to compile -- `test_task_principal_binding.cpp`
+has no `art` alias and no `drive()` helper, both of which the new call sites assumed -- and was fixed
+rather than worked around. All 7 A2A tests pass on FRESHLY built binaries: the first run printed "passed"
+against stale binaries, the exact trap recorded in step 24-25's finding, caught by reading the build
+output rather than the test output. naming-lint OK; layering-lint OK; full suite `ctest -LE live-network`
+401/415, the identical 14.
+
+Next: MCP `RequestSender`/`InputRequestHandler`, then `GraderFn`/`OutputValidator`.
 

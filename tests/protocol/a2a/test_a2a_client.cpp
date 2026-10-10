@@ -84,13 +84,14 @@ struct Harness {
     }
 
     [[nodiscard]] a2a::RunStarter starter() {
-        return [this](art::StartRun req) -> ae::result<a2a::RunOutcome> {
+        return [this](art::StartRun req) -> art::task<ae::result<a2a::RunOutcome>> {
             ae::result<art::AgentResponse> resp = drive(session.start_run(std::move(req)));
             if (!resp) {
-                return std::unexpected(ae::error{ae::failure_class::transient,
-                                                  "the run did not complete", "a2a.run_did_not_complete"});
+                co_return std::unexpected(
+                    ae::error{ae::failure_class::transient, "the run did not complete",
+                              "a2a.run_did_not_complete"});
             }
-            return a2a::RunOutcome{session.last_run_id(), *resp};
+            co_return a2a::RunOutcome{session.last_run_id(), *resp};
         };
     }
 };
@@ -134,7 +135,7 @@ int main() {
     // test_task_principal_binding.cpp; here the point is the ordinary authorized path.
     ae::rt::SessionCaller const kCaller{"p-owner", ""};
     transport.send_message = [&server, &kCaller](a2a::Message const& m) -> art::task<ae::result<a2a::Task>> {
-        co_return server.send_message(m, kCaller);
+        co_return co_await server.send_message(m, kCaller);
     };
     transport.get_task     = [&server, &kCaller](std::string const& id) -> art::task<ae::result<a2a::Task>> {
         co_return server.get_task(id, kCaller);

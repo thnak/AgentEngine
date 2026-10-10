@@ -5,8 +5,8 @@
 //
 // Transport-agnostic, like `protocol/mcp/server.hpp`: no JSON-RPC/REST envelope here (that is D4+'s
 // own job, matching MCP's own "envelope first" split, C1 before C2), and no actor-messaging plumbing
-// either -- `A2aServer` is handed a `RunStarter` (a plain callable that starts one run and returns
-// once it settles) rather than an `AgentSession` reference itself, exactly the same "no real
+// either -- `A2aServer` is handed a `RunStarter` (a callable that starts one run and whose task
+// settles once that run does) rather than an `AgentSession` reference itself, exactly the same "no real
 // transport yet, take what a transport would supply as given" layering `McpServer` already
 // established for `held`/`approve`. This phase's OWN test wires a `RunStarter` against a REAL
 // `agentengine::rt::AgentSession`, the same "same process, two roles, real machinery underneath"
@@ -37,12 +37,12 @@
 // synchronous turn loop... What IS real here: minting, tracking, and resolving Interaction
 // records... the vocabulary and lifecycle, proven standalone"). Consequently:
 //   - `TASK_STATE_SUBMITTED`/`TASK_STATE_WORKING` are never independently OBSERVABLE from outside --
-//     `send_message()` itself blocks until the run settles, so a caller never sees an intermediate
+//     `send_message()`'s own task settles only when the run does, so a caller never sees an intermediate
 //     state (the same "no `returnImmediately: true` async dispatch built yet" gap named below).
 //   - `TASK_STATE_INPUT_REQUIRED`/`TASK_STATE_AUTH_REQUIRED` have no real producer -- the turn loop
 //     never opens an `Interaction` on its own. Named, not fabricated.
 //   - `TASK_STATE_COMPLETED` is the real success terminal; `TASK_STATE_FAILED` is the real generic
-//     failure terminal (the `RunStarter` returning an error -- admission denial, context-provider
+//     failure terminal (the `RunStarter`'s task holding an error -- admission denial, context-provider
 //     failure, chat-client failure, and token-budget-exceeded all collapse to this ONE generic
 //     failure shape in `AgentSession` today, none distinguishable from outside it, so this dispatcher
 //     does not invent a false distinction between e.g. `FAILED` and `REJECTED` that the underlying
@@ -79,10 +79,14 @@ struct RunOutcome {
     agentengine::rt::AgentResponse response;
 };
 
-// A BLOCKING call from the caller's point of view: returns only once the underlying
+// A BLOCKING call from the caller's point of view: the returned task settles only once the underlying
 // `rt::AgentSession::start_run()` call has settled (or failed to). See file-top comment for exactly
 // what that means for task-state observability.
-using RunStarter = std::function<result<RunOutcome>(agentengine::rt::StartRun)>;
+//
+// ADR-237 §5.1: the seam is asynchronous -- a run starter is where a host reaches its real session,
+// including whatever that session does over the network -- so `A2aServer::send_message()` awaits it
+// rather than driving it synchronously.
+using RunStarter = std::function<task<result<RunOutcome>>(agentengine::rt::StartRun)>;
 
 namespace server_detail {
 
@@ -129,14 +133,16 @@ public:
     // this dispatcher remembering to check anything. A non-Tier-3 session (the common, embedded/
     // single-tenant case, 018 §1) never reads `authority` at all, so every existing 2-argument call
     // site (`tests/protocol/a2a/test_a2a_server.cpp`, `tests/protocol/a2a/test_task_principal_binding.cpp`) is unaffected.
-    [[nodiscard]] result<Task> send_message(
+    [[nodiscard]] task<result<Task>> send_message(
             Message const& inbound, agentengine::rt::SessionCaller const& caller,
             std::optional<agentengine::rt::RequestAuthority> authority = std::nullopt) {
         agentengine::Message input = from_a2a_message(inbound);
         agentengine::rt::StartRun start{std::move(input)};
         start.caller    = caller;
         start.authority = std::move(authority);
-        result<RunOutcome> outcome = starter_(std::move(start));
+        // The ONLY suspension point in this method -- the `std::lock_guard` below is deliberately
+        // taken after it, so no mutex is ever held across a suspension.
+        result<RunOutcome> outcome = co_await starter_(std::move(start));
 
         std::lock_guard<std::mutex> lock(mutex_);
         if (!outcome) {
@@ -144,7 +150,7 @@ public:
             // this one case; `Task.id` is therefore NOT a `run_id` here, the honest exception to §1's
             // usual identity, not a silently invented one.
             result<std::string> minted = server_detail::generate_task_id();
-            if (!minted) return std::unexpected(minted.error());
+            if (!minted) co_return std::unexpected(minted.error());
             Task t;
             t.id             = *minted;
             t.context_id     = context_id_;
@@ -163,7 +169,7 @@ public:
             failure_msg.parts.push_back(std::move(p));
             t.status.message = failure_msg;
             tasks_.emplace(t.id, StoredTask{t, caller});
-            return t;
+            co_return t;
         }
 
         Task t;
@@ -174,7 +180,7 @@ public:
         t.history.push_back(inbound_with_task_id(inbound, t.id, context_id_));
         t.history.push_back(*t.status.message);
         tasks_.emplace(t.id, StoredTask{t, caller});
-        return t;
+        co_return t;
     }
 
     // §A.2 `GetTask`.

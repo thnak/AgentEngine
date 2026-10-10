@@ -108,13 +108,14 @@ struct Harness {
     }
 
     [[nodiscard]] a2a::RunStarter starter() {
-        return [this](art::StartRun req) -> ae::result<a2a::RunOutcome> {
+        return [this](art::StartRun req) -> art::task<ae::result<a2a::RunOutcome>> {
             ae::result<art::AgentResponse> resp = drive(session.start_run(std::move(req)));
             if (!resp) {
-                return std::unexpected(ae::error{ae::failure_class::transient,
-                                                  "the run did not complete", "a2a.run_did_not_complete"});
+                co_return std::unexpected(
+                    ae::error{ae::failure_class::transient, "the run did not complete",
+                              "a2a.run_did_not_complete"});
             }
-            return a2a::RunOutcome{session.last_run_id(), *resp};
+            co_return a2a::RunOutcome{session.last_run_id(), *resp};
         };
     }
 };
@@ -143,7 +144,7 @@ int main() {
     // and `AgentSession::handle()` skipped admission entirely.
     ae::rt::SessionCaller const kOwner{"p-owner", ""};
 
-    auto sent = server.send_message(text_message("hello"), kOwner);
+    auto sent = drive(server.send_message(text_message("hello"), kOwner));
     check(sent.has_value(), "D3-1: send_message() against a real AgentSession succeeds");
     std::string task_id;
     if (sent.has_value()) {
@@ -211,7 +212,7 @@ int main() {
     {
         Harness<FailingChatClient> hf{"s-a2a-fail"};
         a2a::A2aServer failing_server(hf.starter(), "ctx-2");
-        auto failed = failing_server.send_message(text_message("this will fail"), kOwner);
+        auto failed = drive(failing_server.send_message(text_message("this will fail"), kOwner));
         check(failed.has_value(),
               "D3-8: even a run that never completes still produces a real Task -- SendMessage "
               "itself does not fail, the TASK reports the failure");
@@ -231,11 +232,11 @@ int main() {
     {
         Harness<CannedChatClient> hc{"s-a2a-cancel"};
         a2a::A2aServer canceled_server(
-            [&hc](art::StartRun req) -> ae::result<a2a::RunOutcome> {
+            [&hc](art::StartRun req) -> art::task<ae::result<a2a::RunOutcome>> {
                 hc.session.cancel();  // no run in flight yet: a no-op for the run below (ADR-178 K6) ...
                 ae::result<art::AgentResponse> resp = drive(hc.session.start_run(std::move(req)));
-                if (resp) return a2a::RunOutcome{hc.session.last_run_id(), *resp};
-                return std::unexpected(resp.error());  // ... so the starter forwards the run's own error
+                if (resp) co_return a2a::RunOutcome{hc.session.last_run_id(), *resp};
+                co_return std::unexpected(resp.error());  // ... so the starter forwards the run's own error
             },
             "ctx-cancel");
         // A starter that forwards the session's error verbatim, with the host's cancel landing mid-run.
@@ -248,16 +249,16 @@ int main() {
             }
         });
         a2a::A2aServer cancel_mid_run_server(
-            [&hk](art::StartRun req) -> ae::result<a2a::RunOutcome> {
+            [&hk](art::StartRun req) -> art::task<ae::result<a2a::RunOutcome>> {
                 ae::result<art::AgentResponse> resp = drive(hk.session.start_run(std::move(req)));
-                if (resp) return a2a::RunOutcome{hk.session.last_run_id(), *resp};
-                return std::unexpected(resp.error());
+                if (resp) co_return a2a::RunOutcome{hk.session.last_run_id(), *resp};
+                co_return std::unexpected(resp.error());
             },
             "ctx-cancel-2");
-        auto canceled = cancel_mid_run_server.send_message(text_message("stop me"), kOwner);
+        auto canceled = drive(cancel_mid_run_server.send_message(text_message("stop me"), kOwner));
         check(canceled.has_value() && canceled->status.state == a2a::task_state::canceled,
               "D3-11: a run the host canceled is TASK_STATE_CANCELED (class canceled), not TASK_STATE_FAILED");
-        auto not_canceled = canceled_server.send_message(text_message("fine"), kOwner);
+        auto not_canceled = drive(canceled_server.send_message(text_message("fine"), kOwner));
         check(not_canceled.has_value() && not_canceled->status.state == a2a::task_state::completed,
               "D3-11 control: the same forwarding starter with a stale (pre-run) cancel completes");
     }
@@ -273,7 +274,7 @@ int main() {
         // agent_session.hpp's own §20.4 admission denies it outright (run.authority_required), which
         // this dispatcher surfaces as a real, retrievable FAILED task, the same shape D3-8 already
         // proved for a chat-layer failure -- SendMessage itself does not reject, the TASK reports it.
-        auto no_authority = tier3_server.send_message(text_message("no authority supplied"), kOwner);
+        auto no_authority = drive(tier3_server.send_message(text_message("no authority supplied"), kOwner));
         check(no_authority.has_value(),
               "D3-9: SendMessage itself still succeeds even when the underlying run is denied");
         check(no_authority.has_value() &&
@@ -289,7 +290,7 @@ int main() {
             std::chrono::steady_clock::now() + std::chrono::hours{1},
         };
         auto with_authority =
-            tier3_server.send_message(text_message("real authority supplied"), kOwner, authority);
+            drive(tier3_server.send_message(text_message("real authority supplied"), kOwner, authority));
         check(with_authority.has_value() &&
                   with_authority->status.state == a2a::task_state::completed,
               "D3-10: a real, admitted `authority` argument lets a Tier-3 session's run complete");
