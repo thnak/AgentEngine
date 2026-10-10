@@ -1615,7 +1615,7 @@ by one asserting the descriptor declares `CapturesSessionState` and keeps `Effec
 
 ### Step 14 open: the remaining `make_tool_descriptor_with_invoke` production sites follow step 13's
 pattern -- `sandbox/mandatory_sandbox_provider.hpp`
-(RunCommand + the four task-branch tools), `sandbox/live_shell_sandbox_provider.hpp` (ShellExecTool),
+(RunCommand + the four task-branch tools),
 `native_jail/session_shell_wiring.hpp` (RunShellTool),
 `rt/agent_spawn.hpp` (AgentSpawnTool), `tools/cli_chat.cpp` (ExecuteCodeTool/MountSkillTool). The
 dynamic-schema bridges (`mcp_tool_bridge.hpp`, `wasm_tool_bridge.hpp`, `native_providers.hpp`,
@@ -1658,4 +1658,17 @@ poison `invoke()` sentinel is gone, and `schedule_wakeup_tool()` now returns
   test_tool_deterministic and test_tool_batch_partition (plus the deterministic compile-fail control) pass;
   full tree (469 targets) `/W4 /WX` clean; naming/layering lint OK; full suite `ctest -LE live-network`
   401/415, the identical 14 baseline failures.
+
+### Step 17 (2026-10-10): `ShellExecTool` to instance form (first templated-provider conversion)
+
+`sandbox/live_shell_sandbox_provider.hpp`'s `ShellExecTool` follows Step 16's template, with one twist:
+`LiveShellSandboxProvider` is a class template, so `ShellExecTool` becomes `template <class ProviderT>` --
+it holds `ProviderT*`, and its out-of-line `invoke()` (defined after the provider, where it is complete)
+reaches the provider's private `shell_exec()` through a `template <class> friend struct ShellExecTool;`
+declaration. It keeps `Capabilities<cap::decl::RunCommand>` and adds `CapturesSessionState`; the static
+poison sentinel is gone and `on_context()` now pushes
+`make_tool_descriptor(ShellExecTool<LiveShellSandboxProvider>{*this})`.
+
+Evidence: test_live_shell_sandbox_provider passes (test_live_shell_sandbox_provider_live is one of the 14
+Docker baseline failures); full tree `/W4 /WX` clean; naming/layering lint OK; full suite 401/415.
 

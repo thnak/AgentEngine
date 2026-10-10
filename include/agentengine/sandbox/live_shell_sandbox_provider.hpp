@@ -95,9 +95,16 @@ AE_JSON_SCHEMA(ShellExecReply, ok, exit_code, output, output_bytes, timed_out, s
                unrecorded_changes_discarded, commit_error, tree_digest, turn_index, skipped_symlinks, image,
                image_digest, image_digest_kind)
 
-// `invoke()` is an unreachable sentinel: dispatch goes through the closure `on_context()` installs.
+// ADR-237 §5.2: an instance-form `Tool<>` conformer now, templated on the owning provider type so it
+// can hold it explicitly (the provider is a class template). Its `invoke()` (defined below, where
+// `LiveShellSandboxProvider` is complete) calls the provider's private `shell_exec()` through the
+// `friend` declaration in the class; `CapturesSessionState` keeps it non-backgroundable and
+// non-rerun-comparable exactly as the old `[this]`-capturing closure was. The former static poison
+// `invoke()` sentinel is gone.
+template <class ProviderT>
 struct ShellExecTool
-    : agentengine::Tool<ShellExecTool, agentengine::Capabilities<agentengine::cap::decl::RunCommand>> {
+    : agentengine::Tool<ShellExecTool<ProviderT>, agentengine::Capabilities<agentengine::cap::decl::RunCommand>,
+                        agentengine::CapturesSessionState> {
     static constexpr std::string_view name = "shell_exec";
     static constexpr std::string_view description =
         "Run a command in this session's own persistent, isolated shell. The working directory, exported "
@@ -107,13 +114,12 @@ struct ShellExecTool
     using Args = ShellExecArgs;
     using Reply = ShellExecReply;
 
-    [[nodiscard]] static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) {
-        return std::unexpected(agentengine::error{
-            agentengine::failure_class::fatal,
-            "ShellExecTool::invoke() must never run directly -- dispatch goes through the closure "
-            "LiveShellSandboxProvider::on_context() installs.",
-            "live_shell_provider.invoke_unreachable"});
-    }
+    explicit ShellExecTool(ProviderT& provider) : provider_(&provider) {}
+
+    [[nodiscard]] agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const;
+
+private:
+    ProviderT* provider_;
 };
 
 template <PersistentShellSurface Surface, class Store = agentengine::InMemoryWorktreeObjectStore,
@@ -212,10 +218,8 @@ public:
         agentengine::ContextContribution contribution;
         if (!runtime_.has_value()) co_return contribution;
         check_lifetime(lifetime_event::context, std::nullopt, &ctx);
-        contribution.tools.push_back(agentengine::make_tool_descriptor_with_invoke<ShellExecTool>(
-            [this](ShellExecArgs args, agentengine::EffectContext& call_ctx) -> agentengine::result<ShellExecReply> {
-                return shell_exec(std::move(args), call_ctx);
-            }));
+        contribution.tools.push_back(
+            agentengine::make_tool_descriptor(ShellExecTool<LiveShellSandboxProvider>{*this}));
         co_return contribution;
     }
 
@@ -262,6 +266,10 @@ public:
     }
 
 private:
+    // ADR-237 §5.2: the instance-form `ShellExecTool` (declared above) holds this provider explicitly and
+    // calls `shell_exec()` below.
+    template <class> friend struct ShellExecTool;
+
     [[nodiscard]] agentengine::result<ShellExecReply> shell_exec(ShellExecArgs args, agentengine::EffectContext& ctx) {
         check_lifetime(lifetime_event::shell_exec, std::nullopt, &ctx);
         agentengine::IdentityHandle const caller = agentengine::IdentityAuthority::bootstrap().adopt(ctx.principal);
@@ -464,5 +472,13 @@ private:
     std::uint64_t opens_ = 0;
     std::uint64_t event_seq_ = 0;
 };
+
+// ADR-237 §5.2: out-of-line because it needs `LiveShellSandboxProvider` complete to reach the private
+// `shell_exec()` it befriends.
+template <class ProviderT>
+agentengine::task<agentengine::result<ShellExecReply>> ShellExecTool<ProviderT>::invoke(
+    ShellExecArgs args, agentengine::EffectContext& ctx) const {
+    co_return provider_->shell_exec(std::move(args), ctx);
+}
 
 }  // namespace agentengine
