@@ -1688,3 +1688,20 @@ test_agent_spawn_worktree, test_delegation_provenance, test_rt_spawn_cost_budget
 and test_rt_agent_session_tooling_and_delegation pass; full tree `/W4 /WX` clean; naming/layering lint OK;
 full suite 401/415.
 
+### Step 19 (2026-10-10): test-side `make_sync_invoke` sweep begins
+
+Four test-side authors that lifted a synchronous closure with `make_sync_invoke` now build the coroutine
+`invoke` directly (no behavior change), removing four call sites of the transitional factory ahead of its
+deletion: `tools/test_driver/test_driver.hpp` (the ADR-208 replay double),
+`tests/core/tools/test_tool_registry.cpp`, `tests/core/context/test_turn_middleware.cpp`, and
+`tests/rt/test_rt_background_job_runner.cpp` (its `tool()` helper keeps its synchronous-callable API and
+wraps it in the coroutine inline).
+
+Evidence: test_tool_registry, test_turn_middleware (+ test_rt_agent_session_turn_middleware),
+test_rt_background_job_runner and test_agentengine_test_driver pass; full tree `/W4 /WX` clean;
+naming/layering lint OK; full suite 401/415 (a single transient `test_rt_workflow_batch_coalescing`
+failure under `-j4` re-ran clean -- a pre-existing flake, not a regression). Remaining test-side sites:
+`tests/testing/test_agentengine_test_driver.cpp`, `tests/core/tools/test_approval_resume.cpp`,
+`tests/core/context/test_tool_optimizer_provider.cpp`, `tests/core/agent/test_agent_yaml_compiler.cpp`,
+`tests/python/test_agent_tools_codegen.cpp`.
+

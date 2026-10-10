@@ -114,8 +114,8 @@ ae::Principal principal(std::string id, std::string tenant = "t1") {
     return p;
 }
 
-// ADR-237 §5.2: the descriptor's `invoke` is async; these helpers author synchronous bodies and
-// lift them with `make_sync_invoke`.
+// ADR-237 §5.2: the descriptor's `invoke` is async; this helper wraps the synchronous body the call
+// sites author into the async seam directly (no `make_sync_invoke`).
 using SyncInvoke = std::function<ae::result<ae::json::Value>(ae::json::Value const&, ae::EffectContext&)>;
 
 ae::ToolDescriptor tool(std::string name, SyncInvoke fn,
@@ -124,7 +124,8 @@ ae::ToolDescriptor tool(std::string name, SyncInvoke fn,
     d.name           = std::move(name);
     d.backgroundable = true;
     d.effect_class   = cls;
-    d.invoke         = ae::make_sync_invoke(std::move(fn));
+    d.invoke         = [fn = std::move(fn)](ae::json::Value const& args, ae::EffectContext& ctx)
+        -> ae::task<ae::result<ae::json::Value>> { co_return fn(args, ctx); };
     return d;
 }
 

@@ -425,9 +425,9 @@ private:
     std::string const name = d.name;
     // ADR-212 §3.5: a replay serves the recording, not the tool, so it cannot stand in for a re-run.
     d.deterministic = false;
-    d.invoke = make_sync_invoke([log, name](Value const& args, EffectContext& ctx) -> result<Value> {
+    d.invoke = [log, name](Value const& args, EffectContext& ctx) -> task<result<Value>> {
         auto served = log->serve(name, json::dump(args));
-        if (auto const* e = std::get_if<error>(&served)) return std::unexpected(*e);
+        if (auto const* e = std::get_if<error>(&served)) co_return std::unexpected(*e);
         ToolExchange const& x = std::get<ToolExchange>(served);
         std::size_t k = 0;
         for (ExecEventRecord const& ev : x.exec_events) {
@@ -439,9 +439,9 @@ private:
             p.error_code = ev.error_code;
             ctx.sandbox_exec_sink(ev.kind, std::move(p));
         }
-        if (x.is_error) return std::unexpected(error{x.klass, x.message, x.code});
-        return x.result;
-    });
+        if (x.is_error) co_return std::unexpected(error{x.klass, x.message, x.code});
+        co_return x.result;
+    };
     return d;
 }
 

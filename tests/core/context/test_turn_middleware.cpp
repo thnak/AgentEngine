@@ -72,9 +72,9 @@ ToolDescriptor make_marker_tool(std::string name, std::string marker) {
     ToolDescriptor d;
     d.name        = name;
     d.description = "original description";
-    d.invoke      = make_sync_invoke([marker](json::Value const&, EffectContext&) -> result<json::Value> {
-        return json::Value::make_string(marker);
-    });
+    d.invoke      = [marker](json::Value const&, EffectContext&) -> task<result<json::Value>> {
+        co_return json::Value::make_string(marker);
+    };
     return d;
 }
 

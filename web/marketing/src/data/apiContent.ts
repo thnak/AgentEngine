@@ -51,6 +51,16 @@ export const apiGroupLabels: Record<Lang, Record<ApiGroup, string>> = {
 export const apiPages: Record<Lang, ApiPage[]> = {
   en: [
     {
+      id: "how-it-works",
+      group: "core",
+      label: "How AgentEngine works",
+      href: `${SITE_BASE}/api/how-it-works.html`,
+      eyebrow: "Orientation — 001 §3–§4 · CONVENTIONS.md",
+      description:
+        "Start here: the lifecycle of a run, how authority reaches an effect, the eight core invariants and what enforces each, and who owns what between the engine and its host.",
+      status: "real",
+    },
+    {
       id: "agent",
       group: "core",
       label: "Agent & register_agent",
