@@ -2002,3 +2002,25 @@ along typedef lines.** `InputRequestHandler` is invoked inside `call_tool`'s own
 and `ToolSourceFetch` slices, which had none. Then `OutputValidator`, which reaches
 `AgentSession::set_output_schema` and six test call sites.
 
+**MCP resume inventory (recorded here so the next session starts cold -- no re-exploration needed).** The
+conversion is atomic: the three typedefs and every `McpClient` verb that invokes them must move in one
+commit, because `McpClient` has no sync/async split to hide behind.
+
+- `protocol/mcp/client.hpp` -- `RequestSender` (:49), `InputRequestHandler` (:77), `RequestSenderWithHeaders`
+  (:317) go `task`-shaped. Every invocation is inside `McpClient`: the transport picker at `:587` (prefers
+  `sender_with_headers_`, falls back to `sender_`) and the MRTR round loop at `:462` (`input_handler_`).
+- Verbs that become coroutines with them: `list_tools` (:344), `call_tool` (:411), and the task-extension
+  pair around `:520` (`call_tool_as_task` and its poll path). `get`/`cancel`-style pure lookups, if any, stay
+  sync -- the A2A precedent.
+- `protocol/mcp/mcp_tool_bridge.hpp` -- `mcp_tools_as_descriptors_from` (its descriptor lambda at `:40` calls
+  `client->call_tool`) and `mcp_tools_as_descriptors` (:75, calls `list_tools`) both become coroutines; the
+  `ToolDescriptor` lambdas they hand out already return tasks, so that side needs nothing.
+- Consumers: `tools/mcp_conformance_client.cpp` (`:290` ctor, `:329` `list_tools`, `:429` `call_tool`, plus a
+  real `RequestSenderWithHeaders` at `:193` and a real input handler at `:297`). **Open question to settle
+  first, and it is the one thing that could make this slice bigger than it looks: how does that tool run a
+  task?** It is a `tools/` binary, not a test, so `tests/support/run_task_sync.hpp` may not be reachable --
+  if its `main` has no drive loop today, the slice has to add one. Then
+  `tests/protocol/mcp/test_mcp_client.cpp` (~15 call sites; needs a local `drive()`),
+  `tests/protocol/mcp/test_mcp_tasks_extension.cpp` (`:92` sender lambda, task verbs) and
+  `tests/protocol/mcp/test_codeact_tool_union.cpp` (`:187`-`:219`).
+
