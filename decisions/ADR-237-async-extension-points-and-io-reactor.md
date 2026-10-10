@@ -1888,3 +1888,30 @@ layering-lint OK; full suite `ctest -LE live-network` 401/415, the identical 14.
 five production sites (two RAG providers, with §5.1's embedder/index seams; two native-process providers,
 with §9 D3; the WASM bridge, which needs a WASM-enabled build to verify).
 
+### Step 27 (2026-10-10): §5.1 seam conversion, slice 2 -- `ToolSourceFetch` is async
+
+The first §5.1 seam after step 8, chosen because the inventory shows it is the smallest: one typedef, two
+`ToolOptimizerState` fields, one test helper, and **no production supplier at all** -- the only producers
+are still `no_tool_source()` and a test's `fetch_one()`.
+
+- `core/tool_optimizer_provider.hpp`: `ToolSourceFetch` becomes
+  `std::function<task<result<std::vector<ToolDescriptor>>>(EffectContext&)>` -- a source may do real I/O
+  (a remote MCP server, a plugin host), which is the §5.1 reason for the seam. `no_tool_source()` returns
+  a coroutine lambda.
+- The consumers follow rather than being left half-async: `build_universe()` becomes
+  `task<result<ToolTable>>` and `co_await`s both fetches; `real_search_tools`/`real_mount_tool` become
+  coroutines (`real_unmount_tool` fetches nothing and stays a plain function); the two tools that call
+  them `co_return co_await ...`; `on_context()` `co_await`s `build_universe`; and
+  `currently_scoped_tools()` -- a documented public accessor with **zero call sites in the tree** --
+  becomes `task<result<ToolTable>>` rather than keeping a synchronous facade over an async seam.
+- `tests/core/context/test_tool_optimizer_provider.cpp`: `fetch_one()`'s lambda returns a task.
+
+Evidence: build-dev rebuild clean; `test_tool_optimizer_provider` (incl. R6, the real `AgentSession`
+declare/invoke cadence over the composed three-provider stack), `test_agent_yaml_compiler` and
+`test_agent_tools_codegen` pass; naming-lint OK; layering-lint OK; full suite `ctest -LE live-network`
+401/415, the identical 14. The `agentengine_cli_chat` target does not include this header and was already
+up to date.
+
+Next-smallest §5.1 candidates, from the same inventory: A2A `CardFetcher`/`RunStarter`, MCP
+`RequestSender`/`InputRequestHandler`, and `GraderFn`/`OutputValidator`.
+

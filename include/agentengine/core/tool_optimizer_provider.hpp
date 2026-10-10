@@ -108,11 +108,13 @@ AE_JSON_SCHEMA(UnmountToolReply, ok, message)
 // to preserve). Wraps e.g. protocol/mcp/mcp_tool_bridge.hpp's mcp_tools_as_descriptors(client) or
 // src/backends/wasm/wasm_tool_bridge.hpp's wasm_tools_as_descriptors_from(backend, handle, id, ctx)
 // -- a caller with no MCP/plugin connection passes no_tool_source() below.
-using ToolSourceFetch = std::function<result<std::vector<ToolDescriptor>>(EffectContext&)>;
+// ADR-237 §5.1: this seam is asynchronous -- a source may do real I/O (a remote MCP server, a plugin
+// host), so the fetch returns a `task` and is awaited by `build_universe()` below, itself a coroutine.
+using ToolSourceFetch = std::function<task<result<std::vector<ToolDescriptor>>>(EffectContext&)>;
 
 [[nodiscard]] inline ToolSourceFetch no_tool_source() {
-    return [](EffectContext&) -> result<std::vector<ToolDescriptor>> {
-        return std::vector<ToolDescriptor>{};
+    return [](EffectContext&) -> task<result<std::vector<ToolDescriptor>>> {
+        co_return std::vector<ToolDescriptor>{};
     };
 }
 
@@ -134,10 +136,10 @@ struct ToolOptimizerState {
 // The real bodies live as free functions over `ToolOptimizerState` (defined below the tools), so a
 // tool's `invoke()` is a thin adapter over the same logic `on_context()` reads -- one implementation,
 // no per-copy state, reachable through the ordinary `Tool<>` contract.
-[[nodiscard]] result<SearchToolsReply> real_search_tools(ToolOptimizerState const& state,
-                                                         SearchToolsArgs args, EffectContext& ctx);
-[[nodiscard]] result<MountToolReply> real_mount_tool(ToolOptimizerState& state, MountToolArgs args,
-                                                     EffectContext& ctx);
+[[nodiscard]] task<result<SearchToolsReply>> real_search_tools(ToolOptimizerState const& state,
+                                                              SearchToolsArgs args, EffectContext& ctx);
+[[nodiscard]] task<result<MountToolReply>> real_mount_tool(ToolOptimizerState& state, MountToolArgs args,
+                                                           EffectContext& ctx);
 [[nodiscard]] result<UnmountToolReply> real_unmount_tool(ToolOptimizerState& state,
                                                          UnmountToolArgs args, EffectContext& ctx);
 
@@ -153,7 +155,7 @@ struct SearchToolsTool : Tool<SearchToolsTool, EffectClass<effect_class::pure>, 
     explicit SearchToolsTool(std::shared_ptr<ToolOptimizerState> s) : state_(std::move(s)) {}
 
     [[nodiscard]] task<result<Reply>> invoke(Args args, EffectContext& ctx) const {
-        co_return real_search_tools(*state_, std::move(args), ctx);
+        co_return co_await real_search_tools(*state_, std::move(args), ctx);
     }
 
 private:
@@ -172,7 +174,7 @@ struct MountToolTool : Tool<MountToolTool, EffectClass<effect_class::pure>, Capt
     explicit MountToolTool(std::shared_ptr<ToolOptimizerState> s) : state_(std::move(s)) {}
 
     [[nodiscard]] task<result<Reply>> invoke(Args args, EffectContext& ctx) const {
-        co_return real_mount_tool(*state_, std::move(args), ctx);
+        co_return co_await real_mount_tool(*state_, std::move(args), ctx);
     }
 
 private:
@@ -209,19 +211,19 @@ private:
 // skill-unlocked-tools slot -- skills stay SkillsProvider's own concern, never this class's)
 // rather than reimplementing dedup logic, then additionally rejects any source tool that shadows
 // one of THIS provider's own reserved management-tool names.
-[[nodiscard]] inline result<ToolTable> build_universe(ToolOptimizerState const& state,
-                                                      EffectContext& ctx) {
-    auto mcp = state.mcp_tools_fetch(ctx);
-    if (!mcp) return std::unexpected(mcp.error());
-    auto plugin = state.plugin_tools_fetch(ctx);
-    if (!plugin) return std::unexpected(plugin.error());
+[[nodiscard]] inline task<result<ToolTable>> build_universe(ToolOptimizerState const& state,
+                                                           EffectContext& ctx) {
+    auto mcp = co_await state.mcp_tools_fetch(ctx);
+    if (!mcp) co_return std::unexpected(mcp.error());
+    auto plugin = co_await state.plugin_tools_fetch(ctx);
+    if (!plugin) co_return std::unexpected(plugin.error());
 
     auto universe = union_codeact_tools(state.agent_tools, ToolTable::from_tools<>(), *mcp, *plugin);
-    if (!universe) return std::unexpected(universe.error());
+    if (!universe) co_return std::unexpected(universe.error());
 
     for (ToolDescriptor const& d : universe->descriptors()) {
         if (is_management_tool_name(d.name)) {
-            return std::unexpected(error{
+            co_return std::unexpected(error{
                 failure_class::contract,
                 "tool '" + d.name +
                     "' collides with one of ToolOptimizerProvider's own always-on management "
@@ -229,7 +231,7 @@ private:
                 "tool_optimizer.reserved_name_collision"});
         }
     }
-    return universe;
+    co_return universe;
 }
 
 [[nodiscard]] inline std::string to_lower(std::string s) {
@@ -261,11 +263,11 @@ private:
 // if ANY query word appears in a tool's name+description is what "search" is actually expected to
 // mean; a single-word query (this class's own R4 test, tests/core/context/test_tool_optimizer_provider.cpp)
 // behaves identically either way, so this is a strict widening, not a behavior change for it.
-[[nodiscard]] inline result<SearchToolsReply> real_search_tools(ToolOptimizerState const& state,
-                                                                SearchToolsArgs args,
-                                                                EffectContext& ctx) {
-    auto universe = build_universe(state, ctx);
-    if (!universe) return std::unexpected(universe.error());
+[[nodiscard]] inline task<result<SearchToolsReply>> real_search_tools(ToolOptimizerState const& state,
+                                                                    SearchToolsArgs args,
+                                                                    EffectContext& ctx) {
+    auto universe = co_await build_universe(state, ctx);
+    if (!universe) co_return std::unexpected(universe.error());
     std::vector<std::string> const words = split_words(to_lower(args.query));
     std::vector<std::string> names;
     for (ToolDescriptor const& d : universe->descriptors()) {
@@ -276,20 +278,20 @@ private:
             });
         if (matches) names.push_back(d.name);
     }
-    return SearchToolsReply{std::move(names)};
+    co_return SearchToolsReply{std::move(names)};
 }
 
-[[nodiscard]] inline result<MountToolReply> real_mount_tool(ToolOptimizerState& state,
-                                                            MountToolArgs args, EffectContext& ctx) {
-    auto universe = build_universe(state, ctx);
-    if (!universe) return std::unexpected(universe.error());
+[[nodiscard]] inline task<result<MountToolReply>> real_mount_tool(ToolOptimizerState& state,
+                                                                 MountToolArgs args, EffectContext& ctx) {
+    auto universe = co_await build_universe(state, ctx);
+    if (!universe) co_return std::unexpected(universe.error());
     if (universe->find(args.name) == nullptr) {
-        return std::unexpected(error{failure_class::contract, "unknown tool: " + args.name,
-                                      "tool_optimizer.unknown_name"});
+        co_return std::unexpected(error{failure_class::contract, "unknown tool: " + args.name,
+                                        "tool_optimizer.unknown_name"});
     }
     if (std::ranges::find(state.mounted, args.name) == state.mounted.end())
         state.mounted.push_back(args.name);
-    return MountToolReply{true, "mounted: " + args.name};
+    co_return MountToolReply{true, "mounted: " + args.name};
 }
 
 [[nodiscard]] inline result<UnmountToolReply> real_unmount_tool(ToolOptimizerState& state,
@@ -320,7 +322,7 @@ public:
               std::move(always_on), {}})) {}
 
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext&, EffectContext& ctx) {
-        auto universe = build_universe(*state_, ctx);
+        auto universe = co_await build_universe(*state_, ctx);
         if (!universe) co_return std::unexpected(universe.error());
 
         ToolTable const scoped =
@@ -340,10 +342,10 @@ public:
     // parameters for a CodeAct bridge -- MUST be sourced from here, recomputed the same way, never
     // independently refetched, per this file's own top-comment integration invariant (§3 of the
     // design draft).
-    [[nodiscard]] result<ToolTable> currently_scoped_tools(EffectContext& ctx) {
-        auto universe = build_universe(*state_, ctx);
-        if (!universe) return std::unexpected(universe.error());
-        return scope_tools_to_mounted_skills(*universe, state_->mounted, state_->always_on);
+    [[nodiscard]] task<result<ToolTable>> currently_scoped_tools(EffectContext& ctx) {
+        auto universe = co_await build_universe(*state_, ctx);
+        if (!universe) co_return std::unexpected(universe.error());
+        co_return scope_tools_to_mounted_skills(*universe, state_->mounted, state_->always_on);
     }
 
 private:

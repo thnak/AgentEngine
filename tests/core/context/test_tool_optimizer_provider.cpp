@@ -84,8 +84,8 @@ struct PingTool : Tool<PingTool, EffectClass<effect_class::pure>> {
 }
 
 [[nodiscard]] ToolSourceFetch fetch_one(ToolDescriptor d) {
-    return [d = std::move(d)](EffectContext&) -> result<std::vector<ToolDescriptor>> {
-        return std::vector<ToolDescriptor>{d};
+    return [d = std::move(d)](EffectContext&) -> task<result<std::vector<ToolDescriptor>>> {
+        co_return std::vector<ToolDescriptor>{d};
     };
 }
 
