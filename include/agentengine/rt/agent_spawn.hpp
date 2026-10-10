@@ -114,15 +114,21 @@ struct AgentSpawnReply {
 };
 AE_JSON_SCHEMA(AgentSpawnReply, output, input_tokens, output_tokens, child_id)
 
-// Poison-sentinel CRTP shape, matching ScheduleWakeupTool's own established precedent
-// (rt/agent_session.hpp) exactly -- this static invoke() must never actually run; it exists only so
-// AgentSpawnTool satisfies Tool<Derived,...>'s contract for make_tool_descriptor_with_invoke<...>()
-// to extract Args/Reply/schemas from. No Capabilities<...> policy tag declared here either, for the
-// SAME reason ScheduleWakeupTool declares none: enforcement is a LIVE, per-call, per-agent_id check
-// (perform_agent_spawn()'s own steps [2]/[3] below) a static compile-time ceiling entry cannot
-// express (it would have to name every spawnable agent_id and its own budget at compile time, which
-// the model's own call selects at runtime from a HOST-curated set, not a compile-time-fixed one).
-struct AgentSpawnTool : agentengine::Tool<AgentSpawnTool> {
+// ADR-237 §5.2: an instance-form `Tool<>` conformer now, templated on the provider's own `StoreT` so it
+// can hold the provider explicitly. Its `invoke()` (defined below, where `AgentSpawnToolProvider` and
+// `perform_agent_spawn()` are complete) calls the provider's private `dispatch_agent_spawn()` through
+// the `friend` declaration in the class; `CapturesSessionState` keeps it non-backgroundable and
+// non-rerun-comparable exactly as the old `[this]`-capturing closure was. The former static poison
+// `invoke()` sentinel is gone. No `Capabilities<...>` policy tag declared here, for the SAME reason
+// ScheduleWakeupTool declares none: enforcement is a LIVE, per-call, per-agent_id check
+// (perform_agent_spawn()'s own steps [2]/[3] below) a static compile-time ceiling entry cannot express
+// (it would have to name every spawnable agent_id and its own budget at compile time, which the model's
+// own call selects at runtime from a HOST-curated set, not a compile-time-fixed one).
+template <agentengine::rt::AppendLogStore StoreT>
+class AgentSpawnToolProvider;
+
+template <agentengine::rt::AppendLogStore StoreT>
+struct AgentSpawnTool : agentengine::Tool<AgentSpawnTool<StoreT>, agentengine::CapturesSessionState> {
     static constexpr std::string_view name = "agent.spawn";
     static constexpr std::string_view description =
         "Run a sub-agent (from a host-curated, closed set) on the given input and return its "
@@ -130,12 +136,13 @@ struct AgentSpawnTool : agentengine::Tool<AgentSpawnTool> {
         "hold no grant for the named agent.";
     using Args  = AgentSpawnArgs;
     using Reply = AgentSpawnReply;
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) {
-        return std::unexpected(agentengine::error{
-            agentengine::failure_class::contract,
-            "agent.spawn invoked without its host-bound dispatch closure -- unreachable",
-            "agent_spawn.unreachable_static_invoke"});
-    }
+
+    explicit AgentSpawnTool(AgentSpawnToolProvider<StoreT>& provider) : provider_(&provider) {}
+
+    [[nodiscard]] agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const;
+
+private:
+    AgentSpawnToolProvider<StoreT>* provider_;
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -591,11 +598,7 @@ public:
         // all, not a per-agent_id scan; the per-target check is the LIVE one inside
         // perform_agent_spawn()'s own step [2].
         if (ctx.capabilities && ctx.capabilities->contains_kind(agentengine::capability_kind::agent_call)) {
-            c.tools.push_back(agentengine::make_tool_descriptor_with_invoke<AgentSpawnTool>(
-                [this](AgentSpawnArgs a, agentengine::EffectContext& call_ctx) {
-                    return perform_agent_spawn(a, call_ctx, registry_, pump_, quota_, quota_tracker_,
-                                                caller_worktree_ref_, caller_mount_id_);
-                }));
+            c.tools.push_back(agentengine::make_tool_descriptor(AgentSpawnTool<StoreT>{*this}));
         }
         co_return c;
     }
@@ -605,6 +608,15 @@ public:
     }
 
 private:
+    // ADR-237 §5.2: the instance-form `AgentSpawnTool` (declared above) holds this provider explicitly
+    // and calls `dispatch_agent_spawn()` below -- the old `[this]`-capturing closure's body, unchanged.
+    template <agentengine::rt::AppendLogStore> friend struct AgentSpawnTool;
+    [[nodiscard]] agentengine::result<AgentSpawnReply> dispatch_agent_spawn(AgentSpawnArgs const& args,
+                                                                           agentengine::EffectContext& ctx) {
+        return perform_agent_spawn(args, ctx, registry_, pump_, quota_, quota_tracker_,
+                                    caller_worktree_ref_, caller_mount_id_);
+    }
+
     SpawnTargetRegistry const& registry_;
     SpawnPump<StoreT>&         pump_;
     agentengine::Ref           caller_worktree_ref_;
@@ -618,5 +630,13 @@ private:
 // work, named in the design doc's own §4.6 -- 026 is still Draft, and
 // trust/agent_library_manifest.hpp's own file banner already names this as the next step once it
 // exists.
+
+// ADR-237 §5.2: out-of-line because it needs `AgentSpawnToolProvider` complete to reach the private
+// `dispatch_agent_spawn()` it befriends.
+template <agentengine::rt::AppendLogStore StoreT>
+agentengine::task<agentengine::result<AgentSpawnReply>> AgentSpawnTool<StoreT>::invoke(
+    AgentSpawnArgs args, agentengine::EffectContext& ctx) const {
+    co_return provider_->dispatch_agent_spawn(args, ctx);
+}
 
 }  // namespace agentengine::rt

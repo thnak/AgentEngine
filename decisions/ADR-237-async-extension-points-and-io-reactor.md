@@ -1617,7 +1617,7 @@ by one asserting the descriptor declares `CapturesSessionState` and keeps `Effec
 pattern -- `sandbox/mandatory_sandbox_provider.hpp`
 (RunCommand + the four task-branch tools),
 `native_jail/session_shell_wiring.hpp` (RunShellTool),
-`rt/agent_spawn.hpp` (AgentSpawnTool), `tools/cli_chat.cpp` (ExecuteCodeTool/MountSkillTool). The
+`tools/cli_chat.cpp` (ExecuteCodeTool/MountSkillTool). The
 dynamic-schema bridges (`mcp_tool_bridge.hpp`, `wasm_tool_bridge.hpp`, `native_providers.hpp`,
 `native_shell_session_provider.hpp`, the two RAG providers, `eval_stub_tool.hpp`) can never be `Tool<>`
 conformers -- their Args/Reply are runtime-derived -- so they lose `make_sync_invoke` and get a direct
@@ -1671,4 +1671,20 @@ poison sentinel is gone and `on_context()` now pushes
 
 Evidence: test_live_shell_sandbox_provider passes (test_live_shell_sandbox_provider_live is one of the 14
 Docker baseline failures); full tree `/W4 /WX` clean; naming/layering lint OK; full suite 401/415.
+
+### Step 18 (2026-10-10): `AgentSpawnTool` to instance form (second templated-provider conversion)
+
+`rt/agent_spawn.hpp`'s `AgentSpawnTool` follows Step 17: `AgentSpawnToolProvider` is
+`template <AppendLogStore StoreT>`, so the tool becomes `template <AppendLogStore StoreT>`, holds
+`AgentSpawnToolProvider<StoreT>*` (the provider itself forward-declared above it), and its out-of-line
+`invoke()` (defined at the end of the header, where the provider is complete) calls the provider's new
+private `dispatch_agent_spawn()` -- the old closure's body, calling the same free
+`perform_agent_spawn()` -- through a `template <AppendLogStore> friend struct AgentSpawnTool;`
+declaration. It declares `CapturesSessionState`; the static poison sentinel is gone and `on_context()`
+pushes `make_tool_descriptor(AgentSpawnTool<StoreT>{*this})`.
+
+Evidence: test_rt_agent_spawn, test_rt_agent_spawn_child_run, test_spawn_budget, test_agent_spawn_capability,
+test_agent_spawn_worktree, test_delegation_provenance, test_rt_spawn_cost_budget, test_rt_spawn_pump_concurrency
+and test_rt_agent_session_tooling_and_delegation pass; full tree `/W4 /WX` clean; naming/layering lint OK;
+full suite 401/415.
 
