@@ -74,17 +74,28 @@ AE_JSON_SCHEMA(RunShellReply, ok, stdout_text, stderr_text)
 
 // The `Tool<>` declaration surface (006 §1), mirroring `cli_chat.cpp`'s `ExecuteCodeTool` exactly:
 // `FsRead`/`FsWrite` on the fixed "work" mount, `at_most_once` (shell has real side effects, unlike
-// a `pure` read tool). `invoke()` is NEVER called on this path -- `make_tool_descriptor_with_invoke`
-// (ADR-028, below) runs `SessionShellSandbox::run()` instead; this body exists only so a caller who
-// mistakenly reaches it directly (bypassing the real descriptor) fails loudly rather than silently
-// running against no real sandbox at all.
+// a `pure` read tool).
+//
+// ADR-237 §5.2: an instance-form `Tool<>` conformer now, holding the owning `SessionShellSandbox`
+// explicitly. It is deliberately NOT templated on that owner: the owner is a concrete class, so the
+// name `RunShellTool` (and everything 027 says about it) is unchanged, and the ADR-208 test driver can
+// keep naming `RunShellTool::Reply`. `CapturesSessionState` preserves what the old
+// `make_tool_descriptor_with_invoke` closure set -- this tool really does hold session-scoped state.
+// The static poison `invoke()` is gone: the owner-less default-constructed stand-in is what that test
+// driver records from, and a call on it fails loudly rather than silently running against no real
+// sandbox at all.
 //
 // ADR-217: `EnforcesGrantedCaps` -- every mediated-shell file operation looks up the HELD grant's own
 // FsRead/FsWrite (`require_fs_read`/`require_fs_write` in mediated_shell_dispatch.cpp, gap-12) and
 // enforces its `size_cap_bytes` (`cat`) and `quota_bytes`/`file_count_cap` (mkdir, cp, redirects), never
 // a number from this declaration. So a capped grant admits run_shell, and the cap holds at use.
+//
+// ae-naming-lint: allow SessionShellSandbox — forward declaration of the type defined below (027 §3)
+class SessionShellSandbox;
+
 struct RunShellTool : Tool<RunShellTool, Capabilities<cap::decl::FsRead<"work">, cap::decl::FsWrite<"work">>,
-                            EffectClass<effect_class::at_most_once>, EnforcesGrantedCaps> {
+                            EffectClass<effect_class::at_most_once>, EnforcesGrantedCaps,
+                            CapturesSessionState> {
     static constexpr std::string_view name = "run_shell";
     static constexpr std::string_view description =
         "Run a shell command or script inside this session's own sandboxed working directory. "
@@ -92,15 +103,15 @@ struct RunShellTool : Tool<RunShellTool, Capabilities<cap::decl::FsRead<"work">,
     using Args = RunShellArgs;
     using Reply = RunShellReply;
 
-    [[nodiscard]] static result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(error{
-            failure_class::fatal,
-            "RunShellTool::invoke() must never run directly -- this tool is only ever reachable "
-            "through the real ToolDescriptor SessionShellSandbox::tool_descriptor() builds via "
-            "make_tool_descriptor_with_invoke() (ADR-028), which dispatches to a real, live "
-            "MediatedShellRunner instead of this unreachable stub.",
-            "session_shell_wiring.invoke_unreachable"});
-    }
+    // Owner-less: the shape-only stand-in (the ADR-208 test driver records from it, and constructs no
+    // sandbox). A real call needs the owner `SessionShellSandbox::tool_descriptor()` passes.
+    RunShellTool() = default;
+    explicit RunShellTool(SessionShellSandbox& owner) : owner_(&owner) {}
+
+    [[nodiscard]] task<result<Reply>> invoke(Args, EffectContext&) const;
+
+private:
+    SessionShellSandbox* owner_ = nullptr;
 };
 
 // Owns everything one session's shell tool needs to stay alive across calls: the mediated
@@ -130,18 +141,12 @@ public:
         return std::unique_ptr<SessionShellSandbox>(new SessionShellSandbox(std::move(*adapter), wall_clock_budget));
     }
 
-    // The real, live `ToolDescriptor` for `run_shell` -- built via `make_tool_descriptor_with_invoke`
-    // (ADR-028, `core/tool_pipeline.hpp`), whose closure captures `this` and calls `run()` below
-    // instead of `RunShellTool::invoke()`'s unreachable stub. `captures_session_state = true` (set
-    // automatically by that factory) correctly refuses to let this descriptor ever be
-    // `Backgroundable` -- this object is exactly the kind of session-scoped state
-    // `tool_pipeline.hpp`'s own comment on that field describes.
-    [[nodiscard]] ToolDescriptor tool_descriptor() {
-        return make_tool_descriptor_with_invoke<RunShellTool>(
-            [this](RunShellArgs args, EffectContext& ctx) -> result<RunShellReply> {
-                return this->run(args, ctx);
-            });
-    }
+    // The real, live `ToolDescriptor` for `run_shell` -- ADR-237 §5.2: an instance of `RunShellTool`
+    // that holds THIS sandbox and dispatches to `run()` below. The tool's own `CapturesSessionState`
+    // declaration correctly refuses to let this descriptor ever be `Backgroundable` -- this object is
+    // exactly the kind of session-scoped state `tool_pipeline.hpp`'s own comment on that field
+    // describes.
+    [[nodiscard]] ToolDescriptor tool_descriptor() { return make_tool_descriptor(RunShellTool{*this}); }
 
     // The same mediated filesystem view `run_shell` itself uses -- exposed so a caller can also
     // populate `EffectContext::sandbox_fs` (the Phase 0 seam, `core/effect_context.hpp`) with it
@@ -150,6 +155,9 @@ public:
     [[nodiscard]] FileSystemAdapter* filesystem_adapter() noexcept { return &fs_; }
 
 private:
+    // ADR-237 §5.2: the instance-form `RunShellTool` above holds this sandbox and calls `run()` below.
+    friend struct RunShellTool;
+
     SessionShellSandbox(native_jail::mediated_shell::MediatedFileSystemAdapter fs,
                         std::chrono::milliseconds wall_clock_budget)
         : fs_(std::move(fs)), registry_(), state_(),
@@ -194,11 +202,26 @@ private:
     native_jail::mediated_shell::DefaultCommandRegistry registry_;
     ExecState state_;
     native_jail::mediated_shell::MediatedShellRunner shell_;
-    // ADR-170 (issue #64) -- see run()'s own comment. Plain, not atomic: this descriptor is built by
-    // `make_tool_descriptor_with_invoke()`, which marks it `captures_session_state = true`, and
-    // `tool_pipeline.hpp`'s own guard refuses to background or parallel-dispatch such a tool -- so
-    // `run()` is only ever reached on the session's single `session_mutex_`-serialized thread (I1).
+    // ADR-170 (issue #64) -- see run()'s own comment. Plain, not atomic: `RunShellTool` declares
+    // `CapturesSessionState`, so `tool_pipeline.hpp`'s own guard refuses to background or
+    // parallel-dispatch this tool -- `run()` is only ever reached on the session's single
+    // `session_mutex_`-serialized thread (I1).
     std::uint64_t exec_counter_ = 0;
 };
+
+// ADR-237 §5.2: out-of-line because it needs `SessionShellSandbox` complete. A null owner is the
+// shape-only stand-in (`tools/test_driver/test_driver.hpp`, which constructs no sandbox): it fails
+// loudly, the same loud failure the old unreachable static stub produced, rather than silently running
+// against no real sandbox.
+task<result<RunShellReply>> RunShellTool::invoke(RunShellArgs args, EffectContext& ctx) const {
+    if (owner_ == nullptr) {
+        co_return std::unexpected(error{
+            failure_class::fatal,
+            "run_shell was invoked on a declared shape rather than the live descriptor -- the live "
+            "one comes from SessionShellSandbox::tool_descriptor(), which holds a real sandbox.",
+            "session_shell_wiring.invoke_unreachable"});
+    }
+    co_return owner_->run(args, ctx);
+}
 
 }  // namespace agentengine

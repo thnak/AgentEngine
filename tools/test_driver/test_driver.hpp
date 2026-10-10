@@ -238,10 +238,11 @@ struct Fixture {
 [[nodiscard]] inline bool is_real_tool(std::string_view n) { return n == "run_shell" || n == "read_sandbox_file"; }
 
 // The real tools' declared shape (name, description, schema, ceiling, approval, effect class). The
-// read_sandbox_file entry is the real tool: it acts only through `ctx.sandbox_fs`. run_shell's invoke is the
-// unreachable stub; the live descriptor comes from the session's sandbox.
+// read_sandbox_file entry is the real tool: it acts only through `ctx.sandbox_fs`. ADR-237 §5.2: run_shell is
+// the owner-less stand-in -- its invoke fails loudly if called, and the live descriptor comes from the
+// session's sandbox.
 [[nodiscard]] inline std::vector<ToolDescriptor> real_tool_standins() {
-    return {make_tool_descriptor<RunShellTool>(), make_tool_descriptor<tools::ReadSandboxFile>({})};
+    return {make_tool_descriptor(RunShellTool{}), make_tool_descriptor<tools::ReadSandboxFile>({})};
 }
 
 [[nodiscard]] inline CapabilitySet real_tool_grant() {

@@ -1775,3 +1775,35 @@ baseline failures.
 Remaining §5.2 production site: `session_shell_wiring.hpp`'s `RunShellTool`, still blocked on
 `tools/test_driver/test_driver.hpp`'s static-shape use.
 
+### Step 23 (2026-10-10): `RunShellTool` to instance form -- no production `with_invoke` site left
+
+`src/backends/native_jail/session_shell_wiring.hpp`'s `RunShellTool` is an instance-form `Tool<>`
+conformer holding the owning `SessionShellSandbox` explicitly. It is deliberately NOT templated on that
+owner: the owner is a concrete class, so the name `RunShellTool` is unchanged (027's row and every doc
+reference keep working) and the ADR-208 test driver keeps naming `RunShellTool::Reply`. It declares
+`CapturesSessionState`, preserving what the old factory closure set.
+
+The poison sentinel became a real, used failure path rather than being deleted. The ADR-208 test driver
+records from a *declared shape* and deliberately constructs no sandbox (`real_tool_standins()`, ADR-208
+G6), so `RunShellTool` gained a default constructor with a null owner, and its `invoke()` -- out-of-line,
+where `SessionShellSandbox` is complete, reaching the private `run()` through `friend struct RunShellTool;`
+-- fails loudly when the owner is null: the same loud failure the old stub produced, not a silent run
+against no sandbox. `tool_descriptor()` now returns `make_tool_descriptor(RunShellTool{*this})`, and the
+test driver's stand-in is `make_tool_descriptor(RunShellTool{})`.
+
+**Milestone: no production `make_tool_descriptor_with_invoke` call site remains.** A grep over every
+`.cpp`/`.hpp` in the tree leaves only the factory's own definition (`tool_descriptor.hpp:229`), prose in
+comments, the deliberately-unbuilt `docs/planning/proofs/`, and test files that exist to exercise the
+factory itself. Every production tool that ever used it is now a `Tool<>` conformer, and no production
+static poison `invoke()` sentinel is left (the remaining `*_invoke_unreachable`/`dead_static_invoke_path`
+strings are test-local tools plus `RunShellTool`'s null-owner path, which is the live stand-in contract).
+
+Evidence: test_session_shell_wiring, test_agentengine_test_driver and scenario_scripted_shell_roundtrip
+pass (the last two drive the stand-in through the real recording/replay path), as do the other 23
+shell/mediated/native_jail tests in that selection; the only two failures there are the baseline
+Docker-gated `test_docker_persistent_shell_surface`/`test_live_shell_sandbox_provider_live`. build-dev
+rebuild clean; naming-lint OK; layering-lint OK; full suite 401/415, the identical 14.
+
+Next §5.2 step: delete `make_tool_descriptor_with_invoke` itself and rewrite the ~10 test files that
+exercise it.
+
