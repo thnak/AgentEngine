@@ -54,6 +54,7 @@
 #include "agentengine/protocol/agui/projection.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "backends/native_jail/session_shell_wiring.hpp"
+#include "../support/run_task_sync.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::NoSessionState;
@@ -431,11 +432,11 @@ int main() {
                                                 *json::parse(R"({"noop":true})"), false};
 
         std::atomic<bool> completed{false};
-        auto submitted = agentengine::background_task(
+        auto submitted = agentengine::test_support::run_task_sync<agentengine::result<void>>(agentengine::background_task(
             table, held, req, ctx, agentengine::ApprovalDecider{}, /*current_background_count=*/0,
             [&completed](agentengine::ToolResult, agentengine::ToolInvocationAudit) {
                 completed.store(true);
-            });
+            }));
         check(submitted.has_value(), "S7 setup: the Backgroundable tool call is accepted");
         check(wait_until([&] { return completed.load(); }, std::chrono::seconds(2)),
               "S7 setup: the detached thread actually finishes");
@@ -535,7 +536,7 @@ int main() {
             ToolCallRequest const req{"call-shell", "run_shell", *json::parse(R"({"source":"pwd"})"),
                                        false};
             agentengine::ToolInvocationAudit audit;
-            agentengine::ToolResult const result = invoke_tool(table, held, req, ctx, nullptr, &audit);
+            agentengine::ToolResult const result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, nullptr, &audit));
             check(!result.is_error, "S9 setup: the real run_shell call succeeds");
 
             check(rec.events.size() == 2,
@@ -562,7 +563,7 @@ int main() {
             ToolCallRequest const req2{"call-shell-2", "run_shell",
                                         *json::parse(R"({"source":"pwd"})"), false};
             agentengine::ToolInvocationAudit audit2;
-            (void)invoke_tool(table, held, req2, ctx, nullptr, &audit2);
+            (void)agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req2, ctx, nullptr, &audit2));
             check(rec.events.size() == 2 && rec.events[0].second.exec_id != "shell_1",
                   "S9: a second call mints its own exec_id -- two shell runs never splice into one "
                   "activity in a consumer that correlates by it");

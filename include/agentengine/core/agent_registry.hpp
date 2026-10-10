@@ -44,6 +44,7 @@
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
+#include "agentengine/rt/block_on.hpp"  // ADR-237 §5.2: drive the async pipeline from this sync host edge
 #include "agentengine/sandbox/sandbox_backend_registry.hpp"
 #include "agentengine/trust/capability.hpp"
 
@@ -645,7 +646,8 @@ template <class A>
     if (!attenuated) {
         return fail_closed(attenuated.error());
     }
-    return invoke_tool(meta.tools, *attenuated, request, ctx, approve, audit_out, policy);
+    // ADR-237 §5.2: `invoke_tool` is async; this host helper is a genuinely-sync edge, so block on it.
+    return rt::block_on(invoke_tool(meta.tools, *attenuated, request, ctx, approve, audit_out, policy));
 }
 
 }  // namespace agentengine

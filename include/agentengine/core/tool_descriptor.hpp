@@ -1,9 +1,10 @@
 #pragma once
 // Implements 006-Tool-and-Function-Plane.md §6 -- the DECLARATION half of the tool plane: what a tool
 // is at runtime (`ToolDescriptor`), how a compile-time `Tool<Derived, Policies...>` conformer becomes
-// one (`make_tool_descriptor<ToolT>()`, `make_tool_descriptor_with_invoke<ToolT>()`), and the
-// immutable per-run table they are resolved into (`ToolTable`). This is the I6 mechanism for tools:
-// the declarative surface and the native CRTP surface must agree on exactly these fields.
+// one (ADR-237 §5.2's instance form `make_tool_descriptor(ToolT{...})` / `ToolTable::from(...)`, plus
+// the transitional static `make_tool_descriptor<ToolT>()` and `make_tool_descriptor_with_invoke<ToolT>()`),
+// and the immutable per-run table they are resolved into (`ToolTable`). This is the I6 mechanism for
+// tools: the declarative surface and the native CRTP surface must agree on exactly these fields.
 //
 // Moved verbatim out of `core/tool_pipeline.hpp`, which keeps the INVOCATION half (006 §3's ten
 // steps, idempotency, approval and policy deciders, the audit record, batch partitioning, background
@@ -22,9 +23,11 @@
 // from `tool_pipeline.hpp`'s admitted path.
 
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -195,6 +198,7 @@ template <class ToolT>
     d.parallelizable = ToolT::kHasParallelizable;
     d.deterministic = ToolT::declared_deterministic();
     d.enforces_granted_caps = ToolT::declared_enforces_granted_caps();
+    d.captures_session_state = ToolT::declared_captures_session_state();  // ADR-237 §5.2
     d.args_schema_json = ToolT::args_schema();
     d.reply_schema_json = ToolT::reply_schema();
     if (auto parsed = json::parse(d.args_schema_json)) {
@@ -256,6 +260,47 @@ template <class ToolT, class InvokeFn>
     return d;
 }
 
+// ADR-237 §5.2: the instance-invoke form. `ToolT` declares a non-static `const`
+// `task<result<Reply>> invoke(Args, EffectContext&)`; the tool object is moved into a descriptor-owned
+// `shared_ptr` and the seam calls it through that owner. A stateless tool is an empty object
+// (`make_tool_descriptor(ToolT{})`); a stateful one carries its injected state by value, which is how
+// the former `make_tool_descriptor_with_invoke` call sites become real `Tool<>` conformers.
+// Registration is `ToolTable::from(ToolT{...}, ...)`. This is the §5.2 target shape; the older
+// zero-argument `make_tool_descriptor<ToolT>()` above is the transitional static-invoke form and is
+// deleted once every conformer is converted.
+template <class ToolT>
+[[nodiscard]] ToolDescriptor make_tool_descriptor(ToolT tool) {
+    ToolDescriptor d;
+    d.name = std::string(ToolT::name);
+    d.description = std::string(ToolT::description);
+    d.capability_ceiling = ToolT::declared_capabilities();
+    d.approval = ToolT::declared_approval();
+    d.backgroundable = ToolT::declared_backgroundable();
+    d.effect_class = ToolT::declared_effect_class();
+    d.exclusivity_group = ToolT::declared_exclusivity_group();
+    d.parallelizable = ToolT::kHasParallelizable;
+    // ADR-212/§5.2: the instance invoke IS the declared code, so the Deterministic/
+    // EnforcesGrantedCaps claims carry over from the declaration, exactly as the static factory above.
+    d.deterministic = ToolT::declared_deterministic();
+    d.enforces_granted_caps = ToolT::declared_enforces_granted_caps();
+    d.captures_session_state = ToolT::declared_captures_session_state();  // ADR-237 §5.2
+    d.args_schema_json = ToolT::args_schema();
+    d.reply_schema_json = ToolT::reply_schema();
+    if (auto parsed = json::parse(d.args_schema_json)) {
+        d.args_schema_value = std::move(*parsed);
+        d.args_schema_value_cached = true;
+    }
+    auto owned = std::make_shared<ToolT>(std::move(tool));
+    d.invoke = [owned](json::Value const& args_value, EffectContext& ctx) -> task<result<json::Value>> {
+        auto args = schema::from_json<typename ToolT::Args>(args_value);
+        if (!args) co_return std::unexpected(args.error());
+        auto reply = co_await owned->invoke(*args, ctx);
+        if (!reply) co_return std::unexpected(reply.error());
+        co_return schema::to_json(*reply);
+    };
+    return d;
+}
+
 // Forward-declared only -- the real type lives in core/tool_registry.hpp (gap-4 closure, ADR-054),
 // which itself depends on ToolDescriptor/ToolTable from THIS header, so the dependency can only run
 // one direction. `ToolTable::from_names()` below is declared here (next to `from_tools`/
@@ -274,6 +319,20 @@ public:
     [[nodiscard]] static ToolTable from_tools() {
         ToolTable t;
         (t.descriptors_.push_back(make_tool_descriptor<ToolTs>()), ...);
+        return t;
+    }
+
+    // ADR-237 §5.2: the instance-form registration path. Each argument is a `Tool<>` instance -- a
+    // stateless tool is `ToolT{}`, a stateful one carries its injected state by value -- moved into
+    // its descriptor (see the value-taking `make_tool_descriptor` above). This is where the former
+    // `make_tool_descriptor_with_invoke` call sites migrate. `from()` with no arguments is an empty
+    // table, matching `from_tools<>()`.
+    template <class... ToolTs>
+    [[nodiscard]] static ToolTable from(ToolTs&&... tools) {
+        ToolTable t;
+        (t.descriptors_.push_back(
+             make_tool_descriptor<std::decay_t<ToolTs>>(std::forward<ToolTs>(tools))),
+         ...);
         return t;
     }
 

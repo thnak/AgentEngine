@@ -46,6 +46,7 @@
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/sandbox/filesystem_adapter.hpp"
+#include "../../support/run_task_sync.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::NoSessionState;
@@ -417,11 +418,11 @@ int main() {
                                                 *json::parse(R"({"noop":true})"), false};
 
         std::atomic<bool> completed{false};
-        auto submitted = agentengine::background_task(
+        auto submitted = agentengine::test_support::run_task_sync<agentengine::result<void>>(agentengine::background_task(
             table, held, req, ctx, agentengine::ApprovalDecider{}, /*current_background_count=*/0,
             [&completed](agentengine::ToolResult, agentengine::ToolInvocationAudit) {
                 completed.store(true);
-            });
+            }));
         check(submitted.has_value(), "D setup: the Backgroundable tool call is accepted");
 
         check(wait_until([&] { return completed.load(); }, std::chrono::seconds(2)),
@@ -458,7 +459,7 @@ int main() {
 
         std::atomic<bool> completed{false};
         std::atomic<bool> saw_null{false};
-        auto submitted = agentengine::background_task(
+        auto submitted = agentengine::test_support::run_task_sync<agentengine::result<void>>(agentengine::background_task(
             table, held, req, ctx, agentengine::ApprovalDecider{}, /*current_background_count=*/0,
             [&completed, &saw_null](agentengine::ToolResult result, agentengine::ToolInvocationAudit) {
                 if (!result.content.empty()) {
@@ -469,7 +470,7 @@ int main() {
                     }
                 }
                 completed.store(true);
-            });
+            }));
         check(submitted.has_value(), "E setup: the Backgroundable tool call is accepted");
 
         check(wait_until([&] { return completed.load(); }, std::chrono::seconds(2)),

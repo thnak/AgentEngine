@@ -12,6 +12,7 @@
 
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/protocol/mcp/server.hpp"
+#include "../../support/run_task_sync.hpp"
 
 namespace {
 
@@ -98,8 +99,8 @@ int main() {
         ae::EffectContext ctx_a;
         ctx_a.principal = kCallerA;
         ae::ToolInvocationAudit audit_a;
-        auto result_a = invoke_tool(table, held, make_request("c1", "always_approve_tool"), ctx_a,
-                                     capturing, &audit_a);
+        auto result_a = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, make_request("c1", "always_approve_tool"), ctx_a,
+                                     capturing, &audit_a));
         check(!result_a.is_error, "claim 1 setup: the call with caller A succeeds");
         check(observed_by_decider.id == "caller-a" && observed_by_decider.tenant_id == "tenant-1",
               "claim 1: the decider observed caller A's own identity");
@@ -111,8 +112,8 @@ int main() {
         ae::EffectContext ctx_b;
         ctx_b.principal = kCallerB;
         ae::ToolInvocationAudit audit_b;
-        auto result_b = invoke_tool(table, held, make_request("c2", "always_approve_tool"), ctx_b,
-                                     capturing, &audit_b);
+        auto result_b = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, make_request("c2", "always_approve_tool"), ctx_b,
+                                     capturing, &audit_b));
         check(!result_b.is_error, "claim 1 control setup: the call with caller B succeeds");
         check(observed_by_decider.id == "caller-b" && observed_by_decider.tenant_id == "tenant-2" &&
                   observed_by_decider.id == audit_b.principal_id,
@@ -174,14 +175,14 @@ int main() {
         ctx.principal = kCaller;
         bool                completed = false;
         ae::ToolInvocationAudit final_audit;
-        auto started = background_task(
+        auto started = agentengine::test_support::run_task_sync<agentengine::result<void>>(background_task(
             table, held_with_background, make_request("c3", "always_approve_backgroundable_tool"), ctx,
             capturing,
             /*current_background_count=*/0,
             [&](ae::ToolResult result, ae::ToolInvocationAudit audit) {
                 completed    = !result.is_error;
                 final_audit  = audit;
-            });
+            }));
         check(started.has_value(), "claim 4 setup: the backgrounded call starts successfully");
         check(decider_called_on_calling_thread,
               "claim 4: approve() ran on the CALLING thread, before the worker detaches -- never "

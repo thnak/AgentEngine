@@ -158,7 +158,7 @@ int main() {
         ApprovalDecider denies = [](Principal const&, std::string_view, std::string const&) {
             return false;
         };
-        auto denied_result = invoke_tool(table, held, req, ctx, denies);
+        auto denied_result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, denies));
         check(denied_result.is_error,
               "G3(gate)-R3: the hostile content smuggled into the tool's own arguments does NOT "
               "auto-approve the call -- the smuggled 'pre-approved' claim changes nothing, "
@@ -170,7 +170,7 @@ int main() {
         ApprovalDecider approves = [](Principal const&, std::string_view, std::string const&) {
             return true;
         };
-        auto approved_result = invoke_tool(table, held, req, ctx, approves);
+        auto approved_result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, approves));
         check(!approved_result.is_error,
               "G3(gate)-R4 (positive control): the SAME call succeeds when the decider itself "
               "says yes -- the pipeline works correctly end to end, so R3's denial was the "

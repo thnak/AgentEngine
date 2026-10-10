@@ -5,6 +5,8 @@
 
 #include "agentengine/rt/agent_session_core.hpp"
 
+#include "agentengine/rt/block_on.hpp"  // ADR-237 §5.2: drive the async pipeline on batch worker threads
+
 namespace agentengine::rt {
 
 // agent_session.hpp:785
@@ -853,7 +855,9 @@ task<result<agentengine::StandingEffect>> AgentSessionCore::start_background_tas
     std::string const owner_principal_id = effect_context_.principal.id;
 
     std::weak_ptr<BackgroundCompletionQueue> weak_queue = standing_effects_registry_.completion_queue();
-    result<void> submitted = background_task(
+    // ADR-237 §5.2: `background_task` is async; it only performs the synchronous admission and
+    // detaches its worker, so awaiting it here never parks for the tool's own duration.
+    result<void> submitted = co_await background_task(
         table, *effect_context_.capabilities, request, effect_context_, approve, current_count,
         [weak_queue, handle_id, call_id = request.call_id](ToolResult result_out,
                                                              ToolInvocationAudit audit) mutable {
@@ -959,12 +963,12 @@ void AgentSessionCore::emit_run_event_for(std::string const& run_id, run_event_k
 }
 
 // agent_session.hpp:2060
-std::vector<AgentSessionCore::DispatchedCall> AgentSessionCore::dispatch_tool_calls(std::vector<ToolCallRequest> const& reqs,
+task<std::vector<AgentSessionCore::DispatchedCall>> AgentSessionCore::dispatch_tool_calls(std::vector<ToolCallRequest> const& reqs,
                                                   ToolTable const& tool_table, CapabilitySet const& held,
                                                   ApprovalDecider const& approve,
                                                   PolicyDecider const& policy) {
     std::vector<DispatchedCall> out(reqs.size());
-    if (reqs.empty()) return out;
+    if (reqs.empty()) co_return out;
     // ADR-193: what this run may still spend, so a tool that runs another agent caps the child's budget by it
     // (red team round 1: each child got its own full `child_token_budget` whatever the parent had left).
     // Recomputed before EVERY sequential call (round 2: set once per batch, every spawn in one response saw the
@@ -1047,7 +1051,7 @@ std::vector<AgentSessionCore::DispatchedCall> AgentSessionCore::dispatch_tool_ca
                 effect_context_.remaining_token_budget = remaining_budget();  // ADR-193 round 2
                 ToolInvocationAudit audit;
                 ToolResult result =
-                    invoke_tool(tool_table, held, req, effect_context_, approve, &audit, policy);
+                    co_await invoke_tool(tool_table, held, req, effect_context_, approve, &audit, policy);
                 effect_context_.report_progress = [](ContentItem) {};
                 effect_context_.sandbox_exec_sink =
                     [](run_event_kind, run_event_payload::SandboxExec) {};
@@ -1118,7 +1122,10 @@ std::vector<AgentSessionCore::DispatchedCall> AgentSessionCore::dispatch_tool_ca
             for (std::size_t k = 0; k < job.call_indices.size(); ++k) {
                 auto const started = std::chrono::steady_clock::now();
                 ToolCallRequest const& req = *job.requests[k];
-                AdmittedCallOutcome outcome = run_admitted_call(*job.tools[k], req, job.ctxs[k], job.bounds[k]);
+                // ADR-237 §5.2: on this worker thread the async invoke is a genuinely-sync edge, so
+                // drive it with `rt::block_on` (never on a lane; these are ThreadPool workers).
+                AdmittedCallOutcome outcome =
+                    agentengine::rt::block_on(run_admitted_call(*job.tools[k], req, job.ctxs[k], job.bounds[k]));
                 ToolInvocationAudit audit = make_call_audit(req, job.ctxs[k], started, outcome);
                 emit_run_event_for(job.ctxs[k].run_id, run_event_kind::tool_call_finished,
                                      run_event_payload::ToolCallFinished{audit.call_id, outcome.result});
@@ -1130,7 +1137,7 @@ std::vector<AgentSessionCore::DispatchedCall> AgentSessionCore::dispatch_tool_ca
         agentengine::rt::run_jobs_bounded(runnables, kParallelBatchWorkerCap);
     }
 
-    return out;
+    co_return out;
 }
 
 // agent_session.hpp:2256
@@ -1269,12 +1276,12 @@ task<result<AgentResponse>> AgentSessionCore::resolve_codeact_ask(ResolveInterac
             replay_allowed = now && now(effect_context_.principal, req.tool_name, json::dump(req.arguments));
         }
     }
-    ToolResult tool_result =
-        replay_allowed
-            ? invoke_tool(tool_table, held, req, effect_context_, one_shot_approve, &audit)
-            : make_denial_result(req.call_id, "the replay was not approved again after unattended mode changed",
-                                 "tool.approval_denied");
-    if (!replay_allowed) {
+    ToolResult tool_result;
+    if (replay_allowed) {  // ADR-237 §5.2: the pipeline is async; await it.
+        tool_result = co_await invoke_tool(tool_table, held, req, effect_context_, one_shot_approve, &audit);
+    } else {
+        tool_result = make_denial_result(
+            req.call_id, "the replay was not approved again after unattended mode changed", "tool.approval_denied");
         audit.call_id = req.call_id;
         audit.ok      = false;
     }
@@ -1380,7 +1387,7 @@ task<result<AgentResponse>> AgentSessionCore::finish_hook_processed_round(Pendin
         reqs.push_back(hc.request);
         req_positions.push_back(i);
     }
-    std::vector<DispatchedCall> dispatched = dispatch_tool_calls(reqs, tool_table, held, approve, policy);
+    std::vector<DispatchedCall> dispatched = co_await dispatch_tool_calls(reqs, tool_table, held, approve, policy);
     for (std::size_t j = 0; j < dispatched.size(); ++j) {
         results[req_positions[j]] = std::move(dispatched[j].result);
     }
@@ -2255,7 +2262,7 @@ task<result<AgentResponse>> AgentSessionCore::run_rounds_body() {
         }
 
         std::vector<DispatchedCall> dispatched =
-            dispatch_tool_calls(reqs, tool_table, held, effective_approval_decider(tool_table), policy_decider_);
+            co_await dispatch_tool_calls(reqs, tool_table, held, effective_approval_decider(tool_table), policy_decider_);
 
         for (std::size_t j = 0; j < dispatched.size(); ++j) {
             std::size_t const i = req_positions[j];

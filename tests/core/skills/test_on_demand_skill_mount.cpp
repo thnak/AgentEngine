@@ -107,7 +107,7 @@ int main() {
                                        json::Value::make_object({{"note", json::Value::make_string("x")}}),
                                        /*arguments_tainted=*/false, 0};
             ToolInvocationAudit audit;
-            ToolResult const result = invoke_tool(scoped, held, req, ctx, {}, &audit);
+            ToolResult const result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(scoped, held, req, ctx, {}, &audit));
             check(result.is_error,
                   "R2-before: invoke_tool REJECTS fake_tool while test-skill is unmounted -- a real "
                   "restriction, not a cosmetic one");
@@ -130,7 +130,7 @@ int main() {
                                        json::Value::make_object({{"note", json::Value::make_string("x")}}),
                                        /*arguments_tainted=*/false, 0};
             ToolInvocationAudit audit;
-            ToolResult const result = invoke_tool(scoped, held, req, ctx, {}, &audit);
+            ToolResult const result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(scoped, held, req, ctx, {}, &audit));
             check(!result.is_error,
                   "R2-after: the SAME call to fake_tool succeeds once test-skill is mounted -- the "
                   "unlock is real, through the real pipeline, not a separate code path");

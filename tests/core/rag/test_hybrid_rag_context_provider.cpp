@@ -232,15 +232,15 @@ int main() {
 
             ae::EffectContext denied_ctx{};
             denied_ctx.principal = principal;
-            auto denied = ae::invoke_tool(table, ae::CapabilitySet{}, req, denied_ctx, ae::ApprovalDecider{});
+            auto denied = agentengine::test_support::run_task_sync<agentengine::ToolResult>(ae::invoke_tool(table, ae::CapabilitySet{}, req, denied_ctx, ae::ApprovalDecider{}));
             AE_CHECK(denied.is_error,
                      "H9c: recall is DENIED through invoke_tool() when the caller holds no FsRead "
                      "on the corpus mount");
 
             ae::EffectContext allowed_ctx{};
             allowed_ctx.principal = principal;
-            auto allowed = ae::invoke_tool(table, ae::CapabilitySet::grant_root({ae::Capability{read_cap}}),
-                                           req, allowed_ctx, ae::ApprovalDecider{});
+            auto allowed = agentengine::test_support::run_task_sync<agentengine::ToolResult>(ae::invoke_tool(table, ae::CapabilitySet::grant_root({ae::Capability{read_cap}}),
+                                           req, allowed_ctx, ae::ApprovalDecider{}));
             AE_CHECK(!allowed.is_error,
                      "H9d: the SAME call SUCCEEDS once the caller holds the matching FsRead");
         }

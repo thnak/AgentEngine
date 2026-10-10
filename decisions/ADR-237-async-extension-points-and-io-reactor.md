@@ -1431,3 +1431,156 @@ deletion" order — this is the first of the three).
   `ToolTable::from`; delete `make_tool_descriptor_with_invoke`, `make_sync_invoke`, and the 15 sentinel
   `invoke`s; migrate the ~11 static hand-built descriptors to `Tool<>`; then `drive_leaf_task` /
   `synchronous_leaf` go.
+
+### Step 10 (2026-10-09): tool seam, slice 2 — the pipeline itself is async
+
+The second slice of §5.2 (D2's "seam signatures → callers → deletion" order): now that the seam
+signature is `task<...>` (step 9), the **pipeline that drives it** is converted too, so an async
+`invoke` is awaited end to end instead of trampolined. Additive for every shipped tool (they still
+resolve inline and never park), but a tool that genuinely parks now suspends its caller's own await
+chain rather than deadlocking a `block_on`.
+
+- **`run_admitted_call`** (`src/core/tool_pipeline.cpp`) → `task<AdmittedCallOutcome>`: step 8
+  `co_await`s `tool.invoke(...)` directly — the transitional `rt::drive_leaf_task` is gone from this
+  path. Steps 9 (normalize) and 10 (revoke, unconditional) are unchanged.
+- **`invoke_tool`** (`core/tool_pipeline.hpp`/`src/core/tool_pipeline.cpp`) → `task<ToolResult>`:
+  `co_await`s `run_admitted_call`; steps 1/4/7/5 (`admit_call`) stay synchronous inside the coroutine
+  body, so the audit `finish()` closure and the `{run_id, turn_index, call_index, digest}` idempotency
+  derivation are byte-for-byte as before.
+- **`background_task`** → `task<result<void>>`: the coroutine body performs only the synchronous
+  admission (steps 1, 4/7, 5) and then detaches its worker (step 8), so awaiting it never parks for the
+  tool's own duration — same observable behaviour, new signature. The detached worker still drives the
+  async invoke with `rt::drive_leaf_task` (a genuinely-sync edge; unchanged here).
+- **`AgentSessionCore::dispatch_tool_calls`** (`rt/agent_session_core.hpp`/`src/rt/agent_session_core.cpp`)
+  → `task<std::vector<DispatchedCall>>`: the sequential path `co_await`s `invoke_tool`; the fan-out path
+  (ADR-160) drives `run_admitted_call` with `rt::block_on` on each `run_jobs_bounded` `std::jthread` — a
+  plain ThreadPool-style worker, not a lane, so `block_on` is allowed (`bounded_call_fanout.hpp` marks
+  no thread). Its two callers (`run_rounds`, `finish_hook_processed_round`, both already coroutines)
+  `co_await` it.
+- **Genuinely-sync host edges** drive the async entry points with `rt::block_on`, the one sanctioned
+  sync driver (`block_on.hpp`): `invoke_agent_tool` (`core/agent_registry.hpp`), the MCP tool-call and
+  background handlers (`protocol/mcp/server.hpp`), the native-jail `bridge_tool_call`
+  (`src/backends/native_jail/tool_bridge.hpp`), and `examples/11_skill_mount.cpp`.
+  `src/rt/agent_session_core.cpp` and the three host headers each gained a `rt/block_on.hpp` include
+  (core L2 → rt L0 is down-layer, already precedented by `session_builder.hpp`).
+- **Tests**: every free `invoke_tool(...)`/`background_task(...)` call site (21 files, 78 calls) now
+  drives the task with `test_support::run_task_sync<...>` and includes `tests/support/run_task_sync.hpp`
+  — the same driver step 9 established. Comment prose naming `invoke_tool()`/`background_task()` is left
+  untouched.
+- **Evidence.** Windows (MSVC 14.51, full tree `/W4 /WX`, dev preset): builds clean, no warnings. The
+  27 targeted tests — every wrapped file plus `test_agent_tool_invocation`, `test_tool_bridge`,
+  `test_rt_background_job_runner`, `example_11_skill_mount`, and the two `sandbox_tool_provider`
+  compile-fail controls — pass 27/27. Full suite `ctest -LE live-network`: 401/415, the failures being
+  the 13 Docker-daemon sandbox tests (the unchanged step-1 baseline) and
+  `test_external_skill_discovery`'s **D6**, an explicitly *opportunistic* check against this machine's
+  real `~/.claude/skills` (which currently holds only `synced/` — no symlinked `firecrawl-*` skill dirs),
+  a host-state difference rather than a regression: nothing in this change touches skill discovery.
+- **Open after step 10 (smaller, but sharp):** the last two trampolines on this seam are
+  `background_task`'s detached `std::thread` and `background_job_runner.hpp`'s `run_job` — both go when
+  `AgentSession::start_background_task` moves onto `rt::BackgroundJobRunner` (ADR-181 phase 5) and
+  `drive_leaf_task`/`synchronous_leaf` are deleted. The four host `rt::block_on` edges
+  (`invoke_agent_tool`, MCP, the native-jail bridge, the example) go when those callers move onto the
+  Runtime/strands (§5.2 callers). Then the rest of §5.2: `Tool<>`'s instance
+  `const task<result<Reply>> invoke`, `ToolTable::from`, deletion of `make_tool_descriptor_with_invoke`/
+  `make_sync_invoke`/the sentinel `invoke`s, and migrating the ~11 hand-built descriptors.
+
+### Step 11 (2026-10-09): §5.2 "one way to declare a tool", slice 1 — the instance contract enters
+
+The first, additive move of §5.2's authoring-contract change: introduce the target shape and its
+registration path without yet forcing the ~130 existing conformers over.
+
+- **Contract (`core/tool.hpp`)**: the §5.2 target form is a non-static **`const`**
+  `agentengine::task<result<Reply>> invoke(Args, EffectContext&)` — a stateless tool is an empty object,
+  a stateful one carries injected state — documented at the contract site; `core/task.hpp` is now
+  included by `tool.hpp`. The older `static result<Reply> invoke` is recorded as accepted
+  **transitionally** and deleted once every conformer is converted.
+- **Mechanism (`core/tool_descriptor.hpp`)**: a second, value-taking
+  `make_tool_descriptor<ToolT>(ToolT tool)` moves the tool into a descriptor-owned `std::shared_ptr` and
+  the seam calls its instance `invoke`; it carries the `Deterministic`/`EnforcesGrantedCaps` claims from
+  the declaration (the instance invoke **is** the declared code, unlike `make_tool_descriptor_with_invoke`).
+  `ToolTable::from(ToolT{...}, ...)` registers instances; `from()` is an empty table. Neither existing
+  path changes, so nothing regresses.
+- **Policy declaration (`core/tool.hpp`)**: `CapturesSessionState` — the explicit tag §5.2 requires
+  (red-team G2) — with `declared_captures_session_state()`, read by both factories into
+  `ToolDescriptor::captures_session_state`. This is what lets a migrated stateful descriptor keep the
+  `true` that `make_tool_descriptor_with_invoke` set implicitly, instead of defaulting `false` (which
+  would silently make a configured tool backgroundable and rerun-comparable).
+- **First conformers converted**: `tools::ReadSandboxFile` and `tools::ReadContent` — both stateless, so
+  `captures_session_state` stays `false`, exactly as their old `make_tool_descriptor<T>()` default (their
+  `invoke_via`/`invoke_from_sandbox` helpers stay static). `tools/test_driver/test_driver.hpp` now
+  registers `ReadSandboxFile` through the value-taking factory.
+- **Tests**: `test_read_content` and `test_effect_context_sandbox_fs` drive the async invoke with
+  `test_support::run_task_sync`.
+- **Evidence.** Windows (MSVC 14.51, dev preset `/W4 /WX`): full tree builds clean; `test_read_content`,
+  `test_effect_context_sandbox_fs`, `test_agentengine_test_driver` pass; full suite `ctest -LE
+  live-network` 401/415 — the identical 14 (13 Docker + `test_external_skill_discovery`'s opportunistic
+  D6) as step 10, i.e. no new failures from a change that touches `tool.hpp` for every consumer.
+- **Open (the bulk of §5.2):** the remaining `Tool<>` conformers (mostly tests) and the ~30
+  `make_tool_descriptor_with_invoke` / ~20 `make_sync_invoke` sites still use the transitional paths. With
+  `CapturesSessionState` now available, the ~11 hand-built **stateful** descriptors can migrate to
+  `Tool<>` instances (declaring the tag where they held session state), then the remaining conformers and
+  test drivers, then the deletion of the static `result<Reply> invoke` form /
+  `make_tool_descriptor_with_invoke` / `make_sync_invoke` / the sentinel `invoke`s — the next slices.
+
+### Step 12 (2026-10-10): §5.2 slice 2 — the hand-built stateful descriptors start moving
+
+`CapturesSessionState` (step 11) unblocks the stateful half of the migration. This step converts the
+hand-built descriptors whose state is a plain shared block, leaving the two that are still entangled
+with an unmigrated seam (below).
+
+- **`TodoProvider`** (`core/todo_provider.hpp`, 5 tools): `todos_add`/`todos_complete`/`todos_remove`/
+  `todos_get_remaining`/`todos_get_all` become `todo_detail::Todo*Tool` `Tool<>` conformers holding the
+  shared `TodoState`; the two read-only ones carry `EffectClass<pure>`; all five declare
+  `CapturesSessionState`, so their `captures_session_state` stays `true` exactly as the old
+  `make_sync_invoke([this]...)` closures set it. The bounds and `render()` moved into `todo_detail`
+  (`TodoProvider::kMaxItems`/`kMaxTitleLength` remain public aliases for existing callers).
+- **`PlanExecuteMode`** (`core/plan_execute_mode.hpp`, `plan_ready`): a `plan_execute_detail::PlanReadyTool`
+  `Tool<>` holding the shared read-only `TodoState` and the shared `GateState`, declaring
+  `CapturesSessionState`.
+- **`MemoryProvider`** (`core/memory_provider.hpp`, `recall`): a `memory_detail`-adjacent
+  `RecallTool<OS,RS>` `Tool<>` that holds the provider's read-only config by value and is therefore
+  **not** `CapturesSessionState` (matching the old copy-capturing closure). Its ceiling is known only at
+  provider construction, so `make_recall_tool_descriptor()` still sets `capability_ceiling` on the
+  returned descriptor (ADR-153's must-fix, preserved verbatim) — the `Tool<>` declares `Capabilities<>`
+  empty. §9 D3 replaces that post-hoc set with a per-call requirement.
+- **Deferred (still hand-built, with reasons):** the two RAG providers' `recall` tools
+  (`vector_rag_context_provider.hpp`, `hybrid_rag_context_provider.hpp`) drive their `Embedder`/index
+  through `rt::drive_leaf_task` behind `synchronous_leaf` gates; converting them to an async `invoke`
+  removes those gates and is entangled with §5.1's async embedder/index seams, so it lands with that
+  work. The two native-process providers must move together with §9 **D3** (their empty ceiling plus
+  in-body grant matching is exactly what D3 replaces with a per-call requirement).
+- **Evidence.** Windows (MSVC 14.51, dev preset `/W4 /WX`): full tree builds clean; `test_todo_provider`,
+  `test_plan_execute_mode`, `test_harness_session`, `test_memory_provider`, `test_memory_codeact_bridging`,
+  `test_memory_no_authority_laundering` and the rest of the memory/eval/RAG set pass; `tools/naming_lint.py`
+  OK; full suite `ctest -LE live-network` 401/415 — the identical 14 as steps 10/11, no new failures.
+
+### Step 12 open items (unchanged from step 11): the RAG `recall` tools (with §5.1), the native-process
+providers (with D3), the remaining test `Tool<>` conformers, and the deletion of the static `invoke`/
+`make_tool_descriptor_with_invoke`/`make_sync_invoke`/sentinels.
+
+### Step 12a (2026-10-10): code-review pass over the §5.2 tool-contract changes
+
+A focused review (no BLOCKER/HIGH; behavior-preserving, I2 intact) produced these fixes:
+
+- **Include hygiene.** `core/tool.hpp` no longer includes `core/task.hpp` — it never names `task`, and
+  `core/tool_descriptor.hpp` (plus the two conformers that spell `task<...>`, `tools/read_content.hpp`
+  and `tools/read_sandbox_file.hpp`) include it directly. Stops `rt/task.hpp`'s `<thread>`/`<mutex>`/
+  `<condition_variable>` fan-out through every `tool.hpp`-only includer.
+- **`ToolTable::from(...)` coverage.** It had zero call sites/tests; `test_tool_table_scoping.cpp` now has
+  R5 — `from()` (empty), `from(LiveTool{...})`, field-equality against `make_tool_descriptor(T{...})`, and
+  a driven call proving the value-taking factory keeps the live instance alive.
+- **N1 (per-turn allocations) resolved.** The five `TodoProvider` tools, `PlanExecuteMode`'s `plan_ready`,
+  and `MemoryProvider`'s `recall` are now built **once in the owning provider's constructor** and cached
+  (`TodoProvider::tools_`, `PlanExecuteMode::plan_ready_tool_`, `MemoryProvider::recall_tool_`), instead
+  of `make_shared<ToolT>` + schema re-parse on every `on_context()`/`make_recall_tool_descriptor()`.
+  `on_context()` copies the cached descriptors into its contribution.
+- **M1 documented.** `RecallTool` holds raw `OS*`/`RS*` (the provider's config by value); the
+  provider-outlives-descriptor precondition is now stated explicitly on the type (ownership change is out
+  of scope — the host owns the stores).
+- **Prose.** Refreshed the stale file-top comments in `todo_provider.hpp`/`tool_descriptor.hpp`, merged
+  the duplicate `plan_execute_detail` block, and fixed the "invoke closure" wording in
+  `plan_execute_mode.hpp`.
+- **Evidence.** Windows (MSVC 14.51, `/W4 /WX`): full tree clean; naming-lint OK; layering-lint OK; the
+  affected provider/context/memory/tools tests pass; full suite `ctest -LE live-network` 401/415, the
+  identical 14 baseline failures.
+

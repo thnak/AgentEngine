@@ -98,7 +98,7 @@ int main() {
         check(allowed.empty(), "before mount: nothing is unlocked yet");
         ToolTable const     scoped = scope_tools_to_mounted_skills(universe, allowed);
         ToolInvocationAudit audit;
-        ToolResult const    result = invoke_tool(scoped, held, count_call(), ctx, {}, &audit);
+        ToolResult const    result = rt::block_on(invoke_tool(scoped, held, count_call(), ctx, {}, &audit));
         check(result.is_error, "before mount: word_count is genuinely REJECTED by the real pipeline");
         check(audit.error_code == "tool.unknown_name",
               "before mount: rejected as 'unknown tool', not a permission denial -- it isn't in the "
@@ -116,7 +116,7 @@ int main() {
               "after mount: word_count is now named as unlocked");
         ToolTable const     scoped = scope_tools_to_mounted_skills(universe, allowed);
         ToolInvocationAudit audit;
-        ToolResult const    result = invoke_tool(scoped, held, count_call(), ctx, {}, &audit);
+        ToolResult const    result = rt::block_on(invoke_tool(scoped, held, count_call(), ctx, {}, &audit));
         check(!result.is_error, "after mount: the SAME call to word_count now succeeds");
         if (!result.is_error && !result.content.empty()) {
             auto const* data = std::get_if<Data>(&result.content.front().value);

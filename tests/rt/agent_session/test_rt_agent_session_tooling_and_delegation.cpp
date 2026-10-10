@@ -61,6 +61,7 @@
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/trust/principal.hpp"
+#include "../../support/run_task_sync.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::NoSessionState;
@@ -551,9 +552,9 @@ int main() {
         EffectContext ctx;
         bool completion_called = false;
 
-        auto submitted = agentengine::background_task(
+        auto submitted = agentengine::test_support::run_task_sync<agentengine::result<void>>(agentengine::background_task(
             table, held, req, ctx, /*approve=*/{}, /*current_background_count=*/0,
-            [&completion_called](ToolResult, agentengine::ToolInvocationAudit) { completion_called = true; });
+            [&completion_called](ToolResult, agentengine::ToolInvocationAudit) { completion_called = true; }));
 
         check(!submitted.has_value(),
               "S3: background_task() refuses a captures_session_state descriptor even though it "
@@ -584,9 +585,9 @@ int main() {
         EffectContext ctx;
         bool completion_called = false;
 
-        auto submitted = agentengine::background_task(
+        auto submitted = agentengine::test_support::run_task_sync<agentengine::result<void>>(agentengine::background_task(
             table, held, req, ctx, /*approve=*/{}, /*current_background_count=*/0,
-            [&completion_called](ToolResult, agentengine::ToolInvocationAudit) { completion_called = true; });
+            [&completion_called](ToolResult, agentengine::ToolInvocationAudit) { completion_called = true; }));
 
         check(submitted.has_value(),
               "S4: an ordinary stateless Backgroundable tool still backgrounds successfully -- no "

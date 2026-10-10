@@ -223,26 +223,22 @@ result<AdmittedCall> admit_call(ToolTable const& table, CapabilitySet const& hel
     return AdmittedCall{tool, std::move(bound)};
 }
 
-AdmittedCallOutcome run_admitted_call(ToolDescriptor const& tool, ToolCallRequest const& request,
-                                      EffectContext& ctx, std::vector<BoundCapability>& bound) {
+task<AdmittedCallOutcome> run_admitted_call(ToolDescriptor const& tool, ToolCallRequest const& request,
+                                            EffectContext& ctx, std::vector<BoundCapability>& bound) {
     using namespace tool_pipeline_detail;
     // -- step 8: invoke (deadline checked at the call boundary, not preemptible mid-call) ---------
     if (ctx.deadline.time_since_epoch().count() != 0 &&
         std::chrono::steady_clock::now() > ctx.deadline) {
         for (auto const& b : bound) b.revoke();
         error e{failure_class::resource, "deadline already exceeded", "tool.deadline_exceeded"};
-        return AdmittedCallOutcome{make_error_result(request.call_id, e), e, 0};
+        co_return AdmittedCallOutcome{make_error_result(request.call_id, e), e, 0};
     }
 
     ctx.bound_capabilities = &bound;
-    // ADR-237 §5.2: `invoke` is async. Until the pipeline itself is converted, drive it to
-    // completion synchronously -- the invoked task is a leaf (its body calls a tool and never parks).
-    auto drive_invoke = [&]() -> result<json::Value> {
-        auto driven = rt::drive_leaf_task(tool.invoke(request.arguments, ctx));
-        if (!driven) return std::unexpected(driven.error());
-        return std::move(*driven);
-    };
-    result<json::Value> invoke_result = drive_invoke();
+    // ADR-237 §5.2: `invoke` is async -- await it directly (no synchronous trampoline). The task is
+    // a leaf for every shipped tool; a genuinely async tool (step B's point) parks here and its
+    // caller's own await chain carries the suspension.
+    result<json::Value> invoke_result = co_await tool.invoke(request.arguments, ctx);
     ctx.bound_capabilities = nullptr;
 
     // -- step 10: account (revoke unconditionally, success or failure) ----------------------------
@@ -251,15 +247,15 @@ AdmittedCallOutcome run_admitted_call(ToolDescriptor const& tool, ToolCallReques
     // -- step 9: normalize --------------------------------------------------------------------------
     if (!invoke_result) {
         error const& e = invoke_result.error();
-        return AdmittedCallOutcome{make_error_result(request.call_id, e), e, 0};
+        co_return AdmittedCallOutcome{make_error_result(request.call_id, e), e, 0};
     }
 
     auto normalized = normalize_success(request.call_id, *invoke_result, ctx);
     if (!normalized) {
         error const& e = normalized.error();
-        return AdmittedCallOutcome{make_error_result(request.call_id, e), e, 0};
+        co_return AdmittedCallOutcome{make_error_result(request.call_id, e), e, 0};
     }
-    return AdmittedCallOutcome{std::move(normalized->first), std::nullopt, normalized->second};
+    co_return AdmittedCallOutcome{std::move(normalized->first), std::nullopt, normalized->second};
 }
 
 ToolInvocationAudit make_call_audit(ToolCallRequest const& request,
@@ -281,18 +277,18 @@ ToolInvocationAudit make_call_audit(ToolCallRequest const& request,
     return audit;
 }
 
-ToolResult invoke_tool(ToolTable const& table, CapabilitySet const& held,
-                       ToolCallRequest const& request, EffectContext& ctx,
-                       ApprovalDecider const& approve,
-                       ToolInvocationAudit* audit_out,
-                       // ADR-070: appended last (this file's own established
-                       // convention for additive parameters), default `{}` so
-                       // every existing positional call site -- including the
-                       // three "already resolved by a human" one-shot-approve
-                       // sites in rt/agent_session.hpp -- is unaffected and
-                       // never re-litigates a decision policy_driven already
-                       // deferred to a real human.
-                       PolicyDecider const& policy) {
+task<ToolResult> invoke_tool(ToolTable const& table, CapabilitySet const& held,
+                             ToolCallRequest const& request, EffectContext& ctx,
+                             ApprovalDecider const& approve,
+                             ToolInvocationAudit* audit_out,
+                             // ADR-070: appended last (this file's own established
+                             // convention for additive parameters), default `{}` so
+                             // every existing positional call site -- including the
+                             // three "already resolved by a human" one-shot-approve
+                             // sites in rt/agent_session.hpp -- is unaffected and
+                             // never re-litigates a decision policy_driven already
+                             // deferred to a real human.
+                             PolicyDecider const& policy) {
     using namespace tool_pipeline_detail;
     auto const started = std::chrono::steady_clock::now();
     // Phase F1: derived once, unconditionally, from exactly the four inputs 019 §3 names -- never
@@ -322,7 +318,7 @@ ToolResult invoke_tool(ToolTable const& table, CapabilitySet const& held,
     auto admission = admit_call(table, held, request, ctx.principal, approve, policy);
     if (!admission) {
         error const& e = admission.error();
-        return finish(make_error_result(request.call_id, e), &e);
+        co_return finish(make_error_result(request.call_id, e), &e);
     }
     ToolDescriptor const* tool = admission->tool;
     std::vector<BoundCapability> bound = std::move(admission->bound);
@@ -330,8 +326,8 @@ ToolResult invoke_tool(ToolTable const& table, CapabilitySet const& held,
     // -- step 6: admit -- deferred (Quark 022 not in M2 scope; documented no-op, see file top) ----
 
     // -- steps 8, 9, 10 (invoke, normalize, account): `run_admitted_call()` above, ADR-160 §5 -------
-    AdmittedCallOutcome outcome = run_admitted_call(*tool, request, ctx, bound);
-    return finish(std::move(outcome.result), outcome.failure ? &*outcome.failure : nullptr, outcome.bytes);
+    AdmittedCallOutcome outcome = co_await run_admitted_call(*tool, request, ctx, bound);
+    co_return finish(std::move(outcome.result), outcome.failure ? &*outcome.failure : nullptr, outcome.bytes);
 }
 
 std::vector<ConcurrencyClass> partition_batch(
@@ -375,27 +371,27 @@ std::vector<ConcurrencyClass> partition_batch(
     return classes;
 }
 
-result<void> background_task(ToolTable const& table, CapabilitySet const& held,
-                             ToolCallRequest const& request, EffectContext ctx,
-                             ApprovalDecider const& approve,
-                             std::size_t current_background_count,
-                             BackgroundTaskCompletion on_complete) {
+task<result<void>> background_task(ToolTable const& table, CapabilitySet const& held,
+                                   ToolCallRequest const& request, EffectContext ctx,
+                                   ApprovalDecider const& approve,
+                                   std::size_t current_background_count,
+                                   BackgroundTaskCompletion on_complete) {
     using namespace tool_pipeline_detail;
 
     // -- step 1: resolve ---------------------------------------------------------------------------
     ToolDescriptor const* tool = table.find(request.tool_name);
     if (!tool) {
-        return std::unexpected(
+        co_return std::unexpected(
             error{failure_class::contract, "unknown tool: " + request.tool_name, "tool.unknown_name"});
     }
     // -- step 2: validate -- ADR-197, the same refusal `admit_call()` makes ----------------------
-    if (!request.arguments_parse_error.empty()) return std::unexpected(malformed_arguments_error(request));
+    if (!request.arguments_parse_error.empty()) co_return std::unexpected(malformed_arguments_error(request));
 
     // 006 §6b: an undeclared tool may never be backgrounded -- Tool::declared_backgroundable()'s own
     // fail-closed default.
     if (!tool->backgroundable) {
-        return std::unexpected(error{failure_class::policy, "tool is not declared Backgroundable",
-                                      "tool.not_backgroundable"});
+        co_return std::unexpected(error{failure_class::policy, "tool is not declared Backgroundable",
+                                         "tool.not_backgroundable"});
     }
 
     // ADR-028: a state-capturing descriptor's `invoke` closure holds a reference into its owning
@@ -406,9 +402,9 @@ result<void> background_task(ToolTable const& table, CapabilitySet const& held,
     // step the plain `backgroundable` check above already gates -- never reached, not merely
     // discouraged by convention.
     if (tool->captures_session_state) {
-        return std::unexpected(error{failure_class::policy,
-                                      "a session-state-capturing tool may never be backgrounded",
-                                      "tool.state_capturing_not_backgroundable"});
+        co_return std::unexpected(error{failure_class::policy,
+                                         "a session-state-capturing tool may never be backgrounded",
+                                         "tool.state_capturing_not_backgroundable"});
     }
 
     // ADR-060 §4 (red-team finding, must-fix): `ctx` above is a BY-VALUE parameter -- a real copy of
@@ -458,7 +454,7 @@ result<void> background_task(ToolTable const& table, CapabilitySet const& held,
         auto handle = bind_ceiling_entry(held, *tool, requirement);  // ADR-217
         if (!handle) {
             error e{failure_class::policy, "required capability not held", "tool.capability_not_held"};
-            return std::unexpected(e);
+            co_return std::unexpected(e);
         }
         bound.push_back(std::move(*handle));
     }
@@ -471,7 +467,7 @@ result<void> background_task(ToolTable const& table, CapabilitySet const& held,
         for (auto const& b : bound) b.revoke();
         error e{failure_class::resource, "Background<max_concurrent> ceiling reached or not granted",
                  "tool.background_capacity_exceeded"};
-        return std::unexpected(e);
+        co_return std::unexpected(e);
     }
 
     // -- step 5: approve ------------------------------------------------------------------------------
@@ -484,7 +480,7 @@ result<void> background_task(ToolTable const& table, CapabilitySet const& held,
         if (!approved) {
             for (auto const& b : bound) b.revoke();
             error e{failure_class::policy, "approval required and not granted", "tool.approval_denied"};
-            return std::unexpected(e);
+            co_return std::unexpected(e);
         }
     }
 
@@ -542,7 +538,7 @@ result<void> background_task(ToolTable const& table, CapabilitySet const& held,
     });
     worker.detach();
 
-    return {};
+    co_return result<void>{};
 }
 
 }  // namespace agentengine

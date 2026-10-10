@@ -1071,10 +1071,13 @@ private:
     // host-configurable knob yet.
     static constexpr std::size_t kParallelBatchWorkerCap = 4;
 
-    std::vector<DispatchedCall> dispatch_tool_calls(std::vector<ToolCallRequest> const& reqs,
-                                                      ToolTable const& tool_table, CapabilitySet const& held,
-                                                      ApprovalDecider const& approve,
-                                                      PolicyDecider const& policy);
+    // ADR-237 §5.2: async -- `task<...>`. The sequential path `co_await`s `invoke_tool`; the
+    // fanned-out path drives `run_admitted_call` with `rt::block_on` on each bounded worker thread
+    // (a genuinely-sync edge), joining before this task completes.
+    task<std::vector<DispatchedCall>> dispatch_tool_calls(std::vector<ToolCallRequest> const& reqs,
+                                                          ToolTable const& tool_table, CapabilitySet const& held,
+                                                          ApprovalDecider const& approve,
+                                                          PolicyDecider const& policy);
 
     // `force_tainted()`, `filter_cross_provider_reasoning()`, and `drain_streaming_response()` now
     // live as free functions in `rt::detail` (rt/agent_session_trust.hpp, included above) --

@@ -24,7 +24,7 @@
 //
 // I3 ("model output is data, never authority"): the phase transition is never inferred from what
 // the model SAYS. It requires a real, structured, host-mediated action -- calling the `plan_ready`
-// tool -- and that tool's own invoke closure independently re-checks `TodoProvider::has_planned()`
+// tool -- and that tool's own invoke independently re-checks `TodoProvider::has_planned()`
 // (at least one real `todos_add` call already succeeded) before honoring it, so the model cannot
 // talk its way into "execute" phase with zero actual planning by simply asserting it is done.
 
@@ -71,6 +71,40 @@ struct GateState {
 };
 
 namespace plan_execute_detail {
+
+// ADR-237 §5.2: `plan_ready` as a real `Tool<>` conformer (it was a hand-built descriptor with a
+// `make_sync_invoke([this]...)` closure). It holds the shared `TodoState` (read-only) and the shared
+// `GateState`, so `CapturesSessionState` keeps it non-backgroundable/non-rerun-comparable exactly as
+// its old capturing closure was; `PlanExecuteMode` contributes it via `make_tool_descriptor(ToolT{...})`.
+// ae-naming-lint: allow PlanReadyTool — ADR-237 §5.2 Tool<> conformer for PlanExecuteMode's plan_ready
+struct PlanReadyTool : Tool<PlanReadyTool, Capabilities<>, Approval<approval_mode::never_require>,
+                            CapturesSessionState> {
+    static constexpr std::string_view name        = "plan_ready";
+    static constexpr std::string_view description = "Declare planning complete and begin executing. "
+                                                    "Requires at least one todo item to already exist.";
+    using Args  = PlanReadyArgs;
+    using Reply = PlanReadyReply;
+
+    PlanReadyTool(std::shared_ptr<TodoState const> plan, std::shared_ptr<GateState> gate)
+        : plan_(std::move(plan)), gate_(std::move(gate)) {}
+
+    [[nodiscard]] task<result<Reply>> invoke(Args, EffectContext&) const {
+        // I3: re-checked here, not trusted from the fact the model chose to call this tool at all --
+        // a structured call is still not evidence of SUBSTANCE on its own. At least one real
+        // todos_add must have already succeeded.
+        if (!plan_->ever_used) {
+            co_return std::unexpected(error{failure_class::contract,
+                                            "no plan yet -- call todos_add at least once first",
+                                            "plan_execute.no_plan"});
+        }
+        gate_->executing = true;
+        co_return Reply{true};
+    }
+
+private:
+    std::shared_ptr<TodoState const> plan_;
+    std::shared_ptr<GateState>       gate_;
+};
 
 // The default "safe to call before the plan gate opens" bar: no capability reach at all, and an
 // effect class that's safe to attempt without having committed to a plan first. This is the same
@@ -136,11 +170,16 @@ public:
     // returned `shared_ptr` is retained, which keeps the underlying `TodoState` alive independently
     // of whichever `TodoProvider` value happens to hold a live reference to it at any given moment
     // (see todo_provider.hpp's own comment on `TodoState` for why that indirection exists).
-    explicit PlanExecuteMode(TodoProvider const& todo) : plan_(todo.plan_state_handle()) {}
+    explicit PlanExecuteMode(TodoProvider const& todo) : plan_(todo.plan_state_handle()) {
+        // ADR-237 §5.2 (N1): build the `plan_ready` descriptor once. It holds the shared `TodoState`
+        // and `GateState`, whose identities never change, so `on_context()` need not rebuild it.
+        plan_ready_tool_ = make_tool_descriptor<plan_execute_detail::PlanReadyTool>(
+            plan_execute_detail::PlanReadyTool{plan_, gate_});
+    }
 
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext&, EffectContext&) {
         ContextContribution c;
-        c.tools.push_back(make_plan_ready_descriptor());
+        c.tools.push_back(plan_ready_tool_);
         if (!gate_->executing) {
             c.instructions = TaintedText{std::string(kGatingGuidance)};
         }
@@ -164,34 +203,9 @@ private:
         "todo list (todos_add) describing your plan, then call plan_ready to begin executing. "
         "Read-only, capability-free tools remain available while you plan.";
 
-    [[nodiscard]] ToolDescriptor make_plan_ready_descriptor() {
-        ToolDescriptor d;
-        d.name                  = "plan_ready";
-        d.description           = "Declare planning complete and begin executing. Requires at least "
-                                   "one todo item to already exist.";
-        d.approval               = approval_mode::never_require;
-        d.args_schema_json      = schema::json_schema_of<PlanReadyArgs>();
-        d.reply_schema_json     = schema::json_schema_of<PlanReadyReply>();
-        d.captures_session_state = true;
-        d.invoke = make_sync_invoke([this](json::Value const& args_value, EffectContext&) -> result<json::Value> {
-            auto args = schema::from_json<PlanReadyArgs>(args_value);
-            if (!args) return std::unexpected(args.error());
-            // I3: re-checked here, not trusted from the fact the model chose to call this tool at
-            // all -- a structured call is still not evidence of SUBSTANCE on its own. At least one
-            // real todos_add must have already succeeded.
-            if (!plan_->ever_used) {
-                return std::unexpected(error{failure_class::contract,
-                                              "no plan yet -- call todos_add at least once first",
-                                              "plan_execute.no_plan"});
-            }
-            gate_->executing = true;
-            return schema::to_json(PlanReadyReply{true});
-        });
-        return d;
-    }
-
     std::shared_ptr<TodoState const> plan_;
     std::shared_ptr<GateState>       gate_ = std::make_shared<GateState>();
+    ToolDescriptor                   plan_ready_tool_;  // ADR-237 §5.2 (N1): built once
 };
 
 static_assert(ContextProvider<PlanExecuteMode>,

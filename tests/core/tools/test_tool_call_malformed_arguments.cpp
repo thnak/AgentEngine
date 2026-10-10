@@ -30,6 +30,7 @@
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/testing/scripted_chat_client.hpp"
+#include "../../support/run_task_sync.hpp"
 
 namespace {
 
@@ -112,8 +113,8 @@ Invoked invoke(ae::ToolTable const& table, std::string arguments_json) {
     ae::CapabilitySet const held;
     ae::EffectContext ctx;
     Invoked out;
-    out.result = ae::invoke_tool(table, held, ae::tool_call_request_of(model_call("c", "probe", arguments_json), 0),
-                                 ctx, ae::ApprovalDecider{}, &out.audit);
+    out.result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(ae::invoke_tool(table, held, ae::tool_call_request_of(model_call("c", "probe", arguments_json), 0),
+                                 ctx, ae::ApprovalDecider{}, &out.audit));
     return out;
 }
 
@@ -227,20 +228,20 @@ int main() {
 
         ae::CapabilitySet const held_bg = ae::CapabilitySet::grant_root({ae::cap::Background{4}});
         bool completed = false;
-        auto started = ae::background_task(
+        auto started = agentengine::test_support::run_task_sync<agentengine::result<void>>(ae::background_task(
             table, held_bg, ae::tool_call_request_of(model_call("c", "background_probe", "{not json"), 0),
             ae::EffectContext{}, ae::ApprovalDecider{}, 0,
-            [&](ae::ToolResult, ae::ToolInvocationAudit) { completed = true; });
+            [&](ae::ToolResult, ae::ToolInvocationAudit) { completed = true; }));
         check(!started && started.error().code == "tool.malformed_arguments",
               "T5: background_task() refuses it too, before spawning anything");
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         check(!completed && g_probe_runs == 0, "T5: no background worker ran the tool");
 
         // control: the same backgroundable tool with valid arguments does start
-        started = ae::background_task(table, held_bg,
+        started = agentengine::test_support::run_task_sync<agentengine::result<void>>(ae::background_task(table, held_bg,
                                       ae::tool_call_request_of(model_call("c2", "background_probe", "{}"), 0),
                                       ae::EffectContext{}, ae::ApprovalDecider{}, 0,
-                                      [&](ae::ToolResult, ae::ToolInvocationAudit) { completed = true; });
+                                      [&](ae::ToolResult, ae::ToolInvocationAudit) { completed = true; }));
         for (int i = 0; i < 200 && !completed; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
         check(started.has_value() && completed, "T5 control: valid arguments background and complete");
     }

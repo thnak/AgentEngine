@@ -241,7 +241,7 @@ struct Fixture {
 // read_sandbox_file entry is the real tool: it acts only through `ctx.sandbox_fs`. run_shell's invoke is the
 // unreachable stub; the live descriptor comes from the session's sandbox.
 [[nodiscard]] inline std::vector<ToolDescriptor> real_tool_standins() {
-    return {make_tool_descriptor<RunShellTool>(), make_tool_descriptor<tools::ReadSandboxFile>()};
+    return {make_tool_descriptor<RunShellTool>(), make_tool_descriptor<tools::ReadSandboxFile>({})};
 }
 
 [[nodiscard]] inline CapabilitySet real_tool_grant() {
