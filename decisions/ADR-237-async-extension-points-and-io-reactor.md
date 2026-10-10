@@ -1584,3 +1584,34 @@ A focused review (no BLOCKER/HIGH; behavior-preserving, I2 intact) produced thes
   affected provider/context/memory/tools tests pass; full suite `ctest -LE live-network` 401/415, the
   identical 14 baseline failures.
 
+### Step 13 (2026-10-10): §5.2 stateful-conformer migration begins — `ToolOptimizerProvider`
+
+The first production `make_tool_descriptor_with_invoke<ToolT>` site converted to §5.2's instance form,
+establishing the pattern the remaining stateful descriptors copy: a shared, session-scoped state object
+behind one `shared_ptr` (the `TodoProvider`/`TodoState` precedent), held by value by each tool instance.
+
+- `search_tools`/`mount_tool`/`unmount_tool` are now `Tool<..., EffectClass<pure>, CapturesSessionState>`
+  conformers with a non-static `const task<result<Reply>> invoke`; the dead static poison `invoke()` stubs
+  are gone -- the instance invoke IS the one real path.
+- New `ToolOptimizerState` (`agent_tools` + both source fetches + `always_on` + the mutable `mounted` set),
+  owned by `ToolOptimizerProvider` and handed to each tool, so a tool's `invoke()` mutates the SAME mount
+  set the next turn's `on_context()` scopes from -- across every copy a `ComposedContextProvider` makes --
+  and no closure captures the provider's `this` (the ADR-028 dangling-capture hazard).
+- The real logic moved to free functions over `ToolOptimizerState` (`build_universe`,
+  `real_search_tools`/`real_mount_tool`/`real_unmount_tool`), reached by both `on_context()` and the tools
+  -- one implementation, no per-copy state. Public API unchanged (ctor, `on_context`, `on_turn_end`,
+  `currently_scoped_tools`).
+- Evidence: `test_tool_optimizer_provider` R1-R6 pass (incl. R6, the real `AgentSession` declare/invoke
+  cadence over the composed 3-provider stack); full tree `/W4 /WX` clean; naming/layering lint OK; full
+  suite `ctest -LE live-network` 401/415, the identical 14 baseline failures.
+
+### Step 14 open: the remaining `make_tool_descriptor_with_invoke` production sites follow step 13's
+pattern -- `secret_quarantine.hpp` (QuarantineSecretTool), `sandbox/mandatory_sandbox_provider.hpp`
+(RunCommand + the four task-branch tools), `sandbox/live_shell_sandbox_provider.hpp` (ShellExecTool),
+`native_jail/session_shell_wiring.hpp` (RunShellTool), `rt/agent_session_core.cpp` (ScheduleWakeupTool),
+`rt/agent_spawn.hpp` (AgentSpawnTool), `tools/cli_chat.cpp` (ExecuteCodeTool/MountSkillTool). The
+dynamic-schema bridges (`mcp_tool_bridge.hpp`, `wasm_tool_bridge.hpp`, `native_providers.hpp`,
+`native_shell_session_provider.hpp`, the two RAG providers, `eval_stub_tool.hpp`) can never be `Tool<>`
+conformers -- their Args/Reply are runtime-derived -- so they lose `make_sync_invoke` and get a direct
+async `invoke` lambda instead.
+
