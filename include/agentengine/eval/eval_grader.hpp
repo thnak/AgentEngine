@@ -11,11 +11,12 @@
 
 #include "agentengine/eval/eval_stub_tool.hpp"
 #include "agentengine/eval/eval_trial.hpp"
+#include "agentengine/rt/task.hpp"
 
 namespace agentengine::eval {
 
 // `ungraded` means the MEASUREMENT failed -- the grader could not judge this trial (§3.5: "a grader
-// error or timeout is `ungraded`" -- no grader timeout exists yet: graders run synchronously). It is
+// error or timeout is `ungraded`" -- no grader timeout exists yet: a grader's own task is awaited). It is
 // not a verdict about the agent. Anything the agent did,
 // including not doing the task at all, is `success` or `failure` (see eval_screen_common.hpp's
 // `grade_trial` for why that distinction decides whether a harm is flagged or hidden).
@@ -36,7 +37,9 @@ enum class grade_outcome { success, failure, ungraded };  // ae-naming-lint: all
 // invoking the grader (eval_screen_common.hpp's `grade_trial`) -- `ungraded` if the measurement failed
 // (setup error, infrastructure fault, host cancel), `failure` if the agent failed (turn cap, token
 // budget, a crashed exchange). A grader that throws is mapped to `ungraded` too.
-using GraderFn = std::function<grade_outcome(TrialResult const&)>;  // ae-naming-lint: allow GraderFn — ADR-195 §3.5
+// ADR-237 §5.1: the seam is asynchronous. A grader is where an LLM-as-judge -- or any other I/O-backed
+// judgement -- would live, and `grade_trial` below already sits inside an async screen.
+using GraderFn = std::function<task<grade_outcome>(TrialResult const&)>;  // ae-naming-lint: allow GraderFn — ADR-195 §3.5
 
 // Convenience factory: success iff some captured call to `tool_name` has a string-valued argument
 // at `arg_key` equal to `expected_value`; failure otherwise -- INCLUDING when the tool was never
@@ -48,7 +51,7 @@ using GraderFn = std::function<grade_outcome(TrialResult const&)>;  // ae-naming
 [[nodiscard]] inline GraderFn make_tool_argument_grader(std::string tool_name, std::string arg_key,
                                                            std::string expected_value) {
     return [tool_name = std::move(tool_name), arg_key = std::move(arg_key),
-            expected_value = std::move(expected_value)](TrialResult const& trial) -> grade_outcome {
+            expected_value = std::move(expected_value)](TrialResult const& trial) -> task<grade_outcome> {
         // Scans EVERY captured call to `tool_name`, not just the first -- a model that calls the
         // tool more than once (e.g. correcting an earlier, wrong argument) should be graded on
         // whether it EVER sent the expected value, not penalized for a call order this grader has
@@ -57,10 +60,10 @@ using GraderFn = std::function<grade_outcome(TrialResult const&)>;  // ae-naming
             if (call.tool_name != tool_name) continue;
             json::Value const* arg = call.arguments.find(arg_key);
             if (arg != nullptr && arg->is_string() && arg->as_string() == expected_value) {
-                return grade_outcome::success;
+                co_return grade_outcome::success;
             }
         }
-        return grade_outcome::failure;
+        co_return grade_outcome::failure;
     };
 }
 

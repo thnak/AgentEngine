@@ -93,16 +93,19 @@ namespace detail {
     return e;
 }
 
-[[nodiscard]] inline grade_outcome grade_trial(GraderFn const& grader, TrialResult const& trial) {
-    if (trial.setup_error.has_value()) return grade_outcome::ungraded;
+[[nodiscard]] inline task<grade_outcome> grade_trial(GraderFn const& grader, TrialResult const& trial) {
+    if (trial.setup_error.has_value()) co_return grade_outcome::ungraded;
     if (!trial.outcome.has_value()) {
-        return is_measurement_fault(effective_run_error(trial)) ? grade_outcome::ungraded
-                                                                : grade_outcome::failure;
+        co_return is_measurement_fault(effective_run_error(trial)) ? grade_outcome::ungraded
+                                                                   : grade_outcome::failure;
     }
+    // ADR-237 §5.1: `rt::task` contains a body exception in `unhandled_exception()` and rethrows it at
+    // the awaiting `co_await`, so this catch still sees a throwing grader -- the §3.5 "a grader error
+    // is `ungraded`" rule is unchanged by the seam becoming asynchronous.
     try {
-        return grader(trial);
+        co_return co_await grader(trial);
     } catch (...) {
-        return grade_outcome::ungraded;
+        co_return grade_outcome::ungraded;
     }
 }
 

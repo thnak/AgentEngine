@@ -1969,5 +1969,32 @@ against stale binaries, the exact trap recorded in step 24-25's finding, caught 
 output rather than the test output. naming-lint OK; layering-lint OK; full suite `ctest -LE live-network`
 401/415, the identical 14.
 
-Next: MCP `RequestSender`/`InputRequestHandler`, then `GraderFn`/`OutputValidator`.
+### Step 30 (2026-10-10): §5.1 seam conversion, slice 5 -- `GraderFn` is async
+
+Chosen over `OutputValidator` after sizing both, and the sizing is the finding: `OutputValidator` is NOT
+the small change the inventory implied. The validator is *stored* into the session
+(`AgentSession::set_output_schema`), so converting it reaches `AgentSession`'s core plus six test call
+sites. `GraderFn` is the contained one -- it lives entirely in `eval/`.
+
+- `eval/eval_grader.hpp`: `GraderFn` becomes `std::function<task<grade_outcome>(TrialResult const&)>`, and
+  `make_tool_argument_grader()`'s lambda becomes a coroutine. Adds the `rt/task.hpp` include.
+- `eval/eval_screen_common.hpp`: `grade_trial()` becomes a coroutine. **The §3.5 rule is preserved, not
+  re-derived:** a throwing grader is still `ungraded`, because `rt::task` contains a body exception in
+  `unhandled_exception()` and rethrows it at the awaiting `co_await`, so `grade_trial`'s `try/catch`
+  around the `co_await` still sees it. That is exactly what S13 in `test_eval_gross_harm_screen` and
+  `throwing_on_boom_grader` in `test_eval_follow_rate_screen` pin, and both pass unchanged.
+- The two screens needed **one line each**: both `run_*_screen` internals were ALREADY coroutines
+  (`co_await detail::run_trial_with_retry(...)` on the line above), so `detail::grade_trial(...)` becomes
+  `co_await detail::grade_trial(...)` and nothing else moves -- no new cascade to chase.
+- Tests: the three hand-rolled grader factories (`task_grader`, `throwing_on_boom_grader`,
+  `final_value_grader`) become coroutines, and the five direct `grade_trial` calls become `drive(...)`.
+  Both screen tests already had a local `drive()` helper, so nothing new was needed there.
+
+Evidence: build-dev rebuild clean; all 11 eval tests pass, including `test_eval_tier1_screen`,
+`test_eval_gross_harm_screen` and `test_eval_follow_rate_screen`; naming-lint OK; layering-lint OK; full
+suite `ctest -LE live-network` 401/415, the identical 14.
+
+Next: MCP `RequestSender`/`RequestSenderWithHeaders`/`InputRequestHandler` -- three typedefs plus
+`mcp_tool_bridge.hpp` and a real production consumer (`tools/mcp_conformance_client.cpp`), best split into
+three steps. Then `OutputValidator`, which reaches `AgentSession::set_output_schema`.
 
