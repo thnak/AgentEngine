@@ -1994,7 +1994,11 @@ Evidence: build-dev rebuild clean; all 11 eval tests pass, including `test_eval_
 `test_eval_gross_harm_screen` and `test_eval_follow_rate_screen`; naming-lint OK; layering-lint OK; full
 suite `ctest -LE live-network` 401/415, the identical 14.
 
-Next: MCP `RequestSender`/`RequestSenderWithHeaders`/`InputRequestHandler` -- three typedefs plus
-`mcp_tool_bridge.hpp` and a real production consumer (`tools/mcp_conformance_client.cpp`), best split into
-three steps. Then `OutputValidator`, which reaches `AgentSession::set_output_schema`.
+Next: MCP. **The three typedefs are NOT separable the way this step first assumed -- do not plan the split
+along typedef lines.** `InputRequestHandler` is invoked inside `call_tool`'s own MRTR round loop
+(`client.hpp:462`), so converting it makes `call_tool` a coroutine and drags the sender typedefs and
+`mcp_tool_bridge.hpp` along with it: `McpClient` is one unit. It also has a real production consumer
+(`tools/mcp_conformance_client.cpp`, a `RequestSenderWithHeaders` and a real input handler), unlike the A2A
+and `ToolSourceFetch` slices, which had none. Then `OutputValidator`, which reaches
+`AgentSession::set_output_schema` and six test call sites.
 
