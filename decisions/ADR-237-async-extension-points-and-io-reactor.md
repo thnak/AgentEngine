@@ -1747,3 +1747,31 @@ test_live_shell_sandbox_provider_live) fail identically to baseline with "is a D
 reachable?"/"failed to connect to the docker API" -- compile-verification only in this preset, as before;
 no daemon is available here to exercise the migrated dispatch bodies end to end.
 
+### Step 22 (2026-10-10): `cli_chat`'s two tools to instance form, and the declaration-only universe closed
+
+`tools/cli_chat.cpp`'s `ExecuteCodeTool` and `MountSkillTool` are now instance-form `Tool<>` conformers
+templated on `ToolDeclaringHistoryProvider`, holding it explicitly and reaching its private
+`real_execute_code()`/`real_mount_skill()` through `template <class> friend struct ...;`.
+`CapturesSessionState` preserves the factory's hardcoded `captures_session_state = true`; for
+`MountSkillTool` that is the `pure` + `CapturesSessionState` combination `QuarantineSecretTool` already
+uses (no external effect, state that belongs to the session). The two static poison `invoke()` sentinels
+are gone.
+
+The second half is what made this site non-mechanical. `print_skills_banner()` is a free function with no
+host to hand the tools to, and it built `ToolTable::from_tools<ExecuteCodeTool, MountSkillTool>()` purely
+for the two DECLARATIONS -- to print what is invocable at startup. A zero-argument static table does not
+exist once the tools are instance-form, so the provider gained a public `declared_universe()` that builds
+both descriptors from live instances; `on_context()` now scopes from that same source and the banner takes
+it as a parameter. Declared and invocable therefore come from one place instead of two.
+
+Evidence: this file is outside build-dev (that tree builds `test_cli_chat_plan` only -- the decision half,
+`tools/cli_chat_plan.hpp`), so it was compile-verified where the target actually exists:
+`cmake --build build --target agentengine_cli_chat`, in the tree configured with
+`AGENTENGINE_WITH_HTTPS=ON` and `AGENTENGINE_BUILD_PYTHON_RUNNER=ON` (the two conditions CMakeLists
+requires for the executable), compiles `tools/cli_chat.cpp` and links `agentengine_cli_chat.exe` with no
+errors. build-dev rebuild clean; naming-lint OK; layering-lint OK; full suite 401/415, the identical 14
+baseline failures.
+
+Remaining §5.2 production site: `session_shell_wiring.hpp`'s `RunShellTool`, still blocked on
+`tools/test_driver/test_driver.hpp`'s static-shape use.
+
