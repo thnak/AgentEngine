@@ -1616,7 +1616,7 @@ by one asserting the descriptor declares `CapturesSessionState` and keeps `Effec
 ### Step 14 open: the remaining `make_tool_descriptor_with_invoke` production sites follow step 13's
 pattern -- `sandbox/mandatory_sandbox_provider.hpp`
 (RunCommand + the four task-branch tools), `sandbox/live_shell_sandbox_provider.hpp` (ShellExecTool),
-`native_jail/session_shell_wiring.hpp` (RunShellTool), `rt/agent_session_core.cpp` (ScheduleWakeupTool),
+`native_jail/session_shell_wiring.hpp` (RunShellTool),
 `rt/agent_spawn.hpp` (AgentSpawnTool), `tools/cli_chat.cpp` (ExecuteCodeTool/MountSkillTool). The
 dynamic-schema bridges (`mcp_tool_bridge.hpp`, `wasm_tool_bridge.hpp`, `native_providers.hpp`,
 `native_shell_session_provider.hpp`, the two RAG providers, `eval_stub_tool.hpp`) can never be `Tool<>`
@@ -1637,4 +1637,25 @@ _tier1_screen and test_codeact_tool_union pass; full tree `/W4 /WX` clean; namin
 wasmtime release), so it is deliberately LEFT on `make_sync_invoke` until a WASM-enabled build can verify
 it -- not converted unverified. The remaining dynamic-schema sites (`native_providers.hpp`,
 `native_shell_session_provider.hpp`, the two RAG providers) move with D3/§5.1.
+
+### Step 16 (2026-10-10): `ScheduleWakeupTool` to instance form (first big-owner conversion)
+
+`ScheduleWakeupTool` (rt/agent_session_core.hpp) was the one place in the codebase whose tool closure
+reached back into its owning session by capturing `this` (ADR-028 §1's own exhaustive check). It is now
+an instance-form `Tool<ScheduleWakeupTool, CapturesSessionState>` holding an explicit `AgentSessionCore*`;
+its `invoke` (defined in agent_session_core.cpp, where the class is complete) calls the new private
+`AgentSessionCore::dispatch_schedule_wakeup()` -- the old closure's body, moved verbatim, reached through
+a `friend` declaration. `AgentSessionCore` gained a forward declaration above the tool; the former static
+poison `invoke()` sentinel is gone, and `schedule_wakeup_tool()` now returns
+`make_tool_descriptor(ScheduleWakeupTool{*this})`.
+
+- `captures_session_state` is preserved (declared `CapturesSessionState`), so ADR-061 §20.5/§20.6's
+  unlocked-direct-dispatch discipline and the background/parallel refusals are unchanged.
+- This is the template for the rest of the big-owner sites (mandatory_sandbox_provider, agent_spawn,
+  cli_chat, session_shell_wiring): tool holds an explicit owner handle, invoke defined where the owner is
+  complete, dispatch body moved to a member, `CapturesSessionState` declared.
+- Evidence: test_rt_agent_session_schedule_wakeup_tool, test_rt_agent_session_tooling_and_delegation,
+  test_tool_deterministic and test_tool_batch_partition (plus the deterministic compile-fail control) pass;
+  full tree (469 targets) `/W4 /WX` clean; naming/layering lint OK; full suite `ctest -LE live-network`
+  401/415, the identical 14 baseline failures.
 

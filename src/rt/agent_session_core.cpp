@@ -606,28 +606,37 @@ task<result<ToolTable>> AgentSessionCore::resume_tool_table(SuspendedRoundRecord
 
 // agent_session.hpp:1513
 ToolDescriptor AgentSessionCore::schedule_wakeup_tool() {
-    return make_tool_descriptor_with_invoke<ScheduleWakeupTool>(
-        [this](ScheduleWakeupArgs args, EffectContext& ctx) -> result<ScheduleWakeupReply> {
-            // ADR-061 §20.6: `ctx` is the real, per-request EffectContext invoke_tool()
-            // hands this closure -- calls schedule_wakeup_impl() DIRECTLY (never the
-            // locking public schedule_wakeup() wrapper: this closure already runs inside
-            // the session_mutex_ lock via run_rounds() -> invoke_tool(), and a non-
-            // reentrant AsyncMutex would deadlock on a second co_await lock()).
-            CapabilitySet const empty_caps = CapabilitySet::grant_root({});
-            CapabilitySet const& call_held =
-                ctx.capabilities ? *ctx.capabilities : empty_caps;
-            // `args.label` passed by value (not moved) -- the state_changed emission
-            // below still needs it after the registry call returns.
-            auto effect = standing_effects_registry_.schedule_wakeup_impl(
-                std::chrono::milliseconds(args.delay_ms), args.label,
-                std::chrono::steady_clock::now(), call_held, ctx.principal, ctx.run_id,
-                session_id_);
-            if (!effect) return std::unexpected(effect.error());
-            emit_run_event_for(ctx.run_id, run_event_kind::state_changed,
-                                run_event_payload::StateChanged{
-                                    "schedule_wakeup armed: " + args.label});
-            return ScheduleWakeupReply{effect->handle_id};
-        });
+    // ADR-237 §5.2: the instance-form tool holds this session explicitly; the dispatch body is
+    // dispatch_schedule_wakeup() below, reached only from ScheduleWakeupTool::invoke().
+    return make_tool_descriptor(ScheduleWakeupTool{*this});
+}
+
+// agent_session.hpp:1513 (ADR-237 §5.2)
+task<result<ScheduleWakeupReply>> ScheduleWakeupTool::invoke(ScheduleWakeupArgs args,
+                                                             EffectContext& ctx) const {
+    co_return session_->dispatch_schedule_wakeup(args, ctx);
+}
+
+result<ScheduleWakeupReply> AgentSessionCore::dispatch_schedule_wakeup(ScheduleWakeupArgs const& args,
+                                                                      EffectContext& ctx) {
+    // ADR-061 §20.6: `ctx` is the real, per-request EffectContext invoke_tool() hands this call --
+    // calls schedule_wakeup_impl() DIRECTLY (never the locking public schedule_wakeup() wrapper: this
+    // runs inside the session_mutex_ lock via run_rounds() -> invoke_tool(), and a non-reentrant
+    // AsyncMutex would deadlock on a second co_await lock()).
+    CapabilitySet const empty_caps = CapabilitySet::grant_root({});
+    CapabilitySet const& call_held =
+        ctx.capabilities ? *ctx.capabilities : empty_caps;
+    // `args.label` passed by value (not moved) -- the state_changed emission
+    // below still needs it after the registry call returns.
+    auto effect = standing_effects_registry_.schedule_wakeup_impl(
+        std::chrono::milliseconds(args.delay_ms), args.label,
+        std::chrono::steady_clock::now(), call_held, ctx.principal, ctx.run_id,
+        session_id_);
+    if (!effect) return std::unexpected(effect.error());
+    emit_run_event_for(ctx.run_id, run_event_kind::state_changed,
+                        run_event_payload::StateChanged{
+                            "schedule_wakeup armed: " + args.label});
+    return ScheduleWakeupReply{effect->handle_id};
 }
 
 // agent_session.hpp:1657
