@@ -2036,9 +2036,13 @@ Everything listed below is **not done**, and nothing in this ADR or PR #169 clai
 stores; `VectorIndex`/`SparseIndex`; `BatchBackend`; `ChatClient`; `SurfaceFactory`; `Resolver`; plus ~15
 further `std::function` typedefs that have not been triaged individually yet.
 
-**Remaining §5.2 cleanup:** delete `make_sync_invoke`'s three production call sites (two RAG -- blocked on
-D3; one WASM -- needs a WASM-enabled build to verify); remove the zero-arg `make_tool_descriptor<ToolT>()` /
-`ToolTable::from_tools<Ts...>()` static-invoke form (the remaining conformers are mostly tests).
+**Remaining §5.2 cleanup:** delete `make_sync_invoke`'s **five** production call sites -- counted by grep,
+not recollection: the two RAG tools (`core/hybrid_rag_context_provider.hpp:211`,
+`core/vector_rag_context_provider.hpp:367`), the two native-process providers
+(`native_process/native_providers.hpp:230`, `native_process/native_shell_session_provider.hpp:324`, which
+wait on **D3**), and the WASM bridge (`wasm/wasm_tool_bridge.hpp:135`, which needs a WASM-enabled build to
+verify). Then remove the zero-arg `make_tool_descriptor<ToolT>()` / `ToolTable::from_tools<Ts...>()`
+static-invoke form (the remaining conformers are mostly tests).
 
 **Carried but unstarted:** D3, D4, D7; the §10 spec + 027 vocabulary + `web/marketing` pass; the §8 gates.
 
@@ -2061,7 +2065,7 @@ Gate: those tests are updated with the reason recorded -- never deleted to make 
 `EffectContext`/capability plumbing. Expect the mutex-across-suspension hazard from the A2A server
 (`protocol/a2a/server.hpp:141`) to recur -- audit every lock when one of these goes async.
 
-**Phase E -- §5.2 cleanup, only after C and D.** The three `make_sync_invoke` sites and the static
+**Phase E -- §5.2 cleanup, only after C and D.** The five `make_sync_invoke` sites and the static
 `make_tool_descriptor`/`from_tools` form can only be deleted once nothing synchronous remains downstream of
 them. The WASM site additionally needs a WASM-enabled build to verify, which the current local build does
 not produce.
