@@ -282,9 +282,12 @@ struct World {
         auto root = drive(ledger.create_root_branch(owner, "b" + std::to_string(++seq)));
         if (!root.has_value()) return std::unexpected(root.error());
         auto c = counters;
-        return p.bind_sandbox(ledger, std::move(*root), owner, dir / ("staging" + std::to_string(seq)), branch_q, run_q,
-                              storage != nullptr ? *storage : storage_q, open != nullptr ? *open : open_q, limits,
-                              [c] { return FakeLiveSurface(c); }, 10s, Lifetime{}, clock.fn());
+        // ADR-237 §5.1 (step 37): `bind_sandbox` is async now (it awaits the surface factory). This helper
+        // keeps its own synchronous `result<void>` shape for its call sites and drives the task here.
+        return agentengine::rt::block_on(p.bind_sandbox(
+            ledger, std::move(*root), owner, dir / ("staging" + std::to_string(seq)), branch_q, run_q,
+            storage != nullptr ? *storage : storage_q, open != nullptr ? *open : open_q, limits,
+            [c]() -> task<FakeLiveSurface> { co_return FakeLiveSurface(c); }, 10s, Lifetime{}, clock.fn()));
     }
 };
 

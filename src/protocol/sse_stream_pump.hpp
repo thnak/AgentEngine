@@ -17,9 +17,37 @@
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/stream.hpp"
 #include "agentengine/protocol/provider_chat_wire.hpp"
+#include "agentengine/rt/http.hpp"
+#include "agentengine/rt/http_tls.hpp"
+#include "agentengine/rt/task.hpp"
+#include "agentengine/sandbox/io_timeout.hpp"
 #include "agentengine/sandbox/provider_http_client.hpp"
 
 namespace agentengine::detail::provider_wire {
+
+namespace sse_pump_detail {
+[[nodiscard]] inline rt::AddressPolicy accept_all() {
+    return [](pal::IpAddress const&) { return true; };
+}
+}  // namespace sse_pump_detail
+
+// ADR-237 §5.1 (step 34): builds the `rt::HttpContext` for one provider exchange from the client's
+// `ProviderReactorOptions` -- the reactor + DNS pool from the Runtime, the transport's CA seam, ADR-016's
+// accept-all default policy, and the blocking path's own idle bound (`sandbox::io_timeout_ms()`, which rt/ is L0
+// and may not read itself). Lives here (src/, HTTPS-only) rather than in the shared header so the TLS connector
+// does not leak into every consumer of the provider client headers.
+[[nodiscard]] inline rt::HttpContext make_http_context(ProviderReactorOptions const& o,
+                                                       std::string const& ca_bundle_pem_override, bool https) {
+    rt::HttpContext ctx;
+    ctx.reactor  = o.runtime != nullptr ? &o.runtime->reactor() : nullptr;
+    ctx.dns_pool = o.runtime != nullptr ? &o.runtime->dns_pool() : nullptr;
+    ctx.policy   = o.policy ? o.policy : sse_pump_detail::accept_all();
+    ctx.options  = o.options;
+    ctx.options.idle_timeout     = std::chrono::milliseconds{sandbox::io_timeout_ms()};
+    ctx.options.connect.resolver = o.resolver;
+    if (https) ctx.tls = rt::tls_connector(rt::TlsConnectorOptions{.ca_bundle_pem_override = ca_bundle_pem_override});
+    return ctx;
+}
 
 // `Accumulator` is constructed as `Accumulator(bool chunked, std::string producer_chat_client_id)` and provides
 // `feed(std::string_view) -> result<std::vector<ChatResponseUpdate>>`, `truncated() -> bool` and
@@ -106,6 +134,92 @@ void pump_sse_stream(std::string_view vendor, std::string const& model, std::str
         if (producer.push(std::move(update)) != stream_push::ok) return;
     }
     producer.close();
+}
+
+// ADR-237 §5.1/§6.3 (step 34): `pump_sse_stream`'s reactor twin -- a COROUTINE that suspends on `rt::http_stream`
+// / `rt::sse_events` instead of holding a thread. Started by the client through `rt::Runtime::spawn` (the client
+// owns the root, §4.5 rule 2), so no per-call `std::thread` is detached. The six terminal rules of the blocking
+// pump are preserved: a transport failure is forwarded (mapped through `http_error_to_error`, keeping the
+// transient/policy/contract/resource split), a non-2xx goes through `http_status_error`, a body cut mid-stream is
+// `net.stream_truncated`, a 2xx that delivered no event at all is `net.stream_truncated` (the "body never began"
+// case), and a complete stream closes the producer.
+//
+// The accumulator is constructed `chunked=false`: rt's `BodyDecoder` already stripped any chunk framing, so feed()
+// receives decoded payload. rt's `SseDecoder` parses events itself, so each decoded event is re-serialized as one
+// `data: <payload>` block before `feed()` -- the vendor accumulators' own entry point. On the single-data-line
+// LF/CRLF streams every OpenAI/Anthropic backend sends, this is byte-identical to what the framer would have seen.
+template <class Accumulator>
+task<void> pump_sse_stream_async(std::string vendor, std::string model, rt::HttpContext ctx, rt::HttpRequest req,
+                                 stream_producer<ChatResponseUpdate> producer, std::stop_token stop) {
+    rt::HttpStreamResponse head = co_await rt::http_stream(ctx, req, stop);
+    if (!head.ok()) {
+        producer.fail(http_error_to_error(head.error, head.code, head.message));
+        co_return;
+    }
+    if (head.status < 200 || head.status >= 300) {
+        // Same transient/policy/contract split as the non-streaming path; the streaming path never buffered the
+        // error document, so the message falls back to "<vendor> http status N".
+        producer.fail(http_status_error(vendor, head.status, {}));
+        co_return;
+    }
+
+    Accumulator acc(/*chunked=*/false, std::string(vendor) + ":" + model);
+    rt::SseStream sse = rt::sse_events(std::move(head.body), ctx.options.max_event_bytes);
+    bool any_event    = false;
+    for (;;) {
+        rt::SseNext n = co_await sse.next(stop);
+        if (n.status == rt::sse_status::error) {
+            if (n.error == rt::http_error::canceled && stop.stop_requested()) {
+                producer.fail(error{failure_class::canceled, "canceled by the caller", "net.cancelled"});
+            } else {
+                producer.fail(http_error_to_error(n.error, n.code, n.message));
+            }
+            co_return;
+        }
+        if (n.status == rt::sse_status::end) {
+            if (n.incomplete_dropped) {
+                producer.fail(error{failure_class::transient,
+                                    "the response stream ended inside an event: the connection was cut while the "
+                                    "model was still answering",
+                                    "net.stream_truncated"});
+                co_return;
+            }
+            if (!any_event) {
+                // A 2xx whose body delivered not one event: head-then-cut (the blocking pump's `!acc` case).
+                producer.fail(error{failure_class::transient,
+                                    "the response ended before its body began: the connection was cut right after "
+                                    "the response head",
+                                    "net.stream_truncated"});
+                co_return;
+            }
+            for (auto& update : acc.finish()) {
+                if (producer.push(std::move(update)) != stream_push::ok) co_return;
+            }
+            producer.close();
+            co_return;
+        }
+        any_event = true;
+        // Re-serialize the decoded event into the vendor accumulator's own entry format. The `event:` NAME is
+        // preserved when the wire carried one (Anthropic's named-event framing, `split_sse_named_events`); an
+        // OpenAI-compatible stream sends none, so it is omitted there.
+        std::string block;
+        if (!n.event.event.empty()) {
+            block += "event: ";
+            block += n.event.event;
+            block += "\n";
+        }
+        block += "data: ";
+        block += n.event.data;
+        block += "\n\n";
+        auto updates = acc.feed(block);
+        if (!updates) {
+            producer.fail(updates.error());
+            co_return;
+        }
+        for (auto& update : *updates) {
+            if (producer.push(std::move(update)) != stream_push::ok) co_return;
+        }
+    }
 }
 
 }  // namespace agentengine::detail::provider_wire

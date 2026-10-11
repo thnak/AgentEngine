@@ -2024,16 +2024,405 @@ commit, because `McpClient` has no sync/async split to hide behind.
   `tests/protocol/mcp/test_mcp_tasks_extension.cpp` (`:92` sender lambda, task verbs) and
   `tests/protocol/mcp/test_codeact_tool_union.cpp` (`:187`-`:219`).
 
+### Step 31 (2026-10-11): §5.1 seam conversion, slice 6 -- the MCP client boundary is async (Phase A)
+
+The first of §14.1's named phases, and the only seam that was fully inventoried: `McpClient` (client.hpp)
+and its bridge (mcp_tool_bridge.hpp). Converted atomically, exactly as the inventory above requires --
+`McpClient` has no sync/async split to hide behind, so the three typedefs and every verb that invokes one
+move together.
+
+- **`protocol/mcp/client.hpp`** -- `RequestSender` (`:49`), `RequestSenderWithHeaders` (`:317`) and
+  `InputRequestHandler` (`:77`) are now `std::function<task<...>>`, and the private `send` funnel (the one
+  place both sender shapes are invoked) is a coroutine too. Every verb that reaches the sender became a
+  coroutine: `list_tools`, `call_tool` (its MRTR round loop `co_await`s `InputRequestHandler` per key),
+  `call_tool_as_task`, `get_task`, `cancel_task`. The A2A precedent's "pure lookups stay sync" applies to
+  **none** of them -- each invokes the sender, so each awaits it. Adds `core/task.hpp`; the body of each verb
+  is unchanged (same cache key, same digest/rug-pull check, same `isError` surfacing, same MRTR id/state
+  rules), only `return` -> `co_return` and the one `send` call per verb gained a `co_await`.
+- **`protocol/mcp/mcp_tool_bridge.hpp`** -- `mcp_tools_as_descriptors_from` and
+  `mcp_tools_as_descriptors` both return `task<...>`; the descriptor lambda it hands out (already a
+  `task<result<json::Value>>`) now `co_await`s `client->call_tool`. The consumer seam is unchanged: a
+  caller wraps this in a `ToolSourceFetch` lambda, which has been `task`-shaped since step 27, so no
+  production caller needed editing.
+- **`tools/mcp_conformance_client.cpp`** -- the drive-loop question settled first, as §14.1 required.
+  The binary is a `tools/` target whose `main` is synchronous and cannot reach
+  `tests/support/run_task_sync.hpp`, but it links `agentengine::core`, an INTERFACE library that already
+  pulls in the rt runtime (`agentengine_rt_session` etc.), so `rt::block_on` -- the one sanctioned outer
+  driver (`block_on.hpp`) -- is reachable with **no CMake change**. Its `RequestSenderWithHeaders` and its
+  real `InputRequestHandler` become coroutines (their bodies call the blocking `perform_http_exchange`, so
+  they never park), and `list_tools`/`call_tool` are driven with `rt::block_on`.
+- **Tests** -- `test_mcp_client.cpp` and `test_mcp_tasks_extension.cpp` gain the local `drive()` helper the
+  A2A client test uses (a resume-until-done loop, sound here because the sender never parks; the ADR
+  flags `run_task_sync`/the naive loop as wrong only once a task can genuinely suspend). The server/mock
+  sender stand-ins become coroutines. `test_codeact_tool_union.cpp` reuses its existing `run_task_sync` for
+  `mcp_tools_as_descriptors`. `web/marketing`'s `apiContent.ts` snippet still compiles as written (a
+  non-coroutine lambda returning a prvalue `task` is exactly what `ToolSourceFetch` wants).
+- **Behaviour did not move** -- the standing rule of this ADR. All 9 `protocol/mcp` tests pass unchanged
+  in substance: C3-1..C3-8 (real-server happy path, caching, ttl=0, pagination cache keys, rug-pull
+  detection), C4-1..C4-10 (the tasks extension, incl. `Background<1>` capacity and sticky cancel) and
+  U5/U6 (the bridged descriptor round-tripping through the real `McpClient`/`McpServer` pair).
+
+Evidence: full tree `build-dev` clean (MSVC 14.51, `/W4 /WX`); `agentengine_mcp_conformance_client` builds;
+`ctest -L protocol/mcp` **9/9**; naming-lint OK; layering-lint OK; full suite `ctest -LE live-network`
+**401/415**, the identical 14 baseline failures (13 Docker-dependent sandbox tests + `test_external_skill
+_discovery`'s opportunistic host-state check).
+
+Open after step 31: the tool's `rt::block_on` edge goes when the host-side drivers move onto the Runtime
+(D7), same as step 8's `materialize_skill_mounts` edge; the remaining §5.1 seams are §14.1's Phases B-F.
+
+### Step 32 (2026-10-11): §5.1 seam conversion, slice 7 -- `OutputValidator` is async (Phase B, slice 1)
+
+Phase B's first seam, taken with the test-first discipline §14.1 requires -- and a correction to that
+phase's premise, recorded rather than absorbed (this ADR's standing rule).
+
+- **The premise was too strong.** §14.1 recorded `OutputValidator` as having "zero test coverage today
+  (only the build verifies it)". The seam's *behaviour* is in fact already pinned end to end:
+  `test_agent_session_bridge` **P9** (`make_agent_session<SchemaAgent>`: a matching reply yields structured
+  output, an invalid one fails `run.output_schema_validation_failed`, a metadata-only bind refuses),
+  `test_agent_session_output_schema` **O1/O2/O5** (a hand-written validator through `set_output_schema`),
+  and `test_rt_workflow_chat_client_outer_session` **O4** (the workflow outer session). What genuinely had
+  no *direct* coverage was `output_validator_for<A>()` itself -- and P9's single `"not json at all"` reply
+  cannot tell a **parse** error from a **schema mismatch**. So **P9b was ADDED to
+  `test_agent_session_bridge`** (written and run green against the *sync* seam first, then re-run after the
+  conversion): valid schema-shaped JSON passes; malformed JSON is rejected at the parse layer; JSON missing
+  a required field is rejected at the `from_json` layer; an agent declaring no `OutputSchema<T>` produces no
+  validator at all.
+- **`core/agent_session_bridge.hpp`** -- `agent_bind_detail::OutputValidator` becomes
+  `std::function<task<result<void>>(std::string_view)>`, and `output_validator_for<A>()`'s lambda is a
+  coroutine (`co_return`s at its three exits; its body never parks). Adds `core/task.hpp`. `harness.hpp`
+  threads the same alias through unchanged, so the harness path follows automatically.
+- **`rt/agent_session_core.hpp`** -- `set_output_schema`'s parameter and the `output_schema_validate_`
+  member both spell the `task`-returning `std::function` inline; the session deliberately does not name the
+  bridge's alias (rt stays below core). **`src/rt/agent_session_core.cpp`** -- the one invocation site, in
+  the already-coroutine round loop, is now `co_await output_schema_validate_(text_content)`; the
+  fail-closed branch (the `run_failed` event + `run.output_schema_validation_failed`) is byte-for-byte
+  unchanged.
+- **Test call sites** (the six §14.1 named, plus P9b): `test_agent_session_output_schema`'s
+  `make_demo_validator` and `test_rt_workflow_chat_client_outer_session`'s `validate` lambda became
+  coroutines; P9b's direct calls go through `rt::block_on`.
+
+Evidence: full tree `build-dev` clean (MSVC 14.51, `/W4 /WX`); `test_agent_session_bridge`,
+`test_agent_session_output_schema` and `test_rt_workflow_chat_client_outer_session` pass; naming-lint OK;
+layering-lint OK; full suite `ctest -LE live-network` **401/415**, the identical 14.
+
+Open after step 32: the rest of Phase B -- `ChatClient`, `Resolver`, `SurfaceFactory`.
+
+### Step 33 (2026-10-11): §4.5 rule 2 -- `rt::Runtime::spawn` / `rt::RootHandle` (the owned-root primitive Phase B needs)
+
+Phase B's `ChatClient` slice must start a `chat_stream()` producer on the reactor with no per-call thread,
+and -- by the owner's 2026-10-11 decision (the caller-passed-scope of §4.5 rule 3a was found impractical:
+a `task_scope` is constructible only on a strand, while ~90 call sites call `chat_stream()` off any strand)
+-- the CLIENT, not the caller, owns that producer. `rt::Runtime` had only `run` (blocking) and `enter`
+(which must be `co_await`ed), so this step adds the missing primitive: a non-blocking OWNED root.
+
+- `include/agentengine/rt/runtime.hpp` -- `Runtime::spawn(StrandGroup const&, task<T>)` (plus a
+  `spawn(task<T>)` overload on a fresh group) posts the root to a fresh strand of the group and returns a
+  `RootHandle` **immediately**. The root is tracked exactly like a `run`/`enter` root: `admit()` registers it
+  with its own stop source, an await-chain link is added, `watch_root` arms the stuck-run watchdog, and
+  shutdown requests stop on it and joins it. `RootHandle` exposes `done()`, `request_stop()`, `fault()` and
+  `join()`; `join()` is refused on a lane/offload worker (`rt.block_on_on_lane`, §4.3). `RootHandle`
+  deliberately does **not** join in its destructor -- the Runtime joins every live root at shutdown, so an
+  abandoned handle cannot leak a thread, it only loses the ability to stop/join/observe.
+- The frame (`runtime_detail::spawn_root`) mirrors `enter_root`: it owns the engine task and finalizes itself
+  through `finish_spawn` (defined after `Runtime`, mirroring `finish_enter`), which removes the chain link,
+  unwatches the group, marks the handle done, wakes a joiner, then `release_root` -- the last touch on the
+  Runtime. A body exception is recorded on the handle, never `std::terminate`.
+- Scope deviation, recorded: this is the owner's chosen alternative to §4.5 rule 3a's caller-passed scope
+  (producer owned by the client, not the caller). The `chat_stream()` signature is UNCHANGED, so the ~190-site
+  concept churn the original Phase B plan anticipated does not happen; the ADR's §4.5 rule 3a text is to be
+  amended when this is Judged.
+
+Evidence: `tests/rt/test_rt_spawn.cpp` S1-S6 -- the body runs on a lane (a strand is current; `block_on` is
+refused there) and never on the host thread; `spawn()` is non-blocking (returns before the body finishes); a
+root parks on the reactor (`rt::sleep_for`) and resumes on a lane; `request_stop()` cancels a 10 s park
+promptly; a throwing root records `fault()` without terminating; destroying the Runtime stops + joins a
+parked root promptly; `join()` on a lane is refused. `build-dev` full tree clean (MSVC 14.51, `/W4 /WX`);
+`ctest -L rt` **80/80**; `ctest -LE live-network` **402/416** (`test_rt_spawn` added), the identical 14
+baseline failures; naming-lint OK; layering-lint OK.
+
+Open: not yet used -- the provider `ChatClient`'s `chat_stream` producer is the first consumer (Phase B,
+next). The plan for that slice (client-owned scope, the reactor HTTP rewrite replacing `Resolver`, dropping
+`chat()`) is written up at `~/.commandcode/plans/adr237-phase-b-chatclient-switchover.md`.
+
+### Step 34 (2026-10-11): §5.1 Phase B -- the provider `chat_stream` on the reactor (the ChatClient switchover, slice 1)
+
+The first half of the `ChatClient`/`Resolver` switchover. The vendor backends' `chat_stream` can now run its
+producer as an OWNED reactor root (`rt::Runtime::spawn`, step 33) instead of a detached `std::thread`. The
+change is additive and opt-in so the tree stays green throughout: a trailing `ProviderReactorOptions` on both
+provider ctors, defaulted to the blocking path (null `runtime`), so all ~30 existing construction sites are
+unchanged.
+
+- `protocol/provider_chat_wire.hpp` -- `ProviderReactorOptions{runtime, policy, resolver, options}` (the
+  reactor path's inputs) and `http_error_to_error` (step 6's named leftover: the reactor's `http_error` onto
+  `failure_class`, reusing `rt::is_resource_error` for the resource class).
+- `src/protocol/sse_stream_pump.hpp` -- `pump_sse_stream_async`, a COROUTINE twin of the blocking
+  `pump_sse_stream` that suspends on `rt::http_stream` / `rt::sse_events`. All six terminal rules are
+  preserved (transport error forwarded, non-2xx via `http_status_error`, mid-stream cut and "body never
+  began" both `net.stream_truncated`, complete stream closes). rt's framing/SSE decoders do the chunk work,
+  so the accumulators are fed `chunked=false`; each decoded event is re-serialized for the vendor accumulator
+  with its `event:` NAME preserved when the wire carried one (Anthropic's named-event framing), so both wire
+  dialects parse identically. `make_http_context` lives here (src/, HTTPS-only) so the TLS connector does not
+  leak into the shared header; `idle_timeout` is `sandbox::io_timeout_ms()`.
+- `protocol/openai/chat_client.hpp` + `src/protocol/openai/chat_client.cpp` (and the identical Anthropic
+  pair) -- a trailing `ProviderReactorOptions` ctor param and `run_stream_worker_async`, a plain function that
+  builds the same wire request and calls `reactor.runtime->spawn(pump_sse_stream_async<Accumulator>(...))`.
+  `chat_stream` branches to it when `reactor_.runtime != nullptr`.
+- `CMakeLists.txt` -- `agentengine_provider_http_client` now links `agentengine::rt_tls` PUBLIC (the library
+  references `rt::TlsStream`); every consumer inherits it.
+
+Evidence: the HTTPS tree (`build/`, VS generator, `AGENTENGINE_WITH_HTTPS=ON`) builds the provider library and
+its four protocol test targets; the two loopback live tests (`test_openai_chat_client_live`,
+`test_anthropic_chat_client_live`) pass unchanged (the blocking path). NEW cases in BOTH loopback tests
+construct the client with a `rt::Runtime` + a loopback `HostResolver` and assert the same canned chunked-SSE
+response (OpenAI's `data:`-only shape; Anthropic's NAMED-`event:` shape) decodes and delivers through
+`ae::stream<T>` in order with 0 loss and reaches the success terminal -- driven by an owned root on the
+reactor, no detached thread. `build-dev` is untouched (every change is inside `AGENTENGINE_WITH_HTTPS`), so its
+402/416 is unchanged. A LIVE end-to-end run against the real OpenRouter API
+(`test_openai_chat_client_openrouter_live_e2e`, a real key) passes -- real token usage, a real streamed reply
+("Ping!") over `ae::stream<T>`, a wrong-key 401 classified `policy`, and the I2 capability denial -- so the
+shared provider plumbing still talks to a real API. That live run drives the blocking path; a REACTOR-path live
+run (which would also exercise reactor DNS) needs a live test that constructs the client with a Runtime, still
+open.
+
+Still open after step 34 (partly superseded by step 35, which made `chat()` non-blocking on the reactor):
+hosts do not yet construct the provider clients with a Runtime (the switchover is opt-in, and the `Resolver`
+seam remains for the blocking fallback); `io_timeout_ms` is threaded but the step-6 timer-stop-on-strand move
+is not.
+
+### Step 35 (2026-10-11): §5.1 Phase B -- `chat()` on the reactor (the ChatClient switchover, slice 2)
+
+The second half of the ChatClient switchover, taken as the CHEAPER of §5.1's two options for `chat()`
+("gains a real `chat()` again ... or drops it"): the non-streaming method stays in the API, but its body is
+no longer blocking where a Runtime is set. Dropping `chat()` was measured FIRST and rejected as
+disproportionate (see the §14.1 sizing note): ~50 differently-shaped test fixtures stub `chat_stream` and
+rely on the unary path, so removing it is a ~40-file rewrite that also erases `AgentSession`'s non-streaming
+mode.
+
+- `protocol/openai/chat_client.hpp` + `src/protocol/openai/chat_client.cpp` (and the identical Anthropic pair)
+  -- a new `detail::exchange_json_async(...)`, a COROUTINE that runs the same buffered exchange on
+  `rt::http_request` (rt/http.hpp) with `exchange_json`'s exact contract (transport failure via
+  `http_error_to_error`, non-2xx via `http_status_error`, 2xx body parsed as JSON). `chat()` branches to it
+  when `reactor_.runtime != nullptr`, and falls back to the blocking `exchange_json` otherwise -- so all ~30
+  construction sites and every fixture are unchanged. The step-34 `ProviderReactorOptions` /
+  `make_http_context` / `http_error_to_error` are reused verbatim; cancellation passes `ctx.cancellation` as
+  the request's stop token.
+
+Evidence: the HTTPS tree builds; `test_openai_chat_client_live` / `test_anthropic_chat_client_live` gain a
+`chat()+reactor` case (a `rt::Runtime` + loopback `HostResolver`, driven by `rt::block_on`) that performs a
+real TLS round-trip on `rt::http` and parses the buffered body -- both pass, and the existing blocking
+`chat()` cases still pass; the live OpenRouter e2e (`test_openai_chat_client_openrouter_live_e2e`, real key)
+still passes. `build-dev` is untouched (every change is inside `AGENTENGINE_WITH_HTTPS`), so its 402/416
+stands.
+
+Residuals: the switchover stays opt-in -- hosts do not yet construct the provider clients with a Runtime, so
+`chat()` is non-blocking only when one is supplied (the blocking `exchange_json` remains for hosts with
+none); the `Resolver` seam is therefore still present.
+
+### Step 36 (2026-10-11): §5.1 Phase B -- the reactor path verified LIVE against a real provider
+
+Closes the "reactor's real DNS / a live reactor-path run" residual that steps 34 and 35 both named.
+
+- `tests/protocol/openai/test_openai_chat_client_openrouter_live_e2e.cpp` gains **OC-5**: the same class,
+  host and model, but constructed with a `rt::Runtime` and NO injected resolver, so DNS resolves through
+  `rt::Runtime::dns_pool()`. Both reactor halves run against the real endpoint -- `chat()` through
+  `rt::http_request` (driven by `rt::block_on`) and `chat_stream()` through the owned root
+  (`rt::Runtime::spawn`, no detached thread).
+- Evidence (live, real key, 2026-10-11): OC-5 passes -- a real round-trip on `rt::http_request` with
+  nonzero input/output usage, and the owned-root stream reaches `stream_terminal::closed` with non-empty
+  text. OC-1..OC-4 (the blocking path) still pass, as does the loopback suite on the HTTPS tree.
+
+Sizing of the remaining residual (making the switchover non-opt-in, then deleting the blocking
+`exchange_json` + `Resolver` seam): **no product/host code constructs a `rt::Runtime` today** -- the type
+appears only in `rt/` headers, the provider seam, and tests. So "thread a Runtime through the hosts" is in
+fact "give every host a Runtime": `tools/cli_chat.cpp`, `tools/test_driver/live_backend.hpp`,
+`examples/16_group_chat_live.cpp`, `examples/17_planner_live.cpp`, `devsim/*/main.cpp`, and
+`core/session_builder.hpp`'s `QuickstartSessionBuilder` (the canonical product factory, whose `build()`
+constructs the real `Primary` client through one uniform positional call). Only after that can the blocking
+fallback go -- and every no-Runtime test site must then be given a Runtime or kept on a named fallback,
+the same per-file cost the drop-`chat()` measurement (§14.1) found. Recommended as its own slice; not
+attempted here.
+
+### Step 37 (2026-10-11): §5.1 Phase B -- `SurfaceFactory` async (first of Phase B's last two seams)
+
+- `sandbox/live_shell_sandbox_provider.hpp`: `SurfaceFactory` is now `std::function<rt::task<Surface>()>` -- a
+  `Surface` may be a possibly-REMOTE environment (ADR-209: a container/daemon handshake), so constructing one
+  is allowed to suspend. `bind_sandbox` is now `task<result<void>>` and awaits the factory; its refusal
+  ordering and result contract are otherwise unchanged. The copy-assign constructs its surface through
+  `rt::block_on(make_surface_())` -- the same idiom that operator already used two lines up for
+  `spawn_child_branch` (l.187), so no new pattern was introduced.
+- Conformers: `tests/sandbox/test_live_shell_sandbox_provider.cpp`'s `World::bind` helper and
+  `tests/sandbox/execution_surface/test_live_shell_sandbox_provider_live.cpp`'s `bind` lambda keep their
+  synchronous `result<void>` shape for their call sites and drive the task with `rt::block_on`; the surface
+  lambdas became coroutines (`co_return Surface{...}`). No production caller outside the class:
+  `MandatorySandboxProvider::bind_sandbox` is a different signature and is untouched, and every
+  `tools/*.cpp` `bind_sandbox` is that one.
+- Evidence: `build-dev` clean; `test_live_shell_sandbox_provider` passes (bind / re-bind / copy-fork);
+  the Docker-daemon live test gets THROUGH `ok: setup: bind the live provider`, and its only failures are
+  `docker run failed: failed to connect to the docker API` -- no daemon on this machine, not this change.
+  `ctest -LE live-network` shows the identical 14 known failures of §14.1's baseline; the extra 20
+  `compile_fail` failures in that run are an ARTIFACT of running ctest without the MSVC environment
+  (`fatal error C1083: Cannot open include file: 'cstdint'`), not a code regression.
+
+**Next -- the last Phase B seam, `Resolver` (sized, not started).** The sync seam is
+`std::function<result<VerifiedEndpoint>(std::string_view, std::uint16_t)>` (`protocol/provider_chat_wire.hpp:26`),
+i.e. the blocking client's resolve+SSRF-filter step. The reactor path already SUBSUMES it -- `rt::Runtime`
+supplies DNS via `dns_pool()` and the address policy via `ProviderReactorOptions.policy` -- so "converting"
+it means DELETING it together with the blocking `exchange_json`. Measured shape of that slice:
+(1) the seam is a POSITIONAL ctor argument at ~101 construction sites across ~30 test files plus the hosts,
+so the clients should OWN a `rt::Runtime` rather than require one from each site (that keeps every
+construction site and every fixture compiling unchanged); (2) `run_task_sync` (the driver those ~30 files
+use) supplies NO home, and `reactor_await.hpp` REFUSES a homeless waiter, so the task driver must become
+`rt::block_on`-based (`block_on.hpp`'s own contract: "the calling thread is the driven task's home") -- a
+harness change, not a per-file one; (3) only then can `exchange_json` + the `Resolver` parameter go. That
+is the next slice, and it should be taken as one deliberate pass with a green build between each of the
+three steps. The qdrant `Resolver` (same shape, another file) belongs to Phase C.
+
+### Step 38 (2026-10-11): §5.1 Phase B -- the test driver supplies a home (the `Resolver` slice, step 1 of 3)
+
+Prerequisite for deleting the last Phase B seam (`Resolver`) and the blocking `exchange_json` behind it:
+the harness the provider tests drive explicit-path `chat()` with had no way to run a task that genuinely
+parks.
+
+- `tests/support/run_task_sync.hpp` now delegates to `rt::block_on` instead of its own manual-resume
+  `Driver`. `block_on` makes the CALLING THREAD the driven task's home (its own ADR-175 contract), which
+  is required because `rt/reactor_await.hpp`'s `AwaitedOp::on_complete` REFUSES a homeless waiter
+  (`Reactor::note_homeless_refusal`) rather than resuming it on the reactor thread -- so a reactor-awaiting
+  task driven by the old loop would never resume at all. For the non-parking `ChatClient` conformers this
+  harness was written for, behaviour is unchanged (the chain still runs inline on this thread); the
+  hand-written driver's ASan-confirmed stack-use-after-scope workaround goes away with it, since
+  `rt::block_on` already carries that fix.
+- Evidence: `build-dev` clean, `ctest -L rt` 80/80; the HTTPS tree builds and
+  `test_openai_chat_client_live` / `test_anthropic_chat_client_live` run ALL PASS directly. (Under
+  `ctest --test-dir build` these two report "Test command: NOT_AVAILABLE ... Not Run" in 0.00s -- a
+  registration/build-config artifact of the multi-config `build` tree, independent of any source change,
+  since the same binaries pass when invoked directly.)
+
+Remaining steps of the `Resolver` slice (unchanged in intent, see step 37's plan): (2) make the two
+provider clients OWN a `rt::Runtime` so the reactor path becomes the only path without touching the ~101
+construction sites; (3) delete `exchange_json` + the `Resolver` ctor parameter and the detached-thread
+worker. Step 2 was subsequently taken in the same session (step 39, below); step 3 was not, because its
+parameter removal looked like the ~101-site change class -- step 39 records the cheaper shape it can take
+instead.
+
+### Step 39 (2026-10-11): §5.1 Phase B -- the provider clients own their Runtime (`Resolver` slice, step 2 of 3)
+
+The reactor path is no longer opt-in. Each provider client holds `std::unique_ptr<rt::Runtime>
+owned_runtime_`, created in the constructor when the caller supplied no `ProviderReactorOptions.runtime`,
+and `reactor_.runtime` is pointed at it -- so `chat()` and `chat_stream()` always take the reactor branch,
+with NO change to any of the ~101 construction sites (they keep their existing positional arguments,
+including the trailing options default).
+
+- Held by `unique_ptr`, not by value, for two reasons: the client stays move-constructible, and the heap
+  object's address is stable, so `reactor_.runtime` (a raw pointer copied into the coroutine's context)
+  cannot dangle when a client is moved -- e.g. into `ModelCallGateway`. Declared AFTER `reactor_` so it is
+  destroyed first.
+- Evidence (the "an async seam must not move behaviour" check for this step): the HTTPS tree builds;
+  `test_openai_chat_client_live` and `test_anthropic_chat_client_live` run ALL PASS invoked directly,
+  including every PRE-EXISTING blocking-path case (attribution, structured, metadata, tool-call
+  streaming) as well as the reactor cases. The same assertions now hold with the exchange running on
+  `rt::http` instead of a detached thread. (`ctest --test-dir build` cannot run either binary --
+  "Test command: NOT_AVAILABLE" -- a multi-config registration artifact, see step 38.)
+
+Remaining -- step 3, the last of Phase B: delete `exchange_json`, the `if (runtime == nullptr)` branches in
+both clients, and the detached-thread `run_stream_worker`. CHEAPER SHAPE found while doing step 2: the
+`Resolver` ctor PARAMETER need NOT be removed (which would have forced the ~101-site edit). It can instead
+be WIRED INTO the reactor -- converted to the reactor's own `HostResolver` and left in
+`ProviderReactorOptions.resolver` -- so production's `sandbox::resolve_host` still governs name resolution,
+now executed on the runtime's DNS pool rather than on a blocking thread. Every construction site keeps
+compiling, and the parameter stays meaningful instead of dead.
+
+### Step 40 (2026-10-11): §5.1 Phase B -- the `Resolver` parameter becomes the reactor's DNS seam
+
+The step 39 note's "cheaper shape", taken first (before any deletion) because the deletions are only safe
+once name resolution has somewhere to go.
+
+- `protocol/provider_chat_wire.hpp` gains `host_resolver_from(Resolver, std::uint16_t)`: it wraps the
+  provider `Resolver` (`result<sandbox::VerifiedEndpoint>`) as the reactor's `rt::HostResolver`
+  (`pal::ResolveOutcome`), mapping the verified endpoint's host-order IPv4 onto `pal::IpAddress::v4` and a
+  failed resolve onto `pal::resolve_error::not_found`. `rt` runs a `HostResolver` on its DNS pool
+  (rt/dns.hpp's own words: "a blocking resolver, run on the DNS pool"), so production's
+  `sandbox::resolve_host` keeps governing name resolution on the reactor path -- off the reactor thread --
+  instead of being called inline by the blocking exchange.
+- Both clients' constructors install it when the caller named no reactor resolver:
+  `if (!reactor_.resolver) reactor_.resolver = host_resolver_from(resolver_, port_);`. So the `Resolver`
+  constructor parameter -- which every one of the ~101 construction sites still passes -- stays
+  LOAD-BEARING rather than becoming vestigial, and no call site changes.
+- Evidence: HTTPS tree builds; `test_openai_chat_client_live` and `test_anthropic_chat_client_live` both
+  run ALL PASS with resolution now flowing through the wrapped seam. HONEST SCOPE of that evidence: those
+  loopback suites use the host name "localhost", which real DNS also resolves, so they prove the wiring
+  does not BREAK anything rather than proving the wrapper is individually load-bearing -- a case that
+  isolates it (a name only the test resolver can answer) is a worthwhile follow-up.
+
+Remaining -- the last piece of Phase B: with resolution moved, delete `exchange_json`, the
+`if (runtime == nullptr)` branches in both clients, and the detached-thread `run_stream_worker`.
+
+### Step 41 (2026-10-11): §5.1 Phase B -- the blocking provider path is gone from both clients
+
+With resolution moved (step 40), both backends' model path is now reactor-only:
+
+- `chat()`: the `if (reactor_.runtime != nullptr) { ... } else { provider_wire::exchange_json(...) }` branch
+  is replaced by an unconditional `co_await detail::exchange_json_async(...)`. No blocking exchange remains
+  in the method.
+- `chat_stream()`: the `std::thread(&detail::run_stream_worker, ...).detach()` branch is deleted; the owned
+  producer root (`rt::Runtime::spawn` via `run_stream_worker_async`) is the only way a stream is produced.
+  This is the charter item -- no detached thread on the model path.
+- Evidence: HTTPS tree builds; `test_openai_chat_client_live` and `test_anthropic_chat_client_live` both run
+  ALL PASS. Since steps 39/40 already made every construction site take the reactor branch, those two
+  suites' PREVIOUSLY-BLOCKING cases (attribution, structured, metadata, tool-call streaming, and the
+  intentional-error cases) are now genuinely Reactor-path runs -- a real "the seam moved, the behaviour did
+  not" check, not a re-run of the same code.
+
+Leftover, mechanically dead but still compiled: `detail::run_stream_worker`'s and
+`provider_wire::exchange_json`'s declarations in the two client headers and their definitions in
+`src/protocol/{openai,anthropic}/chat_client.cpp` / `provider_chat_wire.hpp`, plus the (now unused)
+`pump_sse_stream` twin of `pump_sse_stream_async`. Deleting them is pure subtraction with no call sites to
+update -- the last cleanup of Phase B, left to a following pass rather than started without room to
+re-verify.
+
+### Step 42 (2026-10-11): §5.1 Phase B -- the dead detached-thread worker is deleted
+
+- `detail::run_stream_worker` is gone from BOTH backends: its declaration in
+  `protocol/{openai,anthropic}/chat_client.hpp` and its definition in `src/protocol/{openai,anthropic}/
+  chat_client.cpp`. Nothing called it after step 41, and its `pump_sse_stream<...>` instantiation goes with
+  it (the blocking `pump_sse_stream` template itself stays -- uninstantiated, it costs nothing, and it is
+  the pair `pump_sse_stream_async` is documented against).
+- **`provider_wire::exchange_json` was NOT deleted, and the grep is the reason**: it is still called by
+  `protocol/openai/openrouter_batch_backend.hpp:139`, so the batch backend is a second client of the
+  blocking exchange. It therefore outlives this slice; that backend's own conversion is the follow-up, not
+  a deletion.
+- Evidence: HTTPS tree builds; `test_openai_chat_client_live` and `test_anthropic_chat_client_live` both
+  ALL PASS.
+- Stale-comment residual (cosmetic, not compiled): the "detached background worker" comment block above the
+  removed declarations and `rt/http.hpp`'s mention of `pump_sse_stream` still describe the old shape.
+
 ### §14.1 What is left, and the phases to follow
 
-Recorded at session end so the work resumes cold. **Status: §5.1 is 5 of ~27 seams converted**
-(`SkillSource`/`ChunkingPolicy`, `ToolSourceFetch`, the A2A client, the A2A server, `GraderFn`). §5.2's
+Recorded at session end so the work resumes cold. **Status: §5.1 is 10 of ~27 seams converted**
+(`SkillSource`/`ChunkingPolicy`, `ToolSourceFetch`, the A2A client, the A2A server, `GraderFn`, MCP --
+§14 step 31, `OutputValidator` -- §14 step 32, `ChatClient` -- §14 steps 33-36, `SurfaceFactory` --
+§14 step 37, and `Resolver` -- §14 steps 38-41). **PHASE B IS COMPLETE** on the conversion side: every one
+of its seams has a reactor/task form and the provider model path has no blocking body and no detached
+thread. Its one outstanding item is DEAD-CODE SUBTRACTION, not conversion: delete the now-uncalled
+`run_stream_worker`, `provider_wire::exchange_json` and `pump_sse_stream` (step 41's own note). §5.2's
 tool contract is complete on the production side, but its transitional sync bridge is NOT removed.
 Everything listed below is **not done**, and nothing in this ADR or PR #169 claims otherwise.
 
-**Remaining §5.1 seams (sync -> `task`):** MCP (inventoried immediately above); `OutputValidator`; `Runner`;
+Sizing of the last two Phase B seams (2026-10-11, measured -- both are SMALL if taken as separate slices):
+**`SurfaceFactory`** is one typedef, `std::function<Surface()>`, in `sandbox/live_shell_sandbox_provider.hpp:133`,
+used at exactly TWO sites -- `bind_sandbox` (l.171, so `bind_sandbox` becomes `task<result<void>>`) and the
+copy-assign (l.202, which keeps `rt::block_on(make_surface_())`; the SAME operator already does
+`rt::block_on(spawn_child_branch(...))` at l.187, so the idiom is precedented in place). Conformers are tiny
+coroutines. **`Resolver`** is `std::function<result<VerifiedEndpoint>(std::string_view, std::uint16_t)>`, and
+it must be split: the provider half (`protocol/provider_chat_wire.hpp:26`, aliased by both backends) is the
+step-36 residual -- give hosts a Runtime, then delete the blocking `exchange_json` + the parameter, multi-host
+and multi-test-site; the qdrant half (`protocol/qdrant/vector_index.hpp:90`, same shape) belongs in Phase C
+with the index seams. `rt/dns.hpp`'s `HostResolver` is NOT a seam to convert -- it is already the
+reactor-vocabulary input (a blocking resolver run on the DNS pool). Order taken: `SurfaceFactory` first (small,
+closes the small end of Phase B), then Phase C with the qdrant `Resolver` folded in.
+
+**Remaining §5.1 seams (sync -> `task`):** `Runner`;
 `SandboxBackend`; `ExecutionSurface`; `PersistentShellSurface`; `NetEgressBackend`; `SecretStore`; the three
-stores; `VectorIndex`/`SparseIndex`; `BatchBackend`; `ChatClient`; `SurfaceFactory`; `Resolver`; plus ~15
+stores; `VectorIndex`/`SparseIndex`; `BatchBackend`; `Resolver`; plus ~15
 further `std::function` typedefs that have not been triaged individually yet.
 
 **Remaining §5.2 cleanup:** delete `make_sync_invoke`'s **five** production call sites -- counted by grep,
@@ -2046,14 +2435,38 @@ static-invoke form (the remaining conformers are mostly tests).
 
 **Carried but unstarted:** D3, D4, D7; the §10 spec + 027 vocabulary + `web/marketing` pass; the §8 gates.
 
-**Phase A -- MCP, as one atomic slice.** The inventory above is the whole spec. Goes first because it is
-the only seam that is fully inventoried and self-contained. Settle the `mcp_conformance_client.cpp`
-drive-loop question before editing.
+**Phase A -- MCP, as one atomic slice.** DONE (§14 step 31, 2026-10-11). The inventory above was the whole
+spec; it went first because it was the only seam fully inventoried and self-contained. The
+`mcp_conformance_client.cpp` drive-loop question was settled before editing: that binary reaches
+`rt::block_on` through `agentengine::core` (see step 31), so no CMake change was needed.
 
-**Phase B -- core seams.** `OutputValidator` first, and with a caveat that changes the order of work: it
-has **zero test coverage today** (only the build verifies it), so this slice must ADD a test of the
-validator's own behaviour *before* converting it -- otherwise a behaviour move under the async seam would be
-invisible. Then `ChatClient`, `Resolver`, `SurfaceFactory`.
+**Phase B -- core seams.** `OutputValidator` DONE (§14 step 32, 2026-10-11). The phase's "zero test
+coverage" premise was too strong and is corrected in step 32: the seam's behaviour was already pinned
+end-to-end (bridge P9, session O1/O2/O5, workflow O4), but the typed producer `output_validator_for<A>()`
+had no *direct* test and P9 could not separate a parse error from a schema mismatch -- so P9b was ADDED to
+`test_agent_session_bridge` before the conversion (run green against the sync seam, then re-run after).
+Remaining: `Resolver` (`SurfaceFactory` landed as §14 step 37). The `ChatClient` producer-ownership question is now
+settled (owner decision 2026-10-11: **client-owned**, NOT §4.5 rule 3a's caller-passed scope -- a
+`task_scope` needs a strand, and ~90 call sites have none), and its prerequisite landed as **step 33**
+(`rt::Runtime::spawn` / `rt::RootHandle`, the non-blocking owned-root primitive). The provider `chat_stream`
+rewrite onto `rt::http` and dropping `chat()` are the next slices
+(`~/.commandcode/plans/adr237-phase-b-chatclient-switchover.md`).
+
+Sizing note for the drop-`chat()` slice (2026-10-11, measured): it is much larger than the plan assumed.
+`AgentSession` picks the unary path whenever `stream_model_calls_` is false -- which is the DEFAULT in the
+tests -- so ~50 fixtures across ~35 files stub `chat_stream` as `return {};` (each with its own `State` shape;
+some have no `state_` at all). Deleting the session's `chat()` branch flips every one onto the streaming path,
+so each stub must first become a real `chat_stream` (one delta per scripted item, usage on the final update --
+see the `response_stream`-style helper a landed pass should add). Verified by experiment: deleting the branch
+without that conversion segfaults ~40 session tests. The conversion must precede the deletion, or the tree
+breaks. Ordering: (1) add the helper, (2) convert every stub (green throughout, since `chat()` still exists),
+(3) delete `chat()` + `LegacyChatClient` + the branch + the providers' `chat()` and its call sites.
+
+DECISION (2026-10-11): given that measurement, §5.1's OTHER option was taken instead -- `chat()` KEPT, made
+non-blocking on the reactor (**step 35**). It reaches the same charter goal (no blocking body, no detached
+thread on the model path) at ~1 file of change, and keeps `LegacyChatClient`, `AgentSession`'s non-streaming
+mode, and every fixture intact. The drop-`chat()` ordering above is recorded for the event someone still
+wants it; it is not currently planned.
 
 **Phase C -- index and storage seams.** `VectorIndex`/`SparseIndex`, the three stores, `SecretStore`. These
 unblock the RAG `recall` conversion, which belongs here rather than earlier: `recall` deletes two

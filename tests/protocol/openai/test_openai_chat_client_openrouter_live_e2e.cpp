@@ -37,6 +37,8 @@
 
 #include "agentengine/pal/env.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
+#include "agentengine/rt/block_on.hpp"
+#include "agentengine/rt/runtime.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
 #include "../../support/run_task_sync.hpp"
@@ -260,6 +262,46 @@ int main() {
         if (!resp) {
             check(resp.error().klass == failure_class::policy, "OC-4: a capability denial is classified 'policy'");
         }
+    }
+
+    // ---- OC-5: the REACTOR path against the real endpoint (ADR-237 §5.1, steps 34/35/36) ------------
+    // The same class, host and model, but the transport runs on a rt::Runtime: chat() exchanges over
+    // rt::http_request and chat_stream()'s producer is an OWNED root (rt::Runtime::spawn) -- no blocking
+    // body, no detached thread. DNS goes through the runtime's OWN pool (no injected resolver here), so
+    // this is also the reactor's real-DNS verification that was still open after step 34.
+    {
+        rt::Runtime                    rt{rt::RuntimeConfig{.lanes = 2}};
+        openai::detail::ReactorOptions rops;
+        rops.runtime = &rt;  // no resolver seam: rt::http resolves through rt::Runtime::dns_pool()
+
+        openai::OpenAIChatClient<InMemorySecretStore> reactive(
+            host, kHttpsPort, model, SecretRef{kSecretName}, caps, store, path_prefix(), sandbox::resolve_host,
+            /*ca=*/{}, /*http_referer=*/{}, /*x_title=*/kXTitle,
+            /*end_user_id=*/"test-openai-via-openrouter-reactor", /*seed=*/std::nullopt,
+            /*transport=*/sandbox::ProviderTransport::tls, /*scan_response_format_leaks=*/false,
+            /*session_id=*/"test-openai-via-openrouter-reactor", rops);
+
+        auto resp = rt::block_on(reactive.chat(request_asking("Reply with exactly one word: pong"), ctx));
+        check(resp.has_value(),
+              "OC-5: chat() on the reactor completes a real round-trip over rt::http_request -- real DNS "
+              "through the runtime's pool, real TLS, no blocking body");
+        if (!resp) {
+            std::fprintf(stderr, "       error: %s (%s)\n", resp.error().message.c_str(),
+                         resp.error().code.c_str());
+        } else {
+            check(resp->usage.input_tokens > 0 && resp->usage.output_tokens > 0,
+                  "OC-5: real, nonzero token usage came back on the reactor path");
+        }
+
+        stream<ChatResponseUpdate> s =
+            reactive.chat_stream(request_asking("Reply with exactly one word: pong"), ctx);
+        auto updates = drain(s);
+        check(s.terminal() == stream_terminal::closed,
+              "OC-5: chat_stream() on the reactor (owned root, rt::Runtime::spawn) reaches the SUCCESS "
+              "terminal against the real endpoint");
+        check(!text_of(updates).empty(),
+              "OC-5: the concatenated text deltas are non-empty on the reactor path");
+        note("reactor stream text", text_of(updates));
     }
 
     if (g_failures == 0) {

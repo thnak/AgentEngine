@@ -466,9 +466,12 @@ int main() {
 
     // ---- O4: set_output_schema() armed -- the pause is a pending interaction, not a schema failure. ----
     {
-        auto const validate = [](std::string_view text) -> agentengine::result<void> {
-            if (text.size() >= 2 && text.front() == '{' && text.find("\"ok\"") != std::string_view::npos) return {};
-            return std::unexpected(error{failure_class::contract, "not {\"ok\":...}", "test.schema"});
+        // ADR-237 §5.1: the validator seam is a `task` producer now.
+        auto const validate = [](std::string_view text) -> agentengine::task<agentengine::result<void>> {
+            if (text.size() >= 2 && text.front() == '{' && text.find("\"ok\"") != std::string_view::npos) {
+                co_return agentengine::result<void>{};
+            }
+            co_return std::unexpected(error{failure_class::contract, "not {\"ok\":...}", "test.schema"});
         };
         auto inner = ask_workflow("o4", "give me json");
         Outer outer;

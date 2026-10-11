@@ -8,6 +8,10 @@
 // generated descriptor's `capability_ceiling` is `{cap::ToolCall{name}}` -- the session's own
 // `ToolBridgeConfig::capabilities` must explicitly name that exact MCP tool, the same shape any
 // other capability-gated tool already requires, never widened just because the client exists.
+//
+// ADR-237 §5.1: both adapters are now `task` producers. `mcp_tools_as_descriptors()` awaits the
+// client's own `list_tools()`, and the descriptor lambda it hands out `co_await`s `call_tool()` --
+// the lambda already returned a `task`, so only the await was added inside it.
 
 #include <memory>
 #include <string>
@@ -16,13 +20,14 @@
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_value.hpp"
+#include "agentengine/core/task.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/protocol/mcp/client.hpp"
 #include "agentengine/trust/capability.hpp"
 
 namespace agentengine::mcp {
 
-[[nodiscard]] inline std::vector<ToolDescriptor> mcp_tools_as_descriptors_from(
+[[nodiscard]] inline task<std::vector<ToolDescriptor>> mcp_tools_as_descriptors_from(
     std::vector<McpToolInfo> const& listed, std::shared_ptr<McpClient> const& client) {
     std::vector<ToolDescriptor> out;
     out.reserve(listed.size());
@@ -37,7 +42,7 @@ namespace agentengine::mcp {
         std::string const tool_name = info.name;  // captured by value, not a reference into `listed`
         descriptor.invoke = [client, tool_name](json::Value const& args,
                                                 EffectContext&) -> task<result<json::Value>> {
-            auto outcome = client->call_tool(tool_name, args);
+            auto outcome = co_await client->call_tool(tool_name, args);
             if (!outcome) co_return std::unexpected(outcome.error());
             // 011 §3.1: "surfaced to the model for self-correction" -- an MCP-side execution
             // failure becomes a real pipeline error here, never a silently successful empty
@@ -66,17 +71,17 @@ namespace agentengine::mcp {
         };
         out.push_back(std::move(descriptor));
     }
-    return out;
+    co_return out;
 }
 
 // Calls `client->list_tools()` and adapts the result. Kept separate from the `listed`-taking
 // overload above so a caller that already has a listing (e.g. from its own caching/paging loop)
 // doesn't pay for a second `list_tools()` round trip.
-[[nodiscard]] inline result<std::vector<ToolDescriptor>> mcp_tools_as_descriptors(
+[[nodiscard]] inline task<result<std::vector<ToolDescriptor>>> mcp_tools_as_descriptors(
     std::shared_ptr<McpClient> client) {
-    auto listed = client->list_tools();
-    if (!listed) return std::unexpected(listed.error());
-    return mcp_tools_as_descriptors_from(*listed, client);
+    auto listed = co_await client->list_tools();
+    if (!listed) co_return std::unexpected(listed.error());
+    co_return co_await mcp_tools_as_descriptors_from(*listed, client);
 }
 
 }  // namespace agentengine::mcp

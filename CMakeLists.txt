@@ -818,6 +818,9 @@ if(AGENTENGINE_WITH_HTTPS)
     src/protocol/openai/openrouter_batch.cpp
     src/protocol/anthropic/chat_client.cpp)
   target_link_libraries(agentengine_provider_http_client PUBLIC agentengine::net_egress_proxy)
+  # ADR-237 §5.1 (step 34): the provider clients' `chat_stream` can now drive rt/http on the reactor, so the
+  # library references `rt::TlsStream` (rt/http_tls.hpp). PUBLIC so every consumer inherits it.
+  target_link_libraries(agentengine_provider_http_client PUBLIC agentengine::rt_tls)
   target_link_libraries(agentengine_provider_http_client PRIVATE agentengine_warnings)
   add_library(agentengine::provider_http_client ALIAS agentengine_provider_http_client)
 endif()

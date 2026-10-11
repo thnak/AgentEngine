@@ -2028,7 +2028,7 @@ task<result<AgentResponse>> AgentSessionCore::run_rounds_body() {
             std::optional<std::string> structured_output_json;
             if (output_schema_validate_) {
                 std::string text_content = text_of(response->message);
-                result<void> const validated = output_schema_validate_(text_content);
+                result<void> const validated = co_await output_schema_validate_(text_content);
                 if (!validated) {
                     emit_run_event(run_event_kind::run_failed,
                                     run_event_payload::RunFailed{

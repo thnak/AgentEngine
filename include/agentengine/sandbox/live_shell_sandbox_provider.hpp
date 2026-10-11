@@ -130,7 +130,11 @@ public:
     // Snapshots kept per provider (§5: bounded LRU). The oldest is dropped first.
     static constexpr std::size_t kMaxSnapshots = 256;
 
-    using SurfaceFactory = std::function<Surface()>;
+    // ADR-237 §5.1 (step 37): the surface factory is an ASYNC seam. A `Surface` may be a possibly-remote
+    // environment (ADR-209 -- a container/daemon handshake, not a local object graph), so constructing one
+    // is allowed to suspend: `Surface()` -> `task<Surface>()`. Non-coroutine callers drive it through
+    // `rt::block_on` (the copy-assign below does exactly that for `spawn_child_branch` already).
+    using SurfaceFactory = std::function<agentengine::rt::task<Surface>()>;
 
     // Unbound: contributes no tool. Required to exist for `AgentSession::clear_in_process_state()`.
     LiveShellSandboxProvider() = default;
@@ -139,7 +143,9 @@ public:
     // The binding call. `limits` is REQUIRED (no unbounded default, §8): a zero ceiling, a non-positive
     // deadline or a missing factory is refused before anything changes. A re-bind releases the held
     // environment first.
-    [[nodiscard]] agentengine::result<void> bind_sandbox(
+    // ADR-237 §5.1 (step 37): async, because it awaits the surface factory (above). Same result contract
+    // and same refusal ordering as before -- only the return is a `task` now.
+    [[nodiscard]] agentengine::rt::task<agentengine::result<void>> bind_sandbox(
         agentengine::Ledger<Store>& ledger, agentengine::BranchHandle<Store> branch, agentengine::IdentityHandle owner,
         std::filesystem::path staging_root, agentengine::rt::AsyncQuota<agentengine::BranchCost>& branch_quota,
         agentengine::rt::AsyncQuota<agentengine::RunCost>& run_quota,
@@ -148,9 +154,9 @@ public:
         std::chrono::milliseconds command_deadline, Lifetime lifetime_policy = {},
         LiveShellClock clock = default_live_shell_clock()) {
         auto valid = validate_live_shell_limits(limits);
-        if (!valid.has_value()) return valid;
+        if (!valid.has_value()) co_return valid;
         if (command_deadline.count() <= 0 || !make_surface || !clock) {
-            return std::unexpected(agentengine::error{
+            co_return std::unexpected(agentengine::error{
                 agentengine::failure_class::contract,
                 "bind_sandbox needs a positive per-command deadline, a surface factory and a clock",
                 "live_shell_provider.bad_binding"});
@@ -168,10 +174,10 @@ public:
         lifetime_ = std::move(lifetime_policy);
         clock_ = std::move(clock);
         runtime_.emplace(ledger, std::move(branch), std::move(staging_root));
-        surface_ = std::make_unique<Surface>(make_surface_());
+        surface_ = std::make_unique<Surface>(co_await make_surface_());
         reset_shell_state();
         snapshots_.clear();
-        return {};
+        co_return agentengine::result<void>{};
     }
 
     [[nodiscard]] bool is_bound() const noexcept { return runtime_.has_value(); }
@@ -199,7 +205,7 @@ public:
         lifetime_ = other.lifetime_;
         clock_ = other.clock_;
         runtime_.emplace(std::move(*child));
-        surface_ = std::make_unique<Surface>(make_surface_());
+        surface_ = std::make_unique<Surface>(agentengine::rt::block_on(make_surface_()));
         reset_shell_state();
         snapshots_ = other.snapshots_;
         return *this;

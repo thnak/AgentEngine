@@ -708,9 +708,10 @@ public:
     // parse is the validator" idiom (003 §4, corrected 2026-08-14). Returns `result<void>`, not a
     // bare bool (ADR-058 §4 B3), so a real failure carries a real message. `strategy` gates whether
     // the REQUEST carries a native structured-output constraint (run_rounds(), native only) --
-    // validation of the RESPONSE, below, applies regardless of strategy.
+    // validation of the RESPONSE, below, applies regardless of strategy. ADR-237 §5.1: `validate` is
+    // a `task` producer now (it is awaited in run_rounds); the typed validator resolves inline.
     void set_output_schema(std::string json, agentengine::output_schema_strategy strategy,
-                            std::function<result<void>(std::string_view)> validate) {
+                            std::function<task<result<void>>(std::string_view)> validate) {
         output_schema_json_     = std::move(json);
         output_schema_strategy_ = strategy;
         output_schema_validate_ = std::move(validate);
@@ -1373,7 +1374,8 @@ private:
     std::string                                          output_schema_json_;
     agentengine::output_schema_strategy                  output_schema_strategy_ =
         agentengine::output_schema_strategy::native;
-    std::function<result<void>(std::string_view)>        output_schema_validate_;
+    // ADR-237 §5.1: a `task` producer -- see set_output_schema()'s own comment.
+    std::function<task<result<void>>(std::string_view)>  output_schema_validate_;
     std::uint64_t                                         admission_denied_count_ = 0;
     stream_producer<RunEvent>                             run_event_producer_;
     std::unordered_map<std::string, std::uint64_t>        run_event_seq_by_run_;

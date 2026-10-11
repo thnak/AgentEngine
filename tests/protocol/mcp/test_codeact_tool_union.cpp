@@ -181,12 +181,16 @@ int main() {
         // deliberately no defaulted overload, since a default is what made the A2A admission path
         // fail open.
         ae::Principal const kCaller = ae::make_local_cli_principal("codeact-union-test", "test-tenant");
-        mcp::RequestSender sender = [&server, &kCaller](mcp::JsonRpcRequest const& req) {
-            return server.dispatch(req, kCaller);
+        mcp::RequestSender sender = [&server, &kCaller](mcp::JsonRpcRequest const& req)
+            -> ae::task<mcp::JsonRpcResponse> {
+            co_return server.dispatch(req, kCaller);
         };
         auto client = std::make_shared<mcp::McpClient>(sender, "codeact-union-test-client");
 
-        auto descriptors = mcp::mcp_tools_as_descriptors(client);
+        // ADR-237 §5.1: the adapter is a `task` producer now; its body never parks (the sender
+        // drives the in-process server synchronously), so the shared test driver is enough.
+        auto descriptors = ae::test_support::run_task_sync<ae::result<std::vector<ae::ToolDescriptor>>>(
+            mcp::mcp_tools_as_descriptors(client));
         check(descriptors.has_value() && descriptors->size() == 2,
               "U5: mcp_tools_as_descriptors() lists both real MCP-side tools");
 

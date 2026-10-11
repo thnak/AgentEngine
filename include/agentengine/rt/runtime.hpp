@@ -160,6 +160,21 @@ struct SharedCounters {
     std::atomic<std::uint64_t> adopted_finished{0};  // ... that have since finished
 };
 
+// ADR-237 §4.5 rule 2 (step 33): one `spawn` -- an OWNED root the caller does not await. Shared by the
+// `RootHandle` (which observes it) and the root frame (which records into it). The Runtime tracks the root
+// exactly like a `run`/`enter` root: shutdown requests `stop` on it and joins it.
+// ae-naming-lint: allow SpawnState — ADR-237 §4.5: new runtime vocabulary, 027 §4 row added when the ADR is Judged
+struct SpawnState {
+    Runtime*                rt     = nullptr;
+    std::uint64_t           holder = 0;
+    Strand                  strand;
+    std::stop_source        stop;
+    std::atomic<bool>       done{false};
+    std::exception_ptr      fault;
+    std::mutex              m;
+    std::condition_variable cv;
+};
+
 // One `enter`: shared by the awaiter and the root frame; the root frame's reference keeps it alive after an
 // adoption (§4.5 rule 3). `phase` decides, exactly once, who the end of the root belongs to.
 template <class T>
@@ -195,6 +210,29 @@ struct RootFrame {
     };
     std::coroutine_handle<promise_type> h;
 };
+
+// Defined after `Runtime` (it touches the Runtime's private root bookkeeping), exactly like `finish_enter`.
+void finish_spawn(SpawnState& st) noexcept;
+
+// ADR-237 §4.5 rule 2 (step 33): the frame a `spawn` root runs in -- identical ownership shape to
+// `enter_root`'s, but with NO foreign continuation. The Runtime owns the root; the frame's own last
+// statement finalizes it (finish_spawn, defined after `Runtime`, exactly like `finish_enter`).
+template <class T>
+RootFrame spawn_root(task<T> t, std::shared_ptr<SpawnState> st) {
+    {
+        task<T> body = std::move(t);  // destroyed before finalization, as `enter_root` does
+        try {
+            if constexpr (std::is_void_v<T>) {
+                co_await body;
+            } else {
+                (void)co_await body;
+            }
+        } catch (...) {
+            st->fault = std::current_exception();
+        }
+    }
+    finish_spawn(*st);  // the last statement; `st` keeps the state alive through it
+}
 
 template <class T>
 void finish_enter(EnterState<T>& st) noexcept;
@@ -319,6 +357,45 @@ private:
     std::shared_ptr<detail::ResumerTicket>           ticket_keep_;  // kept to claim a queued continuation
     bool                                             started_ = false;
     bool                                             resumed_ = false;
+};
+
+// ADR-237 §4.5 rule 2 (step 33): the handle to a `spawn`ed root -- an OWNED root the caller does not await.
+// Obtaining it does not block. It deliberately does NOT join in its destructor (a root may still be running
+// when the handle is dropped); the Runtime joins every live root at shutdown regardless, so an abandoned
+// handle cannot leak a thread -- it only gives up the ability to stop/join/observe.
+// ae-naming-lint: allow RootHandle — ADR-237 §4.5: new runtime vocabulary, 027 §4 row added when the ADR is Judged
+class RootHandle {
+public:
+    RootHandle() noexcept                        = default;
+    RootHandle(RootHandle&&) noexcept            = default;
+    RootHandle& operator=(RootHandle&&) noexcept = default;
+    RootHandle(RootHandle const&)                = delete;
+    RootHandle& operator=(RootHandle const&)     = delete;
+
+    [[nodiscard]] bool valid() const noexcept { return static_cast<bool>(state_); }
+    [[nodiscard]] bool done() const noexcept {
+        return state_ && state_->done.load(std::memory_order_acquire);
+    }
+    // The exception the root body threw, if any (usually null: a producer reports through its stream).
+    [[nodiscard]] std::exception_ptr fault() const noexcept { return state_ ? state_->fault : nullptr; }
+    // Request stop on the root (the same source shutdown requests).
+    void request_stop() noexcept {
+        if (state_) state_->stop.request_stop();
+    }
+    // Block until the root finishes. Refused on a lane/offload worker (§4.3: it would park a worker on work
+    // that may need that worker). Returns false for an empty handle.
+    bool join() {
+        if (!state_) return false;
+        if (char const* refused = detail::block_on_refusal_code()) throw block_on_refused(refused);  // §4.3
+        std::unique_lock lock(state_->m);
+        state_->cv.wait(lock, [this] { return state_->done.load(std::memory_order_acquire); });
+        return true;
+    }
+
+private:
+    friend class Runtime;
+    explicit RootHandle(std::shared_ptr<runtime_detail::SpawnState> st) noexcept : state_(std::move(st)) {}
+    std::shared_ptr<runtime_detail::SpawnState> state_;
 };
 
 // ae-naming-lint: allow Runtime — ADR-237 §9 D7: new runtime vocabulary, 027 §4 row added when the ADR is Judged
@@ -459,12 +536,47 @@ public:
         return EnterAwaiter<T>(*this, std::move(t), thread.resumer(), &thread);
     }
 
+    // Case 4 (§4.5 rule 2, step 33): start `t` as an OWNED root WITHOUT blocking, on a fresh strand of
+    // `group`, and return a handle to it. The Runtime tracks the root exactly like a `run`/`enter` root, so
+    // shutdown requests stop on it and joins it; a caller that needs the root gone requests stop and joins.
+    // A root that throws has its exception recorded on the handle (`fault()`); like every root it counts
+    // toward shutdown. This is how the engine starts work it owns but does not await (a `chat_stream`
+    // producer, ADR-237 §4.5 rule 3a).
+    template <class T>
+    [[nodiscard]] RootHandle spawn(StrandGroup const& group, task<T> t) {
+        if (!t.valid() || !group.valid()) throw std::invalid_argument("rt::Runtime::spawn: empty task or group");
+        auto st    = std::make_shared<runtime_detail::SpawnState>();
+        st->rt     = this;
+        st->holder = mint_holder_id();
+        st->strand = group.new_strand();
+        RootHandle handle{st};
+        admit(st->holder, st->stop);  // throws rt.runtime_closed during shutdown
+        try {
+            chain_detail::Registry::instance().add(st->holder,
+                                                   chain_detail::Link{0, nullptr, st->stop.get_token(), 0});
+            lanes_.watch_root(st->strand);
+        } catch (...) {
+            (void)chain_detail::Registry::instance().remove(st->holder);
+            release_root(st->holder);
+            throw;
+        }
+        runtime_detail::RootFrame frame = runtime_detail::spawn_root(std::move(t), st);
+        st->strand.post(frame.h, st->holder);
+        return handle;
+    }
+    template <class T>
+    [[nodiscard]] RootHandle spawn(task<T> t) {
+        return spawn(new_strand_group(), std::move(t));
+    }
+
 private:
     friend class CompletionThread;
     template <class T>
     friend class EnterAwaiter;
+    friend class RootHandle;
     template <class T>
     friend void runtime_detail::finish_enter(runtime_detail::EnterState<T>& st) noexcept;
+    friend void runtime_detail::finish_spawn(runtime_detail::SpawnState& st) noexcept;
 
     void admit(std::uint64_t holder, std::stop_source const& stop) {
         std::lock_guard lock(m_);
@@ -571,6 +683,22 @@ void EnterAwaiter<T>::await_suspend(std::coroutine_handle<> foreign) {
 }
 
 namespace runtime_detail {
+
+// The end of a `spawn` root, on its lane (the last statement of `spawn_root`). Marks the handle done, wakes a
+// joiner, then releases the root: the last touch on the Runtime (which is why the Runtime cannot be destroyed
+// until this returns -- its destructor waits for `roots_` to reach 0, which `release_root` does).
+inline void finish_spawn(SpawnState& st) noexcept {
+    Runtime* const      rt     = st.rt;
+    std::uint64_t const holder = st.holder;
+    (void)chain_detail::Registry::instance().remove(holder);
+    rt->lanes_.unwatch_root(st.strand);
+    {
+        std::lock_guard lock(st.m);
+        st.done.store(true, std::memory_order_release);
+    }
+    st.cv.notify_all();
+    rt->release_root(holder);
+}
 
 // The end of an `enter` root, on its lane (the last statement of `enter_root`). Exactly one of: hand the foreign
 // continuation to the host's Resumer (the awaiter is still there), or -- the awaiter was destroyed and the root

@@ -162,9 +162,15 @@ int main() {
 
     auto bind = [&](Provider& p, std::string const& name, std::string const& image, std::chrono::milliseconds deadline) {
         auto root = drive(ledger.create_root_branch(owner, name));
-        return p.bind_sandbox(ledger, std::move(*root), owner, dir / name, branch_q, run_q, storage_q, open_q,
-                              LiveShellLimits{30min, 2h, 100},
-                              [image] { return DockerPersistentShellSurface(image, box()); }, deadline);
+        // ADR-237 §5.1 (step 37): `bind_sandbox` is async now (it awaits the surface factory); drive it here
+        // so this lambda keeps its own synchronous `result<void>` shape for its call sites.
+        return agentengine::rt::block_on(p.bind_sandbox(
+            ledger, std::move(*root), owner, dir / name, branch_q, run_q, storage_q, open_q,
+            LiveShellLimits{30min, 2h, 100},
+            [image]() -> agentengine::rt::task<DockerPersistentShellSurface> {
+                co_return DockerPersistentShellSurface(image, box());
+            },
+            deadline));
     };
 
     // ---- L1, L2, L3, L4, L5

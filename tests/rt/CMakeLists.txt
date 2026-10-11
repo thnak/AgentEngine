@@ -169,6 +169,10 @@ endif()
 agentengine_add_test(test_rt_lanes LIBS agentengine::core agentengine_warnings TIMEOUT 180)
 agentengine_add_test(test_rt_runtime LIBS agentengine::core agentengine_warnings TIMEOUT 180)
 
+# ---- ADR-237 §4.5 rule 2 (impl step 33): rt::Runtime::spawn / rt::RootHandle -- an OWNED root a caller does
+# NOT await (a chat_stream() producer), started without blocking and tracked like a run/enter root.
+agentengine_add_test(test_rt_spawn LIBS agentengine::core agentengine_warnings TIMEOUT 180)
+
 # ---- ADR-237 implementation step 5: structured concurrency (rt/scope.hpp: with_scope / when_all / task_scope -- child
 # strands of the session, join on the owner's strand, failure cancels siblings two-phase, emitted order, the cap, no
 # child outlives its scope), stop callbacks posted to the owning strand (rt/strand_stop_callback.hpp), and holder await

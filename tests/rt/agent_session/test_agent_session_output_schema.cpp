@@ -91,13 +91,15 @@ AE_JSON_SCHEMA(DemoOutput, name, value)
 
 // The validator closure a real caller would write at the ONE place that knows both T and constructs
 // the session -- AgentSession itself never sees DemoOutput, matching ADR-058 §4 B2's own finding.
-[[nodiscard]] std::function<agentengine::result<void>(std::string_view)> make_demo_validator() {
-    return [](std::string_view text) -> agentengine::result<void> {
+// ADR-237 §5.1 (step 32): `AgentSessionCore::set_output_schema` takes a TASK-returning validator now,
+// so this fixture's validator is a coroutine (it never parks).
+[[nodiscard]] std::function<agentengine::rt::task<agentengine::result<void>>(std::string_view)> make_demo_validator() {
+    return [](std::string_view text) -> agentengine::rt::task<agentengine::result<void>> {
         auto parsed = agentengine::json::parse(text);
-        if (!parsed) return std::unexpected(parsed.error());
+        if (!parsed) co_return std::unexpected(parsed.error());
         auto decoded = agentengine::schema::from_json<DemoOutput>(*parsed);
-        if (!decoded) return std::unexpected(decoded.error());
-        return {};
+        if (!decoded) co_return std::unexpected(decoded.error());
+        co_return agentengine::result<void>{};
     };
 }
 
