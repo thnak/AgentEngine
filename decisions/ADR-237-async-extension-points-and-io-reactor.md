@@ -2024,3 +2024,53 @@ commit, because `McpClient` has no sync/async split to hide behind.
   `tests/protocol/mcp/test_mcp_tasks_extension.cpp` (`:92` sender lambda, task verbs) and
   `tests/protocol/mcp/test_codeact_tool_union.cpp` (`:187`-`:219`).
 
+### §14.1 What is left, and the phases to follow
+
+Recorded at session end so the work resumes cold. **Status: §5.1 is 5 of ~27 seams converted**
+(`SkillSource`/`ChunkingPolicy`, `ToolSourceFetch`, the A2A client, the A2A server, `GraderFn`). §5.2's
+tool contract is complete on the production side, but its transitional sync bridge is NOT removed.
+Everything listed below is **not done**, and nothing in this ADR or PR #169 claims otherwise.
+
+**Remaining §5.1 seams (sync -> `task`):** MCP (inventoried immediately above); `OutputValidator`; `Runner`;
+`SandboxBackend`; `ExecutionSurface`; `PersistentShellSurface`; `NetEgressBackend`; `SecretStore`; the three
+stores; `VectorIndex`/`SparseIndex`; `BatchBackend`; `ChatClient`; `SurfaceFactory`; `Resolver`; plus ~15
+further `std::function` typedefs that have not been triaged individually yet.
+
+**Remaining §5.2 cleanup:** delete `make_sync_invoke`'s three production call sites (two RAG -- blocked on
+D3; one WASM -- needs a WASM-enabled build to verify); remove the zero-arg `make_tool_descriptor<ToolT>()` /
+`ToolTable::from_tools<Ts...>()` static-invoke form (the remaining conformers are mostly tests).
+
+**Carried but unstarted:** D3, D4, D7; the §10 spec + 027 vocabulary + `web/marketing` pass; the §8 gates.
+
+**Phase A -- MCP, as one atomic slice.** The inventory above is the whole spec. Goes first because it is
+the only seam that is fully inventoried and self-contained. Settle the `mcp_conformance_client.cpp`
+drive-loop question before editing.
+
+**Phase B -- core seams.** `OutputValidator` first, and with a caveat that changes the order of work: it
+has **zero test coverage today** (only the build verifies it), so this slice must ADD a test of the
+validator's own behaviour *before* converting it -- otherwise a behaviour move under the async seam would be
+invisible. Then `ChatClient`, `Resolver`, `SurfaceFactory`.
+
+**Phase C -- index and storage seams.** `VectorIndex`/`SparseIndex`, the three stores, `SecretStore`. These
+unblock the RAG `recall` conversion, which belongs here rather than earlier: `recall` deletes two
+`synchronous_leaf` contract-error paths that tests pin deliberately, and it depends on the index seams.
+Gate: those tests are updated with the reason recorded -- never deleted to make a build pass.
+
+**Phase D -- execution and sandbox surfaces.** `Runner`, `SandboxBackend`, `ExecutionSurface`,
+`PersistentShellSurface`, `NetEgressBackend`, `BatchBackend`. Grouped because they share the
+`EffectContext`/capability plumbing. Expect the mutex-across-suspension hazard from the A2A server
+(`protocol/a2a/server.hpp:141`) to recur -- audit every lock when one of these goes async.
+
+**Phase E -- §5.2 cleanup, only after C and D.** The three `make_sync_invoke` sites and the static
+`make_tool_descriptor`/`from_tools` form can only be deleted once nothing synchronous remains downstream of
+them. The WASM site additionally needs a WASM-enabled build to verify, which the current local build does
+not produce.
+
+**Phase F -- the carried threads.** D3/D4/D7, the §10 + 027 + `web/marketing` pass, the §8 gates.
+
+**Gate for every phase, unchanged:** build-dev clean; the named tests for the touched area pass; naming-lint
+OK; layering-lint OK; `ctest -LE live-network` -> 401/415 with the identical 14. Never mark §5.1 or §5.2 done
+on anything less. And the standing behavioural rule: **a seam going async must not move behaviour** -- the
+A2A D4 assertions are the exemplar. If a test has to change, that change is the finding, and it gets
+recorded rather than absorbed.
+
