@@ -315,6 +315,11 @@ public:
         return chunked_ && !chunked_decoder_.complete() && !done_seen_ && !captured_usage_.has_value();
     }
 
+    // ADR-237: the reactor pump feeds DECODED events (chunk framing already stripped by rt, so `truncated()` is
+    // always false there). A framing cut surfaces as an rt error instead, and this is the same "its own terminal
+    // event was seen" test `truncated()` defers to: true => the answer is whole whatever the framing did after.
+    [[nodiscard]] bool terminal_seen() const noexcept { return done_seen_ || captured_usage_.has_value(); }
+
     // End of stream: flushes the held-back update and every assembled tool call, marking the very
     // last one final. Safe to call on a stream that produced nothing (returns empty).
     [[nodiscard]] std::vector<ChatResponseUpdate> finish();

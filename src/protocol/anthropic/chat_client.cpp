@@ -507,7 +507,8 @@ void run_stream_worker_async(std::string host, std::uint16_t port, std::string p
     rt::HttpContext ctx =
         agentengine::detail::provider_wire::make_http_context(reactor, ca_bundle_pem_override, https);
     (void)reactor.runtime->spawn(agentengine::detail::provider_wire::pump_sse_stream_async<StreamingUpdateAccumulator>(
-        "anthropic", model, std::move(ctx), std::move(req), std::move(producer), std::move(stop)));
+        "anthropic", model, std::move(ctx), std::move(req), std::move(producer), std::move(stop),
+        &reactor.runtime->offload_pool()));
 }
 
 // ADR-237 §5.1 (step 35): chat()'s reactor path (see the OpenAI backend's identical function).

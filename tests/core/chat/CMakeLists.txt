@@ -49,6 +49,13 @@ if(AGENTENGINE_WITH_HTTPS)
       MbedTLS::mbedx509 MbedTLS::mbedcrypto
     TIMEOUT 120)
 
+  # ADR-237 §4.5 rules 3a/4/5 on the real reactor stream pump: lossless back-pressure, bounded shutdown with an
+  # undrained stream, multi-line SSE data. Loopback server, default suite.
+  agentengine_add_test(test_chat_client_stream_pump_lifecycle
+    LIBS agentengine::core agentengine::provider_http_client agentengine_warnings MbedTLS::mbedtls
+      MbedTLS::mbedx509 MbedTLS::mbedcrypto
+    TIMEOUT 120)
+
   # ---- Milestone 5 Phase J1 (roadmap exit criterion, 004 §7 G1): the same unchanged call site, run
   # against real OpenAI/Anthropic backends over local TLS servers, a ReplayChatClient, and a
   # FailoverChatClient<real, real> composition with a genuinely failing primary.

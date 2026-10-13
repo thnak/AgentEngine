@@ -116,6 +116,12 @@ pal::ProcessSpec helper(std::vector<std::string> args) {
     char        root[MAX_PATH];
     DWORD const n = GetEnvironmentVariableA("SystemRoot", root, MAX_PATH);
     if (n > 0 && n < MAX_PATH) s.env.push_back(std::string("SystemRoot=") + root);
+    // Plus PATH: the sanitizer legs link the helper against the ASan runtime DLL, which the loader finds through
+    // PATH -- without it the child dies with 0xC0000135 (STATUS_DLL_NOT_FOUND) before main(), failing every P*.
+    // PATH is not what P17 probes (AE_PROCESS_HOST_ONLY is), so the isolation claim still holds.
+    std::string path(32768, '\0');
+    DWORD const pn = GetEnvironmentVariableA("PATH", path.data(), static_cast<DWORD>(path.size()));
+    if (pn > 0 && pn < path.size()) s.env.push_back("PATH=" + path.substr(0, pn));
 #endif
     return s;
 }

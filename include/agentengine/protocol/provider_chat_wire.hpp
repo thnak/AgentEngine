@@ -77,10 +77,10 @@ struct ProviderReactorOptions {
         case rt::http_error::idle_timeout:
         case rt::http_error::truncated:
         case rt::http_error::connect_failed:
+        case rt::http_error::resolve_failed:  // a DNS outage is transient (blocking path: net.host_unresolvable)
         case rt::http_error::tls_failed:
         case rt::http_error::transport: klass = failure_class::transient; break;
         case rt::http_error::no_policy:
-        case rt::http_error::resolve_failed:
         case rt::http_error::address_rejected: klass = failure_class::policy; break;
         case rt::http_error::invalid_request:
         case rt::http_error::malformed_response:

@@ -364,6 +364,9 @@ public:
         return chunked_ && !chunked_decoder_.complete() && !message_stop_seen_;
     }
 
+    // ADR-237: see openai's terminal_seen() -- the reactor pump's counterpart of the `truncated()` deferral.
+    [[nodiscard]] bool terminal_seen() const noexcept { return message_stop_seen_; }
+
     [[nodiscard]] std::vector<ChatResponseUpdate> finish();
 
 private:
