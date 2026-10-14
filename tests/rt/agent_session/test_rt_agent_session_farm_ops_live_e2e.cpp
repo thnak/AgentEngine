@@ -396,11 +396,11 @@ struct CalculateFeedRationTool
         "and animal type.";
     using Args = FeedRationArgs;
     using Reply = FeedRationReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    task<result<Reply>> invoke(Args a, EffectContext&) const {
         tool_entry_log().push_back("calculate_feed_ration");
         calculate_feed_ration_called_log() = true;
         double const total = static_cast<double>(a.animal_count) * feed_rate_kg_per_animal(a.animal_type);
-        return Reply{total, a.herd_name + "'s ration is based on " + std::to_string(a.animal_count) +
+        co_return Reply{total, a.herd_name + "'s ration is based on " + std::to_string(a.animal_count) +
                                  " " + a.animal_type + "(s) at the standard per-animal rate."};
     }
 };

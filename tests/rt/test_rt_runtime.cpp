@@ -40,6 +40,8 @@
 //   R14 SHUTDOWN cancels before it joins: a Runtime destroyed while a root sleeps 10 s on its scope stop token
 //       returns promptly, the sleep canceled, and the continuation is still delivered. Mutant: no stop at shutdown
 //       -> 10 s.
+//   R15 A Runtime destroyed on ANOTHER Runtime's lane is not a self-join: no abort. (The check used the any-lane
+//       thread marker.) Mutant: key the check on the any-lane refusal code again -> the process dies.
 //
 // Coroutines are free functions taking their state by pointer, never immediately-invoked lambda coroutines with
 // captures (ADR-237 §14 step 1). Result containers are declared BEFORE the runtime that writes them (step 2).
@@ -724,6 +726,20 @@ void r10_no_thread_outlives() {
 #endif
 }
 
+task<int> make_and_drop_inner_runtime() {
+    {
+        Runtime inner{config(2, 1, 1)};  // built and destroyed on the OUTER runtime's lane
+        (void)inner;
+    }
+    co_return 1;
+}
+
+void r15_runtime_destroyed_on_other_lane() {
+    Runtime outer{config(2)};
+    check(outer.run(make_and_drop_inner_runtime()) == 1,
+          "R15 a Runtime destroyed on another Runtime's lane does not abort");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -747,6 +763,7 @@ int main(int argc, char** argv) {
     r12_dropped_continuation();
     r13_watchdogs();
     r14_shutdown_cancels_roots();
+    r15_runtime_destroyed_on_other_lane();
     std::printf("\n%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

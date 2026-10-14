@@ -102,6 +102,13 @@ namespace lanes_detail {
 
 inline constexpr char const kRefusalCode[] = "rt.block_on_on_lane";
 
+// The scheduler whose worker this thread is (nullptr on any other thread). `kRefusalCode` says "some lane"; this says
+// WHICH pool, so a check that is only about joining one's own workers (`~Runtime`) does not fire on another pool's lane.
+[[nodiscard]] inline void const*& current_scheduler() noexcept {
+    thread_local void const* s = nullptr;
+    return s;
+}
+
 class Scheduler;
 class GroupCore;
 
@@ -200,6 +207,7 @@ public:
     // Worker loop. Runs until stop() and no work is left.
     void run_worker(std::size_t index) {
         ScopedBlockOnRefusal const no_block_on(kRefusalCode);  // §4.3
+        current_scheduler() = this;
         WorkerSlot&                slot = slots_[index];        // §4.3 lane-stall watchdog
         std::unique_lock           lock(m_);
         for (;;) {
@@ -542,6 +550,8 @@ public:
         return StrandGroup(std::make_shared<lanes_detail::GroupCore>(sched_));
     }
     [[nodiscard]] std::size_t lanes() const noexcept { return workers_.size(); }
+    // True on one of THIS pool's worker threads (a lane of another pool is false).
+    [[nodiscard]] bool on_this_lane() const noexcept { return lanes_detail::current_scheduler() == sched_.get(); }
     // Diagnostics: continuations run; posts dropped because the pool had stopped.
     [[nodiscard]] std::uint64_t slices() const noexcept { return sched_->slices(); }
     [[nodiscard]] std::uint64_t dropped_after_stop() const noexcept { return sched_->dropped_after_stop(); }

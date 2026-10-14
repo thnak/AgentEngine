@@ -411,7 +411,7 @@ public:
           dns_(OffloadPool::Options{config_.dns_workers, {}, {}}) {}
 
     ~Runtime() {
-        if (detail::block_on_refusal_code() == lanes_detail::kRefusalCode) {
+        if (lanes_.on_this_lane()) {  // its OWN lane only: another Runtime's lane is not a self-join
             runtime_detail::violation("rt::Runtime destroyed on one of its own lanes (it would join itself)");
         }
         std::unique_lock lock(m_);
