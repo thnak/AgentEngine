@@ -45,6 +45,8 @@
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/core/session_builder.hpp"
 #include "agentengine/core/skill_provider.hpp"
+#include "agentengine/pal/net.hpp"
+#include "agentengine/rt/runtime.hpp"
 #include "agentengine/trust/secret_quarantine.hpp"
 #include "../../support/run_task_sync.hpp"
 
@@ -1184,6 +1186,65 @@ int main() {
                                        std::to_string(delivered) + " of 5 calls")
                                           .c_str());
             }
+        }
+    }
+
+    {
+        // B32 (ADR-237 review finding 6): `.runtime(rt)` runs the model client on the HOST's Runtime -- two
+        // sessions built with the same one put their in-flight model streams on it -- while a session built
+        // without it keeps the client's own private Runtime (the host's sees nothing). The endpoint is a
+        // loopback listener that never accepts: the connection waits in its backlog, so each stream stays
+        // in flight until the listener closes.
+#if defined(_WIN32)
+        agentengine::pal::ensure_winsock();
+#endif
+        auto listener = agentengine::pal::tcp_listen(static_cast<std::uint64_t>((127u << 24) | 1u), 0);
+        check(listener.has_value(), "B32 setup: loopback listener");
+        if (listener.has_value()) {
+            std::uint16_t const port = *agentengine::pal::local_port(*listener);
+            agentengine::rt::Runtime host_rt{agentengine::rt::RuntimeConfig{.lanes = 1}};
+            using Builder = quickstart::QuickstartSessionBuilder<quickstart::Provider::openai>;
+            auto make = [&](bool shared) {
+                Builder b("m");
+                b.api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY").endpoint("127.0.0.1", port, "/v1");
+                if (shared) b.runtime(host_rt);
+                return b.build();
+            };
+            auto wait_roots = [&](std::size_t n) {
+                for (int i = 0; i < 500 && host_rt.roots_in_flight() != n; ++i) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+                return host_rt.roots_in_flight() == n;
+            };
+            {
+                auto own = make(false);
+                check(own.has_value(), "B32 setup: a session without .runtime() builds");
+                if (own.has_value()) {
+                    auto s = own->ask_stream("hi");
+                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                    check(s.has_value() && host_rt.roots_in_flight() == 0,
+                          "B32 (control): without .runtime(), the stream runs on the client's own Runtime");
+                }
+                auto a = make(true);
+                auto b = make(true);
+                check(a.has_value() && b.has_value(), "B32 setup: two sessions with .runtime() build");
+                if (a.has_value() && b.has_value()) {
+                    auto sa = a->ask_stream("hi");
+                    check(sa.has_value() && wait_roots(1), "B32: the first session's stream runs on the host Runtime");
+                    auto sb = b->ask_stream("hi");
+                    check(sb.has_value() && wait_roots(2),
+                          "B32: ... and the second session's on the SAME Runtime (one reactor, not one per client)");
+                }
+                agentengine::pal::close_fd(*listener);  // ends the waiting connections before teardown
+            }
+            {
+                // The Anthropic constructor differs from OpenAI's after `path_prefix`, so make_primary reaches
+                // its reactor options by a separate branch: compiled and built here, not only for OpenAI.
+                quickstart::QuickstartSessionBuilder<quickstart::Provider::anthropic> b("m");
+                b.api_key_from_env("anthropic-api-key", "AE_TEST_QUICKSTART_KEY").runtime(host_rt);
+                check(b.build().has_value(), "B32: an Anthropic session builds on a host Runtime too");
+            }
+            check(wait_roots(0), "B32: the host Runtime is idle once the sessions are gone");
         }
     }
 

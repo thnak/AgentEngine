@@ -888,6 +888,29 @@ struct default_endpoint<Provider::anthropic> {
     static constexpr char const* path_prefix = "/v1";
 };
 
+// ADR-237 review finding 6: builds `Primary` on a host-supplied Runtime when one was given (`.runtime(...)`),
+// else with the client's own private Runtime (the constructors' default). The two constructors agree only up
+// to `path_prefix`, so the reactor options -- their last parameter -- are reached per provider, spelling the
+// defaults in between exactly as the constructors declare them.
+template <Provider P, class Store>
+[[nodiscard]] typename primary_client<P, Store>::type make_primary(
+    std::string const& host, std::uint16_t port, std::string const& model, agentengine::SecretRef const& ref,
+    agentengine::ChatClientCapabilities caps, Store const& store, std::string const& path_prefix,
+    agentengine::rt::Runtime* runtime) {
+    using Client = typename primary_client<P, Store>::type;
+    if (runtime == nullptr) return Client(host, port, model, ref, caps, store, path_prefix);
+    agentengine::detail::provider_wire::ProviderReactorOptions reactor;
+    reactor.runtime = runtime;
+    if constexpr (P == Provider::openai) {
+        return Client(host, port, model, ref, caps, store, path_prefix, sandbox::resolve_host, {}, {}, {}, {},
+                      std::nullopt, sandbox::ProviderTransport::tls, /*scan_response_format_leaks=*/false,
+                      /*session_id=*/{}, std::move(reactor));
+    } else {
+        return Client(host, port, model, ref, caps, store, path_prefix, "2023-06-01", sandbox::resolve_host, {},
+                      {}, {}, {}, {}, sandbox::ProviderTransport::tls, /*session_id=*/{}, std::move(reactor));
+    }
+}
+
 // 2026-08-23 consolidation (docs/planning/2026-08-22-component-role-audit-tracker.md Findings A/B,
 // decisions/ADR-074-composed-context-provider-consolidation.md): this used to be a separate,
 // `quickstart::detail`-local type, `LazyComposedContextProvider<Ms...>`, that existed only because
@@ -931,6 +954,16 @@ public:
         host_        = std::move(host);
         port_        = port;
         path_prefix_ = std::move(path_prefix);
+        return *this;
+    }
+
+    // ADR-237 review finding 6: run this session's model client on a Runtime the HOST owns, instead of the
+    // private one each client otherwise starts (a reactor thread, a DNS pool, lanes -- per client). A host that
+    // builds many sessions passes the same Runtime to each and pays for one. Borrowed, never owned: it must
+    // outlive every Bundle built with it. It shares threads only -- each client keeps its own endpoint,
+    // credential reference and capabilities (I2); nothing on the Runtime lets one client find another.
+    QuickstartSessionBuilder& runtime(agentengine::rt::Runtime& rt) {
+        runtime_ = &rt;
         return *this;
     }
 
@@ -1069,7 +1102,8 @@ public:
         auto capabilities = std::make_unique<agentengine::CapabilitySet>(
             agentengine::CapabilitySet::grant_root(std::move(all_grants)));
 
-        Primary primary(host_, port_, model_, *api_key_ref_, caps_, *store_, path_prefix_);
+        Primary primary = detail::make_primary<P, Store>(host_, port_, model_, *api_key_ref_, caps_, *store_,
+                                                         path_prefix_, runtime_);
 
         auto session = std::make_unique<typename BundleT::SessionT>();
         session->initialize(session_id_, principal_, token_budget_, max_turns_);
@@ -1092,6 +1126,7 @@ public:
 
 private:
     std::string model_;
+    agentengine::rt::Runtime* runtime_ = nullptr;  // .runtime(): borrowed; null = the client's own
     std::string session_id_ = "s-quickstart";
     agentengine::Principal principal_{"p-quickstart", ""};
     agentengine::ChatClientCapabilities caps_{};
@@ -1173,6 +1208,11 @@ public:
         host_        = std::move(host);
         port_        = port;
         path_prefix_ = std::move(path_prefix);
+        return *this;
+    }
+    // ADR-237 review finding 6: as QuickstartSessionBuilder::runtime() -- a borrowed, host-owned Runtime.
+    ComposedQuickstartSessionBuilder& runtime(agentengine::rt::Runtime& rt) {
+        runtime_ = &rt;
         return *this;
     }
     ComposedQuickstartSessionBuilder& max_turns(std::optional<std::uint64_t> n) {
@@ -1263,7 +1303,8 @@ public:
         auto capabilities = std::make_unique<agentengine::CapabilitySet>(
             agentengine::CapabilitySet::grant_root(std::move(all_grants)));
 
-        Primary primary(host_, port_, model_, *api_key_ref_, caps_, *store_, path_prefix_);
+        Primary primary = detail::make_primary<P, Store>(host_, port_, model_, *api_key_ref_, caps_, *store_,
+                                                         path_prefix_, runtime_);
 
         auto session = std::make_unique<typename BundleT::SessionT>();
         session->initialize(session_id_, principal_, token_budget_, max_turns_);
@@ -1288,6 +1329,7 @@ public:
 
 private:
     std::string model_;
+    agentengine::rt::Runtime* runtime_ = nullptr;  // .runtime(): borrowed; null = the client's own
     std::string session_id_ = "s-quickstart";
     agentengine::Principal principal_{"p-quickstart", ""};
     agentengine::ChatClientCapabilities caps_{};
