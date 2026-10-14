@@ -5,7 +5,8 @@
 //
 //   L1  I1, structural: 16 coroutines on ONE strand, 6 lanes, 400 parks each (alternately a re-post and a reactor
 //       timer, so wake-ups also arrive from the reactor thread while the strand runs) -- never two of them running
-//       at once (atomic in-flight counter), and the strand really moved between lane workers. Mutant: post() makes
+//       at once (atomic in-flight counter), and the strand really moved between lane workers (if the busy runs never
+//       moved, a strand idling between reactor wake-ups must). Mutant: post() makes
 //       a running strand ready again -> in-flight reaches 2.
 //   L2  FIFO within a strand: 200 continuations posted in order run in that order on 4 lanes. Mutant: take the
 //       strand's newest item -> out of order.
@@ -132,9 +133,23 @@ Fire i1_body(I1State* st, int iterations, pal::Reactor* reactor) {
     st->finished.fetch_add(1);
 }
 
-// The migration check only keeps the serial check from being vacuous; nothing guarantees a strand moves in one
-// run (on a loaded runner one worker can keep picking it up -- seen on CI as "1 workers"). So: up to 5 runs, each
-// held to the serial rule, until one of them moved.
+// One coroutine that parks on the reactor every iteration: the strand's queue empties at each park, its worker goes
+// back to waiting, and the timer's post wakes whichever worker the condition variable picks.
+Fire idle_body(I1State* st, int iterations, pal::Reactor* reactor) {
+    for (int i = 0; i < iterations; ++i) {
+        {
+            std::lock_guard lock(st->m);
+            st->threads.insert(std::this_thread::get_id());
+        }
+        (void)co_await sleep_for(*reactor, 200us);
+    }
+    st->finished.fetch_add(1);
+}
+
+// The migration check only keeps the serial check from being vacuous. A BUSY strand is sticky by design: a worker
+// whose slice ends with the strand's queue non-empty re-readies and re-picks it without waking anyone, and a post
+// to a running strand notifies nobody (seen on CI as "1 workers" in all 5 runs). So the 16-coroutine runs are held
+// to the serial rule, and migration is also observed on a strand that goes idle between reactor wake-ups.
 void l1_one_strand_is_serial() {
     constexpr int kCoroutines = 16;
     constexpr int kAttempts   = 5;
@@ -152,6 +167,16 @@ void l1_one_strand_is_serial() {
         }
         max_in_flight = std::max(max_in_flight, st.max_in_flight.load());
         most_threads  = std::max(most_threads, st.threads.size());
+    }
+    if (most_threads <= 1) {
+        I1State st;
+        {
+            LanePool pool(6);
+            Strand   s = pool.new_group().new_strand();
+            s.post(idle_body(&st, 200, reactor.get()).h);
+            all_finished = wait_until([&] { return st.finished.load() == 1; }) && all_finished;
+        }
+        most_threads = st.threads.size();
     }
     check(all_finished, "L1 all 16 coroutines finished");
     check(max_in_flight == 1, "L1 I1: never two continuations of one strand running at once (max in-flight " +
