@@ -12,6 +12,8 @@
 //   S5  SHUTDOWN joins an outstanding spawn root: destroying the Runtime while the root parks 10 s on its
 //       scope stop token returns promptly (shutdown requests stop) and joins it.
 //   S6  RootHandle::join() on a lane is refused with rt.block_on_on_lane (§4.3).
+//   S7  spawn() DURING shutdown (from a root that wakes because shutdown stopped it) throws rt.runtime_closed and
+//       leaves nothing counted: the Runtime's destructor still returns (a leaked root count would hang it).
 
 #include <atomic>
 #include <chrono>
@@ -19,6 +21,7 @@
 #include <exception>
 #include <stdexcept>
 #include <stop_token>
+#include <string_view>
 #include <thread>
 
 #include "agentengine/rt/block_on.hpp"
@@ -100,6 +103,23 @@ long long elapsed_ms(std::chrono::steady_clock::time_point t0) {
 
 }  // namespace
 
+struct SpawnLate {
+    std::atomic<int> threw_closed{0};
+    std::atomic<int> other{0};
+};
+
+task<void> body_spawn_after_stop(SpawnLate* s, Runtime* rt, pal::Reactor* reactor) {
+    (void)co_await sleep_for(*reactor, 10s, scope_stop_token());  // ends when shutdown requests stop
+    try {
+        (void)rt->spawn(noop_void());
+        s->other.fetch_add(1);
+    } catch (std::logic_error const& e) {
+        if (std::string_view(e.what()).find("rt.runtime_closed") != std::string_view::npos) s->threw_closed.fetch_add(1);
+        else s->other.fetch_add(1);
+    }
+    co_return;
+}
+
 int main() {
     g_host_thread = std::this_thread::get_id();
 
@@ -174,6 +194,20 @@ int main() {
         check(s.refused.load(), "S6: RootHandle::join() on a lane is refused with rt.block_on_on_lane");
         h.request_stop();
         h.join();
+    }
+
+    // ---- S7: spawn during shutdown throws rt.runtime_closed and does not wedge the destructor ----------------
+    {
+        SpawnLate s;
+        auto const t0 = std::chrono::steady_clock::now();
+        {
+            Runtime rt{RuntimeConfig{.lanes = 2}};
+            (void)rt.spawn(body_spawn_after_stop(&s, &rt, &rt.reactor()));
+            std::this_thread::sleep_for(50ms);
+        }
+        check(s.threw_closed.load() == 1 && s.other.load() == 0,
+              "S7: spawn() during shutdown threw rt.runtime_closed");
+        check(elapsed_ms(t0) < 5000, "S7: and the Runtime's destructor still returned promptly");
     }
 
     if (g_failures == 0) {

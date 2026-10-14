@@ -124,7 +124,7 @@ namespace detail {
 using Resolver = agentengine::detail::provider_wire::Resolver;
 
 // ADR-237 §5.1/§6.3 (step 34): the reactor path's inputs (reactor + DNS pool via a `rt::Runtime`, the address
-// policy, and the test/e2e resolver seam). A null `runtime` selects the blocking path above.
+// policy, and the test/e2e resolver seam). A null `runtime` makes the client own a private Runtime.
 using ReactorOptions = agentengine::detail::provider_wire::ProviderReactorOptions;
 
 // (2): a real JSON object on the wire, not a stringified-JSON string -- ToolCall::arguments_json is
@@ -433,9 +433,6 @@ private:
 [[nodiscard]] result<std::vector<ChatResponseUpdate>> parse_streaming_response_into_updates(
     std::string_view raw_body, bool is_chunked, std::string const& producer_chat_client_id = {});
 
-// The detached background worker -- see protocol/openai/chat_client.hpp's own identical rationale for
-// why detached, not a tracked thread member (a bound instance is shared across concurrent streaming
-// calls via ChatClientRegistry).
 // ADR-237 §5.1 (step 34): the reactor twin of `run_stream_worker` -- a plain function (chat_client.cpp, where
 // the coroutine pump lives) that builds the same request and starts `pump_sse_stream_async` on `reactor.runtime`
 // via `rt::Runtime::spawn`. `reactor.runtime` must be non-null.
@@ -484,8 +481,8 @@ public:
                          // all. Appended last, same "never insert earlier" convention as every
                          // optional param above.
                          std::string session_id = {},
-                         // ADR-237 §5.1 (step 34): the reactor path for `chat_stream`. Defaulted (null runtime)
-                         // to the blocking detached-thread path, so every existing construction site is unchanged.
+                         // ADR-237 §5.1 (step 34): the reactor path for `chat_stream`. Defaulted (null runtime):
+                         // the client then owns a private Runtime, so every existing construction site is unchanged.
                          agentengine::detail::provider_wire::ProviderReactorOptions reactor = {})
         : host_(std::move(host)),
           port_(port),

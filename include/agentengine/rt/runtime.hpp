@@ -376,8 +376,10 @@ public:
     [[nodiscard]] bool done() const noexcept {
         return state_ && state_->done.load(std::memory_order_acquire);
     }
-    // The exception the root body threw, if any (usually null: a producer reports through its stream).
-    [[nodiscard]] std::exception_ptr fault() const noexcept { return state_ ? state_->fault : nullptr; }
+    // The exception the root body threw, if any (usually null: a producer reports through its stream). Only
+    // meaningful once `done()`: the body writes it before the release-store `done` publishes, so an earlier read
+    // would race it.
+    [[nodiscard]] std::exception_ptr fault() const noexcept { return done() ? state_->fault : nullptr; }
     // Request stop on the root (the same source shutdown requests).
     void request_stop() noexcept {
         if (state_) state_->stop.request_stop();
@@ -560,8 +562,16 @@ public:
             release_root(st->holder);
             throw;
         }
-        runtime_detail::RootFrame frame = runtime_detail::spawn_root(std::move(t), st);
-        st->strand.post(frame.h, st->holder);
+        try {
+            runtime_detail::RootFrame frame = runtime_detail::spawn_root(std::move(t), st);
+            st->strand.post(frame.h, st->holder);
+        } catch (...) {
+            // The root never started, so nothing will release it: without this `~Runtime` waits on `roots_` forever.
+            lanes_.unwatch_root(st->strand);
+            (void)chain_detail::Registry::instance().remove(st->holder);
+            release_root(st->holder);
+            throw;
+        }
         return handle;
     }
     template <class T>

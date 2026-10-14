@@ -161,6 +161,9 @@ public:
                 "bind_sandbox needs a positive per-command deadline, a surface factory and a clock",
                 "live_shell_provider.bad_binding"});
         }
+        // The one suspension point comes BEFORE any member is touched: a re-entrant bind (or a destroy) while the
+        // factory is suspended sees the old, whole binding rather than a half-bound object with a dangling closure.
+        auto surface = std::make_unique<Surface>(co_await make_surface());
         release_on_destroy();
         ledger_ = &ledger;
         owner_.emplace(owner);
@@ -174,7 +177,7 @@ public:
         lifetime_ = std::move(lifetime_policy);
         clock_ = std::move(clock);
         runtime_.emplace(ledger, std::move(branch), std::move(staging_root));
-        surface_ = std::make_unique<Surface>(co_await make_surface_());
+        surface_ = std::move(surface);
         reset_shell_state();
         snapshots_.clear();
         co_return agentengine::result<void>{};
@@ -193,6 +196,9 @@ public:
         auto child = agentengine::rt::block_on(other.runtime_->spawn_child_branch(
             *other.owner_, *other.branch_quota_, other.runtime_->staging_root().parent_path()));
         if (!child.has_value()) return *this;
+        // May throw (block_on is refused on a lane): build it before assigning anything, so a throw leaves this
+        // object unbound rather than partly copied.
+        auto surface = std::make_unique<Surface>(agentengine::rt::block_on(other.make_surface_()));
         ledger_ = other.ledger_;
         owner_ = other.owner_;
         branch_quota_ = other.branch_quota_;
@@ -205,7 +211,7 @@ public:
         lifetime_ = other.lifetime_;
         clock_ = other.clock_;
         runtime_.emplace(std::move(*child));
-        surface_ = std::make_unique<Surface>(agentengine::rt::block_on(make_surface_()));
+        surface_ = std::move(surface);
         reset_shell_state();
         snapshots_ = other.snapshots_;
         return *this;

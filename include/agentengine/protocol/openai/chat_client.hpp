@@ -17,33 +17,16 @@
 // ChatClientCapabilities its own deployment's config says the target endpoint actually has; nothing
 // here inspects a response to infer a capability.
 //
-// `perform_provider_https_exchange` is a synchronous, blocking call with nothing to suspend on (Phase
-// B4a's own decision, milestone doc: "a sync function is freely callable from inside an async
-// coroutine body with no co_await needed") -- `chat()`'s coroutine body calls it directly, matching
-// that already-established project position rather than introducing a new one. It genuinely blocks
-// the calling thread for the full round-trip; a real async I/O integration is future work on
-// provider_http_client.hpp itself, not scoped here.
+// `chat()` is a buffered HTTP/1.1 exchange on `rt::http` (`exchange_json_async`, ADR-237 §5.1 step 35): the
+// coroutine suspends on the client's reactor rather than holding a thread for the round-trip.
 //
-// D2 (streaming) scope, named honestly rather than silently claimed complete: `perform_provider_
-// https_exchange` has no incremental/chunked-transfer read loop yet -- it blocks until the full HTTP
-// response is buffered, then returns. `chat_stream()` below therefore performs one complete
-// (blocking) HTTPS exchange on a detached background thread, decodes `Transfer-Encoding: chunked`
-// framing if present (a real OpenAI-compatible streaming response's actual wire shape --
-// `net_egress_proxy.cpp`'s raw-request builder always sends `Connection: close`, so the server
-// closing the connection at the end is the reliable read-loop exit condition either way), splits the
-// decoded body into SSE `data: ...` events, and pushes ONE ChatResponseUpdate per event/assembled-
-// tool-call as it walks the already-fully-received event list -- so the vendor's own chunk
-// BOUNDARIES are preserved faithfully in delivery order (004 §7 G3's own gate: "identical chunk
-// boundaries"), and the credit-controlled ring (core/stream.hpp, Phase B4b) still provides genuine
-// backpressure between this parsing thread and the consumer -- but the underlying network fetch
-// itself is not low-latency incremental. A real incremental read loop is future work on
-// provider_http_client.hpp, not scoped here. The background thread is DETACHED, not tracked as a
-// member: `OpenAIChatClient` may be shared across many concurrent `chat_stream()` calls (a real
-// `ChatClientRegistry` binds one instance per `ChatClientId`, reused across turns), so a single
-// thread member that joins-then-replaces would wrongly serialize concurrent streams. The detached
-// thread captures every value it needs (host/port/path/model/api-key text, the moved request, the
-// moved `stream_producer`) and touches no state owned by `*this`, so its lifetime is fully decoupled
-// from the client object's.
+// Streaming (ADR-237 §5.1, step 41): `chat_stream()` starts an OWNED producer root on the client's
+// `rt::Runtime` (`run_stream_worker_async`, src/protocol/openai/chat_client.cpp), a coroutine that suspends on
+// `rt::http_stream` / `rt::sse_events` instead of holding a thread, decodes the SSE events as they arrive
+// and pushes ONE ChatResponseUpdate per event/assembled tool call, so the vendor's own chunk boundaries are
+// kept in delivery order (004 §7 G3: "identical chunk boundaries"). The credit-controlled ring
+// (core/stream.hpp) gives the consumer genuine back-pressure. The producer captures every value it needs and
+// touches no state owned by `*this`; the Runtime joins it at shutdown (§4.5 rule 4).
 
 #ifdef AGENTENGINE_WITH_HTTPS
 
@@ -384,18 +367,18 @@ private:
 using Resolver = agentengine::detail::provider_wire::Resolver;
 
 // ADR-237 §5.1/§6.3 (step 34): the reactor path's inputs (reactor + DNS pool via a `rt::Runtime`, the address
-// policy, and the test/e2e resolver seam). A null `runtime` selects the blocking path above.
+// policy, and the test/e2e resolver seam). A null `runtime` makes the client own a private Runtime.
 using ReactorOptions = agentengine::detail::provider_wire::ProviderReactorOptions;
 
-// The detached background worker (see file banner for why detached, not a tracked member). Every
+// The stream producer's entry point. Every
 // parameter is owned by value -- no reference back to the `OpenAIChatClient` instance that spawned it.
 // `ca_bundle_pem_override` mirrors `perform_provider_https_exchange`'s own testability seam verbatim
 // (empty in production -- the vendored CA bundle applies; a test's self-signed leaf isn't in it).
 // `http_referer`/`x_title`/`end_user_id`/`seed`/`transport`/`session_id` are `OpenAIChatClient`'s own
 // optional constructor fields, threaded through by value exactly like every other captured parameter
 // here.
-// ADR-237 §5.1 (step 34): the reactor twin of `run_stream_worker`. A plain function (defined in
-// chat_client.cpp, where the coroutine pump lives) that builds the same request and starts
+// ADR-237 §5.1 (step 34): a plain function (defined in
+// chat_client.cpp, where the coroutine pump lives) that builds the wire request and starts
 // `pump_sse_stream_async` on `reactor.runtime` via `rt::Runtime::spawn` -- the producer is an OWNED root, not a
 // detached thread. `reactor.runtime` must be non-null.
 void run_stream_worker_async(std::string host, std::uint16_t port, std::string path, std::string api_key,
@@ -465,8 +448,8 @@ public:
                       // `end_user_id` above, which that vendor does not use for cache routing at all.
                       // Appended last, same convention as every optional param above.
                       std::string session_id = {},
-                      // ADR-237 §5.1 (step 34): the reactor path for `chat_stream`. Defaulted (null runtime) to
-                      // the blocking detached-thread path, so every existing construction site is unchanged.
+                      // ADR-237 §5.1 (step 34): the reactor path for `chat_stream`. Defaulted (null runtime): the
+                      // client then owns a private Runtime, so every existing construction site is unchanged.
                       // Appended last, the same "never insert earlier" convention as every optional param above.
                       agentengine::detail::provider_wire::ProviderReactorOptions reactor = {})
         : host_(std::move(host)),

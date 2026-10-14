@@ -48,12 +48,13 @@ using Resolver = std::function<result<sandbox::VerifiedEndpoint>(std::string_vie
 }
 
 // ADR-237 §5.1/§6.3 (step 34): the reactor path's own inputs, replacing the synchronous `Resolver` seam for
-// the backends' `chat_stream`. A NULL `runtime` keeps the blocking detached-thread path (every existing
-// construction site, unchanged); a non-null one selects the coroutine path -- the producer is started on the
-// reactor by `rt::Runtime::spawn` (the client owns it, §4.5 rule 2) and suspends instead of holding a thread.
+// the backends' `chat_stream`. The reactor is the only path: a NULL `runtime` makes the client build and own a
+// private `rt::Runtime`; a non-null one is borrowed (it must outlive the client). Either way the producer is
+// started on the reactor by `rt::Runtime::spawn` (the client owns it, §4.5 rule 2) and suspends instead of
+// holding a thread.
 // ae-naming-lint: allow ProviderReactorOptions — ADR-237 §6.3: new reactor vocabulary, 027 §4 row added when the ADR is Judged
 struct ProviderReactorOptions {
-    rt::Runtime*      runtime = nullptr;  // null: the blocking path (today's behaviour)
+    rt::Runtime*      runtime = nullptr;  // null: the client owns a private Runtime
     // Host code, never model output (I3). Empty: ACCEPT-ALL -- ADR-016's provider position (a host-configured
     // endpoint, typically loopback/RFC1918; there is no guest grant to mediate and no attacker to defend against).
     rt::AddressPolicy policy;

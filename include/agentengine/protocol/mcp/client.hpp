@@ -356,7 +356,9 @@ public:
     // `input_required` outcome rather than retrying.
     void set_input_request_handler(InputRequestHandler h) { input_handler_ = std::move(h); }
 
-    [[nodiscard]] task<result<std::vector<McpToolInfo>>> list_tools(std::string const& cursor = "") {
+    // `cursor` by VALUE: a lazy coroutine keeps its parameters in its frame, and a `const&` default-argument
+    // temporary would not outlive a task that is stored and awaited later.
+    [[nodiscard]] task<result<std::vector<McpToolInfo>>> list_tools(std::string cursor = {}) {
         // §3.1: "Cache key = method + the parameters that affect the result." An empty-string
         // cursor is still a real, distinct parameter value (§3.1's own "not end-of-results" rule) --
         // folding it into the key, rather than treating "no cursor supplied" and "empty cursor" as
