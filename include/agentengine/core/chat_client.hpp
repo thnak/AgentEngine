@@ -254,8 +254,15 @@ struct ChatResponseUpdate {  // ae-naming-lint: allow ChatResponseUpdate — pre
 // `chat()`-only wrapper templates (`FailoverChatClient`/`ResilientChatClient`/`MiddlewareChatClient`)
 // are UNAFFECTED — they still declare and use `chat()`/`chat_stream()` internally as their own
 // concrete methods, unrelated to whether this concept requires either one.
+//
+// Lifetime contract (decisions/ADR-237 §5.1, #172): the `EffectContext` passed to `chat_stream()` --
+// and the `CapabilitySet` it borrows -- must outlive the returned stream, as must the client itself
+// and anything it references (its `SecretStore`). A conformer may read them from its producer after
+// `chat_stream()` returns: the real backends resolve their API key (`SecretStore::resolve`, now
+// `task`-shaped) as the producer's first step. Every caller today drains the stream within the turn
+// that owns `ctx`, so this holds without change.
 template <class T>
-concept ChatClient = requires(T client, ChatRequest request, EffectContext& ctx) {
+concept ChatClient =requires(T client, ChatRequest request, EffectContext& ctx) {
     { client.capabilities() } -> std::same_as<ChatClientCapabilities>;
     { client.chat_stream(request, ctx) } -> std::same_as<stream<ChatResponseUpdate>>;
 };

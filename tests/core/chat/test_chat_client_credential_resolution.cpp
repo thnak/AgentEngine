@@ -17,6 +17,7 @@
 
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/trust/secret.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "../../support/run_task_sync.hpp"
 
 namespace {
@@ -43,9 +44,8 @@ public:
     [[nodiscard]] agentengine::task<agentengine::result<agentengine::ChatResponse>> chat(
         agentengine::ChatRequest const&, agentengine::EffectContext& ctx) {
         // Resolution happens HERE, inside chat(), against EffectContext -- never at construction.
-        // store_.resolve(...) stays synchronous (trust/secret.hpp's own decision -- the underlying
-        // SecretSource::get() has no I/O to suspend on) so no co_await is needed for it.
-        auto lease = store_.resolve(api_key_ref_, ctx);
+        // store_.resolve(...) is `task`-shaped (ADR-237 §5.1, #172), so it is awaited.
+        auto lease = co_await store_.resolve(api_key_ref_, ctx);
         if (!lease) co_return std::unexpected(lease.error());
 
         agentengine::ChatResponse resp;
@@ -65,8 +65,9 @@ public:
         auto pair =
             agentengine::make_stream<agentengine::ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
         // Resolution happens HERE, inside chat_stream(), against EffectContext -- mirrors chat()'s own
-        // fresh-per-call resolve(), never at construction.
-        auto lease = store_.resolve(api_key_ref_, ctx);
+        // fresh-per-call resolve(), never at construction. This fixture is driven off-lane, so it drives the
+        // `task`-shaped resolve() inline (the real backends resolve on their producer root instead).
+        auto lease = agentengine::rt::block_on(store_.resolve(api_key_ref_, ctx));
         if (!lease) {
             pair.producer.fail(lease.error());
             return std::move(pair.consumer);

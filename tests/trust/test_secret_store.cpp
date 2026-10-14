@@ -17,6 +17,7 @@
 #include <type_traits>
 
 #include "agentengine/trust/secret.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using namespace agentengine;
 
@@ -57,7 +58,7 @@ int main() {
         auto ctx = make_ctx();
         ctx.capabilities = agentengine::borrow_capabilities(held);
 
-        auto lease = store.resolve(SecretRef{"openai-api-key"}, ctx);
+        auto lease = rt::block_on(store.resolve(SecretRef{"openai-api-key"}, ctx));
         AE_CHECK(lease.has_value(), "A1: resolve() succeeds when the capability is held and the value exists");
         if (lease.has_value()) {
             AE_CHECK(lease->reveal_text() == "sk-real-value-do-not-print",
@@ -73,7 +74,7 @@ int main() {
         InMemorySecretStore store;
         store.set("db-password", "hunter2");
         auto ctx = make_ctx();  // ctx.capabilities left null
-        auto lease = store.resolve(SecretRef{"db-password"}, ctx);
+        auto lease = rt::block_on(store.resolve(SecretRef{"db-password"}, ctx));
         AE_CHECK(!lease.has_value(), "gate: resolve() denies when EffectContext carries no capability set at all");
         if (!lease.has_value()) {
             AE_CHECK(lease.error().code == "secret.not_granted",
@@ -88,7 +89,7 @@ int main() {
         CapabilitySet empty;
         auto ctx = make_ctx();
         ctx.capabilities = agentengine::borrow_capabilities(empty);
-        auto lease = store.resolve(SecretRef{"db-password"}, ctx);
+        auto lease = rt::block_on(store.resolve(SecretRef{"db-password"}, ctx));
         AE_CHECK(!lease.has_value(), "gate: resolve() denies against an empty (but non-null) capability set");
     }
 
@@ -101,10 +102,10 @@ int main() {
         auto ctx = make_ctx();
         ctx.capabilities = agentengine::borrow_capabilities(held);
 
-        auto allowed = store.resolve(SecretRef{"service-a-key"}, ctx);
+        auto allowed = rt::block_on(store.resolve(SecretRef{"service-a-key"}, ctx));
         AE_CHECK(allowed.has_value(), "A4: the granted name resolves");
 
-        auto denied = store.resolve(SecretRef{"service-b-key"}, ctx);
+        auto denied = rt::block_on(store.resolve(SecretRef{"service-b-key"}, ctx));
         AE_CHECK(!denied.has_value(),
                   "A4: a DIFFERENT secret name is denied even though some Secret capability is held -- "
                   "least privilege per name, not per kind");
@@ -118,11 +119,11 @@ int main() {
         auto ctx = make_ctx();
         ctx.capabilities = agentengine::borrow_capabilities(held);
 
-        auto first = store.resolve(SecretRef{"rotating-key"}, ctx);
+        auto first = rt::block_on(store.resolve(SecretRef{"rotating-key"}, ctx));
         AE_CHECK(first.has_value() && first->reveal_text() == "value-v1", "A4: first resolve sees v1");
 
         store.set("rotating-key", "value-v2");  // simulates an external rotation event
-        auto second = store.resolve(SecretRef{"rotating-key"}, ctx);
+        auto second = rt::block_on(store.resolve(SecretRef{"rotating-key"}, ctx));
         AE_CHECK(second.has_value() && second->reveal_text() == "value-v2",
                   "A4: the very next resolve() reflects the rotated value -- nothing cached a lease "
                   "across calls to go stale");
@@ -140,14 +141,14 @@ int main() {
         auto ctx = make_ctx();
         ctx.capabilities = agentengine::borrow_capabilities(held);
 
-        auto lease = store.resolve(SecretRef{"test-env-secret"}, ctx);
+        auto lease = rt::block_on(store.resolve(SecretRef{"test-env-secret"}, ctx));
         AE_CHECK(lease.has_value() && lease->reveal_text() == "env-value-123",
                   "A3: AgentEngineSecretStore/EnvSecretSource reads QUARK_SECRET_<name>");
 
         CapabilitySet missing_held =
             CapabilitySet::grant_root({cap::Secret{"never-set-anywhere", std::chrono::seconds{0}}});
         ctx.capabilities = agentengine::borrow_capabilities(missing_held);
-        auto missing = store.resolve(SecretRef{"never-set-anywhere"}, ctx);
+        auto missing = rt::block_on(store.resolve(SecretRef{"never-set-anywhere"}, ctx));
         AE_CHECK(!missing.has_value(), "A3: EnvSecretSource fails closed (not empty-string) when unset");
     }
 
@@ -165,12 +166,12 @@ int main() {
         auto ctx = make_ctx();
         ctx.capabilities = agentengine::borrow_capabilities(held);
 
-        auto lease = store.resolve(SecretRef{"ae_test_secret_file_store_secret"}, ctx);
+        auto lease = rt::block_on(store.resolve(SecretRef{"ae_test_secret_file_store_secret"}, ctx));
         AE_CHECK(lease.has_value() && lease->reveal_text() == "file-value-456",
                   "A3: AgentEngineSecretStore/FileSecretSource reads <root>/<name>, trailing newline stripped");
         std::remove(path.c_str());
 
-        auto missing = store.resolve(SecretRef{"ae_test_secret_file_store_secret"}, ctx);
+        auto missing = rt::block_on(store.resolve(SecretRef{"ae_test_secret_file_store_secret"}, ctx));
         AE_CHECK(!missing.has_value(), "A3: FileSecretSource fails closed once the file is gone");
     }
 

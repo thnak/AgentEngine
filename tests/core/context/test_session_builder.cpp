@@ -48,6 +48,7 @@
 #include "agentengine/pal/net.hpp"
 #include "agentengine/rt/runtime.hpp"
 #include "agentengine/trust/secret_quarantine.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "../../support/run_task_sync.hpp"
 
 namespace {
@@ -369,7 +370,7 @@ int main() {
         EffectContext ctx;
         ctx.principal    = Principal{"p-test", ""};
         ctx.capabilities = borrow_capabilities(held);
-        auto lease = store.resolve(SecretRef{"prod-api-key-2"}, ctx);
+        auto lease = rt::block_on(store.resolve(SecretRef{"prod-api-key-2"}, ctx));
         check(lease.has_value(),
               "resolve() succeeds against the REAL AgentEngineSecretStore/EnvSecretSource pair, using "
               "the EXACT capability-grant shape .api_key(SecretRef) produces -- proves the grant name "

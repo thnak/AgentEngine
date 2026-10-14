@@ -500,7 +500,7 @@ public:
     [[nodiscard]] task<result<ChatResponse>> chat(ChatRequest const& request, EffectContext& ctx) const {
         // Resolution happens HERE, inside chat(), against EffectContext -- never at construction
         // (004 §1 / 018 §4, the same rule test_chat_client_credential_resolution.cpp proves).
-        auto lease = store_.resolve(api_key_ref_, ctx);
+        auto lease = co_await store_.resolve(api_key_ref_, ctx);
         if (!lease) co_return std::unexpected(lease.error());
 
         auto body = detail::build_request_body(request, model_, /*stream=*/false, end_user_id_, seed_,
@@ -525,31 +525,36 @@ public:
 
     [[nodiscard]] stream<ChatResponseUpdate> chat_stream(ChatRequest request, EffectContext& ctx) const {
         auto pair = make_stream<ChatResponseUpdate>(std::pmr::get_default_resource());
-        auto lease = store_.resolve(api_key_ref_, ctx);
-        if (!lease) {
-            // Forward the SecretStore's own real error (already correctly classified, typically
-            // failure_class::policy for a denied grant) instead of a synthetic stand-in -- matches
-            // chat()'s own non-streaming path exactly, which already returns lease.error() unchanged.
-            pair.producer.fail(lease.error());
-            return std::move(pair.consumer);
-        }
-        // ADR-017: read the token BEFORE moving the producer into the thread. Argument evaluation
-        // order is unspecified, so `pair.producer.stop_token()` written inline alongside
-        // `std::move(pair.producer)` could legally run after the move -- on a moved-from producer,
-        // whose stop_source is empty, yielding a token that never fires.
+        // ADR-237 §5.1 (#172): `SecretStore::resolve` is `task`-shaped, so the key is resolved by the first step of
+        // an owned root (`stream_after_key`), not inline here. A denied or missing key still fails the stream with
+        // the store's own error, before any network I/O. That root reads `ctx`, this client and its store after this
+        // call returns: the `ChatClient::chat_stream` contract (core/chat_client.hpp) is that all three outlive the
+        // returned stream.
+        // ADR-017: read the token BEFORE moving the producer (argument evaluation order is unspecified).
         std::stop_token stop = pair.producer.stop_token();
-        // ADR-237 §5.1 (step 41): the reactor path is now the ONLY path -- an owned producer root on the
-        // Runtime (rt::Runtime::spawn), suspending on the reactor instead of a detached thread. Same wire
-        // request, same terminal rules.
-        detail::run_stream_worker_async(host_, port_, path_prefix_ + "/chat/completions",
-                                        lease->reveal_text(), model_, std::move(request),
-                                        std::move(pair.producer), reactor_, ca_bundle_pem_override_,
-                                        http_referer_, x_title_, end_user_id_, seed_, transport_,
-                                        std::move(stop), capabilities_, session_id_);
+        (void)reactor_.runtime->spawn(
+            stream_after_key(std::move(request), ctx, std::move(pair.producer), std::move(stop)));
         return std::move(pair.consumer);
     }
 
 private:
+    // The first step of `chat_stream`'s producer: resolve the key, then start the pump (an owned root of its own,
+    // ADR-237 §5.1 step 34). A failed resolution fails the stream with the store's own error.
+    [[nodiscard]] task<void> stream_after_key(ChatRequest request, EffectContext& ctx,
+                                              stream_producer<ChatResponseUpdate> pair_producer,
+                                              std::stop_token stop) const {
+        auto lease = co_await store_.resolve(api_key_ref_, ctx);
+        if (!lease) {
+            pair_producer.fail(lease.error());
+            co_return;
+        }
+        detail::run_stream_worker_async(host_, port_, path_prefix_ + "/chat/completions",
+                                        lease->reveal_text(), model_, std::move(request),
+                                        std::move(pair_producer), reactor_, ca_bundle_pem_override_,
+                                        http_referer_, x_title_, end_user_id_, seed_, transport_,
+                                        std::move(stop), capabilities_, session_id_);
+    }
+
     std::string host_;
     std::uint16_t port_;
     std::string model_;

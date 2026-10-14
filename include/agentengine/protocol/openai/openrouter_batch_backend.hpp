@@ -118,7 +118,7 @@ public:
 
     [[nodiscard]] task<result<std::string>> submit(std::vector<BatchItemRequest> const& items,
                                                    EffectContext& ctx) override {
-        auto lease = store_.resolve(api_key_ref_, ctx);
+        auto lease = co_await store_.resolve(api_key_ref_, ctx);
         if (!lease) co_return std::unexpected(lease.error());
         auto body = detail::build_openrouter_batch_body(model_, items);
         if (!body) co_return std::unexpected(body.error());
@@ -130,7 +130,7 @@ public:
     }
 
     [[nodiscard]] task<result<BatchPoll>> poll(std::string const& job_id, EffectContext& ctx) override {
-        auto lease = store_.resolve(api_key_ref_, ctx);
+        auto lease = co_await store_.resolve(api_key_ref_, ctx);
         if (!lease) co_return std::unexpected(lease.error());
         auto req = detail::openrouter_batch_request("GET", path_prefix_ + "/batches/" + job_id, lease->reveal_text(), {});
         auto parsed = co_await exchange(std::move(req), ctx);
@@ -146,7 +146,7 @@ public:
     }
 
     [[nodiscard]] task<result<void>> release(std::string const& job_id, EffectContext& ctx) override {
-        auto lease = store_.resolve(api_key_ref_, ctx);
+        auto lease = co_await store_.resolve(api_key_ref_, ctx);
         if (!lease) co_return std::unexpected(lease.error());
         auto req = detail::openrouter_batch_request("DELETE", path_prefix_ + "/batches/" + job_id, lease->reveal_text(), {});
         auto parsed = co_await exchange(std::move(req), ctx);

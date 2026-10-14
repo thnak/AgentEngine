@@ -136,10 +136,10 @@ int main() {
     {
         class NeverResolveStore {
         public:
-            [[nodiscard]] ae::result<ae::SecretLease> resolve(ae::SecretRef const&, ae::EffectContext&) const {
-                return std::unexpected(ae::error{ae::failure_class::fatal,
-                                                   "resolve() must never be called for k=0",
-                                                   "test.unexpected_resolve"});
+            [[nodiscard]] ae::task<ae::result<ae::SecretLease>> resolve(ae::SecretRef, ae::EffectContext&) const {
+                co_return std::unexpected(ae::error{ae::failure_class::fatal,
+                                                      "resolve() must never be called for k=0",
+                                                      "test.unexpected_resolve"});
             }
         };
         static_assert(ae::SecretStore<NeverResolveStore>);

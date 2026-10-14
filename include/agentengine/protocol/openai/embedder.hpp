@@ -274,7 +274,7 @@ public:
         // Resolution happens HERE, inside embed_batch(), against EffectContext -- never at
         // construction (004 §1 / 018 §4, the same rule `OpenAIChatClient::chat()` follows,
         // chat_client.hpp:938-940, and ADR-063 §4's red-team pass confirmed sound for this project).
-        auto lease = store_.resolve(api_key_ref_, ctx);
+        auto lease = co_await store_.resolve(api_key_ref_, ctx);
         if (!lease) co_return std::unexpected(lease.error());
 
         auto body = detail::build_embeddings_request_body(texts, model_);

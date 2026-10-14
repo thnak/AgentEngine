@@ -60,6 +60,7 @@
 #include "agentengine/rt/session_store.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "../support/run_task_sync.hpp"
 
 using namespace agentengine;
@@ -475,7 +476,7 @@ int main() {
 
     // ---- (4) SecretLease itself cannot leak even if something mistakenly tried to print/persist it --
     {
-        auto lease = store.resolve(SecretRef{"openai-api-key"}, ctx);
+        auto lease = rt::block_on(store.resolve(SecretRef{"openai-api-key"}, ctx));
         check(lease.has_value(), "J2: resolving the canary directly succeeds");
         if (lease) {
             check(to_redacted_string(*lease) == "***",

@@ -371,7 +371,7 @@ public:
 
         // Resolution happens HERE, inside add_batch(), against EffectContext -- never at
         // construction (004 §1/018 §4, the same rule OpenAIEmbedder::embed_batch() follows).
-        auto lease = store_.resolve(api_key_ref_, ctx);
+        auto lease = co_await store_.resolve(api_key_ref_, ctx);
         if (!lease) co_return std::unexpected(lease.error());
 
         auto req = detail::build_qdrant_request("PUT", path_prefix_ + "/collections/" + collection_name_ +
@@ -397,7 +397,7 @@ public:
         // resolution, no network call) for the identical reason.
         if (k == 0) co_return std::vector<ScoredId>{};
 
-        auto lease = store_.resolve(api_key_ref_, ctx);
+        auto lease = co_await store_.resolve(api_key_ref_, ctx);
         if (!lease) co_return std::unexpected(lease.error());
 
         auto body = detail::build_search_request_body(query, k);
@@ -419,7 +419,7 @@ public:
         auto point_id = detail::chunk_id_to_qdrant_point_id(id);
         if (!point_id) co_return std::unexpected(point_id.error());
 
-        auto lease = store_.resolve(api_key_ref_, ctx);
+        auto lease = co_await store_.resolve(api_key_ref_, ctx);
         if (!lease) co_return std::unexpected(lease.error());
 
         auto req = detail::build_qdrant_request(

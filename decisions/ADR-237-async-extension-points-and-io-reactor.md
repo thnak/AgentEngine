@@ -2498,12 +2498,38 @@ blocking `sandbox::perform_provider_https_exchange` that took no stop token.
   options fails all three H1 checks. `ctest -LE live-network`: 407/420, the 13 Docker-daemon tests. Not run: the
   embedder's and Qdrant's live tests (no `AGENTENGINE_OPENROUTER_API_KEY` / Qdrant host here; they skip).
 
+### Step 46 (2026-10-14): Phase C slice 3 -- `SecretStore::resolve` is `task`-shaped (#172)
+
+`SecretStore` was "kept synchronous" on the grounds that resolution has no I/O (env, memory, a small file). That
+holds for the stores in the tree, not for the seam: a vault- or keystore-backed store resolves over the network,
+and decision A8 makes the conversion total.
+
+- **The seam.** `resolve(ref, ctx) -> task<result<SecretLease>>`; the three conformers (`AgentEngineSecretStore`,
+  `InMemorySecretStore`, `QuarantineSecretStore`) keep their bodies and complete without suspending. They take
+  the `SecretRef` BY VALUE, so a task held past the call never reads a dead temporary. `SecretSource::get()`
+  stays synchronous: it is the env/file adapter underneath, not the seam.
+- **Callers inside coroutines** `co_await` it: both chat clients' `chat()`, the embedder, Qdrant (x3), the batch
+  backend (x3).
+- **`chat_stream()` resolves on its producer root.** `chat_stream()` returns synchronously, so it cannot await.
+  Both real clients now spawn an owned root (`stream_after_key`) whose first step awaits the key, failing the
+  stream with the store's own error on a denial, and which then starts the pump (step 34's root). New, documented
+  on the `ChatClient` concept: the `EffectContext` (and the `CapabilitySet` it borrows), the client, and its store
+  must outlive the returned stream. Every caller already drains the stream within the turn that owns `ctx`.
+  Rejected: resolving inline with `rt::block_on`, which is refused on a lane (`rt.block_on_on_lane`) -- exactly
+  where a session calls `chat_stream()`.
+- **Evidence.** New `test_chat_stream_key_resolution`, both vendors, loopback server: K1 a denied grant fails the
+  stream with `secret.not_granted`/`policy` and no connection is made; K2 a granted key reaches the wire
+  (`Authorization: Bearer` / `x-api-key`) and the server's 401 fails the stream; K3 `chat_stream()` called on a
+  runtime lane against a store that genuinely suspends on the reactor reaches the wire. Mutant: resolving inline
+  with `rt::block_on` in the OpenAI client fails K3 with `rt.block_on_on_lane`. Test callers of `resolve` drive
+  it with `rt::block_on` off-lane. `ctest -LE live-network`: 408/421, the 13 Docker-daemon tests. Not run: the chat clients' live tests (no provider key here; they skip).
+
 ### §14.1 What is left, and the phases to follow
 
-Recorded at session end so the work resumes cold. **Status: §5.1 is 13 of ~27 seams converted**
+Recorded at session end so the work resumes cold. **Status: §5.1 is 14 of ~27 seams converted**
 (`SkillSource`/`ChunkingPolicy`, `ToolSourceFetch`, the A2A client, the A2A server, `GraderFn`, MCP --
 §14 step 31, `OutputValidator` -- §14 step 32, `ChatClient` -- §14 steps 33-36, `SurfaceFactory` --
-§14 step 37, `Resolver` -- §14 steps 38-41, `BatchBackend` -- §14 step 43, `VectorIndex`/`SparseIndex` -- §14 step 44, and qdrant's `Resolver` -- §14 step 45). **PHASE B IS COMPLETE** on the conversion side: every one
+§14 step 37, `Resolver` -- §14 steps 38-41, `BatchBackend` -- §14 step 43, `VectorIndex`/`SparseIndex` -- §14 step 44, qdrant's `Resolver` -- §14 step 45, and `SecretStore` -- §14 step 46). **PHASE B IS COMPLETE** on the conversion side: every one
 of its seams has a reactor/task form and the provider model path has no blocking body and no detached
 thread. Its one outstanding item is DEAD-CODE SUBTRACTION, not conversion: delete the now-uncalled
 `run_stream_worker`, `provider_wire::exchange_json` and `pump_sse_stream` (step 41's own note). §5.2's
@@ -2573,7 +2599,7 @@ wants it; it is not currently planned.
 
 **Phase C -- index and storage seams.** ~~`VectorIndex`/`SparseIndex`~~ and ~~the RAG `recall`
 conversion~~ done together (§14 step 44); ~~the "async in name only" bodies (`QdrantVectorIndex`,
-`OpenAIEmbedder`) onto `rt::http` with qdrant's `Resolver`~~ (§14 step 45); next the three stores, `SecretStore`. The RAG `recall`
+`OpenAIEmbedder`) onto `rt::http` with qdrant's `Resolver`~~ (§14 step 45); ~~`SecretStore`~~ (§14 step 46); next the three stores. The RAG `recall`
 conversion was planned to belong here rather than earlier: `recall` deletes two
 `synchronous_leaf` contract-error paths that tests pin deliberately, and it depends on the index seams.
 Gate: those tests are updated with the reason recorded -- never deleted to make a build pass.
