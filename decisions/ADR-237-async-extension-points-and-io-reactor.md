@@ -2426,7 +2426,7 @@ needs none of the sandbox plumbing the rest of Phase D shares.
   `canceled` within 5 s, against a server that accepts and never answers) and R10 (a host-supplied
   `ProviderReactorOptions` is used: its resolver is the only route to a `.invalid` host). Mutants: passing an
   empty stop token fails R9 (still in flight 10 s after the stop); ignoring the ctor's options fails both R10
-  checks. `ctest -LE live-network`: 427/440, the 13 failures being the Docker-daemon tests. naming, layering
+  checks. `ctest -LE live-network`: 406/419 (440 registered incl. live-network), the 13 failures being the Docker-daemon tests. naming, layering
   and milestone lints OK. Not run: `test_openrouter_batch_live_e2e` (needs
   `AGENTENGINE_OPENROUTER_BATCH_API_KEY`; skipped when unset).
 
