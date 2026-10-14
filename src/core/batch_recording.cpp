@@ -379,8 +379,11 @@ public:
             [](BatchCallRecord& r, std::size_t const& bytes) { r.admitted_bytes = bytes; });
     }
 
-    [[nodiscard]] result<std::string> submit(std::vector<BatchItemRequest> const& items, EffectContext& ctx) override {
-        return record(
+    // The lambdas below capture the call's arguments by reference; the caller keeps them alive until the
+    // returned task completes (the seam's contract, core/batch_backend.hpp).
+    [[nodiscard]] task<result<std::string>> submit(std::vector<BatchItemRequest> const& items,
+                                                   EffectContext& ctx) override {
+        return record_async<std::string>(
             [&](BatchCallRecord& rec) {
                 rec.op = batch_call_op::submit;
                 for (BatchItemRequest const& it : items) rec.items.emplace_back(it.custom_id, batch_request_to_json(it.request));
@@ -390,8 +393,8 @@ public:
             [](BatchCallRecord& r, std::string const& job) { r.submitted_job = job; });
     }
 
-    [[nodiscard]] result<BatchPoll> poll(std::string const& job_id, EffectContext& ctx) override {
-        return record(
+    [[nodiscard]] task<result<BatchPoll>> poll(std::string const& job_id, EffectContext& ctx) override {
+        return record_async<BatchPoll>(
             [&](BatchCallRecord& rec) {
                 rec.op     = batch_call_op::poll;
                 rec.job_id = job_id;
@@ -401,11 +404,11 @@ public:
             [](BatchCallRecord& r, BatchPoll const& p) { r.poll = p; });
     }
 
-    [[nodiscard]] result<void> cancel(std::string const& job_id, EffectContext& ctx) override {
+    [[nodiscard]] task<result<void>> cancel(std::string const& job_id, EffectContext& ctx) override {
         return record_void(batch_call_op::cancel, job_id, ctx, [&] { return inner_->cancel(job_id, ctx); });
     }
 
-    [[nodiscard]] result<void> release(std::string const& job_id, EffectContext& ctx) override {
+    [[nodiscard]] task<result<void>> release(std::string const& job_id, EffectContext& ctx) override {
         return record_void(batch_call_op::release, job_id, ctx, [&] { return inner_->release(job_id, ctx); });
     }
 
@@ -417,9 +420,47 @@ private:
 
     // Builds the record's inputs, makes the call, then records the outcome. Only the inner call's own exceptions
     // propagate; anything the recording itself throws (building the record, copying a result, the sink) marks
-    // the recording failed and leaves the call's outcome untouched.
+    // the recording failed and leaves the call's outcome untouched. `record` is admit's synchronous form,
+    // `record_async` the vendor calls' (ADR-237 §5.1); both share the three steps below.
     template <class Prepare, class Call, class OnValue>
     auto record(Prepare&& prepare, Call&& call, OnValue&& on_value) const -> decltype(call()) {
+        std::optional<BatchCallRecord> rec = begin(prepare);
+        std::optional<decltype(call())> out;
+        std::exception_ptr              thrown;
+        try {
+            out.emplace(call());
+        } catch (...) {
+            thrown = std::current_exception();
+        }
+        if (thrown) {
+            record_thrown(rec, thrown);
+            std::rethrow_exception(thrown);
+        }
+        record_outcome(rec, *out, on_value);
+        return std::move(*out);
+    }
+
+    // The lambdas are taken by value into the frame; what they capture by reference the caller keeps alive.
+    template <class T, class Prepare, class Call, class OnValue>
+    task<result<T>> record_async(Prepare prepare, Call call, OnValue on_value) const {
+        std::optional<BatchCallRecord> rec = begin(prepare);
+        std::optional<result<T>>       out;
+        std::exception_ptr             thrown;
+        try {
+            out.emplace(co_await call());
+        } catch (...) {
+            thrown = std::current_exception();
+        }
+        if (thrown) {
+            record_thrown(rec, thrown);
+            std::rethrow_exception(thrown);
+        }
+        record_outcome(rec, *out, on_value);
+        co_return std::move(*out);
+    }
+
+    template <class Prepare>
+    [[nodiscard]] std::optional<BatchCallRecord> begin(Prepare& prepare) const {
         std::optional<BatchCallRecord> rec;
         try {
             rec.emplace();
@@ -429,57 +470,50 @@ private:
             rec.reset();
             state_->note_failure();
         }
-        std::optional<decltype(call())> out;
-        std::exception_ptr              thrown;
+        return rec;
+    }
+
+    // The thrown call is recorded here and rethrown by the caller OUTSIDE its handler. A rethrow from a handler
+    // that holds its own nested try crashes clang's Windows EH under AddressSanitizer (google/sanitizers#749's
+    // family; CI's clang-cl ASanUBSan leg, 2026-10-03), and nothing here needs to run inside the handler.
+    void record_thrown(std::optional<BatchCallRecord>& rec, std::exception_ptr const& thrown) const noexcept {
+        if (!rec) return;
+        // The text is copied inside the handler: MSVC's rethrow_exception throws a copy of the stored
+        // exception, so a what() pointer would dangle once the handler exits. A bad_alloc from that copy
+        // leaves the handler for the OUTER try -- no try nested inside a handler.
         try {
-            out.emplace(call());
-        } catch (...) {
-            thrown = std::current_exception();
-        }
-        // The thrown call is recorded and rethrown OUTSIDE the handler above. A rethrow from a handler that holds
-        // its own nested try crashes clang's Windows EH under AddressSanitizer (google/sanitizers#749's family;
-        // CI's clang-cl ASanUBSan leg, 2026-10-03), and nothing here needs to run inside the handler.
-        if (thrown) {
-            if (rec) {
-                // The text is copied inside the handler: MSVC's rethrow_exception throws a copy of the stored
-                // exception, so a what() pointer would dangle once the handler exits. A bad_alloc from that copy
-                // leaves the handler for the OUTER try -- no try nested inside a handler.
-                try {
-                    try {
-                        std::rethrow_exception(thrown);
-                    } catch (std::exception const& e) {
-                        rec->threw = std::string(e.what());
-                    } catch (...) {
-                        rec->threw_non_standard = true;
-                    }
-                    state_->emit(*rec);
-                } catch (...) {
-                    state_->note_failure();
-                }
-            }
-            std::rethrow_exception(thrown);
-        }
-        if (rec) {
             try {
-                if (*out) {
-                    if constexpr (!std::is_void_v<typename std::remove_cvref_t<decltype(*out)>::value_type>) {
-                        on_value(*rec, **out);
-                    }
-                } else {
-                    rec->failure = out->error();
-                }
-                state_->emit(*rec);
+                std::rethrow_exception(thrown);
+            } catch (std::exception const& e) {
+                rec->threw = std::string(e.what());
             } catch (...) {
-                state_->note_failure();
+                rec->threw_non_standard = true;
             }
+            state_->emit(*rec);
+        } catch (...) {
+            state_->note_failure();
         }
-        return std::move(*out);
+    }
+
+    template <class R, class OnValue>
+    void record_outcome(std::optional<BatchCallRecord>& rec, R const& out, OnValue& on_value) const noexcept {
+        if (!rec) return;
+        try {
+            if (out) {
+                if constexpr (!std::is_void_v<typename R::value_type>) on_value(*rec, *out);
+            } else {
+                rec->failure = out.error();
+            }
+            state_->emit(*rec);
+        } catch (...) {
+            state_->note_failure();
+        }
     }
 
     template <class Call>
-    result<void> record_void(batch_call_op op, std::string const& job_id, EffectContext& ctx, Call&& call) const {
-        return record(
-            [&](BatchCallRecord& rec) {
+    task<result<void>> record_void(batch_call_op op, std::string const& job_id, EffectContext& ctx, Call&& call) const {
+        return record_async<void>(
+            [&job_id, &ctx, op](BatchCallRecord& rec) {
                 rec.op     = op;
                 rec.job_id = job_id;
                 attribute(rec, ctx);
@@ -573,7 +607,9 @@ public:
         return answer<std::size_t>(**rec, [](BatchCallRecord const& r) { return r.admitted_bytes; });
     }
 
-    [[nodiscard]] result<std::string> submit(std::vector<BatchItemRequest> const& items, EffectContext& ctx) override {
+    // The vendor calls answer from the recording, so each completes without suspending (ADR-237 §5.1).
+    [[nodiscard]] task<result<std::string>> submit(std::vector<BatchItemRequest> const& items,
+                                                   EffectContext& ctx) override {
         auto rec = next(batch_call_op::submit, &ctx, [&](BatchCallRecord const& r) -> std::string {
             if (r.items.size() != items.size()) {
                 return "submitted " + std::to_string(items.size()) + " items, recorded " +
@@ -591,27 +627,27 @@ public:
             }
             return {};
         });
-        if (!rec) return std::unexpected(rec.error());
-        return answer<std::string>(**rec, [](BatchCallRecord const& r) { return r.submitted_job; });
+        if (!rec) co_return std::unexpected(rec.error());
+        co_return answer<std::string>(**rec, [](BatchCallRecord const& r) { return r.submitted_job; });
     }
 
-    [[nodiscard]] result<BatchPoll> poll(std::string const& job_id, EffectContext& ctx) override {
+    [[nodiscard]] task<result<BatchPoll>> poll(std::string const& job_id, EffectContext& ctx) override {
         auto rec = next(batch_call_op::poll, &ctx, job_check(job_id));
-        if (!rec) return std::unexpected(rec.error());
-        return answer<BatchPoll>(**rec, [](BatchCallRecord const& r) { return r.poll; });
+        if (!rec) co_return std::unexpected(rec.error());
+        co_return answer<BatchPoll>(**rec, [](BatchCallRecord const& r) { return r.poll; });
     }
 
-    [[nodiscard]] result<void> cancel(std::string const& job_id, EffectContext& ctx) override {
+    [[nodiscard]] task<result<void>> cancel(std::string const& job_id, EffectContext& ctx) override {
         auto rec = next(batch_call_op::cancel, &ctx, job_check(job_id));
-        if (!rec) return std::unexpected(rec.error());
-        return answer<std::monostate>(**rec, [](BatchCallRecord const&) { return std::monostate{}; })
+        if (!rec) co_return std::unexpected(rec.error());
+        co_return answer<std::monostate>(**rec, [](BatchCallRecord const&) { return std::monostate{}; })
             .transform([](std::monostate) {});
     }
 
-    [[nodiscard]] result<void> release(std::string const& job_id, EffectContext& ctx) override {
+    [[nodiscard]] task<result<void>> release(std::string const& job_id, EffectContext& ctx) override {
         auto rec = next(batch_call_op::release, &ctx, job_check(job_id));
-        if (!rec) return std::unexpected(rec.error());
-        return answer<std::monostate>(**rec, [](BatchCallRecord const&) { return std::monostate{}; })
+        if (!rec) co_return std::unexpected(rec.error());
+        co_return answer<std::monostate>(**rec, [](BatchCallRecord const&) { return std::monostate{}; })
             .transform([](std::monostate) {});
     }
 

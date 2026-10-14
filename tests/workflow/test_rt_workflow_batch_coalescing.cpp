@@ -190,12 +190,12 @@ public:
         if (++seen_ == nth_ && on_admit_) on_admit_();
         return out;
     }
-    [[nodiscard]] result<std::string> submit(std::vector<BatchItemRequest> const& items, EffectContext& c) override {
+    [[nodiscard]] task<result<std::string>> submit(std::vector<BatchItemRequest> const& items, EffectContext& c) override {
         return inner_->submit(items, c);
     }
-    [[nodiscard]] result<BatchPoll> poll(std::string const& job, EffectContext& c) override { return inner_->poll(job, c); }
-    [[nodiscard]] result<void> cancel(std::string const& job, EffectContext& c) override { return inner_->cancel(job, c); }
-    [[nodiscard]] result<void> release(std::string const& job, EffectContext& c) override { return inner_->release(job, c); }
+    [[nodiscard]] task<result<BatchPoll>> poll(std::string const& job, EffectContext& c) override { return inner_->poll(job, c); }
+    [[nodiscard]] task<result<void>> cancel(std::string const& job, EffectContext& c) override { return inner_->cancel(job, c); }
+    [[nodiscard]] task<result<void>> release(std::string const& job, EffectContext& c) override { return inner_->release(job, c); }
 
 private:
     std::shared_ptr<ScriptedBatchBackend> inner_;
@@ -757,13 +757,19 @@ spec:
             std::string group_key() const override { return "throwing"; }
             BatchLimits limits() const override { return {}; }
             result<std::size_t> admit(ChatRequest const&) const override { return std::size_t{10}; }
-            result<std::string> submit(std::vector<BatchItemRequest> const&, EffectContext&) override {
+            bool throw_poll = true;
+            // submit and poll throw from inside their coroutine bodies (rethrown at the co_await); cancel throws
+            // before it returns a task. The supervisor's guard has to classify both shapes.
+            task<result<std::string>> submit(std::vector<BatchItemRequest> const&, EffectContext&) override {
                 if (throw_submit) throw std::runtime_error("submit boom");
-                return std::string("tjob");
+                co_return std::string("tjob");
             }
-            result<BatchPoll> poll(std::string const&, EffectContext&) override { throw std::runtime_error("poll boom"); }
-            result<void> cancel(std::string const&, EffectContext&) override { throw std::runtime_error("cancel boom"); }
-            result<void> release(std::string const&, EffectContext&) override { return {}; }
+            task<result<BatchPoll>> poll(std::string const&, EffectContext&) override {
+                if (throw_poll) throw std::runtime_error("poll boom");
+                co_return BatchPoll{};
+            }
+            task<result<void>> cancel(std::string const&, EffectContext&) override { throw std::runtime_error("cancel boom"); }
+            task<result<void>> release(std::string const&, EffectContext&) override { co_return result<void>{}; }
         };
         auto backend = std::make_shared<ThrowingBackend>();
         auto calls   = std::make_shared<Calls>();

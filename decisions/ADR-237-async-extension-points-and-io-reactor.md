@@ -2395,12 +2395,47 @@ re-verify.
 - Stale-comment residual (cosmetic, not compiled): the "detached background worker" comment block above the
   removed declarations and `rt/http.hpp`'s mention of `pump_sse_stream` still describe the old shape.
 
+### Step 43 (2026-10-14): §5.1 -- `BatchBackend` is async; the blocking `exchange_json` is deleted
+
+Taken out of Phase D's group because it is the batch backend that kept `exchange_json` alive (step 42), and it
+needs none of the sandbox plumbing the rest of Phase D shares.
+
+- **The seam.** `BatchBackend::submit/poll/cancel/release` return `task<result<...>>`
+  (`core/batch_backend.hpp`). `group_key`, `limits` and `admit` stay synchronous: pure, no I/O, and `admit`
+  runs per candidate inside the supervisor's gather loop. The caller keeps the reference arguments alive until
+  the task completes -- stated on the seam.
+- **The OpenRouter conformer** calls `openai::detail::exchange_json_async` (the exchange `chat()` uses) and
+  takes a trailing `ProviderReactorOptions` (appended last, the chat clients' convention). With no Runtime it
+  owns one; the ctor `Resolver` becomes the reactor's DNS seam unless the host named one -- the same rules as
+  `OpenAIChatClient` (steps 39-40). `ctx.cancellation` is passed through, which the blocking path never had.
+- **Wrappers.** `ScriptedBatchBackend` and the replayer complete without suspending. The recorder's
+  `record()` is split into begin / record-thrown / record-outcome steps shared by the sync `admit` and a new
+  coroutine `record_async`; the thrown-call path keeps its rethrow OUTSIDE the handler (the clang-cl ASan EH
+  constraint recorded there).
+- **Supervisor.** `submit_batch_chunks`, `fold_batch_items` (which releases consumed jobs) and
+  `cancel_abandoned_batches` become coroutines; every caller was already one (`execute()`, `poll_batches*`).
+  `guarded_async` is `guarded`'s twin: a throw from the call itself or from its body (rethrown at the
+  `co_await`) is the same classified `rt.batch.threw` transient failure. C20's throwing backend now throws both
+  ways (submit/poll from the body, cancel before returning a task).
+- **Lock audit** (Phase D's standing instruction): the supervisor suspends on a vendor call only under its
+  `AsyncMutex` run lock; the scripted backend, the recorder's sink lock and the replayer's state lock are
+  `std::mutex` held only in synchronous sections, never across a `co_await`.
+- **Deleted:** `provider_wire::exchange_json` (declaration and definition). No blocking provider exchange
+  remains; `tools/batch_infer.cpp` drives the backend with `rt::block_on` from `main`.
+- **Evidence.** `test_openrouter_batch_backend` gains R9 (a `ctx.cancellation` stop ends an in-flight poll as
+  `canceled` within 5 s, against a server that accepts and never answers) and R10 (a host-supplied
+  `ProviderReactorOptions` is used: its resolver is the only route to a `.invalid` host). Mutants: passing an
+  empty stop token fails R9 (still in flight 10 s after the stop); ignoring the ctor's options fails both R10
+  checks. `ctest -LE live-network`: 427/440, the 13 failures being the Docker-daemon tests. naming, layering
+  and milestone lints OK. Not run: `test_openrouter_batch_live_e2e` (needs
+  `AGENTENGINE_OPENROUTER_BATCH_API_KEY`; skipped when unset).
+
 ### §14.1 What is left, and the phases to follow
 
-Recorded at session end so the work resumes cold. **Status: §5.1 is 10 of ~27 seams converted**
+Recorded at session end so the work resumes cold. **Status: §5.1 is 11 of ~27 seams converted**
 (`SkillSource`/`ChunkingPolicy`, `ToolSourceFetch`, the A2A client, the A2A server, `GraderFn`, MCP --
 §14 step 31, `OutputValidator` -- §14 step 32, `ChatClient` -- §14 steps 33-36, `SurfaceFactory` --
-§14 step 37, and `Resolver` -- §14 steps 38-41). **PHASE B IS COMPLETE** on the conversion side: every one
+§14 step 37, `Resolver` -- §14 steps 38-41, and `BatchBackend` -- §14 step 43). **PHASE B IS COMPLETE** on the conversion side: every one
 of its seams has a reactor/task form and the provider model path has no blocking body and no detached
 thread. Its one outstanding item is DEAD-CODE SUBTRACTION, not conversion: delete the now-uncalled
 `run_stream_worker`, `provider_wire::exchange_json` and `pump_sse_stream` (step 41's own note). §5.2's
@@ -2422,7 +2457,7 @@ closes the small end of Phase B), then Phase C with the qdrant `Resolver` folded
 
 **Remaining §5.1 seams (sync -> `task`):** `Runner`;
 `SandboxBackend`; `ExecutionSurface`; `PersistentShellSurface`; `NetEgressBackend`; `SecretStore`; the three
-stores; `VectorIndex`/`SparseIndex`; `BatchBackend`; `Resolver`; plus ~15
+stores; `VectorIndex`/`SparseIndex`; qdrant's half of `Resolver`; plus ~15
 further `std::function` typedefs that have not been triaged individually yet.
 
 **Remaining §5.2 cleanup:** delete `make_sync_invoke`'s **five** production call sites -- counted by grep,
@@ -2474,7 +2509,7 @@ unblock the RAG `recall` conversion, which belongs here rather than earlier: `re
 Gate: those tests are updated with the reason recorded -- never deleted to make a build pass.
 
 **Phase D -- execution and sandbox surfaces.** `Runner`, `SandboxBackend`, `ExecutionSurface`,
-`PersistentShellSurface`, `NetEgressBackend`, `BatchBackend`. Grouped because they share the
+`PersistentShellSurface`, `NetEgressBackend` (`BatchBackend` was taken early, §14 step 43). Grouped because they share the
 `EffectContext`/capability plumbing. Expect the mutex-across-suspension hazard from the A2A server
 (`protocol/a2a/server.hpp:141`) to recur -- audit every lock when one of these goes async.
 
