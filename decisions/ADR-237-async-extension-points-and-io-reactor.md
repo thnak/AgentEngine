@@ -2472,12 +2472,38 @@ conversion, which §14.1 had scheduled last in Phase C: once local indexes are `
   `test_native_jail_backend_windows`, which passed 3/3 when rerun alone (timing under `-j6` load). naming,
   layering and milestone lints OK.
 
+### Step 45 (2026-10-14): Phase C slice 2 -- `QdrantVectorIndex` and `OpenAIEmbedder` on `rt::http` (#172)
+
+The two "async in name only" RAG backends (decision A8): `task`-shaped since ADR-063/180, but each body was a
+blocking `sandbox::perform_provider_https_exchange` that took no stop token.
+
+- **One provider-plane exchange.** `provider_wire::exchange_async` (`provider_chat_wire.hpp`, defined in
+  `provider_chat_wire.cpp` beside the TLS connector): a buffered HTTP/1.1 exchange on `rt::http`, `stop` ending
+  it in flight, a transport failure mapped through `http_error_to_error`, and EVERY status returned -- each
+  client classifies its own. Both chat clients' `exchange_json_async` (two copies of the same body) are now
+  that call plus `http_status_error`.
+- **The two backends** take a trailing `ProviderReactorOptions` (the chat clients' "append last" convention),
+  own an `rt::Runtime` when none is supplied, turn the ctor `Resolver` into the reactor's DNS seam unless the
+  host named one (qdrant's half of `Resolver`, §14.1) -- the rules of steps 39-40 -- and `co_await` the
+  exchange with `ctx.cancellation`. Their own status mapping (`map_http_status_error`, Qdrant's 404-is-`false`)
+  is unchanged.
+- **Residual, stated:** `perform_provider_https_exchange` has no production caller left; six test files still
+  use it (including its own test), so deleting it belongs with #180/#182.
+- **Evidence.** New `test_rag_backends_on_reactor` against a loopback server: W1 Qdrant wire (PUT upsert with
+  `api-key`, search parse, 404/200 `contains`, 500 transient with Qdrant's message), W2 the embedder's wire
+  (bearer key, vectors by index), C1 a stop ends an in-flight embed and an in-flight Qdrant search as
+  `canceled` promptly, against a server that never answers, H1 a host-supplied `ProviderReactorOptions`
+  resolver is the only route to a `.invalid` host for both. Mutants: an empty stop token in the embedder's or
+  Qdrant's exchange leaves the call in flight 10 s after the stop (each run separately); ignoring the ctor's
+  options fails all three H1 checks. `ctest -LE live-network`: 407/420, the 13 Docker-daemon tests. Not run: the
+  embedder's and Qdrant's live tests (no `AGENTENGINE_OPENROUTER_API_KEY` / Qdrant host here; they skip).
+
 ### §14.1 What is left, and the phases to follow
 
-Recorded at session end so the work resumes cold. **Status: §5.1 is 12 of ~27 seams converted**
+Recorded at session end so the work resumes cold. **Status: §5.1 is 13 of ~27 seams converted**
 (`SkillSource`/`ChunkingPolicy`, `ToolSourceFetch`, the A2A client, the A2A server, `GraderFn`, MCP --
 §14 step 31, `OutputValidator` -- §14 step 32, `ChatClient` -- §14 steps 33-36, `SurfaceFactory` --
-§14 step 37, `Resolver` -- §14 steps 38-41, `BatchBackend` -- §14 step 43, and `VectorIndex`/`SparseIndex` -- §14 step 44). **PHASE B IS COMPLETE** on the conversion side: every one
+§14 step 37, `Resolver` -- §14 steps 38-41, `BatchBackend` -- §14 step 43, `VectorIndex`/`SparseIndex` -- §14 step 44, and qdrant's `Resolver` -- §14 step 45). **PHASE B IS COMPLETE** on the conversion side: every one
 of its seams has a reactor/task form and the provider model path has no blocking body and no detached
 thread. Its one outstanding item is DEAD-CODE SUBTRACTION, not conversion: delete the now-uncalled
 `run_stream_worker`, `provider_wire::exchange_json` and `pump_sse_stream` (step 41's own note). §5.2's
@@ -2499,7 +2525,7 @@ closes the small end of Phase B), then Phase C with the qdrant `Resolver` folded
 
 **Remaining §5.1 seams (sync -> `task`):** `Runner`;
 `SandboxBackend`; `ExecutionSurface`; `PersistentShellSurface`; `NetEgressBackend`; `SecretStore`; the three
-stores; qdrant's half of `Resolver`; plus ~15
+stores; plus ~15
 further `std::function` typedefs that have not been triaged individually yet.
 
 **Remaining §5.2 cleanup:** delete `make_sync_invoke`'s **five** production call sites -- counted by grep,
@@ -2546,8 +2572,8 @@ mode, and every fixture intact. The drop-`chat()` ordering above is recorded for
 wants it; it is not currently planned.
 
 **Phase C -- index and storage seams.** ~~`VectorIndex`/`SparseIndex`~~ and ~~the RAG `recall`
-conversion~~ done together (§14 step 44); next the "async in name only" bodies (`QdrantVectorIndex`,
-`OpenAIEmbedder`) onto `rt::http` with qdrant's `Resolver`, then the three stores, `SecretStore`. The RAG `recall`
+conversion~~ done together (§14 step 44); ~~the "async in name only" bodies (`QdrantVectorIndex`,
+`OpenAIEmbedder`) onto `rt::http` with qdrant's `Resolver`~~ (§14 step 45); next the three stores, `SecretStore`. The RAG `recall`
 conversion was planned to belong here rather than earlier: `recall` deletes two
 `synchronous_leaf` contract-error paths that tests pin deliberately, and it depends on the index seams.
 Gate: those tests are updated with the reason recorded -- never deleted to make a build pass.

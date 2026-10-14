@@ -11,11 +11,13 @@
 
 #include <cstdint>
 #include <functional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_value.hpp"
+#include "agentengine/core/task.hpp"
 #include "agentengine/rt/http.hpp"     // HttpOptions / HttpContext / http_error (no TLS: the connector stays in src/)
 #include "agentengine/rt/runtime.hpp"  // rt::Runtime (reactor + DNS pool + spawn)
 #include "agentengine/sandbox/provider_http_client.hpp"
@@ -102,6 +104,18 @@ struct ProviderReactorOptions {
 // JSON that has one, else "<vendor> http status <N>"; the code is "<vendor>.http_<N>". `body` is empty on the
 // streaming path, which never buffers the error document; the classification does not depend on it.
 [[nodiscard]] error http_status_error(std::string_view vendor, std::uint16_t status, std::string const& body);
+
+// ADR-237 §5.1 (#172): ONE buffered HTTP/1.1 exchange on `rt::http` for every provider-plane client: no blocking
+// body, no thread, and `stop` (the caller's `EffectContext::cancellation`) ends it in flight. A transport failure
+// is an error mapped through `http_error_to_error`; ANY HTTP status comes back as the response, because each
+// client classifies its own (`http_status_error` for the chat clients and the batch backend, the vendor's own
+// mapping for Qdrant and the embedder). `reactor.runtime` must be non-null. Defined in provider_chat_wire.cpp,
+// where the TLS connector (`make_http_context`) lives.
+[[nodiscard]] task<result<rt::HttpResponse>> exchange_async(std::string host, std::uint16_t port,
+                                                            sandbox::NetEgressRequest req,
+                                                            ProviderReactorOptions reactor,
+                                                            std::string ca_bundle_pem_override,
+                                                            sandbox::ProviderTransport transport, std::stop_token stop);
 
 // ADR-237 §5.1: the blocking `exchange_json` that used to sit here is gone. Its last user, the OpenRouter batch
 // backend, now calls `openai::detail::exchange_json_async` on `rt::http` like both chat clients.

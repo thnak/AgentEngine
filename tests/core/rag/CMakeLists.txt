@@ -79,6 +79,12 @@ if(AGENTENGINE_WITH_HTTPS)
     LIBS agentengine::core agentengine::provider_http_client agentengine_warnings MbedTLS::mbedtls
       MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   set_tests_properties(test_qdrant_vector_index_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
+
+  # ---- decisions/ADR-237 §5.1 (#172, Phase C slice 2): QdrantVectorIndex and OpenAIEmbedder on rt::http --
+  # the wire, status mapping, cancellation and host-supplied reactor options, against a loopback server.
+  agentengine_add_test(test_rag_backends_on_reactor
+    LIBS agentengine::core agentengine::provider_http_client agentengine_warnings MbedTLS::mbedtls
+      MbedTLS::mbedx509 MbedTLS::mbedcrypto)
 endif()
 
 # decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.6/§3 claim 7 -- VulkanCosineIndex
