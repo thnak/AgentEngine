@@ -68,21 +68,24 @@ namespace replay_chat_client_detail {
 inline void real_sleep(std::chrono::milliseconds d) { std::this_thread::sleep_for(d); }
 
 // Translates a recorded `stream_terminal` ("cancelled" | "deadline_exceeded" | "failed" | anything
-// else/unset) into an `agentengine::error` -- "cancelled" -> `failure_class::fatal` (a caller-
-// initiated teardown that ends the run, matching `classify_drained_failure`'s own now-retired
-// "cancelled is never retried" precedent), "deadline_exceeded" -> `failure_class::transient` (a real,
-// retryable timeout condition; kept as an INPUT string this function still recognizes even though no
-// LIVE stream can produce that terminal anymore -- see file banner and `recording_chat_client.hpp`'s
-// own note -- since old, already-persisted recordings may still carry it on disk), "failed"/anything
-// unrecognized -> `failure_class::fatal` (this file's own catch-all, named here rather than silently
-// mapped onto something the wire vocabulary doesn't actually say). `detail` is taken and stored BY
-// VALUE -- `error::message` owns its text, so there is nothing left to borrow (see file banner).
+// else/unset) into an `agentengine::error` -- "cancelled" -> `failure_class::canceled` (a caller-
+// initiated teardown: stopped on request, never retried -- ADR-237 D6; it was `fatal` before D6, which
+// also kept it from being retried, but conflated "the host stopped it" with "it broke"),
+// "deadline_exceeded" -> `failure_class::resource` (ADR-237 D6: a deadline is a budget, 001 §5 / I8,
+// everywhere; it was `transient` before D6, which let the gateway retry an exhausted deadline inside the
+// same budget. Kept as an INPUT string this function still recognizes even though no LIVE stream can
+// produce that terminal anymore -- see file banner and `recording_chat_client.hpp`'s own note -- since
+// old, already-persisted recordings may still carry it on disk), "failed"/anything unrecognized ->
+// `failure_class::fatal` (this file's own catch-all, named here rather than silently mapped onto
+// something the wire vocabulary doesn't actually say). The wire spellings ("cancelled",
+// "deadline_exceeded") are unchanged: only the class each one maps to moved. `detail` is taken and stored
+// BY VALUE -- `error::message` owns its text, so there is nothing left to borrow (see file banner).
 [[nodiscard]] inline error terminal_to_error(std::string_view stream_terminal, std::string detail) noexcept {
     if (stream_terminal == "cancelled") {
-        return error{failure_class::fatal, std::move(detail), "replay_chat_client.stream_cancelled"};
+        return error{failure_class::canceled, std::move(detail), "replay_chat_client.stream_cancelled"};
     }
     if (stream_terminal == "deadline_exceeded") {
-        return error{failure_class::transient, std::move(detail),
+        return error{failure_class::resource, std::move(detail),
                       "replay_chat_client.stream_deadline_exceeded"};
     }
     return error{failure_class::fatal, std::move(detail), "replay_chat_client.stream_failed"};

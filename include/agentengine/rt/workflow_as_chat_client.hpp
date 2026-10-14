@@ -543,7 +543,7 @@ inline void run_worker(std::shared_ptr<agentengine::rt::WorkflowSupervisor> inne
             // caller is still draining it). It used to vanish: the outer session was charged 0.
             charge_undelivered();
             producer.fail(agentengine::error{
-                agentengine::failure_class::contract,
+                agentengine::rt::inner_run_failure_class(r.status),  // ADR-237 D6
                 std::string("workflow chat call: the wrapped workflow did not complete (status=") +
                     tag + ")",
                 std::string("chat_client.workflow_chat_client.inner_run_not_completed.") + tag});

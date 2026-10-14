@@ -13,6 +13,7 @@
 #include <string>
 
 #include "agentengine/core/tool_pipeline.hpp"
+#include "../../support/run_task_sync.hpp"
 
 namespace {
 
@@ -116,7 +117,7 @@ int main() {
 
         agentengine::ToolCallRequest req{"call-1", "make_payment", args, false, /*call_index=*/0};
         agentengine::ToolInvocationAudit audit1;
-        auto first = agentengine::invoke_tool(table, held, req, ctx, nullptr, &audit1);
+        auto first = agentengine::test_support::run_task_sync<agentengine::ToolResult>(agentengine::invoke_tool(table, held, req, ctx, nullptr, &audit1));
         check(!first.is_error, "F4-R7 setup: the first (original) execution succeeds");
 
         // Rewind: attempt to re-run the EXACT SAME call (same key) without an operator ack first.
@@ -133,7 +134,7 @@ int main() {
         check(gate_with_ack.has_value(), "F4-R9: with an operator ack, re-execution is authorized");
 
         agentengine::ToolInvocationAudit audit2;
-        auto second = agentengine::invoke_tool(table, held, req, ctx, nullptr, &audit2);
+        auto second = agentengine::test_support::run_task_sync<agentengine::ToolResult>(agentengine::invoke_tool(table, held, req, ctx, nullptr, &audit2));
         check(!second.is_error, "F4-R10: the acknowledged re-execution itself still runs correctly");
         check(audit2.idempotency_key == audit1.idempotency_key,
               "F4-R11: the re-execution carries the SAME idempotency key as the original -- it is "

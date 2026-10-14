@@ -212,7 +212,13 @@ ends in any state but `suspended` abandons its pending items; their jobs are can
 ## 6. Failure
 
 - An executor failure is classified (001 §6) and handled by the edge's declared policy: propagate,
-  retry, route to a fallback branch, or fail the workflow.
+  retry, route to a fallback branch, or fail the workflow. **Except `canceled`** (ADR-237 §9 D6,
+  2026-10-03): an executor stopped on request — e.g. a sibling canceled after another sibling failed —
+  is never retried, never propagated as a failure marker and never routed to a fallback executor that
+  would keep working on its behalf; whatever the edge declares, it ends the run as `fail` does. The
+  workflow's own cancel ends the round `cancelled` before routing (issue #156) and never reaches this
+  rule. A wrapped workflow that ended `cancelled` carries `canceled` to its outer workflow;
+  one that hit its deadline bound carries `resource`.
 - **Supervision** is per-round fault containment: `rt::ThreadPool::submit()`'s `JobOutcome{faulted,
   fault_ptr}` stops a throwing executor's job from crashing the process or hanging the collector, the
   faulted job is classified `failure_class::transient`, and the workflow's own edge-level retry

@@ -3,10 +3,18 @@
 // Phase C3 (docs/planning/milestone-7-protocol-conformance-breakdown.md).
 //
 // Transport-agnostic, exactly like `McpServer` (server.hpp): this client is handed a "send a
-// JsonRpcRequest, get a JsonRpcResponse back" callable (`RequestSender`), not a socket. A later
+// JsonRpcRequest, await a JsonRpcResponse back" callable (`RequestSender`), not a socket. A later
 // transport sub-phase supplies a real Streamable-HTTP/stdio-backed sender; this phase's own test
 // wires one directly into `McpServer::dispatch()`, the same "same process, two roles" shape this
 // codebase's own server-role tests already established.
+//
+// ADR-237 §5.1: every callable this header takes (`RequestSender`, `RequestSenderWithHeaders`,
+// `InputRequestHandler`) and every verb that invokes one (`list_tools`, `call_tool`,
+// `call_tool_as_task`, `get_task`, `cancel_task`) is now asynchronous (`rt::task`). Reaching an MCP
+// server is a network round trip, so none of these was ever genuinely synchronous; the synchronous
+// forms were the Phase C3/C4 stand-in. The `send` funnel is the one place both sender shapes are
+// invoked, so it is a coroutine too -- a verb that only does an in-memory lookup would stay sync,
+// but no verb here is one (each reaches the sender).
 //
 // Scope: `tools/list` with caching (§3.1's own rule -- "Cache key = method + the parameters that
 // affect the result," `ttlMs` honoured, "an empty string is a valid cursor, not end-of-results") and
@@ -42,11 +50,15 @@
 #include "agentengine/core/base64.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_value.hpp"
+#include "agentengine/core/task.hpp"
 #include "agentengine/protocol/mcp/json_rpc.hpp"
 
 namespace agentengine::mcp {
 
-using RequestSender = std::function<JsonRpcResponse(JsonRpcRequest const&)>;
+// ADR-237 §5.1: the sender is asynchronous -- a real transport is a network round trip, so it is a
+// `task` producer rather than a blocking call. A sender whose body never parks (the in-process test
+// harness, `server.dispatch()`) simply returns an immediately-ready task.
+using RequestSender = std::function<task<JsonRpcResponse>(JsonRpcRequest const&)>;
 
 struct McpToolInfo {
     std::string name;
@@ -74,8 +86,11 @@ struct McpToolCallOutcome {
 // handler set, an `input_required` result is returned to the caller unretried.
 //
 // Returns the `InputResponse` value for one server-assigned key, or an error to decline it.
+// ADR-237 §5.1: asynchronous -- producing elicitation/sampling/roots data may itself require I/O
+// (asking a user, calling a model), so the host decision is a `task` producer rather than a blocking
+// call made while `call_tool`'s MRTR round loop runs.
 using InputRequestHandler =
-    std::function<result<json::Value>(std::string const& request_key, json::Value const& request)>;
+    std::function<task<result<json::Value>>(std::string const& request_key, json::Value const& request)>;
 
 // Phase C4: mirrors `server.hpp`'s own `kMcpTasksExtension` -- kept as a client-local literal rather
 // than a shared constant, since server.hpp is server-role-only and this file has no dependency on it.
@@ -310,11 +325,11 @@ inline constexpr std::string_view kMcpProtocolVersion = "2026-07-28";
 // transport (wrong layer) this adds an optional headers-carrying sender.
 //
 // Additive on purpose, matching this codebase's own established precedent for exactly this situation
-// (`StartRun::caller`, `ChatClientRegistry const*`): every existing `RequestSender` call site keeps
-// compiling and behaving identically, and only a transport that actually speaks Streamable HTTP need
-// opt in. That mirrors the spec's own layering -- "Clients using other transports (e.g., stdio) MAY
-// ignore `x-mcp-header` annotations entirely."
-using RequestSenderWithHeaders = std::function<JsonRpcResponse(
+// (`StartRun::caller`, `ChatClientRegistry const*`): only a transport that actually speaks Streamable
+// HTTP need opt in, and it mirrors the spec's own layering -- "Clients using other transports (e.g.,
+// stdio) MAY ignore `x-mcp-header` annotations entirely." ADR-237 §5.1: like `RequestSender`, it is a
+// `task` producer now (it is the same network round trip, carrying headers).
+using RequestSenderWithHeaders = std::function<task<JsonRpcResponse>(
     JsonRpcRequest const&, std::vector<std::pair<std::string, std::string>> const&)>;
 
 class McpClient {
@@ -341,7 +356,9 @@ public:
     // `input_required` outcome rather than retrying.
     void set_input_request_handler(InputRequestHandler h) { input_handler_ = std::move(h); }
 
-    [[nodiscard]] result<std::vector<McpToolInfo>> list_tools(std::string const& cursor = "") {
+    // `cursor` by VALUE: a lazy coroutine keeps its parameters in its frame, and a `const&` default-argument
+    // temporary would not outlive a task that is stored and awaited later.
+    [[nodiscard]] task<result<std::vector<McpToolInfo>>> list_tools(std::string cursor = {}) {
         // §3.1: "Cache key = method + the parameters that affect the result." An empty-string
         // cursor is still a real, distinct parameter value (§3.1's own "not end-of-results" rule) --
         // folding it into the key, rather than treating "no cursor supplied" and "empty cursor" as
@@ -351,19 +368,19 @@ public:
 
         if (auto it = cache_.find(cache_key); it != cache_.end() && ttl_.count() > 0) {
             auto const age = std::chrono::steady_clock::now() - it->second.cached_at;
-            if (age < ttl_) return it->second.tools;
+            if (age < ttl_) co_return it->second.tools;
         }
 
         JsonRpcRequest req{RpcId{next_id()}, "tools/list",
                             with_request_meta(json::Value::make_object(
                                 {{"cursor", json::Value::make_string(cursor)}}))};
-        JsonRpcResponse resp = send(req);
+        JsonRpcResponse resp = co_await send(req);
         if (resp.error.has_value()) {
-            return std::unexpected(error{failure_class::contract, resp.error->message, "mcp.rpc_error"});
+            co_return std::unexpected(error{failure_class::contract, resp.error->message, "mcp.rpc_error"});
         }
         json::Value const* tools_field = resp.result->find("tools");
         if (!tools_field || !tools_field->is_array()) {
-            return std::unexpected(error{failure_class::contract,
+            co_return std::unexpected(error{failure_class::contract,
                                           "tools/list result missing a \"tools\" array",
                                           "mcp.malformed_result"});
         }
@@ -375,7 +392,7 @@ public:
             json::Value const* input       = item.find("inputSchema");
             json::Value const* output      = item.find("outputSchema");
             if (!name || !name->is_string()) {
-                return std::unexpected(error{failure_class::contract,
+                co_return std::unexpected(error{failure_class::contract,
                                               "a tools/list entry is missing \"name\"",
                                               "mcp.malformed_tool_entry"});
             }
@@ -405,10 +422,10 @@ public:
         }
         cache_[cache_key] = client_detail::CacheEntry{tools, std::chrono::steady_clock::now(), digest};
 
-        return tools;
+        co_return tools;
     }
 
-    [[nodiscard]] result<McpToolCallOutcome> call_tool(std::string const& name, json::Value arguments) {
+    [[nodiscard]] task<result<McpToolCallOutcome>> call_tool(std::string const& name, json::Value arguments) {
         // SEP-2243 client behaviour step 3/4/5: derive `Mcp-Param-{Name}` from the tool's OWN
         // schema before the arguments are moved into the request. Derived from the cached listing
         // rather than re-fetched -- the schema this client validated is the one it mirrors from, so a
@@ -430,11 +447,11 @@ public:
         constexpr int              kMaxMrtrRounds = 8;  // bounded: a server that keeps asking must not spin us forever
         for (int round = 0;; ++round) {
             JsonRpcRequest req{RpcId{next_id()}, "tools/call", params};
-            resp = send(req, param_headers);
+            resp = co_await send(req, param_headers);
             if (resp.error.has_value()) {
                 // A PROTOCOL error (unknown tool, malformed request) -- 011 §3.1's own split, the
                 // client-side half symmetric with `McpServer`'s own server-side proof (server.hpp).
-                return std::unexpected(error{failure_class::contract, resp.error->message, "mcp.rpc_error"});
+                co_return std::unexpected(error{failure_class::contract, resp.error->message, "mcp.rpc_error"});
             }
 
             json::Value const* result_type = resp.result->find("resultType");
@@ -450,16 +467,18 @@ public:
                 McpToolCallOutcome out;
                 out.input_required = true;
                 out.input_requests = input_requests ? *input_requests : json::Value::make_object({});
-                return out;  // surfaced, not an error -- the server may not assume we retry
+                co_return out;  // surfaced, not an error -- the server may not assume we retry
             }
 
             // Answer each server-assigned key. A key the handler declines is simply left out: §9's
             // own rule is that under-answering earns another `InputRequiredResult`, not an error, so
-            // partial answers are a legitimate move rather than a failure to report.
+            // partial answers are a legitimate move rather than a failure to report. The handler is
+            // awaited in turn (ADR-237 §5.1) -- a host that answers by doing I/O may now suspend
+            // here without blocking the round loop; `resp`/`input_requests` outlive the await.
             std::vector<std::pair<std::string, json::Value>> responses;
             if (input_requests && input_requests->is_object()) {
                 for (auto const& [key, request] : input_requests->as_object()) {
-                    if (auto answered = input_handler_(key, request)) {
+                    if (auto answered = co_await input_handler_(key, request)) {
                         responses.emplace_back(key, std::move(*answered));
                     }
                 }
@@ -481,7 +500,7 @@ public:
         // §3.1: "surfaced to the model for self-correction" -- an execution failure is returned as a
         // SUCCESSFUL result<> here, never std::unexpected. This layer's own job ends at faithfully
         // relaying what the server said; deciding what to DO with isError:true is the caller's.
-        return outcome;
+        co_return outcome;
     }
 
     [[nodiscard]] bool rug_pull_detected() const noexcept { return rug_pull_detected_; }
@@ -490,7 +509,7 @@ public:
     // server "MUST NOT return CreateTaskResult to a client that did not include the extension
     // capability on that request" -- this is that per-request opt-in). Returns the task handle a
     // Backgroundable tool call was started under; the caller then polls `get_task()`.
-    [[nodiscard]] result<McpTaskHandle> call_tool_as_task(std::string const& name, json::Value arguments) {
+    [[nodiscard]] task<result<McpTaskHandle>> call_tool_as_task(std::string const& name, json::Value arguments) {
         JsonRpcRequest req{
             RpcId{next_id()}, "tools/call",
             json::Value::make_object(
@@ -498,19 +517,19 @@ public:
                  {"arguments", std::move(arguments)},
                  {"extensions",
                   json::Value::make_array({json::Value::make_string(std::string(kMcpTasksExtensionClient))})}})};
-        JsonRpcResponse resp = send(req);
+        JsonRpcResponse resp = co_await send(req);
         if (resp.error.has_value()) {
-            return std::unexpected(error{failure_class::contract, resp.error->message, "mcp.rpc_error"});
+            co_return std::unexpected(error{failure_class::contract, resp.error->message, "mcp.rpc_error"});
         }
         json::Value const* task = resp.result->find("task");
         json::Value const* task_id = task ? task->find("taskId") : nullptr;
         json::Value const* status  = task ? task->find("status") : nullptr;
         if (!task_id || !task_id->is_string() || !status || !status->is_string()) {
-            return std::unexpected(error{failure_class::contract,
+            co_return std::unexpected(error{failure_class::contract,
                                           "tools/call task response missing a well-formed \"task\"",
                                           "mcp.malformed_result"});
         }
-        return McpTaskHandle{task_id->as_string(), status->as_string()};
+        co_return McpTaskHandle{task_id->as_string(), status->as_string()};
     }
 
     // §12: "Status ∈ working | input_required | completed | cancelled | failed." A caller polls until
@@ -519,17 +538,17 @@ public:
     // with error details in result" -- so a real execution failure arrives as `status == "completed"`
     // with `outcome.is_error == true`, exactly `call_tool()`'s own isError contract, never as
     // `status == "failed"`).
-    [[nodiscard]] result<McpTaskPoll> get_task(std::string const& task_id) {
+    [[nodiscard]] task<result<McpTaskPoll>> get_task(std::string const& task_id) {
         JsonRpcRequest req{RpcId{next_id()}, "tasks/get",
                             json::Value::make_object({{"taskId", json::Value::make_string(task_id)}})};
-        JsonRpcResponse resp = send(req);
+        JsonRpcResponse resp = co_await send(req);
         if (resp.error.has_value()) {
-            return std::unexpected(error{failure_class::contract, resp.error->message, "mcp.rpc_error"});
+            co_return std::unexpected(error{failure_class::contract, resp.error->message, "mcp.rpc_error"});
         }
         json::Value const* task   = resp.result->find("task");
         json::Value const* status = task ? task->find("status") : nullptr;
         if (!status || !status->is_string()) {
-            return std::unexpected(error{failure_class::contract,
+            co_return std::unexpected(error{failure_class::contract,
                                           "tasks/get response missing a well-formed \"task\"",
                                           "mcp.malformed_result"});
         }
@@ -542,21 +561,21 @@ public:
             poll.outcome.is_error   = is_error && is_error->as_bool();
             poll.outcome.content    = *content;
         }
-        return poll;
+        co_return poll;
     }
 
     // §12: no `notifications/cancelled` here (spec-forbidden for tasks); a real `tasks/cancel` call
     // instead. The underlying worker thread on the server side cannot actually be stopped (server.hpp's
     // own documented limit) -- cancelling only guarantees a subsequent `get_task()` never reports
     // `"completed"` for this task again.
-    [[nodiscard]] result<void> cancel_task(std::string const& task_id) {
+    [[nodiscard]] task<result<void>> cancel_task(std::string const& task_id) {
         JsonRpcRequest req{RpcId{next_id()}, "tasks/cancel",
                             json::Value::make_object({{"taskId", json::Value::make_string(task_id)}})};
-        JsonRpcResponse resp = send(req);
+        JsonRpcResponse resp = co_await send(req);
         if (resp.error.has_value()) {
-            return std::unexpected(error{failure_class::contract, resp.error->message, "mcp.rpc_error"});
+            co_return std::unexpected(error{failure_class::contract, resp.error->message, "mcp.rpc_error"});
         }
-        return {};
+        co_return result<void>{};
     }
 
 private:
@@ -581,11 +600,13 @@ private:
 
     // One place both sender shapes funnel through, so no call site has to know which one the client
     // was constructed with. Headers are ignored by the plain sender -- correct per the spec's own
-    // "other transports MAY ignore x-mcp-header annotations entirely".
-    [[nodiscard]] JsonRpcResponse send(JsonRpcRequest const& req,
-                                        std::vector<std::pair<std::string, std::string>> headers = {}) {
-        if (sender_with_headers_) return sender_with_headers_(req, headers);
-        return sender_(req);
+    // "other transports MAY ignore x-mcp-header annotations entirely". ADR-237 §5.1: a coroutine, so
+    // the transport's own await drives this client's verbs; `req` is only read, never stored, so the
+    // reference the frame holds is valid for the whole (immediately-awaited) send.
+    [[nodiscard]] task<JsonRpcResponse> send(JsonRpcRequest const& req,
+                                             std::vector<std::pair<std::string, std::string>> headers = {}) {
+        if (sender_with_headers_) co_return co_await sender_with_headers_(req, headers);
+        co_return co_await sender_(req);
     }
 
     // 011 §2's per-request `_meta`, which every outbound request carries. Added after the official

@@ -13,6 +13,7 @@
 #include <string>
 
 #include "agentengine/core/tool_pipeline.hpp"
+#include "../../support/run_task_sync.hpp"
 
 namespace {
 
@@ -105,7 +106,7 @@ int main() {
         agentengine::ToolCallRequest req{"call-1", "echo", args1, false, /*call_index=*/7};
         agentengine::ToolInvocationAudit audit;
         auto ctx = make_ctx("s-pipeline:run:3", 2);
-        auto result = agentengine::invoke_tool(table, held, req, ctx, nullptr, &audit);
+        auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(agentengine::invoke_tool(table, held, req, ctx, nullptr, &audit));
         check(result.is_error == false, "F1-R6 setup: the pipeline call itself succeeds");
         IdempotencyKey expected = derive_idempotency_key(ctx, 7, args1);
         check(audit.idempotency_key == expected,

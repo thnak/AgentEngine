@@ -17,6 +17,7 @@
 #include <string>
 
 #include "agentengine/core/tool_pipeline.hpp"
+#include "../../support/run_task_sync.hpp"
 
 namespace {
 
@@ -78,7 +79,7 @@ int main() {
     {
         agentengine::EffectContext ctx;
         ToolCallRequest req{"call-n", "stashing_tool", *json::parse(R"({"noop":true})"), false};
-        auto result = invoke_tool(table, held, req, ctx, nullptr);
+        auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, nullptr));
         check(!result.is_error, "call n succeeds");
     }
     check(g_live_during_call[0], "positive control: the handle WAS live during call n's own invoke()");
@@ -93,7 +94,7 @@ int main() {
     {
         agentengine::EffectContext ctx;
         ToolCallRequest req{"call-n+1", "stashing_tool", *json::parse(R"({"noop":true})"), false};
-        auto result = invoke_tool(table, held, req, ctx, nullptr);
+        auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, nullptr));
         check(!result.is_error, "call n+1 succeeds");
     }
     check(g_live_during_call[1], "positive control: the handle WAS live during call n+1's own invoke()");

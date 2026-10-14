@@ -39,7 +39,9 @@ agentengine::ToolDescriptor make_descriptor(std::string name, std::string descri
     d.args_schema_json = std::move(args_schema_json);
     d.reply_schema_json = R"({"type":"object","properties":{}})";
     d.invoke = [](agentengine::json::Value const&, agentengine::EffectContext&)
-        -> agentengine::result<agentengine::json::Value> { return agentengine::json::Value::make_null(); };
+        -> agentengine::task<agentengine::result<agentengine::json::Value>> {
+        co_return agentengine::json::Value::make_null();
+    };
     return d;
 }
 

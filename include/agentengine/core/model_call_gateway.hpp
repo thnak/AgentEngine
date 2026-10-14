@@ -129,9 +129,16 @@ namespace model_call_gateway_detail {
 // §4: retry applies to Transient only. Deliberately conservative, matching "policy/contract/resource/
 // fatal aren't retried" on the `chat()` side; no separate coarser vocabulary to re-derive this from
 // anymore -- the old `quark::errc`-keyed split this replaced is gone with `classify_drained_failure`.
+// ADR-237 D6: the class decision is core/error.hpp's `is_retryable`; this site only says its retry re-sends the
+// same call inside the caller's same deadline and budget (`shared`), so `resource` and `canceled` never retry.
 [[nodiscard]] inline bool is_retryable(failure_class klass) noexcept {
-    return klass == failure_class::transient;
+    return agentengine::is_retryable(klass, retry_budget::shared);
 }
+
+// ADR-237 D6: a tier's failure falls through to the next (fallback) tier unless it was `canceled` -- a call
+// stopped on request must not be re-sent to another provider that keeps working on its behalf. Every other class
+// keeps the pre-D6 behaviour (any exhausted tier fails over; G2).
+[[nodiscard]] inline bool fails_over(error const& e) noexcept { return e.klass != failure_class::canceled; }
 
 }  // namespace model_call_gateway_detail
 
@@ -294,6 +301,7 @@ private:
             if constexpr (sizeof...(Fallback) == 0) {
                 co_return attempt;
             } else {
+                if (!model_call_gateway_detail::fails_over(attempt.error())) co_return attempt;  // ADR-237 D6
                 co_return co_await try_tier<1>(request, ctx);
             }
         } else {
@@ -305,6 +313,7 @@ private:
                 co_return attempt;
             }
             if constexpr (Tier < sizeof...(Fallback)) {
+                if (!model_call_gateway_detail::fails_over(attempt.error())) co_return attempt;  // ADR-237 D6
                 co_return co_await try_tier<Tier + 1>(request, ctx);
             } else {
                 co_return attempt;  // the last tier -- its own failure is the whole call's outcome
@@ -421,6 +430,10 @@ private:
             if constexpr (sizeof...(Fallback) == 0) {
                 producer.fail(*failure);
             } else {
+                if (!model_call_gateway_detail::fails_over(*failure)) {  // ADR-237 D6
+                    producer.fail(*failure);
+                    return;
+                }
                 stream_tier<1>(request, ctx, producer, stop);
             }
         } else {
@@ -429,6 +442,10 @@ private:
                 stream_attempt_with_retry(backend, breakers_[Tier], Tier, request, ctx, producer, stop);
             if (!failure.has_value()) return;
             if constexpr (Tier < sizeof...(Fallback)) {
+                if (!model_call_gateway_detail::fails_over(*failure)) {  // ADR-237 D6
+                    producer.fail(*failure);
+                    return;
+                }
                 stream_tier<Tier + 1>(request, ctx, producer, stop);
             } else {
                 producer.fail(*failure);

@@ -9,9 +9,11 @@
 // distinction is the entire point of this mechanism).
 
 #include <cstdio>
+#include <memory>
 #include <string>
 
 #include "agentengine/core/skill_tool_scoping.hpp"
+#include "../../support/run_task_sync.hpp"
 
 using namespace agentengine;
 
@@ -61,6 +63,27 @@ struct GammaTool : Tool<GammaTool, EffectClass<effect_class::pure>> {
     static result<Reply> invoke(Args, EffectContext&) { return Reply{true}; }
 };
 
+// ADR-237 §5.2: an INSTANCE-form `Tool<>` -- non-static `const task<result<Reply>> invoke`, with the
+// tool object holding state -- so R5 can prove `ToolTable::from(...)` / the value-taking
+// `make_tool_descriptor(ToolT{...})` register a real tool and keep that instance alive for the
+// descriptor's whole lifetime (the shared counter must survive the drive).
+struct LiveTool : Tool<LiveTool, EffectClass<effect_class::pure>> {
+    static constexpr std::string_view name        = "live";
+    static constexpr std::string_view description = "An instance-form tool carrying state.";
+    using Args  = NoteArgs;
+    using Reply = NoteReply;
+
+    explicit LiveTool(std::shared_ptr<int> calls) : calls_(std::move(calls)) {}
+
+    [[nodiscard]] task<result<Reply>> invoke(Args, EffectContext&) const {
+        ++*calls_;
+        co_return Reply{true};
+    }
+
+private:
+    std::shared_ptr<int> calls_;
+};
+
 }  // namespace
 
 int main() {
@@ -95,13 +118,13 @@ int main() {
         ToolCallRequest const allowed_req{"call-1", "beta", json::Value::make_object({{"note", json::Value::make_string("x")}}),
                                            /*arguments_tainted=*/false, 0};
         ToolInvocationAudit allowed_audit;
-        ToolResult const allowed_result = invoke_tool(scoped, held, allowed_req, ctx, {}, &allowed_audit);
+        ToolResult const allowed_result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(scoped, held, allowed_req, ctx, {}, &allowed_audit));
         check(!allowed_result.is_error, "R3 setup: calling 'beta' (in the scoped table) succeeds");
 
         ToolCallRequest const denied_req{"call-2", "alpha", json::Value::make_object({{"note", json::Value::make_string("x")}}),
                                           /*arguments_tainted=*/false, 0};
         ToolInvocationAudit denied_audit;
-        ToolResult const denied_result = invoke_tool(scoped, held, denied_req, ctx, {}, &denied_audit);
+        ToolResult const denied_result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(scoped, held, denied_req, ctx, {}, &denied_audit));
         check(denied_result.is_error,
               "R3: calling 'alpha' -- a REAL, registered tool, absent only from the scoped table -- "
               "is rejected, even though it would succeed if called directly against the universe");
@@ -113,7 +136,7 @@ int main() {
         // Same call against the UNSCOPED universe succeeds -- proving 'alpha' is a real, working tool
         // and R3's rejection above came from table membership, not from some unrelated defect in it.
         ToolInvocationAudit universe_audit;
-        ToolResult const universe_result = invoke_tool(universe, held, denied_req, ctx, {}, &universe_audit);
+        ToolResult const universe_result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(universe, held, denied_req, ctx, {}, &universe_audit));
         check(!universe_result.is_error,
               "R3 control: the SAME call against the unscoped universe succeeds -- 'alpha' itself is "
               "fine, only its absence from the scoped table caused the rejection above");
@@ -124,6 +147,38 @@ int main() {
         ToolTable const t = ToolTable::from_descriptors({make_tool_descriptor<AlphaTool>()});
         check(t.descriptors().size() == 1 && t.find("alpha") != nullptr,
               "R4: from_descriptors builds a real, queryable table from a runtime vector");
+    }
+
+    // ---- R5: ToolTable::from(...) registers instance-form tools (ADR-237 §5.2) ----------------------
+    {
+        ToolTable const empty = ToolTable::from();
+        check(empty.descriptors().empty(), "R5: from() with no arguments is an empty table");
+
+        auto             calls = std::make_shared<int>(0);
+        ToolTable const  table = ToolTable::from(LiveTool{calls});
+        check(table.descriptors().size() == 1 && table.find("live") != nullptr,
+              "R5: from(LiveTool{...}) builds a real, queryable table");
+
+        ToolDescriptor const& d = table.descriptors().front();
+        ToolDescriptor const  via_value =
+            make_tool_descriptor<LiveTool>(LiveTool{std::make_shared<int>(0)});
+        check(d.name == via_value.name && d.description == via_value.description &&
+                  d.approval == via_value.approval && d.effect_class == via_value.effect_class &&
+                  d.captures_session_state == via_value.captures_session_state &&
+                  d.deterministic == via_value.deterministic &&
+                  d.enforces_granted_caps == via_value.enforces_granted_caps &&
+                  d.capability_ceiling.size() == via_value.capability_ceiling.size() &&
+                  d.args_schema_json == via_value.args_schema_json &&
+                  d.reply_schema_json == via_value.reply_schema_json &&
+                  d.parallelizable == via_value.parallelizable && d.backgroundable == via_value.backgroundable,
+              "R5: from(...) and make_tool_descriptor(ToolT{...}) produce identical policy metadata");
+
+        EffectContext    ctx;
+        json::Value      args = schema::to_json(NoteArgs{"hi"});
+        auto             reply = test_support::run_task_sync<result<json::Value>>(d.invoke(args, ctx));
+        check(reply.has_value() && *calls == 1,
+              "R5: driving the descriptor runs the LIVE instance's invoke (the tool object outlives "
+              "registration) and the shared state observes the call");
     }
 
     if (g_failures == 0) {

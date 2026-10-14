@@ -179,7 +179,7 @@ judge it against what they see in the sky themselves.
     // matching builtin_skills.hpp's own make_builtin_skills_source() convention.
     SkillSourceDescriptor d;
     d.origin_id = "farm-advisory-test";
-    d.load_skills = [resolved]() { return resolved; };
+    d.load_skills = [resolved]() -> task<result<std::vector<SkillSourceResult>>> { co_return resolved; };
     return d;
 }
 
@@ -230,7 +230,12 @@ struct MountSkillReply {
 };
 AE_JSON_SCHEMA(MountSkillReply, ok, message)
 
-struct MountSkillTool : Tool<MountSkillTool, EffectClass<effect_class::pure>> {
+// ADR-237 §5.2: instance form -- holds the provider and reaches its private `real_mount_skill` through
+// the `friend` declaration below; `invoke` is defined out-of-line, where the provider is complete.
+class FarmAdvisoryProvider;
+
+struct MountSkillTool
+    : Tool<MountSkillTool, EffectClass<effect_class::pure>, CapturesSessionState> {
     static constexpr std::string_view name = "mount_skill";
     static constexpr std::string_view description =
         "Activate a skill you've seen advertised by name and description, so its full instructions "
@@ -239,14 +244,13 @@ struct MountSkillTool : Tool<MountSkillTool, EffectClass<effect_class::pure>> {
         "tools, then wait for your next turn to use them.";
     using Args = MountSkillArgs;
     using Reply = MountSkillReply;
-    // ADR-030: unreachable poison -- real logic lives in FarmAdvisoryProvider::real_mount_skill(),
-    // reached via make_tool_descriptor_with_invoke() below.
-    static result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(error{failure_class::fatal,
-                                      "MountSkillTool::invoke() must never run directly -- reached "
-                                      "only through FarmAdvisoryProvider::real_mount_skill()",
-                                      "farm_advisory.dead_static_invoke_path"});
-    }
+
+    explicit MountSkillTool(FarmAdvisoryProvider& provider) : provider_(&provider) {}
+
+    task<result<Reply>> invoke(Args, EffectContext&) const;
+
+private:
+    FarmAdvisoryProvider* provider_;
 };
 
 // ---- The ContextProvider: its own SkillsProvider<> (for the advertisement + allowed-tools lookup)
@@ -299,8 +303,7 @@ public:
         // turn (agent_session.hpp), so that invariant holds here structurally, not by discipline.
         std::vector<ToolDescriptor> universe_descriptors = {
             make_tool_descriptor<CheckFieldWeatherTool>(),
-            make_tool_descriptor_with_invoke<MountSkillTool>(
-                [this](MountSkillArgs a, EffectContext& ctx) { return real_mount_skill(std::move(a), ctx); }),
+            make_tool_descriptor(MountSkillTool{*this}),
         };
         ToolTable const universe = ToolTable::from_descriptors(std::move(universe_descriptors));
         auto const scoped = scope_tools_to_mounted_skills(
@@ -312,6 +315,9 @@ public:
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
 
 private:
+    // ADR-237 §5.2: the instance-form MountSkillTool above reaches this.
+    friend struct MountSkillTool;
+
     [[nodiscard]] result<MountSkillReply> real_mount_skill(MountSkillArgs a, EffectContext&) {
         if (a.skill_name != kSkillName) {
             return std::unexpected(
@@ -346,6 +352,11 @@ static_assert(std::is_default_constructible_v<FarmAdvisoryLiveSession>);
         if (std::holds_alternative<Text>(item.value)) return true;
     }
     return false;
+}
+
+// ADR-237 §5.2: out-of-line -- needs `FarmAdvisoryProvider` complete.
+task<result<MountSkillReply>> MountSkillTool::invoke(MountSkillArgs a, EffectContext& ctx) const {
+    co_return provider_->real_mount_skill(std::move(a), ctx);
 }
 
 }  // namespace

@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "agentengine/tools/extract_pdf_text.hpp"
+#include "../support/run_task_sync.hpp"
 
 namespace {
 
@@ -245,7 +246,8 @@ void test_ambiguous_source_rejected_before_any_sandbox_work() {
 void test_companion_skill_parses_for_real() {
     auto descriptor = agentengine::tools::make_extracting_document_text_skill_source();
     check(descriptor.origin_id == "extract-pdf-text", "the skill source's own origin_id is set");
-    auto loaded = descriptor.load_skills();
+    auto loaded = agentengine::test_support::run_task_sync<
+        agentengine::result<std::vector<agentengine::SkillSourceResult>>>(descriptor.load_skills());
     if (!loaded.has_value()) {
         std::fprintf(stderr, "skill parse error: code=%s message=%s\n", loaded.error().code.c_str(),
                      loaded.error().message.c_str());

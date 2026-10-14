@@ -77,52 +77,115 @@
 // `ParkedContinuation` instead of being resumed on the releasing thread. The hand-off runs inside the
 // trampoline below, outside `m_`: a host resumer that runs the continuation inline (or drops it, which
 // resumes it) re-enters `unlock()` as a pending release, not as a nested drain.
+//
+// decisions/ADR-237 §4.3 (step 5) -- AWAIT CHAINS: LENDING AND REFUSAL. A task forked by a task scope or
+// `rt::on_strand` has its own holder id, linked to the task it was forked from (rt/await_chain.hpp). Before
+// step 5, such a child asking for a lock its suspended ancestor holds queued behind that ancestor forever (the
+// ancestor waits for the child; the session -> workflow -> agent node -> tool -> parent-session cycle). Now a
+// CONTENDED lock() classifies the requester against the holder and every lender (a walk of the registry, never
+// on the uncontended fast path):
+//   - the holder is an ancestor AWAITING the requester's chain, and the entry point is declared LEND-SAFE
+//     (`lock(lock_entry::lend_safe)`: read-only ones -- `fork_from_async`, `snapshot_record`, history reads):
+//     the lock is LENT. One borrower at a time per lender; further borrowers under the same lender wait in that
+//     lender's LOAN QUEUE, served before every outside FIFO waiter. Releasing a loan returns the lock to the
+//     LENDER (or to the next borrower in its loan queue), never to the FIFO head -- otherwise a queued mutating
+//     entry would take a lock the lender still believes it holds. A borrower's descendant may borrow again:
+//     loans form a STACK (`Guard` remembers its depth; releasing a guard that is not the top of the stack is a
+//     checked violation). A borrower that finishes with its loan outstanding (the guard moved into background
+//     work) is a checked violation, detected where its scope or on_strand records it finished.
+//   - a MUTATING entry point (plain `lock()`, or `lock(lock_entry::mutating)`) requested while an awaiting
+//     ancestor holds the lock or lends it, or ANY entry point requested while a NON-awaiting ancestor holds it
+//     (a `with_scope` owner whose body still runs): REFUSED with `rt.lock_held_by_ancestor` -- a diagnosable error
+//     instead of a run parked forever. `lock(entry)` returns it as a value (`std::expected<Guard, lock_refusal>`);
+//     plain `lock()` keeps its `Guard` signature and throws `lock_refused` (the case was a silent deadlock before).
+//   - everyone else (unrelated tasks, fresh chains -- background jobs) waits in FIFO order, exactly as before.
+// `is_held_by_current_thread()` is unchanged (owner == the current holder id; a borrower is the owner while it
+// holds its loan), so ADR-123's `fork_from` keeps working for every caller that exists today.
 
 #include <algorithm>
 #include <atomic>
 #include <coroutine>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <expected>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
+#include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
+#include "agentengine/rt/await_chain.hpp"
 #include "agentengine/rt/resume_home.hpp"
 
 namespace agentengine::rt {
+
+// ADR-237 §4.3: what an entry point declares about itself when it takes a session's lock.
+// ae-naming-lint: allow lock_entry — ADR-237 §4.3: new runtime vocabulary, 027 §4 row added when the ADR is Judged
+enum class lock_entry : std::uint8_t {
+    mutating,   // start_run, resolve_interaction, start_background_task, schedule_wakeup, close: never borrows
+    lend_safe,  // read-only (fork_from_async, snapshot_record, history reads): may borrow from an awaiting ancestor
+};
+
+// ae-naming-lint: allow lock_held_by_ancestor_code — ADR-237 §4.3: new runtime vocabulary, 027 §4 row added when the ADR is Judged
+inline constexpr char const lock_held_by_ancestor_code[] = "rt.lock_held_by_ancestor";
+
+// ae-naming-lint: allow lock_refusal — ADR-237 §4.3: new runtime vocabulary, 027 §4 row added when the ADR is Judged
+struct lock_refusal {
+    std::string_view code = lock_held_by_ancestor_code;
+};
+
+// Thrown by the Guard-returning `AsyncMutex::lock()` on a refusal (file comment).
+// ae-naming-lint: allow lock_refused — ADR-237 §4.3: new runtime vocabulary, 027 §4 row added when the ADR is Judged
+class lock_refused : public std::logic_error {
+public:
+    lock_refused()
+        : std::logic_error(std::string(lock_held_by_ancestor_code) +
+                           ": a mutating entry point (or any entry point under a non-awaiting ancestor) asked for a "
+                           "lock its own ancestor holds (ADR-237 §4.3)") {}
+    [[nodiscard]] std::string_view code() const noexcept { return lock_held_by_ancestor_code; }
+};
 
 // ae-naming-lint: allow AsyncMutex — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class AsyncMutex {
 public:
     // RAII ownership token, move-only. Held for the duration of a critical section; releasing (on
-    // destruction or explicit reset) hands the mutex directly to the next queued waiter, if any.
+    // destruction or explicit reset) hands the mutex directly to the next queued waiter, if any -- or, for a
+    // LENT guard (ADR-237 §4.3), back to its lender.
     class Guard {
     public:
         Guard() noexcept = default;
         Guard(Guard const&) = delete;
         Guard& operator=(Guard const&) = delete;
-        Guard(Guard&& other) noexcept : mutex_(std::exchange(other.mutex_, nullptr)) {}
+        Guard(Guard&& other) noexcept
+            : mutex_(std::exchange(other.mutex_, nullptr)), depth_(std::exchange(other.depth_, 0)) {}
         Guard& operator=(Guard&& other) noexcept {
             if (this != &other) {
                 release();
                 mutex_ = std::exchange(other.mutex_, nullptr);
+                depth_ = std::exchange(other.depth_, 0);
             }
             return *this;
         }
         ~Guard() { release(); }
 
         [[nodiscard]] bool held() const noexcept { return mutex_ != nullptr; }
+        // ADR-237 §4.3: 0 for the holder's own guard; n for the n-th nested loan.
+        [[nodiscard]] std::size_t loan_depth() const noexcept { return depth_; }
 
     private:
         friend class AsyncMutex;
-        explicit Guard(AsyncMutex* m) noexcept : mutex_(m) {}
+        Guard(AsyncMutex* m, std::size_t depth) noexcept : mutex_(m), depth_(depth) {}
         void release() noexcept {
             if (mutex_) {
                 AsyncMutex* m = std::exchange(mutex_, nullptr);
-                m->unlock();
+                m->unlock(std::exchange(depth_, 0));
             }
         }
         AsyncMutex* mutex_ = nullptr;
+        std::size_t depth_ = 0;
     };
 
     AsyncMutex() noexcept = default;
@@ -133,18 +196,16 @@ public:
     // genuinely owns the mutex -- either immediately (uncontended) or after being queued and later
     // resumed in FIFO order by whichever call released it.
     struct LockAwaiter {
+        LockAwaiter(AsyncMutex* m, lock_entry k) noexcept : self(m), kind(k) {}
+
         AsyncMutex* self;
+        lock_entry  kind;
         bool parked = false;
         std::coroutine_handle<> handle_{};
 
         [[nodiscard]] bool await_ready() noexcept {
             std::lock_guard lock(self->m_);
-            if (!self->held_) {
-                self->held_ = true;
-                self->owner_.store(current_holder_id(), std::memory_order_release);
-                return true;  // uncontended fast path -- no suspension needed
-            }
-            return false;
+            return self->decide_locked(current_holder_id(), *this);  // free, lent or refused: no suspension
         }
 
         [[nodiscard]] bool await_suspend(std::coroutine_handle<> h) {
@@ -154,25 +215,30 @@ public:
             std::lock_guard lock(self->m_);
             // Re-check under lock: an unlock() may have raced in between await_ready()'s unlock and
             // this lock (e.g. on a different thread) -- if the mutex is free now, take it without
-            // ever actually suspending.
-            if (!self->held_) {
-                self->held_ = true;
-                self->owner_.store(record.holder, std::memory_order_release);
+            // ever actually suspending (and the same for a loan or a refusal that became decidable).
+            Classified const c = self->classify_locked(record.holder, kind);
+            if (c.decision != Decision::queue_fifo && c.decision != Decision::queue_loan) {
+                (void)self->decide_locked(record.holder, *this);
                 return false;
             }
             ticket_ = record.ticket;  // ADR-219: null unless a host resumer drives this coroutine
-            self->waiters_.push_back(std::move(record));
+            if (c.decision == Decision::queue_loan) {
+                self->loans_[c.frame].queue.push_back(Waiter{std::move(record), this});  // ADR-237 §4.3
+            } else {
+                self->waiters_.push_back(Waiter{std::move(record), this});
+            }
             handle_ = h;
             parked = true;
             return true;  // genuinely suspend -- unlock() posts `h` to its home, or resumes it inline
         }
 
-        [[nodiscard]] Guard await_resume() noexcept {
+        [[nodiscard]] Guard await_resume() {
             parked = false;  // reached the ordinary way -- nothing stale for the destructor to remove
+            if (refused_) throw lock_refused();  // ADR-237 §4.3
             // ADR-175: ownership was already recorded under m_ by whoever granted the lock. Stamping it
             // here instead -- on whichever thread resumes, whenever that is -- left the RELEASING task
             // reported as owner for as long as a posted successor waited (round 2 finding 1).
-            return Guard{self};
+            return Guard{self, granted_depth_};
         }
 
         // See file banner's CANCELLATION SAFETY note: if this awaiter is destroyed while still
@@ -189,25 +255,33 @@ public:
             bool release_grant = false;
             {
                 std::lock_guard lock(self->m_);
-                auto& q = self->waiters_;
-                auto it = std::find_if(q.begin(), q.end(),
-                                       [this](detail::ParkedResumer const& r) { return r.handle == handle_; });
-                if (it != q.end()) {
-                    q.erase(it);
-                } else {
-                    release_grant = detail::abandon_woken(ticket_);
-                }
+                if (!self->erase_waiter_locked(this)) release_grant = detail::abandon_woken(ticket_);
             }
-            if (release_grant) self->unlock();
+            if (release_grant) self->unlock(granted_depth_);
         }
 
         std::shared_ptr<detail::ResumerTicket> ticket_{};
+        std::size_t granted_depth_ = 0;  // ADR-237 §4.3: written under m_ by whoever granted (0: not a loan)
+        bool        refused_       = false;
     };
 
-    [[nodiscard]] LockAwaiter lock() noexcept { return LockAwaiter{this}; }
+    // ADR-237 §4.3: `co_await mutex.lock(entry)` -- as `lock()`, but a refusal is a value, not an exception.
+    struct CheckedLockAwaiter : LockAwaiter {
+        using LockAwaiter::LockAwaiter;
+        [[nodiscard]] std::expected<Guard, lock_refusal> await_resume() {
+            parked = false;
+            if (refused_) return std::unexpected(lock_refusal{});
+            return Guard{self, granted_depth_};
+        }
+    };
+
+    // A MUTATING entry point's acquisition (ADR-237 §4.3): never borrows; throws `lock_refused` when refused.
+    [[nodiscard]] LockAwaiter lock() noexcept { return LockAwaiter{this, lock_entry::mutating}; }
+    // ADR-237 §4.3: an entry point that declares what it is; a refusal comes back as a value.
+    [[nodiscard]] CheckedLockAwaiter lock(lock_entry entry) noexcept { return CheckedLockAwaiter{this, entry}; }
 
     // Issue #156: non-blocking acquisition from plain (non-coroutine) code -- the lock if it is free right
-    // now, else an empty Guard (`held() == false`); never waits and never queues. Used by
+    // now, else an empty Guard (`held() == false`); never waits, never queues, never borrows. Used by
     // `WorkflowSupervisor::cancel()` to settle a SUSPENDED run on the spot when no entry point is running.
     // The Guard releases exactly like one from `lock()`, handing the mutex to a waiter that queued meanwhile.
     [[nodiscard]] Guard try_lock() noexcept {
@@ -215,7 +289,7 @@ public:
         if (held_) return Guard{};
         held_ = true;
         owner_.store(current_holder_id(), std::memory_order_release);
-        return Guard{this};
+        return Guard{this, 0};
     }
 
     // ADR-123 -- a real, disclosed reentrant-self-deadlock hazard (AgentSession::fork_from(), agent_
@@ -242,12 +316,119 @@ public:
     // free. The only task for which it can equal `current_holder_id()` is one the lock was granted to, and
     // that grant happened-before the task could ask; a concurrent grant to or release by ANOTHER task can
     // only move it between values that are not this task's id.
+    //
+    // ADR-237 §4.3 (step 5): a borrower is the owner while its loan is out; the lender, suspended meanwhile,
+    // is the owner again once the loan comes back.
     [[nodiscard]] bool is_held_by_current_thread() const noexcept {
         return owner_.load(std::memory_order_acquire) == current_holder_id();
     }
 
+    // ADR-237 §4.3 diagnostics: loans granted, refusals, and loans outstanding now.
+    [[nodiscard]] std::uint64_t loans_granted() const noexcept { return loans_granted_.load(std::memory_order_relaxed); }
+    [[nodiscard]] std::uint64_t refusals() const noexcept { return refusals_.load(std::memory_order_relaxed); }
+    [[nodiscard]] std::size_t loan_depth() const {
+        std::lock_guard lock(m_);
+        return loans_.size();
+    }
+    // Diagnostics: requests parked in the FIFO, and in every loan queue.
+    [[nodiscard]] std::size_t queued() const {
+        std::lock_guard lock(m_);
+        return waiters_.size();
+    }
+    [[nodiscard]] std::size_t loan_queued() const {
+        std::lock_guard lock(m_);
+        std::size_t n = 0;
+        for (LoanFrame const& f : loans_) n += f.queue.size();
+        return n;
+    }
+
 private:
     friend struct LockAwaiter;
+
+    // A parked acquisition: its record (who resumes it, under which holder) and its awaiter (where the grant
+    // writes the loan depth).
+    struct Waiter {
+        detail::ParkedResumer r;
+        LockAwaiter*          aw = nullptr;
+    };
+
+    // ADR-237 §4.3: one entry of the loan stack. `lender` lent the lock to `borrower`; `queue` holds further
+    // borrowers under the same lender, served before the FIFO.
+    struct LoanFrame {
+        std::uint64_t      lender   = 0;
+        std::uint64_t      borrower = 0;
+        std::deque<Waiter> queue;
+    };
+
+    enum class Decision : std::uint8_t { take, lend, refuse, queue_fifo, queue_loan };
+    struct Classified {
+        Decision    decision = Decision::queue_fifo;
+        std::size_t frame    = 0;  // queue_loan: the loan frame whose lender the requester descends from
+    };
+
+    // ADR-237 §4.3: what a lock request from holder `me` gets right now (under m_). The current owner (the top
+    // borrower, or the holder) first -- a new, nested loan -- then each lender from the top of the stack down -- a
+    // place in that lender's loan queue.
+    [[nodiscard]] Classified classify_locked(std::uint64_t me, lock_entry kind) const noexcept {
+        if (!held_) return {Decision::take, 0};
+        using chain_detail::relation;
+        auto const&    chains = chain_detail::Registry::instance();
+        relation const top    = chains.relate(me, owner_.load(std::memory_order_relaxed));
+        if (top == relation::awaiting_ancestor) {
+            return {kind == lock_entry::lend_safe ? Decision::lend : Decision::refuse, 0};
+        }
+        if (top == relation::other_ancestor) return {Decision::refuse, 0};
+        for (std::size_t i = loans_.size(); i-- > 0;) {
+            relation const r = chains.relate(me, loans_[i].lender);
+            if (r == relation::awaiting_ancestor) {
+                return {kind == lock_entry::lend_safe ? Decision::queue_loan : Decision::refuse, i};
+            }
+            if (r == relation::other_ancestor) return {Decision::refuse, 0};
+        }
+        return {Decision::queue_fifo, 0};
+    }
+
+    // Applies a decision that needs no suspension (under m_); returns false when the requester must queue.
+    [[nodiscard]] bool decide_locked(std::uint64_t me, LockAwaiter& aw) noexcept {
+        Classified const c = classify_locked(me, aw.kind);
+        switch (c.decision) {
+            case Decision::take:
+                held_ = true;
+                owner_.store(me, std::memory_order_release);
+                aw.granted_depth_ = 0;
+                return true;  // uncontended fast path -- no suspension needed
+            case Decision::lend:
+                loans_.push_back(LoanFrame{owner_.load(std::memory_order_relaxed), me, {}});
+                owner_.store(me, std::memory_order_release);
+                chain_detail::Registry::instance().add_loan(me, +1);
+                aw.granted_depth_ = loans_.size();
+                loans_granted_.fetch_add(1, std::memory_order_relaxed);
+                return true;
+            case Decision::refuse:
+                aw.refused_ = true;
+                refusals_.fetch_add(1, std::memory_order_relaxed);
+                return true;
+            case Decision::queue_fifo:
+            case Decision::queue_loan:
+                return false;
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool erase_waiter_locked(LockAwaiter const* aw) noexcept {
+        auto const match = [aw](Waiter const& w) { return w.aw == aw; };
+        if (auto it = std::find_if(waiters_.begin(), waiters_.end(), match); it != waiters_.end()) {
+            waiters_.erase(it);
+            return true;
+        }
+        for (LoanFrame& f : loans_) {
+            if (auto it = std::find_if(f.queue.begin(), f.queue.end(), match); it != f.queue.end()) {
+                f.queue.erase(it);
+                return true;
+            }
+        }
+        return false;
+    }
 
     // Pops the next waiter and grants it the lock, under m_. The owner is its recorded holder from this
     // instant, whenever it actually resumes -- stored BEFORE posting, so a successor its home resumes at
@@ -263,8 +444,10 @@ private:
     // and recorded that call's holder id; it is granted under a FRESH id instead, so the thread that ran
     // that block_on() is not reported as holder for this critical section (round 4 finding 2).
     [[nodiscard]] detail::ParkedResumer grant_next_locked() noexcept {
-        detail::ParkedResumer next = std::move(waiters_.front());
+        Waiter w = std::move(waiters_.front());
         waiters_.pop_front();
+        w.aw->granted_depth_      = 0;
+        detail::ParkedResumer next = std::move(w.r);
         owner_.store(next.holder, std::memory_order_release);
         if (next.home) {
             if (next.home->try_post(next.handle, next.holder)) return detail::ParkedResumer{};
@@ -280,6 +463,38 @@ private:
         owner_.store(0, std::memory_order_release);
     }
 
+    // ADR-237 §4.3: a released LOAN goes back to its lender -- or to the next borrower queued under that lender --
+    // and never to the FIFO. Returns false for the holder's own guard (depth 0), which `unlock` releases normally.
+    [[nodiscard]] bool release_loan(std::size_t depth) noexcept {
+        detail::ParkedResumer next;
+        {
+            std::lock_guard lock(m_);
+            if (depth != loans_.size()) {
+                detail::checked_violation("an AsyncMutex guard was released while a loan of it is outstanding, or "
+                                          "out of loan-stack order (§4.3)");
+            }
+            if (depth == 0) return false;
+            LoanFrame& f      = loans_.back();
+            auto&      chains = chain_detail::Registry::instance();
+            chains.add_loan(f.borrower, -1);
+            if (f.queue.empty()) {
+                owner_.store(f.lender, std::memory_order_release);  // back to the LENDER, never the FIFO head
+                loans_.pop_back();
+                return true;
+            }
+            Waiter w = std::move(f.queue.front());
+            f.queue.pop_front();
+            f.borrower        = w.r.holder;
+            w.aw->granted_depth_ = depth;
+            owner_.store(w.r.holder, std::memory_order_release);
+            chains.add_loan(w.r.holder, +1);
+            loans_granted_.fetch_add(1, std::memory_order_relaxed);
+            next = std::move(w.r);
+        }
+        detail::wake(std::move(next));  // borrowers are strand children: this posts
+        return true;
+    }
+
     // Hands ownership directly to the next queued waiter (FIFO), if any, or marks the mutex free.
     // ITERATIVE trampoline, not recursive -- see file banner's second numbered note for why: a naive
     // "resume the next waiter, let its own eventual unlock() recurse into this function again" design
@@ -288,7 +503,8 @@ private:
     // thread, possibly this one several frames up, possibly a call that already returned and whose
     // OWN loop is what's about to notice `pending_release_`)"; a reentrant call arriving while that's
     // set just records the pending release and returns immediately -- one call frame, always.
-    void unlock() noexcept {
+    void unlock(std::size_t depth) noexcept {
+        if (release_loan(depth)) return;  // ADR-237 §4.3
         detail::ParkedResumer next;
         {
             std::lock_guard lock(m_);
@@ -335,14 +551,17 @@ private:
         }
     }
 
-    std::mutex m_;
+    mutable std::mutex m_;
     bool held_ = false;
     bool draining_ = false;
     bool pending_release_ = false;
-    std::deque<detail::ParkedResumer> waiters_;
+    std::deque<Waiter> waiters_;
+    std::vector<LoanFrame> loans_;  // ADR-237 §4.3: the loan stack (back = the active loan)
     // ADR-175: the holder id the lock is granted to (resume_home.hpp); written under m_, read lock-free by
     // is_held_by_current_thread(). Holder ids start at 1, so 0 (free) never matches a running task.
     std::atomic<std::uint64_t> owner_{0};
+    std::atomic<std::uint64_t> loans_granted_{0};
+    std::atomic<std::uint64_t> refusals_{0};
 };
 
 }  // namespace agentengine::rt

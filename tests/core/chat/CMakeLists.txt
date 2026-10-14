@@ -49,6 +49,15 @@ if(AGENTENGINE_WITH_HTTPS)
       MbedTLS::mbedx509 MbedTLS::mbedcrypto
     TIMEOUT 120)
 
+  # ADR-237 §4.5 rules 3a/4/5 on the real reactor stream pump: lossless back-pressure, bounded shutdown with an
+  # undrained stream, multi-line SSE data. Loopback server, default suite.
+  agentengine_add_test(test_chat_client_stream_pump_lifecycle
+    LIBS agentengine::core agentengine::provider_http_client agentengine_warnings MbedTLS::mbedtls
+      MbedTLS::mbedx509 MbedTLS::mbedcrypto
+    TIMEOUT 120)
+  # P7 drives src/protocol/sse_stream_pump.hpp (private to src/) directly, with a faulting accumulator.
+  target_include_directories(test_chat_client_stream_pump_lifecycle PRIVATE "${PROJECT_SOURCE_DIR}/src")
+
   # ---- Milestone 5 Phase J1 (roadmap exit criterion, 004 §7 G1): the same unchanged call site, run
   # against real OpenAI/Anthropic backends over local TLS servers, a ReplayChatClient, and a
   # FailoverChatClient<real, real> composition with a genuinely failing primary.
@@ -127,6 +136,10 @@ agentengine_add_test(test_recording_chat_client LIBS agentengine::core agentengi
 # ---- Milestone 5 Phase G2 -- ReplayChatClient (core/replay_chat_client.hpp), the real replay
 # mechanism with identical chunk boundaries and inter-chunk timing (004 §7 G3).
 agentengine_add_test(test_replay_chat_client LIBS agentengine::core agentengine_warnings)
+
+# ---- ADR-237 §9 D6 -- failure_class::canceled, its one spelling, and the one retry decision
+# (core/error.hpp's is_retryable), plus the gateway's shared-budget column and its fail-over rule.
+agentengine_add_test(test_failure_class LIBS agentengine::core agentengine_warnings)
 
 add_executable(test_stream_delta_coalescing test_stream_delta_coalescing.cpp)
 target_link_libraries(test_stream_delta_coalescing PRIVATE agentengine::core agentengine_warnings)

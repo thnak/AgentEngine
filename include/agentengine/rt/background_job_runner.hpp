@@ -74,6 +74,7 @@
 #include "agentengine/core/tool_descriptor.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/agent_session_trust.hpp"  // detail::force_tainted
+#include "agentengine/rt/drive_leaf_task.hpp"      // ADR-237 §5.2: drive the async tool invoke
 #include "agentengine/trust/capability.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secure_random.hpp"
@@ -309,7 +310,7 @@ inline void emit(std::shared_ptr<Core> const& core, std::vector<BackgroundJobEve
                 for (auto const& b : job.bound) b.revoke();  // never invoked: step 10 happens here
                 job.result = tool_pipeline_detail::make_error_result(
                     job.spec.request.call_id,
-                    error{failure_class::policy, "background job canceled before it started",
+                    error{failure_class::canceled, "background job canceled before it started",  // ADR-237 D6 (was policy)
                           std::string(kToolCanceledNoEffect)});
                 drop = finish_locked(*core, job, background_job_state::canceled);
                 events.push_back(make_event(job, background_job_event_kind::state_changed));
@@ -387,7 +388,7 @@ public:
                                           "background_job.approval_not_attested"});
         }
         if (spec.cascade_from.stop_requested()) {
-            return std::unexpected(error{failure_class::policy,
+            return std::unexpected(error{failure_class::canceled,  // ADR-237 D6 (was policy)
                                           "the run this job would belong to was already canceled",
                                           "background_job.parent_canceled"});
         }
@@ -541,7 +542,7 @@ public:
                 job.stop.request_stop();
                 for (auto const& b : job.bound) b.revoke();
                 job.result = tool_pipeline_detail::make_error_result(
-                    job.spec.request.call_id, error{failure_class::transient, "background job runner shut down",
+                    job.spec.request.call_id, error{failure_class::canceled, "background job runner shut down",  // ADR-237 D6
                                                     std::string(kToolCanceledNoEffect)});
                 drops.push_back(finish_locked(*core_, job, background_job_state::canceled));
                 events.push_back(make_event(job, background_job_event_kind::state_changed));
@@ -660,7 +661,13 @@ private:
         // escape (std::terminate would take the host down), so one is converted to a failure.
         result<json::Value> invoked = std::unexpected(error{failure_class::fatal, "not invoked", "background_job.not_invoked"});
         try {
-            invoked = job.spec.tool.invoke(job.spec.request.arguments, ctx);
+            // ADR-237 §5.2: `invoke` is async; drive it on this worker thread.
+            auto drive_invoke = [&]() -> result<json::Value> {
+                auto driven = rt::drive_leaf_task(job.spec.tool.invoke(job.spec.request.arguments, ctx));
+                if (!driven) return std::unexpected(driven.error());
+                return std::move(*driven);
+            };
+            invoked = drive_invoke();
         } catch (std::exception const& e) {
             invoked = std::unexpected(error{failure_class::fatal, std::string("background job tool threw: ") + e.what(),
                                              "background_job.tool_threw"});

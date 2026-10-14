@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "agentengine/tools/read_content.hpp"
+#include "../support/run_task_sync.hpp"  // ADR-237 §5.2: drive the async tool invoke
 
 namespace {
 
@@ -292,7 +293,8 @@ void test_ambiguous_source_neither_set() {
     auto ctx = make_ctx(held);
 
     ReadContent::Args args;  // both url and path left unset
-    auto reply = ReadContent::invoke(args, ctx);
+    auto reply = agentengine::test_support::run_task_sync<result<ReadContent::Reply>>(
+        ReadContent{}.invoke(args, ctx));
     check(!reply.has_value(), "neither url nor path set -> rejected");
     if (!reply) check(reply.error().code == "read_content.ambiguous_source", "ambiguity uses its own error code");
 }
@@ -305,7 +307,8 @@ void test_ambiguous_source_both_set() {
     ReadContent::Args args;
     args.url = "http://example.com/data";
     args.path = "foo.txt";
-    auto reply = ReadContent::invoke(args, ctx);
+    auto reply = agentengine::test_support::run_task_sync<result<ReadContent::Reply>>(
+        ReadContent{}.invoke(args, ctx));
     check(!reply.has_value(), "both url and path set -> rejected");
     if (!reply) check(reply.error().code == "read_content.ambiguous_source", "ambiguity uses its own error code");
 }

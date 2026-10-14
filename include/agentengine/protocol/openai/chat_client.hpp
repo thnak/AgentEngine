@@ -17,33 +17,16 @@
 // ChatClientCapabilities its own deployment's config says the target endpoint actually has; nothing
 // here inspects a response to infer a capability.
 //
-// `perform_provider_https_exchange` is a synchronous, blocking call with nothing to suspend on (Phase
-// B4a's own decision, milestone doc: "a sync function is freely callable from inside an async
-// coroutine body with no co_await needed") -- `chat()`'s coroutine body calls it directly, matching
-// that already-established project position rather than introducing a new one. It genuinely blocks
-// the calling thread for the full round-trip; a real async I/O integration is future work on
-// provider_http_client.hpp itself, not scoped here.
+// `chat()` is a buffered HTTP/1.1 exchange on `rt::http` (`exchange_json_async`, ADR-237 §5.1 step 35): the
+// coroutine suspends on the client's reactor rather than holding a thread for the round-trip.
 //
-// D2 (streaming) scope, named honestly rather than silently claimed complete: `perform_provider_
-// https_exchange` has no incremental/chunked-transfer read loop yet -- it blocks until the full HTTP
-// response is buffered, then returns. `chat_stream()` below therefore performs one complete
-// (blocking) HTTPS exchange on a detached background thread, decodes `Transfer-Encoding: chunked`
-// framing if present (a real OpenAI-compatible streaming response's actual wire shape --
-// `net_egress_proxy.cpp`'s raw-request builder always sends `Connection: close`, so the server
-// closing the connection at the end is the reliable read-loop exit condition either way), splits the
-// decoded body into SSE `data: ...` events, and pushes ONE ChatResponseUpdate per event/assembled-
-// tool-call as it walks the already-fully-received event list -- so the vendor's own chunk
-// BOUNDARIES are preserved faithfully in delivery order (004 §7 G3's own gate: "identical chunk
-// boundaries"), and the credit-controlled ring (core/stream.hpp, Phase B4b) still provides genuine
-// backpressure between this parsing thread and the consumer -- but the underlying network fetch
-// itself is not low-latency incremental. A real incremental read loop is future work on
-// provider_http_client.hpp, not scoped here. The background thread is DETACHED, not tracked as a
-// member: `OpenAIChatClient` may be shared across many concurrent `chat_stream()` calls (a real
-// `ChatClientRegistry` binds one instance per `ChatClientId`, reused across turns), so a single
-// thread member that joins-then-replaces would wrongly serialize concurrent streams. The detached
-// thread captures every value it needs (host/port/path/model/api-key text, the moved request, the
-// moved `stream_producer`) and touches no state owned by `*this`, so its lifetime is fully decoupled
-// from the client object's.
+// Streaming (ADR-237 §5.1, step 41): `chat_stream()` starts an OWNED producer root on the client's
+// `rt::Runtime` (`run_stream_worker_async`, src/protocol/openai/chat_client.cpp), a coroutine that suspends on
+// `rt::http_stream` / `rt::sse_events` instead of holding a thread, decodes the SSE events as they arrive
+// and pushes ONE ChatResponseUpdate per event/assembled tool call, so the vendor's own chunk boundaries are
+// kept in delivery order (004 §7 G3: "identical chunk boundaries"). The credit-controlled ring
+// (core/stream.hpp) gives the consumer genuine back-pressure. The producer captures every value it needs and
+// touches no state owned by `*this`; the Runtime joins it at shutdown (§4.5 rule 4).
 
 #ifdef AGENTENGINE_WITH_HTTPS
 
@@ -315,6 +298,11 @@ public:
         return chunked_ && !chunked_decoder_.complete() && !done_seen_ && !captured_usage_.has_value();
     }
 
+    // ADR-237: the reactor pump feeds DECODED events (chunk framing already stripped by rt, so `truncated()` is
+    // always false there). A framing cut surfaces as an rt error instead, and this is the same "its own terminal
+    // event was seen" test `truncated()` defers to: true => the answer is whole whatever the framing did after.
+    [[nodiscard]] bool terminal_seen() const noexcept { return done_seen_ || captured_usage_.has_value(); }
+
     // End of stream: flushes the held-back update and every assembled tool call, marking the very
     // last one final. Safe to call on a stream that produced nothing (returns empty).
     [[nodiscard]] std::vector<ChatResponseUpdate> finish();
@@ -378,20 +366,38 @@ private:
 // constructs `OpenAIChatClient` with a non-default resolver.
 using Resolver = agentengine::detail::provider_wire::Resolver;
 
-// The detached background worker (see file banner for why detached, not a tracked member). Every
+// ADR-237 §5.1/§6.3 (step 34): the reactor path's inputs (reactor + DNS pool via a `rt::Runtime`, the address
+// policy, and the test/e2e resolver seam). A null `runtime` makes the client own a private Runtime.
+using ReactorOptions = agentengine::detail::provider_wire::ProviderReactorOptions;
+
+// The stream producer's entry point. Every
 // parameter is owned by value -- no reference back to the `OpenAIChatClient` instance that spawned it.
 // `ca_bundle_pem_override` mirrors `perform_provider_https_exchange`'s own testability seam verbatim
 // (empty in production -- the vendored CA bundle applies; a test's self-signed leaf isn't in it).
 // `http_referer`/`x_title`/`end_user_id`/`seed`/`transport`/`session_id` are `OpenAIChatClient`'s own
 // optional constructor fields, threaded through by value exactly like every other captured parameter
 // here.
-void run_stream_worker(std::string host, std::uint16_t port, std::string path, std::string api_key,
-                       std::string model, ChatRequest request,
-                       stream_producer<ChatResponseUpdate> producer, Resolver resolver,
-                       std::string ca_bundle_pem_override, std::string http_referer,
-                       std::string x_title, std::string end_user_id,
-                       std::optional<std::int64_t> seed, sandbox::ProviderTransport transport,
-                       std::stop_token stop, ChatClientCapabilities caps, std::string session_id);
+// ADR-237 §5.1 (step 34): a plain function (defined in
+// chat_client.cpp, where the coroutine pump lives) that builds the wire request and starts
+// `pump_sse_stream_async` on `reactor.runtime` via `rt::Runtime::spawn` -- the producer is an OWNED root, not a
+// detached thread. `reactor.runtime` must be non-null.
+void run_stream_worker_async(std::string host, std::uint16_t port, std::string path, std::string api_key,
+                             std::string model, ChatRequest request,
+                             stream_producer<ChatResponseUpdate> producer, ReactorOptions reactor,
+                             std::string ca_bundle_pem_override, std::string http_referer,
+                             std::string x_title, std::string end_user_id,
+                             std::optional<std::int64_t> seed, sandbox::ProviderTransport transport,
+                             std::stop_token stop, ChatClientCapabilities caps, std::string session_id);
+
+// ADR-237 §5.1 (step 35): chat()'s reactor path -- a buffered HTTP/1.1 exchange on rt::http (no blocking
+// body, no detached thread), with the same request/response contract as `provider_wire::exchange_json`.
+// Declared here, defined in chat_client.cpp (where the rt/ headers and make_http_context live).
+[[nodiscard]] task<result<json::Value>> exchange_json_async(std::string vendor, std::string host,
+                                                            std::uint16_t port, sandbox::NetEgressRequest req,
+                                                            ReactorOptions reactor,
+                                                            std::string ca_bundle_pem_override,
+                                                            sandbox::ProviderTransport transport,
+                                                            std::stop_token stop);
 
 }  // namespace detail
 
@@ -441,7 +447,11 @@ public:
                       // prompt-cache sticky-routing key, sent as the `x-session-id` header -- NOT
                       // `end_user_id` above, which that vendor does not use for cache routing at all.
                       // Appended last, same convention as every optional param above.
-                      std::string session_id = {})
+                      std::string session_id = {},
+                      // ADR-237 §5.1 (step 34): the reactor path for `chat_stream`. Defaulted (null runtime): the
+                      // client then owns a private Runtime, so every existing construction site is unchanged.
+                      // Appended last, the same "never insert earlier" convention as every optional param above.
+                      agentengine::detail::provider_wire::ProviderReactorOptions reactor = {})
         : host_(std::move(host)),
           port_(port),
           model_(std::move(model)),
@@ -457,7 +467,22 @@ public:
           seed_(seed),
           transport_(transport),
           scan_response_format_leaks_(scan_response_format_leaks),
-          session_id_(std::move(session_id)) {}
+          session_id_(std::move(session_id)),
+          reactor_(std::move(reactor)) {
+        // ADR-237 §5.1 (step 39): the reactor path is no longer opt-in. With no Runtime supplied, the
+        // client OWNS one, so `chat()`/`chat_stream()` always run on `rt::http` and the blocking
+        // `exchange_json` is unreachable from this class. Held by `unique_ptr` so the client stays
+        // movable AND `reactor_.runtime` keeps pointing at the same heap object across a move.
+        if (reactor_.runtime == nullptr) {
+            owned_runtime_ = std::make_unique<agentengine::rt::Runtime>(agentengine::rt::RuntimeConfig{});
+            reactor_.runtime = owned_runtime_.get();
+        }
+        // ADR-237 §5.1 (step 40): the ctor's `Resolver` becomes the reactor's DNS seam unless the caller
+        // already named one, so `resolver_` is load-bearing rather than vestigial.
+        if (!reactor_.resolver) {
+            reactor_.resolver = agentengine::detail::provider_wire::host_resolver_from(resolver_, port_);
+        }
+    }
 
     [[nodiscard]] ChatClientCapabilities capabilities() const { return capabilities_; }
 
@@ -484,8 +509,11 @@ public:
         auto req = detail::build_http_request(path_prefix_ + "/chat/completions", lease->reveal_text(),
                                                 json::dump(*body), http_referer_, x_title_, session_id_);
         // ADR-206: the POST, the non-2xx mapping and the JSON parse are shared with the other backend.
-        auto parsed = agentengine::detail::provider_wire::exchange_json("openai", host_, port_, req, resolver_,
-                                                                        ca_bundle_pem_override_, transport_);
+        // ADR-237 §5.1 (step 35): with a Runtime set, the exchange runs as a coroutine on the reactor
+        // (no blocking body); without one it stays the blocking `exchange_json`.
+        // ADR-237 §5.1 (step 41): the reactor exchange is now the ONLY path.
+        auto parsed = co_await detail::exchange_json_async("openai", host_, port_, std::move(req), reactor_,
+                                                           ca_bundle_pem_override_, transport_, ctx.cancellation);
         if (!parsed) co_return std::unexpected(parsed.error());
         auto response = detail::parse_chat_completion_response(*parsed, producer_chat_client_id());
         if (!response) co_return std::unexpected(response.error());
@@ -511,11 +539,14 @@ public:
         // `std::move(pair.producer)` could legally run after the move -- on a moved-from producer,
         // whose stop_source is empty, yielding a token that never fires.
         std::stop_token stop = pair.producer.stop_token();
-        std::thread(&detail::run_stream_worker, host_, port_, path_prefix_ + "/chat/completions",
-                    lease->reveal_text(), model_, std::move(request), std::move(pair.producer), resolver_,
-                    ca_bundle_pem_override_, http_referer_, x_title_, end_user_id_, seed_, transport_,
-                    std::move(stop), capabilities_, session_id_)
-            .detach();
+        // ADR-237 §5.1 (step 41): the reactor path is now the ONLY path -- an owned producer root on the
+        // Runtime (rt::Runtime::spawn), suspending on the reactor instead of a detached thread. Same wire
+        // request, same terminal rules.
+        detail::run_stream_worker_async(host_, port_, path_prefix_ + "/chat/completions",
+                                        lease->reveal_text(), model_, std::move(request),
+                                        std::move(pair.producer), reactor_, ca_bundle_pem_override_,
+                                        http_referer_, x_title_, end_user_id_, seed_, transport_,
+                                        std::move(stop), capabilities_, session_id_);
         return std::move(pair.consumer);
     }
 
@@ -536,6 +567,10 @@ private:
     sandbox::ProviderTransport transport_;
     bool scan_response_format_leaks_;
     std::string session_id_;
+    agentengine::detail::provider_wire::ProviderReactorOptions reactor_;  // ADR-237 §5.1 (step 34)
+    // ADR-237 §5.1 (step 39): the Runtime this client owns when the caller supplied none. Declared AFTER
+    // `reactor_` so it is destroyed FIRST -- `reactor_.runtime` borrows it.
+    std::unique_ptr<agentengine::rt::Runtime> owned_runtime_;
 };
 
 }  // namespace agentengine::openai

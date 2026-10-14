@@ -426,8 +426,9 @@ task<WorkflowResult> WorkflowSupervisor::poll_batches_locked(PollBatches request
         if (pol.now_ns() - oldest > static_cast<std::int64_t>(pol.max_wait.count())) {
             (void)guarded([&] { return backend.cancel(job, ctx); });
             for (BatchItem* b : pending) {
+                // ADR-237 D6: max_wait is a deadline -- `resource` (was `transient`; an edge retry treats both alike)
                 resolve_batch_item_failed(*b, agentengine::batch_item_status::expired,
-                                          agentengine::failure_class::transient, "batch max_wait exceeded",
+                                          agentengine::failure_class::resource, "batch max_wait exceeded",
                                           /*honour_policy=*/true);
             }
             continue;
@@ -479,9 +480,12 @@ task<WorkflowResult> WorkflowSupervisor::poll_batches_locked(PollBatches request
 
 void WorkflowSupervisor::resolve_batch_item(BatchItem& item, agentengine::BatchItemResult const& result) {
     if (result.status != agentengine::batch_item_status::succeeded) {
-        agentengine::failure_class const klass = result.status == agentengine::batch_item_status::errored
-                                                     ? result.klass
-                                                     : agentengine::failure_class::transient;
+        // ADR-237 D6: a vendor-side `canceled` item was stopped on request (this engine only cancels a job when the
+        // run itself is cancelled or past max_wait, both resolved elsewhere) -- `canceled`, never retried; an
+        // `expired` item ran out the vendor's completion window -- a deadline, so `resource`. Both were `transient`.
+        agentengine::failure_class klass = agentengine::failure_class::resource;
+        if (result.status == agentengine::batch_item_status::errored) klass = result.klass;
+        if (result.status == agentengine::batch_item_status::canceled) klass = agentengine::failure_class::canceled;
         resolve_batch_item_failed(item, result.status, klass, result.detail, /*honour_policy=*/true);
         return;
     }

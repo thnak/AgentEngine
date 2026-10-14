@@ -66,6 +66,7 @@
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/protocol/mcp/json_rpc.hpp"
+#include "agentengine/rt/block_on.hpp"  // ADR-237 §5.2: drive the async pipeline from this sync request handler
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secure_random.hpp"
 
@@ -369,7 +370,8 @@ private:
         EffectContext ctx;
         ctx.principal = caller;
         if (grant.has_value()) ctx.capabilities = grant->capabilities;
-        ToolResult tool_result = invoke_tool(table_, effective, call, ctx, approve_);
+        // ADR-237 §5.2: the pipeline is async; this request handler is a genuinely-sync edge.
+        ToolResult tool_result = rt::block_on(invoke_tool(table_, effective, call, ctx, approve_));
 
         // 011 §3.1: "isError vs JSON-RPC error is a semantic split we honour on both sides": an
         // execution error -- including an input-validation failure `invoke_tool()` itself already
@@ -428,7 +430,8 @@ private:
         EffectContext ctx;
         ctx.principal = caller;  // ADR-061 §7 R4/R26, same reasoning as the synchronous path above.
         if (grant.has_value()) ctx.capabilities = grant->capabilities;
-        auto started = background_task(
+        // ADR-237 §5.2: `background_task` is async; this request handler is a genuinely-sync edge.
+        auto started = rt::block_on(background_task(
             table_, effective, call, ctx, approve_, live_count,
             [this, task_id](ToolResult result, ToolInvocationAudit) {
                 std::lock_guard<std::mutex> lock(tasks_mutex_);
@@ -444,7 +447,7 @@ private:
                 // completed with error details in result." A tool that ran and failed is still
                 // `"completed"`, mirroring `handle_tools_call`'s own synchronous isError mapping exactly.
                 it->second.task_status = "completed";
-            });
+            }));
 
         if (!started) {
             std::lock_guard<std::mutex> lock(tasks_mutex_);

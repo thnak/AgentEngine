@@ -225,12 +225,12 @@ std::vector<ScriptStep> unmeasurable_script() {
 }
 ae::eval::GraderFn throwing_on_boom_grader() {
     auto inner = ae::eval::make_tool_argument_grader("set_deploy_region", "region", "eu-west-1");
-    return [inner](ae::eval::TrialResult const& t) {
+    return [inner](ae::eval::TrialResult const& t) -> ae::rt::task<ae::eval::grade_outcome> {
         for (auto const& c : t.tool_calls) {
             auto const* r = c.arguments.find("region");
             if (r != nullptr && r->is_string() && r->as_string() == "boom") throw std::runtime_error("unmeasurable");
         }
-        return inner(t);
+        co_return co_await inner(t);
     };
 }
 

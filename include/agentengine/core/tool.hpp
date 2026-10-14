@@ -69,9 +69,18 @@ struct Deterministic {};
 // tool and the per-call handle carries the grant's cap. Without it (the default) admission keeps
 // `bind()`'s exact `contains()` rule and a capped grant refuses an uncapped declaration -- because a
 // tool that enforces its own declared number (or none) would otherwise run past the grant's cap. Only
-// declare it for a tool whose invoke really reads its caps from the grant; for a
-// `make_tool_descriptor_with_invoke` tool, that is the custom invoke.
+// declare it for a tool whose invoke really reads its caps from the grant -- `RunShellTool` is the
+// shipped example (the mediated shell's own per-operation lookups).
 struct EnforcesGrantedCaps {};  // ae-naming-lint: allow EnforcesGrantedCaps — ADR-217 policy tag; 027 has not been updated to list it
+
+// decisions/ADR-237-async-extension-points-and-io-reactor.md §5.2: "this tool's invoke captures
+// session-scoped state." The explicit declaration `ToolDescriptor::captures_session_state` reads; it is
+// what the now-deleted `make_tool_descriptor_with_invoke` used to set implicitly. A tool with it may not
+// be backgrounded (`background_job_runner`) and is not re-run
+// comparable (`tool_descriptor.hpp`). Deliberately an explicit tag, never derived from "the type is
+// non-empty": deriving it would make every configured tool unbackgroundable (red-team G2), including
+// §5.2's own stateful example.
+struct CapturesSessionState {};  // ae-naming-lint: allow CapturesSessionState — ADR-237 §5.2 policy tag; 027 has not been updated to list it
 
 // Milliseconds, not a std::chrono duration NTTP: chrono durations typically keep their `rep` as a
 // private data member, which disqualifies them as C++20 structural types (the same constraint
@@ -166,6 +175,16 @@ struct policy_enforces_granted_caps<EnforcesGrantedCaps> {
     static constexpr bool value = true;
 };
 
+// ADR-237 §5.2.
+template <class Policy>
+struct policy_captures_session_state {
+    static constexpr bool value = false;
+};
+template <>
+struct policy_captures_session_state<CapturesSessionState> {
+    static constexpr bool value = true;
+};
+
 template <class Policy>
 struct policy_is_parallelizable {
     static constexpr bool value = false;
@@ -197,9 +216,14 @@ struct policy_exclusivity_group<ExclusivityGroup<Name>> {
 //
 // Derived provides: static name, static description, nested Args/Reply types -- each paired with
 // an AE_JSON_SCHEMA(Args, ...)/AE_JSON_SCHEMA(Reply, ...) description (json_schema.hpp; JSON
-// Schema 2020-12, 006 §1) -- and `static result<Reply> invoke(Args, EffectContext&)`. `invoke` is
-// synchronous `result<Reply>`, not `ae::task<result<Reply>>` -- `ae::task<T>` stays deferred for M2
-// (decision 2, no gate item this milestone needs real coroutine concurrency to prove).
+// Schema 2020-12, 006 §1) -- and `invoke`. ADR-237 §5.2's form is a non-static **`const`** member
+// `agentengine::task<result<Reply>> invoke(Args, EffectContext&)`: a stateless tool is an empty
+// object, a stateful one holds its injected state (registered by value through `ToolTable::from(...)`
+// or `make_tool_descriptor(ToolT{...})`). `const` because a `Parallelizable` tool called twice in one
+// batch runs two `invoke`s on the same object concurrently (red-team G2), so mutable per-call state
+// lives in the frame. The older `static result<Reply> invoke(Args, EffectContext&)` form is still
+// accepted transitionally (registered through `make_tool_descriptor<ToolT>()`/`from_tools<Ts...>()`)
+// and is deleted once every conformer is converted (ADR-237 §5.2, "one way to declare a tool").
 template <class Derived, class... Policies>
 struct Tool {
     // decisions/ADR-158-tool-concurrency-exclusivity-policy.md §4/§5: `Parallelizable` and
@@ -328,6 +352,15 @@ struct Tool {
         bool has = false;
         ([&has] {
             if (tool_detail::policy_enforces_granted_caps<Policies>::value) has = true;
+        }(), ...);
+        return has;
+    }
+
+    // ADR-237 §5.2: `false` unless the tool declared `CapturesSessionState`.
+    [[nodiscard]] static constexpr bool declared_captures_session_state() noexcept {
+        bool has = false;
+        ([&has] {
+            if (tool_detail::policy_captures_session_state<Policies>::value) has = true;
         }(), ...);
         return has;
     }

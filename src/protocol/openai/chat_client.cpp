@@ -481,26 +481,66 @@ result<std::vector<ChatResponseUpdate>> parse_streaming_response_into_updates(
     return updates;
 }
 
-void run_stream_worker(std::string host, std::uint16_t port, std::string path, std::string api_key,
-                       std::string model, ChatRequest request,
-                       stream_producer<ChatResponseUpdate> producer, Resolver resolver,
-                       std::string ca_bundle_pem_override, std::string http_referer,
-                       std::string x_title, std::string end_user_id,
-                       std::optional<std::int64_t> seed, sandbox::ProviderTransport transport,
-                       std::stop_token stop, ChatClientCapabilities caps, std::string session_id) {
-    // ADR-020: `caps` reaches here for one reason -- so `chat_stream()` enforces the SAME reasoning-
-    // effort gate `chat()` does. A capability check that held on one of the two entry points would be
-    // no check at all.
+// ADR-237 §5.1 (step 34): the reactor twin of run_stream_worker. Builds the same wire request and starts the
+// coroutine pump as an OWNED root on `reactor.runtime` (rt::Runtime::spawn), so the streaming call suspends on
+// the reactor instead of detaching a thread.
+void run_stream_worker_async(std::string host, std::uint16_t port, std::string path, std::string api_key,
+                             std::string model, ChatRequest request,
+                             stream_producer<ChatResponseUpdate> producer, ReactorOptions reactor,
+                             std::string ca_bundle_pem_override, std::string http_referer,
+                             std::string x_title, std::string end_user_id,
+                             std::optional<std::int64_t> seed, sandbox::ProviderTransport transport,
+                             std::stop_token stop, ChatClientCapabilities caps, std::string session_id) {
     auto body = build_request_body(request, model, /*stream=*/true, end_user_id, seed, caps);
     if (!body) {
-        // Forward the REAL error `build_request_body` already computed, the same shape `chat()`'s own
-        // non-streaming path returns.
         producer.fail(body.error());
         return;
     }
-    auto req = build_http_request(path, api_key, json::dump(*body), http_referer, x_title, session_id);
-    agentengine::detail::provider_wire::pump_sse_stream<StreamingUpdateAccumulator>(
-        "openai", model, host, port, req, producer, resolver, ca_bundle_pem_override, transport, std::move(stop));
+    auto               eg    = build_http_request(path, api_key, json::dump(*body), http_referer, x_title, session_id);
+    bool const         https = transport != sandbox::ProviderTransport::plaintext_http;
+    rt::HttpRequest    req;
+    req.scheme = https ? rt::http_scheme::https : rt::http_scheme::http;
+    req.host   = std::move(host);
+    req.port   = port;
+    req.method = std::move(eg.method);
+    req.target = std::move(eg.path);
+    for (auto& h : eg.headers) req.headers.push_back(std::move(h));
+    req.body = std::move(eg.body);
+    rt::HttpContext ctx =
+        agentengine::detail::provider_wire::make_http_context(reactor, ca_bundle_pem_override, https);
+    (void)reactor.runtime->spawn(agentengine::detail::provider_wire::pump_sse_stream_async<StreamingUpdateAccumulator>(
+        "openai", model, std::move(ctx), std::move(req), std::move(producer), std::move(stop),
+        &reactor.runtime->offload_pool()));
+}
+
+// ADR-237 §5.1 (step 35): chat()'s reactor path. A buffered HTTP/1.1 exchange on rt::http (rt::http_request)
+// -- no blocking body and no thread. Same contract as `provider_wire::exchange_json`: transport failure
+// forwarded (mapped through http_error_to_error), non-2xx through http_status_error, 2xx body parsed as JSON.
+task<result<json::Value>> exchange_json_async(std::string vendor, std::string host, std::uint16_t port,
+                                              sandbox::NetEgressRequest req, ReactorOptions reactor,
+                                              std::string ca_bundle_pem_override,
+                                              sandbox::ProviderTransport transport, std::stop_token stop) {
+    bool const      https = transport != sandbox::ProviderTransport::plaintext_http;
+    rt::HttpRequest hreq;
+    hreq.scheme = https ? rt::http_scheme::https : rt::http_scheme::http;
+    hreq.host   = std::move(host);
+    hreq.port   = port;
+    hreq.method = std::move(req.method);
+    hreq.target = std::move(req.path);
+    for (auto& h : req.headers) hreq.headers.push_back(std::move(h));
+    hreq.body = std::move(req.body);
+    rt::HttpContext hctx =
+        agentengine::detail::provider_wire::make_http_context(reactor, ca_bundle_pem_override, https);
+    rt::HttpResponse resp = co_await rt::http_request(hctx, std::move(hreq), stop);
+    if (!resp.ok()) {
+        co_return std::unexpected(
+            agentengine::detail::provider_wire::http_error_to_error(resp.error, resp.code, resp.message));
+    }
+    if (resp.status < 200 || resp.status >= 300) {
+        co_return std::unexpected(
+            agentengine::detail::provider_wire::http_status_error(vendor, resp.status, resp.body));
+    }
+    co_return json::parse(resp.body);
 }
 
 result<std::vector<ChatResponseUpdate>> StreamingUpdateAccumulator::feed(std::string_view bytes) {

@@ -144,15 +144,29 @@ capability set, never a superset (007).
   emitted effects are recorded. Cancellation is a state, not an abort.
 - Deadline exhaustion inside a turn terminates the run at the next checkpoint boundary with
   `Failed{deadline_exceeded}`, after cancelling in-flight effects.
+- **Canceled and out-of-time are different classes** (ADR-237 §9 D6, 2026-10-03). A requested stop — by
+  the host, a parent, or a sibling's failure — is `failure_class::canceled`; a run the host canceled ends
+  `Canceled`, with code `run.canceled` and class `canceled` (amending ADR-178, which used `fatal`). A
+  deadline is a budget (I8): `failure_class::resource` with a `*deadline_exceeded` code, everywhere — so
+  the two are told apart by class, never by parsing a code. A canceled *operation* inside a live run
+  carries `canceled` to whoever awaits it and ends the run only if that caller lets it.
 
 ## 6. Failure model
 
 - **Errors are values.** `ae::result<T>` throughout; no exceptions for control flow.
 - **Failure is classified before it is handled**, into: `Transient` (retryable — provider 5xx,
   network), `Policy` (denied — capability, approval, content policy), `Contract` (invalid tool args,
-  schema violation), `Resource` (limit exceeded — tokens, time, memory), `Fatal` (invariant
-  violation). Retry applies to `Transient` only; the others are never retried automatically because
-  retrying a `Policy` denial is how a loop becomes an attack.
+  schema violation), `Resource` (limit exceeded — tokens, time, memory; a deadline is `Resource`),
+  `Fatal` (invariant violation), `Canceled` (stopped on request — by the host, a parent, or a
+  sibling's failure; not retryable, not a policy denial, not a fault — ADR-237 §9 D6). Retry applies
+  to `Transient`; the others are never retried automatically because retrying a `Policy` denial is
+  how a loop becomes an attack, and retrying a `Canceled` operation undoes the stop that ended it.
+  One refinement (ADR-237 D6): a retry that re-invokes a whole unit with a budget of its own — a
+  spawned child run, a workflow executor under an edge's `retry` policy — may also retry `Resource`,
+  never under the budget it exhausted. That decision is made once, in `is_retryable(failure_class,
+  retry_budget)` (`core/error.hpp`), and every retrying site calls it. `Canceled` is also never
+  rerouted to a workflow `fallback`, never `propagate`d as a failure marker (014 §6), and never failed
+  over to another provider tier (004 §4).
 - **A tool failure is not a run failure by default** — it is a tool result the model observes and
   may recover from, bounded by `max_consecutive_tool_failures`.
 - **Supervision**: a run that violates an invariant fails the run and returns a

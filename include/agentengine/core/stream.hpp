@@ -120,6 +120,14 @@ public:
                                                                       : stream_push::terminated;
     }
 
+    // Non-blocking push (ADR-237 §4.5 rule 5): `std::nullopt` when the channel is full and still open, with
+    // `value` left intact; otherwise as push().
+    [[nodiscard]] std::optional<stream_push> try_push(T& value) {
+        auto const r = inner_.try_push(value);
+        if (!r) return std::nullopt;
+        return *r == rt::channel_producer<T, error>::push_result::ok ? stream_push::ok : stream_push::terminated;
+    }
+
     // In-band EoS. Idempotent; also fires automatically (as Closed) if the producer is dropped without
     // an explicit close()/fail() (rt::channel_producer's own destructor fire-default).
     void close() noexcept { inner_.close(); }

@@ -28,6 +28,15 @@ void check(bool cond, char const* what) {
 namespace ae   = agentengine;
 namespace mcp  = agentengine::mcp;
 namespace json = agentengine::json;
+namespace art  = agentengine::rt;
+
+// ADR-237 §5.1: every `McpClient` verb is a `task` producer now; its body never parks here (the
+// sender drives the in-process `McpServer` synchronously), so a minimal drive loop is enough.
+template <class T>
+T drive(art::task<T> t) {
+    while (!t.done()) t.resume();
+    return t.take_value();
+}
 
 struct SlowArgs {
     bool noop;
@@ -89,14 +98,15 @@ int main() {
     // the same identity that later polls it -- the ordinary case. The cross-principal case gets
     // its own dedicated test (test_task_principal_binding.cpp).
     ae::Principal const kCaller = ae::make_local_cli_principal("tasks-caller", "test-tenant");
-    mcp::McpClient client([&server, &kCaller](mcp::JsonRpcRequest const& r) {
-                              return server.dispatch(r, kCaller);
+    mcp::McpClient client([&server, &kCaller](mcp::JsonRpcRequest const& r)
+                              -> ae::task<mcp::JsonRpcResponse> {
+                              co_return server.dispatch(r, kCaller);
                           },
                           "tasks-client");
 
     // --- C4-1: the extension cannot background a non-Backgroundable tool ---------------------------
     {
-        auto handle = client.call_tool_as_task("foreground_only", noop_args());
+        auto handle = drive(client.call_tool_as_task("foreground_only", noop_args()));
         check(!handle.has_value(),
               "C4-1: call_tool_as_task() on a non-Backgroundable tool is rejected");
     }
@@ -104,7 +114,7 @@ int main() {
     // --- C4-2/3: a Backgroundable call returns a task handle immediately, status "working" ---------
     mcp::McpTaskHandle handle1;
     {
-        auto h = client.call_tool_as_task("slow_backgroundable", noop_args());
+        auto h = drive(client.call_tool_as_task("slow_backgroundable", noop_args()));
         check(h.has_value(), "C4-2: call_tool_as_task() on a Backgroundable tool succeeds");
         if (h.has_value()) {
             handle1 = *h;
@@ -115,7 +125,7 @@ int main() {
 
     // --- C4-4: an immediate poll (before the sleep finishes) still reports "working", no result ----
     {
-        auto poll = client.get_task(handle1.task_id);
+        auto poll = drive(client.get_task(handle1.task_id));
         check(poll.has_value() && poll->status == "working" && !poll->has_result,
               "C4-4: polling immediately after start still shows \"working\", no result attached yet");
     }
@@ -123,7 +133,7 @@ int main() {
     // --- C4-5: after it finishes, tasks/get reports "completed" with the real reply -----------------
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
-        auto poll = client.get_task(handle1.task_id);
+        auto poll = drive(client.get_task(handle1.task_id));
         check(poll.has_value() && poll->status == "completed",
               "C4-5: once finished, status is \"completed\"");
         if (poll.has_value()) {
@@ -135,13 +145,13 @@ int main() {
     // --- C4-6: a failing Backgroundable call is STILL status "completed" -- never "failed" ----------
     // --- (§12's own rule), with isError:true faithfully carried in the result.                    ---
     {
-        auto h = client.call_tool_as_task("failing_backgroundable", noop_args());
+        auto h = drive(client.call_tool_as_task("failing_backgroundable", noop_args()));
         check(h.has_value(), "C4-6: call_tool_as_task() on the failing tool still starts (the tool "
                               "hasn't RUN yet -- only resolution/authorize/approve are checked before "
                               "backgrounding)");
         if (h.has_value()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(150));
-            auto poll = client.get_task(h->task_id);
+            auto poll = drive(client.get_task(h->task_id));
             check(poll.has_value() && poll->status == "completed",
                   "C4-6: a tool that ran and FAILED is still task status \"completed\", never "
                   "\"failed\" -- §12: \"The failed status MUST NOT represent a tool result with "
@@ -155,9 +165,9 @@ int main() {
 
     // --- C4-7: Background<1> capacity is enforced through the MCP tasks path too (G9, Phase B) ------
     {
-        auto h1 = client.call_tool_as_task("slow_backgroundable", noop_args());
+        auto h1 = drive(client.call_tool_as_task("slow_backgroundable", noop_args()));
         check(h1.has_value(), "C4-7: the first call under a fresh Background<1> grant succeeds");
-        auto h2 = client.call_tool_as_task("slow_backgroundable", noop_args());
+        auto h2 = drive(client.call_tool_as_task("slow_backgroundable", noop_args()));
         check(!h2.has_value(),
               "C4-7: a second concurrent call while the first is still \"working\" is rejected -- "
               "Background<1>'s own ceiling, reused unchanged from Phase B's background_task()");
@@ -169,23 +179,23 @@ int main() {
 
     // --- C4-8: tasks/get on an unknown taskId is rejected --------------------------------------------
     {
-        auto poll = client.get_task("no-such-task-id");
+        auto poll = drive(client.get_task("no-such-task-id"));
         check(!poll.has_value(), "C4-8: get_task() on an unknown taskId is rejected");
     }
 
     // --- C4-9: tasks/cancel on a still-running task marks it "cancelled", and it STAYS "cancelled" --
     // --- even once the underlying (uncancellable) worker thread actually finishes (§12: no revert). -
     {
-        auto h = client.call_tool_as_task("slow_backgroundable", noop_args());
+        auto h = drive(client.call_tool_as_task("slow_backgroundable", noop_args()));
         check(h.has_value(), "C4-9: the call to be cancelled starts successfully");
         if (h.has_value()) {
-            auto cancelled = client.cancel_task(h->task_id);
+            auto cancelled = drive(client.cancel_task(h->task_id));
             check(cancelled.has_value(), "C4-9: cancel_task() on a running task succeeds");
-            auto poll_now = client.get_task(h->task_id);
+            auto poll_now = drive(client.get_task(h->task_id));
             check(poll_now.has_value() && poll_now->status == "cancelled",
                   "C4-9: an immediate poll after cancelling already reports \"cancelled\"");
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
-            auto poll_later = client.get_task(h->task_id);
+            auto poll_later = drive(client.get_task(h->task_id));
             check(poll_later.has_value() && poll_later->status == "cancelled",
                   "C4-9: the status STAYS \"cancelled\" once the (uncancellable) worker thread "
                   "actually completes -- its result is discarded, never silently reviving the task "
@@ -195,7 +205,7 @@ int main() {
 
     // --- C4-10: tasks/cancel on an already-completed task is rejected, not silently accepted --------
     {
-        auto cancelled = client.cancel_task(handle1.task_id);  // handle1 finished back in C4-5
+        auto cancelled = drive(client.cancel_task(handle1.task_id));  // handle1 finished back in C4-5
         check(!cancelled.has_value(),
               "C4-10: cancel_task() on an already-completed task is rejected");
     }

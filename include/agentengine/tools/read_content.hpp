@@ -36,6 +36,7 @@
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_schema.hpp"
+#include "agentengine/core/task.hpp"  // ADR-237 §5.2: invoke returns ae::task<result<Reply>>
 #include "agentengine/core/tool.hpp"
 #include "agentengine/sandbox/filesystem_adapter.hpp"
 #include "agentengine/sandbox/net_egress_proxy.hpp"
@@ -223,16 +224,16 @@ struct ReadContent : Tool<ReadContent, Capabilities<>, Approval<approval_mode::n
     // before either source-specific path runs. The `url` branch always supplies the real,
     // production `sandbox::HostEgressProxy` (default resolver, the real SSRF blocklist
     // `resolve_and_validate` enforces) -- delegates to `invoke_via` below.
-    [[nodiscard]] static result<Reply> invoke(Args args, EffectContext& ctx) {
+    [[nodiscard]] task<result<Reply>> invoke(Args args, EffectContext& ctx) const {
         bool const has_url = args.url.has_value();
         bool const has_path = args.path.has_value();
         if (has_url == has_path) {
-            return std::unexpected(error{failure_class::contract,
+            co_return std::unexpected(error{failure_class::contract,
                                           "read_content requires exactly one of 'url' or 'path'",
                                           "read_content.ambiguous_source"});
         }
-        if (has_path) return invoke_from_sandbox(args, ctx);
-        return invoke_via(args, ctx, sandbox::HostEgressProxy{});
+        if (has_path) co_return invoke_from_sandbox(args, ctx);
+        co_return invoke_via(args, ctx, sandbox::HostEgressProxy{});
     }
 
     // The `path` source: reads one file from the session's own mediated sandbox mount

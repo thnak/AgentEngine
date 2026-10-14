@@ -14,6 +14,8 @@
 #include "agentengine/protocol/mcp/mcp_tool_bridge.hpp"
 #include "agentengine/protocol/mcp/server.hpp"
 
+#include "../../support/run_task_sync.hpp"  // ADR-237 §5.2: drive the async tool invoke
+
 namespace {
 
 int g_failures = 0;
@@ -179,12 +181,16 @@ int main() {
         // deliberately no defaulted overload, since a default is what made the A2A admission path
         // fail open.
         ae::Principal const kCaller = ae::make_local_cli_principal("codeact-union-test", "test-tenant");
-        mcp::RequestSender sender = [&server, &kCaller](mcp::JsonRpcRequest const& req) {
-            return server.dispatch(req, kCaller);
+        mcp::RequestSender sender = [&server, &kCaller](mcp::JsonRpcRequest const& req)
+            -> ae::task<mcp::JsonRpcResponse> {
+            co_return server.dispatch(req, kCaller);
         };
         auto client = std::make_shared<mcp::McpClient>(sender, "codeact-union-test-client");
 
-        auto descriptors = mcp::mcp_tools_as_descriptors(client);
+        // ADR-237 §5.1: the adapter is a `task` producer now; its body never parks (the sender
+        // drives the in-process server synchronously), so the shared test driver is enough.
+        auto descriptors = ae::test_support::run_task_sync<ae::result<std::vector<ae::ToolDescriptor>>>(
+            mcp::mcp_tools_as_descriptors(client));
         check(descriptors.has_value() && descriptors->size() == 2,
               "U5: mcp_tools_as_descriptors() lists both real MCP-side tools");
 
@@ -206,8 +212,8 @@ int main() {
 
             ae::EffectContext ctx{};
             if (echo_descriptor) {
-                auto called = echo_descriptor->invoke(
-                    json::Value::make_object({{"text", json::Value::make_string("hello")}}), ctx);
+                auto called = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(echo_descriptor->invoke(
+                    json::Value::make_object({{"text", json::Value::make_string("hello")}}), ctx));
                 check(called.has_value(), "U5: invoking the adapted descriptor succeeds");
                 if (called) {
                     auto const* text_field = called->find("text");
@@ -220,8 +226,8 @@ int main() {
             }
 
             if (fails_descriptor) {
-                auto called = fails_descriptor->invoke(
-                    json::Value::make_object({{"noop", json::Value::make_bool(true)}}), ctx);
+                auto called = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(fails_descriptor->invoke(
+                    json::Value::make_object({{"noop", json::Value::make_bool(true)}}), ctx));
                 check(!called.has_value(),
                       "U6: an MCP-side isError:true surfaces as a real pipeline error through the "
                       "adapted descriptor's invoke, never a silently successful empty result");

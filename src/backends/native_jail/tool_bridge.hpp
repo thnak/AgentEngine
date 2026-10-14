@@ -44,6 +44,7 @@
 #include <string>
 
 #include "agentengine/core/tool_pipeline.hpp"
+#include "agentengine/rt/block_on.hpp"  // ADR-237 §5.2: drive the async pipeline from this sync bridge
 #include "agentengine/trust/capability.hpp"
 
 namespace agentengine::native_jail {
@@ -72,7 +73,9 @@ struct ToolBridgeConfig {
     ApprovalDecider const bundled_approval = [approved = config.approved](
                                                       Principal const&, std::string_view,
                                                       std::string const&) { return approved; };
-    return invoke_tool(config.bridged_tools, sandbox_capabilities, request, ctx, bundled_approval, audit_out);
+    // ADR-237 §5.2: the pipeline is async; this sandbox-side bridge is a genuinely-sync edge.
+    return agentengine::rt::block_on(
+        invoke_tool(config.bridged_tools, sandbox_capabilities, request, ctx, bundled_approval, audit_out));
 }
 
 } // namespace agentengine::native_jail

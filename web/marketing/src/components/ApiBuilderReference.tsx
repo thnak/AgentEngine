@@ -19,9 +19,19 @@ import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
 import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
+import { ApiIncludes } from "./ApiIncludes";
 import { ApiTable } from "./ApiTable";
 import { CodePanel } from "./CodePanel";
 import { RevealGroup, RevealItem } from "./Reveal";
+
+// Verified by devsim/verify-includes: every path here is compiled by the gate.
+const BUILDER_HEADERS = [
+  "agentengine/core/session_builder.hpp",
+  "agentengine/core/chat_client.hpp",
+  "agentengine/trust/secret.hpp",
+  "agentengine/workflow/graph.hpp",
+  "agentengine/workflow/magentic.hpp",
+];
 
 function Cite({ path, label }: { path: string; label?: string }) {
   return (
@@ -40,6 +50,18 @@ function Cite({ path, label }: { path: string; label?: string }) {
 const copy = {
   en: {
     eyebrow: "Quickstart & native authoring · session_builder.hpp · graph.hpp:590 · magentic.hpp:73",
+    includesNote: (
+      <>
+        Five headers. <code>core/session_builder.hpp</code> is the whole builder family —{" "}
+        <code>QuickstartSessionBuilder</code>, <code>Composed…</code>, <code>Raw…</code>, and the{" "}
+        <code>Bundle</code> they produce; <code>core/chat_client.hpp</code> is{" "}
+        <code>ChatClientCapabilities</code>, which every builder method takes;{" "}
+        <code>trust/secret.hpp</code> is the <code>SecretRef</code> and store a real key needs; and
+        the two workflow headers are <code>WorkflowBuilder</code> /{" "}
+        <code>MagenticWorkflowBuilder</code>. Note what is <em>not</em> here: your own agent type,
+        which is the header you wrote.
+      </>
+    ),
     headingPrefix: "The surface app code",
     headingHighlight: "actually reaches for",
     intro: (
@@ -249,6 +271,18 @@ const copy = {
 
   vi: {
     eyebrow: "Quickstart & authoring gốc · session_builder.hpp · graph.hpp:590 · magentic.hpp:73",
+    includesNote: (
+      <>
+        Năm header. <code>core/session_builder.hpp</code> là toàn bộ họ builder —{" "}
+        <code>QuickstartSessionBuilder</code>, <code>Composed…</code>, <code>Raw…</code>, và{" "}
+        <code>Bundle</code> mà chúng tạo ra; <code>core/chat_client.hpp</code> là{" "}
+        <code>ChatClientCapabilities</code>, thứ mà mọi phương thức builder đều nhận;{" "}
+        <code>trust/secret.hpp</code> là <code>SecretRef</code> và store mà một khóa thật cần; còn
+        hai header workflow là <code>WorkflowBuilder</code> /{" "}
+        <code>MagenticWorkflowBuilder</code>. Hãy để ý thứ <em>không</em> có ở đây: kiểu agent của
+        chính bạn, tức header bạn tự viết.
+      </>
+    ),
     headingPrefix: "Bề mặt mà mã ứng dụng",
     headingHighlight: "thực sự tìm đến",
     intro: (
@@ -483,6 +517,13 @@ export function ApiBuilderReference() {
         <RevealGroup>
           <RevealItem>
             <ApiDiagnosticNote>{t.introNote}</ApiDiagnosticNote>
+          </RevealItem>
+        </RevealGroup>
+
+        {/* ---- What to include ------------------------------------------------------------------ */}
+        <RevealGroup>
+          <RevealItem>
+            <ApiIncludes headers={BUILDER_HEADERS}>{t.includesNote}</ApiIncludes>
           </RevealItem>
         </RevealGroup>
 

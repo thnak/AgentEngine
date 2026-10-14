@@ -540,10 +540,17 @@ int main() {
                                "net.byte_cap_exceeded"};
         check(retried(resource, "p5-resource") == 1, "P5: a byte-cap failure is not retried");
 
-        Attempt cancelled = base;  // the transport classes a cancellation TRANSIENT; the class alone would retry it
-        cancelled.fail = error{failure_class::transient, "cancelled via stop_token", "net.cancelled"};
-        check(retried(cancelled, "p5-cancel") == 1,
-              "P5 (Q5): net.cancelled is transient by class yet is NOT retried -- excluded by code");
+        // ADR-237 D6: the transport classes a cancellation `canceled` now (it was `transient`, excluded by its code);
+        // the predicate's code exception is gone, so the CLASS is what stops the retry.
+        Attempt cancelled = base;
+        cancelled.fail = error{failure_class::canceled, "cancelled via stop_token", "net.cancelled"};
+        check(retried(cancelled, "p5-cancel") == 1, "P5 (Q5, D6): net.cancelled is class canceled and is NOT retried");
+        // ...and the code alone no longer decides anything: a transient failure that happens to carry the old code
+        // is an ordinary transient failure (no string-keyed exception left in the predicate).
+        Attempt coded = base;
+        coded.fail = error{failure_class::transient, "a transient failure", "net.cancelled"};
+        check(retried(coded, "p5-cancel-code") == 2,
+              "P5 (D6): the predicate keys off the class, not the net.cancelled code");
     }
 
     // ---- P6: I3 -- text that SPELLS an error code moves nothing -------------------------------------

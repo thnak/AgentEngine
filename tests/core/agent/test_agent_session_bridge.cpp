@@ -515,6 +515,29 @@ int main() {
         }
     }
 
+    // ---- P9b: the typed validator producer on its own ------------------------------------------------------------
+    // P9 exercises `output_validator_for<A>()` only THROUGH a bound session. This pins the producer's own
+    // behaviour -- including the error PROVENANCE (a malformed parse vs. a schema mismatch, which P9's single
+    // "not json at all" reply cannot tell apart) -- so ADR-237 §5.1's async conversion of the
+    // `agent_bind_detail::OutputValidator` seam cannot move it silently.
+    {
+        auto validator = ae::agent_bind_detail::output_validator_for<SchemaAgent>();
+        check(static_cast<bool>(validator), "P9b: an OutputSchema<T> agent produces a validator");
+
+        auto ok = ae::rt::block_on(validator(R"({"verdict":"yes","score":3})"));
+        check(ok.has_value(), "P9b: valid schema-shaped JSON passes");
+
+        auto malformed = ae::rt::block_on(validator("not json at all"));
+        check(!malformed.has_value(), "P9b: malformed JSON is rejected at the parse layer");
+
+        auto mismatch = ae::rt::block_on(validator(R"({"verdict":"yes"})"));  // required int "score" absent
+        check(!mismatch.has_value(),
+              "P9b: JSON missing a required field is rejected at the from_json layer, not the parse layer");
+
+        auto none = ae::agent_bind_detail::output_validator_for<NoClientAgent>();
+        check(!none, "P9b: an agent declaring no OutputSchema<T> produces NO validator");
+    }
+
     // ---- P10: validation at bind time ---------------------------------------------------------------------------
     {
         auto none = ae::make_agent_session<NoClientAgent>(ScriptedChatClient{});

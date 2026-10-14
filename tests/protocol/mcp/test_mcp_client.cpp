@@ -28,6 +28,15 @@ void check(bool cond, char const* what) {
 namespace ae   = agentengine;
 namespace mcp  = agentengine::mcp;
 namespace json = agentengine::json;
+namespace art  = agentengine::rt;
+
+// ADR-237 §5.1: every `McpClient` verb is a `task` producer now. Its body never parks here -- the
+// sender is a synchronous in-process `McpServer`/mock -- so a minimal drive loop is enough.
+template <class T>
+T drive(art::task<T> t) {
+    while (!t.done()) t.resume();
+    return t.take_value();
+}
 
 struct EchoArgs {
     std::string text;
@@ -97,29 +106,30 @@ int main() {
     // in-process test harness IS the transport, so it names one explicitly rather than relying
     // on a default -- there is deliberately no defaulted overload to fall into.
     ae::Principal const kCaller = ae::make_local_cli_principal("test-caller", "test-tenant");
-    mcp::RequestSender to_real_server = [&server, &kCaller](mcp::JsonRpcRequest const& req) {
-        return server.dispatch(req, kCaller);
+    mcp::RequestSender to_real_server = [&server, &kCaller](mcp::JsonRpcRequest const& req)
+        -> ae::task<mcp::JsonRpcResponse> {
+        co_return server.dispatch(req, kCaller);
     };
 
     // --- C3-1/2/3/4: happy-path client behaviour against a REAL server ------------------------------
     {
         mcp::McpClient client(to_real_server, "test-client");
 
-        auto tools = client.list_tools();
+        auto tools = drive(client.list_tools());
         check(tools.has_value() && tools->size() == 2, "C3-1: list_tools() returns both real tools");
 
-        auto ok_call = client.call_tool("echo", json::Value::make_object({{"text", json::Value::make_string("hi")}}));
+        auto ok_call = drive(client.call_tool("echo", json::Value::make_object({{"text", json::Value::make_string("hi")}})));
         check(ok_call.has_value(), "C3-2: a successful tools/call is a successful result<>");
         if (ok_call.has_value()) check(!ok_call->is_error, "C3-2: isError is false for a successful call");
 
-        auto failing_call = client.call_tool("always_fails", json::Value::make_object({{"noop", json::Value::make_bool(true)}}));
+        auto failing_call = drive(client.call_tool("always_fails", json::Value::make_object({{"noop", json::Value::make_bool(true)}})));
         check(failing_call.has_value(),
               "C3-3: an execution failure is STILL a successful result<> -- isError is SURFACED, "
               "never turned into a client-side failure/exception (011 §3.1: \"surfaced to the model "
               "for self-correction\")");
         if (failing_call.has_value()) check(failing_call->is_error, "C3-3: isError is true, faithfully relayed");
 
-        auto unknown_call = client.call_tool("nope", json::Value{});
+        auto unknown_call = drive(client.call_tool("nope", json::Value{}));
         check(!unknown_call.has_value(),
               "C3-4: a PROTOCOL error (unknown tool) IS a client-side failure -- the isError "
               "surfacing rule applies only to execution errors, not protocol errors");
@@ -132,12 +142,12 @@ int main() {
     {
         MockListServer mock;
         mock.live[""] = {"tool-a", "v1"};
-        mcp::McpClient client([&mock](mcp::JsonRpcRequest const& r) { return mock(r); }, "cache-client");
+        mcp::McpClient client([&mock](mcp::JsonRpcRequest const& r) -> ae::task<mcp::JsonRpcResponse> { co_return mock(r); }, "cache-client");
         client.set_ttl(std::chrono::milliseconds(5000));
 
-        auto first = client.list_tools();
+        auto first = drive(client.list_tools());
         check(first.has_value() && mock.call_count == 1, "C3-5: the first call reaches the sender");
-        auto second = client.list_tools();
+        auto second = drive(client.list_tools());
         check(second.has_value() && mock.call_count == 1,
               "C3-5: a second call within ttl is served from cache -- the sender is NOT re-invoked");
     }
@@ -146,10 +156,10 @@ int main() {
     {
         MockListServer mock;
         mock.live[""] = {"tool-a", "v1"};
-        mcp::McpClient client([&mock](mcp::JsonRpcRequest const& r) { return mock(r); }, "no-cache-client");
+        mcp::McpClient client([&mock](mcp::JsonRpcRequest const& r) -> ae::task<mcp::JsonRpcResponse> { co_return mock(r); }, "no-cache-client");
         // ttl left at its default (0).
-        (void)client.list_tools();
-        (void)client.list_tools();
+        (void)drive(client.list_tools());
+        (void)drive(client.list_tools());
         check(mock.call_count == 2,
               "C3-6: with no ttl configured, every list_tools() call reaches the sender -- 0 means "
               "\"never serve from cache,\" not \"cache forever\"");
@@ -161,11 +171,11 @@ int main() {
         MockListServer mock;
         mock.live[""]          = {"tool-page-1", "first page"};
         mock.live["cursor-x"]  = {"tool-page-2", "second page"};
-        mcp::McpClient client([&mock](mcp::JsonRpcRequest const& r) { return mock(r); }, "page-client");
+        mcp::McpClient client([&mock](mcp::JsonRpcRequest const& r) -> ae::task<mcp::JsonRpcResponse> { co_return mock(r); }, "page-client");
         client.set_ttl(std::chrono::milliseconds(5000));
 
-        auto page1 = client.list_tools("");
-        auto page2 = client.list_tools("cursor-x");
+        auto page1 = drive(client.list_tools(""));
+        auto page2 = drive(client.list_tools("cursor-x"));
         check(page1.has_value() && page1->size() == 1 && page1->front().name == "tool-page-1",
               "C3-7: the empty-string-cursor page returns its own real content");
         check(page2.has_value() && page2->size() == 1 && page2->front().name == "tool-page-2",
@@ -175,7 +185,7 @@ int main() {
 
         // Re-fetching page1 within ttl still hits the cache -- proves the two keys don't clobber
         // each other's cache slot.
-        auto page1_again = client.list_tools("");
+        auto page1_again = drive(client.list_tools(""));
         check(page1_again.has_value() && page1_again->front().name == "tool-page-1" && mock.call_count == 2,
               "C3-7: re-fetching the empty-cursor page within ttl is still a cache hit after a "
               "DIFFERENT cursor was fetched in between");
@@ -186,14 +196,14 @@ int main() {
     {
         MockListServer mock;
         mock.live[""] = {"tool-a", "the original description"};
-        mcp::McpClient client([&mock](mcp::JsonRpcRequest const& r) { return mock(r); }, "rugpull-client");
+        mcp::McpClient client([&mock](mcp::JsonRpcRequest const& r) -> ae::task<mcp::JsonRpcResponse> { co_return mock(r); }, "rugpull-client");
         // ttl left at 0 -- every call reaches the (mutable) mock, simulating "re-checked periodically".
 
-        (void)client.list_tools();
+        (void)drive(client.list_tools());
         check(!client.rug_pull_detected(), "C3-8: no rug pull detected on the very first fetch");
 
         mock.live[""] = {"tool-a", "a DIFFERENT description -- the same name, changed content"};
-        (void)client.list_tools();
+        (void)drive(client.list_tools());
         check(client.rug_pull_detected(),
               "C3-8: a tool's description changing under the same name between fetches is detected "
               "as a rug pull, per 011 §8's digest-pinning/re-approval discipline");

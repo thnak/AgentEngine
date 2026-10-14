@@ -123,7 +123,7 @@ int main() {
                 {{"source", json::Value::make_string("echo from-provider > out.txt")}}),
             false};
         agentengine::ToolInvocationAudit audit;
-        auto result = agentengine::invoke_tool(table, held, req, ctx, nullptr, &audit);
+        auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(agentengine::invoke_tool(table, held, req, ctx, nullptr, &audit));
         check(!result.is_error, "Part 2: run_shell, invoked through the pipeline, succeeds");
         check(audit.ok, "Part 2: audit records success");
 
@@ -160,7 +160,7 @@ int main() {
         agentengine::ToolCallRequest const req{
             "call-2", "run_shell",
             json::Value::make_object({{"source", json::Value::make_string("cat out.txt")}}), false};
-        auto result = agentengine::invoke_tool(table, held, req, call_ctx, nullptr);
+        auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(agentengine::invoke_tool(table, held, req, call_ctx, nullptr));
         check(!result.is_error, "Part 3: a later round's run_shell call succeeds against the SAME "
                                  "sandbox (no new directory was created for it)");
         if (!result.content.empty()) {

@@ -1,9 +1,10 @@
 #pragma once
 // Implements 006-Tool-and-Function-Plane.md §6 -- the DECLARATION half of the tool plane: what a tool
 // is at runtime (`ToolDescriptor`), how a compile-time `Tool<Derived, Policies...>` conformer becomes
-// one (`make_tool_descriptor<ToolT>()`, `make_tool_descriptor_with_invoke<ToolT>()`), and the
-// immutable per-run table they are resolved into (`ToolTable`). This is the I6 mechanism for tools:
-// the declarative surface and the native CRTP surface must agree on exactly these fields.
+// one (ADR-237 §5.2's instance form `make_tool_descriptor(ToolT{...})` / `ToolTable::from(...)`, plus
+// the transitional static `make_tool_descriptor<ToolT>()` and `make_tool_descriptor_with_invoke<ToolT>()`),
+// and the immutable per-run table they are resolved into (`ToolTable`). This is the I6 mechanism for
+// tools: the declarative surface and the native CRTP surface must agree on exactly these fields.
 //
 // Moved verbatim out of `core/tool_pipeline.hpp`, which keeps the INVOCATION half (006 §3's ten
 // steps, idempotency, approval and policy deciders, the audit record, batch partitioning, background
@@ -22,9 +23,11 @@
 // from `tool_pipeline.hpp`'s admitted path.
 
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -33,6 +36,7 @@
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/json_value.hpp"
+#include "agentengine/core/task.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/trust/capability.hpp"
 
@@ -54,7 +58,10 @@ struct ToolDescriptor {
     std::string args_schema_json;
     std::string reply_schema_json;
 
-    using InvokeFn = std::function<result<json::Value>(json::Value const&, EffectContext&)>;
+    // ADR-237 §5.2: `invoke` is asynchronous -- returns `task<result<json::Value>>` (006 §1's
+    // `ae::task<result<Reply>>`, type-erased). A synchronous caller drives it with
+    // `rt::drive_leaf_task` until the pipeline itself is converted (ADR-237 §5.2 step B).
+    using InvokeFn = std::function<task<result<json::Value>>(json::Value const&, EffectContext&)>;
     InvokeFn invoke;
 
     // ADR-023 §6 point 4 / 007 §4 amendment: `invoke_tool`'s step 5 reads this ONLY for a
@@ -73,12 +80,11 @@ struct ToolDescriptor {
     // The member name is kept as-is: `d.effect_class` is the reading call sites already use.
     agentengine::effect_class effect_class = agentengine::effect_class::at_most_once;
 
-    // Session-scoped-stateful-tools mechanism (ADR-028): `true` only for a descriptor built via
-    // `make_tool_descriptor_with_invoke<ToolT>()` below, whose `invoke` closure captures a
-    // reference into its owning provider's own session-scoped state (e.g. a persistent
-    // interpreter's exec state, mounted-skills tracking) rather than being a pure, ownership-free
-    // static call. `false` (the default) for every ordinary `make_tool_descriptor<ToolT>()` tool,
-    // unaffected. `background_task()` below refuses to background any descriptor with this set —
+    // Session-scoped-stateful-tools mechanism (ADR-028, ADR-237 §5.2): `true` only for a descriptor
+    // whose tool declares `CapturesSessionState` (`core/tool.hpp`), i.e. whose `invoke` reads
+    // session-scoped state (a persistent interpreter's exec state, mounted-skills tracking) rather
+    // than being a pure, ownership-free call. `false` (the default) for every ordinary stateless
+    // tool, unaffected. `background_task()` below refuses to background any descriptor with this set —
     // `start_background_task()` (agent_session.hpp) detaches a real `std::thread` that would then
     // hold a reference into session state with no synchronization against `AgentSession::
     // fork_from()`/`clear_in_process_state()` (neither is part of `protocol`, so neither is
@@ -102,7 +108,7 @@ struct ToolDescriptor {
     // `ToolTable`/session, but the wire-format `translate_tool()` in the OpenAI/Anthropic backends
     // re-parsed it into a fresh `json::Value` on every single `chat()`/`chat_stream()` call that
     // included this tool -- redundant work repeated once per turn per tool, for the whole run.
-    // `make_tool_descriptor<ToolT>()`/`make_tool_descriptor_with_invoke<ToolT>()` below parse it
+    // `make_tool_descriptor<ToolT>()`/`make_tool_descriptor(ToolT{...})` below parse it
     // ONCE, here, at registration time; `args_schema_value_cached` is `false` for any hand-built
     // descriptor that predates this field (memory_provider.hpp/vector_rag_context_provider.hpp/
     // mcp_tool_bridge.hpp/native_providers.hpp all assign `args_schema_json` directly, not through
@@ -169,6 +175,15 @@ struct ToolDescriptor {
            !d.captures_session_state;
 }
 
+// ADR-237 §5.2 (transitional): lift a synchronous json-level invoke into the (now async) seam, so a
+// hand-built descriptor need not be rewritten as a coroutine before it is migrated to `Tool<>`.
+// Deleted once §5.2's shape-3 descriptors are migrated (ADR-237 §5.2 step D).
+[[nodiscard]] inline ToolDescriptor::InvokeFn make_sync_invoke(
+    std::function<result<json::Value>(json::Value const&, EffectContext&)> fn) {
+    return [fn = std::move(fn)](json::Value const& args, EffectContext& ctx)
+               -> task<result<json::Value>> { co_return fn(args, ctx); };
+}
+
 template <class ToolT>
 [[nodiscard]] ToolDescriptor make_tool_descriptor() {
     ToolDescriptor d;
@@ -182,34 +197,39 @@ template <class ToolT>
     d.parallelizable = ToolT::kHasParallelizable;
     d.deterministic = ToolT::declared_deterministic();
     d.enforces_granted_caps = ToolT::declared_enforces_granted_caps();
+    d.captures_session_state = ToolT::declared_captures_session_state();  // ADR-237 §5.2
     d.args_schema_json = ToolT::args_schema();
     d.reply_schema_json = ToolT::reply_schema();
     if (auto parsed = json::parse(d.args_schema_json)) {
         d.args_schema_value = std::move(*parsed);
         d.args_schema_value_cached = true;
     }
-    d.invoke = [](json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {
+    d.invoke = [](json::Value const& args_value, EffectContext& ctx) -> task<result<json::Value>> {
         auto args = schema::from_json<typename ToolT::Args>(args_value);
-        if (!args) return std::unexpected(args.error());
+        if (!args) co_return std::unexpected(args.error());
         auto reply = ToolT::invoke(*args, ctx);
-        if (!reply) return std::unexpected(reply.error());
-        return schema::to_json(*reply);
+        if (!reply) co_return std::unexpected(reply.error());
+        co_return schema::to_json(*reply);
     };
     return d;
 }
 
-// ADR-028 -- the general session-scoped-stateful-tools mechanism. Identical to
-// `make_tool_descriptor<ToolT>()` above (same compile-time extraction of `ToolT`'s declared
-// `Capabilities<...>`/`Approval<...>`/`EffectClass<...>`/schemas -- a state-capturing tool is
-// still a real `Tool<Derived, Policies...>` conformer, never a hand-built-from-scratch descriptor
-// that would silently default to an empty capability ceiling and `never_require` approval), except
-// `custom_invoke` runs INSTEAD OF `ToolT::invoke` -- letting the caller supply a callable that
-// captures whatever session-scoped state it needs (typically a non-static member function on the
-// state-owning `ContextProvider`, e.g. `[this](Args a, EffectContext& ctx) { return
-// this->real_invoke(a, ctx); }`). `ToolT::invoke` itself is never called on this path; it may even
-// be left undefined by `ToolT` if every call site uses this factory instead of the plain one.
-template <class ToolT, class InvokeFn>
-[[nodiscard]] ToolDescriptor make_tool_descriptor_with_invoke(InvokeFn custom_invoke) {
+// ADR-237 §5.2: `make_tool_descriptor_with_invoke` lived here. It is DELETED -- every one of its call
+// sites (production and test) is now an instance-form `Tool<>` conformer registered through the
+// value-taking `make_tool_descriptor(ToolT)` below, so a descriptor's invoke IS the declared code and no
+// closure-over-session-state path remains. Its old implicit `captures_session_state = true` is now the
+// explicit `CapturesSessionState` policy tag (`core/tool.hpp`).
+
+// ADR-237 §5.2: the instance-invoke form. `ToolT` declares a non-static `const`
+// `task<result<Reply>> invoke(Args, EffectContext&)`; the tool object is moved into a descriptor-owned
+// `shared_ptr` and the seam calls it through that owner. A stateless tool is an empty object
+// (`make_tool_descriptor(ToolT{})`); a stateful one carries its injected state by value, which is how
+// the former `make_tool_descriptor_with_invoke` call sites become real `Tool<>` conformers.
+// Registration is `ToolTable::from(ToolT{...}, ...)`. This is the §5.2 target shape; the older
+// zero-argument `make_tool_descriptor<ToolT>()` above is the transitional static-invoke form and is
+// deleted once every conformer is converted.
+template <class ToolT>
+[[nodiscard]] ToolDescriptor make_tool_descriptor(ToolT tool) {
     ToolDescriptor d;
     d.name = std::string(ToolT::name);
     d.description = std::string(ToolT::description);
@@ -219,26 +239,24 @@ template <class ToolT, class InvokeFn>
     d.effect_class = ToolT::declared_effect_class();
     d.exclusivity_group = ToolT::declared_exclusivity_group();
     d.parallelizable = ToolT::kHasParallelizable;
-    // ADR-212 §3.4: `custom_invoke` is not the code `Deterministic` describes, and it reads session
-    // state a verifying node does not have, so the claim does not carry over.
-    d.deterministic = false;
-    // ADR-217: carried over -- the tag describes the invoke the descriptor runs, and a tool built only
-    // through this factory (e.g. `RunShellTool`) declares it for its custom invoke.
+    // ADR-212/§5.2: the instance invoke IS the declared code, so the Deterministic/
+    // EnforcesGrantedCaps claims carry over from the declaration, exactly as the static factory above.
+    d.deterministic = ToolT::declared_deterministic();
     d.enforces_granted_caps = ToolT::declared_enforces_granted_caps();
+    d.captures_session_state = ToolT::declared_captures_session_state();  // ADR-237 §5.2
     d.args_schema_json = ToolT::args_schema();
     d.reply_schema_json = ToolT::reply_schema();
     if (auto parsed = json::parse(d.args_schema_json)) {
         d.args_schema_value = std::move(*parsed);
         d.args_schema_value_cached = true;
     }
-    d.captures_session_state = true;
-    d.invoke = [custom_invoke = std::move(custom_invoke)](
-                   json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {
+    auto owned = std::make_shared<ToolT>(std::move(tool));
+    d.invoke = [owned](json::Value const& args_value, EffectContext& ctx) -> task<result<json::Value>> {
         auto args = schema::from_json<typename ToolT::Args>(args_value);
-        if (!args) return std::unexpected(args.error());
-        auto reply = custom_invoke(*args, ctx);
-        if (!reply) return std::unexpected(reply.error());
-        return schema::to_json(*reply);
+        if (!args) co_return std::unexpected(args.error());
+        auto reply = co_await owned->invoke(*args, ctx);
+        if (!reply) co_return std::unexpected(reply.error());
+        co_return schema::to_json(*reply);
     };
     return d;
 }
@@ -261,6 +279,20 @@ public:
     [[nodiscard]] static ToolTable from_tools() {
         ToolTable t;
         (t.descriptors_.push_back(make_tool_descriptor<ToolTs>()), ...);
+        return t;
+    }
+
+    // ADR-237 §5.2: the instance-form registration path. Each argument is a `Tool<>` instance -- a
+    // stateless tool is `ToolT{}`, a stateful one carries its injected state by value -- moved into
+    // its descriptor (see the value-taking `make_tool_descriptor` above). This is where the former
+    // `make_tool_descriptor_with_invoke` call sites went. `from()` with no arguments is an empty
+    // table, matching `from_tools<>()`.
+    template <class... ToolTs>
+    [[nodiscard]] static ToolTable from(ToolTs&&... tools) {
+        ToolTable t;
+        (t.descriptors_.push_back(
+             make_tool_descriptor<std::decay_t<ToolTs>>(std::forward<ToolTs>(tools))),
+         ...);
         return t;
     }
 

@@ -36,6 +36,7 @@
 #include <string>
 #include <thread>
 
+#include "../../support/run_task_sync.hpp"  // ADR-237 §5.2: drive the async tool invoke
 using namespace agentengine;
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
@@ -110,7 +111,7 @@ using Provider = LiveShellSandboxProvider<DockerPersistentShellSurface>;
     auto tool = tool_of(p);  // an on_context per call: each is a "turn" boundary as far as the provider can tell
     if (!tool.has_value()) return std::unexpected(error{failure_class::contract, "no tool", "test.no_tool"});
     EffectContext ctx = owner_ctx();
-    auto out = tool->invoke(json::Value::make_object({{"command", json::Value::make_string(command)}}), ctx);
+    auto out = test_support::run_task_sync<result<json::Value>>(tool->invoke(json::Value::make_object({{"command", json::Value::make_string(command)}}), ctx));
     if (!out.has_value()) return std::unexpected(out.error());
     return schema::from_json<ShellExecReply>(*out);
 }
@@ -161,9 +162,15 @@ int main() {
 
     auto bind = [&](Provider& p, std::string const& name, std::string const& image, std::chrono::milliseconds deadline) {
         auto root = drive(ledger.create_root_branch(owner, name));
-        return p.bind_sandbox(ledger, std::move(*root), owner, dir / name, branch_q, run_q, storage_q, open_q,
-                              LiveShellLimits{30min, 2h, 100},
-                              [image] { return DockerPersistentShellSurface(image, box()); }, deadline);
+        // ADR-237 §5.1 (step 37): `bind_sandbox` is async now (it awaits the surface factory); drive it here
+        // so this lambda keeps its own synchronous `result<void>` shape for its call sites.
+        return agentengine::rt::block_on(p.bind_sandbox(
+            ledger, std::move(*root), owner, dir / name, branch_q, run_q, storage_q, open_q,
+            LiveShellLimits{30min, 2h, 100},
+            [image]() -> agentengine::rt::task<DockerPersistentShellSurface> {
+                co_return DockerPersistentShellSurface(image, box());
+            },
+            deadline));
     };
 
     // ---- L1, L2, L3, L4, L5

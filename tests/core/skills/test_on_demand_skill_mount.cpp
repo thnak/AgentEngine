@@ -13,6 +13,7 @@
 #include "agentengine/core/mounted_skills_state.hpp"
 #include "agentengine/core/skill_provider.hpp"
 #include "agentengine/core/skill_tool_scoping.hpp"
+#include "../../support/run_task_sync.hpp"
 
 using namespace agentengine;
 
@@ -85,7 +86,7 @@ int main() {
         sources.push_back(make_skill_source_descriptor(InlineSkillSource(
             "origin-a", {make_skill_with_tool("test-skill", "fake_tool")})));
         SkillsProvider<> skills(std::move(sources));
-        auto loaded = skills.ensure_loaded();
+        auto loaded = test_support::run_task_sync<result<void>>(skills.ensure_loaded());
         check(loaded.has_value(), "R2 setup: the one-skill source resolves cleanly");
 
         MountedSkillsState mount_state;
@@ -106,7 +107,7 @@ int main() {
                                        json::Value::make_object({{"note", json::Value::make_string("x")}}),
                                        /*arguments_tainted=*/false, 0};
             ToolInvocationAudit audit;
-            ToolResult const result = invoke_tool(scoped, held, req, ctx, {}, &audit);
+            ToolResult const result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(scoped, held, req, ctx, {}, &audit));
             check(result.is_error,
                   "R2-before: invoke_tool REJECTS fake_tool while test-skill is unmounted -- a real "
                   "restriction, not a cosmetic one");
@@ -129,7 +130,7 @@ int main() {
                                        json::Value::make_object({{"note", json::Value::make_string("x")}}),
                                        /*arguments_tainted=*/false, 0};
             ToolInvocationAudit audit;
-            ToolResult const result = invoke_tool(scoped, held, req, ctx, {}, &audit);
+            ToolResult const result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(scoped, held, req, ctx, {}, &audit));
             check(!result.is_error,
                   "R2-after: the SAME call to fake_tool succeeds once test-skill is mounted -- the "
                   "unlock is real, through the real pipeline, not a separate code path");

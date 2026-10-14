@@ -14,6 +14,9 @@ export default defineConfig({
       input: {
         main: fileURLToPath(new URL('./index.html', import.meta.url)),
         api: fileURLToPath(new URL('./api.html', import.meta.url)),
+        apiHowItWorks: fileURLToPath(new URL('./api/how-it-works.html', import.meta.url)),
+        apiFirstApp: fileURLToPath(new URL('./api/first-app.html', import.meta.url)),
+        apiPizzaOrder: fileURLToPath(new URL('./api/pizza-order.html', import.meta.url)),
         apiAgent: fileURLToPath(new URL('./api/agent.html', import.meta.url)),
         apiBuilder: fileURLToPath(new URL('./api/builder.html', import.meta.url)),
         apiTool: fileURLToPath(new URL('./api/tool.html', import.meta.url)),

@@ -148,7 +148,8 @@ concrete pre-implementation checklist item for its `ChatClient` backend, not a r
 
 - **Retry** applies to `Transient` only (001 §6), bounded exponential with jitter, and **must
   respect the remaining deadline** rather than its own timeout — a retry that outlives the caller's
-  budget is a bug.
+  budget is a bug. A `Resource` failure (a deadline included) is not retried under the budget it
+  exhausted, and a `Canceled` call is neither retried nor failed over to another tier (ADR-237 §9 D6).
 - **Idempotency:** a retried call carries a stable idempotency key so a provider that supports it
   does not double-charge or double-execute.
 - **Rate limits and overload** use `rt::CircuitBreaker` (`rt/circuit_breaker.hpp`) plus

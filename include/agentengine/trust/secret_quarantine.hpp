@@ -239,14 +239,20 @@ AE_JSON_SCHEMA(QuarantineSecretReply, redacted_text)
 
 // Zero-capability management tool -- grants nothing new (006's own `EffectClass`/`Tool` vocabulary
 // is the only precedent this needs; ADR-068 §4 finding 2 corrected an earlier citation to PR18's
-// unmerged `ToolOptimizerProvider` that this file does not repeat). `invoke()` is a dead poison stub;
-// real logic lives in `make_quarantine_secret_tool_descriptor()`'s closure below, reached via
-// `make_tool_descriptor_with_invoke()` -- the same pattern `ToolOptimizerProvider`'s management tools
-// use once/if that PR merges.
+// unmerged `ToolOptimizerProvider` that this file does not repeat).
+//
+// ADR-237 §5.2: a real `Tool<>` conformer now, not a hand-built descriptor with a
+// `make_tool_descriptor_with_invoke([&store]...)` closure. It holds the quarantining store by pointer
+// (the store is owned by the provider, which outlives every descriptor it hands out -- the same
+// provider-outlives-descriptor contract `MemoryProvider::RecallTool` states) and declares
+// `CapturesSessionState`, keeping it non-backgroundable and non-rerun-comparable exactly as its old
+// capturing closure was. The dead static `invoke()` poison stub is gone: the instance `invoke()` IS
+// the one real path.
 //
 // ALWAYS `agent_initiated` -- `text` is a model-supplied argument, never engine-verified content, so
 // nothing minted through this tool is ever grant-eligible (this file's own top comment).
-struct QuarantineSecretTool : Tool<QuarantineSecretTool, EffectClass<effect_class::pure>> {
+struct QuarantineSecretTool : Tool<QuarantineSecretTool, EffectClass<effect_class::pure>,
+                                    CapturesSessionState> {
     static constexpr std::string_view name = "quarantine_secret";
     static constexpr std::string_view description =
         "Hide a piece of text you're about to say (e.g. a credential you noticed in a tool result "
@@ -255,23 +261,21 @@ struct QuarantineSecretTool : Tool<QuarantineSecretTool, EffectClass<effect_clas
         "Continue using the returned text, not the original.";
     using Args = QuarantineSecretArgs;
     using Reply = QuarantineSecretReply;
-    static result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(
-            error{failure_class::fatal,
-                  "QuarantineSecretTool::invoke() must never run directly -- reached only through "
-                  "make_quarantine_secret_tool_descriptor()'s own closure",
-                  "secret_quarantine.dead_static_invoke_path"});
+
+    explicit QuarantineSecretTool(QuarantineSecretStore& store) : store_(&store) {}
+
+    [[nodiscard]] task<result<Reply>> invoke(Args args, EffectContext& ctx) const {
+        if (args.text.empty()) co_return Reply{args.text};
+        SecretRef const ref = store_->quarantine(args.text, quarantine_trigger::agent_initiated, ctx);
+        co_return Reply{"[quarantined secret: " + ref.name + "]"};
     }
+
+private:
+    QuarantineSecretStore* store_;
 };
 
 [[nodiscard]] inline ToolDescriptor make_quarantine_secret_tool_descriptor(QuarantineSecretStore& store) {
-    return make_tool_descriptor_with_invoke<QuarantineSecretTool>(
-        [&store](QuarantineSecretArgs args, EffectContext& ctx) -> result<QuarantineSecretReply> {
-            if (args.text.empty()) return QuarantineSecretReply{args.text};
-            SecretRef const ref =
-                store.quarantine(args.text, quarantine_trigger::agent_initiated, ctx);
-            return QuarantineSecretReply{"[quarantined secret: " + ref.name + "]"};
-        });
+    return make_tool_descriptor(QuarantineSecretTool{store});
 }
 
 // Wraps `QuarantineSecretStore` as a real `ContextProvider` conformer -- ADR-068's own named residual

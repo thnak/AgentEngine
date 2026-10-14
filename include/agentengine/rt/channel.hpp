@@ -213,6 +213,21 @@ public:
         return push_result::ok;
     }
 
+    // Non-blocking twin of push() (ADR-237 §4.5 rule 5: a coroutine on a lane must never park the thread).
+    // `std::nullopt` = the queue is full and the channel still open -- `value` is NOT consumed, so the caller can
+    // hand the same item to a blocking push() on a thread that may park. Otherwise as push(): `ok` (moved in) or
+    // `terminated` (not enqueued).
+    [[nodiscard]] std::optional<push_result> try_push(T& value) {
+        std::unique_lock lock(state_->m);
+        if (state_->terminal != channel_terminal::open) return push_result::terminated;
+        if (state_->queue.size() >= state_->capacity) return std::nullopt;
+        state_->queue.push_back(std::move(value));
+        detail::ParkedResumer waiter = std::exchange(state_->waiting_consumer, {});
+        lock.unlock();
+        detail::wake(std::move(waiter));
+        return push_result::ok;
+    }
+
     // Clean, in-band end-of-stream. Idempotent -- a second call (or the destructor's own fire-default)
     // after an explicit close()/fail() is a harmless no-op, never overwrites an already-set terminal.
     void close() noexcept { finish(channel_terminal::closed, std::nullopt); }

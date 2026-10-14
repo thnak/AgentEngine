@@ -56,14 +56,14 @@ int main() {
             t.on_context(session_ctx, ctx));
         auto const* add = find_tool(*t_out, "todos_add");
         auto add_args = json::parse(R"({"title":"plan it"})");
-        auto add_result = add->invoke(*add_args, ctx);
+        auto add_result = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(add->invoke(*add_args, ctx));
         check(add_result.has_value(), "setup: todos_add succeeds");
 
         auto m_out = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
             m.on_context(session_ctx, ctx));
         auto const* ready = find_tool(*m_out, "plan_ready");
         auto no_args = json::parse(R"({})");
-        auto ready_result = ready->invoke(*no_args, ctx);
+        auto ready_result = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(ready->invoke(*no_args, ctx));
         check(ready_result.has_value(), "setup: plan_ready succeeds");
     };
 
@@ -87,7 +87,7 @@ int main() {
     {
         auto no_args = json::parse(R"({})");
         check(no_args.has_value(), "setup: empty-object args parse");
-        auto result = ready_tool0->invoke(*no_args, ctx);
+        auto result = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(ready_tool0->invoke(*no_args, ctx));
         check(!result.has_value() && result.error().code == "plan_execute.no_plan",
               "R2 (I3): plan_ready refuses to open the gate with zero real planning evidence -- the "
               "structured call alone is not trusted as substance, only a prior real todos_add is");
@@ -102,11 +102,11 @@ int main() {
         auto const* add_tool = find_tool(*todo_out, "todos_add");
         check(add_tool != nullptr, "setup: todos_add found");
         auto add_args = json::parse(R"({"title":"cut release notes"})");
-        auto add_result = add_tool->invoke(*add_args, ctx);
+        auto add_result = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(add_tool->invoke(*add_args, ctx));
         check(add_result.has_value(), "setup: todos_add succeeds");
 
         auto no_args = json::parse(R"({})");
-        auto ready_result = ready_tool0->invoke(*no_args, ctx);
+        auto ready_result = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(ready_tool0->invoke(*no_args, ctx));
         check(ready_result.has_value(), "R3: plan_ready succeeds once a real todo exists");
         check(gate->executing, "R3: the gate is now open");
     }
@@ -141,7 +141,7 @@ int main() {
         auto const* copied_add = find_tool(*todo_ctx, "todos_add");
         check(copied_add != nullptr, "setup: copied TodoProvider's todos_add found");
         auto add_args = json::parse(R"({"title":"ship it"})");
-        check(copied_add->invoke(*add_args, ctx).has_value(),
+        check(ae::test_support::run_task_sync<ae::result<ae::json::Value>>(copied_add->invoke(*add_args, ctx)).has_value(),
               "setup: todos_add on the COPY succeeds");
 
         auto plan_ctx = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
@@ -149,7 +149,7 @@ int main() {
         auto const* copied_ready = find_tool(*plan_ctx, "plan_ready");
         check(copied_ready != nullptr, "setup: copied PlanExecuteMode's plan_ready found");
         auto no_args = json::parse(R"({})");
-        auto ready_result = copied_ready->invoke(*no_args, ctx);
+        auto ready_result = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(copied_ready->invoke(*no_args, ctx));
         check(ready_result.has_value(),
               "R5a: plan_ready on the COPY sees the todo the COPY's own todos_add just added -- the "
               "copy shares TodoState with its own copy, not a stale snapshot");

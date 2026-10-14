@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "agentengine/core/codeact_tool_union.hpp"
+#include "../support/run_task_sync.hpp"
 
 using namespace agentengine;
 using namespace agentengine::wasm;
@@ -226,7 +227,7 @@ int main() {
             ApprovalDecider const approve;
             ToolInvocationAudit audit;
 
-            ToolResult result = invoke_tool(*unioned, held, req, ctx, approve, &audit);
+            ToolResult result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(*unioned, held, req, ctx, approve, &audit));
             AE_CHECK(!result.is_error, "e2e: echo call succeeds through the real invoke_tool() pipeline");
             AE_CHECK(audit.ok, "e2e: audit records success");
             if (!result.is_error && result.content.size() == 1) {
@@ -260,7 +261,7 @@ int main() {
             req.arguments = json::Value::make_object({{"msg", json::Value::make_string("hello")}});
             ApprovalDecider const approve;
 
-            ToolResult result = invoke_tool(*unioned, held_without_grant, req, ctx, approve, nullptr);
+            ToolResult result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(*unioned, held_without_grant, req, ctx, approve, nullptr));
             AE_CHECK(result.is_error,
                       "i2: missing cap::ToolCall denies the call, even though the wasm instance's own "
                       "operator_grant is fully granted");
@@ -280,7 +281,7 @@ int main() {
             req.arguments = json::Value::make_null();
             ApprovalDecider const approve;
 
-            ToolResult result = invoke_tool(*unioned, held, req, ctx, approve, nullptr);
+            ToolResult result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(*unioned, held, req, ctx, approve, nullptr));
             AE_CHECK(!result.is_error, "now: call succeeds through the real pipeline (Data-content path)");
             if (!result.is_error && result.content.size() == 1) {
                 auto const* data = std::get_if<Data>(&result.content[0].value);

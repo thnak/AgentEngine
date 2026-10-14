@@ -19,6 +19,7 @@
 #include "agentengine/core/agent_registry.hpp"
 #include "agentengine/trust/policy_reachability.hpp"
 #include "backends/native_jail/session_shell_wiring.hpp"
+#include "../../support/run_task_sync.hpp"
 
 namespace {
 
@@ -117,7 +118,7 @@ ae::ToolResult call(ae::ToolTable const& table, CapabilitySet const& held, std::
     ctx.sandbox_fs = fs;
     ae::ToolCallRequest const req{"call", tool, std::move(args), false};
     ae::ToolInvocationAudit audit;
-    auto r      = ae::invoke_tool(table, held, req, ctx, nullptr, &audit);
+    auto r      = agentengine::test_support::run_task_sync<agentengine::ToolResult>(ae::invoke_tool(table, held, req, ctx, nullptr, &audit));
     g_last_code = audit.error_code;
     return r;
 }

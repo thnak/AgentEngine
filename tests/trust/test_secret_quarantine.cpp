@@ -13,6 +13,7 @@
 #include "agentengine/trust/capability.hpp"
 #include "agentengine/trust/secret_quarantine.hpp"
 
+#include "../support/run_task_sync.hpp"  // ADR-237 §5.2: drive the async tool invoke
 using namespace agentengine;
 
 namespace {
@@ -195,8 +196,8 @@ void test_agent_initiated_tool_never_grants_and_redacts_verbatim() {
     EffectContext ctx = make_ctx();
     QuarantineSecretArgs const args{"a very specific string the model flagged"};
     json::Value const args_json = schema::to_json(args);
-    auto const reply_json = descriptor.invoke(args_json, ctx);
-    AE_CHECK(reply_json.has_value(), "invoking the real closure (not the dead static invoke()) succeeds");
+    auto const reply_json = test_support::run_task_sync<result<json::Value>>(descriptor.invoke(args_json, ctx));
+    AE_CHECK(reply_json.has_value(), "invoking the real instance invoke() succeeds");
 
     if (reply_json.has_value()) {
         auto const reply = schema::from_json<QuarantineSecretReply>(*reply_json);
@@ -215,15 +216,15 @@ void test_agent_initiated_tool_never_grants_and_redacts_verbatim() {
              "quarantine_secret's own tool-call path mints zero grant-eligible refs");
 }
 
-void test_dead_static_invoke_path_is_unreachable_but_fails_safely() {
-    std::cout << "-- QuarantineSecretTool::invoke() dead path fails, doesn't crash --\n";
-    EffectContext ctx = make_ctx();
-    auto const result = QuarantineSecretTool::invoke(QuarantineSecretArgs{"x"}, ctx);
-    AE_CHECK(!result.has_value(), "the static invoke() stub always fails");
-    if (!result.has_value()) {
-        AE_CHECK(result.error().code == "secret_quarantine.dead_static_invoke_path",
-                 "the stub fails with its own named, greppable error code");
-    }
+void test_descriptor_declares_session_state_capture() {
+    std::cout << "-- QuarantineSecretTool declares CapturesSessionState (ADR-237 §5.2) --\n";
+    QuarantineSecretStore store;
+    ToolDescriptor const descriptor = make_quarantine_secret_tool_descriptor(store);
+    AE_CHECK(descriptor.captures_session_state,
+             "the migrated tool declares CapturesSessionState -- kept non-backgroundable and "
+             "non-rerun-comparable, exactly as its old capturing closure was");
+    AE_CHECK(descriptor.effect_class == effect_class::pure,
+             "and keeps its declared EffectClass<pure>");
 }
 
 }  // namespace
@@ -235,7 +236,7 @@ int main() {
     test_grant_eligibility_excludes_agent_initiated();
     test_scan_and_quarantine_redacts_correctly();
     test_agent_initiated_tool_never_grants_and_redacts_verbatim();
-    test_dead_static_invoke_path_is_unreachable_but_fails_safely();
+    test_descriptor_declares_session_state_capture();
 
     if (g_failures == 0) {
         std::cout << "ALL PASS\n";

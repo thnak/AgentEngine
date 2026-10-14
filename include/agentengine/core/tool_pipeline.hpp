@@ -324,8 +324,11 @@ struct AdmittedCallOutcome {
     std::size_t bytes = 0;
 };
 
-[[nodiscard]] AdmittedCallOutcome run_admitted_call(ToolDescriptor const& tool, ToolCallRequest const& request,
-                                                    EffectContext& ctx, std::vector<BoundCapability>& bound);
+// ADR-237 §5.2: async -- step 8 `co_await`s the tool's `task<result<json::Value>>` invoke. A
+// genuinely-sync caller (a detached background worker, a host edge) drives this with
+// `rt::block_on`; the two callers inside this file drive it with `co_await`.
+[[nodiscard]] task<AdmittedCallOutcome> run_admitted_call(ToolDescriptor const& tool, ToolCallRequest const& request,
+                                                          EffectContext& ctx, std::vector<BoundCapability>& bound);
 
 // ADR-160 §5: a small, shared audit-record builder for the parallel-batch fan-out path only --
 // `invoke_tool()`'s own inline `finish()` closure and `background_task()`'s own closure each keep
@@ -342,18 +345,21 @@ struct AdmittedCallOutcome {
 // regardless of outcome (step 10) -- see the RAII guard below, which is what makes G3 ("a
 // capability handle from call n is unusable in call n+1") true by construction rather than by
 // convention.
-[[nodiscard]] ToolResult invoke_tool(ToolTable const& table, CapabilitySet const& held,
-                                     ToolCallRequest const& request, EffectContext& ctx,
-                                     ApprovalDecider const& approve,
-                                     ToolInvocationAudit* audit_out = nullptr,
-                                     // ADR-070: appended last (this file's own established
-                                     // convention for additive parameters), default `{}` so
-                                     // every existing positional call site -- including the
-                                     // three "already resolved by a human" one-shot-approve
-                                     // sites in rt/agent_session.hpp -- is unaffected and
-                                     // never re-litigates a decision policy_driven already
-                                     // deferred to a real human.
-                                     PolicyDecider const& policy = {});
+//
+// ADR-237 §5.2: async -- `task<ToolResult>`. Engine callers `co_await` it; a genuinely-sync host
+// (an MCP request handler, the native-jail bridge, an example `main`) drives it with `rt::block_on`.
+[[nodiscard]] task<ToolResult> invoke_tool(ToolTable const& table, CapabilitySet const& held,
+                                           ToolCallRequest const& request, EffectContext& ctx,
+                                           ApprovalDecider const& approve,
+                                           ToolInvocationAudit* audit_out = nullptr,
+                                           // ADR-070: appended last (this file's own established
+                                           // convention for additive parameters), default `{}` so
+                                           // every existing positional call site -- including the
+                                           // three "already resolved by a human" one-shot-approve
+                                           // sites in rt/agent_session.hpp -- is unaffected and
+                                           // never re-litigates a decision policy_driven already
+                                           // deferred to a real human.
+                                           PolicyDecider const& policy = {});
 
 // decisions/ADR-160-parallel-tool-batch-scheduler.md §5 "Batch partitioning". A pure function: given
 // the batch of requests actually being dispatched (the caller has already filtered out anything a
@@ -424,10 +430,13 @@ struct ConcurrencyClass {
 // ae-naming-lint: allow BackgroundTaskCompletion — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using BackgroundTaskCompletion = std::function<void(ToolResult, ToolInvocationAudit)>;
 
-[[nodiscard]] result<void> background_task(ToolTable const& table, CapabilitySet const& held,
-                                           ToolCallRequest const& request, EffectContext ctx,
-                                           ApprovalDecider const& approve,
-                                           std::size_t current_background_count,
-                                           BackgroundTaskCompletion on_complete);
+// ADR-237 §5.2: async -- `task<result<void>>`. The coroutine body performs ONLY the synchronous
+// admission steps (1, 4/7, 5) and then detaches the worker that runs step 8; it never itself parks,
+// so an engine caller `co_await`s it and a genuinely-sync host drives it with `rt::block_on`.
+[[nodiscard]] task<result<void>> background_task(ToolTable const& table, CapabilitySet const& held,
+                                                 ToolCallRequest const& request, EffectContext ctx,
+                                                 ApprovalDecider const& approve,
+                                                 std::size_t current_background_count,
+                                                 BackgroundTaskCompletion on_complete);
 
 }  // namespace agentengine

@@ -28,6 +28,7 @@
 #include "agentengine/core/composed_context_provider.hpp"
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "../../support/run_task_sync.hpp"
 
 using ae::rt::AgentSession;
@@ -51,8 +52,7 @@ void check(bool cond, char const* what) {
 // external, so a plain "resume until done" loop is safe.
 template <class T>
 T drive(ae::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return ae::rt::block_on(std::move(t));
 }
 
 ae::Message make_msg(std::string text, std::string message_id) {

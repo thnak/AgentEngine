@@ -56,7 +56,7 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       tag: "rt::AgentSessionRecord · CheckpointCadence<N> · checkpoint_if_due()",
       title: "A checkpoint is a small, flat, JSON-encoded bookkeeping record — not the conversation",
       body:
-        "rt::AgentSessionRecord carries seven fields and nothing else: session_id, principal_id, principal_tenant_id, a deleted flag, run_counter, turn_index, and the run's open Interactions. It is encoded as JSON through the session's own hand-written codec (never a reflection macro) and handed to a host-supplied rt::SessionStore as opaque bytes. History, typed session state, metadata, standing effects and pending CodeAct asks are all deliberately outside it — each for a named reason, not by omission. save_agent_session_snapshot() reads that record under the same rt::AsyncMutex every public entry point holds, so a checkpoint can never observe a half-mutated session; CheckpointCadence<N>::due() decides whether a given turn boundary writes at all, with the turn counter owned by the caller because AgentSession has no ambient store access (I2).",
+        "rt::AgentSessionRecord carries eight fields and nothing else: session_id, principal_id, principal_tenant_id, a deleted flag, run_counter, turn_index, the run's open Interactions, and require_authority (ADR-061 §22.1 — carried through fork and restore so a Tier-3 session cannot silently downgrade to the caller-only admission path). It is encoded as JSON through the session's own hand-written codec (never a reflection macro) and handed to a host-supplied rt::SessionStore as opaque bytes. History, typed session state, metadata, standing effects and pending CodeAct asks are all deliberately outside it — each for a named reason, not by omission. save_agent_session_snapshot() reads that record under the same rt::AsyncMutex every public entry point holds, so a checkpoint can never observe a half-mutated session; CheckpointCadence<N>::due() decides whether a given turn boundary writes at all, with the turn counter owned by the caller because AgentSession has no ambient store access (I2).",
       cite: "include/agentengine/rt/agent_session.hpp:389",
       href: gh("include/agentengine/rt/agent_session.hpp"),
     },
@@ -116,7 +116,7 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       tag: "Interaction{interaction_id, run_id, reason} · rt/interaction_codec.hpp",
       title: "A run that waits for a human is a durability question, not just a UX one",
       body:
-        "Interaction is the one internal correlation record behind every kind of waiting: input, auth, approval (ADR-029), and codeact_ask (ADR-057). It is all scalars and strings, so it round-trips through a checkpoint trivially — and it is the only non-scalar field AgentSessionRecord carries, encoded by rt/interaction_codec.hpp. That makes an open approval durable and restorable. What is not durable is the round the approval was suspended in: resolve_interaction() requires history_'s tail to still be the exact assistant tool-call message that suspended, and history_ is not in the record. A restored session therefore knows an approval was pending and cannot resume it — ADR-029 named this residual itself. The approval flow's mechanics live on the AgentSession page; this is the persistence half of the same story.",
+        "Interaction is the one internal correlation record behind every kind of waiting: input, auth, approval (ADR-029), and codeact_ask (ADR-057). It is all scalars and strings, so it round-trips through a checkpoint trivially — and it is the only non-scalar field AgentSessionRecord carries, encoded by rt/interaction_codec.hpp. That makes an open approval durable and restorable. What is not durable is the suspended ROUND: the record carries the open interaction but nothing about the round it belongs to, and restore_from_record() clears the in-memory per-interaction records that describe the session being replaced. So resolve_interaction() on a restored session fails on its FIRST guard — the interaction has no recorded round — with session.resolve_interaction.round_not_recorded, closing it with nothing run. (A live session has a second guard behind that one: a resolve also requires history_'s tail to still be the exact assistant tool-call message that suspended, or it reports session.resolve_interaction.stale.) A restored session therefore knows an approval was pending and cannot resume it — ADR-029 named this residual itself. It remains usable for NEW work: a fresh start_run() on the restored session is accepted. The approval flow's mechanics live on the AgentSession page; this is the persistence half of the same story.",
       cite: "include/agentengine/core/interaction.hpp:43",
       href: gh("include/agentengine/core/interaction.hpp"),
     },
@@ -168,7 +168,7 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       tag: "rt::AgentSessionRecord · CheckpointCadence<N> · checkpoint_if_due()",
       title: "Một checkpoint là bản ghi sổ sách nhỏ, phẳng, mã hóa JSON — không phải cuộc hội thoại",
       body:
-        "rt::AgentSessionRecord mang đúng bảy trường và không gì khác: session_id, principal_id, principal_tenant_id, cờ deleted, run_counter, turn_index, và các Interaction đang mở của run. Nó được mã hóa JSON bằng codec viết tay của chính session (không hề dùng macro phản chiếu) rồi trao cho một rt::SessionStore do host cung cấp dưới dạng byte mờ. Lịch sử hội thoại, state có kiểu, metadata, hiệu ứng thường trực và các câu hỏi CodeAct đang chờ đều cố ý nằm ngoài — mỗi thứ đều có lý do được nêu tên, không phải bị bỏ quên. save_agent_session_snapshot() đọc bản ghi đó dưới cùng một rt::AsyncMutex mà mọi điểm vào công khai đều giữ, nên một checkpoint không bao giờ nhìn thấy session đang bị sửa dở; CheckpointCadence<N>::due() quyết định một mốc lượt có ghi hay không, còn bộ đếm lượt thuộc về caller vì AgentSession không có quyền truy cập store ngầm (I2).",
+        "rt::AgentSessionRecord mang đúng tám trường và không gì khác: session_id, principal_id, principal_tenant_id, cờ deleted, run_counter, turn_index, các Interaction đang mở của run, và require_authority (ADR-061 §22.1 — được mang theo qua fork và restore để một session Tier-3 không thể âm thầm hạ cấp xuống đường admission chỉ-dựa-caller). Nó được mã hóa JSON bằng codec viết tay của chính session (không hề dùng macro phản chiếu) rồi trao cho một rt::SessionStore do host cung cấp dưới dạng byte mờ. Lịch sử hội thoại, state có kiểu, metadata, hiệu ứng thường trực và các câu hỏi CodeAct đang chờ đều cố ý nằm ngoài — mỗi thứ đều có lý do được nêu tên, không phải bị bỏ quên. save_agent_session_snapshot() đọc bản ghi đó dưới cùng một rt::AsyncMutex mà mọi điểm vào công khai đều giữ, nên một checkpoint không bao giờ nhìn thấy session đang bị sửa dở; CheckpointCadence<N>::due() quyết định một mốc lượt có ghi hay không, còn bộ đếm lượt thuộc về caller vì AgentSession không có quyền truy cập store ngầm (I2).",
       cite: "include/agentengine/rt/agent_session.hpp:389",
       href: gh("include/agentengine/rt/agent_session.hpp"),
     },
@@ -228,7 +228,7 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       tag: "Interaction{interaction_id, run_id, reason} · rt/interaction_codec.hpp",
       title: "Một run chờ con người là câu hỏi về tính bền vững, không chỉ về trải nghiệm",
       body:
-        "Interaction là bản ghi tương quan nội bộ duy nhất đứng sau mọi kiểu chờ đợi: input, auth, approval (ADR-029) và codeact_ask (ADR-057). Nó toàn số và chuỗi, nên đi qua một checkpoint hết sức dễ dàng — và nó là trường không vô hướng duy nhất mà AgentSessionRecord mang theo, mã hóa bởi rt/interaction_codec.hpp. Điều đó khiến một phê duyệt đang mở trở nên bền vững và khôi phục được. Thứ không bền vững là chính vòng đã bị treo: resolve_interaction() đòi phần đuôi của history_ vẫn phải là đúng thông điệp gọi tool của assistant lúc treo, mà history_ lại không nằm trong bản ghi. Vì vậy một session vừa khôi phục biết rằng có một phê duyệt đang chờ nhưng không thể tiếp tục nó — chính ADR-029 đã nêu tên phần dư này. Cơ chế của luồng phê duyệt nằm ở trang AgentSession; đây là nửa bền vững của cùng câu chuyện.",
+        "Interaction là bản ghi tương quan nội bộ duy nhất đứng sau mọi kiểu chờ đợi: input, auth, approval (ADR-029) và codeact_ask (ADR-057). Nó toàn số và chuỗi, nên đi qua một checkpoint hết sức dễ dàng — và nó là trường không vô hướng duy nhất mà AgentSessionRecord mang theo, mã hóa bởi rt/interaction_codec.hpp. Điều đó khiến một phê duyệt đang mở trở nên bền vững và khôi phục được. Thứ không bền vững là VÒNG đã bị treo: bản ghi mang theo interaction đang mở nhưng không mang thông tin gì về vòng mà nó thuộc về, và restore_from_record() xóa các bản ghi interaction trong bộ nhớ vốn mô tả session đang bị thay thế. Vì vậy resolve_interaction() trên một session đã khôi phục thất bại ngay ở điểm bảo vệ ĐẦU TIÊN — interaction không có vòng nào được ghi lại — với session.resolve_interaction.round_not_recorded, đóng nó mà không chạy gì cả. (Một session đang sống có thêm điểm bảo vệ thứ hai phía sau: một lần resolve cũng đòi phần đuôi của history_ vẫn phải là đúng thông điệp gọi tool của assistant lúc treo, nếu không sẽ báo session.resolve_interaction.stale.) Vì vậy một session vừa khôi phục biết rằng có một phê duyệt đang chờ nhưng không thể tiếp tục nó — chính ADR-029 đã nêu tên phần dư này. Nó vẫn dùng được cho công việc MỚI: một start_run() mới trên session đã khôi phục vẫn được chấp nhận. Cơ chế của luồng phê duyệt nằm ở trang AgentSession; đây là nửa bền vững của cùng câu chuyện.",
       cite: "include/agentengine/core/interaction.hpp:43",
       href: gh("include/agentengine/core/interaction.hpp"),
     },
@@ -659,6 +659,10 @@ struct AgentSessionRecord {
     std::uint64_t run_counter = 0;
     std::uint64_t turn_index = 0;
     std::vector<Interaction> open_interactions;   // the only non-scalar field
+    // ADR-061 §22.1 -- in the record AND in the bytes on disk: a Tier-3 session that required
+    // per-request authority must not silently downgrade to the caller-only admission path on
+    // restore or fork.
+    bool require_authority = false;
 };
 
 // The in-flight guard that replaced quark::FenceToken: the SAME AsyncMutex
@@ -710,8 +714,10 @@ task<result<SessionDeletionReceipt>> delete_session(auto& session, auto& store) 
     co_return receipt;
 }
 
-// Read side: a tombstoned record is indistinguishable from one that never existed.
-auto found = load_agent_session_snapshot(store, "s-1");   // -> std::nullopt`;
+// Read side: a tombstoned record is indistinguishable from one that never existed -- but they are
+// both a SUCCESSFUL load. The return is result<optional<AgentSessionRecord>>, so there are two
+// separate ways to have nothing: check the result first, then the optional.
+auto found = load_agent_session_snapshot(store, "s-1");   // -> result holding an empty optional`;
 
 export const idempotencySnippet = `// core/tool_pipeline.hpp -- 019 §3's four inputs, and nothing else.
 struct IdempotencyKey {

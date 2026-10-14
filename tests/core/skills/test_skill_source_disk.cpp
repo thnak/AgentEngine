@@ -9,6 +9,7 @@
 #include <string>
 
 #include "agentengine/core/skill_source.hpp"
+#include "../../support/run_task_sync.hpp"
 
 using namespace agentengine;
 
@@ -54,7 +55,7 @@ int main() {
         DiskSkillSource source("local", root);
         check(source.origin_id() == "local", "R1: origin_id() round-trips");
 
-        auto loaded = source.load_skills();
+        auto loaded = test_support::run_task_sync<result<std::vector<SkillSourceResult>>>(source.load_skills());
         check(loaded.has_value(), "R1: a real host directory with two valid skill dirs loads cleanly");
         if (loaded) {
             check(loaded->size() == 2,
@@ -107,7 +108,7 @@ int main() {
                    "---\nname: WRONG-CASE\ndescription: This one has an invalid name.\n---\nBody.\n");
 
         DiskSkillSource source("local", bad_root);
-        auto loaded = source.load_skills();
+        auto loaded = test_support::run_task_sync<result<std::vector<SkillSourceResult>>>(source.load_skills());
         check(!loaded.has_value(),
               "R2: one invalid SKILL.md anywhere under the root fails load_skills() ENTIRELY -- a "
               "caller never silently runs with only the good half of a source it believed loaded "
@@ -123,7 +124,7 @@ int main() {
     // ---- R3: a root that isn't a directory at all fails closed --------------------------------------
     {
         DiskSkillSource source("local", root / "pdf-tools" / "SKILL.md");  // a FILE, not a directory
-        auto loaded = source.load_skills();
+        auto loaded = test_support::run_task_sync<result<std::vector<SkillSourceResult>>>(source.load_skills());
         check(!loaded.has_value() && loaded.error().code == "skill.disk_root_not_a_directory",
               "R3: pointing a DiskSkillSource at a file (not a directory) fails closed with a named "
               "error code, not a crash or a silently empty result");

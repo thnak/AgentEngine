@@ -123,6 +123,10 @@ namespace detail {
 // Phase D's OpenAI backend's `Resolver` alias.
 using Resolver = agentengine::detail::provider_wire::Resolver;
 
+// ADR-237 §5.1/§6.3 (step 34): the reactor path's inputs (reactor + DNS pool via a `rt::Runtime`, the address
+// policy, and the test/e2e resolver seam). A null `runtime` makes the client own a private Runtime.
+using ReactorOptions = agentengine::detail::provider_wire::ProviderReactorOptions;
+
 // (2): a real JSON object on the wire, not a stringified-JSON string -- ToolCall::arguments_json is
 // parsed into this shape for outbound translation, and json::dump()'d back for inbound.
 [[nodiscard]] json::Value translate_tool_use_input(std::string const& arguments_json);
@@ -360,6 +364,9 @@ public:
         return chunked_ && !chunked_decoder_.complete() && !message_stop_seen_;
     }
 
+    // ADR-237: see openai's terminal_seen() -- the reactor pump's counterpart of the `truncated()` deferral.
+    [[nodiscard]] bool terminal_seen() const noexcept { return message_stop_seen_; }
+
     [[nodiscard]] std::vector<ChatResponseUpdate> finish();
 
 private:
@@ -426,16 +433,24 @@ private:
 [[nodiscard]] result<std::vector<ChatResponseUpdate>> parse_streaming_response_into_updates(
     std::string_view raw_body, bool is_chunked, std::string const& producer_chat_client_id = {});
 
-// The detached background worker -- see protocol/openai/chat_client.hpp's own identical rationale for
-// why detached, not a tracked thread member (a bound instance is shared across concurrent streaming
-// calls via ChatClientRegistry).
-void run_stream_worker(std::string host, std::uint16_t port, std::string path, std::string api_key,
-                       std::string api_version, std::string model, ChatClientCapabilities caps,
-                       ChatRequest request, stream_producer<ChatResponseUpdate> producer,
-                       Resolver resolver, std::string ca_bundle_pem_override,
-                       std::string http_referer, std::string x_title, std::string end_user_id,
-                       std::string cache_ttl, sandbox::ProviderTransport transport,
-                       std::stop_token stop, std::string session_id);
+// ADR-237 §5.1 (step 34): the reactor twin of `run_stream_worker` -- a plain function (chat_client.cpp, where
+// the coroutine pump lives) that builds the same request and starts `pump_sse_stream_async` on `reactor.runtime`
+// via `rt::Runtime::spawn`. `reactor.runtime` must be non-null.
+void run_stream_worker_async(std::string host, std::uint16_t port, std::string path, std::string api_key,
+                             std::string api_version, std::string model, ChatClientCapabilities caps,
+                             ChatRequest request, stream_producer<ChatResponseUpdate> producer,
+                             ReactorOptions reactor, std::string ca_bundle_pem_override,
+                             std::string http_referer, std::string x_title, std::string end_user_id,
+                             std::string cache_ttl, sandbox::ProviderTransport transport,
+                             std::stop_token stop, std::string session_id);
+
+// ADR-237 §5.1 (step 35): chat()'s reactor path (see the OpenAI backend's identical declaration).
+[[nodiscard]] task<result<json::Value>> exchange_json_async(std::string vendor, std::string host,
+                                                            std::uint16_t port, sandbox::NetEgressRequest req,
+                                                            ReactorOptions reactor,
+                                                            std::string ca_bundle_pem_override,
+                                                            sandbox::ProviderTransport transport,
+                                                            std::stop_token stop);
 
 }  // namespace detail
 
@@ -465,7 +480,10 @@ public:
                          // `end_user_id` above, which that vendor does not use for cache routing at
                          // all. Appended last, same "never insert earlier" convention as every
                          // optional param above.
-                         std::string session_id = {})
+                         std::string session_id = {},
+                         // ADR-237 §5.1 (step 34): the reactor path for `chat_stream`. Defaulted (null runtime):
+                         // the client then owns a private Runtime, so every existing construction site is unchanged.
+                         agentengine::detail::provider_wire::ProviderReactorOptions reactor = {})
         : host_(std::move(host)),
           port_(port),
           model_(std::move(model)),
@@ -481,7 +499,18 @@ public:
           end_user_id_(std::move(end_user_id)),
           cache_ttl_(std::move(cache_ttl)),
           transport_(transport),
-          session_id_(std::move(session_id)) {
+          session_id_(std::move(session_id)),
+          reactor_(std::move(reactor)) {
+        // ADR-237 §5.1 (step 39): see the OpenAI backend's identical note -- the reactor path is no
+        // longer opt-in; with no Runtime supplied the client owns one.
+        if (reactor_.runtime == nullptr) {
+            owned_runtime_ = std::make_unique<agentengine::rt::Runtime>(agentengine::rt::RuntimeConfig{});
+            reactor_.runtime = owned_runtime_.get();
+        }
+        // ADR-237 §5.1 (step 40): see the OpenAI backend's identical note.
+        if (!reactor_.resolver) {
+            reactor_.resolver = agentengine::detail::provider_wire::host_resolver_from(resolver_, port_);
+        }
         if (!detail::is_valid_cache_ttl(cache_ttl_)) {
             throw std::invalid_argument(
                 "AnthropicChatClient: cache_ttl must be \"\" (server default), \"5m\", or \"1h\"");
@@ -515,8 +544,11 @@ public:
                                                 api_version_, json::dump(*body), http_referer_, x_title_,
                                                 session_id_);
         // ADR-206: the POST, the non-2xx mapping and the JSON parse are shared with the other backend.
-        auto parsed = agentengine::detail::provider_wire::exchange_json("anthropic", host_, port_, req, resolver_,
-                                                                        ca_bundle_pem_override_, transport_);
+        // ADR-237 §5.1 (step 35): with a Runtime set, the exchange runs as a coroutine on the reactor
+        // (no blocking body); without one it stays the blocking `exchange_json`.
+        // ADR-237 §5.1 (step 41): the reactor exchange is now the ONLY path.
+        auto parsed = co_await detail::exchange_json_async("anthropic", host_, port_, std::move(req), reactor_,
+                                                           ca_bundle_pem_override_, transport_, ctx.cancellation);
         if (!parsed) co_return std::unexpected(parsed.error());
         co_return detail::parse_message_response(*parsed, producer_chat_client_id());
     }
@@ -533,11 +565,13 @@ public:
         // ADR-017: read the token BEFORE moving the producer (see the OpenAI backend's identical note
         // -- unspecified argument evaluation order would otherwise let this read a moved-from producer).
         std::stop_token stop = pair.producer.stop_token();
-        std::thread(&detail::run_stream_worker, host_, port_, path_prefix_ + "/messages",
-                    lease->reveal_text(), api_version_, model_, capabilities_, std::move(request),
-                    std::move(pair.producer), resolver_, ca_bundle_pem_override_, http_referer_, x_title_,
-                    end_user_id_, cache_ttl_, transport_, std::move(stop), session_id_)
-            .detach();
+        // ADR-237 §5.1 (step 41): the reactor path is now the ONLY path (see the OpenAI backend's
+        // identical note) -- an owned producer root on the Runtime, not a detached thread.
+        detail::run_stream_worker_async(host_, port_, path_prefix_ + "/messages", lease->reveal_text(),
+                                        api_version_, model_, capabilities_, std::move(request),
+                                        std::move(pair.producer), reactor_, ca_bundle_pem_override_,
+                                        http_referer_, x_title_, end_user_id_, cache_ttl_, transport_,
+                                        std::move(stop), session_id_);
         return std::move(pair.consumer);
     }
 
@@ -558,6 +592,9 @@ private:
     std::string cache_ttl_;
     sandbox::ProviderTransport transport_;
     std::string session_id_;
+    agentengine::detail::provider_wire::ProviderReactorOptions reactor_;  // ADR-237 §5.1 (step 34)
+    // ADR-237 §5.1 (step 39): see the OpenAI backend's identical member.
+    std::unique_ptr<agentengine::rt::Runtime> owned_runtime_;
 };
 
 }  // namespace agentengine::anthropic

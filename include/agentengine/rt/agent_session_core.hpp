@@ -58,6 +58,11 @@
 
 namespace agentengine::rt {
 
+// ADR-237 §5.2: forward-declared for `ScheduleWakeupTool` (declared above the full class, which is
+// defined further down this header).
+// ae-naming-lint: allow AgentSessionCore — ADR-199
+class AgentSessionCore;
+
 // Reused, unchanged shape (matching agentengine::NoSessionState). A distinct type from the
 // core/agent_session.hpp one, deliberately -- Slice 1 does not depend on that header at all, keeping
 // this file's own Quark-free claim easy to verify by inspection (no transitive include of anything
@@ -203,25 +208,23 @@ struct ScheduleWakeupReply {
 };
 AE_JSON_SCHEMA(ScheduleWakeupReply, handle_id)
 
-// `invoke()` is an unreachable poison sentinel, matching ADR-028's own `CounterTool` precedent
-// (test_rt_agent_session_tooling_and_delegation.cpp) -- real dispatch never reaches this static
-// method. It exists only so `ScheduleWakeupTool` satisfies `Tool<Derived,...>`'s CRTP contract (a
-// real Args/Reply/name/description/schema surface for `make_tool_descriptor_with_invoke<
-// ScheduleWakeupTool>()`, below, to extract at construction time). The actual dispatch happens
-// through the closure `run_rounds()` supplies, which reaches back into the owning `AgentSession`
-// directly by capturing `this` -- the one place in this codebase that CAN do that, since
-// `EffectContext` carries no seam back to the session (ADR-028 §1's own exhaustive check, confirmed
-// unchanged) and no `ContextProvider` owns a back-reference to its `AgentSession` either. No
-// `Capabilities<...>` policy tag is declared here deliberately: the REAL enforcement (does the
-// session hold a `cap::Schedule` grant at all; does this delay fit its `max_horizon`; is its
-// `max_active` already at capacity) is a LIVE, per-call check against a runtime count -- the exact
-// same reason `Background<max_concurrent>`'s own enforcement lives inside `background_task()`'s body
-// rather than a static `ToolDescriptor::capability_ceiling` entry, not this tool's own compile-time
-// declared ceiling (which a generic `invoke_tool()` step-4/7 bind could only check for bare
-// existence, never the live count `schedule_wakeup_impl()` (ADR-061 §20.5) itself already checks
-// correctly).
+// ADR-237 §5.2: a real instance-form `Tool<>` conformer now. Its `invoke()` (defined in
+// agent_session_core.cpp, where `AgentSessionCore` is complete) holds an explicit handle to the owning
+// session and calls `AgentSessionCore::dispatch_schedule_wakeup()` -- the old `[this]`-capturing
+// closure, expressed as a declared member instead of an implicit capture, which is the one place in
+// this codebase that MAY reach back into its session (ADR-028 §1's own exhaustive check, confirmed
+// unchanged: `EffectContext` carries no seam back to the session, and no `ContextProvider` owns a
+// back-reference). `CapturesSessionState` keeps it non-backgroundable and non-rerun-comparable, exactly
+// as that closure was; the former static poison `invoke()` sentinel is gone -- the instance invoke IS
+// the one real path. No `Capabilities<...>` policy tag is declared here deliberately: the REAL
+// enforcement (does the session hold a `cap::Schedule` grant at all; does this delay fit its
+// `max_horizon`; is its `max_active` already at capacity) is a LIVE, per-call check against a runtime
+// count -- the exact same reason `Background<max_concurrent>`'s own enforcement lives inside
+// `background_task()`'s body rather than a static `ToolDescriptor::capability_ceiling` entry (which a
+// generic `invoke_tool()` step-4/7 bind could only check for bare existence, never the live count
+// `schedule_wakeup_impl()` (ADR-061 §20.5) itself already checks correctly).
 // ae-naming-lint: allow ScheduleWakeupTool — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
-struct ScheduleWakeupTool : agentengine::Tool<ScheduleWakeupTool> {
+struct ScheduleWakeupTool : agentengine::Tool<ScheduleWakeupTool, agentengine::CapturesSessionState> {
     static constexpr std::string_view name = "schedule_wakeup";
     static constexpr std::string_view description =
         "Arms a durable wake condition that fires after the given delay (019 §2's Timer/schedule wake "
@@ -229,13 +232,13 @@ struct ScheduleWakeupTool : agentengine::Tool<ScheduleWakeupTool> {
         "Requires a granted Schedule<max_horizon, max_active> capability.";
     using Args  = ScheduleWakeupArgs;
     using Reply = ScheduleWakeupReply;
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) {
-        return std::unexpected(agentengine::error{
-            agentengine::failure_class::contract,
-            "schedule_wakeup invoked without its session-bound dispatch closure -- this static "
-            "method must never actually run",
-            "schedule_wakeup.unreachable_static_invoke"});
-    }
+
+    explicit ScheduleWakeupTool(AgentSessionCore& session) : session_(&session) {}
+
+    [[nodiscard]] agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const;
+
+private:
+    AgentSessionCore* session_;
 };
 
 // ADR-057 §9 (Design B: abort-and-replay for `agent.ask()`, 026 §5): the host-side replay record a
@@ -571,7 +574,7 @@ public:
     // COOPERATIVE at named checkpoints, never preemptive: the top of each round, inside a streaming model
     // call (it abandons the stream and so reaches the transport's blocking read), and after a model call
     // returns but BEFORE its tool calls run. A tool sees the same signal as `EffectContext::cancellation`.
-    // The run ends `run.canceled` (`failure_class::fatal`) after a `run_canceled` event; nothing the
+    // The run ends `run.canceled` (`failure_class::canceled`, ADR-237 D6; ADR-178 had `fatal`) after a `run_canceled` event; nothing the
     // canceled round had not yet committed is appended to history. A no-op when no run is in flight: the
     // next `start_run()` gets a FRESH source, so a stale cancel can never poison it.
     // ADR-230: also cancels whatever the bound client holds open (`InteractiveChatClient`) -- a session suspended
@@ -705,9 +708,10 @@ public:
     // parse is the validator" idiom (003 §4, corrected 2026-08-14). Returns `result<void>`, not a
     // bare bool (ADR-058 §4 B3), so a real failure carries a real message. `strategy` gates whether
     // the REQUEST carries a native structured-output constraint (run_rounds(), native only) --
-    // validation of the RESPONSE, below, applies regardless of strategy.
+    // validation of the RESPONSE, below, applies regardless of strategy. ADR-237 §5.1: `validate` is
+    // a `task` producer now (it is awaited in run_rounds); the typed validator resolves inline.
     void set_output_schema(std::string json, agentengine::output_schema_strategy strategy,
-                            std::function<result<void>(std::string_view)> validate) {
+                            std::function<task<result<void>>(std::string_view)> validate) {
         output_schema_json_     = std::move(json);
         output_schema_strategy_ = strategy;
         output_schema_validate_ = std::move(validate);
@@ -980,6 +984,14 @@ private:
     // mirroring Background<max_concurrent>'s own in-body check for the identical reason). This
     // AgentSession no longer needs its own copy of that logic; see this method's own top comment for
     // the state-changed event AND state.
+    //
+    // ADR-237 §5.2: the dispatch body `ScheduleWakeupTool::invoke()` (defined in agent_session_core.cpp)
+    // calls -- the old `[this]`-capturing closure's body, expressed as an explicit member instead.
+    // UNLOCKED, exactly like the closure it replaced: reached only through invoke_tool() inside
+    // run_rounds(), which already holds session_mutex_, so it must never take that lock itself.
+    friend struct ScheduleWakeupTool;
+    [[nodiscard]] result<ScheduleWakeupReply> dispatch_schedule_wakeup(ScheduleWakeupArgs const& args,
+                                                                       EffectContext& ctx);
 
     void emit_run_event(run_event_kind kind, RunEventPayload payload = run_event_payload::Empty{}) {
         note_run_lifecycle(kind, payload);
@@ -1071,10 +1083,13 @@ private:
     // host-configurable knob yet.
     static constexpr std::size_t kParallelBatchWorkerCap = 4;
 
-    std::vector<DispatchedCall> dispatch_tool_calls(std::vector<ToolCallRequest> const& reqs,
-                                                      ToolTable const& tool_table, CapabilitySet const& held,
-                                                      ApprovalDecider const& approve,
-                                                      PolicyDecider const& policy);
+    // ADR-237 §5.2: async -- `task<...>`. The sequential path `co_await`s `invoke_tool`; the
+    // fanned-out path drives `run_admitted_call` with `rt::block_on` on each bounded worker thread
+    // (a genuinely-sync edge), joining before this task completes.
+    task<std::vector<DispatchedCall>> dispatch_tool_calls(std::vector<ToolCallRequest> const& reqs,
+                                                          ToolTable const& tool_table, CapabilitySet const& held,
+                                                          ApprovalDecider const& approve,
+                                                          PolicyDecider const& policy);
 
     // `force_tainted()`, `filter_cross_provider_reasoning()`, and `drain_streaming_response()` now
     // live as free functions in `rt::detail` (rt/agent_session_trust.hpp, included above) --
@@ -1359,7 +1374,8 @@ private:
     std::string                                          output_schema_json_;
     agentengine::output_schema_strategy                  output_schema_strategy_ =
         agentengine::output_schema_strategy::native;
-    std::function<result<void>(std::string_view)>        output_schema_validate_;
+    // ADR-237 §5.1: a `task` producer -- see set_output_schema()'s own comment.
+    std::function<task<result<void>>(std::string_view)>  output_schema_validate_;
     std::uint64_t                                         admission_denied_count_ = 0;
     stream_producer<RunEvent>                             run_event_producer_;
     std::unordered_map<std::string, std::uint64_t>        run_event_seq_by_run_;

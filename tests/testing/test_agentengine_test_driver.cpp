@@ -47,6 +47,7 @@
 #include <string>
 #include <vector>
 
+#include "../support/run_task_sync.hpp"  // ADR-237 §5.2: drive the async tool invoke
 #include "agentengine/pal/env.hpp"
 #include "test_driver/fixture_trust.hpp"
 #include "test_driver/shell_sandbox.hpp"
@@ -1483,15 +1484,16 @@ int main() {
             auto log = std::make_shared<td::RealToolLog>(std::nullopt);
             int inner_calls = 0;
             agentengine::ToolDescriptor fake = td::real_tool_standins()[0];
-            fake.invoke = [&inner_calls](Value const&, agentengine::EffectContext&) -> agentengine::result<Value> {
+            fake.invoke = [&inner_calls](Value const&, agentengine::EffectContext&)
+                -> agentengine::task<agentengine::result<Value>> {
                 ++inner_calls;
-                return td::obj({{"ok", td::boolean(true)}});
+                co_return td::obj({{"ok", td::boolean(true)}});
             };
             agentengine::ToolDescriptor const wrapped = td::recording_tool(fake, log, nullptr);
             agentengine::EffectContext ctx;
             bool capped = false;
             for (std::size_t i = 0; i <= td::kMaxRealToolCalls; ++i) {
-                auto r = wrapped.invoke(td::obj({}), ctx);
+                auto r = agentengine::test_support::run_task_sync<agentengine::result<Value>>(wrapped.invoke(td::obj({}), ctx));
                 if (!r) capped = r.error().code == "test.real_tool_call_cap";
             }
             check(capped && inner_calls == static_cast<int>(td::kMaxRealToolCalls),
@@ -1503,7 +1505,7 @@ int main() {
             cctx.cancellation = stop.get_token();
             stop.request_stop();
             int const before = inner_calls;
-            auto r = wrapped2.invoke(td::obj({}), cctx);
+            auto r = agentengine::test_support::run_task_sync<agentengine::result<Value>>(wrapped2.invoke(td::obj({}), cctx));
             check(!r && r.error().code == "test.real_tool_canceled" && inner_calls == before,
                   "P5 G2: after cancel no real-tool call runs");
             check(td::valid_utf8("plain \xC3\xA9 text") && !td::valid_utf8("\xFF") && !td::valid_utf8("\xC3") &&

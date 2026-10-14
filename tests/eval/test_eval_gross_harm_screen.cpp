@@ -187,7 +187,8 @@ auto make_summarizer_factory() {
 //   skip          -- answer in text without ever calling the tool (an OUTCOME: failure);
 //   unmeasurable  -- a call the grader cannot judge; it throws, so the MEASUREMENT failed (`ungraded`);
 //   transient     -- the provider call fails with a `failure_class::transient` error (e.g. a 503);
-//   canceled      -- the run ends `run.canceled`, as a host cancel does.
+//   canceled      -- the run ends `failure_class::canceled`, as a host cancel does (ADR-237 D6; the screen keys
+//                    off the class, so the code below is deliberately NOT `run.canceled`).
 // The last three are the measurement faults `grade_trial` maps to `ungraded`.
 enum class cell { ok, wrong, never, skip, unmeasurable, transient, canceled };
 
@@ -201,7 +202,7 @@ std::vector<ScriptStep> script_for(cell c) {
         case cell::transient:
             return {fail_step(ae::error{ae::failure_class::transient, "HTTP 503", "provider.http_503"})};
         case cell::canceled:
-            return {fail_step(ae::error{ae::failure_class::fatal, "canceled by the host", "run.canceled"})};
+            return {fail_step(ae::error{ae::failure_class::canceled, "canceled by the host", "test.host_canceled"})};
     }
     return {};
 }
@@ -210,12 +211,12 @@ std::vector<ScriptStep> script_for(cell c) {
 // failed measurement (§3.5: a grader error is `ungraded`).
 ae::eval::GraderFn task_grader() {
     auto inner = ae::eval::make_tool_argument_grader("do_task", "result", "ok");
-    return [inner](ae::eval::TrialResult const& t) {
+    return [inner](ae::eval::TrialResult const& t) -> ae::rt::task<ae::eval::grade_outcome> {
         for (auto const& c : t.tool_calls) {
             auto const* r = c.arguments.find("result");
             if (r != nullptr && r->is_string() && r->as_string() == "boom") throw std::runtime_error("unmeasurable");
         }
-        return inner(t);
+        co_return co_await inner(t);
     };
 }
 
@@ -928,13 +929,13 @@ int main() {
         auto overflow = stream_failed(ae::error{ae::failure_class::contract, "context length exceeded", "provider.http_400"});
         auto timeout = stream_failed(ae::error{ae::failure_class::transient, "read timed out", "net.timeout"});
         auto unknown = stream_failed(std::nullopt);
-        AE_CHECK(ev::detail::grade_trial(grader, overflow) == ev::grade_outcome::failure &&
+        AE_CHECK(drive(ev::detail::grade_trial(grader, overflow)) == ev::grade_outcome::failure &&
                      !ev::detail::worth_a_retry(overflow),
                  "S13: a stream the provider ended with a contract error is a failure, and is not retried");
-        AE_CHECK(ev::detail::grade_trial(grader, timeout) == ev::grade_outcome::ungraded &&
+        AE_CHECK(drive(ev::detail::grade_trial(grader, timeout)) == ev::grade_outcome::ungraded &&
                      ev::detail::worth_a_retry(timeout),
                  "S13: a stream that timed out is a failed measurement, and is retried");
-        AE_CHECK(ev::detail::grade_trial(grader, unknown) == ev::grade_outcome::ungraded,
+        AE_CHECK(drive(ev::detail::grade_trial(grader, unknown)) == ev::grade_outcome::ungraded,
                  "S13: with no recorded provider error the session's own label stands");
 
         // The LAST recording is the failing call; an earlier one's error is not.
@@ -942,13 +943,13 @@ int main() {
         ae::ChatCallRecording earlier;
         earlier.stream_error = ae::error{ae::failure_class::contract, "old", "provider.http_400"};
         later_timeout.recordings.insert(later_timeout.recordings.begin(), earlier);
-        AE_CHECK(ev::detail::grade_trial(grader, later_timeout) == ev::grade_outcome::ungraded,
+        AE_CHECK(drive(ev::detail::grade_trial(grader, later_timeout)) == ev::grade_outcome::ungraded,
                  "S13: the failing call is the last recording, not an earlier one");
 
         // Only `run.stream_incomplete` is reclassified: any other run error keeps its own class.
         auto not_stream = overflow;
         not_stream.outcome = std::unexpected(ae::error{ae::failure_class::transient, "HTTP 503", "provider.http_503"});
-        AE_CHECK(ev::detail::grade_trial(grader, not_stream) == ev::grade_outcome::ungraded,
+        AE_CHECK(drive(ev::detail::grade_trial(grader, not_stream)) == ev::grade_outcome::ungraded,
                  "S13: a non-stream error is classified by itself, whatever the last recording holds");
     }
 

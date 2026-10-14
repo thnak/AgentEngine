@@ -14,6 +14,7 @@
 #include <thread>
 
 #include "agentengine/core/tool_pipeline.hpp"
+#include "../../support/run_task_sync.hpp"
 
 namespace {
 
@@ -85,7 +86,7 @@ void test_no_threshold_set_is_unaffected() {
     auto ctx = make_ctx();  // tool_result_byte_threshold left unset, blob_sink left unset
     std::string const big(5000, 'a');
 
-    auto result = agentengine::invoke_tool(table, held, make_request("c1", "echo_payload", big), ctx, nullptr);
+    auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(agentengine::invoke_tool(table, held, make_request("c1", "echo_payload", big), ctx, nullptr));
     check(!result.is_error, "with no threshold wired, even a large reply is not treated as oversized");
     check(result.content.size() == 1 && std::holds_alternative<agentengine::Data>(result.content[0].value),
           "with no threshold wired, the result is an ordinary Data item -- byte-for-byte prior behavior");
@@ -97,7 +98,7 @@ void test_under_threshold_is_data_item() {
     auto ctx = make_ctx();
     ctx.tool_result_byte_threshold = 1000;
 
-    auto result = agentengine::invoke_tool(table, held, make_request("c2", "echo_payload", "small"), ctx, nullptr);
+    auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(agentengine::invoke_tool(table, held, make_request("c2", "echo_payload", "small"), ctx, nullptr));
     check(!result.is_error, "under threshold succeeds");
     check(std::holds_alternative<agentengine::Data>(result.content[0].value), "under threshold stays a Data item");
     check(result.content[0].tainted, "still provenance-marked tainted, exactly as before");
@@ -119,7 +120,7 @@ void test_over_threshold_with_sink_promotes_to_blob() {
     };
 
     std::string const big(500, 'z');
-    auto result = agentengine::invoke_tool(table, held, make_request("c3", "echo_payload", big), ctx, nullptr);
+    auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(agentengine::invoke_tool(table, held, make_request("c3", "echo_payload", big), ctx, nullptr));
     check(!result.is_error, "over threshold with a sink wired still succeeds");
     check(result.content.size() == 1, "still exactly one content item");
     auto const* media = std::get_if<agentengine::Media>(&result.content[0].value);
@@ -141,7 +142,7 @@ void test_over_threshold_with_no_sink_fails_closed() {
     ctx.tool_result_byte_threshold = 20;  // blob_sink left unset
 
     std::string const big(500, 'z');
-    auto result = agentengine::invoke_tool(table, held, make_request("c4", "echo_payload", big), ctx, nullptr);
+    auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(agentengine::invoke_tool(table, held, make_request("c4", "echo_payload", big), ctx, nullptr));
     check(result.is_error, "over threshold with no sink fails closed rather than inlining anyway");
     auto const* err = std::get_if<agentengine::Error>(&result.content[0].value);
     check(err != nullptr, "the failure is a structured Error content item");
@@ -158,7 +159,7 @@ void test_blob_sink_failure_propagates() {
     };
 
     std::string const big(500, 'z');
-    auto result = agentengine::invoke_tool(table, held, make_request("c5", "echo_payload", big), ctx, nullptr);
+    auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(agentengine::invoke_tool(table, held, make_request("c5", "echo_payload", big), ctx, nullptr));
     check(result.is_error, "a failing blob_sink fails the whole call");
     // The sink's own error propagates verbatim -- never masked behind a generic "oversized" message.
 }
@@ -183,7 +184,7 @@ void test_background_task_applies_the_same_rule() {
     bool result_is_error = true;
     bool result_is_media = false;
     std::string const big(500, 'z');
-    auto started = agentengine::background_task(
+    auto started = agentengine::test_support::run_task_sync<agentengine::result<void>>(agentengine::background_task(
         table, held, make_request("c6", "echo_payload_bg", big), ctx, nullptr,
         /*current_background_count=*/0,
         [&](agentengine::ToolResult result, agentengine::ToolInvocationAudit) {
@@ -191,7 +192,7 @@ void test_background_task_applies_the_same_rule() {
             result_is_media = !result.content.empty() &&
                                std::holds_alternative<agentengine::Media>(result.content[0].value);
             completed = true;
-        });
+        }));
     check(started.has_value(), "background_task accepts a Backgroundable tool under a granted Background<1>");
 
     for (int i = 0; i < 200 && !completed; ++i) {

@@ -370,7 +370,7 @@ template <class InnerFactory, class SummarizerFactory>
         detail::AttemptedTrial attempted =
             co_await detail::run_trial_with_retry(make_inner, make_summarizer, slot, std::move(trial_spec), retries_left);
         TrialResult trial_result = std::move(attempted.result);
-        grade_outcome const grade = detail::grade_trial(task_def.grader, trial_result);
+        grade_outcome const grade = co_await detail::grade_trial(task_def.grader, trial_result);
         bool const faulted = detail::was_faulted(attempted.attempts, grade);
         detail::drop_transcripts_unless_retained(trial_result, spec.retain_recordings);
         if (attempted.first_attempt.has_value()) {

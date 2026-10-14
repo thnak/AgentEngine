@@ -77,15 +77,15 @@ struct PingTool : Tool<PingTool, EffectClass<effect_class::pure>> {
     d.name = std::move(name);
     d.description = std::move(description);
     d.effect_class = effect_class::pure;
-    d.invoke = [](json::Value const&, EffectContext&) -> result<json::Value> {
-        return json::Value::make_object({{"echo", json::Value::make_string("ok")}});
+    d.invoke = [](json::Value const&, EffectContext&) -> task<result<json::Value>> {
+        co_return json::Value::make_object({{"echo", json::Value::make_string("ok")}});
     };
     return d;
 }
 
 [[nodiscard]] ToolSourceFetch fetch_one(ToolDescriptor d) {
-    return [d = std::move(d)](EffectContext&) -> result<std::vector<ToolDescriptor>> {
-        return std::vector<ToolDescriptor>{d};
+    return [d = std::move(d)](EffectContext&) -> task<result<std::vector<ToolDescriptor>>> {
+        co_return std::vector<ToolDescriptor>{d};
     };
 }
 
@@ -95,7 +95,7 @@ struct PingTool : Tool<PingTool, EffectClass<effect_class::pure>> {
 [[nodiscard]] result<json::Value> call(ContextContribution const& c, std::string const& tool_name,
                                         json::Value args, EffectContext& ctx) {
     for (ToolDescriptor const& d : c.tools) {
-        if (d.name == tool_name) return d.invoke(args, ctx);
+        if (d.name == tool_name) return test_support::run_task_sync<result<json::Value>>(d.invoke(args, ctx));
     }
     return std::unexpected(error{failure_class::contract,
                                   "no such tool in this contribution: " + tool_name,
@@ -291,7 +291,7 @@ int main() {
             ToolTable const table = ToolTable::from_descriptors(c->tools);
             ToolCallRequest const req{"call-1", "plugin_tool", json::Value::make_object({}), false, 0};
             ToolInvocationAudit audit;
-            ToolResult const result = invoke_tool(table, held, req, ctx, {}, &audit);
+            ToolResult const result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, {}, &audit));
             check(result.is_error,
                   "R2-before: invoke_tool REJECTS plugin_tool while it is unmounted -- a real "
                   "restriction, not a cosmetic one");
@@ -318,7 +318,7 @@ int main() {
             ToolTable const table = ToolTable::from_descriptors(c->tools);
             ToolCallRequest const req{"call-2", "plugin_tool", json::Value::make_object({}), false, 0};
             ToolInvocationAudit audit;
-            ToolResult const result = invoke_tool(table, held, req, ctx, {}, &audit);
+            ToolResult const result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, {}, &audit));
             check(!result.is_error,
                   "R2-after: the SAME call to plugin_tool succeeds once mounted -- the unlock is "
                   "real, through the real pipeline, not a separate code path");
@@ -371,7 +371,7 @@ int main() {
         ToolTable const table = ToolTable::from_descriptors(c->tools);
         ToolCallRequest const req{"call-1", "weather_lookup", json::Value::make_object({}), false, 0};
         ToolInvocationAudit audit;
-        ToolResult const result = invoke_tool(table, held, req, ctx, {}, &audit);
+        ToolResult const result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, {}, &audit));
         check(result.is_error,
               "R4: search_tools is read-only -- weather_lookup is still unmounted/unreachable after "
               "searching for it");

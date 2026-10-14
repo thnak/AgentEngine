@@ -204,17 +204,15 @@ spec:
         auto reg1 = registry.register_tool("web_search", [] {
             ae::ToolDescriptor d;
             d.name = "web_search";
-            d.invoke = [](ae::json::Value const&, ae::EffectContext&) -> ae::result<ae::json::Value> {
-                return ae::json::Value{};
-            };
+            d.invoke = [](ae::json::Value const&, ae::EffectContext&)
+                -> ae::task<ae::result<ae::json::Value>> { co_return ae::json::Value{}; };
             return d;
         }(), ae::tool_provenance::native);
         auto reg2 = registry.register_tool("code_interpreter", [] {
             ae::ToolDescriptor d;
             d.name = "code_interpreter";
-            d.invoke = [](ae::json::Value const&, ae::EffectContext&) -> ae::result<ae::json::Value> {
-                return ae::json::Value{};
-            };
+            d.invoke = [](ae::json::Value const&, ae::EffectContext&)
+                -> ae::task<ae::result<ae::json::Value>> { co_return ae::json::Value{}; };
             return d;
         }(), ae::tool_provenance::native);
         check(reg1.has_value() && reg2.has_value(), "F-6b setup: both fixture tools register");

@@ -231,7 +231,7 @@ int main() {
         }
 
         ae::RecursiveChunker const chunker{/*chunk_size_words=*/5, /*overlap_fraction=*/0.4};
-        auto chunks = chunker.chunk(long_text);
+        auto chunks = ae::test_support::run_task_sync<std::vector<ae::TextChunk>>(chunker.chunk(long_text));
 
         AE_CHECK(chunks.size() > 1,
                  "(d) a 20-word input with a 5-word target chunk size splits into multiple chunks");
@@ -276,12 +276,13 @@ int main() {
         // A single short input (well under the target size) yields exactly ONE chunk, no spurious
         // splitting or overlap machinery kicking in for content that never needed it.
         ae::RecursiveChunker const default_chunker{};
-        auto short_chunks = default_chunker.chunk("Just one short paragraph, nothing more.");
+        auto short_chunks = ae::test_support::run_task_sync<std::vector<ae::TextChunk>>(
+            default_chunker.chunk("Just one short paragraph, nothing more."));
         AE_CHECK(short_chunks.size() == 1,
                  "(d) a short input (under the default ~450-word target) produces exactly 1 chunk");
 
         // An empty input produces zero chunks, not a spurious empty one.
-        auto empty_chunks = default_chunker.chunk("");
+        auto empty_chunks = ae::test_support::run_task_sync<std::vector<ae::TextChunk>>(default_chunker.chunk(""));
         AE_CHECK(empty_chunks.empty(), "(d) an empty input produces zero chunks");
     }
 
@@ -299,7 +300,8 @@ int main() {
         // split -- only the byte-cap backstop can be responsible for any splitting observed here.
         ae::RecursiveChunker const capped_chunker{/*chunk_size_words=*/50, /*overlap_fraction=*/0.0,
                                                     /*max_atom_bytes=*/64};
-        auto capped_chunks = capped_chunker.chunk(pathological_line);
+        auto capped_chunks = ae::test_support::run_task_sync<std::vector<ae::TextChunk>>(
+            capped_chunker.chunk(pathological_line));
 
         AE_CHECK(capped_chunks.size() > 1,
                  "(e) a word-count-tiny line dominated by one huge no-whitespace run is still split "
@@ -323,7 +325,8 @@ int main() {
         // backstop is genuinely what changed behavior above, not some unrelated word-count effect.
         ae::RecursiveChunker const uncapped_chunker{/*chunk_size_words=*/50, /*overlap_fraction=*/0.0,
                                                       /*max_atom_bytes=*/0};
-        auto uncapped_chunks = uncapped_chunker.chunk(pathological_line);
+        auto uncapped_chunks = ae::test_support::run_task_sync<std::vector<ae::TextChunk>>(
+            uncapped_chunker.chunk(pathological_line));
         AE_CHECK(uncapped_chunks.size() == 1 && uncapped_chunks.front().text.size() == pathological_line.size(),
                  "(e) max_atom_bytes=0 disables the backstop entirely -- the same pathological line "
                  "again produces one unsplit, unbounded chunk, confirming the default (16384) is what "

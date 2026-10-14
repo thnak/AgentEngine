@@ -61,6 +61,7 @@
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/core/session_builder.hpp"
+#include "agentengine/core/task.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/trust/agent_library_manifest.hpp"
@@ -243,7 +244,10 @@ using AgentBundleWith = quickstart::Bundle<ChatClientT, InMemorySecretStore, Age
 
 namespace agent_bind_detail {
 
-using OutputValidator = std::function<result<void>(std::string_view)>;
+// ADR-237 §5.1: asynchronous -- validating a response may need real I/O (a schema server, a judge
+// model), so the seam is a `task` producer. The typed validator `output_validator_for<A>()` below
+// resolves inline and simply returns an immediately-ready task.
+using OutputValidator = std::function<task<result<void>>(std::string_view)>;
 
 // decisions/ADR-234: a host-code step over the agent's declared descriptors, applied AFTER the agent-level
 // floors below. The bridge's own callers pass none; the harness passes one that may only make a tool MORE
@@ -397,12 +401,12 @@ template <class A>
     if constexpr (std::is_void_v<SchemaT>) {
         return {};
     } else {
-        return [](std::string_view text) -> result<void> {
+        return [](std::string_view text) -> task<result<void>> {
             auto parsed = json::parse(text);
-            if (!parsed) return std::unexpected(parsed.error());
+            if (!parsed) co_return std::unexpected(parsed.error());
             auto decoded = schema::from_json<SchemaT>(*parsed);
-            if (!decoded) return std::unexpected(decoded.error());
-            return {};
+            if (!decoded) co_return std::unexpected(decoded.error());
+            co_return result<void>{};
         };
     }
 }

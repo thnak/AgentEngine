@@ -263,7 +263,8 @@ int main() {
         auto r = drive(h.session.start_run(StartRun{user_message("hi")}));
         g_cancel_from_tool = nullptr;
         check(!r.has_value() && r.error().code == "run.canceled", "K1: the run ends run.canceled");
-        check(!r.has_value() && r.error().klass == failure_class::fatal, "K1: it is a fatal end, not a transient one a caller might retry");
+        check(!r.has_value() && r.error().klass == failure_class::canceled,
+              "K1: its class is canceled (ADR-237 D6, amending ADR-178's fatal) -- not transient, which a caller might retry");
         check(h.client->calls == 1, "K1: no SECOND model call was made after the cancel");
         check(g_tool_runs == 1, "K1: the tool that was already running finished (cooperative, not preemptive)");
         check(g_tool_saw_cancel, "K1: and it saw the cancel as EffectContext::cancellation");
@@ -301,6 +302,8 @@ int main() {
         canceller.join();
         check(!r.has_value() && r.error().code == "run.canceled",
               "K2: a run canceled mid-stream ends run.canceled, not run.stream_incomplete");
+        check(!r.has_value() && r.error().klass == failure_class::canceled,
+              "K2 (D6): the drain's own cancel is class canceled");
         check(ms < 2500, "K2: and it did so well before the provider's silence would have ended it");
         auto c = tally(h);
         check(c.call_started == 1 && c.call_finished == 1,
@@ -317,6 +320,7 @@ int main() {
         h.client->steps[0].on_call = [&h] { h.session.cancel(); };
         auto r = drive(h.session.start_run(StartRun{user_message("hi")}));
         check(!r.has_value() && r.error().code == "run.canceled", "K3: the run ends run.canceled");
+        check(!r.has_value() && r.error().klass == failure_class::canceled, "K3 (D6): class canceled");
         check(g_tool_runs == 0, "K3: the tool the canceled response asked for NEVER ran");
         check(h.session.run_tokens_consumed() == kUsage.input_tokens + kUsage.output_tokens,
               "K3: the response's usage was still charged -- the model call really happened");
@@ -383,6 +387,8 @@ int main() {
         auto r = drive(h.session.start_run(StartRun{user_message("hi")}));
         check(!r.has_value() && r.error().code == "run.canceled",
               "K5b: a stream that dies after a cancel landed mid-drain ends run.canceled, not run.chat_failed");
+        check(!r.has_value() && r.error().klass == failure_class::canceled,
+              "K5b (D6): the run ends class canceled, though the stream's own failure was transient");
         check(h.client->calls == 1 && h.session.stream_retries_used() == 0,
               "K5b: it was NOT retried, though retries were available and the failure is retryable");
         auto c = tally(h);
@@ -398,6 +404,36 @@ int main() {
         auto r2 = drive(h2.session.start_run(StartRun{user_message("hi")}));
         check(r2.has_value() && h2.client->calls == 2 && h2.session.stream_retries_used() == 1,
               "K5 control: without the cancel the identical failure is retried and the run converges");
+    }
+
+    // ---- K8 (ADR-237 D6): a canceled model call the run did NOT ask for -----------------------------------
+    // The rule: a canceled operation carries `canceled` up to whoever awaits it, and ends the run only as that
+    // caller decides. The session does not retry it (canceled never retries) and, its own token untouched, does
+    // not pretend the HOST canceled the run: it ends run_failed, with the call's `canceled` class carried
+    // unchanged. Control: the same stream failing `transient` IS retried and converges.
+    {
+        std::vector<Step> steps(2);
+        steps[0].updates = {text_delta("Let me check")};
+        steps[0].fail    = error{failure_class::canceled, "stopped by its own owner", "test.call_canceled"};
+        steps[1].updates = {text_delta("All done.", /*is_final=*/true, kUsage)};
+        Harness h(std::move(steps), /*retries=*/2);
+        auto r = drive(h.session.start_run(StartRun{user_message("hi")}));
+        check(!r.has_value() && r.error().klass == failure_class::canceled,
+              "K8: the call's canceled class reaches the run's caller unchanged");
+        check(h.client->calls == 1 && h.session.stream_retries_used() == 0,
+              "K8: a canceled stream is NOT retried, though retries were available");
+        auto c = tally(h);
+        check(c.canceled == 0 && c.failed == 1,
+              "K8: the run's own token was never stopped, so it ends run_failed, not run_canceled");
+
+        std::vector<Step> steps2(2);
+        steps2[0].updates = {text_delta("Let me check")};
+        steps2[0].fail    = error{failure_class::transient, "stopped by its own owner", "test.call_canceled"};
+        steps2[1].updates = {text_delta("All done.", /*is_final=*/true, kUsage)};
+        Harness h2(std::move(steps2), /*retries=*/2);
+        auto r2 = drive(h2.session.start_run(StartRun{user_message("hi")}));
+        check(r2.has_value() && h2.client->calls == 2,
+              "K8 control: the identical stream failing transient IS retried and converges");
     }
 
     // ---- K6: cancel() with no run in flight is harmless ------------------------------------------------

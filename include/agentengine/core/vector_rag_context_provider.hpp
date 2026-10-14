@@ -353,11 +353,18 @@ private:
         d.approval          = approval_mode::never_require;
         d.args_schema_json  = schema::json_schema_of<RagRecallArgs>();
         d.reply_schema_json = schema::json_schema_of<RagRecallReply>();
+        // ADR-153's must-fix, applied here too: `invoke` reads the corpus with `read_cap_`, a value fixed
+        // at construction, so without a ceiling the pipeline's steps 4/7 bind nothing and any caller --
+        // a CodeAct/sandbox bridge holding no FsRead on this mount included -- would read with this
+        // provider's authority. Declaring the ceiling makes the caller's own grant the gate (I2).
+        d.capability_ceiling = {Capability{read_cap_}};
+        // Captures `this`; ADR-160's scheduler and `rerun_comparable()` key off this flag.
+        d.captures_session_state = true;
 
         // ADR-064 Design B: args are validated FIRST (reject-not-coerce, 006 §3 step 2) regardless of
         // which branch below runs, so a malformed call always gets its own schema error rather than
         // either branch's error masking a genuinely separate contract violation.
-        d.invoke = [this](json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {
+        d.invoke = make_sync_invoke([this](json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {
             (void)this;  // only the `synchronous_leaf` branch below actually touches members; the
                          // other branch's own instantiation would otherwise trip -Wunused-lambda-capture
             auto args = schema::from_json<RagRecallArgs>(args_value);
@@ -433,7 +440,7 @@ private:
                     "task<T>/task<void> and declares synchronous_leaf = true.",
                     "vector_rag_context_provider.recall_tool_requires_synchronous_leaf_embedder"});
             }
-        };
+        });
         return d;
     }
 

@@ -234,7 +234,8 @@ int main() {
             ae::json::Value args =
                 ae::json::Value::make_object({{"query", ae::json::Value::make_string("dark mode")}});
             std::size_t const search_calls_before = remote_index.search_calls;
-            auto invoked = out->tools.front().invoke(args, ctx);
+            auto invoked = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(
+                out->tools.front().invoke(args, ctx));
             AE_CHECK(invoked.has_value(),
                      "R2-5: recall(query) succeeds SYNCHRONOUSLY against a synchronous_leaf=true "
                      "RemoteVectorIndex -- rt::drive_leaf_task() correctly drives the index leg's "

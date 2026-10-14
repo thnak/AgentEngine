@@ -195,18 +195,23 @@ AE_JSON_SCHEMA(SpawnArgs, label)
 struct SpawnReply { std::string output; };
 AE_JSON_SCHEMA(SpawnReply, output)
 
-struct SpawnTool : agentengine::Tool<SpawnTool> {
+// ADR-237 §5.2: instance form -- holds the provider and reaches its private `spawn_child` through the
+// `friend` declaration below; `invoke` is defined out-of-line, where `SpawnHistoryProvider` is complete.
+class SpawnHistoryProvider;
+
+struct SpawnTool : agentengine::Tool<SpawnTool, agentengine::CapturesSessionState> {
     static constexpr std::string_view name        = "agent.spawn";
     static constexpr std::string_view description =
         "test-only stand-in for item 1's real AgentSpawnTool -- proves item 2's drive mechanism only.";
     using Args  = SpawnArgs;
     using Reply = SpawnReply;
-    static result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(error{failure_class::contract,
-                                      "SpawnTool::invoke() must never run directly in this test -- "
-                                      "only through the custom_invoke closure below",
-                                      "test.dead_static_invoke_path"});
-    }
+
+    explicit SpawnTool(SpawnHistoryProvider& provider) : provider_(&provider) {}
+
+    task<result<Reply>> invoke(Args, EffectContext&) const;
+
+private:
+    SpawnHistoryProvider* provider_;
 };
 
 // Parent HistoryProviderT: advertises SpawnTool; its custom_invoke closure is the real §2 pipeline,
@@ -226,13 +231,15 @@ public:
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = {agentengine::make_tool_descriptor_with_invoke<SpawnTool>(
-            [this](SpawnArgs a, EffectContext& ctx) { return spawn_child(std::move(a), ctx); })};
+        c.tools = {agentengine::make_tool_descriptor(SpawnTool{*this})};
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
 
 private:
+    // ADR-237 §5.2: the instance-form SpawnTool above reaches this.
+    friend struct SpawnTool;
+
     [[nodiscard]] result<SpawnReply> spawn_child(SpawnArgs a, EffectContext& ctx) {
         ++spawn_call_count_;
         // §2 step [2] (item 4, already landed).
@@ -267,6 +274,11 @@ private:
     std::shared_ptr<ScriptedChatClient::State> child_observed_state_;
 };
 static_assert(agentengine::ContextProvider<SpawnHistoryProvider>);
+
+// ADR-237 §5.2: out-of-line -- needs `SpawnHistoryProvider` complete.
+task<result<SpawnReply>> SpawnTool::invoke(SpawnArgs a, EffectContext& ctx) const {
+    co_return provider_->spawn_child(std::move(a), ctx);
+}
 
 }  // namespace
 

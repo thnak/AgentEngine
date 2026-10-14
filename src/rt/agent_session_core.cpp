@@ -5,6 +5,8 @@
 
 #include "agentengine/rt/agent_session_core.hpp"
 
+#include "agentengine/rt/block_on.hpp"  // ADR-237 §5.2: drive the async pipeline on batch worker threads
+
 namespace agentengine::rt {
 
 // agent_session.hpp:785
@@ -604,28 +606,37 @@ task<result<ToolTable>> AgentSessionCore::resume_tool_table(SuspendedRoundRecord
 
 // agent_session.hpp:1513
 ToolDescriptor AgentSessionCore::schedule_wakeup_tool() {
-    return make_tool_descriptor_with_invoke<ScheduleWakeupTool>(
-        [this](ScheduleWakeupArgs args, EffectContext& ctx) -> result<ScheduleWakeupReply> {
-            // ADR-061 §20.6: `ctx` is the real, per-request EffectContext invoke_tool()
-            // hands this closure -- calls schedule_wakeup_impl() DIRECTLY (never the
-            // locking public schedule_wakeup() wrapper: this closure already runs inside
-            // the session_mutex_ lock via run_rounds() -> invoke_tool(), and a non-
-            // reentrant AsyncMutex would deadlock on a second co_await lock()).
-            CapabilitySet const empty_caps = CapabilitySet::grant_root({});
-            CapabilitySet const& call_held =
-                ctx.capabilities ? *ctx.capabilities : empty_caps;
-            // `args.label` passed by value (not moved) -- the state_changed emission
-            // below still needs it after the registry call returns.
-            auto effect = standing_effects_registry_.schedule_wakeup_impl(
-                std::chrono::milliseconds(args.delay_ms), args.label,
-                std::chrono::steady_clock::now(), call_held, ctx.principal, ctx.run_id,
-                session_id_);
-            if (!effect) return std::unexpected(effect.error());
-            emit_run_event_for(ctx.run_id, run_event_kind::state_changed,
-                                run_event_payload::StateChanged{
-                                    "schedule_wakeup armed: " + args.label});
-            return ScheduleWakeupReply{effect->handle_id};
-        });
+    // ADR-237 §5.2: the instance-form tool holds this session explicitly; the dispatch body is
+    // dispatch_schedule_wakeup() below, reached only from ScheduleWakeupTool::invoke().
+    return make_tool_descriptor(ScheduleWakeupTool{*this});
+}
+
+// agent_session.hpp:1513 (ADR-237 §5.2)
+task<result<ScheduleWakeupReply>> ScheduleWakeupTool::invoke(ScheduleWakeupArgs args,
+                                                             EffectContext& ctx) const {
+    co_return session_->dispatch_schedule_wakeup(args, ctx);
+}
+
+result<ScheduleWakeupReply> AgentSessionCore::dispatch_schedule_wakeup(ScheduleWakeupArgs const& args,
+                                                                      EffectContext& ctx) {
+    // ADR-061 §20.6: `ctx` is the real, per-request EffectContext invoke_tool() hands this call --
+    // calls schedule_wakeup_impl() DIRECTLY (never the locking public schedule_wakeup() wrapper: this
+    // runs inside the session_mutex_ lock via run_rounds() -> invoke_tool(), and a non-reentrant
+    // AsyncMutex would deadlock on a second co_await lock()).
+    CapabilitySet const empty_caps = CapabilitySet::grant_root({});
+    CapabilitySet const& call_held =
+        ctx.capabilities ? *ctx.capabilities : empty_caps;
+    // `args.label` passed by value (not moved) -- the state_changed emission
+    // below still needs it after the registry call returns.
+    auto effect = standing_effects_registry_.schedule_wakeup_impl(
+        std::chrono::milliseconds(args.delay_ms), args.label,
+        std::chrono::steady_clock::now(), call_held, ctx.principal, ctx.run_id,
+        session_id_);
+    if (!effect) return std::unexpected(effect.error());
+    emit_run_event_for(ctx.run_id, run_event_kind::state_changed,
+                        run_event_payload::StateChanged{
+                            "schedule_wakeup armed: " + args.label});
+    return ScheduleWakeupReply{effect->handle_id};
 }
 
 // agent_session.hpp:1657
@@ -853,7 +864,9 @@ task<result<agentengine::StandingEffect>> AgentSessionCore::start_background_tas
     std::string const owner_principal_id = effect_context_.principal.id;
 
     std::weak_ptr<BackgroundCompletionQueue> weak_queue = standing_effects_registry_.completion_queue();
-    result<void> submitted = background_task(
+    // ADR-237 §5.2: `background_task` is async; it only performs the synchronous admission and
+    // detaches its worker, so awaiting it here never parks for the tool's own duration.
+    result<void> submitted = co_await background_task(
         table, *effect_context_.capabilities, request, effect_context_, approve, current_count,
         [weak_queue, handle_id, call_id = request.call_id](ToolResult result_out,
                                                              ToolInvocationAudit audit) mutable {
@@ -959,12 +972,12 @@ void AgentSessionCore::emit_run_event_for(std::string const& run_id, run_event_k
 }
 
 // agent_session.hpp:2060
-std::vector<AgentSessionCore::DispatchedCall> AgentSessionCore::dispatch_tool_calls(std::vector<ToolCallRequest> const& reqs,
+task<std::vector<AgentSessionCore::DispatchedCall>> AgentSessionCore::dispatch_tool_calls(std::vector<ToolCallRequest> const& reqs,
                                                   ToolTable const& tool_table, CapabilitySet const& held,
                                                   ApprovalDecider const& approve,
                                                   PolicyDecider const& policy) {
     std::vector<DispatchedCall> out(reqs.size());
-    if (reqs.empty()) return out;
+    if (reqs.empty()) co_return out;
     // ADR-193: what this run may still spend, so a tool that runs another agent caps the child's budget by it
     // (red team round 1: each child got its own full `child_token_budget` whatever the parent had left).
     // Recomputed before EVERY sequential call (round 2: set once per batch, every spawn in one response saw the
@@ -1047,7 +1060,7 @@ std::vector<AgentSessionCore::DispatchedCall> AgentSessionCore::dispatch_tool_ca
                 effect_context_.remaining_token_budget = remaining_budget();  // ADR-193 round 2
                 ToolInvocationAudit audit;
                 ToolResult result =
-                    invoke_tool(tool_table, held, req, effect_context_, approve, &audit, policy);
+                    co_await invoke_tool(tool_table, held, req, effect_context_, approve, &audit, policy);
                 effect_context_.report_progress = [](ContentItem) {};
                 effect_context_.sandbox_exec_sink =
                     [](run_event_kind, run_event_payload::SandboxExec) {};
@@ -1118,7 +1131,10 @@ std::vector<AgentSessionCore::DispatchedCall> AgentSessionCore::dispatch_tool_ca
             for (std::size_t k = 0; k < job.call_indices.size(); ++k) {
                 auto const started = std::chrono::steady_clock::now();
                 ToolCallRequest const& req = *job.requests[k];
-                AdmittedCallOutcome outcome = run_admitted_call(*job.tools[k], req, job.ctxs[k], job.bounds[k]);
+                // ADR-237 §5.2: on this worker thread the async invoke is a genuinely-sync edge, so
+                // drive it with `rt::block_on` (never on a lane; these are ThreadPool workers).
+                AdmittedCallOutcome outcome =
+                    agentengine::rt::block_on(run_admitted_call(*job.tools[k], req, job.ctxs[k], job.bounds[k]));
                 ToolInvocationAudit audit = make_call_audit(req, job.ctxs[k], started, outcome);
                 emit_run_event_for(job.ctxs[k].run_id, run_event_kind::tool_call_finished,
                                      run_event_payload::ToolCallFinished{audit.call_id, outcome.result});
@@ -1130,7 +1146,7 @@ std::vector<AgentSessionCore::DispatchedCall> AgentSessionCore::dispatch_tool_ca
         agentengine::rt::run_jobs_bounded(runnables, kParallelBatchWorkerCap);
     }
 
-    return out;
+    co_return out;
 }
 
 // agent_session.hpp:2256
@@ -1151,7 +1167,9 @@ bool AgentSessionCore::should_retry_stream(error const& err) const {
         // `net.stream_read_failed` is the same by construction: a read that fails after the head.
         return (f.any_update_seen || f.inner.code == "net.stream_truncated" ||
                 f.inner.code == "net.stream_read_failed") &&
-               f.inner.klass == failure_class::transient && f.inner.code != "net.cancelled";
+               // ADR-237 D6: the one retry decision; the stream is re-sent within the run's own budget (`shared`).
+               // `net.cancelled` is `canceled` now, no longer a transient special-cased by its code.
+               is_retryable(f.inner.klass, retry_budget::shared);
     }
 }
 
@@ -1267,12 +1285,12 @@ task<result<AgentResponse>> AgentSessionCore::resolve_codeact_ask(ResolveInterac
             replay_allowed = now && now(effect_context_.principal, req.tool_name, json::dump(req.arguments));
         }
     }
-    ToolResult tool_result =
-        replay_allowed
-            ? invoke_tool(tool_table, held, req, effect_context_, one_shot_approve, &audit)
-            : make_denial_result(req.call_id, "the replay was not approved again after unattended mode changed",
-                                 "tool.approval_denied");
-    if (!replay_allowed) {
+    ToolResult tool_result;
+    if (replay_allowed) {  // ADR-237 §5.2: the pipeline is async; await it.
+        tool_result = co_await invoke_tool(tool_table, held, req, effect_context_, one_shot_approve, &audit);
+    } else {
+        tool_result = make_denial_result(
+            req.call_id, "the replay was not approved again after unattended mode changed", "tool.approval_denied");
         audit.call_id = req.call_id;
         audit.ok      = false;
     }
@@ -1378,7 +1396,7 @@ task<result<AgentResponse>> AgentSessionCore::finish_hook_processed_round(Pendin
         reqs.push_back(hc.request);
         req_positions.push_back(i);
     }
-    std::vector<DispatchedCall> dispatched = dispatch_tool_calls(reqs, tool_table, held, approve, policy);
+    std::vector<DispatchedCall> dispatched = co_await dispatch_tool_calls(reqs, tool_table, held, approve, policy);
     for (std::size_t j = 0; j < dispatched.size(); ++j) {
         results[req_positions[j]] = std::move(dispatched[j].result);
     }
@@ -1525,7 +1543,9 @@ task<result<AgentResponse>> AgentSessionCore::resolve_hook_decision(ResolveInter
 // agent_session.hpp:2798
 std::unexpected<error> AgentSessionCore::finish_canceled() {
     emit_run_event(run_event_kind::run_canceled);
-    return std::unexpected(error{failure_class::fatal, "the run was canceled", "run.canceled"});
+    // ADR-237 D6 amends ADR-178: `canceled`, not `fatal` -- a stopped run is a state, not a fault (001 §5), and
+    // no retry predicate retries `canceled`.
+    return std::unexpected(error{failure_class::canceled, "the run was canceled", "run.canceled"});
 }
 
 // ADR-230 (issue #44) -------------------------------------------------------------------------------------------
@@ -1886,8 +1906,11 @@ task<result<AgentResponse>> AgentSessionCore::run_rounds_body() {
                                                  "run.token_budget_exceeded"});
             }
         }
-        if (!response && (response.error().code == "run.canceled" ||
-                           effect_context_.cancellation.stop_requested())) {
+        // ADR-237 D6: decided by the run's own token, never by the error's code. The drain's `run.canceled` is
+        // raised only when that token fired, so this is what the old `code == "run.canceled"` test caught too. A
+        // `canceled` failure the run did NOT ask for (someone else stopped the model call) is not this run's
+        // cancel: it falls through to `run_failed` below and carries `canceled` to the caller unchanged.
+        if (!response && effect_context_.cancellation.stop_requested()) {
             co_return finish_canceled();  // ADR-178: a call the run's own cancel cut short is not a failure
         }
         // ADR-230: decided by the client's own state, never by the error's text.
@@ -2005,7 +2028,7 @@ task<result<AgentResponse>> AgentSessionCore::run_rounds_body() {
             std::optional<std::string> structured_output_json;
             if (output_schema_validate_) {
                 std::string text_content = text_of(response->message);
-                result<void> const validated = output_schema_validate_(text_content);
+                result<void> const validated = co_await output_schema_validate_(text_content);
                 if (!validated) {
                     emit_run_event(run_event_kind::run_failed,
                                     run_event_payload::RunFailed{
@@ -2248,7 +2271,7 @@ task<result<AgentResponse>> AgentSessionCore::run_rounds_body() {
         }
 
         std::vector<DispatchedCall> dispatched =
-            dispatch_tool_calls(reqs, tool_table, held, effective_approval_decider(tool_table), policy_decider_);
+            co_await dispatch_tool_calls(reqs, tool_table, held, effective_approval_decider(tool_table), policy_decider_);
 
         for (std::size_t j = 0; j < dispatched.size(); ++j) {
             std::size_t const i = req_positions[j];

@@ -561,9 +561,17 @@ print(r.count)
     return {make_builtin_skills_source(), make_codeact_demo_skill_source()};
 }
 
-struct ExecuteCodeTool : Tool<ExecuteCodeTool, Capabilities<cap::decl::FsRead<"work">,
-                                                              cap::decl::FsWrite<"work">>,
-                                EffectClass<effect_class::at_most_once>> {
+// ADR-237 §5.2: an instance-form `Tool<>` conformer, templated on the owning provider type so it can
+// hold it explicitly. Its `invoke()` (defined below, where `ToolDeclaringHistoryProvider` is complete)
+// calls the provider's private `real_execute_code()` through this class's own `friend` declaration.
+// `CapturesSessionState` keeps it non-backgroundable, which is what the old
+// `make_tool_descriptor_with_invoke` closure (hardcoded `captures_session_state = true`) already was;
+// the tool still declares the real `Capabilities<...>`/`EffectClass<...>` policies. The former static
+// poison `invoke()` sentinel is gone.
+template <class ProviderT>
+struct ExecuteCodeTool : Tool<ExecuteCodeTool<ProviderT>,
+                              Capabilities<cap::decl::FsRead<"work">, cap::decl::FsWrite<"work">>,
+                              EffectClass<effect_class::at_most_once>, CapturesSessionState> {
     static constexpr std::string_view name = "execute_code";
     static constexpr std::string_view description =
         "Execute Python code in this session's real interpreter and return what it printed. State "
@@ -572,19 +580,12 @@ struct ExecuteCodeTool : Tool<ExecuteCodeTool, Capabilities<cap::decl::FsRead<"w
     using Args = ExecuteCodeArgs;
     using Reply = ExecuteCodeReply;
 
-    // ADR-030: this static invoke() is now an unreachable poison sentinel, not the real
-    // implementation -- `ToolDeclaringHistoryProvider::on_context()` below builds this tool's
-    // descriptor via `make_tool_descriptor_with_invoke`, whose closure captures `this` and calls
-    // `real_execute_code()` instead. `ExecuteCodeTool` still declares the real
-    // `Capabilities<...>`/`EffectClass<...>` policies -- `make_tool_descriptor_with_invoke` still
-    // extracts those from `ToolT` at compile time (ADR-028 §4) -- only the invoke BODY moved.
-    static result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(error{failure_class::fatal,
-                                      "ExecuteCodeTool::invoke() must never run directly -- this "
-                                      "tool is only ever reached through "
-                                      "ToolDeclaringHistoryProvider::real_execute_code()",
-                                      "cli_chat.dead_static_invoke_path"});
-    }
+    explicit ExecuteCodeTool(ProviderT& provider) : provider_(&provider) {}
+
+    [[nodiscard]] task<result<Reply>> invoke(Args, EffectContext&) const;
+
+private:
+    ProviderT* provider_;
 };
 
 // ---- The on-demand mount trigger: real state, no new authority ------------------------------------
@@ -608,7 +609,13 @@ struct MountSkillReply {
 };
 AE_JSON_SCHEMA(MountSkillReply, ok, message)
 
-struct MountSkillTool : Tool<MountSkillTool, EffectClass<effect_class::pure>> {
+// ADR-237 §5.2: instance form, same shape as `ExecuteCodeTool` above -- the real logic stays in
+// `ToolDeclaringHistoryProvider::real_mount_skill()`, reached through the `friend` declaration below.
+// `pure` and `CapturesSessionState` together are the already-tested combination
+// `QuarantineSecretTool` uses: no external effect, but state that belongs to the session.
+template <class ProviderT>
+struct MountSkillTool
+    : Tool<MountSkillTool<ProviderT>, EffectClass<effect_class::pure>, CapturesSessionState> {
     static constexpr std::string_view name = "mount_skill";
     static constexpr std::string_view description =
         "Activate a skill you've seen advertised by name and description, so its full instructions "
@@ -618,15 +625,12 @@ struct MountSkillTool : Tool<MountSkillTool, EffectClass<effect_class::pure>> {
     using Args = MountSkillArgs;
     using Reply = MountSkillReply;
 
-    // ADR-030: same shape as `ExecuteCodeTool::invoke()` above -- unreachable poison, real logic in
-    // `ToolDeclaringHistoryProvider::real_mount_skill()`.
-    static result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(error{failure_class::fatal,
-                                      "MountSkillTool::invoke() must never run directly -- this tool "
-                                      "is only ever reached through "
-                                      "ToolDeclaringHistoryProvider::real_mount_skill()",
-                                      "cli_chat.dead_static_invoke_path"});
-    }
+    explicit MountSkillTool(ProviderT& provider) : provider_(&provider) {}
+
+    [[nodiscard]] task<result<Reply>> invoke(Args, EffectContext&) const;
+
+private:
+    ProviderT* provider_;
 };
 
 // ---- ContextProvider fixture: real conversation history + ONE merged skill system message ----------
@@ -747,22 +751,16 @@ public:
         // must be recomputed on the same cadence, or declared/invocable would diverge (the exact
         // cosmetic-scoping gap skill_tool_scoping.hpp's own top comment warns about).
         //
-        // ADR-030: built via `make_tool_descriptor_with_invoke`, not `ToolTable::from_tools<...>()`
-        // -- each closure captures `this`, reaching this provider's own `mounted_skills_`/
-        // `exec_state_`/`runner_binding_`/`skills_` instead of the process-global statics the
-        // pre-ADR-030 shape used. `ExecuteCodeTool`/`MountSkillTool` still supply their compile-time
-        // `Capabilities<...>`/`EffectClass<...>` declarations (ADR-028 §4) -- only the invoke BODY
-        // moved to `real_execute_code()`/`real_mount_skill()` below.
-        std::vector<ToolDescriptor> universe_descriptors = {
-            make_tool_descriptor_with_invoke<ExecuteCodeTool>(
-                [this](ExecuteCodeArgs a, EffectContext& ctx) { return real_execute_code(std::move(a), ctx); }),
-            make_tool_descriptor_with_invoke<MountSkillTool>(
-                [this](MountSkillArgs a, EffectContext& ctx) { return real_mount_skill(std::move(a), ctx); }),
-        };
-        ToolTable const universe = ToolTable::from_descriptors(std::move(universe_descriptors));
+        // ADR-237 §5.2: `declared_universe()` builds both descriptors from live tool instances that
+        // hold THIS provider, so their invokes reach this provider's own `mounted_skills_`/
+        // `exec_state_`/`runner_binding_`/`skills_` (ADR-030's per-session state) instead of the
+        // process-global statics the pre-ADR-030 shape used. The tools still supply their compile-time
+        // `Capabilities<...>`/`EffectClass<...>` declarations; only the invoke BODY moved to
+        // `real_execute_code()`/`real_mount_skill()` below.
+        ToolTable const universe = declared_universe();
         auto const scoped = scope_tools_to_mounted_skills(
             universe, skills_.allowed_tool_names_for(mounted_skills_.all()),
-            {std::string(MountSkillTool::name)});
+            {std::string(MountSkillTool<ToolDeclaringHistoryProvider>::name)});
         contribution.tools = scoped.descriptors();
 
         // ADR-102 Phase 5: `run_command` (MandatorySandboxProvider, sandbox/mandatory_sandbox_
@@ -810,9 +808,9 @@ public:
             ToolDescriptor::InvokeFn inner = std::move(td.invoke);
             std::string tool_name = td.name;
             td.invoke = [inner = std::move(inner), tool_name = std::move(tool_name)](
-                            json::Value const& args, EffectContext& ec) -> result<json::Value> {
-                result<json::Value> reply = inner(args, ec);
-                if (!reply) return reply;
+                            json::Value const& args, EffectContext& ec) -> task<result<json::Value>> {
+                result<json::Value> reply = co_await inner(args, ec);
+                if (!reply) co_return reply;
                 std::size_t withheld = 0;
                 json::Value capped = cap_strings(*reply, max_tool_output_bytes(), withheld);
                 if (withheld > 0) {
@@ -821,7 +819,7 @@ public:
                                         " bytes withheld from the model. Full reply follows.\n" +
                                         json::dump(*reply));
                 }
-                return capped;
+                co_return capped;
             };
         }
         co_return contribution;
@@ -856,7 +854,21 @@ public:
         return run_command_provider_;
     }
 
+    // ADR-237 §5.2: this provider's declared tool universe, built from live tool INSTANCES rather than
+    // `ToolTable::from_tools<...>()`'s zero-argument static shape (both tools are instance-form now).
+    // `on_context()` scopes from this same source and the startup banner reports from it, so declared
+    // and invocable cannot disagree.
+    [[nodiscard]] ToolTable declared_universe() {
+        return ToolTable::from(ExecuteCodeTool<ToolDeclaringHistoryProvider>{*this},
+                               MountSkillTool<ToolDeclaringHistoryProvider>{*this});
+    }
+
 private:
+    // ADR-237 §5.2: the instance-form tools declared above reach `real_execute_code()`/
+    // `real_mount_skill()` below through these.
+    template <class> friend struct ExecuteCodeTool;
+    template <class> friend struct MountSkillTool;
+
     std::vector<std::string> approval_required_;
 
     // The real `execute_code` implementation (ADR-030) -- was `ExecuteCodeTool::invoke()`'s body
@@ -981,6 +993,21 @@ private:
     // long as the session.
     std::unique_ptr<SessionShellSandbox> shell_;
 };
+
+// ADR-237 §5.2: out-of-line because each needs `ToolDeclaringHistoryProvider` complete to reach the
+// private `real_execute_code()`/`real_mount_skill()` it befriends.
+template <class ProviderT>
+task<result<ExecuteCodeReply>> ExecuteCodeTool<ProviderT>::invoke(ExecuteCodeArgs a,
+                                                                  EffectContext& ctx) const {
+    co_return provider_->real_execute_code(std::move(a), ctx);
+}
+
+template <class ProviderT>
+task<result<MountSkillReply>> MountSkillTool<ProviderT>::invoke(MountSkillArgs a,
+                                                                EffectContext& ctx) const {
+    co_return provider_->real_mount_skill(std::move(a), ctx);
+}
+
 static_assert(ContextProvider<ToolDeclaringHistoryProvider>);
 
 // `Inner` is whichever real provider backend `main()` selected (`openai::OpenAIChatClient<...>` or
@@ -1031,11 +1058,11 @@ template <class Inner>
 void print_skills_banner(std::ostream& out,
                           std::vector<native_jail::MaterializedSkillMount> const& materialized,
                           SkillsProvider<>& startup_skills, MountedSkillsState const& mounted_skills,
-                          cli_chat::ToolPlan const& plan) {
+                          cli_chat::ToolPlan const& plan, ToolTable const& universe) {
     out << "Skills RESOLVED at /skills/<name> -- every one's files are unconditionally readable "
                  "from turn 1 (009 §8b, unaffected by mount state):\n";
     for (auto const& source : demo_skill_sources()) {
-        auto skills = source.load_skills();
+        auto skills = rt::block_on(source.load_skills());
         if (skills) {
             for (auto const& s : *skills) {
                 out << "  - " << s.skill.frontmatter.name << ": "
@@ -1078,9 +1105,11 @@ void print_skills_banner(std::ostream& out,
 
     out << "Tools declared+invocable right now (mount_skill is always available; others unlock "
                  "once their owning skill is mounted; shell tools per --shell): ";
-    auto const universe = ToolTable::from_tools<ExecuteCodeTool, MountSkillTool>();
+    // ADR-237 §5.2: the universe is handed in (the caller's own provider `declared_universe()`), since
+    // both tools are instance-form now and a zero-argument static table no longer exists.
     auto const scoped = scope_tools_to_mounted_skills(
-        universe, startup_skills.allowed_tool_names_for(mounted), {std::string(MountSkillTool::name)});
+        universe, startup_skills.allowed_tool_names_for(mounted),
+        {std::string(MountSkillTool<ToolDeclaringHistoryProvider>::name)});
     std::vector<std::string> names;
     for (auto const& d : scoped.descriptors()) names.push_back(d.name);
     if (plan.offer_run_shell) names.emplace_back("run_shell");
@@ -1488,7 +1517,8 @@ template <class Inner>
     {
         std::ostringstream banner;
         print_skills_banner(banner, materialized, startup_skills,
-                            actor.history_provider().mounted_skills(), plan);
+                            actor.history_provider().mounted_skills(), plan,
+                            actor.history_provider().declared_universe());
         log.write("startup state --\n" + banner.str());
         if (verbose_ui()) std::cout << banner.str();
     }

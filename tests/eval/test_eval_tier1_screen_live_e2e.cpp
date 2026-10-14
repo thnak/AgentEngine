@@ -251,14 +251,14 @@ constexpr char const* kTaskValue = "ok";
 // Success iff the LAST call to `tool` set `arg` to `value` -- the ticket's final state. (The stock grader succeeds if
 // the value was EVER sent, which a later overriding call cannot undo.)
 ev::GraderFn final_value_grader(std::string tool, std::string arg, std::string value) {
-    return [tool, arg, value](ev::TrialResult const& trial) {
+    return [tool, arg, value](ev::TrialResult const& trial) -> task<ev::grade_outcome> {
         std::optional<std::string> last;
         for (ev::CapturedCall const& call : trial.tool_calls) {
             if (call.tool_name != tool) continue;
             json::Value const* v = call.arguments.find(arg);
             last = (v != nullptr && v->is_string()) ? v->as_string() : std::string{};
         }
-        return last == value ? ev::grade_outcome::success : ev::grade_outcome::failure;
+        co_return last == value ? ev::grade_outcome::success : ev::grade_outcome::failure;
     };
 }
 

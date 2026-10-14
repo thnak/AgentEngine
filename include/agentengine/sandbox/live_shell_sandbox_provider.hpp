@@ -95,9 +95,16 @@ AE_JSON_SCHEMA(ShellExecReply, ok, exit_code, output, output_bytes, timed_out, s
                unrecorded_changes_discarded, commit_error, tree_digest, turn_index, skipped_symlinks, image,
                image_digest, image_digest_kind)
 
-// `invoke()` is an unreachable sentinel: dispatch goes through the closure `on_context()` installs.
+// ADR-237 §5.2: an instance-form `Tool<>` conformer now, templated on the owning provider type so it
+// can hold it explicitly (the provider is a class template). Its `invoke()` (defined below, where
+// `LiveShellSandboxProvider` is complete) calls the provider's private `shell_exec()` through the
+// `friend` declaration in the class; `CapturesSessionState` keeps it non-backgroundable and
+// non-rerun-comparable exactly as the old `[this]`-capturing closure was. The former static poison
+// `invoke()` sentinel is gone.
+template <class ProviderT>
 struct ShellExecTool
-    : agentengine::Tool<ShellExecTool, agentengine::Capabilities<agentengine::cap::decl::RunCommand>> {
+    : agentengine::Tool<ShellExecTool<ProviderT>, agentengine::Capabilities<agentengine::cap::decl::RunCommand>,
+                        agentengine::CapturesSessionState> {
     static constexpr std::string_view name = "shell_exec";
     static constexpr std::string_view description =
         "Run a command in this session's own persistent, isolated shell. The working directory, exported "
@@ -107,13 +114,12 @@ struct ShellExecTool
     using Args = ShellExecArgs;
     using Reply = ShellExecReply;
 
-    [[nodiscard]] static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) {
-        return std::unexpected(agentengine::error{
-            agentengine::failure_class::fatal,
-            "ShellExecTool::invoke() must never run directly -- dispatch goes through the closure "
-            "LiveShellSandboxProvider::on_context() installs.",
-            "live_shell_provider.invoke_unreachable"});
-    }
+    explicit ShellExecTool(ProviderT& provider) : provider_(&provider) {}
+
+    [[nodiscard]] agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const;
+
+private:
+    ProviderT* provider_;
 };
 
 template <PersistentShellSurface Surface, class Store = agentengine::InMemoryWorktreeObjectStore,
@@ -124,7 +130,11 @@ public:
     // Snapshots kept per provider (§5: bounded LRU). The oldest is dropped first.
     static constexpr std::size_t kMaxSnapshots = 256;
 
-    using SurfaceFactory = std::function<Surface()>;
+    // ADR-237 §5.1 (step 37): the surface factory is an ASYNC seam. A `Surface` may be a possibly-remote
+    // environment (ADR-209 -- a container/daemon handshake, not a local object graph), so constructing one
+    // is allowed to suspend: `Surface()` -> `task<Surface>()`. Non-coroutine callers drive it through
+    // `rt::block_on` (the copy-assign below does exactly that for `spawn_child_branch` already).
+    using SurfaceFactory = std::function<agentengine::rt::task<Surface>()>;
 
     // Unbound: contributes no tool. Required to exist for `AgentSession::clear_in_process_state()`.
     LiveShellSandboxProvider() = default;
@@ -133,7 +143,9 @@ public:
     // The binding call. `limits` is REQUIRED (no unbounded default, §8): a zero ceiling, a non-positive
     // deadline or a missing factory is refused before anything changes. A re-bind releases the held
     // environment first.
-    [[nodiscard]] agentengine::result<void> bind_sandbox(
+    // ADR-237 §5.1 (step 37): async, because it awaits the surface factory (above). Same result contract
+    // and same refusal ordering as before -- only the return is a `task` now.
+    [[nodiscard]] agentengine::rt::task<agentengine::result<void>> bind_sandbox(
         agentengine::Ledger<Store>& ledger, agentengine::BranchHandle<Store> branch, agentengine::IdentityHandle owner,
         std::filesystem::path staging_root, agentengine::rt::AsyncQuota<agentengine::BranchCost>& branch_quota,
         agentengine::rt::AsyncQuota<agentengine::RunCost>& run_quota,
@@ -142,13 +154,16 @@ public:
         std::chrono::milliseconds command_deadline, Lifetime lifetime_policy = {},
         LiveShellClock clock = default_live_shell_clock()) {
         auto valid = validate_live_shell_limits(limits);
-        if (!valid.has_value()) return valid;
+        if (!valid.has_value()) co_return valid;
         if (command_deadline.count() <= 0 || !make_surface || !clock) {
-            return std::unexpected(agentengine::error{
+            co_return std::unexpected(agentengine::error{
                 agentengine::failure_class::contract,
                 "bind_sandbox needs a positive per-command deadline, a surface factory and a clock",
                 "live_shell_provider.bad_binding"});
         }
+        // The one suspension point comes BEFORE any member is touched: a re-entrant bind (or a destroy) while the
+        // factory is suspended sees the old, whole binding rather than a half-bound object with a dangling closure.
+        auto surface = std::make_unique<Surface>(co_await make_surface());
         release_on_destroy();
         ledger_ = &ledger;
         owner_.emplace(owner);
@@ -162,10 +177,10 @@ public:
         lifetime_ = std::move(lifetime_policy);
         clock_ = std::move(clock);
         runtime_.emplace(ledger, std::move(branch), std::move(staging_root));
-        surface_ = std::make_unique<Surface>(make_surface_());
+        surface_ = std::move(surface);
         reset_shell_state();
         snapshots_.clear();
-        return {};
+        co_return agentengine::result<void>{};
     }
 
     [[nodiscard]] bool is_bound() const noexcept { return runtime_.has_value(); }
@@ -181,6 +196,9 @@ public:
         auto child = agentengine::rt::block_on(other.runtime_->spawn_child_branch(
             *other.owner_, *other.branch_quota_, other.runtime_->staging_root().parent_path()));
         if (!child.has_value()) return *this;
+        // May throw (block_on is refused on a lane): build it before assigning anything, so a throw leaves this
+        // object unbound rather than partly copied.
+        auto surface = std::make_unique<Surface>(agentengine::rt::block_on(other.make_surface_()));
         ledger_ = other.ledger_;
         owner_ = other.owner_;
         branch_quota_ = other.branch_quota_;
@@ -193,7 +211,7 @@ public:
         lifetime_ = other.lifetime_;
         clock_ = other.clock_;
         runtime_.emplace(std::move(*child));
-        surface_ = std::make_unique<Surface>(make_surface_());
+        surface_ = std::move(surface);
         reset_shell_state();
         snapshots_ = other.snapshots_;
         return *this;
@@ -212,10 +230,8 @@ public:
         agentengine::ContextContribution contribution;
         if (!runtime_.has_value()) co_return contribution;
         check_lifetime(lifetime_event::context, std::nullopt, &ctx);
-        contribution.tools.push_back(agentengine::make_tool_descriptor_with_invoke<ShellExecTool>(
-            [this](ShellExecArgs args, agentengine::EffectContext& call_ctx) -> agentengine::result<ShellExecReply> {
-                return shell_exec(std::move(args), call_ctx);
-            }));
+        contribution.tools.push_back(
+            agentengine::make_tool_descriptor(ShellExecTool<LiveShellSandboxProvider>{*this}));
         co_return contribution;
     }
 
@@ -262,6 +278,10 @@ public:
     }
 
 private:
+    // ADR-237 §5.2: the instance-form `ShellExecTool` (declared above) holds this provider explicitly and
+    // calls `shell_exec()` below.
+    template <class> friend struct ShellExecTool;
+
     [[nodiscard]] agentengine::result<ShellExecReply> shell_exec(ShellExecArgs args, agentengine::EffectContext& ctx) {
         check_lifetime(lifetime_event::shell_exec, std::nullopt, &ctx);
         agentengine::IdentityHandle const caller = agentengine::IdentityAuthority::bootstrap().adopt(ctx.principal);
@@ -464,5 +484,13 @@ private:
     std::uint64_t opens_ = 0;
     std::uint64_t event_seq_ = 0;
 };
+
+// ADR-237 §5.2: out-of-line because it needs `LiveShellSandboxProvider` complete to reach the private
+// `shell_exec()` it befriends.
+template <class ProviderT>
+agentengine::task<agentengine::result<ShellExecReply>> ShellExecTool<ProviderT>::invoke(
+    ShellExecArgs args, agentengine::EffectContext& ctx) const {
+    co_return provider_->shell_exec(std::move(args), ctx);
+}
 
 }  // namespace agentengine
