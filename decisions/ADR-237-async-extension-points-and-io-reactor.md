@@ -2395,6 +2395,49 @@ re-verify.
 - Stale-comment residual (cosmetic, not compiled): the "detached background worker" comment block above the
   removed declarations and `rt/http.hpp`'s mention of `pump_sse_stream` still describe the old shape.
 
+### Step 44 (2026-10-14): Phase C slice 1 -- one `task`-shaped index seam; the RAG `recall` tools await (#172)
+
+§5.1 said the index concepts merge into the already-async `RemoteVectorIndex` shape, because the local/remote
+split existed only because one side was synchronous. Done that way, and together with the RAG `recall`
+conversion, which §14.1 had scheduled last in Phase C: once local indexes are `task`-shaped, a synchronous
+`recall` could only reach them by a temporary `synchronous_leaf` on every local conformer.
+
+- **Seams.** `VectorIndex` (`core/vector_index.hpp`) and `SparseIndex` (`core/sparse_index.hpp`):
+  `add_batch(..., ctx)`, `search(..., ctx)`, `contains(id, ctx)`, each `task<result<...>>`.
+  `core/remote_vector_index.hpp` (`RemoteVectorIndex`, `AnyVectorIndex`, ADR-180 §2.1's R1 disjointness rule)
+  is deleted. `PersistentVectorIndex::snapshot/restore` stay synchronous for now: they are store calls and
+  move with the store seams.
+- **Conformers.** `BruteForceCosineIndex`, `BM25Index`, `VulkanCosineIndex`: the existing synchronous bodies
+  are kept byte-for-byte as private `*_now` helpers, and the public seam methods are coroutines over them that
+  complete without suspending (`ctx` unused). `QdrantVectorIndex` was already `task`-shaped; it drops
+  `synchronous_leaf`.
+- **Callers.** `DiskCorpusSource::mount`/`mount_hybrid` and both providers' `on_context` simply `co_await`;
+  every `if constexpr (RemoteVectorIndex<...>)` dispatch is gone. A failed `contains` during `mount` now aborts
+  the mount (it was a `bool` that could not fail) -- the same pre-commit abort an embed failure already gets.
+- **`recall`.** Both RAG providers' `recall` tools are a plain lambda handing off to a member coroutine
+  (`recall_call`, args by value -- the MCP bridge's shape), which awaits the embedder and the index. Deleted
+  with it: both `make_sync_invoke` sites (2 of §5.2's five), both `rt::drive_leaf_task` uses, and the four
+  `recall_tool_requires_synchronous_leaf_{embedder,index}` contract errors. `synchronous_leaf` is no longer
+  required by `Embedder`; `OpenAIEmbedder`/`QdrantVectorIndex` keep a comment stating their bodies still block
+  ("async in name only", decision A8 -- moving them onto `rt::http` is the next slice).
+- **Finding, recorded rather than absorbed.** `test_vector_rag_context_provider` R16 pinned the fail-closed
+  `recall_tool_requires_synchronous_leaf_embedder` error for a `synchronous_leaf = false` embedder. The same
+  conformer's `recall` now succeeds; R16 asserts that instead, with the reason in the test.
+- **Finding: the old `recall` could not run on a runtime lane.** Since ADR-175 `drive_leaf_task` is
+  `block_on`, and a lane refuses `block_on` (`rt.block_on_on_lane`, §4.3). The pre-#172 `recall` therefore
+  returned `rt.leaf_task_faulted` whenever it was invoked on a lane -- latent only because session callers are
+  not on the runtime yet (#179). The converted `recall` awaits, so it works there.
+- **Evidence.** `test_remote_vector_index` is rewritten (historical name) to drive conformers that genuinely
+  suspend -- each parks on a reactor timer -- through every caller ON A RUNTIME LANE: S1 `on_context`, S2
+  `recall`, S3 hybrid `on_context` + `recall` with both legs suspending, S4 `mount` + `mount_hybrid`; each
+  check also asserts the mocks really parked. Mutant: vector `recall` driving its embedder through
+  `drive_leaf_task` (the old shape) fails S2 with `rt.leaf_task_faulted`. Index tests call the seam through
+  `tests/support/index_sync.hpp` (concept-constrained `sync_*` drivers, so braced-init arguments still work).
+  Vulkan on, real GPU: `test_vulkan_cosine_index` and its fault-injection twin pass (Vulkan is not built in
+  CI). Full `ctest -LE live-network`: 405/419 -- the 13 Docker-daemon tests, plus
+  `test_native_jail_backend_windows`, which passed 3/3 when rerun alone (timing under `-j6` load). naming,
+  layering and milestone lints OK.
+
 ### §14.1 What is left, and the phases to follow
 
 Recorded at session end so the work resumes cold. **Status: §5.1 is 10 of ~27 seams converted**
@@ -2468,8 +2511,10 @@ thread on the model path) at ~1 file of change, and keeps `LegacyChatClient`, `A
 mode, and every fixture intact. The drop-`chat()` ordering above is recorded for the event someone still
 wants it; it is not currently planned.
 
-**Phase C -- index and storage seams.** `VectorIndex`/`SparseIndex`, the three stores, `SecretStore`. These
-unblock the RAG `recall` conversion, which belongs here rather than earlier: `recall` deletes two
+**Phase C -- index and storage seams.** ~~`VectorIndex`/`SparseIndex`~~ and ~~the RAG `recall`
+conversion~~ done together (§14 step 44); next the "async in name only" bodies (`QdrantVectorIndex`,
+`OpenAIEmbedder`) onto `rt::http` with qdrant's `Resolver`, then the three stores, `SecretStore`. The RAG `recall`
+conversion was planned to belong here rather than earlier: `recall` deletes two
 `synchronous_leaf` contract-error paths that tests pin deliberately, and it depends on the index seams.
 Gate: those tests are updated with the reason recorded -- never deleted to make a build pass.
 

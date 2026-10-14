@@ -36,6 +36,11 @@
 #include "agentengine/core/worktree.hpp"
 #include "agentengine/rt/append_log_store.hpp"
 #include "../../support/run_task_sync.hpp"
+#include "../../support/index_sync.hpp"
+
+using agentengine::test_support::sync_add_batch;
+using agentengine::test_support::sync_contains;
+using agentengine::test_support::sync_search;
 
 namespace {
 
@@ -59,10 +64,6 @@ int g_failures = 0;
 // this task's scope), so this mock only ever needs to answer for QUERY text, never chunk text.
 class MockEmbedder {
 public:
-    // ADR-064 §3 Design B's required trait: this mock never awaits anything (co_return only), so
-    // driving it via rt::drive_leaf_task() is sound.
-    static constexpr bool synchronous_leaf = true;
-
     [[nodiscard]] ae::EmbedderCapabilities capabilities() const { return {3, 100}; }
 
     ae::task<ae::result<std::vector<std::vector<float>>>> embed_batch(std::vector<std::string> const& texts,
@@ -146,7 +147,7 @@ ae::result<ae::Digest> write_chunk(ae::InMemoryWorktreeObjectStore& object_store
     auto written = ae::write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record);
     if (!written) return std::unexpected(written.error());
 
-    auto added = index.add_batch(std::vector<std::string>{*digest}, std::vector<std::vector<float>>{vec});
+    auto added = sync_add_batch(index, std::vector<std::string>{*digest}, std::vector<std::vector<float>>{vec});
     if (!added) return std::unexpected(added.error());
 
     return digest;
@@ -160,10 +161,6 @@ ae::result<ae::Digest> write_chunk(ae::InMemoryWorktreeObjectStore& object_store
 // calls -- exactly the "unwrapped Embedder breaks replay" tradeoff §2.2A accepts explicitly.
 class AlternatingEmbedder {
 public:
-    // ADR-064 §3 Design B's required trait: this mock never awaits anything (co_return only), so
-    // driving it via rt::drive_leaf_task() is sound.
-    static constexpr bool synchronous_leaf = true;
-
     [[nodiscard]] ae::EmbedderCapabilities capabilities() const { return {3, 100}; }
 
     ae::task<ae::result<std::vector<std::vector<float>>>> embed_batch(std::vector<std::string> const& texts,
@@ -198,17 +195,12 @@ std::vector<float> stateless_vector_for(std::string const& text) {
             static_cast<float>((h / 997 / 991) % 883)};
 }
 
-// R16 (ADR-064 §6/§7's own named residual): a real conformer that declares synchronous_leaf =
-// false -- ALL 4 real conformers in the tree (OpenAIEmbedder + this file's other 3 mocks) declare
-// `true`, so nothing exercises VectorRagContextProvider::recall's `if constexpr` FALSE branch
-// through an actual template instantiation without this dedicated class. The embed_batch() body
-// below is otherwise irrelevant to what this class exists to test -- synchronous_leaf gates
-// recall's invoke at COMPILE time (which branch gets instantiated), not by inspecting runtime
-// behavior, so this body just needs to keep on_context()'s own (unrelated, ordinary co_await) path
-// working normally.
+// R16: the conformer that used to declare `synchronous_leaf = false` -- the one kind `recall` refused
+// (ADR-064 §6/§7). Since ADR-237 §5.1 (#172) `recall` awaits its embedder and the trait is gone, so this
+// class now proves the refusal is gone too. (A conformer that genuinely suspends is exercised end-to-end in
+// test_remote_vector_index.cpp.)
 class NonLeafEmbedder {
 public:
-    static constexpr bool synchronous_leaf = false;
 
     [[nodiscard]] ae::EmbedderCapabilities capabilities() const { return {3, 100}; }
 
@@ -218,9 +210,7 @@ public:
         co_return out;
     }
 };
-static_assert(ae::Embedder<NonLeafEmbedder>,
-              "NonLeafEmbedder must satisfy the Embedder concept (ADR-063 §2.2) despite declaring "
-              "synchronous_leaf = false");
+static_assert(ae::Embedder<NonLeafEmbedder>, "NonLeafEmbedder must satisfy the Embedder concept (ADR-063 §2.2)");
 
 using NonLeafProvider =
     ae::VectorRagContextProvider<NonLeafEmbedder, ae::BruteForceCosineIndex,
@@ -231,14 +221,9 @@ using NonLeafProvider =
 // `fail_next` toggles on read; AlternatingEmbedder's `call_count` mutates every call), which are
 // deliberately scripted for single-threaded determinism and would themselves race if driven
 // concurrently. A real concurrent-recall() test needs a conformer whose OWN internal shape doesn't
-// introduce a race that isn't actually about drive_leaf_task()/VectorRagContextProvider at all.
+// introduce a race that isn't actually about VectorRagContextProvider's recall at all.
 class StatelessEmbedder {
 public:
-    // ADR-064 §3 Design B's required trait: embed_batch() never awaits anything (co_return only) and
-    // touches no member state, so driving it via rt::drive_leaf_task() from multiple threads
-    // concurrently is sound.
-    static constexpr bool synchronous_leaf = true;
-
     [[nodiscard]] ae::EmbedderCapabilities capabilities() const { return {3, 100}; }
 
     ae::task<ae::result<std::vector<std::vector<float>>>> embed_batch(std::vector<std::string> const& texts,
@@ -340,8 +325,7 @@ int main() {
         AE_CHECK(out.has_value() && out->tools.size() == 1 && out->tools.front().name == "recall",
                  "R7: a recall(query)-shaped tool is contributed alongside default injection");
 
-        // --- The recall tool's own invoke: ADR-064 Design B, driven synchronously via
-        // rt::drive_leaf_task() since MockEmbedder declares synchronous_leaf = true ------------------
+        // --- The recall tool's own invoke (awaits the embedder and the index, ADR-237 §5.1) ------------
         {
             embedder.vectors["dark mode"] = {1.0f, 0.0f, 0.0f};  // distinct from on_context()'s own
                                                                     // scripted query text above
@@ -352,9 +336,8 @@ int main() {
             tool_ctx.principal = principal;
             auto reply = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(out->tools.front().invoke(*args, tool_ctx));
             AE_CHECK(reply.has_value(),
-                     "R8: invoking recall() with well-formed args against a synchronous_leaf Embedder "
-                     "succeeds -- real end-to-end drive_leaf_task()-driven embed + search, not the "
-                     "old fail-closed stub");
+                     "R8: invoking recall() with well-formed args succeeds -- a real end-to-end embed + "
+                     "search, not the old fail-closed stub");
             auto parsed_reply = reply.has_value() ? ae::schema::from_json<ae::RagRecallReply>(*reply)
                                                     : ae::result<ae::RagRecallReply>{};
             AE_CHECK(parsed_reply.has_value() && parsed_reply->results.size() == 2,
@@ -836,7 +819,7 @@ int main() {
         // A stale index entry: added directly to the index, WITHOUT ever writing a matching
         // CorpusChunkRecord/blob -- the same end state a re-mount that dropped this chunk from
         // storage (without yet reconciling the index) would leave behind, per ADR-063 §7.
-        auto stale_added = index.add_batch(std::vector<std::string>{"stale-digest-no-backing-record"},
+        auto stale_added = sync_add_batch(index, std::vector<std::string>{"stale-digest-no-backing-record"},
                                             std::vector<std::vector<float>>{{1.0f, 0.0f, 0.0f}});
         AE_CHECK(stale_added.has_value(), "R14 setup: adding the stale (unbacked) index entry succeeds");
 
@@ -956,11 +939,11 @@ int main() {
     }
 
     // ============================================================================================
-    // R16 (ADR-064 §6/§7's own named residual, closed here): recall's invoke against a REAL
-    // conformer that declares synchronous_leaf = false -- exercises the `if constexpr` FALSE branch
-    // through an actual template instantiation for the first time in this tree (all 4 real
-    // conformers declare `true`). Proves the fail-closed fallback still behaves exactly as
-    // originally designed, not merely that it compiles.
+    // R16 -- CHANGED BY ADR-237 §5.1 (#172), recorded rather than absorbed: this check used to pin
+    // recall's fail-closed `recall_tool_requires_synchronous_leaf_embedder` error for a conformer
+    // declaring `synchronous_leaf = false`. `recall` now awaits its embedder like `on_context()`, so the
+    // same conformer's recall SUCCEEDS (an empty index gives an empty result list). That is the intended
+    // behaviour change, not a regression.
     // ============================================================================================
     {
         ae::InMemoryWorktreeObjectStore object_store;
@@ -983,25 +966,21 @@ int main() {
         ctx.principal = principal;
         ae::SessionContext session_ctx{"s-r16", principal, history};
 
-        // on_context()'s own default-injection path is unaffected by synchronous_leaf -- it always
-        // used the ordinary co_await path, never drive_leaf_task(). Confirms this before testing
-        // recall's own, DIFFERENT path below, so a failure here couldn't be mistaken for R16's own
-        // point.
+        // on_context() first, so a failure there couldn't be mistaken for R16's own point.
         auto out = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
             provider.on_context(session_ctx, ctx));
         AE_CHECK(out.has_value() && out->tools.size() == 1,
-                 "R16 setup: on_context() still contributes recall regardless of synchronous_leaf");
+                 "R16 setup: on_context() contributes recall");
 
         auto args = ae::json::parse(R"({"query":"anything"})");
         AE_CHECK(args.has_value(), "R16 setup: recall args parse");
         ae::EffectContext tool_ctx{};
         auto reply = out.has_value() ? ae::test_support::run_task_sync<ae::result<ae::json::Value>>(out->tools.front().invoke(*args, tool_ctx)) : ae::result<ae::json::Value>{};
-        AE_CHECK(!reply.has_value() &&
-                     reply.error().code ==
-                         "vector_rag_context_provider.recall_tool_requires_synchronous_leaf_embedder",
-                 "R16: recall's invoke against a synchronous_leaf = false conformer fails closed with "
-                 "the documented, stable error code -- the fail-closed fallback, reached by a real "
-                 "test for the first time, behaves exactly as designed, not merely compiles");
+        auto const* results = reply.has_value() ? reply->find("results") : nullptr;
+        AE_CHECK(results != nullptr && results->is_array() && results->as_array().empty(),
+                 "R16: recall's invoke against the formerly refused (synchronous_leaf = false) conformer now "
+                 "succeeds -- an empty index gives an empty result list, not a contract error" +
+                     (reply ? std::string{} : " -- got " + reply.error().code));
     }
 
     bool const ok = g_failures == total_failures_before;

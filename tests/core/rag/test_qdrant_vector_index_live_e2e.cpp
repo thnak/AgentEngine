@@ -111,7 +111,7 @@ int main() {
     QdrantVectorIndex index(host, port, collection, SecretRef{kSecretName}, store, /*path_prefix=*/"",
                              /*max_batch_size=*/0, sandbox::resolve_host, /*ca_bundle_pem_override=*/{},
                              transport);
-    static_assert(RemoteVectorIndex<decltype(index)>, "QdrantVectorIndex must satisfy RemoteVectorIndex");
+    static_assert(VectorIndex<decltype(index)>, "QdrantVectorIndex must satisfy VectorIndex");
 
     std::string const digest_a = fake_digest('a');
     std::string const digest_b = fake_digest('b');

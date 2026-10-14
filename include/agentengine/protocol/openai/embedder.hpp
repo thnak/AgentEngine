@@ -204,13 +204,9 @@ namespace detail {
 template <SecretStore Store>
 class OpenAIEmbedder {
 public:
-    // ADR-064 §2 fact 3, re-verified against this class's own embed_batch() body below every time it
-    // changes: every step is a plain, synchronous, BLOCKING call (store_.resolve(), perform_provider_
-    // https_exchange(), json::parse()) -- the only coroutine keyword used is co_return. This is a
-    // STRONGER property than "only nested task<T> awaits" -- this body never suspends at all, by
-    // inspection -- so driving it via rt::drive_leaf_task() is sound.
-    static constexpr bool synchronous_leaf = true;
-
+    // ADR-237 §5.1 residual, stated: `embed_batch()` is `task`-shaped but its body is still a plain, BLOCKING
+    // exchange (store_.resolve(), perform_provider_https_exchange(), json::parse()) -- "async in name only"
+    // (§3 decision A8). Moving it onto `rt::http` is the next slice of #172.
 
     // Parameter order mirrors `OpenAIChatClient`'s own constructor exactly (host/port/model/
     // SecretRef/capabilities/store/path_prefix/resolver/ca_bundle_pem_override/..., transport

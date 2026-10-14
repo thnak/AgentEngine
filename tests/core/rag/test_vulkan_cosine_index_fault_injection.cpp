@@ -42,6 +42,11 @@
 
 #include "agentengine/pal/env.hpp"
 #include "backends/vulkan_vector_index/vulkan_cosine_index.hpp"
+#include "../../support/index_sync.hpp"
+
+using agentengine::test_support::sync_add_batch;
+using agentengine::test_support::sync_contains;
+using agentengine::test_support::sync_search;
 
 using namespace agentengine;
 using namespace agentengine::backends::vulkan_vector_index;
@@ -184,7 +189,7 @@ void read_validation_logs() {
 bool faulted_then_recovered(VulkanCosineIndex& idx, Point const& p, unsigned nth,
                             std::vector<std::string> const& expected, std::string const& where) {
     detail::arm_fault_injection(p.point, nth);
-    auto const faulted = idx.search(std::span<float const>(kQuery, 3), 10);
+    auto const faulted = sync_search(idx, std::span<float const>(kQuery, 3), 10);
     unsigned const hits = detail::fault_injection_hits(p.point);
     detail::disarm_fault_injection();
     bool const fired = nth <= hits;
@@ -194,7 +199,7 @@ bool faulted_then_recovered(VulkanCosineIndex& idx, Point const& p, unsigned nth
     } else {
         AE_CHECK(ranking_is(faulted, expected), label + ": point not reached this often -- search() unaffected");
     }
-    auto const recovered = idx.search(std::span<float const>(kQuery, 3), 10);
+    auto const recovered = sync_search(idx, std::span<float const>(kQuery, 3), 10);
     AE_CHECK(ranking_is(recovered, expected),
              label + ": the SAME instance recovers -- the next search() returns the exact expected ranking");
     return fired;
@@ -251,7 +256,7 @@ int main() {
                 if (!created.has_value()) break;
                 ++g_validation.instances;
                 VulkanCosineIndex idx = std::move(*created);
-                AE_CHECK(idx.add_batch({"a", "b", "c"},
+                AE_CHECK(sync_add_batch(idx, {"a", "b", "c"},
                                        {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}})
                              .has_value(),
                          "setup: phase-1 add_batch");
@@ -259,7 +264,7 @@ int main() {
                 // Growth: forces the vectors-buffer rebuild, the scores-buffer REGROW (n 3 -> 5 exceeds its
                 // capacity -- the path whose failure used to leave a destroyed handle cached), and the
                 // cached dispatch command buffer's reset path.
-                AE_CHECK(idx.add_batch({"d", "e"}, {{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}}).has_value(),
+                AE_CHECK(sync_add_batch(idx, {"d", "e"}, {{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}}).has_value(),
                          "setup: phase-2 add_batch");
                 fired = faulted_then_recovered(idx, p, nth, kPhase2Expected,
                                                "growth: rebuild + scores regrow") || fired;

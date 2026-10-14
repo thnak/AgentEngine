@@ -20,6 +20,11 @@
 
 #include "agentengine/core/vector_index.hpp"
 #include "agentengine/core/worktree.hpp"
+#include "../../support/index_sync.hpp"
+
+using agentengine::test_support::sync_add_batch;
+using agentengine::test_support::sync_contains;
+using agentengine::test_support::sync_search;
 
 namespace {
 
@@ -47,12 +52,12 @@ int main() {
             {0.0f, 1.0f, 0.0f},   // orthogonal -- cosine 0
             {-1.0f, 0.0f, 0.0f},  // opposite direction -- cosine -1
         };
-        auto added = index.add_batch(ids, vecs);
+        auto added = sync_add_batch(index, ids, vecs);
         AE_CHECK(added.has_value(), "setup: add_batch accepts 3 ids paired with 3 vectors");
         AE_CHECK(index.size() == 3, "setup: all 3 entries are stored");
 
         float const query[3] = {1.0f, 0.0f, 0.0f};
-        auto results = index.search(std::span<float const>(query, 3), /*k=*/3);
+        auto results = sync_search(index, std::span<float const>(query, 3), /*k=*/3);
         AE_CHECK(results.has_value() && results->size() == 3, "search returns all 3 entries for k=3");
         if (results.has_value() && results->size() == 3) {
             AE_CHECK((*results)[0].id == "exact-match" && (*results)[0].score > 0.99f,
@@ -63,7 +68,7 @@ int main() {
                      "the opposite-direction vector ranks last with cosine ~-1.0");
         }
 
-        auto top1 = index.search(std::span<float const>(query, 3), /*k=*/1);
+        auto top1 = sync_search(index, std::span<float const>(query, 3), /*k=*/1);
         AE_CHECK(top1.has_value() && top1->size() == 1 && (*top1)[0].id == "exact-match",
                  "k truncates the result set to the top-k entries, not just sorts all of them");
     }
@@ -73,13 +78,13 @@ int main() {
         ae::BruteForceCosineIndex index;
         std::vector<std::string> ids = {"a", "b"};
         std::vector<std::vector<float>> one_vec = {{1.0f, 0.0f}};
-        auto mismatched = index.add_batch(ids, one_vec);
+        auto mismatched = sync_add_batch(index, ids, one_vec);
         AE_CHECK(!mismatched.has_value() && mismatched.error().code == "vector_index.add_batch_length_mismatch",
                  "add_batch rejects ids/vectors of differing length as a contract violation");
 
         std::vector<std::string> dup_ids = {"x", "x"};
         std::vector<std::vector<float>> dup_vecs = {{1.0f}, {2.0f}};
-        auto duped = index.add_batch(dup_ids, dup_vecs);
+        auto duped = sync_add_batch(index, dup_ids, dup_vecs);
         AE_CHECK(!duped.has_value() && duped.error().code == "vector_index.add_batch_duplicate_id",
                  "add_batch rejects a duplicate id within a single call as a contract violation");
         AE_CHECK(index.size() == 0,
@@ -95,10 +100,10 @@ int main() {
         // headers/repeated snippets").
         std::vector<std::string> ids = {"zzz-last", "aaa-first", "mmm-middle"};
         std::vector<std::vector<float>> vecs = {{1.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 0.0f}};
-        AE_CHECK(index.add_batch(ids, vecs).has_value(), "setup: 3 tied entries stored");
+        AE_CHECK(sync_add_batch(index, ids, vecs).has_value(), "setup: 3 tied entries stored");
 
         float const query[2] = {1.0f, 0.0f};
-        auto results = index.search(std::span<float const>(query, 2), /*k=*/3);
+        auto results = sync_search(index, std::span<float const>(query, 2), /*k=*/3);
         AE_CHECK(results.has_value() && results->size() == 3, "all 3 tied entries returned");
         if (results.has_value() && results->size() == 3) {
             AE_CHECK((*results)[0].score == (*results)[1].score && (*results)[1].score == (*results)[2].score,
@@ -114,7 +119,7 @@ int main() {
         // Re-run the identical search to prove the ordering is stable across calls, not merely
         // stable within one call (the ADR's own concern: "retrieval over a FIXED, already-embedded
         // corpus could return different top-K sets across runs").
-        auto results_again = index.search(std::span<float const>(query, 2), /*k=*/3);
+        auto results_again = sync_search(index, std::span<float const>(query, 2), /*k=*/3);
         AE_CHECK(results_again.has_value() && *results_again == *results,
                  "repeated search() calls over the same index and query return byte-identical "
                  "ordering -- deterministic, not order-of-iteration-dependent");
@@ -123,10 +128,10 @@ int main() {
     // --- Dimensionality validation (red-team finding, 2026-08-19): reject, don't silently truncate --
     {
         ae::BruteForceCosineIndex index;
-        AE_CHECK(index.add_batch({"a"}, {{1.0f, 0.0f, 0.0f}}).has_value(),
+        AE_CHECK(sync_add_batch(index, {"a"}, {{1.0f, 0.0f, 0.0f}}).has_value(),
                  "setup: a 3-dim vector establishes this index's dimensionality");
 
-        auto wrong_dim = index.add_batch({"b"}, {{1.0f, 0.0f}});
+        auto wrong_dim = sync_add_batch(index, {"b"}, {{1.0f, 0.0f}});
         AE_CHECK(!wrong_dim.has_value() && wrong_dim.error().code == "vector_index.add_batch_dimension_mismatch",
                  "add_batch rejects a vector whose width disagrees with the index's established "
                  "dimensionality, instead of silently storing it and letting cosine_similarity() "
@@ -136,20 +141,20 @@ int main() {
 
         std::vector<std::string> mixed_ids = {"c", "d"};
         std::vector<std::vector<float>> mixed_vecs = {{1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}};
-        auto mixed = index.add_batch(mixed_ids, mixed_vecs);
+        auto mixed = sync_add_batch(index, mixed_ids, mixed_vecs);
         AE_CHECK(!mixed.has_value() && mixed.error().code == "vector_index.add_batch_dimension_mismatch",
                  "a batch where entries disagree with EACH OTHER's width (not just the index) is "
                  "also rejected, not just the first-vs-established-dimension case");
 
         float const wrong_dim_query[2] = {1.0f, 0.0f};
-        auto bad_search = index.search(std::span<float const>(wrong_dim_query, 2), /*k=*/1);
+        auto bad_search = sync_search(index, std::span<float const>(wrong_dim_query, 2), /*k=*/1);
         AE_CHECK(!bad_search.has_value() && bad_search.error().code == "vector_index.search_dimension_mismatch",
                  "search() rejects a query vector whose width disagrees with the index's "
                  "dimensionality too, not just add_batch() -- same reject-not-coerce reasoning "
                  "applied symmetrically to the read side");
 
         float const right_dim_query[3] = {1.0f, 0.0f, 0.0f};
-        auto ok_search = index.search(std::span<float const>(right_dim_query, 3), /*k=*/1);
+        auto ok_search = sync_search(index, std::span<float const>(right_dim_query, 3), /*k=*/1);
         AE_CHECK(ok_search.has_value(), "search() still succeeds normally with a correctly-dimensioned query");
     }
 
@@ -172,7 +177,7 @@ int main() {
             readers.emplace_back([&]() {
                 float const query[2] = {1.0f, 0.0f};
                 while (!stop.load(std::memory_order_acquire)) {
-                    auto result = index.search(std::span<float const>(query, 2), /*k=*/1'000'000);
+                    auto result = sync_search(index, std::span<float const>(query, 2), /*k=*/1'000'000);
                     if (!result.has_value()) {
                         // Every entry the writer below ever adds is 2-dim, so a dimension error
                         // here would be a genuine bug, not an expected outcome.
@@ -183,7 +188,7 @@ int main() {
                         // (a returned id search() saw but that isn't genuinely committed) would
                         // surface here as a real, observable inconsistency.
                         for (auto const& s : *result) {
-                            if (!index.contains(s.id)) {
+                            if (!sync_contains(index, s.id)) {
                                 reader_saw_bad_state.store(true, std::memory_order_release);
                             }
                         }
@@ -196,7 +201,7 @@ int main() {
         std::thread writer([&]() {
             for (int i = 0; i < kWriterBatches; ++i) {
                 std::string const id = "w" + std::to_string(i);
-                auto added = index.add_batch({id}, {{1.0f, 0.0f}});
+                auto added = sync_add_batch(index, {id}, {{1.0f, 0.0f}});
                 if (!added.has_value()) reader_saw_bad_state.store(true, std::memory_order_release);
             }
             stop.store(true, std::memory_order_release);
@@ -222,13 +227,13 @@ int main() {
     {
         ae::InMemoryWorktreeObjectStore store;
         ae::BruteForceCosineIndex index;
-        AE_CHECK(index.add_batch({"a", "b", "c"},
+        AE_CHECK(sync_add_batch(index, {"a", "b", "c"},
                                   {{1.0f, 0.0f}, {0.0f, 1.0f}, {0.7071f, 0.7071f}})
                      .has_value(),
                  "setup: 3 entries stored");
 
         float const query[2] = {1.0f, 0.0f};
-        auto before = index.search(std::span<float const>(query, 2), /*k=*/3);
+        auto before = sync_search(index, std::span<float const>(query, 2), /*k=*/3);
         AE_CHECK(before.has_value(), "pre-snapshot search succeeds");
 
         auto digest = index.snapshot(store);
@@ -246,7 +251,7 @@ int main() {
         AE_CHECK(restore_result.has_value(), "restore() succeeds");
         AE_CHECK(restored.size() == 3, "restore() repopulates every entry the snapshot held");
 
-        auto after = restored.search(std::span<float const>(query, 2), /*k=*/3);
+        auto after = sync_search(restored, std::span<float const>(query, 2), /*k=*/3);
         AE_CHECK(after.has_value() && before.has_value() && after->size() == before->size(),
                  "claim 4: post-restore search returns the SAME NUMBER of results as pre-snapshot");
         if (after.has_value() && before.has_value()) {
@@ -341,19 +346,19 @@ int main() {
     {
         ae::InMemoryWorktreeObjectStore store;
         ae::BruteForceCosineIndex source_index;
-        AE_CHECK(source_index.add_batch({"x"}, {{1.0f, 0.0f}}).has_value(), "setup: source populated");
+        AE_CHECK(sync_add_batch(source_index, {"x"}, {{1.0f, 0.0f}}).has_value(), "setup: source populated");
         auto digest = source_index.snapshot(store);
         AE_CHECK(digest.has_value(), "setup: source snapshotted");
 
         ae::BruteForceCosineIndex already_populated;
-        AE_CHECK(already_populated.add_batch({"pre-existing"}, {{0.0f, 1.0f}}).has_value(),
+        AE_CHECK(sync_add_batch(already_populated, {"pre-existing"}, {{0.0f, 1.0f}}).has_value(),
                  "setup: the restore TARGET already holds an unrelated entry");
         auto restore_result = already_populated.restore(store, *digest);
         AE_CHECK(!restore_result.has_value() &&
                      restore_result.error().code == "vector_index.restore_requires_empty_index",
                  "restore() on a non-empty index is rejected with a typed error, rather than "
                  "silently discarding the pre-existing entry");
-        AE_CHECK(already_populated.size() == 1 && already_populated.contains("pre-existing"),
+        AE_CHECK(already_populated.size() == 1 && sync_contains(already_populated, "pre-existing"),
                  "the rejected restore() call left the target's pre-existing state completely "
                  "untouched -- not even partially overwritten");
     }
@@ -365,21 +370,21 @@ int main() {
         float const inf = std::numeric_limits<float>::infinity();
 
         ae::BruteForceCosineIndex idx;
-        auto bad_nan = idx.add_batch({"n"}, {{1.0f, nan}});
+        auto bad_nan = sync_add_batch(idx, {"n"}, {{1.0f, nan}});
         AE_CHECK(!bad_nan.has_value() && bad_nan.error().code == "vector_index.add_batch_non_finite" &&
                      bad_nan.error().klass == ae::failure_class::contract,
                  "add_batch() rejects a NaN component as a contract violation");
-        auto bad_inf = idx.add_batch({"i"}, {{-inf, 0.0f}});
+        auto bad_inf = sync_add_batch(idx, {"i"}, {{-inf, 0.0f}});
         AE_CHECK(!bad_inf.has_value() && bad_inf.error().code == "vector_index.add_batch_non_finite",
                  "add_batch() rejects an infinite component");
         AE_CHECK(idx.size() == 0, "a rejected batch leaves the index untouched");
-        auto mixed = idx.add_batch({"ok", "bad"}, {{1.0f, 0.0f}, {nan, nan}});
-        AE_CHECK(!mixed.has_value() && idx.size() == 0 && !idx.contains("ok"),
+        auto mixed = sync_add_batch(idx, {"ok", "bad"}, {{1.0f, 0.0f}, {nan, nan}});
+        AE_CHECK(!mixed.has_value() && idx.size() == 0 && !sync_contains(idx, "ok"),
                  "one non-finite vector rejects the WHOLE batch -- no partial commit of the finite ones");
 
-        AE_CHECK(idx.add_batch({"a"}, {{1.0f, 0.0f}}).has_value(), "setup: one finite vector");
+        AE_CHECK(sync_add_batch(idx, {"a"}, {{1.0f, 0.0f}}).has_value(), "setup: one finite vector");
         float const nan_query[2] = {nan, 1.0f};
-        auto q = idx.search(std::span<float const>(nan_query, 2), 1);
+        auto q = sync_search(idx, std::span<float const>(nan_query, 2), 1);
         AE_CHECK(!q.has_value() && q.error().code == "vector_index.search_non_finite",
                  "search() rejects a non-finite query rather than scoring NaN against every entry");
 

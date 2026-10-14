@@ -1,6 +1,6 @@
 #pragma once
 // Implements decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.5 --
-// `QdrantVectorIndex`, the `RemoteVectorIndex` (core/remote_vector_index.hpp) reference conformer.
+// `QdrantVectorIndex`, the remote `VectorIndex` (core/vector_index.hpp) reference conformer.
 // Reaches any Qdrant-API-compatible host over plain JSON/HTTPS, reusing the exact same transport
 // `protocol/openai/embedder.hpp` already proved live (`sandbox::perform_provider_https_exchange`,
 // ADR-063 claim 4) and the identical `SecretStore` credential-resolution discipline (resolved INSIDE
@@ -79,7 +79,7 @@
 
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_value.hpp"
-#include "agentengine/core/remote_vector_index.hpp"
+#include "agentengine/core/vector_index.hpp"
 #include "agentengine/sandbox/provider_http_client.hpp"
 #include "agentengine/trust/secret.hpp"
 
@@ -292,18 +292,17 @@ template <SecretStore Store>
 // ae-naming-lint: allow QdrantVectorIndex — ADR-180: new vocabulary, not yet in 027 §2-4's tables.
 class QdrantVectorIndex {
 public:
-    // Every step is a plain, synchronous, BLOCKING call (store_.resolve(), perform_provider_
-    // https_exchange(), json::parse()) -- the only coroutine keyword used anywhere below is
-    // co_return, mirroring OpenAIEmbedder::embed_batch()'s own identical, re-verified-every-change
-    // claim (embedder.hpp). Driving any of the three methods below via rt::drive_leaf_task() is sound.
-    static constexpr bool synchronous_leaf = true;
+    // ADR-237 §5.1 residual, stated: every method is `task`-shaped, but its body is still a plain, BLOCKING
+    // exchange (store_.resolve(), perform_provider_https_exchange(), json::parse()) -- "async in name only"
+    // (§3 decision A8). Moving it onto `rt::http` is the next slice of #172; until then a caller's lane is
+    // held for the exchange, exactly as before.
 
     // Parameter order mirrors OpenAIEmbedder's own constructor as closely as the two classes' actual
     // parameters allow (host/port/.../SecretRef/.../store/path_prefix/resolver/
     // ca_bundle_pem_override/transport) -- `collection_name` takes the slot `model` occupies there
     // (both are "which logical resource on the host this conformer talks to"), and there is no
-    // `EmbedderCapabilities`-shaped parameter (RemoteVectorIndex declares no capabilities() method).
-    // `max_batch_size` (ADR-180 §4 red-team pass 2 finding 2): unlike `Embedder`, `RemoteVectorIndex`
+    // `EmbedderCapabilities`-shaped parameter (VectorIndex declares no capabilities() method).
+    // `max_batch_size` (ADR-180 §4 red-team pass 2 finding 2): unlike `Embedder`, `VectorIndex`
     // declares no required capabilities()/batch-limit concept at all, so this class self-imposes one
     // as an OPTIONAL constructor parameter (`0` = unlimited, matching `EmbedderCapabilities::
     // max_batch_size`'s own "declared, never probed" convention exactly) -- without it, a caller
@@ -447,11 +446,11 @@ private:
     sandbox::ProviderTransport transport_;
 };
 
-// `QdrantVectorIndex` is templated on `Store`, so a bare `RemoteVectorIndex<QdrantVectorIndex>` cannot
+// `QdrantVectorIndex` is templated on `Store`, so a bare `VectorIndex<QdrantVectorIndex>` cannot
 // be written -- concept-checking a template requires a concrete instantiation, the same reason
 // `OpenAIEmbedder<InMemorySecretStore>` is what `embedder.hpp`'s own bottom static_assert checks.
-static_assert(RemoteVectorIndex<QdrantVectorIndex<InMemorySecretStore>>,
-              "QdrantVectorIndex must satisfy the real RemoteVectorIndex concept (ADR-180 §2.1/§2.5)");
+static_assert(VectorIndex<QdrantVectorIndex<InMemorySecretStore>>,
+              "QdrantVectorIndex must satisfy the real VectorIndex concept (ADR-180 §2.5, ADR-237 §5.1)");
 
 }  // namespace agentengine::qdrant
 

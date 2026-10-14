@@ -28,6 +28,11 @@
 #include "agentengine/core/worktree.hpp"
 #include "agentengine/rt/append_log_store.hpp"
 #include "../../support/run_task_sync.hpp"
+#include "../../support/index_sync.hpp"
+
+using agentengine::test_support::sync_add_batch;
+using agentengine::test_support::sync_contains;
+using agentengine::test_support::sync_search;
 
 namespace {
 
@@ -46,7 +51,6 @@ int g_failures = 0;
 // Same deterministic, scripted shape test_vector_rag_context_provider.cpp's MockEmbedder uses.
 class MockEmbedder {
 public:
-    static constexpr bool synchronous_leaf = true;
     [[nodiscard]] ae::EmbedderCapabilities capabilities() const { return {3, 100}; }
 
     ae::task<ae::result<std::vector<std::vector<float>>>> embed_batch(std::vector<std::string> const& texts,
@@ -110,9 +114,9 @@ ae::result<ae::Digest> write_chunk(ae::InMemoryWorktreeObjectStore& object_store
     auto written = ae::write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record);
     if (!written) return std::unexpected(written.error());
 
-    auto dense_added = dense.add_batch({*digest}, {vec});
+    auto dense_added = sync_add_batch(dense, {*digest}, {vec});
     if (!dense_added) return std::unexpected(dense_added.error());
-    auto sparse_added = sparse.add_batch({*digest}, {text});
+    auto sparse_added = sync_add_batch(sparse, {*digest}, {text});
     if (!sparse_added) return std::unexpected(sparse_added.error());
 
     return digest;

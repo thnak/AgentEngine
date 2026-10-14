@@ -27,10 +27,10 @@
 // cosine similarity is scale-invariant, and power-of-two scaling is exact in IEEE arithmetic, so
 // this changes no in-range result by even one ULP.
 //
-// Satisfies the EXISTING, UNMODIFIED `VectorIndex` concept (core/vector_index.hpp) -- no
-// `EffectContext`, no capability gating, no async: GPU dispatch is local compute, not a network
-// effect, the same reasoning that already lets `BruteForceCosineIndex`/`RecursiveChunker` stay
-// synchronous. Reuses `BruteForceCosineIndex`'s exact score-desc/id-asc tie-break after reading GPU
+// Satisfies the `VectorIndex` concept (core/vector_index.hpp), which ADR-237 §5.1 made `task`-shaped for local
+// and remote conformers alike. GPU dispatch is local compute, not a network effect: each seam method completes
+// without suspending and ignores its `EffectContext` -- no capability gating, the same reasoning that applies to
+// `BruteForceCosineIndex`. Reuses `BruteForceCosineIndex`'s exact score-desc/id-asc tie-break after reading GPU
 // scores back to the host (ADR-063 §4 finding 7's own total order, not re-derived here).
 //
 // Fails closed: `create()` returns a real `result<...>` error (never a crash, never a partially-
@@ -49,7 +49,9 @@
 #include <string>
 #include <vector>
 
+#include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/task.hpp"
 #include "agentengine/core/vector_index.hpp"
 
 namespace agentengine::backends::vulkan_vector_index {
@@ -73,21 +75,35 @@ public:
     // every method on -- `add_batch()`/`search()` return a typed `contract` error
     // (`vulkan_vector_index.moved_from`), `contains()` returns false, `size()` returns 0. Previously
     // every method dereferenced the null pimpl (an access violation, reproduced on the real GPU).
-    [[nodiscard]] agentengine::result<void> add_batch(std::vector<std::string> const& ids,
-                                                        std::vector<std::vector<float>> const& vectors);
-    [[nodiscard]] agentengine::result<std::vector<agentengine::ScoredId>> search(
-        std::span<float const> query, std::size_t k) const;
-    [[nodiscard]] bool contains(std::string const& id) const;
+    [[nodiscard]] agentengine::task<agentengine::result<void>> add_batch(std::vector<std::string> const& ids,
+                                                                         std::vector<std::vector<float>> const& vectors,
+                                                                         agentengine::EffectContext&) {
+        co_return add_batch_now(ids, vectors);
+    }
+    [[nodiscard]] agentengine::task<agentengine::result<std::vector<agentengine::ScoredId>>> search(
+        std::span<float const> query, std::size_t k, agentengine::EffectContext&) const {
+        co_return search_now(query, k);
+    }
+    [[nodiscard]] agentengine::task<agentengine::result<bool>> contains(std::string const& id,
+                                                                        agentengine::EffectContext&) const {
+        co_return contains_now(id);
+    }
     [[nodiscard]] std::size_t size() const;
 
 private:
+    [[nodiscard]] agentengine::result<void> add_batch_now(std::vector<std::string> const& ids,
+                                                            std::vector<std::vector<float>> const& vectors);
+    [[nodiscard]] agentengine::result<std::vector<agentengine::ScoredId>> search_now(std::span<float const> query,
+                                                                                      std::size_t k) const;
+    [[nodiscard]] bool contains_now(std::string const& id) const;
+
     struct Impl;
     explicit VulkanCosineIndex(std::unique_ptr<Impl> impl) noexcept;
     std::unique_ptr<Impl> impl_;
 };
 
 static_assert(agentengine::VectorIndex<VulkanCosineIndex>,
-              "VulkanCosineIndex must satisfy the real, unmodified VectorIndex concept (ADR-180 §2.6)");
+              "VulkanCosineIndex must satisfy the real VectorIndex concept (ADR-180 §2.6, ADR-237 §5.1)");
 
 namespace detail {
 

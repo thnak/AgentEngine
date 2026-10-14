@@ -23,8 +23,13 @@
 #include <vector>
 
 #include "agentengine/core/vector_index.hpp"
+#include "../../support/index_sync.hpp"
 
 using Clock = std::chrono::steady_clock;
+
+using agentengine::test_support::sync_add_batch;
+using agentengine::test_support::sync_contains;
+using agentengine::test_support::sync_search;
 
 namespace {
 
@@ -49,7 +54,7 @@ std::vector<std::vector<float>> make_vectors(std::size_t n, std::size_t dim, std
 
     ae::BruteForceCosineIndex index;
     auto t_build0 = Clock::now();
-    auto added = index.add_batch(ids, vectors);
+    auto added = sync_add_batch(index, ids, vectors);
     auto t_build1 = Clock::now();
     if (!added.has_value()) {
         std::cerr << "FAIL: add_batch() failed unexpectedly during benchmark setup (n=" << n << ")\n";
@@ -65,7 +70,7 @@ std::vector<std::vector<float>> make_vectors(std::size_t n, std::size_t dim, std
     constexpr int kWarmup = 5;
     constexpr int kIterations = 100;
     for (int i = 0; i < kWarmup; ++i) {
-        auto warm = index.search(query, 5);
+        auto warm = sync_search(index, query, 5);
         if (!warm.has_value()) {
             std::cerr << "FAIL: search() failed unexpectedly during warmup (n=" << n << ")\n";
             return false;
@@ -74,7 +79,7 @@ std::vector<std::vector<float>> make_vectors(std::size_t n, std::size_t dim, std
 
     auto t0 = Clock::now();
     for (int i = 0; i < kIterations; ++i) {
-        auto result = index.search(query, 5);
+        auto result = sync_search(index, query, 5);
         if (!result.has_value()) {
             std::cerr << "FAIL: search() failed unexpectedly during benchmark (n=" << n << ")\n";
             return false;

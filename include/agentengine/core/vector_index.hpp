@@ -26,7 +26,9 @@
 #include <unordered_set>
 #include <vector>
 
+#include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/task.hpp"
 #include "agentengine/core/worktree_types.hpp"
 
 namespace agentengine {
@@ -39,20 +41,26 @@ struct ScoredId {
     friend bool operator==(ScoredId const&, ScoredId const&) = default;
 };
 
+// decisions/ADR-237 §5.1: ONE dense-index seam for local and remote conformers. It used to be split in two --
+// a synchronous `VectorIndex` for local compute and an async `RemoteVectorIndex` (ADR-180 §2.1) for a network
+// service -- and the split existed only because one side was synchronous. Every method is now `task`-shaped and
+// takes the caller's `EffectContext`: a remote conformer resolves its credential inside each call (never at
+// construction, ADR-063 §2.5) and honours `ctx.cancellation`; a local one (`BruteForceCosineIndex`,
+// `VulkanCosineIndex`) completes without suspending and ignores `ctx`. Callers always `co_await`; there is no
+// `if constexpr` dispatch on the index kind and no `synchronous_leaf` trait.
 template <class T>
 // ae-naming-lint: allow VectorIndex — ADR-063: new vocabulary, not yet in 027 §2-4's tables.
 concept VectorIndex =
     requires(T idx, std::vector<std::string> ids, std::vector<std::vector<float>> vecs,
-             std::span<float const> query, std::size_t k, std::string const& id) {
-        { idx.add_batch(ids, vecs) } -> std::same_as<result<void>>;
-        { idx.search(query, k) } -> std::same_as<result<std::vector<ScoredId>>>;
-        // ADR-063 §4 finding 2 ("the design never names a manifest/lookup that lets re-mount
-        // answer 'does this digest already have a stored vector' before calling embed_batch()
-        // again"): a CorpusSource conformer's re-mount path checks this BEFORE re-embedding a
-        // chunk, both to avoid the wasted embedder call and because add_batch() itself rejects a
-        // duplicate id outright (§2.4A's own content-addressed dedup means two DIFFERENT files
-        // producing byte-identical chunk text is expected, not an error condition to propagate).
-        { idx.contains(id) } -> std::same_as<bool>;
+             std::span<float const> query, std::size_t k, std::string const& id, EffectContext& ctx) {
+        { idx.add_batch(ids, vecs, ctx) } -> std::same_as<task<result<void>>>;
+        { idx.search(query, k, ctx) } -> std::same_as<task<result<std::vector<ScoredId>>>>;
+        // ADR-063 §4 finding 2: a CorpusSource re-mount checks this BEFORE re-embedding a chunk, both to avoid
+        // the wasted embedder call and because add_batch() rejects a duplicate id outright (§2.4A's
+        // content-addressed dedup means two DIFFERENT files producing byte-identical chunk text is expected).
+        // For a remote conformer this is a network round-trip per chunk (ADR-180 §7 residual: no batched
+        // "which of these ids exist" call is designed).
+        { idx.contains(id, ctx) } -> std::same_as<task<result<bool>>>;
     };
 
 // Implements decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.4 — a REFINEMENT
@@ -62,7 +70,7 @@ concept VectorIndex =
 // wants restart-survival implements `snapshot()`/`restore()`; one that doesn't (e.g. a purely
 // ephemeral per-session scratch index, or `VulkanCosineIndex`, ADR-180 §2.6, which is local compute
 // with no durability story of its own either) remains a perfectly valid plain `VectorIndex` without
-// being forced to carry machinery it has no use for. A `RemoteVectorIndex` conformer (ADR-180 §2.5,
+// being forced to carry machinery it has no use for. A remote conformer (ADR-180 §2.5,
 // e.g. `QdrantVectorIndex`) deliberately does NOT implement this concept at all — its durable home
 // IS the remote service by construction, so this concept's own problem (local process memory is not
 // durable) does not apply to it.
@@ -227,8 +235,27 @@ struct ByteReader {
 // ae-naming-lint: allow BruteForceCosineIndex — ADR-063: new vocabulary, not yet in 027 §2-4's tables.
 class BruteForceCosineIndex {
 public:
-    [[nodiscard]] result<void> add_batch(std::vector<std::string> const& ids,
-                                          std::vector<std::vector<float>> const& vectors) {
+    // -- the seam (ADR-237 §5.1) -- local compute: completes without suspending; `ctx` is unused.
+    [[nodiscard]] task<result<void>> add_batch(std::vector<std::string> const& ids,
+                                               std::vector<std::vector<float>> const& vectors, EffectContext&) {
+        co_return add_batch_now(ids, vectors);
+    }
+    [[nodiscard]] task<result<std::vector<ScoredId>>> search(std::span<float const> query, std::size_t k,
+                                                             EffectContext&) const {
+        co_return search_now(query, k);
+    }
+    [[nodiscard]] task<result<bool>> contains(std::string const& id, EffectContext&) const {
+        co_return contains_now(id);
+    }
+
+    [[nodiscard]] std::size_t size() const {
+        std::shared_lock lock(mutex_);
+        return entries_.size();
+    }
+
+private:
+    [[nodiscard]] result<void> add_batch_now(std::vector<std::string> const& ids,
+                                             std::vector<std::vector<float>> const& vectors) {
         std::unique_lock lock(mutex_);
         if (ids.size() != vectors.size()) {
             return std::unexpected(error{failure_class::contract,
@@ -275,8 +302,7 @@ public:
         return {};
     }
 
-    [[nodiscard]] result<std::vector<ScoredId>> search(std::span<float const> query,
-                                                         std::size_t k) const {
+    [[nodiscard]] result<std::vector<ScoredId>> search_now(std::span<float const> query, std::size_t k) const {
         std::shared_lock lock(mutex_);
         // Same reject-not-coerce reasoning as add_batch()'s dimension check above, applied to the
         // query side (red-team, 2026-08-19) -- a mismatched-width query would otherwise silently
@@ -302,15 +328,12 @@ public:
         return scored;
     }
 
-    [[nodiscard]] bool contains(std::string const& id) const {
+    [[nodiscard]] bool contains_now(std::string const& id) const {
         std::shared_lock lock(mutex_);
         return entries_.contains(id);
     }
 
-    [[nodiscard]] std::size_t size() const {
-        std::shared_lock lock(mutex_);
-        return entries_.size();
-    }
+public:
 
     // ADR-180 §2.4: writes this index's entire current state as one content-addressed blob via the
     // caller-supplied `object_store` (the same store a corpus mount already writes chunk blobs/records

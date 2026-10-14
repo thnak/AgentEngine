@@ -28,6 +28,11 @@
 #include "agentengine/core/sparse_index.hpp"
 #include "agentengine/rt/append_log_store.hpp"
 #include "../../support/run_task_sync.hpp"
+#include "../../support/index_sync.hpp"
+
+using agentengine::test_support::sync_add_batch;
+using agentengine::test_support::sync_contains;
+using agentengine::test_support::sync_search;
 
 namespace {
 
@@ -51,10 +56,6 @@ int g_failures = 0;
 // the metric §3 claim 2's disproof test compares against "the mutated file's own chunk count".
 class MockEmbedder {
 public:
-    // ADR-064 §3 Design B's required trait: this mock never awaits anything (co_return only), so
-    // driving it via rt::drive_leaf_task() is sound.
-    static constexpr bool synchronous_leaf = true;
-
     [[nodiscard]] ae::EmbedderCapabilities capabilities() const { return caps; }
 
     ae::task<ae::result<std::vector<std::vector<float>>>> embed_batch(std::vector<std::string> const& texts,
@@ -172,7 +173,7 @@ int main() {
             std::as_bytes(std::span{file1_original.data(), file1_original.size()}));
         AE_CHECK(file1_blob_digest.has_value(), "(a) setup: file1's own content digest computes cleanly");
         if (file1_blob_digest.has_value()) {
-            AE_CHECK(index.contains(*file1_blob_digest),
+            AE_CHECK(sync_contains(index, *file1_blob_digest),
                      "(a) file1's chunk id (its own whole-file digest, since it's a single-chunk "
                      "file) is present in the index");
             auto blob = object_store.get_blob(*file1_blob_digest);
@@ -414,20 +415,23 @@ int main() {
         // "chunk already in the dense index" (needs_dense == false) from "chunk needs a dense
         // add_batch() call that then fails" (needs_dense == true, and that call fails).
         struct FailAfterSeedDenseIndex {
-            ae::result<void> add_batch(std::vector<std::string> const& ids,
-                                        std::vector<std::vector<float>> const&) {
+            ae::task<ae::result<void>> add_batch(std::vector<std::string> const& ids,
+                                                 std::vector<std::vector<float>> const&, ae::EffectContext&) {
                 if (fail_now) {
-                    return std::unexpected(
+                    co_return std::unexpected(
                         ae::error{ae::failure_class::transient, "scripted dense add_batch failure",
                                   "test.scripted_dense_failure"});
                 }
                 for (auto const& id : ids) seeded.insert(id);
-                return {};
+                co_return ae::result<void>{};
             }
-            ae::result<std::vector<ae::ScoredId>> search(std::span<float const>, std::size_t) const {
-                return std::vector<ae::ScoredId>{};
+            ae::task<ae::result<std::vector<ae::ScoredId>>> search(std::span<float const>, std::size_t,
+                                                                   ae::EffectContext&) const {
+                co_return std::vector<ae::ScoredId>{};
             }
-            [[nodiscard]] bool contains(std::string const& id) const { return seeded.contains(id); }
+            ae::task<ae::result<bool>> contains(std::string const& id, ae::EffectContext&) const {
+                co_return seeded.contains(id);
+            }
 
             std::unordered_set<std::string> seeded;
             bool fail_now = false;
@@ -451,7 +455,7 @@ int main() {
         // Pre-seed the dense index with chunk A's own id -- chunk A is now "already in dense" (so
         // mount_hybrid() will mark it needs_dense == false, needs_sparse == true, a sparse-only
         // commit), WITHOUT going through the (about-to-be-scripted-to-fail) add_batch() path.
-        AE_CHECK(dense_index.add_batch({*chunk_a_digest}, {{0.0f}}).has_value(),
+        AE_CHECK(sync_add_batch(dense_index, {*chunk_a_digest}, {{0.0f}}).has_value(),
                  "R3 setup: chunk A pre-seeded into the dense index directly");
         dense_index.fail_now = true;  // any FURTHER dense add_batch() call (chunk B's) now fails
 
@@ -476,7 +480,7 @@ int main() {
         AE_CHECK(!result.has_value() && result.error().code == "test.scripted_dense_failure",
                  "R3-2: the reported error is genuinely the scripted dense failure, not something else");
 
-        AE_CHECK(sparse_index.contains(*chunk_a_digest),
+        AE_CHECK(sync_contains(sparse_index, *chunk_a_digest),
                  "R3-3: chunk A (sparse-only, needs_dense==false) WAS committed to the sparse index "
                  "despite chunk B's dense-leg failure happening in the SAME pass -- the two legs "
                  "commit independently, proving the fix for finding R3");
@@ -484,11 +488,11 @@ int main() {
         auto chunk_b_digest =
             ae::compute_digest(std::as_bytes(std::span{chunk_b_text.data(), chunk_b_text.size()}));
         AE_CHECK(chunk_b_digest.has_value(), "R3 setup: chunk B's digest computes cleanly");
-        AE_CHECK(sparse_index.contains(*chunk_b_digest),
+        AE_CHECK(sync_contains(sparse_index, *chunk_b_digest),
                  "R3-4: chunk B (needed BOTH legs) was ALSO committed to sparse, even though its OWN "
                  "dense leg failed -- the sparse commit for chunk B ran regardless of the dense "
                  "outcome, since sparse_ids/sparse_texts are collected and committed independently");
-        AE_CHECK(!dense_index.contains(*chunk_b_digest),
+        AE_CHECK(!sync_contains(dense_index, *chunk_b_digest),
                  "R3-5: chunk B correctly did NOT land in the dense index -- its add_batch() call "
                  "genuinely failed, this isn't a case of the error being spurious");
 
