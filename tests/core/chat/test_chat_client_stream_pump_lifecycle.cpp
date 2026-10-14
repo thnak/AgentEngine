@@ -13,6 +13,10 @@
 //     that does not resolve fails chat() and chat_stream() `transient` (retried), as the blocking path did.
 //  P5 `EffectContext::cancellation` stops an in-flight chat(): a server that sends headers and then nothing
 //     holds the exchange open (checked: still pending before the stop), and a stop ends it `canceled` promptly.
+//  P7 a fault inside the pump ends the stream FAILED `net.stream_pump_faulted` (fatal), never closed: the pump is
+//     driven directly with an accumulator that throws on its first event (control: the real accumulator closes
+//     cleanly on the same server). Mutant: drop the pump's catch -> the producer is abandoned and the consumer is
+//     never told why.
 
 #ifdef AGENTENGINE_WITH_HTTPS
 
@@ -23,17 +27,22 @@
 #include <cstdio>
 #include <cstdlib>
 #include <future>
+#include <stdexcept>
 #include <stop_token>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/protocol/provider_chat_wire.hpp"
 #include "agentengine/rt/block_on.hpp"
+#include "agentengine/rt/runtime.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
+
+#include "protocol/sse_stream_pump.hpp"  // src/: the pump template itself, for P7's fault injection
 
 using namespace agentengine;
 using agentengine::sandbox::ProviderTransport;
@@ -209,6 +218,41 @@ struct Drained {
     return out;
 }
 
+// P7: an accumulator that faults on the first event it is fed.
+class ThrowingAccumulator {
+public:
+    ThrowingAccumulator(bool /*chunked*/, std::string /*producer_id*/) {}
+    [[nodiscard]] bool terminal_seen() const noexcept { return false; }
+    [[nodiscard]] result<std::vector<ChatResponseUpdate>> feed(std::string_view /*bytes*/) {
+        throw std::runtime_error("P7: injected accumulator fault");
+    }
+    [[nodiscard]] std::vector<ChatResponseUpdate> finish() { return {}; }
+};
+
+// P7: runs the reactor pump with `Accumulator` against `server` on `runtime`, returning the drained stream.
+template <class Accumulator>
+[[nodiscard]] Drained pump_directly(BurstServer const& server, rt::Runtime& runtime, std::string& fail_klass) {
+    namespace pw = agentengine::detail::provider_wire;
+    pw::ProviderReactorOptions reactor;
+    reactor.runtime = &runtime;
+    rt::HttpRequest req;
+    req.scheme = rt::http_scheme::http;
+    req.host   = "127.0.0.1";
+    req.port   = server.port();
+    req.method = "POST";
+    req.target = "/v1/chat/completions";
+    req.body   = "{}";
+    auto pair  = make_stream<ChatResponseUpdate>(std::pmr::get_default_resource());
+    (void)runtime.spawn(pw::pump_sse_stream_async<Accumulator>("openai", "m", pw::make_http_context(reactor, {}, false),
+                                                               std::move(req), std::move(pair.producer),
+                                                               std::stop_token{}, &runtime.offload_pool()));
+    Drained const d = drain(pair.consumer, std::chrono::seconds(20));
+    if (d.terminal == stream_terminal::failed) {
+        fail_klass = pair.consumer.fail_error().klass == failure_class::fatal ? "fatal" : "other";
+    }
+    return d;
+}
+
 }  // namespace
 
 int main() {
@@ -345,6 +389,23 @@ int main() {
             check(d.terminal == stream_terminal::failed && s.fail_error().klass == failure_class::transient,
                   "P6: chat_stream() to an unresolvable host fails transient (retried), not policy");
             check(lookups >= 2, "P6: (control) both calls went through the resolver that failed");
+        }
+    }
+
+    // ---- P7: a fault inside the pump fails the stream, it never reads as a clean answer ----------------------
+    {
+        std::vector<std::string> events{delta_event("fine"), "data: [DONE]\n\n"};
+        BurstServer              server(events, /*hold_open=*/false);
+        check(server.ok(), "P7: server started");
+        if (server.ok()) {
+            rt::Runtime runtime{rt::RuntimeConfig{.lanes = 1}};
+            std::string klass;
+            Drained const ok = pump_directly<agentengine::openai::detail::StreamingUpdateAccumulator>(server, runtime, klass);
+            check(ok.terminal == stream_terminal::closed && ok.text == "fine",
+                  "P7: (control) the real accumulator closes the same stream cleanly with its text");
+            Drained const bad = pump_directly<ThrowingAccumulator>(server, runtime, klass);
+            check(bad.terminal == stream_terminal::failed && bad.code == "net.stream_pump_faulted" && klass == "fatal",
+                  "P7: an exception inside the pump ends the stream failed net.stream_pump_faulted (fatal), not closed");
         }
     }
 

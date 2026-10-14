@@ -55,6 +55,8 @@ if(AGENTENGINE_WITH_HTTPS)
     LIBS agentengine::core agentengine::provider_http_client agentengine_warnings MbedTLS::mbedtls
       MbedTLS::mbedx509 MbedTLS::mbedcrypto
     TIMEOUT 120)
+  # P7 drives src/protocol/sse_stream_pump.hpp (private to src/) directly, with a faulting accumulator.
+  target_include_directories(test_chat_client_stream_pump_lifecycle PRIVATE "${PROJECT_SOURCE_DIR}/src")
 
   # ---- Milestone 5 Phase J1 (roadmap exit criterion, 004 §7 G1): the same unchanged call site, run
   # against real OpenAI/Anthropic backends over local TLS servers, a ReplayChatClient, and a
