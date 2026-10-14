@@ -104,7 +104,7 @@ inline constexpr char const kRefusalCode[] = "rt.block_on_on_lane";
 
 // The scheduler whose worker this thread is (nullptr on any other thread). `kRefusalCode` says "some lane"; this says
 // WHICH pool, so a check that is only about joining one's own workers (`~Runtime`) does not fire on another pool's lane.
-[[nodiscard]] inline void const*& current_scheduler() noexcept {
+[[nodiscard]] AGENTENGINE_TLS_ACCESSOR inline void const*& current_scheduler() noexcept {
     thread_local void const* s = nullptr;
     return s;
 }

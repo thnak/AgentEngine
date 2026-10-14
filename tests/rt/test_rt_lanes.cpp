@@ -132,21 +132,32 @@ Fire i1_body(I1State* st, int iterations, pal::Reactor* reactor) {
     st->finished.fetch_add(1);
 }
 
+// The migration check only keeps the serial check from being vacuous; nothing guarantees a strand moves in one
+// run (on a loaded runner one worker can keep picking it up -- seen on CI as "1 workers"). So: up to 5 runs, each
+// held to the serial rule, until one of them moved.
 void l1_one_strand_is_serial() {
-    I1State st;
     constexpr int kCoroutines = 16;
+    constexpr int kAttempts   = 5;
     std::unique_ptr<pal::Reactor> reactor = pal::make_default_reactor();
-    {
-        LanePool pool(6);
-        Strand   s = pool.new_group().new_strand();
-        for (int i = 0; i < kCoroutines; ++i) s.post(i1_body(&st, 400, reactor.get()).h);
-        check(wait_until([&] { return st.finished.load() == kCoroutines; }), "L1 all 16 coroutines finished");
+    bool        all_finished = true;
+    int         max_in_flight = 0;
+    std::size_t most_threads  = 0;
+    for (int attempt = 0; attempt < kAttempts && most_threads <= 1; ++attempt) {
+        I1State st;
+        {
+            LanePool pool(6);
+            Strand   s = pool.new_group().new_strand();
+            for (int i = 0; i < kCoroutines; ++i) s.post(i1_body(&st, 400, reactor.get()).h);
+            all_finished = wait_until([&] { return st.finished.load() == kCoroutines; }) && all_finished;
+        }
+        max_in_flight = std::max(max_in_flight, st.max_in_flight.load());
+        most_threads  = std::max(most_threads, st.threads.size());
     }
-    check(st.max_in_flight.load() == 1,
-          "L1 I1: never two continuations of one strand running at once (max in-flight " +
-              std::to_string(st.max_in_flight.load()) + ")");
-    check(st.threads.size() > 1,
-          "L1 the strand moved between lane workers (" + std::to_string(st.threads.size()) + " workers)");
+    check(all_finished, "L1 all 16 coroutines finished");
+    check(max_in_flight == 1, "L1 I1: never two continuations of one strand running at once (max in-flight " +
+                                  std::to_string(max_in_flight) + ")");
+    check(most_threads > 1,
+          "L1 the strand moved between lane workers (" + std::to_string(most_threads) + " workers)");
 }
 
 // ---- L2 -----------------------------------------------------------------------------------------------------

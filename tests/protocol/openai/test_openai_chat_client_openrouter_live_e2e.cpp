@@ -267,12 +267,13 @@ int main() {
     // ---- OC-5: the REACTOR path against the real endpoint (ADR-237 §5.1, steps 34/35/36) ------------
     // The same class, host and model, but the transport runs on a rt::Runtime: chat() exchanges over
     // rt::http_request and chat_stream()'s producer is an OWNED root (rt::Runtime::spawn) -- no blocking
-    // body, no detached thread. DNS goes through the runtime's OWN pool (no injected resolver here), so
-    // this is also the reactor's real-DNS verification that was still open after step 34.
+    // body, no detached thread. With no `rops.resolver`, the constructor wraps its `sandbox::resolve_host`
+    // (host_resolver_from), and rt runs that on the runtime's DNS pool: real DNS, off the reactor thread. rt's
+    // own getaddrinfo resolver is NOT what runs here -- the provider clients never use it (test_rt_dns covers it).
     {
         rt::Runtime                    rt{rt::RuntimeConfig{.lanes = 2}};
         openai::detail::ReactorOptions rops;
-        rops.runtime = &rt;  // no resolver seam: rt::http resolves through rt::Runtime::dns_pool()
+        rops.runtime = &rt;  // no resolver: the ctor's sandbox::resolve_host, run on rt::Runtime::dns_pool()
 
         openai::OpenAIChatClient<InMemorySecretStore> reactive(
             host, kHttpsPort, model, SecretRef{kSecretName}, caps, store, path_prefix(), sandbox::resolve_host,

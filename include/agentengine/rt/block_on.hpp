@@ -105,7 +105,7 @@ private:
 
 namespace detail {
 // The refusal code of the current thread, or nullptr if `block_on()` is allowed on it.
-[[nodiscard]] inline char const*& block_on_refusal_code() noexcept {
+[[nodiscard]] AGENTENGINE_TLS_ACCESSOR inline char const*& block_on_refusal_code() noexcept {
     thread_local char const* code = nullptr;
     return code;
 }

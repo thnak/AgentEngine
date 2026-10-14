@@ -9,6 +9,10 @@
 //     the channel was full, because the thread that would drain it was the one destroying the client (rule 4).
 //  P3 a multi-line SSE `data:` field reaches the accumulator whole (SseDecoder joins lines with '\n'; the pump
 //     must re-emit one `data:` prefix per line).
+//  P4 the `http_error` -> failure_class mapping keeps a DNS failure transient; P6 proves it end to end: a host
+//     that does not resolve fails chat() and chat_stream() `transient` (retried), as the blocking path did.
+//  P5 `EffectContext::cancellation` stops an in-flight chat(): a server that sends headers and then nothing
+//     holds the exchange open (checked: still pending before the stop), and a stop ends it `canceled` promptly.
 
 #ifdef AGENTENGINE_WITH_HTTPS
 
@@ -19,6 +23,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <future>
+#include <stop_token>
 #include <memory>
 #include <string>
 #include <thread>
@@ -26,6 +31,7 @@
 
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/protocol/provider_chat_wire.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
 
@@ -168,9 +174,12 @@ private:
 
 using Client = openai::OpenAIChatClient<InMemorySecretStore>;
 
-[[nodiscard]] std::unique_ptr<Client> make_client(BurstServer const& server, InMemorySecretStore& store) {
-    return std::make_unique<Client>("127.0.0.1", server.port(), "m", SecretRef{"provider-key"},
-                                    ChatClientCapabilities{}, store, "/v1", sandbox::resolve_host, std::string{},
+[[nodiscard]] std::unique_ptr<Client> make_client(BurstServer const& server, InMemorySecretStore& store,
+                                                  agentengine::detail::provider_wire::Resolver resolver =
+                                                      sandbox::resolve_host,
+                                                  std::string host = "127.0.0.1") {
+    return std::make_unique<Client>(std::move(host), server.port(), "m", SecretRef{"provider-key"},
+                                    ChatClientCapabilities{}, store, "/v1", std::move(resolver), std::string{},
                                     std::string{}, std::string{}, std::string{}, std::nullopt,
                                     ProviderTransport::plaintext_http);
 }
@@ -286,6 +295,57 @@ int main() {
         check(http_error_to_error(rt::http_error::address_rejected, "net.address_blocked", "x").klass ==
                   failure_class::policy,
               "P4: a policy-refused address stays policy");
+    }
+
+    // ---- P5: EffectContext::cancellation stops an in-flight chat() ------------------------------------------
+    {
+        BurstServer server({}, /*hold_open=*/true);  // headers, then silence
+        check(server.ok(), "P5: server started");
+        if (server.ok()) {
+            auto             client = make_client(server, store);
+            std::stop_source src;
+            EffectContext    cctx;
+            cctx.principal    = ctx.principal;
+            cctx.capabilities = agentengine::borrow_capabilities(held);
+            cctx.cancellation = src.get_token();
+            auto pending = std::async(std::launch::async, [&] {
+                return rt::block_on(client->chat(request_asking("hi"), cctx));
+            });
+            bool const held_open = pending.wait_for(std::chrono::milliseconds(800)) == std::future_status::timeout;
+            check(held_open, "P5: (control) the silent server holds chat() open until something stops it");
+            src.request_stop();
+            bool const prompt = pending.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+            check(prompt, "P5: a stop on ctx.cancellation ends the in-flight chat() promptly");
+            if (!prompt) {
+                std::fprintf(stderr, "chat() ignored its cancellation; exiting without joining it\n");
+                std::fflush(stderr);
+                std::_Exit(1);
+            }
+            auto const r = pending.get();
+            check(!r && r.error().klass == failure_class::canceled, "P5: ... and it ends `canceled`, not a result");
+        }
+    }
+
+    // ---- P6: a host that does not resolve fails transient on both entry points -----------------------------
+    {
+        BurstServer server({}, /*hold_open=*/false);  // never reached: only its port is used
+        check(server.ok(), "P6: server started");
+        if (server.ok()) {
+            int  lookups = 0;
+            auto dead    = [&lookups](std::string_view, std::uint16_t) -> result<sandbox::VerifiedEndpoint> {
+                ++lookups;
+                return std::unexpected(error{failure_class::transient, "no such host", "net.host_unresolvable"});
+            };
+            auto client = make_client(server, store, dead, "no-such-host.invalid");
+            auto r      = rt::block_on(client->chat(request_asking("hi"), ctx));
+            check(!r && r.error().klass == failure_class::transient,
+                  "P6: chat() to an unresolvable host fails transient (retried), not policy");
+            stream<ChatResponseUpdate> s = client->chat_stream(request_asking("hi"), ctx);
+            Drained const              d = drain(s, std::chrono::seconds(20));
+            check(d.terminal == stream_terminal::failed && s.fail_error().klass == failure_class::transient,
+                  "P6: chat_stream() to an unresolvable host fails transient (retried), not policy");
+            check(lookups >= 2, "P6: (control) both calls went through the resolver that failed");
+        }
     }
 
     if (g_failures != 0) {

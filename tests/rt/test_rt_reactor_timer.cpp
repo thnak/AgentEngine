@@ -165,6 +165,27 @@ std::thread::id reactor_thread_of(pal::Reactor& r) {
     return probe->where;
 }
 
+// R8's handle on the reactor it destroys: forwards to a real one and says when a timer start was handed to it. The
+// destroy must come after the waiter's start_timer() call -- the start is then queued ahead of the shutdown sweep
+// (FIFO) and is cancelled by it. A fixed sleep cannot promise that on a loaded runner: a late waiter posted into
+// a destroyed reactor and never woke (CI Release legs, both compilers).
+class StartSpyReactor final : public pal::Reactor {
+public:
+    explicit StartSpyReactor(std::unique_ptr<pal::Reactor> inner) : inner_(std::move(inner)) {}
+    void start_timer(std::shared_ptr<pal::ReactorOp> op, clock::time_point deadline) override {
+        inner_->start_timer(std::move(op), deadline);
+        started.store(true, std::memory_order_release);
+    }
+    [[nodiscard]] bool on_reactor_thread() const noexcept override { return inner_->on_reactor_thread(); }
+    std::atomic<bool> started{false};
+
+protected:
+    void post_cancel(std::shared_ptr<pal::ReactorOp> const& op) override { inner_->cancel(op); }
+
+private:
+    std::unique_ptr<pal::Reactor> inner_;
+};
+
 }  // namespace
 
 int main() {
@@ -297,7 +318,7 @@ int main() {
 
     // R8 ------------------------------------------------------------------------------------------------
     {
-        auto               doomed = pal::make_default_reactor();
+        auto               doomed = std::make_unique<StartSpyReactor>(pal::make_default_reactor());
         std::atomic<bool>  done{false};
         Observed           o;
         pal::Reactor*      raw = doomed.get();  // the waiter must not read the unique_ptr main resets (TSan)
@@ -305,7 +326,8 @@ int main() {
             o = block_on(nap(*raw, 60s));
             done.store(true, std::memory_order_release);
         });
-        std::this_thread::sleep_for(50ms);
+        check(wait_until([&] { return doomed->started.load(std::memory_order_acquire); }),
+              "R8: the waiter's sleep was handed to the reactor");
         auto const t0 = std::chrono::steady_clock::now();
         doomed.reset();  // shutdown with a pending sleep
         check(std::chrono::steady_clock::now() - t0 < 5s, "R8: reactor shutdown returned promptly");
