@@ -22,10 +22,14 @@
 #   - targets with their own compile definitions (a macro the PCH was not built with: C4605 under /WX
 #     on MSVC, a hard error on clang);
 #   - the folders listed in AE_TEST_PCH_SKIP_FOLDERS: compile-fail gates (their verdict must not depend on
-#     what a PCH dragged in), and folders whose TUs #define macros before their first #include.
+#     what a PCH dragged in), and folders whose TUs #define macros before their first #include;
+#   - tests/rt itself (AE_TEST_PCH_SKIP_EXACT_FOLDERS; its subfolders keep the PCH): the runtime layer's own
+#     tests sit below core and open `agentengine` and `agentengine::rt` together, so the PCH's core headers
+#     (core/chat_client.hpp -> core/task.hpp's `agentengine::task` alias) make every bare `task` ambiguous.
 option(AGENTENGINE_TEST_PCH "Share one precompiled header across the plain test executables (dev builds)" OFF)
 
 set(AE_TEST_PCH_SKIP_FOLDERS compile_fail python experiments helpers)
+set(AE_TEST_PCH_SKIP_EXACT_FOLDERS rt)
 
 # Called once from tests/CMakeLists.txt, after the directory-wide flags are final.
 function(agentengine_define_test_pch)
@@ -41,6 +45,9 @@ endfunction()
 # Called by agentengine_add_test_folder() for each folder it adds.
 function(agentengine_apply_test_pch folder)
   if(NOT AGENTENGINE_TEST_PCH)
+    return()
+  endif()
+  if(folder IN_LIST AE_TEST_PCH_SKIP_EXACT_FOLDERS)
     return()
   endif()
   foreach(skip IN LISTS AE_TEST_PCH_SKIP_FOLDERS)
