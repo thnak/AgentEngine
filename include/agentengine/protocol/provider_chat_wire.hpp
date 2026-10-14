@@ -103,13 +103,8 @@ struct ProviderReactorOptions {
 // streaming path, which never buffers the error document; the classification does not depend on it.
 [[nodiscard]] error http_status_error(std::string_view vendor, std::uint16_t status, std::string const& body);
 
-// chat()'s whole exchange after the request is built: one blocking POST (no stop token, no byte cap), a
-// transport failure forwarded unchanged, a non-2xx mapped through http_status_error, and a 2xx body parsed as
-// JSON.
-[[nodiscard]] result<json::Value> exchange_json(std::string_view vendor, std::string_view host, std::uint16_t port,
-                                                sandbox::NetEgressRequest const& req, Resolver const& resolver,
-                                                std::string_view ca_bundle_pem_override,
-                                                sandbox::ProviderTransport transport);
+// ADR-237 §5.1: the blocking `exchange_json` that used to sit here is gone. Its last user, the OpenRouter batch
+// backend, now calls `openai::detail::exchange_json_async` on `rt::http` like both chat clients.
 
 }  // namespace agentengine::detail::provider_wire
 

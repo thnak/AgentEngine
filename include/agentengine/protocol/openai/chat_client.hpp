@@ -390,7 +390,8 @@ void run_stream_worker_async(std::string host, std::uint16_t port, std::string p
                              std::stop_token stop, ChatClientCapabilities caps, std::string session_id);
 
 // ADR-237 §5.1 (step 35): chat()'s reactor path -- a buffered HTTP/1.1 exchange on rt::http (no blocking
-// body, no detached thread), with the same request/response contract as `provider_wire::exchange_json`.
+// body, no detached thread): a transport failure mapped through `http_error_to_error`, a non-2xx through
+// `http_status_error`, a 2xx body parsed as JSON. Also the OpenRouter batch backend's exchange.
 // Declared here, defined in chat_client.cpp (where the rt/ headers and make_http_context live).
 [[nodiscard]] task<result<json::Value>> exchange_json_async(std::string vendor, std::string host,
                                                             std::uint16_t port, sandbox::NetEgressRequest req,
@@ -471,7 +472,7 @@ public:
           reactor_(std::move(reactor)) {
         // ADR-237 §5.1 (step 39): the reactor path is no longer opt-in. With no Runtime supplied, the
         // client OWNS one, so `chat()`/`chat_stream()` always run on `rt::http` and the blocking
-        // `exchange_json` is unreachable from this class. Held by `unique_ptr` so the client stays
+        // blocking exchange is unreachable from this class. Held by `unique_ptr` so the client stays
         // movable AND `reactor_.runtime` keeps pointing at the same heap object across a move.
         if (reactor_.runtime == nullptr) {
             owned_runtime_ = std::make_unique<agentengine::rt::Runtime>(agentengine::rt::RuntimeConfig{});
@@ -509,9 +510,7 @@ public:
         auto req = detail::build_http_request(path_prefix_ + "/chat/completions", lease->reveal_text(),
                                                 json::dump(*body), http_referer_, x_title_, session_id_);
         // ADR-206: the POST, the non-2xx mapping and the JSON parse are shared with the other backend.
-        // ADR-237 §5.1 (step 35): with a Runtime set, the exchange runs as a coroutine on the reactor
-        // (no blocking body); without one it stays the blocking `exchange_json`.
-        // ADR-237 §5.1 (step 41): the reactor exchange is now the ONLY path.
+        // ADR-237 §5.1 (steps 35, 41): the exchange runs as a coroutine on the reactor -- the only path.
         auto parsed = co_await detail::exchange_json_async("openai", host_, port_, std::move(req), reactor_,
                                                            ca_bundle_pem_override_, transport_, ctx.cancellation);
         if (!parsed) co_return std::unexpected(parsed.error());

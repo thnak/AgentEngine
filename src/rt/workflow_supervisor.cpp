@@ -706,7 +706,7 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
         }
         ports_.clear();
         // ADR-235 §3.5 step 4: resolved vendor batch items, folded like a round's own results.
-        if (std::optional<workflow_status> const ended = fold_batch_items(next)) {
+        if (std::optional<workflow_status> const ended = co_await fold_batch_items(next)) {
             push_fan_in_aggregated_events();
             co_return finish(*ended, entered_at);
         }
@@ -1042,7 +1042,7 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
         // ADR-236 §3: never submit (and pay for) a job for a round that is already cancelled -- it would only be
         // abandoned and cancelled on the next poll.
         if (!batch_chunks.empty() && !cancel_requested()) {
-            batch_waiting = submit_batch_chunks(batch_chunks, exec_deliveries, replies, batch_deferred);
+            batch_waiting = co_await submit_batch_chunks(batch_chunks, exec_deliveries, replies, batch_deferred);
         }
 
         ++rounds_;

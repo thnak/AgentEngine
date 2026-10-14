@@ -14,16 +14,23 @@
 //     non-text content), and accepts plain text, reporting a positive size.
 // R6  cancel() is refused (no cancel endpoint); release() is DELETE {prefix}/batches/{id}.
 // R7  a non-2xx answer is an error with the HTTP-status class (429 transient, 401 policy).
+// R9  ADR-237 §5.1: the vendor calls run on `rt::http`, so `ctx.cancellation` stops one in flight. A poll against
+//     a server that accepts and never answers returns `canceled` soon after the stop, not at the idle timeout.
+// R10 a host-supplied `ProviderReactorOptions` is used, not replaced: its resolver names the only route to the
+//     server (the host name is not in DNS), and the call runs on the host's `rt::Runtime`.
 
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
+#include <future>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "agentengine/pal/net.hpp"
 #include "agentengine/protocol/openai/openrouter_batch_backend.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
 
@@ -207,7 +214,7 @@ int main() {
                                                                 {}, ProviderTransport::plaintext_http);
 
     // ---- R1 ----
-    auto job = backend.submit({{"i0", ask("what is six times seven?")}, {"i1", ask("say hi")}}, ctx);
+    auto job = agentengine::rt::block_on(backend.submit({{"i0", ask("what is six times seven?")}, {"i1", ask("say hi")}}, ctx));
     check(job.has_value() && *job == "batch_123", "R1: submit returns the vendor's job id");
     {
         auto reqs = server.requests();
@@ -224,7 +231,7 @@ int main() {
     }
 
     // ---- R2 ----
-    auto p1 = backend.poll("batch_123", ctx);
+    auto p1 = agentengine::rt::block_on(backend.poll("batch_123", ctx));
     check(p1.has_value() && !p1->ended && p1->items.empty(), "R2: in_progress -> not ended, no items");
     {
         auto reqs = server.requests();
@@ -232,7 +239,7 @@ int main() {
     }
 
     // ---- R3 ----
-    auto p2 = backend.poll("batch_123", ctx);
+    auto p2 = agentengine::rt::block_on(backend.poll("batch_123", ctx));
     check(p2.has_value() && p2->ended && p2->items.size() == 2, "R3: completed -> ended with both results");
     if (p2 && p2->items.size() == 2) {
         BatchItemResult const* ok = nullptr;
@@ -248,7 +255,7 @@ int main() {
     }
 
     // ---- R4 ----
-    auto p3 = backend.poll("batch_9", ctx);
+    auto p3 = agentengine::rt::block_on(backend.poll("batch_9", ctx));
     check(p3.has_value() && p3->ended && p3->items.empty() &&
               p3->detail == "request i3: base64 images are rejected",
           "R4: a failed batch is ended, has no results, and reports the vendor's reason");
@@ -274,20 +281,81 @@ int main() {
     }
 
     // ---- R6 ----
-    check(!backend.cancel("batch_123", ctx).has_value(), "R6: cancel is refused (OpenRouter has no cancel endpoint)");
-    check(backend.release("batch_123", ctx).has_value(), "R6: release succeeds");
+    check(!agentengine::rt::block_on(backend.cancel("batch_123", ctx)).has_value(), "R6: cancel is refused (OpenRouter has no cancel endpoint)");
+    check(agentengine::rt::block_on(backend.release("batch_123", ctx)).has_value(), "R6: release succeeds");
     {
         auto reqs = server.requests();
         check(reqs.size() >= 5 && reqs[4].rfind("DELETE /api/v1/batches/batch_123 ", 0) == 0, "R6: release is DELETE");
     }
 
     // ---- R7 ----
-    auto t429 = backend.poll("batch_123", ctx);
+    auto t429 = agentengine::rt::block_on(backend.poll("batch_123", ctx));
     check(!t429.has_value() && t429.error().klass == failure_class::transient, "R7: 429 is a transient error");
-    auto t401 = backend.poll("batch_123", ctx);
+    auto t401 = agentengine::rt::block_on(backend.poll("batch_123", ctx));
     check(!t401.has_value() && t401.error().klass == failure_class::policy, "R7: 401 is a policy error");
 
     check(backend.group_key().find("openai/gpt-4o-mini") != std::string::npos, "group key names the model");
+
+    // ---- R9: cancellation reaches the in-flight exchange ----
+    {
+        // Listening but never accepting: the connect completes from the backlog and no byte ever comes back.
+        auto silent = pal::tcp_listen(static_cast<std::uint64_t>(kLoopbackHostOrder), 0);
+        check(silent.has_value(), "R9 setup: silent listener");
+        if (silent) {
+            std::uint16_t const silent_port = *pal::local_port(*silent);
+            openai::OpenRouterBatchBackend<InMemorySecretStore> quiet("127.0.0.1", silent_port, "openai/gpt-4o-mini",
+                                                                      SecretRef{"or-key"}, store, "/api/v1",
+                                                                      sandbox::resolve_host, {},
+                                                                      ProviderTransport::plaintext_http);
+            std::stop_source stop;
+            EffectContext    cctx = ctx;
+            cctx.cancellation     = stop.get_token();
+            auto const started    = std::chrono::steady_clock::now();
+            auto fut = std::async(std::launch::async, [&] { return agentengine::rt::block_on(quiet.poll("batch_123", cctx)); });
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));
+            stop.request_stop();
+            if (fut.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
+                // The exchange ignored the stop. Nothing can unwind the hung call, so end the process here.
+                std::fprintf(stderr, "FAIL: R9: a cancelled poll is still in flight 10 s after the stop\n");
+                std::_Exit(1);
+            }
+            auto const r       = fut.get();
+            auto const elapsed = std::chrono::steady_clock::now() - started;
+            check(!r.has_value() && r.error().klass == failure_class::canceled,
+                  "R9: the cancelled poll fails as canceled" +
+                      (r.has_value() ? std::string{} : " (got " + r.error().code + ")"));
+            check(elapsed < std::chrono::seconds(5), "R9: and returns promptly after the stop");
+            pal::close_fd(*silent);
+        }
+    }
+
+    // ---- R10: the host's reactor options are the ones used ----
+    {
+        ScriptedHttpServer one({{200, R"({"id":"batch_7","object":"batch","status":"in_progress","results":null,"error":null})"}});
+        check(one.ok(), "R10 setup: loopback server listening");
+        agentengine::rt::Runtime host_rt{agentengine::rt::RuntimeConfig{.lanes = 1}};
+        std::atomic<int>         resolved{0};
+        agentengine::detail::provider_wire::ProviderReactorOptions opts;
+        opts.runtime  = &host_rt;
+        opts.resolver = [&resolved](std::string const& host) {
+            pal::ResolveOutcome out;
+            if (host == "batch.invalid") {
+                ++resolved;
+                out.addresses.push_back(pal::IpAddress::v4(127, 0, 0, 1));
+            } else {
+                out.error = pal::resolve_error::not_found;
+            }
+            return out;
+        };
+        // `.invalid` never resolves through real DNS (RFC 6761), so only the supplied resolver reaches the server.
+        openai::OpenRouterBatchBackend<InMemorySecretStore> hosted("batch.invalid", one.port(), "openai/gpt-4o-mini",
+                                                                   SecretRef{"or-key"}, store, "/api/v1",
+                                                                   sandbox::resolve_host, {},
+                                                                   ProviderTransport::plaintext_http, std::move(opts));
+        auto p = agentengine::rt::block_on(hosted.poll("batch_7", ctx));
+        check(p.has_value() && !p->ended, "R10: the poll reaches the server through the host's resolver");
+        check(resolved.load() >= 1, "R10: the host-supplied resolver was called");
+    }
 
     // ---- R8: every documented non-terminal status keeps the job pending -- `cancelling` included, which is
     // not terminal (only completed/failed/expired/cancelled are) and must never expire the remainder.

@@ -514,8 +514,8 @@ void run_stream_worker_async(std::string host, std::uint16_t port, std::string p
 }
 
 // ADR-237 §5.1 (step 35): chat()'s reactor path. A buffered HTTP/1.1 exchange on rt::http (rt::http_request)
-// -- no blocking body and no thread. Same contract as `provider_wire::exchange_json`: transport failure
-// forwarded (mapped through http_error_to_error), non-2xx through http_status_error, 2xx body parsed as JSON.
+// -- no blocking body and no thread. A transport failure is mapped through http_error_to_error, a non-2xx
+// through http_status_error, and a 2xx body parsed as JSON.
 task<result<json::Value>> exchange_json_async(std::string vendor, std::string host, std::uint16_t port,
                                               sandbox::NetEgressRequest req, ReactorOptions reactor,
                                               std::string ca_bundle_pem_override,
