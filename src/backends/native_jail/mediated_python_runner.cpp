@@ -79,7 +79,7 @@ result<void> MediatedPythonRunner::initialize() {
     return {};
 }
 
-result<ExecOutcome> MediatedPythonRunner::run(ExecRequest request, ExecState& state, EffectContext& ctx) {
+result<ExecOutcome> MediatedPythonRunner::run_blocking(ExecRequest request, ExecState& state, EffectContext& ctx) {
     if (!request.language.empty() && request.language != "python") {
         return std::unexpected(error{failure_class::contract,
                                       "MediatedPythonRunner cannot run language: " + request.language,

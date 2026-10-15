@@ -17,6 +17,7 @@
 #include <crtdbg.h>
 #endif
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/trust/capability.hpp"
@@ -79,7 +80,7 @@ int main() {
                  .register_runner(RegisteredRunner{
                      "python",
                      [&](ExecRequest const& req, ExecState& state, EffectContext& ctx) -> result<ExecOutcome> {
-                         return python.run(req, state, ctx);
+                         return agentengine::rt::block_on(python.run(req, state, ctx));
                      }})
                  .has_value(),
              "E3-PY1: setup -- the real PythonRunner registers under the name 'python'");
@@ -95,7 +96,7 @@ int main() {
         EffectContext ctx{};
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
-        auto out = shell.run(ExecRequest{"shell", "python print(6 * 7)"}, state, ctx);
+        auto out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "python print(6 * 7)"}, state, ctx));
         AE_CHECK(out.has_value() && out->stdout_text.find("42") != std::string::npos,
                  "E3-PY2: ShellRunner invokes the REAL MediatedPythonRunner and returns its real stdout");
     }
@@ -112,7 +113,7 @@ int main() {
         // grammar for anything beyond a simple expression, not a ShellRunner correctness bug.
         ExecState state{};
         EffectContext ctx{};  // no capabilities granted at all
-        auto out = shell.run(ExecRequest{"shell", "python ae_e3_side_effect=1"}, state, ctx);
+        auto out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "python ae_e3_side_effect=1"}, state, ctx));
         AE_CHECK(!out.has_value() && out.error().code == "shell.capability_denied",
                  "E3-PY3 (negative control): ShellRunner cannot invoke PythonRunner without RunnerCall");
 
@@ -122,7 +123,7 @@ int main() {
         // NameError instead proves it was never set.
         CapabilitySet caps = CapabilitySet::grant_root({Capability{cap::RunnerCall{"python"}}});
         ctx.capabilities = agentengine::borrow_capabilities(caps);
-        auto probe = shell.run(ExecRequest{"shell", "python print(ae_e3_side_effect)"}, state, ctx);
+        auto probe = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "python print(ae_e3_side_effect)"}, state, ctx));
         AE_CHECK(probe.has_value() && probe->stderr_text.find("NameError") != std::string::npos,
                  "E3-PY3: the denied call's side effect never happened -- the interpreter was truly "
                  "never reached, not merely reported as denied");
@@ -145,7 +146,7 @@ int main() {
         std::string source =
             "python \"try:\n    open('/work/should_be_denied.txt', 'w')\nexcept PermissionError as e:\n"
             "    print('DENIED:', e)\"";
-        auto out = shell.run(ExecRequest{"shell", source}, state, ctx);
+        auto out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", source}, state, ctx));
         AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos,
                  "E3-PY4: PythonRunner, invoked THROUGH ShellRunner, still enforces its own "
                  "capability checks against the SAME ctx -- RunnerCall{\"python\"} alone does not "

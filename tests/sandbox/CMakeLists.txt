@@ -202,5 +202,5 @@ agentengine_add_test(test_task_branch_content_durability_integration
 # decisions/ADR-237 §5.1 Phase D (#173): the execution and sandbox seams are task-shaped -- each caller driven ON
 # A RUNTIME LANE against a conformer that genuinely parks on the reactor. NO daemon.
 agentengine_add_test(test_execution_seams_on_lane
-  LIBS agentengine::core agentengine::net_egress_proxy agentengine::worktree_store agentengine::sandbox_io
-    agentengine_warnings)
+  LIBS agentengine::core agentengine::net_egress_proxy agentengine::mediated_shell_runner
+    agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)

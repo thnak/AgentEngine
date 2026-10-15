@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <string>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/mediated_command_registry.hpp"
@@ -85,7 +86,7 @@ int main() {
         EffectContext ctx{};
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
-        auto out = shell.run(ExecRequest{"shell", "for x in a b c do echo item done"}, state, ctx);
+        auto out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "for x in a b c do echo item done"}, state, ctx));
         AE_CHECK(out.has_value() && out->klass == exec_outcome_class::ok,
                  "WCT-1 (positive control): an ordinary bounded for-loop completes normally, not timed out");
         AE_CHECK(out.has_value() && out->stdout_text.find("item") != std::string::npos,
@@ -104,7 +105,7 @@ int main() {
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         auto const started = std::chrono::steady_clock::now();
-        auto out = shell.run(ExecRequest{"shell", exponential_blowup_script()}, state, ctx);
+        auto out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", exponential_blowup_script()}, state, ctx));
         auto const elapsed = std::chrono::steady_clock::now() - started;
 
         AE_CHECK(out.has_value(),
@@ -136,7 +137,7 @@ int main() {
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         auto const started = std::chrono::steady_clock::now();
-        auto out = shell.run(ExecRequest{"shell", exponential_blowup_script()}, state, ctx);
+        auto out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", exponential_blowup_script()}, state, ctx));
         auto const elapsed = std::chrono::steady_clock::now() - started;
 
         AE_CHECK(out.has_value() && out->klass == exec_outcome_class::timeout,

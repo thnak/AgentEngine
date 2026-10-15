@@ -52,6 +52,7 @@
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/context_provider.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/mounted_skills_state.hpp"
@@ -755,7 +756,7 @@ private:
 
         ExecRequest req{"python", a.code, {}};
         ExecState state{};
-        auto outcome = runner.run(req, state, ctx);
+        auto outcome = agentengine::rt::block_on(runner.run(req, state, ctx));
         if (!outcome) return std::unexpected(outcome.error());
 
         ExecuteCodeReply reply;

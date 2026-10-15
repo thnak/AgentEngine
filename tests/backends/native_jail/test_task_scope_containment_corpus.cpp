@@ -22,6 +22,7 @@
 #include <fstream>
 #include <string>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/mediated_command_registry.hpp"
@@ -93,7 +94,7 @@ int main() {
 
     for (std::size_t i = 0; i < kTaskScopeCorpusSize; ++i) {
         auto const& c = kTaskScopeCorpus[i];
-        auto out      = shell.run(ExecRequest{"shell", c.scripted_action}, state, ctx);
+        auto out      = agentengine::rt::block_on(shell.run(ExecRequest{"shell", c.scripted_action}, state, ctx));
 
         if (c.expect_denied) {
             AE_CHECK(out.has_value() && out->klass == exec_outcome_class::policy_violation,

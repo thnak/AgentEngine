@@ -18,6 +18,7 @@
 #include <string>
 #include <thread>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/pal/net.hpp"
@@ -195,7 +196,7 @@ int main() {
                                     "s.close()\n"
                                     "print('GOT:', data)";
         ExecRequest req{"python", script};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         AE_CHECK(out.has_value() && out->klass == exec_outcome_class::ok,
                  "SOCK-1: a script connecting to a real granted NetOut target runs successfully");
         AE_CHECK(out.has_value() && out->stdout_text.find("GOT: b'hello relay'") != std::string::npos,
@@ -242,7 +243,7 @@ int main() {
                          "    finally:\n"
                          "        s.close()\n"
                          "print('RESULTS:', results)"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         AE_CHECK(out.has_value() && out->klass == exec_outcome_class::ok,
                  "SOCK-DENY: setup -- the unmediated-socket-method probe script runs");
         AE_CHECK(out.has_value() &&
@@ -292,7 +293,7 @@ int main() {
                          "except OSError as e:\n"
                          "    print('DENIED:', e)\n"
                          "f.close()"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         AE_CHECK(out.has_value() && out->klass == exec_outcome_class::ok,
                  "FILE-RO-1: setup -- the direct _ae_internal.file_write probe script runs");
         AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos,

@@ -54,8 +54,8 @@ static_assert(ae::ChatClient<DummyChatClient>,
 // ---- Runner concept (sandbox/runner.hpp) — trivial conforming type ------------------------------
 
 struct DummyRunner {
-    ae::result<ae::ExecOutcome> run(ae::ExecRequest const&, ae::ExecState&, ae::EffectContext&) {
-        return ae::ExecOutcome{};
+    ae::task<ae::result<ae::ExecOutcome>> run(ae::ExecRequest, ae::ExecState&, ae::EffectContext&) {
+        co_return ae::ExecOutcome{};
     }
 };
 static_assert(ae::Runner<DummyRunner>, "DummyRunner must satisfy the Runner concept (010 §1a)");
