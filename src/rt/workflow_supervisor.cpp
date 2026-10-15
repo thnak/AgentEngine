@@ -1209,7 +1209,7 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
         // whether or not this round is about to suspend, so a checkpoint taken here always has
         // enough to resume from either way -- see file banner's "Checkpoint hook" paragraph.
         if (checkpoint_hook_) {
-            checkpoint_hook_(rounds_, to_record());
+            co_await checkpoint_hook_(rounds_, to_record());
             push_structural_event(agentengine::workflow::workflow_event_kind::checkpoint_saved,
                                    agentengine::workflow::workflow_event_payload::CheckpointSaved{rounds_});
         }

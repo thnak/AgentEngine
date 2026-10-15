@@ -55,8 +55,8 @@ public:
     // `sup`, so this `WorkflowCheckpointManager` must outlive every round `sup` ever executes after
     // `attach()` is called.
     void attach(WorkflowSupervisor& sup) {
-        sup.set_checkpoint_hook([this](std::uint32_t /*round*/, RunStateRecord const& rec) {
-            result<void> saved = store_.save(rec.run_id, encode_run_state_record(rec));
+        sup.set_checkpoint_hook([this](std::uint32_t /*round*/, RunStateRecord rec) -> task<void> {
+            result<void> saved = co_await store_.save(rec.run_id, encode_run_state_record(rec));
             if (!saved && on_save_error_) on_save_error_(saved.error());
         });
     }
@@ -66,17 +66,17 @@ public:
     // A real error -- the store I/O failed, the stored record was malformed, or (see file banner)
     // the graph has an agent-kind (or sub_workflow-kind) executor and
     // `acknowledge_agent_history_reset` was not set.
-    [[nodiscard]] static result<bool> resume_or_start(
-        StoreT& store, std::string const& run_id, WorkflowSupervisor& sup,
+    [[nodiscard]] static task<result<bool>> resume_or_start(
+        StoreT& store, std::string run_id, WorkflowSupervisor& sup,
         agentengine::workflow::Workflow graph, std::vector<ExecutorBody> bodies,
         std::vector<agentengine::EffectContext> contexts = {},
         std::string designated_stall_reporter = {}, bool acknowledge_agent_history_reset = false) {
         sup.initialize(std::move(graph), std::move(bodies), std::move(contexts),
                         std::move(designated_stall_reporter));
 
-        result<std::optional<RunStateRecord>> loaded = load_workflow_checkpoint(store, run_id);
-        if (!loaded) return std::unexpected(loaded.error());
-        if (!loaded->has_value()) return false;
+        result<std::optional<RunStateRecord>> loaded = co_await load_workflow_checkpoint(store, run_id);
+        if (!loaded) co_return std::unexpected(loaded.error());
+        if (!loaded->has_value()) co_return false;
 
         // ALSO covers `sub_workflow`-kind, not just `agent`-kind -- a post-implementation audit
         // named this defensively: `sub_workflow` cannot execute at all today
@@ -92,7 +92,7 @@ public:
                                    e.kind == agentengine::workflow::executor_kind::sub_workflow;
                         });
         if (has_stateful_kind && !acknowledge_agent_history_reset) {
-            return std::unexpected(agentengine::error{
+            co_return std::unexpected(agentengine::error{
                 agentengine::failure_class::contract,
                 "WorkflowCheckpointManager::resume_or_start: resuming a graph with an agent-kind "
                 "(or sub_workflow-kind) executor silently discards that executor's own in-flight "
@@ -103,7 +103,7 @@ public:
         }
 
         sup.restore_from_record(**loaded);
-        return true;
+        co_return true;
     }
 
 private:

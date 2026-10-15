@@ -252,7 +252,10 @@ int main() {
         WorkflowSupervisor sup;
         sup.initialize(wf, bodies, {}, "mgr");
         sup.set_checkpoint_hook(
-            [&checkpoints](std::uint32_t, RunStateRecord const& rec) { checkpoints.push_back(rec); });
+            [&checkpoints](std::uint32_t, RunStateRecord rec) -> agentengine::task<void> {
+                checkpoints.push_back(std::move(rec));
+                co_return;
+            });
         WorkflowResult baseline = drive(sup.run_workflow(RunWorkflow{text_message("in")}));
 
         check(baseline.status == workflow_status::bound_max_stalls, "S6 setup: baseline run trips at round 3");

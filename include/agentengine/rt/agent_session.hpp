@@ -545,24 +545,24 @@ template <class ChatClientT, class StateT, class HistoryProviderT, SessionStore 
 [[nodiscard]] task<result<void>> save_agent_session_snapshot(
     AgentSession<ChatClientT, StateT, HistoryProviderT>& session, StoreT& store) {
     AgentSessionRecord rec = co_await session.snapshot_record();
-    co_return store.save(rec.session_id, encode_agent_session_record(rec));
+    co_return co_await store.save(rec.session_id, encode_agent_session_record(rec));
 }
 
 // Load the latest durable record for `session_id`, or std::nullopt if it was never snapshotted or
 // was deleted (delete_session()'s tombstone) -- a caller of THIS function sees no distinction
 // between "never existed" and "deleted", matching the Quark original's own read-path property.
-// Synchronous (no task<T>) -- unlike save/delete, this never touches a live AgentSession instance,
-// so there is no in-flight state to guard against.
+// `task`-shaped since decisions/ADR-237 §5.1 (#172) because the store is -- it still never touches a live
+// AgentSession instance, so there is no in-flight state to guard against. `store` must outlive the await.
 template <SessionStore StoreT>
-[[nodiscard]] result<std::optional<AgentSessionRecord>> load_agent_session_snapshot(
-    StoreT const& store, std::string const& session_id) {
-    if (!store.exists(session_id)) return std::optional<AgentSessionRecord>{};
-    result<std::vector<std::byte>> bytes = store.load(session_id);
-    if (!bytes) return std::unexpected(bytes.error());
+[[nodiscard]] task<result<std::optional<AgentSessionRecord>>> load_agent_session_snapshot(
+    StoreT const& store, std::string session_id) {
+    if (!co_await store.exists(session_id)) co_return std::optional<AgentSessionRecord>{};
+    result<std::vector<std::byte>> bytes = co_await store.load(session_id);
+    if (!bytes) co_return std::unexpected(bytes.error());
     result<AgentSessionRecord> rec = decode_agent_session_record(*bytes);
-    if (!rec) return std::unexpected(rec.error());
-    if (rec->deleted) return std::optional<AgentSessionRecord>{};
-    return std::optional<AgentSessionRecord>{std::move(*rec)};
+    if (!rec) co_return std::unexpected(rec.error());
+    if (rec->deleted) co_return std::optional<AgentSessionRecord>{};
+    co_return std::optional<AgentSessionRecord>{std::move(*rec)};
 }
 
 // Gap-15 fix (2026-08-14, decisions/ADR-043-*.md): 005 §2's exact policy vocabulary
@@ -656,22 +656,22 @@ template <SessionStore StoreT>
                                                           std::uint64_t turn_index,
                                                           std::span<Message const> delta) {
     TurnDeltaRecord rec{session_id, turn_index, std::vector<Message>(delta.begin(), delta.end())};
-    co_return store.save(turn_delta_store_key(session_id, turn_index), encode_turn_delta_record(rec));
+    co_return co_await store.save(turn_delta_store_key(session_id, turn_index), encode_turn_delta_record(rec));
 }
 
 // Symmetric reader, for a future restore path to consume -- not itself wired into
 // load_agent_session_snapshot() (rehydrating history_ on restart is a separate, larger question this
 // ADR does not answer; see the ADR's own "what this does not claim").
 template <SessionStore StoreT>
-[[nodiscard]] inline result<std::optional<TurnDeltaRecord>> load_turn_delta(
-    StoreT const& store, std::string const& session_id, std::uint64_t turn_index) {
+[[nodiscard]] inline task<result<std::optional<TurnDeltaRecord>>> load_turn_delta(
+    StoreT const& store, std::string session_id, std::uint64_t turn_index) {
     std::string const key = turn_delta_store_key(session_id, turn_index);
-    if (!store.exists(key)) return std::optional<TurnDeltaRecord>{};
-    result<std::vector<std::byte>> bytes = store.load(key);
-    if (!bytes) return std::unexpected(bytes.error());
+    if (!co_await store.exists(key)) co_return std::optional<TurnDeltaRecord>{};
+    result<std::vector<std::byte>> bytes = co_await store.load(key);
+    if (!bytes) co_return std::unexpected(bytes.error());
     result<TurnDeltaRecord> rec = decode_turn_delta_record(*bytes);
-    if (!rec) return std::unexpected(rec.error());
-    return std::optional<TurnDeltaRecord>{std::move(*rec)};
+    if (!rec) co_return std::unexpected(rec.error());
+    co_return std::optional<TurnDeltaRecord>{std::move(*rec)};
 }
 
 // 005 §2's ack-durability contract, honored WITHOUT giving AgentSession ambient Store access (I2,
@@ -809,7 +809,7 @@ template <class ChatClientT, class StateT, class HistoryProviderT, SessionStore 
     // site was the real, hand-built AgentSessionRecord construction §23a Finding 1 found silently
     // contradicting the struct's own "only two places" comment.
     AgentSessionRecord tombstone = make_tombstone_record(receipt.session_id);
-    result<void> saved = store.save(receipt.session_id, encode_agent_session_record(tombstone));
+    result<void> saved = co_await store.save(receipt.session_id, encode_agent_session_record(tombstone));
     if (!saved) co_return std::unexpected(saved.error());
     receipt.durable_record_removed = true;
 

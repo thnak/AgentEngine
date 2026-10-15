@@ -24,6 +24,7 @@
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using namespace agentengine;
 using agentengine::rt::AgentSession;
@@ -116,7 +117,7 @@ int main() {
           "the session snapshots to the store");
 
     // ---- Simulate a restart: throw the old instance's identity away, load a fresh one -------------
-    auto loaded = load_agent_session_snapshot(store, "s-checkpoint");
+    auto loaded = agentengine::rt::block_on(load_agent_session_snapshot(store, "s-checkpoint"));
     check(loaded.has_value() && loaded->has_value(), "the saved session loads back as a real record");
 
     if (loaded.has_value() && loaded->has_value()) {

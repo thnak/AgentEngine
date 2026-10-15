@@ -25,6 +25,7 @@
 #endif
 
 #include "agentengine/rt/session_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::error;
 using agentengine::failure_class;
@@ -86,10 +87,10 @@ int main() {
     {
         InMemorySessionStore store;
         SessionId id = "session-alpha";
-        auto saved = store.save(id, bytes_from("hello, session store"));
+        auto saved = agentengine::rt::block_on(store.save(id, bytes_from("hello, session store")));
         check(saved.has_value(), "M1: save() succeeds");
 
-        auto loaded = store.load(id);
+        auto loaded = agentengine::rt::block_on(store.load(id));
         check(loaded.has_value(), "M1: load() succeeds after save()");
         check(loaded.has_value() && string_from(*loaded) == "hello, session store",
               "M1: load() returns byte-identical content to what was saved");
@@ -99,7 +100,7 @@ int main() {
     // a crash -- classified as a contract violation (unknown id), not a transient/fatal failure.
     {
         InMemorySessionStore store;
-        auto loaded = store.load("never-saved-session");
+        auto loaded = agentengine::rt::block_on(store.load("never-saved-session"));
         check(!loaded.has_value(), "M2: load() on an unsaved session id returns an error, not a value");
         check(loaded.has_value() || loaded.error().klass == failure_class::contract,
               "M2: the error is classified failure_class::contract");
@@ -112,15 +113,15 @@ int main() {
     {
         InMemorySessionStore store;
         SessionId id = "session-to-delete";
-        check(store.save(id, bytes_from("will be removed")).has_value(),
+        check(agentengine::rt::block_on(store.save(id, bytes_from("will be removed"))).has_value(),
               "M3: save() before removal succeeds");
-        check(store.exists(id), "M3: exists() is true right after save()");
+        check(agentengine::rt::block_on(store.exists(id)), "M3: exists() is true right after save()");
 
-        auto removed = store.remove(id);
+        auto removed = agentengine::rt::block_on(store.remove(id));
         check(removed.has_value(), "M3: remove() on an existing session succeeds");
-        check(!store.exists(id), "M3: exists() is false right after remove()");
+        check(!agentengine::rt::block_on(store.exists(id)), "M3: exists() is false right after remove()");
 
-        auto loaded = store.load(id);
+        auto loaded = agentengine::rt::block_on(store.load(id));
         check(!loaded.has_value(), "M3: load() after remove() returns an error");
         check(loaded.has_value() || loaded.error().code == "rt.session_store.not_found",
               "M3: load() after remove() reports the SAME not_found code as never-saved");
@@ -129,7 +130,7 @@ int main() {
     // M4: remove() is idempotent -- removing an id that was never saved is not an error.
     {
         InMemorySessionStore store;
-        auto removed = store.remove("no-such-session-ever");
+        auto removed = agentengine::rt::block_on(store.remove("no-such-session-ever"));
         check(removed.has_value(), "M4: remove() on a never-saved id succeeds (idempotent)");
     }
 
@@ -137,12 +138,12 @@ int main() {
     {
         InMemorySessionStore store;
         SessionId id = "session-exists-check";
-        check(!store.exists(id), "M5: exists() is false before any save()");
-        check(store.save(id, bytes_from("v1")).has_value(), "M5: first save() succeeds");
-        check(store.exists(id), "M5: exists() is true after save()");
+        check(!agentengine::rt::block_on(store.exists(id)), "M5: exists() is false before any save()");
+        check(agentengine::rt::block_on(store.save(id, bytes_from("v1"))).has_value(), "M5: first save() succeeds");
+        check(agentengine::rt::block_on(store.exists(id)), "M5: exists() is true after save()");
         // Overwriting an existing id replaces its content rather than erroring or appending.
-        check(store.save(id, bytes_from("v2")).has_value(), "M5: overwriting save() succeeds");
-        auto loaded = store.load(id);
+        check(agentengine::rt::block_on(store.save(id, bytes_from("v2"))).has_value(), "M5: overwriting save() succeeds");
+        auto loaded = agentengine::rt::block_on(store.load(id));
         check(loaded.has_value() && string_from(*loaded) == "v2",
               "M5: overwriting save() replaces the stored bytes, not appends");
     }
@@ -155,14 +156,14 @@ int main() {
     {
         FileSessionStore store(root);
         SessionId id = "file-session-one";
-        auto saved = store.save(id, bytes_from("durable bytes on disk"));
+        auto saved = agentengine::rt::block_on(store.save(id, bytes_from("durable bytes on disk")));
         check(saved.has_value(), "F1: FileSessionStore::save() succeeds");
 
-        auto loaded = store.load(id);
+        auto loaded = agentengine::rt::block_on(store.load(id));
         check(loaded.has_value(), "F1: FileSessionStore::load() succeeds after save()");
         check(loaded.has_value() && string_from(*loaded) == "durable bytes on disk",
               "F1: FileSessionStore load() returns byte-identical content to what was saved");
-        check(store.exists(id), "F1: FileSessionStore::exists() is true after save()");
+        check(agentengine::rt::block_on(store.exists(id)), "F1: FileSessionStore::exists() is true after save()");
     }
 
     // F2: genuine cross-instance persistence -- a NEW FileSessionStore object, constructed AFTER the
@@ -171,7 +172,7 @@ int main() {
     // durable storage, not just an in-process cache that happens to share a class name.
     {
         FileSessionStore reopened(root);
-        auto loaded = reopened.load("file-session-one");
+        auto loaded = agentengine::rt::block_on(reopened.load("file-session-one"));
         check(loaded.has_value(),
               "F2: a freshly-constructed FileSessionStore instance finds data written by a PRIOR, "
               "now-destroyed instance pointed at the same root directory");
@@ -182,7 +183,7 @@ int main() {
     // F3: load() on a session that was never saved fails cleanly with the same not_found contract.
     {
         FileSessionStore store(root);
-        auto loaded = store.load("file-session-never-saved");
+        auto loaded = agentengine::rt::block_on(store.load("file-session-never-saved"));
         check(!loaded.has_value(), "F3: FileSessionStore load() on a missing session returns an error");
         check(loaded.has_value() || loaded.error().klass == failure_class::contract,
               "F3: the error is classified failure_class::contract");
@@ -195,14 +196,14 @@ int main() {
     {
         FileSessionStore store(root);
         SessionId id = "file-session-to-delete";
-        check(store.save(id, bytes_from("temporary")).has_value(), "F4: save() before removal succeeds");
-        check(store.exists(id), "F4: exists() is true right after save()");
+        check(agentengine::rt::block_on(store.save(id, bytes_from("temporary"))).has_value(), "F4: save() before removal succeeds");
+        check(agentengine::rt::block_on(store.exists(id)), "F4: exists() is true right after save()");
 
-        auto removed = store.remove(id);
+        auto removed = agentengine::rt::block_on(store.remove(id));
         check(removed.has_value(), "F4: remove() succeeds");
-        check(!store.exists(id), "F4: exists() is false right after remove()");
+        check(!agentengine::rt::block_on(store.exists(id)), "F4: exists() is false right after remove()");
 
-        auto loaded = store.load(id);
+        auto loaded = agentengine::rt::block_on(store.load(id));
         check(!loaded.has_value(), "F4: load() after remove() returns an error");
         check(loaded.has_value() || loaded.error().code == "rt.session_store.not_found",
               "F4: load() after remove() reports not_found, same as never-saved");
@@ -210,14 +211,14 @@ int main() {
         // A brand new instance over the same root also sees it gone -- proves the file was actually
         // deleted from disk, not just hidden by some in-process cache.
         FileSessionStore reopened(root);
-        check(!reopened.exists(id),
+        check(!agentengine::rt::block_on(reopened.exists(id)),
               "F4: a freshly-constructed instance over the same root also sees the session gone");
     }
 
     // F5: remove() on a never-saved id is idempotent (not an error), matching InMemorySessionStore.
     {
         FileSessionStore store(root);
-        auto removed = store.remove("file-session-no-such-id-ever");
+        auto removed = agentengine::rt::block_on(store.remove("file-session-no-such-id-ever"));
         check(removed.has_value(), "F5: FileSessionStore remove() on a never-saved id succeeds");
     }
 
@@ -225,15 +226,15 @@ int main() {
     // configured root directory.
     {
         FileSessionStore store(root);
-        auto saved_slash = store.save("../escape-attempt", bytes_from("x"));
+        auto saved_slash = agentengine::rt::block_on(store.save("../escape-attempt", bytes_from("x")));
         check(!saved_slash.has_value(), "F6: save() rejects a session id containing '..'");
         check(saved_slash.has_value() || saved_slash.error().klass == failure_class::contract,
               "F6: the rejection is classified failure_class::contract");
 
-        auto saved_backslash = store.save("nested\\path", bytes_from("x"));
+        auto saved_backslash = agentengine::rt::block_on(store.save("nested\\path", bytes_from("x")));
         check(!saved_backslash.has_value(), "F6: save() rejects a session id containing a separator");
 
-        check(!store.exists("../escape-attempt"), "F6: exists() degrades to false for an invalid id");
+        check(!agentengine::rt::block_on(store.exists("../escape-attempt")), "F6: exists() degrades to false for an invalid id");
     }
 
     // F7: empty bytes round-trip too (a session that serializes to zero bytes is a legitimate, if
@@ -241,9 +242,9 @@ int main() {
     {
         FileSessionStore store(root);
         SessionId id = "file-session-empty-payload";
-        check(store.save(id, std::vector<std::byte>{}).has_value(), "F7: save() of empty bytes succeeds");
-        check(store.exists(id), "F7: exists() is true for a session saved with empty bytes");
-        auto loaded = store.load(id);
+        check(agentengine::rt::block_on(store.save(id, std::vector<std::byte>{})).has_value(), "F7: save() of empty bytes succeeds");
+        check(agentengine::rt::block_on(store.exists(id)), "F7: exists() is true for a session saved with empty bytes");
+        auto loaded = agentengine::rt::block_on(store.load(id));
         check(loaded.has_value(), "F7: load() of an empty-payload session succeeds");
         check(loaded.has_value() && loaded->empty(), "F7: the loaded bytes are genuinely empty");
     }

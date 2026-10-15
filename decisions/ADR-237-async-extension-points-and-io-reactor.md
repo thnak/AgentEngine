@@ -2524,6 +2524,29 @@ and decision A8 makes the conversion total.
   with `rt::block_on` in the OpenAI client fails K3 with `rt.block_on_on_lane`. Test callers of `resolve` drive
   it with `rt::block_on` off-lane. `ctest -LE live-network`: 408/421, the 13 Docker-daemon tests. Not run: the chat clients' live tests (no provider key here; they skip).
 
+### Step 47 (2026-10-15): Phase C slice 4 -- `SessionStore` is `task`-shaped (#172)
+
+The first of the three stores, taken first because its core callers already `co_return` from coroutines.
+
+- **The seam.** `save`/`load`/`exists`/`remove` all return `task<...>` (`exists` is `task<bool>`); ids are taken
+  BY VALUE so a held task never reads a dead temporary. `InMemorySessionStore` and `FileSessionStore` keep their
+  bodies and complete without suspending -- the `rt::offload` move §6 names for file stores is NOT done here (same
+  stance as step 46's conformers); a file store that blocks a lane is the remaining residual of this seam.
+- **Callers.** `save_agent_session_snapshot`, `save_turn_delta`, `delete_session`, `save_workflow_checkpoint`
+  `co_await`; the loaders (`load_agent_session_snapshot`, `load_turn_delta`, `load_project_snapshot`,
+  `load_workflow_checkpoint`) and `save_project_snapshot`, `WorkflowCheckpointManager::resume_or_start` become
+  `task`-shaped. `ProjectSupervisor` needed no change.
+- **`WorkflowSupervisor::CheckpointHook` is now `std::function<task<void>(std::uint32_t, RunStateRecord)>`** (record
+  by value) and `execute()` awaits it at the superstep boundary. This was the one decision the seam forced: the
+  manager's hook is what persists the checkpoint, and `rt::block_on` is refused on a lane. Every hook in tests is a
+  trivial coroutine lambda; no test assertion changed, only call shapes (`block_on` off-lane).
+- **Evidence.** `test_rt_workflow_checkpoint_manager` C6 attaches the manager to a store that genuinely parks on the
+  reactor and drives the workflow on a runtime lane. Mutant: `block_on` inside the hook terminates the test
+  (`rt.block_on_on_lane`, exit 3). `ctest -LE live-network`: the 13 Docker-daemon tests fail as in step 46;
+  `test_rt_lanes` failed once under `-j8` and passes 3/3 alone (load-sensitive, unrelated to this change).
+  naming-lint and layering-lint OK. `agentengine_test_driver.exe` could not relink (held open by a running MCP
+  server) -- unrelated, not rebuilt.
+
 ### §14.1 What is left, and the phases to follow
 
 Recorded at session end so the work resumes cold. **Status: §5.1 is 14 of ~27 seams converted**
@@ -2599,7 +2622,7 @@ wants it; it is not currently planned.
 
 **Phase C -- index and storage seams.** ~~`VectorIndex`/`SparseIndex`~~ and ~~the RAG `recall`
 conversion~~ done together (§14 step 44); ~~the "async in name only" bodies (`QdrantVectorIndex`,
-`OpenAIEmbedder`) onto `rt::http` with qdrant's `Resolver`~~ (§14 step 45); ~~`SecretStore`~~ (§14 step 46); next the three stores. The RAG `recall`
+`OpenAIEmbedder`) onto `rt::http` with qdrant's `Resolver`~~ (§14 step 45); ~~`SecretStore`~~ (§14 step 46); ~~`SessionStore`~~ (§14 step 47); next `AppendLogStore` and `WorktreeObjectStore`. The RAG `recall`
 conversion was planned to belong here rather than earlier: `recall` deletes two
 `synchronous_leaf` contract-error paths that tests pin deliberately, and it depends on the index seams.
 Gate: those tests are updated with the reason recorded -- never deleted to make a build pass.

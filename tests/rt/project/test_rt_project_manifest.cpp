@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "agentengine/rt/project_manifest.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::InMemorySessionStore;
@@ -100,19 +101,21 @@ static_assert(agentengine::ChatClient<OneShotChatClient>);
 // fails, so a member's checkpoint can be made to fail deterministically without real I/O.
 class AlwaysFailingStore {
 public:
-    [[nodiscard]] agentengine::result<void> save(agentengine::rt::SessionId const&,
-                                                    std::vector<std::byte>) {
-        return std::unexpected(agentengine::error{agentengine::failure_class::transient,
-                                                    "AlwaysFailingStore refuses every save()",
-                                                    "test.always_failing_store.save"});
+    [[nodiscard]] agentengine::task<agentengine::result<void>> save(agentengine::rt::SessionId,
+                                                                      std::vector<std::byte>) {
+        co_return std::unexpected(agentengine::error{agentengine::failure_class::transient,
+                                                       "AlwaysFailingStore refuses every save()",
+                                                       "test.always_failing_store.save"});
     }
-    [[nodiscard]] agentengine::result<std::vector<std::byte>> load(
-        agentengine::rt::SessionId const&) const {
-        return std::unexpected(agentengine::error{agentengine::failure_class::contract, "unused",
-                                                    "test.always_failing_store.load"});
+    [[nodiscard]] agentengine::task<agentengine::result<std::vector<std::byte>>> load(
+        agentengine::rt::SessionId) const {
+        co_return std::unexpected(agentengine::error{agentengine::failure_class::contract, "unused",
+                                                       "test.always_failing_store.load"});
     }
-    [[nodiscard]] bool exists(agentengine::rt::SessionId const&) const { return false; }
-    [[nodiscard]] agentengine::result<void> remove(agentengine::rt::SessionId const&) { return {}; }
+    [[nodiscard]] agentengine::task<bool> exists(agentengine::rt::SessionId) const { co_return false; }
+    [[nodiscard]] agentengine::task<agentengine::result<void>> remove(agentengine::rt::SessionId) {
+        co_return agentengine::result<void>{};
+    }
 };
 static_assert(agentengine::rt::SessionStore<AlwaysFailingStore>);
 
@@ -138,16 +141,16 @@ static_assert(agentengine::rt::SessionStore<AlwaysFailingStore>);
 void test_m1_round_trip_and_absent() {
     InMemorySessionStore store;
 
-    auto absent = load_project_snapshot(store, "proj-never-saved");
+    auto absent = agentengine::rt::block_on(load_project_snapshot(store, "proj-never-saved"));
     check(absent.has_value(), "M1: load on an unsaved project_id does not error");
     check(absent.has_value() && !absent->has_value(),
           "M1: a project_id with no snapshot loads nullopt, not an error");
 
     ProjectRecord rec = make_record("proj-1");
-    auto saved = save_project_snapshot(store, rec);
+    auto saved = agentengine::rt::block_on(save_project_snapshot(store, rec));
     check(saved.has_value(), "M1: save_project_snapshot succeeds");
 
-    auto loaded = load_project_snapshot(store, "proj-1");
+    auto loaded = agentengine::rt::block_on(load_project_snapshot(store, "proj-1"));
     check(loaded.has_value() && loaded->has_value(), "M1: load_project_snapshot finds the saved record");
     check(loaded.has_value() && loaded->has_value() && **loaded == rec,
           "M1: the loaded record is byte-for-byte identical, including its active_members list");
@@ -156,14 +159,14 @@ void test_m1_round_trip_and_absent() {
 void test_m2_overwrite_latest() {
     InMemorySessionStore store;
     ProjectRecord first = make_record("proj-2");
-    (void)save_project_snapshot(store, first);
+    (void)agentengine::rt::block_on(save_project_snapshot(store, first));
 
     ProjectRecord second = first;
     second.status = project_status::paused;
     second.title  = "Renamed";
-    (void)save_project_snapshot(store, second);
+    (void)agentengine::rt::block_on(save_project_snapshot(store, second));
 
-    auto loaded = load_project_snapshot(store, "proj-2");
+    auto loaded = agentengine::rt::block_on(load_project_snapshot(store, "proj-2"));
     check(loaded.has_value() && loaded->has_value() && **loaded == second,
           "M2: a second save under the same project_id overwrites -- load returns the NEWEST, "
           "not the first");
@@ -184,7 +187,7 @@ void test_p1_pause_healthy() {
     check(report.all_ok(), "P1: checkpointing a healthy member succeeds");
     check(paused.status == project_status::paused,
           "P1: the record's status flips to paused only after a successful checkpoint");
-    check(member_store.exists("member-p1"), "P1: the member's snapshot actually landed");
+    check(agentengine::rt::block_on(member_store.exists("member-p1")), "P1: the member's snapshot actually landed");
 
     // I4 (030 §4: "the pause/restore cycle is invisible to the run"), reframed honestly for rt::
     // land: there is no actor to evict and lazily reactivate here (rt::ProjectSupervisor's own
@@ -244,7 +247,7 @@ void test_p4_archive_healthy() {
     check(report.all_ok(), "P4: checkpointing a healthy member during archive succeeds");
     check(archived.status == project_status::archived,
           "P4: a healthy archive_project() lands the record at archived (via paused first)");
-    check(member_store.exists("member-p4"), "P4: the member's snapshot landed during the pause step");
+    check(agentengine::rt::block_on(member_store.exists("member-p4")), "P4: the member's snapshot landed during the pause step");
 }
 
 void test_p5_archive_fail_closed() {

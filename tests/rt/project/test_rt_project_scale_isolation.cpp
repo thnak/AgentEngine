@@ -37,6 +37,7 @@
 #include <vector>
 
 #include "agentengine/rt/project_manifest.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::InMemorySessionStore;
@@ -146,7 +147,7 @@ int main() {
     // against.
     bool none_checkpointed_yet = true;
     for (std::size_t i = 0; i < kProjectCount; ++i) {
-        if (stores[i]->exists("s-scale-" + std::to_string(i))) none_checkpointed_yet = false;
+        if (agentengine::rt::block_on(stores[i]->exists("s-scale-" + std::to_string(i)))) none_checkpointed_yet = false;
     }
     check(none_checkpointed_yet, "setup: no store has been checkpointed into yet (sanity baseline)");
 
@@ -161,7 +162,7 @@ int main() {
     auto [paused, report] = drive(pause_project(*supervisors[kPausedIndex], rec));
     check(report.all_ok(), "G1: pause_project checkpoints the target's member cleanly");
     check(paused.status == project_status::paused, "G1: pause_project marks the target Paused");
-    check(stores[kPausedIndex]->exists("s-scale-" + std::to_string(kPausedIndex)),
+    check(agentengine::rt::block_on(stores[kPausedIndex]->exists("s-scale-" + std::to_string(kPausedIndex))),
           "G1: the paused Project's member session's snapshot actually landed");
 
     // =========================================================================================
@@ -173,7 +174,7 @@ int main() {
     bool only_target_checkpointed = true;
     for (std::size_t i = 0; i < kProjectCount; ++i) {
         if (i == kPausedIndex) continue;
-        if (stores[i]->exists("s-scale-" + std::to_string(i))) only_target_checkpointed = false;
+        if (agentengine::rt::block_on(stores[i]->exists("s-scale-" + std::to_string(i)))) only_target_checkpointed = false;
     }
     check(only_target_checkpointed,
           "G1(a) -- CORE CLAIM: pause_project(#50) never wrote to any of the OTHER 99 Projects' own "

@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "agentengine/rt/workflow_supervisor.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::ContinueWorkflow;
 using agentengine::rt::ExecutorOutcome;
@@ -376,8 +377,8 @@ int main() {
         auto saved = drive(agentengine::rt::save_workflow_checkpoint(sup, store));
         check(saved.has_value(), "P2: save_workflow_checkpoint() succeeds");
 
-        auto loaded = agentengine::rt::load_workflow_checkpoint(store, sup.run_id());
-        check(loaded.has_value() && loaded->has_value(), "P2: load_workflow_checkpoint() finds it");
+        auto loaded = agentengine::rt::block_on(agentengine::rt::load_workflow_checkpoint(store, sup.run_id()));
+        check(loaded.has_value() && loaded->has_value(), "P2: agentengine::rt::block_on(load_workflow_checkpoint()) finds it");
         if (loaded.has_value() && loaded->has_value()) {
             check((*loaded)->run_id == sup.run_id(), "P2: the loaded record's run_id round-trips");
             check((*loaded)->rounds == r.rounds, "P2: the loaded record's rounds round-trips");
@@ -387,7 +388,7 @@ int main() {
     // ---- P3: loading a run_id that was never saved returns std::nullopt, not an error ------------
     {
         agentengine::rt::InMemorySessionStore store;
-        auto loaded = agentengine::rt::load_workflow_checkpoint(store, "never-existed");
+        auto loaded = agentengine::rt::block_on(agentengine::rt::load_workflow_checkpoint(store, "never-existed"));
         check(loaded.has_value() && !loaded->has_value(),
               "P3: an id that was never saved reports std::nullopt, not a failure");
     }

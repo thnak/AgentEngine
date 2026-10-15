@@ -314,7 +314,10 @@ int main() {
         WorkflowSupervisor          sup1;
         sup1.initialize(wf, bodies1);
         sup1.set_checkpoint_hook(
-            [&records](std::uint32_t, RunStateRecord const& rec) { records.push_back(rec); });
+            [&records](std::uint32_t, RunStateRecord rec) -> agentengine::task<void> {
+                records.push_back(std::move(rec));
+                co_return;
+            });
         WorkflowResult r1 = drive(sup1.run_workflow(RunWorkflow{text_message("go")}));
         check(r1.status == workflow_status::completed, "F4: the first (uninterrupted) run completes");
 

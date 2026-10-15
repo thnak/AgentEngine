@@ -27,6 +27,9 @@
 #endif
 
 #include "agentengine/rt/workflow_checkpoint_manager.hpp"
+#include "agentengine/rt/block_on.hpp"
+#include "agentengine/rt/runtime.hpp"
+#include "agentengine/rt/sleep.hpp"
 
 using agentengine::result;
 using agentengine::rt::ExecutorBody;
@@ -130,6 +133,34 @@ using agentengine::role;
     return root;
 }
 
+// A store that parks on the reactor before every save -- a database- or object-store-backed store's shape.
+class SuspendingSessionStore {
+public:
+    explicit SuspendingSessionStore(agentengine::pal::Reactor& reactor) : reactor_(&reactor) {}
+
+    [[nodiscard]] agentengine::task<result<void>> save(agentengine::rt::SessionId id, std::vector<std::byte> bytes) {
+        (void)co_await agentengine::rt::sleep_for(*reactor_, std::chrono::milliseconds{5});
+        ++parks;
+        co_return co_await inner_.save(std::move(id), std::move(bytes));
+    }
+    [[nodiscard]] agentengine::task<result<std::vector<std::byte>>> load(agentengine::rt::SessionId id) const {
+        co_return co_await inner_.load(std::move(id));
+    }
+    [[nodiscard]] agentengine::task<bool> exists(agentengine::rt::SessionId id) const {
+        co_return co_await inner_.exists(std::move(id));
+    }
+    [[nodiscard]] agentengine::task<result<void>> remove(agentengine::rt::SessionId id) {
+        co_return co_await inner_.remove(std::move(id));
+    }
+
+    int parks = 0;
+
+private:
+    agentengine::pal::Reactor* reactor_;
+    InMemorySessionStore       inner_;
+};
+static_assert(agentengine::rt::SessionStore<SuspendingSessionStore>);
+
 }  // namespace
 
 int main() {
@@ -146,7 +177,7 @@ int main() {
 
         WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("in")}));
         check(r.status == workflow_status::suspended, "C1 setup: the graph suspends at the gate");
-        check(store.exists(sup.run_id()),
+        check(agentengine::rt::block_on(store.exists(sup.run_id())),
               "C1: attach() persisted a checkpoint under run_id() with zero caller-written hook code");
     }
 
@@ -157,8 +188,8 @@ int main() {
         std::vector<ExecutorBody> bodies = {forward_body(), {}};
 
         WorkflowSupervisor sup;
-        result<bool> resumed = WorkflowCheckpointManager<InMemorySessionStore>::resume_or_start(
-            store, "never-checkpointed:run:1", sup, wf, bodies);
+        result<bool> resumed = agentengine::rt::block_on(WorkflowCheckpointManager<InMemorySessionStore>::resume_or_start(
+            store, "never-checkpointed:run:1", sup, wf, bodies));
         check(resumed.has_value() && *resumed == false,
               "C2: no stored checkpoint for this run_id -> resume_or_start() returns false");
 
@@ -187,8 +218,8 @@ int main() {
         // again below.
         WorkflowSupervisor sup2;
         std::vector<ExecutorBody> bodies2 = {forward_body(), {}};  // fresh, caller-supplied again
-        result<bool> resumed = WorkflowCheckpointManager<InMemorySessionStore>::resume_or_start(
-            store, run_id, sup2, wf, bodies2);
+        result<bool> resumed = agentengine::rt::block_on(WorkflowCheckpointManager<InMemorySessionStore>::resume_or_start(
+            store, run_id, sup2, wf, bodies2));
         check(resumed.has_value() && *resumed == true,
               "C3: a real stored checkpoint for this run_id -> resume_or_start() returns true");
 
@@ -217,13 +248,13 @@ int main() {
         std::string const run_id = "agent-guard:run:1";
         RunStateRecord seed;
         seed.run_id = run_id;
-        check(store.save(run_id, encode_run_state_record(seed)).has_value(),
+        check(agentengine::rt::block_on(store.save(run_id, encode_run_state_record(seed))).has_value(),
               "C4 setup: seed a (structurally minimal) checkpoint under this run_id");
 
         std::vector<ExecutorBody> bodies = {ExecutorBody{}};  // no real agent body needed for this gate
         WorkflowSupervisor sup;
-        result<bool> resumed = WorkflowCheckpointManager<InMemorySessionStore>::resume_or_start(
-            store, run_id, sup, wf, bodies);
+        result<bool> resumed = agentengine::rt::block_on(WorkflowCheckpointManager<InMemorySessionStore>::resume_or_start(
+            store, run_id, sup, wf, bodies));
         check(!resumed.has_value(),
               "C4: resuming a graph with an agent-kind executor, unacknowledged, fails closed");
         if (!resumed) {
@@ -232,8 +263,8 @@ int main() {
         }
 
         WorkflowSupervisor sup_ack;
-        result<bool> resumed_ack = WorkflowCheckpointManager<InMemorySessionStore>::resume_or_start(
-            store, run_id, sup_ack, wf, bodies, {}, {}, /*acknowledge_agent_history_reset=*/true);
+        result<bool> resumed_ack = agentengine::rt::block_on(WorkflowCheckpointManager<InMemorySessionStore>::resume_or_start(
+            store, run_id, sup_ack, wf, bodies, {}, {}, /*acknowledge_agent_history_reset=*/true));
         check(resumed_ack.has_value() && *resumed_ack,
               "C4: explicitly acknowledging the history reset proceeds with the resume");
     }
@@ -254,13 +285,13 @@ int main() {
         std::string const run_id = "sub-workflow-guard:run:1";
         RunStateRecord seed;
         seed.run_id = run_id;
-        check(store.save(run_id, encode_run_state_record(seed)).has_value(),
+        check(agentengine::rt::block_on(store.save(run_id, encode_run_state_record(seed))).has_value(),
               "C4b setup: seed a (structurally minimal) checkpoint under this run_id");
 
         std::vector<ExecutorBody> bodies = {ExecutorBody{}};
         WorkflowSupervisor sup;
-        result<bool> resumed = WorkflowCheckpointManager<InMemorySessionStore>::resume_or_start(
-            store, run_id, sup, wf, bodies);
+        result<bool> resumed = agentengine::rt::block_on(WorkflowCheckpointManager<InMemorySessionStore>::resume_or_start(
+            store, run_id, sup, wf, bodies));
         check(!resumed.has_value(),
               "C4b: resuming a graph with a sub_workflow-kind executor, unacknowledged, fails closed");
         if (!resumed) {
@@ -269,8 +300,8 @@ int main() {
         }
 
         WorkflowSupervisor sup_ack;
-        result<bool> resumed_ack = WorkflowCheckpointManager<InMemorySessionStore>::resume_or_start(
-            store, run_id, sup_ack, wf, bodies, {}, {}, /*acknowledge_agent_history_reset=*/true);
+        result<bool> resumed_ack = agentengine::rt::block_on(WorkflowCheckpointManager<InMemorySessionStore>::resume_or_start(
+            store, run_id, sup_ack, wf, bodies, {}, {}, /*acknowledge_agent_history_reset=*/true));
         check(resumed_ack.has_value() && *resumed_ack,
               "C4b: explicitly acknowledging the history reset proceeds with the resume");
     }
@@ -298,8 +329,8 @@ int main() {
         FileSessionStore reopened(root);
         WorkflowSupervisor sup2;
         std::vector<ExecutorBody> bodies2 = {forward_body(), {}};
-        result<bool> resumed = WorkflowCheckpointManager<FileSessionStore>::resume_or_start(
-            reopened, run_id, sup2, wf, bodies2);
+        result<bool> resumed = agentengine::rt::block_on(WorkflowCheckpointManager<FileSessionStore>::resume_or_start(
+            reopened, run_id, sup2, wf, bodies2));
         check(resumed.has_value() && *resumed == true,
               "C5: resume_or_start() finds the checkpoint through a freshly-reopened FileSessionStore");
 
@@ -310,6 +341,25 @@ int main() {
 
         std::error_code ec;
         std::filesystem::remove_all(root, ec);
+    }
+
+    // ---- C6: the checkpoint hook awaits a store that genuinely suspends, on a runtime lane (ADR-237 §5.1) ---
+    {
+        agentengine::rt::Runtime host_rt{agentengine::rt::RuntimeConfig{.lanes = 1}};
+        SuspendingSessionStore store(host_rt.reactor());
+        Workflow wf = gate_graph();
+        std::vector<ExecutorBody> bodies = {forward_body(), {}};
+
+        WorkflowSupervisor sup;
+        sup.initialize(wf, bodies);
+        WorkflowCheckpointManager<SuspendingSessionStore> mgr(store);
+        mgr.attach(sup);
+
+        WorkflowResult r = host_rt.run(sup.run_workflow(RunWorkflow{text_message("in")}));
+        check(r.status == workflow_status::suspended, "C6 setup: the graph suspends at the gate on a lane");
+        check(store.parks >= 1, "C6: the hook awaited a store that parked on the reactor");
+        check(agentengine::rt::block_on(store.exists(sup.run_id())),
+              "C6: the checkpoint landed after the suspension -- a blocking hook would throw rt.block_on_on_lane");
     }
 
     if (g_failures == 0) {

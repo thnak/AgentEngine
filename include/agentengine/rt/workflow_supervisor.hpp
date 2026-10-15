@@ -886,7 +886,9 @@ public:
     // Reproduced verbatim from the original: a caller-injected callback (I2), never an ambient Store,
     // fired with the round just completed and a full `to_record()` snapshot taken at exactly that
     // boundary.
-    using CheckpointHook = std::function<void(std::uint32_t round, RunStateRecord const&)>;
+    // `task`-shaped since decisions/ADR-237 §5.1 (#172): the usual hook persists through a SessionStore, which
+    // is. The record is by value so the hook frame owns it across a suspension.
+    using CheckpointHook = std::function<task<void>(std::uint32_t round, RunStateRecord)>;
     void set_checkpoint_hook(CheckpointHook hook) { checkpoint_hook_ = std::move(hook); }
 
     // ADR-055 follow-up -- see file banner's "Merge-on-join hook" paragraph for the full design.
@@ -1661,21 +1663,21 @@ private:
 template <SessionStore StoreT>
 [[nodiscard]] task<result<void>> save_workflow_checkpoint(WorkflowSupervisor& supervisor, StoreT& store) {
     RunStateRecord rec = co_await supervisor.snapshot_record();
-    co_return store.save(rec.run_id, encode_run_state_record(rec));
+    co_return co_await store.save(rec.run_id, encode_run_state_record(rec));
 }
 
 // Load the latest durable checkpoint for `run_id`, or std::nullopt if none was ever saved. Synchronous
 // (no task<T>) -- like rt::AgentSession's own load_agent_session_snapshot(), this never touches a live
 // WorkflowSupervisor instance, so there is no in-flight state to guard against.
 template <SessionStore StoreT>
-[[nodiscard]] result<std::optional<RunStateRecord>> load_workflow_checkpoint(
-    StoreT const& store, std::string const& run_id) {
-    if (!store.exists(run_id)) return std::optional<RunStateRecord>{};
-    result<std::vector<std::byte>> bytes = store.load(run_id);
-    if (!bytes) return std::unexpected(bytes.error());
+[[nodiscard]] task<result<std::optional<RunStateRecord>>> load_workflow_checkpoint(
+    StoreT const& store, std::string run_id) {
+    if (!co_await store.exists(run_id)) co_return std::optional<RunStateRecord>{};
+    result<std::vector<std::byte>> bytes = co_await store.load(run_id);
+    if (!bytes) co_return std::unexpected(bytes.error());
     result<RunStateRecord> rec = decode_run_state_record(*bytes);
-    if (!rec) return std::unexpected(rec.error());
-    return std::optional<RunStateRecord>{std::move(*rec)};
+    if (!rec) co_return std::unexpected(rec.error());
+    co_return std::optional<RunStateRecord>{std::move(*rec)};
 }
 
 }  // namespace agentengine::rt
