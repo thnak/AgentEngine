@@ -26,6 +26,7 @@
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/core/memory_provider.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "support/run_task_sync.hpp"
 
 using namespace agentengine;
@@ -97,7 +98,7 @@ int main() {
     rt::InMemoryAppendLogStore   ref_store;
     Principal const principal{"p-demo", ""};
 
-    check(ensure_memory_worktree(object_store, ref_store, principal).has_value(),
+    check(rt::block_on(ensure_memory_worktree(object_store, ref_store, principal)).has_value(),
           "the memory worktree bootstraps");
 
     Mount const mount = memory_mount(principal);
@@ -111,7 +112,7 @@ int main() {
     preference.tags       = {"ui", "preference"};
     preference.salience    = 0.5f;
     preference.origin     = MemoryOrigin{memory_source::user_stated, "run-0", "turn-0", principal};
-    check(write_memory_item(object_store, ref_store, mount, write_cap, preference).has_value(),
+    check(rt::block_on(write_memory_item(object_store, ref_store, mount, write_cap, preference)).has_value(),
           "an earlier session's memory item is stored");
 
     Provider provider{object_store, ref_store, mount, read_cap, write_cap, MockSummarizerClient{},
@@ -155,7 +156,7 @@ int main() {
     test_support::run_task_sync<std::monostate>(
         provider.on_turn_end(TurnView{std::span<Message const>(turn_arr, 2)}, turn_ctx));
 
-    auto items = list_memory_items(object_store, ref_store, mount, read_cap);
+    auto items = rt::block_on(list_memory_items(object_store, ref_store, mount, read_cap));
     check(items.has_value() && items->size() == 2,
           "on_turn_end() wrote exactly one NEW item (the pre-existing one, plus this one)");
     if (items.has_value()) {

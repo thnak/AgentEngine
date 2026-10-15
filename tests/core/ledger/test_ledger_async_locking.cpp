@@ -41,7 +41,7 @@
 using namespace agentengine;
 namespace fs = std::filesystem;
 
-namespace {
+namespace ledger_async_test {
 
 int g_checks = 0;
 int g_failed = 0;
@@ -126,9 +126,12 @@ private:
 
 static_assert(WorktreeObjectStore<GatedStore>);
 
-}  // namespace
+}  // namespace ledger_async_test
 
-template class agentengine::Ledger<GatedStore>;
+// Named namespace, not anonymous: an explicit instantiation over an internal-linkage store makes every unused
+// Ledger member 'defined but not used' under -Werror=unused-function.
+template class agentengine::Ledger<ledger_async_test::GatedStore>;
+using namespace ledger_async_test;
 
 namespace {
 
