@@ -96,6 +96,7 @@
 #endif
 
 #include "agentengine/rt/append_log_file_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "../support/memory_cap.hpp"
 
 using agentengine::rt::FileAppendLogStore;
@@ -211,7 +212,7 @@ int run_append_child(char const* root, int child, int count) {
     for (int i = 0; i < count; ++i) {
         std::string const payload = "c" + std::to_string(child) + "-" + std::to_string(i) +
                                     std::string(static_cast<std::size_t>(i % 5) * 60, 'y');
-        if (!store.append("xproc-log", bytes_from(payload)).has_value()) return 1;
+        if (!agentengine::rt::block_on(store.append("xproc-log", bytes_from(payload))).has_value()) return 1;
     }
     return 0;
 }
@@ -269,18 +270,18 @@ int main(int argc, char** argv) {
         InMemoryAppendLogStore store;
         LogId const id = "log-alpha";
 
-        auto s1 = store.append(id, bytes_from("first"));
+        auto s1 = agentengine::rt::block_on(store.append(id, bytes_from("first")));
         check(s1.has_value() && *s1 == 1, "L1: the first append() to a fresh log gets seq 1");
-        auto s2 = store.append(id, bytes_from("second"));
+        auto s2 = agentengine::rt::block_on(store.append(id, bytes_from("second")));
         check(s2.has_value() && *s2 == 2, "L1: the second append() gets seq 2, strictly increasing");
-        auto s3 = store.append(id, bytes_from("third"));
+        auto s3 = agentengine::rt::block_on(store.append(id, bytes_from("third")));
         check(s3.has_value() && *s3 == 3, "L1: seq numbers keep increasing per append");
 
-        check(store.last_seq(id) == 3, "L4: last_seq() reflects the current entry count");
-        check(store.last_seq("never-touched") == 0,
+        check(agentengine::rt::block_on(store.last_seq(id)) == 3, "L4: last_seq() reflects the current entry count");
+        check(agentengine::rt::block_on(store.last_seq("never-touched")) == 0,
               "L4: last_seq() on an id that was never appended to reports 0, not an error");
 
-        auto all = store.read_from(id, 0);
+        auto all = agentengine::rt::block_on(store.read_from(id, 0));
         check(all.has_value() && all->size() == 3, "L2: read_from(id, 0) returns every entry");
         if (all.has_value() && all->size() == 3) {
             check(string_from((*all)[0]) == "first" && string_from((*all)[1]) == "second" &&
@@ -288,17 +289,17 @@ int main(int argc, char** argv) {
                   "L2: entries come back in append order, byte-identical to what was appended");
         }
 
-        auto tail = store.read_from(id, 1);
+        auto tail = agentengine::rt::block_on(store.read_from(id, 1));
         check(tail.has_value() && tail->size() == 2 && string_from((*tail)[0]) == "second",
               "L3: read_from(id, 1) is EXCLUSIVE of seq 1 -- only 'second' and 'third' come back, "
               "not 'first'");
 
-        auto empty_tail = store.read_from(id, 3);
+        auto empty_tail = agentengine::rt::block_on(store.read_from(id, 3));
         check(empty_tail.has_value() && empty_tail->empty(),
               "L3: read_from(id, last_seq()) returns nothing -- there is no entry past the log's own "
               "current end");
 
-        auto never = store.read_from("never-touched", 0);
+        auto never = agentengine::rt::block_on(store.read_from("never-touched", 0));
         check(never.has_value() && never->empty(),
               "L2: read_from() on an id that was never appended to returns an empty list, not an "
               "error -- an empty log and a never-touched log look the same to a reader");
@@ -307,16 +308,16 @@ int main(int argc, char** argv) {
     // ---- L5: two independent log ids never see each other's entries --------------------------------
     {
         InMemoryAppendLogStore store;
-        (void)store.append("log-a", bytes_from("a1"));
-        (void)store.append("log-a", bytes_from("a2"));
-        (void)store.append("log-b", bytes_from("b1"));
+        (void)agentengine::rt::block_on(store.append("log-a", bytes_from("a1")));
+        (void)agentengine::rt::block_on(store.append("log-a", bytes_from("a2")));
+        (void)agentengine::rt::block_on(store.append("log-b", bytes_from("b1")));
 
-        auto a = store.read_from("log-a", 0);
-        auto b = store.read_from("log-b", 0);
+        auto a = agentengine::rt::block_on(store.read_from("log-a", 0));
+        auto b = agentengine::rt::block_on(store.read_from("log-b", 0));
         check(a.has_value() && a->size() == 2, "L5: log-a has exactly its own 2 entries");
         check(b.has_value() && b->size() == 1 && string_from((*b)[0]) == "b1",
               "L5: log-b has exactly its own 1 entry, none of log-a's");
-        check(store.last_seq("log-a") == 2 && store.last_seq("log-b") == 1,
+        check(agentengine::rt::block_on(store.last_seq("log-a")) == 2 && agentengine::rt::block_on(store.last_seq("log-b")) == 1,
               "L5: last_seq() is tracked independently per log id");
     }
 
@@ -328,23 +329,23 @@ int main(int argc, char** argv) {
     {
         {
             FileAppendLogStore store(root);
-            auto s1 = store.append("durable-log", bytes_from("one"));
+            auto s1 = agentengine::rt::block_on(store.append("durable-log", bytes_from("one")));
             check(s1.has_value() && *s1 == 1, "L6 setup: first append succeeds with seq 1");
-            auto s2 = store.append("durable-log", bytes_from("two"));
+            auto s2 = agentengine::rt::block_on(store.append("durable-log", bytes_from("two")));
             check(s2.has_value() && *s2 == 2, "L6 setup: second append succeeds with seq 2");
         }  // store goes out of scope entirely -- nothing kept in memory
 
         FileAppendLogStore fresh(root);
-        check(fresh.last_seq("durable-log") == 2,
+        check(agentengine::rt::block_on(fresh.last_seq("durable-log")) == 2,
               "L6: a FRESH FileAppendLogStore instance, constructed only from the directory, reports "
               "the same last_seq() the prior instance left behind");
-        auto all = fresh.read_from("durable-log", 0);
+        auto all = agentengine::rt::block_on(fresh.read_from("durable-log", 0));
         check(all.has_value() && all->size() == 2 && string_from((*all)[0]) == "one" &&
                   string_from((*all)[1]) == "two",
               "L6: the fresh instance reads back both entries, byte-identical and in order -- "
               "genuinely persisted to disk, not just in-process memory");
 
-        auto tail = fresh.read_from("durable-log", 1);
+        auto tail = agentengine::rt::block_on(fresh.read_from("durable-log", 1));
         check(tail.has_value() && tail->size() == 1 && string_from((*tail)[0]) == "two",
               "L6: read_from()'s exclusive-of-N semantics hold for FileAppendLogStore too");
     }
@@ -353,8 +354,8 @@ int main(int argc, char** argv) {
     // cleanly before it, every prior fully-written record survives intact.
     {
         FileAppendLogStore store(root);
-        (void)store.append("torn-log", bytes_from("intact-one"));
-        (void)store.append("torn-log", bytes_from("intact-two"));
+        (void)agentengine::rt::block_on(store.append("torn-log", bytes_from("intact-one")));
+        (void)agentengine::rt::block_on(store.append("torn-log", bytes_from("intact-two")));
 
         // Manually append a torn record directly to the file: a length prefix claiming 100 bytes
         // follow, but only 3 actually do -- exactly what a crash mid-write of the payload would leave
@@ -367,7 +368,7 @@ int main(int argc, char** argv) {
         out.write("bad", 3);
         out.close();
 
-        auto all = store.read_from("torn-log", 0);
+        auto all = agentengine::rt::block_on(store.read_from("torn-log", 0));
         check(all.has_value(),
               "L7: read_from() does not fail on a torn trailing record -- it stops cleanly, it does "
               "not surface an I/O error for damage only the LAST record has");
@@ -375,7 +376,7 @@ int main(int argc, char** argv) {
                   string_from((*all)[1]) == "intact-two",
               "L7: both fully-written records before the torn one are returned intact -- a torn tail "
               "does not corrupt or hide anything that durably completed");
-        check(store.last_seq("torn-log") == 2,
+        check(agentengine::rt::block_on(store.last_seq("torn-log")) == 2,
               "L7: last_seq() also reports 2, not 3 -- the torn record was never durably appended, "
               "so it must not count as a real entry either");
     }
@@ -395,7 +396,7 @@ int main(int argc, char** argv) {
                 for (int i = 0; i < kPerThread; ++i) {
                     std::string const payload = "t" + std::to_string(t) + "-" + std::to_string(i) +
                                                 std::string(static_cast<std::size_t>(i % 7) * 40, 'x');
-                    auto seq = (i % 2 == 0 ? store : mine).append("race-log", bytes_from(payload));
+                    auto seq = agentengine::rt::block_on((i % 2 == 0 ? store : mine).append("race-log", bytes_from(payload)));
                     got[static_cast<std::size_t>(t)].emplace_back(seq.has_value() ? *seq : 0, payload);
                 }
             });
@@ -408,7 +409,7 @@ int main(int argc, char** argv) {
         std::thread reader([&store, &writers_done, &reads_ok, &reads] {
             std::size_t last = 0;
             while (!writers_done.load()) {
-                auto seen = store.read_from("race-log", 0);
+                auto seen = agentengine::rt::block_on(store.read_from("race-log", 0));
                 ++reads;
                 if (!seen.has_value() || seen->size() < last) {
                     reads_ok = false;
@@ -422,7 +423,7 @@ int main(int argc, char** argv) {
         reader.join();
         check(reads_ok && reads > 0, "L8: a reader racing the writers never gets an error or sees the log shrink");
 
-        auto all = store.read_from("race-log", 0);
+        auto all = agentengine::rt::block_on(store.read_from("race-log", 0));
         std::set<SeqNo> seqs;
         bool every_seq_matches = all.has_value();
         for (auto const& per_thread : got) {
@@ -444,7 +445,7 @@ int main(int argc, char** argv) {
     // every later record was swallowed and each append returned the same seq.
     {
         FileAppendLogStore store(root);
-        (void)store.append("repair-log", bytes_from("one"));
+        (void)agentengine::rt::block_on(store.append("repair-log", bytes_from("one")));
         std::filesystem::path const path = root / "repair-log";
         {
             std::ofstream out(path, std::ios::binary | std::ios::app);
@@ -452,12 +453,12 @@ int main(int argc, char** argv) {
             out.write(reinterpret_cast<char const*>(&claimed_len), sizeof(claimed_len));
             out.write("ab", 2);
         }
-        auto before = store.read_from("repair-log", 0);
+        auto before = agentengine::rt::block_on(store.read_from("repair-log", 0));
         check(before.has_value() && before->size() == 1,
               "L9: a header claiming ~4 GiB is read as a torn tail -- the records before it still read");
-        auto s2 = store.append("repair-log", bytes_from("two"));
-        auto s3 = store.append("repair-log", bytes_from("three"));
-        auto after = store.read_from("repair-log", 0);
+        auto s2 = agentengine::rt::block_on(store.append("repair-log", bytes_from("two")));
+        auto s3 = agentengine::rt::block_on(store.append("repair-log", bytes_from("three")));
+        auto after = agentengine::rt::block_on(store.read_from("repair-log", 0));
         check(s2.has_value() && *s2 == 2 && s3.has_value() && *s3 == 3,
               "L9: appends after the torn tail get seqs 2 and 3, not the same seq twice");
         check(after.has_value() && after->size() == 3 && string_from((*after)[1]) == "two" &&
@@ -471,7 +472,7 @@ int main(int argc, char** argv) {
         constexpr int kPerChild = 40;
         bool const spawned = spawn_append_children(argv[0], root, kChildren, kPerChild);
         FileAppendLogStore store(root);
-        auto all = store.read_from("xproc-log", 0);
+        auto all = agentengine::rt::block_on(store.read_from("xproc-log", 0));
         std::set<std::string> payloads;
         if (all.has_value()) {
             for (auto const& p : *all) payloads.insert(string_from(p));
@@ -484,14 +485,14 @@ int main(int argc, char** argv) {
     // L11: a missing file, and a zero-length record at the end.
     {
         FileAppendLogStore store(root);
-        auto none = store.read_from("never-written", 0);
-        check(none.has_value() && none->empty() && store.last_seq("never-written") == 0,
+        auto none = agentengine::rt::block_on(store.read_from("never-written", 0));
+        check(none.has_value() && none->empty() && agentengine::rt::block_on(store.last_seq("never-written")) == 0,
               "L11: a log that was never written reads as empty, not an error");
         check(!std::filesystem::exists(root / "never-written"),
               "L11: reading a log that was never written does not create its file");
-        (void)store.append("empty-tail", bytes_from("x"));
-        auto s2 = store.append("empty-tail", {});
-        auto all = store.read_from("empty-tail", 0);
+        (void)agentengine::rt::block_on(store.append("empty-tail", bytes_from("x")));
+        auto s2 = agentengine::rt::block_on(store.append("empty-tail", {}));
+        auto all = agentengine::rt::block_on(store.read_from("empty-tail", 0));
         check(s2.has_value() && *s2 == 2 && all.has_value() && all->size() == 2 && (*all)[1].empty(),
               "L11: a zero-length record at the end of the file reads back as an empty record");
     }
@@ -502,7 +503,7 @@ int main(int argc, char** argv) {
     {
         FileAppendLogStore store(root);
         std::filesystem::path const path = root / "mapped";
-        (void)store.append("mapped", bytes_from("a"));
+        (void)agentengine::rt::block_on(store.append("mapped", bytes_from("a")));
         std::ofstream(path, std::ios::binary | std::ios::app) << std::string("\x09\x00\x00\x00" "ab", 6);
         std::string const before = read_file(path);
         HANDLE const f = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
@@ -510,12 +511,12 @@ int main(int argc, char** argv) {
         HANDLE const m =
             f == INVALID_HANDLE_VALUE ? nullptr : ::CreateFileMappingW(f, nullptr, PAGE_READONLY, 0, 0, nullptr);
         void const* view = m == nullptr ? nullptr : ::MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0);
-        auto const while_mapped = store.append("mapped", bytes_from("b"));
+        auto const while_mapped = agentengine::rt::block_on(store.append("mapped", bytes_from("b")));
         std::string const during = read_file(path);
         if (view != nullptr) ::UnmapViewOfFile(view);
         if (m != nullptr) ::CloseHandle(m);
         if (f != INVALID_HANDLE_VALUE) ::CloseHandle(f);
-        auto after = store.append("mapped", bytes_from("b"));
+        auto after = agentengine::rt::block_on(store.append("mapped", bytes_from("b")));
         check(view != nullptr && !while_mapped.has_value() && during == before,
               "L16: while the log cannot be truncated, the append fails and the file is unchanged");
         check(after.has_value() && *after == 2, "L16: once it can, the torn tail is cut and the append lands as seq 2");
@@ -528,17 +529,17 @@ int main(int argc, char** argv) {
     // record was then unreadable (L20a) or read back as garbage with every later record misframed (L20b).
     {
         FileAppendLogStore store(root);
-        (void)store.append("torn-then-append", bytes_from("intact-one"));
-        (void)store.append("torn-then-append", bytes_from("intact-two"));
+        (void)agentengine::rt::block_on(store.append("torn-then-append", bytes_from("intact-one")));
+        (void)agentengine::rt::block_on(store.append("torn-then-append", bytes_from("intact-two")));
         {
             std::ofstream out(root / "torn-then-append", std::ios::binary | std::ios::app);
             std::uint32_t const claimed_len = 100;  // longer than everything that follows: L20a
             out.write(reinterpret_cast<char const*>(&claimed_len), sizeof(claimed_len));
             out.write("bad", 3);
         }
-        auto s3 = store.append("torn-then-append", bytes_from("after-crash"));
+        auto s3 = agentengine::rt::block_on(store.append("torn-then-append", bytes_from("after-crash")));
         check(s3.has_value() && *s3 == 3, "L20a: the first append after a crash gets seq 3");
-        auto all = store.read_from("torn-then-append", 0);
+        auto all = agentengine::rt::block_on(store.read_from("torn-then-append", 0));
         check(all.has_value() && all->size() == 3,
               "L20a: the record appended after a torn tail is readable -- not swallowed by the torn "
               "record's length prefix");
@@ -546,11 +547,11 @@ int main(int argc, char** argv) {
             check(string_from((*all)[2]) == "after-crash",
                   "L20a: the post-crash record reads back byte-identical");
         }
-        check(store.last_seq("torn-then-append") == 3, "L20a: last_seq() agrees with the seq append() returned");
+        check(agentengine::rt::block_on(store.last_seq("torn-then-append")) == 3, "L20a: last_seq() agrees with the seq append() returned");
     }
     {
         FileAppendLogStore store(root);
-        (void)store.append("torn-misframe", bytes_from("intact-one"));
+        (void)agentengine::rt::block_on(store.append("torn-misframe", bytes_from("intact-one")));
         {
             // A FULL v3 header (length, payload CRC, valid header CRC) claiming 9 bytes, then only 3: the
             // claimed length is SHORTER than the next append's frame, so without truncation the reader would
@@ -559,9 +560,9 @@ int main(int argc, char** argv) {
             std::string const torn = v3_frame("bad", 9);
             out.write(torn.data(), static_cast<std::streamsize>(torn.size()));
         }
-        (void)store.append("torn-misframe", bytes_from("after-crash-1"));
-        (void)store.append("torn-misframe", bytes_from("after-crash-2"));
-        auto all = store.read_from("torn-misframe", 0);
+        (void)agentengine::rt::block_on(store.append("torn-misframe", bytes_from("after-crash-1")));
+        (void)agentengine::rt::block_on(store.append("torn-misframe", bytes_from("after-crash-2")));
+        auto all = agentengine::rt::block_on(store.read_from("torn-misframe", 0));
         bool const exact = all.has_value() && all->size() == 3 && string_from((*all)[0]) == "intact-one" &&
                            string_from((*all)[1]) == "after-crash-1" && string_from((*all)[2]) == "after-crash-2";
         check(exact,
@@ -571,13 +572,13 @@ int main(int argc, char** argv) {
     {
         // L20c: a torn length header (only 2 of its 4 bytes landed).
         FileAppendLogStore store(root);
-        (void)store.append("torn-header", bytes_from("intact-one"));
+        (void)agentengine::rt::block_on(store.append("torn-header", bytes_from("intact-one")));
         {
             std::ofstream out(root / "torn-header", std::ios::binary | std::ios::app);
             out.write("\x05\x00", 2);
         }
-        (void)store.append("torn-header", bytes_from("after-crash"));
-        auto all = store.read_from("torn-header", 0);
+        (void)agentengine::rt::block_on(store.append("torn-header", bytes_from("after-crash")));
+        auto all = agentengine::rt::block_on(store.read_from("torn-header", 0));
         check(all.has_value() && all->size() == 2 && string_from((*all)[1]) == "after-crash",
               "L20c: an append after a torn 2-byte header is readable and correctly framed");
     }
@@ -588,17 +589,17 @@ int main(int argc, char** argv) {
     // the last record, which L27 now refuses.
     {
         FileAppendLogStore store(root);
-        (void)store.append("bad-crc-tail", bytes_from("intact-one"));
+        (void)agentengine::rt::block_on(store.append("bad-crc-tail", bytes_from("intact-one")));
         std::size_t const header = header_size_of(read_file(root / "bad-crc-tail"));
         {
             std::ofstream out(root / "bad-crc-tail", std::ios::binary | std::ios::app);
             out.write(std::string(header + 5, '\0').data(), static_cast<std::streamsize>(header + 5));
         }
-        auto before = store.read_from("bad-crc-tail", 0);
+        auto before = agentengine::rt::block_on(store.read_from("bad-crc-tail", 0));
         check(before.has_value() && before->size() == 1,
               "L21: a zero-filled final frame is treated as torn, not returned as data");
-        (void)store.append("bad-crc-tail", bytes_from("after-crash"));
-        auto after = store.read_from("bad-crc-tail", 0);
+        (void)agentengine::rt::block_on(store.append("bad-crc-tail", bytes_from("after-crash")));
+        auto after = agentengine::rt::block_on(store.read_from("bad-crc-tail", 0));
         check(after.has_value() && after->size() == 2 && string_from((*after)[1]) == "after-crash",
               "L21: the next append replaces the zero-filled tail and reads back intact");
     }
@@ -607,22 +608,22 @@ int main(int argc, char** argv) {
     // after it would vanish) and must not be written past.
     {
         FileAppendLogStore store(root);
-        (void)store.append("corrupt-mid", bytes_from("record-one"));
-        (void)store.append("corrupt-mid", bytes_from("record-two"));
-        (void)store.append("corrupt-mid", bytes_from("record-three"));
+        (void)agentengine::rt::block_on(store.append("corrupt-mid", bytes_from("record-one")));
+        (void)agentengine::rt::block_on(store.append("corrupt-mid", bytes_from("record-two")));
+        (void)agentengine::rt::block_on(store.append("corrupt-mid", bytes_from("record-three")));
         std::size_t const header = header_size_of(read_file(root / "corrupt-mid"));
         {
             std::fstream f(root / "corrupt-mid", std::ios::binary | std::ios::in | std::ios::out);
             f.seekp(static_cast<std::streamoff>(8 + header + 2));  // magic, record one's header, 2 bytes in
             f.put('X');
         }
-        auto read = store.read_from("corrupt-mid", 0);
+        auto read = agentengine::rt::block_on(store.read_from("corrupt-mid", 0));
         check(!read.has_value() && read.error().code == "rt.append_log_store.corrupt_record",
               "L22: a CRC mismatch on a non-final record is reported as corruption, not treated as the end");
-        auto appended = store.append("corrupt-mid", bytes_from("record-four"));
+        auto appended = agentengine::rt::block_on(store.append("corrupt-mid", bytes_from("record-four")));
         check(!appended.has_value() && appended.error().code == "rt.append_log_store.corrupt_record",
               "L22: append() refuses to write past a corrupt record");
-        check(store.last_seq("corrupt-mid") == 0, "L22: last_seq() degrades to 0, as documented");
+        check(agentengine::rt::block_on(store.last_seq("corrupt-mid")) == 0, "L22: last_seq() degrades to 0, as documented");
     }
 
     // L23: a log written in the ORIGINAL (v1) format -- no magic, no CRC -- is still read, a torn v1
@@ -640,12 +641,12 @@ int main(int argc, char** argv) {
             out.write(reinterpret_cast<char const*>(&torn_len), sizeof(torn_len));
             out.write("x", 1);
         }
-        auto old = store.read_from("legacy-v1", 0);
+        auto old = agentengine::rt::block_on(store.read_from("legacy-v1", 0));
         check(old.has_value() && old->size() == 2 && string_from((*old)[1]) == "old-two",
               "L23: a v1 log is read, stopping cleanly before its torn tail");
-        auto s = store.append("legacy-v1", bytes_from("new-three"));
+        auto s = agentengine::rt::block_on(store.append("legacy-v1", bytes_from("new-three")));
         check(s.has_value() && *s == 3, "L23: appending to a v1 log continues its seq numbering");
-        auto all = store.read_from("legacy-v1", 0);
+        auto all = agentengine::rt::block_on(store.read_from("legacy-v1", 0));
         check(all.has_value() && all->size() == 3 && string_from((*all)[2]) == "new-three",
               "L23: the appended record reads back in v1 framing");
         std::ifstream in(root / "legacy-v1", std::ios::binary);
@@ -659,19 +660,19 @@ int main(int argc, char** argv) {
     {
         {
             FileAppendLogStore store(root, agentengine::rt::append_log_sync::disk);
-            auto s1 = store.append("synced", bytes_from("one"));
-            auto s2 = store.append("synced", bytes_from("two"));
+            auto s1 = agentengine::rt::block_on(store.append("synced", bytes_from("one")));
+            auto s2 = agentengine::rt::block_on(store.append("synced", bytes_from("two")));
             check(s1.has_value() && *s1 == 1 && s2.has_value() && *s2 == 2,
                   "L24: append_log_sync::disk appends succeed");
         }
         FileAppendLogStore fresh(root);
-        check(fresh.last_seq("synced") == 2, "L24: records written with disk sync persist");
+        check(agentengine::rt::block_on(fresh.last_seq("synced")) == 2, "L24: records written with disk sync persist");
     }
 
     // ---- ADR-195 §8a (E32 red team round 3): damage must never pass for a torn tail --------------------------
     auto five_records = [&root](char const* id) {
         FileAppendLogStore store(root);
-        for (int i = 0; i < 5; ++i) (void)store.append(id, bytes_from("record-" + std::to_string(i)));
+        for (int i = 0; i < 5; ++i) (void)agentengine::rt::block_on(store.append(id, bytes_from("record-" + std::to_string(i))));
         return read_file(root / id);
     };
     // Every damage case below must fail read_from() AND append() with `code`, report last_seq() 0, and leave
@@ -679,10 +680,10 @@ int main(int argc, char** argv) {
     auto refused = [&root](char const* id, std::string const& damaged, char const* code) {
         write_file(root / id, damaged);
         FileAppendLogStore store(root);
-        auto read = store.read_from(id, 0);
-        auto appended = store.append(id, bytes_from("new"));
+        auto read = agentengine::rt::block_on(store.read_from(id, 0));
+        auto appended = agentengine::rt::block_on(store.append(id, bytes_from("new")));
         return !read.has_value() && read.error().code == code && !appended.has_value() &&
-               appended.error().code == code && store.last_seq(id) == 0 && read_file(root / id) == damaged;
+               appended.error().code == code && agentengine::rt::block_on(store.last_seq(id)) == 0 && read_file(root / id) == damaged;
     };
 
     // L25 (P1): a damaged or unknown magic. Before §8a it was parsed as v1: `AELO` as a ~1.3 GB length made
@@ -700,9 +701,9 @@ int main(int argc, char** argv) {
               "L25: a file shorter than the magic that is a damaged magic is refused too");
         write_file(root / "magic-torn", "AELOG");  // a torn creation: a prefix of the magic, nothing recorded
         FileAppendLogStore store(root);
-        auto empty = store.read_from("magic-torn", 0);
-        auto s1 = store.append("magic-torn", bytes_from("first"));
-        auto all = store.read_from("magic-torn", 0);
+        auto empty = agentengine::rt::block_on(store.read_from("magic-torn", 0));
+        auto s1 = agentengine::rt::block_on(store.append("magic-torn", bytes_from("first")));
+        auto all = agentengine::rt::block_on(store.read_from("magic-torn", 0));
         check(empty.has_value() && empty->empty() && s1.has_value() && *s1 == 1 && all.has_value() &&
                   all->size() == 1 && read_file(root / "magic-torn").starts_with(kMagicV3),
               "L25: a file holding only part of the magic reads as empty, and the next append writes a v3 log");
@@ -739,9 +740,9 @@ int main(int argc, char** argv) {
     auto recovers = [&root](char const* id, std::string const& file, std::size_t intact) {
         write_file(root / id, file);
         FileAppendLogStore store(root);
-        auto before = store.read_from(id, 0);
-        auto seq = store.append(id, bytes_from("after-crash"));
-        auto after = store.read_from(id, 0);
+        auto before = agentengine::rt::block_on(store.read_from(id, 0));
+        auto seq = agentengine::rt::block_on(store.append(id, bytes_from("after-crash")));
+        auto after = agentengine::rt::block_on(store.read_from(id, 0));
         return before.has_value() && before->size() == intact && seq.has_value() && *seq == intact + 1 &&
                after.has_value() && after->size() == intact + 1 && string_from(after->back()) == "after-crash";
     };
@@ -769,8 +770,8 @@ int main(int argc, char** argv) {
         std::string const v2 = kMagicV2 + v2_frame("old-one") + v2_frame("old-two");
         write_file(root / "v2-log", v2);
         FileAppendLogStore store(root);
-        auto old = store.read_from("v2-log", 0);
-        auto s3 = store.append("v2-log", bytes_from("new-three"));
+        auto old = agentengine::rt::block_on(store.read_from("v2-log", 0));
+        auto s3 = agentengine::rt::block_on(store.append("v2-log", bytes_from("new-three")));
         check(old.has_value() && old->size() == 2 && string_from((*old)[1]) == "old-two" && s3.has_value() &&
                   *s3 == 3 && read_file(root / "v2-log") == v2 + v2_frame("new-three"),
               "L29: a v2 log is read, and appended to in exact v2 framing (not upgraded, not mixed)");
@@ -892,8 +893,8 @@ int main(int argc, char** argv) {
         }
         write_file(root / "v1-starts-with-A", v1);
         FileAppendLogStore store(root);
-        auto old = store.read_from("v1-starts-with-A", 0);
-        auto s3 = store.append("v1-starts-with-A", bytes_from("third"));
+        auto old = agentengine::rt::block_on(store.read_from("v1-starts-with-A", 0));
+        auto s3 = agentengine::rt::block_on(store.append("v1-starts-with-A", bytes_from("third")));
         check(v1[0] == 'A' && old.has_value() && old->size() == 2 && s3.has_value() && *s3 == 3 &&
                   !read_file(root / "v1-starts-with-A").starts_with(kMagicV3),
               "L33: a v1 log whose first byte happens to be 'A' is still read and appended in v1 framing");

@@ -520,27 +520,15 @@ task<result<json::Value>> exchange_json_async(std::string vendor, std::string ho
                                               sandbox::NetEgressRequest req, ReactorOptions reactor,
                                               std::string ca_bundle_pem_override,
                                               sandbox::ProviderTransport transport, std::stop_token stop) {
-    bool const      https = transport != sandbox::ProviderTransport::plaintext_http;
-    rt::HttpRequest hreq;
-    hreq.scheme = https ? rt::http_scheme::https : rt::http_scheme::http;
-    hreq.host   = std::move(host);
-    hreq.port   = port;
-    hreq.method = std::move(req.method);
-    hreq.target = std::move(req.path);
-    for (auto& h : req.headers) hreq.headers.push_back(std::move(h));
-    hreq.body = std::move(req.body);
-    rt::HttpContext hctx =
-        agentengine::detail::provider_wire::make_http_context(reactor, ca_bundle_pem_override, https);
-    rt::HttpResponse resp = co_await rt::http_request(hctx, std::move(hreq), stop);
-    if (!resp.ok()) {
+    auto resp = co_await agentengine::detail::provider_wire::exchange_async(
+        std::move(host), port, std::move(req), std::move(reactor), std::move(ca_bundle_pem_override), transport,
+        std::move(stop));
+    if (!resp) co_return std::unexpected(resp.error());
+    if (resp->status < 200 || resp->status >= 300) {
         co_return std::unexpected(
-            agentengine::detail::provider_wire::http_error_to_error(resp.error, resp.code, resp.message));
+            agentengine::detail::provider_wire::http_status_error(vendor, resp->status, resp->body));
     }
-    if (resp.status < 200 || resp.status >= 300) {
-        co_return std::unexpected(
-            agentengine::detail::provider_wire::http_status_error(vendor, resp.status, resp.body));
-    }
-    co_return json::parse(resp.body);
+    co_return json::parse(resp->body);
 }
 
 result<std::vector<ChatResponseUpdate>> StreamingUpdateAccumulator::feed(std::string_view bytes) {

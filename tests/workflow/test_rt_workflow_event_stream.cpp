@@ -245,8 +245,9 @@ void w4_checkpoint_saved() {
     sup.initialize(linear_graph(), linear_bodies());
     WorkflowEventStream stream = sup.enable_event_stream(std::pmr::get_default_resource());
     int checkpoint_calls = 0;
-    sup.set_checkpoint_hook([&checkpoint_calls](std::uint32_t, agentengine::rt::RunStateRecord const&) {
+    sup.set_checkpoint_hook([&checkpoint_calls](std::uint32_t, agentengine::rt::RunStateRecord) -> agentengine::task<void> {
         ++checkpoint_calls;
+        co_return;
     });
 
     WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("go")}));

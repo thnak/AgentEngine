@@ -20,6 +20,7 @@
 
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/session_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::AgentSessionRecord;
@@ -112,7 +113,7 @@ int main() {
     auto saved = drive(save_agent_session_snapshot(session, store));
     check(saved.has_value(), "D1-R1: checkpointing after turn 2 succeeds");
 
-    auto loaded = load_agent_session_snapshot(store, "s-ckpt");
+    auto loaded = agentengine::rt::block_on(load_agent_session_snapshot(store, "s-ckpt"));
     check(loaded.has_value() && loaded->has_value() && (*loaded)->run_counter == 2,
           "D1-R2: the checkpoint's own record carries the run's real position (run_counter=2)");
 

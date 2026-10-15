@@ -10,6 +10,11 @@
 #include <vector>
 
 #include "agentengine/core/sparse_index.hpp"
+#include "../../support/index_sync.hpp"
+
+using agentengine::test_support::sync_add_batch;
+using agentengine::test_support::sync_contains;
+using agentengine::test_support::sync_search;
 
 namespace {
 
@@ -37,13 +42,13 @@ int main() {
     //   score(d1) = idf * (1*2.2) / denom = 0.980829 * 2.2 / 2.252941 = 0.957781
     {
         ae::BM25Index bm25;
-        auto added = bm25.add_batch(
+        auto added = sync_add_batch(bm25, 
             {"d1", "d2", "d3"},
             {"the cat sat on the mat", "the dog sat on the log", "cats and dogs are great"});
         AE_CHECK(added.has_value(), "setup: 3 docs added");
         AE_CHECK(bm25.size() == 3, "setup: size() reflects all 3 docs");
 
-        auto scored = bm25.search("cat", 10);
+        auto scored = sync_search(bm25, "cat", 10);
         AE_CHECK(scored.has_value(), "search('cat') succeeds");
         if (scored.has_value()) {
             AE_CHECK(scored->size() == 1,
@@ -58,21 +63,21 @@ int main() {
             }
         }
 
-        auto no_match = bm25.search("nonexistent_term_xyz", 10);
+        auto no_match = sync_search(bm25, "nonexistent_term_xyz", 10);
         AE_CHECK(no_match.has_value() && no_match->empty(),
                  "a query with no matching term returns an empty, successful result, not an error");
 
-        AE_CHECK(bm25.contains("d1") && !bm25.contains("nonexistent-id"),
+        AE_CHECK(sync_contains(bm25, "d1") && !sync_contains(bm25, "nonexistent-id"),
                  "contains() reflects exactly what was added, no more, no less");
     }
 
     // --- IDF smoothing keeps a term present in every doc from going negative ----------------------
     {
         ae::BM25Index bm25;
-        AE_CHECK(bm25.add_batch({"x", "y", "z"}, {"common word", "common term", "common phrase"})
+        AE_CHECK(sync_add_batch(bm25, {"x", "y", "z"}, {"common word", "common term", "common phrase"})
                      .has_value(),
                  "setup: 3 docs, all sharing 'common'");
-        auto scored = bm25.search("common", 10);
+        auto scored = sync_search(bm25, "common", 10);
         AE_CHECK(scored.has_value() && scored->size() == 3,
                  "a term present in every document still matches every document (non-negative IDF "
                  "via the +0.5 Robertson-Sparck-Jones smoothing, not a zero/negative score that "
@@ -85,17 +90,17 @@ int main() {
     // --- Contract violations, mirroring BruteForceCosineIndex's own identical checks --------------
     {
         ae::BM25Index bm25;
-        auto mismatched = bm25.add_batch({"a", "b"}, {"one text"});
+        auto mismatched = sync_add_batch(bm25, {"a", "b"}, {"one text"});
         AE_CHECK(!mismatched.has_value() && mismatched.error().code == "sparse_index.add_batch_length_mismatch",
                  "add_batch rejects ids/texts of differing length");
 
-        auto duped = bm25.add_batch({"x", "x"}, {"text one", "text two"});
+        auto duped = sync_add_batch(bm25, {"x", "x"}, {"text one", "text two"});
         AE_CHECK(!duped.has_value() && duped.error().code == "sparse_index.add_batch_duplicate_id",
                  "add_batch rejects a duplicate id within a single call");
         AE_CHECK(bm25.size() == 0, "a rejected add_batch call adds nothing at all");
 
-        AE_CHECK(bm25.add_batch({"y"}, {"first"}).has_value(), "setup: 'y' added");
-        auto redup = bm25.add_batch({"y"}, {"second"});
+        AE_CHECK(sync_add_batch(bm25, {"y"}, {"first"}).has_value(), "setup: 'y' added");
+        auto redup = sync_add_batch(bm25, {"y"}, {"second"});
         AE_CHECK(!redup.has_value() && redup.error().code == "sparse_index.add_batch_duplicate_id",
                  "add_batch rejects an id already present from a PRIOR call, not just within one call");
     }
@@ -105,11 +110,11 @@ int main() {
     {
         ae::BM25Index bm25;
         // Three byte-identical documents against a query matching all of them equally.
-        AE_CHECK(bm25.add_batch({"zzz-last", "aaa-first", "mmm-middle"},
+        AE_CHECK(sync_add_batch(bm25, {"zzz-last", "aaa-first", "mmm-middle"},
                                  {"apple banana", "apple banana", "apple banana"})
                      .has_value(),
                  "setup: 3 tied docs stored");
-        auto scored = bm25.search("apple", 10);
+        auto scored = sync_search(bm25, "apple", 10);
         AE_CHECK(scored.has_value() && scored->size() == 3, "all 3 tied docs returned");
         if (scored.has_value() && scored->size() == 3) {
             AE_CHECK((*scored)[0].score == (*scored)[1].score && (*scored)[1].score == (*scored)[2].score,
@@ -125,8 +130,8 @@ int main() {
     // --- k truncates, does not merely sort ----------------------------------------------------------
     {
         ae::BM25Index bm25;
-        AE_CHECK(bm25.add_batch({"a", "b", "c"}, {"word", "word", "word"}).has_value(), "setup");
-        auto top1 = bm25.search("word", 1);
+        AE_CHECK(sync_add_batch(bm25, {"a", "b", "c"}, {"word", "word", "word"}).has_value(), "setup");
+        auto top1 = sync_search(bm25, "word", 1);
         AE_CHECK(top1.has_value() && top1->size() == 1, "k=1 truncates the result set to exactly 1 entry");
     }
 

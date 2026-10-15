@@ -501,7 +501,7 @@ FileAppendLogStore::FileAppendLogStore(std::filesystem::path root, append_log_sy
                                                      // own constructor comment for why
 }
 
-result<SeqNo> FileAppendLogStore::append(LogId const& id, std::vector<std::byte> bytes) const {
+result<SeqNo> FileAppendLogStore::append_blocking(LogId const& id, std::vector<std::byte> bytes) const {
     namespace d = append_log_store_detail;
     auto path = path_for(id);
     if (!path) return std::unexpected(path.error());
@@ -556,7 +556,7 @@ result<SeqNo> FileAppendLogStore::append(LogId const& id, std::vector<std::byte>
     return static_cast<SeqNo>(scan.record_count) + 1;
 }
 
-result<std::vector<std::vector<std::byte>>> FileAppendLogStore::read_from(LogId const& id,
+result<std::vector<std::vector<std::byte>>> FileAppendLogStore::read_from_blocking(LogId const& id,
                                                                          SeqNo from) const {
     namespace d = append_log_store_detail;
     auto existing = read_locked(id);
@@ -566,7 +566,7 @@ result<std::vector<std::vector<std::byte>>> FileAppendLogStore::read_from(LogId 
     return std::move(scan.records);
 }
 
-SeqNo FileAppendLogStore::last_seq(LogId const& id) const {
+SeqNo FileAppendLogStore::last_seq_blocking(LogId const& id) const {
     auto existing = read_locked(id);
     if (!existing) return SeqNo{0};
     auto const scan = append_log_store_detail::scan_log(*existing, 0, /*collect=*/false);

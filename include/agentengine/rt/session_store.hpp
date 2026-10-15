@@ -55,6 +55,7 @@
 #include <vector>
 
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine::rt {
 
@@ -77,10 +78,10 @@ using SessionId = std::string;
 template <class T>
 concept SessionStore = requires(T& store, T const& const_store, SessionId const& id,
                                  std::vector<std::byte> bytes) {
-    { store.save(id, std::move(bytes)) } -> std::same_as<result<void>>;
-    { const_store.load(id) } -> std::same_as<result<std::vector<std::byte>>>;
-    { const_store.exists(id) } -> std::same_as<bool>;
-    { store.remove(id) } -> std::same_as<result<void>>;
+    { store.save(id, std::move(bytes)) } -> std::same_as<task<result<void>>>;
+    { const_store.load(id) } -> std::same_as<task<result<std::vector<std::byte>>>>;
+    { const_store.exists(id) } -> std::same_as<task<bool>>;
+    { store.remove(id) } -> std::same_as<task<result<void>>>;
 };
 
 // ------------------------------------------------------------------------------------------------
@@ -100,29 +101,29 @@ concept SessionStore = requires(T& store, T const& const_store, SessionId const&
 // ae-naming-lint: allow InMemorySessionStore — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class InMemorySessionStore {
 public:
-    [[nodiscard]] result<void> save(SessionId const& id, std::vector<std::byte> bytes) {
+    [[nodiscard]] task<result<void>> save(SessionId id, std::vector<std::byte> bytes) {
         std::lock_guard<std::mutex> lock(mutex_);
         rows_[id] = std::move(bytes);
-        return {};
+        co_return result<void>{};
     }
 
-    [[nodiscard]] result<std::vector<std::byte>> load(SessionId const& id) const {
+    [[nodiscard]] task<result<std::vector<std::byte>>> load(SessionId id) const {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = rows_.find(id);
         if (it == rows_.end()) {
-            return std::unexpected(error{failure_class::contract,
+            co_return std::unexpected(error{failure_class::contract,
                                           "no session stored under this id: '" + id + "'",
                                           "rt.session_store.not_found"});
         }
-        return it->second;  // copy out -- the map keeps its own bytes, matching load()'s
+        co_return it->second;  // copy out -- the map keeps its own bytes, matching load()'s
                              // "hand the caller an independent copy" contract implied by returning
                              // by value (a caller mutating the returned vector must not corrupt what
                              // a later load() of the same id sees).
     }
 
-    [[nodiscard]] bool exists(SessionId const& id) const {
+    [[nodiscard]] task<bool> exists(SessionId id) const {
         std::lock_guard<std::mutex> lock(mutex_);
-        return rows_.contains(id);
+        co_return rows_.contains(id);
     }
 
     // Idempotent: removing an id that was never saved (or already removed) is NOT an error -- the
@@ -131,10 +132,10 @@ public:
     // deleted session's `load_agent_session_snapshot()` indistinguishable from "never existed" --
     // §1463-1477) rather than forcing every caller to check `exists()` first just to avoid an error
     // it does not actually need reported.
-    [[nodiscard]] result<void> remove(SessionId const& id) {
+    [[nodiscard]] task<result<void>> remove(SessionId id) {
         std::lock_guard<std::mutex> lock(mutex_);
         rows_.erase(id);
-        return {};
+        co_return result<void>{};
     }
 
 private:
@@ -202,13 +203,13 @@ public:
         std::filesystem::create_directories(root_, ec);  // ignored: see comment above
     }
 
-    [[nodiscard]] result<void> save(SessionId const& id, std::vector<std::byte> bytes) const {
+    [[nodiscard]] task<result<void>> save(SessionId id, std::vector<std::byte> bytes) const {
         auto path = path_for(id);
-        if (!path) return std::unexpected(path.error());
+        if (!path) co_return std::unexpected(path.error());
 
         std::ofstream out(*path, std::ios::binary | std::ios::trunc);
         if (!out.is_open()) {
-            return std::unexpected(error{failure_class::transient,
+            co_return std::unexpected(error{failure_class::transient,
                                           "could not open session file for writing: " + path->string(),
                                           "rt.session_store.file_open_failed"});
         }
@@ -218,33 +219,33 @@ public:
         }
         out.flush();
         if (!out.good()) {
-            return std::unexpected(error{failure_class::transient,
+            co_return std::unexpected(error{failure_class::transient,
                                           "failed writing session bytes to: " + path->string(),
                                           "rt.session_store.file_write_failed"});
         }
-        return {};
+        co_return result<void>{};
     }
 
-    [[nodiscard]] result<std::vector<std::byte>> load(SessionId const& id) const {
+    [[nodiscard]] task<result<std::vector<std::byte>>> load(SessionId id) const {
         auto path = path_for(id);
-        if (!path) return std::unexpected(path.error());
+        if (!path) co_return std::unexpected(path.error());
 
         std::error_code ec;
         if (!std::filesystem::exists(*path, ec) || ec) {
-            return std::unexpected(error{failure_class::contract,
+            co_return std::unexpected(error{failure_class::contract,
                                           "no session stored under this id: '" + id + "'",
                                           "rt.session_store.not_found"});
         }
 
         std::ifstream in(*path, std::ios::binary | std::ios::ate);
         if (!in.is_open()) {
-            return std::unexpected(error{failure_class::transient,
+            co_return std::unexpected(error{failure_class::transient,
                                           "could not open session file for reading: " + path->string(),
                                           "rt.session_store.file_open_failed"});
         }
         auto size = in.tellg();
         if (size < 0) {
-            return std::unexpected(error{failure_class::transient,
+            co_return std::unexpected(error{failure_class::transient,
                                           "could not determine session file size: " + path->string(),
                                           "rt.session_store.file_read_failed"});
         }
@@ -253,39 +254,39 @@ public:
         if (!bytes.empty()) {
             in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
             if (!in.good() && !in.eof()) {
-                return std::unexpected(error{failure_class::transient,
+                co_return std::unexpected(error{failure_class::transient,
                                               "failed reading session bytes from: " + path->string(),
                                               "rt.session_store.file_read_failed"});
             }
         }
-        return bytes;
+        co_return bytes;
     }
 
-    [[nodiscard]] bool exists(SessionId const& id) const {
+    [[nodiscard]] task<bool> exists(SessionId id) const {
         auto path = path_for(id);
-        if (!path) return false;  // an invalid id can never have a file -- degrade to "not there",
+        if (!path) co_return false;  // an invalid id can never have a file -- degrade to "not there",
                                    // matching this method's documented "no side effect to roll back,
                                    // so an unreadable/invalid state just means false" contract.
         std::error_code ec;
         bool result_exists = std::filesystem::exists(*path, ec);
-        return !ec && result_exists;
+        co_return !ec && result_exists;
     }
 
     // Idempotent, same contract as InMemorySessionStore::remove(): removing an id with no file on
     // disk is success, not an error -- `std::filesystem::remove()`'s own return value (found-and-
     // removed vs. not-found) is deliberately discarded for exactly that reason.
-    [[nodiscard]] result<void> remove(SessionId const& id) const {
+    [[nodiscard]] task<result<void>> remove(SessionId id) const {
         auto path = path_for(id);
-        if (!path) return std::unexpected(path.error());
+        if (!path) co_return std::unexpected(path.error());
 
         std::error_code ec;
         std::filesystem::remove(*path, ec);
         if (ec) {
-            return std::unexpected(error{failure_class::transient,
+            co_return std::unexpected(error{failure_class::transient,
                                           "failed removing session file: " + path->string(),
                                           "rt.session_store.file_remove_failed"});
         }
-        return {};
+        co_return result<void>{};
     }
 
 private:

@@ -31,6 +31,7 @@
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/rt/workflow_checkpoint_manager.hpp"
 #include "agentengine/workflow/magentic.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using namespace agentengine;
 using namespace agentengine::workflow;
@@ -204,8 +205,8 @@ int main() {
         };
 
         WorkflowSupervisor sup;
-        result<bool> resumed = WorkflowCheckpointManager<FileSessionStore>::resume_or_start(
-            reopened, run_id, sup, built->graph, bodies2);
+        result<bool> resumed = agentengine::rt::block_on(WorkflowCheckpointManager<FileSessionStore>::resume_or_start(
+            reopened, run_id, sup, built->graph, bodies2));
         check(resumed.has_value() && *resumed == true,
               "resume_or_start() finds the on-disk checkpoint and resumes instead of starting fresh");
 

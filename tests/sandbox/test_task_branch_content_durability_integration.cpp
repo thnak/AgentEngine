@@ -38,6 +38,7 @@
 #include "agentengine/core/file_worktree_object_store.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -130,7 +131,7 @@ int main() {
         check(root_r.has_value(), "[1] create_root_branch() on a durable, file-backed Ledger succeeds");
         if (!root_r.has_value()) return EXIT_FAILURE;
 
-        auto root_blob_r = durable_ledger.put_blob_safe(to_bytes(kRootContent), owner);
+        auto root_blob_r = agentengine::rt::block_on(durable_ledger.put_blob_safe(to_bytes(kRootContent), owner));
         check(root_blob_r.has_value(), "[1] put_blob_safe() writes real content to real disk");
         if (!root_blob_r.has_value()) return EXIT_FAILURE;
         root_blob_digest = *root_blob_r;
@@ -207,7 +208,7 @@ int main() {
 
         // [6] the REAL content committed in Phase A is still readable, byte-exact, through the
         // ACL-gated production read path, after the full crash-recovery-and-merge cycle.
-        auto readback_r = reopened_ledger.get_blob_safe(root_blob_digest, owner);
+        auto readback_r = agentengine::rt::block_on(reopened_ledger.get_blob_safe(root_blob_digest, owner));
         check(readback_r.has_value(), "[6] the root's own real content is still readable via "
                                        "get_blob_safe() after the full crash-recovery-and-merge cycle");
         if (readback_r.has_value()) {

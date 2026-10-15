@@ -153,7 +153,10 @@ int main() {
         WorkflowSupervisor sup;
         sup.initialize(wf, build_bodies());
         sup.set_checkpoint_hook(
-            [&](std::uint32_t /*round*/, RunStateRecord const& rec) { checkpoints.push_back(rec); });
+            [&](std::uint32_t /*round*/, RunStateRecord rec) -> agentengine::task<void> {
+                checkpoints.push_back(std::move(rec));
+                co_return;
+            });
 
         WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("in")}));
         check(r.status == workflow_status::completed,

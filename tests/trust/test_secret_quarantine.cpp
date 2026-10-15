@@ -12,6 +12,7 @@
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "agentengine/trust/secret_quarantine.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include "../support/run_task_sync.hpp"  // ADR-237 §5.2: drive the async tool invoke
 using namespace agentengine;
@@ -92,19 +93,19 @@ void test_resolve_requires_capability() {
     SecretRef const ref = store.quarantine("sk-needs-a-grant", quarantine_trigger::agent_initiated, ctx);
 
     // No capability granted (ctx.capabilities stays nullptr) -- must fail closed.
-    auto const denied = store.resolve(ref, ctx);
+    auto const denied = rt::block_on(store.resolve(ref, ctx));
     AE_CHECK(!denied.has_value(), "resolve() denies with no capabilities bound at all");
 
     CapabilitySet const wrong_caps =
         CapabilitySet::grant_root({cap::Secret{"some-other-name", std::chrono::seconds{0}}});
     EffectContext wrong_ctx = make_granted_ctx(wrong_caps);
-    auto const still_denied = store.resolve(ref, wrong_ctx);
+    auto const still_denied = rt::block_on(store.resolve(ref, wrong_ctx));
     AE_CHECK(!still_denied.has_value(), "resolve() denies a grant for a DIFFERENT ref name");
 
     CapabilitySet const right_caps =
         CapabilitySet::grant_root({cap::Secret{ref.name, std::chrono::seconds{0}}});
     EffectContext right_ctx = make_granted_ctx(right_caps);
-    auto const allowed = store.resolve(ref, right_ctx);
+    auto const allowed = rt::block_on(store.resolve(ref, right_ctx));
     AE_CHECK(allowed.has_value(), "resolve() succeeds with the matching grant");
     if (allowed.has_value()) {
         AE_CHECK(allowed->reveal_text() == "sk-needs-a-grant", "resolved value round-trips correctly");

@@ -23,6 +23,7 @@
 #include "agentengine/core/worktree.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/capability.hpp"
+#include "agentengine/core/task.hpp"
 #include "backends/native_jail/mediated_filesystem_adapter.hpp"
 #include "backends/native_jail/worktree_mount_sync.hpp"
 
@@ -44,14 +45,14 @@ using MaterializedSkillMount = std::pair<std::string, std::wstring>;
 // orphaned side effect (same posture `SkillsProvider::resolve_and_mount()` itself already takes for
 // its own object-store writes), if any one skill's materialization fails.
 template <WorktreeObjectStore ObjectStoreT>
-[[nodiscard]] result<std::vector<MaterializedSkillMount>> materialize_skill_mounts(
-    SkillsProvider<ObjectStoreT>& provider, std::filesystem::path const& host_root,
-    std::vector<std::string> const& reserved_mount_ids) {
-    if (auto loaded = rt::block_on(provider.ensure_loaded()); !loaded) return std::unexpected(loaded.error());
+[[nodiscard]] task<result<std::vector<MaterializedSkillMount>>> materialize_skill_mounts(
+    SkillsProvider<ObjectStoreT>& provider, std::filesystem::path host_root,
+    std::vector<std::string> reserved_mount_ids) {
+    if (auto loaded = co_await provider.ensure_loaded(); !loaded) co_return std::unexpected(loaded.error());
 
     for (Mount const& mount : provider.mounted()) {
         if (std::ranges::find(reserved_mount_ids, mount.mount_id) != reserved_mount_ids.end()) {
-            return std::unexpected(
+            co_return std::unexpected(
                 error{failure_class::contract,
                       "skill '" + mount.mount_id + "' collides with a reserved sandbox mount id -- "
                       "refusing to materialize any skill mount for this call",
@@ -66,23 +67,23 @@ template <WorktreeObjectStore ObjectStoreT>
         std::error_code ec;
         std::filesystem::create_directories(skill_dir, ec);
         if (ec) {
-            return std::unexpected(error{failure_class::resource,
+            co_return std::unexpected(error{failure_class::resource,
                                           "failed to create skill mount directory: " + ec.message(),
                                           "skill.mount_directory_create_failed"});
         }
         std::wstring const skill_dir_w = skill_dir.wstring();
 
         auto adapter = mediated_shell::MediatedFileSystemAdapter::create(skill_dir_w);
-        if (!adapter) return std::unexpected(adapter.error());
+        if (!adapter) co_return std::unexpected(adapter.error());
 
         cap::FsRead const granted{mount.mount_id, "", std::nullopt};
         auto materialized =
-            materialize_mount(provider.object_store(), provider.ref_store(), mount, granted, *adapter);
-        if (!materialized) return std::unexpected(materialized.error());
+            co_await materialize_mount(provider.object_store(), provider.ref_store(), mount, granted, *adapter);
+        if (!materialized) co_return std::unexpected(materialized.error());
 
         out.emplace_back(mount.mount_id, skill_dir_w);
     }
-    return out;
+    co_return out;
 }
 
 }  // namespace agentengine::native_jail

@@ -35,6 +35,7 @@
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/rt/workflow_checkpoint_manager.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using namespace agentengine;
 using namespace agentengine::workflow;
@@ -151,8 +152,8 @@ int main() {
         std::vector<ExecutorBody> bodies = {planner_body(), {}};  // caller-supplied again, fresh objects
 
         WorkflowSupervisor sup;  // a FRESH supervisor -- the original from above is gone
-        result<bool> resumed = WorkflowCheckpointManager<FileSessionStore>::resume_or_start(
-            reopened, run_id, sup, wf, bodies);
+        result<bool> resumed = agentengine::rt::block_on(WorkflowCheckpointManager<FileSessionStore>::resume_or_start(
+            reopened, run_id, sup, wf, bodies));
         check(resumed.has_value() && *resumed == true,
               "resume_or_start() finds the on-disk checkpoint and resumes instead of starting fresh");
 

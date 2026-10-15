@@ -46,6 +46,13 @@ if(AGENTENGINE_WITH_HTTPS)
     LIBS agentengine::core agentengine::provider_http_client agentengine_warnings MbedTLS::mbedtls
       MbedTLS::mbedx509 MbedTLS::mbedcrypto)
 
+  # ---- ADR-237 §5.1 (#172): both chat clients resolve their key on chat_stream's producer root ----
+  # Offline, against a loopback server: a denied grant fails the stream with the store's own error before
+  # any connection; a suspending store works when chat_stream() is called on a runtime lane.
+  agentengine_add_test(test_chat_stream_key_resolution
+    LIBS agentengine::core agentengine::provider_http_client agentengine_warnings MbedTLS::mbedtls
+      MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+
   # ---- ADR-063 §3 claim 4's own disproof test: OpenAIEmbedder against REAL api.openrouter.ai -----
   agentengine_add_test(test_openai_embedder_openrouter_live_e2e
     LIBS agentengine::core agentengine::provider_http_client agentengine_warnings MbedTLS::mbedtls

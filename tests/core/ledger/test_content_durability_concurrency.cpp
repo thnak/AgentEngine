@@ -46,6 +46,7 @@
 
 #include "agentengine/core/file_worktree_object_store.hpp"
 #include "agentengine/core/ledger.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -104,12 +105,12 @@ int main() {
                 FileWorktreeObjectStore store(objects_dir);
                 for (int i = 0; i < kBlobsPerThread; ++i) {
                     std::string const content = "thread-" + std::to_string(t) + "-blob-" + std::to_string(i);
-                    auto put_r = store.put_blob(to_bytes(content));
+                    auto put_r = agentengine::rt::block_on(store.put_blob(to_bytes(content)));
                     if (!put_r.has_value()) {
                         ++failures;
                         continue;
                     }
-                    auto get_r = store.get_blob(*put_r);
+                    auto get_r = agentengine::rt::block_on(store.get_blob(*put_r));
                     if (!get_r.has_value()) {
                         ++failures;
                         continue;
@@ -176,7 +177,7 @@ int main() {
                     FileWorktreeObjectStore store(objects_dir);
                     ++ready;
                     while (!go.load(std::memory_order_acquire)) std::this_thread::yield();
-                    auto put_r = store.put_blob(bytes);
+                    auto put_r = agentengine::rt::block_on(store.put_blob(bytes));
                     (void)put_r;
                 });
             }
@@ -190,7 +191,7 @@ int main() {
             FileWorktreeObjectStore probe(objects_dir);
             auto digest_r = agentengine::compute_digest(bytes);
             if (!digest_r.has_value()) { ++missing; continue; }
-            auto get_r = probe.get_blob(*digest_r);
+            auto get_r = agentengine::rt::block_on(probe.get_blob(*digest_r));
             if (!get_r.has_value()) { ++missing; continue; }
             if (get_r->size() != bytes.size() || *get_r != bytes) ++corrupted;
         }

@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "agentengine/rt/project_supervisor.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::CheckpointReport;
@@ -100,17 +101,21 @@ static_assert(agentengine::ChatClient<OneShotChatClient>);
 // stubbed to the simplest contract-satisfying answer.
 class AlwaysFailingStore {
 public:
-    [[nodiscard]] agentengine::result<void> save(agentengine::rt::SessionId const&, std::vector<std::byte>) {
-        return std::unexpected(agentengine::error{agentengine::failure_class::transient,
-                                                    "AlwaysFailingStore refuses every save()",
-                                                    "test.always_failing_store.save"});
+    [[nodiscard]] agentengine::task<agentengine::result<void>> save(agentengine::rt::SessionId,
+                                                                      std::vector<std::byte>) {
+        co_return std::unexpected(agentengine::error{agentengine::failure_class::transient,
+                                                       "AlwaysFailingStore refuses every save()",
+                                                       "test.always_failing_store.save"});
     }
-    [[nodiscard]] agentengine::result<std::vector<std::byte>> load(agentengine::rt::SessionId const&) const {
-        return std::unexpected(agentengine::error{agentengine::failure_class::contract, "unused",
-                                                    "test.always_failing_store.load"});
+    [[nodiscard]] agentengine::task<agentengine::result<std::vector<std::byte>>> load(
+        agentengine::rt::SessionId) const {
+        co_return std::unexpected(agentengine::error{agentengine::failure_class::contract, "unused",
+                                                       "test.always_failing_store.load"});
     }
-    [[nodiscard]] bool exists(agentengine::rt::SessionId const&) const { return false; }
-    [[nodiscard]] agentengine::result<void> remove(agentengine::rt::SessionId const&) { return {}; }
+    [[nodiscard]] agentengine::task<bool> exists(agentengine::rt::SessionId) const { co_return false; }
+    [[nodiscard]] agentengine::task<agentengine::result<void>> remove(agentengine::rt::SessionId) {
+        co_return agentengine::result<void>{};
+    }
 };
 static_assert(agentengine::rt::SessionStore<AlwaysFailingStore>);
 
@@ -151,8 +156,8 @@ int main() {
         // ---- Q2: checkpoint_members_and_workflows() actually writes both members' snapshots -------
         CheckpointReport report = drive(sup.checkpoint_members_and_workflows());
         check(report.all_ok(), "Q2: checkpointing two healthy members reports no failures");
-        check(store_a.exists("member-a"), "Q2: member_a's snapshot actually landed in its own store");
-        check(store_b.exists("member-b"), "Q2: member_b's snapshot actually landed in its own store");
+        check(agentengine::rt::block_on(store_a.exists("member-a")), "Q2: member_a's snapshot actually landed in its own store");
+        check(agentengine::rt::block_on(store_b.exists("member-b")), "Q2: member_b's snapshot actually landed in its own store");
     }
 
     // ---- Q2/Q5: a workflow's checkpoint is also written, and runs AFTER every member's -------------
@@ -199,8 +204,8 @@ int main() {
 
         CheckpointReport report = drive(sup.checkpoint_members_and_workflows());
         check(report.all_ok(), "Q2/Q5: checkpointing a healthy member + a healthy workflow succeeds");
-        check(member_store.exists("member-c"), "Q2: the member's snapshot landed");
-        check(workflow_store.exists(wf_sup.run_id()),
+        check(agentengine::rt::block_on(member_store.exists("member-c")), "Q2: the member's snapshot landed");
+        check(agentengine::rt::block_on(workflow_store.exists(wf_sup.run_id())),
               "Q2: the workflow's checkpoint landed under its own run_id");
     }
 
@@ -239,9 +244,9 @@ int main() {
             check(report.failures[0].err.code == "test.always_failing_store.save",
                   "Q3: the real underlying store error is surfaced through, not swallowed");
         }
-        check(store_first.exists("ok-first"),
+        check(agentengine::rt::block_on(store_first.exists("ok-first")),
               "Q3: the member registered BEFORE the failing one still got checkpointed");
-        check(store_last.exists("ok-last"),
+        check(agentengine::rt::block_on(store_last.exists("ok-last")),
               "Q3: the member registered AFTER the failing one ALSO still got checkpointed -- "
               "checkpoint_members_and_workflows() does not abort on the first failure");
     }

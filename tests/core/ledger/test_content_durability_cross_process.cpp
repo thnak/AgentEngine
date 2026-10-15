@@ -56,6 +56,7 @@
 
 #include "agentengine/core/file_worktree_object_store.hpp"
 #include "agentengine/core/ledger.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -112,8 +113,8 @@ int run_writer_role(std::filesystem::path const& objects_dir, std::filesystem::p
                                "file-backed Ledger<FileWorktreeObjectStore>");
     if (!root_r.has_value()) return 1;
 
-    auto root_blob_r = ledger.put_blob_safe(to_bytes("real content committed by process 1, on the root"),
-                                              owner);
+    auto root_blob_r = agentengine::rt::block_on(ledger.put_blob_safe(to_bytes("real content committed by process 1, on the root"),
+                                              owner));
     check(root_blob_r.has_value(), "[1] writer: put_blob_safe() on the root succeeds through the real, "
                                     "file-backed object store");
     if (!root_blob_r.has_value()) return 1;
@@ -130,7 +131,7 @@ int run_writer_role(std::filesystem::path const& objects_dir, std::filesystem::p
     if (!child_r.has_value()) return 1;
 
     auto child_blob_r =
-        ledger.put_blob_safe(to_bytes("real content committed by process 1, on the CHILD"), owner);
+        agentengine::rt::block_on(ledger.put_blob_safe(to_bytes("real content committed by process 1, on the CHILD"), owner));
     check(child_blob_r.has_value(), "[1] writer: put_blob_safe() on the child succeeds");
     if (!child_blob_r.has_value()) return 1;
 
@@ -265,7 +266,7 @@ int run_reader_role(std::filesystem::path const& self_exe) {
     // [5] read the REAL, merged, disk-recovered content back through the ACL-gated production read
     // path and confirm it is genuinely both blobs, byte-for-byte -- not merely "merge() returned
     // success".
-    auto merged_tree_r = ledger.get_tree_safe(merge_r->tree, owner);
+    auto merged_tree_r = agentengine::rt::block_on(ledger.get_tree_safe(merge_r->tree, owner));
     check(merged_tree_r.has_value(), "[5] reader: get_tree_safe() on the merged checkpoint's own tree "
                                       "succeeds");
     if (!merged_tree_r.has_value()) return EXIT_FAILURE;
@@ -275,7 +276,7 @@ int run_reader_role(std::filesystem::path const& self_exe) {
 
     bool root_note_ok = false, child_note_ok = false;
     for (TreeEntry const& entry : merged_tree_r->entries) {
-        auto blob_r = ledger.get_blob_safe(entry.digest, owner);
+        auto blob_r = agentengine::rt::block_on(ledger.get_blob_safe(entry.digest, owner));
         if (!blob_r.has_value()) continue;
         std::string content(reinterpret_cast<char const*>(blob_r->data()), blob_r->size());
         if (entry.name == "root-note.txt" && content == "real content committed by process 1, on the root") {

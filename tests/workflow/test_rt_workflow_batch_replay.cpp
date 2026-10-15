@@ -253,7 +253,7 @@ constexpr std::int64_t kStart = 1'790'987'445'123'456'789;  // past 2^53: exerci
         BatchPolicy pol;
         pol.now_ns = first.clock;
         (void)sup.enable_batch_coalescing(pol);
-        sup.set_checkpoint_hook([&saved](std::uint32_t, RunStateRecord const& rec) { saved = rec; });
+        sup.set_checkpoint_hook([&saved](std::uint32_t, RunStateRecord rec) -> agentengine::task<void> { saved = std::move(rec); co_return; });
         cap.add(drive(sup.run_workflow(RunWorkflow{text_message("x")})));
     }
     auto decoded = rt::decode_run_state_record(rt::encode_run_state_record(saved));

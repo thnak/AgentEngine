@@ -166,18 +166,18 @@ public:
     }
 
     // `SecretStore` concept.
-    [[nodiscard]] result<SecretLease> resolve(SecretRef const& ref, EffectContext& ctx) const {
+    [[nodiscard]] task<result<SecretLease>> resolve(SecretRef ref, EffectContext& ctx) const {
         if (auto gate = secret_detail::require_secret_capability(ref, ctx); !gate) {
-            return std::unexpected(gate.error());
+            co_return std::unexpected(gate.error());
         }
         std::lock_guard<std::mutex> lock(mu_);
         auto it = values_.find(ref.name);
         if (it == values_.end()) {
-            return std::unexpected(error{failure_class::contract,
-                                          "no quarantined secret for '" + ref.name + "'",
-                                          "secret_quarantine.not_found"});
+            co_return std::unexpected(error{failure_class::contract,
+                                             "no quarantined secret for '" + ref.name + "'",
+                                             "secret_quarantine.not_found"});
         }
-        return SecretLease{ref, make_secret(it->second)};
+        co_return SecretLease{ref, make_secret(it->second)};
     }
 
     // HOST-ONLY -- there is no path from any `Tool::invoke()` body (model-reachable code) to this

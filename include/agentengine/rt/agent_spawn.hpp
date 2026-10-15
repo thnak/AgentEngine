@@ -368,8 +368,8 @@ private:
             agentengine::derive_spawn_child_id(req.caller_ref, req.caller_principal, seq);
         if (!child_id) return std::unexpected(child_id.error());
 
-        agentengine::result<agentengine::SpawnWorktreeGrant> worktree_grant = agentengine::mint_spawn_worktree(
-            ref_store_, req.caller_ref, *child_id, req.worktree_mode, *req.caller_held, req.caller_mount_id);
+        agentengine::result<agentengine::SpawnWorktreeGrant> worktree_grant = agent_spawn_detail::drive(agentengine::mint_spawn_worktree(
+            ref_store_, req.caller_ref, *child_id, req.worktree_mode, *req.caller_held, req.caller_mount_id));
         if (!worktree_grant) return std::unexpected(worktree_grant.error());
 
         return SpawnMintResult{*grant, *child_id, *worktree_grant};

@@ -1,6 +1,7 @@
 # ADR-064 — Can a synchronous `ToolDescriptor::invoke` safely reach `Embedder::embed_batch()`'s `task<T>`?
 
 **Status:** Judged (2026-08-19, project owner sign-off). Design B implemented and proven (2026-08-19).
+**Superseded in part (2026-10-14, ADR-237 §14 step 44, #172):** `ToolDescriptor::invoke` is `task`-shaped (ADR-237 §5.2), so both RAG `recall` tools now `co_await` their embedder and index. The `synchronous_leaf` trait and the `rt::drive_leaf_task()` path this ADR designed are no longer used by them, and the `Embedder` concept no longer requires the trait.
 Designed, then red-teamed once (§4, `general-purpose` agent, no prior context) — found
 2 critical + 3 real-gap + 2 minor findings against the design, **plus one real, pre-existing, latent
 bug in already-shipped code** (`ThreadPool`+`AsyncMutex`+`AgentSession` — see §4 finding 1). Design B

@@ -39,6 +39,7 @@
 #include "agentengine/core/composed_context_provider.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/sandbox/live_shell_sandbox_provider.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -295,7 +296,7 @@ using PerRunProvider = LiveShellSandboxProvider<FakeLiveSurface>;
 using PerSessionProvider = LiveShellSandboxProvider<FakeLiveSurface, InMemoryWorktreeObjectStore, lifetime::PerSession>;
 
 [[nodiscard]] bool tree_has(Ledger<>& ledger, std::string const& tree_digest, IdentityHandle who, std::string const& name) {
-    auto tree = ledger.get_tree_safe(tree_digest, who);
+    auto tree = agentengine::rt::block_on(ledger.get_tree_safe(tree_digest, who));
     if (!tree.has_value()) return false;
     return std::any_of(tree->entries.begin(), tree->entries.end(), [&](auto const& e) { return e.name == name; });
 }

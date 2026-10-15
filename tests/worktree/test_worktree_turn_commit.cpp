@@ -15,6 +15,7 @@
 #include <string>
 
 #include "agentengine/core/worktree.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using namespace agentengine;
 using agentengine::rt::InMemoryAppendLogStore;
@@ -39,16 +40,16 @@ std::vector<std::byte> bytes_of(std::string const& content) {
     return bytes;
 }
 
-Digest empty_tree(InMemoryWorktreeObjectStore& store) { return *store.put_tree(Tree{}); }
+Digest empty_tree(InMemoryWorktreeObjectStore& store) { return *agentengine::rt::block_on(store.put_tree(Tree{})); }
 
 // A one-file tree {"a.txt" -> content}, matching how mount_write's own set_entry_at_path would build
 // one turn's worth of change -- built directly here since these tests exercise the ref/turn layer,
 // not the mount layer.
 Digest one_file_tree(InMemoryWorktreeObjectStore& store, std::string const& content) {
-    auto blob = store.put_blob(bytes_of(content));
+    auto blob = agentengine::rt::block_on(store.put_blob(bytes_of(content)));
     Tree t;
     t.entries.push_back(TreeEntry{"a.txt", *blob, false});
-    return *store.put_tree(t);
+    return *agentengine::rt::block_on(store.put_tree(t));
 }
 
 } // namespace
@@ -61,7 +62,7 @@ int main() {
         InMemoryWorktreeObjectStore obj_store;
         auto d0 = empty_tree(obj_store);
 
-        auto t1 = commit_turn(ref_store, "session:turn-1", d0);
+        auto t1 = agentengine::rt::block_on(commit_turn(ref_store, "session:turn-1", d0));
         AE_CHECK(t1.has_value() && t1->ref.name == "session:turn-1" && t1->ref.tree_digest == d0,
                  "D1-C1: commit_turn on a fresh name succeeds and returns the moved Ref");
         AE_CHECK(t1.has_value() && t1->turn == 1, "D1-C1: the first turn committed on a fresh name is turn 1");
@@ -75,12 +76,12 @@ int main() {
         auto d0 = empty_tree(obj_store);
         auto d1 = one_file_tree(obj_store, "v1");
 
-        auto t1 = commit_turn(ref_store, "session:turn-2", d0);
+        auto t1 = agentengine::rt::block_on(commit_turn(ref_store, "session:turn-2", d0));
         AE_CHECK(t1.has_value() && t1->turn == 1, "D1-C2: setup -- first turn is 1");
-        auto t2 = commit_turn(ref_store, "session:turn-2", d1);
+        auto t2 = agentengine::rt::block_on(commit_turn(ref_store, "session:turn-2", d1));
         AE_CHECK(t2.has_value() && t2->turn == 2, "D1-C2: the second turn on the same name is 2, not 1 again");
 
-        auto live = read_ref(ref_store, "session:turn-2");
+        auto live = agentengine::rt::block_on(read_ref(ref_store, "session:turn-2"));
         AE_CHECK(live.has_value() && live->has_value() && (*live)->tree_digest == d1,
                  "D1-C2: read_ref reflects the latest turn's digest, same as an ordinary commit_ref would");
     }
@@ -92,9 +93,9 @@ int main() {
         InMemoryWorktreeObjectStore obj_store;
         auto d0 = empty_tree(obj_store);
         for (int i = 0; i < 5; ++i) {
-            AE_CHECK(commit_turn(ref_store, "session:busy", d0).has_value(), "D1-R1: setup -- busy ref commit");
+            AE_CHECK(agentengine::rt::block_on(commit_turn(ref_store, "session:busy", d0)).has_value(), "D1-R1: setup -- busy ref commit");
         }
-        auto fresh = commit_turn(ref_store, "session:fresh", d0);
+        auto fresh = agentengine::rt::block_on(commit_turn(ref_store, "session:fresh", d0));
         AE_CHECK(fresh.has_value() && fresh->turn == 1,
                  "D1-R1: a freshly-named ref's first turn is 1 regardless of a sibling ref's own history");
     }
@@ -112,28 +113,28 @@ int main() {
         auto d_v1 = one_file_tree(obj_store, "v1");
         auto d_v2 = one_file_tree(obj_store, "v2");
 
-        auto turn1 = commit_turn(ref_store, name, d_empty);  // turn 1: empty root
-        auto turn2 = commit_turn(ref_store, name, d_v1);     // turn 2: a.txt = v1
-        auto turn3 = commit_turn(ref_store, name, d_v2);     // turn 3: a.txt = v2
+        auto turn1 = agentengine::rt::block_on(commit_turn(ref_store, name, d_empty));  // turn 1: empty root
+        auto turn2 = agentengine::rt::block_on(commit_turn(ref_store, name, d_v1));     // turn 2: a.txt = v1
+        auto turn3 = agentengine::rt::block_on(commit_turn(ref_store, name, d_v2));     // turn 3: a.txt = v2
         AE_CHECK(turn1.has_value() && turn2.has_value() && turn3.has_value() && turn1->turn == 1 &&
                      turn2->turn == 2 && turn3->turn == 3,
                  "D2-C1: setup -- three turns committed in order");
 
         // D2-C1: turn_digest_at fetches turn 2's exact digest, and the tree it names really is
         // a.txt=v1 (content read back, not just digest equality assumed).
-        auto fetched_digest = turn_digest_at(ref_store, name, 2);
+        auto fetched_digest = agentengine::rt::block_on(turn_digest_at(ref_store, name, 2));
         AE_CHECK(fetched_digest.has_value() && *fetched_digest == d_v1,
-                 "D2-C1: turn_digest_at(turn 2) returns exactly the digest committed at that turn");
-        auto fetched_tree = obj_store.get_tree(*fetched_digest);
+                 "D2-C1: agentengine::rt::block_on(turn_digest_at(turn 2)) returns exactly the digest committed at that turn");
+        auto fetched_tree = agentengine::rt::block_on(obj_store.get_tree(*fetched_digest));
         AE_CHECK(fetched_tree.has_value() && fetched_tree->entries.size() == 1 &&
                      fetched_tree->entries[0].name == "a.txt",
                  "D2-C1: the fetched turn's tree really does contain a.txt (not merely digest equality)");
 
         // D2-C2: rewinding to turn 2 moves the ref's LIVE head backward to that digest.
-        auto rewound = rewind_to_turn(ref_store, name, 2);
+        auto rewound = agentengine::rt::block_on(rewind_to_turn(ref_store, name, 2));
         AE_CHECK(rewound.has_value() && rewound->ref.tree_digest == d_v1,
-                 "D2-C2: rewind_to_turn(2) reports the restored Ref pointing at turn 2's digest");
-        auto live_after_rewind = read_ref(ref_store, name);
+                 "D2-C2: agentengine::rt::block_on(rewind_to_turn(2)) reports the restored Ref pointing at turn 2's digest");
+        auto live_after_rewind = agentengine::rt::block_on(read_ref(ref_store, name));
         AE_CHECK(live_after_rewind.has_value() && live_after_rewind->has_value() &&
                      (*live_after_rewind)->tree_digest == d_v1,
                  "D2-C2: read_ref's live head is now turn 2's digest (v1), not turn 3's (v2) -- true "
@@ -143,10 +144,10 @@ int main() {
         // fully retained and exactly recoverable -- a rewind narrows nothing it passed over.
         AE_CHECK(rewound.has_value() && rewound->turn == 4,
                  "D2-C3: the rewind commit itself is a new, ordinary turn (4), not a history edit at turn 2");
-        auto still_there = turn_digest_at(ref_store, name, 3);
+        auto still_there = agentengine::rt::block_on(turn_digest_at(ref_store, name, 3));
         AE_CHECK(still_there.has_value() && *still_there == d_v2,
                  "D2-C3: turn 3's digest (v2) is still retained after rewinding past it");
-        auto second_rewind = rewind_to_turn(ref_store, name, 3);
+        auto second_rewind = agentengine::rt::block_on(rewind_to_turn(ref_store, name, 3));
         AE_CHECK(second_rewind.has_value() && second_rewind->ref.tree_digest == d_v2 &&
                      second_rewind->turn == 5,
                  "D2-C3: a SECOND rewind (to turn 3) exactly recovers the state that existed just "
@@ -161,26 +162,26 @@ int main() {
         InMemoryWorktreeObjectStore obj_store;
         std::string const name = "session:rewind-negative";
         auto d0 = empty_tree(obj_store);
-        AE_CHECK(commit_turn(ref_store, name, d0).has_value() &&
-                     commit_turn(ref_store, name, one_file_tree(obj_store, "only-turn-2")).has_value(),
+        AE_CHECK(agentengine::rt::block_on(commit_turn(ref_store, name, d0)).has_value() &&
+                     agentengine::rt::block_on(commit_turn(ref_store, name, one_file_tree(obj_store, "only-turn-2"))).has_value(),
                  "D2-C4: setup -- two turns committed (1 and 2)");
 
-        auto zero = turn_digest_at(ref_store, name, 0);
+        auto zero = agentengine::rt::block_on(turn_digest_at(ref_store, name, 0));
         AE_CHECK(!zero.has_value() && zero.error().code == "worktree.turn_not_found",
                  "D2-C4: turn 0 (turns start at 1) fails closed with worktree.turn_not_found");
 
-        auto past_end = turn_digest_at(ref_store, name, 99);
+        auto past_end = agentengine::rt::block_on(turn_digest_at(ref_store, name, 99));
         AE_CHECK(!past_end.has_value() && past_end.error().code == "worktree.turn_not_found",
                  "D2-C4: a turn number past the last commit fails closed the same way");
 
-        auto never_committed = turn_digest_at(ref_store, "session:never-committed-at-all", 1);
+        auto never_committed = agentengine::rt::block_on(turn_digest_at(ref_store, "session:never-committed-at-all", 1));
         AE_CHECK(!never_committed.has_value() && never_committed.error().code == "worktree.turn_not_found",
                  "D2-C4: a name with no log at all fails closed identically, not with a different code");
 
         // Positive control: turn 1 on this SAME ref (the boundary right next to the rejected turn 0)
         // resolves cleanly -- proving the rejections above are really about the specific turn number,
         // not e.g. this ref being broken in some other way.
-        auto turn1_ok = turn_digest_at(ref_store, name, 1);
+        auto turn1_ok = agentengine::rt::block_on(turn_digest_at(ref_store, name, 1));
         AE_CHECK(turn1_ok.has_value() && *turn1_ok == d0,
                  "D2-C4 (positive control): turn 1, immediately next to the rejected turn 0, resolves fine");
     }
@@ -195,20 +196,20 @@ int main() {
         Mount mount{"/work", name, ""};
         cap::FsRead granted{"/work", "", std::nullopt};
 
-        AE_CHECK(commit_turn(ref_store, name, empty_tree(obj_store)).has_value(),
+        AE_CHECK(agentengine::rt::block_on(commit_turn(ref_store, name, empty_tree(obj_store))).has_value(),
                  "D2-C5: setup -- turn 1, empty root");
-        AE_CHECK(commit_turn(ref_store, name, one_file_tree(obj_store, "old-content")).has_value(),
+        AE_CHECK(agentengine::rt::block_on(commit_turn(ref_store, name, one_file_tree(obj_store, "old-content"))).has_value(),
                  "D2-C5: setup -- turn 2, a.txt = old-content");
-        AE_CHECK(commit_turn(ref_store, name, one_file_tree(obj_store, "new-content")).has_value(),
+        AE_CHECK(agentengine::rt::block_on(commit_turn(ref_store, name, one_file_tree(obj_store, "new-content"))).has_value(),
                  "D2-C5: setup -- turn 3, a.txt = new-content");
 
-        auto before = mount_read(obj_store, ref_store, mount, granted, "a.txt");
+        auto before = agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, granted, "a.txt"));
         AE_CHECK(before.has_value() && std::string(reinterpret_cast<char const*>(before->data()), before->size()) == "new-content",
                  "D2-C5: before rewinding, mount_read sees the latest content");
 
-        AE_CHECK(rewind_to_turn(ref_store, name, 2).has_value(), "D2-C5: rewind to turn 2");
+        AE_CHECK(agentengine::rt::block_on(rewind_to_turn(ref_store, name, 2)).has_value(), "D2-C5: rewind to turn 2");
 
-        auto after = mount_read(obj_store, ref_store, mount, granted, "a.txt");
+        auto after = agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, granted, "a.txt"));
         AE_CHECK(after.has_value() && std::string(reinterpret_cast<char const*>(after->data()), after->size()) == "old-content",
                  "D2-C5: after rewinding to turn 2, mount_read sees the OLD content through the "
                  "ordinary guest-facing read path");

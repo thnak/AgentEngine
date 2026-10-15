@@ -101,7 +101,6 @@
 #include "agentengine/core/embedder.hpp"
 #include "agentengine/core/fs_walk.hpp"
 #include "agentengine/core/error.hpp"
-#include "agentengine/core/remote_vector_index.hpp"
 #include "agentengine/core/sparse_index.hpp"
 #include "agentengine/core/task.hpp"
 #include "agentengine/core/vector_index.hpp"
@@ -515,12 +514,12 @@ public:
         // Idempotent: a re-mount against an already-bootstrapped ref takes the early `has_value()`
         // return and does nothing here.
         {
-            auto existing = read_ref(ref_store, mount.ref_name);
+            auto existing = co_await read_ref(ref_store, mount.ref_name);
             if (!existing) co_return std::unexpected(existing.error());
             if (!existing->has_value()) {
-                auto empty = object_store.put_tree(Tree{});
+                auto empty = co_await object_store.put_tree(Tree{});
                 if (!empty) co_return std::unexpected(empty.error());
-                auto committed = commit_ref(ref_store, mount.ref_name, *empty);
+                auto committed = co_await commit_ref(ref_store, mount.ref_name, *empty);
                 if (!committed) co_return std::unexpected(committed.error());
             }
         }
@@ -602,7 +601,11 @@ public:
                 // mount or an earlier file in THIS pass; `seen_ids_this_pass` additionally catches
                 // two NEW chunks (from two different changed files) colliding within this one pass,
                 // which `index.contains()` alone cannot see yet (neither has been added).
-                if (index.contains(*id) || seen_ids_this_pass.contains(*id)) {
+                // ADR-237 §5.1: the index seam is task-shaped; a failed lookup (a remote index's network
+                // error) aborts the mount before anything is committed.
+                auto indexed = co_await index.contains(*id, ctx);
+                if (!indexed) co_return std::unexpected(indexed.error());
+                if (*indexed || seen_ids_this_pass.contains(*id)) {
                     ++out.chunks_deduped;
                     continue;
                 }
@@ -666,7 +669,7 @@ public:
             for (std::size_t k = start; k < end; ++k) {
                 auto const& pc = pending[k];
                 auto chunk_bytes = std::as_bytes(std::span{pc.text.data(), pc.text.size()});
-                auto blob_digest = object_store.put_blob(chunk_bytes);
+                auto blob_digest = co_await object_store.put_blob(chunk_bytes);
                 if (!blob_digest) co_return std::unexpected(blob_digest.error());
                 if (*blob_digest != pc.id) {
                     // Should be unreachable (both are `compute_digest()` over the identical bytes) --
@@ -678,14 +681,14 @@ public:
                                                      "corpus_source.chunk_id_mismatch"});
                 }
                 CorpusChunkRecord record{pc.id, pc.source_path, pc.line_start, pc.line_end, pc.source_file_hash};
-                auto written = write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record);
+                auto written = co_await write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record);
                 if (!written) co_return std::unexpected(written.error());
 
                 ids.push_back(pc.id);
                 batch_vecs.push_back(vectors[k]);
             }
 
-            auto added = index.add_batch(ids, batch_vecs);
+            auto added = co_await index.add_batch(ids, batch_vecs, ctx);
             if (!added) co_return std::unexpected(added.error());
             out.chunks_embedded += (end - start);
         }
@@ -738,12 +741,8 @@ public:
     // can actually observe and fill the gap; only the FOLLOWING call may resume passing this call's
     // own returned `file_hashes` for the cheap steady-state path.
     //
-    // `DenseIndexT` is `AnyVectorIndex` (ADR-180 §2.1), not `VectorIndex` alone -- a hybrid corpus may
-    // be ingested straight into a network-backed dense index (e.g. `QdrantVectorIndex`, ADR-180 §2.5)
-    // exactly as readily as a local one; the `RemoteVectorIndex` branches below `co_await` its
-    // `add_batch()`/`contains()` (this method is already a coroutine, so no `synchronous_leaf` gate is
-    // needed here -- that trait only matters for driving a task synchronously from `recall`'s
-    // synchronous `invoke`, not from a plain, already-async mount call).
+    // `DenseIndexT` may be local or network-backed (e.g. `QdrantVectorIndex`, ADR-180 §2.5): since ADR-237
+    // §5.1 both are one `task`-shaped `VectorIndex`, so every index call below is simply awaited.
     //
     // Partial-failure/commit-ordering policy is IDENTICAL to mount()'s own (see this file's top
     // comment): every embed_batch() sub-batch for NEW dense chunks runs first, entirely, before any
@@ -751,7 +750,7 @@ public:
     // failure partway through leaves both `dense_index.contains()`/`sparse_index.contains()` false for
     // the affected ids -- the next mount_hybrid() call retries them, rather than leaving a permanent
     // ghost entry on either leg.
-    template <Embedder EmbedderT, AnyVectorIndex DenseIndexT, SparseIndex SparseIndexT,
+    template <Embedder EmbedderT, VectorIndex DenseIndexT, SparseIndex SparseIndexT,
               WorktreeObjectStore OS, rt::AppendLogStore RS, ChunkingPolicy ChunkerT = RecursiveChunker>
     [[nodiscard]] task<result<DiskCorpusHybridMountResult>> mount_hybrid(
         OS& object_store, RS& ref_store, Mount const& mount, cap::FsWrite const& write_cap,
@@ -767,12 +766,12 @@ public:
 
         // Bootstrap, identical to mount() -- see that method's own comment.
         {
-            auto existing = read_ref(ref_store, mount.ref_name);
+            auto existing = co_await read_ref(ref_store, mount.ref_name);
             if (!existing) co_return std::unexpected(existing.error());
             if (!existing->has_value()) {
-                auto empty = object_store.put_tree(Tree{});
+                auto empty = co_await object_store.put_tree(Tree{});
                 if (!empty) co_return std::unexpected(empty.error());
-                auto committed = commit_ref(ref_store, mount.ref_name, *empty);
+                auto committed = co_await commit_ref(ref_store, mount.ref_name, *empty);
                 if (!committed) co_return std::unexpected(committed.error());
             }
         }
@@ -842,22 +841,17 @@ public:
                 auto id = compute_digest(chunk_bytes);
                 if (!id) co_return std::unexpected(id.error());
 
-                bool dense_has;
-                if constexpr (RemoteVectorIndex<DenseIndexT>) {
-                    auto has = co_await dense_index.contains(*id, ctx);
-                    if (!has) co_return std::unexpected(has.error());
-                    dense_has = *has;
-                } else {
-                    dense_has = dense_index.contains(*id);
-                }
-                bool const sparse_has = sparse_index.contains(*id);
+                auto dense_has = co_await dense_index.contains(*id, ctx);
+                if (!dense_has) co_return std::unexpected(dense_has.error());
+                auto sparse_has = co_await sparse_index.contains(*id, ctx);
+                if (!sparse_has) co_return std::unexpected(sparse_has.error());
 
                 // seen_ids_this_pass catches two NEW chunks from two different changed files
                 // colliding within THIS pass -- neither index has seen either yet, so contains()
                 // alone can't (same reasoning mount()'s own identical check already documents).
                 bool const already_seen_this_pass = seen_ids_this_pass.contains(*id);
-                bool const needs_dense  = !dense_has && !already_seen_this_pass;
-                bool const needs_sparse = !sparse_has && !already_seen_this_pass;
+                bool const needs_dense  = !*dense_has && !already_seen_this_pass;
+                bool const needs_sparse = !*sparse_has && !already_seen_this_pass;
                 if (already_seen_this_pass) {
                     // ADR-180 §4 red-team finding M2 (2026-09-22): count this occurrence as deduped
                     // on BOTH legs unconditionally, not gated on `dense_has`/`sparse_has` -- this
@@ -919,7 +913,7 @@ public:
         // --- Commit: blob + record first (idempotent, both legs), then each leg's own add_batch() -------
         for (auto const& pc : pending) {
             auto chunk_bytes = std::as_bytes(std::span{pc.text.data(), pc.text.size()});
-            auto blob_digest = object_store.put_blob(chunk_bytes);
+            auto blob_digest = co_await object_store.put_blob(chunk_bytes);
             if (!blob_digest) co_return std::unexpected(blob_digest.error());
             if (*blob_digest != pc.id) {
                 co_return std::unexpected(error{failure_class::fatal,
@@ -927,7 +921,7 @@ public:
                                                  "corpus_source.chunk_id_mismatch"});
             }
             CorpusChunkRecord record{pc.id, pc.source_path, pc.line_start, pc.line_end, pc.source_file_hash};
-            auto written = write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record);
+            auto written = co_await write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record);
             if (!written) co_return std::unexpected(written.error());
         }
 
@@ -951,11 +945,7 @@ public:
                 dense_vecs.push_back(vectors.at(i));
             }
             if (!dense_ids.empty()) {
-                if constexpr (RemoteVectorIndex<DenseIndexT>) {
-                    dense_add_result = co_await dense_index.add_batch(dense_ids, dense_vecs, ctx);
-                } else {
-                    dense_add_result = dense_index.add_batch(dense_ids, dense_vecs);
-                }
+                dense_add_result = co_await dense_index.add_batch(dense_ids, dense_vecs, ctx);
                 if (dense_add_result) out.chunks_embedded += dense_ids.size();
             }
         }
@@ -970,7 +960,7 @@ public:
                 sparse_texts.push_back(pc.text);
             }
             if (!sparse_ids.empty()) {
-                sparse_add_result = sparse_index.add_batch(sparse_ids, sparse_texts);
+                sparse_add_result = co_await sparse_index.add_batch(sparse_ids, sparse_texts, ctx);
                 if (sparse_add_result) out.chunks_sparse_indexed += sparse_ids.size();
             }
         }

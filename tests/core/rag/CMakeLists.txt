@@ -57,10 +57,9 @@ if(WIN32)
   agentengine_add_test(test_hybrid_rag_context_provider
     LIBS agentengine::core agentengine::worktree_store agentengine_warnings)
 
-  # decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.1, §4 findings R1/R2 --
-  # `RemoteVectorIndex`/`AnyVectorIndex` (core/remote_vector_index.hpp): concept disjointness, and
-  # real (not merely mock-compiles) instantiation of every RemoteVectorIndex dispatch branch in
-  # VectorRagContextProvider, HybridRagContextProvider, and DiskCorpusSource::mount_hybrid().
+  # decisions/ADR-237 §5.1 (#172): the one task-shaped VectorIndex/SparseIndex seam, driven through every
+  # caller (both RAG providers' on_context() and recall, mount(), mount_hybrid()) by conformers that
+  # genuinely suspend on the reactor. Historical name: this was ADR-180's RemoteVectorIndex dispatch test.
   agentengine_add_test(test_remote_vector_index
     LIBS agentengine::core agentengine::worktree_store agentengine_warnings)
 endif()
@@ -80,6 +79,12 @@ if(AGENTENGINE_WITH_HTTPS)
     LIBS agentengine::core agentengine::provider_http_client agentengine_warnings MbedTLS::mbedtls
       MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   set_tests_properties(test_qdrant_vector_index_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
+
+  # ---- decisions/ADR-237 §5.1 (#172, Phase C slice 2): QdrantVectorIndex and OpenAIEmbedder on rt::http --
+  # the wire, status mapping, cancellation and host-supplied reactor options, against a loopback server.
+  agentengine_add_test(test_rag_backends_on_reactor
+    LIBS agentengine::core agentengine::provider_http_client agentengine_warnings MbedTLS::mbedtls
+      MbedTLS::mbedx509 MbedTLS::mbedcrypto)
 endif()
 
 # decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.6/§3 claim 7 -- VulkanCosineIndex

@@ -33,6 +33,7 @@
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/channel.hpp"
 #include "agentengine/rt/session_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::AgentSessionRecord;
@@ -184,8 +185,8 @@ int main() {
         auto saved = drive(save_agent_session_snapshot(session, store));
         check(saved.has_value(), "P2: save_agent_session_snapshot() succeeds");
 
-        auto loaded = load_agent_session_snapshot(store, "p2");
-        check(loaded.has_value() && loaded->has_value(), "P2: load_agent_session_snapshot() finds it");
+        auto loaded = agentengine::rt::block_on(load_agent_session_snapshot(store, "p2"));
+        check(loaded.has_value() && loaded->has_value(), "P2: agentengine::rt::block_on(load_agent_session_snapshot()) finds it");
         if (loaded.has_value() && loaded->has_value()) {
             AgentSessionRecord const& rec = **loaded;
             check(rec.session_id == "p2", "P2: the loaded record's session_id round-trips");
@@ -200,7 +201,7 @@ int main() {
         session.initialize("p2", Principal{"p2-renamed", "tenant-x"});
         auto saved_again = drive(save_agent_session_snapshot(session, store));
         check(saved_again.has_value(), "P2b setup: a second snapshot under the same id succeeds");
-        auto loaded_again = load_agent_session_snapshot(store, "p2");
+        auto loaded_again = agentengine::rt::block_on(load_agent_session_snapshot(store, "p2"));
         check(loaded_again.has_value() && loaded_again->has_value() &&
                   (*loaded_again)->principal_id == "p2-renamed",
               "P2b: recovery returns the LATEST snapshot, not the first one");
@@ -209,7 +210,7 @@ int main() {
     // P3: loading a session id that was never saved returns std::nullopt, not an error.
     {
         InMemorySessionStore store;
-        auto loaded = load_agent_session_snapshot(store, "never-existed");
+        auto loaded = agentengine::rt::block_on(load_agent_session_snapshot(store, "never-existed"));
         check(loaded.has_value() && !loaded->has_value(),
               "P3: an id that was never saved reports std::nullopt, not a failure");
     }
@@ -246,7 +247,7 @@ int main() {
         check(session.metadata().empty(), "P4: metadata is cleared");
         check(session.last_run_id().empty(), "P4: run identity is cleared");
 
-        auto loaded = load_agent_session_snapshot(store, "p4");
+        auto loaded = agentengine::rt::block_on(load_agent_session_snapshot(store, "p4"));
         check(loaded.has_value() && !loaded->has_value(),
               "P4: post-delete load returns std::nullopt -- indistinguishable from never-existed, "
               "matching the original's own 'no residue' read-path property");
@@ -264,12 +265,12 @@ int main() {
         auto below_threshold = drive(checkpoint_if_due<CheckpointCadence<3>>(session, store, 1));
         check(below_threshold.has_value() && !*below_threshold,
               "P5: below the cadence threshold, checkpoint_if_due() reports false (skipped)");
-        check(!store.exists("p5"), "P5: a skipped checkpoint writes nothing to the store");
+        check(!agentengine::rt::block_on(store.exists("p5")), "P5: a skipped checkpoint writes nothing to the store");
 
         auto at_threshold = drive(checkpoint_if_due<CheckpointCadence<3>>(session, store, 3));
         check(at_threshold.has_value() && *at_threshold,
               "P5: at the cadence threshold, checkpoint_if_due() reports true (written)");
-        check(store.exists("p5"), "P5: a due checkpoint actually writes a record to the store");
+        check(agentengine::rt::block_on(store.exists("p5")), "P5: a due checkpoint actually writes a record to the store");
     }
 
     // P6: the in-flight guard -- snapshot_record() queues behind a genuinely in-flight start_run()

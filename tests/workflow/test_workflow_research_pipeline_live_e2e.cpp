@@ -80,6 +80,7 @@
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
 #include "agentengine/workflow/graph.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using namespace agentengine;
 using namespace agentengine::workflow;
@@ -530,8 +531,8 @@ int main() {
         };
 
         WorkflowSupervisor sup;
-        result<bool> resumed = WorkflowCheckpointManager<FileSessionStore>::resume_or_start(
-            reopened, run_id, sup, wf, bodies2);
+        result<bool> resumed = agentengine::rt::block_on(WorkflowCheckpointManager<FileSessionStore>::resume_or_start(
+            reopened, run_id, sup, wf, bodies2));
         check(resumed.has_value() && *resumed == true,
               "P2: resume_or_start() finds the on-disk checkpoint and resumes instead of starting "
               "fresh (mirrors examples/22_magentic_plan_signoff_checkpoint.cpp's exact mechanics)");

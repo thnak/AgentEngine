@@ -94,6 +94,7 @@
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
 #include "agentengine/workflow/graph.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #ifndef AGENTENGINE_REPO_ROOT
 #error "AGENTENGINE_REPO_ROOT must be defined by tests/CMakeLists.txt"
@@ -751,8 +752,8 @@ int main() {
         };
 
         WorkflowSupervisor sup;
-        result<bool> resumed = WorkflowCheckpointManager<FileSessionStore>::resume_or_start(
-            reopened, run_id, sup, wf, bodies2);
+        result<bool> resumed = agentengine::rt::block_on(WorkflowCheckpointManager<FileSessionStore>::resume_or_start(
+            reopened, run_id, sup, wf, bodies2));
         check(resumed.has_value() && *resumed == true,
               "resume_or_start() finds the on-disk checkpoint and resumes instead of starting fresh");
 

@@ -27,7 +27,13 @@
 #include "agentengine/core/vector_index.hpp"
 #include "agentengine/core/worktree.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "../../support/run_task_sync.hpp"
+#include "../../support/index_sync.hpp"
+
+using agentengine::test_support::sync_add_batch;
+using agentengine::test_support::sync_contains;
+using agentengine::test_support::sync_search;
 
 namespace {
 
@@ -46,7 +52,6 @@ int g_failures = 0;
 // Same deterministic, scripted shape test_vector_rag_context_provider.cpp's MockEmbedder uses.
 class MockEmbedder {
 public:
-    static constexpr bool synchronous_leaf = true;
     [[nodiscard]] ae::EmbedderCapabilities capabilities() const { return {3, 100}; }
 
     ae::task<ae::result<std::vector<std::vector<float>>>> embed_batch(std::vector<std::string> const& texts,
@@ -85,9 +90,9 @@ ae::Message make_msg(ae::role r, std::string text, std::string message_id) {
 ae::result<ae::Ref> bootstrap_corpus_worktree(ae::InMemoryWorktreeObjectStore& object_store,
                                                 ae::rt::InMemoryAppendLogStore& ref_store,
                                                 ae::Mount const& mount) {
-    auto empty = object_store.put_tree(ae::Tree{});
+    auto empty = agentengine::rt::block_on(object_store.put_tree(ae::Tree{}));
     if (!empty) return std::unexpected(empty.error());
-    return ae::commit_ref(ref_store, mount.ref_name, *empty);
+    return agentengine::rt::block_on(ae::commit_ref(ref_store, mount.ref_name, *empty));
 }
 
 // Writes one hand-built chunk into BOTH the dense and sparse index -- the hybrid sibling of
@@ -98,7 +103,7 @@ ae::result<ae::Digest> write_chunk(ae::InMemoryWorktreeObjectStore& object_store
                                      ae::BM25Index& sparse, std::string const& text,
                                      std::string const& source_path, std::size_t line_start,
                                      std::size_t line_end, std::vector<float> const& vec) {
-    auto digest = object_store.put_blob(std::as_bytes(std::span{text.data(), text.size()}));
+    auto digest = agentengine::rt::block_on(object_store.put_blob(std::as_bytes(std::span{text.data(), text.size()})));
     if (!digest) return std::unexpected(digest.error());
 
     ae::CorpusChunkRecord record{};
@@ -107,12 +112,12 @@ ae::result<ae::Digest> write_chunk(ae::InMemoryWorktreeObjectStore& object_store
     record.line_start       = line_start;
     record.line_end         = line_end;
     record.source_file_hash = "test-file-hash";
-    auto written = ae::write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record);
+    auto written = agentengine::rt::block_on(ae::write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record));
     if (!written) return std::unexpected(written.error());
 
-    auto dense_added = dense.add_batch({*digest}, {vec});
+    auto dense_added = sync_add_batch(dense, {*digest}, {vec});
     if (!dense_added) return std::unexpected(dense_added.error());
-    auto sparse_added = sparse.add_batch({*digest}, {text});
+    auto sparse_added = sync_add_batch(sparse, {*digest}, {text});
     if (!sparse_added) return std::unexpected(sparse_added.error());
 
     return digest;

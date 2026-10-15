@@ -32,6 +32,7 @@
 #include "agentengine/core/provenance_marker.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine {
 
@@ -192,13 +193,13 @@ inline constexpr double kMaxRelativeRecencyBoost = 1.0;
 // fixed memory-worktree tree digest and a fixed turn; no network call occurs") — every input is
 // either stored, structured data or the query text itself; nothing here reads a clock or calls out.
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<std::vector<MemoryItem>> rank_memory_items(OS& object_store, RS& ref_store,
-                                                                   Mount const& mount,
-                                                                   cap::FsRead const& granted,
-                                                                   std::string const& query_text,
+[[nodiscard]] task<result<std::vector<MemoryItem>>> rank_memory_items(OS& object_store, RS& ref_store,
+                                                                   Mount mount,
+                                                                   cap::FsRead granted,
+                                                                   std::string query_text,
                                                                    std::size_t max_results) {
-    auto items = list_memory_items(object_store, ref_store, mount, granted);
-    if (!items) return std::unexpected(items.error());
+    auto items = co_await list_memory_items(object_store, ref_store, mount, granted);
+    if (!items) co_return std::unexpected(items.error());
 
     std::uint64_t max_write_seq = 0;
     for (auto const& item : *items) max_write_seq = std::max(max_write_seq, item.write_seq);
@@ -223,7 +224,7 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
     for (std::size_t k = 0; k < scored.size() && k < max_results; ++k) {
         out.push_back((*items)[scored[k].second]);
     }
-    return out;
+    co_return out;
 }
 
 // ADR-237 §5.2: the contributed `recall` tool as a real `Tool<>` conformer (it was a hand-built
@@ -248,7 +249,7 @@ struct RecallTool : Tool<RecallTool<OS, RS>, Capabilities<>, Approval<approval_m
           read_cap_(std::move(read_cap)) {}
 
     [[nodiscard]] task<result<Reply>> invoke(Args args, EffectContext&) const {
-        auto ranked = rank_memory_items(*object_store_, *ref_store_, mount_, read_cap_, args.query,
+        auto ranked = co_await rank_memory_items(*object_store_, *ref_store_, mount_, read_cap_, args.query,
                                         /*max_results=*/10);
         if (!ranked) co_return std::unexpected(ranked.error());
         // Gap-audit finding 17 applies here identically to `on_context()`'s default injection -- an
@@ -303,7 +304,7 @@ public:
         note_user_message(session_ctx.history);
 
         auto ranked =
-            rank_memory_items(*object_store_, *ref_store_, mount_, read_cap_, query_text, max_injected_);
+            co_await rank_memory_items(*object_store_, *ref_store_, mount_, read_cap_, query_text, max_injected_);
         if (!ranked) co_return std::unexpected(ranked.error());
 
         ContextContribution contribution;
@@ -400,7 +401,7 @@ public:
         item.content = last_extraction_.text;
         item.origin = MemoryOrigin{memory_source::model_inferred, ctx.run_id,
                                     std::to_string(ctx.turn_index), ctx.principal};
-        (void)write_memory_item(*object_store_, *ref_store_, mount_, write_cap_, item);
+        (void)co_await write_memory_item(*object_store_, *ref_store_, mount_, write_cap_, item);
         co_return std::monostate{};
     }
 

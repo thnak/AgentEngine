@@ -45,6 +45,7 @@
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/tool_pipeline.hpp"  // IdempotencyKey
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine::rt {
 
@@ -228,22 +229,22 @@ struct reader {
 
 namespace effect_journal_detail {
 template <AppendLogStore StoreT>
-[[nodiscard]] result<void> append_entry(StoreT& store, std::string_view session_id,
-                                          EffectJournalEntry const& entry) {
+[[nodiscard]] task<result<void>> append_entry(StoreT& store, std::string session_id,
+                                          EffectJournalEntry entry) {
     auto bytes = encode_effect_journal_entry(entry);
-    if (!bytes) return std::unexpected(bytes.error());
-    auto appended = store.append(effect_journal_log_id(session_id), std::move(*bytes));
-    if (!appended) return std::unexpected(appended.error());
-    return {};
+    if (!bytes) co_return std::unexpected(bytes.error());
+    auto appended = co_await store.append(effect_journal_log_id(session_id), std::move(*bytes));
+    if (!appended) co_return std::unexpected(appended.error());
+    co_return result<void>{};
 }
 }  // namespace effect_journal_detail
 
 // "The intent to perform an effect is journaled before execution."
 template <AppendLogStore StoreT>
-[[nodiscard]] result<void> journal_effect_intent(StoreT& store, std::string_view session_id,
-                                                  IdempotencyKey const& key, std::string tool_name,
+[[nodiscard]] task<result<void>> journal_effect_intent(StoreT& store, std::string session_id,
+                                                  IdempotencyKey key, std::string tool_name,
                                                   std::string call_id) {
-    return effect_journal_detail::append_entry(
+    co_return co_await effect_journal_detail::append_entry(
         store, session_id,
         EffectJournalEntry{key.to_string(), std::move(tool_name), std::move(call_id),
                             effect_journal_phase::intent, false});
@@ -252,10 +253,10 @@ template <AppendLogStore StoreT>
 // "...and the outcome journaled after." Same log, same key -- `ok` is the effect's own success/
 // failure, not this journal write's (a failed append surfaces as this function's own error result).
 template <AppendLogStore StoreT>
-[[nodiscard]] result<void> journal_effect_outcome(StoreT& store, std::string_view session_id,
-                                                   IdempotencyKey const& key, std::string tool_name,
+[[nodiscard]] task<result<void>> journal_effect_outcome(StoreT& store, std::string session_id,
+                                                   IdempotencyKey key, std::string tool_name,
                                                    std::string call_id, bool ok) {
-    return effect_journal_detail::append_entry(
+    co_return co_await effect_journal_detail::append_entry(
         store, session_id,
         EffectJournalEntry{key.to_string(), std::move(tool_name), std::move(call_id),
                             effect_journal_phase::outcome, ok});
@@ -263,29 +264,29 @@ template <AppendLogStore StoreT>
 
 // The full journal for one session, in commit order.
 template <AppendLogStore StoreT>
-[[nodiscard]] result<std::vector<EffectJournalEntry>> read_effect_journal(StoreT const& store,
-                                                                            std::string_view session_id) {
-    auto raw = store.read_from(effect_journal_log_id(session_id), 0);
-    if (!raw) return std::unexpected(raw.error());
+[[nodiscard]] task<result<std::vector<EffectJournalEntry>>> read_effect_journal(StoreT const& store,
+                                                                            std::string session_id) {
+    auto raw = co_await store.read_from(effect_journal_log_id(session_id), 0);
+    if (!raw) co_return std::unexpected(raw.error());
 
     std::vector<EffectJournalEntry> entries;
     entries.reserve(raw->size());
     for (std::vector<std::byte> const& bytes : *raw) {
         auto entry = decode_effect_journal_entry(bytes);
-        if (!entry) return std::unexpected(entry.error());
+        if (!entry) co_return std::unexpected(entry.error());
         entries.push_back(std::move(*entry));
     }
-    return entries;
+    co_return entries;
 }
 
 // "On resume, a journaled-but-unconfirmed effect is reconciled." A journaled intent with no
 // matching outcome (same idempotency_key) -- in commit order. Read-only: answers WHICH intents
 // need a decision, never what the decision should be (F3's own, deferred, job).
 template <AppendLogStore StoreT>
-[[nodiscard]] result<std::vector<EffectJournalEntry>> unconfirmed_effect_intents(
-    StoreT const& store, std::string_view session_id) {
-    auto entries = read_effect_journal(store, session_id);
-    if (!entries) return std::unexpected(entries.error());
+[[nodiscard]] task<result<std::vector<EffectJournalEntry>>> unconfirmed_effect_intents(
+    StoreT const& store, std::string session_id) {
+    auto entries = co_await read_effect_journal(store, session_id);
+    if (!entries) co_return std::unexpected(entries.error());
 
     std::unordered_map<std::string, bool> has_outcome;
     for (auto const& e : *entries) {
@@ -298,7 +299,7 @@ template <AppendLogStore StoreT>
             unconfirmed.push_back(e);
         }
     }
-    return unconfirmed;
+    co_return unconfirmed;
 }
 
 }  // namespace agentengine::rt

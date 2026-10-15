@@ -32,6 +32,7 @@
 
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/effect_journal.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::EffectContext;
 using agentengine::IdempotencyKey;
@@ -72,30 +73,30 @@ int main() {
     IdempotencyKey const key1 = derive_idempotency_key(ctx, /*call_index=*/0, args1);
 
     // ---- J1: empty journal before anything happens -------------------------------------------------
-    auto empty = read_effect_journal(store, session_id);
+    auto empty = agentengine::rt::block_on(read_effect_journal(store, session_id));
     check(empty.has_value() && empty->empty(), "J1: a fresh session has an empty effect journal");
 
     // ---- J2: intent journaled BEFORE execution -------------------------------------------------------
-    auto intent1 = journal_effect_intent(store, session_id, key1, "fs_write", "call-1");
+    auto intent1 = agentengine::rt::block_on(journal_effect_intent(store, session_id, key1, "fs_write", "call-1"));
     check(intent1.has_value(), "J2: journaling an intent succeeds");
 
-    auto after_intent = read_effect_journal(store, session_id);
+    auto after_intent = agentengine::rt::block_on(read_effect_journal(store, session_id));
     check(after_intent.has_value() && after_intent->size() == 1 &&
               (*after_intent)[0].phase == effect_journal_phase::intent &&
               (*after_intent)[0].idempotency_key == key1.to_string(),
           "J2: the journal now has exactly one intent entry, carrying the real idempotency key");
 
     // ---- J3: unconfirmed while no outcome exists yet -------------------------------------------------
-    auto pending1 = unconfirmed_effect_intents(store, session_id);
+    auto pending1 = agentengine::rt::block_on(unconfirmed_effect_intents(store, session_id));
     check(pending1.has_value() && pending1->size() == 1,
           "J3: with no outcome yet, the intent is correctly reported as unconfirmed -- 'a "
           "journaled-but-unconfirmed effect' (019 §3), the exact reconciliation candidate");
 
     // ---- J4/J5: outcome journaled AFTER execution -- confirms the intent -----------------------------
-    auto outcome1 = journal_effect_outcome(store, session_id, key1, "fs_write", "call-1", true);
+    auto outcome1 = agentengine::rt::block_on(journal_effect_outcome(store, session_id, key1, "fs_write", "call-1", true));
     check(outcome1.has_value(), "J4: journaling the matching outcome succeeds");
 
-    auto after_outcome = read_effect_journal(store, session_id);
+    auto after_outcome = agentengine::rt::block_on(read_effect_journal(store, session_id));
     check(after_outcome.has_value() && after_outcome->size() == 2 &&
               (*after_outcome)[0].phase == effect_journal_phase::intent &&
               (*after_outcome)[1].phase == effect_journal_phase::outcome &&
@@ -104,7 +105,7 @@ int main() {
           "recording success");
 
     // ---- J6: a confirmed effect is never reported as unconfirmed ------------------------------------
-    auto pending2 = unconfirmed_effect_intents(store, session_id);
+    auto pending2 = agentengine::rt::block_on(unconfirmed_effect_intents(store, session_id));
     check(pending2.has_value() && pending2->empty(),
           "J6: a confirmed effect (intent + matching outcome) is never reported as unconfirmed once "
           "its outcome lands");
@@ -117,10 +118,10 @@ int main() {
     IdempotencyKey const key2 = derive_idempotency_key(ctx2, 0, args2);
     check(!(key1 == key2), "setup: the second effect's key differs from the first's");
 
-    auto intent2 = journal_effect_intent(store, session_id, key2, "fs_write", "call-2");
+    auto intent2 = agentengine::rt::block_on(journal_effect_intent(store, session_id, key2, "fs_write", "call-2"));
     check(intent2.has_value(), "setup: journaling the second (interrupted) intent succeeds");
 
-    auto pending3 = unconfirmed_effect_intents(store, session_id);
+    auto pending3 = agentengine::rt::block_on(unconfirmed_effect_intents(store, session_id));
     check(pending3.has_value() && pending3->size() == 1 &&
               (*pending3)[0].idempotency_key == key2.to_string(),
           "J7: only the genuinely-interrupted second effect is reported unconfirmed -- the "
@@ -129,15 +130,15 @@ int main() {
 
     // ---- J8: two different sessions' journals, same store instance, never collide -------------------
     std::string const other_session_id = "s-journal-other";
-    auto other_empty = read_effect_journal(store, other_session_id);
+    auto other_empty = agentengine::rt::block_on(read_effect_journal(store, other_session_id));
     check(other_empty.has_value() && other_empty->empty(),
           "J8: a DIFFERENT session_id's journal, in the SAME AppendLogStore instance, starts empty "
           "-- 's-journal's own two entries above did not leak into it");
 
-    auto other_intent = journal_effect_intent(store, other_session_id, key1, "fs_write", "call-x");
+    auto other_intent = agentengine::rt::block_on(journal_effect_intent(store, other_session_id, key1, "fs_write", "call-x"));
     check(other_intent.has_value(), "J8: journaling into the other session's own journal succeeds");
 
-    auto s_journal_unchanged = read_effect_journal(store, session_id);
+    auto s_journal_unchanged = agentengine::rt::block_on(read_effect_journal(store, session_id));
     check(s_journal_unchanged.has_value() && s_journal_unchanged->size() == 3,
           "J8: writing to the OTHER session's journal leaves 's-journal's own journal at its prior "
           "size (3: intent1, outcome1, intent2 from J2/J4/J7) -- name-scoping by session_id "
@@ -224,8 +225,8 @@ int main() {
             R"({"call_id":"c","idempotency_key":"k","outcome_ok":false,"phase":"intent","tool_name":"t"})";
         std::vector<std::byte> legacy;
         for (char c : json) legacy.push_back(static_cast<std::byte>(c));
-        (void)legacy_store.append(agentengine::rt::effect_journal_log_id("s-legacy"), std::move(legacy));
-        auto r = read_effect_journal(legacy_store, "s-legacy");
+        (void)agentengine::rt::block_on(legacy_store.append(agentengine::rt::effect_journal_log_id("s-legacy"), std::move(legacy)));
+        auto r = agentengine::rt::block_on(read_effect_journal(legacy_store, "s-legacy"));
         check(!r.has_value() && r.error().code == "rt.effect_journal.entry.legacy_json_format",
               "J16: an old JSON-format journal is refused clearly (legacy_json_format), not misread");
     }

@@ -119,7 +119,7 @@
 "include/agentengine/protocol/anthropic/chat_client.hpp" = { layer = "L2", reason = "Anthropic ChatClient backend (004 §3): an outbound provider, not a served surface" }
 "include/agentengine/protocol/provider_chat_wire.hpp"    = { layer = "L2", reason = "HTTP plumbing shared by the two ChatClient backends above (ADR-206)" }
 "include/agentengine/protocol/openai/embedder.hpp"       = { layer = "L2", reason = "Embedder conformer (ADR-063 §2.5)" }
-"include/agentengine/protocol/qdrant/vector_index.hpp"   = { layer = "L2", reason = "RemoteVectorIndex conformer (ADR-180 §2.5)" }
+"include/agentengine/protocol/qdrant/vector_index.hpp"   = { layer = "L2", reason = "remote VectorIndex conformer (ADR-180 §2.5)" }
 "include/agentengine/protocol/openai/openrouter_batch_backend.hpp" = { layer = "L2", reason = "BatchBackend conformer (ADR-235 §3.2): an outbound provider, not a served surface" }
 
 # --- src/ -----------------------------------------------------------------------------------------

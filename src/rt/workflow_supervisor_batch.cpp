@@ -588,7 +588,7 @@ task<std::optional<workflow_status>> WorkflowSupervisor::fold_batch_items(std::v
         record_visit(idx, rounds_ - 1, replies[i].payload);
         if (is_output_selected(idx)) state_.selected_output = replies[i].payload;
         if (merge_on_join_hook_ && graph_.executors[idx].worktree_mode == agentengine::sharing_mode::branch) {
-            agentengine::result<void> merged = merge_on_join_hook_(graph_.executors[idx].id);
+            agentengine::result<void> merged = co_await merge_on_join_hook_(graph_.executors[idx].id);
             if (!merged) {
                 state_.failed_executor = graph_.executors[idx].id;
                 push_structural_event(workflow_event_kind::merge_conflict, wp::MergeRef{graph_.executors[idx].id});

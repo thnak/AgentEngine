@@ -136,10 +136,10 @@ int main() {
     {
         class NeverResolveStore {
         public:
-            [[nodiscard]] ae::result<ae::SecretLease> resolve(ae::SecretRef const&, ae::EffectContext&) const {
-                return std::unexpected(ae::error{ae::failure_class::fatal,
-                                                   "resolve() must never be called for k=0",
-                                                   "test.unexpected_resolve"});
+            [[nodiscard]] ae::task<ae::result<ae::SecretLease>> resolve(ae::SecretRef, ae::EffectContext&) const {
+                co_return std::unexpected(ae::error{ae::failure_class::fatal,
+                                                      "resolve() must never be called for k=0",
+                                                      "test.unexpected_resolve"});
             }
         };
         static_assert(ae::SecretStore<NeverResolveStore>);
@@ -261,11 +261,9 @@ int main() {
 
     // --- Concept conformance (compile-time; already checked by the header's own static_assert, but
     // makes the intent visible from this test file's own perspective too) ---------------------------
-    static_assert(agentengine::RemoteVectorIndex<QdrantVectorIndex<agentengine::InMemorySecretStore>>);
-    static_assert(!agentengine::VectorIndex<QdrantVectorIndex<agentengine::InMemorySecretStore>>,
-                  "QdrantVectorIndex is exclusively a RemoteVectorIndex, never accidentally also a "
-                  "plain VectorIndex (ADR-180 §4 finding R1's own disjointness guarantee, exercised "
-                  "here against a REAL conformer, not just a synthetic mock)");
+    // ADR-237 §5.1: one `task`-shaped VectorIndex concept for local and remote conformers (the former
+    // RemoteVectorIndex split, and its R1 disjointness guarantee, no longer exist).
+    static_assert(agentengine::VectorIndex<QdrantVectorIndex<agentengine::InMemorySecretStore>>);
     AE_CHECK(true, "concept conformance (compile-time, see static_asserts above)");
 
     std::cout << (g_failures == 0 ? "test_qdrant_vector_index: OK\n" : "test_qdrant_vector_index: FAIL\n");

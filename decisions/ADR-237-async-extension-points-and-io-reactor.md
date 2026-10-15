@@ -2429,13 +2429,198 @@ needs none of the sandbox plumbing the rest of Phase D shares.
   checks. `ctest -LE live-network`: 406/419 (440 registered incl. live-network), the 13 failures being the Docker-daemon tests. naming, layering
   and milestone lints OK. Not run: `test_openrouter_batch_live_e2e` (needs
   `AGENTENGINE_OPENROUTER_BATCH_API_KEY`; skipped when unset).
+### Step 44 (2026-10-14): Phase C slice 1 -- one `task`-shaped index seam; the RAG `recall` tools await (#172)
+
+§5.1 said the index concepts merge into the already-async `RemoteVectorIndex` shape, because the local/remote
+split existed only because one side was synchronous. Done that way, and together with the RAG `recall`
+conversion, which §14.1 had scheduled last in Phase C: once local indexes are `task`-shaped, a synchronous
+`recall` could only reach them by a temporary `synchronous_leaf` on every local conformer.
+
+- **Seams.** `VectorIndex` (`core/vector_index.hpp`) and `SparseIndex` (`core/sparse_index.hpp`):
+  `add_batch(..., ctx)`, `search(..., ctx)`, `contains(id, ctx)`, each `task<result<...>>`.
+  `core/remote_vector_index.hpp` (`RemoteVectorIndex`, `AnyVectorIndex`, ADR-180 §2.1's R1 disjointness rule)
+  is deleted. `PersistentVectorIndex::snapshot/restore` stay synchronous for now: they are store calls and
+  move with the store seams.
+- **Conformers.** `BruteForceCosineIndex`, `BM25Index`, `VulkanCosineIndex`: the existing synchronous bodies
+  are kept byte-for-byte as private `*_now` helpers, and the public seam methods are coroutines over them that
+  complete without suspending (`ctx` unused). `QdrantVectorIndex` was already `task`-shaped; it drops
+  `synchronous_leaf`.
+- **Callers.** `DiskCorpusSource::mount`/`mount_hybrid` and both providers' `on_context` simply `co_await`;
+  every `if constexpr (RemoteVectorIndex<...>)` dispatch is gone. A failed `contains` during `mount` now aborts
+  the mount (it was a `bool` that could not fail) -- the same pre-commit abort an embed failure already gets.
+- **`recall`.** Both RAG providers' `recall` tools are a plain lambda handing off to a member coroutine
+  (`recall_call`, args by value -- the MCP bridge's shape), which awaits the embedder and the index. Deleted
+  with it: both `make_sync_invoke` sites (2 of §5.2's five), both `rt::drive_leaf_task` uses, and the four
+  `recall_tool_requires_synchronous_leaf_{embedder,index}` contract errors. `synchronous_leaf` is no longer
+  required by `Embedder`; `OpenAIEmbedder`/`QdrantVectorIndex` keep a comment stating their bodies still block
+  ("async in name only", decision A8 -- moving them onto `rt::http` is the next slice).
+- **Finding, recorded rather than absorbed.** `test_vector_rag_context_provider` R16 pinned the fail-closed
+  `recall_tool_requires_synchronous_leaf_embedder` error for a `synchronous_leaf = false` embedder. The same
+  conformer's `recall` now succeeds; R16 asserts that instead, with the reason in the test.
+- **Finding: the old `recall` could not run on a runtime lane.** Since ADR-175 `drive_leaf_task` is
+  `block_on`, and a lane refuses `block_on` (`rt.block_on_on_lane`, §4.3). The pre-#172 `recall` therefore
+  returned `rt.leaf_task_faulted` whenever it was invoked on a lane -- latent only because session callers are
+  not on the runtime yet (#179). The converted `recall` awaits, so it works there.
+- **Evidence.** `test_remote_vector_index` is rewritten (historical name) to drive conformers that genuinely
+  suspend -- each parks on a reactor timer -- through every caller ON A RUNTIME LANE: S1 `on_context`, S2
+  `recall`, S3 hybrid `on_context` + `recall` with both legs suspending, S4 `mount` + `mount_hybrid`; each
+  check also asserts the mocks really parked. Mutant: vector `recall` driving its embedder through
+  `drive_leaf_task` (the old shape) fails S2 with `rt.leaf_task_faulted`. Index tests call the seam through
+  `tests/support/index_sync.hpp` (concept-constrained `sync_*` drivers, so braced-init arguments still work).
+  Vulkan on, real GPU: `test_vulkan_cosine_index` and its fault-injection twin pass (Vulkan is not built in
+  CI). Full `ctest -LE live-network`: 405/419 -- the 13 Docker-daemon tests, plus
+  `test_native_jail_backend_windows`, which passed 3/3 when rerun alone (timing under `-j6` load). naming,
+  layering and milestone lints OK.
+
+### Step 45 (2026-10-14): Phase C slice 2 -- `QdrantVectorIndex` and `OpenAIEmbedder` on `rt::http` (#172)
+
+The two "async in name only" RAG backends (decision A8): `task`-shaped since ADR-063/180, but each body was a
+blocking `sandbox::perform_provider_https_exchange` that took no stop token.
+
+- **One provider-plane exchange.** `provider_wire::exchange_async` (`provider_chat_wire.hpp`, defined in
+  `provider_chat_wire.cpp` beside the TLS connector): a buffered HTTP/1.1 exchange on `rt::http`, `stop` ending
+  it in flight, a transport failure mapped through `http_error_to_error`, and EVERY status returned -- each
+  client classifies its own. Both chat clients' `exchange_json_async` (two copies of the same body) are now
+  that call plus `http_status_error`.
+- **The two backends** take a trailing `ProviderReactorOptions` (the chat clients' "append last" convention),
+  own an `rt::Runtime` when none is supplied, turn the ctor `Resolver` into the reactor's DNS seam unless the
+  host named one (qdrant's half of `Resolver`, §14.1) -- the rules of steps 39-40 -- and `co_await` the
+  exchange with `ctx.cancellation`. Their own status mapping (`map_http_status_error`, Qdrant's 404-is-`false`)
+  is unchanged.
+- **Residual, stated:** `perform_provider_https_exchange` has no production caller left; six test files still
+  use it (including its own test), so deleting it belongs with #180/#182.
+- **Evidence.** New `test_rag_backends_on_reactor` against a loopback server: W1 Qdrant wire (PUT upsert with
+  `api-key`, search parse, 404/200 `contains`, 500 transient with Qdrant's message), W2 the embedder's wire
+  (bearer key, vectors by index), C1 a stop ends an in-flight embed and an in-flight Qdrant search as
+  `canceled` promptly, against a server that never answers, H1 a host-supplied `ProviderReactorOptions`
+  resolver is the only route to a `.invalid` host for both. Mutants: an empty stop token in the embedder's or
+  Qdrant's exchange leaves the call in flight 10 s after the stop (each run separately); ignoring the ctor's
+  options fails all three H1 checks. `ctest -LE live-network`: 407/420, the 13 Docker-daemon tests. Not run: the
+  embedder's and Qdrant's live tests (no `AGENTENGINE_OPENROUTER_API_KEY` / Qdrant host here; they skip).
+
+### Step 46 (2026-10-14): Phase C slice 3 -- `SecretStore::resolve` is `task`-shaped (#172)
+
+`SecretStore` was "kept synchronous" on the grounds that resolution has no I/O (env, memory, a small file). That
+holds for the stores in the tree, not for the seam: a vault- or keystore-backed store resolves over the network,
+and decision A8 makes the conversion total.
+
+- **The seam.** `resolve(ref, ctx) -> task<result<SecretLease>>`; the three conformers (`AgentEngineSecretStore`,
+  `InMemorySecretStore`, `QuarantineSecretStore`) keep their bodies and complete without suspending. They take
+  the `SecretRef` BY VALUE, so a task held past the call never reads a dead temporary. `SecretSource::get()`
+  stays synchronous: it is the env/file adapter underneath, not the seam.
+- **Callers inside coroutines** `co_await` it: both chat clients' `chat()`, the embedder, Qdrant (x3), the batch
+  backend (x3).
+- **`chat_stream()` resolves on its producer root.** `chat_stream()` returns synchronously, so it cannot await.
+  Both real clients now spawn an owned root (`stream_after_key`) whose first step awaits the key, failing the
+  stream with the store's own error on a denial, and which then starts the pump (step 34's root). New, documented
+  on the `ChatClient` concept: the `EffectContext` (and the `CapabilitySet` it borrows), the client, and its store
+  must outlive the returned stream. Every caller already drains the stream within the turn that owns `ctx`.
+  Rejected: resolving inline with `rt::block_on`, which is refused on a lane (`rt.block_on_on_lane`) -- exactly
+  where a session calls `chat_stream()`.
+- **Evidence.** New `test_chat_stream_key_resolution`, both vendors, loopback server: K1 a denied grant fails the
+  stream with `secret.not_granted`/`policy` and no connection is made; K2 a granted key reaches the wire
+  (`Authorization: Bearer` / `x-api-key`) and the server's 401 fails the stream; K3 `chat_stream()` called on a
+  runtime lane against a store that genuinely suspends on the reactor reaches the wire. Mutant: resolving inline
+  with `rt::block_on` in the OpenAI client fails K3 with `rt.block_on_on_lane`. Test callers of `resolve` drive
+  it with `rt::block_on` off-lane. `ctest -LE live-network`: 408/421, the 13 Docker-daemon tests. Not run: the chat clients' live tests (no provider key here; they skip).
+
+### Step 47 (2026-10-15): Phase C slice 4 -- `SessionStore` is `task`-shaped (#172)
+
+The first of the three stores, taken first because its core callers already `co_return` from coroutines.
+
+- **The seam.** `save`/`load`/`exists`/`remove` all return `task<...>` (`exists` is `task<bool>`); ids are taken
+  BY VALUE so a held task never reads a dead temporary. `InMemorySessionStore` and `FileSessionStore` keep their
+  bodies and complete without suspending -- the `rt::offload` move §6 names for file stores is NOT done here (same
+  stance as step 46's conformers); a file store that blocks a lane is the remaining residual of this seam.
+- **Callers.** `save_agent_session_snapshot`, `save_turn_delta`, `delete_session`, `save_workflow_checkpoint`
+  `co_await`; the loaders (`load_agent_session_snapshot`, `load_turn_delta`, `load_project_snapshot`,
+  `load_workflow_checkpoint`) and `save_project_snapshot`, `WorkflowCheckpointManager::resume_or_start` become
+  `task`-shaped. `ProjectSupervisor` needed no change.
+- **`WorkflowSupervisor::CheckpointHook` is now `std::function<task<void>(std::uint32_t, RunStateRecord)>`** (record
+  by value) and `execute()` awaits it at the superstep boundary. This was the one decision the seam forced: the
+  manager's hook is what persists the checkpoint, and `rt::block_on` is refused on a lane. Every hook in tests is a
+  trivial coroutine lambda; no test assertion changed, only call shapes (`block_on` off-lane).
+- **Evidence.** `test_rt_workflow_checkpoint_manager` C6 attaches the manager to a store that genuinely parks on the
+  reactor and drives the workflow on a runtime lane. Mutant: `block_on` inside the hook terminates the test
+  (`rt.block_on_on_lane`, exit 3). `ctest -LE live-network`: the 13 Docker-daemon tests fail as in step 46;
+  `test_rt_lanes` failed once under `-j8` and passes 3/3 alone (load-sensitive, unrelated to this change).
+  naming-lint and layering-lint OK. `agentengine_test_driver.exe` could not relink (held open by a running MCP
+  server) -- unrelated, not rebuilt.
+
+### Step 48 (2026-10-15): Phase C slice 5 -- `AppendLogStore` is `task`-shaped, and with it every ref reader/writer (#172)
+
+`append`/`read_from`/`last_seq` return `task<...>`; ids by value. `InMemoryAppendLogStore` keeps its body.
+`FileAppendLogStore`'s out-of-line bodies are now `append_blocking`/`read_from_blocking`/`last_seq_blocking`
+(format, locking and truncation untouched) behind inline `task` wrappers that complete without suspending; the
+`rt::offload` move §6 names is NOT done here -- the same named residual as `FileSessionStore`'s.
+
+- **The cascade was the finding.** `AppendLogStore` is the ref store, so `read_ref`/`commit_ref` sit under the
+  whole worktree layer. Everything that touches a ref is now a `task`: `commit_ref`/`commit_turn`/`turn_digest_at`/
+  `rewind_to_turn`; `mount_read`/`mount_write(_with_blob)`/`materialize_merge_conflicts`;
+  `merge_branch_into_parent` + retry; `create/read/write_sub_worktree`; `check_shared_staleness`; the memory
+  helpers (`ensure_*`, `write/read/list_memory_item(s)`, `rank_memory_items`); corpus-chunk read/write,
+  `render_scored_chunk`, `mint_spawn_worktree`, `mint/resume_executor_worktrees`; the effect journal, project
+  archive and workflow time-travel; `Tier1AttemptLog` and `EvalStore::make`; and the native-jail materializers
+  (`materialize_mount`, `harvest_mount`, `materialize_memory_mount`, `harvest_memory_notes`,
+  `materialize_skill_mounts`). Object-store-only helpers (`set_entry_at_path`, `merge_subtrees`, `diff_*`) are
+  unchanged: they wait for `WorktreeObjectStore` (next).
+- **`WorkflowSupervisor::MergeOnJoinHook` is now `std::function<task<result<void>>(std::string)>`**, awaited in
+  `execute()` and `fold_batch_items()` (both already coroutines); `make_merge_on_join_hook` returns it.
+- **`SpawnMinter` drives `mint_spawn_worktree` with `agent_spawn_detail::drive`**, the same naive resume loop it
+  already uses for the cost pool on its dedicated worker thread. Sound while the ref store completes without
+  suspending; a store that truly parks would spin that thread -- named, to fix with Phase D.
+- **Evidence.** `test_worktree_ref_store` A2-L1 drives `commit_ref -> mount_write -> mount_read` on a runtime lane
+  against a log that parks on the reactor (both appends park). Mutant: `block_on` in `commit_ref_impl` ends the
+  test with exit 3 (`rt.block_on_on_lane`). Test fakes that wrapped a store (`FlakyStore`, `LosingStore`,
+  `SameSeqStore`, `CountingLogStore`) became `task`-shaped; ~600 call sites in tests changed shape only
+  (`block_on` off-lane), no assertion changed. `ctest -LE live-network`: 408/421, the 13 Docker-daemon tests --
+  among them `test_sandbox_runtime`, `test_mandatory_sandbox_provider` and `test_task_branch_*`, which reach this
+  code and could NOT run here, so the sandbox-side wiring is verified by compilation only.
+  naming-lint and layering-lint OK.
+
+### Step 49 (2026-10-15): Phase C slice 6 -- `WorktreeObjectStore` is `task`-shaped, including `Ledger` (#172)
+
+`put_blob`/`get_blob`/`put_tree`/`get_tree` (and the optional `blob_size`) return `task<result<...>>`; ids by value;
+`put_blob` keeps its `std::span`, which must outlive the returned task. `InMemoryWorktreeObjectStore`'s methods are
+coroutines with the same bodies. `FileWorktreeObjectStore`'s bodies are now `*_blocking` behind inline `task` wrappers
+-- the `rt::offload` move is the same named residual as steps 47-48.
+
+- **`Ledger` is the point of this slice, and it needed its own design: `decisions/ADR-238`.** `Ledger` held a
+  `std::mutex` across every store call, which cannot survive a store that suspends. ADR-238 (Proposed, red-teamed twice
+  before any code) splits `mutex_` into a state lock that is never held across a `co_await` and a new `op_mutex_`
+  (`rt::AsyncMutex`) that serialises `create_root_branch`/`commit`/`reset_to`/`merge`/`abandon`/
+  `abandon_orphaned_branch` across their store I/O, in phases (authorize and copy locals under `mutex_`; store I/O with
+  no lock; re-find by name and apply under `mutex_`). `get_blob_safe`, `get_tree_safe`, `put_blob_safe` and
+  `BlobWriteBatch::put` are `task`s. `RealIoFileSystem::materialize` reads every blob before taking its `sync_mutex_`.
+- **Everything over an object store followed:** `ensure_empty_tree`, `resolve_entry_at_path`, `set_entry_at_path`,
+  `resolve_subtree_digest`, `blob_size_of`, `subtree_usage`, `read_blob_within_size_cap`; `merge_subtrees` and
+  `merge_trees(store, ...)`; `collect_leaves_as`, `diff_subtrees`, `diff_trees`, `check_shared_staleness`;
+  `collect_blob_paths`, `assemble_tree`, `resolve_and_mount`, corpus `mount`/`mount_hybrid`, `render_scored_chunk`;
+  the native-jail materializers; and `PersistentVectorIndex::snapshot`/`restore` (which write to the store).
+- **Evidence.** `test_ledger_async_locking` (44 checks) forces each interleaving with a gated store on one thread:
+  T1 concurrent commits chain 1..N with `put_tree` parked; T2 a merge waits for a parked commit to its parent and
+  keeps the commit's file; T3 an abandon waits behind an in-flight merge; T4 an unauthorized read never reaches the
+  store; T5 a throwing `put_tree` becomes `ledger.store_faulted`, refunds, and releases the lock; T6
+  `abandon_orphaned_branch`/`reap_pending_abandons` do not self-deadlock; T7 a merge task destroyed while parked
+  leaves its child reclaimable; T8 a nested operation from a `when_all` child of the lock holder is refused with
+  `ledger.op_lock_refused` and throws nothing (real one-lane `Runtime`); T9 `materialize` holds no `std::mutex` while
+  parked. **All seven planted mutants are killed** (no op lock on commit -> T2; none on abandon -> T3; nested public
+  `abandon` -> hang; no `InFlightChild` guard -> T7; plain `lock()` -> T8; `put_tree` under `mutex_` -> crash;
+  `materialize` locking before its reads -> hang). Call sites in 43 test files changed shape only; the fakes that
+  wrapped a store became `task`-shaped. `ctest -LE live-network`: all green except the same 13 Docker-daemon tests,
+  among them `test_sandbox_runtime`, `test_mandatory_sandbox_provider` and `test_task_branch_*`, which reach this code
+  and could NOT run here, so the sandbox-side wiring (including `materialize`) is verified by compilation and T9 only.
+  naming-lint and layering-lint OK.
+- **A refusal is not what a nested plain `co_await` produces.** Writing T8 showed `ledger.op_lock_refused` only
+  arises for a task *forked* by a scope (`when_all`/`on_strand`) from the holder; a plain awaited child shares the
+  holder's id and would wait on itself. The code therefore never nests a public locker (ADR-238 §3.5), and T6 proves it.
 
 ### §14.1 What is left, and the phases to follow
 
-Recorded at session end so the work resumes cold. **Status: §5.1 is 11 of ~27 seams converted**
+Recorded at session end so the work resumes cold. **Status: §5.1 is 14 of ~27 seams converted**
 (`SkillSource`/`ChunkingPolicy`, `ToolSourceFetch`, the A2A client, the A2A server, `GraderFn`, MCP --
 §14 step 31, `OutputValidator` -- §14 step 32, `ChatClient` -- §14 steps 33-36, `SurfaceFactory` --
-§14 step 37, `Resolver` -- §14 steps 38-41, and `BatchBackend` -- §14 step 43). **PHASE B IS COMPLETE** on the conversion side: every one
+§14 step 37, `Resolver` -- §14 steps 38-41, `BatchBackend` -- §14 step 43, `VectorIndex`/`SparseIndex` -- §14 step 44, qdrant's `Resolver` -- §14 step 45, and `SecretStore` -- §14 step 46). **PHASE B IS COMPLETE** on the conversion side: every one
 of its seams has a reactor/task form and the provider model path has no blocking body and no detached
 thread. Its one outstanding item is DEAD-CODE SUBTRACTION, not conversion: delete the now-uncalled
 `run_stream_worker`, `provider_wire::exchange_json` and `pump_sse_stream` (step 41's own note). §5.2's
@@ -2457,7 +2642,7 @@ closes the small end of Phase B), then Phase C with the qdrant `Resolver` folded
 
 **Remaining §5.1 seams (sync -> `task`):** `Runner`;
 `SandboxBackend`; `ExecutionSurface`; `PersistentShellSurface`; `NetEgressBackend`; `SecretStore`; the three
-stores; `VectorIndex`/`SparseIndex`; qdrant's half of `Resolver`; plus ~15
+stores; plus ~15
 further `std::function` typedefs that have not been triaged individually yet.
 
 **Remaining §5.2 cleanup:** delete `make_sync_invoke`'s **five** production call sites -- counted by grep,
@@ -2503,10 +2688,13 @@ thread on the model path) at ~1 file of change, and keeps `LegacyChatClient`, `A
 mode, and every fixture intact. The drop-`chat()` ordering above is recorded for the event someone still
 wants it; it is not currently planned.
 
-**Phase C -- index and storage seams.** `VectorIndex`/`SparseIndex`, the three stores, `SecretStore`. These
-unblock the RAG `recall` conversion, which belongs here rather than earlier: `recall` deletes two
+**Phase C -- index and storage seams.** ~~`VectorIndex`/`SparseIndex`~~ and ~~the RAG `recall`
+conversion~~ done together (§14 step 44); ~~the "async in name only" bodies (`QdrantVectorIndex`,
+`OpenAIEmbedder`) onto `rt::http` with qdrant's `Resolver`~~ (§14 step 45); ~~`SecretStore`~~ (§14 step 46); ~~`SessionStore`~~ (§14 step 47); ~~`AppendLogStore`~~ (§14 step 48); ~~`WorktreeObjectStore` incl. `Ledger`~~ (§14 step 49, ADR-238). The RAG `recall`
+conversion was planned to belong here rather than earlier: `recall` deletes two
 `synchronous_leaf` contract-error paths that tests pin deliberately, and it depends on the index seams.
 Gate: those tests are updated with the reason recorded -- never deleted to make a build pass.
+**PHASE C IS COMPLETE (2026-10-15, #172):** every seam in its checklist has a `task` form (steps 44-49), and the RAG `recall` tools landed with the index seams in step 44, so no `synchronous_leaf` path remains in `include/` or `src/`. Not done and not claimed: Phase D (execution/sandbox surfaces) and Phase E (§5.2 cleanup).
 
 **Phase D -- execution and sandbox surfaces.** `Runner`, `SandboxBackend`, `ExecutionSurface`,
 `PersistentShellSurface`, `NetEgressBackend` (`BatchBackend` was taken early, §14 step 43). Grouped because they share the

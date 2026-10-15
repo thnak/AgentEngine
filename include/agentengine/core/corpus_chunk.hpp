@@ -18,6 +18,7 @@
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/core/worktree.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine {
 
@@ -107,12 +108,12 @@ struct CorpusChunkRecord {
 // `write_memory_item()`'s own JSON-blob-via-`mount_write()` shape (memory.hpp:279-303) exactly,
 // minus the write_seq stamping Memory needs and this record doesn't.
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<Ref> write_corpus_chunk_record(OS& object_store, RS& ref_store, Mount const& mount,
-                                                     cap::FsWrite const& granted,
-                                                     CorpusChunkRecord const& record) {
+[[nodiscard]] task<result<Ref>> write_corpus_chunk_record(OS& object_store, RS& ref_store, Mount mount,
+                                                     cap::FsWrite granted,
+                                                     CorpusChunkRecord record) {
     std::string const text = json::dump(corpus_chunk_record_to_json(record));
     auto bytes = std::as_bytes(std::span{text.data(), text.size()});
-    return mount_write(object_store, ref_store, mount, granted, corpus_chunk_record_path(record.id), bytes);
+    co_return co_await mount_write(object_store, ref_store, mount, granted, corpus_chunk_record_path(record.id), bytes);
 }
 
 // O(1) point lookup by id (never a tree walk) — the shape `VectorRagContextProvider`'s query-time
@@ -120,16 +121,16 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 // whole corpus). Deliberately does NOT mirror `list_memory_items()`'s "list everything" shape — a
 // per-query full-corpus walk would be far more expensive than a citation lookup needs to be.
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<CorpusChunkRecord> read_corpus_chunk_record(OS& object_store, RS& ref_store,
-                                                                  Mount const& mount,
-                                                                  cap::FsRead const& granted,
-                                                                  std::string const& id) {
-    auto bytes = mount_read(object_store, ref_store, mount, granted, corpus_chunk_record_path(id));
-    if (!bytes) return std::unexpected(bytes.error());
+[[nodiscard]] task<result<CorpusChunkRecord>> read_corpus_chunk_record(OS& object_store, RS& ref_store,
+                                                                  Mount mount,
+                                                                  cap::FsRead granted,
+                                                                  std::string id) {
+    auto bytes = co_await mount_read(object_store, ref_store, mount, granted, corpus_chunk_record_path(id));
+    if (!bytes) co_return std::unexpected(bytes.error());
     std::string text(reinterpret_cast<char const*>(bytes->data()), bytes->size());
     auto parsed = json::parse(text);
-    if (!parsed) return std::unexpected(parsed.error());
-    return corpus_chunk_record_from_json(*parsed);
+    if (!parsed) co_return std::unexpected(parsed.error());
+    co_return corpus_chunk_record_from_json(*parsed);
 }
 
 }  // namespace agentengine

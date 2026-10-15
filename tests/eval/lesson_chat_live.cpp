@@ -43,6 +43,7 @@
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using namespace agentengine;
 namespace ev = agentengine::eval;
@@ -219,7 +220,7 @@ int serve(fs::path const& dir, std::string const& arm, ev::LessonCandidate const
     fs::create_directories(dir / "outbox");
     auto log = std::make_shared<ActionLog>(dir / "actions.jsonl");
 
-    auto store_result = ev::EvalStore::make("chat", dir.filename().string());
+    auto store_result = agentengine::rt::block_on(ev::EvalStore::make("chat", dir.filename().string()));
     if (!store_result) {
         std::fprintf(stderr, "lesson_chat_live: %s\n", store_result.error().message.c_str());
         return 2;
@@ -237,7 +238,7 @@ int serve(fs::path const& dir, std::string const& arm, ev::LessonCandidate const
         MemoryItem item = std::move(*rendered);
         item.origin = MemoryOrigin{memory_source::model_inferred, "chat-lesson", "0", store.principal()};
         lesson_text = item.content;
-        if (auto w = write_memory_item(store.object_store(), store.ref_store(), store.mount(), store.write_cap(), item); !w) {
+        if (auto w = agentengine::rt::block_on(write_memory_item(store.object_store(), store.ref_store(), store.mount(), store.write_cap(), item)); !w) {
             std::fprintf(stderr, "lesson_chat_live: %s\n", w.error().message.c_str());
             return 2;
         }

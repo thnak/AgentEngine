@@ -43,6 +43,7 @@
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine::rt {
 
@@ -107,25 +108,25 @@ struct ProjectMember {
 }
 
 template <AppendLogStore StoreT>
-[[nodiscard]] result<void> archive_project_member(StoreT& store, std::string_view project_id,
+[[nodiscard]] task<result<void>> archive_project_member(StoreT& store, std::string project_id,
                                                     ProjectMember member) {
     std::string const text = agentengine::json::dump(project_member_to_json(member));
     std::vector<std::byte> bytes;
     bytes.reserve(text.size());
     for (char c : text) bytes.push_back(static_cast<std::byte>(c));
-    auto appended = store.append(project_archive_log_id(project_id), std::move(bytes));
-    if (!appended) return std::unexpected(appended.error());
-    return {};
+    auto appended = co_await store.append(project_archive_log_id(project_id), std::move(bytes));
+    if (!appended) co_return std::unexpected(appended.error());
+    co_return result<void>{};
 }
 
 // Every archived member for a Project, in the order they were archived -- the old suite's own H5
 // claim (test_project_registry.cpp:181-190). An O(N) read over the tail, matching the original's own
 // documented asymmetry (project.hpp:146-147: "G4 bounds WRITE cost, not read cost").
 template <AppendLogStore StoreT>
-[[nodiscard]] result<std::vector<ProjectMember>> read_archived_members(StoreT const& store,
-                                                                         std::string_view project_id) {
-    auto raw = store.read_from(project_archive_log_id(project_id), 0);
-    if (!raw) return std::unexpected(raw.error());
+[[nodiscard]] task<result<std::vector<ProjectMember>>> read_archived_members(StoreT const& store,
+                                                                         std::string project_id) {
+    auto raw = co_await store.read_from(project_archive_log_id(project_id), 0);
+    if (!raw) co_return std::unexpected(raw.error());
 
     std::vector<ProjectMember> out;
     out.reserve(raw->size());
@@ -134,12 +135,12 @@ template <AppendLogStore StoreT>
         text.reserve(bytes.size());
         for (std::byte b : bytes) text.push_back(static_cast<char>(b));
         auto parsed = agentengine::json::parse(text);
-        if (!parsed) return std::unexpected(parsed.error());
+        if (!parsed) co_return std::unexpected(parsed.error());
         auto member = project_member_from_json(*parsed);
-        if (!member) return std::unexpected(member.error());
+        if (!member) co_return std::unexpected(member.error());
         out.push_back(std::move(*member));
     }
-    return out;
+    co_return out;
 }
 
 }  // namespace agentengine::rt

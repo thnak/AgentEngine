@@ -1067,7 +1067,7 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
             // break-on-first-failure convention below).
             if (merge_on_join_hook_ && !merge_failed &&
                 graph_.executors[idx].worktree_mode == agentengine::sharing_mode::branch) {
-                agentengine::result<void> merged = merge_on_join_hook_(graph_.executors[idx].id);
+                agentengine::result<void> merged = co_await merge_on_join_hook_(graph_.executors[idx].id);
                 if (!merged) {
                     state_.failed_executor = graph_.executors[idx].id;
                     merge_failed = true;
@@ -1209,7 +1209,7 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
         // whether or not this round is about to suspend, so a checkpoint taken here always has
         // enough to resume from either way -- see file banner's "Checkpoint hook" paragraph.
         if (checkpoint_hook_) {
-            checkpoint_hook_(rounds_, to_record());
+            co_await checkpoint_hook_(rounds_, to_record());
             push_structural_event(agentengine::workflow::workflow_event_kind::checkpoint_saved,
                                    agentengine::workflow::workflow_event_payload::CheckpointSaved{rounds_});
         }

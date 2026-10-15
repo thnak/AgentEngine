@@ -37,6 +37,7 @@
 #include "agentengine/rt/append_log_store.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "agentengine/workflow/graph.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine::workflow {
 
@@ -117,21 +118,21 @@ namespace detail {
 // design -- core/worktree.hpp's own comment), so this existence check is this file's job, not
 // something the primitive underneath does for it.
 template <rt::AppendLogStore RS>
-[[nodiscard]] result<std::vector<ExecutorWorktreeGrant>> mint_executor_worktrees(
-    RS& ref_store, Ref const& run_parent_ref, Workflow const& wf) {
+[[nodiscard]] task<result<std::vector<ExecutorWorktreeGrant>>> mint_executor_worktrees(
+    RS& ref_store, Ref run_parent_ref, Workflow wf) {
     std::vector<ExecutorWorktreeGrant> out;
     out.reserve(wf.executors.size());
 
     for (auto const& ex : wf.executors) {
         auto id_ok = detail::check_executor_id(ex.id);
-        if (!id_ok) return std::unexpected(id_ok.error());
+        if (!id_ok) co_return std::unexpected(id_ok.error());
 
         std::string const child_name = run_parent_ref.name + "/agents/" + ex.id;
 
-        auto existing = read_ref(ref_store, child_name);
-        if (!existing) return std::unexpected(existing.error());
+        auto existing = co_await read_ref(ref_store, child_name);
+        if (!existing) co_return std::unexpected(existing.error());
         if (existing->has_value()) {
-            return std::unexpected(error{
+            co_return std::unexpected(error{
                 failure_class::contract,
                 "a worktree already exists for executor '" + ex.id + "' under parent ref '" +
                     run_parent_ref.name +
@@ -140,12 +141,12 @@ template <rt::AppendLogStore RS>
                 "worktree_scoping.already_minted"});
         }
 
-        auto sub = create_sub_worktree(ref_store, run_parent_ref, child_name, ex.worktree_mode);
-        if (!sub) return std::unexpected(sub.error());
+        auto sub = co_await create_sub_worktree(ref_store, run_parent_ref, child_name, ex.worktree_mode);
+        if (!sub) co_return std::unexpected(sub.error());
 
         out.push_back(detail::grant_for(*sub, ex.id));
     }
-    return out;
+    co_return out;
 }
 
 // Reconstruct a RESUMED run's worktree grants, for the `shared`/`branch`/`scratch` executors a
@@ -167,17 +168,17 @@ template <rt::AppendLogStore RS>
 // re-supplied by the same future checkpoint-schema change. Named, not fixed, matching the
 // `readonly` gap above.
 template <rt::AppendLogStore RS>
-[[nodiscard]] result<std::vector<ExecutorWorktreeGrant>> resume_executor_worktrees(
-    RS& ref_store, Ref const& run_parent_ref, Workflow const& wf) {
+[[nodiscard]] task<result<std::vector<ExecutorWorktreeGrant>>> resume_executor_worktrees(
+    RS& ref_store, Ref run_parent_ref, Workflow wf) {
     std::vector<ExecutorWorktreeGrant> out;
     out.reserve(wf.executors.size());
 
     for (auto const& ex : wf.executors) {
         auto id_ok = detail::check_executor_id(ex.id);
-        if (!id_ok) return std::unexpected(id_ok.error());
+        if (!id_ok) co_return std::unexpected(id_ok.error());
 
         if (ex.worktree_mode == sharing_mode::readonly) {
-            return std::unexpected(error{
+            co_return std::unexpected(error{
                 failure_class::contract,
                 "executor '" + ex.id +
                     "' is a readonly worktree, which cannot be resumed: its pinned digest is not "
@@ -194,10 +195,10 @@ template <rt::AppendLogStore RS>
             // reconstructed the identical way `create_sub_worktree` builds it the first time.
             sub = SubWorktree{child_name, run_parent_ref.name, sharing_mode::shared, {}, {}};
         } else {
-            auto existing = read_ref(ref_store, child_name);
-            if (!existing) return std::unexpected(existing.error());
+            auto existing = co_await read_ref(ref_store, child_name);
+            if (!existing) co_return std::unexpected(existing.error());
             if (!existing->has_value()) {
-                return std::unexpected(error{
+                co_return std::unexpected(error{
                     failure_class::contract,
                     "no minted worktree found for executor '" + ex.id + "' under parent ref '" +
                         run_parent_ref.name +
@@ -210,7 +211,7 @@ template <rt::AppendLogStore RS>
 
         out.push_back(detail::grant_for(sub, ex.id));
     }
-    return out;
+    co_return out;
 }
 
 // Builds a real `rt::WorkflowSupervisor::MergeOnJoinHook`-compatible callable -- 025 §4's "merges
@@ -241,7 +242,7 @@ template <rt::AppendLogStore RS>
 // (`rt::WorkflowSupervisor::execute()` turns a returned error into `workflow_status::merge_conflict`,
 // never a silent drop).
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] std::function<result<void>(std::string const&)> make_merge_on_join_hook(
+[[nodiscard]] std::function<task<result<void>>(std::string)> make_merge_on_join_hook(
     OS& object_store, RS& ref_store, std::string run_parent_ref_name, std::string ours_agent_id,
     Workflow const& wf, std::vector<ExecutorWorktreeGrant> const& grants) {
     std::unordered_map<std::string, SubWorktree> by_id;
@@ -253,10 +254,10 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 
     return [&object_store, &ref_store, run_parent_ref_name = std::move(run_parent_ref_name),
             ours_agent_id = std::move(ours_agent_id),
-            by_id = std::move(by_id)](std::string const& executor_id) -> result<void> {
+            by_id = std::move(by_id)](std::string executor_id) -> task<result<void>> {
         auto it = by_id.find(executor_id);
         if (it == by_id.end()) {
-            return std::unexpected(error{
+            co_return std::unexpected(error{
                 failure_class::contract,
                 "merge-on-join hook called for '" + executor_id +
                     "', which has no known branch-mode grant -- mismatched wf/grants wiring",
@@ -264,23 +265,23 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
         }
         SubWorktree const& branch = it->second;
 
-        auto parent = read_ref(ref_store, run_parent_ref_name);
-        if (!parent) return std::unexpected(parent.error());
+        auto parent = co_await read_ref(ref_store, run_parent_ref_name);
+        if (!parent) co_return std::unexpected(parent.error());
         if (!parent->has_value()) {
-            return std::unexpected(error{failure_class::contract,
+            co_return std::unexpected(error{failure_class::contract,
                                           "merge-on-join: parent ref '" + run_parent_ref_name +
                                               "' has never been committed",
                                           "worktree_scoping.merge_hook_parent_missing"});
         }
 
-        auto outcome = retry_merge_branch_into_parent(object_store, ref_store, branch, **parent, 3);
-        if (!outcome) return std::unexpected(outcome.error());
-        if (outcome->ok()) return {};
+        auto outcome = co_await retry_merge_branch_into_parent(object_store, ref_store, branch, **parent, 3);
+        if (!outcome) co_return std::unexpected(outcome.error());
+        if (outcome->ok()) co_return result<void>{};
 
-        auto materialized = materialize_merge_conflicts(object_store, ref_store, run_parent_ref_name,
+        auto materialized = co_await materialize_merge_conflicts(object_store, ref_store, run_parent_ref_name,
                                                           ours_agent_id, branch, outcome->conflicts);
-        if (!materialized) return std::unexpected(materialized.error());
-        return std::unexpected(error{
+        if (!materialized) co_return std::unexpected(materialized.error());
+        co_return std::unexpected(error{
             failure_class::policy,
             "merge-on-join produced " + std::to_string(outcome->conflicts.size()) +
                 " conflict(s) for executor '" + executor_id + "'; evidence materialized at '" +

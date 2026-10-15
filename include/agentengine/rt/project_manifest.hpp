@@ -204,20 +204,19 @@ struct ProjectRecord {
 // (agent_session.hpp) but plain/synchronous -- see file banner for why no in-flight guard is needed.
 
 template <SessionStore StoreT>
-[[nodiscard]] result<void> save_project_snapshot(StoreT& store, ProjectRecord const& rec) {
-    return store.save(rec.project_id, encode_project_record(rec));
+[[nodiscard]] task<result<void>> save_project_snapshot(StoreT& store, ProjectRecord rec) {
+    co_return co_await store.save(rec.project_id, encode_project_record(rec));
 }
 
 template <SessionStore StoreT>
-[[nodiscard]] result<std::optional<ProjectRecord>> load_project_snapshot(
-    StoreT const& store, std::string_view project_id) {
-    std::string const id{project_id};
-    if (!store.exists(id)) return std::optional<ProjectRecord>{};
-    result<std::vector<std::byte>> bytes = store.load(id);
-    if (!bytes) return std::unexpected(bytes.error());
+[[nodiscard]] task<result<std::optional<ProjectRecord>>> load_project_snapshot(
+    StoreT const& store, std::string id) {
+    if (!co_await store.exists(id)) co_return std::optional<ProjectRecord>{};
+    result<std::vector<std::byte>> bytes = co_await store.load(id);
+    if (!bytes) co_return std::unexpected(bytes.error());
     result<ProjectRecord> rec = decode_project_record(*bytes);
-    if (!rec) return std::unexpected(rec.error());
-    return std::optional<ProjectRecord>{std::move(*rec)};
+    if (!rec) co_return std::unexpected(rec.error());
+    co_return std::optional<ProjectRecord>{std::move(*rec)};
 }
 
 // ---- Directed lifecycle (030 §4) -- see file banner for why these are reworked, not ported

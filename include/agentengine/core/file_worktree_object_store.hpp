@@ -92,7 +92,30 @@ public:
         std::filesystem::create_directories(root_ / "trees");
     }
 
-    [[nodiscard]] agentengine::result<agentengine::Digest> put_blob(std::span<std::byte const> bytes) {
+    // The seam (core/worktree_types.hpp `WorktreeObjectStore`) is `task`-shaped since decisions/ADR-237 §5.1 (#172).
+    // The bodies below are the `*_blocking` members, unchanged: they hold `mutex_` across file I/O and a retry
+    // backoff, so they are deliberately NOT coroutines (a `std::mutex` must not span a suspension). They complete
+    // without suspending; moving them onto `rt::offload` (ADR-237 §6) is a named residual, as for the other file
+    // stores. Ids are taken by value so a held task never reads a dead temporary.
+    [[nodiscard]] agentengine::task<agentengine::result<agentengine::Digest>> put_blob(
+        std::span<std::byte const> bytes) {
+        co_return put_blob_blocking(bytes);
+    }
+    [[nodiscard]] agentengine::task<agentengine::result<std::vector<std::byte>>> get_blob(
+        agentengine::Digest digest) const {
+        co_return get_blob_blocking(digest);
+    }
+    [[nodiscard]] agentengine::task<agentengine::result<std::uint64_t>> blob_size(agentengine::Digest digest) const {
+        co_return blob_size_blocking(digest);
+    }
+    [[nodiscard]] agentengine::task<agentengine::result<agentengine::Digest>> put_tree(agentengine::Tree tree) {
+        co_return put_tree_blocking(std::move(tree));
+    }
+    [[nodiscard]] agentengine::task<agentengine::result<agentengine::Tree>> get_tree(agentengine::Digest digest) const {
+        co_return get_tree_blocking(digest);
+    }
+
+    [[nodiscard]] agentengine::result<agentengine::Digest> put_blob_blocking(std::span<std::byte const> bytes) {
         auto digest = agentengine::compute_digest(bytes);
         if (!digest) return std::unexpected(digest.error());
         std::lock_guard<std::mutex> guard(*mutex_);
@@ -214,7 +237,7 @@ public:
                 bool mismatched = false;
                 bool absent = false;
                 for (int attempt = 0; attempt < kRescueAttempts; ++attempt) {
-                    if (auto existing = get_blob(*digest); existing.has_value()) {
+                    if (auto existing = get_blob_blocking(*digest); existing.has_value()) {
                         if (agentengine::compute_digest(existing.value()).value_or(std::string{}) ==
                             *digest) {
                             return *digest;
@@ -254,7 +277,7 @@ public:
         return *digest;
     }
 
-    [[nodiscard]] agentengine::result<std::vector<std::byte>> get_blob(agentengine::Digest const& digest) const {
+    [[nodiscard]] agentengine::result<std::vector<std::byte>> get_blob_blocking(agentengine::Digest const& digest) const {
         if (!is_well_formed_digest(digest)) {
             return std::unexpected(agentengine::error{agentengine::failure_class::contract,
                                                           "digest is not a well-formed 64-char hex SHA-256 string",
@@ -278,7 +301,7 @@ public:
     // its content size. Same malformed/not-found errors as get_blob(), in the same order. The one
     // entry the two could answer differently is one this store never writes: a DIRECTORY planted at
     // blobs/<digest>, which file_size() refuses and (on POSIX) an ifstream opens and reads as empty.
-    [[nodiscard]] agentengine::result<std::uint64_t> blob_size(agentengine::Digest const& digest) const {
+    [[nodiscard]] agentengine::result<std::uint64_t> blob_size_blocking(agentengine::Digest const& digest) const {
         if (!is_well_formed_digest(digest)) {
             return std::unexpected(agentengine::error{agentengine::failure_class::contract,
                                                           "digest is not a well-formed 64-char hex SHA-256 string",
@@ -294,7 +317,7 @@ public:
         return static_cast<std::uint64_t>(size);
     }
 
-    [[nodiscard]] agentengine::result<agentengine::Digest> put_tree(agentengine::Tree tree) {
+    [[nodiscard]] agentengine::result<agentengine::Digest> put_tree_blocking(agentengine::Tree tree) {
         std::ranges::sort(tree.entries, {}, &agentengine::TreeEntry::name);
         auto bytes = agentengine::canonical_tree_bytes(tree);
         auto digest = agentengine::compute_digest(bytes);
@@ -351,7 +374,7 @@ public:
         return *digest;
     }
 
-    [[nodiscard]] agentengine::result<agentengine::Tree> get_tree(agentengine::Digest const& digest) const {
+    [[nodiscard]] agentengine::result<agentengine::Tree> get_tree_blocking(agentengine::Digest const& digest) const {
         if (!is_well_formed_digest(digest)) {
             return std::unexpected(agentengine::error{agentengine::failure_class::contract,
                                                           "digest is not a well-formed 64-char hex SHA-256 string",

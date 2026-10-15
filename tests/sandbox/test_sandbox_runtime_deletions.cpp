@@ -36,6 +36,7 @@
 
 #include "agentengine/sandbox/execution_surface.hpp"
 #include "agentengine/sandbox/sandbox_runtime.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -139,7 +140,7 @@ static_assert(ExecutionSurface<InPlaceSurface>);
 
 [[nodiscard]] std::vector<std::string> committed_names(Ledger<>& ledger, Checkpoint const& cp, IdentityHandle who) {
     std::vector<std::string> out;
-    auto tree = ledger.get_tree_safe(cp.tree, who);
+    auto tree = agentengine::rt::block_on(ledger.get_tree_safe(cp.tree, who));
     if (!tree.has_value()) return {"<tree unreadable>"};
     for (auto const& e : tree->entries) out.push_back(e.name);
     std::sort(out.begin(), out.end());

@@ -43,6 +43,7 @@
 // Bounded to a few seconds. Needs no daemon, no network and no privileges.
 
 #include "agentengine/core/file_worktree_object_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include <atomic>
 #include <cstdio>
@@ -232,7 +233,7 @@ int main() {
                     // failure: the exception escaped the thread and took the process with it, so
                     // there was no "failed" branch to reach.
                     try {
-                        auto put_r = store.put_blob(bytes);
+                        auto put_r = agentengine::rt::block_on(store.put_blob(bytes));
                         if (put_r.has_value()) {
                             ++returned;
                         } else {
@@ -289,7 +290,7 @@ int main() {
         auto digest_r = agentengine::compute_digest(bytes);
         check(digest_r.has_value(), "C4 (precondition): the content has a digest to look up");
         if (digest_r.has_value()) {
-            auto get_r = probe.get_blob(*digest_r);
+            auto get_r = agentengine::rt::block_on(probe.get_blob(*digest_r));
             check(get_r.has_value(), "C4: the blob is genuinely on disk afterwards");
             check(get_r.has_value() && get_r->size() == bytes.size() && *get_r == bytes,
                   "C4: ... and byte-for-byte correct, so C3 was not bought by dropping the write");
@@ -352,7 +353,7 @@ int main() {
                     FileWorktreeObjectStore store(objects_dir);
                     for (int i = 0; i < 400; ++i) {
                         try {
-                            auto put_r = store.put_blob(bytes);
+                            auto put_r = agentengine::rt::block_on(store.put_blob(bytes));
                             (void)put_r;   // success or a reported error are both fine here
                         } catch (...) {
                             ++escaped;

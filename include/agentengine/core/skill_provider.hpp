@@ -48,6 +48,7 @@
 #include "agentengine/core/skill_source.hpp"
 #include "agentengine/core/worktree.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine {
 
@@ -69,7 +70,7 @@ struct PendingTreeEntry {
 // blob `TreeEntry`; everything else is grouped by its leading segment, stripped of that segment, and
 // recursed into a subtree.
 template <WorktreeObjectStore ObjectStoreT>
-[[nodiscard]] result<Digest> assemble_tree(ObjectStoreT& store, std::vector<PendingTreeEntry> entries) {
+[[nodiscard]] task<result<Digest>> assemble_tree(ObjectStoreT& store, std::vector<PendingTreeEntry> entries) {
     std::vector<TreeEntry> tree_entries;
     std::vector<std::pair<std::string, std::vector<PendingTreeEntry>>> groups;
 
@@ -91,12 +92,12 @@ template <WorktreeObjectStore ObjectStoreT>
     }
 
     for (auto& [name, sub_entries] : groups) {
-        auto sub_digest = assemble_tree(store, std::move(sub_entries));
-        if (!sub_digest) return std::unexpected(sub_digest.error());
+        auto sub_digest = co_await assemble_tree(store, std::move(sub_entries));
+        if (!sub_digest) co_return std::unexpected(sub_digest.error());
         tree_entries.push_back(TreeEntry{name, *sub_digest, true});
     }
 
-    return store.put_tree(Tree{std::move(tree_entries)});
+    co_return co_await store.put_tree(Tree{std::move(tree_entries)});
 }
 
 }  // namespace skill_provider_detail
@@ -229,17 +230,17 @@ private:
                 std::vector<skill_provider_detail::PendingTreeEntry> pending;
                 pending.reserve(item.files.size());
                 for (auto const& file : item.files) {
-                    auto blob_digest = object_store_.put_blob(file.bytes);
+                    auto blob_digest = co_await object_store_.put_blob(file.bytes);
                     if (!blob_digest) co_return std::unexpected(blob_digest.error());
                     auto segments = split_mount_path(file.relative_path);
                     if (!segments) co_return std::unexpected(segments.error());
                     pending.push_back(
                         skill_provider_detail::PendingTreeEntry{std::move(*segments), std::move(*blob_digest)});
                 }
-                auto tree_digest = skill_provider_detail::assemble_tree(object_store_, std::move(pending));
+                auto tree_digest = co_await skill_provider_detail::assemble_tree(object_store_, std::move(pending));
                 if (!tree_digest) co_return std::unexpected(tree_digest.error());
 
-                auto committed_ref = commit_ref(*ref_store_, "skill:" + skill_name, *tree_digest);
+                auto committed_ref = co_await commit_ref(*ref_store_, "skill:" + skill_name, *tree_digest);
                 if (!committed_ref) co_return std::unexpected(committed_ref.error());
 
                 // Bare skill name, not "/skills/" + name -- see this file's own top comment for why

@@ -48,6 +48,8 @@ yes, it was owed.** It found:
   - no failure branch had ever run.
 - **two Minor issues**.
 
+**Superseded in part (2026-10-14, ADR-237 §14 step 44, #172):** §2.1's `VectorIndex`/`RemoteVectorIndex` split is gone. Both index concepts (`VectorIndex`, `SparseIndex`) are one `task`-shaped, `EffectContext`-threaded seam for local and remote conformers; `RemoteVectorIndex`, `AnyVectorIndex`, the `if constexpr` dispatch sites and the R1 disjointness rule were removed with it.
+
 All eight are fixed with executed proof. Pass 5 was systematic by construction, not by eye:
 - an exhaustive 47-entry-point Vulkan-call table;
 - the Khronos validation and profiles layers;

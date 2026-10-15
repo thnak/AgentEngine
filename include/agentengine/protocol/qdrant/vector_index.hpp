@@ -1,9 +1,9 @@
 #pragma once
 // Implements decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.5 --
-// `QdrantVectorIndex`, the `RemoteVectorIndex` (core/remote_vector_index.hpp) reference conformer.
-// Reaches any Qdrant-API-compatible host over plain JSON/HTTPS, reusing the exact same transport
-// `protocol/openai/embedder.hpp` already proved live (`sandbox::perform_provider_https_exchange`,
-// ADR-063 claim 4) and the identical `SecretStore` credential-resolution discipline (resolved INSIDE
+// `QdrantVectorIndex`, the remote `VectorIndex` (core/vector_index.hpp) reference conformer.
+// Reaches any Qdrant-API-compatible host over plain JSON/HTTPS, on the same transport as
+// `protocol/openai/embedder.hpp` (`provider_wire::exchange_async`, `rt::http` on the reactor since ADR-237
+// §5.1 / #172 -- the blocking `sandbox::perform_provider_https_exchange` before) and the identical `SecretStore` credential-resolution discipline (resolved INSIDE
 // each call, never at construction, 004 §1/018 §4) -- ZERO new third-party dependency, staying at the
 // same "protocol-tier" cost `OpenAIEmbedder` already established, per ADR-180 §2.5's own chosen design.
 //
@@ -72,6 +72,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string>
 #include <utility>
@@ -79,7 +80,9 @@
 
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_value.hpp"
-#include "agentengine/core/remote_vector_index.hpp"
+#include "agentengine/core/vector_index.hpp"
+#include "agentengine/protocol/provider_chat_wire.hpp"
+#include "agentengine/rt/runtime.hpp"
 #include "agentengine/sandbox/provider_http_client.hpp"
 #include "agentengine/trust/secret.hpp"
 
@@ -292,18 +295,16 @@ template <SecretStore Store>
 // ae-naming-lint: allow QdrantVectorIndex — ADR-180: new vocabulary, not yet in 027 §2-4's tables.
 class QdrantVectorIndex {
 public:
-    // Every step is a plain, synchronous, BLOCKING call (store_.resolve(), perform_provider_
-    // https_exchange(), json::parse()) -- the only coroutine keyword used anywhere below is
-    // co_return, mirroring OpenAIEmbedder::embed_batch()'s own identical, re-verified-every-change
-    // claim (embedder.hpp). Driving any of the three methods below via rt::drive_leaf_task() is sound.
-    static constexpr bool synchronous_leaf = true;
+    // ADR-237 §5.1 (#172): every method runs its exchange on `rt::http` (`provider_wire::exchange_async`) -- no
+    // blocking body, and `ctx.cancellation` reaches the request. A host running many sessions passes its own
+    // `rt::Runtime` through the trailing `ProviderReactorOptions`; otherwise the index owns one.
 
     // Parameter order mirrors OpenAIEmbedder's own constructor as closely as the two classes' actual
     // parameters allow (host/port/.../SecretRef/.../store/path_prefix/resolver/
     // ca_bundle_pem_override/transport) -- `collection_name` takes the slot `model` occupies there
     // (both are "which logical resource on the host this conformer talks to"), and there is no
-    // `EmbedderCapabilities`-shaped parameter (RemoteVectorIndex declares no capabilities() method).
-    // `max_batch_size` (ADR-180 §4 red-team pass 2 finding 2): unlike `Embedder`, `RemoteVectorIndex`
+    // `EmbedderCapabilities`-shaped parameter (VectorIndex declares no capabilities() method).
+    // `max_batch_size` (ADR-180 §4 red-team pass 2 finding 2): unlike `Embedder`, `VectorIndex`
     // declares no required capabilities()/batch-limit concept at all, so this class self-imposes one
     // as an OPTIONAL constructor parameter (`0` = unlimited, matching `EmbedderCapabilities::
     // max_batch_size`'s own "declared, never probed" convention exactly) -- without it, a caller
@@ -316,7 +317,9 @@ public:
                        std::size_t max_batch_size = 0,
                        detail::Resolver resolver = sandbox::resolve_host,
                        std::string ca_bundle_pem_override = {},
-                       sandbox::ProviderTransport transport = sandbox::ProviderTransport::tls)
+                       sandbox::ProviderTransport transport = sandbox::ProviderTransport::tls,
+                       // ADR-237 §5.1 (#172): appended last, the chat clients' "never insert earlier" convention.
+                       agentengine::detail::provider_wire::ProviderReactorOptions reactor = {})
         : host_(std::move(host)),
           port_(port),
           collection_name_(std::move(collection_name)),
@@ -326,7 +329,19 @@ public:
           max_batch_size_(max_batch_size),
           resolver_(std::move(resolver)),
           ca_bundle_pem_override_(std::move(ca_bundle_pem_override)),
-          transport_(transport) {}
+          transport_(transport),
+          reactor_(std::move(reactor)) {
+        // As the chat clients (ADR-237 §5.1 steps 39-40): no Runtime supplied -> own one, held by unique_ptr so
+        // `reactor_.runtime` survives a move; the ctor's Resolver becomes the reactor's DNS seam unless the caller
+        // named one.
+        if (reactor_.runtime == nullptr) {
+            owned_runtime_   = std::make_unique<agentengine::rt::Runtime>(agentengine::rt::RuntimeConfig{});
+            reactor_.runtime = owned_runtime_.get();
+        }
+        if (!reactor_.resolver) {
+            reactor_.resolver = agentengine::detail::provider_wire::host_resolver_from(resolver_, port_);
+        }
+    }
 
     [[nodiscard]] task<result<void>> add_batch(std::vector<std::string> const& ids,
                                                  std::vector<std::vector<float>> const& vectors,
@@ -356,15 +371,13 @@ public:
 
         // Resolution happens HERE, inside add_batch(), against EffectContext -- never at
         // construction (004 §1/018 §4, the same rule OpenAIEmbedder::embed_batch() follows).
-        auto lease = store_.resolve(api_key_ref_, ctx);
+        auto lease = co_await store_.resolve(api_key_ref_, ctx);
         if (!lease) co_return std::unexpected(lease.error());
 
         auto req = detail::build_qdrant_request("PUT", path_prefix_ + "/collections/" + collection_name_ +
                                                             "/points",
                                                   lease->reveal_text(), json::dump(*body));
-        auto resp = sandbox::perform_provider_https_exchange(host_, port_, req, {}, std::nullopt,
-                                                                resolver_, ca_bundle_pem_override_,
-                                                                transport_);
+        auto resp = co_await exchange(std::move(req), ctx);
         if (!resp) co_return std::unexpected(resp.error());
         if (resp->status < 200 || resp->status >= 300) {
             co_return std::unexpected(detail::map_http_status_error(resp->status, resp->body));
@@ -384,16 +397,14 @@ public:
         // resolution, no network call) for the identical reason.
         if (k == 0) co_return std::vector<ScoredId>{};
 
-        auto lease = store_.resolve(api_key_ref_, ctx);
+        auto lease = co_await store_.resolve(api_key_ref_, ctx);
         if (!lease) co_return std::unexpected(lease.error());
 
         auto body = detail::build_search_request_body(query, k);
         auto req = detail::build_qdrant_request(
             "POST", path_prefix_ + "/collections/" + collection_name_ + "/points/search",
             lease->reveal_text(), json::dump(body));
-        auto resp = sandbox::perform_provider_https_exchange(host_, port_, req, {}, std::nullopt,
-                                                                resolver_, ca_bundle_pem_override_,
-                                                                transport_);
+        auto resp = co_await exchange(std::move(req), ctx);
         if (!resp) co_return std::unexpected(resp.error());
         if (resp->status < 200 || resp->status >= 300) {
             co_return std::unexpected(detail::map_http_status_error(resp->status, resp->body));
@@ -408,15 +419,13 @@ public:
         auto point_id = detail::chunk_id_to_qdrant_point_id(id);
         if (!point_id) co_return std::unexpected(point_id.error());
 
-        auto lease = store_.resolve(api_key_ref_, ctx);
+        auto lease = co_await store_.resolve(api_key_ref_, ctx);
         if (!lease) co_return std::unexpected(lease.error());
 
         auto req = detail::build_qdrant_request(
             "GET", path_prefix_ + "/collections/" + collection_name_ + "/points/" + *point_id,
             lease->reveal_text());
-        auto resp = sandbox::perform_provider_https_exchange(host_, port_, req, {}, std::nullopt,
-                                                                resolver_, ca_bundle_pem_override_,
-                                                                transport_);
+        auto resp = co_await exchange(std::move(req), ctx);
         if (!resp) co_return std::unexpected(resp.error());
         // docs/research/2026-09-22-qdrant-rest-api.md §1: 404 is Qdrant's own documented "point not
         // found" signal for this endpoint -- a normal, successful "no" answer, not a transport/policy
@@ -435,6 +444,14 @@ public:
     }
 
 private:
+    // ADR-237 §5.1 (#172): the one provider-plane exchange on `rt::http`; `ctx.cancellation` ends it in flight.
+    // Every status comes back, and is classified by this file's own `map_http_status_error`.
+    [[nodiscard]] task<result<rt::HttpResponse>> exchange(sandbox::NetEgressRequest req, EffectContext& ctx) const {
+        return agentengine::detail::provider_wire::exchange_async(host_, port_, std::move(req), reactor_,
+                                                                  ca_bundle_pem_override_, transport_,
+                                                                  ctx.cancellation);
+    }
+
     std::string host_;
     std::uint16_t port_;
     std::string collection_name_;
@@ -445,13 +462,15 @@ private:
     detail::Resolver resolver_;
     std::string ca_bundle_pem_override_;
     sandbox::ProviderTransport transport_;
+    agentengine::detail::provider_wire::ProviderReactorOptions reactor_;
+    std::unique_ptr<agentengine::rt::Runtime>                  owned_runtime_;  // set only when none was supplied
 };
 
-// `QdrantVectorIndex` is templated on `Store`, so a bare `RemoteVectorIndex<QdrantVectorIndex>` cannot
+// `QdrantVectorIndex` is templated on `Store`, so a bare `VectorIndex<QdrantVectorIndex>` cannot
 // be written -- concept-checking a template requires a concrete instantiation, the same reason
 // `OpenAIEmbedder<InMemorySecretStore>` is what `embedder.hpp`'s own bottom static_assert checks.
-static_assert(RemoteVectorIndex<QdrantVectorIndex<InMemorySecretStore>>,
-              "QdrantVectorIndex must satisfy the real RemoteVectorIndex concept (ADR-180 §2.1/§2.5)");
+static_assert(VectorIndex<QdrantVectorIndex<InMemorySecretStore>>,
+              "QdrantVectorIndex must satisfy the real VectorIndex concept (ADR-180 §2.5, ADR-237 §5.1)");
 
 }  // namespace agentengine::qdrant
 

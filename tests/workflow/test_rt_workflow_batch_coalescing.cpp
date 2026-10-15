@@ -308,7 +308,7 @@ int main() {
         g.init(sup);
         (void)sup.enable_batch_coalescing();
         RunStateRecord saved;
-        sup.set_checkpoint_hook([&saved](std::uint32_t, RunStateRecord const& rec) { saved = rec; });
+        sup.set_checkpoint_hook([&saved](std::uint32_t, RunStateRecord rec) -> agentengine::task<void> { saved = std::move(rec); co_return; });
         (void)drive(sup.run_workflow(RunWorkflow{text_message("x")}));
         check(saved.batch_items.size() == 3, "C6: the round's checkpoint records the 3 pending items");
         auto decoded = rt::decode_run_state_record(rt::encode_run_state_record(saved));

@@ -9,6 +9,7 @@
 
 #include "agentengine/core/memory.hpp"
 #include "agentengine/eval/eval_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 namespace {
 
@@ -30,7 +31,7 @@ int main() {
     namespace ev = ae::eval;
 
     // ---- happy path: minted principal carries the reserved prefix -----------------------------
-    auto store1 = ev::EvalStore::make("trial", "a");
+    auto store1 = agentengine::rt::block_on(ev::EvalStore::make("trial", "a"));
     AE_CHECK(store1.has_value(), "EvalStore::make succeeds for an ordinary tenant suffix/id");
     if (store1) {
         AE_CHECK(store1->principal().tenant_id == "eval:trial",
@@ -41,9 +42,9 @@ int main() {
     }
 
     // ---- colon-collision guard round-trips through EvalStore::make, not just mint_eval_trial_principal
-    auto colon_in_suffix = ev::EvalStore::make("eval:trial", "a");
+    auto colon_in_suffix = agentengine::rt::block_on(ev::EvalStore::make("eval:trial", "a"));
     AE_CHECK(!colon_in_suffix.has_value(), "a colon in tenant_suffix is refused at this call site");
-    auto colon_in_id = ev::EvalStore::make("trial", "a:b");
+    auto colon_in_id = agentengine::rt::block_on(ev::EvalStore::make("trial", "a:b"));
     AE_CHECK(!colon_in_id.has_value(), "a colon in id is refused at this call site");
 
     // ---- isolation is by the FRESH STORE, not by name (§3.2) -----------------------------------
@@ -57,16 +58,16 @@ int main() {
         seeded.salience = 0.5f;
         seeded.origin = ae::MemoryOrigin{ae::memory_source::model_inferred, "run-0", "turn-0",
                                           store1->principal()};
-        AE_CHECK(ae::write_memory_item(store1->object_store(), store1->ref_store(), store1->mount(),
-                                        store1->write_cap(), seeded)
+        AE_CHECK(agentengine::rt::block_on(ae::write_memory_item(store1->object_store(), store1->ref_store(), store1->mount(),
+                                        store1->write_cap(), seeded))
                      .has_value(),
                  "setup: seeding an item into the first store succeeds");
 
-        auto store2 = ev::EvalStore::make("trial", "a");
+        auto store2 = agentengine::rt::block_on(ev::EvalStore::make("trial", "a"));
         AE_CHECK(store2.has_value(), "a second EvalStore with the SAME identity mints successfully");
         if (store2) {
-            auto listed = ae::list_memory_items(store2->object_store(), store2->ref_store(),
-                                                 store2->mount(), store2->read_cap());
+            auto listed = agentengine::rt::block_on(ae::list_memory_items(store2->object_store(), store2->ref_store(),
+                                                 store2->mount(), store2->read_cap()));
             AE_CHECK(listed.has_value() && listed->empty(),
                      "the second, same-identity EvalStore's fresh store holds ZERO items from the "
                      "first -- isolation is by the fresh store object, not by ref_name/identity");

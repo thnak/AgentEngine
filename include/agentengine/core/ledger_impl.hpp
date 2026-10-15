@@ -36,37 +36,40 @@ agentengine::result<void> Ledger<Store>::mark_digest_shared(agentengine::Digest 
 }
 
 template <class Store>
-agentengine::result<std::vector<std::byte>> Ledger<Store>::get_blob_safe(
-        agentengine::Digest const& digest, agentengine::IdentityHandle caller) {
-    std::lock_guard<std::mutex> g(mutex_);
-    if (!authorized_for(blob_acl_, digest, caller)) {
-        return std::unexpected(agentengine::error{agentengine::failure_class::policy,
-                                                      "caller is not authorized to read this blob digest",
-                                                      "ledger.blob_access_denied"});
+agentengine::rt::task<agentengine::result<std::vector<std::byte>>> Ledger<Store>::get_blob_safe(
+        agentengine::Digest digest, agentengine::IdentityHandle caller) {
+    // ADR-238 §3.6: A (authorize, under mutex_) then B (the store read, with no lock held).
+    {
+        std::lock_guard<std::mutex> g(mutex_);
+        if (!authorized_for(blob_acl_, digest, caller)) {
+            co_return std::unexpected(agentengine::error{agentengine::failure_class::policy,
+                                                             "caller is not authorized to read this blob digest",
+                                                             "ledger.blob_access_denied"});
+        }
     }
-    auto b = store_.get_blob(digest);
+    auto b = co_await ledger_detail::guarded(store_.get_blob(digest));
     if (!b) {
-        return std::unexpected(agentengine::error{agentengine::failure_class::fatal, b.error().message,
-                                                      "ledger.get_blob_failed"});
+        co_return std::unexpected(ledger_detail::store_failure(b.error(), "ledger.get_blob_failed"));
     }
-    return *b;
+    co_return std::move(*b);
 }
 
 template <class Store>
-agentengine::result<agentengine::Tree> Ledger<Store>::get_tree_safe(agentengine::Digest const& digest,
-                                                                       agentengine::IdentityHandle caller) {
-    std::lock_guard<std::mutex> g(mutex_);
-    if (!authorized_for(tree_acl_, digest, caller)) {
-        return std::unexpected(agentengine::error{agentengine::failure_class::policy,
-                                                      "caller is not authorized to read this tree digest",
-                                                      "ledger.tree_access_denied"});
+agentengine::rt::task<agentengine::result<agentengine::Tree>> Ledger<Store>::get_tree_safe(
+        agentengine::Digest digest, agentengine::IdentityHandle caller) {
+    {
+        std::lock_guard<std::mutex> g(mutex_);
+        if (!authorized_for(tree_acl_, digest, caller)) {
+            co_return std::unexpected(agentengine::error{agentengine::failure_class::policy,
+                                                             "caller is not authorized to read this tree digest",
+                                                             "ledger.tree_access_denied"});
+        }
     }
-    auto t = store_.get_tree(digest);
+    auto t = co_await ledger_detail::guarded(store_.get_tree(digest));
     if (!t) {
-        return std::unexpected(agentengine::error{agentengine::failure_class::fatal, t.error().message,
-                                                      "ledger.get_tree_failed"});
+        co_return std::unexpected(ledger_detail::store_failure(t.error(), "ledger.get_tree_failed"));
     }
-    return *t;
+    co_return std::move(*t);
 }
 
 template <class Store>
@@ -86,19 +89,20 @@ agentengine::rt::task<agentengine::result<BranchHandle<Store>>> Ledger<Store>::c
     agentengine::IdentityHandle owner, std::string disambiguator) {
     std::string name = "root-" + std::to_string(owner.id());
     if (!disambiguator.empty()) name += "-" + disambiguator;
-    agentengine::Digest empty_tree_digest;
+
+    // ADR-238 §3.2: overwrites a branch of this name if one exists, so it is a head-moving operation.
+    auto op = co_await op_mutex_.lock(agentengine::rt::lock_entry::mutating);
+    if (!op) co_return std::unexpected(op_lock_refused_error());
+
+    // B: the store write, no mutex_ held. Idempotent and content-addressed (ADR-238 C2).
+    auto put = co_await ledger_detail::guarded(store_.put_tree(agentengine::Tree{}));
+    if (!put) {
+        co_return std::unexpected(ledger_detail::store_failure(put.error(), "ledger.put_tree_failed"));
+    }
+    agentengine::Digest const empty_tree_digest = *put;
     {
-        // Every store_ access is serialized by THIS Ledger's own mutex_, the same one guarding
-        // branches_: the store's own lock makes each call safe, but the ACL and branch bookkeeping
-        // around it must change in the same critical section.
+        // C: the ACL and branch bookkeeping change in one critical section.
         std::lock_guard<std::mutex> g(mutex_);
-        auto put = store_.put_tree(agentengine::Tree{});
-        if (!put) {
-            co_return std::unexpected(agentengine::error{agentengine::failure_class::fatal,
-                                                             put.error().message,
-                                                             "ledger.put_tree_failed"});
-        }
-        empty_tree_digest = *put;
         auto acl_ok = insert_acl_root_bounded(tree_acl_, empty_tree_digest, owner.id(),
                                                  max_acl_roots_per_digest_);
         if (!acl_ok.has_value()) co_return std::unexpected(acl_ok.error());
@@ -113,6 +117,8 @@ template <class Store>
 agentengine::rt::task<agentengine::result<Checkpoint>> Ledger<Store>::commit(
         BranchHandle<Store> const& branch, agentengine::Tree tree,
         agentengine::IdentityHandle authored_by, agentengine::rt::AsyncQuota<StorageBytes>& quota) {
+    // ADR-238 §3.6: nothing below reads `branch` again after a suspension.
+    std::string branch_name = branch.name();
     std::size_t const approx_bytes = agentengine::canonical_tree_bytes(tree).size();
     auto consumed = co_await quota.try_consume(approx_bytes, authored_by);
     if (!consumed.has_value()) co_return std::unexpected(consumed.error());
@@ -123,17 +129,32 @@ agentengine::rt::task<agentengine::result<Checkpoint>> Ledger<Store>::commit(
         co_return std::unexpected(folding_check.error());
     }
 
-    // Computed with `mutex_` released before any `co_await` (a lock held across a coroutine
-    // suspension point is a real correctness hazard: the coroutine may resume on a different
-    // thread than it suspended on, and unlocking a std::mutex from a different thread than locked
-    // it is UB) -- and any failure refunds exactly what was consumed above, rather than burning
-    // quota for a rejected commit.
-    agentengine::result<Checkpoint> outcome = [&]() -> agentengine::result<Checkpoint> {
+    // The op lock and the store write live in `commit_phases`, so the lock is released before any refund below
+    // (ADR-238 §3.3), and any failure refunds exactly what was consumed rather than burning quota for a rejected
+    // commit.
+    agentengine::result<Checkpoint> outcome =
+        co_await commit_phases(std::move(branch_name), std::move(tree), authored_by);
+    if (!outcome.has_value()) {
+        (void)co_await quota.refund(approx_bytes);
+        co_return std::unexpected(outcome.error());
+    }
+    co_return *outcome;
+}
+
+template <class Store>
+agentengine::rt::task<agentengine::result<Checkpoint>> Ledger<Store>::commit_phases(
+        std::string branch_name, agentengine::Tree tree, agentengine::IdentityHandle authored_by) {
+    auto op = co_await op_mutex_.lock(agentengine::rt::lock_entry::mutating);
+    if (!op) co_return std::unexpected(op_lock_refused_error());
+
+    {
+        // A: every entry a commit references must already be legitimately accessible to the committer. ACLs only
+        // grow (ADR-238 C1), so this still holds in C.
         std::lock_guard<std::mutex> g(mutex_);
         for (auto const& entry : tree.entries) {
             auto const& acl = entry.is_tree ? tree_acl_ : blob_acl_;
             if (!authorized_for(acl, entry.digest, authored_by)) {
-                return std::unexpected(agentengine::error{
+                co_return std::unexpected(agentengine::error{
                     agentengine::failure_class::policy,
                     "commit references digest '" + entry.digest.substr(0, 12) + "...' (path '" +
                         entry.name +
@@ -143,47 +164,58 @@ agentengine::rt::task<agentengine::result<Checkpoint>> Ledger<Store>::commit(
                     "ledger.commit_unauthorized_reference"});
             }
         }
-        auto tree_digest = store_.put_tree(std::move(tree));
-        if (!tree_digest) {
-            return std::unexpected(agentengine::error{agentengine::failure_class::fatal,
-                                                          tree_digest.error().message,
-                                                          "ledger.put_tree_failed"});
-        }
-        auto acl_ok = insert_acl_root_bounded(tree_acl_, *tree_digest, authored_by.id(),
-                                                 max_acl_roots_per_digest_);
-        if (!acl_ok.has_value()) return std::unexpected(acl_ok.error());
-
-        auto it = branches_.find(branch.name());
-        if (it == branches_.end()) {
-            return std::unexpected(agentengine::error{agentengine::failure_class::contract,
-                                                          "unknown branch", "ledger.unknown_branch"});
-        }
-        auto& state = it->second;
-        std::uint64_t const new_turn = state.head_turn_index + 1;
-        auto self = compute_self_digest(*tree_digest, state.head_self_digest, authored_by.id(), new_turn);
-        if (!self.has_value()) return std::unexpected(self.error());
-        Checkpoint cp{*self, *tree_digest, state.head_self_digest, authored_by.id(), new_turn};
-        state.head_self_digest = *self;
-        state.head_tree_digest = *tree_digest;
-        state.head_turn_index = new_turn;
-        state.checkpoints.insert_or_assign(new_turn, cp);
-        persist_snapshot_locked();
-        return cp;
-    }();
-
-    if (!outcome.has_value()) {
-        (void)co_await quota.refund(approx_bytes);
-        co_return std::unexpected(outcome.error());
     }
-    co_return *outcome;
+
+    // B: no mutex_ held.
+    auto tree_digest = co_await ledger_detail::guarded(store_.put_tree(std::move(tree)));
+    if (!tree_digest) {
+        co_return std::unexpected(ledger_detail::store_failure(tree_digest.error(), "ledger.put_tree_failed"));
+    }
+
+    // C: the turn, parent and self digest come from the head read HERE, so concurrent commits to one branch form
+    // one linear chain (ADR-238 C4).
+    agentengine::result<Checkpoint> applied = [&]() -> agentengine::result<Checkpoint> {
+        try {
+            std::lock_guard<std::mutex> g(mutex_);
+            auto acl_ok = insert_acl_root_bounded(tree_acl_, *tree_digest, authored_by.id(),
+                                                     max_acl_roots_per_digest_);
+            if (!acl_ok.has_value()) return std::unexpected(acl_ok.error());
+
+            auto it = branches_.find(branch_name);
+            if (it == branches_.end()) {
+                return std::unexpected(agentengine::error{agentengine::failure_class::contract,
+                                                              "unknown branch", "ledger.unknown_branch"});
+            }
+            auto& state = it->second;
+            std::uint64_t const new_turn = state.head_turn_index + 1;
+            auto self = compute_self_digest(*tree_digest, state.head_self_digest, authored_by.id(), new_turn);
+            if (!self.has_value()) return std::unexpected(self.error());
+            Checkpoint cp{*self, *tree_digest, state.head_self_digest, authored_by.id(), new_turn};
+            state.head_self_digest = *self;
+            state.head_tree_digest = *tree_digest;
+            state.head_turn_index = new_turn;
+            state.checkpoints.insert_or_assign(new_turn, cp);
+            persist_snapshot_locked();
+            return cp;
+        } catch (...) {
+            return std::unexpected(agentengine::error{agentengine::failure_class::fatal,
+                                                          "commit could not be applied", "ledger.internal_fault"});
+        }
+    }();
+    co_return applied;
 }
 
 template <class Store>
 agentengine::rt::task<agentengine::result<Checkpoint>> Ledger<Store>::reset_to(
         BranchHandle<Store> const& branch, std::uint64_t target_turn_index,
         agentengine::IdentityHandle requested_by) {
+    std::string const branch_name = branch.name();
+    // ADR-238 §3.2: moves a head, so it must not interleave with a merge's window.
+    auto op = co_await op_mutex_.lock(agentengine::rt::lock_entry::mutating);
+    if (!op) co_return std::unexpected(op_lock_refused_error());
+
     std::lock_guard<std::mutex> g(mutex_);
-    auto it = branches_.find(branch.name());
+    auto it = branches_.find(branch_name);
     if (it == branches_.end()) {
         co_return std::unexpected(agentengine::error{agentengine::failure_class::contract,
                                                          "unknown branch", "ledger.unknown_branch"});
@@ -213,12 +245,14 @@ template <class Store>
 agentengine::rt::task<agentengine::result<BranchHandle<Store>>> Ledger<Store>::branch_from(
     BranchHandle<Store> const& parent, agentengine::IdentityHandle created_by,
     agentengine::rt::AsyncQuota<BranchCost>& quota) {
+    // ADR-238 §3.6: copied before the first suspension; the handle is not read again.
+    std::string const parent_name = parent.name();
     auto consumed = co_await quota.try_consume(1, created_by);
     if (!consumed.has_value()) co_return std::unexpected(consumed.error());
 
     agentengine::result<BranchHandle<Store>> outcome = [&]() -> agentengine::result<BranchHandle<Store>> {
         std::lock_guard<std::mutex> g(mutex_);
-        auto it = branches_.find(parent.name());
+        auto it = branches_.find(parent_name);
         if (it == branches_.end()) {
             return std::unexpected(agentengine::error{agentengine::failure_class::contract,
                                                           "unknown parent branch",
@@ -226,7 +260,7 @@ agentengine::rt::task<agentengine::result<BranchHandle<Store>>> Ledger<Store>::b
         }
         BranchState const& parent_state = it->second;
         std::string child_name =
-            parent.name() + "/child-" + std::to_string(created_by.id()) + "-" +
+            parent_name + "/child-" + std::to_string(created_by.id()) + "-" +
             std::to_string(branch_seq_++);
         auto acl_ok = insert_acl_root_bounded(tree_acl_, parent_state.head_tree_digest,
                                                  created_by.id(), max_acl_roots_per_digest_);
@@ -251,79 +285,139 @@ template <class Store>
 agentengine::rt::task<agentengine::result<Checkpoint>> Ledger<Store>::merge(
         BranchHandle<Store> child, BranchHandle<Store> const& parent,
         agentengine::IdentityHandle requested_by, agentengine::rt::AsyncQuota<MergeCost>& quota) {
+    // ADR-238 §3.6/§3.7. The parent's name is copied before the first suspension; `child` is a by-value parameter
+    // whose destructor would queue a REAL abandon if this frame were destroyed while parked (the house "drop the
+    // handle" cancellation idiom, ADR-017). `InFlightChild` resolves it now and, unless disarmed at the success
+    // point, registers the child as a reclaimable orphan on any early exit -- exactly what every failed-merge path
+    // below already does by hand.
+    std::string parent_name = parent.name();
+    InFlightChild in_flight(*this, child);
+
     auto consumed = co_await quota.try_consume(1, requested_by);
-    if (!consumed.has_value()) {
-        // MUST-FIX, found by an independent red-team pass on this exact fix (2026-08-29): without
-        // this block, `child` reaches its own destructor still `resolved_ == false` (nothing below
-        // ever ran), so `BranchHandle::~BranchHandle()`'s `maybe_queue_abandon()` queues a REAL
-        // abandon -- the next unrelated `reap_pending_abandons()` call would genuinely ERASE this
-        // branch, destroying the caller's real work, not merely leave it "untouched" or
-        // "reclaimable" the way every other rejection path below does. Matches every other
-        // rejection path's own contract exactly: register `child` as a reclaimable orphan (only if
-        // it still genuinely exists) and mark it resolved, so a quota-refused merge loses no more
-        // than any other refused merge does, and the caller keeps the same real
-        // `reclaim_orphaned_branch()` recovery path. No `co_await` inside this scope, so taking
-        // `mutex_` here briefly does not reopen the lock-across-suspension hazard this method's own
-        // header comment names.
-        {
-            std::lock_guard<std::mutex> g(mutex_);
-            orphan_child_locked(child);
-        }
-        co_return std::unexpected(consumed.error());
-    }
+    if (!consumed.has_value()) co_return std::unexpected(consumed.error());  // in_flight orphans the child
 
-    agentengine::result<Checkpoint> outcome = [&]() -> agentengine::result<Checkpoint> {
-        std::lock_guard<std::mutex> g(mutex_);
-        auto participants = load_merge_participants_locked(child, parent, requested_by);
-        if (!participants.has_value()) return std::unexpected(participants.error());
-        BranchState& parent_state = *participants->parent_state;
-
-        auto merge_result = perform_three_way_merge_locked(
-            participants->base_digest, participants->ours_digest, participants->theirs_digest, child);
-        if (!merge_result.has_value()) return std::unexpected(merge_result.error());
-
-        auto committed = commit_merged_tree_locked(std::move(*merge_result), requested_by,
-                                                      parent_state, child);
-        if (!committed.has_value()) return std::unexpected(committed.error());
-
-        auto granted = grant_parent_owner_access_locked(committed->merged_tree_digest,
-                                                            committed->entries_for_owner_grant,
-                                                            parent_state, requested_by, child);
-        if (!granted.has_value()) return std::unexpected(granted.error());
-
-        std::uint64_t const new_turn = parent_state.head_turn_index + 1;
-        auto self = compute_self_digest(committed->merged_tree_digest, parent_state.head_self_digest,
-                                          requested_by.id(), new_turn);
-        if (!self.has_value()) {
-            orphan_child_locked(child);
-            return std::unexpected(self.error());
-        }
-        Checkpoint cp{*self, committed->merged_tree_digest, parent_state.head_self_digest,
-                         requested_by.id(), new_turn};
-        parent_state.head_self_digest = *self;
-        parent_state.head_tree_digest = committed->merged_tree_digest;
-        parent_state.head_turn_index = new_turn;
-        parent_state.checkpoints.insert_or_assign(new_turn, cp);
-        branches_.erase(child.name());
-        child.resolved_ = true;
-        persist_snapshot_locked();
-        return cp;
-    }();
-
+    agentengine::result<Checkpoint> outcome =
+        co_await merge_phases(child, std::move(parent_name), requested_by);
     if (!outcome.has_value()) {
         (void)co_await quota.refund(1);
         co_return std::unexpected(outcome.error());
     }
+    in_flight.disarm();
     co_return *outcome;
 }
 
 template <class Store>
+agentengine::rt::task<agentengine::result<Checkpoint>> Ledger<Store>::merge_phases(
+        BranchHandle<Store>& child, std::string parent_name, agentengine::IdentityHandle requested_by) {
+    // ADR-238 §3.5: `merge` holds no lock here, and this is the only place that takes `op_mutex_` for a merge.
+    auto op = co_await op_mutex_.lock(agentengine::rt::lock_entry::mutating);
+    if (!op) {
+        {
+            std::lock_guard<std::mutex> g(mutex_);
+            orphan_child_locked(child);
+        }
+        co_return std::unexpected(op_lock_refused_error());
+    }
+    std::string const child_name = child.name();
+
+    // A: validate both branches and the requester, and copy the three digests out. No pointer into `branches_` is
+    // kept across B (ADR-238 §3.6).
+    agentengine::Digest theirs_digest, ours_digest, base_digest;
+    {
+        std::lock_guard<std::mutex> g(mutex_);
+        auto digests = load_merge_digests_locked(child, parent_name, requested_by);
+        if (!digests.has_value()) co_return std::unexpected(digests.error());
+        theirs_digest = digests->theirs_digest;
+        ours_digest = digests->ours_digest;
+        base_digest = digests->base_digest;
+    }
+
+    // B: the store reads and the pure merge, no mutex_ held.
+    auto base_tree = co_await ledger_detail::guarded(store_.get_tree(base_digest));
+    auto ours_tree = co_await ledger_detail::guarded(store_.get_tree(ours_digest));
+    auto theirs_tree =
+        co_await ledger_detail::guarded(store_.get_tree(theirs_digest));
+    if (!base_tree.has_value() || !ours_tree.has_value() || !theirs_tree.has_value()) {
+        {
+            std::lock_guard<std::mutex> g(mutex_);
+            orphan_child_locked(child);
+        }
+        co_return std::unexpected(agentengine::error{
+            agentengine::failure_class::fatal,
+            "merge could not load base/ours/theirs from the object store",
+            "ledger.merge_tree_load_failed"});
+    }
+    LedgerMergeResult merged = merge_trees(*base_tree, *ours_tree, *theirs_tree);
+    if (!merged.conflicts.empty()) {
+        {
+            std::lock_guard<std::mutex> g(mutex_);
+            orphan_child_locked(child);
+        }
+        co_return std::unexpected(agentengine::error{
+            agentengine::failure_class::contract,
+            "merge produced " + std::to_string(merged.conflicts.size()) +
+                " real conflicting path(s) (first: '" + merged.conflicts.front().path +
+                "') -- automatic conflict resolution is explicitly out of this design's scope; "
+                "the merge is rejected rather than silently picking a side",
+            "ledger.merge_conflict"});
+    }
+
+    // A2: every entry of the merge result must be accessible to the requester. Reads `*_acl_`, so it stays under the
+    // lock and is never hoisted into B.
+    std::vector<TreeEntry> entries_for_owner_grant;
+    {
+        std::lock_guard<std::mutex> g(mutex_);
+        auto authorized = authorize_merge_result_locked(merged, parent_name, requested_by, child);
+        if (!authorized.has_value()) co_return std::unexpected(authorized.error());
+        entries_for_owner_grant = std::move(*authorized);
+    }
+
+    // B2: the merged tree's store write.
+    auto merged_tree_digest =
+        co_await ledger_detail::guarded(store_.put_tree(std::move(merged.merged)));
+    if (!merged_tree_digest.has_value()) {
+        {
+            std::lock_guard<std::mutex> g(mutex_);
+            orphan_child_locked(child);
+        }
+        co_return std::unexpected(ledger_detail::store_failure(merged_tree_digest.error(), "ledger.put_tree_failed"));
+    }
+
+    // C: re-find both branches by name and apply everything in one critical section.
+    agentengine::result<Checkpoint> applied = [&]() -> agentengine::result<Checkpoint> {
+        try {
+            std::lock_guard<std::mutex> g(mutex_);
+            return apply_merge_locked(child, parent_name, requested_by, *merged_tree_digest,
+                                      entries_for_owner_grant);
+        } catch (...) {
+            return std::unexpected(agentengine::error{agentengine::failure_class::fatal,
+                                                          "merge could not be applied", "ledger.internal_fault"});
+        }
+    }();
+    co_return applied;
+}
+
+template <class Store>
 agentengine::rt::task<agentengine::result<void>> Ledger<Store>::abandon(BranchHandle<Store> child) {
+    // ADR-238 §3.2/§3.5: deletes a branch, so it holds `op_mutex_`; the body is `abandon_op_locked`, which never
+    // locks, so `abandon_orphaned_branch` can call it without nesting a public locker.
+    auto op = co_await op_mutex_.lock(agentengine::rt::lock_entry::mutating);
+    if (!op) {
+        // The handle is not erased and not abandoned: register it as reclaimable instead of queueing a real abandon.
+        std::lock_guard<std::mutex> g(mutex_);
+        orphan_child_locked(child);
+        co_return std::unexpected(op_lock_refused_error());
+    }
+    abandon_op_locked(child);
+    co_return agentengine::result<void>{};
+}
+
+template <class Store>
+void Ledger<Store>::abandon_op_locked(BranchHandle<Store>& child) {
     std::lock_guard<std::mutex> g(mutex_);
     branches_.erase(child.name());
     child.resolved_ = true;
     persist_snapshot_locked();
-    co_return agentengine::result<void>{};
 }
 
 template <class Store>
@@ -347,9 +441,28 @@ agentengine::rt::task<std::size_t> Ledger<Store>::reap_pending_abandons() {
             }
         }
         if (!creator_id.has_value()) continue;
+        // ADR-238 §3.11: the window between the snapshot above and the erase below is wider now (the abandon waits
+        // on `op_mutex_`), so re-verify under the lock that this is still the branch that was queued.
         BranchHandle<Store> handle(this, name, *creator_id, base);
-        auto r = co_await abandon(std::move(handle));
-        if (r.has_value()) ++processed;
+        auto op = co_await op_mutex_.lock(agentengine::rt::lock_entry::mutating);
+        if (!op) {
+            std::lock_guard<std::mutex> g(mutex_);
+            orphan_child_locked(handle);
+            continue;
+        }
+        bool unchanged = false;
+        {
+            std::lock_guard<std::mutex> g(mutex_);
+            auto it = branches_.find(name);
+            unchanged = it != branches_.end() && it->second.created_by_id == *creator_id &&
+                        it->second.head_tree_digest == base;
+        }
+        if (!unchanged) {
+            handle.resolved_ = true;  // do not re-queue a branch that is no longer the one that was abandoned
+            continue;
+        }
+        abandon_op_locked(handle);
+        ++processed;
     }
     co_return processed;
 }
@@ -451,7 +564,12 @@ agentengine::result<BranchHandle<Store>> Ledger<Store>::reclaim_orphaned_branch(
 
 template <class Store>
 agentengine::rt::task<agentengine::result<void>> Ledger<Store>::abandon_orphaned_branch(
-        std::string const& branch_name, agentengine::IdentityHandle requested_by) {
+        std::string branch_name, agentengine::IdentityHandle requested_by) {
+    // ADR-238 §3.5: takes `op_mutex_` ONCE and calls `abandon_op_locked`, never the public `abandon` (which locks
+    // again and would wait on itself forever: `AsyncMutex` has no recursive mode).
+    auto op = co_await op_mutex_.lock(agentengine::rt::lock_entry::mutating);
+    if (!op) co_return std::unexpected(op_lock_refused_error());
+
     std::optional<std::uint64_t> base_owner_check;
     agentengine::Digest base;
     {
@@ -478,20 +596,23 @@ agentengine::rt::task<agentengine::result<void>> Ledger<Store>::abandon_orphaned
         orphaned_from_restart_.erase(branch_name);
     }
     BranchHandle<Store> handle(this, branch_name, *base_owner_check, base);
-    co_return co_await abandon(std::move(handle));
+    abandon_op_locked(handle);
+    co_return agentengine::result<void>{};
 }
 
 template <class Store>
-agentengine::result<agentengine::Digest> Ledger<Store>::put_blob_locked(std::span<std::byte const> bytes,
-                                                                           agentengine::IdentityHandle const& writer) {
-    auto d = store_.put_blob(bytes);
+agentengine::rt::task<agentengine::result<agentengine::Digest>> Ledger<Store>::put_blob_phases(
+        std::span<std::byte const> bytes, agentengine::IdentityHandle writer) {
+    // B: the store write, no mutex_ held (content-addressed and idempotent, ADR-238 C2).
+    auto d = co_await ledger_detail::guarded(store_.put_blob(bytes));
     if (!d) {
-        return std::unexpected(agentengine::error{agentengine::failure_class::fatal, d.error().message,
-                                                      "ledger.put_blob_failed"});
+        co_return std::unexpected(ledger_detail::store_failure(d.error(), "ledger.put_blob_failed"));
     }
+    // C: the bounded ACL insertion, evaluated against the live set under the lock.
+    std::lock_guard<std::mutex> g(mutex_);
     auto acl_ok = insert_acl_root_bounded(blob_acl_, *d, writer.id(), max_acl_roots_per_digest_);
-    if (!acl_ok.has_value()) return std::unexpected(acl_ok.error());
-    return *d;
+    if (!acl_ok.has_value()) co_return std::unexpected(acl_ok.error());
+    co_return *d;
 }
 
 template <class Store>
@@ -547,11 +668,11 @@ agentengine::result<void> Ledger<Store>::check_case_folding_collision(agentengin
 }
 
 template <class Store>
-agentengine::result<typename Ledger<Store>::MergeParticipants> Ledger<Store>::load_merge_participants_locked(
-        BranchHandle<Store>& child, BranchHandle<Store> const& parent,
+agentengine::result<typename Ledger<Store>::MergeDigests> Ledger<Store>::load_merge_digests_locked(
+        BranchHandle<Store>& child, std::string const& parent_name,
         agentengine::IdentityHandle requested_by) {
     auto child_it = branches_.find(child.name());
-    auto parent_it = branches_.find(parent.name());
+    auto parent_it = branches_.find(parent_name);
     if (child_it == branches_.end() || parent_it == branches_.end()) {
         // The child branch itself may still be unknown too (a stale/already-consumed handle) --
         // only register it as a reclaimable orphan if it genuinely still exists.
@@ -561,7 +682,7 @@ agentengine::result<typename Ledger<Store>::MergeParticipants> Ledger<Store>::lo
                                                          "ledger.unknown_branch"});
     }
     BranchState const& child_state = child_it->second;
-    BranchState& parent_state = parent_it->second;
+    BranchState const& parent_state = parent_it->second;
     agentengine::Digest const theirs_digest = child_state.head_tree_digest;
     agentengine::Digest const ours_digest = parent_state.head_tree_digest;
     agentengine::Digest const base_digest = child_state.base_tree_digest;
@@ -573,42 +694,13 @@ agentengine::result<typename Ledger<Store>::MergeParticipants> Ledger<Store>::lo
             "merge requester is not authorized for the child branch's head tree digest",
             "ledger.merge_unauthorized_reference"});
     }
-    return MergeParticipants{&parent_state, theirs_digest, ours_digest, base_digest};
+    return MergeDigests{theirs_digest, ours_digest, base_digest};
 }
 
 template <class Store>
-agentengine::result<LedgerMergeResult> Ledger<Store>::perform_three_way_merge_locked(
-        agentengine::Digest const& base_digest, agentengine::Digest const& ours_digest,
-        agentengine::Digest const& theirs_digest, BranchHandle<Store>& child) {
-    auto base_tree = store_.get_tree(base_digest);
-    auto ours_tree = store_.get_tree(ours_digest);
-    auto theirs_tree = store_.get_tree(theirs_digest);
-    if (!base_tree.has_value() || !ours_tree.has_value() || !theirs_tree.has_value()) {
-        orphan_child_locked(child);
-        return std::unexpected(agentengine::error{
-            agentengine::failure_class::fatal,
-            "merge could not load base/ours/theirs from the object store",
-            "ledger.merge_tree_load_failed"});
-    }
-
-    LedgerMergeResult merged = merge_trees(*base_tree, *ours_tree, *theirs_tree);
-    if (!merged.conflicts.empty()) {
-        orphan_child_locked(child);
-        return std::unexpected(agentengine::error{
-            agentengine::failure_class::contract,
-            "merge produced " + std::to_string(merged.conflicts.size()) +
-                " real conflicting path(s) (first: '" + merged.conflicts.front().path +
-                "') -- automatic conflict resolution is explicitly out of this design's scope; "
-                "the merge is rejected rather than silently picking a side",
-            "ledger.merge_conflict"});
-    }
-    return merged;
-}
-
-template <class Store>
-agentengine::result<typename Ledger<Store>::CommittedMergeTree> Ledger<Store>::commit_merged_tree_locked(
-        LedgerMergeResult merged, agentengine::IdentityHandle requested_by,
-        BranchState const& parent_state, BranchHandle<Store>& child) {
+agentengine::result<std::vector<TreeEntry>> Ledger<Store>::authorize_merge_result_locked(
+        LedgerMergeResult const& merged, std::string const& parent_name,
+        agentengine::IdentityHandle requested_by, BranchHandle<Store>& child) {
     for (auto const& entry : merged.merged.entries) {
         auto const& acl = entry.is_tree ? tree_acl_ : blob_acl_;
         if (!authorized_for(acl, entry.digest, requested_by)) {
@@ -620,26 +712,54 @@ agentengine::result<typename Ledger<Store>::CommittedMergeTree> Ledger<Store>::c
                 "ledger.merge_unauthorized_reference"});
         }
     }
-
-    std::vector<TreeEntry> merged_entries_for_owner_grant;
-    if (parent_state.created_by_id != requested_by.id()) {
-        merged_entries_for_owner_grant = merged.merged.entries;
-    }
-
-    auto merged_tree_digest = store_.put_tree(std::move(merged.merged));
-    if (!merged_tree_digest.has_value()) {
+    auto parent_it = branches_.find(parent_name);
+    if (parent_it == branches_.end()) {
         orphan_child_locked(child);
-        return std::unexpected(agentengine::error{agentengine::failure_class::fatal,
-                                                         merged_tree_digest.error().message,
-                                                         "ledger.put_tree_failed"});
+        return std::unexpected(agentengine::error{agentengine::failure_class::contract,
+                                                         "unknown branch in merge()", "ledger.unknown_branch"});
     }
-    auto acl_ok = insert_acl_root_bounded(tree_acl_, *merged_tree_digest, requested_by.id(),
+    std::vector<TreeEntry> entries_for_owner_grant;
+    if (parent_it->second.created_by_id != requested_by.id()) entries_for_owner_grant = merged.merged.entries;
+    return entries_for_owner_grant;
+}
+
+template <class Store>
+agentengine::result<Checkpoint> Ledger<Store>::apply_merge_locked(
+        BranchHandle<Store>& child, std::string const& parent_name, agentengine::IdentityHandle requested_by,
+        agentengine::Digest const& merged_tree_digest, std::vector<TreeEntry> const& entries_for_owner_grant) {
+    auto parent_it = branches_.find(parent_name);
+    if (parent_it == branches_.end() || branches_.find(child.name()) == branches_.end()) {
+        orphan_child_locked(child);
+        return std::unexpected(agentengine::error{agentengine::failure_class::contract,
+                                                         "unknown branch in merge()", "ledger.unknown_branch"});
+    }
+    BranchState& parent_state = parent_it->second;
+
+    auto acl_ok = insert_acl_root_bounded(tree_acl_, merged_tree_digest, requested_by.id(),
                                              max_acl_roots_per_digest_);
     if (!acl_ok.has_value()) {
         orphan_child_locked(child);
         return std::unexpected(acl_ok.error());
     }
-    return CommittedMergeTree{*merged_tree_digest, std::move(merged_entries_for_owner_grant)};
+    auto granted = grant_parent_owner_access_locked(merged_tree_digest, entries_for_owner_grant, parent_state,
+                                                       requested_by, child);
+    if (!granted.has_value()) return std::unexpected(granted.error());
+
+    std::uint64_t const new_turn = parent_state.head_turn_index + 1;
+    auto self = compute_self_digest(merged_tree_digest, parent_state.head_self_digest, requested_by.id(), new_turn);
+    if (!self.has_value()) {
+        orphan_child_locked(child);
+        return std::unexpected(self.error());
+    }
+    Checkpoint cp{*self, merged_tree_digest, parent_state.head_self_digest, requested_by.id(), new_turn};
+    parent_state.head_self_digest = *self;
+    parent_state.head_tree_digest = merged_tree_digest;
+    parent_state.head_turn_index = new_turn;
+    parent_state.checkpoints.insert_or_assign(new_turn, cp);
+    branches_.erase(child.name());
+    child.resolved_ = true;
+    persist_snapshot_locked();
+    return cp;
 }
 
 template <class Store>

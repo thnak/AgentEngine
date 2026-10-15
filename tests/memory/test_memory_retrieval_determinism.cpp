@@ -16,6 +16,7 @@
 
 #include "agentengine/core/memory_provider.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "../support/run_task_sync.hpp"
 
 namespace {
@@ -122,7 +123,7 @@ int main() {
     ae::rt::InMemoryAppendLogStore ref_store;
     ae::Principal const principal{"p-h3", ""};
 
-    auto bootstrapped = ae::ensure_memory_worktree(object_store, ref_store, principal);
+    auto bootstrapped = agentengine::rt::block_on(ae::ensure_memory_worktree(object_store, ref_store, principal));
     AE_CHECK(bootstrapped.has_value(), "setup: the memory worktree bootstraps");
 
     ae::Mount const mount = ae::memory_mount(principal);
@@ -135,7 +136,7 @@ int main() {
     tea.tags = {"preference", "drink"};
     tea.salience = 0.6f;
     tea.origin = ae::MemoryOrigin{ae::memory_source::user_stated, "run-0", "turn-0", principal};
-    AE_CHECK(ae::write_memory_item(object_store, ref_store, mount, write_cap, tea).has_value(),
+    AE_CHECK(agentengine::rt::block_on(ae::write_memory_item(object_store, ref_store, mount, write_cap, tea)).has_value(),
              "setup: writing the first memory item succeeds");
 
     ae::MemoryItem cmake{};
@@ -143,7 +144,7 @@ int main() {
     cmake.content = "the build system is CMake";
     cmake.salience = 0.2f;
     cmake.origin = ae::MemoryOrigin{ae::memory_source::tool_derived, "run-0", "turn-0", principal};
-    AE_CHECK(ae::write_memory_item(object_store, ref_store, mount, write_cap, cmake).has_value(),
+    AE_CHECK(agentengine::rt::block_on(ae::write_memory_item(object_store, ref_store, mount, write_cap, cmake)).has_value(),
              "setup: writing the second memory item succeeds");
 
     TripwireSummarizer summarizer;
@@ -157,7 +158,7 @@ int main() {
     ae::SessionContext session_ctx{"s-h3", principal, history};
 
     // A FIXED memory-worktree tree digest -- captured before any retrieval, checked unchanged after.
-    auto ref_before = ae::read_ref(ref_store, ae::memory_ref_name(principal));
+    auto ref_before = agentengine::rt::block_on(ae::read_ref(ref_store, ae::memory_ref_name(principal)));
     AE_CHECK(ref_before.has_value() && ref_before->has_value(),
              "setup: the memory worktree's Ref is readable before retrieval");
 
@@ -195,7 +196,7 @@ int main() {
              "ChatClient (summarizer) was invoked ZERO times -- retrieval is a pure read over the "
              "memory worktree, never a network/model call (029 §9 G1's own 'no network call')");
 
-    auto ref_after = ae::read_ref(ref_store, ae::memory_ref_name(principal));
+    auto ref_after = agentengine::rt::block_on(ae::read_ref(ref_store, ae::memory_ref_name(principal)));
     AE_CHECK(ref_after.has_value() && ref_after->has_value() && ref_before.has_value() &&
                  ref_before->has_value() && (*ref_after)->tree_digest == (*ref_before)->tree_digest,
              "H3-R3: the memory worktree's own tree digest is UNCHANGED after every retrieval call "

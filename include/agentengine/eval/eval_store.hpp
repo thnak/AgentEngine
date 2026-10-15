@@ -35,21 +35,21 @@ public:
     // `tenant_suffix`/`id` are host-supplied trial identifiers, never derived from model or
     // candidate output (I3) -- forwarded verbatim to `mint_eval_trial_principal`, whose own
     // colon-collision refusal (round 4, E25) applies here unchanged.
-    [[nodiscard]] static result<EvalStore> make(std::string tenant_suffix, std::string id) {
+    [[nodiscard]] static task<result<EvalStore>> make(std::string tenant_suffix, std::string id) {
         auto principal = mint_eval_trial_principal(std::move(tenant_suffix), std::move(id));
-        if (!principal) return std::unexpected(principal.error());
+        if (!principal) co_return std::unexpected(principal.error());
 
         EvalStore store;
         store.principal_ = std::move(*principal);
         if (auto bootstrapped =
-                ensure_memory_worktree(*store.object_store_, *store.ref_store_, store.principal_);
+                co_await ensure_memory_worktree(*store.object_store_, *store.ref_store_, store.principal_);
             !bootstrapped) {
-            return std::unexpected(bootstrapped.error());
+            co_return std::unexpected(bootstrapped.error());
         }
         store.mount_ = memory_mount(store.principal_);
         store.read_cap_  = cap::FsRead{memory_mount_id(store.principal_), "", std::nullopt};
         store.write_cap_ = cap::FsWrite{memory_mount_id(store.principal_), "", std::nullopt, std::nullopt};
-        return store;
+        co_return store;
     }
 
     [[nodiscard]] Principal const& principal() const noexcept { return principal_; }
