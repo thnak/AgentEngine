@@ -2694,6 +2694,7 @@ conversion~~ done together (§14 step 44); ~~the "async in name only" bodies (`Q
 conversion was planned to belong here rather than earlier: `recall` deletes two
 `synchronous_leaf` contract-error paths that tests pin deliberately, and it depends on the index seams.
 Gate: those tests are updated with the reason recorded -- never deleted to make a build pass.
+**PHASE C IS COMPLETE (2026-10-15, #172):** every seam in its checklist has a `task` form (steps 44-49), and the RAG `recall` tools landed with the index seams in step 44, so no `synchronous_leaf` path remains in `include/` or `src/`. Not done and not claimed: Phase D (execution/sandbox surfaces) and Phase E (§5.2 cleanup).
 
 **Phase D -- execution and sandbox surfaces.** `Runner`, `SandboxBackend`, `ExecutionSurface`,
 `PersistentShellSurface`, `NetEgressBackend` (`BatchBackend` was taken early, §14 step 43). Grouped because they share the
