@@ -1259,19 +1259,19 @@ private:
     // §3.3 step 7: submits every chunk. A chunk whose submit fails is handled by `on_unbatchable`: re-enqueued
     // with `no_batch` into `deferred` (sync), or appended to `exec_deliveries`/`replies` as a failed reply
     // (fail). Returns the executor indices now waiting on a batch (live view).
-    std::vector<std::size_t> submit_batch_chunks(std::vector<BatchChunk>& chunks,
-                                                 std::vector<Delivery>& exec_deliveries,
-                                                 std::vector<ExecuteReply>& replies,
-                                                 std::vector<Delivery>& deferred);
+    task<std::vector<std::size_t>> submit_batch_chunks(std::vector<BatchChunk>& chunks,
+                                                       std::vector<Delivery>& exec_deliveries,
+                                                       std::vector<ExecuteReply>& replies,
+                                                       std::vector<Delivery>& deferred);
     // §3.5 helpers, under `run_mutex_`.
     task<WorkflowResult> poll_batches_locked(PollBatches request);
-    void cancel_abandoned_batches();
+    task<void> cancel_abandoned_batches();
     void resolve_batch_item(BatchItem& item, agentengine::BatchItemResult const& result);
     void resolve_batch_item_failed(BatchItem& item, agentengine::batch_item_status status,
                                    agentengine::failure_class klass, std::string const& detail, bool honour_policy);
     // execute()'s prologue fold of resolved items (§3.5 step 4). Returns a terminal status to finish with, or
     // nullopt to continue into the round loop.
-    std::optional<workflow_status> fold_batch_items(std::vector<Delivery>& next);
+    task<std::optional<workflow_status>> fold_batch_items(std::vector<Delivery>& next);
     [[nodiscard]] agentengine::EffectContext batch_context(std::size_t executor_index);
     // Called by every entry point after admission: a run that was cancelled (or has a cancel pending and
     // something live) answers `cancelled` without moving. `std::nullopt` means "proceed".

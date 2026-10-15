@@ -105,24 +105,24 @@ public:
     [[nodiscard]] std::string group_key() const override { return inner_->group_key(); }
     [[nodiscard]] BatchLimits limits() const override { return inner_->limits(); }
     [[nodiscard]] result<std::size_t> admit(ChatRequest const& r) const override { return log("admit", inner_->admit(r)); }
-    [[nodiscard]] result<std::string> submit(std::vector<BatchItemRequest> const& items, EffectContext& ctx) override {
-        return log("submit", inner_->submit(items, ctx));
+    [[nodiscard]] task<result<std::string>> submit(std::vector<BatchItemRequest> const& items, EffectContext& ctx) override {
+        co_return log("submit", co_await inner_->submit(items, ctx));
     }
-    [[nodiscard]] result<BatchPoll> poll(std::string const& job, EffectContext& ctx) override {
-        auto p = log("poll", inner_->poll(job, ctx));
+    [[nodiscard]] task<result<BatchPoll>> poll(std::string const& job, EffectContext& ctx) override {
+        auto p = log("poll", co_await inner_->poll(job, ctx));
         if (p) {
             for (auto const& item : p->items) {
                 std::fprintf(stderr, "  item %s: %s %s\n", item.custom_id.c_str(),
                              batch_item_status_tag(item.status), item.detail.c_str());
             }
         }
-        return p;
+        co_return p;
     }
-    [[nodiscard]] result<void> cancel(std::string const& job, EffectContext& ctx) override {
-        return log("cancel", inner_->cancel(job, ctx));
+    [[nodiscard]] task<result<void>> cancel(std::string const& job, EffectContext& ctx) override {
+        co_return log("cancel", co_await inner_->cancel(job, ctx));
     }
-    [[nodiscard]] result<void> release(std::string const& job, EffectContext& ctx) override {
-        return log("release", inner_->release(job, ctx));
+    [[nodiscard]] task<result<void>> release(std::string const& job, EffectContext& ctx) override {
+        co_return log("release", co_await inner_->release(job, ctx));
     }
 
 private:

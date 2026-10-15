@@ -23,6 +23,10 @@
 // No backend receives authority it did not already have: it is constructed by host code with the
 // same endpoint and SecretRef the synchronous client uses, and every call takes the node's own
 // EffectContext for secret resolution (018 §4) -- no ambient credential (I2).
+//
+// decisions/ADR-237 §5.1: the four calls that reach the vendor (`submit`, `poll`, `cancel`, `release`)
+// are `task`-shaped, so a conformer speaks `rt::http` on the reactor instead of blocking a lane thread.
+// `group_key`, `limits` and `admit` stay synchronous: they are pure and never do I/O.
 
 #include <cstddef>
 #include <string>
@@ -31,6 +35,7 @@
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine {
 
@@ -88,14 +93,15 @@ public:
     // `max_payload_bytes`); on error, the reason this request must not be batched.
     [[nodiscard]] virtual result<std::size_t> admit(ChatRequest const& request) const = 0;
     // Returns the vendor job id.
-    [[nodiscard]] virtual result<std::string> submit(std::vector<BatchItemRequest> const& items,
-                                                     EffectContext& ctx) = 0;
-    [[nodiscard]] virtual result<BatchPoll> poll(std::string const& job_id, EffectContext& ctx) = 0;
-    [[nodiscard]] virtual result<void> cancel(std::string const& job_id, EffectContext& ctx) = 0;
+    // The caller keeps `items`, `job_id` and `ctx` alive until the returned task completes.
+    [[nodiscard]] virtual task<result<std::string>> submit(std::vector<BatchItemRequest> const& items,
+                                                           EffectContext& ctx) = 0;
+    [[nodiscard]] virtual task<result<BatchPoll>> poll(std::string const& job_id, EffectContext& ctx) = 0;
+    [[nodiscard]] virtual task<result<void>> cancel(std::string const& job_id, EffectContext& ctx) = 0;
     // Best effort: ask the vendor to delete a terminal job's stored inputs/results once the engine has
     // consumed them (batch storage is not zero-data-retention, research doc fact 5). A vendor without
     // deletion returns success and does nothing.
-    [[nodiscard]] virtual result<void> release(std::string const& job_id, EffectContext& ctx) = 0;
+    [[nodiscard]] virtual task<result<void>> release(std::string const& job_id, EffectContext& ctx) = 0;
 };
 
 }  // namespace agentengine

@@ -23,16 +23,4 @@ error http_status_error(std::string_view vendor, std::uint16_t status, std::stri
     return error{klass, message, std::string(vendor) + ".http_" + std::to_string(status)};
 }
 
-result<json::Value> exchange_json(std::string_view vendor, std::string_view host, std::uint16_t port,
-                                  sandbox::NetEgressRequest const& req, Resolver const& resolver,
-                                  std::string_view ca_bundle_pem_override, sandbox::ProviderTransport transport) {
-    auto resp = sandbox::perform_provider_https_exchange(host, port, req, {}, std::nullopt, resolver,
-                                                         ca_bundle_pem_override, transport);
-    if (!resp) return std::unexpected(resp.error());
-    if (resp->status < 200 || resp->status >= 300) {
-        return std::unexpected(http_status_error(vendor, resp->status, resp->body));
-    }
-    return json::parse(resp->body);
-}
-
 }  // namespace agentengine::detail::provider_wire

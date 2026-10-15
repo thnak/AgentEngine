@@ -544,9 +544,7 @@ public:
                                                 api_version_, json::dump(*body), http_referer_, x_title_,
                                                 session_id_);
         // ADR-206: the POST, the non-2xx mapping and the JSON parse are shared with the other backend.
-        // ADR-237 §5.1 (step 35): with a Runtime set, the exchange runs as a coroutine on the reactor
-        // (no blocking body); without one it stays the blocking `exchange_json`.
-        // ADR-237 §5.1 (step 41): the reactor exchange is now the ONLY path.
+        // ADR-237 §5.1 (steps 35, 41): the exchange runs as a coroutine on the reactor -- the only path.
         auto parsed = co_await detail::exchange_json_async("anthropic", host_, port_, std::move(req), reactor_,
                                                            ca_bundle_pem_override_, transport_, ctx.cancellation);
         if (!parsed) co_return std::unexpected(parsed.error());
