@@ -17,6 +17,7 @@ export default defineConfig({
         apiHowItWorks: fileURLToPath(new URL('./api/how-it-works.html', import.meta.url)),
         apiFirstApp: fileURLToPath(new URL('./api/first-app.html', import.meta.url)),
         apiPizzaOrder: fileURLToPath(new URL('./api/pizza-order.html', import.meta.url)),
+        apiUseCases: fileURLToPath(new URL('./api/use-cases.html', import.meta.url)),
         apiAgent: fileURLToPath(new URL('./api/agent.html', import.meta.url)),
         apiBuilder: fileURLToPath(new URL('./api/builder.html', import.meta.url)),
         apiTool: fileURLToPath(new URL('./api/tool.html', import.meta.url)),

@@ -1487,6 +1487,46 @@ button {
   color: var(--text-dim);
 }
 
+/* The use-cases page's per-row metadata lines ("Start from" /
+ * "Implement against") -- a labeled line: the label in the faint mono
+ * voice, the value (a link or a code identifier) beside it. */
+.use-case-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.use-case-meta-label {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+}
+
+.use-case-link {
+  color: var(--text-dim);
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-underline-offset: 2px;
+  word-break: break-word;
+}
+
+.use-case-link:hover {
+  color: var(--text);
+}
+
+.use-case-entry {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  word-break: break-word;
+}
+
 .api-table {
   display: flex;
   flex-direction: column;

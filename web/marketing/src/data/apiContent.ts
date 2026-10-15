@@ -152,6 +152,16 @@ export const apiPages: Record<Lang, ApiPage[]> = {
       status: "real",
     },
     {
+      id: "use-cases",
+      group: "core",
+      label: "Use cases",
+      href: `${SITE_BASE}/api/use-cases.html`,
+      eyebrow: "The picker — one use case per feature",
+      description:
+        "A concrete use case for every AgentEngine feature, the runnable offline example that proves it, and the entry points to implement against — plus a quick-pick table by goal.",
+      status: "real",
+    },
+    {
       id: "agent",
       group: "core",
       label: "Agent & register_agent",
@@ -343,6 +353,16 @@ export const apiPages: Record<Lang, ApiPage[]> = {
       eyebrow: "Ví dụ trọn vẹn — một đơn hàng, từ đầu đến cuối",
       description:
         "Một ứng dụng khách hàng được đi theo từ lời chào tới hoàn tiền: cấp quyền, từ chối, phê duyệt bởi con người, khởi động lại, phát lại ngoại tuyến, và đồ thị leo thang — mỗi hồi đều dẫn nguồn ví dụ thật đứng sau nó.",
+      status: "real",
+    },
+    {
+      id: "use-cases",
+      group: "core",
+      label: "Các trường hợp sử dụng",
+      href: `${SITE_BASE}/api/use-cases.html`,
+      eyebrow: "Bộ chọn — một trường hợp sử dụng cho mỗi tính năng",
+      description:
+        "Một trường hợp sử dụng cụ thể cho mọi tính năng AgentEngine, chương trình ngoại tuyến chạy được đã chứng minh nó, và các điểm vào để triển khai dựa trên — cộng một bảng chọn nhanh theo mục tiêu.",
       status: "real",
     },
     {
