@@ -93,7 +93,7 @@ bench/             budget gate (023)
 samples/           runnable programs over the public surface
 decisions/         ADRs — design → red-team → prove → judge records
 docs/research/     dated research records with sources
-NNN-*.md           the RFC specs (authoritative)
+rfcs/NNN-*.md      the RFC specs (authoritative)
 ```
 
 ## Naming & files
