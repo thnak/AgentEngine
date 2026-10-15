@@ -16,13 +16,18 @@
 //       resolved by name, is driven through the registry's type-erased entry: create -> exec -> exec -> destroy.
 //   S2  per-instance state survives those suspensions (the registry's Revision 1 regression: the second exec
 //       sees the first's state), and a destroyed handle is gone.
+//   X1  SandboxRuntime::run() with an ExecutionSurface that suspends in reset/run/drain_to: the command's output
+//       is committed as a real Ledger checkpoint, run on a lane.
+//   X2  a surface that refuses the command (an error from `run`, after suspending) still refunds RunCost --
+//       the refund ordering is unchanged by the await.
 //
 // Every check also asserts the conformer really suspended (`parks` > 0), so a fake that silently completed
 // inline could not make these pass.
 //
 // Positive controls (planted by hand, recorded in ADR-237 §14): driving the fetch with `rt::block_on` inside
 // `invoke_via` fails E1 on the lane; driving `shell_.run()` with `rt::block_on` in `SessionShellSandbox::run`
-// fails R2; a registry `exec` entry that drives the backend with `rt::block_on` fails S1.
+// fails R2; a registry `exec` entry that drives the backend with `rt::block_on` fails S1; driving
+// `surface.run()` with `rt::block_on` in `SandboxRuntime::run` fails X1.
 
 #include <chrono>
 #include <cstddef>
@@ -33,6 +38,7 @@
 #include <string>
 
 #include <filesystem>
+#include <fstream>
 
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
@@ -43,6 +49,8 @@
 #include "agentengine/sandbox/runner.hpp"
 #include "agentengine/sandbox/sandbox.hpp"
 #include "agentengine/sandbox/sandbox_backend_registry.hpp"
+#include "agentengine/sandbox/execution_surface.hpp"
+#include "agentengine/sandbox/sandbox_runtime.hpp"
 #include "agentengine/tools/read_content.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/session_shell_wiring.hpp"
@@ -265,6 +273,90 @@ void backend_section(Parker& parker) {
     AE_CHECK(instance->execs.empty(), "S2: destroy reached the one registered instance");
 }
 
+// ---- X: ExecutionSurface -----------------------------------------------------------------------------------
+
+// Stands in for a container surface: every call parks first. `run("write <name> <text>")` writes a file into the
+// surface's own view; `run("refuse")` is refused up front (an error, as `DockerExecutionSurface` does for a
+// command it will not hand to the container).
+struct SuspendingSurface {
+    Parker* parker = nullptr;
+    std::filesystem::path box;
+
+    agentengine::task<agentengine::result<void>> reset(std::filesystem::path host_dir) {
+        co_await parker->park();
+        std::error_code ec;
+        std::filesystem::remove_all(box, ec);
+        std::filesystem::create_directories(box, ec);
+        std::filesystem::copy(host_dir, box, std::filesystem::copy_options::recursive, ec);
+        co_return agentengine::result<void>{};
+    }
+    agentengine::task<agentengine::result<agentengine::SurfaceRunOutcome>> run(std::string command) {
+        co_await parker->park();
+        if (command == "refuse") {
+            co_return std::unexpected(agentengine::error{agentengine::failure_class::policy, "refused",
+                                                         "test.refused"});
+        }
+        auto const sp1 = command.find(' ');
+        auto const sp2 = command.find(' ', sp1 + 1);
+        std::ofstream(box / command.substr(sp1 + 1, sp2 - sp1 - 1)) << command.substr(sp2 + 1);
+        co_return agentengine::SurfaceRunOutcome{0, "wrote"};
+    }
+    agentengine::task<agentengine::result<void>> drain_to(std::filesystem::path host_dir) {
+        co_await parker->park();
+        auto cleared = agentengine::clear_directory_contents(host_dir, "test.drain_clear");
+        if (!cleared.has_value()) co_return cleared;
+        std::error_code ec;
+        std::filesystem::copy(box, host_dir, std::filesystem::copy_options::recursive, ec);
+        co_return agentengine::result<void>{};
+    }
+};
+static_assert(agentengine::ExecutionSurface<SuspendingSurface>);
+
+void surface_section(Parker& parker) {
+    namespace fs = std::filesystem;
+    using namespace agentengine;
+    IdentityAuthority& authority = IdentityAuthority::bootstrap();
+    IdentityHandle owner = authority.mint_root("execution-seams-on-lane-owner");
+    Ledger<> ledger;
+    auto storage_quota = rt::AsyncQuota<StorageBytes>::mint_root(authority, owner, 10'000'000);
+    auto run_quota = rt::AsyncQuota<RunCost>::mint_root(authority, owner, 100);
+    auto root = run(ledger.create_root_branch(owner));
+    AE_CHECK(storage_quota.has_value() && run_quota.has_value() && root.has_value(), "X setup: quotas and a root");
+    if (!storage_quota || !run_quota || !root) return;
+
+    fs::path const staging = fs::temp_directory_path() / "ae_execution_seams_on_lane_staging";
+    fs::path const box = fs::temp_directory_path() / "ae_execution_seams_on_lane_box";
+    std::error_code ec;
+    fs::remove_all(staging, ec);
+    fs::remove_all(box, ec);
+    SandboxRuntime runtime(ledger, std::move(*root), staging);
+    SuspendingSurface surface{&parker, box};
+
+    std::size_t parks_before = parker.parks;
+    auto out = run(runtime.run(surface, "write hello.txt from-a-suspending-surface", owner, *run_quota, *storage_quota));
+    AE_CHECK(out.has_value() && out->exec.exit_code == 0 && out->exec.stdout_text == "wrote",
+             "X1: SandboxRuntime::run(), on a lane, awaits a surface that genuinely suspends");
+    AE_CHECK(parker.parks >= parks_before + 3, "X1: reset, run and drain_to each really suspended");
+    if (out.has_value()) {
+        auto tree = rt::block_on(ledger.get_tree_safe(out->checkpoint.tree, owner));
+        bool found = false;
+        if (tree.has_value()) {
+            for (auto const& e : tree->entries) found = found || e.name == "hello.txt";
+        }
+        AE_CHECK(found, "X1: the file the command wrote is in the committed checkpoint");
+    }
+
+    auto const before_refuse = run_quota->remaining();
+    parks_before = parker.parks;
+    auto refused = run(runtime.run(surface, "refuse", owner, *run_quota, *storage_quota));
+    AE_CHECK(!refused.has_value() && refused.error().code == "test.refused",
+             "X2: a command the surface refuses is an error");
+    AE_CHECK(run_quota->remaining() == before_refuse, "X2: and RunCost is refunded -- nothing ran");
+    AE_CHECK(parker.parks > parks_before, "X2: the surface really suspended before refusing");
+    fs::remove_all(staging, ec);
+    fs::remove_all(box, ec);
+}
+
 }  // namespace
 
 int main() {
@@ -275,6 +367,7 @@ int main() {
     egress_section(parker);
     runner_section(parker);
     backend_section(parker);
+    surface_section(parker);
 
     if (g_failures != 0) {
         std::cerr << g_failures << " check(s) failed\n";

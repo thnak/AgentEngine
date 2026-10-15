@@ -17,6 +17,7 @@
 // (subsequent checks are skipped, matching this design's own probes' "fail loud, don't keep going and
 // pretend" posture) but always attempts best-effort cleanup first.
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/sandbox/containerd_execution_surface.hpp"
 
 #include <sys/wait.h>
@@ -123,7 +124,7 @@ int main() {
         //     anywhere in this process -- a real, live test of "ctr run's own convenience-flag path
         //     handles image pull/unpack automatically, no separate step needed."
         write_file(host_dir / "a.txt", "turn1-content\n");
-        auto r1 = surface.reset(host_dir);
+        auto r1 = agentengine::rt::block_on(surface.reset(host_dir));
         check(r1.has_value(),
               "reset() #1 (fresh container, bind-mounted at host_dir, image auto-pulled if needed)");
         if (!r1.has_value()) {
@@ -188,7 +189,7 @@ int main() {
 
         // --- The container sees turn-1 content via the LIVE bind mount (no copy_to_container step
         //     exists in this conformer at all -- if this passes, the bind mount is real and live).
-        auto seen = surface.run("cat /workspace/a.txt");
+        auto seen = agentengine::rt::block_on(surface.run("cat /workspace/a.txt"));
         check(seen.has_value() && seen->exit_code == 0, "run(): container reads turn-1 content");
         if (seen.has_value()) {
             check(seen->stdout_text == "turn1-content\n",
@@ -198,14 +199,14 @@ int main() {
 
         // --- A write FROM the container round-trips onto real host disk with NO drain_to() call at
         //     all -- proving the central architectural finding (copy-out disappears) directly.
-        auto wrote = surface.run("echo written-from-container > /workspace/b.txt");
+        auto wrote = agentengine::rt::block_on(surface.run("echo written-from-container > /workspace/b.txt"));
         check(wrote.has_value() && wrote->exit_code == 0, "run(): container writes b.txt");
         std::string const host_view = read_file(host_dir / "b.txt");
         check(host_view == "written-from-container\n",
               "host disk sees the container's write with ZERO drain_to() call ('" + host_view + "')");
 
         // --- drain_to() to the SAME directory is a true, harmless no-op.
-        auto drained = surface.drain_to(host_dir);
+        auto drained = agentengine::rt::block_on(surface.drain_to(host_dir));
         check(drained.has_value(), "drain_to(same host_dir) succeeds as a no-op");
         check(read_file(host_dir / "b.txt") == "written-from-container\n",
               "drain_to(same host_dir) does not disturb existing content");
@@ -214,14 +215,14 @@ int main() {
         //     the general ExecutionSurface contract this conformer's own header comment names as not
         //     exercised by SandboxRuntime::run() itself, verified for real here.
         fs::path const other_dir = root / "other";
-        auto drained_elsewhere = surface.drain_to(other_dir);
+        auto drained_elsewhere = agentengine::rt::block_on(surface.drain_to(other_dir));
         check(drained_elsewhere.has_value(), "drain_to(a DIFFERENT host_dir) succeeds via host-side copy");
         check(read_file(other_dir / "b.txt") == "written-from-container\n",
               "drain_to(a DIFFERENT host_dir) actually copies the current content there");
 
         // --- A non-zero exit code is a normal, meaningful RESULT (ExecutionSurface's own documented
         //     contract), never itself a result<> error.
-        auto failing = surface.run("exit 7");
+        auto failing = agentengine::rt::block_on(surface.run("exit 7"));
         check(failing.has_value() && failing->exit_code == 7,
               "run(): a non-zero exit code is a normal value, not a result<> error");
 
@@ -230,7 +231,7 @@ int main() {
         std::string nul_command = "echo hi";
         nul_command.push_back('\0');
         nul_command += "; rm -rf /workspace";
-        auto rejected = surface.run(nul_command);
+        auto rejected = agentengine::rt::block_on(surface.run(nul_command));
         check(!rejected.has_value() && rejected.error().code == "ctr_cli_backend.embedded_nul",
               "run(): embedded-NUL command is rejected outright, not silently truncated");
         // Prove the rejection was REAL, not just a returned error with the workload still having run.
@@ -253,11 +254,11 @@ int main() {
 
         // reset() now destroys the still-alive turn-1 container and starts a fresh one at the SAME,
         // now-recreated path.
-        auto r2 = surface.reset(host_dir);
+        auto r2 = agentengine::rt::block_on(surface.reset(host_dir));
         check(r2.has_value(), "reset() #2 (destroy old, still-alive container; create fresh one at "
                                "the recreated path)");
         if (r2.has_value()) {
-            auto turn2_view = surface.run("ls /workspace; cat /workspace/c.txt 2>&1");
+            auto turn2_view = agentengine::rt::block_on(surface.run("ls /workspace; cat /workspace/c.txt 2>&1"));
             check(turn2_view.has_value() && turn2_view->exit_code == 0,
                   "fresh turn-2 container starts and reads turn-2 content");
             if (turn2_view.has_value()) {

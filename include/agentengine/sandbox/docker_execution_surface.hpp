@@ -723,9 +723,21 @@ public:
     // (daemon contention, a network hiccup) leaves it in place, so the object still remembers the
     // leak and a caller retrying `reset()` gets another real attempt at destroying the SAME
     // container, rather than silently starting a second one alongside an orphaned first.
-    [[nodiscard]] agentengine::result<void> reset(std::filesystem::path const& host_dir);
+    // The `ExecutionSurface` seam (ADR-237 §5.1, #173): coroutines over the `*_blocking` bodies, completing
+    // without suspending -- the bodies still block on the CLI (moving them onto `rt::process` is #180's).
+    [[nodiscard]] agentengine::task<agentengine::result<void>> reset(std::filesystem::path host_dir) {
+        co_return reset_blocking(host_dir);
+    }
+    [[nodiscard]] agentengine::task<agentengine::result<SurfaceRunOutcome>> run(std::string command) {
+        co_return run_blocking(command);
+    }
+    [[nodiscard]] agentengine::task<agentengine::result<void>> drain_to(std::filesystem::path host_dir) {
+        co_return drain_to_blocking(host_dir);
+    }
 
-    [[nodiscard]] agentengine::result<SurfaceRunOutcome> run(std::string const& command);
+    [[nodiscard]] agentengine::result<void> reset_blocking(std::filesystem::path const& host_dir);
+
+    [[nodiscard]] agentengine::result<SurfaceRunOutcome> run_blocking(std::string const& command);
 
     // Issue #80 (`ImageIdentifiedSurface`, execution_surface.hpp). `image()` is the reference this surface
     // was CONFIGURED with -- a tag, a digest reference, whatever the host passed; `image_digest()` is what
@@ -738,7 +750,7 @@ public:
     // another record's digest is even meaningful. `unknown` whenever there is no digest.
     [[nodiscard]] agentengine::ImageDigestKind image_digest_kind() const noexcept { return resolved_kind_; }
 
-    [[nodiscard]] agentengine::result<void> drain_to(std::filesystem::path const& host_dir);
+    [[nodiscard]] agentengine::result<void> drain_to_blocking(std::filesystem::path const& host_dir);
 
 private:
     std::string image_;

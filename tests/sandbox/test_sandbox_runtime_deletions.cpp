@@ -96,25 +96,25 @@ class CopyOutSurface {
 public:
     explicit CopyOutSurface(fs::path box) : box_(std::move(box)) {}
 
-    [[nodiscard]] result<void> reset(fs::path const& host_dir) {
+    [[nodiscard]] task<result<void>> reset(fs::path host_dir) {
         std::error_code ec;
         fs::remove_all(box_, ec);
         fs::create_directories(box_, ec);
         fs::copy(host_dir, box_, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
-        if (ec) return std::unexpected(error{failure_class::fatal, "seed copy failed: " + ec.message(), "test.seed"});
-        return {};
+        if (ec) co_return std::unexpected(error{failure_class::fatal, "seed copy failed: " + ec.message(), "test.seed"});
+        co_return result<void>{};
     }
 
-    [[nodiscard]] result<SurfaceRunOutcome> run(std::string const& command) { return apply(box_, command); }
+    [[nodiscard]] task<result<SurfaceRunOutcome>> run(std::string command) { co_return apply(box_, command); }
 
-    [[nodiscard]] result<void> drain_to(fs::path const& host_dir) {
+    [[nodiscard]] task<result<void>> drain_to(fs::path host_dir) {
         auto cleared = clear_directory_contents(host_dir, "test.drain_clear");
-        if (!cleared.has_value()) return std::unexpected(cleared.error());
+        if (!cleared.has_value()) co_return std::unexpected(cleared.error());
         std::error_code ec;
         fs::create_directories(host_dir, ec);
         fs::copy(box_, host_dir, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
-        if (ec) return std::unexpected(error{failure_class::fatal, "drain copy failed: " + ec.message(), "test.drain"});
-        return {};
+        if (ec) co_return std::unexpected(error{failure_class::fatal, "drain copy failed: " + ec.message(), "test.drain"});
+        co_return result<void>{};
     }
 
 private:
@@ -126,12 +126,12 @@ static_assert(ExecutionSurface<CopyOutSurface>);
 // ContainerdExecutionSurface's bind mount at /workspace.
 class InPlaceSurface {
 public:
-    [[nodiscard]] result<void> reset(fs::path const& host_dir) {
+    [[nodiscard]] task<result<void>> reset(fs::path host_dir) {
         dir_ = host_dir;
-        return {};
+        co_return result<void>{};
     }
-    [[nodiscard]] result<SurfaceRunOutcome> run(std::string const& command) { return apply(dir_, command); }
-    [[nodiscard]] result<void> drain_to(fs::path const&) { return {}; }
+    [[nodiscard]] task<result<SurfaceRunOutcome>> run(std::string command) { co_return apply(dir_, command); }
+    [[nodiscard]] task<result<void>> drain_to(fs::path) { co_return result<void>{}; }
 
 private:
     fs::path dir_;
