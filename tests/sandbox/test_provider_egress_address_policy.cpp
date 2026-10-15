@@ -18,6 +18,7 @@
 
 #ifdef AGENTENGINE_WITH_HTTPS
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/pal/net.hpp"
 
 #include <atomic>
@@ -322,7 +323,7 @@ int main() {
         sandbox::HostEgressProxy proxy;  // real resolver, exactly as production constructs it
         cap::NetOut granted;
         granted.host_allowlist.push_back(host + ":" + std::to_string(server.port()) + ":http");
-        auto resp = proxy.fetch(simple_get(), granted);
+        auto resp = agentengine::rt::block_on(proxy.fetch(simple_get(), granted));
         check(!resp.has_value(),
               "G1 (end to end): a WASM guest holding a cap::NetOut grant that explicitly allowlists "
               "this exact live loopback target is STILL refused -- ADR-016 relaxed the provider path "

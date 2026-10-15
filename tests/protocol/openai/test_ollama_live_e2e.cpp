@@ -46,6 +46,7 @@
 // Ollama instance runs it -- see docs/research/2026-08-21-ollama-openai-compat-api.md's own closing
 // note.
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/pal/net.hpp"
 
@@ -405,7 +406,7 @@ int main() {
         sandbox::NetEgressRequest req;
         req.method = "GET";
         req.path = "/v1/models";
-        auto resp = proxy.fetch(req, granted);
+        auto resp = agentengine::rt::block_on(proxy.fetch(req, granted));
         check(!resp.has_value() && resp.error().code == "net.address_blocked",
               "OL-8 (ADR-016 G1): a WASM guest holding a cap::NetOut grant that explicitly allowlists "
               "this exact live local server is STILL refused on address policy");

@@ -561,8 +561,10 @@ wasmtime_error_t* cb_http_request(void* env, wasmtime_context_t* ctx,
             : std::nullopt;
     cap::NetOut const effective_grant = sandbox::narrow_by_resource_limit(*cap, resource_net_bytes);
 
+    // Synchronous on purpose (ADR-237 §5.1, #173): the guest is blocked inside this host import, so there is
+    // nothing to suspend to. `fetch_blocking` is the same gates and exchange the async `fetch` seam runs.
     sandbox::HostEgressProxy const proxy;
-    auto response = proxy.fetch(req, effective_grant);
+    auto response = proxy.fetch_blocking(req, effective_grant);
     if (!response) {
         // The WIT `http-error` enum has exactly four cases -- a deliberately small, guest-facing
         // vocabulary (wit/ae-tool.wit's own comment: the guest only needs to know "not allowlisted",

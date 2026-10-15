@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/tools/extract_pdf_text.hpp"
 #include "../support/run_task_sync.hpp"
 
@@ -211,7 +212,7 @@ void test_real_end_to_end_extraction() {
     ExtractPdfText::Args args;
     args.path = "test.pdf";  // the fake adapter ignores this and returns kTestPdf regardless
 
-    auto reply = ExtractPdfText::invoke(args, ctx);
+    auto reply = agentengine::rt::block_on(ExtractPdfText{}.invoke(args, ctx));
     if (!reply.has_value()) {
         std::fprintf(stderr, "extract_pdf_text real end-to-end call failed: code=%s message=%s\n",
                      reply.error().code.c_str(), reply.error().message.c_str());
@@ -235,7 +236,7 @@ void test_ambiguous_source_rejected_before_any_sandbox_work() {
     ctx.capabilities = agentengine::borrow_capabilities(held);
 
     ExtractPdfText::Args args;  // neither url nor path set
-    auto reply = ExtractPdfText::invoke(args, ctx);
+    auto reply = agentengine::rt::block_on(ExtractPdfText{}.invoke(args, ctx));
     check(!reply.has_value(), "neither url nor path set -> rejected");
     if (!reply) {
         check(reply.error().code == "extract_pdf_text.ambiguous_source",

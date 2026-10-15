@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/task.hpp"
 #include "agentengine/trust/capability.hpp"
 
 namespace agentengine::sandbox {
@@ -175,11 +176,15 @@ inline constexpr std::uint64_t kHardResponseCeilingBytes = 16u * 1024u * 1024u;
 // (`HostEgressProxy` below); a deployer's own conforming type (a corporate proxy client, an existing
 // SSRF appliance, an mTLS-terminating gateway) is usable with no engine change, per 008 §10 Q3's
 // resolution ("stays a seam underneath... for a deployer who wants to substitute").
+//
+// decisions/ADR-237 §5.1 (Phase D, #173): `fetch` returns `task<result<NetEgressResponse>>` -- a deployer's
+// conformer is a proxy client, i.e. network I/O, and may suspend. The backend object must outlive the
+// returned task; a conformer that keeps the request or grant past its first suspension takes them by value.
 template <class T>
 // ae-naming-lint: allow NetEgressBackend — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 concept NetEgressBackend = requires(T backend, cap::NetOut const& granted, NetEgressRequest const& req) {
     { T::traits } -> std::convertible_to<NetEgressTraits const&>;
-    { backend.fetch(req, granted) } -> std::same_as<result<NetEgressResponse>>;
+    { backend.fetch(req, granted) } -> std::same_as<task<result<NetEgressResponse>>>;
 };
 
 // The first-party default `NetEgressBackend`. `fetch()` composes, in order: single-target-grant gate
@@ -204,7 +209,17 @@ struct HostEgressProxy {
     // bypass: production code never constructs a `HostEgressProxy` with a non-default resolver.
     std::function<result<VerifiedEndpoint>(std::string_view, std::uint16_t)> resolver = resolve_and_validate;
 
-    [[nodiscard]] result<NetEgressResponse> fetch(NetEgressRequest const& req, cap::NetOut const& granted) const;
+    // The seam (ADR-237 §5.1, #173). Completes without suspending: the body is still the blocking
+    // `fetch_blocking` below -- moving it onto `rt::http` is #180's, not this seam's. Request and grant are
+    // taken by value so a task held past this call never reads a dead temporary.
+    [[nodiscard]] task<result<NetEgressResponse>> fetch(NetEgressRequest req, cap::NetOut granted) const {
+        co_return fetch_blocking(req, granted);
+    }
+
+    // The gates and the exchange, synchronous. Called directly only where the caller cannot suspend: the
+    // WASM host import `http-request` (`wasm_backend.cpp`), whose guest is blocked inside the call.
+    [[nodiscard]] result<NetEgressResponse> fetch_blocking(NetEgressRequest const& req,
+                                                           cap::NetOut const& granted) const;
 };
 
 static_assert(NetEgressBackend<HostEgressProxy>);

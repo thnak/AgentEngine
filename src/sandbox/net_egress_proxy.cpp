@@ -726,7 +726,8 @@ result<NetEgressResponse> perform_https_exchange_streaming(
 }
 #endif
 
-result<NetEgressResponse> HostEgressProxy::fetch(NetEgressRequest const& req, cap::NetOut const& granted) const {
+result<NetEgressResponse> HostEgressProxy::fetch_blocking(NetEgressRequest const& req,
+                                                          cap::NetOut const& granted) const {
     // C1: the WIT `http-request` call gives the guest no way to name a host at all -- host/port/
     // scheme come entirely from the grant (see this header's own file-top comment) -- so a grant
     // with anything other than exactly one allowlist entry is genuinely ambiguous, not resolvable by

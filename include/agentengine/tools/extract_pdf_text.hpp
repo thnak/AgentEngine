@@ -195,32 +195,34 @@ struct ParsedPages {
 
 // ---- Fetching bytes for the two sources -- own minimal copy of ReadContent's pattern ----
 
+// ADR-237 §5.1 (#173): a coroutine, because the egress seam is. Every argument must outlive the task;
+// each caller awaits it in the same full-expression.
 template <sandbox::NetEgressBackend Proxy>
-[[nodiscard]] result<std::string> fetch_via_url(std::string const& url, EffectContext& ctx,
-                                                 Proxy const& proxy) {
+[[nodiscard]] task<result<std::string>> fetch_via_url(std::string const& url, EffectContext& ctx,
+                                                       Proxy const& proxy) {
     auto parsed = parse_read_content_url(url);
-    if (!parsed) return std::unexpected(parsed.error());
+    if (!parsed) co_return std::unexpected(parsed.error());
     if (!ctx.capabilities) {
-        return std::unexpected(error{failure_class::policy, "no capability set bound to this call",
+        co_return std::unexpected(error{failure_class::policy, "no capability set bound to this call",
                                       "tool.capability_not_held"});
     }
     std::string const target = net_out_target_string(*parsed);
     auto granted = ctx.capabilities->find_net_out(target);
     if (!granted) {
-        return std::unexpected(error{failure_class::policy,
+        co_return std::unexpected(error{failure_class::policy,
                                       "no granted NetOut capability covers '" + target + "'",
                                       "tool.capability_not_held"});
     }
     sandbox::NetEgressRequest const req{"GET", parsed->path, {}, {}};
-    auto response = proxy.fetch(req, *granted);
-    if (!response) return std::unexpected(response.error());
+    auto response = co_await proxy.fetch(req, *granted);
+    if (!response) co_return std::unexpected(response.error());
     if (response->status < 200 || response->status >= 300) {
-        return std::unexpected(error{failure_class::transient,
+        co_return std::unexpected(error{failure_class::transient,
                                       "extract_pdf_text received HTTP status " +
                                           std::to_string(response->status),
                                       "extract_pdf_text.http_error"});
     }
-    return std::move(response->body);
+    co_return std::move(response->body);
 }
 
 [[nodiscard]] inline result<std::string> fetch_via_path(std::string const& path, EffectContext& ctx) {
@@ -467,33 +469,34 @@ struct ExtractPdfText : Tool<ExtractPdfText, Capabilities<>, Approval<approval_m
     using Args = ExtractPdfTextArgs;
     using Reply = ExtractPdfTextReply;
 
-    [[nodiscard]] static result<Reply> invoke(Args args, EffectContext& ctx) {
-        return invoke_via(args, ctx, sandbox::HostEgressProxy{});
+    // ADR-237 §5.2 instance form: a coroutine, because the egress seam it reaches is (§5.1, #173).
+    [[nodiscard]] task<result<Reply>> invoke(Args args, EffectContext& ctx) const {
+        co_return co_await invoke_via(args, ctx, sandbox::HostEgressProxy{});
     }
 
     // Parameterized over the egress backend, same testability seam ReadContent::invoke_via already
     // establishes -- invoke() above always supplies the real HostEgressProxy; a test supplies a fake
     // conformer instead.
     template <sandbox::NetEgressBackend Proxy>
-    [[nodiscard]] static result<Reply> invoke_via(Args const& args, EffectContext& ctx,
+    [[nodiscard]] static task<result<Reply>> invoke_via(Args const& args, EffectContext& ctx,
                                                     Proxy const& proxy) {
         bool const has_url = args.url.has_value();
         bool const has_path = args.path.has_value();
         if (has_url == has_path) {
-            return std::unexpected(error{failure_class::contract,
+            co_return std::unexpected(error{failure_class::contract,
                                           "extract_pdf_text requires exactly one of 'url' or 'path'",
                                           "extract_pdf_text.ambiguous_source"});
         }
 
-        auto bytes = has_url ? extract_pdf_text_detail::fetch_via_url(*args.url, ctx, proxy)
-                              : extract_pdf_text_detail::fetch_via_path(*args.path, ctx);
-        if (!bytes) return std::unexpected(bytes.error());
+        result<std::string> bytes = has_url ? co_await extract_pdf_text_detail::fetch_via_url(*args.url, ctx, proxy)
+                                             : extract_pdf_text_detail::fetch_via_path(*args.path, ctx);
+        if (!bytes) co_return std::unexpected(bytes.error());
 
         std::filesystem::path const dir = extract_pdf_text_detail::scratch_dir();
         std::error_code ec;
         std::filesystem::create_directories(dir, ec);
         if (ec) {
-            return std::unexpected(error{failure_class::resource,
+            co_return std::unexpected(error{failure_class::resource,
                                           "failed to create the pdf scratch directory: " + ec.message(),
                                           "extract_pdf_text.scratch_dir_failed"});
         }
@@ -501,13 +504,13 @@ struct ExtractPdfText : Tool<ExtractPdfText, Capabilities<>, Approval<approval_m
         {
             std::ofstream out(file, std::ios::binary | std::ios::trunc);
             if (!out) {
-                return std::unexpected(error{failure_class::resource,
+                co_return std::unexpected(error{failure_class::resource,
                                               "failed to open the pdf scratch file for writing",
                                               "extract_pdf_text.scratch_write_failed"});
             }
             out.write(bytes->data(), static_cast<std::streamsize>(bytes->size()));
             if (!out) {
-                return std::unexpected(error{failure_class::resource,
+                co_return std::unexpected(error{failure_class::resource,
                                               "failed to write the pdf scratch file",
                                               "extract_pdf_text.scratch_write_failed"});
             }
@@ -516,12 +519,12 @@ struct ExtractPdfText : Tool<ExtractPdfText, Capabilities<>, Approval<approval_m
         auto raw_output = extract_pdf_text_detail::invoke_worker("text", file, ctx);
         std::filesystem::remove(file, ec);  // best-effort cleanup regardless of outcome below
 
-        if (!raw_output) return std::unexpected(raw_output.error());
+        if (!raw_output) co_return std::unexpected(raw_output.error());
 
         auto parsed = extract_pdf_text_detail::parse_worker_output(*raw_output);
-        if (!parsed) return std::unexpected(parsed.error());
+        if (!parsed) co_return std::unexpected(parsed.error());
 
-        return extract_pdf_text_detail::build_reply(std::move(*parsed), ctx);
+        co_return extract_pdf_text_detail::build_reply(std::move(*parsed), ctx);
     }
 };
 

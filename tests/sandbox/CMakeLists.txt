@@ -198,3 +198,9 @@ agentengine_add_test(test_mandatory_sandbox_provider_composed
 # durability (ADR-130), and the Store-genericity fix that lets them compose (ADR-132) all together.
 agentengine_add_test(test_task_branch_content_durability_integration
   LIBS agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+
+# decisions/ADR-237 §5.1 Phase D (#173): the execution and sandbox seams are task-shaped -- each caller driven ON
+# A RUNTIME LANE against a conformer that genuinely parks on the reactor. NO daemon.
+agentengine_add_test(test_execution_seams_on_lane
+  LIBS agentengine::core agentengine::net_egress_proxy agentengine::worktree_store agentengine::sandbox_io
+    agentengine_warnings)
