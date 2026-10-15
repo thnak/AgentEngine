@@ -73,7 +73,7 @@ int main() {
     SkillsProvider<> provider(std::move(sources));
 
     auto materialized =
-        native_jail::materialize_skill_mounts(provider, std::filesystem::path(base) / "skills", {"work"});
+        agentengine::rt::block_on(native_jail::materialize_skill_mounts(provider, std::filesystem::path(base) / "skills", {"work"}));
     check(materialized.has_value(), "setup: materialize_skill_mounts succeeds for one real skill");
     if (!materialized || materialized->empty()) {
         std::fprintf(stderr, "test_mediated_python_runner_skill_mounts: 1 FAILURE(S) (setup)\n");

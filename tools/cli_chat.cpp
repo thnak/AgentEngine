@@ -1807,7 +1807,7 @@ int main(int argc, char** argv) {
     std::filesystem::path const skills_scratch =
         std::filesystem::temp_directory_path() / "agentengine_cli_chat_skills";
     auto materialized =
-        native_jail::materialize_skill_mounts(startup_skills, skills_scratch, {kWorkMount});
+        agentengine::rt::block_on(native_jail::materialize_skill_mounts(startup_skills, skills_scratch, {kWorkMount}));
     if (!materialized) {
         std::cerr << "FATAL: failed to materialize skill mounts: " << materialized.error().message << "\n";
         return 1;
