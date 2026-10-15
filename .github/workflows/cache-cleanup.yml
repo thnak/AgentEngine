@@ -20,7 +20,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REF: refs/pull/${{ github.event.pull_request.number }}/merge
-        # One call: DELETE /actions/caches deletes every entry whose key starts with `key` under `ref`.
-        # Deleting entry by entry is one API call per object (thousands per PR) and trips the rate limit.
+        # DELETE /actions/caches deletes every entry whose key starts with `key` under `ref`, but at most
+        # 30 per call (measured 2026-10-15), so loop until a call deletes nothing. Entry-by-entry deletes
+        # are one call per object (thousands per PR) and trip the API rate limit.
         run: |
-          gh api -X DELETE "repos/${{ github.repository }}/actions/caches?key=sccache&ref=$REF" --silent
+          while :; do
+            n=$(gh api -X DELETE "repos/${{ github.repository }}/actions/caches?key=sccache&ref=$REF" --jq .total_count)
+            echo "deleted $n"
+            [ "$n" -gt 0 ] || break
+          done
