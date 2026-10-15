@@ -1,0 +1,23 @@
+name: Cache watch
+
+# Weekly health check of the Actions cache (tools/ci_cache_watch.sh). A threshold breach fails the run,
+# and GitHub emails the repo owner about a failed scheduled workflow, so there is no separate alerting.
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  pull-requests: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: tools/ci_cache_watch.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
