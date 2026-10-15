@@ -2,7 +2,7 @@
 
 Hand-authored JSON fixtures for `agentengine::test_support::RecordedChatClient`
 (`tests/support/recorded_chat_client.hpp`). Each fixture maps onto one `ae::ChatResponse` (a
-`Message` + `Usage`) — see `004-Model-Provider-Plane.md` §6 for the recording/replay concept this
+`Message` + `Usage`) — see `rfcs/004-Model-Provider-Plane.md` §6 for the recording/replay concept this
 is a test-scoped, hand-authored stand-in for (not an implementation of that feature).
 
 ## Schema

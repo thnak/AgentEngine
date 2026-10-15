@@ -1,5 +1,5 @@
 #pragma once
-// Implements 008-Sandbox-and-Isolation.md §3's "seccomp-BPF" element of the Linux `native-jail`
+// Implements rfcs/008-Sandbox-and-Isolation.md §3's "seccomp-BPF" element of the Linux `native-jail`
 // backend -- Milestone 2 Phase C task C2. A real, hand-built seccomp-BPF program (no libseccomp
 // dependency, matching this codebase's "pure OS API, no third-party dependency" posture for
 // native_jail's other Linux/Windows kernel-layer code), installed on the calling thread before

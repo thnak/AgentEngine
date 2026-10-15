@@ -50,7 +50,7 @@ open, not gating this sign-off: whether the ANN/GPU seam backend gate (§2.3B) s
 roadmap given claim 1's now-confirmed Goal-tier miss beyond small corpora, `GraphRagContextProvider`
 (§2.1b, named/cost-scoped, not designed), and the other named residuals in §7 below.
 
-**Relates to:** `005-Sessions-State-and-Memory.md` §5 (`ContextProvider`), `029-Memory-System.md`
+**Relates to:** `rfcs/005-Sessions-State-and-Memory.md` §5 (`ContextProvider`), `rfcs/029-Memory-System.md`
 (the sibling "kind" this generalizes — 029 is keyword/salience/recency, deterministic, no network
 call; this ADR's design explicitly does NOT inherit that no-network guarantee, see §3.2).
 `CONVENTIONS.md`'s three-tier dependency posture (§3.4 below is bound by it directly).
@@ -815,7 +815,7 @@ evidence get a verdict; the rest stay PENDING, not guessed at.
   and measured under `build-clang-release` (Release, clang) for real numbers: **n=200 → ~248 µs/call,
   n=1000 → ~1.45 ms/call, n=5000 → ~7.6 ms/call** (single-threaded, one reference machine, not yet a
   023 §7 G1-baselined reference machine — a caveat worth restating, not a reason to withhold the
-  number). **RFC `023-Performance-Targets-and-Budgets.md` §3 now names a dedicated budget row**
+  number). **RFC `rfcs/023-Performance-Targets-and-Budgets.md` §3 now names a dedicated budget row**
   (added 2026-08-19, project owner's own choice: matches "Context assembly"'s existing analog
   exactly — `RAG retrieval | VectorIndex::search(k), p99, ~200-chunk corpus, dim 1536 | ≤ 500 µs |
   Goal`): **n=200 (~248 µs) is a genuine Goal-tier PASS**, comfortably under budget; **n=1000
@@ -949,7 +949,7 @@ its 5 findings are fixed and tested. `recall(query)`'s sync-invoke/async-embedde
 actual, reviewed, tested fix (`decisions/ADR-064-recall-tool-sync-invoke-vs-async-embedder.md`,
 Design B, implemented, proven, and independently red-teamed a second time, also Judged 2026-08-19).
 Claims 2, 3, 4, 5, 6 and finding 7 are closed with real executed evidence; claim 1 now has both real
-measured numbers AND a real RFC `023-Performance-Targets-and-Budgets.md` §3 budget row to compare
+measured numbers AND a real RFC `rfcs/023-Performance-Targets-and-Budgets.md` §3 budget row to compare
 against (added 2026-08-19, project owner's own choice: `≤ 500 µs, Goal`, matching "Context assembly"'s
 existing row) — n=200 PASSES, n=1000/5000 are genuine Goal-tier MISSES, accepted as a decided,
 named residual rather than a blocker (per 023 §6 a Goal miss warns and needs a written justification,

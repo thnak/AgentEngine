@@ -1,5 +1,5 @@
 #pragma once
-// Implements 013-UI-and-Streaming-Surfaces.md §3's own table row ("MCP progress (011) |
+// Implements rfcs/013-UI-and-Streaming-Surfaces.md §3's own table row ("MCP progress (011) |
 // notifications/progress on the originating request's response stream, when serving a tool call --
 // sourced from ToolCallDelta (006 §6a) exactly like the AG-UI projection above") and 011 §1's request-
 // scoped notification split ("notifications/progress... continue to flow on the response stream of

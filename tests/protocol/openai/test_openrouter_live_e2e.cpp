@@ -1,4 +1,4 @@
-// End-to-end proof of 004-Model-Provider-Plane.md §3's two shipped backends
+// End-to-end proof of rfcs/004-Model-Provider-Plane.md §3's two shipped backends
 // (protocol/openai/chat_client.hpp, protocol/anthropic/chat_client.hpp) against a REAL, remote,
 // third-party inference service -- OpenRouter, which exposes BOTH an OpenAI-compatible
 // (`/api/v1/chat/completions`) and an Anthropic-compatible (`/api/v1/messages`) surface on the same

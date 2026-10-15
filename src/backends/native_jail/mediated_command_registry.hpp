@@ -1,5 +1,5 @@
 #pragma once
-// Implements 010-Python-Code-Interpreter.md §2 -- Milestone 3 Phase E3. A genuinely new
+// Implements rfcs/010-Python-Code-Interpreter.md §2 -- Milestone 3 Phase E3. A genuinely new
 // CommandRegistry, carrying forward decisions/ADR-001's closed three-way lookup finding (builtin /
 // registered Runner / registered Tool, never a fourth path that could resolve to an arbitrary
 // process) as a design, not copied code -- command_registry.hpp stays untouched.

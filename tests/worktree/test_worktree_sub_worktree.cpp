@@ -1,4 +1,4 @@
-// Proof for 025-Worktree-and-Virtual-Filesystem.md §3's sub-worktree sharing modes, Milestone 3
+// Proof for rfcs/025-Worktree-and-Virtual-Filesystem.md §3's sub-worktree sharing modes, Milestone 3
 // Phase B1 (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md) --
 // `create_sub_worktree`/`read_sub_worktree`/`write_sub_worktree` (core/worktree.hpp) proven per
 // mode: `shared` gives immediate cross-visibility (not just an identical starting value), `branch`

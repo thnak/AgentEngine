@@ -5,11 +5,11 @@
 real in-memory object/ref stores, and the full related memory-suite (8 targets) shows no regression.
 See §4/§5/§6.
 
-**Relates to:** `026-Agent-Facing-Runtime-Surface.md` §5 (`agent.notes`'s spec: "ordinary writes into
+**Relates to:** `rfcs/026-Agent-Facing-Runtime-Surface.md` §5 (`agent.notes`'s spec: "ordinary writes into
 `/memory`, landing as `AgentAuthored` `MemoryItem`s", `FsWrite<mount>`), GitHub issue #40 (`agent.notes`
 has ZERO implementation — no mount, no conversion mechanism, nothing), `decisions/
 ADR-153-agent-memory-codeact-bridging.md` §7 (named this exact write-back mechanism as its own
-residual, reusing `harvest_mount()`), `029-Memory-System.md` §4 (the `AgentAuthored` `MemoryItem`
+residual, reusing `harvest_mount()`), `rfcs/029-Memory-System.md` §4 (the `AgentAuthored` `MemoryItem`
 tagging this ADR produces), `include/agentengine/core/memory.hpp` (`write_memory_item`,
 `ensure_memory_worktree` — the structural-write precedent this ADR's own `ensure_memory_notes_inbox_
 worktree` mirrors), `src/backends/native_jail/agent_files_data_codegen.hpp` (the ALREADY-real generic

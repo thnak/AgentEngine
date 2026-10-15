@@ -8,7 +8,7 @@ not") and an already-existing, already-passing regression test — it ships no n
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #11 (the finding this
 ADR closes); `decisions/ADR-004-appcontainer-native-jail-windows-backend.md` §6.1/§8.1/§8.3/§11 item
 1 (the original finding, decision, and — now corrected — suggested-next-step this ADR confirms was
-already done); `008-Sandbox-and-Isolation.md` §1b (the layered filesystem-boundary model this residual
+already done); `rfcs/008-Sandbox-and-Isolation.md` §1b (the layered filesystem-boundary model this residual
 is a concrete instance of).
 
 ## 1. The question
@@ -61,7 +61,7 @@ Re-grounded directly against current code and ADR-004's actual text:
 ## 3. Why no new fix is needed: the accepted design already covers this
 
 ADR-004 §6.1 already reasoned through exactly this failure mode and reached the same layering
-`008-Sandbox-and-Isolation.md` §1b independently specifies: **interpreter-level `open()` mediation is
+`rfcs/008-Sandbox-and-Isolation.md` §1b independently specifies: **interpreter-level `open()` mediation is
 the *primary* filesystem read boundary; AppContainer's ACL denial is backstop layer 3, not the
 boundary itself.** This is real, shipped, Judged code, not a future plan:
 

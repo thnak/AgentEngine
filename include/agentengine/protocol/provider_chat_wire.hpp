@@ -1,5 +1,5 @@
 #pragma once
-// Implements 004-Model-Provider-Plane.md §3/§4 -- ADR-206 (#120 S6): the HTTP plumbing the OpenAI-compatible
+// Implements rfcs/004-Model-Provider-Plane.md §3/§4 -- ADR-206 (#120 S6): the HTTP plumbing the OpenAI-compatible
 // (protocol/openai/chat_client.hpp) and Anthropic (protocol/anthropic/chat_client.hpp) ChatClient backends share.
 // The two had carried identical copies of it, differing only in the vendor name each wrote into its error
 // messages. What stays per vendor: the wire format (request body, headers, response and SSE event parsing).

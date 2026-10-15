@@ -1,4 +1,4 @@
-// Milestone 7 Phase C4 (011-MCP-Conformance.md §3.6/§12, docs/research/2026-mcp-protocol-detail.md
+// Milestone 7 Phase C4 (rfcs/011-MCP-Conformance.md §3.6/§12, docs/research/2026-mcp-protocol-detail.md
 // §12, docs/planning/milestone-7-protocol-conformance-breakdown.md). Proves the
 // `io.modelcontextprotocol/tasks` extension end-to-end: `McpClient::call_tool_as_task()` /
 // `get_task()` / `cancel_task()` (client.hpp) against a REAL `McpServer` (server.hpp) backgrounding a

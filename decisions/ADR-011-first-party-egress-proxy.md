@@ -1,6 +1,6 @@
 # ADR-011 — What should the first-party host-mediated egress proxy be, so that `NetOut`'s allowlist, byte cap, and method restrictions are real controls a guest cannot route around, not assertions in prose?
 
-**Resolves:** `008-Sandbox-and-Isolation.md` §10 Q3's already-RFC-resolved shape ("a real first-party
+**Resolves:** `rfcs/008-Sandbox-and-Isolation.md` §10 Q3's already-RFC-resolved shape ("a real first-party
 default, and a seam a deployer may replace") — this ADR is what makes that real, mechanically, for
 M2's actual consumer: `wasm`'s `http-request` host import (`src/backends/wasm/wasm_backend.cpp`),
 currently a stub that traps `"http-request: not implemented in M2's minimal host"`. Scoped per

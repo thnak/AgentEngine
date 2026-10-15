@@ -1,5 +1,5 @@
 // Proves decisions/ADR-016-provider-egress-address-policy.md's gate G5 -- and, through it,
-// 004-Model-Provider-Plane.md §3's OpenAI-compatible backend (protocol/openai/chat_client.hpp)
+// rfcs/004-Model-Provider-Plane.md §3's OpenAI-compatible backend (protocol/openai/chat_client.hpp)
 // end to end against a REAL, LOCAL llama.cpp server.
 //
 // This is the endpoint class 004 §3 names explicitly ("vLLM/llama.cpp/Ollama-style local servers")

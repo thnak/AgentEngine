@@ -1,5 +1,5 @@
 #pragma once
-// Implements 013-UI-and-Streaming-Surfaces.md §1 -- the one internal run event stream, projected
+// Implements rfcs/013-UI-and-Streaming-Surfaces.md §1 -- the one internal run event stream, projected
 // onto every external surface (AG-UI, A2A streaming, MCP progress, OpenAI-compatible SSE, §2-§3).
 // Milestone 7 Phase A (docs/planning/milestone-7-protocol-conformance-breakdown.md).
 //

@@ -1,7 +1,7 @@
-// Milestone 5 Phase I1 (018-Identity-Authorization-and-Secrets.md §6: "Tenant is a first-class
+// Milestone 5 Phase I1 (rfcs/018-Identity-Authorization-and-Secrets.md §6: "Tenant is a first-class
 // dimension of principal, session, memory scope, sandbox, quota, and audit -- not a filter applied
 // at query time... Cross-tenant access is denied at the actor boundary; a cross-tenant leak is a
-// release-blocking defect class"; 029-Memory-System.md §9 G4/G5). This file proves a REAL bug this
+// release-blocking defect class"; rfcs/029-Memory-System.md §9 G4/G5). This file proves a REAL bug this
 // phase found and fixed: through Milestone 4, `memory_ref_name()`/`memory_mount_id()`
 // (core/memory.hpp) derived their output from `principal.id` ALONE -- `tenant_id` played no role.
 // Two principals in DIFFERENT tenants sharing the same `id` (not a contrived scenario: tenant-scoped

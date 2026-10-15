@@ -7,8 +7,8 @@ superseded by their removal the same day (see §7a) — part of what was judged,
 
 **Relates to:** `decisions/ADR-027-agent-session-tool-call-loop.md` (Judged — the internal
 multi-round tool-call loop this ADR's streaming path runs inside, unmodified in its own control
-flow); `013-UI-and-Streaming-Surfaces.md` §1 (the real-event-stream vocabulary this ADR gives its
-first real `model_delta` emitter); `004-Model-Provider-Plane.md` §1/§5 (TokenBudget<N>, the
+flow); `rfcs/013-UI-and-Streaming-Surfaces.md` §1 (the real-event-stream vocabulary this ADR gives its
+first real `model_delta` emitter); `rfcs/004-Model-Provider-Plane.md` §1/§5 (TokenBudget<N>, the
 guarantee this ADR's fail-closed usage rule protects).
 
 ## 1. The question

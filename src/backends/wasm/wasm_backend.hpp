@@ -1,6 +1,6 @@
 #pragma once
 // Implements agentengine::SandboxBackend (sandbox/sandbox.hpp) for the `wasm` profile --
-// 009-Plugin-and-Extension-System.md's `ae:tool` world (wit/ae-tool.wit, revised by this task),
+// rfcs/009-Plugin-and-Extension-System.md's `ae:tool` world (wit/ae-tool.wit, revised by this task),
 // backed by wasmtime's Component Model C API (AGENTENGINE_WITH_WASM, D1) -- Milestone 2 Phase D task
 // D3 (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md). Security-critical: built
 // through design->red-team->prove->judge per CLAUDE.md, landed as

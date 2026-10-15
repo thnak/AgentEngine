@@ -12,7 +12,7 @@ replaces), `decisions/ADR-036-model-call-gateway.md` (`ModelCallGateway`/`ModelC
 type this design adds `call_stream()`/`ModelCallGatewayStreamLike` to), `decisions/ADR-060-tool-call-
 progress-reporting.md` (`EffectContext::report_progress`, the field this design widens from
 `std::string_view` to `ContentItem`, and the methodology model — numbered findings, severity, direct
-source reading — every red-team round in this pass followed), `013-UI-and-Streaming-Surfaces.md` (the
+source reading — every red-team round in this pass followed), `rfcs/013-UI-and-Streaming-Surfaces.md` (the
 `RunEvent` vocabulary this design's producers/projections extend).
 
 ## 1. The question
@@ -209,7 +209,7 @@ All three pass. Full `ctest` sweep (default `build/` tree, non-HTTPS): 196/196 p
   capture `this`; moving the `Bundle` elsewhere leaves them holding a dangling pointer once the old
   object is destroyed. Narrow in practice (`Bundle` has no move-assignment; real usage is "build once,
   keep in place"), disclosed rather than prevented.
-- **006-Tool-and-Function-Plane.md §6a's `report_progress(ProgressUpdate)` naming** does not match this
+- **rfcs/006-Tool-and-Function-Plane.md §6a's `report_progress(ProgressUpdate)` naming** does not match this
   ADR's `ContentItem` choice — a documentation-only RFC amendment or a real scope question, not resolved
   here.
 - **A tool that pushes `Media{raw_bytes}` (not a `BlobRef`) as progress content** gets those bytes

@@ -4,7 +4,7 @@
 proven (real code + new tests across two files, full suite green).
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #19 (the finding this
-ADR closes, Phase 1 only). `004-Model-Provider-Plane.md` §2 (`ChatClientCapabilities`'s
+ADR closes, Phase 1 only). `rfcs/004-Model-Provider-Plane.md` §2 (`ChatClientCapabilities`'s
 `multimodal_in_image`/`_audio`/`_video`/`_file` bits — declared, not probed). `003-Message-and-
 Content-Model.md` (the `Media` content kind this gate checks).
 

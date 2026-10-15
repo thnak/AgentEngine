@@ -1,7 +1,7 @@
 # ADR-005 — Should a capability that must cross a process boundary be represented as a self-verifying macaroon-style bearer token, or as an opaque reference checked against a host-side registry?
 
-**Resolves:** OQ-3 (OpenQuestions.md), 007-Capability-and-Trust-Model.md §10 Q1, 008-Sandbox-and-
-Isolation.md §9 Q4, 018-Identity-Authorization-and-Secrets.md §Q2.
+**Resolves:** OQ-3 (OpenQuestions.md), rfcs/007-Capability-and-Trust-Model.md §10 Q1, 008-Sandbox-and-
+Isolation.md §9 Q4, rfcs/018-Identity-Authorization-and-Secrets.md §Q2.
 
 **Scope, deliberately small** (per the project owner's direction to prove this and the remaining
 open questions with small experiments rather than full-scale builds): this ADR proves the *token

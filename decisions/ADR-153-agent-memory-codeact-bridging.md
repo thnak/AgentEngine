@@ -6,7 +6,7 @@ checks (R1-R3) all pass against a real `MemoryProvider`/`bridge_tool_call()`/`ma
 and a full rebuild of every test target that touches `MemoryProvider` or `ToolBridgeConfig` confirms no
 regression — see §5/§6 below.
 
-**Relates to:** `026-Agent-Facing-Runtime-Surface.md` §5 (`agent.memory`'s spec: "ordinary read access
+**Relates to:** `rfcs/026-Agent-Facing-Runtime-Surface.md` §5 (`agent.memory`'s spec: "ordinary read access
 to the memory worktree's files under `/memory`... the ranked/on-demand view is `agent.tools.recall`, an
 ordinary tool"), GitHub issue #31's own comment (the audit that found this gap), `include/agentengine/
 core/memory_provider.hpp` (`MemoryProvider::make_recall_tool_descriptor()`), `src/backends/native_jail/

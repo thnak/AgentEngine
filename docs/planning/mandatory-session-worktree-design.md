@@ -303,7 +303,7 @@ lifetime, genuinely accumulates one ref-log entry per turn, forever, with no exi
 shrink it.
 
 **This is not an oversight — it is the direct, unavoidable cost of the rollback guarantee §7 just
-made mandatory.** `025-Worktree-and-Virtual-Filesystem.md` §9 G5 (the same gate `rewind_to_turn()`
+made mandatory.** `rfcs/025-Worktree-and-Virtual-Filesystem.md` §9 G5 (the same gate `rewind_to_turn()`
 implements) explicitly commits to "an arbitrary retained turn digest" being reachable — i.e. this
 codebase's own spec already chose unlimited retention as a hard requirement, not an accident later
 discovered to be expensive. Compacting away an old commit and being able to roll back to it are

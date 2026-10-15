@@ -10,11 +10,11 @@
 - **Scope:** `include/agentengine/core/summarizer_prompt.hpp` (new — the one shared request builder and the reply
   rules), `include/agentengine/core/memory_provider.hpp` (`on_context`, `on_turn_end`, `last_extraction()`),
   `include/agentengine/core/history_provider.hpp` (`HistoryProvider<Summarize<N>>::on_context`),
-  `029-Memory-System.md` §4 and `005-Sessions-State-and-Memory.md` §4 (amended), `tests/memory/test_summarizer_prompt.cpp`
+  `rfcs/029-Memory-System.md` §4 and `rfcs/005-Sessions-State-and-Memory.md` §4 (amended), `tests/memory/test_summarizer_prompt.cpp`
   (new), `tests/core/context/test_history_provider_summarize.cpp` (B4-R3), `tests/eval/test_eval_summarizer_live_e2e.cpp` (two live
   checks), `tests/CMakeLists.txt` (additive).
-- **Related specs:** `029-Memory-System.md` §4 (memory extraction), §6 (retrieved memory is tainted, labelled) ·
-  `005-Sessions-State-and-Memory.md` §4 (`Summarize<N>`) · `decisions/ADR-195-evaluation-harness.md` §8 (where the
+- **Related specs:** `rfcs/029-Memory-System.md` §4 (memory extraction), §6 (retrieved memory is tainted, labelled) ·
+  `rfcs/005-Sessions-State-and-Memory.md` §4 (`Summarize<N>`) · `decisions/ADR-195-evaluation-harness.md` §8 (where the
   defect was found) · `decisions/ADR-173-system-channel-taint-fence.md` (why the history summary is already tainted).
 
 ## 1. The question

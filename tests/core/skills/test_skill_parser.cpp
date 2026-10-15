@@ -1,4 +1,4 @@
-// Implements 009-Plugin-and-Extension-System.md §8a -- proves core/skill.hpp's `parse_skill_md`
+// Implements rfcs/009-Plugin-and-Extension-System.md §8a -- proves core/skill.hpp's `parse_skill_md`
 // against a valid SKILL.md document and against one real failure per named validation error code
 // (§8a's "our importer therefore validates against the constraints explicitly and rejects rather
 // than guessing," made concrete: a test per rejection, not just a test that SOME rejection happens).

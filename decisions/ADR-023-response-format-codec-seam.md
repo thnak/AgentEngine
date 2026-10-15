@@ -265,7 +265,7 @@ Conclusion unchanged; reasoning corrected.
 §6 point 4 (the text-derived declassifier) is now real, tested code, closing the last item this ADR's
 own §6 left open.
 
-- **007 §4 amendment** (`007-Capability-and-Trust-Model.md`, dated 2026-08-10): documents
+- **007 §4 amendment** (`rfcs/007-Capability-and-Trust-Model.md`, dated 2026-08-10): documents
   `call_provenance` as an extension of the existing `Tainted<T>`/declassifier framework and states the
   admitted declassifier — a strict allowlist match against the tool's own declared shape (capability
   ceiling + effect class), never the untrusted arguments — plus operator approval as the only other

@@ -4,8 +4,8 @@
 code + extended tests, full suite green).
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #2 (the finding this ADR
-closes). `002-Agent-Model-and-Authoring.md` §1/§7 (the normative source of this requirement — this is
-not new surface, an implementation gap against an existing spec). `015-Declarative-Agent-Format.md`
+closes). `rfcs/002-Agent-Model-and-Authoring.md` §1/§7 (the normative source of this requirement — this is
+not new surface, an implementation gap against an existing spec). `rfcs/015-Declarative-Agent-Format.md`
 §2/§3 (whose own worked examples already carry `metadata.version`/`metadata.description` — the
 declarative surface was ahead of the compiled C++ struct).
 

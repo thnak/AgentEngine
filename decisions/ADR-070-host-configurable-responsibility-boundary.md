@@ -13,7 +13,7 @@ threading), `include/agentengine/rt/agent_session.hpp` (`set_policy_decider`/`po
 (SU7-SU9, 20 new checks), `tests/workflow/test_rt_workflow_supervisor.cpp` (6 new checks) — real Windows/MSVC
 build, see §5 for commands and counts.
 
-**Relates to:** `007-Capability-and-Trust-Model.md` (owns I2/I3, the two invariants this ADR must not
+**Relates to:** `rfcs/007-Capability-and-Trust-Model.md` (owns I2/I3, the two invariants this ADR must not
 weaken), `decisions/ADR-023-response-format-codec-seam.md` (the `text_derived` declassifier gate this
 ADR deliberately leaves closed, citing that ADR's own red-team finding), `decisions/ADR-033-
 middleware-model-call-chain.md` (the middleware declassification-position closure this ADR also
@@ -268,7 +268,7 @@ wired — discovered while implementing, not anticipated by the original plan ha
 ## 7. The decision
 
 **Design B is adopted and implemented**, per §5's evidence. It binds:
-- `007-Capability-and-Trust-Model.md` — no change to its own text; this ADR is the record that I2/I3
+- `rfcs/007-Capability-and-Trust-Model.md` — no change to its own text; this ADR is the record that I2/I3
   were checked against and left intact (§3 Design C, §4a).
 - `decisions/ADR-029-suspend-for-human-approval.md` §6 — amended in place (§5b).
 - `decisions/ADR-066-context-provider-attribution-provenance.md` §7 — amended in place (§5d).

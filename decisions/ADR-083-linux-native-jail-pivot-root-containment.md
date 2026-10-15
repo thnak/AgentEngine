@@ -12,7 +12,7 @@ namespace creation under `CAP_SYS_ADMIN` (root).
 
 **Relates to:** `decisions/ADR-082-native-jail-promotion-gate-008-9.md` (this ADR closes that
 document's own named residual — "G2/G3's shared Linux gap" — the one item left after G6/G7's
-same-day closure), `008-Sandbox-and-Isolation.md` §1b/§2/§3/§9 (G2 containment, G3 no ambient
+same-day closure), `rfcs/008-Sandbox-and-Isolation.md` §1b/§2/§3/§9 (G2 containment, G3 no ambient
 authority, the `native-jail` profile's Linux half), `decisions/ADR-004-appcontainer-native-jail-
 windows-backend.md` (the Windows side's already-Judged AppContainer filesystem containment this
 closes the Linux parity gap against), `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap
@@ -22,7 +22,7 @@ this ADR updates rather than leaves as documented gaps).
 
 ## 1. The question
 
-**Stated so it has a wrong answer:** `008-Sandbox-and-Isolation.md` §9 G2 requires "every §7 abuse
+**Stated so it has a wrong answer:** `rfcs/008-Sandbox-and-Isolation.md` §9 G2 requires "every §7 abuse
 case is contained" and G3 requires "a probe guest enumerating filesystem, network, env, and processes
 finds exactly the granted set and nothing else, on each backend." Before this ADR,
 `LinuxNativeJailBackend` met G3 on the env and network axes but not on filesystem or process

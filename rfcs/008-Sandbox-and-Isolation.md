@@ -1,6 +1,6 @@
 # 008 — Sandbox and Isolation
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-04 by ADR-171** (§2a — isolation machinery in the tree is not a backend until it satisfies §2; proximity is not conformance) · **Depends on:** 007, 009, 021 · **Gate:** §9 · **Research:** [2026 landscape §6–8](docs/research/2026-standards-landscape.md)
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-04 by ADR-171** (§2a — isolation machinery in the tree is not a backend until it satisfies §2; proximity is not conformance) · **Depends on:** 007, 009, 021 · **Gate:** §9 · **Research:** [2026 landscape §6–8](../docs/research/2026-standards-landscape.md)
 
 ## Goal
 
@@ -98,7 +98,7 @@ cold-start winner, tiny, portable down to microcontrollers — but it has only *
 and Component Model support, which is the one axis that matters here. On the features this design
 depends on it has fewer, not more. It may still earn a scoped place for ultra-short guest calls or
 constrained deployments, behind the same host interface and behind a gate; that was
-[OQ-12](OpenQuestions.md), now resolved (2026-08-03,
+[OQ-12](../OpenQuestions.md), now resolved (2026-08-03,
 `decisions/ADR-008-wasm3-cold-start-vs-wasmtime.md`): a real, measured cold-start comparison on this
 project's own trivial-workload shape found wasm3 160-180x faster at p50 and 250-400x at p99 — the
 gate this paragraph named is cleared, so wasm3 is now a real candidate for that scoped niche, not a
@@ -106,7 +106,7 @@ hypothetical one. This paragraph's rejection of wasm3 **as the primary runtime**
 measurement is silent on Component Model/WASI 0.3 support, which is why the primary-runtime decision
 above stands regardless. Whether to actually build the scoped second runtime is a separate decision
 the ADR does not make. Evidence:
-[`docs/research/2026-wasm-runtime-and-state-persistence.md`](docs/research/2026-wasm-runtime-and-state-persistence.md) §1.
+[`docs/research/2026-wasm-runtime-and-state-persistence.md`](../docs/research/2026-wasm-runtime-and-state-persistence.md) §1.
 
 **Where this leaves the engine (OQ-12 gate cleared, 2026-08-04): the measurement above makes wasm3
 a real candidate for a scoped niche — it does not, by itself, commit the engine to shipping one.**
@@ -476,7 +476,7 @@ picking a different backend for them.** §1's decision already rules out a WASM 
 the reasons stated there; this is the cost of that decision made explicit rather than left as a
 surprise discovered later. A session's Python/shell state does not survive passivation on any
 profile it can run under — only the worktree does. Evidence for the wasm-side property:
-[`docs/research/2026-wasm-runtime-and-state-persistence.md`](docs/research/2026-wasm-runtime-and-state-persistence.md) §2.
+[`docs/research/2026-wasm-runtime-and-state-persistence.md`](../docs/research/2026-wasm-runtime-and-state-persistence.md) §2.
 
 ## 7. Failure and abuse
 

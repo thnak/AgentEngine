@@ -5,7 +5,7 @@ pass via the `Agent` tool, findings in §3), implemented, and proven (real code 
 `MiddlewareChatClient`, this ADR's original accepted consumer, was removed 2026-08-12 and superseded
 by `MiddlewareModelCallGateway` (ADR-036) — part of what was judged, not left outstanding; see §5a.
 
-**Relates to:** `002-Agent-Model-and-Authoring.md` §5 (the RFC this closes one interception point
+**Relates to:** `rfcs/002-Agent-Model-and-Authoring.md` §5 (the RFC this closes one interception point
 of); `decisions/ADR-023-response-format-codec-seam.md` (007 §4's `call_provenance` amendment — the
 mechanism this ADR's fatal-finding fix routes middleware-introduced tool calls through, unmodified);
 the (now-removed, see §5a) `ResilientChatClient<Inner>` decorator-wrapper idiom this design originally
@@ -151,6 +151,6 @@ deterministic test-authoring bugs, both fixed the same day; see ADR-024 §6's ow
   `enforce_backend_tool_call_provenance`, `MiddlewareChatClient<Inner, Ms...>`.
 - `tests/test_middleware_chat_client.cpp` (new) — this ADR's §6 evidence.
 - `tests/CMakeLists.txt` — registers the new test target.
-- `002-Agent-Model-and-Authoring.md` §5 — hook signature corrected (`task<>` → `task<std::monostate>`),
+- `rfcs/002-Agent-Model-and-Authoring.md` §5 — hook signature corrected (`task<>` → `task<std::monostate>`),
   the confused-deputy-shaped capability-widening note added, implementation status updated to name
   what is real now and what remains declared-only.

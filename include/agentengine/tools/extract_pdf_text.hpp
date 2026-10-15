@@ -1,5 +1,5 @@
 #pragma once
-// Implements 009-Plugin-and-Extension-System.md §7's "Document extraction" catalog row -- the PDF
+// Implements rfcs/009-Plugin-and-Extension-System.md §7's "Document extraction" catalog row -- the PDF
 // text-layer slice, per ADR-106 (PDFium, BSD-3-Clause, not poppler/mupdf) and
 // docs/planning/pdf-text-extraction-design-draft.md (Revision 7, closed after six real red-team
 // rounds). First real, host-reachable slice of that design; earlier work on this branch landed

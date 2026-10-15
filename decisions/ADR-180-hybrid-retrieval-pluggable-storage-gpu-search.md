@@ -91,14 +91,14 @@ Re-grounded against the real, current, Judged ADR-063 text (not assumed from mem
 1. **§2.3B named Vulkan as deferred, not rejected**, behind three gates: (i) a CPU baseline exists and is
    benched — **done**, `BruteForceCosineIndex` + `tests/core/rag/test_vector_index_benchmark.cpp`; (ii) that bench
    shows brute-force is the actual bottleneck — **done**, ADR-063 §6's own verdict on claim 1 is a real,
-   measured Goal-tier MISS beyond ~1000 chunks against `023-Performance-Targets-and-Budgets.md`'s
+   measured Goal-tier MISS beyond ~1000 chunks against `rfcs/023-Performance-Targets-and-Budgets.md`'s
    `≤ 500 µs` row; (iii) an explicit resolution of §3.5's determinism concern before merge — **not done**,
    this is §2.6 below.
 2. **§4 finding 1 / §7's first residual: vector-index persistence is undesigned.** `BruteForceCosineIndex`
    is in-memory-only; a process restart re-embeds the entire corpus regardless of `previous_file_hashes`.
    Still true today (re-confirmed by reading `vector_index.hpp` fresh for this draft). §2.4 below closes it.
 3. **No hybrid (dense+sparse) design anywhere.** The only "hybrid" in the existing RFC/ADR corpus is
-   GraphRAG's DRIFT search (`029-Memory-System.md` §219-222) — vector-then-graph, unrelated to
+   GraphRAG's DRIFT search (`rfcs/029-Memory-System.md` §219-222) — vector-then-graph, unrelated to
    dense+keyword fusion. §2.2/§2.3 below design it from scratch.
 4. **No external/network-backed `VectorIndex` conformer, and the `VectorIndex` concept as written cannot
    admit one** — `add_batch`/`search`/`contains` are plain synchronous `result<T>`, no `task<T>`, no

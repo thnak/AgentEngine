@@ -5,7 +5,7 @@ against the REAL `agentengine_python_worker.exe` process — 12 checks (R1-R4) a
 related native-jail/python-worker test suite (7 targets, including ADR-057's own `agent.ask` end-to-end
 test, which shares the same wire frame this ADR extends) shows no regression. See §5/§6.
 
-**Relates to:** `026-Agent-Facing-Runtime-Surface.md` §5 (`agent.output`'s spec, "Emit structured
+**Relates to:** `rfcs/026-Agent-Facing-Runtime-Surface.md` §5 (`agent.output`'s spec, "Emit structured
 output conforming to the run's schema", zero capability), GitHub issue #39 (filed from the same audit
 that produced ADR-153), `decisions/ADR-058-agent-output-live-wiring.md` (the OTHER, unrelated half of
 "agent.output" — `OutputSchema<T>`/`set_output_schema()`, the run's own final structured output driven

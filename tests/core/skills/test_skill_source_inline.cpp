@@ -1,4 +1,4 @@
-// Implements 009-Plugin-and-Extension-System.md §8 -- proves core/skill_source.hpp's
+// Implements rfcs/009-Plugin-and-Extension-System.md §8 -- proves core/skill_source.hpp's
 // `InlineSkillSource` (the direct "inline skill" case the user asked for MAF-parity on) and
 // core/builtin_skills.hpp's `make_builtin_skills_source()` (§8f's one shipped example: real content,
 // parsed at construction time, no disk I/O).

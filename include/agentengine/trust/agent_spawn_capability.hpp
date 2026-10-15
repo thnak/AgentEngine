@@ -2,7 +2,7 @@
 // Implements docs/planning/agent-spawn-runtime-design-draft.md §4.4a (depth-budget wiring, reusing
 // trust/spawn_budget.hpp's ADR-006 SpawnBudget unmodified) and §4.5 (child capability minting,
 // "Design B" -- the design doc's own recommended, red-teamed-clean alternative, §3) for
-// 026-Agent-Facing-Runtime-Surface.md §5's `agent.spawn` -- OpenQuestions.md OQ-14, named the
+// rfcs/026-Agent-Facing-Runtime-Surface.md §5's `agent.spawn` -- OpenQuestions.md OQ-14, named the
 // project's own "sharpest case".
 //
 // SCOPE, exactly matching the task that produced this file: items 4 (wire the two already-proven,

@@ -2,8 +2,8 @@
 
 ## 1. The question
 
-`002-Agent-Model-and-Authoring.md` §2's own worked example instantiates `SandboxProfile<Profile::Strict>`
-— syntax that reads as passing an enum-like *value*. `008-Sandbox-and-Isolation.md` §2a states plainly
+`rfcs/002-Agent-Model-and-Authoring.md` §2's own worked example instantiates `SandboxProfile<Profile::Strict>`
+— syntax that reads as passing an enum-like *value*. `rfcs/008-Sandbox-and-Isolation.md` §2a states plainly
 that "`P` is any type satisfying the `SandboxBackend` concept" — a deployer's own class, used directly
 as the template argument, no new machinery. These are not two phrasings of the same idea: a C++
 `concept` constrains expressions on a *type* (member functions, a static member, return types) — it
@@ -238,8 +238,8 @@ task did not touch.
 **Accepted: Design A.** `SandboxProfile<P>` takes any type satisfying `SandboxProfileArg` — a real
 `SandboxBackend`, or the resolution selector `Strict`. This makes 008 §2a's extensibility promise true
 by construction rather than aspirational, fixes the independently-broken `Profile::Strict` symbol as
-part of the same change (both RFCs, `002-Agent-Model-and-Authoring.md` §2/§3 and
-`008-Sandbox-and-Isolation.md` §3, corrected to match — `Profile::Strict` → `Strict` throughout, per
+part of the same change (both RFCs, `rfcs/002-Agent-Model-and-Authoring.md` §2/§3 and
+`rfcs/008-Sandbox-and-Isolation.md` §3, corrected to match — `Profile::Strict` → `Strict` throughout, per
 CLAUDE.md's "fix the spec first, then the code"), and unblocks one of `register_agent<A>()`'s two
 previously-stubbed `SandboxProfile` checks (`check_sandbox_profile_availability`) to do real,
 compile-time-backed work.

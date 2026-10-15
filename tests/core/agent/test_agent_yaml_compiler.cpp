@@ -1,4 +1,4 @@
-// Milestone 7 Phase F3 (015-Declarative-Agent-Format.md §2, docs/planning/milestone-7-protocol-
+// Milestone 7 Phase F3 (rfcs/015-Declarative-Agent-Format.md §2, docs/planning/milestone-7-protocol-
 // conformance-breakdown.md). Proves `compile_agent_document()` (core/agent_yaml_compiler.hpp)
 // against 015's own §2 example document, and -- the actual I6 property this compiler exists to
 // serve -- against a REAL, hand-written C++ Agent compiled via `register_agent<A>()`, confirming

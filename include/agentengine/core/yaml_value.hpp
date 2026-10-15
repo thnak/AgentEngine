@@ -1,5 +1,5 @@
 #pragma once
-// Implements 015-Declarative-Agent-Format.md's YAML surface -- Milestone 7 Phase F1
+// Implements rfcs/015-Declarative-Agent-Format.md's YAML surface -- Milestone 7 Phase F1
 // (docs/planning/milestone-7-protocol-conformance-breakdown.md). A hand-rolled, DELIBERATELY SCOPED
 // YAML SUBSET parser, matching CONVENTIONS' core-tier discipline ("std + Quark only, no third-party
 // dependency, ever") the same way `core/json_value.hpp` already does for JSON -- no YAML library

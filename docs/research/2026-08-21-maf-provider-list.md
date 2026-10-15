@@ -42,7 +42,7 @@ connector class.
 
 ## What this means for AgentEngine
 
-AgentEngine ships two `ChatClient` backends today (004-Model-Provider-Plane.md §3): an
+AgentEngine ships two `ChatClient` backends today (rfcs/004-Model-Provider-Plane.md §3): an
 **OpenAI-compatible** one (real `api.openai.com` and any OpenAI-compatible endpoint via host/path
 override — OpenRouter, vLLM/llama.cpp/Ollama-style local servers, most vendor compat endpoints, per
 that table's own "Reach" column) and a real **Anthropic** one.

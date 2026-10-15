@@ -10,7 +10,7 @@ mirroring ADR-090's own "investigated and deferred" precedent for `ResourceLimit
 neither of which had been checked against either the project's own spec or containerd's real CLI
 surface. This ADR is that investigation, run to a real conclusion for both fields.
 
-## 2. What 008-Sandbox-and-Isolation.md actually assigns these fields to
+## 2. What rfcs/008-Sandbox-and-Isolation.md actually assigns these fields to
 
 Unlike `pids`/`fds` — which are Linux kernel resource-control primitives with a natural
 process/cgroup-level enforcement point `ctr run`'s convenience flags can reach — `disk_bytes` and
@@ -18,7 +18,7 @@ process/cgroup-level enforcement point `ctr run`'s convenience flags can reach �
 `src/backends/native_jail/cgroup_limits.hpp`'s own header comment already states this plainly for
 the sibling backend: "`disk_bytes`, `net_bytes`, `output_bytes`, `fds` are explicitly NOT enforced
 here — 008 §1b assigns those to interpreter-level mediation... or, for `output_bytes`, to the bounded
-pipe-drain the backend itself performs." `008-Sandbox-and-Isolation.md` §1b confirms this directly
+pipe-drain the backend itself performs." `rfcs/008-Sandbox-and-Isolation.md` §1b confirms this directly
 (quoted, §1b's own capability table): `disk_bytes`/`net_bytes`-shaped containment (`FsRead`/`FsWrite`
 usage tracking, `NetOut` byte accounting) is delivered via **interpreter-level mediation of `open`/
 `socket`** — i.e. AgentEngine's own `MediatedPythonRunner`/`ShellRunner` intercepting the actual

@@ -113,7 +113,7 @@ malformed entry is a load error; the expansion's own refusals (014 §4) surface 
 
 ## 4. Schema and validation
 
-- **JSON Schema 2020-12** for both documents, published in [`schema/`](schema/) and versioned with
+- **JSON Schema 2020-12** for both documents, published in [`schema/`](../schema) and versioned with
   `apiVersion`. Same dialect as MCP tool schemas (011), so one validator serves the whole project.
 - Validation is **strict**: unknown fields are errors, not ignored. A typo'd policy silently
   ignored is how a production agent runs without the sandbox its author thought they configured.

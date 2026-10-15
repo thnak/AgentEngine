@@ -1,5 +1,5 @@
 #pragma once
-// Implements 005-Sessions-State-and-Memory.md §5 — the one seam for "contribute to the context
+// Implements rfcs/005-Sessions-State-and-Memory.md §5 — the one seam for "contribute to the context
 // before the model is called." History, skills, and memory (029) are kinds of this, not parallel
 // concepts (027 §3).
 //

@@ -8,7 +8,7 @@ sitting on top of AgentEngine's own already-proven, non-concurrent primitives
 `WorkflowSupervisor`, the `request_port`/`resume_workflow()` HITL mechanism): no reusable
 manager/participant builder, no stall/reset loop-detection bound, no typed plan-signoff HITL
 payload, no packaged checkpoint-persistence convenience, no named transcript reconstruction. Can
-these be built as pure additive sugar over what already exists — 014-Workflow-and-Orchestration.md
+these be built as pure additive sugar over what already exists — rfcs/014-Workflow-and-Orchestration.md
 §9 Q5 says Magentic "is not a separate subsystem... no new engine primitive" — without widening any
 capability/authority boundary, and without silently mis-describing what they actually cover for a
 cyclic (repeat-visit) graph, which is exactly Magentic's own shape?

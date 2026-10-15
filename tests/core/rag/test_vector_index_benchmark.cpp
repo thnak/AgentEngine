@@ -1,7 +1,7 @@
 // Implements decisions/ADR-063-retrieval-augmented-context-provider-shape.md §3 claim 1 --
 // BruteForceCosineIndex::search() latency at the hypothesized corpus size (§2.3A: "low hundreds to
 // low thousands of items, embedding dimension in the low hundreds to ~1536"). RFC
-// 023-Performance-Targets-and-Budgets.md names no dedicated budget row for vector-index search
+// rfcs/023-Performance-Targets-and-Budgets.md names no dedicated budget row for vector-index search
 // specifically -- the closest existing analog is "Context assembly: assemble a 50-message context,
 // p99 <= 500 us (Goal)" (023 §3), a DIFFERENT operation this bench does not claim equivalence to.
 // This bench's own job, honestly scoped: replace claim 1's "no number claimed yet" placeholder with

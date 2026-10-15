@@ -89,7 +89,7 @@ brokenness.
 
 ## 3. Sub-agents — designed, unit-tested at the primitive level, not wired
 
-`026-Agent-Facing-Runtime-Surface.md` §5 (line 185-186) states the target design: *"`agent.spawn`
+`rfcs/026-Agent-Facing-Runtime-Surface.md` §5 (line 185-186) states the target design: *"`agent.spawn`
 inherits an attenuated capability set and a sub-worktree (025 §3) — a spawned agent can never exceed
 its parent."* 026 is itself marked Draft (per ADR-006's own residual, quoted below) — this is
 normal RFC style in this repo (present-tense target design, implementation status tracked
@@ -107,7 +107,7 @@ Tracing what actually exists:
 - `decisions/ADR-024-skill-scoped-tool-and-mount-wiring.md` §7 independently confirms:
   *"`AgentSession` still owns no sandbox and no tool-call loop in production... Building that
   ownership is a separate, larger architectural question this ADR does not attempt."*
-- **Updated 2026-08-11 — no longer true as stated.** `014-Workflow-and-Orchestration.md` §1 now
+- **Updated 2026-08-11 — no longer true as stated.** `rfcs/014-Workflow-and-Orchestration.md` §1 now
   states the resolved half of this gap directly, and `workflow/worktree_scoping.hpp`
   (`decisions/ADR-032-workflow-executor-worktree-scoping.md`) is real code: `Executor::worktree_mode`
   declares a per-node `sharing_mode`, and `mint_executor_worktrees`/`resume_executor_worktrees` turn

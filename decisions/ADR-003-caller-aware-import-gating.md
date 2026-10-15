@@ -9,7 +9,7 @@
   design extends — §3 the meta-path finder, §3.3/§5.5.2/§7.7 the host-side-only-state lesson,
   §5.5.1 Layer 0's sweep, §8.9/§10.1 the finding this ADR exists to answer, §10.2 the two candidate
   resolutions it names without deciding between); `OpenQuestions.md` OQ-15 (the same finding as a
-  cross-cutting open question); 008-Sandbox-and-Isolation.md §1b (the two-layer mechanism; layer 3,
+  cross-cutting open question); rfcs/008-Sandbox-and-Isolation.md §1b (the two-layer mechanism; layer 3,
   the kernel jail, as the backstop this design does not remove the need for); 010-Python-Code-
   Interpreter.md §5 (package policy — this design's "caller-gated" set is a refinement of what a
   `preinstalled: numpy+pandas` policy resolves to, not a new policy shape).

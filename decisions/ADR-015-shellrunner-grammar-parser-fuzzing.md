@@ -2,7 +2,7 @@
 
 ## 1. The question
 
-`010-Python-Code-Interpreter.md` §9's promotion gate G8 names a claim ADR-001's own prove phase
+`rfcs/010-Python-Code-Interpreter.md` §9's promotion gate G8 names a claim ADR-001's own prove phase
 explicitly stopped short of: "continuous corpus-driven fuzzing (libFuzzer-class) against the grammar
 parser under ASan/UBSan, finds zero crashes/hangs/OOB reads over a declared minimum run; a
 deliberately reintroduced known-bug class is caught by the harness." ADR-001 §8.5-8.6 ran a real

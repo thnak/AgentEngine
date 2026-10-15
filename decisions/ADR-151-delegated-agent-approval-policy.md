@@ -11,8 +11,8 @@ reviewable before that sign-off.
 EXPRESSIBLE today with zero engine changes, but no reference implementation existed anywhere in this
 codebase). `decisions/ADR-070-host-configurable-responsibility-boundary.md` (owns the Delegated
 Decision Seam's five required properties, §4 below checks this ADR's additions against every one of
-them; §4a's "what must NOT become a seam" list, unaffected here). `007-Capability-and-Trust-Model.md`
-(I2/I3, untouched). `018-Identity-Authorization-and-Secrets.md` §2 (`on_behalf_of`/`delegation_depth`,
+them; §4a's "what must NOT become a seam" list, unaffected here). `rfcs/007-Capability-and-Trust-Model.md`
+(I2/I3, untouched). `rfcs/018-Identity-Authorization-and-Secrets.md` §2 (`on_behalf_of`/`delegation_depth`,
 `derive_on_behalf_of()`). `decisions/ADR-079-agent-spawn-runtime-and-capability-minting.md` (the
 `agent.spawn` mechanism this ADR adds two new opt-in fields to, `rt/agent_spawn.hpp`/`rt/agent_spawn_
 child_run.hpp`).

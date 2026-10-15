@@ -1,5 +1,5 @@
 #pragma once
-// Implements 018-Identity-Authorization-and-Secrets.md §4 as a capability-gated wrapper over a
+// Implements rfcs/018-Identity-Authorization-and-Secrets.md §4 as a capability-gated wrapper over a
 // zeroizing `Secret` buffer, non-copyable, no `std::string` conversion, `Env`/`File` adapters --
 // AgentEngine adds exactly one thing this lower-level seam correctly has no opinion about: a
 // `cap::Secret` capability check (007 §3) at the point of use -- plus AgentEngine's own `SecretRef`/

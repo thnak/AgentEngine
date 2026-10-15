@@ -1,5 +1,5 @@
 #pragma once
-// Core vocabulary for 025-Worktree-and-Virtual-Filesystem.md §2 -- a content-addressed object store
+// Core vocabulary for rfcs/025-Worktree-and-Virtual-Filesystem.md §2 -- a content-addressed object store
 // plus a mutable tree: Blob = immutable bytes addressed by digest, Tree = {name -> Blob|Tree}
 // addressed by digest, Ref = a mutable name -> Tree digest. See core/worktree.hpp (the umbrella
 // header this file is split out of) for the full architecture writeup, digest-algorithm rationale,

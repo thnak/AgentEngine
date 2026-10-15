@@ -1,4 +1,4 @@
-// Implements 009-Plugin-and-Extension-System.md §8 -- proves core/skill_source.hpp's
+// Implements rfcs/009-Plugin-and-Extension-System.md §8 -- proves core/skill_source.hpp's
 // `DiskSkillSource` against a REAL temp directory on the real host filesystem: the "load from disk"
 // half of the user's MAF-parity ask. A subdirectory with no SKILL.md is skipped, not an error; a
 // subdirectory WITH an invalid SKILL.md fails the whole load_skills() call (all-or-nothing).

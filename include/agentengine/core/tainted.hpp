@@ -1,5 +1,5 @@
 #pragma once
-// Implements 003-Message-and-Content-Model.md §2 and 007-Capability-and-Trust-Model.md §4 — the
+// Implements rfcs/003-Message-and-Content-Model.md §2 and rfcs/007-Capability-and-Trust-Model.md §4 — the
 // taint mechanism enforcing I3. Model-originated and externally-retrieved content is `Tainted<T>`,
 // transitively; no capability-granting or policy-deciding API may accept a tainted value. This is
 // a *type-level* marker, not a bit someone remembers to check: `Tainted<T>` has no implicit

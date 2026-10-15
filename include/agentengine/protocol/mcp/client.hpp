@@ -1,5 +1,5 @@
 #pragma once
-// Implements 011-MCP-Conformance.md §3 -- consuming an MCP server's tools (client role). Milestone 7
+// Implements rfcs/011-MCP-Conformance.md §3 -- consuming an MCP server's tools (client role). Milestone 7
 // Phase C3 (docs/planning/milestone-7-protocol-conformance-breakdown.md).
 //
 // Transport-agnostic, exactly like `McpServer` (server.hpp): this client is handed a "send a

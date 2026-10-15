@@ -91,7 +91,7 @@ Concretely:
 This is a **textbook ambient-authority grant**: the hook process's authority is "whatever the invoking
 user's OS account can do," not a capability set scoped to the event it's reacting to. It is exactly
 what AgentEngine's **I2** ("no ambient authority" — `AgentEngineSpecification.md` §4) exists to
-prevent, and exactly what `009-Plugin-and-Extension-System.md` §5 names explicitly as unavailable to
+prevent, and exactly what `rfcs/009-Plugin-and-Extension-System.md` §5 names explicitly as unavailable to
 any plugin world: *"Not available in any world: raw sockets, subprocess, nested sandbox creation,
 arbitrary filesystem, host environment, or any handle that outlives the invocation."*
 

@@ -9,10 +9,10 @@
   satisfying the `Runner` concept (`include/agentengine/sandbox/runner.hpp`) that backs the Shell
   mode (010 §1). Excludes `PythonRunner` (separate, concurrent ADR) and excludes 025's real
   `Worktree` implementation (not designed here — see §2.1).
-- **Related specs:** `010-Python-Code-Interpreter.md` §1a, §2, §3a, §10 Q6/Q7 · `006-Tool-and-
-  Function-Plane.md` §2, §3, §4 · `007-Capability-and-Trust-Model.md` · `008-Sandbox-and-
-  Isolation.md` §1b, §3 · `025-Worktree-and-Virtual-Filesystem.md` §5, §7 · `026-Agent-Facing-
-  Runtime-Surface.md` §3 (error surface) · `003-Message-and-Content-Model.md` §2 (taint).
+- **Related specs:** `rfcs/010-Python-Code-Interpreter.md` §1a, §2, §3a, §10 Q6/Q7 · `006-Tool-and-
+  Function-Plane.md` §2, §3, §4 · `rfcs/007-Capability-and-Trust-Model.md` · `008-Sandbox-and-
+  Isolation.md` §1b, §3 · `rfcs/025-Worktree-and-Virtual-Filesystem.md` §5, §7 · `026-Agent-Facing-
+  Runtime-Surface.md` §3 (error surface) · `rfcs/003-Message-and-Content-Model.md` §2 (taint).
 
 ## 1. The question
 

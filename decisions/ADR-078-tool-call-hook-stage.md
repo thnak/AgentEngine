@@ -127,7 +127,7 @@ the same shape `PendingCodeActAsk` already establishes), `HookDispatchAnswer`. `
 gained `enforce_hook_rewritten_tool_call_provenance()`. `core/interaction.hpp` gained
 `interaction_reason::hook_decision` (both directions of `rt/interaction_codec.hpp`'s JSON codec
 updated; `protocol/agui/projection.hpp`'s event-kind `switch` updated so an unmatched case doesn't
-silently fall through to the AG-UI projector; `001-Execution-Model.md` amended, since
+silently fall through to the AG-UI projector; `rfcs/001-Execution-Model.md` amended, since
 `interaction_reason` is named there normatively). `rt/agent_session.hpp` gained the hook-stage block in
 `run_rounds()`, `resolve_hook_decision()`, and `finish_hook_processed_round()`, plus
 `set_tool_call_hook()`/`tool_call_hook_` matching `set_approval_decider()`'s existing convention and
@@ -150,10 +150,10 @@ workflow agents' own self-report.
 "minimum real, coherent slice" the original design draft named (its own punch-list items 1-2).
 
 **Binds:**
-- `002-Agent-Model-and-Authoring.md` §5 — names the tool-call hook stage as the first real,
+- `rfcs/002-Agent-Model-and-Authoring.md` §5 — names the tool-call hook stage as the first real,
   gating, external-capable hook AgentEngine ships, distinct from `Middleware`'s own declared-but-
   narrower-scoped interception points.
-- `001-Execution-Model.md` §2 — `interaction_reason`'s value set amended to include `hook_decision`
+- `rfcs/001-Execution-Model.md` §2 — `interaction_reason`'s value set amended to include `hook_decision`
   (the enum's own comment is the authoritative amendment trail per this project's existing convention
   for this specific field, per the RFC's own now-added cross-reference).
 - `OpenQuestions.md` — resolves OQ-21's minimum slice; the question moves to Resolved with the

@@ -9,8 +9,8 @@ complete, 2026-08-24; awaiting project-owner Judged sign-off).
 closes — "`SandboxSpec::capabilities` remains entirely unenforced... Slice 3+ work, not started
 here"), `decisions/ADR-071-native-unsandboxed-process-execution-providers.md` (precedent for adding
 a purpose-built capability kind instead of overloading an existing one), `decisions/ADR-070-host-configurable-responsibility-boundary.md` (the Delegated Decision Seam shape this design's opt-in
-mirrors), `008-Sandbox-and-Isolation.md` §2 ("empty-by-default authority... nothing is reachable
-that the spec did not grant"), `007-Capability-and-Trust-Model.md` (`CapabilitySet`, I2/I3). Full
+mirrors), `rfcs/008-Sandbox-and-Isolation.md` §2 ("empty-by-default authority... nothing is reachable
+that the spec did not grant"), `rfcs/007-Capability-and-Trust-Model.md` (`CapabilitySet`, I2/I3). Full
 design record, kept as the uncompressed history including the pre-red-team draft and every finding:
 `docs/planning/sandbox-spec-capability-enforcement-design-draft.md`.
 

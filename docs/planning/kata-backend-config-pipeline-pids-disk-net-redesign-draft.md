@@ -16,7 +16,7 @@ to produce a live host-filesystem-corruption path), all fixed in this draft befo
 cross-chain `nft` quota, the loop-backed writable overlay) are sound; this was a fix-and-re-review,
 not a structural redesign.
 
-**Relates to:** `008-Sandbox-and-Isolation.md` §1b/§2, `decisions/ADR-090-kata-backend-pids-limit-investigated-and-deferred.md` (reopened by this draft — its own negative finding is superseded, not
+**Relates to:** `rfcs/008-Sandbox-and-Isolation.md` §1b/§2, `decisions/ADR-090-kata-backend-pids-limit-investigated-and-deferred.md` (reopened by this draft — its own negative finding is superseded, not
 wrong), `decisions/ADR-092-kata-backend-disk-net-bytes-investigated-and-deferred.md` (reopened,
 `net_bytes` moot-because-deny_all reasoning is stale since ADR-093/Slice 10; `disk_bytes`
 interpreter-mediation reasoning is correct but this draft proposes a **different**, backend-level

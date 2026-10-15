@@ -4,7 +4,7 @@
 proven (real code + new test file, full suite green).
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #15 (the finding this
-ADR closes). `005-Sessions-State-and-Memory.md` §2 (the acknowledgment-protocol contract this ADR
+ADR closes). `rfcs/005-Sessions-State-and-Memory.md` §2 (the acknowledgment-protocol contract this ADR
 implements — quoted directly in §2 below). `include/agentengine/rt/message_codec.hpp` (ADR-037 Phase
 3 Slice 2's already-proven Message↔JSON codec, reused here rather than re-invented — this ADR is a
 second real consumer of it, not its origin).

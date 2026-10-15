@@ -1513,7 +1513,7 @@ the option §8 never considered, so that goes first.
 
 **T0 — the cheapest option on the board was omitted from the design space entirely.** 011 §7's
 transport clause has a second sentence this ADR never engages: *"**stdio** remains for local servers,
-with `server/discover` usable as the backward-compatibility probe"* (`011-MCP-Conformance.md:227-228`,
+with `server/discover` usable as the backward-compatibility probe"* (`rfcs/011-MCP-Conformance.md:227-228`,
 verified). **An stdio server role needs no socket, no TLS, no HTTP framing, no fixture host, and no
 chunked-encoding parser** — the artifact R19 says the fixture must contain and which exists nowhere in
 this tree. It is the one inbound transport the project-owner direction does not forbid the engine from
@@ -1696,7 +1696,7 @@ prevent.
 
 **T0 overclaimed, and the overclaim is load-bearing.** T0 asserted that an engine-owned stdio server
 "yields an honestly engine-attributable conformance run." Checked: 011 §10's documented invocation is
-`conformance server --url http://localhost:3000/mcp` (`011-MCP-Conformance.md:327`), and this
+`conformance server --url http://localhost:3000/mcp` (`rfcs/011-MCP-Conformance.md:327`), and this
 project's own dated research tabulates that command against **"our HTTP server"**
 (`docs/research/2026-mcp-ecosystem.md:220`). **There is no evidence anywhere in this repo that
 `conformance server` can drive a stdio server.** T0's *insight* stands — stdio is engine-ownable,

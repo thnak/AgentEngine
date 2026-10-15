@@ -1,4 +1,4 @@
-// 008-Sandbox-and-Isolation.md SS7/SS9 (G1 parity / G2 containment) promotion-gate evidence for
+// rfcs/008-Sandbox-and-Isolation.md SS7/SS9 (G1 parity / G2 containment) promotion-gate evidence for
 // KataBackend -- kata_backend.hpp's own "SLICE 4" header section has the full story of what this
 // file covers and why, including a real, previously-undisclosed gap this same pass found and fixed
 // (wall_ms timeout only killed the HOST-side `ctr` CLI wrapper, not the guest process -- see the

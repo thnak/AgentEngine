@@ -1,5 +1,5 @@
 #pragma once
-// Implements 009-Plugin-and-Extension-System.md §8f -- the "generic skills" that ship IN this engine,
+// Implements rfcs/009-Plugin-and-Extension-System.md §8f -- the "generic skills" that ship IN this engine,
 // compiled into the binary, never as loose `SKILL.md` files a deployment's host filesystem must
 // happen to still contain at runtime. "These ship in this repo, not as a separate download" (§8f's
 // own words) is satisfied more directly by `InlineSkillSource` (skill_source.hpp) than by a

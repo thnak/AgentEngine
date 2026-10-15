@@ -1,5 +1,5 @@
 #pragma once
-// Implements 007-Capability-and-Trust-Model.md and I4 — the mandatory attribution parameter
+// Implements rfcs/007-Capability-and-Trust-Model.md and I4 — the mandatory attribution parameter
 // carried into every effect. Never an ambient thread-local (CONVENTIONS.md "Security rules").
 
 #include <chrono>

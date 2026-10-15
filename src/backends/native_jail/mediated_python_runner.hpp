@@ -1,7 +1,7 @@
 #pragma once
-// Implements 010-Python-Code-Interpreter.md §1a/§2/§3a/§9 G7 -- Milestone 3 Phase E2's `PythonRunner`
+// Implements rfcs/010-Python-Code-Interpreter.md §1a/§2/§3a/§9 G7 -- Milestone 3 Phase E2's `PythonRunner`
 // (embedded CPython under native-jail, satisfying `sandbox/runner.hpp`'s `Runner` concept), REBUILT
-// as an IPC CLIENT by the jailed-Python-worker design (008-Sandbox-and-Isolation.md §1b/§3,
+// as an IPC CLIENT by the jailed-Python-worker design (rfcs/008-Sandbox-and-Isolation.md §1b/§3,
 // 010 §2/§6 -- the ADR superseding native_jail_backend.hpp's former "Correction (2026-08-23)"
 // comment, which asserted the CPython-interpreter/host-filesystem-boundary gap was closed by a
 // mechanism that turned out never to touch NativeJailBackend at all; it did not close the gap, and

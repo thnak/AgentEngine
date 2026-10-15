@@ -136,4 +136,4 @@ Unlike `backgroundable-standingeffect-gap.md`, this was not passed over unnamed 
 building it or forgetting it. ADR-032 (worktree scoping for workflow executors) and 014's own RFC text
 both separately reconfirm the fence is still in place as of 2026-08-11/13
 (`decisions/ADR-032-workflow-executor-worktree-scoping.md:41-42`,
-`014-Workflow-and-Orchestration.md:44`) — nothing has silently drifted since M6 closed.
+`rfcs/014-Workflow-and-Orchestration.md:44`) — nothing has silently drifted since M6 closed.

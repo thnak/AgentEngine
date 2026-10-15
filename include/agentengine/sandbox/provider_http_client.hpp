@@ -1,5 +1,5 @@
 #pragma once
-// Implements 004-Model-Provider-Plane.md §1/§3 -- Milestone 5 Phase C
+// Implements rfcs/004-Model-Provider-Plane.md §1/§3 -- Milestone 5 Phase C
 // (docs/planning/milestone-5-providers-identity-secrets-breakdown.md): a general-purpose,
 // host-INITIATED HTTPS client for ChatClient backends (004 §3's OpenAI-compatible/Anthropic
 // backends, Phase D/E) to call a real inference API directly.

@@ -4,7 +4,7 @@ Audience: a consumer/deployer of AgentEngine (first-party or third-party) who wa
 own isolation technology into `SandboxProfile<P>` — a Kubernetes-native orchestrator like
 [`kubernetes-sigs/agent-sandbox`](https://github.com/kubernetes-sigs/agent-sandbox), a vendor
 sandbox API, gVisor, Firecracker+jailer, or anything else satisfying the contract below. This is
-the extension seam **008-Sandbox-and-Isolation.md** §2a names and
+the extension seam **rfcs/008-Sandbox-and-Isolation.md** §2a names and
 `docs/planning/sandbox-backend-registry-design-draft.md` §5 designs: "any type satisfying
 `SandboxBackend` works exactly the same way `native-jail` or `remote` does" — you are not editing
 AgentEngine's own code to add one.
@@ -102,7 +102,7 @@ struct ProfileTraits {
   assume `SandboxSpec::limits.memory_bytes` is respected because your `exec()` compiles against it.
 - **`ExecRequest`** (`language`, `source`, `preseeded_answers`) — `source` is a caller-trusted
   string (already resolved from whatever mediation layer sits above you — this concept does not
-  mediate `open()`/`socket()`/`subprocess` calls itself; that's `010-Python-Code-Interpreter.md`'s
+  mediate `open()`/`socket()`/`subprocess` calls itself; that's `rfcs/010-Python-Code-Interpreter.md`'s
   job, layered *above* your backend, e.g. `python_runner.hpp`/`shell_runner.hpp`).
   `preseeded_answers` is `agent.ask()` replay state (ADR-057 §9) — ignore it entirely if your
   backend never implements `agent.ask()`; that's a legitimate empty, not a gap.

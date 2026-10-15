@@ -1,5 +1,5 @@
 #pragma once
-// Implements 014-Workflow-and-Orchestration.md §1's named gap ("nothing states whether a workflow
+// Implements rfcs/014-Workflow-and-Orchestration.md §1's named gap ("nothing states whether a workflow
 // executor or a handoff target gets its own sub-worktree, inherits the caller's, or shares one, and
 // no code wires an executor to `create_sub_worktree` today") using 025-Worktree-and-Virtual-
 // Filesystem.md §3's already-real, already-tested `SubWorktree`/`sharing_mode` primitive.

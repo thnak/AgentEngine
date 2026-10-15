@@ -5,7 +5,7 @@
 Phase D/E's two backends — surveyed, still not built (both explicitly need a further design
 decision)", i.e. items 3 and 8 of
 `docs/research/2026-08-07-provider-metadata-and-sampling-params-survey.md`'s "Recommended design".
-**Amends:** 004-Model-Provider-Plane.md §2 (dated amendment, 2026-08-07).
+**Amends:** rfcs/004-Model-Provider-Plane.md §2 (dated amendment, 2026-08-07).
 **Relates to:** 003 §6 (the `Usage::cache_write_tokens` field-ordering lesson), ADR-016 (the live
 llama.cpp/OpenRouter reach these probes used).
 

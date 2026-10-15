@@ -850,7 +850,7 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   variadic shape; documented (not enforced) as expected to hold `core::ContextProvider`-satisfying
   types once 005's real logic lands (027 §3: `MemoryProvider` is superseded by `ContextProvider`).
   `Middleware<Ms...>` needed no `ae-naming-lint` suppression — unlike its five siblings, it already has
-  a canonical-name row in `027-Vocabulary-and-Naming.md` §3. `Stateless<N>` mirrors `MaxTurns<N>`'s
+  a canonical-name row in `rfcs/027-Vocabulary-and-Naming.md` §3. `Stateless<N>` mirrors `MaxTurns<N>`'s
   shape (`N` = pool size); confirmed via 002 §9 Q3 that "off by default" means the tag's *absence*, not
   a template default, since a default the metadata compiler (E2) inferred would silently apply
   Stateless authority-adjacent semantics to an agent that never asked for it.

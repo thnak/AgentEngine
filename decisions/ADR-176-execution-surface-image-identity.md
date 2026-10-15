@@ -24,7 +24,7 @@
   `tests/core/tools/test_image_provenance_shape.cpp` (new),
   `tests/compile_fail/image_provenance_unstampable_reply.cpp` (new) and its positive control (new),
   `bench/docker_image_digest_resolution.cpp` (new), `tests/CMakeLists.txt`, `.github/workflows/ci.yml`,
-  `027-Vocabulary-and-Naming.md`, `docs/research/2026-09-18-image-id-vs-descriptor-digest.md` (new).
+  `rfcs/027-Vocabulary-and-Naming.md`, `docs/research/2026-09-18-image-id-vs-descriptor-digest.md` (new).
 - **Why an ADR at all.** PR #83 argued none was needed: additive observability, no capability decision
   touched. That is true of the surface area (§2, last paragraph) and false of two things underneath it.
   First, the resolution sits on the per-command hot path — `SandboxRuntime::run()` calls `reset()` once
@@ -51,7 +51,7 @@ the bytes a command *produced*; nothing named the environment that produced them
 
 Issue #80 cites AeroCoWorker's RFC 015 §4c.6 (a per-piece manifest: node, tool version, sandbox image)
 as the consuming use case. **That RFC is not in this repository** — AgentEngine's own
-`015-Declarative-Agent-Format.md` has sections 1-8 and no §4c — so it is named here as the requester's
+`rfcs/015-Declarative-Agent-Format.md` has sections 1-8 and no §4c — so it is named here as the requester's
 stated motivation, not as an AgentEngine spec obligation this ADR discharges.
 
 Two questions, not one:
@@ -418,7 +418,7 @@ behaves differently. Recorded in the test file itself, not only here.
   `ce80d2e`.
 - Linux g++-14: both touched test targets **compile**.
 - `python tools/naming_lint.py`: OK — `ImageIdentifiedSurface` has a real row in
-  `027-Vocabulary-and-Naming.md`, not a suppression.
+  `rfcs/027-Vocabulary-and-Naming.md`, not a suppression.
 - ~~**Evidence gap: the containerd runtime checks were never executed.**~~ **Withdrawn — it was wrong
   about CI**, and is kept here because an overstated gap is as much a defect in an ADR as an overstated
   claim. The Linux CI leg pulls `alpine` and runs the three containerd tests under `sudo`; they pass, and

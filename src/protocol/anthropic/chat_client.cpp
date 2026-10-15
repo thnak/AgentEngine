@@ -1,4 +1,4 @@
-// Implements 004-Model-Provider-Plane.md §3 (the Anthropic Messages ChatClient backend); ADR-206 (#120 S6).
+// Implements rfcs/004-Model-Provider-Plane.md §3 (the Anthropic Messages ChatClient backend); ADR-206 (#120 S6).
 // The non-template bodies of include/agentengine/protocol/anthropic/chat_client.hpp, moved verbatim out of the
 // header so they are compiled once here instead of in every file that includes it. The header keeps every
 // declaration and comment, the small helpers, and the AnthropicChatClient<Store> template; the design and the

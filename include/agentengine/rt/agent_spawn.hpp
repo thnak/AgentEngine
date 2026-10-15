@@ -1,7 +1,7 @@
 #pragma once
 // (Also implements ADR-193: delegated input provenance, lineage, usage charged upward, per-target settings.)
 // Implements docs/planning/agent-spawn-runtime-design-draft.md item 1 (§2, §4.1) --
-// 026-Agent-Facing-Runtime-Surface.md §5's `agent.spawn` -- OpenQuestions.md OQ-14, named the
+// rfcs/026-Agent-Facing-Runtime-Surface.md §5's `agent.spawn` -- OpenQuestions.md OQ-14, named the
 // project's own "sharpest case". This is the REAL, wired, end-to-end call path: a real
 // `Tool<>`-conforming surface a running agent can actually invoke, orchestrating already-landed
 // items 2 (rt/agent_spawn_child_run.hpp's run_child_agent_session), 3

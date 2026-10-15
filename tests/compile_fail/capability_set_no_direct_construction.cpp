@@ -1,4 +1,4 @@
-// This file MUST NOT compile (007-Capability-and-Trust-Model.md §9 G1 / decisions/
+// This file MUST NOT compile (rfcs/007-Capability-and-Trust-Model.md §9 G1 / decisions/
 // ADR-009-capability-set-enforcement-mechanism.md's C6 claim, miniature) — see
 // tests/compile_fail/CMakeLists.txt's compile-fail gate. `CapabilitySet` deliberately has no public
 // constructor, aggregate-init path, or any other way to smuggle a capability list in besides

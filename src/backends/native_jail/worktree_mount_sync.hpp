@@ -1,5 +1,5 @@
 #pragma once
-// Implements 025-Worktree-and-Virtual-Filesystem.md §5/§7 -- Milestone 3 Phase F1
+// Implements rfcs/025-Worktree-and-Virtual-Filesystem.md §5/§7 -- Milestone 3 Phase F1
 // (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md). The bridge
 // core/worktree_mount_fs.hpp's own header names as still missing: "syncing a Tree onto mount_root...
 // that materialization/sync mechanism is a Phase [F1] dependency of PythonRunner/ShellRunner, not

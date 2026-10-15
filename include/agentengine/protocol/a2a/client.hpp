@@ -1,5 +1,5 @@
 #pragma once
-// Implements 012-A2A-Conformance.md §3/§4a -- consuming a remote A2A agent (client role). Milestone 7
+// Implements rfcs/012-A2A-Conformance.md §3/§4a -- consuming a remote A2A agent (client role). Milestone 7
 // Phase D4 (docs/planning/milestone-7-protocol-conformance-breakdown.md).
 //
 // Transport-agnostic, exactly like `A2aServer` (server.hpp) and `McpClient` (protocol/mcp/client.hpp):

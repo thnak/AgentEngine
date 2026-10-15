@@ -4,8 +4,8 @@
 **Closes:** the Milestone 5 Phase J1 residual, "`AgentSession<ChatClientT>` cannot host a
 non-default-constructible `ChatClient` conformer"
 (`docs/planning/milestone-5-providers-identity-secrets-breakdown.md`).
-**Relates to:** 001-Execution-Model.md §3 (the turn loop), 004-Model-Provider-Plane.md §1/§3,
-018-Identity-Authorization-and-Secrets.md §4, ADR-016 (the plaintext provider transport this ADR's
+**Relates to:** rfcs/001-Execution-Model.md §3 (the turn loop), rfcs/004-Model-Provider-Plane.md §1/§3,
+rfcs/018-Identity-Authorization-and-Secrets.md §4, ADR-016 (the plaintext provider transport this ADR's
 proof uses).
 
 ## 1. Context

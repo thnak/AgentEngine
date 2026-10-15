@@ -1,6 +1,6 @@
 #pragma once
 // Also: ADR-191/192's delivery-mark guard (`granted_deliveries`, `keep_only_granted_deliveries`).
-// Implements 002-Agent-Model-and-Authoring.md §5's `Middleware<Ms...>` -- an ordered chain wrapping
+// Implements rfcs/002-Agent-Model-and-Authoring.md §5's `Middleware<Ms...>` -- an ordered chain wrapping
 // the model call, one of the four declared interception points ("run", "turn", "model call", "tool
 // call"). This file moves the MODEL-CALL point from "declared CRTP policy tag with no
 // chain-composition logic or consumer" (§5's own prior text) to real, tested code. ADR-033

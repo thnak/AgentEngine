@@ -15,20 +15,20 @@ this design does not change), `decisions/ADR-071-native-unsandboxed-process-exec
 (a structurally distinct, deliberately weaker Tier-2 backend this ADR's worker process is not a
 variant of — see §2), `decisions/ADR-014-worktree-mount-path-canonicalization.md` (the
 `open_within_mount_root` mount-boundary check this design's Slice 2 residual, not yet built, would
-need), `008-Sandbox-and-Isolation.md` §1b/§3 (the three-layer interpreter isolation model and the
+need), `rfcs/008-Sandbox-and-Isolation.md` §1b/§3 (the three-layer interpreter isolation model and the
 "locked to `native-jail` permanently" requirement this ADR closes the layer-3 gap against),
-`010-Python-Code-Interpreter.md` §2/§6 (the T3 trust-tier classification `execute_code` runs at),
+`rfcs/010-Python-Code-Interpreter.md` §2/§6 (the T3 trust-tier classification `execute_code` runs at),
 `docs/planning/2026-08-22-component-role-audit-tracker.md` Findings Q and R (the audit that found
 and traced this gap — the primary source record for this ADR's design/red-team phase; see §2's
 disclosure on what is and is not preserved from that pass).
 
 ## 1. The question
 
-**Stated so it has a wrong answer:** `008-Sandbox-and-Isolation.md` §1b states plainly that "relying
+**Stated so it has a wrong answer:** `rfcs/008-Sandbox-and-Isolation.md` §1b states plainly that "relying
 solely on interpreter mediation has no answer for a bug in the mediation itself" and names a
 kernel-level jail as the mandatory third layer for the code interpreter; §3's profile table defines
 `native-jail`'s boundary as "Kernel-enforced... **plus** mediated at the point of use," and states
-the interpreter "is locked to `native-jail` permanently." `010-Python-Code-Interpreter.md` §6 states
+the interpreter "is locked to `native-jail` permanently." `rfcs/010-Python-Code-Interpreter.md` §6 states
 code executed via `execute_code` runs at the sandbox's trust tier, **T3** — the least-trusted tier,
 by the RFC's own vocabulary exactly what `none`-profile in-process execution is defined to refuse.
 

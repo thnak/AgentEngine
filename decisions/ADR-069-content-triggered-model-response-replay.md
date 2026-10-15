@@ -86,7 +86,7 @@ Same three-lens workflow review as ADR-066/067/068. Four findings, no FATAL, thr
    call sites before this ships.
 2. **Must-fix**: a citation error — the design attributed `Retry<Policy>`'s "transient-failure retry
    shape" framing to "027 §4" (which contains no such table); corrected to
-   `002-Agent-Model-and-Authoring.md` §3, the real location.
+   `rfcs/002-Agent-Model-and-Authoring.md` §3, the real location.
 3. **Must-fix**: the header claimed flat independence from all three other drafts in this batch, while
    the design's own body asked the review workflow to confirm non-overlap with the turn-middleware
    design — an unresolved question the header's claim didn't reflect. Corrected: independence from
@@ -169,7 +169,7 @@ non-streaming calls only. It binds:
   composes OVER a `ModelCallGatewayLike` (typically a `MiddlewareModelCallGateway<...>`), rather than
   extending `ModelCallContext`/`MiddlewareModelCallGateway` itself — a narrower binding than
   originally drafted (§5), leaving ADR-033/036's own shipped, Judged code completely untouched.
-- Does NOT bind `002-Agent-Model-and-Authoring.md` §3's `Retry<Policy>` — explicitly a distinct
+- Does NOT bind `rfcs/002-Agent-Model-and-Authoring.md` §3's `Retry<Policy>` — explicitly a distinct
   mechanism (content-triggered, not transient-failure-triggered), not an extension of it.
 - Does NOT reuse `MiddlewareTraceEvent`/`MiddlewareTraceHook` verbatim as originally drafted — a
   separate `ContentReplayAttemptEvent`/`ContentReplayTraceHook` pair was built instead, because this

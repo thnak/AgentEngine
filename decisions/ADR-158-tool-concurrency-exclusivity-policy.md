@@ -20,7 +20,7 @@ match; GitHub issue #41's own title/body still say "ADR-157" (issues aren't renu
 are — see the issue's own follow-up comment noting the change).
 
 **Relates to:** GitHub issue #41 (files this exact gap, filed after this draft's first version —
-see §0). `006-Tool-and-Function-Plane.md` §5 (Concurrency — the binary "batch is parallel only
+see §0). `rfcs/006-Tool-and-Function-Plane.md` §5 (Concurrency — the binary "batch is parallel only
 when every call is `Parallelizable`" rule) and §8 G4 (parallel-batch determinism, itself still deferred
 — `include/agentengine/core/tool.hpp`'s own comment on `Parallelizable`: *"M2 proves a single native
 tool call, never a parallel batch... this carries no pipeline logic yet"*). `include/agentengine/core/
@@ -28,7 +28,7 @@ tool_pipeline.hpp` (`PolicyDecider`, `policy_decision`, `ToolCallRequest`). `dec
 configurable-responsibility-boundary.md` (the Delegated Decision Seam `PolicyDecider` belongs to, and
 its five required properties any new seam here must also satisfy — property 4 in particular, §3 below).
 `decisions/ADR-151-delegated-agent-approval-policy.md` (the only existing `PolicyDecider` reference
-implementation). `007-Capability-and-Trust-Model.md` §3 (`Background<max_concurrent>`, the one
+implementation). `rfcs/007-Capability-and-Trust-Model.md` §3 (`Background<max_concurrent>`, the one
 concurrency ceiling that already exists). `CONVENTIONS.md`'s policy-idiom rule ("no RTTI, no
 reflection, no `virtual` for policy on the hot path... type erasure is permitted only at declared
 seams... never inside a turn's hot loop") — binding on §4's design below. `include/agentengine/trust/capability.hpp`

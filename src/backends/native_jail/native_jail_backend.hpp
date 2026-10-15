@@ -1,6 +1,6 @@
 #pragma once
 // Implements agentengine::SandboxBackend (sandbox/sandbox.hpp) for the `native-jail` profile,
-// Windows half (008-Sandbox-and-Isolation.md §1b, §2, §3) -- Milestone 2 Phase C task C2
+// Windows half (rfcs/008-Sandbox-and-Isolation.md §1b, §2, §3) -- Milestone 2 Phase C task C2
 // (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md). Written fresh against 008
 // as currently Reviewed (per project-owner direction, 2026-08-05), carrying forward
 // decisions/ADR-004-appcontainer-native-jail-windows-backend.md's *findings*, not its unbuilt spike
@@ -62,7 +62,7 @@
 // executable path plus arguments) that the CALLER -- test code today, a closed Runner/Tool
 // registry from M3 onward (008 §1b layer 2, 010 §1a) -- is trusted to have already resolved and
 // mediated. This backend does not itself interpret `language`; it exists on ExecRequest for forward
-// compatibility with the Runner-routed shape 010 will need. 008-Sandbox-and-Isolation.md §2's
+// compatibility with the Runner-routed shape 010 will need. rfcs/008-Sandbox-and-Isolation.md §2's
 // "`ExecRequest` mediation is the caller's responsibility, not the backend's" clause is the
 // canonical statement of why (docs/planning/sandbox-exec-request-capability-mediation-design-
 // draft.md investigated and confirmed this is correct-by-design, not unfinished, for every backend
@@ -116,7 +116,7 @@
 
 namespace agentengine::native_jail {
 
-// Jailed-Python-worker design (008-Sandbox-and-Isolation.md §1b/§3, 010-Python-Code-Interpreter.md
+// Jailed-Python-worker design (rfcs/008-Sandbox-and-Isolation.md §1b/§3, rfcs/010-Python-Code-Interpreter.md
 // §2/§6 -- decisions/ADR-081-jailed-python-worker-process-slice-1.md is the ADR superseding this
 // header's former "Correction (2026-08-23)" comment, which claimed the CPython-interpreter/host-
 // filesystem-boundary gap was closed "by an entirely different, now-permanent mechanism" without any

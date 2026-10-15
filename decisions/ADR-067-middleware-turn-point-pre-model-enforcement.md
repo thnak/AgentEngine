@@ -23,8 +23,8 @@ this ADR's own test file failing in exactly that way. Fixed: `TurnContext` now o
 `ToolSurfaceView` (`tool_surface`), shared by every middleware in the chain and finalized exactly once
 by `run_turn_middleware_chain()` itself.
 
-**Relates to:** `002-Agent-Model-and-Authoring.md` §5 (`Middleware`'s declared, unwired `turn` point),
-`017-Safety-and-Content-Governance.md` §4 (`ae:filter`'s declared, unimplemented `pre_model` point —
+**Relates to:** `rfcs/002-Agent-Model-and-Authoring.md` §5 (`Middleware`'s declared, unwired `turn` point),
+`rfcs/017-Safety-and-Content-Governance.md` §4 (`ae:filter`'s declared, unimplemented `pre_model` point —
 this ADR closes it), `decisions/ADR-033-middleware-model-call-chain.md` (the composition shape and
 the `ToolCall`-provenance-laundering precedent this design's own FATAL finding mirrors and fixes the
 same way), `decisions/ADR-042-context-instructions-taint-channel.md` (the taint-merge safety argument
@@ -188,13 +188,13 @@ approval machinery, out of scope here (§7).
 **Design B, as corrected during implementation (§5), is adopted and implemented**, scoped narrowly:
 the `turn`/`pre_model` point only, tool-surface enforcement via `ToolSurfaceView`, taint-safe
 compaction via `redact_subspan()`, a single forward pass (not the full before/after onion). It binds:
-- `002-Agent-Model-and-Authoring.md` §5 — the `turn` interception point moves from declared-but-
+- `rfcs/002-Agent-Model-and-Authoring.md` §5 — the `turn` interception point moves from declared-but-
   unwired to specified, implemented, AND wired into `rt::AgentSession` for real (2026-08-20, see §7's
   residual-risk update below): `AgentSession::set_turn_middleware_hook()` runs the chain once per
   round, right before that round's `ChatRequest` is built.
-- `017-Safety-and-Content-Governance.md` §4 — closes the `pre_model` filter point's `allow`/
+- `rfcs/017-Safety-and-Content-Governance.md` §4 — closes the `pre_model` filter point's `allow`/
   `annotate`/`redact`/`deny` verdicts; `require_approval` is explicitly not modeled (see residuals).
-- `005-Sessions-State-and-Memory.md` §8 Q3 — re-resolved narrower: a `turn`-level `Compactor` may
+- `rfcs/005-Sessions-State-and-Memory.md` §8 Q3 — re-resolved narrower: a `turn`-level `Compactor` may
   shape what one turn's model call sees, but never rewrites `history[]` — proven both structurally
   (the type signature) and behaviorally (§5/§6); 005 §4's own `history[]` compaction is untouched.
 - Depends on `decisions/ADR-066-context-provider-attribution-provenance.md` (Proposed).

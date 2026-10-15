@@ -84,7 +84,7 @@ real cluster substrate built from scratch, not "stand up a harness against Quark
 a materially larger scope than this note originally assumed. Left named as a real, larger gap for
 whoever scopes M9, not silently narrowed back to the original estimate.
 
-**Resolved here:** `020-Configuration-and-Hosting.md` §3a's hosting-shape table names a **Cluster**
+**Resolved here:** `rfcs/020-Configuration-and-Hosting.md` §3a's hosting-shape table names a **Cluster**
 hosting shape explicitly — "N nodes over Quark's cluster (010/021/026) with sessions placed by
 HRW/VirtualBins" (historical: 020 itself now marks this row as design intent only, not currently
 buildable post-ADR-037) — as one of five shapes 020 covers, and 020 is an **M9** RFC. A ≥3-node

@@ -1,5 +1,5 @@
 #pragma once
-// A third candidate in 009-Plugin-and-Extension-System.md §7's "Document extraction" catalog row --
+// A third candidate in rfcs/009-Plugin-and-Extension-System.md §7's "Document extraction" catalog row --
 // PDF document-information-dictionary metadata (Title/Author/Subject/Keywords/Creator/Producer/
 // CreationDate/ModDate, ISO 32000-1:2008 §14.3.3) plus the total page count, reusing the exact same
 // sandboxed `agentengine_pdf_worker` process `extract_pdf_text.hpp` already spawns (its own `meta`

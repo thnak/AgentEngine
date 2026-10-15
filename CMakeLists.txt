@@ -940,7 +940,7 @@ if(WIN32)
 endif()
 
 # ---- Worktree content-addressed object store (src/core/) ---------------------------------------
-# Implements 025-Worktree-and-Virtual-Filesystem.md §2, Milestone 3 Phase A1
+# Implements rfcs/025-Worktree-and-Virtual-Filesystem.md §2, Milestone 3 Phase A1
 # (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md): SHA-256 content digests
 # for Blob/Tree objects via Windows CNG/BCrypt, a system API -- not a third-party dependency, same
 # posture as ADR-005's capability_token.cpp. The Linux SHA-256 provider (worktree_digest_posix.cpp,

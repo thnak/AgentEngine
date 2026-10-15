@@ -1,5 +1,5 @@
 #pragma once
-// Implements 001-Execution-Model.md §2 — `Interaction`, the one internal correlation identity
+// Implements rfcs/001-Execution-Model.md §2 — `Interaction`, the one internal correlation identity
 // behind `InputRequired`/`AuthRequired` ("the run itself only ever knows `Interaction` records,
 // never a protocol's id shape"). Milestone 4 Phase E1
 // (docs/planning/milestone-4-sessions-durability-memory-breakdown.md, decision 2): 001 §2 already

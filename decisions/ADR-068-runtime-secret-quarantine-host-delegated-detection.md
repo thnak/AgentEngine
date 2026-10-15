@@ -20,8 +20,8 @@ ADR's `SecretDetector`/`QuarantineAuditHook` shape (host-injected, `nullptr`-by-
 barred from ever reaching a capability-granting position) as the prior-art precedent for its own
 formally-named "Delegated Decision Seam" pattern.
 
-**Relates to:** `018-Identity-Authorization-and-Secrets.md` §4 (`SecretRef`/`SecretStore`/
-`SecretLease`, extended here with a mint-at-runtime path), `005-Sessions-State-and-Memory.md` §1
+**Relates to:** `rfcs/018-Identity-Authorization-and-Secrets.md` §4 (`SecretRef`/`SecretStore`/
+`SecretLease`, extended here with a mint-at-runtime path), `rfcs/005-Sessions-State-and-Memory.md` §1
 (redaction as a legal, audited history-rewrite category — the first real consumer of that category
 triggered by the agent itself), `decisions/ADR-033-middleware-model-call-chain.md`
 (`MiddlewareTraceHook`, the host-injected-callback idiom this design's audit fix reuses). Design
@@ -142,10 +142,10 @@ build --target test_secret_quarantine --config Debug`, `ctest --test-dir build -
 ## 7. The decision
 
 **Design B, as corrected during implementation (§5), is adopted and implemented.** It binds:
-- `018-Identity-Authorization-and-Secrets.md` §4 — extends `SecretStore`'s vocabulary with a
+- `rfcs/018-Identity-Authorization-and-Secrets.md` §4 — extends `SecretStore`'s vocabulary with a
   mint-at-runtime path (`QuarantineSecretStore`), never replacing the existing declare-then-resolve
   path.
-- `005-Sessions-State-and-Memory.md` §1 — the `quarantine_secret` tool is the first real, agent-
+- `rfcs/005-Sessions-State-and-Memory.md` §1 — the `quarantine_secret` tool is the first real, agent-
   triggered consumer of the redaction history-rewrite category already named there.
 - Does NOT bind 017 §4 — detection is explicitly its own seam, not a consumer of `ae:filter`'s
   unimplemented points.

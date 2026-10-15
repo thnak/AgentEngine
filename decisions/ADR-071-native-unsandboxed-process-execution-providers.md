@@ -374,7 +374,7 @@ residuals.
   additionally requires every composed `Ps::name` be pairwise distinct (§5g) — a host cannot compose
   two providers of the same native-execution family into one tree, mandatory so an LLM is never
   handed two functionally-identical tools.
-- `CLAUDE.md`'s Python locked-decision bullet and `008-Sandbox-and-Isolation.md` §1 — **amended**,
+- `CLAUDE.md`'s Python locked-decision bullet and `rfcs/008-Sandbox-and-Isolation.md` §1 — **amended**,
   narrowly, following `decisions/ADR-037-remove-quark-as-core-runtime.md`'s own precedent for
   editing a locked decision (replace the bullet with a new locked statement + a `(Historical: ...)`
   clause naming this ADR + a re-lock sentence): the "embedded CPython, never a second runtime" rule
@@ -382,7 +382,7 @@ residuals.
   *code interpreter*), to `MediatedPythonRunner`'s mediated, in-process embedding — `NativePythonProvider`
   is a distinct, explicitly-scoped, host-opt-in capability for a different job (native host-installed-
   package automation, not the CodeAct interpreter), not a second interpreter for the same one. See
-  the companion `CLAUDE.md`/`008-Sandbox-and-Isolation.md` edits landed alongside this ADR.
+  the companion `CLAUDE.md`/`rfcs/008-Sandbox-and-Isolation.md` edits landed alongside this ADR.
 
 **Explicitly out of scope, named rather than left implied:**
 - A POSIX (`posix_spawn`) implementation of `native_process_spawn`/`native_worktree_bridge` —

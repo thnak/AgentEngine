@@ -1,6 +1,6 @@
 // ADR-037 port of test_agui_projection.cpp onto agentengine::rt::AgentSession (include/agentengine/
 // rt/agent_session.hpp) -- the Quark-actor-free replacement for agentengine::AgentSession (core/
-// agent_session.hpp). Milestone 7 Phase E2 (013-UI-and-Streaming-Surfaces.md §2.1/§2.2,
+// agent_session.hpp). Milestone 7 Phase E2 (rfcs/013-UI-and-Streaming-Surfaces.md §2.1/§2.2,
 // docs/planning/milestone-7-protocol-conformance-breakdown.md). Proves `RunEventProjector`
 // (protocol/agui/projection.hpp) both end to end against a REAL `rt::AgentSession` turn loop (via
 // `enable_event_stream()`, real since Phase A, ported to rt:: by ADR-037 Phase 2 Slice 1) for the

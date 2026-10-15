@@ -1,4 +1,4 @@
-// Implements 004-Model-Provider-Plane.md §2's 2026-08-07 amendment; decisions/ADR-020-portable-
+// Implements rfcs/004-Model-Provider-Plane.md §2's 2026-08-07 amendment; decisions/ADR-020-portable-
 // reasoning-effort.md. Proves the amendment's central claim: `ChatRequest::reasoning_effort` is ONE
 // portable ordinal level that each backend maps down to its OWN native mechanism -- not a vendor
 // field passed through.

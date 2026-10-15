@@ -40,7 +40,7 @@ agents reading the real source, not from memory):
   anywhere in `include/`, `src/`, `tests/`, `tools/`; no CMake flag enables it; Quark's own
   `CMakeLists.txt` compiles only `src/version.cpp`, so the cluster/net headers are unused template
   surface with zero compiled object code. AgentEngine's own RFCs (`AgentEngineSpecification.md:236`,
-  `020-Configuration-and-Hosting.md` §"Cluster concerns") name this as **planned, deferred** future
+  `rfcs/020-Configuration-and-Hosting.md` §"Cluster concerns") name this as **planned, deferred** future
   work (Milestone 7+), not accidental baggage.
 - **Core coupling audit**: what IS deep is the LOCAL, single-process actor/concurrency substrate.
   `AgentSession` and `WorkflowSupervisor`/`FunctionExecutor` are not callers of Quark — they ARE

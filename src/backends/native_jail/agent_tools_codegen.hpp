@@ -1,5 +1,5 @@
 #pragma once
-// Implements 026-Agent-Facing-Runtime-Surface.md §4/§5 -- Milestone 3 Phase G1. `agent.tools` as
+// Implements rfcs/026-Agent-Facing-Runtime-Surface.md §4/§5 -- Milestone 3 Phase G1. `agent.tools` as
 // ORDINARY Python callables (`tools.web_search(query="...", max_results=5)`), not the raw
 // `call_tool("name", '{"query":"..."}')` bridge F2 built (010 §6): "Generated from the same tool
 // metadata as everything else (006 §1)... so they cannot drift" (026 §4) -- made literal here by

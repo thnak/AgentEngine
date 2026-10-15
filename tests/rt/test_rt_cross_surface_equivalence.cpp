@@ -1,6 +1,6 @@
 // ADR-037 port of test_cross_surface_equivalence.cpp onto agentengine::rt::AgentSession (include/
 // agentengine/rt/agent_session.hpp) -- the Quark-actor-free replacement for agentengine::AgentSession
-// (core/agent_session.hpp). Milestone 7 Phase E4 (013-UI-and-Streaming-Surfaces.md §6 G3: "the same
+// (core/agent_session.hpp). Milestone 7 Phase E4 (rfcs/013-UI-and-Streaming-Surfaces.md §6 G3: "the same
 // run projects to AG-UI and A2A streaming with equivalent content, proven by a cross-surface
 // comparison test", docs/planning/milestone-7-protocol-conformance-breakdown.md). Drives ONE real
 // `rt::AgentSession` run (via `enable_event_stream()`, real since Phase A, ported to rt:: by ADR-037

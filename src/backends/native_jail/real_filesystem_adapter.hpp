@@ -1,6 +1,6 @@
 #pragma once
 // Implements ADR-001-shellrunner-grammar-and-dispatch.md §2.1 / §2.5.5, with the FULL path-escape
-// list §2.5.5 requires (a floor that must match or exceed 025-Worktree-and-Virtual-Filesystem.md §5
+// list §2.5.5 requires (a floor that must match or exceed rfcs/025-Worktree-and-Virtual-Filesystem.md §5
 // verbatim): `..` traversal, absolute-path redirection, symlink/junction/reparse-point escape,
 // Alternate Data Streams, UNC paths, extended-length `\\?\` prefixes, reserved device names, and
 // case-fold-consistent comparison between the capability-scope check and the actual I/O call.

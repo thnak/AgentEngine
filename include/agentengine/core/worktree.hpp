@@ -1,5 +1,5 @@
 #pragma once
-// Implements 025-Worktree-and-Virtual-Filesystem.md §2 -- a content-addressed object store plus a
+// Implements rfcs/025-Worktree-and-Virtual-Filesystem.md §2 -- a content-addressed object store plus a
 // mutable tree: Blob = immutable bytes addressed by digest, Tree = {name -> Blob|Tree} addressed by
 // digest, Ref = a mutable name -> Tree digest. This header is the umbrella entry point: it pulls in
 // the full worktree vocabulary (object store, Ref persistence, sub-worktrees, three-way merge,

@@ -5,7 +5,7 @@
 `sandbox/provider_http_client.hpp`'s SSE read loop and a real Phase D/E backend's own
 `chat()`/`chat_stream()` bodies", and the Phase C/D2 gap named in both backends' file banners
 ("`perform_provider_https_exchange` has no incremental/chunked-transfer read loop yet").
-**Relates to:** 004-Model-Provider-Plane.md §7 G3, ADR-011 (the egress read loop), ADR-013 (TLS),
+**Relates to:** rfcs/004-Model-Provider-Plane.md §7 G3, ADR-011 (the egress read loop), ADR-013 (TLS),
 ADR-016 (the plaintext transport), ADR-017 (consumer cancellation).
 
 ## 1. Context

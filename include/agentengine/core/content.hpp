@@ -1,6 +1,6 @@
 #pragma once
 // ContentItem also carries ADR-191's `approval` and ADR-192's `deliver_as_instructions` delivery marks.
-// Implements 003-Message-and-Content-Model.md — one content model shared by the agent core, every
+// Implements rfcs/003-Message-and-Content-Model.md — one content model shared by the agent core, every
 // ChatClient, and every protocol surface. Terminology (027 §7): this is `Content`, not `Part` —
 // `Part` is A2A's word and stays only in `agentengine::a2a` mapping code.
 

@@ -1,4 +1,4 @@
-// Proof for 025-Worktree-and-Virtual-Filesystem.md §3/§10 Q2's `shared`-mode staleness note,
+// Proof for rfcs/025-Worktree-and-Virtual-Filesystem.md §3/§10 Q2's `shared`-mode staleness note,
 // Milestone 3 Phase B3 (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md) --
 // `diff_trees`/`summarize_diff`/`check_shared_staleness` (core/worktree.hpp) proven per the RFC's
 // G7 gate: "A `shared` sub-worktree that changed since an agent's last read surfaces the staleness

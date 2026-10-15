@@ -1,5 +1,5 @@
 #pragma once
-// Implements 013-UI-and-Streaming-Surfaces.md §2's AG-UI event vocabulary (exact identifiers cited
+// Implements rfcs/013-UI-and-Streaming-Surfaces.md §2's AG-UI event vocabulary (exact identifiers cited
 // from docs/research/2026-a2a-and-agui-detail.md Part B, checked against `@ag-ui/core` 0.0.57,
 // 2026-07-31). Milestone 7 Phase E1 (docs/planning/milestone-7-protocol-conformance-breakdown.md).
 //

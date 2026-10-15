@@ -1,5 +1,5 @@
 #pragma once
-// Implements 013-UI-and-Streaming-Surfaces.md §4's Server-Sent Events framing for AG-UI
+// Implements rfcs/013-UI-and-Streaming-Surfaces.md §4's Server-Sent Events framing for AG-UI
 // (docs/research/2026-a2a-and-agui-detail.md §B.3: "SSE (default): text/event-stream, one
 // `data: <JSON BaseEvent>` frame per event"). Milestone 7 Phase E3
 // (docs/planning/milestone-7-protocol-conformance-breakdown.md).

@@ -1,4 +1,4 @@
-// Milestone 7 Phase D2 (012-A2A-Conformance.md §2.1, docs/research/2026-a2a-and-agui-detail.md §A.3,
+// Milestone 7 Phase D2 (rfcs/012-A2A-Conformance.md §2.1, docs/research/2026-a2a-and-agui-detail.md §A.3,
 // docs/planning/milestone-7-protocol-conformance-breakdown.md). Proves `to_agent_card()`
 // (protocol/a2a/agent_card.hpp) generates an Agent Card from a REAL, `register_agent<A>()`-compiled
 // `AgentMetadata` -- skills derived one-per-tool from the real `ToolTable`, never hand-maintained --

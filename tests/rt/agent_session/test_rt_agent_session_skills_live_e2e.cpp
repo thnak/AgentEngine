@@ -1,4 +1,4 @@
-// Implements 009-Plugin-and-Extension-System.md §8, live: a real, skills-composed `AgentSession`
+// Implements rfcs/009-Plugin-and-Extension-System.md §8, live: a real, skills-composed `AgentSession`
 // (`ComposedContextProvider<BuiltinSkillsProvider, ToolDeclaringHistoryProvider>`) driven through a
 // two-turn conversation against a REAL remote model over OpenRouter -- a plain greeting, then a
 // request that only makes sense if the model actually read the mounted `using-the-code-interpreter`

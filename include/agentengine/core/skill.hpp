@@ -1,5 +1,5 @@
 #pragma once
-// Implements 009-Plugin-and-Extension-System.md §8a-8b -- the SKILL.md interchange format (YAML
+// Implements rfcs/009-Plugin-and-Extension-System.md §8a-8b -- the SKILL.md interchange format (YAML
 // frontmatter + Markdown body, agentskills.io/specification) as a value type plus a parser. Pure
 // text-in/value-out: no worktree/VFS dependency, no mount, no source (disk/inline) concept -- those
 // are `skill_source.hpp`/`skill_provider.hpp`, layered on top of this file, never the other way

@@ -17,7 +17,7 @@ path. Details below.
 
 ---
 
-## 1. Two extension-point shapes (027-Vocabulary-and-Naming.md)
+## 1. Two extension-point shapes (rfcs/027-Vocabulary-and-Naming.md)
 
 | Shape | Term | What it does | Where |
 |---|---|---|---|

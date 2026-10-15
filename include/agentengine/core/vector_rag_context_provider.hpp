@@ -83,7 +83,7 @@
 
 namespace agentengine {
 
-// New in this pass (ADR-063 §2.1), not yet added to 027-Vocabulary-and-Naming.md §2-4's
+// New in this pass (ADR-063 §2.1), not yet added to rfcs/027-Vocabulary-and-Naming.md §2-4's
 // canonical-name tables; mirrors memory_provider.hpp's own RecallArgs shape under a distinct name
 // so the two tools' JSON schemas never collide.
 // ae-naming-lint: allow RagRecallArgs
@@ -92,7 +92,7 @@ struct RagRecallArgs {
 };
 AE_JSON_SCHEMA(RagRecallArgs, query)
 
-// New in this pass (ADR-063 §2.1), not yet added to 027-Vocabulary-and-Naming.md §2-4's
+// New in this pass (ADR-063 §2.1), not yet added to rfcs/027-Vocabulary-and-Naming.md §2-4's
 // canonical-name tables; mirrors memory_provider.hpp's own RecallReply shape under a distinct name,
 // same reasoning as RagRecallArgs above.
 // ae-naming-lint: allow RagRecallReply

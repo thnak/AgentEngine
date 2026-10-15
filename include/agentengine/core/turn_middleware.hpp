@@ -1,6 +1,6 @@
 #pragma once
-// Implements 002-Agent-Model-and-Authoring.md §5's `turn` interception point AND
-// 017-Safety-and-Content-Governance.md §4's `pre_model` filter point -- one mechanism closes both,
+// Implements rfcs/002-Agent-Model-and-Authoring.md §5's `turn` interception point AND
+// rfcs/017-Safety-and-Content-Governance.md §4's `pre_model` filter point -- one mechanism closes both,
 // per decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md. Depends on
 // decisions/ADR-066-context-provider-attribution-provenance.md (provenance must exist first -- see
 // context_assembly.hpp's own `assemble_context()` stamping loop).

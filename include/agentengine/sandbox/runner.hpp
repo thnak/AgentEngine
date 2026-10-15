@@ -1,5 +1,5 @@
 #pragma once
-// Implements 010-Python-Code-Interpreter.md §1a, §3a — the Runner concept and ExecState. Named
+// Implements rfcs/010-Python-Code-Interpreter.md §1a, §3a — the Runner concept and ExecState. Named
 // `Runner`, deliberately not `Executor` (027 §5 — that word already means a workflow graph node).
 
 #include <string>

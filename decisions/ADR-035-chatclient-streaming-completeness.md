@@ -13,7 +13,7 @@ closed" and "`AnthropicChatClient`'s streaming path is not wired for usage captu
 both are closed here). `decisions/ADR-023-response-format-codec-seam.md` (Judged — the confused-
 deputy scan this ADR relocates and generalizes). `decisions/ADR-036-model-call-gateway.md`
 (Proposed — the coroutine-based retry/failover/middleware mechanism that superseded this ADR's
-original Phase 2 plan; see §4). `004-Model-Provider-Plane.md` §1 (the literal `ChatClient` concept
+original Phase 2 plan; see §4). `rfcs/004-Model-Provider-Plane.md` §1 (the literal `ChatClient` concept
 this ADR's final phase amends) and §5 (`TokenBudget<N>`, the guarantee the usage-capture and
 fail-closed rules protect).
 

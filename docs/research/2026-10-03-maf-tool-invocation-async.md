@@ -94,7 +94,7 @@ real coroutine concurrency to prove"), and that the one network primitive undern
 
 ### 2a. The spec already says async
 
-`006-Tool-and-Function-Plane.md` §1 declares `static ae::task<result<Reply>> invoke(Args,
+`rfcs/006-Tool-and-Function-Plane.md` §1 declares `static ae::task<result<Reply>> invoke(Args,
 EffectContext&);`. The code does not. Under this repo's rule (spec wins), the code is in debt to the
 spec; nothing has to be relitigated to make the switch, though the switch itself needs an ADR
 (hot path, security-relevant, conformance-gated surfaces).

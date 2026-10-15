@@ -6,7 +6,7 @@ proven (real code + two new test files, full suite 176/176 green).
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gaps #16 and #21 (both
 closed by this ADR, in the shape the audit itself said they had to be closed together: "these are
 foundational enough that fixing one without the other leaves an inconsistent taint story").
-`003-Message-and-Content-Model.md` §2 and `007-Capability-and-Trust-Model.md` §4 (the taint mechanism
+`rfcs/003-Message-and-Content-Model.md` §2 and `rfcs/007-Capability-and-Trust-Model.md` §4 (the taint mechanism
 this ADR gives its first real content-model field, `Tainted<T>`/`TaintedText`, already Judged as a
 type per 007 §9 G2's compile-fail proof — never previously instantiated as an actual field anywhere).
 

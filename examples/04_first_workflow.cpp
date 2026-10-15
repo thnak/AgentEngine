@@ -5,7 +5,7 @@
 // input "Hello, World!" the workflow produces "!DLROW ,OLLEH", exactly like the MAF sample it
 // mirrors.
 //
-// AgentEngine's workflow model (014-Workflow-and-Orchestration.md) is its own thing, not a
+// AgentEngine's workflow model (rfcs/014-Workflow-and-Orchestration.md) is its own thing, not a
 // `WorkflowBuilder` fluent API: a `Workflow` is DATA (`executors`/`edges`/`start`/
 // `output_selection`/`bound`, agentengine/workflow/graph.hpp), executed round-by-round (a
 // "superstep" per round, 014 §2). ADR-037's Quark-free `agentengine::rt::WorkflowSupervisor`

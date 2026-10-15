@@ -1,4 +1,4 @@
-// Follow-up to Milestone 5 (006-Tool-and-Function-Plane.md §1): proves `Described<T, "text">`
+// Follow-up to Milestone 5 (rfcs/006-Tool-and-Function-Plane.md §1): proves `Described<T, "text">`
 // (core/json_schema.hpp) closes the gap the user found -- OpenAI's and Anthropic's own "tools" wire
 // formats carry a `description` on EVERY parameter, and this project's schema generator had no
 // channel for that until now. Covers:

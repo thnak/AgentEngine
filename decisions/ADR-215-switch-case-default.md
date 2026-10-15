@@ -3,9 +3,9 @@
 **Status:** **Proposed (2026-10-01).** Design, one self red-team pass (§4), implemented and proven (§6).
 The project owner judges it.
 
-**Relates to:** GitHub issue #34. `014-Workflow-and-Orchestration.md` §1 (edge kinds), §4 (request
-ports, issue #155's route check). `015-Declarative-Agent-Format.md` §3 (workflow document).
-`027-Vocabulary-and-Naming.md` (the `edge_kind` row). I6 (declarative/native equivalence).
+**Relates to:** GitHub issue #34. `rfcs/014-Workflow-and-Orchestration.md` §1 (edge kinds), §4 (request
+ports, issue #155's route check). `rfcs/015-Declarative-Agent-Format.md` §3 (workflow document).
+`rfcs/027-Vocabulary-and-Naming.md` (the `edge_kind` row). I6 (declarative/native equivalence).
 ADR-152 (workflow event stream). ADR-214 (written in the same series).
 
 Files: `include/agentengine/workflow/graph.hpp`, `src/rt/workflow_supervisor.cpp`,

@@ -1,6 +1,6 @@
 #pragma once
-// Implements 011-MCP-Conformance.md §12's "servers MUST generate [task ids] with sufficient
-// entropy" and 011 §8a's "handles are high-entropy" clause, and 012-A2A-Conformance.md §4's
+// Implements rfcs/011-MCP-Conformance.md §12's "servers MUST generate [task ids] with sufficient
+// entropy" and 011 §8a's "handles are high-entropy" clause, and rfcs/012-A2A-Conformance.md §4's
 // equivalent for A2A task ids.
 //
 // Closes ADR-061 §7's finding R3: both `protocol/mcp/server.hpp` and `protocol/a2a/server.hpp`

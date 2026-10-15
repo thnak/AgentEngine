@@ -1,5 +1,5 @@
 #pragma once
-// Implements 026-Agent-Facing-Runtime-Surface.md §5 -- Milestone 3 Phase G2
+// Implements rfcs/026-Agent-Facing-Runtime-Surface.md §5 -- Milestone 3 Phase G2
 // (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md). `agent.files`/`agent.data`:
 // ordinary-Python convenience wrappers over primitives already mediated one layer down --
 // `_ae_internal.open` (Stage D, mediated_python_runner.cpp's own `Internal_open`) and

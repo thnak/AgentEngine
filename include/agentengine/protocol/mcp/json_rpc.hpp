@@ -1,5 +1,5 @@
 #pragma once
-// Implements 011-MCP-Conformance.md's wire layer: JSON-RPC 2.0, the transport-agnostic envelope every
+// Implements rfcs/011-MCP-Conformance.md's wire layer: JSON-RPC 2.0, the transport-agnostic envelope every
 // MCP request/response/notification rides (Streamable HTTP and stdio alike, 011 §7). Milestone 7
 // Phase C1 (docs/planning/milestone-7-protocol-conformance-breakdown.md).
 //

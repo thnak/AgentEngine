@@ -1,4 +1,4 @@
-// Proof for 025-Worktree-and-Virtual-Filesystem.md §2's content-addressed object model
+// Proof for rfcs/025-Worktree-and-Virtual-Filesystem.md §2's content-addressed object model
 // (core/worktree.hpp), Milestone 3 Phase A1
 // (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md). Exercises the three
 // structural claims §2 makes: snapshotting is recording one digest, diffing two states is a tree

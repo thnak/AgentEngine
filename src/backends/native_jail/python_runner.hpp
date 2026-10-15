@@ -1,5 +1,5 @@
 #pragma once
-// Implements 010-Python-Code-Interpreter.md §1a (the `Runner` concept) and §2 (runtime selection:
+// Implements rfcs/010-Python-Code-Interpreter.md §1a (the `Runner` concept) and §2 (runtime selection:
 // embedded native CPython under native_jail, mediated per 008 §1b — never WASM, never a second
 // runtime). Backend: native_jail (008 §1b, §3).
 //

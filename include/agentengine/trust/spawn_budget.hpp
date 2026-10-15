@@ -1,5 +1,5 @@
 #pragma once
-// Implements 007-Capability-and-Trust-Model.md §3's `AgentCall<agent>` capability parameter
+// Implements rfcs/007-Capability-and-Trust-Model.md §3's `AgentCall<agent>` capability parameter
 // ("agent id, depth budget") and resolves the depth-bound half of 026-Agent-Facing-Runtime-
 // Surface.md §9 Q1 / OQ-14 (OpenQuestions.md) — whether depth and budget bounds are sufficient
 // against agent.spawn's recursion-and-cost hazard. See

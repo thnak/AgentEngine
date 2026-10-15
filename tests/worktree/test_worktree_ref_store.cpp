@@ -1,4 +1,4 @@
-// Proof for 025-Worktree-and-Virtual-Filesystem.md §2's Ref ("a mutable name -> Tree digest"),
+// Proof for rfcs/025-Worktree-and-Virtual-Filesystem.md §2's Ref ("a mutable name -> Tree digest"),
 // Milestone 3 Phase A2 (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md) --
 // `Ref` persistence riding `agentengine::rt::AppendLogStore` (`core/worktree.hpp`'s
 // `commit_ref`/`read_ref`), ADR-037. Proves a Ref update is durable and that two independently

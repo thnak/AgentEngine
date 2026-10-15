@@ -76,7 +76,7 @@ endif()
 # ---- RecordedChatClient fixture player (test-only) ---------------------------------------------
 # Proves the ChatClient concept and ChatRequest/ChatResponse vocabulary are usable end-to-end
 # against hand-authored JSON fixtures, without a real network call or API key (CLAUDE.md task
-# brief; concept: 004-Model-Provider-Plane.md §6).
+# brief; concept: rfcs/004-Model-Provider-Plane.md §6).
 # nlohmann/json is a test-only dependency, FetchContent-ed in tests/CMakeLists.txt.
 add_executable(test_recorded_chat_client test_recorded_chat_client.cpp)
 target_link_libraries(test_recorded_chat_client PRIVATE

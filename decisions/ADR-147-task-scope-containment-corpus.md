@@ -8,7 +8,7 @@ in Proposed state so the evidence trail is complete and reviewable before that s
 
 **Relates to:** GitHub issue #17 (opens this line of work). `docs/planning/honeypot-realism-gate-
 design-draft.md` (the design this corrects and implements — see §2 for what changed and why).
-`008-Sandbox-and-Isolation.md` §9 G9 (the gate this closes) and `017-Safety-and-Content-
+`rfcs/008-Sandbox-and-Isolation.md` §9 G9 (the gate this closes) and `017-Safety-and-Content-
 Governance.md` §8 (the cross-reference note added there, deliberately not a duplicate gate).
 `decisions/ADR-014` (the `open_within_mount_root` mount-escape containment this gate reuses, not
 reinvents). `tests/helpers/task_scope_corpus.hpp`, `tests/backends/native_jail/test_task_scope_containment_corpus.cpp`
@@ -21,8 +21,8 @@ narrative that happens to motivate one out-of-scope action get contained the sam
 adversarial probe already is — or does this codebase's existing hostile-suite coverage only ever
 test containment against corpus content that already *looks* hostile?
 
-**Before this ADR: untested, confirmed by direct read.** `008-Sandbox-and-Isolation.md` §9 (G1-G8)
-and `017-Safety-and-Content-Governance.md` §8 (G1-G6) were grepped and read in full (the honeypot-
+**Before this ADR: untested, confirmed by direct read.** `rfcs/008-Sandbox-and-Isolation.md` §9 (G1-G8)
+and `rfcs/017-Safety-and-Content-Governance.md` §8 (G1-G6) were grepped and read in full (the honeypot-
 realism draft's own verification, re-confirmed here) — every existing gate's corpus is either
 overtly hostile-looking (`tests/helpers/abuse_case_corpus.hpp`'s fork-bomb/OOM/unbounded-output
 probes; `test_mediated_shell_runner_hostile_corpus.cpp`'s literal `cmd.exe`/`../../../../Windows`

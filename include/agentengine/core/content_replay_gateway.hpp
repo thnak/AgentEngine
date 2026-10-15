@@ -3,7 +3,7 @@
 // has already committed content that violates policy (a secret, a toxicity hit, anything a pluggable
 // trigger flags) -- this file discards it and re-invokes the underlying model call with a corrective
 // instruction, rather than letting it commit to durable history/checkpoint/transcript at all.
-// Distinct from `002-Agent-Model-and-Authoring.md` §3's `Retry<Policy>` (a TRANSIENT-FAILURE retry
+// Distinct from `rfcs/002-Agent-Model-and-Authoring.md` §3's `Retry<Policy>` (a TRANSIENT-FAILURE retry
 // shape -- retrying because a call ERRORED) -- this is a CONTENT-triggered retry: the call succeeded,
 // but what it produced must never be kept.
 //

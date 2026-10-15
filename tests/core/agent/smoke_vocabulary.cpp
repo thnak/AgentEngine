@@ -1,5 +1,5 @@
 // Implements no single spec on its own; proves that every abstract-vocabulary header under
-// include/agentengine/ (002-010, 025, 029, 007-Capability-and-Trust-Model.md) compiles as one
+// include/agentengine/ (002-010, 025, 029, rfcs/007-Capability-and-Trust-Model.md) compiles as one
 // translation unit and that the concepts they declare (ChatClient, Runner, SandboxBackend) are
 // satisfiable by a conforming type, per CONVENTIONS.md "a load-bearing invariant without a test...
 // is not done."

@@ -1,5 +1,5 @@
 #pragma once
-// Implements 004-Model-Provider-Plane.md §6 ("Recording and replay") -- Milestone 5 Phase G1
+// Implements rfcs/004-Model-Provider-Plane.md §6 ("Recording and replay") -- Milestone 5 Phase G1
 // (docs/planning/milestone-5-providers-identity-secrets-breakdown.md, Phase G / decision 8): "promote
 // the recording mechanism from RecordedChatClient's test-scoped fixture player to the real thing:
 // every real backend (D/E) records request, response or full ordered chunk sequence, timing, and

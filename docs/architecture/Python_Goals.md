@@ -1,7 +1,7 @@
 # Python Runtime Integration Goals
 
-**Status:** Living design goals — a one-page summary of properties `010-Python-Code-Interpreter.md`
-and `008-Sandbox-and-Isolation.md` §1b already specify in detail, kept here for onboarding.
+**Status:** Living design goals — a one-page summary of properties `rfcs/010-Python-Code-Interpreter.md`
+and `rfcs/008-Sandbox-and-Isolation.md` §1b already specify in detail, kept here for onboarding.
 
 This document defines the architectural goals for integrating CPython into the execution kernel.
 

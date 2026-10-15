@@ -1,5 +1,5 @@
 #pragma once
-// Implements 006-Tool-and-Function-Plane.md §6 -- the DECLARATION half of the tool plane: what a tool
+// Implements rfcs/006-Tool-and-Function-Plane.md §6 -- the DECLARATION half of the tool plane: what a tool
 // is at runtime (`ToolDescriptor`), how a compile-time `Tool<Derived, Policies...>` conformer becomes
 // one (ADR-237 §5.2's instance form `make_tool_descriptor(ToolT{...})` / `ToolTable::from(...)`, plus
 // the transitional static `make_tool_descriptor<ToolT>()` and `make_tool_descriptor_with_invoke<ToolT>()`),

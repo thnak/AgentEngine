@@ -3,7 +3,7 @@
 **Status:** Accepted — 2026-08-07
 **Closes:** the Milestone 5 Phase J3 residual, "`chat_stream()`'s underlying fetch has no cancellation
 wiring from the consumer" (`docs/planning/milestone-5-providers-identity-secrets-breakdown.md`).
-**Relates to:** 004-Model-Provider-Plane.md §7 G2, ADR-018 (Quark's credit-controlled ring),
+**Relates to:** rfcs/004-Model-Provider-Plane.md §7 G2, ADR-018 (Quark's credit-controlled ring),
 ADR-011/ADR-013 (the egress read loop and its `stop_token` cancellation).
 
 ## 1. Context

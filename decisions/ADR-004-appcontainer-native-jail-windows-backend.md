@@ -27,8 +27,8 @@
   VHDX-backed worktree rollback (a `025` worktree-adapter question, out of scope here — raised and
   spiked in this session's conversation but deliberately not folded in, to keep this ADR's claim
   surface honest).
-- **Related specs:** `008-Sandbox-and-Isolation.md` §1b, §2 (contract), §3 (profile table), §4
-  (capability enforcement), §7 (abuse cases), §9 G1–G3 · `021-Platform-Support-and-Portability.md`
+- **Related specs:** `rfcs/008-Sandbox-and-Isolation.md` §1b, §2 (contract), §3 (profile table), §4
+  (capability enforcement), §7 (abuse cases), §9 G1–G3 · `rfcs/021-Platform-Support-and-Portability.md`
   Q2 (the exact open question this ADR provides first evidence against) · `010-Python-Code-
   Interpreter.md` §1a, §2, §5 (package policy tiers) · ADR-001 (`ShellRunner`) · ADR-002/ADR-003
   (`PythonRunner` import mediation — this ADR extends their layering argument to `open()`).
@@ -345,8 +345,8 @@ diagnosed mechanism).
 
 ### 8.4 What this binds
 
-Nothing is promoted. This ADR is evidence toward `008-Sandbox-and-Isolation.md` §1b/§3's Windows
-`native-jail` backend and toward `021-Platform-Support-and-Portability.md` Q2, cited as partial,
+Nothing is promoted. This ADR is evidence toward `rfcs/008-Sandbox-and-Isolation.md` §1b/§3's Windows
+`native-jail` backend and toward `rfcs/021-Platform-Support-and-Portability.md` Q2, cited as partial,
 scoped evidence — not as closing either.
 
 ### 8.5 What would reopen this

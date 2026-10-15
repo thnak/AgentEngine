@@ -1,5 +1,5 @@
 #pragma once
-// Implements 001-Execution-Model.md §6 (failure classification) and CONVENTIONS.md's error model:
+// Implements rfcs/001-Execution-Model.md §6 (failure classification) and CONVENTIONS.md's error model:
 // ae::result<T> = std::expected<T, ae::error>. No exceptions for control flow (hot paths noexcept).
 // ADR-237 §9 D6: `failure_class::canceled`, the one string spelling of every class, and the one retry
 // decision (`is_retryable`). Every classification site is listed in
@@ -79,7 +79,7 @@ struct error {  // ae-naming-lint: allow error — pre-existing M0 scaffolding, 
     failure_class klass;
     std::string   message;
     std::string   code;  // stable, machine-readable; safe to match on in tests and policy
-    // Milestone 3 Phase G4 (026-Agent-Facing-Runtime-Surface.md §3, §9 Q2's "sourced from real
+    // Milestone 3 Phase G4 (rfcs/026-Agent-Facing-Runtime-Surface.md §3, §9 Q2's "sourced from real
     // occurrences, never hand-authored" resolution): an optional platform error code (win32
     // GetLastError()/errno) a guest-facing boundary can use to raise a REAL, correctly-typed,
     // correctly-worded exception (e.g. PyErr_SetFromWindowsErr) instead of re-wording `message`

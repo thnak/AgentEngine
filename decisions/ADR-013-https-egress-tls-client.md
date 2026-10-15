@@ -6,7 +6,7 @@
 naming the reason explicitly (§9): "no TLS/HTTP library is vendored anywhere in this repo," and
 Quark's existing `SecureTransport`/mbedTLS adapter is built for node-to-node cluster mTLS identity —
 deliberately opts out of hostname verification and trusts a private cluster CA chain, the opposite of
-what fetching an arbitrary agent-declared host needs. `008-Sandbox-and-Isolation.md` §10 Q3 itself
+what fetching an arbitrary agent-declared host needs. `rfcs/008-Sandbox-and-Isolation.md` §10 Q3 itself
 draws a sharp line between the two halves of an egress proxy: the allowlist/DNS-rebinding mechanism
 "doesn't need a vetted third-party crypto library... so there's no equivalent 'don't roll your own'
 argument," but TLS is different — hand-rolling it would be exactly the unaudited-crypto risk this

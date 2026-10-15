@@ -1,5 +1,5 @@
 #pragma once
-// Implements 026-Agent-Facing-Runtime-Surface.md §5's `agent.ask(prompt: str) -> str`, under
+// Implements rfcs/026-Agent-Facing-Runtime-Surface.md §5's `agent.ask(prompt: str) -> str`, under
 // decisions/ADR-057-agent-ask-suspend-without-deadlock.md's Design B (abort-and-replay) -- the
 // mechanism ADR-057 §4's red-team pass proved is the only one of the three candidates buildable
 // against this codebase's real runtime substrate (Design A deadlocks on the real, single-worker

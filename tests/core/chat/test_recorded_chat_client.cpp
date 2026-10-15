@@ -2,7 +2,7 @@
 // (agentengine/core/chat_client.hpp, agentengine/core/content.hpp) are usable end-to-end without a
 // real network call or API key, via the hand-authored JSON fixture player RecordedChatClient
 // (tests/support/recorded_chat_client.hpp — a test-scoped stand-in for the recording/replay concept
-// in 004-Model-Provider-Plane.md §6, not an implementation of it). Adding a scenario means adding a
+// in rfcs/004-Model-Provider-Plane.md §6, not an implementation of it). Adding a scenario means adding a
 // fixture under tests/fixtures/chat_client/, not writing more C++ (CLAUDE.md task brief).
 
 // Witness for tests/CMakeLists.txt's NDEBUG-stripping block. This file, and the twelve others listed

@@ -9,7 +9,7 @@ designed natively rather than bolted on?
 
 ## RFC 013 §1 already names this concept
 
-Direct quote, `013-UI-and-Streaming-Surfaces.md` (around `ToolCallDelta`'s definition):
+Direct quote, `rfcs/013-UI-and-Streaming-Surfaces.md` (around `ToolCallDelta`'s definition):
 
 > [`ModelDelta` is] the model incrementally producing a call's arguments before invocation starts;
 > `ToolCallDelta` is the tool reporting on work already in flight.

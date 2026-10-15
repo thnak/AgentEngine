@@ -9,7 +9,7 @@ implemented, and proven (real code + tests, §4). Re-verified at sign-off review
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #14 (the finding this ADR
 closes). `docs/planning/conflict-evidence-materialization-design-draft.md` (the design this implements).
-`025-Worktree-and-Virtual-Filesystem.md` §4 ("conflict → the merge fails and is surfaced, with both
+`rfcs/025-Worktree-and-Virtual-Filesystem.md` §4 ("conflict → the merge fails and is surfaced, with both
 versions retained at `/conflicts/<path>.<agent>`, and the run's supervising agent or a human resolves
 it" — the normative requirement this ADR designs against). `include/agentengine/core/worktree.hpp`'s
 `merge_branch_into_parent()`/`MergeConflict` (the existing, real machinery this ADR builds on top of,
@@ -145,7 +145,7 @@ ADR's own `materialize_merge_conflicts()`) had zero production call sites; the w
 workflow-execution subsystems were proven in complete isolation from each other.
 
 **The "WHEN" question, answered by the RFC itself, confirmed by direct re-reading before designing
-anything**: `025-Worktree-and-Virtual-Filesystem.md` §4, verbatim: *"A `branch` sub-worktree merges
+anything**: `rfcs/025-Worktree-and-Virtual-Filesystem.md` §4, verbatim: *"A `branch` sub-worktree merges
 back when its agent completes."* — a per-EXECUTOR-completion event, not tied to `edge_kind::fan_in`
 (a message-ROUTING join, a different, easily-confused concept `route_from()` already implements; 025
 §4's own merge-on-join has never been about how a reply gets routed onward).

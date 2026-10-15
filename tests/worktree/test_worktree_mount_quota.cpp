@@ -1,4 +1,4 @@
-// Proof for 025-Worktree-and-Virtual-Filesystem.md §5's write-quota enforcement ("Quotas are
+// Proof for rfcs/025-Worktree-and-Virtual-Filesystem.md §5's write-quota enforcement ("Quotas are
 // enforced at write, and exhaustion is an ordinary `No space left on device`-class error inside the
 // guest, not a protocol lecture" -- 026 §3's own mapping table, matched here verbatim), Milestone 3
 // Phase C2's mount layer -- Phase C1's `mount_write` explicitly deferred this numeric enforcement as

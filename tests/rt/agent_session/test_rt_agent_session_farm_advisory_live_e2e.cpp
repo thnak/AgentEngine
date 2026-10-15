@@ -1,4 +1,4 @@
-// Implements 009-Plugin-and-Extension-System.md §8 + decisions/ADR-024-skill-scoped-tool-and-mount-
+// Implements rfcs/009-Plugin-and-Extension-System.md §8 + decisions/ADR-024-skill-scoped-tool-and-mount-
 // wiring.md's Phase 3 addendum, live: a real, self-contained `ContextProvider` (`FarmAdvisoryProvider`
 // below -- its own `SkillsProvider<>` plus its own `MountedSkillsState`, the same shape
 // tools/cli_chat.cpp's `ToolDeclaringHistoryProvider` uses, minus that file's Python/native_jail

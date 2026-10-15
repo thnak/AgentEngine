@@ -2560,7 +2560,7 @@ allowed = skills.allowed_tool_names_for(mount_state.all());                   //
 scoped  = scope_tools_to_mounted_skills(universe, allowed);
 result  = invoke_tool(scoped, held, count_call(), ctx, {}, &audit);           // succeeds now`;
 
-// 026-Agent-Facing-Runtime-Surface.md §4/§5 -- CodeAct is not a separate tool, it's execute_code
+// rfcs/026-Agent-Facing-Runtime-Surface.md §4/§5 -- CodeAct is not a separate tool, it's execute_code
 // with the agent Python library present in the sandbox. agent_library_manifest.hpp is the ONE
 // shared registry both the real dir(agent)/help(agent) story and the model-facing prompt summary
 // read from -- listed here in that same order.
@@ -2836,7 +2836,7 @@ auto resumed = drive(session.resolve_interaction(
 // Durability page's B7 cost note: a file write before the ask runs TWICE in total) -- with the new
 // answer now available to the SAME ask_or_raise() call, which returns normally this time.`;
 
-// 014-Workflow-and-Orchestration.md §1/§2/§3 -- Milestone 6, complete. A Workflow is DATA (nothing
+// rfcs/014-Workflow-and-Orchestration.md §1/§2/§3 -- Milestone 6, complete. A Workflow is DATA (nothing
 // here is an actor, a scheduler, or an execution decision); a WorkflowSupervisor runs it
 // round-by-round over AgentEngine's own agentengine::rt:: runtime (historical: originally a real
 // quark::Engine; ADR-037 replaced it).
@@ -3638,7 +3638,7 @@ export const protocolEntries: Record<Lang, ProtocolEntry[]> = {
       id: "mcp",
       name: "MCP server + client",
       rfc: "011-MCP-Conformance",
-      rfcHref: gh("011-MCP-Conformance.md"),
+      rfcHref: gh("rfcs/011-MCP-Conformance.md"),
       status: "real",
       note: "protocol/mcp/ has real headers (json_rpc.hpp, server.hpp, client.hpp, progress.hpp) and five test files. McpServer is a transport-agnostic request dispatcher over the real ToolTable — server/discover, tools/list, tools/call all work. What's missing: real Streamable HTTP/stdio transport (a later sub-phase) — hand it a JsonRpcRequest and you get a JsonRpcResponse back, but nothing puts bytes on a socket yet.",
     },
@@ -3646,7 +3646,7 @@ export const protocolEntries: Record<Lang, ProtocolEntry[]> = {
       id: "a2a",
       name: "A2A",
       rfc: "012-A2A-Conformance",
-      rfcHref: gh("012-A2A-Conformance.md"),
+      rfcHref: gh("rfcs/012-A2A-Conformance.md"),
       status: "real",
       note: "protocol/a2a/ has real headers and six test files. A2aServer implements SendMessage/GetTask/CancelTask over a real AgentSession run. Two real gaps: no JSON-RPC/REST envelope yet (transport-agnostic, same layering as MCP), and AgentSession's turn loop is still fully synchronous end-to-end, so TASK_STATE_SUBMITTED/WORKING are never independently observable.",
     },
@@ -3654,7 +3654,7 @@ export const protocolEntries: Record<Lang, ProtocolEntry[]> = {
       id: "agui",
       name: "AG-UI streaming surface",
       rfc: "013-UI-and-Streaming-Surfaces",
-      rfcHref: gh("013-UI-and-Streaming-Surfaces.md"),
+      rfcHref: gh("rfcs/013-UI-and-Streaming-Surfaces.md"),
       status: "real",
       note: "protocol/agui/ has real headers and three test files. RunEventProjector maps the real internal run-event stream onto AG-UI wire events (TEXT_MESSAGE_START/CONTENT/END, RunFinishedInterrupt) and sse.hpp encodes them — real projection logic, not yet wired to a serving transport.",
     },
@@ -3662,7 +3662,7 @@ export const protocolEntries: Record<Lang, ProtocolEntry[]> = {
       id: "openai-inbound",
       name: "OpenAI-compatible HTTP (inbound)",
       rfc: "013-UI-and-Streaming-Surfaces",
-      rfcHref: gh("013-UI-and-Streaming-Surfaces.md"),
+      rfcHref: gh("rfcs/013-UI-and-Streaming-Surfaces.md"),
       status: "design",
       note: "Not the same thing as OpenAIChatClient above, which is an outbound provider client. Serving agentengine agents behind an OpenAI-shaped endpoint is unbuilt — the one surface on this page with no real code behind it yet.",
     },
@@ -3670,7 +3670,7 @@ export const protocolEntries: Record<Lang, ProtocolEntry[]> = {
       id: "declarative",
       name: "Declarative YAML/JSON agent format",
       rfc: "015-Declarative-Agent-Format",
-      rfcHref: gh("015-Declarative-Agent-Format.md"),
+      rfcHref: gh("rfcs/015-Declarative-Agent-Format.md"),
       status: "real",
       note: "core/agent_yaml_compiler.hpp is real and tested: it compiles an Agent document to the same AgentMetadata register_agent<A>() produces, for agent_name, instructions, chat_client_id, max_turns, token_budget, approval, concurrency, telemetry, and sandbox_profile.is_strict. tools/capability_ceiling stay honestly empty — no name-keyed tool/capability registry exists yet to resolve spec.tools against — which is exactly why the Milestone 7 exit criterion (byte-identical AgentMetadata against the C++ equivalent, I6) isn't reached yet.",
     },
@@ -3680,7 +3680,7 @@ export const protocolEntries: Record<Lang, ProtocolEntry[]> = {
       id: "mcp",
       name: "MCP server + client",
       rfc: "011-MCP-Conformance",
-      rfcHref: gh("011-MCP-Conformance.md"),
+      rfcHref: gh("rfcs/011-MCP-Conformance.md"),
       status: "real",
       note: "protocol/mcp/ có các header thật (json_rpc.hpp, server.hpp, client.hpp, progress.hpp) và năm file test. McpServer là một bộ điều phối request không phụ thuộc transport (transport-agnostic), xây trên ToolTable thật — server/discover, tools/list, tools/call đều hoạt động. Cái còn thiếu: transport Streamable HTTP/stdio thật (một sub-phase sau này) — đưa cho nó một JsonRpcRequest, bạn nhận lại một JsonRpcResponse, nhưng chưa có gì đưa byte lên socket cả.",
     },
@@ -3688,7 +3688,7 @@ export const protocolEntries: Record<Lang, ProtocolEntry[]> = {
       id: "a2a",
       name: "A2A",
       rfc: "012-A2A-Conformance",
-      rfcHref: gh("012-A2A-Conformance.md"),
+      rfcHref: gh("rfcs/012-A2A-Conformance.md"),
       status: "real",
       note: "protocol/a2a/ có các header thật và sáu file test. A2aServer triển khai SendMessage/GetTask/CancelTask trên một run AgentSession thật. Có hai khoảng trống có thật: chưa có envelope JSON-RPC/REST (không phụ thuộc transport, cùng cách phân lớp với MCP), và vòng lặp lượt của AgentSession vẫn hoàn toàn đồng bộ đầu-cuối, nên TASK_STATE_SUBMITTED/WORKING không bao giờ có thể quan sát độc lập được.",
     },
@@ -3696,7 +3696,7 @@ export const protocolEntries: Record<Lang, ProtocolEntry[]> = {
       id: "agui",
       name: "AG-UI streaming surface",
       rfc: "013-UI-and-Streaming-Surfaces",
-      rfcHref: gh("013-UI-and-Streaming-Surfaces.md"),
+      rfcHref: gh("rfcs/013-UI-and-Streaming-Surfaces.md"),
       status: "real",
       note: "protocol/agui/ có các header thật và ba file test. RunEventProjector ánh xạ luồng sự kiện run nội bộ thật sang các sự kiện wire của AG-UI (TEXT_MESSAGE_START/CONTENT/END, RunFinishedInterrupt) và sse.hpp mã hóa chúng — logic ánh xạ có thật, chỉ là chưa được đấu nối vào một transport phục vụ.",
     },
@@ -3704,7 +3704,7 @@ export const protocolEntries: Record<Lang, ProtocolEntry[]> = {
       id: "openai-inbound",
       name: "OpenAI-compatible HTTP (inbound)",
       rfc: "013-UI-and-Streaming-Surfaces",
-      rfcHref: gh("013-UI-and-Streaming-Surfaces.md"),
+      rfcHref: gh("rfcs/013-UI-and-Streaming-Surfaces.md"),
       status: "design",
       note: "Đây không phải cùng thứ với OpenAIChatClient ở trên, vốn là một client provider chiều ra (outbound). Việc phục vụ agent của agentengine đứng sau một endpoint có hình dạng OpenAI vẫn chưa được xây dựng — đây là bề mặt duy nhất trên trang này chưa có mã thật đứng sau.",
     },
@@ -3712,7 +3712,7 @@ export const protocolEntries: Record<Lang, ProtocolEntry[]> = {
       id: "declarative",
       name: "Declarative YAML/JSON agent format",
       rfc: "015-Declarative-Agent-Format",
-      rfcHref: gh("015-Declarative-Agent-Format.md"),
+      rfcHref: gh("rfcs/015-Declarative-Agent-Format.md"),
       status: "real",
       note: "core/agent_yaml_compiler.hpp có thật và đã được kiểm thử: nó biên dịch một tài liệu Agent thành đúng AgentMetadata mà register_agent<A>() tạo ra, cho agent_name, instructions, chat_client_id, max_turns, token_budget, approval, concurrency, telemetry, và sandbox_profile.is_strict. tools/capability_ceiling vẫn được để trống một cách trung thực — chưa có registry tool/capability theo tên nào tồn tại để phân giải spec.tools dựa vào — và đó chính xác là lý do vì sao tiêu chí thoát của Milestone 7 (AgentMetadata giống hệt từng byte so với bản C++ tương đương, I6) vẫn chưa đạt được.",
     },
@@ -3997,18 +3997,18 @@ export interface RfcLink {
 }
 
 export const apiRfcLinks: RfcLink[] = [
-  { label: "002 — Agent Model and Authoring", href: gh("002-Agent-Model-and-Authoring.md"), status: "real" },
-  { label: "004 — Model Provider Plane", href: gh("004-Model-Provider-Plane.md"), status: "real" },
-  { label: "006 — Tool and Function Plane", href: gh("006-Tool-and-Function-Plane.md"), status: "real" },
-  { label: "007 — Capability and Trust Model", href: gh("007-Capability-and-Trust-Model.md"), status: "real" },
-  { label: "008 — Sandbox and Isolation", href: gh("008-Sandbox-and-Isolation.md"), status: "real" },
-  { label: "009 — Plugin and Extension System", href: gh("009-Plugin-and-Extension-System.md"), status: "real" },
-  { label: "011 — MCP Conformance", href: gh("011-MCP-Conformance.md"), status: "real" },
-  { label: "012 — A2A Conformance", href: gh("012-A2A-Conformance.md"), status: "real" },
-  { label: "013 — UI and Streaming Surfaces", href: gh("013-UI-and-Streaming-Surfaces.md"), status: "real" },
-  { label: "014 — Workflow and Orchestration", href: gh("014-Workflow-and-Orchestration.md"), status: "real" },
-  { label: "015 — Declarative Agent Format", href: gh("015-Declarative-Agent-Format.md"), status: "real" },
-  { label: "025 — Worktree and Virtual Filesystem", href: gh("025-Worktree-and-Virtual-Filesystem.md"), status: "real" },
+  { label: "002 — Agent Model and Authoring", href: gh("rfcs/002-Agent-Model-and-Authoring.md"), status: "real" },
+  { label: "004 — Model Provider Plane", href: gh("rfcs/004-Model-Provider-Plane.md"), status: "real" },
+  { label: "006 — Tool and Function Plane", href: gh("rfcs/006-Tool-and-Function-Plane.md"), status: "real" },
+  { label: "007 — Capability and Trust Model", href: gh("rfcs/007-Capability-and-Trust-Model.md"), status: "real" },
+  { label: "008 — Sandbox and Isolation", href: gh("rfcs/008-Sandbox-and-Isolation.md"), status: "real" },
+  { label: "009 — Plugin and Extension System", href: gh("rfcs/009-Plugin-and-Extension-System.md"), status: "real" },
+  { label: "011 — MCP Conformance", href: gh("rfcs/011-MCP-Conformance.md"), status: "real" },
+  { label: "012 — A2A Conformance", href: gh("rfcs/012-A2A-Conformance.md"), status: "real" },
+  { label: "013 — UI and Streaming Surfaces", href: gh("rfcs/013-UI-and-Streaming-Surfaces.md"), status: "real" },
+  { label: "014 — Workflow and Orchestration", href: gh("rfcs/014-Workflow-and-Orchestration.md"), status: "real" },
+  { label: "015 — Declarative Agent Format", href: gh("rfcs/015-Declarative-Agent-Format.md"), status: "real" },
+  { label: "025 — Worktree and Virtual Filesystem", href: gh("rfcs/025-Worktree-and-Virtual-Filesystem.md"), status: "real" },
 ];
 
 // ---- Trust & Sandbox page: RFC 008 §2a/§4/§4a (backend mechanics, custom backends, remote

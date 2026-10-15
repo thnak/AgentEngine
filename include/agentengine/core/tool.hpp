@@ -1,5 +1,5 @@
 #pragma once
-// Implements 006-Tool-and-Function-Plane.md — one declaration, one invocation path, one approval
+// Implements rfcs/006-Tool-and-Function-Plane.md — one declaration, one invocation path, one approval
 // model for tools regardless of source (native, WASM plugin, MCP server, remote agent, sandboxed
 // script, composite workflow).
 

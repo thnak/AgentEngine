@@ -1,5 +1,5 @@
 #pragma once
-// Implements the jailed-Python-worker design's IPC transport (008-Sandbox-and-Isolation.md §1b/§3's
+// Implements the jailed-Python-worker design's IPC transport (rfcs/008-Sandbox-and-Isolation.md §1b/§3's
 // native-jail layer-3 backstop, wired for real per the ADR superseding native_jail_backend.hpp's
 // former "Correction (2026-08-23)" comment). `FramedChannel`: generic length-prefixed JSON framing
 // over the two anonymous pipe pairs `NativeJailBackend::create_python_worker()` creates — the ONLY

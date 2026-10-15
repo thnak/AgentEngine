@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-156-agent-notes-write-back.md -- 026-Agent-Facing-Runtime-Surface.md §5's
+// Implements decisions/ADR-156-agent-notes-write-back.md -- rfcs/026-Agent-Facing-Runtime-Surface.md §5's
 // `agent.notes` ("Durable notes across turns and sessions — ordinary writes into `/memory`, landing as
 // `AgentAuthored` `MemoryItem`s", `FsWrite<mount>`), GitHub issue #40.
 //

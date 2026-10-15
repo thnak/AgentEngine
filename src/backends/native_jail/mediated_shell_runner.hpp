@@ -1,5 +1,5 @@
 #pragma once
-// Implements 010-Python-Code-Interpreter.md §1a/§2/§3a -- Milestone 3 Phase E3
+// Implements rfcs/010-Python-Code-Interpreter.md §1a/§2/§3a -- Milestone 3 Phase E3
 // (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md, decision 4). A genuinely
 // new `ShellRunner`, carrying forward decisions/ADR-001's Judged Design A finding (whole-script-
 // parses-before-anything-executes) as a design, not copied code -- shell_runner.hpp stays

@@ -220,7 +220,7 @@ standalone primitive with zero callers, closing the actual gap OQ-14 and OQ-16 b
 
 **Binds:**
 
-- `026-Agent-Facing-Runtime-Surface.md` §5 (`agent.spawn`) — now has a real, wired call path, not
+- `rfcs/026-Agent-Facing-Runtime-Surface.md` §5 (`agent.spawn`) — now has a real, wired call path, not
   merely a described tool shape.
 - `OpenQuestions.md` OQ-14 and OQ-16 — both updated (this ADR's own change) to reflect the resolution
   and the residuals named in §7.

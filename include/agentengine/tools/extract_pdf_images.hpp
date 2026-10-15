@@ -1,5 +1,5 @@
 #pragma once
-// A third candidate in 009-Plugin-and-Extension-System.md §7's "Document extraction" catalog row --
+// A third candidate in rfcs/009-Plugin-and-Extension-System.md §7's "Document extraction" catalog row --
 // PDF embedded-image METADATA listing (position/dimensions/format, NOT bytes), reusing the exact
 // same sandboxed `agentengine_pdf_worker` process `extract_pdf_text.hpp`/`extract_pdf_toc.hpp`
 // already spawn (its own `images` mode, `pdf_worker_main.cpp`), the same url/path sourcing, and the

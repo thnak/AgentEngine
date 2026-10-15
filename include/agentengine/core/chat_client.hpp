@@ -1,5 +1,5 @@
 #pragma once
-// Implements 004-Model-Provider-Plane.md — the seam to every inference API. Terminology (027 §5,
+// Implements rfcs/004-Model-Provider-Plane.md — the seam to every inference API. Terminology (027 §5,
 // §7): `ChatClient`, not `Provider` — "provider" stays free for the colloquial vendor sense.
 //
 // Milestone 5 Phase B1/B2 (docs/planning/milestone-5-providers-identity-secrets-breakdown.md):

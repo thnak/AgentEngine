@@ -1,4 +1,4 @@
-// Milestone 7 Phase E1 (013-UI-and-Streaming-Surfaces.md §2.1/§2.2, docs/research/2026-a2a-and-agui-
+// Milestone 7 Phase E1 (rfcs/013-UI-and-Streaming-Surfaces.md §2.1/§2.2, docs/research/2026-a2a-and-agui-
 // detail.md Part B, docs/planning/milestone-7-protocol-conformance-breakdown.md). Proves the AG-UI
 // event vocabulary (protocol/agui/types.hpp) serializes with the exact wire identifiers/field names
 // the cited research record specifies -- every alternative gets its own check, since this vocabulary

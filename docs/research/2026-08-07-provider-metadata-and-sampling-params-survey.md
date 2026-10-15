@@ -195,7 +195,7 @@ after the previous last parameter (`ca_bundle_pem_override`), never inserted ear
    unlike `Usage`) ahead of both backend implementations.
 5. ~~**Widen `Usage` with a `cache_write_tokens`-equivalent field**~~ — **Done.** `Usage` gained
    `cache_write_tokens` (appended LAST, after `cost_estimate` — see the field's own code comment and
-   `003-Message-and-Content-Model.md` §6's dated amendment for why: inserting it earlier broke existing
+   `rfcs/003-Message-and-Content-Model.md` §6's dated amendment for why: inserting it earlier broke existing
    positional `Usage{a,b,c,d,e}` call sites with a real compile error, caught and fixed before either
    backend agent started). OpenAI maps OpenRouter's `usage.prompt_tokens_details.cache_write_tokens`;
    Anthropic maps `usage.cache_creation_input_tokens`.
@@ -248,7 +248,7 @@ up:
   OpenAI-shaped client library that always sends the fuller shape — but not verified here).
 - **vLLM/Ollama live verification** — this survey is documentation-only for these two; Phase D/E's own
   live verification only exercised OpenRouter (a hosted gateway), never a self-hosted llama.cpp/vLLM/
-  Ollama instance directly. `004-Model-Provider-Plane.md §3`'s own table lists "Local / embedded" (an
+  Ollama instance directly. `rfcs/004-Model-Provider-Plane.md §3`'s own table lists "Local / embedded" (an
   OpenAI-compatible local server) as real future reach, not required for the M5 exit gate — this survey
   is preparatory research for that row, not a claim it's been proven.
 - **Ollama `seed` support** — genuinely undocumented as of this survey; needs either a live check or a

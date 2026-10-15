@@ -1110,7 +1110,7 @@ were resolved in §5 above, against the real code — removed from this list, no
    drain site named in §2 — **RESOLVED (confirmed-clean) by the second red-team pass's Finding 18**: a
    full-tree grep found exactly one construction site and exactly one read site, both already accounted
    for. No longer open.
-8. **§5 Finding 12**: reconcile `006-Tool-and-Function-Plane.md:170`'s `ProgressUpdate` naming against this
+8. **§5 Finding 12**: reconcile `rfcs/006-Tool-and-Function-Plane.md:170`'s `ProgressUpdate` naming against this
    piece's `ContentItem` choice — an RFC amendment (documentation-only ADR) or a real scope question,
    not decided here.
 

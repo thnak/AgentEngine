@@ -1,5 +1,5 @@
 #pragma once
-// Implements 009-Plugin-and-Extension-System.md §3 — the manifest shape. "The manifest declares,
+// Implements rfcs/009-Plugin-and-Extension-System.md §3 — the manifest shape. "The manifest declares,
 // the operator grants" (009 §3) — this header has no load/verify/instantiate logic; that is the
 // WASM component host, a seam backend with its own review cycle.
 

@@ -1,5 +1,5 @@
 #pragma once
-// Implements 025-Worktree-and-Virtual-Filesystem.md §3's "a session may run several agents, each on
+// Implements rfcs/025-Worktree-and-Virtual-Filesystem.md §3's "a session may run several agents, each on
 // its own subtree" for a DYNAMICALLY-generated child id -- docs/planning/agent-spawn-runtime-design-
 // draft.md §4.3 (item 3 of OpenQuestions.md OQ-14's agent.spawn wiring; 026-Agent-Facing-Runtime-
 // Surface.md §5). `workflow/worktree_scoping.hpp`'s own `mint_executor_worktrees()` is the adapted

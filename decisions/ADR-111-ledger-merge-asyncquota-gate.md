@@ -5,7 +5,7 @@
   §5) that share zero code with this change. An independent red-team pass on this exact fix found and
   this session fixed **one real, MUST-FIX data-loss bug in the fix's own first version** — see §4. A
   second, separate review pass caught a real CI-breaking gap (`MergeCost` had no
-  `027-Vocabulary-and-Naming.md` row, which `tools/naming_lint.py`'s CI gate enforces — this exact
+  `rfcs/027-Vocabulary-and-Naming.md` row, which `tools/naming_lint.py`'s CI gate enforces — this exact
   branch's own recent history shows two prior "Fix naming_lint gap" commits for the identical class of
   miss) and a minor unqualified-vs-qualified style inconsistency; both fixed same day (`027-Vocabulary-
   and-Naming.md` row added, `sandbox_runtime.hpp`'s `agentengine::MergeCost` unqualified to match its
@@ -17,7 +17,7 @@
   Not yet re-verified on Linux.
 - **Date:** 2026-08-29.
 - **Scope:** `include/agentengine/core/ledger.hpp` (`MergeCost` Kind tag, `Ledger<Store>::merge()`
-  signature and body), `027-Vocabulary-and-Naming.md` (rows for `MergeCost`, and the two pre-existing
+  signature and body), `rfcs/027-Vocabulary-and-Naming.md` (rows for `MergeCost`, and the two pre-existing
   `ContainerdCliBackend`/`ContainerdExecutionSurface` gaps found alongside it),
   `include/agentengine/sandbox/sandbox_runtime.hpp`
   (`SandboxRuntime::merge_into()` signature and body, threading the new quota through), and

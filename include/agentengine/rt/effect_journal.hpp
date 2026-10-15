@@ -1,5 +1,5 @@
 #pragma once
-// ADR-037: agentengine::rt::EffectJournalEntry -- 019-Durability-and-Long-Running-Agents.md §3's
+// ADR-037: agentengine::rt::EffectJournalEntry -- rfcs/019-Durability-and-Long-Running-Agents.md §3's
 // "the intent to perform an effect is journaled before execution and the outcome journaled after.
 // On resume, a journaled-but-unconfirmed effect is reconciled," ported off the old
 // `core/effect_journal.hpp`'s `quark::Store`/`quark::EventLog<EffectJournalEntry,S>`/

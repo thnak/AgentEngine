@@ -1,4 +1,4 @@
-// Milestone 7 Phase E4 (012-A2A-Conformance.md §2.3, 013-UI-and-Streaming-Surfaces.md §3,
+// Milestone 7 Phase E4 (rfcs/012-A2A-Conformance.md §2.3, rfcs/013-UI-and-Streaming-Surfaces.md §3,
 // docs/planning/milestone-7-protocol-conformance-breakdown.md). Proves `A2aStreamProjector`
 // (protocol/a2a/streaming.hpp) maps `RunEvent` onto A2A's real task-lifecycle states, and that the
 // oneof `StreamResponse` wire wrapping picks the right single key per alternative.

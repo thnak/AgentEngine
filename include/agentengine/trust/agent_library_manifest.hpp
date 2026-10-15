@@ -1,5 +1,5 @@
 #pragma once
-// Resolves OQ-16 (OpenQuestions.md): 026-Agent-Facing-Runtime-Surface.md §4 gives `agent.tools` a
+// Resolves OQ-16 (OpenQuestions.md): rfcs/026-Agent-Facing-Runtime-Surface.md §4 gives `agent.tools` a
 // real introspection story (docstrings, a .pyi stub, dir()/help()) but the other seven `agent.*`
 // modules (026 §5) have no equivalent, and nothing tells the model which top-level modules are even
 // present before it tries importing one.

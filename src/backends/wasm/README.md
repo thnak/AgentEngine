@@ -4,7 +4,7 @@ Implements `agentengine::SandboxBackend` (`include/agentengine/sandbox/sandbox.h
 `wasm` profile: wasmtime + WASI 0.3 Component Model, the plugin ABI (**009-Plugin-and-Extension-
 System.md**). Software, capability-based isolation with no ambient authority, µs–low-ms cold start,
 identical across the target platform set (021 §2 — Windows now, Linux next; macOS is not a target)
-— per **008-Sandbox-and-Isolation.md §3**. This is where plugin
+— per **rfcs/008-Sandbox-and-Isolation.md §3**. This is where plugin
 (`ae:tool`/`ae:skill`/`ae:provider`/`ae:memory`/`ae:filter`/`ae:codec`) execution and the
 deterministic-mode/snapshot machinery (008 §5–§6a) live.
 

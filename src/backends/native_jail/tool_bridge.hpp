@@ -1,5 +1,5 @@
 #pragma once
-// Implements 010-Python-Code-Interpreter.md §6 / 006-Tool-and-Function-Plane.md §3 -- Milestone 3
+// Implements rfcs/010-Python-Code-Interpreter.md §6 / rfcs/006-Tool-and-Function-Plane.md §3 -- Milestone 3
 // Phase F2 (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md). The `call_tool`
 // bridge: a mechanism that lets code running INSIDE a sandboxed interpreter/shell (Stage D's
 // `_ae_internal` idiom, `MediatedShellRunner`'s `RegisteredTool`) reach the REAL 006 §3 ten-step

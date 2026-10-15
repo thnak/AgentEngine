@@ -6,8 +6,8 @@ sign-off review: `tests/workflow/test_workflow_worktree_scoping.cpp` still passe
 by ADR-037's later Quark removal (this ADR's own subsystem — sub-worktree/`sharing_mode` — never
 depended on the actor engine).
 
-**Relates to:** `014-Workflow-and-Orchestration.md` §1 (the gap this ADR closes, quoted below);
-`025-Worktree-and-Virtual-Filesystem.md` §3 (the sub-worktree/`sharing_mode` primitive this ADR
+**Relates to:** `rfcs/014-Workflow-and-Orchestration.md` §1 (the gap this ADR closes, quoted below);
+`rfcs/025-Worktree-and-Virtual-Filesystem.md` §3 (the sub-worktree/`sharing_mode` primitive this ADR
 reuses without modification); `docs/architecture/worktree-sharing-skills-and-subagents.md` §3 (the
 prior as-built trace: "designed, unit-tested at the primitive level, not wired" — this ADR wires the
 policy+minting half, explicitly not the rest, see §5).

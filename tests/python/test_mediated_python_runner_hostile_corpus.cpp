@@ -1,5 +1,5 @@
 // Milestone 3 Phase E4 (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md) --
-// 010-Python-Code-Interpreter.md §9 G2's containment corpus plus G7's import-allowlist "native
+// rfcs/010-Python-Code-Interpreter.md §9 G2's containment corpus plus G7's import-allowlist "native
 // extension not on it" claim, against the REAL `agentengine::native_jail::MediatedPythonRunner`
 // (E2). Every denial is paired with a positive control (022 §5) proving the probe itself is real,
 // not vacuous -- same discipline as test_mediated_python_runner_smoke.cpp.

@@ -4,7 +4,7 @@
 proven (real code + new/extended tests across three files, full suite green).
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #20 (the finding this
-ADR closes). `003-Message-and-Content-Model.md` §8 Q2 (already Resolved 2026-08-04: "exclude from
+ADR closes). `rfcs/003-Message-and-Content-Model.md` §8 Q2 (already Resolved 2026-08-04: "exclude from
 context assembly, never translate" — this ADR is the first real implementation of that resolution,
 not a new design). `decisions/ADR-046-*.md` (this session's other memory/content-model fix,
 unrelated in mechanism but touching the same content-model surface).

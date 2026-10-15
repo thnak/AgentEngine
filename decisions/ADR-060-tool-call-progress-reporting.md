@@ -8,13 +8,13 @@ tests, 0 failed, run three times across two rebases) confirm no regression elsew
 own governance (`decisions/README.md`, `OpenQuestions.md` OQ-11), only the project owner marks an ADR
 Judged; that has not happened.
 
-**Relates to:** `013-UI-and-Streaming-Surfaces.md` §1 ("`ToolCallDelta`'s producer... a call to
+**Relates to:** `rfcs/013-UI-and-Streaming-Surfaces.md` §1 ("`ToolCallDelta`'s producer... a call to
 `EffectContext.report_progress` during `invoke()` (006 §6a) is the only source" — the still-unbuilt
-mechanism this ADR closes), `006-Tool-and-Function-Plane.md` §6a (the tool-authoring side of the same
+mechanism this ADR closes), `rfcs/006-Tool-and-Function-Plane.md` §6a (the tool-authoring side of the same
 contract), `include/agentengine/core/effect_context.hpp` (the struct this ADR adds a field to),
 `include/agentengine/rt/agent_session.hpp` (`run_rounds()`'s three `invoke_tool()` call sites, the
 real wiring point), `include/agentengine/core/run_event.hpp` (`ToolCallDelta`, `run_event_kind`,
-already real — this ADR gives them their first real producer), `026-Agent-Facing-Runtime-Surface.md`
+already real — this ADR gives them their first real producer), `rfcs/026-Agent-Facing-Runtime-Surface.md`
 §5 (`agent.progress`, the CodeAct module this ADR is a prerequisite for, not itself in scope — see §3),
 `decisions/ADR-028-session-scoped-stateful-tools.md` (`captures_session_state`/`Backgroundable`, the
 existing dangling-reference/data-race hazard class this ADR's own red-team found a NEW door into),

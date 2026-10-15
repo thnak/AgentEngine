@@ -5,13 +5,13 @@
 project-owner direction (2026-08-24) to cover every mount/net-shaped `SandboxBackend`, not Kata
 alone — see §1 for why a Kata-only fix would itself be a defect.
 
-**Relates to:** `008-Sandbox-and-Isolation.md` §2 (`SandboxSpec`, the "empty-by-default authority"
-contract clause), `007-Capability-and-Trust-Model.md` (`CapabilitySet`, I2), `decisions/ADR-071-native-unsandboxed-process-execution-providers.md` (precedent for a purpose-built capability kind
+**Relates to:** `rfcs/008-Sandbox-and-Isolation.md` §2 (`SandboxSpec`, the "empty-by-default authority"
+contract clause), `rfcs/007-Capability-and-Trust-Model.md` (`CapabilitySet`, I2), `decisions/ADR-071-native-unsandboxed-process-execution-providers.md` (precedent for a purpose-built capability kind
 instead of overloading an existing one), `decisions/ADR-070-host-configurable-responsibility-boundary.md` (Delegated Decision Seam shape reused here for the empty-capabilities opt-out).
 
 ## 1. The problem
 
-`008-Sandbox-and-Isolation.md` §2 states the contract every `SandboxBackend` must meet:
+`rfcs/008-Sandbox-and-Isolation.md` §2 states the contract every `SandboxBackend` must meet:
 
 > 1. **Empty-by-default authority.** Nothing is reachable that the spec did not grant (**I2**).
 

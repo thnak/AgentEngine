@@ -1,4 +1,4 @@
-// Proof for ADR-037 Phase 3: 014-Workflow-and-Orchestration.md §7's live-view bullet ("a running
+// Proof for ADR-037 Phase 3: rfcs/014-Workflow-and-Orchestration.md §7's live-view bullet ("a running
 // workflow exposes a live view of executor states, in-flight messages, and round number") against
 // `agentengine::rt::WorkflowSupervisor::enable_live_view()` -- the Quark-actor-free replacement for
 // `agentengine::workflow::WorkflowSupervisor`'s own live view. SUPERSEDES the old, Quark-actor-based

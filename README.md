@@ -188,36 +188,36 @@ Start with the [specification](AgentEngineSpecification.md), then
 |---|---|---|---|
 | — | [AgentEngineSpecification.md](AgentEngineSpecification.md) | Vision, layering, invariants, locked decisions, the runtime substrate, glossary | Draft |
 | — | [CONVENTIONS.md](CONVENTIONS.md) | The binding coding contract | Draft |
-| 001 | [Execution Model](001-Execution-Model.md) | Run lifecycle, turn loop, concurrency, cancellation, failure, replay | Reviewed |
-| 002 | [Agent Model and Authoring](002-Agent-Model-and-Authoring.md) | CRTP policy surface, composition, middleware, metadata validation | Reviewed |
-| 003 | [Message and Content Model](003-Message-and-Content-Model.md) | `Content` items, provenance and taint, blobs, structured output, usage | Reviewed |
-| 004 | [ChatClient Plane](004-Model-Provider-Plane.md) | `ChatClient` seam, capability-driven degradation, reliability, cost, recording | Reviewed |
-| 005 | [Sessions, State and Memory](005-Sessions-State-and-Memory.md) | `AgentSession` actor, persistence, context assembly, compaction, memory, redaction | Reviewed |
-| 006 | [Tool and Function Plane](006-Tool-and-Function-Plane.md) | Declaration, the 10-step invocation pipeline, approval, concurrency, result hygiene | Reviewed |
-| 007 | [Capability and Trust Model](007-Capability-and-Trust-Model.md) | Threat model, principals, capabilities, taint, policy, trust tiers, supply chain, audit | Reviewed |
-| 008 | [Sandbox and Isolation](008-Sandbox-and-Isolation.md) | The isolation contract, profiles, per-backend enforcement, determinism, abuse handling | Reviewed |
-| 009 | [Plugin and Extension System](009-Plugin-and-Extension-System.md) | WIT worlds, package format, lifecycle, host imports, the C/C++ library track, skills | Reviewed |
-| 010 | [Code Interpreter and Shell](010-Python-Code-Interpreter.md) | Interpreter + CodeAct + Shell sharing one execution context, runtime selection and its evidence, workspace, packages, the `call_tool` bridge | Reviewed |
-| 011 | [MCP Conformance](011-MCP-Conformance.md) | MCP `2026-07-28` client + server: stateless core, MRTR, tools/resources/prompts, extensions, authorization | Reviewed |
-| 012 | [A2A Conformance](012-A2A-Conformance.md) | A2A v1.0: agent card, task lifecycle, bindings, delegation | Reviewed |
-| 013 | [UI and Streaming Surfaces](013-UI-and-Streaming-Surfaces.md) | The internal run event stream and its projections (AG-UI, A2A, SSE) | Reviewed |
-| 014 | [Workflow and Orchestration](014-Workflow-and-Orchestration.md) | Typed executor graph, supersteps, patterns, checkpointing, time-travel | Reviewed |
-| 015 | [Declarative Agent Format](015-Declarative-Agent-Format.md) | YAML/JSON agents and workflows; the equivalence rule | Reviewed |
-| 016 | [Observability](016-Observability.md) | OTel GenAI conformance, traces, metrics, content-capture privacy, audit vs telemetry | Reviewed |
-| 017 | [Safety and Content Governance](017-Safety-and-Content-Governance.md) | Prompt injection defence in depth, filters, PII, attack-class table | Reviewed |
-| 018 | [Identity, Authorization and Secrets](018-Identity-Authorization-and-Secrets.md) | Principals, admission vs effect authorization, secret seam, multi-tenancy | Reviewed |
-| 019 | [Durability and Long-Running Agents](019-Durability-and-Long-Running-Agents.md) | Checkpoints, suspension, exactly-once effects, recovery, retention | Reviewed |
-| 020 | [Configuration and Hosting](020-Configuration-and-Hosting.md) | Policy vs configuration, hosting shapes, server surfaces, operations | Reviewed |
-| 021 | [Platform Support and Portability](021-Platform-Support-and-Portability.md) | Support tiers, per-subsystem portability risk, build matrix | Reviewed |
-| 022 | [Testing and Evaluation](022-Testing-and-Evaluation.md) | Deterministic simulation, golden traces, evaluation, positive controls | Reviewed |
-| 023 | [Performance Targets and Budgets](023-Performance-Targets-and-Budgets.md) | Budget classes, provisional numbers, machine-independent invariants | Reviewed |
-| 024 | [Versioning, Compatibility and Governance](024-Versioning-Compatibility-and-Governance.md) | Versioning, deprecation, the decision process, RFC hygiene | Reviewed |
-| 025 | [Worktree and Virtual Filesystem](025-Worktree-and-Virtual-Filesystem.md) | The session's virtual disk: content-addressed objects, sub-worktrees, sharing and merge, mounts, per-turn commit | Reviewed |
-| 026 | [Agent-Facing Runtime Surface](026-Agent-Facing-Runtime-Surface.md) | What the model sees: the ordinary environment, plain Python, and the `agent` library that *is* CodeAct's action space | Reviewed |
-| 027 | [Vocabulary and Naming](027-Vocabulary-and-Naming.md) | The canonical name for every concept, aligned to MAF, plus the collision register for words that mean different things in different specs | Reviewed |
-| 028 | [Bulk Data Transfer and Zero-Copy](028-Bulk-Data-Transfer-and-Zero-Copy.md) | Moving large data without JSON, without copies, and without touching the context window: handles, Arrow, per-profile mapping | Reviewed |
-| 029 | [Memory System](029-Memory-System.md) | Memory as a principal-scoped worktree, not a wrapped vector database: structured `MemoryItem`s, attributed extraction, deterministic default retrieval, vectors as an optional upgrade | Reviewed |
-| 030 | [Project: Workspace Grouping and Lifecycle](030-Project-Workspace-and-Lifecycle.md) | A durable unit above a session — root session + owned sub-sessions + their worktree refs — with directed pause/restore/resume and no cap on concurrently open projects | Reviewed |
+| 001 | [Execution Model](rfcs/001-Execution-Model.md) | Run lifecycle, turn loop, concurrency, cancellation, failure, replay | Reviewed |
+| 002 | [Agent Model and Authoring](rfcs/002-Agent-Model-and-Authoring.md) | CRTP policy surface, composition, middleware, metadata validation | Reviewed |
+| 003 | [Message and Content Model](rfcs/003-Message-and-Content-Model.md) | `Content` items, provenance and taint, blobs, structured output, usage | Reviewed |
+| 004 | [ChatClient Plane](rfcs/004-Model-Provider-Plane.md) | `ChatClient` seam, capability-driven degradation, reliability, cost, recording | Reviewed |
+| 005 | [Sessions, State and Memory](rfcs/005-Sessions-State-and-Memory.md) | `AgentSession` actor, persistence, context assembly, compaction, memory, redaction | Reviewed |
+| 006 | [Tool and Function Plane](rfcs/006-Tool-and-Function-Plane.md) | Declaration, the 10-step invocation pipeline, approval, concurrency, result hygiene | Reviewed |
+| 007 | [Capability and Trust Model](rfcs/007-Capability-and-Trust-Model.md) | Threat model, principals, capabilities, taint, policy, trust tiers, supply chain, audit | Reviewed |
+| 008 | [Sandbox and Isolation](rfcs/008-Sandbox-and-Isolation.md) | The isolation contract, profiles, per-backend enforcement, determinism, abuse handling | Reviewed |
+| 009 | [Plugin and Extension System](rfcs/009-Plugin-and-Extension-System.md) | WIT worlds, package format, lifecycle, host imports, the C/C++ library track, skills | Reviewed |
+| 010 | [Code Interpreter and Shell](rfcs/010-Python-Code-Interpreter.md) | Interpreter + CodeAct + Shell sharing one execution context, runtime selection and its evidence, workspace, packages, the `call_tool` bridge | Reviewed |
+| 011 | [MCP Conformance](rfcs/011-MCP-Conformance.md) | MCP `2026-07-28` client + server: stateless core, MRTR, tools/resources/prompts, extensions, authorization | Reviewed |
+| 012 | [A2A Conformance](rfcs/012-A2A-Conformance.md) | A2A v1.0: agent card, task lifecycle, bindings, delegation | Reviewed |
+| 013 | [UI and Streaming Surfaces](rfcs/013-UI-and-Streaming-Surfaces.md) | The internal run event stream and its projections (AG-UI, A2A, SSE) | Reviewed |
+| 014 | [Workflow and Orchestration](rfcs/014-Workflow-and-Orchestration.md) | Typed executor graph, supersteps, patterns, checkpointing, time-travel | Reviewed |
+| 015 | [Declarative Agent Format](rfcs/015-Declarative-Agent-Format.md) | YAML/JSON agents and workflows; the equivalence rule | Reviewed |
+| 016 | [Observability](rfcs/016-Observability.md) | OTel GenAI conformance, traces, metrics, content-capture privacy, audit vs telemetry | Reviewed |
+| 017 | [Safety and Content Governance](rfcs/017-Safety-and-Content-Governance.md) | Prompt injection defence in depth, filters, PII, attack-class table | Reviewed |
+| 018 | [Identity, Authorization and Secrets](rfcs/018-Identity-Authorization-and-Secrets.md) | Principals, admission vs effect authorization, secret seam, multi-tenancy | Reviewed |
+| 019 | [Durability and Long-Running Agents](rfcs/019-Durability-and-Long-Running-Agents.md) | Checkpoints, suspension, exactly-once effects, recovery, retention | Reviewed |
+| 020 | [Configuration and Hosting](rfcs/020-Configuration-and-Hosting.md) | Policy vs configuration, hosting shapes, server surfaces, operations | Reviewed |
+| 021 | [Platform Support and Portability](rfcs/021-Platform-Support-and-Portability.md) | Support tiers, per-subsystem portability risk, build matrix | Reviewed |
+| 022 | [Testing and Evaluation](rfcs/022-Testing-and-Evaluation.md) | Deterministic simulation, golden traces, evaluation, positive controls | Reviewed |
+| 023 | [Performance Targets and Budgets](rfcs/023-Performance-Targets-and-Budgets.md) | Budget classes, provisional numbers, machine-independent invariants | Reviewed |
+| 024 | [Versioning, Compatibility and Governance](rfcs/024-Versioning-Compatibility-and-Governance.md) | Versioning, deprecation, the decision process, RFC hygiene | Reviewed |
+| 025 | [Worktree and Virtual Filesystem](rfcs/025-Worktree-and-Virtual-Filesystem.md) | The session's virtual disk: content-addressed objects, sub-worktrees, sharing and merge, mounts, per-turn commit | Reviewed |
+| 026 | [Agent-Facing Runtime Surface](rfcs/026-Agent-Facing-Runtime-Surface.md) | What the model sees: the ordinary environment, plain Python, and the `agent` library that *is* CodeAct's action space | Reviewed |
+| 027 | [Vocabulary and Naming](rfcs/027-Vocabulary-and-Naming.md) | The canonical name for every concept, aligned to MAF, plus the collision register for words that mean different things in different specs | Reviewed |
+| 028 | [Bulk Data Transfer and Zero-Copy](rfcs/028-Bulk-Data-Transfer-and-Zero-Copy.md) | Moving large data without JSON, without copies, and without touching the context window: handles, Arrow, per-profile mapping | Reviewed |
+| 029 | [Memory System](rfcs/029-Memory-System.md) | Memory as a principal-scoped worktree, not a wrapped vector database: structured `MemoryItem`s, attributed extraction, deterministic default retrieval, vectors as an optional upgrade | Reviewed |
+| 030 | [Project: Workspace Grouping and Lifecycle](rfcs/030-Project-Workspace-and-Lifecycle.md) | A durable unit above a session — root session + owned sub-sessions + their worktree refs — with directed pause/restore/resume and no cap on concurrently open projects | Reviewed |
 
 Supporting documents: [`OpenQuestions.md`](OpenQuestions.md) (cross-cutting unresolved questions),
 [`decisions/`](decisions/) (the ADR process and record), and the dated, cited research records —
@@ -276,6 +276,6 @@ the code. Contested, hot-path, or security-critical designs go through
 ## Licence
 
 **MIT** — see [`LICENSE`](LICENSE). Resolved by the project owner 2026-08-04
-([024 Q1](024-Versioning-Compatibility-and-Governance.md), OQ-11), originally to match Quark's own
+([024 Q1](rfcs/024-Versioning-Compatibility-and-Governance.md), OQ-11), originally to match Quark's own
 licence back when Quark was a consumed dependency; ADR-037 later removed that dependency without
 reopening the licence choice.

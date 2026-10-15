@@ -24,13 +24,13 @@ behind `set_output_schema()` being called, which no `build-py` test does) but no
 This ADR stays **Proposed, not Judged** — per `decisions/README.md`/`OpenQuestions.md` OQ-11, only
 the project owner marks an ADR Judged.
 
-**Relates to:** `003-Message-and-Content-Model.md` §4 (the RFC text this ADR either makes true or
+**Relates to:** `rfcs/003-Message-and-Content-Model.md` §4 (the RFC text this ADR either makes true or
 corrects), `include/agentengine/core/agent.hpp` (`OutputSchema<T>`, the compile-time tag),
 `include/agentengine/core/agent_registry.hpp` (Milestone 5 Phase B5/B6 — schema compilation and
 strategy selection, real and tested), `include/agentengine/core/chat_client.hpp`
 (`output_schema_strategy`, `select_output_schema_strategy`, `ChatRequest::output_schema_json`),
 `include/agentengine/rt/agent_session.hpp` (`run_rounds()`, `AgentResponse`, the live turn loop this
-machinery has never been connected to), `026-Agent-Facing-Runtime-Surface.md` §5 (`agent.output`, the
+machinery has never been connected to), `rfcs/026-Agent-Facing-Runtime-Surface.md` §5 (`agent.output`, the
 CodeAct module this ADR treats as an explicit follow-on, not this pass's own scope).
 
 ## 1. The question, and a correction to the record first
@@ -327,9 +327,9 @@ issue in `from_json_value<T>`, independent of `OutputSchema<T>` entirely — eve
 **Verdict: DEFEATED for this pass.** No in-tree type exercises a real type-driven-parse-vs-JSON-Schema
 gap, and the one theoretically real gap (enum range) would survive a Design C validator unchanged
 because the schema generator itself would need retrofitting too. Per CLAUDE.md's own rule ("if the
-spec is wrong, fix the spec first, with an ADR, then the code"), `003-Message-and-Content-Model.md`
+spec is wrong, fix the spec first, with an ADR, then the code"), `rfcs/003-Message-and-Content-Model.md`
 §4's sentence — "Validation is JSON Schema 2020-12, matching MCP's tool schemas, so one validator
-serves both" (`003-Message-and-Content-Model.md:111`) — is the thing that should be corrected: this
+serves both" (`rfcs/003-Message-and-Content-Model.md:111`) — is the thing that should be corrected: this
 codebase's actual and, per C1/C2, currently *sufficient* validation idiom is "does this JSON
 type-parse into the declared C++ shape" (`from_json_value<T>`), not a generic constraint-rule engine,
 and no real gap has been found that would justify building one.
@@ -366,7 +366,7 @@ necessity). The fourth design (extend `ContextContribution`) survives as a docum
 is not preferred, on (b)/(c) above. **Recommendation for the "prove" phase: build Design B, corrected
 per B1/B3, with the insertion point identified at B5** (`run_rounds()`'s `calls.empty()` convergence
 branch, `rt/agent_session.hpp:1110-1118`, all three call sites of the pattern), and separately open an
-ADR against `003-Message-and-Content-Model.md` §4 to replace "Validation is JSON Schema 2020-12...
+ADR against `rfcs/003-Message-and-Content-Model.md` §4 to replace "Validation is JSON Schema 2020-12...
 one validator serves both" with language matching what C1/C2 found is actually enforced.
 
 ## 5. Executed evidence
@@ -616,7 +616,7 @@ eventually write to, but nothing in this pass builds that writer.
 
 ## 8. Concrete mechanism for Design B (prove-phase plan, written before implementation)
 
-Grounded in the red-team's own B1-B5 findings and the corrected `003-Message-and-Content-Model.md`
+Grounded in the red-team's own B1-B5 findings and the corrected `rfcs/003-Message-and-Content-Model.md`
 §4 text (already edited, this pass).
 
 - **`AgentSession` gains an additive opt-in setter**, matching `suspend_for_approval_`/

@@ -1,5 +1,5 @@
 #pragma once
-// Implements 004-Model-Provider-Plane.md §3 -- Milestone 5 Phase D: the OpenAI-compatible ChatClient
+// Implements rfcs/004-Model-Provider-Plane.md §3 -- Milestone 5 Phase D: the OpenAI-compatible ChatClient
 // backend (Chat Completions), 004 §3's default/widest-reach backend (OpenAI, gateways, vLLM/
 // llama.cpp/Ollama-style local servers, most vendor compat endpoints). Wire-format field names below
 // were sourced directly from the official OpenAI .NET SDK's generated serialization code (the

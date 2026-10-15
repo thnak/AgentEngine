@@ -3,7 +3,7 @@
 **Status:** **Proposed (2026-10-01).** Design, one self red-team pass (§4), implemented and proven (§6).
 Judge is the project owner's.
 
-**Relates to:** GitHub issue #156. `014-Workflow-and-Orchestration.md` §2/§4. ADR-159 (mid-run
+**Relates to:** GitHub issue #156. `rfcs/014-Workflow-and-Orchestration.md` §2/§4. ADR-159 (mid-run
 cancellation, the mechanism this amends). ADR-178 (`AgentSession::cancel()` is per run — the precedent
 followed here). ADR-210 §7 C1 (where #156 was found). ADR-157 (nested sub-workflows). ADR-152 (event
 stream). `include/agentengine/rt/workflow_supervisor.hpp`, `src/rt/workflow_supervisor.cpp`,

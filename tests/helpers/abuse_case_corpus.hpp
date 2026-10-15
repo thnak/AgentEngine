@@ -1,6 +1,6 @@
 #pragma once
 // M2 Phase C task C4 (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md): the
-// shared hostile-probe corpus 008-Sandbox-and-Isolation.md §9 G1 requires -- "one hostile test
+// shared hostile-probe corpus rfcs/008-Sandbox-and-Isolation.md §9 G1 requires -- "one hostile test
 // corpus runs against every available backend on every platform in the current target set (021 §2
 // -- Windows now, Linux next) and produces the same outcome classification for every case."
 //

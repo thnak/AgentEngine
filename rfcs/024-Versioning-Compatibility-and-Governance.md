@@ -55,7 +55,7 @@ a runtime dependency, not this process convention):
    questions. Status **Draft**.
 2. **Design → red-team → prove → judge** — for contested, hot-path, or security-critical choices:
    competing designs are implemented in real code, attacked, measured, and judged on evidence.
-   Produces an **ADR** in [`decisions/`](decisions/).
+   Produces an **ADR** in [`decisions/`](../decisions).
 3. **Promotion** — the RFC's named gate is executed; status moves Draft → Reviewed → Proven →
    Accepted (platform).
 4. **Code follows the spec.** When code and spec disagree, the spec wins; if the spec is wrong, fix

@@ -1087,13 +1087,13 @@ opposed to Finding Q's framing, which treated the missing resource cap as an unw
 agreed architecture).
 
 **The RFC is explicit that the kernel jail is not optional for the interpreter, and says exactly why.**
-`008-Sandbox-and-Isolation.md` §1b (lines 169–174) lays out the interpreter's isolation as three layers —
+`rfcs/008-Sandbox-and-Isolation.md` §1b (lines 169–174) lays out the interpreter's isolation as three layers —
 (1) closed import allowlist, (2) per-module dangerous-behavior mediation, (3) **kernel-level jail as
 backstop** — and states the reason layer 3 exists in so many words: *"relying solely on interpreter
 mediation has no answer for a bug in the mediation itself."* §3's profile table (line 262) defines
 `native-jail`'s boundary as "Kernel-enforced... **plus** mediated at the point of use" — both, not either.
 §3's own prose (lines 294–296) states plainly: *"the code interpreter, which is locked to `native-jail`
-permanently."* `010-Python-Code-Interpreter.md` §2 (line 63) repeats it ("under `native-jail`") and §6
+permanently."* `rfcs/010-Python-Code-Interpreter.md` §2 (line 63) repeats it ("under `native-jail`") and §6
 (line 246) states code executed via `execute_code` runs at **the sandbox's trust tier, T3** — and 008's own
 profile table (line 264) states the in-process `none` profile is scoped to "first-party trusted code only;
 **refuses to load T2/T3 code**." T3 code is, by the RFC's own vocabulary, exactly the class `none` is

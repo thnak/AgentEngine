@@ -712,7 +712,7 @@ a `ContentReplayTrigger`) the builder cannot default sensibly.
 **Composition order is builder-owned, not caller-owned.** `.with_middleware(...)` and
 `.with_content_replay(...)` may be called in any order the host finds natural; `build()` always nests
 them `ContentReplayGateway<MiddlewareModelCallGateway<ModelCallGateway<...>, Ms...>>` — outer-to-inner
-fixed, per `002-Agent-Model-and-Authoring.md:191-196`'s own stated reasoning for why this nesting order
+fixed, per `rfcs/002-Agent-Model-and-Authoring.md:191-196`'s own stated reasoning for why this nesting order
 is correct (review the final, post-retry outcome once, not once per retry attempt). A host calling
 these methods in the "wrong" order gets the *correct* object graph anyway — the one property a facade
 must guarantee, or it isn't saving the host from a real mistake class.
