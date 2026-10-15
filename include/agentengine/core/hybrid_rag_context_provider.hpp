@@ -152,7 +152,7 @@ public:
 
         ContextContribution contribution;
         for (ScoredId const& s : fused) {
-            auto rendered = vector_rag_detail::render_scored_chunk(*object_store_, *ref_store_, mount_,
+            auto rendered = co_await vector_rag_detail::render_scored_chunk(*object_store_, *ref_store_, mount_,
                                                                      read_cap_, s);
             // Same best-effort posture VectorRagContextProvider::on_context() already takes (see that
             // method's own comment): a stale index entry skips, rather than failing the whole
@@ -170,16 +170,16 @@ public:
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
 
 private:
-    [[nodiscard]] result<json::Value> reply_from_scored(std::vector<ScoredId> const& scored) const {
+    [[nodiscard]] task<result<json::Value>> reply_from_scored(std::vector<ScoredId> const& scored) const {
         RagRecallReply reply;
         reply.results.reserve(scored.size());
         for (ScoredId const& s : scored) {
-            auto rendered = vector_rag_detail::render_scored_chunk(*object_store_, *ref_store_, mount_,
+            auto rendered = co_await vector_rag_detail::render_scored_chunk(*object_store_, *ref_store_, mount_,
                                                                      read_cap_, s);
             if (!rendered) continue;
             reply.results.push_back(*rendered);
         }
-        return schema::to_json(reply);
+        co_return schema::to_json(reply);
     }
 
     // Mirrors VectorRagContextProvider::make_recall_tool_descriptor()'s exact lifetime reasoning (see
@@ -229,7 +229,7 @@ private:
         // 10, matching VectorRagContextProvider's own on-demand max_results literal -- independent of
         // max_injected_ (default-injection sizing, a different concern from an on-demand query).
         if (fused.size() > 10) fused.resize(10);
-        co_return reply_from_scored(fused);
+        co_return co_await reply_from_scored(fused);
     }
 
     OS*          object_store_;

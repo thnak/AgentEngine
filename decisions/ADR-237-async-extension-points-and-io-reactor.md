@@ -2547,6 +2547,37 @@ The first of the three stores, taken first because its core callers already `co_
   naming-lint and layering-lint OK. `agentengine_test_driver.exe` could not relink (held open by a running MCP
   server) -- unrelated, not rebuilt.
 
+### Step 48 (2026-10-15): Phase C slice 5 -- `AppendLogStore` is `task`-shaped, and with it every ref reader/writer (#172)
+
+`append`/`read_from`/`last_seq` return `task<...>`; ids by value. `InMemoryAppendLogStore` keeps its body.
+`FileAppendLogStore`'s out-of-line bodies are now `append_blocking`/`read_from_blocking`/`last_seq_blocking`
+(format, locking and truncation untouched) behind inline `task` wrappers that complete without suspending; the
+`rt::offload` move §6 names is NOT done here -- the same named residual as `FileSessionStore`'s.
+
+- **The cascade was the finding.** `AppendLogStore` is the ref store, so `read_ref`/`commit_ref` sit under the
+  whole worktree layer. Everything that touches a ref is now a `task`: `commit_ref`/`commit_turn`/`turn_digest_at`/
+  `rewind_to_turn`; `mount_read`/`mount_write(_with_blob)`/`materialize_merge_conflicts`;
+  `merge_branch_into_parent` + retry; `create/read/write_sub_worktree`; `check_shared_staleness`; the memory
+  helpers (`ensure_*`, `write/read/list_memory_item(s)`, `rank_memory_items`); corpus-chunk read/write,
+  `render_scored_chunk`, `mint_spawn_worktree`, `mint/resume_executor_worktrees`; the effect journal, project
+  archive and workflow time-travel; `Tier1AttemptLog` and `EvalStore::make`; and the native-jail materializers
+  (`materialize_mount`, `harvest_mount`, `materialize_memory_mount`, `harvest_memory_notes`,
+  `materialize_skill_mounts`). Object-store-only helpers (`set_entry_at_path`, `merge_subtrees`, `diff_*`) are
+  unchanged: they wait for `WorktreeObjectStore` (next).
+- **`WorkflowSupervisor::MergeOnJoinHook` is now `std::function<task<result<void>>(std::string)>`**, awaited in
+  `execute()` and `fold_batch_items()` (both already coroutines); `make_merge_on_join_hook` returns it.
+- **`SpawnMinter` drives `mint_spawn_worktree` with `agent_spawn_detail::drive`**, the same naive resume loop it
+  already uses for the cost pool on its dedicated worker thread. Sound while the ref store completes without
+  suspending; a store that truly parks would spin that thread -- named, to fix with Phase D.
+- **Evidence.** `test_worktree_ref_store` A2-L1 drives `commit_ref -> mount_write -> mount_read` on a runtime lane
+  against a log that parks on the reactor (both appends park). Mutant: `block_on` in `commit_ref_impl` ends the
+  test with exit 3 (`rt.block_on_on_lane`). Test fakes that wrapped a store (`FlakyStore`, `LosingStore`,
+  `SameSeqStore`, `CountingLogStore`) became `task`-shaped; ~600 call sites in tests changed shape only
+  (`block_on` off-lane), no assertion changed. `ctest -LE live-network`: 408/421, the 13 Docker-daemon tests --
+  among them `test_sandbox_runtime`, `test_mandatory_sandbox_provider` and `test_task_branch_*`, which reach this
+  code and could NOT run here, so the sandbox-side wiring is verified by compilation only.
+  naming-lint and layering-lint OK.
+
 ### §14.1 What is left, and the phases to follow
 
 Recorded at session end so the work resumes cold. **Status: §5.1 is 14 of ~27 seams converted**
@@ -2622,7 +2653,7 @@ wants it; it is not currently planned.
 
 **Phase C -- index and storage seams.** ~~`VectorIndex`/`SparseIndex`~~ and ~~the RAG `recall`
 conversion~~ done together (§14 step 44); ~~the "async in name only" bodies (`QdrantVectorIndex`,
-`OpenAIEmbedder`) onto `rt::http` with qdrant's `Resolver`~~ (§14 step 45); ~~`SecretStore`~~ (§14 step 46); ~~`SessionStore`~~ (§14 step 47); next `AppendLogStore` and `WorktreeObjectStore`. The RAG `recall`
+`OpenAIEmbedder`) onto `rt::http` with qdrant's `Resolver`~~ (§14 step 45); ~~`SecretStore`~~ (§14 step 46); ~~`SessionStore`~~ (§14 step 47); ~~`AppendLogStore`~~ (§14 step 48); next `WorktreeObjectStore`. The RAG `recall`
 conversion was planned to belong here rather than earlier: `recall` deletes two
 `synchronous_leaf` contract-error paths that tests pin deliberately, and it depends on the index seams.
 Gate: those tests are updated with the reason recorded -- never deleted to make a build pass.

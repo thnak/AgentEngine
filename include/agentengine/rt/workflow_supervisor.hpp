@@ -895,7 +895,7 @@ public:
     // Fired once per branch-mode executor, immediately after ITS OWN reply is folded successfully
     // this round. `result<void>{}` means "merged cleanly, or nothing needed merging"; a real `error`
     // is a fatal, non-retried outcome for the whole run (`workflow_status::merge_conflict`).
-    using MergeOnJoinHook = std::function<agentengine::result<void>(std::string const& executor_id)>;
+    using MergeOnJoinHook = std::function<task<agentengine::result<void>>(std::string executor_id)>;
     void set_merge_on_join_hook(MergeOnJoinHook hook) { merge_on_join_hook_ = std::move(hook); }
 
     // 014 §7's live-view bullet. Constructs a fresh, directly-connected producer/consumer pair

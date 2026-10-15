@@ -239,7 +239,7 @@ private:
                 auto tree_digest = skill_provider_detail::assemble_tree(object_store_, std::move(pending));
                 if (!tree_digest) co_return std::unexpected(tree_digest.error());
 
-                auto committed_ref = commit_ref(*ref_store_, "skill:" + skill_name, *tree_digest);
+                auto committed_ref = co_await commit_ref(*ref_store_, "skill:" + skill_name, *tree_digest);
                 if (!committed_ref) co_return std::unexpected(committed_ref.error());
 
                 // Bare skill name, not "/skills/" + name -- see this file's own top comment for why

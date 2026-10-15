@@ -26,6 +26,7 @@
 
 #include "agentengine/rt/append_log_file_store.hpp"
 #include "agentengine/rt/project_archive.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::FileAppendLogStore;
 using agentengine::rt::InMemoryAppendLogStore;
@@ -58,7 +59,7 @@ void check(bool cond, char const* what) {
 
 void test_a1_empty_tail() {
     InMemoryAppendLogStore store;
-    auto tail = read_archived_members(store, "proj-empty");
+    auto tail = agentengine::rt::block_on(read_archived_members(store, "proj-empty"));
     check(tail.has_value(), "A1: read_archived_members on an untouched tail does not error");
     check(tail.has_value() && tail->empty(), "A1: an untouched archived tail reads back empty");
 }
@@ -71,10 +72,10 @@ void test_a2_order_and_fidelity() {
         make_member("s-h3", "completed"),
     };
     for (auto const& m : to_archive) {
-        auto r = archive_project_member(store, "proj-1", m);
+        auto r = agentengine::rt::block_on(archive_project_member(store, "proj-1", m));
         check(r.has_value(), "A2: archive_project_member succeeds");
     }
-    auto tail = read_archived_members(store, "proj-1");
+    auto tail = agentengine::rt::block_on(read_archived_members(store, "proj-1"));
     check(tail.has_value(), "A2: read_archived_members succeeds");
     check(tail.has_value() && *tail == to_archive,
           "A2: the archived tail reads back in EXACTLY the order members were archived, fields intact");
@@ -82,13 +83,13 @@ void test_a2_order_and_fidelity() {
 
 void test_a3_isolation_across_projects() {
     InMemoryAppendLogStore store;
-    auto r1 = archive_project_member(store, "proj-a", make_member("s-a1", "completed"));
-    auto r2 = archive_project_member(store, "proj-b", make_member("s-b1", "completed"));
-    auto r3 = archive_project_member(store, "proj-b", make_member("s-b2", "completed"));
+    auto r1 = agentengine::rt::block_on(archive_project_member(store, "proj-a", make_member("s-a1", "completed")));
+    auto r2 = agentengine::rt::block_on(archive_project_member(store, "proj-b", make_member("s-b1", "completed")));
+    auto r3 = agentengine::rt::block_on(archive_project_member(store, "proj-b", make_member("s-b2", "completed")));
     check(r1.has_value() && r2.has_value() && r3.has_value(), "A3: archives to distinct projects succeed");
 
-    auto tail_a = read_archived_members(store, "proj-a");
-    auto tail_b = read_archived_members(store, "proj-b");
+    auto tail_a = agentengine::rt::block_on(read_archived_members(store, "proj-a"));
+    auto tail_b = agentengine::rt::block_on(read_archived_members(store, "proj-b"));
     check(tail_a.has_value() && tail_a->size() == 1 && (*tail_a)[0].session_id == "s-a1",
           "A3: proj-a's tail holds only its own member");
     check(tail_b.has_value() && tail_b->size() == 2, "A3: proj-b's tail holds only its own two members");
@@ -98,14 +99,14 @@ void test_a4_scale() {
     InMemoryAppendLogStore store;
     constexpr int kCount = 2000;
     for (int i = 0; i < kCount; ++i) {
-        auto r = archive_project_member(store, "proj-scale",
-                                          make_member("s-h" + std::to_string(i), "completed"));
+        auto r = agentengine::rt::block_on(archive_project_member(store, "proj-scale",
+                                          make_member("s-h" + std::to_string(i), "completed")));
         if (!r.has_value()) {
             check(false, "A4: archive_project_member succeeds at scale");
             return;
         }
     }
-    auto tail = read_archived_members(store, "proj-scale");
+    auto tail = agentengine::rt::block_on(read_archived_members(store, "proj-scale"));
     check(tail.has_value() && tail->size() == static_cast<std::size_t>(kCount),
           "A4: all 2000 archived members read back, none dropped");
     bool in_order = true;
@@ -123,13 +124,13 @@ void test_a4_scale() {
 void test_d1_durability_across_store_instances(std::filesystem::path const& root) {
     {
         FileAppendLogStore store(root);
-        auto r1 = archive_project_member(store, "proj-durable", make_member("s-d1", "completed"));
-        auto r2 = archive_project_member(store, "proj-durable", make_member("s-d2", "completed"));
+        auto r1 = agentengine::rt::block_on(archive_project_member(store, "proj-durable", make_member("s-d1", "completed")));
+        auto r2 = agentengine::rt::block_on(archive_project_member(store, "proj-durable", make_member("s-d2", "completed")));
         check(r1.has_value() && r2.has_value(), "D1: archives through the first store instance succeed");
     }  // store instance goes out of scope -- simulates a process restart
 
     FileAppendLogStore reopened(root);
-    auto tail = read_archived_members(reopened, "proj-durable");
+    auto tail = agentengine::rt::block_on(read_archived_members(reopened, "proj-durable"));
     check(tail.has_value() && tail->size() == 2,
           "D1: a SECOND FileAppendLogStore instance rooted at the same directory sees both members");
     check(tail.has_value() && tail->size() == 2 && (*tail)[0].session_id == "s-d1" &&

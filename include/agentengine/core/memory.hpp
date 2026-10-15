@@ -23,6 +23,7 @@
 #include "agentengine/core/worktree.hpp"
 #include "agentengine/rt/append_log_store.hpp"
 #include "agentengine/trust/principal.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine {
 
@@ -92,22 +93,22 @@ struct MemoryItem {  // ae-naming-lint: allow MemoryItem — pre-existing M0 sca
 // ADR-156's own dedicated notes-inbox ref, `memory_notes_materializer.hpp`) reuse this exact logic
 // rather than a byte-for-byte copy of it (code-review finding on that ADR's own pass).
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<Ref> ensure_worktree_ref(OS& object_store, RS& ref_store, std::string const& name) {
-    auto existing = read_ref(ref_store, name);
-    if (!existing) return std::unexpected(existing.error());
-    if (existing->has_value()) return **existing;
+[[nodiscard]] task<result<Ref>> ensure_worktree_ref(OS& object_store, RS& ref_store, std::string name) {
+    auto existing = co_await read_ref(ref_store, name);
+    if (!existing) co_return std::unexpected(existing.error());
+    if (existing->has_value()) co_return **existing;
 
     auto empty = object_store.put_tree(Tree{});
-    if (!empty) return std::unexpected(empty.error());
-    return commit_ref(ref_store, name, *empty);
+    if (!empty) co_return std::unexpected(empty.error());
+    co_return co_await commit_ref(ref_store, name, *empty);
 }
 
 // Bootstraps a principal's memory worktree specifically -- see `ensure_worktree_ref()` above for the
 // underlying (now-shared) bootstrap logic.
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<Ref> ensure_memory_worktree(OS& object_store, RS& ref_store,
-                                                   Principal const& principal) {
-    return ensure_worktree_ref(object_store, ref_store, memory_ref_name(principal));
+[[nodiscard]] task<result<Ref>> ensure_memory_worktree(OS& object_store, RS& ref_store,
+                                                   Principal principal) {
+    co_return co_await ensure_worktree_ref(object_store, ref_store, memory_ref_name(principal));
 }
 
 // Milestone 4 Phase G5 (029 §8/§9 G5: "cross-principal memory leakage through a shared index
@@ -315,12 +316,12 @@ namespace memory_detail {
 // assigned" — a caller passes a candidate item without a real id and gets one filled in as a side
 // effect of the write actually landing.
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<Ref> write_memory_item(OS& object_store, RS& ref_store, Mount const& mount,
-                                              cap::FsWrite const& granted, MemoryItem& item) {
+[[nodiscard]] task<result<Ref>> write_memory_item(OS& object_store, RS& ref_store, Mount mount,
+                                              cap::FsWrite granted, MemoryItem& item) {
     auto content_bytes =
         std::as_bytes(std::span{item.content.data(), item.content.size()});
     auto digest = compute_digest(content_bytes);
-    if (!digest) return std::unexpected(digest.error());
+    if (!digest) co_return std::unexpected(digest.error());
     item.id = *digest;
 
     // ADR-179 stage 0: the whole read-modify-write below (predict write_seq, read the tree, add the blob,
@@ -337,24 +338,24 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
     // below. That is now enforced against other threads of THIS process going through this function (the
     // lock above); it is still NOT enforced against another process, or a caller writing the ref through
     // `mount_write()` directly.
-    item.write_seq = ref_store.last_seq(ref_log_id(mount.ref_name)) + 1;
+    item.write_seq = co_await ref_store.last_seq(ref_log_id(mount.ref_name)) + 1;
 
     std::string const record = json::dump(memory_item_to_json(item));
     auto record_bytes = std::as_bytes(std::span{record.data(), record.size()});
-    return mount_write(object_store, ref_store, mount, granted, memory_item_path(item.kind, item.id),
+    co_return co_await mount_write(object_store, ref_store, mount, granted, memory_item_path(item.kind, item.id),
                         record_bytes);
 }
 
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<MemoryItem> read_memory_item(OS& object_store, RS& ref_store, Mount const& mount,
-                                                    cap::FsRead const& granted, memory_kind kind,
-                                                    std::string const& id) {
-    auto bytes = mount_read(object_store, ref_store, mount, granted, memory_item_path(kind, id));
-    if (!bytes) return std::unexpected(bytes.error());
+[[nodiscard]] task<result<MemoryItem>> read_memory_item(OS& object_store, RS& ref_store, Mount mount,
+                                                    cap::FsRead granted, memory_kind kind,
+                                                    std::string id) {
+    auto bytes = co_await mount_read(object_store, ref_store, mount, granted, memory_item_path(kind, id));
+    if (!bytes) co_return std::unexpected(bytes.error());
     std::string text(reinterpret_cast<char const*>(bytes->data()), bytes->size());
     auto parsed = json::parse(text);
-    if (!parsed) return std::unexpected(parsed.error());
-    return memory_item_from_json(*parsed);
+    if (!parsed) co_return std::unexpected(parsed.error());
+    co_return memory_item_from_json(*parsed);
 }
 
 namespace memory_detail {
@@ -389,18 +390,18 @@ template <WorktreeObjectStore S>
 // empty list, not an error (matching `load_agent_session_snapshot`'s own "absence is not a
 // failure" precedent).
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<std::vector<MemoryItem>> list_memory_items(OS& object_store, RS& ref_store,
-                                                                   Mount const& mount,
-                                                                   cap::FsRead const& granted) {
+[[nodiscard]] task<result<std::vector<MemoryItem>>> list_memory_items(OS& object_store, RS& ref_store,
+                                                                   Mount mount,
+                                                                   cap::FsRead granted) {
     if (granted.mount_id != mount.mount_id) {
-        return std::unexpected(error{failure_class::policy,
+        co_return std::unexpected(error{failure_class::policy,
                                       "this capability does not authorize the requested mount",
                                       "worktree.mount_capability_mismatch"});
     }
 
-    auto ref = read_ref(ref_store, mount.ref_name);
-    if (!ref) return std::unexpected(ref.error());
-    if (!ref->has_value()) return std::vector<MemoryItem>{};
+    auto ref = co_await read_ref(ref_store, mount.ref_name);
+    if (!ref) co_return std::unexpected(ref.error());
+    if (!ref->has_value()) co_return std::vector<MemoryItem>{};
 
     // Resolve `mount.subtree_path` within the ref's own tree first -- every memory mount this
     // phase actually constructs (`memory_mount()`) roots at "", but a caller-built `Mount` with a
@@ -409,12 +410,12 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
     Digest root_digest = (*ref)->tree_digest;
     if (!mount.subtree_path.empty()) {
         auto segments = split_mount_path(mount.subtree_path);
-        if (!segments) return std::unexpected(segments.error());
+        if (!segments) co_return std::unexpected(segments.error());
         if (!segments->empty()) {
             auto entry = detail::resolve_entry_at_path(object_store, root_digest, *segments);
             if (!entry) {
                 // The mount's own subtree hasn't been written yet -- no memory under it, not an error.
-                return std::vector<MemoryItem>{};
+                co_return std::vector<MemoryItem>{};
             }
             root_digest = entry->digest;
         }
@@ -422,21 +423,21 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 
     std::vector<std::string> paths;
     auto collected = memory_detail::collect_blob_paths(object_store, root_digest, /*is_tree=*/true, "", paths);
-    if (!collected) return std::unexpected(collected.error());
+    if (!collected) co_return std::unexpected(collected.error());
 
     std::vector<MemoryItem> items;
     items.reserve(paths.size());
     for (auto const& path : paths) {
-        auto bytes = mount_read(object_store, ref_store, mount, granted, path);
-        if (!bytes) return std::unexpected(bytes.error());
+        auto bytes = co_await mount_read(object_store, ref_store, mount, granted, path);
+        if (!bytes) co_return std::unexpected(bytes.error());
         std::string text(reinterpret_cast<char const*>(bytes->data()), bytes->size());
         auto parsed = json::parse(text);
-        if (!parsed) return std::unexpected(parsed.error());
+        if (!parsed) co_return std::unexpected(parsed.error());
         auto item = memory_item_from_json(*parsed);
-        if (!item) return std::unexpected(item.error());
+        if (!item) co_return std::unexpected(item.error());
         items.push_back(std::move(*item));
     }
-    return items;
+    co_return items;
 }
 
 } // namespace agentengine

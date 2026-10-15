@@ -133,9 +133,20 @@ class FileAppendLogStore {
 public:
     explicit FileAppendLogStore(std::filesystem::path root, append_log_sync sync = append_log_sync::os_buffer);
 
-    [[nodiscard]] result<SeqNo> append(LogId const& id, std::vector<std::byte> bytes) const;
-    [[nodiscard]] result<std::vector<std::vector<std::byte>>> read_from(LogId const& id, SeqNo from) const;
-    [[nodiscard]] SeqNo last_seq(LogId const& id) const;
+    // `task`-shaped since decisions/ADR-237 §5.1 (#172). The bodies are the `*_blocking` members below and
+    // complete without suspending: moving them onto `rt::offload` (§6) is a named residual, as for
+    // FileSessionStore. Ids are by value so a held task never reads a dead temporary.
+    [[nodiscard]] task<result<SeqNo>> append(LogId id, std::vector<std::byte> bytes) const {
+        co_return append_blocking(id, std::move(bytes));
+    }
+    [[nodiscard]] task<result<std::vector<std::vector<std::byte>>>> read_from(LogId id, SeqNo from) const {
+        co_return read_from_blocking(id, from);
+    }
+    [[nodiscard]] task<SeqNo> last_seq(LogId id) const { co_return last_seq_blocking(id); }
+
+    [[nodiscard]] result<SeqNo> append_blocking(LogId const& id, std::vector<std::byte> bytes) const;
+    [[nodiscard]] result<std::vector<std::vector<std::byte>>> read_from_blocking(LogId const& id, SeqNo from) const;
+    [[nodiscard]] SeqNo last_seq_blocking(LogId const& id) const;
 
 private:
     // The whole file under a shared lock; a missing file is an empty log.

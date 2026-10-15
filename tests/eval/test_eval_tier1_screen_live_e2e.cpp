@@ -60,6 +60,7 @@
 #include "agentengine/rt/append_log_file_store.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using namespace agentengine;
 namespace ev = agentengine::eval;
@@ -460,7 +461,7 @@ int analyze(fs::path const& dir) {
     // The attempt log on disk, read back through a fresh store.
     rt::FileAppendLogStore store(dir / "attempt-log");
     ev::Tier1AttemptLog<rt::FileAppendLogStore> log(store);
-    auto history = log.lineage_attempts(lineage);
+    auto history = agentengine::rt::block_on(log.lineage_attempts(lineage));
     check(history.has_value(), "attempt log: the lineage's log reads back from disk");
     if (!history) return g_failures - failures_before;
 

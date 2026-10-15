@@ -47,6 +47,7 @@
 #include <vector>
 
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine::rt {
 
@@ -67,9 +68,9 @@ template <class T>
 // ae-naming-lint: allow AppendLogStore — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 concept AppendLogStore = requires(T& store, T const& const_store, LogId const& id,
                                    std::vector<std::byte> bytes, SeqNo from) {
-    { store.append(id, std::move(bytes)) } -> std::same_as<result<SeqNo>>;
-    { const_store.read_from(id, from) } -> std::same_as<result<std::vector<std::vector<std::byte>>>>;
-    { const_store.last_seq(id) } -> std::same_as<SeqNo>;
+    { store.append(id, std::move(bytes)) } -> std::same_as<task<result<SeqNo>>>;
+    { const_store.read_from(id, from) } -> std::same_as<task<result<std::vector<std::vector<std::byte>>>>>;
+    { const_store.last_seq(id) } -> std::same_as<task<SeqNo>>;
 };
 
 // ------------------------------------------------------------------------------------------------
@@ -79,30 +80,29 @@ concept AppendLogStore = requires(T& store, T const& const_store, LogId const& i
 // ae-naming-lint: allow InMemoryAppendLogStore — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class InMemoryAppendLogStore {
 public:
-    [[nodiscard]] result<SeqNo> append(LogId const& id, std::vector<std::byte> bytes) {
-        std::lock_guard<std::mutex> lock(mutex_);
+    [[nodiscard]] task<result<SeqNo>> append(LogId id, std::vector<std::byte> bytes) {
+        std::lock_guard<std::mutex> lock(mutex_);  // released before the task completes: no suspension inside
         auto& entries = logs_[id];
         entries.push_back(std::move(bytes));
-        return static_cast<SeqNo>(entries.size());
+        co_return static_cast<SeqNo>(entries.size());
     }
 
-    [[nodiscard]] result<std::vector<std::vector<std::byte>>> read_from(LogId const& id,
-                                                                          SeqNo from) const {
+    [[nodiscard]] task<result<std::vector<std::vector<std::byte>>>> read_from(LogId id, SeqNo from) const {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = logs_.find(id);
-        if (it == logs_.end()) return std::vector<std::vector<std::byte>>{};
+        if (it == logs_.end()) co_return std::vector<std::vector<std::byte>>{};
         std::vector<std::vector<std::byte>> out;
         // `from` is EXCLUSIVE (matches quark::EventLog's own "from + 1" read boundary) -- entries_
         // is 0-indexed, seq N lives at index N-1, so "everything with seq > from" starts at index
         // `from` itself.
         for (std::size_t i = from; i < it->second.size(); ++i) out.push_back(it->second[i]);
-        return out;
+        co_return out;
     }
 
-    [[nodiscard]] SeqNo last_seq(LogId const& id) const {
+    [[nodiscard]] task<SeqNo> last_seq(LogId id) const {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = logs_.find(id);
-        return it == logs_.end() ? SeqNo{0} : static_cast<SeqNo>(it->second.size());
+        co_return it == logs_.end() ? SeqNo{0} : static_cast<SeqNo>(it->second.size());
     }
 
 private:

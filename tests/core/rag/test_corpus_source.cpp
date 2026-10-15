@@ -27,6 +27,7 @@
 #include "agentengine/core/corpus_source.hpp"
 #include "agentengine/core/sparse_index.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "../../support/run_task_sync.hpp"
 #include "../../support/index_sync.hpp"
 
@@ -181,7 +182,7 @@ int main() {
                                              file1_original,
                      "(a) the chunk TEXT itself is retrievable from the object store by that same id "
                      "(put_blob() and the precomputed chunk id agree)");
-            auto record = ae::read_corpus_chunk_record(object_store, ref_store, mount, read_cap, *file1_blob_digest);
+            auto record = agentengine::rt::block_on(ae::read_corpus_chunk_record(object_store, ref_store, mount, read_cap, *file1_blob_digest));
             AE_CHECK(record.has_value() && record->source_path == "file1.txt" && record->line_start == 1 &&
                          record->line_end == 1,
                      "(a) the citation record for file1's chunk names the right source_path and a "

@@ -44,6 +44,7 @@
 #include "agentengine/rt/append_log_store.hpp"
 #include "agentengine/rt/runtime.hpp"
 #include "agentengine/rt/sleep.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 namespace {
 
@@ -189,7 +190,7 @@ ae::result<ae::Ref> bootstrap_corpus_worktree(ae::InMemoryWorktreeObjectStore& o
                                               ae::rt::InMemoryAppendLogStore& ref_store, ae::Mount const& mount) {
     auto empty = object_store.put_tree(ae::Tree{});
     if (!empty) return std::unexpected(empty.error());
-    return ae::commit_ref(ref_store, mount.ref_name, *empty);
+    return agentengine::rt::block_on(ae::commit_ref(ref_store, mount.ref_name, *empty));
 }
 
 ae::rt::Runtime* g_runtime = nullptr;
@@ -228,7 +229,7 @@ int main() {
         auto digest = object_store.put_blob(std::as_bytes(std::span{text.data(), text.size()}));
         AE_CHECK(digest.has_value(), "setup: chunk blob written");
         ae::CorpusChunkRecord record{*digest, "docs/settings.md", 1, 1, "hash"};
-        AE_CHECK(ae::write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record).has_value(),
+        AE_CHECK(agentengine::rt::block_on(ae::write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record)).has_value(),
                  "setup: chunk record written");
 
         SuspendingEmbedder embedder{parker};
@@ -280,7 +281,7 @@ int main() {
         auto digest = object_store.put_blob(std::as_bytes(std::span{text.data(), text.size()}));
         AE_CHECK(digest.has_value(), "setup: chunk blob written");
         ae::CorpusChunkRecord record{*digest, "docs/settings.md", 1, 1, "hash"};
-        AE_CHECK(ae::write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record).has_value(),
+        AE_CHECK(agentengine::rt::block_on(ae::write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record)).has_value(),
                  "setup: chunk record written");
 
         SuspendingEmbedder embedder{parker};

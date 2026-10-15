@@ -15,6 +15,7 @@
 
 #include "agentengine/core/worktree.hpp"
 #include "agentengine/pal/env.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "backends/native_jail/mediated_filesystem_adapter.hpp"
 #include "backends/native_jail/worktree_mount_sync.hpp"
 
@@ -84,7 +85,7 @@ int main() {
         auto nested = blob_of(obj_store, "nested content");
         auto sub_tree = tree_of(obj_store, {{"nested.txt", nested, false}});
         auto root_tree = tree_of(obj_store, {{"greeting.txt", greeting, false}, {"sub", sub_tree, true}});
-        AE_CHECK(commit_ref(ref_store, "session:sync-1", root_tree).has_value(),
+        AE_CHECK(agentengine::rt::block_on(commit_ref(ref_store, "session:sync-1", root_tree)).has_value(),
                  "F1-M1: setup commit succeeds");
 
         Mount mount{"work", "session:sync-1", ""};
@@ -93,7 +94,7 @@ int main() {
         AE_CHECK(adapter.has_value(), "F1-M1: setup -- MediatedFileSystemAdapter::create succeeds");
 
         cap::FsRead granted{"work", "", std::nullopt};
-        auto materialized = materialize_mount(obj_store, ref_store, mount, granted, *adapter);
+        auto materialized = agentengine::rt::block_on(materialize_mount(obj_store, ref_store, mount, granted, *adapter));
         AE_CHECK(materialized.has_value(), "F1-M1: materialize_mount succeeds against a fully-granted FsRead");
 
         AE_CHECK(std::filesystem::exists(target_dir + "/greeting.txt"),
@@ -113,7 +114,7 @@ int main() {
         auto denied_adapter = MediatedFileSystemAdapter::create(widen_simple(denied_dir));
         AE_CHECK(denied_adapter.has_value(), "F1-M1: setup -- second adapter for the denial case");
         cap::FsRead wrong_mount{"other", "", std::nullopt};
-        auto denied = materialize_mount(obj_store, ref_store, mount, wrong_mount, *denied_adapter);
+        auto denied = agentengine::rt::block_on(materialize_mount(obj_store, ref_store, mount, wrong_mount, *denied_adapter));
         AE_CHECK(!denied.has_value() && denied.error().code == "worktree.mount_capability_mismatch",
                  "F1-M1: materialize_mount fails closed on a capability for a different mount_id");
         AE_CHECK(!std::filesystem::exists(denied_dir + "/greeting.txt"),
@@ -124,8 +125,8 @@ int main() {
         auto ghost_dir = fresh_dir(scratch, "materialize_ghost");
         auto ghost_adapter = MediatedFileSystemAdapter::create(widen_simple(ghost_dir));
         AE_CHECK(ghost_adapter.has_value(), "F1-M1: setup -- third adapter for the ghost-ref case");
-        auto ghost = materialize_mount(obj_store, ref_store, ghost_mount, cap::FsRead{"ghost", "", std::nullopt},
-                                        *ghost_adapter);
+        auto ghost = agentengine::rt::block_on(materialize_mount(obj_store, ref_store, ghost_mount, cap::FsRead{"ghost", "", std::nullopt},
+                                        *ghost_adapter));
         AE_CHECK(!ghost.has_value() && ghost.error().code == "worktree.mount_ref_missing",
                  "F1-M1: materialize_mount over an uncommitted ref fails closed");
     }
@@ -135,7 +136,7 @@ int main() {
         InMemoryStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto empty_tree = tree_of(obj_store, {});
-        AE_CHECK(commit_ref(ref_store, "session:sync-2", empty_tree).has_value(),
+        AE_CHECK(agentengine::rt::block_on(commit_ref(ref_store, "session:sync-2", empty_tree)).has_value(),
                  "F1-H1: setup -- an initially-empty /out-style ref commits");
 
         Mount mount{"out", "session:sync-2", ""};
@@ -154,7 +155,7 @@ int main() {
                  "F1-H1: setup -- a nested output file is really written to disk");
 
         cap::FsWrite granted{"out", "", std::nullopt, std::nullopt};
-        auto harvested = harvest_mount(obj_store, ref_store, mount, granted, *adapter);
+        auto harvested = agentengine::rt::block_on(harvest_mount(obj_store, ref_store, mount, granted, *adapter));
         AE_CHECK(harvested.has_value(), "F1-H1: harvest_mount succeeds against a fully-granted FsWrite");
         AE_CHECK(harvested.has_value() && harvested->size() == 2,
                  "F1-H1: harvest_mount reports exactly the two real files it found (025 SS7)");
@@ -183,17 +184,17 @@ int main() {
 
         // The harvest must have actually committed the Tree, not just constructed Content items --
         // mount_read against the SAME mount now sees exactly what was on disk.
-        auto read_back = mount_read(obj_store, ref_store, mount, cap::FsRead{"out", "", std::nullopt}, "result.txt");
+        auto read_back = agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, cap::FsRead{"out", "", std::nullopt}, "result.txt"));
         AE_CHECK(read_back.has_value() && string_of(*read_back) == "computed result",
                  "F1-H1: the worktree Tree was really updated -- mount_read sees the harvested content");
         auto read_nested =
-            mount_read(obj_store, ref_store, mount, cap::FsRead{"out", "", std::nullopt}, "plots/chart.csv");
+            agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, cap::FsRead{"out", "", std::nullopt}, "plots/chart.csv"));
         AE_CHECK(read_nested.has_value() && string_of(*read_nested) == "x,y\n1,2\n",
                  "F1-H1: the nested harvested file round-trips through mount_read too");
 
         // Negative control: a capability for a DIFFERENT mount_id fails closed BEFORE anything
         // commits, and the Ref does not move.
-        auto ref_before = read_ref(ref_store, "session:sync-2");
+        auto ref_before = agentengine::rt::block_on(read_ref(ref_store, "session:sync-2"));
         AE_CHECK(ref_before.has_value() && ref_before->has_value(), "F1-H1: setup -- ref is readable before the denial");
 
         auto denied_dir = fresh_dir(scratch, "harvest_denied");
@@ -203,11 +204,11 @@ int main() {
                  "F1-H1: setup -- a real file exists for the denied harvest to find");
 
         cap::FsWrite wrong_mount{"other", "", std::nullopt, std::nullopt};
-        auto denied = harvest_mount(obj_store, ref_store, mount, wrong_mount, *denied_adapter);
+        auto denied = agentengine::rt::block_on(harvest_mount(obj_store, ref_store, mount, wrong_mount, *denied_adapter));
         AE_CHECK(!denied.has_value() && denied.error().code == "worktree.mount_capability_mismatch",
                  "F1-H1: harvest_mount fails closed on a capability for a different mount_id");
 
-        auto ref_after = read_ref(ref_store, "session:sync-2");
+        auto ref_after = agentengine::rt::block_on(read_ref(ref_store, "session:sync-2"));
         AE_CHECK(ref_after.has_value() && ref_after->has_value() &&
                      (*ref_after)->tree_digest == (*ref_before)->tree_digest,
                  "F1-H1: a denied harvest never moved the mount's Ref");

@@ -27,6 +27,7 @@
 #include "agentengine/core/vector_index.hpp"
 #include "agentengine/core/worktree.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "../../support/run_task_sync.hpp"
 #include "../../support/index_sync.hpp"
 
@@ -91,7 +92,7 @@ ae::result<ae::Ref> bootstrap_corpus_worktree(ae::InMemoryWorktreeObjectStore& o
                                                 ae::Mount const& mount) {
     auto empty = object_store.put_tree(ae::Tree{});
     if (!empty) return std::unexpected(empty.error());
-    return ae::commit_ref(ref_store, mount.ref_name, *empty);
+    return agentengine::rt::block_on(ae::commit_ref(ref_store, mount.ref_name, *empty));
 }
 
 // Writes one hand-built chunk into BOTH the dense and sparse index -- the hybrid sibling of
@@ -111,7 +112,7 @@ ae::result<ae::Digest> write_chunk(ae::InMemoryWorktreeObjectStore& object_store
     record.line_start       = line_start;
     record.line_end         = line_end;
     record.source_file_hash = "test-file-hash";
-    auto written = ae::write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record);
+    auto written = agentengine::rt::block_on(ae::write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record));
     if (!written) return std::unexpected(written.error());
 
     auto dense_added = sync_add_batch(dense, {*digest}, {vec});

@@ -79,6 +79,7 @@
 #include "agentengine/core/vector_index.hpp"
 #include "agentengine/core/worktree.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine {
 
@@ -151,10 +152,10 @@ namespace vector_rag_detail {
 // second copy. Shared by `on_context()`'s default injection path AND a contributed `recall` tool's own
 // `invoke`.
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<std::string> render_scored_chunk(OS& object_store, RS& ref_store, Mount const& mount,
-                                                        cap::FsRead const& read_cap, ScoredId const& scored) {
-    auto record = read_corpus_chunk_record(object_store, ref_store, mount, read_cap, scored.id);
-    if (!record) return std::unexpected(record.error());
+[[nodiscard]] task<result<std::string>> render_scored_chunk(OS& object_store, RS& ref_store, Mount mount,
+                                                        cap::FsRead read_cap, ScoredId scored) {
+    auto record = co_await read_corpus_chunk_record(object_store, ref_store, mount, read_cap, scored.id);
+    if (!record) co_return std::unexpected(record.error());
 
     // corpus_chunk.hpp's own header comment: `scored.id` IS the chunk TEXT's own content digest
     // -- the identical id `put_blob()` returned when the chunk was written and `VectorIndex`
@@ -167,7 +168,7 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
     // capability gate at the blob layer. This is the SAME mechanism corpus_chunk.hpp's own
     // header comment already designs and names, not a gap this file introduces.
     auto chunk_bytes = object_store.get_blob(scored.id);
-    if (!chunk_bytes) return std::unexpected(chunk_bytes.error());
+    if (!chunk_bytes) co_return std::unexpected(chunk_bytes.error());
     std::string const chunk_text(reinterpret_cast<char const*>(chunk_bytes->data()), chunk_bytes->size());
 
     // ADR-063 §2.6b's exact shape: "citation_label = ... ; rendered text = citation_label + " "
@@ -179,7 +180,7 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
         std::to_string(record->line_start) + "-" + std::to_string(record->line_end) +
         std::string(rag_citation_label_close());
 
-    return citation_label + " " + neutralize_forged_provenance_markers(chunk_text, rag_citation_label_open());
+    co_return citation_label + " " + neutralize_forged_provenance_markers(chunk_text, rag_citation_label_open());
 }
 
 // ADR-180 §2.3: extracted from `VectorRagContextProvider`'s own former private static method,
@@ -275,7 +276,7 @@ public:
 
         ContextContribution contribution;
         for (ScoredId const& s : *scored_result) {
-            auto rendered = vector_rag_detail::render_scored_chunk(*object_store_, *ref_store_, mount_,
+            auto rendered = co_await vector_rag_detail::render_scored_chunk(*object_store_, *ref_store_, mount_,
                                                                      read_cap_, s);
             if (!rendered) {
                 // Real, currently-undesigned lifecycle edge case (ADR-063 §7 already names the
@@ -311,16 +312,16 @@ private:
     // ADR-180 §2.1: builds the on-demand `recall(query)` reply from an already-scored, already-
     // ranked result list, with the "skip a stale entry, keep the rest" best-effort posture of
     // `on_context()`.
-    [[nodiscard]] result<json::Value> reply_from_scored(std::vector<ScoredId> const& scored) const {
+    [[nodiscard]] task<result<json::Value>> reply_from_scored(std::vector<ScoredId> const& scored) const {
         RagRecallReply reply;
         reply.results.reserve(scored.size());
         for (ScoredId const& s : scored) {
-            auto rendered = vector_rag_detail::render_scored_chunk(*object_store_, *ref_store_, mount_,
+            auto rendered = co_await vector_rag_detail::render_scored_chunk(*object_store_, *ref_store_, mount_,
                                                                      read_cap_, s);
             if (!rendered) continue;
             reply.results.push_back(*rendered);
         }
-        return schema::to_json(reply);
+        co_return schema::to_json(reply);
     }
 
     // NOT `const` -- deliberately: `recall_call()` below calls `this->embedder_.
@@ -382,7 +383,7 @@ private:
         // deliberately independent of max_injected_ (which sizes DEFAULT injection, a different concern).
         auto scored = co_await index_->search(query_span, /*k=*/10, ctx);
         if (!scored) co_return std::unexpected(scored.error());
-        co_return reply_from_scored(*scored);
+        co_return co_await reply_from_scored(*scored);
     }
 
     OS*          object_store_;

@@ -59,6 +59,7 @@
 #include "agentengine/core/memory.hpp"
 #include "agentengine/core/worktree.hpp"
 #include "agentengine/trust/capability.hpp"
+#include "agentengine/core/task.hpp"
 #include "backends/native_jail/mediated_filesystem_adapter.hpp"
 #include "backends/native_jail/memory_mount_materializer.hpp"  // MaterializedMemoryMount
 #include "backends/native_jail/worktree_mount_sync.hpp"
@@ -86,9 +87,9 @@ namespace agentengine::native_jail {
 // this genuinely separate one, rather than a second hand-copied implementation. Called internally by
 // `harvest_memory_notes()` below so callers never need their own separate bootstrap step.
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<Ref> ensure_memory_notes_inbox_worktree(OS& object_store, RS& ref_store,
-                                                                Principal const& principal) {
-    return ensure_worktree_ref(object_store, ref_store, memory_notes_inbox_ref_name(principal));
+[[nodiscard]] task<result<Ref>> ensure_memory_notes_inbox_worktree(OS& object_store, RS& ref_store,
+                                                                Principal principal) {
+    co_return co_await ensure_worktree_ref(object_store, ref_store, memory_notes_inbox_ref_name(principal));
 }
 
 // Creates a fresh, empty real host directory for this run's own staging area -- no read from the
@@ -115,19 +116,19 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 // `ctx.run_id`/`ctx.turn_index`) -- never invented here (I4: every effect is attributable to a real
 // run/turn, not a placeholder).
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<std::vector<MemoryItem>> harvest_memory_notes(
-    OS& object_store, RS& ref_store, Principal const& principal, cap::FsWrite const& inbox_granted,
-    cap::FsWrite const& structural_granted, std::wstring const& host_dir, std::string const& run_id,
-    std::string const& turn_id) {
-    auto bootstrapped = ensure_memory_notes_inbox_worktree(object_store, ref_store, principal);
-    if (!bootstrapped) return std::unexpected(bootstrapped.error());
+[[nodiscard]] task<result<std::vector<MemoryItem>>> harvest_memory_notes(
+    OS& object_store, RS& ref_store, Principal principal, cap::FsWrite inbox_granted,
+    cap::FsWrite structural_granted, std::wstring host_dir, std::string run_id,
+    std::string turn_id) {
+    auto bootstrapped = co_await ensure_memory_notes_inbox_worktree(object_store, ref_store, principal);
+    if (!bootstrapped) co_return std::unexpected(bootstrapped.error());
 
     auto adapter = mediated_shell::MediatedFileSystemAdapter::create(host_dir);
-    if (!adapter) return std::unexpected(adapter.error());
+    if (!adapter) co_return std::unexpected(adapter.error());
 
     Mount const inbox_mount = memory_notes_inbox_mount(principal);
-    auto harvested = harvest_mount(object_store, ref_store, inbox_mount, inbox_granted, *adapter);
-    if (!harvested) return std::unexpected(harvested.error());
+    auto harvested = co_await harvest_mount(object_store, ref_store, inbox_mount, inbox_granted, *adapter);
+    if (!harvested) co_return std::unexpected(harvested.error());
 
     // Best-effort per item, deliberately: `write_memory_item()` durably commits ONE item at a time
     // (`mount_write`'s own per-write `commit_ref`, matching `harvest_subtree`'s own established "not
@@ -157,11 +158,11 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
                                               // or an extracted procedure, 029 §3's own kind taxonomy.
         item.content.assign(reinterpret_cast<char const*>(bytes->data()), bytes->size());
         item.origin = MemoryOrigin{memory_source::agent_authored, run_id, turn_id, principal};
-        auto written = write_memory_item(object_store, ref_store, structural_mount, structural_granted, item);
+        auto written = co_await write_memory_item(object_store, ref_store, structural_mount, structural_granted, item);
         if (!written) continue;  // this ONE item's durable write failed -- skip it, keep the rest.
         items.push_back(std::move(item));
     }
-    return items;
+    co_return items;
 }
 
 }  // namespace agentengine::native_jail

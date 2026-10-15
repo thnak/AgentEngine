@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "agentengine/core/worktree.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using namespace agentengine;
 using InMemoryStore = agentengine::rt::InMemoryAppendLogStore;
@@ -69,11 +70,11 @@ Digest blob_of(InMemoryWorktreeObjectStore& store, std::string const& content) {
 template <rt::AppendLogStore RS>
 result<Ref> naive_last_writer_wins_merge(RS& ref_store, SubWorktree const& branch,
                                           std::string const& parent_name) {
-    auto branch_ref = read_ref(ref_store, branch.backing_ref_name);
+    auto branch_ref = agentengine::rt::block_on(read_ref(ref_store, branch.backing_ref_name));
     if (!branch_ref || !branch_ref->has_value()) {
         return std::unexpected(error{failure_class::contract, "branch ref missing", "test.naive_no_branch"});
     }
-    return commit_ref(ref_store, parent_name, (*branch_ref)->tree_digest);
+    return agentengine::rt::block_on(commit_ref(ref_store, parent_name, (*branch_ref)->tree_digest));
 }
 
 } // namespace
@@ -101,7 +102,7 @@ int main() {
 
             auto base = blob_of(obj_store, "base-content");
             auto base_tree = *obj_store.put_tree(Tree{{TreeEntry{"base.txt", base, false}}});
-            auto parent = commit_ref(ref_store, parent_name, base_tree);
+            auto parent = agentengine::rt::block_on(commit_ref(ref_store, parent_name, base_tree));
             if (!parent) {
                 report_trial_failure("B4-C1 trial " + std::to_string(trial) + ": setup parent commit failed");
                 continue;
@@ -110,14 +111,14 @@ int main() {
             std::vector<SubWorktree> branches;
             bool setup_ok = true;
             for (int i = 0; i < kAgents && setup_ok; ++i) {
-                auto branch = create_sub_worktree(ref_store, *parent,
+                auto branch = agentengine::rt::block_on(create_sub_worktree(ref_store, *parent,
                                                    parent_name + "/agents/a" + std::to_string(i),
-                                                   sharing_mode::branch);
+                                                   sharing_mode::branch));
                 auto content = blob_of(obj_store, "agent-" + std::to_string(i) + "-content");
                 auto branch_tree = *obj_store.put_tree(
                     Tree{{TreeEntry{"base.txt", base, false},
                           TreeEntry{"agent-" + std::to_string(i) + ".txt", content, false}}});
-                setup_ok = branch.has_value() && write_sub_worktree(ref_store, *branch, branch_tree).has_value();
+                setup_ok = branch.has_value() && agentengine::rt::block_on(write_sub_worktree(ref_store, *branch, branch_tree)).has_value();
                 if (setup_ok) branches.push_back(*branch);
             }
             if (!setup_ok) {
@@ -138,7 +139,7 @@ int main() {
             for (std::size_t pos = 0; pos < order.size(); ++pos) {
                 int idx = order[pos];
                 auto first_attempt =
-                    merge_branch_into_parent(obj_store, ref_store, branches[idx], shared_initial_snapshot);
+                    agentengine::rt::block_on(merge_branch_into_parent(obj_store, ref_store, branches[idx], shared_initial_snapshot));
 
                 if (pos == 0) {
                     if (!first_attempt.has_value() || !first_attempt->ok()) {
@@ -162,9 +163,9 @@ int main() {
                     continue;
                 }
 
-                auto retried = retry_merge_branch_into_parent(obj_store, ref_store, branches[idx],
+                auto retried = agentengine::rt::block_on(retry_merge_branch_into_parent(obj_store, ref_store, branches[idx],
                                                                 shared_initial_snapshot,
-                                                                /*max_attempts=*/kAgents + 1);
+                                                                /*max_attempts=*/kAgents + 1));
                 if (!retried.has_value() || !retried->ok()) {
                     trial_clean = false;
                     report_trial_failure("B4-C1 trial " + std::to_string(trial) +
@@ -174,7 +175,7 @@ int main() {
             }
             if (trial_clean) ++trials_all_clean;
 
-            auto final_parent = read_ref(ref_store, parent_name);
+            auto final_parent = agentengine::rt::block_on(read_ref(ref_store, parent_name));
             bool final_ok = final_parent.has_value() && final_parent->has_value();
             if (final_ok) {
                 auto final_tree = obj_store.get_tree((*final_parent)->tree_digest);
@@ -217,12 +218,12 @@ int main() {
 
             auto a_v1 = blob_of(obj_store, "shared-file-v1");
             auto base_tree = *obj_store.put_tree(Tree{{TreeEntry{"shared.txt", a_v1, false}}});
-            auto parent = commit_ref(ref_store, parent_name, base_tree);
+            auto parent = agentengine::rt::block_on(commit_ref(ref_store, parent_name, base_tree));
 
             auto branch_x =
-                create_sub_worktree(ref_store, *parent, parent_name + "/agents/x", sharing_mode::branch);
+                agentengine::rt::block_on(create_sub_worktree(ref_store, *parent, parent_name + "/agents/x", sharing_mode::branch));
             auto branch_y =
-                create_sub_worktree(ref_store, *parent, parent_name + "/agents/y", sharing_mode::branch);
+                agentengine::rt::block_on(create_sub_worktree(ref_store, *parent, parent_name + "/agents/y", sharing_mode::branch));
             if (!parent || !branch_x.has_value() || !branch_y.has_value()) {
                 report_trial_failure("B4-C2 trial " + std::to_string(trial) + ": setup failed");
                 continue;
@@ -232,8 +233,8 @@ int main() {
             auto y_edit = blob_of(obj_store, "y-edit-trial-" + std::to_string(trial));
             auto x_tree = *obj_store.put_tree(Tree{{TreeEntry{"shared.txt", x_edit, false}}});
             auto y_tree = *obj_store.put_tree(Tree{{TreeEntry{"shared.txt", y_edit, false}}});
-            bool writes_ok = write_sub_worktree(ref_store, *branch_x, x_tree).has_value() &&
-                              write_sub_worktree(ref_store, *branch_y, y_tree).has_value();
+            bool writes_ok = agentengine::rt::block_on(write_sub_worktree(ref_store, *branch_x, x_tree)).has_value() &&
+                              agentengine::rt::block_on(write_sub_worktree(ref_store, *branch_y, y_tree)).has_value();
             if (!writes_ok) {
                 report_trial_failure("B4-C2 trial " + std::to_string(trial) + ": setup writes failed");
                 continue;
@@ -245,7 +246,7 @@ int main() {
             if (rng() % 2 == 0) std::swap(both[0], both[1]);
 
             auto first_outcome =
-                merge_branch_into_parent(obj_store, ref_store, both[0], shared_initial_snapshot);
+                agentengine::rt::block_on(merge_branch_into_parent(obj_store, ref_store, both[0], shared_initial_snapshot));
             if (!first_outcome.has_value() || !first_outcome->ok()) {
                 report_trial_failure("B4-C2 trial " + std::to_string(trial) +
                                       ": the first-dispatched agent's edit did not merge cleanly");
@@ -253,7 +254,7 @@ int main() {
             }
 
             auto second_outcome =
-                retry_merge_branch_into_parent(obj_store, ref_store, both[1], shared_initial_snapshot, 3);
+                agentengine::rt::block_on(retry_merge_branch_into_parent(obj_store, ref_store, both[1], shared_initial_snapshot, 3));
             bool conflict_surfaced =
                 second_outcome.has_value() && !second_outcome->ok() && !second_outcome->conflicts.empty();
             if (conflict_surfaced) {
@@ -264,7 +265,7 @@ int main() {
                                       "a conflict -- staleness recovery silently dropped the collision");
             }
 
-            auto final_parent = read_ref(ref_store, parent_name);
+            auto final_parent = agentengine::rt::block_on(read_ref(ref_store, parent_name));
             if (!final_parent.has_value() || !final_parent->has_value()) {
                 report_trial_failure("B4-C2 trial " + std::to_string(trial) +
                                       ": parent ref stopped resolving after the conflict");
@@ -292,19 +293,19 @@ int main() {
 
             auto base = blob_of(obj_store, "base-content");
             auto base_tree = *obj_store.put_tree(Tree{{TreeEntry{"base.txt", base, false}}});
-            auto parent = commit_ref(ref_store, parent_name, base_tree);
+            auto parent = agentengine::rt::block_on(commit_ref(ref_store, parent_name, base_tree));
 
             std::vector<SubWorktree> branches;
             bool setup_ok = parent.has_value();
             for (int i = 0; i < kAgents && setup_ok; ++i) {
-                auto branch = create_sub_worktree(ref_store, *parent,
+                auto branch = agentengine::rt::block_on(create_sub_worktree(ref_store, *parent,
                                                    parent_name + "/agents/a" + std::to_string(i),
-                                                   sharing_mode::branch);
+                                                   sharing_mode::branch));
                 auto content = blob_of(obj_store, "agent-" + std::to_string(i) + "-content");
                 auto branch_tree = *obj_store.put_tree(
                     Tree{{TreeEntry{"base.txt", base, false},
                           TreeEntry{"agent-" + std::to_string(i) + ".txt", content, false}}});
-                setup_ok = branch.has_value() && write_sub_worktree(ref_store, *branch, branch_tree).has_value();
+                setup_ok = branch.has_value() && agentengine::rt::block_on(write_sub_worktree(ref_store, *branch, branch_tree)).has_value();
                 if (setup_ok) branches.push_back(*branch);
             }
             if (!setup_ok) {
@@ -327,7 +328,7 @@ int main() {
                 }
             }
 
-            auto final_parent = read_ref(ref_store, parent_name);
+            auto final_parent = agentengine::rt::block_on(read_ref(ref_store, parent_name));
             bool lost_update = true;
             if (final_parent.has_value() && final_parent->has_value()) {
                 auto final_tree = obj_store.get_tree((*final_parent)->tree_digest);

@@ -23,6 +23,7 @@
 #include "agentengine/core/worktree_ref_store.hpp"
 #include "agentengine/core/worktree_types.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine {
 
@@ -47,27 +48,27 @@ struct SubWorktree {
 }
 
 template <rt::AppendLogStore S>
-[[nodiscard]] result<SubWorktree> create_sub_worktree(S& store, Ref const& parent,
+[[nodiscard]] task<result<SubWorktree>> create_sub_worktree(S& store, Ref parent,
                                                        std::string child_name, sharing_mode mode) {
     switch (mode) {
         case sharing_mode::shared:
-            return SubWorktree{std::move(child_name), parent.name, mode, {}, {}};
+            co_return SubWorktree{std::move(child_name), parent.name, mode, {}, {}};
         case sharing_mode::branch: {
-            auto committed = commit_ref(store, child_name, parent.tree_digest);
-            if (!committed) return std::unexpected(committed.error());
-            return SubWorktree{std::move(child_name), committed->name, mode, {}, parent.tree_digest};
+            auto committed = co_await commit_ref(store, child_name, parent.tree_digest);
+            if (!committed) co_return std::unexpected(committed.error());
+            co_return SubWorktree{std::move(child_name), committed->name, mode, {}, parent.tree_digest};
         }
         case sharing_mode::scratch: {
             auto empty_digest = empty_tree_digest();
-            if (!empty_digest) return std::unexpected(empty_digest.error());
-            auto committed = commit_ref(store, child_name, *empty_digest);
-            if (!committed) return std::unexpected(committed.error());
-            return SubWorktree{std::move(child_name), committed->name, mode, {}, {}};
+            if (!empty_digest) co_return std::unexpected(empty_digest.error());
+            auto committed = co_await commit_ref(store, child_name, *empty_digest);
+            if (!committed) co_return std::unexpected(committed.error());
+            co_return SubWorktree{std::move(child_name), committed->name, mode, {}, {}};
         }
         case sharing_mode::readonly:
-            return SubWorktree{std::move(child_name), {}, mode, parent.tree_digest, {}};
+            co_return SubWorktree{std::move(child_name), {}, mode, parent.tree_digest, {}};
     }
-    return std::unexpected(
+    co_return std::unexpected(
         error{failure_class::contract, "unrecognized sharing_mode value", "worktree.unknown_sharing_mode"});
 }
 
@@ -76,11 +77,11 @@ template <rt::AppendLogStore S>
 // other Ref, can never leak into a readonly view); every other mode replays `backing_ref_name`'s
 // own durable log, which for `shared` IS the parent's log.
 template <rt::AppendLogStore S>
-[[nodiscard]] result<std::optional<Ref>> read_sub_worktree(S& store, SubWorktree const& sub) {
+[[nodiscard]] task<result<std::optional<Ref>>> read_sub_worktree(S& store, SubWorktree sub) {
     if (sub.mode == sharing_mode::readonly) {
-        return std::optional<Ref>{Ref{sub.name, sub.pinned_digest}};
+        co_return std::optional<Ref>{Ref{sub.name, sub.pinned_digest}};
     }
-    return read_ref(store, sub.backing_ref_name);
+    co_return co_await read_ref(store, sub.backing_ref_name);
 }
 
 // Commits a new tree digest through `sub`. `readonly` fails closed on the mode itself -- 025 §5's
@@ -89,13 +90,13 @@ template <rt::AppendLogStore S>
 // commit to the parent's own Ref, which is what makes the write immediately visible to every
 // sibling reading through that same name).
 template <rt::AppendLogStore S>
-[[nodiscard]] result<Ref> write_sub_worktree(S& store, SubWorktree const& sub, Digest new_tree_digest) {
+[[nodiscard]] task<result<Ref>> write_sub_worktree(S& store, SubWorktree sub, Digest new_tree_digest) {
     if (sub.mode == sharing_mode::readonly) {
-        return std::unexpected(error{failure_class::policy,
+        co_return std::unexpected(error{failure_class::policy,
                                       "cannot write to a readonly sub-worktree",
                                       "worktree.readonly_write_rejected"});
     }
-    return commit_ref(store, sub.backing_ref_name, std::move(new_tree_digest));
+    co_return co_await commit_ref(store, sub.backing_ref_name, std::move(new_tree_digest));
 }
 
 }  // namespace agentengine

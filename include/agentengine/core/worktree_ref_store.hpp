@@ -16,6 +16,7 @@
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/core/worktree_types.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine {
 
@@ -68,15 +69,15 @@ namespace detail {
 // since the store's own strict-seq-monotonicity already makes a first commit and a later commit the
 // same call.
 template <rt::AppendLogStore StoreT>
-[[nodiscard]] result<std::pair<Ref, rt::SeqNo>> commit_ref_impl(StoreT& store, std::string name,
+[[nodiscard]] task<result<std::pair<Ref, rt::SeqNo>>> commit_ref_impl(StoreT& store, std::string name,
                                                                   Digest tree_digest) {
     std::string const text = agentengine::json::dump(ref_moved_to_json(RefMoved{tree_digest}));
     std::vector<std::byte> bytes;
     bytes.reserve(text.size());
     for (char c : text) bytes.push_back(static_cast<std::byte>(c));
-    auto appended = store.append(ref_log_id(name), std::move(bytes));
-    if (!appended) return std::unexpected(appended.error());
-    return std::make_pair(Ref{std::move(name), std::move(tree_digest)}, *appended);
+    auto appended = co_await store.append(ref_log_id(name), std::move(bytes));
+    if (!appended) co_return std::unexpected(appended.error());
+    co_return std::make_pair(Ref{std::move(name), std::move(tree_digest)}, *appended);
 }
 } // namespace detail
 
@@ -85,24 +86,24 @@ template <rt::AppendLogStore StoreT>
 // store's own strict-seq-monotonicity already makes a first commit and a later commit the same
 // call.
 template <rt::AppendLogStore StoreT>
-[[nodiscard]] result<Ref> commit_ref(StoreT& store, std::string name, Digest tree_digest) {
-    auto r = detail::commit_ref_impl(store, std::move(name), std::move(tree_digest));
-    if (!r) return std::unexpected(r.error());
-    return std::move(r->first);
+[[nodiscard]] task<result<Ref>> commit_ref(StoreT& store, std::string name, Digest tree_digest) {
+    auto r = co_await detail::commit_ref_impl(store, std::move(name), std::move(tree_digest));
+    if (!r) co_return std::unexpected(r.error());
+    co_return std::move(r->first);
 }
 
 // Read a Ref's current state by reading its durable log's tail and taking the last entry -- a fresh
 // process, a restart, or a node migration all reach the identical state this way, which is 025 §9
 // G1's mechanism in miniature. `nullopt` when `name` has never been committed (no log entries).
 template <rt::AppendLogStore StoreT>
-[[nodiscard]] result<std::optional<Ref>> read_ref(StoreT const& store, std::string name) {
-    auto raw = store.read_from(ref_log_id(name), 0);
-    if (!raw) return std::unexpected(raw.error());
-    if (raw->empty()) return std::optional<Ref>{};  // never committed
+[[nodiscard]] task<result<std::optional<Ref>>> read_ref(StoreT const& store, std::string name) {
+    auto raw = co_await store.read_from(ref_log_id(name), 0);
+    if (!raw) co_return std::unexpected(raw.error());
+    if (raw->empty()) co_return std::optional<Ref>{};  // never committed
 
     auto moved = detail::decode_ref_moved(raw->back());
-    if (!moved) return std::unexpected(moved.error());
-    return std::optional<Ref>{Ref{std::move(name), std::move(moved->tree_digest)}};
+    if (!moved) co_return std::unexpected(moved.error());
+    co_return std::optional<Ref>{Ref{std::move(name), std::move(moved->tree_digest)}};
 }
 
 // ============================================================================================
@@ -134,10 +135,10 @@ struct TurnCommit {
 // this function's only addition over a plain `commit_ref` call is not discarding the SeqNo the
 // commit landed at.
 template <rt::AppendLogStore StoreT>
-[[nodiscard]] result<TurnCommit> commit_turn(StoreT& store, std::string name, Digest tree_digest) {
-    auto r = detail::commit_ref_impl(store, std::move(name), std::move(tree_digest));
-    if (!r) return std::unexpected(r.error());
-    return TurnCommit{std::move(r->first), r->second};
+[[nodiscard]] task<result<TurnCommit>> commit_turn(StoreT& store, std::string name, Digest tree_digest) {
+    auto r = co_await detail::commit_ref_impl(store, std::move(name), std::move(tree_digest));
+    if (!r) co_return std::unexpected(r.error());
+    co_return TurnCommit{std::move(r->first), r->second};
 }
 
 // D2 (part 1): the tree digest retained at `turn` in `name`'s own log -- `rt::AppendLogStore` never
@@ -147,20 +148,20 @@ template <rt::AppendLogStore StoreT>
 // asking for `turn == 0` or a turn beyond the log's own tail fails closed
 // (`worktree.turn_not_found`) rather than silently being handed a neighboring commit.
 template <rt::AppendLogStore StoreT>
-[[nodiscard]] result<Digest> turn_digest_at(StoreT const& store, std::string const& name, rt::SeqNo turn) {
+[[nodiscard]] task<result<Digest>> turn_digest_at(StoreT const& store, std::string name, rt::SeqNo turn) {
     if (turn == 0) {
-        return std::unexpected(error{failure_class::contract, "no commit is retained at the requested turn",
+        co_return std::unexpected(error{failure_class::contract, "no commit is retained at the requested turn",
                                       "worktree.turn_not_found"});
     }
-    auto tail = store.read_from(ref_log_id(name), turn - 1);
-    if (!tail) return std::unexpected(tail.error());
+    auto tail = co_await store.read_from(ref_log_id(name), turn - 1);
+    if (!tail) co_return std::unexpected(tail.error());
     if (tail->empty()) {
-        return std::unexpected(error{failure_class::contract, "no commit is retained at the requested turn",
+        co_return std::unexpected(error{failure_class::contract, "no commit is retained at the requested turn",
                                       "worktree.turn_not_found"});
     }
     auto moved = detail::decode_ref_moved(tail->front());
-    if (!moved) return std::unexpected(moved.error());
-    return moved->tree_digest;
+    if (!moved) co_return std::unexpected(moved.error());
+    co_return moved->tree_digest;
 }
 
 // D2 (part 2): rewind as ref reassignment (025's own framing, restated by §9 G5) -- fetches the
@@ -171,10 +172,10 @@ template <rt::AppendLogStore StoreT>
 // just before the first one, proving G5's "reproduces that turn's tree exactly" is not merely true
 // for the one turn rewound to, but stays true of the whole history around it.
 template <rt::AppendLogStore StoreT>
-[[nodiscard]] result<TurnCommit> rewind_to_turn(StoreT& store, std::string name, rt::SeqNo turn) {
-    auto digest = turn_digest_at(store, name, turn);
-    if (!digest) return std::unexpected(digest.error());
-    return commit_turn(store, std::move(name), std::move(*digest));
+[[nodiscard]] task<result<TurnCommit>> rewind_to_turn(StoreT& store, std::string name, rt::SeqNo turn) {
+    auto digest = co_await turn_digest_at(store, name, turn);
+    if (!digest) co_return std::unexpected(digest.error());
+    co_return co_await commit_turn(store, std::move(name), std::move(*digest));
 }
 
 }  // namespace agentengine

@@ -415,7 +415,7 @@ template <class Inner, class SummarizerT>
     // MemoryOrigin::attribution.principal to the same identity -- an audit/uniqueness residual (I4-
     // adjacent), not a confinement break. A caller minting many trials should pass a genuinely
     // unique trial_id per attempt.
-    auto store_result = EvalStore::make("trial", spec.trial_id);
+    auto store_result = co_await EvalStore::make("trial", spec.trial_id);
     if (!store_result) {
         trial_result.setup_error = store_result.error();
         co_return trial_result;
@@ -436,7 +436,7 @@ template <class Inner, class SummarizerT>
         // procedural/model_inferred item; that decision is made HERE, by the harness, not inferred.
         item.origin = MemoryOrigin{memory_source::model_inferred, spec.trial_id, "0", store.principal()};
         rendered_lesson_content = item.content;
-        if (auto written = write_memory_item(store.object_store(), store.ref_store(), store.mount(),
+        if (auto written = co_await write_memory_item(store.object_store(), store.ref_store(), store.mount(),
                                               store.write_cap(), item);
             !written) {
             trial_result.setup_error = written.error();

@@ -22,6 +22,7 @@
 #include "agentengine/core/worktree_sub.hpp"
 #include "agentengine/core/worktree_types.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine {
 
@@ -197,30 +198,30 @@ struct SharedStalenessNote {
 // can ever be "stale" in this sense; both fail closed here rather than silently returning an empty
 // note that could be misread as "nothing changed").
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<SharedStalenessNote> check_shared_staleness(OS& object_store, RS& ref_store,
-                                                                  SubWorktree const& shared,
-                                                                  Digest const& last_read_digest) {
+[[nodiscard]] task<result<SharedStalenessNote>> check_shared_staleness(OS& object_store, RS& ref_store,
+                                                                  SubWorktree shared,
+                                                                  Digest last_read_digest) {
     if (shared.mode != sharing_mode::shared) {
-        return std::unexpected(error{failure_class::contract,
+        co_return std::unexpected(error{failure_class::contract,
                                       "check_shared_staleness requires a shared-mode sub-worktree",
                                       "worktree.staleness_requires_shared_mode"});
     }
 
-    auto current = read_sub_worktree(ref_store, shared);
-    if (!current) return std::unexpected(current.error());
+    auto current = co_await read_sub_worktree(ref_store, shared);
+    if (!current) co_return std::unexpected(current.error());
     if (!current->has_value()) {
-        return std::unexpected(error{failure_class::contract,
+        co_return std::unexpected(error{failure_class::contract,
                                       "shared sub-worktree's backing ref has never been committed",
                                       "worktree.staleness_ref_missing"});
     }
     Digest const& current_digest = (*current)->tree_digest;
 
     if (current_digest == last_read_digest) {
-        return SharedStalenessNote{last_read_digest, current_digest, TreeDiff{}};
+        co_return SharedStalenessNote{last_read_digest, current_digest, TreeDiff{}};
     }
     auto diff = diff_trees(object_store, last_read_digest, current_digest);
-    if (!diff) return std::unexpected(diff.error());
-    return SharedStalenessNote{last_read_digest, current_digest, std::move(*diff)};
+    if (!diff) co_return std::unexpected(diff.error());
+    co_return SharedStalenessNote{last_read_digest, current_digest, std::move(*diff)};
 }
 
 }  // namespace agentengine

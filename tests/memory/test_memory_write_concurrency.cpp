@@ -25,6 +25,7 @@
 
 #include "agentengine/core/memory.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 namespace {
 
@@ -49,7 +50,7 @@ int main() {
     ae::InMemoryWorktreeObjectStore object_store;
     ae::rt::InMemoryAppendLogStore ref_store;
     ae::Principal const principal{"p-concurrent", ""};
-    AE_CHECK(ae::ensure_memory_worktree(object_store, ref_store, principal).has_value(),
+    AE_CHECK(agentengine::rt::block_on(ae::ensure_memory_worktree(object_store, ref_store, principal)).has_value(),
              "setup: the memory worktree bootstraps");
 
     ae::Mount const mount = ae::memory_mount(principal);
@@ -69,7 +70,7 @@ int main() {
                 item.content  = "thread " + std::to_string(t) + " item " + std::to_string(i);
                 item.salience = 0.5f;
                 item.origin   = ae::MemoryOrigin{ae::memory_source::tool_derived, "run", "0", principal};
-                if (!ae::write_memory_item(object_store, ref_store, mount, write_cap, item)) {
+                if (!agentengine::rt::block_on(ae::write_memory_item(object_store, ref_store, mount, write_cap, item))) {
                     write_errors.fetch_add(1, std::memory_order_relaxed);
                 }
             }
@@ -78,7 +79,7 @@ int main() {
     go.store(true, std::memory_order_release);
     for (auto& th : threads) th.join();
 
-    auto listed = ae::list_memory_items(object_store, ref_store, mount, read_cap);
+    auto listed = agentengine::rt::block_on(ae::list_memory_items(object_store, ref_store, mount, read_cap));
     AE_CHECK(listed.has_value(), "the final listing decodes");
     if (!listed) return 1;
 

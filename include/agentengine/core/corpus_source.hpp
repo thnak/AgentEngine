@@ -514,12 +514,12 @@ public:
         // Idempotent: a re-mount against an already-bootstrapped ref takes the early `has_value()`
         // return and does nothing here.
         {
-            auto existing = read_ref(ref_store, mount.ref_name);
+            auto existing = co_await read_ref(ref_store, mount.ref_name);
             if (!existing) co_return std::unexpected(existing.error());
             if (!existing->has_value()) {
                 auto empty = object_store.put_tree(Tree{});
                 if (!empty) co_return std::unexpected(empty.error());
-                auto committed = commit_ref(ref_store, mount.ref_name, *empty);
+                auto committed = co_await commit_ref(ref_store, mount.ref_name, *empty);
                 if (!committed) co_return std::unexpected(committed.error());
             }
         }
@@ -681,7 +681,7 @@ public:
                                                      "corpus_source.chunk_id_mismatch"});
                 }
                 CorpusChunkRecord record{pc.id, pc.source_path, pc.line_start, pc.line_end, pc.source_file_hash};
-                auto written = write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record);
+                auto written = co_await write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record);
                 if (!written) co_return std::unexpected(written.error());
 
                 ids.push_back(pc.id);
@@ -766,12 +766,12 @@ public:
 
         // Bootstrap, identical to mount() -- see that method's own comment.
         {
-            auto existing = read_ref(ref_store, mount.ref_name);
+            auto existing = co_await read_ref(ref_store, mount.ref_name);
             if (!existing) co_return std::unexpected(existing.error());
             if (!existing->has_value()) {
                 auto empty = object_store.put_tree(Tree{});
                 if (!empty) co_return std::unexpected(empty.error());
-                auto committed = commit_ref(ref_store, mount.ref_name, *empty);
+                auto committed = co_await commit_ref(ref_store, mount.ref_name, *empty);
                 if (!committed) co_return std::unexpected(committed.error());
             }
         }
@@ -921,7 +921,7 @@ public:
                                                  "corpus_source.chunk_id_mismatch"});
             }
             CorpusChunkRecord record{pc.id, pc.source_path, pc.line_start, pc.line_end, pc.source_file_hash};
-            auto written = write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record);
+            auto written = co_await write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record);
             if (!written) co_return std::unexpected(written.error());
         }
 

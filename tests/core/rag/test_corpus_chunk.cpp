@@ -9,6 +9,7 @@
 #include "agentengine/core/corpus_chunk.hpp"
 #include "agentengine/core/corpus_scope.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 namespace {
 
@@ -37,7 +38,7 @@ int main() {
     {
         auto empty = object_store.put_tree(ae::Tree{});
         AE_CHECK(empty.has_value(), "setup: empty tree stored");
-        auto committed = ae::commit_ref(ref_store, mount.ref_name, *empty);
+        auto committed = agentengine::rt::block_on(ae::commit_ref(ref_store, mount.ref_name, *empty));
         AE_CHECK(committed.has_value(), "setup: corpus worktree bootstraps");
     }
 
@@ -51,15 +52,15 @@ int main() {
     record.line_end = 42;
     record.source_file_hash = "sha256:abc123";
 
-    auto written = ae::write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record);
-    AE_CHECK(written.has_value(), "write_corpus_chunk_record() succeeds through a real capability-gated mount");
+    auto written = agentengine::rt::block_on(ae::write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record));
+    AE_CHECK(written.has_value(), "agentengine::rt::block_on(write_corpus_chunk_record()) succeeds through a real capability-gated mount");
 
-    auto read_back = ae::read_corpus_chunk_record(object_store, ref_store, mount, read_cap, record.id);
+    auto read_back = agentengine::rt::block_on(ae::read_corpus_chunk_record(object_store, ref_store, mount, read_cap, record.id));
     AE_CHECK(read_back.has_value() && *read_back == record,
-             "read_corpus_chunk_record() round-trips every field byte-identically (O(1) point "
+             "agentengine::rt::block_on(read_corpus_chunk_record()) round-trips every field byte-identically (O(1) point "
              "lookup by id, deterministic path 'chunks/<id>.json')");
 
-    auto missing = ae::read_corpus_chunk_record(object_store, ref_store, mount, read_cap, "nonexistent");
+    auto missing = agentengine::rt::block_on(ae::read_corpus_chunk_record(object_store, ref_store, mount, read_cap, "nonexistent"));
     AE_CHECK(!missing.has_value(), "reading an id that was never written fails, not silently empty");
 
     // Malformed JSON round-trip: from_json rejects a record missing a required field.

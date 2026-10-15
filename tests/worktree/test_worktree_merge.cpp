@@ -10,6 +10,7 @@
 #include <string>
 
 #include "agentengine/core/worktree.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using namespace agentengine;
 using InMemoryStore = agentengine::rt::InMemoryAppendLogStore;
@@ -249,24 +250,24 @@ int main() {
         auto a = blob_of(obj_store, "a-content");
         auto base_tree = tree_of(obj_store, {{"a.txt", a, false}});
 
-        auto parent = commit_ref(ref_store, "session:s-10", base_tree);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "session:s-10", base_tree));
         AE_CHECK(parent.has_value(), "B2-R1: setup parent commit succeeds");
-        auto branch = create_sub_worktree(ref_store, *parent, "session:s-10/agents/w", sharing_mode::branch);
+        auto branch = agentengine::rt::block_on(create_sub_worktree(ref_store, *parent, "session:s-10/agents/w", sharing_mode::branch));
         AE_CHECK(branch.has_value() && branch->base_digest == base_tree,
                  "B2-R1: freshly created branch records the parent's digest as its base");
 
         auto b = blob_of(obj_store, "b-content");
         auto branch_tree = tree_of(obj_store, {{"a.txt", a, false}, {"b.txt", b, false}});
-        AE_CHECK(write_sub_worktree(ref_store, *branch, branch_tree).has_value(),
+        AE_CHECK(agentengine::rt::block_on(write_sub_worktree(ref_store, *branch, branch_tree)).has_value(),
                  "B2-R1: setup: branch writes b.txt");
 
-        auto outcome = merge_branch_into_parent(obj_store, ref_store, *branch, *parent);
+        auto outcome = agentengine::rt::block_on(merge_branch_into_parent(obj_store, ref_store, *branch, *parent));
         AE_CHECK(outcome.has_value() && outcome->ok() && outcome->parent_ref.has_value(),
                  "B2-R1: merge with no conflicting parent-side change commits cleanly");
         if (outcome.has_value() && outcome->ok()) {
             AE_CHECK(outcome->parent_ref->tree_digest == branch_tree,
                      "B2-R1: parent Ref now points at the merged (here: branch's) tree");
-            auto reread = read_ref(ref_store, "session:s-10");
+            auto reread = agentengine::rt::block_on(read_ref(ref_store, "session:s-10"));
             AE_CHECK(reread.has_value() && reread->has_value() &&
                          (*reread)->tree_digest == branch_tree,
                      "B2-R1: re-reading the parent directly confirms the commit actually landed");
@@ -283,26 +284,26 @@ int main() {
         auto a_v1 = blob_of(obj_store, "v1");
         auto base_tree = tree_of(obj_store, {{"a.txt", a_v1, false}});
 
-        auto parent = commit_ref(ref_store, "session:s-11", base_tree);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "session:s-11", base_tree));
         AE_CHECK(parent.has_value(), "B2-R2: setup parent commit succeeds");
-        auto branch = create_sub_worktree(ref_store, *parent, "session:s-11/agents/w", sharing_mode::branch);
+        auto branch = agentengine::rt::block_on(create_sub_worktree(ref_store, *parent, "session:s-11/agents/w", sharing_mode::branch));
         AE_CHECK(branch.has_value(), "B2-R2: setup: branch creation succeeds");
 
         auto a_ours = blob_of(obj_store, "ours-edit");
         auto branch_tree = tree_of(obj_store, {{"a.txt", a_ours, false}});
-        AE_CHECK(write_sub_worktree(ref_store, *branch, branch_tree).has_value(),
+        AE_CHECK(agentengine::rt::block_on(write_sub_worktree(ref_store, *branch, branch_tree)).has_value(),
                  "B2-R2: setup: branch edits a.txt");
 
         auto a_theirs = blob_of(obj_store, "theirs-edit");
         auto parent_moved_tree = tree_of(obj_store, {{"a.txt", a_theirs, false}});
-        auto parent_after = commit_ref(ref_store, "session:s-11", parent_moved_tree);
+        auto parent_after = agentengine::rt::block_on(commit_ref(ref_store, "session:s-11", parent_moved_tree));
         AE_CHECK(parent_after.has_value(), "B2-R2: setup: parent independently edits a.txt too");
 
-        auto outcome = merge_branch_into_parent(obj_store, ref_store, *branch, *parent_after);
+        auto outcome = agentengine::rt::block_on(merge_branch_into_parent(obj_store, ref_store, *branch, *parent_after));
         AE_CHECK(outcome.has_value() && !outcome->ok() && !outcome->parent_ref.has_value(),
                  "B2-R2: divergent edit surfaces as a conflict, nothing committed by this call");
 
-        auto reread = read_ref(ref_store, "session:s-11");
+        auto reread = agentengine::rt::block_on(read_ref(ref_store, "session:s-11"));
         AE_CHECK(reread.has_value() && reread->has_value() &&
                      (*reread)->tree_digest == parent_moved_tree,
                  "B2-R2: the parent Ref is UNCHANGED after a failed merge -- never last-writer-wins, "
@@ -318,29 +319,29 @@ int main() {
         auto a = blob_of(obj_store, "a-content");
         auto base_tree = tree_of(obj_store, {{"a.txt", a, false}});
 
-        auto parent_observed = commit_ref(ref_store, "session:s-12", base_tree);
+        auto parent_observed = agentengine::rt::block_on(commit_ref(ref_store, "session:s-12", base_tree));
         AE_CHECK(parent_observed.has_value(), "B2-R3: setup parent commit succeeds");
         auto branch =
-            create_sub_worktree(ref_store, *parent_observed, "session:s-12/agents/w", sharing_mode::branch);
+            agentengine::rt::block_on(create_sub_worktree(ref_store, *parent_observed, "session:s-12/agents/w", sharing_mode::branch));
         AE_CHECK(branch.has_value(), "B2-R3: setup: branch creation succeeds");
 
         auto b = blob_of(obj_store, "b-content");
         auto branch_tree = tree_of(obj_store, {{"a.txt", a, false}, {"b.txt", b, false}});
-        AE_CHECK(write_sub_worktree(ref_store, *branch, branch_tree).has_value(),
+        AE_CHECK(agentengine::rt::block_on(write_sub_worktree(ref_store, *branch, branch_tree)).has_value(),
                  "B2-R3: setup: branch adds b.txt (disjoint -- would merge cleanly if not stale)");
 
         // Someone else moves the parent AFTER `parent_observed` was captured but BEFORE the merge
         // call below uses it.
         auto c = blob_of(obj_store, "c-content");
         auto other_writer_tree = tree_of(obj_store, {{"a.txt", a, false}, {"c.txt", c, false}});
-        AE_CHECK(commit_ref(ref_store, "session:s-12", other_writer_tree).has_value(),
+        AE_CHECK(agentengine::rt::block_on(commit_ref(ref_store, "session:s-12", other_writer_tree)).has_value(),
                  "B2-R3: setup: a different writer moves the parent in between");
 
-        auto outcome = merge_branch_into_parent(obj_store, ref_store, *branch, *parent_observed);
+        auto outcome = agentengine::rt::block_on(merge_branch_into_parent(obj_store, ref_store, *branch, *parent_observed));
         AE_CHECK(!outcome.has_value() && outcome.error().code == "worktree.merge_stale_parent",
                  "B2-R3: merging against a now-stale parent snapshot is rejected with a distinct code");
 
-        auto reread = read_ref(ref_store, "session:s-12");
+        auto reread = agentengine::rt::block_on(read_ref(ref_store, "session:s-12"));
         AE_CHECK(reread.has_value() && reread->has_value() &&
                      (*reread)->tree_digest == other_writer_tree,
                  "B2-R3: the other writer's commit survives untouched -- the stale merge never landed");

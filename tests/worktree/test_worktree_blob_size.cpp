@@ -23,6 +23,7 @@
 #include "agentengine/core/file_worktree_object_store.hpp"
 #include "agentengine/core/worktree_mount.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include <cstdio>
 #include <filesystem>
@@ -119,12 +120,12 @@ constexpr std::size_t kFileBytes = 1000;
 // A mount holding kFiles files of kFileBytes each, written uncapped (no usage walk), counters reset.
 template <class S>
 void fill(S& store, RefStore& refs, Mount const& mount) {
-    (void)commit_ref(refs, mount.ref_name, *store.put_tree(Tree{}));
+    (void)agentengine::rt::block_on(commit_ref(refs, mount.ref_name, *store.put_tree(Tree{})));
     cap::FsWrite const uncapped{mount.mount_id, "", std::nullopt, std::nullopt};
     for (int i = 0; i < kFiles; ++i) {
         std::string content(kFileBytes, 'x');
         content += std::to_string(i);  // distinct blobs, so nothing dedups the count away
-        (void)mount_write(store, refs, mount, uncapped, "f" + std::to_string(i) + ".txt", bytes_of(content));
+        (void)agentengine::rt::block_on(mount_write(store, refs, mount, uncapped, "f" + std::to_string(i) + ".txt", bytes_of(content)));
     }
     store.get_blob_calls = 0;
     store.get_blob_bytes = 0;
@@ -157,7 +158,7 @@ int main() {
         CountingStore store;
         RefStore refs;
         fill(store, refs, mount);
-        auto r = mount_write(store, refs, mount, capped, "one-more.txt", bytes_of("hello"));
+        auto r = agentengine::rt::block_on(mount_write(store, refs, mount, capped, "one-more.txt", bytes_of("hello")));
         check(r.has_value(), "Z2: a capped write into the 200-file mount succeeds on a store without blob_size()");
         check(store.get_blob_calls == static_cast<std::size_t>(kFiles) + 1,
               "Z2 (positive control): ... and makes " + std::to_string(kFiles + 1) +
@@ -171,7 +172,7 @@ int main() {
         RefStore refs;
         fill(store, refs, mount);
         store.blob_size_calls = 0;
-        auto r = mount_write(store, refs, mount, capped, "one-more.txt", bytes_of("hello"));
+        auto r = agentengine::rt::block_on(mount_write(store, refs, mount, capped, "one-more.txt", bytes_of("hello")));
         check(r.has_value(), "Z3: the same write succeeds on a store with blob_size()");
         check(store.get_blob_calls == 0 && store.get_blob_bytes == 0,
               "Z3 (the guard): ... and makes ZERO get_blob() calls, got " + std::to_string(store.get_blob_calls));
@@ -186,8 +187,8 @@ int main() {
         CountingSizedStore new_store;
         RefStore old_refs;
         RefStore new_refs;
-        (void)commit_ref(old_refs, mount.ref_name, *old_store.put_tree(Tree{}));
-        (void)commit_ref(new_refs, mount.ref_name, *new_store.put_tree(Tree{}));
+        (void)agentengine::rt::block_on(commit_ref(old_refs, mount.ref_name, *old_store.put_tree(Tree{})));
+        (void)agentengine::rt::block_on(commit_ref(new_refs, mount.ref_name, *new_store.put_tree(Tree{})));
         cap::FsWrite const tight{"/work", "", std::uint64_t{25}, std::uint32_t{3}};
         struct Step {
             char const* path;
@@ -207,8 +208,8 @@ int main() {
         int differing = 0;
         int rejected = 0;
         for (auto const& s : steps) {
-            auto o = mount_write(old_store, old_refs, mount, tight, s.path, bytes_of(s.content));
-            auto n = mount_write(new_store, new_refs, mount, tight, s.path, bytes_of(s.content));
+            auto o = agentengine::rt::block_on(mount_write(old_store, old_refs, mount, tight, s.path, bytes_of(s.content)));
+            auto n = agentengine::rt::block_on(mount_write(new_store, new_refs, mount, tight, s.path, bytes_of(s.content)));
             rejected += o.has_value() ? 0 : 1;
             if (outcome(o) != outcome(n)) {
                 ++differing;

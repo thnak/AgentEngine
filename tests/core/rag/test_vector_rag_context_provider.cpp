@@ -35,6 +35,7 @@
 #include "agentengine/core/vector_rag_context_provider.hpp"
 #include "agentengine/core/worktree.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "../../support/run_task_sync.hpp"
 #include "../../support/index_sync.hpp"
 
@@ -120,7 +121,7 @@ ae::result<ae::Ref> bootstrap_corpus_worktree(ae::InMemoryWorktreeObjectStore& o
                                                 ae::Mount const& mount) {
     auto empty = object_store.put_tree(ae::Tree{});
     if (!empty) return std::unexpected(empty.error());
-    return ae::commit_ref(ref_store, mount.ref_name, *empty);
+    return agentengine::rt::block_on(ae::commit_ref(ref_store, mount.ref_name, *empty));
 }
 
 ae::result<ae::Digest> put_text_blob(ae::InMemoryWorktreeObjectStore& object_store, std::string const& text) {
@@ -144,7 +145,7 @@ ae::result<ae::Digest> write_chunk(ae::InMemoryWorktreeObjectStore& object_store
     record.line_start       = line_start;
     record.line_end         = line_end;
     record.source_file_hash = "test-file-hash";
-    auto written = ae::write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record);
+    auto written = agentengine::rt::block_on(ae::write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record));
     if (!written) return std::unexpected(written.error());
 
     auto added = sync_add_batch(index, std::vector<std::string>{*digest}, std::vector<std::vector<float>>{vec});
@@ -532,7 +533,7 @@ int main() {
         // provider MIS-constructed with the wrong mount/cap pairing could not silently cross tenants
         // through the CorpusChunkRecord lookup path (only the separately-scoped VectorIndex, proven
         // above, would otherwise be the sole isolation boundary).
-        auto crossed = ae::read_corpus_chunk_record(object_store, ref_store, mount_a, read_b, *chunk_a);
+        auto crossed = agentengine::rt::block_on(ae::read_corpus_chunk_record(object_store, ref_store, mount_a, read_b, *chunk_a));
         AE_CHECK(!crossed.has_value() && crossed.error().code == "worktree.mount_capability_mismatch",
                  "C5-R5: tenant-b's read capability is rejected outright against tenant-a's mount at "
                  "the CorpusChunkRecord lookup layer too -- isolation is structural at two independent "

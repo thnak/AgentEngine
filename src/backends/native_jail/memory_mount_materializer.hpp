@@ -38,6 +38,7 @@
 #include "agentengine/core/memory.hpp"
 #include "agentengine/core/worktree.hpp"
 #include "agentengine/trust/capability.hpp"
+#include "agentengine/core/task.hpp"
 #include "backends/native_jail/mediated_filesystem_adapter.hpp"
 #include "backends/native_jail/worktree_mount_sync.hpp"
 
@@ -99,23 +100,23 @@ using MaterializedMemoryMount = std::pair<std::string, std::wstring>;
 // still checks this against `memory_mount(principal)`'s own REAL `mount_id`, so the authority
 // derivation is unaffected by `mount_name` being a separate, cosmetic identifier.
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<MaterializedMemoryMount> materialize_memory_mount(
-    OS& object_store, RS& ref_store, Principal const& principal, cap::FsRead const& granted,
-    std::string const& mount_name, std::filesystem::path const& host_root,
-    std::vector<std::string> const& reserved_mount_ids) {
+[[nodiscard]] task<result<MaterializedMemoryMount>> materialize_memory_mount(
+    OS& object_store, RS& ref_store, Principal principal, cap::FsRead granted,
+    std::string mount_name, std::filesystem::path host_root,
+    std::vector<std::string> reserved_mount_ids) {
     Mount const mount = memory_mount(principal);
 
     auto mount_dir = reserve_and_create_mount_dir(mount_name, host_root, reserved_mount_ids);
-    if (!mount_dir) return std::unexpected(mount_dir.error());
+    if (!mount_dir) co_return std::unexpected(mount_dir.error());
     std::wstring const mount_dir_w = mount_dir->wstring();
 
     auto adapter = mediated_shell::MediatedFileSystemAdapter::create(mount_dir_w);
-    if (!adapter) return std::unexpected(adapter.error());
+    if (!adapter) co_return std::unexpected(adapter.error());
 
-    auto materialized = materialize_mount(object_store, ref_store, mount, granted, *adapter);
-    if (!materialized) return std::unexpected(materialized.error());
+    auto materialized = co_await materialize_mount(object_store, ref_store, mount, granted, *adapter);
+    if (!materialized) co_return std::unexpected(materialized.error());
 
-    return MaterializedMemoryMount{mount_name, mount_dir_w};
+    co_return MaterializedMemoryMount{mount_name, mount_dir_w};
 }
 
 }  // namespace agentengine::native_jail

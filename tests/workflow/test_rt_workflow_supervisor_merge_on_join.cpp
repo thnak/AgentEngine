@@ -25,6 +25,7 @@
 
 #include "agentengine/rt/workflow_supervisor.hpp"
 #include "agentengine/workflow/worktree_scoping.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::ExecutorBody;
 using agentengine::rt::ExecutorOutcome;
@@ -103,7 +104,7 @@ ExecutorBody writer_body(InMemoryWorktreeObjectStore& obj_store, InMemoryStore& 
                           ExecutorWorktreeGrant grant, std::string file_name, std::string content) {
     return [&obj_store, &ref_store, grant, file_name, content](
                Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-        auto current = read_sub_worktree(ref_store, grant.sub);
+        auto current = agentengine::rt::block_on(read_sub_worktree(ref_store, grant.sub));
         if (!current || !current->has_value()) {
             return std::unexpected(
                 error{failure_class::fatal, "writer_body: no current tree", "test.setup_failed"});
@@ -118,7 +119,7 @@ ExecutorBody writer_body(InMemoryWorktreeObjectStore& obj_store, InMemoryStore& 
         entries.push_back(TreeEntry{file_name, blob_of(obj_store, content), false});
         auto new_tree_digest = tree_of(obj_store, entries);
 
-        auto written = write_sub_worktree(ref_store, grant.sub, new_tree_digest);
+        auto written = agentengine::rt::block_on(write_sub_worktree(ref_store, grant.sub, new_tree_digest));
         if (!written) return std::unexpected(written.error());
         return ExecutorOutcome{in};
     };
@@ -138,7 +139,7 @@ int main() {
         InMemoryStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto root   = tree_of(obj_store, {{"shared.txt", blob_of(obj_store, "shared-content"), false}});
-        auto parent = commit_ref(ref_store, "wf:run-j1", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "wf:run-j1", root));
         check(parent.has_value(), "J1 setup: parent commit succeeds");
 
         Workflow wf;
@@ -149,7 +150,7 @@ int main() {
         wf.bound.max_rounds   = 4;
         check(validate_workflow(wf).has_value(), "J1 setup: the graph validates");
 
-        auto grants = mint_executor_worktrees(ref_store, *parent, wf);
+        auto grants = agentengine::rt::block_on(mint_executor_worktrees(ref_store, *parent, wf));
         check(grants.has_value() && grants->size() == 1, "J1 setup: one grant minted");
 
         std::vector<ExecutorBody> bodies = {
@@ -164,7 +165,7 @@ int main() {
         WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("go")}));
         check(r.status == workflow_status::completed, "J1: the run completes normally");
 
-        auto parent_after = read_ref(ref_store, "wf:run-j1");
+        auto parent_after = agentengine::rt::block_on(read_ref(ref_store, "wf:run-j1"));
         check(parent_after.has_value() && parent_after->has_value(), "J1: the parent ref still exists");
         if (parent_after.has_value() && parent_after->has_value()) {
             auto parent_tree = obj_store.get_tree((*parent_after)->tree_digest);
@@ -181,7 +182,7 @@ int main() {
         InMemoryStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto root   = tree_of(obj_store, {{"a.txt", blob_of(obj_store, "v1"), false}});
-        auto parent = commit_ref(ref_store, "wf:run-j2", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "wf:run-j2", root));
         check(parent.has_value(), "J2 setup: parent commit succeeds");
 
         Workflow wf;
@@ -196,7 +197,7 @@ int main() {
         wf.bound.max_rounds = 4;
         check(validate_workflow(wf).has_value(), "J2 setup: the graph validates");
 
-        auto grants = mint_executor_worktrees(ref_store, *parent, wf);
+        auto grants = agentengine::rt::block_on(mint_executor_worktrees(ref_store, *parent, wf));
         check(grants.has_value() && grants->size() == 3, "J2 setup: three grants minted");
 
         std::vector<ExecutorBody> bodies = {
@@ -217,7 +218,7 @@ int main() {
         check(r.failed_executor == "branch_writer",
               "J2: failed_executor names the branch executor whose merge actually conflicted");
 
-        auto parent_after = read_ref(ref_store, "wf:run-j2");
+        auto parent_after = agentengine::rt::block_on(read_ref(ref_store, "wf:run-j2"));
         check(parent_after.has_value() && parent_after->has_value(), "J2: the parent ref still exists");
         if (parent_after.has_value() && parent_after->has_value()) {
             auto parent_tree = obj_store.get_tree((*parent_after)->tree_digest);
@@ -228,7 +229,7 @@ int main() {
                   "rejected branch merge -- 025 §4's own never-last-writer-wins guarantee");
         }
 
-        auto conflicts_ref = read_ref(ref_store, conflicts_ref_name("wf:run-j2"));
+        auto conflicts_ref = agentengine::rt::block_on(read_ref(ref_store, conflicts_ref_name("wf:run-j2")));
         check(conflicts_ref.has_value() && conflicts_ref->has_value(),
               "J2: real conflict evidence was durably materialized (ADR-055) -- both versions "
               "retained, not merely a returned error nobody durably recorded");
@@ -245,7 +246,7 @@ int main() {
         InMemoryStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto root   = tree_of(obj_store, {{"base.txt", blob_of(obj_store, "base"), false}});
-        auto parent = commit_ref(ref_store, "wf:run-j3", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "wf:run-j3", root));
         check(parent.has_value(), "J3 setup: parent commit succeeds");
 
         Workflow wf;
@@ -260,7 +261,7 @@ int main() {
         wf.bound.max_rounds = 4;
         check(validate_workflow(wf).has_value(), "J3 setup: the graph validates");
 
-        auto grants = mint_executor_worktrees(ref_store, *parent, wf);
+        auto grants = agentengine::rt::block_on(mint_executor_worktrees(ref_store, *parent, wf));
         check(grants.has_value() && grants->size() == 3, "J3 setup: three grants minted");
 
         std::vector<ExecutorBody> bodies = {
@@ -278,7 +279,7 @@ int main() {
         WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("go")}));
         check(r.status == workflow_status::completed, "J3: the run completes normally");
 
-        auto parent_after = read_ref(ref_store, "wf:run-j3");
+        auto parent_after = agentengine::rt::block_on(read_ref(ref_store, "wf:run-j3"));
         if (parent_after.has_value() && parent_after->has_value()) {
             auto parent_tree = obj_store.get_tree((*parent_after)->tree_digest);
             check(parent_tree.has_value() && parent_tree->entries.size() == 3,

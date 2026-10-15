@@ -9,6 +9,7 @@
 #include <string>
 
 #include "agentengine/core/worktree.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using namespace agentengine;
 using InMemoryStore = agentengine::rt::InMemoryAppendLogStore;
@@ -190,12 +191,12 @@ int main() {
         InMemoryWorktreeObjectStore obj_store;
         auto a = blob_of(obj_store, "a-content");
         auto base_tree = tree_of(obj_store, {{"a.txt", a, false}});
-        auto parent = commit_ref(ref_store, "session:s-20", base_tree);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "session:s-20", base_tree));
         AE_CHECK(parent.has_value(), "B3-R1: setup parent commit succeeds");
-        auto shared = create_sub_worktree(ref_store, *parent, "session:s-20/agents/w", sharing_mode::shared);
+        auto shared = agentengine::rt::block_on(create_sub_worktree(ref_store, *parent, "session:s-20/agents/w", sharing_mode::shared));
         AE_CHECK(shared.has_value(), "B3-R1: setup shared sub-worktree creation succeeds");
 
-        auto note = check_shared_staleness(obj_store, ref_store, *shared, base_tree);
+        auto note = agentengine::rt::block_on(check_shared_staleness(obj_store, ref_store, *shared, base_tree));
         AE_CHECK(note.has_value() && !note->stale() && note->diff.changes.empty(),
                  "B3-R1: no staleness when nothing moved since the agent's last read");
     }
@@ -207,13 +208,13 @@ int main() {
         InMemoryWorktreeObjectStore obj_store;
         auto a = blob_of(obj_store, "a-content");
         auto base_tree = tree_of(obj_store, {{"a.txt", a, false}});
-        auto parent = commit_ref(ref_store, "session:s-21", base_tree);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "session:s-21", base_tree));
         AE_CHECK(parent.has_value(), "B3-R2: setup parent commit succeeds");
 
-        auto agent_view = create_sub_worktree(ref_store, *parent, "session:s-21/agents/reader",
-                                               sharing_mode::shared);
-        auto sibling_view = create_sub_worktree(ref_store, *parent, "session:s-21/agents/writer",
-                                                 sharing_mode::shared);
+        auto agent_view = agentengine::rt::block_on(create_sub_worktree(ref_store, *parent, "session:s-21/agents/reader",
+                                               sharing_mode::shared));
+        auto sibling_view = agentengine::rt::block_on(create_sub_worktree(ref_store, *parent, "session:s-21/agents/writer",
+                                                 sharing_mode::shared));
         AE_CHECK(agent_view.has_value() && sibling_view.has_value(),
                  "B3-R2: setup: two shared sub-worktrees over the same parent");
 
@@ -222,10 +223,10 @@ int main() {
 
         auto b = blob_of(obj_store, "b-content");
         auto moved_tree = tree_of(obj_store, {{"a.txt", a, false}, {"b.txt", b, false}});
-        AE_CHECK(write_sub_worktree(ref_store, *sibling_view, moved_tree).has_value(),
+        AE_CHECK(agentengine::rt::block_on(write_sub_worktree(ref_store, *sibling_view, moved_tree)).has_value(),
                  "B3-R2: setup: the sibling writes b.txt through ITS OWN shared view");
 
-        auto note = check_shared_staleness(obj_store, ref_store, *agent_view, agent_last_read);
+        auto note = agentengine::rt::block_on(check_shared_staleness(obj_store, ref_store, *agent_view, agent_last_read));
         AE_CHECK(note.has_value() && note->stale(), "B3-R2: the agent's next turn sees staleness");
         AE_CHECK(note.has_value() && note->diff.file_count() == 1 &&
                      has_change(note->diff, "b.txt", TreeDiffKind::added),
@@ -234,7 +235,7 @@ int main() {
                  "B3-R2: the note's summary is the same count-only text summarize_diff produces");
 
         // Positive control: after the agent "catches up" (re-reads), staleness is gone again.
-        auto caught_up = check_shared_staleness(obj_store, ref_store, *agent_view, moved_tree);
+        auto caught_up = agentengine::rt::block_on(check_shared_staleness(obj_store, ref_store, *agent_view, moved_tree));
         AE_CHECK(caught_up.has_value() && !caught_up->stale(),
                  "B3-R2 (positive control): re-reading clears the staleness, proving it isn't sticky");
     }
@@ -247,12 +248,12 @@ int main() {
         InMemoryWorktreeObjectStore obj_store;
         auto a = blob_of(obj_store, "a-content");
         auto base_tree = tree_of(obj_store, {{"a.txt", a, false}});
-        auto parent = commit_ref(ref_store, "session:s-22", base_tree);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "session:s-22", base_tree));
         AE_CHECK(parent.has_value(), "B3-R3: setup parent commit succeeds");
 
-        auto branch = create_sub_worktree(ref_store, *parent, "session:s-22/agents/b", sharing_mode::branch);
+        auto branch = agentengine::rt::block_on(create_sub_worktree(ref_store, *parent, "session:s-22/agents/b", sharing_mode::branch));
         AE_CHECK(branch.has_value(), "B3-R3: setup branch creation succeeds");
-        auto rejected = check_shared_staleness(obj_store, ref_store, *branch, base_tree);
+        auto rejected = agentengine::rt::block_on(check_shared_staleness(obj_store, ref_store, *branch, base_tree));
         AE_CHECK(!rejected.has_value() && rejected.error().code == "worktree.staleness_requires_shared_mode",
                  "B3-R3: check_shared_staleness rejects a branch-mode sub-worktree with a stable code");
     }

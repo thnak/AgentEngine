@@ -28,6 +28,7 @@
 #include "agentengine/rt/task.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"  // drives a real WorkflowSupervisor, not just its checkpoint records
 #include "agentengine/rt/workflow_time_travel.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::ContinueWorkflow;
 using agentengine::rt::ExecutorBody;
@@ -126,26 +127,26 @@ int main() {
     // ---- L1: a dangling pending checkpoint (never committed) is NOT retained -----------------------
     {
         InMemoryAppendLogStore store;
-        auto staged = stage_pending_checkpoint(store, "run-l1", 1, fake_record("run-l1", "v1"));
+        auto staged = agentengine::rt::block_on(stage_pending_checkpoint(store, "run-l1", 1, fake_record("run-l1", "v1")));
         check(staged.has_value(), "L1 setup: staging a pending checkpoint succeeds");
 
-        auto latest = load_latest_retained_checkpoint(store, "run-l1");
+        auto latest = agentengine::rt::block_on(load_latest_retained_checkpoint(store, "run-l1"));
         check(latest.has_value() && !latest->has_value(),
               "L1: a pending-only checkpoint (never committed) reports as NOT retained -- decision "
               "7's 'not fully committed' rule, matching the Quark original's own two-phase discipline");
 
-        auto all = retained_checkpoints(store, "run-l1");
+        auto all = agentengine::rt::block_on(retained_checkpoints(store, "run-l1"));
         check(all.has_value() && all->empty(),
-              "L1: retained_checkpoints() also excludes the dangling pending entry");
+              "L1: agentengine::rt::block_on(retained_checkpoints()) also excludes the dangling pending entry");
     }
 
     // ---- L2: save_retained_checkpoint() (both phases) makes a checkpoint retrievable ----------------
     {
         InMemoryAppendLogStore store;
-        auto saved = save_retained_checkpoint(store, "run-l2", 1, fake_record("run-l2", "v1"));
-        check(saved.has_value(), "L2: save_retained_checkpoint() (stage + commit) succeeds");
+        auto saved = agentengine::rt::block_on(save_retained_checkpoint(store, "run-l2", 1, fake_record("run-l2", "v1")));
+        check(saved.has_value(), "L2: agentengine::rt::block_on(save_retained_checkpoint()) (stage + commit) succeeds");
 
-        auto latest = load_latest_retained_checkpoint(store, "run-l2");
+        auto latest = agentengine::rt::block_on(load_latest_retained_checkpoint(store, "run-l2"));
         check(latest.has_value() && latest->has_value() &&
                   text_of((*latest)->selected_output) == "v1",
               "L2: the fully-committed checkpoint is retrievable, with its own real state");
@@ -154,11 +155,11 @@ int main() {
     // ---- L3/L4: multiple retained checkpoints, oldest-first listing, latest-by-index lookup --------
     {
         InMemoryAppendLogStore store;
-        (void)save_retained_checkpoint(store, "run-l34", 1, fake_record("run-l34", "v1"));
-        (void)save_retained_checkpoint(store, "run-l34", 2, fake_record("run-l34", "v2"));
-        (void)save_retained_checkpoint(store, "run-l34", 3, fake_record("run-l34", "v3"));
+        (void)agentengine::rt::block_on(save_retained_checkpoint(store, "run-l34", 1, fake_record("run-l34", "v1")));
+        (void)agentengine::rt::block_on(save_retained_checkpoint(store, "run-l34", 2, fake_record("run-l34", "v2")));
+        (void)agentengine::rt::block_on(save_retained_checkpoint(store, "run-l34", 3, fake_record("run-l34", "v3")));
 
-        auto all = retained_checkpoints(store, "run-l34");
+        auto all = agentengine::rt::block_on(retained_checkpoints(store, "run-l34"));
         check(all.has_value() && all->size() == 3, "L3: all 3 retained checkpoints are returned");
         if (all.has_value() && all->size() == 3) {
             check((*all)[0].first == 1 && (*all)[1].first == 2 && (*all)[2].first == 3,
@@ -166,21 +167,21 @@ int main() {
                   "reversed");
         }
 
-        auto latest = load_latest_retained_checkpoint(store, "run-l34");
+        auto latest = agentengine::rt::block_on(load_latest_retained_checkpoint(store, "run-l34"));
         check(latest.has_value() && latest->has_value() &&
                   text_of((*latest)->selected_output) == "v3",
-              "L4: load_latest_retained_checkpoint() returns index 3's state -- the HIGHEST "
+              "L4: agentengine::rt::block_on(load_latest_retained_checkpoint()) returns index 3's state -- the HIGHEST "
               "committed index, not the first one written");
     }
 
     // ---- L5: rewind_workflow() to a specific index selects exactly that one's state -----------------
     {
         InMemoryAppendLogStore store;
-        (void)save_retained_checkpoint(store, "run-l5", 1, fake_record("run-l5", "v1"));
-        (void)save_retained_checkpoint(store, "run-l5", 2, fake_record("run-l5", "v2"));
-        (void)save_retained_checkpoint(store, "run-l5", 3, fake_record("run-l5", "v3"));
+        (void)agentengine::rt::block_on(save_retained_checkpoint(store, "run-l5", 1, fake_record("run-l5", "v1")));
+        (void)agentengine::rt::block_on(save_retained_checkpoint(store, "run-l5", 2, fake_record("run-l5", "v2")));
+        (void)agentengine::rt::block_on(save_retained_checkpoint(store, "run-l5", 3, fake_record("run-l5", "v3")));
 
-        auto rewound = rewind_workflow(store, "run-l5", /*to_checkpoint_index=*/2, "op-1", "manual review");
+        auto rewound = agentengine::rt::block_on(rewind_workflow(store, "run-l5", /*to_checkpoint_index=*/2, "op-1", "manual review"));
         check(rewound.has_value() && text_of(rewound->selected_output) == "v2",
               "L5: rewinding to index 2 returns EXACTLY index 2's state, not the latest (v3) or the "
               "oldest (v1)");
@@ -189,9 +190,9 @@ int main() {
     // ---- L6: rewinding to a non-existent index fails closed with a specific error -------------------
     {
         InMemoryAppendLogStore store;
-        (void)save_retained_checkpoint(store, "run-l6", 1, fake_record("run-l6", "v1"));
+        (void)agentengine::rt::block_on(save_retained_checkpoint(store, "run-l6", 1, fake_record("run-l6", "v1")));
 
-        auto rewound = rewind_workflow(store, "run-l6", /*to_checkpoint_index=*/99, "op-1", "typo'd index");
+        auto rewound = agentengine::rt::block_on(rewind_workflow(store, "run-l6", /*to_checkpoint_index=*/99, "op-1", "typo'd index"));
         check(!rewound.has_value(),
               "L6: rewinding to an index that was never retained fails, not silently returns "
               "something else");
@@ -202,23 +203,23 @@ int main() {
     // ---- L7/L8: the audit log records every rewind request, including a modified-state override ----
     {
         InMemoryAppendLogStore store;
-        (void)save_retained_checkpoint(store, "run-l78", 1, fake_record("run-l78", "v1"));
-        (void)save_retained_checkpoint(store, "run-l78", 5, fake_record("run-l78", "v5"));
+        (void)agentengine::rt::block_on(save_retained_checkpoint(store, "run-l78", 1, fake_record("run-l78", "v1")));
+        (void)agentengine::rt::block_on(save_retained_checkpoint(store, "run-l78", 5, fake_record("run-l78", "v5")));
 
-        auto rewound = rewind_workflow(store, "run-l78", /*to_checkpoint_index=*/1, "operator-x",
-                                        "investigating a bad output");
+        auto rewound = agentengine::rt::block_on(rewind_workflow(store, "run-l78", /*to_checkpoint_index=*/1, "operator-x",
+                                        "investigating a bad output"));
         check(rewound.has_value() && text_of(rewound->selected_output) == "v1",
               "L7 setup: the plain rewind (no override) returns the retained checkpoint's own state");
 
         auto override_state = fake_record("run-l78", "manually-fixed");
         auto rewound2 =
-            rewind_workflow(store, "run-l78", /*to_checkpoint_index=*/5, "operator-y",
-                             "patching a known-bad field", override_state);
+            agentengine::rt::block_on(rewind_workflow(store, "run-l78", /*to_checkpoint_index=*/5, "operator-y",
+                             "patching a known-bad field", override_state));
         check(rewound2.has_value() && text_of(rewound2->selected_output) == "manually-fixed",
               "L8: a modified_state override REPLACES the retained checkpoint's own state wholesale "
               "in the returned record");
 
-        auto audit = read_rewind_audit_log(store, "run-l78");
+        auto audit = agentengine::rt::block_on(read_rewind_audit_log(store, "run-l78"));
         check(audit.has_value() && audit->size() == 2,
               "L7: BOTH rewind requests are recorded, even though this call never applied either "
               "returned record anywhere -- the REQUEST itself is the audited event");
@@ -261,7 +262,7 @@ int main() {
         std::string const interaction_id = r1.open_interactions.front().interaction_id;
 
         // Checkpoint index 1: the SUSPENDED state, before the port is ever answered.
-        auto ckpt1 = save_retained_checkpoint(store, sup.run_id(), 1, sup.to_record());
+        auto ckpt1 = agentengine::rt::block_on(save_retained_checkpoint(store, sup.run_id(), 1, sup.to_record()));
         check(ckpt1.has_value(), "E1: checkpointing the suspended state succeeds");
 
         // Answer the port with "original-answer" and let the ORIGINAL run finish.
@@ -270,13 +271,13 @@ int main() {
         std::string const original_output = text_of(r2.output);
 
         // Checkpoint index 2: the COMPLETED state.
-        auto ckpt2 = save_retained_checkpoint(store, sup.run_id(), 2, sup.to_record());
+        auto ckpt2 = agentengine::rt::block_on(save_retained_checkpoint(store, sup.run_id(), 2, sup.to_record()));
         check(ckpt2.has_value(), "E1 setup: checkpointing the completed state succeeds");
 
         // ---- TIME TRAVEL: rewind to index 1 (BEFORE the port was answered), on a FRESH instance ----
-        auto rewound = rewind_workflow(store, sup.run_id(), /*to_checkpoint_index=*/1,
+        auto rewound = agentengine::rt::block_on(rewind_workflow(store, sup.run_id(), /*to_checkpoint_index=*/1,
                                         "operator-time-traveler",
-                                        "replaying with a different answer to compare outcomes");
+                                        "replaying with a different answer to compare outcomes"));
         check(rewound.has_value(), "E1: rewinding to the pre-answer checkpoint succeeds");
 
         WorkflowSupervisor fresh;

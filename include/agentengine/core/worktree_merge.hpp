@@ -28,6 +28,7 @@
 #include "agentengine/core/worktree_sub.hpp"
 #include "agentengine/core/worktree_types.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine {
 
@@ -184,42 +185,42 @@ struct BranchMergeOutcome {
 // drives a real fix (e.g. a compare-and-set primitive on `Store`) rather than living with this
 // best-effort recheck indefinitely.
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<BranchMergeOutcome> merge_branch_into_parent(OS& object_store, RS& ref_store,
-                                                                   SubWorktree const& branch,
-                                                                   Ref const& expected_parent) {
+[[nodiscard]] task<result<BranchMergeOutcome>> merge_branch_into_parent(OS& object_store, RS& ref_store,
+                                                                   SubWorktree branch,
+                                                                   Ref expected_parent) {
     if (branch.mode != sharing_mode::branch) {
-        return std::unexpected(error{failure_class::contract,
+        co_return std::unexpected(error{failure_class::contract,
                                       "merge_branch_into_parent requires a branch-mode sub-worktree",
                                       "worktree.merge_requires_branch_mode"});
     }
 
-    auto branch_ref = read_ref(ref_store, branch.backing_ref_name);
-    if (!branch_ref) return std::unexpected(branch_ref.error());
+    auto branch_ref = co_await read_ref(ref_store, branch.backing_ref_name);
+    if (!branch_ref) co_return std::unexpected(branch_ref.error());
     if (!branch_ref->has_value()) {
-        return std::unexpected(error{failure_class::contract,
+        co_return std::unexpected(error{failure_class::contract,
                                       "branch sub-worktree's own ref has never been committed",
                                       "worktree.merge_branch_ref_missing"});
     }
 
     auto merged =
         merge_trees(object_store, branch.base_digest, (*branch_ref)->tree_digest, expected_parent.tree_digest);
-    if (!merged) return std::unexpected(merged.error());
+    if (!merged) co_return std::unexpected(merged.error());
     if (!merged->ok()) {
-        return BranchMergeOutcome{std::nullopt, std::move(merged->conflicts)};
+        co_return BranchMergeOutcome{std::nullopt, std::move(merged->conflicts)};
     }
 
-    auto live_parent = read_ref(ref_store, expected_parent.name);
-    if (!live_parent) return std::unexpected(live_parent.error());
+    auto live_parent = co_await read_ref(ref_store, expected_parent.name);
+    if (!live_parent) co_return std::unexpected(live_parent.error());
     if (!live_parent->has_value() || (*live_parent)->tree_digest != expected_parent.tree_digest) {
-        return std::unexpected(error{failure_class::transient,
+        co_return std::unexpected(error{failure_class::transient,
                                       "parent ref moved since the merge's expected base was observed; "
                                       "re-read and retry",
                                       "worktree.merge_stale_parent"});
     }
 
-    auto committed = commit_ref(ref_store, expected_parent.name, merged->merged_tree_digest);
-    if (!committed) return std::unexpected(committed.error());
-    return BranchMergeOutcome{*committed, {}};
+    auto committed = co_await commit_ref(ref_store, expected_parent.name, merged->merged_tree_digest);
+    if (!committed) co_return std::unexpected(committed.error());
+    co_return BranchMergeOutcome{*committed, {}};
 }
 
 // The production-usable response to `merge_branch_into_parent`'s own error message ("re-read and
@@ -231,12 +232,12 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 // only `worktree.merge_stale_parent` drives another attempt. Phase B4's own concurrency proof is what
 // exercises this under many simulated interleavings; this function is the mechanism, not the proof.
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<BranchMergeOutcome> retry_merge_branch_into_parent(OS& object_store, RS& ref_store,
-                                                                         SubWorktree const& branch,
+[[nodiscard]] task<result<BranchMergeOutcome>> retry_merge_branch_into_parent(OS& object_store, RS& ref_store,
+                                                                         SubWorktree branch,
                                                                          Ref initial_expected_parent,
                                                                          int max_attempts) {
     if (max_attempts < 1) {
-        return std::unexpected(error{failure_class::contract, "max_attempts must be at least 1",
+        co_return std::unexpected(error{failure_class::contract, "max_attempts must be at least 1",
                                       "worktree.merge_retry_bad_max_attempts"});
     }
     std::string const parent_name = initial_expected_parent.name;
@@ -244,22 +245,22 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 
     for (int attempt = 0; attempt < max_attempts; ++attempt) {
         if (!expected.has_value()) {
-            auto fresh = read_ref(ref_store, parent_name);
-            if (!fresh) return std::unexpected(fresh.error());
+            auto fresh = co_await read_ref(ref_store, parent_name);
+            if (!fresh) co_return std::unexpected(fresh.error());
             if (!fresh->has_value()) {
-                return std::unexpected(error{failure_class::contract,
+                co_return std::unexpected(error{failure_class::contract,
                                               "retry_merge_branch_into_parent's parent ref has never "
                                               "been committed",
                                               "worktree.merge_parent_missing"});
             }
             expected = std::move(**fresh);
         }
-        auto outcome = merge_branch_into_parent(object_store, ref_store, branch, *expected);
-        if (outcome.has_value()) return outcome;
-        if (outcome.error().code != "worktree.merge_stale_parent") return std::unexpected(outcome.error());
+        auto outcome = co_await merge_branch_into_parent(object_store, ref_store, branch, *expected);
+        if (outcome.has_value()) co_return outcome;
+        if (outcome.error().code != "worktree.merge_stale_parent") co_return std::unexpected(outcome.error());
         expected.reset();  // rejected as stale -- force a fresh read on the next attempt
     }
-    return std::unexpected(error{failure_class::resource,
+    co_return std::unexpected(error{failure_class::resource,
                                   "exceeded max retry attempts merging under sustained contention",
                                   "worktree.merge_retries_exhausted"});
 }
