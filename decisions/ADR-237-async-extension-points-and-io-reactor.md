@@ -2615,6 +2615,87 @@ coroutines with the same bodies. `FileWorktreeObjectStore`'s bodies are now `*_b
   arises for a task *forked* by a scope (`when_all`/`on_strand`) from the holder; a plain awaited child shares the
   holder's id and would wait on itself. The code therefore never nests a public locker (ADR-238 §3.5), and T6 proves it.
 
+### Step 50 (2026-10-15): Phase D -- the execution and sandbox seams are `task`-shaped (#173)
+
+Five slices, one commit each, in the order smallest-first: `NetEgressBackend`, `Runner`, `SandboxBackend`,
+`ExecutionSurface`, `PersistentShellSurface`. The same shape throughout, Phase C's: every conformer keeps its
+body byte-for-byte as a public `*_blocking` member and the seam method is a coroutine over it that completes
+without suspending. Moving those bodies onto `rt::process` / `rt::http` is #180's, not this phase's; until then
+a conformer that blocks a lane is the named residual, as for the file stores.
+
+- **Seams.** `NetEgressBackend::fetch` (`sandbox/net_egress_proxy.hpp`) -> `task<result<NetEgressResponse>>`;
+  `Runner::run` (`sandbox/runner.hpp`) -> `task<result<ExecOutcome>>`; `SandboxBackend::create/exec`
+  (`sandbox/sandbox.hpp`) -> `task<result<...>>` and `destroy` -> `task<void>`; `ExecutionSurface::reset/run/
+  drain_to` (`sandbox/execution_surface.hpp`) and `PersistentShellSurface::open/exec/drain_to/close`
+  (`sandbox/persistent_shell.hpp`) -> `task<result<...>>`. `is_live()` and `traits` stay synchronous (§5.3).
+  Value arguments are taken by value in every in-tree conformer's wrapper; handles, `ExecState` and `ctx` are
+  borrowed and must outlive the task -- stated on each concept.
+- **Conformers.** `HostEgressProxy` (`fetch_blocking`); `ShellRunner`, `PythonRunner`, `MediatedShellRunner`,
+  `MediatedPythonRunner` (`run_blocking`); `NativeJailBackend`, `LinuxNativeJailBackend`, `KataBackend`,
+  `WasmBackend` (`create/exec/destroy_blocking`); `DockerExecutionSurface`, `ContainerdExecutionSurface`
+  (`reset/run/drain_to_blocking`); `DockerPersistentShellSurface` (`open/exec/drain_to/close_blocking`). Every
+  wrapper is `[[nodiscard]]`, so an un-awaited `destroy(h);` is a compile error under `/WX`.
+- **A hazard the rename had to cover, found by reading every body.** `DockerPersistentShellSurface`'s destructor
+  and `open()`'s failure lambda both called `(void)close();`. Left alone, that is a discarded task: the `(void)`
+  silences `[[nodiscard]]` and the container is never removed. Both call `close_blocking()`. No other conformer
+  calls its own seam method internally (checked per file).
+- **Callers that await.** `read_content`'s `invoke_via`, the four PDF tools (`fetch_via_url`, `invoke_worker`,
+  `invoke`/`invoke_via` -- they move to the §5.2 instance form); `SessionShellSandbox::run` (`run_shell`) and
+  `cli_chat`'s `real_execute_code`; the PDF worker's create/exec/destroy, each still inside its own ADR-170
+  event bracket (two small coroutines replace the immediately-invoked lambdas, so a scope still closes before
+  the next stage starts); `SandboxRuntime::run` and `run_live`; `LiveShellSandboxProvider::shell_exec`,
+  `check_lifetime`, `release` and `bind_sandbox`'s release of the old environment.
+- **Finding: `shell_exec` could not run on a runtime lane.** It drove `run_live()` with `rt::block_on`, which a
+  lane refuses (`rt.block_on_on_lane`, §4.3) -- latent only because sessions are not on the runtime yet (#179),
+  the same shape as step 44's `recall`. It awaits now; L1 below proves it on a lane.
+- **Callers that cannot await, each stated.** The WASM host import `http-request` calls
+  `HostEgressProxy::fetch_blocking` (the guest is blocked inside the import; there is nothing to suspend to).
+  `MediatedPythonRunner`'s destructor calls `NativeJailBackend::destroy_blocking`. `SandboxBackendRegistry`'s
+  type-erased entry returns the seam's tasks. `RegisteredRunner` -- the shell's runner-composition typedef --
+  is still synchronous (it is one of #174's untriaged typedefs); compositions call `run_blocking`, or drive
+  `run` with `rt::block_on` in tests. **`LiveShellSandboxProvider`'s destructor and assignment operators**
+  release with a guarded `rt::block_on(surface_->close())`: complete for every in-tree surface; on a lane a
+  refusal is counted as a failed release (the accounting a failed close already gets, with ADR-139's orphan
+  reaping as the last net) and never thrown out of a destructor. §4.5 rule 3a (owners close asynchronously) is
+  the real answer and is not built.
+- **Lock audit** (the phase's standing instruction). No `std::mutex` is held across a `co_await` in anything
+  this phase touched: the backend and surface `.cpp` files contain no `co_await` at all, so every lock in them
+  (`instances_mutex_`, `call_mutex`, `disk_quota_setup_mutex_`, the profile/grant statics) sits in a
+  synchronous body; the coroutine callers hold none (`SandboxRuntime` already serialises on an `AsyncMutex`).
+- **Also fixed: the `AGENTENGINE_BUILD_PYTHON_RUNNER` build was broken on `main`.** Step 48 made
+  `materialize_skill_mounts` a task, but `cli_chat`'s `main()` and `test_mediated_python_runner_skill_mounts`
+  still used it synchronously. Neither builds unless that option is ON, which no CI leg sets, so it went unseen.
+  Both now drive it with `rt::block_on` (separate commit).
+- **Evidence.** New `test_execution_seams_on_lane`: each caller driven ON A RUNTIME LANE against a conformer
+  that parks on a reactor timer, every check also asserting the conformer really suspended. E1/E2
+  `read_content` through a suspending egress backend (success, and the non-2xx mapping unchanged); R1 a
+  suspending `Runner` still shares `ExecState` by reference across the suspension, R2 `run_shell` through the
+  real pipeline; S1/S2 a suspending backend through the registry's type-erased entry, per-instance state kept;
+  X1/X2 `SandboxRuntime::run` with a suspending surface (committed checkpoint; a refused command still
+  refunds `RunCost`); L1/L2 `LiveShellSandboxProvider` bound, `shell_exec` invoked through its descriptor and
+  the PerRun close, all on the lane. **Five planted mutants, each killed** (the test terminates, 0xC0000409, on
+  the refused `block_on`): `rt::block_on` around the fetch in `invoke_via` (E1), around `shell_.run` in
+  `SessionShellSandbox::run` (R2), in the registry's `exec` entry (S1), around `surface.run` in
+  `SandboxRuntime::run` (X1), and the pre-#173 `block_on(run_live(...))` in `shell_exec` (L1).
+- **Verification.** Windows `build-dev`: clean; `ctest -LE live-network` 417/418 -- **with the Docker-daemon
+  tests running this time** (Docker Desktop started locally): `test_sandbox_runtime`,
+  `test_mandatory_sandbox_provider`, `test_task_branch_tools`, `test_task_branch_concurrent_dispatch`,
+  `test_docker_*`, `test_execution_surface_image_identity`, `test_composed_sandbox_providers_live`,
+  `test_docker_persistent_shell_surface` and `test_live_shell_sandbox_provider_live` all pass, which closes the
+  "verified by compilation only" gap steps 48-49 recorded for the sandbox-side wiring. The one failure is
+  `test_external_skill_discovery` D6, which needs symlinked skills in this machine's `~/.claude/skills`
+  (absent, as step 11 already noted). A second Windows tree with `AGENTENGINE_BUILD_PYTHON_RUNNER`,
+  `AGENTENGINE_WITH_PDF`, `AGENTENGINE_WITH_WASM`, `AGENTENGINE_WITH_NATIVE_PROCESS` and HTTPS ON (none of which
+  CI builds): clean; the PDF tools' tests (real sandboxed worker), the native-process, CodeAct and Python
+  runner tests pass; `test_wasm_backend`/`test_wasm_tool_bridge` skip (no guest component built);
+  `test_reference_agent_task_corpus` H1-T3 fails inside the jailed Python worker (`pandas` imported without
+  `read_csv`) after the seam returned the worker's traceback correctly -- an interpreter-environment fault in
+  the worker process, not this change, though it was not re-run on `main` to confirm. Linux (WSL, `-Werror`,
+  HTTPS on): gcc and clang both build the full tree, `LinuxNativeJailBackend`, `KataBackend` and the containerd
+  surface included; gcc's `ctest` is 384/400, the 16 failures being the Docker/containerd-daemon tests (WSL
+  has no daemon) and `test_json_dump_escape`'s RLIMIT_DATA self-check, all expected there. naming-lint,
+  layering-lint and milestone lint OK.
+
 ### §14.1 What is left, and the phases to follow
 
 Recorded at session end so the work resumes cold. **Status: §5.1 is 14 of ~27 seams converted**
@@ -2640,10 +2721,10 @@ with the index seams. `rt/dns.hpp`'s `HostResolver` is NOT a seam to convert -- 
 reactor-vocabulary input (a blocking resolver run on the DNS pool). Order taken: `SurfaceFactory` first (small,
 closes the small end of Phase B), then Phase C with the qdrant `Resolver` folded in.
 
-**Remaining §5.1 seams (sync -> `task`):** `Runner`;
-`SandboxBackend`; `ExecutionSurface`; `PersistentShellSurface`; `NetEgressBackend`; `SecretStore`; the three
-stores; plus ~15
-further `std::function` typedefs that have not been triaged individually yet.
+**Remaining §5.1 seams (sync -> `task`):** ~~`Runner`; `SandboxBackend`; `ExecutionSurface`;
+`PersistentShellSurface`; `NetEgressBackend`~~ (Phase D, §14 step 50); ~~`SecretStore`; the three stores~~ (Phase
+C, steps 46-49); plus ~15 further `std::function` typedefs that have not been triaged individually yet (#174 --
+among them the shell's `RegisteredRunner` composition typedef, which step 50 left synchronous).
 
 **Remaining §5.2 cleanup:** delete `make_sync_invoke`'s **five** production call sites -- counted by grep,
 not recollection: the two RAG tools (`core/hybrid_rag_context_provider.hpp:211`,
@@ -2700,6 +2781,11 @@ Gate: those tests are updated with the reason recorded -- never deleted to make 
 `PersistentShellSurface`, `NetEgressBackend` (`BatchBackend` was taken early, §14 step 43). Grouped because they share the
 `EffectContext`/capability plumbing. Expect the mutex-across-suspension hazard from the A2A server
 (`protocol/a2a/server.hpp:141`) to recur -- audit every lock when one of these goes async.
+**PHASE D IS COMPLETE (2026-10-15, #173):** all five seams are `task`-shaped (§14 step 50, one slice each), every
+production caller awaits them except the stated synchronous edges (the WASM host import, two destructors, the
+`RegisteredRunner` typedef), and the lock audit found no `std::mutex` held across a `co_await`. Not done and not
+claimed: the blocking conformer bodies moving onto `rt::` (#180), §4.5 rule 3a's asynchronous close for the
+providers whose destructors still `block_on` a surface close, and Phase E (§5.2 cleanup).
 
 **Phase E -- §5.2 cleanup, only after C and D.** The five `make_sync_invoke` sites and the static
 `make_tool_descriptor`/`from_tools` form can only be deleted once nothing synchronous remains downstream of
