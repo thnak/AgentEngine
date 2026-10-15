@@ -133,7 +133,7 @@ int main() {
         rt::Runtime host_rt{rt::RuntimeConfig{.lanes = 1}};
         SuspendingLogStore log(host_rt.reactor());
         InMemoryWorktreeObjectStore objects;
-        auto empty = objects.put_tree(Tree{});
+        auto empty = agentengine::rt::block_on(objects.put_tree(Tree{}));
         Mount const mount{"/work", "session:lane", ""};
         cap::FsWrite const w{"/work", "", std::nullopt, std::nullopt};
         cap::FsRead const r{"/work", "", std::nullopt};

@@ -517,7 +517,7 @@ public:
             auto existing = co_await read_ref(ref_store, mount.ref_name);
             if (!existing) co_return std::unexpected(existing.error());
             if (!existing->has_value()) {
-                auto empty = object_store.put_tree(Tree{});
+                auto empty = co_await object_store.put_tree(Tree{});
                 if (!empty) co_return std::unexpected(empty.error());
                 auto committed = co_await commit_ref(ref_store, mount.ref_name, *empty);
                 if (!committed) co_return std::unexpected(committed.error());
@@ -669,7 +669,7 @@ public:
             for (std::size_t k = start; k < end; ++k) {
                 auto const& pc = pending[k];
                 auto chunk_bytes = std::as_bytes(std::span{pc.text.data(), pc.text.size()});
-                auto blob_digest = object_store.put_blob(chunk_bytes);
+                auto blob_digest = co_await object_store.put_blob(chunk_bytes);
                 if (!blob_digest) co_return std::unexpected(blob_digest.error());
                 if (*blob_digest != pc.id) {
                     // Should be unreachable (both are `compute_digest()` over the identical bytes) --
@@ -769,7 +769,7 @@ public:
             auto existing = co_await read_ref(ref_store, mount.ref_name);
             if (!existing) co_return std::unexpected(existing.error());
             if (!existing->has_value()) {
-                auto empty = object_store.put_tree(Tree{});
+                auto empty = co_await object_store.put_tree(Tree{});
                 if (!empty) co_return std::unexpected(empty.error());
                 auto committed = co_await commit_ref(ref_store, mount.ref_name, *empty);
                 if (!committed) co_return std::unexpected(committed.error());
@@ -913,7 +913,7 @@ public:
         // --- Commit: blob + record first (idempotent, both legs), then each leg's own add_batch() -------
         for (auto const& pc : pending) {
             auto chunk_bytes = std::as_bytes(std::span{pc.text.data(), pc.text.size()});
-            auto blob_digest = object_store.put_blob(chunk_bytes);
+            auto blob_digest = co_await object_store.put_blob(chunk_bytes);
             if (!blob_digest) co_return std::unexpected(blob_digest.error());
             if (*blob_digest != pc.id) {
                 co_return std::unexpected(error{failure_class::fatal,

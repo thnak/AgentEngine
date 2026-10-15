@@ -167,7 +167,7 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
     // tenant's chunk id in the first place, see this file's own cross-tenant test), not on a
     // capability gate at the blob layer. This is the SAME mechanism corpus_chunk.hpp's own
     // header comment already designs and names, not a gap this file introduces.
-    auto chunk_bytes = object_store.get_blob(scored.id);
+    auto chunk_bytes = co_await object_store.get_blob(scored.id);
     if (!chunk_bytes) co_return std::unexpected(chunk_bytes.error());
     std::string const chunk_text(reinterpret_cast<char const*>(chunk_bytes->data()), chunk_bytes->size());
 

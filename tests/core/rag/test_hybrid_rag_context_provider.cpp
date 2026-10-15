@@ -90,7 +90,7 @@ ae::Message make_msg(ae::role r, std::string text, std::string message_id) {
 ae::result<ae::Ref> bootstrap_corpus_worktree(ae::InMemoryWorktreeObjectStore& object_store,
                                                 ae::rt::InMemoryAppendLogStore& ref_store,
                                                 ae::Mount const& mount) {
-    auto empty = object_store.put_tree(ae::Tree{});
+    auto empty = agentengine::rt::block_on(object_store.put_tree(ae::Tree{}));
     if (!empty) return std::unexpected(empty.error());
     return agentengine::rt::block_on(ae::commit_ref(ref_store, mount.ref_name, *empty));
 }
@@ -103,7 +103,7 @@ ae::result<ae::Digest> write_chunk(ae::InMemoryWorktreeObjectStore& object_store
                                      ae::BM25Index& sparse, std::string const& text,
                                      std::string const& source_path, std::size_t line_start,
                                      std::size_t line_end, std::vector<float> const& vec) {
-    auto digest = object_store.put_blob(std::as_bytes(std::span{text.data(), text.size()}));
+    auto digest = agentengine::rt::block_on(object_store.put_blob(std::as_bytes(std::span{text.data(), text.size()})));
     if (!digest) return std::unexpected(digest.error());
 
     ae::CorpusChunkRecord record{};

@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine {
 
@@ -94,17 +95,18 @@ struct Ref {
 }
 
 // 025 §2's digest+store+tree contract. A concept, not a base class -- matches SandboxBackend/
-// Runner/ChatClient's own established shape in this codebase. Return types are `result<T>`
-// (synchronous) for the same reason every other seam header still is: `ae::task<T>` is not yet
-// wired in project-wide (M2's own decision 2, unchanged).
+// Runner/ChatClient's own established shape in this codebase. Every method returns `task<result<T>>`
+// since decisions/ADR-237 §5.1 (#172): a store backed by a database or an object service suspends on its I/O.
+// `put_blob` takes a `std::span` -- zero-copy, the caller keeps the bytes alive until the task completes, which
+// every caller does by awaiting it in the same full-expression/statement; ids and trees are taken by value.
 template <class S>
 // ae-naming-lint: allow WorktreeObjectStore — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 concept WorktreeObjectStore =
     requires(S& s, std::span<std::byte const> bytes, Digest const& digest, Tree tree) {
-        { s.put_blob(bytes) } -> std::same_as<result<Digest>>;
-        { s.get_blob(digest) } -> std::same_as<result<std::vector<std::byte>>>;
-        { s.put_tree(tree) } -> std::same_as<result<Digest>>;
-        { s.get_tree(digest) } -> std::same_as<result<Tree>>;
+        { s.put_blob(bytes) } -> std::same_as<task<result<Digest>>>;
+        { s.get_blob(digest) } -> std::same_as<task<result<std::vector<std::byte>>>>;
+        { s.put_tree(tree) } -> std::same_as<task<result<Digest>>>;
+        { s.get_tree(digest) } -> std::same_as<task<result<Tree>>>;
     };
 
 // An OPTIONAL refinement: a store that can report a blob's size without handing over its bytes. A
@@ -117,7 +119,7 @@ template <class S>
 // ae-naming-lint: allow WorktreeObjectStoreWithBlobSize — ADR-025 §4c precedent (WorktreeObjectStore's own identical suppression, the concept this refines): deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 concept WorktreeObjectStoreWithBlobSize =
     WorktreeObjectStore<S> && requires(S& s, Digest const& digest) {
-        { s.blob_size(digest) } -> std::same_as<result<std::uint64_t>>;
+        { s.blob_size(digest) } -> std::same_as<task<result<std::uint64_t>>>;
     };
 
 // The reference adapter -- in-memory, not durable across process exit. Exercises the full
@@ -137,54 +139,54 @@ concept WorktreeObjectStoreWithBlobSize =
 // ae-naming-lint: allow InMemoryWorktreeObjectStore — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class InMemoryWorktreeObjectStore {
 public:
-    [[nodiscard]] result<Digest> put_blob(std::span<std::byte const> bytes) {
+    [[nodiscard]] task<result<Digest>> put_blob(std::span<std::byte const> bytes) {
         auto digest = compute_digest(bytes);
-        if (!digest) return std::unexpected(digest.error());
+        if (!digest) co_return std::unexpected(digest.error());
         std::unique_lock lock(*mutex_);
         blobs_.try_emplace(*digest, bytes.begin(), bytes.end());
-        return *digest;
+        co_return *digest;
     }
 
-    [[nodiscard]] result<std::vector<std::byte>> get_blob(Digest const& digest) const {
+    [[nodiscard]] task<result<std::vector<std::byte>>> get_blob(Digest digest) const {
         std::shared_lock lock(*mutex_);
         auto it = blobs_.find(digest);
         if (it == blobs_.end()) {
-            return std::unexpected(error{failure_class::contract,
+            co_return std::unexpected(error{failure_class::contract,
                                           "no blob with this digest exists in the store",
                                           "worktree.blob_not_found"});
         }
-        return it->second;
+        co_return it->second;
     }
 
-    [[nodiscard]] result<std::uint64_t> blob_size(Digest const& digest) const {
+    [[nodiscard]] task<result<std::uint64_t>> blob_size(Digest digest) const {
         std::shared_lock lock(*mutex_);
         auto it = blobs_.find(digest);
         if (it == blobs_.end()) {
-            return std::unexpected(error{failure_class::contract,
+            co_return std::unexpected(error{failure_class::contract,
                                           "no blob with this digest exists in the store",
                                           "worktree.blob_not_found"});
         }
-        return static_cast<std::uint64_t>(it->second.size());
+        co_return static_cast<std::uint64_t>(it->second.size());
     }
 
-    [[nodiscard]] result<Digest> put_tree(Tree tree) {
+    [[nodiscard]] task<result<Digest>> put_tree(Tree tree) {
         std::ranges::sort(tree.entries, {}, &TreeEntry::name);
         auto digest = compute_digest(canonical_tree_bytes(tree));
-        if (!digest) return std::unexpected(digest.error());
+        if (!digest) co_return std::unexpected(digest.error());
         std::unique_lock lock(*mutex_);
         trees_.insert_or_assign(*digest, std::move(tree));
-        return *digest;
+        co_return *digest;
     }
 
-    [[nodiscard]] result<Tree> get_tree(Digest const& digest) const {
+    [[nodiscard]] task<result<Tree>> get_tree(Digest digest) const {
         std::shared_lock lock(*mutex_);
         auto it = trees_.find(digest);
         if (it == trees_.end()) {
-            return std::unexpected(error{failure_class::contract,
+            co_return std::unexpected(error{failure_class::contract,
                                           "no tree with this digest exists in the store",
                                           "worktree.tree_not_found"});
         }
-        return it->second;
+        co_return it->second;
     }
 
     // Test-only introspection (025 §2's "the same file written by two agents is stored once" is

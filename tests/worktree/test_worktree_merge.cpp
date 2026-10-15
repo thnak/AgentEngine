@@ -32,11 +32,11 @@ Digest blob_of(InMemoryWorktreeObjectStore& store, std::string const& content) {
     std::vector<std::byte> bytes;
     bytes.reserve(content.size());
     for (char c : content) bytes.push_back(static_cast<std::byte>(static_cast<unsigned char>(c)));
-    return *store.put_blob(bytes);
+    return *agentengine::rt::block_on(store.put_blob(bytes));
 }
 
 Digest tree_of(InMemoryWorktreeObjectStore& store, std::vector<TreeEntry> entries) {
-    return *store.put_tree(Tree{std::move(entries)});
+    return *agentengine::rt::block_on(store.put_tree(Tree{std::move(entries)}));
 }
 
 } // namespace
@@ -53,10 +53,10 @@ int main() {
         auto ours = tree_of(store, {{"a.txt", a, false}, {"b.txt", b, false}});
         auto theirs = tree_of(store, {{"a.txt", a, false}, {"c.txt", c, false}});
 
-        auto result = merge_trees(store, base, ours, theirs);
+        auto result = agentengine::rt::block_on(merge_trees(store, base, ours, theirs));
         AE_CHECK(result.has_value() && result->ok(), "B2-C1: disjoint additions merge with no conflict");
         if (result.has_value() && result->ok()) {
-            auto merged = store.get_tree(result->merged_tree_digest);
+            auto merged = agentengine::rt::block_on(store.get_tree(result->merged_tree_digest));
             AE_CHECK(merged.has_value() && merged->entries.size() == 3,
                      "B2-C1: merged tree contains all three files (a, b, c)");
         }
@@ -72,11 +72,11 @@ int main() {
         auto ours = tree_of(store, {{"a.txt", a_v2, false}});
         auto theirs = tree_of(store, {{"a.txt", a_v2, false}});
 
-        auto result = merge_trees(store, base, ours, theirs);
+        auto result = agentengine::rt::block_on(merge_trees(store, base, ours, theirs));
         AE_CHECK(result.has_value() && result->ok(),
                  "B2-C2: identical edits on both sides merge trivially, no conflict");
         if (result.has_value() && result->ok()) {
-            auto merged = store.get_tree(result->merged_tree_digest);
+            auto merged = agentengine::rt::block_on(store.get_tree(result->merged_tree_digest));
             AE_CHECK(merged.has_value() && merged->entries.size() == 1 &&
                          merged->entries[0].digest == a_v2,
                      "B2-C2: merged content is the agreed-upon v2");
@@ -94,7 +94,7 @@ int main() {
         auto ours = tree_of(store, {{"a.txt", a_ours, false}});
         auto theirs = tree_of(store, {{"a.txt", a_theirs, false}});
 
-        auto result = merge_trees(store, base, ours, theirs);
+        auto result = agentengine::rt::block_on(merge_trees(store, base, ours, theirs));
         AE_CHECK(result.has_value() && !result->ok(), "B2-C3: divergent edits surface as a conflict");
         AE_CHECK(result.has_value() && result->conflicts.size() == 1 &&
                      result->conflicts[0].path == "a.txt",
@@ -125,14 +125,14 @@ int main() {
         auto ours = tree_of(store, {{"dir", ours_dir, true}});
         auto theirs = tree_of(store, {{"dir", theirs_dir, true}});
 
-        auto result = merge_trees(store, base, ours, theirs);
+        auto result = agentengine::rt::block_on(merge_trees(store, base, ours, theirs));
         AE_CHECK(result.has_value() && result->ok(),
                  "B2-C4: disjoint changes inside a commonly-modified subdirectory merge cleanly");
         if (result.has_value() && result->ok()) {
-            auto merged = store.get_tree(result->merged_tree_digest);
+            auto merged = agentengine::rt::block_on(store.get_tree(result->merged_tree_digest));
             AE_CHECK(merged.has_value() && merged->entries.size() == 1 && merged->entries[0].is_tree,
                      "B2-C4: top level still has exactly one 'dir' entry");
-            auto merged_dir = store.get_tree(merged->entries[0].digest);
+            auto merged_dir = agentengine::rt::block_on(store.get_tree(merged->entries[0].digest));
             AE_CHECK(merged_dir.has_value() && merged_dir->entries.size() == 3,
                      "B2-C4: merged subdirectory contains x, y, AND z");
         }
@@ -155,7 +155,7 @@ int main() {
         auto ours = tree_of(store, {{"dir", ours_dir, true}});
         auto theirs = tree_of(store, {{"dir", theirs_dir, true}});
 
-        auto result = merge_trees(store, base, ours, theirs);
+        auto result = agentengine::rt::block_on(merge_trees(store, base, ours, theirs));
         AE_CHECK(result.has_value() && !result->ok(),
                  "B2-C5: a genuine nested conflict is NOT masked by the sibling disjoint addition");
         AE_CHECK(result.has_value() && result->conflicts.size() == 1 &&
@@ -175,7 +175,7 @@ int main() {
         auto ours = tree_of(store, {{"b.txt", b_edited, false}});   // deleted a.txt, edited b.txt
         auto theirs = tree_of(store, {});                            // deleted both
 
-        auto result = merge_trees(store, base, ours, theirs);
+        auto result = agentengine::rt::block_on(merge_trees(store, base, ours, theirs));
         AE_CHECK(result.has_value() && !result->ok(),
                  "B2-C6: edit/delete fork on b.txt surfaces as a conflict");
         AE_CHECK(result.has_value() && result->conflicts.size() == 1 &&
@@ -194,7 +194,7 @@ int main() {
         auto ours = tree_of(store, {{"b.txt", b, false}});    // deleted a.txt only
         auto theirs = tree_of(store, {{"b.txt", b, false}});  // deleted a.txt only, identically
 
-        auto result = merge_trees(store, base, ours, theirs);
+        auto result = agentengine::rt::block_on(merge_trees(store, base, ours, theirs));
         AE_CHECK(result.has_value() && result->ok(), "B2-C6b: identical deletion merges trivially");
     }
 
@@ -207,7 +207,7 @@ int main() {
         auto ours = tree_of(store, {{"new.txt", content_same, false}});
         auto theirs = tree_of(store, {{"new.txt", content_same, false}});
 
-        auto result = merge_trees(store, base, ours, theirs);
+        auto result = agentengine::rt::block_on(merge_trees(store, base, ours, theirs));
         AE_CHECK(result.has_value() && result->ok(), "B2-C7: add/add identical content merges trivially");
     }
     {
@@ -218,7 +218,7 @@ int main() {
         auto ours = tree_of(store, {{"new.txt", ours_content, false}});
         auto theirs = tree_of(store, {{"new.txt", theirs_content, false}});
 
-        auto result = merge_trees(store, base, ours, theirs);
+        auto result = agentengine::rt::block_on(merge_trees(store, base, ours, theirs));
         AE_CHECK(result.has_value() && !result->ok() && result->conflicts.size() == 1 &&
                      !result->conflicts[0].base.has_value(),
                  "B2-C7: add/add divergent content is a conflict with no base entry");
@@ -236,7 +236,7 @@ int main() {
         auto ours = tree_of(store, {{"x", ours_subtree, true}});
         auto theirs = tree_of(store, {{"x", x_edited, false}});
 
-        auto result = merge_trees(store, base, ours, theirs);
+        auto result = agentengine::rt::block_on(merge_trees(store, base, ours, theirs));
         AE_CHECK(result.has_value() && !result->ok() && result->conflicts.size() == 1 &&
                      result->conflicts[0].ours->is_tree && !result->conflicts[0].theirs->is_tree,
                  "B2-C8: a blob-vs-tree type fork surfaces as a conflict, not a silent resolution");

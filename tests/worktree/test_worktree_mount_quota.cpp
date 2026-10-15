@@ -47,7 +47,7 @@ std::string string_of(std::vector<std::byte> const& bytes) {
     return s;
 }
 
-Digest empty_tree(InMemoryWorktreeObjectStore& store) { return *store.put_tree(Tree{}); }
+Digest empty_tree(InMemoryWorktreeObjectStore& store) { return *agentengine::rt::block_on(store.put_tree(Tree{})); }
 
 Digest current_tree_digest(InMemoryStore& ref_store, std::string const& ref_name) {
     auto ref = agentengine::rt::block_on(read_ref(ref_store, ref_name));

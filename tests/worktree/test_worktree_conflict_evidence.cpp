@@ -56,11 +56,11 @@ Digest blob_of(InMemoryWorktreeObjectStore& store, std::string const& content) {
     std::vector<std::byte> bytes;
     bytes.reserve(content.size());
     for (char c : content) bytes.push_back(static_cast<std::byte>(static_cast<unsigned char>(c)));
-    return *store.put_blob(bytes);
+    return *agentengine::rt::block_on(store.put_blob(bytes));
 }
 
 Digest tree_of(InMemoryWorktreeObjectStore& store, std::vector<TreeEntry> entries) {
-    return *store.put_tree(Tree{std::move(entries)});
+    return *agentengine::rt::block_on(store.put_tree(Tree{std::move(entries)}));
 }
 
 std::string string_of(std::vector<std::byte> const& bytes) {
@@ -118,7 +118,7 @@ int main() {
         AE_CHECK(conflicts_ref.has_value() && conflicts_ref->has_value(),
                  "M2: a real conflicts ref now exists");
         if (conflicts_ref.has_value() && conflicts_ref->has_value()) {
-            auto tree = obj_store.get_tree((*conflicts_ref)->tree_digest);
+            auto tree = agentengine::rt::block_on(obj_store.get_tree((*conflicts_ref)->tree_digest));
             AE_CHECK(tree.has_value() && tree->entries.size() == 2,
                      "M2: exactly two entries -- ours and theirs -- were materialized");
             TreeEntry const* ours_entry = nullptr;
@@ -167,7 +167,7 @@ int main() {
         auto conflicts_ref = agentengine::rt::block_on(read_ref(ref_store, conflicts_ref_name("session:s-21")));
         AE_CHECK(conflicts_ref.has_value() && conflicts_ref->has_value(), "M3: a conflicts ref exists");
         if (conflicts_ref.has_value() && conflicts_ref->has_value()) {
-            auto tree = obj_store.get_tree((*conflicts_ref)->tree_digest);
+            auto tree = agentengine::rt::block_on(obj_store.get_tree((*conflicts_ref)->tree_digest));
             AE_CHECK(tree.has_value() && tree->entries.size() == 2,
                      "M3: both ours and theirs are materialized even with no base entry at all");
         }
@@ -195,7 +195,7 @@ int main() {
         auto conflicts_ref = agentengine::rt::block_on(read_ref(ref_store, conflicts_ref_name("session:s-22")));
         AE_CHECK(conflicts_ref.has_value() && conflicts_ref->has_value(), "M4: a conflicts ref exists");
         if (conflicts_ref.has_value() && conflicts_ref->has_value()) {
-            auto tree = obj_store.get_tree((*conflicts_ref)->tree_digest);
+            auto tree = agentengine::rt::block_on(obj_store.get_tree((*conflicts_ref)->tree_digest));
             AE_CHECK(tree.has_value() && tree->entries.size() == 1,
                      "M4: exactly ONE entry -- the side that actually still exists -- not a fabricated "
                      "entry for the side that was deleted");
@@ -231,7 +231,7 @@ int main() {
 
         auto conflicts_ref = agentengine::rt::block_on(read_ref(ref_store, conflicts_ref_name("session:s-23")));
         if (conflicts_ref.has_value() && conflicts_ref->has_value()) {
-            auto tree = obj_store.get_tree((*conflicts_ref)->tree_digest);
+            auto tree = agentengine::rt::block_on(obj_store.get_tree((*conflicts_ref)->tree_digest));
             AE_CHECK(tree.has_value() && tree->entries.size() == 2,
                      "M5: BOTH attempts' evidence coexists in the same conflicts ref -- the first "
                      "attempt's entry was not silently dropped when the second one committed");
@@ -336,7 +336,7 @@ int main() {
 
         auto conflicts_ref = agentengine::rt::block_on(read_ref(ref_store, conflicts_ref_name("session:s-33")));
         if (conflicts_ref.has_value() && conflicts_ref->has_value()) {
-            auto root = obj_store.get_tree((*conflicts_ref)->tree_digest);
+            auto root = agentengine::rt::block_on(obj_store.get_tree((*conflicts_ref)->tree_digest));
             AE_CHECK(root.has_value() && root->entries.size() == 1 && root->entries[0].name == "dir" &&
                           root->entries[0].is_tree,
                      "M9: the conflicts ref's own ROOT has exactly one real subdirectory entry "

@@ -40,16 +40,16 @@ std::vector<std::byte> bytes_of(std::string const& content) {
     return bytes;
 }
 
-Digest empty_tree(InMemoryWorktreeObjectStore& store) { return *store.put_tree(Tree{}); }
+Digest empty_tree(InMemoryWorktreeObjectStore& store) { return *agentengine::rt::block_on(store.put_tree(Tree{})); }
 
 // A one-file tree {"a.txt" -> content}, matching how mount_write's own set_entry_at_path would build
 // one turn's worth of change -- built directly here since these tests exercise the ref/turn layer,
 // not the mount layer.
 Digest one_file_tree(InMemoryWorktreeObjectStore& store, std::string const& content) {
-    auto blob = store.put_blob(bytes_of(content));
+    auto blob = agentengine::rt::block_on(store.put_blob(bytes_of(content)));
     Tree t;
     t.entries.push_back(TreeEntry{"a.txt", *blob, false});
-    return *store.put_tree(t);
+    return *agentengine::rt::block_on(store.put_tree(t));
 }
 
 } // namespace
@@ -125,7 +125,7 @@ int main() {
         auto fetched_digest = agentengine::rt::block_on(turn_digest_at(ref_store, name, 2));
         AE_CHECK(fetched_digest.has_value() && *fetched_digest == d_v1,
                  "D2-C1: agentengine::rt::block_on(turn_digest_at(turn 2)) returns exactly the digest committed at that turn");
-        auto fetched_tree = obj_store.get_tree(*fetched_digest);
+        auto fetched_tree = agentengine::rt::block_on(obj_store.get_tree(*fetched_digest));
         AE_CHECK(fetched_tree.has_value() && fetched_tree->entries.size() == 1 &&
                      fetched_tree->entries[0].name == "a.txt",
                  "D2-C1: the fetched turn's tree really does contain a.txt (not merely digest equality)");

@@ -52,11 +52,11 @@ std::string string_of(std::vector<std::byte> const& bytes) {
 }
 
 Digest blob_of(InMemoryWorktreeObjectStore& store, std::string const& content) {
-    return *store.put_blob(bytes_of(content));
+    return *agentengine::rt::block_on(store.put_blob(bytes_of(content)));
 }
 
 Digest tree_of(InMemoryWorktreeObjectStore& store, std::vector<TreeEntry> entries) {
-    return *store.put_tree(Tree{std::move(entries)});
+    return *agentengine::rt::block_on(store.put_tree(Tree{std::move(entries)}));
 }
 
 std::wstring widen_simple(std::string const& s) { return std::wstring(s.begin(), s.end()); }

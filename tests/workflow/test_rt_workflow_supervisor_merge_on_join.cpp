@@ -81,11 +81,11 @@ std::string string_of(std::vector<std::byte> const& bytes) {
 }
 
 Digest blob_of(InMemoryWorktreeObjectStore& store, std::string const& content) {
-    return *store.put_blob(bytes_of(content));
+    return *agentengine::rt::block_on(store.put_blob(bytes_of(content)));
 }
 
 Digest tree_of(InMemoryWorktreeObjectStore& store, std::vector<TreeEntry> entries) {
-    return *store.put_tree(Tree{std::move(entries)});
+    return *agentengine::rt::block_on(store.put_tree(Tree{std::move(entries)}));
 }
 
 Executor make_executor(std::string id, sharing_mode mode) {
@@ -109,7 +109,7 @@ ExecutorBody writer_body(InMemoryWorktreeObjectStore& obj_store, InMemoryStore& 
             return std::unexpected(
                 error{failure_class::fatal, "writer_body: no current tree", "test.setup_failed"});
         }
-        auto current_tree = obj_store.get_tree((*current)->tree_digest);
+        auto current_tree = agentengine::rt::block_on(obj_store.get_tree((*current)->tree_digest));
         if (!current_tree) return std::unexpected(current_tree.error());
 
         std::vector<TreeEntry> entries;
@@ -168,7 +168,7 @@ int main() {
         auto parent_after = agentengine::rt::block_on(read_ref(ref_store, "wf:run-j1"));
         check(parent_after.has_value() && parent_after->has_value(), "J1: the parent ref still exists");
         if (parent_after.has_value() && parent_after->has_value()) {
-            auto parent_tree = obj_store.get_tree((*parent_after)->tree_digest);
+            auto parent_tree = agentengine::rt::block_on(obj_store.get_tree((*parent_after)->tree_digest));
             check(parent_tree.has_value() && parent_tree->entries.size() == 2,
                   "J1: the parent's tree now has BOTH shared.txt and new.txt -- the branch's own "
                   "write folded back, driven entirely by WorkflowSupervisor's own merge-on-join hook, "
@@ -221,8 +221,8 @@ int main() {
         auto parent_after = agentengine::rt::block_on(read_ref(ref_store, "wf:run-j2"));
         check(parent_after.has_value() && parent_after->has_value(), "J2: the parent ref still exists");
         if (parent_after.has_value() && parent_after->has_value()) {
-            auto parent_tree = obj_store.get_tree((*parent_after)->tree_digest);
-            auto blob_content = obj_store.get_blob(parent_tree->entries[0].digest);
+            auto parent_tree = agentengine::rt::block_on(obj_store.get_tree((*parent_after)->tree_digest));
+            auto blob_content = agentengine::rt::block_on(obj_store.get_blob(parent_tree->entries[0].digest));
             check(parent_tree.has_value() && parent_tree->entries.size() == 1 && blob_content.has_value() &&
                       string_of(*blob_content) == "shared-edit",
                   "J2: the parent keeps the SHARED writer's own edit, completely untouched by the "
@@ -234,7 +234,7 @@ int main() {
               "J2: real conflict evidence was durably materialized (ADR-055) -- both versions "
               "retained, not merely a returned error nobody durably recorded");
         if (conflicts_ref.has_value() && conflicts_ref->has_value()) {
-            auto tree = obj_store.get_tree((*conflicts_ref)->tree_digest);
+            auto tree = agentengine::rt::block_on(obj_store.get_tree((*conflicts_ref)->tree_digest));
             check(tree.has_value() && tree->entries.size() == 2,
                   "J2: both ours (the parent/shared side) and theirs (the branch side) are present "
                   "in the materialized conflict evidence");
@@ -281,7 +281,7 @@ int main() {
 
         auto parent_after = agentengine::rt::block_on(read_ref(ref_store, "wf:run-j3"));
         if (parent_after.has_value() && parent_after->has_value()) {
-            auto parent_tree = obj_store.get_tree((*parent_after)->tree_digest);
+            auto parent_tree = agentengine::rt::block_on(obj_store.get_tree((*parent_after)->tree_digest));
             check(parent_tree.has_value() && parent_tree->entries.size() == 3,
                   "J3: the parent's tree has base.txt PLUS both branches' own disjoint additions -- "
                   "two independent branch-executor completions in one round both merged, in sequence, "

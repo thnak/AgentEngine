@@ -119,13 +119,13 @@ ae::Message make_msg(ae::role r, std::string text, std::string message_id) {
 ae::result<ae::Ref> bootstrap_corpus_worktree(ae::InMemoryWorktreeObjectStore& object_store,
                                                 ae::rt::InMemoryAppendLogStore& ref_store,
                                                 ae::Mount const& mount) {
-    auto empty = object_store.put_tree(ae::Tree{});
+    auto empty = agentengine::rt::block_on(object_store.put_tree(ae::Tree{}));
     if (!empty) return std::unexpected(empty.error());
     return agentengine::rt::block_on(ae::commit_ref(ref_store, mount.ref_name, *empty));
 }
 
 ae::result<ae::Digest> put_text_blob(ae::InMemoryWorktreeObjectStore& object_store, std::string const& text) {
-    return object_store.put_blob(std::as_bytes(std::span{text.data(), text.size()}));
+    return agentengine::rt::block_on(object_store.put_blob(std::as_bytes(std::span{text.data(), text.size()})));
 }
 
 // Writes one hand-built corpus chunk (blob + citation record) and adds its vector to `index` -- the
@@ -349,7 +349,7 @@ int main() {
                              "\xE2\x9F\xA6rag:docs/settings.md:10-12\xE2\x9F\xA7") != std::string::npos &&
                          parsed_reply->results.front().find("Dark mode can be enabled") != std::string::npos,
                      "R8c: the returned result carries the same citation label + chunk text discipline "
-                     "as on_context()'s own default injection (render_scored_chunk() is genuinely "
+                     "as on_context()'s own default injection (agentengine::rt::block_on(render_scored_chunk()) is genuinely "
                      "shared between both paths, not reimplemented)");
 
             auto bad_args = ae::json::parse(R"({})");
@@ -851,7 +851,7 @@ int main() {
         AE_CHECK(parsed_reply.has_value() && parsed_reply->results.size() == 1 &&
                      parsed_reply->results.front().find("real, still-present chunk") != std::string::npos,
                  "R14: recall() returns exactly the one real chunk, silently skipping the stale index "
-                 "entry -- render_scored_chunk()'s best-effort skip-on-miss posture (already proven for "
+                 "entry -- agentengine::rt::block_on(render_scored_chunk())'s best-effort skip-on-miss posture (already proven for "
                  "on_context()) genuinely holds through recall's invoke path too, not just on_context()");
     }
 

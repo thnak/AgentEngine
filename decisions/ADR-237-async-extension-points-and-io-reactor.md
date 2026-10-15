@@ -2578,6 +2578,43 @@ The first of the three stores, taken first because its core callers already `co_
   code and could NOT run here, so the sandbox-side wiring is verified by compilation only.
   naming-lint and layering-lint OK.
 
+### Step 49 (2026-10-15): Phase C slice 6 -- `WorktreeObjectStore` is `task`-shaped, including `Ledger` (#172)
+
+`put_blob`/`get_blob`/`put_tree`/`get_tree` (and the optional `blob_size`) return `task<result<...>>`; ids by value;
+`put_blob` keeps its `std::span`, which must outlive the returned task. `InMemoryWorktreeObjectStore`'s methods are
+coroutines with the same bodies. `FileWorktreeObjectStore`'s bodies are now `*_blocking` behind inline `task` wrappers
+-- the `rt::offload` move is the same named residual as steps 47-48.
+
+- **`Ledger` is the point of this slice, and it needed its own design: `decisions/ADR-238`.** `Ledger` held a
+  `std::mutex` across every store call, which cannot survive a store that suspends. ADR-238 (Proposed, red-teamed twice
+  before any code) splits `mutex_` into a state lock that is never held across a `co_await` and a new `op_mutex_`
+  (`rt::AsyncMutex`) that serialises `create_root_branch`/`commit`/`reset_to`/`merge`/`abandon`/
+  `abandon_orphaned_branch` across their store I/O, in phases (authorize and copy locals under `mutex_`; store I/O with
+  no lock; re-find by name and apply under `mutex_`). `get_blob_safe`, `get_tree_safe`, `put_blob_safe` and
+  `BlobWriteBatch::put` are `task`s. `RealIoFileSystem::materialize` reads every blob before taking its `sync_mutex_`.
+- **Everything over an object store followed:** `ensure_empty_tree`, `resolve_entry_at_path`, `set_entry_at_path`,
+  `resolve_subtree_digest`, `blob_size_of`, `subtree_usage`, `read_blob_within_size_cap`; `merge_subtrees` and
+  `merge_trees(store, ...)`; `collect_leaves_as`, `diff_subtrees`, `diff_trees`, `check_shared_staleness`;
+  `collect_blob_paths`, `assemble_tree`, `resolve_and_mount`, corpus `mount`/`mount_hybrid`, `render_scored_chunk`;
+  the native-jail materializers; and `PersistentVectorIndex::snapshot`/`restore` (which write to the store).
+- **Evidence.** `test_ledger_async_locking` (44 checks) forces each interleaving with a gated store on one thread:
+  T1 concurrent commits chain 1..N with `put_tree` parked; T2 a merge waits for a parked commit to its parent and
+  keeps the commit's file; T3 an abandon waits behind an in-flight merge; T4 an unauthorized read never reaches the
+  store; T5 a throwing `put_tree` becomes `ledger.store_faulted`, refunds, and releases the lock; T6
+  `abandon_orphaned_branch`/`reap_pending_abandons` do not self-deadlock; T7 a merge task destroyed while parked
+  leaves its child reclaimable; T8 a nested operation from a `when_all` child of the lock holder is refused with
+  `ledger.op_lock_refused` and throws nothing (real one-lane `Runtime`); T9 `materialize` holds no `std::mutex` while
+  parked. **All seven planted mutants are killed** (no op lock on commit -> T2; none on abandon -> T3; nested public
+  `abandon` -> hang; no `InFlightChild` guard -> T7; plain `lock()` -> T8; `put_tree` under `mutex_` -> crash;
+  `materialize` locking before its reads -> hang). Call sites in 43 test files changed shape only; the fakes that
+  wrapped a store became `task`-shaped. `ctest -LE live-network`: all green except the same 13 Docker-daemon tests,
+  among them `test_sandbox_runtime`, `test_mandatory_sandbox_provider` and `test_task_branch_*`, which reach this code
+  and could NOT run here, so the sandbox-side wiring (including `materialize`) is verified by compilation and T9 only.
+  naming-lint and layering-lint OK.
+- **A refusal is not what a nested plain `co_await` produces.** Writing T8 showed `ledger.op_lock_refused` only
+  arises for a task *forked* by a scope (`when_all`/`on_strand`) from the holder; a plain awaited child shares the
+  holder's id and would wait on itself. The code therefore never nests a public locker (ADR-238 §3.5), and T6 proves it.
+
 ### §14.1 What is left, and the phases to follow
 
 Recorded at session end so the work resumes cold. **Status: §5.1 is 14 of ~27 seams converted**
@@ -2653,7 +2690,7 @@ wants it; it is not currently planned.
 
 **Phase C -- index and storage seams.** ~~`VectorIndex`/`SparseIndex`~~ and ~~the RAG `recall`
 conversion~~ done together (§14 step 44); ~~the "async in name only" bodies (`QdrantVectorIndex`,
-`OpenAIEmbedder`) onto `rt::http` with qdrant's `Resolver`~~ (§14 step 45); ~~`SecretStore`~~ (§14 step 46); ~~`SessionStore`~~ (§14 step 47); ~~`AppendLogStore`~~ (§14 step 48); next `WorktreeObjectStore`. The RAG `recall`
+`OpenAIEmbedder`) onto `rt::http` with qdrant's `Resolver`~~ (§14 step 45); ~~`SecretStore`~~ (§14 step 46); ~~`SessionStore`~~ (§14 step 47); ~~`AppendLogStore`~~ (§14 step 48); ~~`WorktreeObjectStore` incl. `Ledger`~~ (§14 step 49, ADR-238). The RAG `recall`
 conversion was planned to belong here rather than earlier: `recall` deletes two
 `synchronous_leaf` contract-error paths that tests pin deliberately, and it depends on the index seams.
 Gate: those tests are updated with the reason recorded -- never deleted to make a build pass.

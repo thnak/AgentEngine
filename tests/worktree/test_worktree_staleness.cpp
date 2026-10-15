@@ -31,11 +31,11 @@ Digest blob_of(InMemoryWorktreeObjectStore& store, std::string const& content) {
     std::vector<std::byte> bytes;
     bytes.reserve(content.size());
     for (char c : content) bytes.push_back(static_cast<std::byte>(static_cast<unsigned char>(c)));
-    return *store.put_blob(bytes);
+    return *agentengine::rt::block_on(store.put_blob(bytes));
 }
 
 Digest tree_of(InMemoryWorktreeObjectStore& store, std::vector<TreeEntry> entries) {
-    return *store.put_tree(Tree{std::move(entries)});
+    return *agentengine::rt::block_on(store.put_tree(Tree{std::move(entries)}));
 }
 
 std::size_t count_kind(TreeDiff const& diff, TreeDiffKind kind) {
@@ -62,7 +62,7 @@ int main() {
         auto a = blob_of(store, "a-content");
         auto t = tree_of(store, {{"a.txt", a, false}});
 
-        auto diff = diff_trees(store, t, t);
+        auto diff = agentengine::rt::block_on(diff_trees(store, t, t));
         AE_CHECK(diff.has_value() && diff->changes.empty(), "B3-C1: identical trees diff to nothing");
         AE_CHECK(diff.has_value() && summarize_diff(*diff) == "no changes",
                  "B3-C1: summarize_diff reports 'no changes'");
@@ -76,7 +76,7 @@ int main() {
         auto old_tree = tree_of(store, {{"a.txt", a, false}});
         auto new_tree = tree_of(store, {{"a.txt", a, false}, {"b.txt", b, false}});
 
-        auto diff = diff_trees(store, old_tree, new_tree);
+        auto diff = agentengine::rt::block_on(diff_trees(store, old_tree, new_tree));
         AE_CHECK(diff.has_value() && diff->file_count() == 1, "B3-C2: exactly one file changed");
         AE_CHECK(diff.has_value() && has_change(*diff, "b.txt", TreeDiffKind::added),
                  "B3-C2: b.txt is reported as added");
@@ -92,7 +92,7 @@ int main() {
         auto old_tree = tree_of(store, {{"a.txt", a_v1, false}});
         auto new_tree = tree_of(store, {{"a.txt", a_v2, false}});
 
-        auto diff = diff_trees(store, old_tree, new_tree);
+        auto diff = agentengine::rt::block_on(diff_trees(store, old_tree, new_tree));
         AE_CHECK(diff.has_value() && diff->file_count() == 1 &&
                      has_change(*diff, "a.txt", TreeDiffKind::modified),
                  "B3-C3: a.txt is reported as modified, not added/removed");
@@ -106,7 +106,7 @@ int main() {
         auto old_tree = tree_of(store, {{"a.txt", a, false}, {"b.txt", b, false}});
         auto new_tree = tree_of(store, {{"a.txt", a, false}});
 
-        auto diff = diff_trees(store, old_tree, new_tree);
+        auto diff = agentengine::rt::block_on(diff_trees(store, old_tree, new_tree));
         AE_CHECK(diff.has_value() && diff->file_count() == 1 &&
                      has_change(*diff, "b.txt", TreeDiffKind::removed),
                  "B3-C4: b.txt is reported as removed");
@@ -122,7 +122,7 @@ int main() {
         auto old_tree = tree_of(store, {});
         auto new_tree = tree_of(store, {{"dir", new_dir, true}});
 
-        auto diff = diff_trees(store, old_tree, new_tree);
+        auto diff = agentengine::rt::block_on(diff_trees(store, old_tree, new_tree));
         AE_CHECK(diff.has_value() && diff->file_count() == 2,
                  "B3-C5: a newly-added directory counts as 2 files, not 1");
         AE_CHECK(diff.has_value() && has_change(*diff, "dir/x.txt", TreeDiffKind::added) &&
@@ -141,7 +141,7 @@ int main() {
         auto old_tree = tree_of(store, {{"dir", old_dir, true}});
         auto new_tree = tree_of(store, {{"dir", new_dir, true}});
 
-        auto diff = diff_trees(store, old_tree, new_tree);
+        auto diff = agentengine::rt::block_on(diff_trees(store, old_tree, new_tree));
         AE_CHECK(diff.has_value() && diff->file_count() == 1 &&
                      has_change(*diff, "dir/y.txt", TreeDiffKind::added),
                  "B3-C6: only the actually-added nested file is reported, x.txt is silent");
@@ -157,7 +157,7 @@ int main() {
         auto old_tree = tree_of(store, {{"x", x_v1, false}});
         auto new_tree = tree_of(store, {{"x", new_subtree, true}});
 
-        auto diff = diff_trees(store, old_tree, new_tree);
+        auto diff = agentengine::rt::block_on(diff_trees(store, old_tree, new_tree));
         AE_CHECK(diff.has_value() && diff->file_count() == 2, "B3-C7: type change yields 2 entries");
         AE_CHECK(diff.has_value() && has_change(*diff, "x", TreeDiffKind::removed) &&
                      has_change(*diff, "x/inner.txt", TreeDiffKind::added),
@@ -174,7 +174,7 @@ int main() {
         auto old_tree = tree_of(store, {{"a.txt", a_v1, false}, {"c.txt", c, false}});
         auto new_tree = tree_of(store, {{"a.txt", a_v2, false}, {"b.txt", b, false}});
 
-        auto diff = diff_trees(store, old_tree, new_tree);
+        auto diff = agentengine::rt::block_on(diff_trees(store, old_tree, new_tree));
         AE_CHECK(diff.has_value() && count_kind(*diff, TreeDiffKind::modified) == 1 &&
                      count_kind(*diff, TreeDiffKind::added) == 1 &&
                      count_kind(*diff, TreeDiffKind::removed) == 1,

@@ -65,3 +65,9 @@ agentengine_add_test(test_file_worktree_object_store_race
   LIBS agentengine::worktree_store agentengine_warnings)
 # Real threads hammering real filesystem renames -- bounded, but give it room on a loaded CI runner.
 set_tests_properties(test_file_worktree_object_store_race PROPERTIES TIMEOUT 300)
+
+# ADR-238: Ledger over an async object store -- mutex_ is never held across a store suspension and op_mutex_
+# serialises the head-moving operations. A gated store forces each interleaving by hand. No daemon, no network.
+agentengine_add_test(test_ledger_async_locking
+  LIBS agentengine::worktree_store agentengine::sandbox_io agentengine_warnings
+  TIMEOUT 60)

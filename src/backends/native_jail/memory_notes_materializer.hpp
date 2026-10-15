@@ -150,7 +150,7 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
         auto const* blob_ref = std::get_if<BlobRef>(&media->payload);
         if (blob_ref == nullptr) continue;  // harvest_subtree always produces the BlobRef variant.
 
-        auto bytes = object_store.get_blob(blob_ref->digest);
+        auto bytes = co_await object_store.get_blob(blob_ref->digest);
         if (!bytes) continue;  // this ONE file's bytes are unreadable -- skip it, keep the rest.
 
         MemoryItem item{};

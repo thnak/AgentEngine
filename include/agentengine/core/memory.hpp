@@ -98,7 +98,7 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
     if (!existing) co_return std::unexpected(existing.error());
     if (existing->has_value()) co_return **existing;
 
-    auto empty = object_store.put_tree(Tree{});
+    auto empty = co_await object_store.put_tree(Tree{});
     if (!empty) co_return std::unexpected(empty.error());
     co_return co_await commit_ref(ref_store, name, *empty);
 }
@@ -367,20 +367,20 @@ namespace memory_detail {
 // a one-purpose helper with a different signature — diff's own `TreeDiffKind` tagging has no
 // meaning here).
 template <WorktreeObjectStore S>
-[[nodiscard]] result<void> collect_blob_paths(S& store, Digest const& digest, bool is_tree,
-                                                std::string const& path, std::vector<std::string>& out) {
+[[nodiscard]] task<result<void>> collect_blob_paths(S& store, Digest digest, bool is_tree,
+                                                std::string path, std::vector<std::string>& out) {
     if (!is_tree) {
         out.push_back(path);
-        return {};
+        co_return result<void>{};
     }
-    auto tree = store.get_tree(digest);
-    if (!tree) return std::unexpected(tree.error());
+    auto tree = co_await store.get_tree(digest);
+    if (!tree) co_return std::unexpected(tree.error());
     for (auto const& e : tree->entries) {
-        auto r = collect_blob_paths(store, e.digest, e.is_tree,
+        auto r = co_await collect_blob_paths(store, e.digest, e.is_tree,
                                      path.empty() ? e.name : path + "/" + e.name, out);
-        if (!r) return r;
+        if (!r) co_return r;
     }
-    return {};
+    co_return result<void>{};
 }
 
 }  // namespace memory_detail
@@ -412,7 +412,7 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
         auto segments = split_mount_path(mount.subtree_path);
         if (!segments) co_return std::unexpected(segments.error());
         if (!segments->empty()) {
-            auto entry = detail::resolve_entry_at_path(object_store, root_digest, *segments);
+            auto entry = co_await detail::resolve_entry_at_path(object_store, root_digest, *segments);
             if (!entry) {
                 // The mount's own subtree hasn't been written yet -- no memory under it, not an error.
                 co_return std::vector<MemoryItem>{};
@@ -422,7 +422,7 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
     }
 
     std::vector<std::string> paths;
-    auto collected = memory_detail::collect_blob_paths(object_store, root_digest, /*is_tree=*/true, "", paths);
+    auto collected = co_await memory_detail::collect_blob_paths(object_store, root_digest, /*is_tree=*/true, "", paths);
     if (!collected) co_return std::unexpected(collected.error());
 
     std::vector<MemoryItem> items;

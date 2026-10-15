@@ -78,11 +78,11 @@ std::optional<std::string> read_entry(Ledger<>& ledger, std::string const& branc
                                         IdentityHandle owner, std::string const& entry_name) {
     auto head = ledger.head_tree_digest(branch_name, owner);
     if (!head.has_value()) return std::nullopt;
-    auto tree = ledger.get_tree_safe(*head, owner);
+    auto tree = agentengine::rt::block_on(ledger.get_tree_safe(*head, owner));
     if (!tree.has_value()) return std::nullopt;
     for (auto const& e : tree->entries) {
         if (e.name != entry_name) continue;
-        auto bytes = ledger.get_blob_safe(e.digest, owner);
+        auto bytes = agentengine::rt::block_on(ledger.get_blob_safe(e.digest, owner));
         if (!bytes.has_value()) return std::nullopt;
         return std::string(reinterpret_cast<char const*>(bytes->data()), bytes->size());
     }

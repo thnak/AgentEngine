@@ -60,7 +60,7 @@ Digest blob_of(InMemoryWorktreeObjectStore& store, std::string const& content) {
     std::vector<std::byte> bytes;
     bytes.reserve(content.size());
     for (char c : content) bytes.push_back(static_cast<std::byte>(static_cast<unsigned char>(c)));
-    return *store.put_blob(bytes);
+    return *agentengine::rt::block_on(store.put_blob(bytes));
 }
 
 // Test-only, deliberately WRONG merge: blindly commits the branch's own tree over the parent with no
@@ -101,7 +101,7 @@ int main() {
             std::string const parent_name = "session:conc-" + std::to_string(trial);
 
             auto base = blob_of(obj_store, "base-content");
-            auto base_tree = *obj_store.put_tree(Tree{{TreeEntry{"base.txt", base, false}}});
+            auto base_tree = *agentengine::rt::block_on(obj_store.put_tree(Tree{{TreeEntry{"base.txt", base, false}}}));
             auto parent = agentengine::rt::block_on(commit_ref(ref_store, parent_name, base_tree));
             if (!parent) {
                 report_trial_failure("B4-C1 trial " + std::to_string(trial) + ": setup parent commit failed");
@@ -115,9 +115,9 @@ int main() {
                                                    parent_name + "/agents/a" + std::to_string(i),
                                                    sharing_mode::branch));
                 auto content = blob_of(obj_store, "agent-" + std::to_string(i) + "-content");
-                auto branch_tree = *obj_store.put_tree(
+                auto branch_tree = *agentengine::rt::block_on(obj_store.put_tree(
                     Tree{{TreeEntry{"base.txt", base, false},
-                          TreeEntry{"agent-" + std::to_string(i) + ".txt", content, false}}});
+                          TreeEntry{"agent-" + std::to_string(i) + ".txt", content, false}}}));
                 setup_ok = branch.has_value() && agentengine::rt::block_on(write_sub_worktree(ref_store, *branch, branch_tree)).has_value();
                 if (setup_ok) branches.push_back(*branch);
             }
@@ -178,7 +178,7 @@ int main() {
             auto final_parent = agentengine::rt::block_on(read_ref(ref_store, parent_name));
             bool final_ok = final_parent.has_value() && final_parent->has_value();
             if (final_ok) {
-                auto final_tree = obj_store.get_tree((*final_parent)->tree_digest);
+                auto final_tree = agentengine::rt::block_on(obj_store.get_tree((*final_parent)->tree_digest));
                 final_ok = final_tree.has_value() &&
                            final_tree->entries.size() == static_cast<std::size_t>(kAgents + 1);
                 if (final_ok) {
@@ -217,7 +217,7 @@ int main() {
             std::string const parent_name = "session:cconc-" + std::to_string(trial);
 
             auto a_v1 = blob_of(obj_store, "shared-file-v1");
-            auto base_tree = *obj_store.put_tree(Tree{{TreeEntry{"shared.txt", a_v1, false}}});
+            auto base_tree = *agentengine::rt::block_on(obj_store.put_tree(Tree{{TreeEntry{"shared.txt", a_v1, false}}}));
             auto parent = agentengine::rt::block_on(commit_ref(ref_store, parent_name, base_tree));
 
             auto branch_x =
@@ -231,8 +231,8 @@ int main() {
 
             auto x_edit = blob_of(obj_store, "x-edit-trial-" + std::to_string(trial));
             auto y_edit = blob_of(obj_store, "y-edit-trial-" + std::to_string(trial));
-            auto x_tree = *obj_store.put_tree(Tree{{TreeEntry{"shared.txt", x_edit, false}}});
-            auto y_tree = *obj_store.put_tree(Tree{{TreeEntry{"shared.txt", y_edit, false}}});
+            auto x_tree = *agentengine::rt::block_on(obj_store.put_tree(Tree{{TreeEntry{"shared.txt", x_edit, false}}}));
+            auto y_tree = *agentengine::rt::block_on(obj_store.put_tree(Tree{{TreeEntry{"shared.txt", y_edit, false}}}));
             bool writes_ok = agentengine::rt::block_on(write_sub_worktree(ref_store, *branch_x, x_tree)).has_value() &&
                               agentengine::rt::block_on(write_sub_worktree(ref_store, *branch_y, y_tree)).has_value();
             if (!writes_ok) {
@@ -292,7 +292,7 @@ int main() {
             std::string const parent_name = "session:naive-" + std::to_string(trial);
 
             auto base = blob_of(obj_store, "base-content");
-            auto base_tree = *obj_store.put_tree(Tree{{TreeEntry{"base.txt", base, false}}});
+            auto base_tree = *agentengine::rt::block_on(obj_store.put_tree(Tree{{TreeEntry{"base.txt", base, false}}}));
             auto parent = agentengine::rt::block_on(commit_ref(ref_store, parent_name, base_tree));
 
             std::vector<SubWorktree> branches;
@@ -302,9 +302,9 @@ int main() {
                                                    parent_name + "/agents/a" + std::to_string(i),
                                                    sharing_mode::branch));
                 auto content = blob_of(obj_store, "agent-" + std::to_string(i) + "-content");
-                auto branch_tree = *obj_store.put_tree(
+                auto branch_tree = *agentengine::rt::block_on(obj_store.put_tree(
                     Tree{{TreeEntry{"base.txt", base, false},
-                          TreeEntry{"agent-" + std::to_string(i) + ".txt", content, false}}});
+                          TreeEntry{"agent-" + std::to_string(i) + ".txt", content, false}}}));
                 setup_ok = branch.has_value() && agentengine::rt::block_on(write_sub_worktree(ref_store, *branch, branch_tree)).has_value();
                 if (setup_ok) branches.push_back(*branch);
             }
@@ -331,7 +331,7 @@ int main() {
             auto final_parent = agentengine::rt::block_on(read_ref(ref_store, parent_name));
             bool lost_update = true;
             if (final_parent.has_value() && final_parent->has_value()) {
-                auto final_tree = obj_store.get_tree((*final_parent)->tree_digest);
+                auto final_tree = agentengine::rt::block_on(obj_store.get_tree((*final_parent)->tree_digest));
                 if (final_tree.has_value() &&
                     final_tree->entries.size() == static_cast<std::size_t>(kAgents + 1)) {
                     lost_update = false;

@@ -40,6 +40,7 @@
 // fixed while first bringing this test up, not a defect in the ported Ledger code itself.
 
 #include "agentengine/core/ledger.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -118,7 +119,7 @@ int main() {
     check(root_r.has_value(), "create_root_branch() succeeds");
     BranchHandle<> root = std::move(*root_r);
 
-    auto blob1_r = ledger.put_blob_safe(to_bytes("hello"), owner);
+    auto blob1_r = agentengine::rt::block_on(ledger.put_blob_safe(to_bytes("hello"), owner));
     check(blob1_r.has_value(), "put_blob_safe() succeeds through the real object store");
 
     Tree tree1;
@@ -130,29 +131,29 @@ int main() {
           "the checkpoint carries real, non-empty digests");
 
     // ---- [2] get_tree_safe()/get_blob_safe(): authorized owner succeeds, unrelated refused. ------
-    auto tree_read_r = ledger.get_tree_safe(cp1_r->tree, owner);
+    auto tree_read_r = agentengine::rt::block_on(ledger.get_tree_safe(cp1_r->tree, owner));
     check(tree_read_r.has_value(), "get_tree_safe() succeeds for the committing owner");
     check(tree_read_r->entries.size() == 1 && tree_read_r->entries[0].name == "note.txt",
           "the read-back tree genuinely contains what was committed");
 
-    auto blob_read_r = ledger.get_blob_safe(*blob1_r, owner);
+    auto blob_read_r = agentengine::rt::block_on(ledger.get_blob_safe(*blob1_r, owner));
     check(blob_read_r.has_value(), "get_blob_safe() succeeds for the writing owner");
 
-    auto tree_denied_r = ledger.get_tree_safe(cp1_r->tree, unrelated);
+    auto tree_denied_r = agentengine::rt::block_on(ledger.get_tree_safe(cp1_r->tree, unrelated));
     check(!tree_denied_r.has_value() && tree_denied_r.error().code == "ledger.tree_access_denied",
           "get_tree_safe() fails closed for an unrelated identity");
-    auto blob_denied_r = ledger.get_blob_safe(*blob1_r, unrelated);
+    auto blob_denied_r = agentengine::rt::block_on(ledger.get_blob_safe(*blob1_r, unrelated));
     check(!blob_denied_r.has_value() && blob_denied_r.error().code == "ledger.blob_access_denied",
           "get_blob_safe() fails closed for an unrelated identity");
     // A digest nobody wrote has no ACL entry: authorized_for() refuses it before the store is asked, so even the
     // owner gets a policy denial, not a store miss. No test pinned this branch until ADR-207's control C1 showed that
     // flipping it went unnoticed (the store miss that followed still failed the read, with a different class).
     Digest const never_written(64, 'a');
-    auto unknown_blob_r = ledger.get_blob_safe(never_written, owner);
+    auto unknown_blob_r = agentengine::rt::block_on(ledger.get_blob_safe(never_written, owner));
     check(!unknown_blob_r.has_value() && unknown_blob_r.error().code == "ledger.blob_access_denied" &&
               unknown_blob_r.error().klass == failure_class::policy,
           "get_blob_safe() on a digest nobody wrote is a policy denial, even for the owner");
-    auto unknown_tree_r = ledger.get_tree_safe(never_written, owner);
+    auto unknown_tree_r = agentengine::rt::block_on(ledger.get_tree_safe(never_written, owner));
     check(!unknown_tree_r.has_value() && unknown_tree_r.error().code == "ledger.tree_access_denied" &&
               unknown_tree_r.error().klass == failure_class::policy,
           "get_tree_safe() on a digest nobody wrote is a policy denial, even for the owner");
@@ -162,7 +163,7 @@ int main() {
     check(child_r.has_value(), "branch_from() succeeds");
     if (!child_r.has_value()) { std::fprintf(stderr, "  error: %s\n", child_r.error().message.c_str()); return EXIT_FAILURE; }
     BranchHandle<> child = std::move(*child_r);
-    auto inherited_read_r = ledger.get_tree_safe(cp1_r->tree, child_identity);
+    auto inherited_read_r = agentengine::rt::block_on(ledger.get_tree_safe(cp1_r->tree, child_identity));
     check(inherited_read_r.has_value(),
           "the child's creator inherits real read access to the parent's head tree it branched from");
 
@@ -170,7 +171,7 @@ int main() {
     // blob1 (note.txt) is re-referenced by the child's own commit below WITHOUT the child having
     // separately touched it -- this is only authorized because `child_identity` is a real IDENTITY
     // descendant of `owner` (authorized_for()'s ancestry check, not the coarser branch-level grant).
-    auto blob2_r = ledger.put_blob_safe(to_bytes("child content"), child_identity);
+    auto blob2_r = agentengine::rt::block_on(ledger.put_blob_safe(to_bytes("child content"), child_identity));
     check(blob2_r.has_value(), "the child's own put_blob_safe() succeeds");
     Tree child_tree;
     child_tree.entries.push_back(TreeEntry{"note.txt", *blob1_r, false});
@@ -205,7 +206,7 @@ int main() {
           "a successful merge() genuinely consumes 1 unit of AsyncQuota<MergeCost> (ADR-111) -- not "
           "merely a quota parameter it silently ignores");
     if (merge_r.has_value()) {
-        auto merged_tree_r = ledger.get_tree_safe(merge_r->tree, child_identity);
+        auto merged_tree_r = agentengine::rt::block_on(ledger.get_tree_safe(merge_r->tree, child_identity));
         check(merged_tree_r.has_value() && merged_tree_r->entries.size() == 2,
               "the merged tree genuinely contains both the parent's and the child's real content");
 
@@ -216,7 +217,7 @@ int main() {
         // caught it too): this call failed with `ledger.tree_access_denied`, permanently locking the
         // orchestrator out of its own branch -- exactly the "spawn a sub-agent, it merges its work
         // back, the orchestrator resumes" flow this whole design exists to support.
-        auto owner_post_merge_r = ledger.get_tree_safe(merge_r->tree, owner);
+        auto owner_post_merge_r = agentengine::rt::block_on(ledger.get_tree_safe(merge_r->tree, owner));
         check(owner_post_merge_r.has_value() && owner_post_merge_r->entries.size() == 2,
               "the PARENT branch's own creator retains real read access to its own branch's new head "
               "after a descendant's merge -- the orchestrator is never locked out of its own resource");
@@ -230,7 +231,7 @@ int main() {
         // child's OWN write, never touched by `owner` directly -- which still failed
         // `ledger.blob_access_denied` even after the tree-level grant above. Proves the per-entry grant
         // this fix adds actually reaches blob-level ACL, not merely the top-level tree digest.
-        auto owner_blob_r = ledger.get_blob_safe(*blob2_r, owner);
+        auto owner_blob_r = agentengine::rt::block_on(ledger.get_blob_safe(*blob2_r, owner));
         check(owner_blob_r.has_value(),
               "ADR-112: the PARENT branch's own creator can now fetch the actual BYTES of a blob the "
               "child alone wrote and merged in -- 'the orchestrator resumes' is restored content-wise, "
@@ -238,7 +239,7 @@ int main() {
         // Negative control: the new per-entry grant is scoped to `parent_state.created_by_id`
         // specifically, not accidentally widened to every caller. `unrelated` has no relationship to
         // `owner`/`child_identity` at all and must still be refused.
-        auto unrelated_blob_r = ledger.get_blob_safe(*blob2_r, unrelated);
+        auto unrelated_blob_r = agentengine::rt::block_on(ledger.get_blob_safe(*blob2_r, unrelated));
         check(!unrelated_blob_r.has_value() &&
                   unrelated_blob_r.error().code == "ledger.blob_access_denied",
               "ADR-112: the new per-entry grant is scoped to the parent branch's own owner -- a "
@@ -252,14 +253,14 @@ int main() {
     BranchHandle<> conflict_child = std::move(*conflict_child_r);
 
     // Parent changes note.txt to one value...
-    auto parent_change_r = ledger.put_blob_safe(to_bytes("parent's new note"), owner);
+    auto parent_change_r = agentengine::rt::block_on(ledger.put_blob_safe(to_bytes("parent's new note"), owner));
     Tree parent_tree;
     parent_tree.entries.push_back(TreeEntry{"note.txt", *parent_change_r, false});
     auto parent_commit_r = drive(ledger.commit(root, parent_tree, owner, owner_storage_quota));
     check(parent_commit_r.has_value(), "the parent's own conflicting commit succeeds");
 
     // ...while the child independently changes note.txt to a DIFFERENT value.
-    auto child_change_r = ledger.put_blob_safe(to_bytes("child's DIFFERENT new note"), owner);
+    auto child_change_r = agentengine::rt::block_on(ledger.put_blob_safe(to_bytes("child's DIFFERENT new note"), owner));
     Tree conflicting_child_tree;
     conflicting_child_tree.entries.push_back(TreeEntry{"note.txt", *child_change_r, false});
     auto conflicting_child_commit_r =
@@ -312,7 +313,7 @@ int main() {
     auto capped_root_r = drive(capped_ledger.create_root_branch(owner));
     check(capped_root_r.has_value(), "create_root_branch() on the capped ledger succeeds");
     if (!capped_root_r.has_value()) { return EXIT_FAILURE; }
-    auto shared_blob_r = capped_ledger.put_blob_safe(to_bytes("shared"), owner);
+    auto shared_blob_r = agentengine::rt::block_on(capped_ledger.put_blob_safe(to_bytes("shared"), owner));
     check(shared_blob_r.has_value(), "the first writer's put_blob_safe() succeeds (root 1 of 2)");
     // A second, distinct root touching the SAME digest via commit()'s own authorization path: mint a
     // second identity (with its OWN branch-cost quota), have it inherit access via a branch (the only
@@ -336,7 +337,7 @@ int main() {
           "a THIRD distinct root past the configured cap of 2 is rejected closed");
     // Re-touching with an ALREADY-authorized root (the original owner) must still succeed -- never
     // counted against the cap a second time.
-    auto retouch_r = capped_ledger.put_blob_safe(to_bytes("shared"), owner);
+    auto retouch_r = agentengine::rt::block_on(capped_ledger.put_blob_safe(to_bytes("shared"), owner));
     check(retouch_r.has_value(),
           "a re-touch by an already-authorized root succeeds even though the cap is already met");
 
@@ -348,13 +349,13 @@ int main() {
     auto mark_ok_r = ledger.mark_digest_shared(cp1_r->tree, /*is_tree=*/true, owner);
     check(mark_ok_r.has_value(), "mark_digest_shared() succeeds for an already-authorized caller");
     IdentityHandle stranger = authority.mint_root("total-stranger");
-    auto stranger_read_r = ledger.get_tree_safe(cp1_r->tree, stranger);
+    auto stranger_read_r = agentengine::rt::block_on(ledger.get_tree_safe(cp1_r->tree, stranger));
     check(stranger_read_r.has_value(),
           "AFTER marking shared, a total stranger with no prior relationship can read the digest");
 
     // ---- [10] a case-folding collision is rejected. --------------------------------------------
-    auto blob_a_r = ledger.put_blob_safe(to_bytes("A"), owner);
-    auto blob_b_r = ledger.put_blob_safe(to_bytes("B"), owner);
+    auto blob_a_r = agentengine::rt::block_on(ledger.put_blob_safe(to_bytes("A"), owner));
+    auto blob_b_r = agentengine::rt::block_on(ledger.put_blob_safe(to_bytes("B"), owner));
     Tree colliding_tree;
     colliding_tree.entries.push_back(TreeEntry{"readme.txt", *blob_a_r, false});
     colliding_tree.entries.push_back(TreeEntry{"README.txt", *blob_b_r, false});
@@ -381,7 +382,7 @@ int main() {
         check(d_root_r.has_value(), "create_root_branch() on a durable ledger succeeds");
         if (!d_root_r.has_value()) { return EXIT_FAILURE; }
         durable_branch_name = d_root_r->name();
-        auto d_blob_r = durable_ledger.put_blob_safe(to_bytes("durable content"), durable_owner);
+        auto d_blob_r = agentengine::rt::block_on(durable_ledger.put_blob_safe(to_bytes("durable content"), durable_owner));
         Tree d_tree;
         d_tree.entries.push_back(TreeEntry{"durable.txt", *d_blob_r, false});
         auto d_cp_r = drive(durable_ledger.commit(*d_root_r, d_tree, durable_owner, *durable_storage_quota_r));
@@ -448,7 +449,7 @@ int main() {
 
         // A clean, non-conflicting change on the child -- if the merge gate below were bypassed (a
         // real gap this case exists to catch), this would otherwise merge in cleanly.
-        auto qt_blob_r = ledger.put_blob_safe(to_bytes("quota test content"), quota_test_owner);
+        auto qt_blob_r = agentengine::rt::block_on(ledger.put_blob_safe(to_bytes("quota test content"), quota_test_owner));
         Tree qt_tree;
         qt_tree.entries.push_back(TreeEntry{"quota.txt", *qt_blob_r, false});
         auto qt_commit_r = drive(ledger.commit(qt_child, qt_tree, quota_test_owner, *qt_storage_quota_r));

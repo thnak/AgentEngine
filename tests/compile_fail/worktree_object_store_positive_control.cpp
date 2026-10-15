@@ -9,14 +9,15 @@
 #include <span>
 
 #include "agentengine/core/worktree.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using namespace agentengine;
 
 int main() {
     InMemoryWorktreeObjectStore store;
     std::span<std::byte const> const bytes{};
-    auto blob_digest = store.put_blob(bytes);  // ok: the real, digest-derived signature
+    auto blob_digest = agentengine::rt::block_on(store.put_blob(bytes));  // ok: the real, digest-derived signature
     Tree const tree{};
-    auto tree_digest = store.put_tree(tree);   // ok: the real, digest-derived signature
+    auto tree_digest = agentengine::rt::block_on(store.put_tree(tree));   // ok: the real, digest-derived signature
     return (blob_digest.has_value() && tree_digest.has_value()) ? 0 : 1;
 }

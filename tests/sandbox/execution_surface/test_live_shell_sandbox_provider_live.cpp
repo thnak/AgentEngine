@@ -25,6 +25,7 @@
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 #include "agentengine/sandbox/docker_persistent_shell_surface.hpp"
 #include "agentengine/sandbox/live_shell_sandbox_provider.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include "../../support/crt_fail_fast.hpp"
 #include "../../support/memory_cap.hpp"
@@ -117,7 +118,7 @@ using Provider = LiveShellSandboxProvider<DockerPersistentShellSurface>;
 }
 
 [[nodiscard]] bool tree_has(Ledger<>& ledger, std::string const& tree, IdentityHandle who, std::string const& name) {
-    auto t = ledger.get_tree_safe(tree, who);
+    auto t = agentengine::rt::block_on(ledger.get_tree_safe(tree, who));
     return t.has_value() &&
            std::any_of(t->entries.begin(), t->entries.end(), [&](auto const& e) { return e.name == name; });
 }

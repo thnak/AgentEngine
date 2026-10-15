@@ -27,6 +27,7 @@
 
 #include "agentengine/core/ledger.hpp"
 #include "agentengine/sandbox/real_io_filesystem.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -107,7 +108,7 @@ int main() {
         std::uint64_t const before = ledger.snapshot_write_count();
         bool all_ok = true;
         for (int i = 0; i < kFiles; ++i) {
-            all_ok = all_ok && ledger.put_blob_safe(to_bytes(file_content(i)), owner).has_value();
+            all_ok = all_ok && agentengine::rt::block_on(ledger.put_blob_safe(to_bytes(file_content(i)), owner)).has_value();
         }
         std::uint64_t const writes = ledger.snapshot_write_count() - before;
         check(all_ok && writes == static_cast<std::uint64_t>(kFiles),
@@ -164,12 +165,12 @@ int main() {
     {
         Ledger<> ledger(InMemoryWorktreeObjectStore{}, open_dir);
         Ledger<>::BlobWriteBatch batch(ledger, owner);
-        auto d = batch.put(to_bytes("written inside an open batch"));
+        auto d = agentengine::rt::block_on(batch.put(to_bytes("written inside an open batch")));
         check(d.has_value(), "B4: put() inside a batch succeeds");
         if (d.has_value()) {
-            check(ledger.get_blob_safe(*d, owner).has_value(),
+            check(agentengine::rt::block_on(ledger.get_blob_safe(*d, owner)).has_value(),
                   "B4: before finish(), the writer can already read the blob (its ACL root is in place)");
-            check(!ledger.get_blob_safe(*d, unrelated).has_value(),
+            check(!agentengine::rt::block_on(ledger.get_blob_safe(*d, unrelated)).has_value(),
                   "B4: before finish(), an unrelated identity is still refused");
             check(!snapshot_names_blob(open_dir, *d),
                   "B5: before finish(), the blob's ACL line is not yet on disk (the disclosed window)");
@@ -184,7 +185,7 @@ int main() {
         // Cap of 1 distinct root per digest: once `unrelated` owns "taken", `owner` writing the same
         // bytes is refused with ledger.acl_root_cap_exceeded.
         Ledger<> ledger(InMemoryWorktreeObjectStore{}, refused_dir, /*max_acl_roots_per_digest=*/1);
-        auto taken = ledger.put_blob_safe(to_bytes("taken"), unrelated);
+        auto taken = agentengine::rt::block_on(ledger.put_blob_safe(to_bytes("taken"), unrelated));
         check(taken.has_value(), "B6: setup -- another root writes the capped blob first");
 
         Digest first;
@@ -194,9 +195,9 @@ int main() {
         {
             writes_before = ledger.snapshot_write_count();
             Ledger<>::BlobWriteBatch batch(ledger, owner);
-            auto a = batch.put(to_bytes("first"));
-            auto b = batch.put(to_bytes("second"));
-            auto refused = batch.put(to_bytes("taken"));
+            auto a = agentengine::rt::block_on(batch.put(to_bytes("first")));
+            auto b = agentengine::rt::block_on(batch.put(to_bytes("second")));
+            auto refused = agentengine::rt::block_on(batch.put(to_bytes("taken")));
             if (a.has_value()) first = *a;
             if (b.has_value()) second = *b;
             if (!refused.has_value()) refusal_code = refused.error().code;
@@ -216,7 +217,7 @@ int main() {
     fs::path const empty_dir = fresh_dir("ae_blob_batch_empty");
     {
         Ledger<> ledger(InMemoryWorktreeObjectStore{}, empty_dir, /*max_acl_roots_per_digest=*/1);
-        auto taken = ledger.put_blob_safe(to_bytes("taken"), unrelated);
+        auto taken = agentengine::rt::block_on(ledger.put_blob_safe(to_bytes("taken"), unrelated));
         check(taken.has_value(), "B7: setup -- another root writes the capped blob first");
         std::uint64_t const before = ledger.snapshot_write_count();
         {

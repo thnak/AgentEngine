@@ -135,30 +135,30 @@ namespace detail {
 // by a concurrent commit can still be primed. A red-team probe (2026-09-14) demonstrated exactly
 // that; a caller that needs "the ref did not move" must re-read the ref after materializing.
 template <WorktreeObjectStore OS>
-[[nodiscard]] result<void> materialize_subtree(OS& object_store, Mount const& mount, cap::FsRead const& granted,
-                                                Digest const& tree_digest, std::string const& guest_prefix,
+[[nodiscard]] task<result<void>> materialize_subtree(OS& object_store, Mount mount, cap::FsRead granted,
+                                                Digest tree_digest, std::string guest_prefix,
                                                 FileSystemAdapter& fs) {
-    auto tree = object_store.get_tree(tree_digest);
-    if (!tree) return std::unexpected(tree.error());
+    auto tree = co_await object_store.get_tree(tree_digest);
+    if (!tree) co_return std::unexpected(tree.error());
     auto unambiguous = require_unambiguous_entry_names(*tree);
-    if (!unambiguous) return std::unexpected(unambiguous.error());
+    if (!unambiguous) co_return std::unexpected(unambiguous.error());
     for (TreeEntry const& entry : tree->entries) {
         std::string guest_path = guest_prefix.empty() ? entry.name : guest_prefix + "/" + entry.name;
         if (entry.is_tree) {
             auto mk = fs.make_directory(guest_path, /*parents=*/true);
-            if (!mk) return std::unexpected(mk.error());
-            auto r = materialize_subtree(object_store, mount, granted, entry.digest, guest_path, fs);
-            if (!r) return r;
+            if (!mk) co_return std::unexpected(mk.error());
+            auto r = co_await materialize_subtree(object_store, mount, granted, entry.digest, guest_path, fs);
+            if (!r) co_return r;
             continue;
         }
         auto authorized = agentengine::detail::authorize_mount_read(mount, granted, guest_path);
-        if (!authorized) return std::unexpected(authorized.error());
-        auto bytes = agentengine::detail::read_blob_within_size_cap(object_store, granted, entry.digest);
-        if (!bytes) return std::unexpected(bytes.error());
+        if (!authorized) co_return std::unexpected(authorized.error());
+        auto bytes = co_await agentengine::detail::read_blob_within_size_cap(object_store, granted, entry.digest);
+        if (!bytes) co_return std::unexpected(bytes.error());
         auto written = fs.write_file(guest_path, *bytes, /*append=*/false);
-        if (!written) return std::unexpected(written.error());
+        if (!written) co_return std::unexpected(written.error());
     }
-    return {};
+    co_return result<void>{};
 }
 
 // Recursively walks `fs` (a real host directory) starting at `guest_prefix` ("" = the adapter's own
@@ -209,9 +209,9 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
                                       "worktree.mount_ref_missing"});
     }
     auto subtree_digest =
-        agentengine::detail::resolve_subtree_digest(object_store, (*ref)->tree_digest, mount.subtree_path);
+        co_await agentengine::detail::resolve_subtree_digest(object_store, (*ref)->tree_digest, mount.subtree_path);
     if (!subtree_digest) co_return std::unexpected(subtree_digest.error());
-    co_return detail::materialize_subtree(object_store, mount, granted, *subtree_digest, "", fs);
+    co_return co_await detail::materialize_subtree(object_store, mount, granted, *subtree_digest, "", fs);
 }
 
 // Harvests every real file currently under `fs` (e.g. what a run just wrote to /out's real host

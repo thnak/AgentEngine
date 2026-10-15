@@ -188,7 +188,7 @@ ae::Message make_msg(ae::role r, std::string text, std::string message_id) {
 
 ae::result<ae::Ref> bootstrap_corpus_worktree(ae::InMemoryWorktreeObjectStore& object_store,
                                               ae::rt::InMemoryAppendLogStore& ref_store, ae::Mount const& mount) {
-    auto empty = object_store.put_tree(ae::Tree{});
+    auto empty = agentengine::rt::block_on(object_store.put_tree(ae::Tree{}));
     if (!empty) return std::unexpected(empty.error());
     return agentengine::rt::block_on(ae::commit_ref(ref_store, mount.ref_name, *empty));
 }
@@ -226,7 +226,7 @@ int main() {
 
         SuspendingDenseIndex index{parker};
         std::string const text = "Dark mode lives in Settings.";
-        auto digest = object_store.put_blob(std::as_bytes(std::span{text.data(), text.size()}));
+        auto digest = agentengine::rt::block_on(object_store.put_blob(std::as_bytes(std::span{text.data(), text.size()})));
         AE_CHECK(digest.has_value(), "setup: chunk blob written");
         ae::CorpusChunkRecord record{*digest, "docs/settings.md", 1, 1, "hash"};
         AE_CHECK(agentengine::rt::block_on(ae::write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record)).has_value(),
@@ -278,7 +278,7 @@ int main() {
         SuspendingDenseIndex  dense{parker};
         SuspendingSparseIndex sparse{parker};
         std::string const text = "Dark mode lives in Settings, under Appearance.";
-        auto digest = object_store.put_blob(std::as_bytes(std::span{text.data(), text.size()}));
+        auto digest = agentengine::rt::block_on(object_store.put_blob(std::as_bytes(std::span{text.data(), text.size()})));
         AE_CHECK(digest.has_value(), "setup: chunk blob written");
         ae::CorpusChunkRecord record{*digest, "docs/settings.md", 1, 1, "hash"};
         AE_CHECK(agentengine::rt::block_on(ae::write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record)).has_value(),

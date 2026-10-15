@@ -95,14 +95,14 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
                                       "worktree.mount_ref_missing"});
     }
 
-    auto entry = detail::resolve_entry_at_path(object_store, (*ref)->tree_digest, *full_segments);
+    auto entry = agentengine::rt::block_on(detail::resolve_entry_at_path(object_store, (*ref)->tree_digest, *full_segments));
     if (!entry) return std::unexpected(entry.error());
     if (entry->is_tree) {
         return std::unexpected(error{failure_class::contract, "the requested path names a directory, not a file",
                                       "worktree.mount_read_is_directory"});
     }
 
-    auto bytes = object_store.get_blob(entry->digest);
+    auto bytes = agentengine::rt::block_on(object_store.get_blob(entry->digest));
     if (!bytes) return std::unexpected(bytes.error());
     if (granted.size_cap_bytes.has_value() && bytes->size() > *granted.size_cap_bytes) {
         return std::unexpected(error{failure_class::policy,
@@ -116,7 +116,7 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 [[nodiscard]] result<void> old_materialize_subtree(OS& object_store, RS& ref_store, Mount const& mount,
                                                     cap::FsRead const& granted, Digest const& tree_digest,
                                                     std::string const& guest_prefix, FileSystemAdapter& fs) {
-    auto tree = object_store.get_tree(tree_digest);
+    auto tree = agentengine::rt::block_on(object_store.get_tree(tree_digest));
     if (!tree) return std::unexpected(tree.error());
     for (auto const& entry : tree->entries) {
         std::string guest_path = guest_prefix.empty() ? entry.name : guest_prefix + "/" + entry.name;
@@ -145,7 +145,7 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
                                       "worktree.mount_ref_missing"});
     }
     auto subtree_digest =
-        agentengine::detail::resolve_subtree_digest(object_store, (*ref)->tree_digest, mount.subtree_path);
+        agentengine::rt::block_on(agentengine::detail::resolve_subtree_digest(object_store, (*ref)->tree_digest, mount.subtree_path));
     if (!subtree_digest) return std::unexpected(subtree_digest.error());
     return old_materialize_subtree(object_store, ref_store, mount, granted, *subtree_digest, "", fs);
 }
@@ -310,14 +310,14 @@ Built random_tree(InMemoryWorktreeObjectStore& store, std::mt19937& rng, int dep
         } else {
             std::string content(std::uniform_int_distribution<std::size_t>(0, 12)(rng), 'z');
             content += std::to_string(std::uniform_int_distribution<int>(0, 3)(rng));
-            d = *store.put_blob(bytes_of(content));
+            d = *agentengine::rt::block_on(store.put_blob(bytes_of(content)));
         }
         auto segs = split_mount_path(name);
         if (!segs.has_value() || segs->size() != 1 || seen.contains(name)) ambiguous = true;
         seen.insert(name);
         tree.entries.push_back(TreeEntry{name, d, is_tree});
     }
-    return Built{*store.put_tree(std::move(tree)), ambiguous};
+    return Built{*agentengine::rt::block_on(store.put_tree(std::move(tree))), ambiguous};
 }
 
 [[nodiscard]] bool is_prefix(std::vector<std::string> const& shorter, std::vector<std::string> const& longer) {
@@ -331,7 +331,7 @@ int main() {
     {
         InMemoryWorktreeObjectStore store;
         CountingLogStore refs;
-        (void)agentengine::rt::block_on(commit_ref(refs, "session:flat", *store.put_tree(Tree{})));
+        (void)agentengine::rt::block_on(commit_ref(refs, "session:flat", *agentengine::rt::block_on(store.put_tree(Tree{}))));
         Mount const mount{"/work", "session:flat", ""};
         cap::FsWrite const w{"/work", "", std::nullopt, std::nullopt};
         for (int i = 0; i < 200; ++i) {
@@ -460,7 +460,7 @@ int main() {
             auto run = [&](bool use_old, std::vector<ContentItem>& items, Digest& final_tree) -> std::string {
                 InMemoryWorktreeObjectStore store;
                 rt::InMemoryAppendLogStore refs;
-                (void)agentengine::rt::block_on(commit_ref(refs, "session:m4", *store.put_tree(Tree{})));
+                (void)agentengine::rt::block_on(commit_ref(refs, "session:m4", *agentengine::rt::block_on(store.put_tree(Tree{}))));
                 RecordingFs fs = host;
                 std::string status;
                 if (use_old) {

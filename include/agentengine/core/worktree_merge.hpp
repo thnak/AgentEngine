@@ -67,22 +67,22 @@ namespace detail {
 // Tree without a store lookup, since a hypothetical empty ancestor was never actually `put_tree`'d
 // anywhere (unlike `ours_digest`/`theirs_digest`, which always name a real, previously-stored tree).
 template <WorktreeObjectStore S>
-[[nodiscard]] result<MergeResult> merge_subtrees(S& store, std::optional<Digest> const& base_digest,
-                                                  Digest const& ours_digest, Digest const& theirs_digest,
-                                                  std::string const& path_prefix) {
+[[nodiscard]] task<result<MergeResult>> merge_subtrees(S& store, std::optional<Digest> base_digest,
+                                                  Digest ours_digest, Digest theirs_digest,
+                                                  std::string path_prefix) {
     // Fast paths matching 025 §4's "identical content -> trivially merged" and "disjoint changes ->
     // merged automatically" directly, without ever loading either Tree: neither side changed this
     // subtree relative to the other, or only one side changed it relative to the ancestor.
-    if (ours_digest == theirs_digest) return MergeResult{ours_digest, {}};
-    if (base_digest.has_value() && *base_digest == ours_digest) return MergeResult{theirs_digest, {}};
-    if (base_digest.has_value() && *base_digest == theirs_digest) return MergeResult{ours_digest, {}};
+    if (ours_digest == theirs_digest) co_return MergeResult{ours_digest, {}};
+    if (base_digest.has_value() && *base_digest == ours_digest) co_return MergeResult{theirs_digest, {}};
+    if (base_digest.has_value() && *base_digest == theirs_digest) co_return MergeResult{ours_digest, {}};
 
-    result<Tree> base_tree = base_digest.has_value() ? store.get_tree(*base_digest) : result<Tree>{Tree{}};
-    if (!base_tree) return std::unexpected(base_tree.error());
-    auto ours_tree = store.get_tree(ours_digest);
-    if (!ours_tree) return std::unexpected(ours_tree.error());
-    auto theirs_tree = store.get_tree(theirs_digest);
-    if (!theirs_tree) return std::unexpected(theirs_tree.error());
+    result<Tree> base_tree = base_digest.has_value() ? co_await store.get_tree(*base_digest) : result<Tree>{Tree{}};
+    if (!base_tree) co_return std::unexpected(base_tree.error());
+    auto ours_tree = co_await store.get_tree(ours_digest);
+    if (!ours_tree) co_return std::unexpected(ours_tree.error());
+    auto theirs_tree = co_await store.get_tree(theirs_digest);
+    if (!theirs_tree) co_return std::unexpected(theirs_tree.error());
 
     std::unordered_map<std::string, TreeEntry> base_by_name, ours_by_name, theirs_by_name;
     for (auto& e : base_tree->entries) base_by_name.emplace(e.name, e);
@@ -128,8 +128,8 @@ template <WorktreeObjectStore S>
         if (o.has_value() && t.has_value() && o->is_tree && t->is_tree) {
             std::optional<Digest> sub_base =
                 (b.has_value() && b->is_tree) ? std::optional<Digest>{b->digest} : std::nullopt;
-            auto sub = merge_subtrees(store, sub_base, o->digest, t->digest, path_prefix + name + "/");
-            if (!sub) return std::unexpected(sub.error());
+            auto sub = co_await merge_subtrees(store, sub_base, o->digest, t->digest, path_prefix + name + "/");
+            if (!sub) co_return std::unexpected(sub.error());
             if (!sub->ok()) {
                 conflicts.insert(conflicts.end(), std::make_move_iterator(sub->conflicts.begin()),
                                   std::make_move_iterator(sub->conflicts.end()));
@@ -144,11 +144,11 @@ template <WorktreeObjectStore S>
         conflicts.push_back(MergeConflict{path_prefix + name, b, o, t});
     }
 
-    if (!conflicts.empty()) return MergeResult{Digest{}, std::move(conflicts)};
+    if (!conflicts.empty()) co_return MergeResult{Digest{}, std::move(conflicts)};
 
-    auto tree_digest = store.put_tree(Tree{std::move(merged_entries)});
-    if (!tree_digest) return std::unexpected(tree_digest.error());
-    return MergeResult{*tree_digest, {}};
+    auto tree_digest = co_await store.put_tree(Tree{std::move(merged_entries)});
+    if (!tree_digest) co_return std::unexpected(tree_digest.error());
+    co_return MergeResult{*tree_digest, {}};
 }
 
 } // namespace detail
@@ -156,9 +156,9 @@ template <WorktreeObjectStore S>
 // The public entry point: `base_digest`/`ours_digest`/`theirs_digest` all name real, already-stored
 // trees (the caller always has these from an actual branch/parent Ref, never a hypothetical one).
 template <WorktreeObjectStore S>
-[[nodiscard]] result<MergeResult> merge_trees(S& store, Digest const& base_digest,
-                                               Digest const& ours_digest, Digest const& theirs_digest) {
-    return detail::merge_subtrees(store, std::optional<Digest>{base_digest}, ours_digest, theirs_digest, "");
+[[nodiscard]] task<result<MergeResult>> merge_trees(S& store, Digest base_digest,
+                                               Digest ours_digest, Digest theirs_digest) {
+    co_return co_await detail::merge_subtrees(store, std::optional<Digest>{base_digest}, ours_digest, theirs_digest, "");
 }
 
 // The outcome of merging one `branch` sub-worktree back into its parent: either the parent's Ref
@@ -202,7 +202,7 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
                                       "worktree.merge_branch_ref_missing"});
     }
 
-    auto merged =
+    auto merged = co_await
         merge_trees(object_store, branch.base_digest, (*branch_ref)->tree_digest, expected_parent.tree_digest);
     if (!merged) co_return std::unexpected(merged.error());
     if (!merged->ok()) {

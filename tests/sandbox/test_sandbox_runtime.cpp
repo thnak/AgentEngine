@@ -39,6 +39,7 @@
 
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 #include "agentengine/sandbox/sandbox_runtime.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -109,7 +110,7 @@ int main() {
               "turn 1 stdout contains the file's own content");
         check(r1->checkpoint.turn_index == 1, "turn 1 checkpoint.turn_index == 1");
 
-        auto tree1 = ledger.get_tree_safe(r1->checkpoint.tree, owner);
+        auto tree1 = agentengine::rt::block_on(ledger.get_tree_safe(r1->checkpoint.tree, owner));
         check(tree1.has_value(), "turn 1 committed tree is readable by its own author");
         if (tree1.has_value()) {
             bool found_note = false;
@@ -119,7 +120,7 @@ int main() {
             }
             check(found_note, "turn 1 committed tree contains note.txt");
             if (found_note) {
-                auto note_bytes = ledger.get_blob_safe(note_digest, owner);
+                auto note_bytes = agentengine::rt::block_on(ledger.get_blob_safe(note_digest, owner));
                 check(note_bytes.has_value(), "turn 1 note.txt blob is readable");
                 if (note_bytes.has_value()) {
                     std::string const content(reinterpret_cast<char const*>(note_bytes->data()),
@@ -262,7 +263,7 @@ int main() {
         check(deleted.has_value(), "[11] the rm turn succeeds");
         if (deleted.has_value()) {
             check(deleted->exec.exit_code == 0, "[11] rm exits 0 inside the container");
-            auto tree = ledger.get_tree_safe(deleted->checkpoint.tree, owner);
+            auto tree = agentengine::rt::block_on(ledger.get_tree_safe(deleted->checkpoint.tree, owner));
             check(tree.has_value(), "[11] the rm turn's committed tree is readable");
             if (tree.has_value()) {
                 bool doomed = false;

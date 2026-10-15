@@ -86,8 +86,8 @@ template <class T, class OS>
 concept PersistentVectorIndex =
     VectorIndex<T> && WorktreeObjectStore<OS> &&
     requires(T const& idx, T& mutable_idx, OS& store, Digest const& digest) {
-        { idx.snapshot(store) } -> std::same_as<result<Digest>>;
-        { mutable_idx.restore(store, digest) } -> std::same_as<result<void>>;
+        { idx.snapshot(store) } -> std::same_as<task<result<Digest>>>;
+        { mutable_idx.restore(store, digest) } -> std::same_as<task<result<void>>>;
     };
 
 namespace vector_index_detail {
@@ -341,19 +341,23 @@ public:
     // unchanged index re-snapshots to the IDENTICAL digest (content-addressing's own free dedup), so a
     // caller can snapshot after every mount pass cheaply when nothing actually changed.
     template <WorktreeObjectStore OS>
-    [[nodiscard]] result<Digest> snapshot(OS& object_store) const {
-        std::shared_lock lock(mutex_);
+    [[nodiscard]] task<result<Digest>> snapshot(OS& object_store) const {
         std::vector<std::byte> buf;
-        vector_index_detail::append_bytes(buf, "AEV1");
-        vector_index_detail::append_u64(buf, static_cast<std::uint64_t>(dimension_));
-        vector_index_detail::append_u64(buf, static_cast<std::uint64_t>(order_.size()));
-        for (auto const& id : order_) {
-            auto const& vec = entries_.at(id);
-            vector_index_detail::append_u32(buf, static_cast<std::uint32_t>(id.size()));
-            vector_index_detail::append_bytes(buf, id);
-            for (float f : vec) vector_index_detail::append_f32(buf, f);
+        {
+            // The lock covers building the bytes only -- never the store call (a `std::shared_mutex` must not
+            // span a suspension, decisions/ADR-237 §5.1).
+            std::shared_lock lock(mutex_);
+            vector_index_detail::append_bytes(buf, "AEV1");
+            vector_index_detail::append_u64(buf, static_cast<std::uint64_t>(dimension_));
+            vector_index_detail::append_u64(buf, static_cast<std::uint64_t>(order_.size()));
+            for (auto const& id : order_) {
+                auto const& vec = entries_.at(id);
+                vector_index_detail::append_u32(buf, static_cast<std::uint32_t>(id.size()));
+                vector_index_detail::append_bytes(buf, id);
+                for (float f : vec) vector_index_detail::append_f32(buf, f);
+            }
         }
-        return object_store.put_blob(std::span<std::byte const>(buf.data(), buf.size()));
+        co_return co_await object_store.put_blob(std::span<std::byte const>(buf.data(), buf.size()));
     }
 
     // Replaces this index's ENTIRE current state with what `digest` names — the intended use is a
@@ -374,11 +378,11 @@ public:
     // an entry in that then gets silently discarded) -- the sequential misuse case this finding
     // actually demonstrated is now closed; the race is still open, unchanged, and still named there.
     template <WorktreeObjectStore OS>
-    [[nodiscard]] result<void> restore(OS& object_store, Digest const& digest) {
+    [[nodiscard]] task<result<void>> restore(OS& object_store, Digest digest) {
         {
             std::shared_lock empty_check(mutex_);
             if (!entries_.empty()) {
-                return std::unexpected(error{
+                co_return std::unexpected(error{
                     failure_class::contract,
                     "restore() was called on a non-empty index -- restore() REPLACES an index's "
                     "entire state and is intended for a fresh index at process start, never a "
@@ -388,23 +392,23 @@ public:
             }
         }
 
-        auto bytes = object_store.get_blob(digest);
-        if (!bytes) return std::unexpected(bytes.error());
+        auto bytes = co_await object_store.get_blob(digest);
+        if (!bytes) co_return std::unexpected(bytes.error());
 
         vector_index_detail::ByteReader reader{std::span<std::byte const>(bytes->data(), bytes->size())};
         auto magic = reader.read_bytes(4);
-        if (!magic) return std::unexpected(magic.error());
+        if (!magic) co_return std::unexpected(magic.error());
         if (*magic != "AEV1") {
-            return std::unexpected(error{failure_class::contract,
+            co_return std::unexpected(error{failure_class::contract,
                                           "vector index snapshot blob has an unrecognized magic header",
                                           "vector_index.snapshot_bad_magic"});
         }
         auto dim = reader.read_u64();
-        if (!dim) return std::unexpected(dim.error());
+        if (!dim) co_return std::unexpected(dim.error());
         auto count = reader.read_u64();
-        if (!count) return std::unexpected(count.error());
+        if (!count) co_return std::unexpected(count.error());
         auto plausible = reader.check_header_plausible(*count, *dim);
-        if (!plausible) return std::unexpected(plausible.error());
+        if (!plausible) co_return std::unexpected(plausible.error());
 
         std::unordered_map<std::string, std::vector<float>> new_entries;
         std::vector<std::string> new_order;
@@ -412,11 +416,11 @@ public:
         new_order.reserve(static_cast<std::size_t>(*count));
         for (std::uint64_t i = 0; i < *count; ++i) {
             auto id_len = reader.read_u32();
-            if (!id_len) return std::unexpected(id_len.error());
+            if (!id_len) co_return std::unexpected(id_len.error());
             auto id = reader.read_bytes(*id_len);
-            if (!id) return std::unexpected(id.error());
+            if (!id) co_return std::unexpected(id.error());
             if (new_entries.contains(*id)) {
-                return std::unexpected(error{failure_class::contract,
+                co_return std::unexpected(error{failure_class::contract,
                                               "vector index snapshot blob contains a duplicate id",
                                               "vector_index.snapshot_duplicate_id"});
             }
@@ -424,9 +428,9 @@ public:
             vec.reserve(static_cast<std::size_t>(*dim));
             for (std::uint64_t d = 0; d < *dim; ++d) {
                 auto f = reader.read_f32();
-                if (!f) return std::unexpected(f.error());
+                if (!f) co_return std::unexpected(f.error());
                 if (!std::isfinite(*f)) {
-                    return std::unexpected(error{failure_class::contract,
+                    co_return std::unexpected(error{failure_class::contract,
                                                   "vector index snapshot blob contains a non-finite component",
                                                   "vector_index.snapshot_non_finite"});
                 }
@@ -440,7 +444,7 @@ public:
         entries_   = std::move(new_entries);
         order_     = std::move(new_order);
         dimension_ = static_cast<std::size_t>(*dim);
-        return {};
+        co_return result<void>{};
     }
 
 private:

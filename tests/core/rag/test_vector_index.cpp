@@ -20,6 +20,7 @@
 
 #include "agentengine/core/vector_index.hpp"
 #include "agentengine/core/worktree.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "../../support/index_sync.hpp"
 
 using agentengine::test_support::sync_add_batch;
@@ -236,18 +237,18 @@ int main() {
         auto before = sync_search(index, std::span<float const>(query, 2), /*k=*/3);
         AE_CHECK(before.has_value(), "pre-snapshot search succeeds");
 
-        auto digest = index.snapshot(store);
+        auto digest = agentengine::rt::block_on(index.snapshot(store));
         AE_CHECK(digest.has_value(), "snapshot() succeeds and returns a digest");
 
         // Claim 4's own re-snapshot-dedup property: an UNCHANGED index snapshotted twice produces
         // the identical digest -- content-addressing's own free dedup, not asserted, checked.
-        auto digest_again = index.snapshot(store);
+        auto digest_again = agentengine::rt::block_on(index.snapshot(store));
         AE_CHECK(digest_again.has_value() && *digest_again == *digest,
                  "an unchanged index re-snapshots to the IDENTICAL digest");
 
         ae::BruteForceCosineIndex restored;
         AE_CHECK(restored.size() == 0, "setup: the restore target starts empty");
-        auto restore_result = restored.restore(store, *digest);
+        auto restore_result = agentengine::rt::block_on(restored.restore(store, *digest));
         AE_CHECK(restore_result.has_value(), "restore() succeeds");
         AE_CHECK(restored.size() == 3, "restore() repopulates every entry the snapshot held");
 
@@ -274,17 +275,17 @@ int main() {
         // testing exactly the ONE failure mode it names, not incidentally exercising M3's guard
         // instead of the thing it claims to test.
         ae::BruteForceCosineIndex missing_target;
-        auto missing = missing_target.restore(store, std::string(64, '0'));
+        auto missing = agentengine::rt::block_on(missing_target.restore(store, std::string(64, '0')));
         AE_CHECK(!missing.has_value() && missing.error().code != "vector_index.restore_requires_empty_index",
                  "restore() from a digest the store has never seen fails");
 
         // Reject-not-coerce: a blob that exists but isn't a valid snapshot (wrong magic) is
         // rejected, not silently misinterpreted as index data.
         std::string const garbage = "not a snapshot blob";
-        auto garbage_digest = store.put_blob(std::as_bytes(std::span{garbage.data(), garbage.size()}));
+        auto garbage_digest = agentengine::rt::block_on(store.put_blob(std::as_bytes(std::span{garbage.data(), garbage.size()})));
         AE_CHECK(garbage_digest.has_value(), "setup: a non-snapshot blob is stored");
         ae::BruteForceCosineIndex bad_magic_target;
-        auto bad_magic = bad_magic_target.restore(store, *garbage_digest);
+        auto bad_magic = agentengine::rt::block_on(bad_magic_target.restore(store, *garbage_digest));
         AE_CHECK(!bad_magic.has_value() && bad_magic.error().code == "vector_index.snapshot_bad_magic",
                  "restore() rejects a blob with an unrecognized magic header rather than "
                  "misinterpreting arbitrary bytes as vector data");
@@ -306,12 +307,12 @@ int main() {
         push_u64(0);                                   // dimension = 0
         push_u64(0xFFFFFFFFFFFFFFFFull);                // count = UINT64_MAX -- nothing close to that
                                                           // many bytes actually follows
-        auto digest = store.put_blob(std::span<std::byte const>(blob.data(), blob.size()));
+        auto digest = agentengine::rt::block_on(store.put_blob(std::span<std::byte const>(blob.data(), blob.size())));
         AE_CHECK(digest.has_value(), "setup: an implausible-header blob is itself stored successfully "
                                        "-- put_blob() has no reason to reject arbitrary bytes");
 
         ae::BruteForceCosineIndex victim;
-        auto restore_result = victim.restore(store, *digest);
+        auto restore_result = agentengine::rt::block_on(victim.restore(store, *digest));
         AE_CHECK(!restore_result.has_value() &&
                      restore_result.error().code == "vector_index.snapshot_header_implausible",
                  "restore() rejects a header whose declared count could not possibly fit in the "
@@ -331,10 +332,10 @@ int main() {
         push_bytes2("AEV1");
         push_u64_2(0xFFFFFFFFFFFFFFFFull);  // dimension = UINT64_MAX
         push_u64_2(2);                       // count = 2
-        auto digest2 = store.put_blob(std::span<std::byte const>(blob2.data(), blob2.size()));
+        auto digest2 = agentengine::rt::block_on(store.put_blob(std::span<std::byte const>(blob2.data(), blob2.size())));
         AE_CHECK(digest2.has_value(), "setup: the overflow-shaped blob is stored");
         ae::BruteForceCosineIndex victim2;
-        auto restore_result2 = victim2.restore(store, *digest2);
+        auto restore_result2 = agentengine::rt::block_on(victim2.restore(store, *digest2));
         AE_CHECK(!restore_result2.has_value() &&
                      restore_result2.error().code == "vector_index.snapshot_header_implausible",
                  "restore() rejects an overflow-shaped count*dimension header cleanly, rather than "
@@ -347,13 +348,13 @@ int main() {
         ae::InMemoryWorktreeObjectStore store;
         ae::BruteForceCosineIndex source_index;
         AE_CHECK(sync_add_batch(source_index, {"x"}, {{1.0f, 0.0f}}).has_value(), "setup: source populated");
-        auto digest = source_index.snapshot(store);
+        auto digest = agentengine::rt::block_on(source_index.snapshot(store));
         AE_CHECK(digest.has_value(), "setup: source snapshotted");
 
         ae::BruteForceCosineIndex already_populated;
         AE_CHECK(sync_add_batch(already_populated, {"pre-existing"}, {{0.0f, 1.0f}}).has_value(),
                  "setup: the restore TARGET already holds an unrelated entry");
-        auto restore_result = already_populated.restore(store, *digest);
+        auto restore_result = agentengine::rt::block_on(already_populated.restore(store, *digest));
         AE_CHECK(!restore_result.has_value() &&
                      restore_result.error().code == "vector_index.restore_requires_empty_index",
                  "restore() on a non-empty index is rejected with a typed error, rather than "
@@ -400,10 +401,10 @@ int main() {
         ae::vector_index_detail::append_bytes(blob, "z");
         ae::vector_index_detail::append_f32(blob, nan);
         ae::vector_index_detail::append_f32(blob, 1.0f);
-        auto digest = store.put_blob(std::span<std::byte const>(blob.data(), blob.size()));
+        auto digest = agentengine::rt::block_on(store.put_blob(std::span<std::byte const>(blob.data(), blob.size())));
         AE_CHECK(digest.has_value(), "setup: NaN-bearing snapshot blob stored");
         ae::BruteForceCosineIndex restored;
-        auto r = restored.restore(store, *digest);
+        auto r = agentengine::rt::block_on(restored.restore(store, *digest));
         AE_CHECK(!r.has_value() && r.error().code == "vector_index.snapshot_non_finite" && restored.size() == 0,
                  "restore() rejects a snapshot blob carrying a non-finite component, leaving the index empty");
 

@@ -52,31 +52,31 @@ namespace detail {
 // side of a diff has an entry the other side doesn't at all (a whole subtree added, or removed
 // wholesale), and for the "type changed" fallback below.
 template <WorktreeObjectStore S>
-[[nodiscard]] result<void> collect_leaves_as(S& store, Digest const& digest, bool is_tree,
-                                              std::string const& path, TreeDiffKind kind,
+[[nodiscard]] task<result<void>> collect_leaves_as(S& store, Digest digest, bool is_tree,
+                                              std::string path, TreeDiffKind kind,
                                               std::vector<TreeDiffEntry>& out) {
     if (!is_tree) {
         out.push_back(TreeDiffEntry{path, kind});
-        return {};
+        co_return result<void>{};
     }
-    auto tree = store.get_tree(digest);
-    if (!tree) return std::unexpected(tree.error());
+    auto tree = co_await store.get_tree(digest);
+    if (!tree) co_return std::unexpected(tree.error());
     for (auto const& e : tree->entries) {
-        auto r = collect_leaves_as(store, e.digest, e.is_tree, path + "/" + e.name, kind, out);
-        if (!r) return r;
+        auto r = co_await collect_leaves_as(store, e.digest, e.is_tree, path + "/" + e.name, kind, out);
+        if (!r) co_return r;
     }
-    return {};
+    co_return result<void>{};
 }
 
 template <WorktreeObjectStore S>
-[[nodiscard]] result<void> diff_subtrees(S& store, Digest const& old_digest, Digest const& new_digest,
-                                          std::string const& path_prefix, std::vector<TreeDiffEntry>& out) {
-    if (old_digest == new_digest) return {};
+[[nodiscard]] task<result<void>> diff_subtrees(S& store, Digest old_digest, Digest new_digest,
+                                          std::string path_prefix, std::vector<TreeDiffEntry>& out) {
+    if (old_digest == new_digest) co_return result<void>{};
 
-    auto old_tree = store.get_tree(old_digest);
-    if (!old_tree) return std::unexpected(old_tree.error());
-    auto new_tree = store.get_tree(new_digest);
-    if (!new_tree) return std::unexpected(new_tree.error());
+    auto old_tree = co_await store.get_tree(old_digest);
+    if (!old_tree) co_return std::unexpected(old_tree.error());
+    auto new_tree = co_await store.get_tree(new_digest);
+    if (!new_tree) co_return std::unexpected(new_tree.error());
 
     std::unordered_map<std::string, TreeEntry> old_by_name, new_by_name;
     for (auto const& e : old_tree->entries) old_by_name.emplace(e.name, e);
@@ -94,15 +94,15 @@ template <WorktreeObjectStore S>
         std::string path = path_prefix + name;
 
         if (has_old && !has_new) {
-            auto r = collect_leaves_as(store, oit->second.digest, oit->second.is_tree, path,
+            auto r = co_await collect_leaves_as(store, oit->second.digest, oit->second.is_tree, path,
                                         TreeDiffKind::removed, out);
-            if (!r) return r;
+            if (!r) co_return r;
             continue;
         }
         if (!has_old && has_new) {
-            auto r = collect_leaves_as(store, nit->second.digest, nit->second.is_tree, path,
+            auto r = co_await collect_leaves_as(store, nit->second.digest, nit->second.is_tree, path,
                                         TreeDiffKind::added, out);
-            if (!r) return r;
+            if (!r) co_return r;
             continue;
         }
 
@@ -111,8 +111,8 @@ template <WorktreeObjectStore S>
         if (o.digest == n.digest && o.is_tree == n.is_tree) continue;  // unchanged
 
         if (o.is_tree && n.is_tree) {
-            auto r = diff_subtrees(store, o.digest, n.digest, path + "/", out);
-            if (!r) return r;
+            auto r = co_await diff_subtrees(store, o.digest, n.digest, path + "/", out);
+            if (!r) co_return r;
             continue;
         }
         if (!o.is_tree && !n.is_tree) {
@@ -122,12 +122,12 @@ template <WorktreeObjectStore S>
         // A blob<->tree type change: report the old side as wholly removed and the new side as
         // wholly added, so a file that became a directory (or vice versa) is legible per-file
         // rather than collapsed into one misleading "modified" entry.
-        auto removed = collect_leaves_as(store, o.digest, o.is_tree, path, TreeDiffKind::removed, out);
-        if (!removed) return removed;
-        auto added = collect_leaves_as(store, n.digest, n.is_tree, path, TreeDiffKind::added, out);
-        if (!added) return added;
+        auto removed = co_await collect_leaves_as(store, o.digest, o.is_tree, path, TreeDiffKind::removed, out);
+        if (!removed) co_return removed;
+        auto added = co_await collect_leaves_as(store, n.digest, n.is_tree, path, TreeDiffKind::added, out);
+        if (!added) co_return added;
     }
-    return {};
+    co_return result<void>{};
 }
 
 } // namespace detail
@@ -135,12 +135,12 @@ template <WorktreeObjectStore S>
 // Two-way file-level diff between `old_digest` and `new_digest` -- no ancestor, nothing to decide,
 // unlike `merge_trees`.
 template <WorktreeObjectStore S>
-[[nodiscard]] result<TreeDiff> diff_trees(S& store, Digest const& old_digest, Digest const& new_digest) {
+[[nodiscard]] task<result<TreeDiff>> diff_trees(S& store, Digest old_digest, Digest new_digest) {
     TreeDiff diff;
-    auto r = detail::diff_subtrees(store, old_digest, new_digest, "", diff.changes);
-    if (!r) return std::unexpected(r.error());
+    auto r = co_await detail::diff_subtrees(store, old_digest, new_digest, "", diff.changes);
+    if (!r) co_return std::unexpected(r.error());
     std::ranges::sort(diff.changes, {}, &TreeDiffEntry::path);
-    return diff;
+    co_return diff;
 }
 
 // A short, count-only line usable as model context ("the writer changed 3 files") -- deliberately
@@ -219,7 +219,7 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
     if (current_digest == last_read_digest) {
         co_return SharedStalenessNote{last_read_digest, current_digest, TreeDiff{}};
     }
-    auto diff = diff_trees(object_store, last_read_digest, current_digest);
+    auto diff = co_await diff_trees(object_store, last_read_digest, current_digest);
     if (!diff) co_return std::unexpected(diff.error());
     co_return SharedStalenessNote{last_read_digest, current_digest, std::move(*diff)};
 }

@@ -177,7 +177,7 @@ int main() {
             AE_CHECK(sync_contains(index, *file1_blob_digest),
                      "(a) file1's chunk id (its own whole-file digest, since it's a single-chunk "
                      "file) is present in the index");
-            auto blob = object_store.get_blob(*file1_blob_digest);
+            auto blob = agentengine::rt::block_on(object_store.get_blob(*file1_blob_digest));
             AE_CHECK(blob.has_value() && std::string(reinterpret_cast<char const*>(blob->data()), blob->size()) ==
                                              file1_original,
                      "(a) the chunk TEXT itself is retrievable from the object store by that same id "

@@ -58,15 +58,15 @@ void check(bool cond, std::string const& what) {
 // blob_size(), so it is sized the old way.
 class CountingStore {
 public:
-    [[nodiscard]] result<Digest> put_blob(std::span<std::byte const> bytes) { return inner_.put_blob(bytes); }
-    [[nodiscard]] result<std::vector<std::byte>> get_blob(Digest const& digest) {
+    [[nodiscard]] agentengine::rt::task<result<Digest>> put_blob(std::span<std::byte const> bytes) { co_return co_await inner_.put_blob(bytes); }
+    [[nodiscard]] agentengine::rt::task<result<std::vector<std::byte>>> get_blob(Digest digest) {
         ++get_blob_calls;
-        auto b = inner_.get_blob(digest);
+        auto b = co_await inner_.get_blob(digest);
         if (b) get_blob_bytes += b->size();
-        return b;
+        co_return b;
     }
-    [[nodiscard]] result<Digest> put_tree(Tree tree) { return inner_.put_tree(std::move(tree)); }
-    [[nodiscard]] result<Tree> get_tree(Digest const& digest) { return inner_.get_tree(digest); }
+    [[nodiscard]] agentengine::rt::task<result<Digest>> put_tree(Tree tree) { co_return co_await inner_.put_tree(std::move(tree)); }
+    [[nodiscard]] agentengine::rt::task<result<Tree>> get_tree(Digest digest) { co_return co_await inner_.get_tree(digest); }
 
     std::size_t get_blob_calls = 0;
     std::uint64_t get_blob_bytes = 0;
@@ -78,9 +78,9 @@ protected:
 // The same store, plus the refinement.
 class CountingSizedStore : public CountingStore {
 public:
-    [[nodiscard]] result<std::uint64_t> blob_size(Digest const& digest) {
+    [[nodiscard]] agentengine::rt::task<result<std::uint64_t>> blob_size(Digest digest) {
         ++blob_size_calls;
-        return inner_.blob_size(digest);
+        co_return co_await inner_.blob_size(digest);
     }
     std::size_t blob_size_calls = 0;
 };
@@ -94,21 +94,21 @@ void check_contract(S& store, std::string const& name, Digest const& malformed) 
                                 std::size_t{1} << 20}) {
         std::string content(n, 'q');
         if (n > 0) content[n - 1] = static_cast<char>('a' + n % 26);  // distinct content per size
-        auto d = store.put_blob(bytes_of(content));
-        auto size = d ? store.blob_size(*d) : result<std::uint64_t>{std::unexpected(d.error())};
-        auto blob = d ? store.get_blob(*d) : result<std::vector<std::byte>>{std::unexpected(d.error())};
+        auto d = agentengine::rt::block_on(store.put_blob(bytes_of(content)));
+        auto size = d ? agentengine::rt::block_on(store.blob_size(*d)) : result<std::uint64_t>{std::unexpected(d.error())};
+        auto blob = d ? agentengine::rt::block_on(store.get_blob(*d)) : result<std::vector<std::byte>>{std::unexpected(d.error())};
         check(size.has_value() && blob.has_value() && *size == blob->size() && *size == n,
               "Z1 " + name + ": blob_size() == get_blob()->size() == " + std::to_string(n));
     }
     Digest const absent(64, 'a');
-    auto absent_size = store.blob_size(absent);
-    auto absent_blob = store.get_blob(absent);
+    auto absent_size = agentengine::rt::block_on(store.blob_size(absent));
+    auto absent_blob = agentengine::rt::block_on(store.get_blob(absent));
     check(!absent_size.has_value() && !absent_blob.has_value() &&
               absent_size.error().code == absent_blob.error().code,
           "Z1 " + name + ": an absent digest fails both with the same code (" +
               (absent_blob.has_value() ? std::string{"?"} : absent_blob.error().code) + ")");
-    auto bad_size = store.blob_size(malformed);
-    auto bad_blob = store.get_blob(malformed);
+    auto bad_size = agentengine::rt::block_on(store.blob_size(malformed));
+    auto bad_blob = agentengine::rt::block_on(store.get_blob(malformed));
     check(!bad_size.has_value() && !bad_blob.has_value() && bad_size.error().code == bad_blob.error().code,
           "Z1 " + name + ": a malformed digest fails both with the same code (" +
               (bad_blob.has_value() ? std::string{"?"} : bad_blob.error().code) + ")");
@@ -120,7 +120,7 @@ constexpr std::size_t kFileBytes = 1000;
 // A mount holding kFiles files of kFileBytes each, written uncapped (no usage walk), counters reset.
 template <class S>
 void fill(S& store, RefStore& refs, Mount const& mount) {
-    (void)agentengine::rt::block_on(commit_ref(refs, mount.ref_name, *store.put_tree(Tree{})));
+    (void)agentengine::rt::block_on(commit_ref(refs, mount.ref_name, *agentengine::rt::block_on(store.put_tree(Tree{}))));
     cap::FsWrite const uncapped{mount.mount_id, "", std::nullopt, std::nullopt};
     for (int i = 0; i < kFiles; ++i) {
         std::string content(kFileBytes, 'x');
@@ -187,8 +187,8 @@ int main() {
         CountingSizedStore new_store;
         RefStore old_refs;
         RefStore new_refs;
-        (void)agentengine::rt::block_on(commit_ref(old_refs, mount.ref_name, *old_store.put_tree(Tree{})));
-        (void)agentengine::rt::block_on(commit_ref(new_refs, mount.ref_name, *new_store.put_tree(Tree{})));
+        (void)agentengine::rt::block_on(commit_ref(old_refs, mount.ref_name, *agentengine::rt::block_on(old_store.put_tree(Tree{}))));
+        (void)agentengine::rt::block_on(commit_ref(new_refs, mount.ref_name, *agentengine::rt::block_on(new_store.put_tree(Tree{}))));
         cap::FsWrite const tight{"/work", "", std::uint64_t{25}, std::uint32_t{3}};
         struct Step {
             char const* path;

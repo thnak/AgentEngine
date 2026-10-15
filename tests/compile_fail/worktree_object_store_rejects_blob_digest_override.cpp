@@ -13,6 +13,7 @@
 #include <string>
 
 #include "agentengine/core/worktree.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using namespace agentengine;
 
@@ -20,6 +21,6 @@ int main() {
     InMemoryWorktreeObjectStore store;
     std::string const forced_digest(64, '0');
     std::span<std::byte const> const bytes{};
-    auto put = store.put_blob(forced_digest, bytes);  // must not compile: no such overload exists
+    auto put = agentengine::rt::block_on(store.put_blob(forced_digest, bytes));  // must not compile: no such overload exists
     return put.has_value() ? 0 : 1;
 }

@@ -36,7 +36,7 @@ int main() {
     // ensure_memory_worktree()'s own bootstrap shape, inlined here since corpus_scope.hpp
     // deliberately doesn't own worktree bootstrapping (that's CorpusSource's job, not yet built).
     {
-        auto empty = object_store.put_tree(ae::Tree{});
+        auto empty = agentengine::rt::block_on(object_store.put_tree(ae::Tree{}));
         AE_CHECK(empty.has_value(), "setup: empty tree stored");
         auto committed = agentengine::rt::block_on(ae::commit_ref(ref_store, mount.ref_name, *empty));
         AE_CHECK(committed.has_value(), "setup: corpus worktree bootstraps");
