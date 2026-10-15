@@ -25,7 +25,7 @@ jobs:
         # are one call per object (thousands per PR) and trip the API rate limit.
         run: |
           while :; do
-            n=$(gh api -X DELETE "repos/${{ github.repository }}/actions/caches?key=sccache&ref=$REF" --jq .total_count)
+            n=$(gh api -X DELETE "repos/${{ github.repository }}/actions/caches?key=sccache&ref=$REF" --jq .total_count) || n=0  # 404 = nothing matched = done
             echo "deleted $n"
             [ "$n" -gt 0 ] || break
           done
