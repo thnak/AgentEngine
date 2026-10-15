@@ -1,4 +1,4 @@
-// Proof for 025-Worktree-and-Virtual-Filesystem.md §9 G3's concurrency claim, Milestone 3 Phase B4
+// Proof for rfcs/025-Worktree-and-Virtual-Filesystem.md §9 G3's concurrency claim, Milestone 3 Phase B4
 // (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md, scoped per that doc's
 // decision 7): "N concurrent `branch` agents produce a deterministic merge result; every genuine
 // conflict is surfaced, never silently resolved; no lost update over [a machine-safe bounded count

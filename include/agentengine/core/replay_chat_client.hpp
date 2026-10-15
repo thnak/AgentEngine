@@ -1,5 +1,5 @@
 #pragma once
-// Implements 004-Model-Provider-Plane.md §6 ("Recording and replay") -- Milestone 5 Phase G2:
+// Implements rfcs/004-Model-Provider-Plane.md §6 ("Recording and replay") -- Milestone 5 Phase G2:
 // `ReplayChatClient`, the real, product-code `ChatClient` conformer that PLAYS BACK a
 // `ChatCallRecording` (core/chat_recording.hpp, Phase G1's shared JSON codec) with identical chunk
 // boundaries and inter-chunk timing (004 §7 G3's own gate: "streaming-dependent behavior... reproduces

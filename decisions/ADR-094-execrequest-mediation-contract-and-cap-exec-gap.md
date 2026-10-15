@@ -21,13 +21,13 @@ Tracing the real call path (`tools/cli_chat.cpp`'s `real_execute_code()`) confir
 model-supplied `code` never reaches any `SandboxBackend::exec()` today, for any backend — it routes
 through `MediatedPythonRunner`, a separate IPC-driven jailed worker process. The contract each of the
 three backends' `exec()` already implements — trusting `ExecRequest` as fully-mediated input,
-mediation being the caller's job, not the backend's, per `008-Sandbox-and-Isolation.md` §1b layer 2 —
+mediation being the caller's job, not the backend's, per `rfcs/008-Sandbox-and-Isolation.md` §1b layer 2 —
 is correct, settled architecture, not an unfinished wiring task. The actual defect: this one invariant
 was stated three times, independently worded, in `kata_backend.hpp`, `linux_native_jail_backend.hpp`,
 and `native_jail_backend.hpp` — a drift risk, the same shape `decisions/ADR-087-sandbox-spec-
 capability-enforcement.md` already named ("no per-backend divergence") for a different field.
 
-**Fixed this pass:** `008-Sandbox-and-Isolation.md` §2 (the backend-agnostic `SandboxBackend` contract
+**Fixed this pass:** `rfcs/008-Sandbox-and-Isolation.md` §2 (the backend-agnostic `SandboxBackend` contract
 section — corrected from an initial draft that proposed §1b, which a red-team pass caught as the wrong
 home; §1b is scoped to native-jail's own composed mediation stack, not backend-agnostic contract
 language) gained a new paragraph, "`ExecRequest` mediation is the caller's responsibility, not the
@@ -46,7 +46,7 @@ to call `SandboxBackend::create()`/`exec()` at all? An early draft misread `cap:
 (`include/agentengine/trust/capability.hpp:120-130`) as scoped to *nested* exec (008 §4's "`Exec`
 (nested)" table row, unconditionally denied everywhere by construction) and concluded there was no
 real gap. **The red-team pass caught this as wrong**, independently verifying
-`007-Capability-and-Trust-Model.md:59`: `Exec<profile>` | "Create a sandbox of a profile" | profile,
+`rfcs/007-Capability-and-Trust-Model.md:59`: `Exec<profile>` | "Create a sandbox of a profile" | profile,
 resource limits — unambiguously a top-level, host-side gate on `create()` itself, distinct from the
 008 §4 nested-exec row. `authorize_spec()` (`sandbox.hpp:210`) — the function ADR-087 built
 specifically to make `SandboxSpec::capabilities` load-bearing — never reads `cap::Exec` grants at all;
@@ -78,7 +78,7 @@ session, rejecting a speculative OOM heuristic with no verifiable signal).
 
 ## 5. What changed in this pass
 
-- `008-Sandbox-and-Isolation.md` — new §2 paragraph (contract-level, backend-agnostic).
+- `rfcs/008-Sandbox-and-Isolation.md` — new §2 paragraph (contract-level, backend-agnostic).
 - `src/backends/kata/kata_backend.hpp` — residual bullet replaced with a pointer to 008 §2 and this
   ADR; the Finding-2 follow-on named explicitly, not silently dropped.
 - `src/backends/native_jail/linux_native_jail_backend.hpp` — same consolidation for its own bullet.

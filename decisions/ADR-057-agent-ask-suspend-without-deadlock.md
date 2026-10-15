@@ -19,8 +19,8 @@ mechanism this reuses, and the mutex-acquisition shape whose limits this ADR run
 `decisions/ADR-030-session-scoped-codeact-wiring.md` (`CodeActRunnerBinding`'s "at most one session
 ever live against the shared runner" claim, which this design must not violate), `decisions/ADR-028-
 session-scoped-stateful-tools.md` (`Backgroundable`/`BackgroundCompletionQueue`, the existing
-off-coroutine-thread precedent Design C leans on), `001-Execution-Model.md` §2 (`Interaction`,
-`InputRequired`), `026-Agent-Facing-Runtime-Surface.md` §5 (`agent.ask` — `Elicit` capability, no
+off-coroutine-thread precedent Design C leans on), `rfcs/001-Execution-Model.md` §2 (`Interaction`,
+`InputRequired`), `rfcs/026-Agent-Facing-Runtime-Surface.md` §5 (`agent.ask` — `Elicit` capability, no
 implementation today).
 
 ## 1. The question

@@ -367,7 +367,7 @@ unmodified as historical record; this pass's fixes are in §4b (findings 33/34/3
 finding 32's own discussion) and §6 (finding 36), cross-referenced back to "round 9 finding 33/34/35/36/37"
 the same way prior revisions cross-referenced their own round's findings.
 
-Continues `009-Plugin-and-Extension-System.md` §7's "Document extraction (text layer)" catalog row,
+Continues `rfcs/009-Plugin-and-Extension-System.md` §7's "Document extraction (text layer)" catalog row,
 specifically the third this row names ("...and a DOCX/PPTX/XLSX structural parser") that
 `decisions/ADR-106-document-extraction-catalog-candidate-license-substitution.md` §3 explicitly scoped
 itself away from: "this pass did not do the research needed to find a permissively-licensed C++
@@ -3434,7 +3434,7 @@ as already-accepted precedent, because Track B never puts a worker-writable file
 read path for its result.
 
 **Checked directly against what this exact codebase already builds for exactly this threat class**:
-`include/agentengine/core/worktree_mount_fs.hpp:1-125` — ADR-014, `021-Platform-Support-and-Portability.md`
+`include/agentengine/core/worktree_mount_fs.hpp:1-125` — ADR-014, `rfcs/021-Platform-Support-and-Portability.md`
 §6 G3's own "path-escape corpus (`..`, symlinks, junctions, `\\?\`, ADS, case tricks, unicode
 normalization) fails to escape a mount on any platform" requirement — exists specifically because a naive
 open-by-path is not safe against a writer-controlled reparse point: `open_within_mount_root`'s own header

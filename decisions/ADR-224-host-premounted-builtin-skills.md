@@ -3,7 +3,7 @@
 **Status:** **Proposed (2026-10-01).** Design (§3), one adversarial self red-team pass (§4, 7 findings
 fixed, 7 residuals named), implemented and proven (§5). Awaiting Judge.
 
-**Relates to:** GitHub issue #47. `009-Plugin-and-Extension-System.md` §8c (on-demand mounting, amended
+**Relates to:** GitHub issue #47. `rfcs/009-Plugin-and-Extension-System.md` §8c (on-demand mounting, amended
 here) and §8f (built-in skills). ADR-024 (skill-scoped tools and `mount_skill`; its "mounting grants no
 authority" argument is reused unchanged). ADR-030 (cli_chat's session-scoped CodeAct wiring). ADR-096
 (`SandboxToolProvider`), ADR-102 Phase 5 / ADR-119 (`run_command` and `cap::RunCommand`), ADR-208 (the

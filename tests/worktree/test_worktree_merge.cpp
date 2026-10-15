@@ -1,4 +1,4 @@
-// Proof for 025-Worktree-and-Virtual-Filesystem.md §4's three-way merge on branch join, Milestone 3
+// Proof for rfcs/025-Worktree-and-Virtual-Filesystem.md §4's three-way merge on branch join, Milestone 3
 // Phase B2 (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md) --
 // `merge_trees`/`merge_branch_into_parent` (core/worktree.hpp) proven per the RFC's three explicit
 // outcomes -- disjoint changes merge automatically, identical content merges trivially, a genuine

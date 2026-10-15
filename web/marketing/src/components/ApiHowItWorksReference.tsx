@@ -205,7 +205,7 @@ const copy = {
       [
         "I7 — Protocol conformance is a gate",
         "Each protocol RFC names an executable suite and a protocol revision; \"supports MCP\" without a passing suite at a named revision is not a claim this project makes.",
-        "011-MCP-Conformance.md",
+        "rfcs/011-MCP-Conformance.md",
       ],
       [
         "I8 — Budgets are enforced, not documented",
@@ -482,7 +482,7 @@ const copy = {
       [
         "I7 — Tuân thủ giao thức là một cổng chặn",
         "Mỗi RFC giao thức nêu một bộ kiểm thử chạy được và một phiên bản giao thức; \"hỗ trợ MCP\" mà không có bộ kiểm thử đạt ở phiên bản được nêu tên thì không phải là tuyên bố dự án này đưa ra.",
-        "011-MCP-Conformance.md",
+        "rfcs/011-MCP-Conformance.md",
       ],
       [
         "I8 — Ngân sách được thực thi, không chỉ ghi lại",

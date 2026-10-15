@@ -2,7 +2,7 @@
 // ADR-201 (#120 S5): the function bodies live in src/core/tool_pipeline.cpp, compiled once into
 // agentengine_tool_pipeline; this header keeps every type, every declaration with its comment, and bodies under
 // 6 lines. Bodies were moved verbatim.
-// Implements 006-Tool-and-Function-Plane.md §3 — the ten-step invocation pipeline every tool call
+// Implements rfcs/006-Tool-and-Function-Plane.md §3 — the ten-step invocation pipeline every tool call
 // traverses, as real host machinery (not modeled on Tool itself, core/tool.hpp's own comment).
 //
 // The declaration half (`ToolDescriptor`, `make_tool_descriptor<ToolT>()`, `ToolTable`) lives in

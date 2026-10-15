@@ -1,6 +1,6 @@
 #pragma once
 // A structural-type wrapper making string literals usable as class-type non-type template
-// parameters (002-Agent-Model-and-Authoring.md §2 / README example `ChatClientId<"vendor:model">`
+// parameters (rfcs/002-Agent-Model-and-Authoring.md §2 / README example `ChatClientId<"vendor:model">`
 // binds a string-literal prvalue, which cannot bind to a `std::string_view const&` NTTP — that
 // reference form requires a named object with linkage). `fixed_string` is the standard C++20
 // structural-NTTP idiom: CTAD deduces `N` from the literal, so `ChatClientId<"...">` deduces

@@ -6,7 +6,7 @@
 **Status:** Judged (design → build → independent red-team → fix → re-verify complete for the
 Slice 1 scope, 2026-08-23). Real, new code — not a formalization of prior work.
 
-**Relates to:** `008-Sandbox-and-Isolation.md` §1 (the locked "no `microvm` profile" decision this
+**Relates to:** `rfcs/008-Sandbox-and-Isolation.md` §1 (the locked "no `microvm` profile" decision this
 ADR operates under a reopened, narrowed exception to, not a repeal of), `docs/planning/microvm-
 first-party-backend-design-draft.md` (the design → red-team → judge record that declined full
 Design A/B on 2026-08-23, then recorded reopen condition (i) as met later the same day — §9 of
@@ -20,7 +20,7 @@ pinning falls short of in one honestly-disclosed way — see §3).
 
 ## 1. The question, and why it could now be asked
 
-`008-Sandbox-and-Isolation.md` §1's locked decision — no `microvm` profile, no first-party
+`rfcs/008-Sandbox-and-Isolation.md` §1's locked decision — no `microvm` profile, no first-party
 hardware-isolation backend built or maintained first — was relitigated earlier the same day
 (2026-08-23) per CLAUDE.md's mandated design → red-team → judge process for contested, locked
 decisions. That process's real, 4-lens adversarial red-team found the case for reversal genuinely

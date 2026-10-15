@@ -1,4 +1,4 @@
-// Positive control for the 007-Capability-and-Trust-Model.md §9 G2 compile-fail proof — this file
+// Positive control for the rfcs/007-Capability-and-Trust-Model.md §9 G2 compile-fail proof — this file
 // MUST compile. A fail-only suite can't distinguish "the mechanism correctly rejects this" from
 // "nothing here compiles at all"; this proves the explicit, named declassifier path
 // (`unsafe_view()`, 007 §4) still works.

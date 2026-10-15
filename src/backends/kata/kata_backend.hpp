@@ -334,7 +334,7 @@
 // Still NOT done, named honestly rather than silently assumed:
 //
 //   - `ExecRequest::source` is treated as a shell command line (`/bin/sh -c <source>`) the caller is
-//     trusted to have already resolved and mediated -- 008-Sandbox-and-Isolation.md §2's "`ExecRequest`
+//     trusted to have already resolved and mediated -- rfcs/008-Sandbox-and-Isolation.md §2's "`ExecRequest`
 //     mediation is the caller's responsibility, not the backend's" clause is the canonical statement
 //     of this contract (shared verbatim with `LinuxNativeJailBackend`'s own identical M2-only scope,
 //     linux_native_jail_backend.hpp); investigated in

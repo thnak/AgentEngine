@@ -1,5 +1,5 @@
 // Milestone 5 Phase G2 (docs/planning/milestone-5-providers-identity-secrets-breakdown.md lines
-// 513-521; 004-Model-Provider-Plane.md §6/§7 G3): proves `ReplayChatClient`
+// 513-521; rfcs/004-Model-Provider-Plane.md §6/§7 G3): proves `ReplayChatClient`
 // (core/replay_chat_client.hpp) end to end -- the real, product-code recording PLAYER that
 // supersedes tests/support/recorded_chat_client.hpp's `RecordedChatClient` for product code
 // (decision 8). Every scenario is constructed directly against `ChatCallRecording`

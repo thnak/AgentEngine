@@ -1,5 +1,5 @@
-// Implements 009-Plugin-and-Extension-System.md §8 (multi-skill), decisions/ADR-065-tool-optimizer-
-// provider.md (a REAL ToolOptimizerProvider, not a stand-in), and 010-Python-Code-Interpreter.md §1a/
+// Implements rfcs/009-Plugin-and-Extension-System.md §8 (multi-skill), decisions/ADR-065-tool-optimizer-
+// provider.md (a REAL ToolOptimizerProvider, not a stand-in), and rfcs/010-Python-Code-Interpreter.md §1a/
 // §2 (a REAL embedded CPython interpreter, native_jail::PythonRunner -- not a canned stand-in), all
 // driven through a real remote model over OpenRouter.
 //

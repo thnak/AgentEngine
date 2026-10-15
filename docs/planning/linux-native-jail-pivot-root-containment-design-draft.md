@@ -33,7 +33,7 @@ Re-grounded directly against current code (this pass, not carried over from the 
   CLONE_NEWUTS | CLONE_NEWIPC | SIGCHLD` and nothing else — no `mount()`, `pivot_root()`, or
   `chroot()` anywhere in the file. The header's own comment says so directly: `CLONE_NEWNS` gives the
   guest a *private copy* of the mount table, but nothing restricts which existing host paths remain
-  visible inside it. `008-Sandbox-and-Isolation.md:437-449` states the same thing as current,
+  visible inside it. `rfcs/008-Sandbox-and-Isolation.md:437-449` states the same thing as current,
   non-stale spec text: zero filesystem/process containment on Linux `native-jail` today. This is
   confirmed independent of ADR-037's churn (ADR-037 only removed Quark; this backend predates and
   postdates that removal unchanged).

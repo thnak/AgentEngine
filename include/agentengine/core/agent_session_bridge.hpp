@@ -1,5 +1,5 @@
 #pragma once
-// Implements 002-Agent-Model-and-Authoring.md §2.1 ("Running an agent", as amended by
+// Implements rfcs/002-Agent-Model-and-Authoring.md §2.1 ("Running an agent", as amended by
 // decisions/ADR-226-agent-run-bridge.md) and the run half of 015 §1's equivalence rule (I6): the bridge
 // from a declared agent -- `struct A : Agent<A, Policies...>` compiled by `register_agent<A>()`, or a
 // 015 Agent document compiled by `compile_agent_document()` -- to a RUNNING `rt::AgentSession`

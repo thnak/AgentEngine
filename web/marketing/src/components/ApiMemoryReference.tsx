@@ -890,8 +890,8 @@ export function ApiMemoryReference() {
 
           <RevealItem>
             <Cite
-              path="029-Memory-System.md"
-              label="029-Memory-System.md — §9 has seven gates. G1 (determinism) and G3 (no authority laundering) are directly proven; G5 (cross-principal isolation) is proven at the derivation and capability boundary, but its adversarial shared-index half needs the vector plugin that does not exist; G2, G4, G6 and G7 have no test yet."
+              path="rfcs/029-Memory-System.md"
+              label="rfcs/029-Memory-System.md — §9 has seven gates. G1 (determinism) and G3 (no authority laundering) are directly proven; G5 (cross-principal isolation) is proven at the derivation and capability boundary, but its adversarial shared-index half needs the vector plugin that does not exist; G2, G4, G6 and G7 have no test yet."
             />
           </RevealItem>
         </RevealGroup>

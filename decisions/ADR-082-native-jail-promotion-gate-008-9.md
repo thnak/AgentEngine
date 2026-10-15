@@ -33,7 +33,7 @@ sandbox.md` (the original phase tracker; its own "Exit criteria" are what this A
 ## 1. The question
 
 `docs/planning/v1-implementation-roadmap.md`'s Milestone 2 exit criterion states, by name: "`native-
-jail` sandbox parity (008 §9 G1) holds on Windows and Linux." `008-Sandbox-and-Isolation.md` §9
+jail` sandbox parity (008 §9 G1) holds on Windows and Linux." `rfcs/008-Sandbox-and-Isolation.md` §9
 defines eight gates (G1-G8) a sandbox profile must clear to be considered promoted. M2 Phase C's own
 tracker (`docs/issues/m2-phase-c-native-jail-sandbox.md`) lists six tasks (C1-C6) targeting G1-G4
 specifically, all six marked done in the breakdown doc with real code and real tests. **No ADR was
@@ -265,7 +265,7 @@ reason and forgets this property was never actually gated on a test.
 
 **Update (2026-08-23) — closed, upgraded from INCONCLUSIVE to CORRECT.**
 `tests/backends/native_jail/test_native_jail_session_boundary_windows.cpp`, new this pass: two `MediatedPythonRunner`
-instances (008-Sandbox-and-Isolation.md's `sandbox_lifetime::per_session` worker, `decisions/ADR-081-
+instances (rfcs/008-Sandbox-and-Isolation.md's `sandbox_lifetime::per_session` worker, `decisions/ADR-081-
 jailed-python-worker-process-slice-1.md`) held alive concurrently against the same `NativeJailBackend`.
 A canary planted in session A is read back from A itself both before and after session B's own probe
 for it (the sandwich structure rules out "A's own state merely reset around the same time" as an

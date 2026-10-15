@@ -1,5 +1,5 @@
 #pragma once
-// Implements 002-Agent-Model-and-Authoring.md §6 — register_agent<A>(), the real metadata compiler.
+// Implements rfcs/002-Agent-Model-and-Authoring.md §6 — register_agent<A>(), the real metadata compiler.
 // M2 Phase E tasks E2 and E3 (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md):
 // E2 is register_agent<A>() itself; E3 is invoke_agent_tool() at the bottom of this file, the
 // milestone's headline exit-criterion sentence wired to real code (see that function's own comment).

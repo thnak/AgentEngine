@@ -1,5 +1,5 @@
 #pragma once
-// Implements 012-A2A-Conformance.md §2.1 -- Agent Card generation. Milestone 7 Phase D2
+// Implements rfcs/012-A2A-Conformance.md §2.1 -- Agent Card generation. Milestone 7 Phase D2
 // (docs/planning/milestone-7-protocol-conformance-breakdown.md).
 //
 // §2.1: "Generated from agent metadata (002 §7) -- never hand-maintained, because a hand-maintained

@@ -1,7 +1,7 @@
 # `wit/`
 
 WIT worlds defining the plugin ABI — the contract of record for the WASM Component Model plugin
-system, versioned (`ae:tool@1.0.0`, etc.). Governing RFC: **009-Plugin-and-Extension-System.md §2**,
+system, versioned (`ae:tool@1.0.0`, etc.). Governing RFC: **rfcs/009-Plugin-and-Extension-System.md §2**,
 whose worlds table this directory implements:
 
 | World | File | Implements |

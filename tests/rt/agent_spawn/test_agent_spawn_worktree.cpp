@@ -1,5 +1,5 @@
 // Proof for docs/planning/agent-spawn-runtime-design-draft.md §4.3 (item 3 of OpenQuestions.md
-// OQ-14's agent.spawn wiring; 026-Agent-Facing-Runtime-Surface.md §5) --
+// OQ-14's agent.spawn wiring; rfcs/026-Agent-Facing-Runtime-Surface.md §5) --
 // core/agent_spawn_worktree.hpp's `allocate_spawn_seq`/`derive_spawn_child_id`/`check_child_id`/
 // `mint_spawn_worktree`. Style/structure mirrors tests/workflow/test_workflow_worktree_scoping.cpp (this
 // project's own closest precedent -- proving each named red-team finding stays fixed, not merely

@@ -1,4 +1,4 @@
-// 008-Sandbox-and-Isolation.md SS9 G2/G3's Linux filesystem-containment half --
+// rfcs/008-Sandbox-and-Isolation.md SS9 G2/G3's Linux filesystem-containment half --
 // LinuxNativeJailBackend::setup_jail() (linux_native_jail_backend.cpp) now builds a real
 // pivot_root + bind-mount jail per exec() call: MS_PRIVATE first, a tmpfs-backed root, exactly the
 // granted MountSpec set bind-mounted in (read-only grants remounted MS_RDONLY -- the initial

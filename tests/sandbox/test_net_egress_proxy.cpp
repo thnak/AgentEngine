@@ -1,5 +1,5 @@
 // Proves decisions/ADR-011-first-party-egress-proxy.md's falsifiable claims (M2 Phase F task F1,
-// 008-Sandbox-and-Isolation.md §9 G2 "containment... with a positive control"). Structure follows
+// rfcs/008-Sandbox-and-Isolation.md §9 G2 "containment... with a positive control"). Structure follows
 // ADR-009's own precedent: pure-function claims (C4/C5) need no live socket at all; pre-network-gate
 // claims (C1/C3/C7/C9, "rejected before any network activity") are proven by an injected resolver
 // whose call count stays zero; only the genuinely I/O-dependent claims (C2/C8/C10, and G2's positive

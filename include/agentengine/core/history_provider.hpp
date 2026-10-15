@@ -1,5 +1,5 @@
 #pragma once
-// Implements 005-Sessions-State-and-Memory.md §4/§5's `HistoryProvider` kind — the first real
+// Implements rfcs/005-Sessions-State-and-Memory.md §4/§5's `HistoryProvider` kind — the first real
 // `ContextProvider` conformer (Milestone 4 Phase B2,
 // docs/planning/milestone-4-sessions-durability-memory-breakdown.md), replacing
 // `AgentSession`'s M1-scope "the full history, trivially" shortcut (agent_session.hpp's own top

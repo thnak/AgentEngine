@@ -78,7 +78,7 @@ design→red-team→prove→judge track (CLAUDE.md, "contested, hot-path, or sec
 actually gets exercised for real, not just described.
 
 **The rule, designed to work at any headcount — extending
-[024 §7's deferred governance question](../../024-Versioning-Compatibility-and-Governance.md)
+[024 §7's deferred governance question](../../rfcs/024-Versioning-Compatibility-and-Governance.md)
 now that it's actually being asked, without inventing a quorum number 024 §7 correctly declined to
 guess:**
 

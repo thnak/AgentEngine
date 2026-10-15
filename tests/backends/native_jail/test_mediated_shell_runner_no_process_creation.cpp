@@ -1,4 +1,4 @@
-// Milestone 3 Phase E4 -- the STATIC half of 010-Python-Code-Interpreter.md §9 G2's ShellRunner-
+// Milestone 3 Phase E4 -- the STATIC half of rfcs/010-Python-Code-Interpreter.md §9 G2's ShellRunner-
 // specific bar ("must not merely be contained, must not exist as a reachable code path"), applied
 // to the REAL `agentengine_mediated_shell_runner` library (E3), not the untouched ADR-001 spike --
 // test_shell_runner_no_process_creation.cpp already covers the spike; this file is its own

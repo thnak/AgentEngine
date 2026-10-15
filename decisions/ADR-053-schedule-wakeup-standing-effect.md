@@ -8,9 +8,9 @@ Re-verified at sign-off review: `tests/rt/agent_session/test_rt_agent_session_sc
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #7 (the finding this ADR
 closes). `docs/planning/schedule-wakeup-standing-effect-design-draft.md` (the design this implements,
-with one correction — see §2). `006-Tool-and-Function-Plane.md` §6b / `019-Durability-and-Long-Running-
+with one correction — see §2). `rfcs/006-Tool-and-Function-Plane.md` §6b / `019-Durability-and-Long-Running-
 Agents.md` §2 (`schedule_wakeup`'s own normative definition — the "Timer/schedule" wake-condition
-table row). `007-Capability-and-Trust-Model.md` §3 (the `Schedule<max_horizon, max_active>` capability
+table row). `rfcs/007-Capability-and-Trust-Model.md` §3 (the `Schedule<max_horizon, max_active>` capability
 row this ADR wires up, rather than inventing a new mechanism). `include/agentengine/core/
 standing_effect.hpp`, `include/agentengine/rt/agent_session.hpp` (its "SLICE 4 ADDITION" banner
 paragraph carries the same design writeup as this ADR, in the file the reader is actually looking at).
@@ -31,7 +31,7 @@ mechanism into the StandingEffect handle shape," but "there is no mechanism to w
 
 The design draft's own §3(b) proposed a **new CRTP policy tag**, `Schedule<max_horizon_ms>`, "matching
 `MaxTurns<N>`/`TokenBudget<N>`'s existing idiom" — written before this ADR's implementation pass touched
-real code. Re-grounding that specific proposal against `007-Capability-and-Trust-Model.md` §3's own
+real code. Re-grounding that specific proposal against `rfcs/007-Capability-and-Trust-Model.md` §3's own
 table found it already wrong: **`Schedule<max_horizon, max_active>` is already a normatively-named
 CAPABILITY** (007 §3's own row, same table `Background<max_concurrent>` — the mechanism `start_
 background_task()` already enforces — comes from), not a bare agent-level policy tag. Checking the code
@@ -60,7 +60,7 @@ would for any other capability.
 
 A second, smaller correction: the draft hedged between emitting `tool_call_started` or `state_changed`
 on registration ("mirroring `start_background_task()`'s exact existing shape... emit `run_event_kind::
-tool_call_started`/`state_changed`"). `006-Tool-and-Function-Plane.md` §6b is unambiguous: *"Registering,
+tool_call_started`/`state_changed`"). `rfcs/006-Tool-and-Function-Plane.md` §6b is unambiguous: *"Registering,
 resolving, or cancelling one is visible on the run's event stream via `StateChanged`."* `schedule_
 wakeup()` emits `state_changed`, never `tool_call_started` — there is no `ToolCallRequest` behind a
 `schedule_wakeup` call to attribute a tool-call-shaped event to, unlike `start_background_task()`.
@@ -126,7 +126,7 @@ edited headers plus the new test binary.
 
 - **Does not resurrect a self-firing timer.** Named explicitly in §3 and in the design draft's own §4;
   `due_standing_effects()` is polled by a host, never self-invoked.
-- **Does not design the host-side poller itself** — `020-Configuration-and-Hosting.md`'s own
+- **Does not design the host-side poller itself** — `rfcs/020-Configuration-and-Hosting.md`'s own
   `EmbeddedHost` facade, or an interim `tools/cli_chat.cpp`-level poll loop, is real, separate follow-up
   work, matching the design draft's own scoping.
 - **Does not design the resumption call's shape** — what a host does with a due entry beyond observing
@@ -152,7 +152,7 @@ still passes in full, unchanged since commit `732f6a8`.
 
 At the project owner's explicit direction, this ADR's own §5 residual is closed: `schedule_wakeup` is
 now a real tool the MODEL itself can call mid-turn, per 006 §6b's own normative framing ("declared
-tools gated by a new capability") and `019-Durability-and-Long-Running-Agents.md` §2's "Agent-callable,
+tools gated by a new capability") and `rfcs/019-Durability-and-Long-Running-Agents.md` §2's "Agent-callable,
 not just host-triggered" paragraph — *"`schedule_wakeup` and `watch_resource`... let the model itself
 arm a Timer/schedule or External-event wake and then end its turn... This adds a caller, not a new
 state machine."* Before this amendment, only a host-side C++ caller could reach `AgentSession::

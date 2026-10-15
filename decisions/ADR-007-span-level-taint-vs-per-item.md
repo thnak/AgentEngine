@@ -150,5 +150,5 @@ could ever be justified.
 No repository source changed by this ADR — the decision is "do not build." Evidence lives at
 `span_taint_prove.cpp` in this session's scratchpad (not committed, matching the precedent set by
 OQ-7's Wasmtime smoke test for evidence that informs a decision without shipping as product code).
-`003-Message-and-Content-Model.md` §7 Q3, `007-Capability-and-Trust-Model.md` §10 Q2, and
-`017-Safety-and-Content-Governance.md` §9 Q2 are updated to point here.
+`rfcs/003-Message-and-Content-Model.md` §7 Q3, `rfcs/007-Capability-and-Trust-Model.md` §10 Q2, and
+`rfcs/017-Safety-and-Content-Governance.md` §9 Q2 are updated to point here.

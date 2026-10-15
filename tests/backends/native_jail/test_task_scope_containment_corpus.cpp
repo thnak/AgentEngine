@@ -1,4 +1,4 @@
-// ADR-147 (008-Sandbox-and-Isolation.md §9 G9), design corrected from `docs/planning/honeypot-
+// ADR-147 (rfcs/008-Sandbox-and-Isolation.md §9 G9), design corrected from `docs/planning/honeypot-
 // realism-gate-design-draft.md` by an independent red-team pass (2026-08-31) that found the draft
 // never stated whether a corpus entry's "did it take the bait" outcome is scripted, one-time-
 // recorded, or live-model-driven -- and that its "genuinely different methodology" claim and its

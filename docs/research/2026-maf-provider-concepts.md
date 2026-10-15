@@ -47,7 +47,7 @@ per-turn dynamic tool injection), `Mem0Provider`, `FoundryMemoryProvider`, `Agen
 `load_skill(skillName)`, `read_skill_resource(skillName, resourceName)`,
 `run_skill_script(skillName, scriptName, arguments?)` — with a docstring estimate of "~100 tokens per
 skill" for the advertisement step (`_skills.py:1837-1844`). This is a **compare-and-contrast point**
-against our own design: `009-Plugin-and-Extension-System.md` §8b goes further still — no loader
+against our own design: `rfcs/009-Plugin-and-Extension-System.md` §8b goes further still — no loader
 tools at all, skills mounted read-only on the worktree, agent uses ordinary file reads.
 
 ## 2. Anthropic / OpenAI chat client backends

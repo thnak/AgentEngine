@@ -1,5 +1,5 @@
 // Milestone 2 Phase C, task C5 (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md):
-// 008-Sandbox-and-Isolation.md SS9 G3 -- "a probe guest enumerating filesystem, network, env, and
+// rfcs/008-Sandbox-and-Isolation.md SS9 G3 -- "a probe guest enumerating filesystem, network, env, and
 // processes finds exactly the granted set and nothing else, on each backend." This is the Windows
 // half against the real NativeJailBackend (C2). Filesystem is deliberately NOT retested here --
 // C3's fs-escape-attempt case (test_native_jail_abuse_corpus_windows.cpp) already is this axis's

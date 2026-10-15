@@ -9,8 +9,8 @@
 - **Files**: `include/agentengine/rt/resume_home.hpp` (`Resumer`, `ParkedContinuation`, `ScopedResumer`,
   `detail::ResumerTicket`); `rt/task.hpp` (raw `resume()` keeps a host resumer); `rt/async_mutex.hpp` and
   `rt/channel.hpp` (awaiter destructors, comments); `tests/rt/test_rt_host_resumer.cpp` (new) and
-  `tests/rt/CMakeLists.txt`; `bench/rt_block_on_handoff.cpp` (two new lines); `020-Configuration-and-Hosting.md`
-  §3a and `001-Execution-Model.md` §8 (the host rule); `027-Vocabulary-and-Naming.md` §4 (three names).
+  `tests/rt/CMakeLists.txt`; `bench/rt_block_on_handoff.cpp` (two new lines); `rfcs/020-Configuration-and-Hosting.md`
+  §3a and `rfcs/001-Execution-Model.md` §8 (the host rule); `rfcs/027-Vocabulary-and-Naming.md` §4 (three names).
 
 ---
 

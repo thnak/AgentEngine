@@ -1,4 +1,4 @@
-// Implements 009-Plugin-and-Extension-System.md §8b-8c -- proves core/skill_provider.hpp's
+// Implements rfcs/009-Plugin-and-Extension-System.md §8b-8c -- proves core/skill_provider.hpp's
 // `SkillsProvider`: real mounting through core/worktree.hpp's real Tree/Ref/Mount machinery (never a
 // mock), the flat `/skills/<name>` path, the reject-on-collision anti-shadowing rule, the system-
 // message advertisement shape, and the resolve-once/freeze guarantee (009 §8c).

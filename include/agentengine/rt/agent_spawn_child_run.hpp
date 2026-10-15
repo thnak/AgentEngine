@@ -1,7 +1,7 @@
 #pragma once
 // (Also implements ADR-193: the child applies only its target's named settings; events and whole-run usage go back.)
 // Implements docs/planning/agent-spawn-runtime-design-draft.md item 2 / §4.2 (the nested-agent-run
-// invocation mechanism) for 026-Agent-Facing-Runtime-Surface.md §5's `agent.spawn` --
+// invocation mechanism) for rfcs/026-Agent-Facing-Runtime-Surface.md §5's `agent.spawn` --
 // OpenQuestions.md OQ-14, named the project's own "sharpest case". THIS FILE IS ITEM 2 ONLY:
 // constructing + driving a FRESH child `rt::AgentSession` to completion, synchronously, mid-run,
 // from inside a parent's own tool-call loop -- given an ALREADY-MINTED child `CapabilitySet`

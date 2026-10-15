@@ -1,5 +1,5 @@
 #pragma once
-// Implements 004-Model-Provider-Plane.md §3 -- Milestone 5 Phase E: the Anthropic ChatClient backend
+// Implements rfcs/004-Model-Provider-Plane.md §3 -- Milestone 5 Phase E: the Anthropic ChatClient backend
 // (Messages API, `POST /v1/messages`), 004 §3's "first-class" backend (reasoning parts, prompt
 // caching, tool use) for Claude 5 family (Fable 5, Opus 5, Sonnet 5) and Haiku 4.5. Wire-format field
 // names below were sourced directly from the official Anthropic C# SDK's generated model code

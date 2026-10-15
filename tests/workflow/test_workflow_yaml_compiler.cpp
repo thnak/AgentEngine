@@ -1,4 +1,4 @@
-// Milestone 7 Phase F2 (015-Declarative-Agent-Format.md §3, docs/planning/milestone-7-protocol-
+// Milestone 7 Phase F2 (rfcs/015-Declarative-Agent-Format.md §3, docs/planning/milestone-7-protocol-
 // conformance-breakdown.md). Proves `compile_workflow_document()` (workflow/yaml_compiler.hpp)
 // against 015's own §3 example -- both LITERALLY as written (proving the real, honest finding that
 // it is underspecified relative to what `validate_workflow()` requires) and EXTENDED with the

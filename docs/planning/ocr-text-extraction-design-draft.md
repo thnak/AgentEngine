@@ -5,7 +5,7 @@
 tools, PDFium-backed, `docs/planning/pdf-text-extraction-design-draft.md` Revision 7 after six real
 red-team rounds). Unlike that draft's own final state, this one has NOT been adversarially reviewed —
 say so plainly rather than borrowing Track B's revision count. No code, no vendoring, no ADR yet.
-Continues `009-Plugin-and-Extension-System.md` §7's "OCR" catalog row: "Tesseract-class... Reading
+Continues `rfcs/009-Plugin-and-Extension-System.md` §7's "OCR" catalog row: "Tesseract-class... Reading
 text from scanned/image-only pages no text layer covers — not a `ChatClient` call, but imperfect;
 deterministic-tier alongside text-layer extraction, not attributed like tier 3 below." Also responds
 to `docs/planning/v1-office-user-toolkit.md` §5, which already names Tesseract OCR as a real, unmet

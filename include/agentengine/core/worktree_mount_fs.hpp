@@ -1,6 +1,6 @@
 #pragma once
-// Implements 025-Worktree-and-Virtual-Filesystem.md §5's OS-level path-escape corpus requirement
-// (021-Platform-Support-and-Portability.md §6 G3: "the path-escape corpus (`..`, symlinks,
+// Implements rfcs/025-Worktree-and-Virtual-Filesystem.md §5's OS-level path-escape corpus requirement
+// (rfcs/021-Platform-Support-and-Portability.md §6 G3: "the path-escape corpus (`..`, symlinks,
 // junctions, `\\?\`, ADS, case tricks, unicode normalization) fails to escape a mount on any
 // platform") -- Milestone 3 Phase C2, decisions/ADR-014-worktree-mount-path-canonicalization.md.
 //

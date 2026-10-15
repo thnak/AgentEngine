@@ -1,4 +1,4 @@
-// Implements 014-Workflow-and-Orchestration.md §8 G2 (the promotion gate): "checkpoint/resume: kill
+// Implements rfcs/014-Workflow-and-Orchestration.md §8 G2 (the promotion gate): "checkpoint/resume: kill
 // at each superstep boundary of a 20-node workflow; every resume completes with output identical
 // to the uninterrupted control." ADR-037 task #60 -- SUPERSEDES the old Quark-actor-based
 // test_workflow_checkpoint_g2.cpp, reproven against agentengine::rt::WorkflowSupervisor.

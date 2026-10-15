@@ -1,4 +1,4 @@
-// Proof for 025-Worktree-and-Virtual-Filesystem.md §6's turn-boundary commit ("at each turn
+// Proof for rfcs/025-Worktree-and-Virtual-Filesystem.md §6's turn-boundary commit ("at each turn
 // boundary the current tree is committed and its digest recorded") and §9 G5's rewind gate
 // ("restoring an arbitrary retained turn digest reproduces that turn's tree exactly"), Milestone 3
 // Phase D1/D2 (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md). Both build

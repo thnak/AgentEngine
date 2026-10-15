@@ -1,5 +1,5 @@
 #pragma once
-// Implements 009-Plugin-and-Extension-System.md §8b-8c -- the `ContextProvider` conformer that
+// Implements rfcs/009-Plugin-and-Extension-System.md §8b-8c -- the `ContextProvider` conformer that
 // actually mounts resolved skills (core/worktree.hpp's real Tree/Ref/Mount machinery) read-only,
 // logically at `/skills/<name>`, and contributes their ~100-token "name: description" advertisement
 // to the model's context. Never introduces `load_skill`/`read_skill_resource` tool wrappers (§8b's

@@ -1,4 +1,4 @@
-// Milestone 7 Phase C3 (011-MCP-Conformance.md §3, docs/planning/milestone-7-protocol-conformance-
+// Milestone 7 Phase C3 (rfcs/011-MCP-Conformance.md §3, docs/planning/milestone-7-protocol-conformance-
 // breakdown.md). Proves McpClient (protocol/mcp/client.hpp) against two senders: a REAL McpServer
 // (server.hpp, Phase C2) for the happy-path tools/list + tools/call shape, and a hand-rolled mock
 // sender for the caching/pagination/rug-pull properties that need fine control over what a "peer"

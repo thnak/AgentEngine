@@ -10,8 +10,8 @@ in full, unchanged since commit `51083eb`.
 closes) and gap #5's name-keyed `ToolTable`-construction half, which this ADR also closes as a direct
 consequence. `docs/planning/tool-capability-registry-design-draft.md` (the design this implements,
 unchanged from the draft — this pass found no correction needed, unlike ADR-053's own §2).
-`006-Tool-and-Function-Plane.md` (spec.tools' own normative "references tools by name from the
-registry" line, previously placeholder text with no mechanics). `015-Declarative-Agent-Format.md` §1/§2
+`rfcs/006-Tool-and-Function-Plane.md` (spec.tools' own normative "references tools by name from the
+registry" line, previously placeholder text with no mechanics). `rfcs/015-Declarative-Agent-Format.md` §1/§2
 (the declarative surface this closes name resolution for). `include/agentengine/core/agent_yaml_
 compiler.hpp` (the one real call site wired this pass).
 

@@ -1,4 +1,4 @@
-// Interactive CLI chat driver, built to validate 009-Plugin-and-Extension-System.md §8's skill
+// Interactive CLI chat driver, built to validate rfcs/009-Plugin-and-Extension-System.md §8's skill
 // mechanism live, by hand, against a real remote model: type a greeting, then ask the agent to use a
 // mounted skill, and watch it actually reach for the real tool the skill names AND actually execute
 // code through the real embedded CPython sandbox (src/backends/native_jail/mediated_python_runner.hpp)

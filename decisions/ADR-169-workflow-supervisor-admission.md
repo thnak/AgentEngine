@@ -16,8 +16,8 @@
   `tests/CMakeLists.txt` (additive wiring). **No other production file changed**, and no existing test
   file needed a single edit.
 - **Related specs:** GitHub issue #65 (the defect this closes) ·
-  `007-Capability-and-Trust-Model.md` §2 · `018-Identity-Authorization-and-Secrets.md` §1/§2/§6 ·
-  `014-Workflow-and-Orchestration.md` §4 (the request port whose resume path this gates) ·
+  `rfcs/007-Capability-and-Trust-Model.md` §2 · `rfcs/018-Identity-Authorization-and-Secrets.md` §1/§2/§6 ·
+  `rfcs/014-Workflow-and-Orchestration.md` §4 (the request port whose resume path this gates) ·
   `decisions/ADR-029-suspend-for-human-approval.md` (the check `AgentSession::resolve_interaction()`
   has had since Milestone 5 Phase H2 and this class did not) ·
   `decisions/ADR-061-host-provided-inbound-transport.md` §20.1/§20.4 (the two-mode admission shape,

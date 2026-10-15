@@ -39,7 +39,7 @@ didn't.
 The second major technique for exceeding a single model's fixed capability: coordinate several
 instances/roles instead of scaling one. 2026 research has moved past "does this help" to
 **"under what conditions does it help, and when does it actively hurt"** — directly relevant to
-this project's own `014-Workflow-and-Orchestration.md`.
+this project's own `rfcs/014-Workflow-and-Orchestration.md`.
 
 - **[Capable language models can outgrow the benefits of (multi-agent coordination) — Nature Machine
   Intelligence](https://www.nature.com/articles/s42256-026-01268-y)**, peer-reviewed, read in full

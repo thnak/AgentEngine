@@ -180,7 +180,7 @@ signature or synchronicity** goes stale the moment the conversion lands. The con
 | `web/marketing/api/workflow*.html` (8 pages) | Workflow supervisor moves onto strands; `route_from` blame changes; ADR-160 parallel batches → `when_all` child strands | Medium |
 | `web/marketing/api/trust-sandbox.html` | "D3: per-call capability requirement — parse once, bound set only, fail closed (`ctx.authorize(cap)`)" changes how a capability is checked | Medium |
 | `web/marketing/api/events.html`, `hitl.html`, `durability.html` | New `failure_class::canceled`; canceled runs end `run.canceled`; A2A `TASK_STATE_CANCELED` | Medium |
-| `027-Vocabulary-and-Naming.md` | PR 169's own checklist: "apply the §10 spec changes and 027 vocabulary rows" | **High** |
+| `rfcs/027-Vocabulary-and-Naming.md` | PR 169's own checklist: "apply the §10 spec changes and 027 vocabulary rows" | **High** |
 | `README.md` | Already stale (§3 D6), and says nothing about the async programme | **High** |
 | `docs/guides/*` | Any guide showing a synchronous tool/skill/provider implementation | Medium |
 | This audit's D5/D7 rows | Both are resolved or reshaped by PR 169's completion | Low |

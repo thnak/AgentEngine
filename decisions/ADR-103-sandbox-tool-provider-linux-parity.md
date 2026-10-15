@@ -26,7 +26,7 @@
 - **Related specs:** `decisions/ADR-096-session-sandbox-lifecycle-context-provider-wiring.md`
   (`SandboxToolProvider`'s own design, Windows-only "for this pass") · `decisions/ADR-014-worktree-mount-path-canonicalization.md`
   (Judged; the containment primitive this whole port reuses, both the Windows Phase C2 half and the
-  already-Judged Linux Phase C4 half) · `021-Platform-Support-and-Portability.md` §6 G3 (the
+  already-Judged Linux Phase C4 half) · `rfcs/021-Platform-Support-and-Portability.md` §6 G3 (the
   path-escape corpus every containment claim in this codebase is measured against) ·
   `CONVENTIONS.md` ("isolation parity is a gate, not a goal" — cited repeatedly below, since
   several real findings in this pass were exactly a Windows/Linux shape mismatch, not a security

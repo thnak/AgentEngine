@@ -1,4 +1,4 @@
-// Implements 004-Model-Provider-Plane.md §3/§4 -- ADR-206 (#120 S6): include/agentengine/protocol/
+// Implements rfcs/004-Model-Provider-Plane.md §3/§4 -- ADR-206 (#120 S6): include/agentengine/protocol/
 // provider_chat_wire.hpp, the HTTP plumbing shared by the OpenAI and Anthropic ChatClient backends.
 
 #include "agentengine/protocol/provider_chat_wire.hpp"

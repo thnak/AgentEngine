@@ -1,4 +1,4 @@
-// This file MUST NOT compile (025-Worktree-and-Virtual-Filesystem.md §2, Milestone 3 Phase A3) --
+// This file MUST NOT compile (rfcs/025-Worktree-and-Virtual-Filesystem.md §2, Milestone 3 Phase A3) --
 // see tests/compile_fail/CMakeLists.txt's compile-fail gate. `InMemoryWorktreeObjectStore::put_blob` (core/
 // worktree.hpp) takes ONLY the content -- `put_blob(bytes) -> digest` -- and the digest is always
 // DERIVED from that content by `compute_digest`, never accepted as a caller-supplied parameter.

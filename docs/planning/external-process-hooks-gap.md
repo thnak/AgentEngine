@@ -9,10 +9,10 @@ pass**, matching the standing project-owner posture already applied to the two s
 whether to implement is a decision for whoever picks this up, informed by the design draft's punch
 list.
 
-**RFCs:** `002-Agent-Model-and-Authoring.md` §5 (`Middleware<Ms...>`, the closest existing concept);
-`006-Tool-and-Function-Plane.md` §3 (the ten-step tool pipeline); `008-Sandbox-and-Isolation.md` §3
-(sandbox profiles); `009-Plugin-and-Extension-System.md` §5 (the plugin capability surface, which
-explicitly excludes subprocess); `013-UI-and-Streaming-Surfaces.md` (the `RunEvent` stream).
+**RFCs:** `rfcs/002-Agent-Model-and-Authoring.md` §5 (`Middleware<Ms...>`, the closest existing concept);
+`rfcs/006-Tool-and-Function-Plane.md` §3 (the ten-step tool pipeline); `rfcs/008-Sandbox-and-Isolation.md` §3
+(sandbox profiles); `rfcs/009-Plugin-and-Extension-System.md` §5 (the plugin capability surface, which
+explicitly excludes subprocess); `rfcs/013-UI-and-Streaming-Surfaces.md` (the `RunEvent` stream).
 **Research:** `docs/research/2026-08-14-claude-code-hooks-mechanics.md` — Claude Code's and the OpenAI
 Agents SDK's real "Hooks" mechanics, fetched and cited directly (not from memory, per `CLAUDE.md`'s
 research discipline).

@@ -15,7 +15,7 @@ contrived the deployment *feels* to the model, not a fixed per-capability tax.
 
 ## Verification: the gap is real
 
-Grepped `008-Sandbox-and-Isolation.md` §9 (Promotion gate, G1-G8) and `017-Safety-and-Content-
+Grepped `rfcs/008-Sandbox-and-Isolation.md` §9 (Promotion gate, G1-G8) and `017-Safety-and-Content-
 Governance.md` §8 (Promotion gate, G1-G6) for "honeypot"/"realistic" — no hits. Read both gate
 sections in full. Every existing gate measures **containment of a known-adversarial corpus**: kill
 time (008 G2), no-ambient-authority enumeration (008 G3), injection-effects-prevented (017 G1),

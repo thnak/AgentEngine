@@ -1,6 +1,6 @@
 # ADR-006 — Are depth and budget bounds sufficient to contain `agent.spawn`'s recursion hazard, and how is the bound represented so guest code cannot widen it?
 
-**Resolves (partially):** 026-Agent-Facing-Runtime-Surface.md §9 Q1, the sharpest case named by
+**Resolves (partially):** rfcs/026-Agent-Facing-Runtime-Surface.md §9 Q1, the sharpest case named by
 OQ-14 (OpenQuestions.md). **Scope, deliberately narrow** (small prove, matching this backlog's
 established scale): this ADR proves the depth-counter mechanism only. It does not build the rest of
 `agent.spawn` (026 has no implementation yet — Draft status), does not address the wall-clock/token

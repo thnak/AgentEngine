@@ -1,5 +1,5 @@
 #pragma once
-// Implements 010-Python-Code-Interpreter.md §1a (the `Runner` concept) and §2 (the shell-dispatch
+// Implements rfcs/010-Python-Code-Interpreter.md §1a (the `Runner` concept) and §2 (the shell-dispatch
 // design), per decisions/ADR-001-shellrunner-grammar-and-dispatch.md — Design A (§3): a
 // recursive-descent parser produces a pmr-backed AST, which a tree-walking evaluator (§2.3's
 // shared dispatch step over the fixed builtin table, §2.4) then executes against an injected

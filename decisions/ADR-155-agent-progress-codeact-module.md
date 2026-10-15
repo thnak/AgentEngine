@@ -6,7 +6,7 @@ to end against the REAL `agentengine_python_worker.exe` process — 10 checks (R
 full related native-jail/python-worker/report-progress test suite (7 targets, including ADR-060's own
 `test_agent_session_tool_call_progress.cpp`) shows no regression. See §5/§6.
 
-**Relates to:** `026-Agent-Facing-Runtime-Surface.md` §5 (`agent.progress`'s spec, "Report progress on
+**Relates to:** `rfcs/026-Agent-Facing-Runtime-Surface.md` §5 (`agent.progress`'s spec, "Report progress on
 long work → run event stream", zero capability), GitHub issue #31 (the full three-piece gap this ADR
 closes), `decisions/ADR-060-tool-call-progress-reporting.md` (`EffectContext::report_progress`, the
 already-real, already-tested channel this ADR reaches from CodeAct — §3 of that ADR named this exact

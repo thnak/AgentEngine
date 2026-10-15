@@ -1,5 +1,5 @@
 // Milestone 2 Phase C, task C4 (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md):
-// 008-Sandbox-and-Isolation.md §9 G1 -- "one hostile test corpus runs against every available
+// rfcs/008-Sandbox-and-Isolation.md §9 G1 -- "one hostile test corpus runs against every available
 // backend on every platform in the current target set and produces the same outcome
 // classification for every case." This is the Windows half; tests/backends/native_jail/test_native_jail_parity_linux.cpp
 // is the Linux half, both consuming the SAME table (tests/helpers/abuse_case_corpus.hpp) verbatim.

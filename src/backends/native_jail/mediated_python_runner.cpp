@@ -1,6 +1,6 @@
 // Implements mediated_python_runner.hpp -- see that header's file-top comment for exactly what
 // changed versus the in-process shape this class had before the jailed-Python-worker redesign
-// (008-Sandbox-and-Isolation.md §1b/§3, 010-Python-Code-Interpreter.md §2/§6). This translation unit
+// (rfcs/008-Sandbox-and-Isolation.md §1b/§3, rfcs/010-Python-Code-Interpreter.md §2/§6). This translation unit
 // has NO CPython dependency at all -- every real interpreter concern lives in
 // python_worker_mediation.cpp now, inside the separate worker process this class's `initialize()`
 // spawns via `NativeJailBackend::create_python_worker()`.

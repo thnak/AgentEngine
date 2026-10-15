@@ -697,8 +697,8 @@ export function ApiCodeActReference() {
                 <a href={gh("include/agentengine/trust/agent_library_manifest.hpp")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
                   include/agentengine/trust/agent_library_manifest.hpp
                 </a>
-                <a href={gh("026-Agent-Facing-Runtime-Surface.md")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
-                  026-Agent-Facing-Runtime-Surface.md §5
+                <a href={gh("rfcs/026-Agent-Facing-Runtime-Surface.md")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
+                  rfcs/026-Agent-Facing-Runtime-Surface.md §5
                 </a>
                 <a href={gh("tests/python/test_mediated_python_runner_agent_tools.cpp")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
                   tests/python/test_mediated_python_runner_agent_tools.cpp

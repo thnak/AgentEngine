@@ -1,4 +1,4 @@
-// Implements 004-Model-Provider-Plane.md §6 ("Recording and replay"); ADR-207 (#120 S7).
+// Implements rfcs/004-Model-Provider-Plane.md §6 ("Recording and replay"); ADR-207 (#120 S7).
 // The non-template bodies of include/agentengine/core/chat_recording.hpp, moved verbatim out of the header so they
 // are compiled once here instead of in every file that includes it. The header keeps every declaration and comment
 // and the small helpers; the format and the rules each body implements are documented at its declaration there.

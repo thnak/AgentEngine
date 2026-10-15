@@ -3,9 +3,9 @@
 **Status:** **Judged (2026-09-30, project-owner sign-off).** Design (§3), corrected by one independent
 red-team pass (§4), implemented and proven (§6).
 
-**Relates to:** GitHub issue #81. `006-Tool-and-Function-Plane.md` §1 (tool declaration).
-`019-Durability-and-Long-Running-Agents.md` §3/§6 (`EffectClass`, re-execution on rewind).
-`027-Vocabulary-and-Naming.md` §3. `include/agentengine/core/tool.hpp`,
+**Relates to:** GitHub issue #81. `rfcs/006-Tool-and-Function-Plane.md` §1 (tool declaration).
+`rfcs/019-Durability-and-Long-Running-Agents.md` §3/§6 (`EffectClass`, re-execution on rewind).
+`rfcs/027-Vocabulary-and-Naming.md` §3. `include/agentengine/core/tool.hpp`,
 `include/agentengine/core/tool_descriptor.hpp`. ADR-158 (the policy-tag + compile-fail precedent this
 follows). ADR-176 (`ImageIdentifiedSurface`, which lets a host pin the environment a comparison ran
 in). Research: `docs/research/2026-09-30-mcp-tool-annotations-determinism.md`.

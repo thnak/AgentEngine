@@ -4,8 +4,8 @@
 lint run.
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #9 (the finding this
-ADR closes). `027-Vocabulary-and-Naming.md` §1-2 ("Normative for: every public identifier" — the
-table this ADR corrects). `003-Message-and-Content-Model.md` §6, `004-Model-Provider-Plane.md`
+ADR closes). `rfcs/027-Vocabulary-and-Naming.md` §1-2 ("Normative for: every public identifier" — the
+table this ADR corrects). `rfcs/003-Message-and-Content-Model.md` §6, `rfcs/004-Model-Provider-Plane.md`
 (both already normatively spell it `Usage`). `decisions/ADR-025-naming-lint-namespace-scope-and-027-
 vocabulary-diagram.md` §7 (explicitly deferred gap 9 to its own ADR rather than addressing it inline).
 
@@ -47,7 +47,7 @@ disagrees with the OTHER two normative documents governing the same field.
 
 ## 3. The fix
 
-`027-Vocabulary-and-Naming.md` §2's table row corrected from `UsageDetails` to `Usage`, marked
+`rfcs/027-Vocabulary-and-Naming.md` §2's table row corrected from `UsageDetails` to `Usage`, marked
 **ours** with an explicit "honest divergence" rationale per 027 §1's own required discipline (why
 this project's name differs from MAF's, when the rule says adopt MAF's name by default): the shorter
 name was already normatively established by 003/004 and already shipped as real, tested code — 027's

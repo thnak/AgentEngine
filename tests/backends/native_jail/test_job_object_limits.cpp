@@ -1,5 +1,5 @@
 // Executed evidence for src/backends/native_jail/job_object_limits.{hpp,cpp}, first evidence
-// toward 021-Platform-Support-and-Portability.md Q2 and the Job Object half of
+// toward rfcs/021-Platform-Support-and-Portability.md Q2 and the Job Object half of
 // decisions/ADR-004-appcontainer-native-jail-windows-backend.md §9's "build the Job Object layer
 // next" follow-up. Every claim below has a positive control (008 §9 G2: "a positive control
 // (limits deliberately disabled) demonstrably fails — so the test is not vacuous") — a hostile

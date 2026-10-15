@@ -1,4 +1,4 @@
-// Proof for 025-Worktree-and-Virtual-Filesystem.md §5's mount resolution, Milestone 3 Phase C1
+// Proof for rfcs/025-Worktree-and-Virtual-Filesystem.md §5's mount resolution, Milestone 3 Phase C1
 // (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md) -- `split_mount_path`/
 // `mount_read`/`mount_write` (core/worktree.hpp) proven per 007 §3: a capability grant is checked
 // BEFORE any store access, never after, and a capability scoped to one mount or one path prefix can

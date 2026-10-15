@@ -1,4 +1,4 @@
-// Proof for 010-Python-Code-Interpreter.md §3a's `ExecState` ("one instance per session, held by
+// Proof for rfcs/010-Python-Code-Interpreter.md §3a's `ExecState` ("one instance per session, held by
 // the sandbox and passed by reference into whichever Runner executes"), Milestone 3 Phase E1
 // (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md). `PythonRunner`/
 // `ShellRunner` do not exist yet (Phase E2/E3) -- this proves the part of §3a that does not need

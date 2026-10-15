@@ -1,5 +1,5 @@
 // Proof for decisions/ADR-153-agent-memory-codeact-bridging.md -- the two pieces GitHub issue #31's
-// own comment (and 026-Agent-Facing-Runtime-Surface.md §5's `agent.memory` row) named as unreachable
+// own comment (and rfcs/026-Agent-Facing-Runtime-Surface.md §5's `agent.memory` row) named as unreachable
 // from inside a CodeAct `execute_code` script even though the underlying capability is real:
 //
 //   1. `MemoryProvider::make_recall_tool_descriptor()` (now public) round-trips through the SAME

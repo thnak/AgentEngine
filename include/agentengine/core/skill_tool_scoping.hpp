@@ -1,5 +1,5 @@
 #pragma once
-// Implements 009-Plugin-and-Extension-System.md §8c's per-skill tool-scoping mechanism: a skill's
+// Implements rfcs/009-Plugin-and-Extension-System.md §8c's per-skill tool-scoping mechanism: a skill's
 // `allowed-tools` frontmatter field (parsed into `SkillsProvider::allowed_tool_names()`,
 // skill_provider.hpp) restricts which tools are offered/invocable this run to the union declared by
 // whichever skills are currently mounted, PLUS a caller-chosen `always_on` base set. This is a

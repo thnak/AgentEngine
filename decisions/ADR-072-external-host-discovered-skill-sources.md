@@ -4,7 +4,7 @@
 **Status:** Proposed (design → red-team → prove phases complete; awaiting project-owner "Judged"
 sign-off, matching ADR-070/071's own flow).
 
-**Relates to:** `009-Plugin-and-Extension-System.md` §8 (owns the `SkillSource`/`SkillsProvider`
+**Relates to:** `rfcs/009-Plugin-and-Extension-System.md` §8 (owns the `SkillSource`/`SkillsProvider`
 machinery this ADR reuses unchanged, §8g cross-references this ADR), `decisions/ADR-024-skill-
 scoped-tool-and-mount-wiring.md` (on-demand mounting, unaffected), `decisions/ADR-066-context-
 provider-attribution-provenance.md` (the provenance mechanism this ADR's residual falls short of,
@@ -205,7 +205,7 @@ No FATAL finding. No design change resulted from this pass.
 
 ## 7. The decision
 
-**Design B is adopted and implemented.** It binds `009-Plugin-and-Extension-System.md` §8g (new,
+**Design B is adopted and implemented.** It binds `rfcs/009-Plugin-and-Extension-System.md` §8g (new,
 cross-references this ADR) — no other spec requires amendment, since `SkillsProvider`/`DiskSkillSource`
 themselves are unchanged. Full-tree evidence: `test_external_skill_discovery` 20/20; full `ctest`
 228/228 (100%), zero regressions.

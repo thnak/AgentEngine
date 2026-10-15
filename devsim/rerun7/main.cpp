@@ -9,7 +9,7 @@
 // components/ApiFirstAppReference.tsx}) alone; see REPORT.md for every place that failed and had to
 // be reverse-engineered from include/.
 //
-// Implements 014-Workflow-and-Orchestration.md §2 (termination bound) / §3 (Concurrent, Router).
+// Implements rfcs/014-Workflow-and-Orchestration.md §2 (termination bound) / §3 (Concurrent, Router).
 
 #include <atomic>
 #include <cctype>

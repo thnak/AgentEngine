@@ -1,7 +1,7 @@
 # `src/backends`
 
 First-party `agentengine::SandboxBackend` implementations (`include/agentengine/sandbox/sandbox.hpp`,
-008-Sandbox-and-Isolation.md §2-3). Each subdirectory implements one named profile and owns its own
+rfcs/008-Sandbox-and-Isolation.md §2-3). Each subdirectory implements one named profile and owns its own
 `design -> red-team -> prove -> judge` cycle per CLAUDE.md — see each directory's own `README.md`
 for its current scope and status:
 

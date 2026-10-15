@@ -6,8 +6,8 @@ session). Design → red-team (twice) → prove, all complete. **Resolves `OpenQ
 
 **Relates to:** `decisions/ADR-070-host-configurable-responsibility-boundary.md` (its own §7 named
 the direction this ADR would resolve toward, as a cross-reference, not a resolution — see that ADR's
-own text and OQ-19's note); `007-Capability-and-Trust-Model.md` (I2/I3, `CapabilitySet`);
-`014-Workflow-and-Orchestration.md` §1/§3/§7 (`executor_kind::agent`, orchestration patterns, I6).
+own text and OQ-19's note); `rfcs/007-Capability-and-Trust-Model.md` (I2/I3, `CapabilitySet`);
+`rfcs/014-Workflow-and-Orchestration.md` §1/§3/§7 (`executor_kind::agent`, orchestration patterns, I6).
 Design record, kept as the full uncompressed history including the FIRST draft's two FATAL findings:
 `docs/planning/agent-as-workflow-executor-design-draft.md`. Gap analysis and MAF precedent research:
 `docs/planning/agent-as-workflow-executor-gap.md`, `docs/research/2026-08-13-maf-agent-as-workflow-executor.md`.

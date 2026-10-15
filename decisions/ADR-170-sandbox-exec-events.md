@@ -17,9 +17,9 @@
   `include/agentengine/protocol/agui/projection.hpp` (modified — the new fields reach the wire),
   `tests/sandbox/test_sandbox_exec_events.cpp` (new), `tests/CMakeLists.txt` (additive wiring).
   **No existing test file changed.**
-- **Related specs:** GitHub issue #64 (the defect this closes) · `013-UI-and-Streaming-Surfaces.md`
+- **Related specs:** GitHub issue #64 (the defect this closes) · `rfcs/013-UI-and-Streaming-Surfaces.md`
   §1 (the event vocabulary, amended by this ADR to name the producer), §2.1 (the AG-UI
-  `ActivitySnapshot` mapping, already implemented) · `008-Sandbox-and-Isolation.md` §2 (the
+  `ActivitySnapshot` mapping, already implemented) · `rfcs/008-Sandbox-and-Isolation.md` §2 (the
   `SandboxBackend` concept whose `create`/`exec` already take an `EffectContext`), §6 (`per_session`
   sandbox lifetime — why one producer honestly has no `create` stage), §8 (post-hoc observability,
   the thing that already existed and is not a live signal) ·

@@ -1,4 +1,4 @@
-// Milestone 7 Phase F1 (015-Declarative-Agent-Format.md §2/§3, docs/planning/milestone-7-protocol-
+// Milestone 7 Phase F1 (rfcs/015-Declarative-Agent-Format.md §2/§3, docs/planning/milestone-7-protocol-
 // conformance-breakdown.md). Proves the hand-rolled YAML-subset parser (core/yaml_value.hpp) --
 // primarily against the RFC's OWN §2 Agent / §3 Workflow example documents, verbatim, since that is
 // the concrete bar this subset must clear, plus targeted unit checks for each supported construct

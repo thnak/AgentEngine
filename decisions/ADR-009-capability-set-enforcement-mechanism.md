@@ -1,6 +1,6 @@
 # ADR-009 — How should in-process `Capability`/`CapabilitySet` be represented and enforced so that empty-by-default, attenuation-only, and per-invocation revocation are structural properties, not conventions?
 
-**Resolves:** 007-Capability-and-Trust-Model.md §3's in-process enforcement half (the *types* —
+**Resolves:** rfcs/007-Capability-and-Trust-Model.md §3's in-process enforcement half (the *types* —
 `Capability`, `Principal`, `EffectContext`, the taint mechanism — landed in Milestone 1; this ADR is
 what makes `Capability`/`CapabilitySet` do something). Scoped per
 [docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md](../docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md)'s

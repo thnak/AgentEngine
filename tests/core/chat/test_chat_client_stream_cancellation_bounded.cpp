@@ -1,5 +1,5 @@
 // Milestone 5 Phase J3 (docs/planning/milestone-5-providers-identity-secrets-breakdown.md, roadmap
-// exit criterion; 004-Model-Provider-Plane.md §7 G2): "cancellation mid-stream releases the
+// exit criterion; rfcs/004-Model-Provider-Plane.md §7 G2): "cancellation mid-stream releases the
 // connection within a bounded time and leaves no orphaned socket or partial state (checked under
 // ASan + a leak gate)."
 //

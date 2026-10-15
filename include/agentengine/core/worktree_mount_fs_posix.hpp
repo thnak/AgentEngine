@@ -1,6 +1,6 @@
 #pragma once
-// Implements 025-Worktree-and-Virtual-Filesystem.md §5's OS-level path-escape corpus requirement
-// (021-Platform-Support-and-Portability.md §6 G3), Linux half -- Milestone 3 Phase C4, the parity
+// Implements rfcs/025-Worktree-and-Virtual-Filesystem.md §5's OS-level path-escape corpus requirement
+// (rfcs/021-Platform-Support-and-Portability.md §6 G3), Linux half -- Milestone 3 Phase C4, the parity
 // pass over `worktree_mount_fs.hpp`'s Windows-only primitive (Phase C2,
 // decisions/ADR-014-worktree-mount-path-canonicalization.md, Judged). Ordinary task, not its own
 // ADR: this carries forward ADR-014's already-Judged design finding (open, then verify from the

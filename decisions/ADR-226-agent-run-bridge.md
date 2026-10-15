@@ -5,8 +5,8 @@ findings, 6 fixed in the design or code, 5 disclosed residuals), implemented and
 the project owner's.
 
 **Relates to:** GitHub issue #46 (and issue #32's "Layer A", which it was split from).
-`002-Agent-Model-and-Authoring.md` §2.1 (amended by this ADR), §3, §6, §9 Q2.
-`015-Declarative-Agent-Format.md` §1 (I6). ADR-059 (the ceiling is attenuated, never granted), ADR-074
+`rfcs/002-Agent-Model-and-Authoring.md` §2.1 (amended by this ADR), §3, §6, §9 Q2.
+`rfcs/015-Declarative-Agent-Format.md` §1 (I6). ADR-059 (the ceiling is attenuated, never granted), ADR-074
 and the quickstart builder's findings 9/11 (a move-only, fail-closed context slot), ADR-058 (output
 schema enforcement), ADR-070 (`PolicyDecider`), ADR-037 (no actor engine). New:
 `include/agentengine/core/agent_session_bridge.hpp`, `tests/core/agent/test_agent_session_bridge.cpp`.

@@ -1,5 +1,5 @@
 #pragma once
-// Implements 015-Declarative-Agent-Format.md §3's Workflow document, compiling it to
+// Implements rfcs/015-Declarative-Agent-Format.md §3's Workflow document, compiling it to
 // `workflow/graph.hpp`'s own layer-1 `Workflow` -- the SAME struct `WorkflowBuilder` (the C++
 // authoring form) emits, checked by the SAME `validate_workflow()`, exactly the "declarative loader
 // calls the same validator rather than reimplementing it" design `graph.hpp`'s own file-top comment

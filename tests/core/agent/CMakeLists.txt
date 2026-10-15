@@ -7,7 +7,7 @@ target_link_libraries(smoke_vocabulary PRIVATE agentengine::core agentengine_war
 
 add_test(NAME smoke_vocabulary COMMAND smoke_vocabulary)
 
-# ---- Reference-agent prompt assembly (M3 Phase H1, 026-Agent-Facing-Runtime-Surface.md §7/§8) --
+# ---- Reference-agent prompt assembly (M3 Phase H1, rfcs/026-Agent-Facing-Runtime-Surface.md §7/§8) --
 # Header-only (core/reference_agent_prompt.hpp, core/token_estimate.hpp), core-tier, model-independent.
 agentengine_add_test(test_reference_agent_prompt LIBS agentengine::core agentengine_warnings)
 

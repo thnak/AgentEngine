@@ -1,5 +1,5 @@
 #pragma once
-// Implements 005-Sessions-State-and-Memory.md §3 — deterministic, budgeted assembly across an
+// Implements rfcs/005-Sessions-State-and-Memory.md §3 — deterministic, budgeted assembly across an
 // ordered list of `ContextProvider` contributors. Milestone 4 Phase B3
 // (docs/planning/milestone-4-sessions-durability-memory-breakdown.md): proven here as its own
 // standalone, generically-tested seam. `AgentSession` itself still wires exactly one contributor

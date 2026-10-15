@@ -1,5 +1,5 @@
 #pragma once
-// Implements 009-Plugin-and-Extension-System.md §8b's other missing half: `SkillsProvider::mounted()`
+// Implements rfcs/009-Plugin-and-Extension-System.md §8b's other missing half: `SkillsProvider::mounted()`
 // (core/skill_provider.hpp) resolves and mounts skills into its own PRIVATE, in-memory object/ref
 // store -- nothing outside that provider instance ever sees it. `materialize_mount`
 // (worktree_mount_sync.hpp) is the real, already-tested primitive for turning a worktree `Mount` into

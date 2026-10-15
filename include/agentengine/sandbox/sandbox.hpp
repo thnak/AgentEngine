@@ -1,5 +1,5 @@
 #pragma once
-// Implements 008-Sandbox-and-Isolation.md §2-3 — one isolation contract, named profiles. This
+// Implements rfcs/008-Sandbox-and-Isolation.md §2-3 — one isolation contract, named profiles. This
 // header fixes the shape only; every backend (wasm/, native_jail/, remote/ under src/backends/)
 // implements `SandboxBackend` and is where the actual isolation logic — and its own design ->
 // red-team -> prove -> judge cycle — lives.

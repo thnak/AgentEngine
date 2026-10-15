@@ -27,7 +27,7 @@ regressions.
 
 **Relates to:** `decisions/ADR-063-retrieval-augmented-context-provider-shape.md` §7 (the exact gap
 this ADR resolves — `VectorRagContextProvider::recall(query)`'s `invoke` fails closed today because
-of this unresolved question), `006-Tool-and-Function-Plane.md` §6b (`Backgroundable`/`StandingEffect`),
+of this unresolved question), `rfcs/006-Tool-and-Function-Plane.md` §6b (`Backgroundable`/`StandingEffect`),
 `decisions/ADR-037-remove-quark-as-core-runtime.md` (introduced `agentengine::rt::task<T>` and
 `agentengine::rt::ThreadPool`, the two primitives this ADR builds on), `include/agentengine/core/
 tool_pipeline.hpp` (M2 Phase B's own documented decision: "a single NATIVE tool call, synchronous —

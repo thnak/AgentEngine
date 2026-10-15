@@ -3,8 +3,8 @@
 **Question:** when a user (or a tool result, or a retrieved document) feeds an agent sensitive or
 dangerous content — PII, credentials, secrets — what do other frameworks/platforms actually ship to
 detect, redact, block, or contain it, and where in the pipeline does the control sit? Researched to
-compare against this project's own design in [017-Safety-and-Content-Governance.md](../../017-Safety-and-Content-Governance.md)
-§4-§5 and [018-Identity-Authorization-and-Secrets.md](../../018-Identity-Authorization-and-Secrets.md) §4.
+compare against this project's own design in [rfcs/017-Safety-and-Content-Governance.md](../../rfcs/017-Safety-and-Content-Governance.md)
+§4-§5 and [rfcs/018-Identity-Authorization-and-Secrets.md](../../rfcs/018-Identity-Authorization-and-Secrets.md) §4.
 
 Research performed 2026-08-07 via web search against primary-source docs; every claim below carries
 a source URL and the date found on that source (ms.date, blog date, or "2026" where the page is
@@ -172,8 +172,8 @@ undated but current as fetched).
 
 ## Relevance to this project
 
-This project's existing design ([017 §4-§5](../../017-Safety-and-Content-Governance.md),
-[018 §4](../../018-Identity-Authorization-and-Secrets.md)) already lands on the same shape the
+This project's existing design ([017 §4-§5](../../rfcs/017-Safety-and-Content-Governance.md),
+[018 §4](../../rfcs/018-Identity-Authorization-and-Secrets.md)) already lands on the same shape the
 survey converges on, and in two places goes further than anything found:
 
 - **Filter points include `tool_args`/`tool_result`**, closing the blind spot both Bedrock and

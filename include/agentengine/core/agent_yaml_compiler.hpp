@@ -1,5 +1,5 @@
 #pragma once
-// Implements 015-Declarative-Agent-Format.md §2's Agent document, compiling it to
+// Implements rfcs/015-Declarative-Agent-Format.md §2's Agent document, compiling it to
 // `core/agent_registry.hpp`'s own `AgentMetadata` -- the SAME compiled-metadata type
 // `register_agent<A>()` (the C++ authoring form) produces, the actual I6 property this compiler
 // exists to serve. Milestone 7 Phase F3 (docs/planning/milestone-7-protocol-conformance-breakdown.md).

@@ -22,8 +22,8 @@ edit; check the design doc's own section list rather than trusting a stale line 
 superseded predecessor `docs/planning/mandatory-session-worktree-design.md` (4 revisions, 4
 red-team rounds, kept as-is per that document's own header — Design A below).
 
-**Relates to:** `007-Capability-and-Trust-Model.md` (`CapabilitySet`, I2/I3 — the model Design A
-retrofits onto and Design B replaces), `008-Sandbox-and-Isolation.md` (the mandatory-sandbox
+**Relates to:** `rfcs/007-Capability-and-Trust-Model.md` (`CapabilitySet`, I2/I3 — the model Design A
+retrofits onto and Design B replaces), `rfcs/008-Sandbox-and-Isolation.md` (the mandatory-sandbox
 requirement itself; §2a's `SandboxBackend` concept), `decisions/ADR-012-sandbox-profile-template-
 parameter-kind.md`, `decisions/ADR-080-sandbox-backend-registry.md`, `decisions/ADR-087-sandbox-
 spec-capability-enforcement.md`, `decisions/ADR-096-session-sandbox-lifecycle-context-provider-
@@ -36,7 +36,7 @@ scope" and §8's residual.** `decisions/ADR-071-native-unsandboxed-process-execu
 
 ## 1. The question
 
-**Stated so it has a wrong answer:** `008-Sandbox-and-Isolation.md`'s mandatory requirement — every
+**Stated so it has a wrong answer:** `rfcs/008-Sandbox-and-Isolation.md`'s mandatory requirement — every
 session gets exactly one sandbox and one rewindable checkpoint history, no exceptions — needs an
 identity/authorization/durability model underneath it. Does that model get built by **retrofitting**
 the existing, already-Judged-track `CapabilitySet`/`AppendLogStore`/`WorktreeObjectStore`/
@@ -241,7 +241,7 @@ the full suite (28 positive + 5 negative-must-fail-to-compile probes).
 ## 7. The decision
 
 **Design B is accepted as the identity/authorization/checkpoint-durability model** for the mandatory
-per-session sandbox + checkpoint-ledger requirement (`008-Sandbox-and-Isolation.md`). This ADR
+per-session sandbox + checkpoint-ledger requirement (`rfcs/008-Sandbox-and-Isolation.md`). This ADR
 **authorizes the design**, not an implementation merge — no file under `include/agentengine/` or
 `src/` changes as a result of this ADR by itself.
 

@@ -1,5 +1,5 @@
 #pragma once
-// Implements 008-Sandbox-and-Isolation.md §10 Q3 and decisions/ADR-011-first-party-egress-proxy.md:
+// Implements rfcs/008-Sandbox-and-Isolation.md §10 Q3 and decisions/ADR-011-first-party-egress-proxy.md:
 // the host-mediated egress mechanism `NetOut` (007 §3) is enforced through. See that ADR for the
 // design rationale (why resolve-once-connect-to-verified-literal, why no redirect-following, why
 // plain HTTP only this milestone) and docs/research/2026-08-05-ssrf-dns-rebinding-defense.md for the

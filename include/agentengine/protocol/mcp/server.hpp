@@ -1,5 +1,5 @@
 #pragma once
-// Implements 011-MCP-Conformance.md §4 -- exposing AgentEngine's own ToolTable as an MCP server, over
+// Implements rfcs/011-MCP-Conformance.md §4 -- exposing AgentEngine's own ToolTable as an MCP server, over
 // the JSON-RPC 2.0 envelope (protocol/mcp/json_rpc.hpp). Milestone 7 Phase C2
 // (docs/planning/milestone-7-protocol-conformance-breakdown.md).
 //

@@ -1,5 +1,5 @@
 // Proof for ADR-055 (2026-08-10-full-codebase-adr-gap-audit.md gap #14): `conflicts_ref_name()`/
-// `materialize_merge_conflicts()` (core/worktree.hpp), closing 025-Worktree-and-Virtual-Filesystem.md
+// `materialize_merge_conflicts()` (core/worktree.hpp), closing rfcs/025-Worktree-and-Virtual-Filesystem.md
 // §4's "the merge fails and is surfaced, with both versions retained at /conflicts/<path>.<agent>"
 // requirement. Modeled on test_worktree_merge.cpp's own fixture shape (blob_of/tree_of helpers, the
 // same InMemoryWorktreeObjectStore/InMemoryAppendLogStore pair) so the two can be compared side by

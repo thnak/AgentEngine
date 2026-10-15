@@ -1,5 +1,5 @@
 #pragma once
-// Implements 009-Plugin-and-Extension-System.md §8 -- "where does a skill come from," the loading/
+// Implements rfcs/009-Plugin-and-Extension-System.md §8 -- "where does a skill come from," the loading/
 // sourcing abstraction the user asked for MAF-parity on ("load from disk or inline skill, with skill
 // provider support"). MAF's own `AgentSkillsProvider`/`SkillsProvider` (docs/research/2026-maf-
 // provider-concepts.md §1) is the vocabulary precedent for the CONCEPT of "a pluggable skill origin";

@@ -1,5 +1,5 @@
 #pragma once
-// Implements 008-Sandbox-and-Isolation.md §2 (ResourceLimits enforcement) via Linux cgroups v2 --
+// Implements rfcs/008-Sandbox-and-Isolation.md §2 (ResourceLimits enforcement) via Linux cgroups v2 --
 // the Linux half of Milestone 2 Phase C task C2 (docs/planning/milestone-2-tools-capabilities-
 // sandbox-breakdown.md), the counterpart to job_object_limits.hpp on Windows.
 //

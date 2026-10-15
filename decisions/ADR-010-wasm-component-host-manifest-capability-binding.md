@@ -6,8 +6,8 @@
 - **Date:** 2026-08-05 (design, red-team, revision, prove, judge — all same session).
 - **Depends on:** `decisions/ADR-009-capability-set-enforcement-mechanism.md` (the `CapabilitySet`/
   `BoundCapability` mechanism this design binds to, not reinvents); `009-Plugin-and-Extension-
-  System.md` §2–§6, §10 G1/G2; `007-Capability-and-Trust-Model.md` §3 (`Capability`, real code);
-  `008-Sandbox-and-Isolation.md` §2 (`SandboxBackend` contract), §6 (lifetime/pooling); `wit/ae-
+  System.md` §2–§6, §10 G1/G2; `rfcs/007-Capability-and-Trust-Model.md` §3 (`Capability`, real code);
+  `rfcs/008-Sandbox-and-Isolation.md` §2 (`SandboxBackend` contract), §6 (lifetime/pooling); `wit/ae-
   tool.wit` (D2, revised by this ADR — see §6); `OpenQuestions.md` OQ-7 ("not attempted: actually
   instantiating a real `.wasm` component... through the `wasmtime_component_*` APIs" — this ADR is
   the task that first does that); `docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md`

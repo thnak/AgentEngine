@@ -8,10 +8,10 @@
   `include/agentengine/protocol/anthropic/chat_client.hpp` and
   `include/agentengine/protocol/openai/chat_client.hpp` (both serializers wired),
   `include/agentengine/core/history_provider.hpp` (the summary's own stamping corrected),
-  `003-Message-and-Content-Model.md` §2 (amended), `tests/core/chat/test_system_channel_taint_fence.cpp` (new),
+  `rfcs/003-Message-and-Content-Model.md` §2 (amended), `tests/core/chat/test_system_channel_taint_fence.cpp` (new),
   `tests/core/context/test_history_provider_summarize.cpp` (B4-R6 corrected), `tests/CMakeLists.txt` (additive).
-- **Related specs:** GitHub issue #61 (the defect this closes) · `003-Message-and-Content-Model.md` §2
-  (the taint mechanism, amended here) · `007-Capability-and-Trust-Model.md` §1 (model output is
+- **Related specs:** GitHub issue #61 (the defect this closes) · `rfcs/003-Message-and-Content-Model.md` §2
+  (the taint mechanism, amended here) · `rfcs/007-Capability-and-Trust-Model.md` §1 (model output is
   assumed hostile) · `decisions/ADR-042-context-instructions-taint-channel.md` §5 (which named this
   exact residual and left it open) · `decisions/ADR-046-memory-confidence-labels-and-system-message-separator.md`
   (the marker + neutralization technique this generalizes) ·

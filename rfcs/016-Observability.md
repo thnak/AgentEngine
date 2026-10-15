@@ -1,6 +1,6 @@
 # 016 — Observability
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 001, 007, 013 · **Gate:** §7 · **Research:** [2026 landscape §4](docs/research/2026-standards-landscape.md)
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 001, 007, 013 · **Gate:** §7 · **Research:** [2026 landscape §4](../docs/research/2026-standards-landscape.md)
 
 ## Goal
 

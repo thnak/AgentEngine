@@ -84,7 +84,7 @@ public:
     // random id, so the same secret appearing via two different ContextProviders (e.g. live
     // history AND a memory recall of the same leaked value) collapses to ONE SecretRef without
     // either provider needing to know about the other. Mirrors this project's own content-
-    // addressing precedent (025-Worktree-and-Virtual-Filesystem.md), applied to secrets instead of
+    // addressing precedent (rfcs/025-Worktree-and-Virtual-Filesystem.md), applied to secrets instead of
     // files.
     [[nodiscard]] SecretRef quarantine(std::string_view detected_value, EffectContext& ctx);
 };
@@ -129,7 +129,7 @@ which is real, merged, and does not depend on PR18 landing.) This is the "loop b
 the agent notices something suspicious" case, and it needs **no new turn-replay mechanism**: the
 model calls this tool mid-round, gets back the redacted replacement text, and continues the SAME
 round with clean data — an ordinary step in `AgentSession::run_rounds()`'s already-existing
-multi-round tool-call loop. `005-Sessions-State-and-Memory.md` §1 already names redaction as a
+multi-round tool-call loop. `rfcs/005-Sessions-State-and-Memory.md` §1 already names redaction as a
 legal, audited history-rewrite category ("compaction, redaction, fork — never an incidental
 mutation"); this is the first real consumer of that category triggered by the agent itself rather
 than an operator/filter.

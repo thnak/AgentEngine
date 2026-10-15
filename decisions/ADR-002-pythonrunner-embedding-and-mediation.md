@@ -9,10 +9,10 @@
   jail (layer 3), not the interpreter, is the real boundary. A new cross-cutting question is opened
   in `OpenQuestions.md` for the two ways this could be closed (§10.2); neither is decided here.
 - **Date:** 2026-07-31 (design/red-team); prove + judge 2026-08-01
-- **Depends on:** 008-Sandbox-and-Isolation.md §1b (the two-layer mechanism this ADR makes concrete),
-  010-Python-Code-Interpreter.md §1a (`Runner`), §3a (`ExecState`), §5 (package policy), §9 G7 (the
-  promotion gate this design must eventually pass), 007-Capability-and-Trust-Model.md
-  (`CapabilitySet`), 025-Worktree-and-Virtual-Filesystem.md §5 (mount canonicalization rules), 026 §3
+- **Depends on:** rfcs/008-Sandbox-and-Isolation.md §1b (the two-layer mechanism this ADR makes concrete),
+  rfcs/010-Python-Code-Interpreter.md §1a (`Runner`), §3a (`ExecState`), §5 (package policy), §9 G7 (the
+  promotion gate this design must eventually pass), rfcs/007-Capability-and-Trust-Model.md
+  (`CapabilitySet`), rfcs/025-Worktree-and-Virtual-Filesystem.md §5 (mount canonicalization rules), 026 §3
   (the exact exception shapes guest code must see)
 - **Concerns:** `src/backends/native_jail/python_runner.hpp` (was read-only for the design/red-team
   phases; the prove phase replaced the stub with a real implementation backed by the new

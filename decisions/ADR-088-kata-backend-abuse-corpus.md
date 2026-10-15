@@ -8,7 +8,7 @@ Status: Proposed (design → independent red-team → fix → implement → loca
 
 `decisions/ADR-087-sandbox-spec-capability-enforcement.md` closed the `SandboxSpec::capabilities`
 gap for `KataBackend`. `kata_backend.hpp`'s own header comment still named, honestly, a real
-outstanding gap: no `008-Sandbox-and-Isolation.md` §7/§9 abuse-corpus test exists for this backend
+outstanding gap: no `rfcs/008-Sandbox-and-Isolation.md` §7/§9 abuse-corpus test exists for this backend
 at all, unlike `LinuxNativeJailBackend`/`NativeJailBackend`, which both have one
 (`test_native_jail_abuse_corpus_{linux,windows}.cpp`). This ADR is that evidence — and the story of
 a design that was investigated, red-teamed, and correctly rejected before it could ship as false

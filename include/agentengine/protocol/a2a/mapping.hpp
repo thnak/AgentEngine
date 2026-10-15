@@ -1,5 +1,5 @@
 #pragma once
-// Implements 012-A2A-Conformance.md §1's "Message → Part[] ... is the content model of 003. The
+// Implements rfcs/012-A2A-Conformance.md §1's "Message → Part[] ... is the content model of 003. The
 // mapping layer is thin by construction" -- the `agentengine::Message`/`ContentItem` (003, internal)
 // <-> `agentengine::a2a::Message`/`Part` (012, wire) projection. Milestone 7 Phase D3
 // (docs/planning/milestone-7-protocol-conformance-breakdown.md).

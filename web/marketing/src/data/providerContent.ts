@@ -149,8 +149,8 @@ export const providerEntries: Record<Lang, ApiEntry[]> = {
       title: "The parts of 004 this tree does not implement",
       body:
         "Two of 004 §3's four backend classes have no code at all: a remote A2A agent used where a model would be, and a ChatClient shipped as a WASM plugin through the ae:provider world. The Responses API half of the OpenAI row is likewise unbuilt — only Chat Completions exists. §2's degradation rule is enforced but not recorded, because no trace sink exists yet. §4's stable idempotency key is generated and carried, but no backend turns it into a request header, and the breaker key is per-backend-position, not per {tenant, provider, model, SecretRef}. §5's per-run TokenBudget<N> is real; the per-tenant and per-principal ceilings, the cost metric and the configuration-driven pricing tables are not, and Usage::cost_estimate is round-tripped by the recording codec but never populated by any backend. §6's privacy modes for recordings do not exist. §7's G4 performance budget has no bench.",
-      cite: "004-Model-Provider-Plane.md",
-      href: gh("004-Model-Provider-Plane.md"),
+      cite: "rfcs/004-Model-Provider-Plane.md",
+      href: gh("rfcs/004-Model-Provider-Plane.md"),
     },
   ],
   vi: [
@@ -251,8 +251,8 @@ export const providerEntries: Record<Lang, ApiEntry[]> = {
       title: "Những phần của 004 mà cây mã này không cài đặt",
       body:
         "Hai trong bốn lớp backend của 004 §3 hoàn toàn chưa có mã: một agent A2A ở xa được dùng thay chỗ của một model, và một ChatClient phát hành dưới dạng plugin WASM qua world ae:provider. Nửa Responses API của dòng OpenAI cũng chưa được xây — chỉ có Chat Completions. Quy tắc suy giảm ở §2 được thực thi nhưng không được ghi lại, vì chưa có trace sink nào tồn tại. Khóa idempotency ổn định ở §4 được sinh ra và mang theo, nhưng không backend nào biến nó thành một header của request, và khóa của circuit breaker là theo vị trí backend, không phải theo {tenant, provider, model, SecretRef}. TokenBudget<N> theo từng run ở §5 là thật; các trần theo tenant và theo principal, chỉ số chi phí và các bảng giá điều khiển bằng cấu hình thì chưa, còn Usage::cost_estimate được bộ mã hóa bản ghi chuyển qua chuyển lại nhưng không backend nào từng điền vào. Các chế độ riêng tư cho bản ghi ở §6 không tồn tại. Ngân sách hiệu năng G4 ở §7 chưa có bench nào.",
-      cite: "004-Model-Provider-Plane.md",
-      href: gh("004-Model-Provider-Plane.md"),
+      cite: "rfcs/004-Model-Provider-Plane.md",
+      href: gh("rfcs/004-Model-Provider-Plane.md"),
     },
   ],
 };
@@ -608,7 +608,7 @@ export const adrRows: Record<Lang, AdrRow[]> = {
     { id: "ADR-035", title: "Every ChatClient conformer becomes genuinely streaming-capable, then chat() stops being required", governs: "chat() leaving the ChatClient concept, LegacyChatClient existing at all, and the text_delta-index hardening in the Anthropic accumulator.", file: "decisions/ADR-035-chatclient-streaming-completeness.md" },
     { id: "ADR-036", title: "A coroutine-based model-call gateway replaces chat_stream() wrapper-parity", governs: "ModelCallGateway and MiddlewareModelCallGateway — and the deletion of FailoverChatClient, ResilientChatClient and MiddlewareChatClient. Giving those three chat_stream() parity had a confirmed use-after-free hazard.", file: "decisions/ADR-036-model-call-gateway.md" },
     { id: "ADR-048", title: "Outbound media capability gate", governs: "validate_outbound_media_capabilities — refusing rather than silently dropping Media, including Media nested inside a ToolResult's own content.", file: "decisions/ADR-048-outbound-media-capability-gate.md" },
-    { id: "— none —", title: "Secret resolution for providers", governs: "There is no ADR. The governing documents are 018 §4 (point-of-use resolution), 020 §4 (the SecretSource seam) and 004 §1 — with ADR-009 supplying the capability mechanism the cap::Secret gate relies on.", file: "018-Identity-Authorization-and-Secrets.md" },
+    { id: "— none —", title: "Secret resolution for providers", governs: "There is no ADR. The governing documents are 018 §4 (point-of-use resolution), 020 §4 (the SecretSource seam) and 004 §1 — with ADR-009 supplying the capability mechanism the cap::Secret gate relies on.", file: "rfcs/018-Identity-Authorization-and-Secrets.md" },
     { id: "— none —", title: "Recording and replay", governs: "Also no ADR. 004 §6 plus Milestone 5 Phase G1 govern the shared JSON envelope; ADR-035 and ADR-037 only touched it consequentially, to keep it working across the streaming and runtime migrations.", file: "include/agentengine/core/chat_recording.hpp" },
   ],
   vi: [
@@ -620,7 +620,7 @@ export const adrRows: Record<Lang, AdrRow[]> = {
     { id: "ADR-035", title: "Every ChatClient conformer becomes genuinely streaming-capable, then chat() stops being required", governs: "Việc chat() rời khỏi concept ChatClient, sự tồn tại của LegacyChatClient, và phần gia cố chỉ-số-text_delta trong bộ tích lũy phía Anthropic.", file: "decisions/ADR-035-chatclient-streaming-completeness.md" },
     { id: "ADR-036", title: "A coroutine-based model-call gateway replaces chat_stream() wrapper-parity", governs: "ModelCallGateway và MiddlewareModelCallGateway — cùng việc xóa bỏ FailoverChatClient, ResilientChatClient và MiddlewareChatClient. Việc cho ba wrapper đó ngang bằng chat_stream() đã bị xác nhận có nguy cơ use-after-free.", file: "decisions/ADR-036-model-call-gateway.md" },
     { id: "ADR-048", title: "Outbound media capability gate", governs: "validate_outbound_media_capabilities — từ chối thay vì lặng lẽ bỏ Media, kể cả Media lồng bên trong phần content của một ToolResult.", file: "decisions/ADR-048-outbound-media-capability-gate.md" },
-    { id: "— không có —", title: "Phân giải bí mật cho nhà cung cấp", governs: "Không có ADR nào. Các tài liệu chi phối là 018 §4 (phân giải tại điểm sử dụng), 020 §4 (ranh giới SecretSource) và 004 §1 — với ADR-009 cung cấp cơ chế capability mà cổng cap::Secret dựa vào.", file: "018-Identity-Authorization-and-Secrets.md" },
+    { id: "— không có —", title: "Phân giải bí mật cho nhà cung cấp", governs: "Không có ADR nào. Các tài liệu chi phối là 018 §4 (phân giải tại điểm sử dụng), 020 §4 (ranh giới SecretSource) và 004 §1 — với ADR-009 cung cấp cơ chế capability mà cổng cap::Secret dựa vào.", file: "rfcs/018-Identity-Authorization-and-Secrets.md" },
     { id: "— không có —", title: "Ghi và phát lại", governs: "Cũng không có ADR. 004 §6 cùng Milestone 5 Phase G1 chi phối phong bì JSON dùng chung; ADR-035 và ADR-037 chỉ chạm vào nó như hệ quả, để giữ nó hoạt động qua các đợt di trú streaming và runtime.", file: "include/agentengine/core/chat_recording.hpp" },
   ],
 };

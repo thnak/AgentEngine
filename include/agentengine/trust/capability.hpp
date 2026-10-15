@@ -1,5 +1,5 @@
 #pragma once
-// Implements 007-Capability-and-Trust-Model.md §3 — the unforgeable handle authorizing one class of
+// Implements rfcs/007-Capability-and-Trust-Model.md §3 — the unforgeable handle authorizing one class of
 // effect, and its in-process representation/enforcement (grant, check, attenuate, per-invocation
 // bind + revoke). Design settled by
 // decisions/ADR-009-capability-set-enforcement-mechanism.md (design -> red-team -> prove -> judge,
@@ -378,7 +378,7 @@ using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::Net
                     // so a legacy call site keeps compiling; this one guards a security decision).
 }
 
-// Compile-time capability *declaration* tags (002-Agent-Model-and-Authoring.md §3 / 006-Tool-and-
+// Compile-time capability *declaration* tags (rfcs/002-Agent-Model-and-Authoring.md §3 / 006-Tool-and-
 // Function-Plane.md §1's own examples: `Capabilities<NetOut<"api.search.example">>`) — distinct
 // from the runtime `cap::*` instances above, and necessarily so: `cap::NetOut` carries a
 // `std::vector<std::string>` and is therefore not a structural type, so it cannot itself be used as

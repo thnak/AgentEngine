@@ -1,5 +1,5 @@
 #pragma once
-// Implements 025-Worktree-and-Virtual-Filesystem.md §3's sub-worktree sharing-mode vocabulary.
+// Implements rfcs/025-Worktree-and-Virtual-Filesystem.md §3's sub-worktree sharing-mode vocabulary.
 //
 // Split out of core/worktree.hpp (ADR-032) so a header that only needs the four-way MODE VALUE --
 // not the object store, the Ref/Tree machinery, or any Quark actor/persistence dependency --

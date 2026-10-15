@@ -183,7 +183,7 @@ move an agent across that boundary without rewriting callers.
 
 ## 5a. Human-in-the-loop has three incompatible shapes
 
-The single most useful cross-protocol finding, and it sharpens [OQ-4](OpenQuestions.md):
+The single most useful cross-protocol finding, and it sharpens [OQ-4](../OpenQuestions.md):
 
 | Protocol | Shape | Correlation identity |
 |---|---|---|

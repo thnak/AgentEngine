@@ -12,7 +12,7 @@ reproves).
 
 ## 1. The question
 
-`030-Project-Workspace-and-Lifecycle.md` §4 says "call `.passivate()` on every member session's
+`rfcs/030-Project-Workspace-and-Lifecycle.md` §4 says "call `.passivate()` on every member session's
 `ActorRef<AgentSession>` (and on the Project's own supervising actor, last), then mark the manifest
 Paused." That sentence describes a mechanism — Quark actor eviction from memory, lazily reactivated
 on the next ask — that has no counterpart once Quark is removed: `agentengine::rt::AgentSession` is a

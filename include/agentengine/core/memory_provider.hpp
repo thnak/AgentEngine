@@ -1,5 +1,5 @@
 #pragma once
-// Implements 029-Memory-System.md §4/§5 — `MemoryProvider`, a real `ContextProvider` conformer.
+// Implements rfcs/029-Memory-System.md §4/§5 — `MemoryProvider`, a real `ContextProvider` conformer.
 // Milestone 4 Phase G3 (writing: extraction via a declared `ChatClient`, decision 8) and Phase G4
 // (reading: default structured retrieval + a contributed `recall(query)` tool). Built last, after
 // B's `ContextProvider`/`ContextContribution.tools` (B1) and G1/G2's worktree-backed

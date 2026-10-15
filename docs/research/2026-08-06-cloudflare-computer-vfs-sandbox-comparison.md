@@ -4,8 +4,8 @@ Dated 2026-08-06. Source: `D:\GitSrc\computer` (Cloudflare's "Computer" package 
 virtual filesystem with pluggable sandboxed execution backends; local checkout, preview/unreleased,
 docs marked "forward-looking, code wins over docs on conflict"). Read in full: `docs/01`–`docs/19`,
 package READMEs for `dofs`/`rpc`/`computerd`/`computer`, `AGENTS.md`, `COLLABORATORS.md`. Scope: what,
-if anything, transfers to `025-Worktree-and-Virtual-Filesystem.md`, `008-Sandbox-and-Isolation.md`,
-`009-Plugin-and-Extension-System.md`, and `decisions/ADR-011-first-party-egress-proxy.md`.
+if anything, transfers to `rfcs/025-Worktree-and-Virtual-Filesystem.md`, `rfcs/008-Sandbox-and-Isolation.md`,
+`rfcs/009-Plugin-and-Extension-System.md`, and `decisions/ADR-011-first-party-egress-proxy.md`.
 
 Overall read: Computer and this project solve an overlapping problem (durable virtual disk + sandboxed
 execution surface for agent workloads) from different starting constraints — Computer is a shipping

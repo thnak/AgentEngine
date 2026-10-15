@@ -15,7 +15,7 @@ capability-ceiling binding, I3 resolution timing, namespace squatting, and WASM-
 scratch."* Re-verified directly against current code (2026-08-14), not carried over from the audit's
 own 4-day-old snapshot:
 
-- **006/015 really do just assume a registry exists.** 006-Tool-and-Function-Plane.md has zero
+- **006/015 really do just assume a registry exists.** rfcs/006-Tool-and-Function-Plane.md has zero
   occurrences of "registry." 015 §1 says only: *"the declarative form references tools by name from
   the registry (native, plugin, MCP, A2A)"* — no mechanics anywhere. The audit's "placeholder text
   with no real content" characterization holds up; this is a genuine, currently-unresolved design gap,

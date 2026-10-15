@@ -190,7 +190,7 @@ open/close tag pair for the `<think>`-tag families).
   the call the way today's parser would. This is scoped, bounded work: the grammar is a small
   delimited-token format, not a general parser problem.
 - **(B) Channel-aware UI projection — the "great for rendering UI" idea.** This is more interesting
-  than (A) and already has a landing spot: RFC `013-UI-and-Streaming-Surfaces.md` already models
+  than (A) and already has a landing spot: RFC `rfcs/013-UI-and-Streaming-Surfaces.md` already models
   `ModelDelta` with distinct **text**/**reasoning**/**tool-call** delta kinds, and `003 §1` already
   has a `Reasoning`/`ReasoningEncryptedValue` content type. Harmony's `analysis`/`commentary`/`final`
   channels map almost directly onto that existing three-way split — `analysis` → reasoning delta,

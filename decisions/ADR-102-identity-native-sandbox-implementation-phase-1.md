@@ -124,7 +124,7 @@ primitive `AsyncQuota<T>`'s own port follows), `include/agentengine/sandbox/sand
 shipped `SandboxBackend`/`ExecOutcome` vocabulary Phase 3's `ExecutionSurface`/`SurfaceRunOutcome`
 deliberately does NOT conform to or reuse), `decisions/ADR-101-sandbox-backend-tree-refinement-
 reconciliation.md` (a separate, still-Proposed/unjudged tree-capable `SandboxBackend` refinement track
-Phase 3 deliberately stays independent of), `027-Vocabulary-and-Naming.md` §4 (new rows added by
+Phase 3 deliberately stays independent of), `rfcs/027-Vocabulary-and-Naming.md` §4 (new rows added by
 this ADR), `docs/planning/proofs/identity_authority/identity_authority.hpp`, `docs/planning/proofs/
 async_quota/async_quota.hpp`, `docs/planning/proofs/worktree_io/{worktree_ledger.hpp,merge_trees.hpp,
 real_io_filesystem.hpp}`, `docs/planning/proofs/execution_surface/{execution_surface.hpp,
@@ -187,14 +187,14 @@ already exists in the prove-phase source (`identity_authority.hpp:161-179`, §24
 exercised by `mandatory_sandbox_provider.hpp:256`; this ADR promotes and retypes it, does not invent
 it.
 
-**Steelman.** `027-Vocabulary-and-Naming.md` §1's own rule: "keep a different name only where the
+**Steelman.** `rfcs/027-Vocabulary-and-Naming.md` §1's own rule: "keep a different name only where the
 concept genuinely differs — and say why." The two types answer genuinely different questions — real
 `Principal` answers "who is this request attributed to, right now" (007's per-request attribution
 model); `IdentityHandle`/`IdentityAuthority` answers "does this durable authority-subject, once
 minted, remain the same subject across a process restart, and what is its real ancestry chain" — a
 question `Principal` was never asked to answer and, per Design A's rejection, should not be
 retrofitted to answer. `Principal` is also registered, canonical, MAF-derived vocabulary
-(`027-Vocabulary-and-Naming.md:129`) — not this project's own coinage to redefine.
+(`rfcs/027-Vocabulary-and-Naming.md:129`) — not this project's own coinage to redefine.
 
 **Cost, stated honestly:** two identity vocabularies now coexist in the trust module, bridged at
 exactly one seam (`adopt()`). A caller unfamiliar with the distinction could genuinely confuse them —
@@ -224,7 +224,7 @@ broke two other probes" — a real precedent for exactly this kind of change).
   `agentengine::Principal const&`, not bare strings. *Disproof: a type named `Principal` appears
   anywhere in the ported files, or `adopt()` still takes bare strings.*
 - **C5 (naming lint passes for the right reason).** Every new public name (`IdentityAuthority`,
-  `IdentityHandle`, `Grant<Payload>`, `AsyncQuota<Kind>`) is registered in `027-Vocabulary-and-Naming.md`
+  `IdentityHandle`, `Grant<Payload>`, `AsyncQuota<Kind>`) is registered in `rfcs/027-Vocabulary-and-Naming.md`
   §4 with an explicit rationale, not merely suppressed. *Disproof: `tools/naming_lint.py` only passes
   via an `// ae-naming-lint: allow` suppression comment for one of these names, with no corresponding
   027 row.*
@@ -294,7 +294,7 @@ production code," so it is named here explicitly rather than left implicit a sec
   after the tenant-scoping fix landed.
 - `python tools/naming_lint.py`: `027 naming-lint: OK` — all four new names
   (`IdentityAuthority`/`IdentityHandle`/`Grant<Payload>`/`AsyncQuota<Kind>`) recognized via real
-  `027-Vocabulary-and-Naming.md` §4 rows, no suppression comments used.
+  `rfcs/027-Vocabulary-and-Naming.md` §4 rows, no suppression comments used.
 - Full project rebuild: 370/370 targets, zero errors.
 - Full `ctest` suite: 280/280 passing (including the new `test_identity_authority_grant`), run twice
   (before and after the red-team fix), zero regressions from this change either time.
@@ -331,7 +331,7 @@ async_quota.hpp`, `namespace agentengine::rt` (matching `SpawnCostBudget`'s real
   every constructed `error{}` in the ported code must pick a real class (matching `SpawnCostBudget`'s
   own `failure_class::resource` for quota exhaustion, `capability.hpp`'s own `failure_class::policy`
   for authorization refusals).
-- `027-Vocabulary-and-Naming.md` §4 gains real rows for all four new names, not suppression comments.
+- `rfcs/027-Vocabulary-and-Naming.md` §4 gains real rows for all four new names, not suppression comments.
 
 **Explicitly out of scope — named, not silently dropped, per the approved plan
 (`~/.claude/plans/virtual-herding-cocoa.md`):**
@@ -676,7 +676,7 @@ plus a `docker ps -a` before/after check to confirm container lifecycle behavior
 - `python tools/naming_lint.py`: as a byproduct of registering Phase 3's own new names, found and fixed
   a real, previously-unregistered latent gap FROM PHASE 2 (`MergeConflict`/`StorageBytes` were never
   actually recognized by the lint tool, because its table-row regex only captures the FIRST backtick
-  name in a combined "`X` / `Y`" row — `027-Vocabulary-and-Naming.md`'s own Phase 2 rows had combined
+  name in a combined "`X` / `Y`" row — `rfcs/027-Vocabulary-and-Naming.md`'s own Phase 2 rows had combined
   two names per row). Fixed by splitting every combined row (Phase 2's `MergeResult`/`MergeConflict`
   and `BranchCost`/`StorageBytes`, and this phase's own `RunCost`/`ResetCost`) into one row per name;
   confirmed the lint now reports zero unregistered names.
@@ -875,7 +875,7 @@ instance from two different threads."
   phase: zero leftover containers.
 - `python tools/naming_lint.py`: registering Phase 4's own new names surfaced and fixed a SECOND
   instance of the SAME combined-table-row gap Phase 3's own evidence already found and fixed for Phase
-  2's rows (`027-Vocabulary-and-Naming.md`'s table-row regex only recognizes the FIRST backtick name
+  2's rows (`rfcs/027-Vocabulary-and-Naming.md`'s table-row regex only recognizes the FIRST backtick name
   per row) — this phase's own first `RunCommandArgs`/`RunCommandReply` row, and its own first
   `block_on<T>()` row (which additionally used a fully-qualified `agentengine::rt::block_on<T>()` as
   the leading token, which the same regex captures as the nonsense name "agentengine") both needed

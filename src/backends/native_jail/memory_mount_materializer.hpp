@@ -1,6 +1,6 @@
 #pragma once
 // Implements decisions/ADR-153-agent-memory-codeact-bridging.md -- the read-materialization half of
-// 026-Agent-Facing-Runtime-Surface.md §5's `agent.memory` ("ordinary read access to the memory
+// rfcs/026-Agent-Facing-Runtime-Surface.md §5's `agent.memory` ("ordinary read access to the memory
 // worktree's files under `/memory`", `FsRead<mount>`) and the pre-run half of `agent.notes`
 // (`FsWrite<mount>` on the SAME `/memory` mount -- 026 §5's table names both as capability grants over
 // one conceptual mount point, not two separate directories). This file only ever produces a snapshot a

@@ -1,5 +1,5 @@
 #pragma once
-// Implements 005-Sessions-State-and-Memory.md §5's `TodoProvider` provider kind and
+// Implements rfcs/005-Sessions-State-and-Memory.md §5's `TodoProvider` provider kind and
 // decisions/ADR-166-todo-provider.md. Closes issue #53 (MAF's Harness bundles a todo/task-list
 // tracking ContextProvider by default; 002/005/006/014 had no equivalent). Builds on the
 // design draft docs/planning/todo-provider-design-draft.md (PR #25) -- red-teamed and implemented

@@ -1,4 +1,4 @@
-// Milestone 7 Phase D3 (012-A2A-Conformance.md §2.3, docs/planning/milestone-7-protocol-conformance-
+// Milestone 7 Phase D3 (rfcs/012-A2A-Conformance.md §2.3, docs/planning/milestone-7-protocol-conformance-
 // breakdown.md). Proves `A2aServer` (protocol/a2a/server.hpp) end to end against a REAL
 // `agentengine::rt::AgentSession` -- `Task.id` really is the session's own `run_id`
 // (`AgentSession::last_run_id()`), `SendMessage` really drives a full turn through a real

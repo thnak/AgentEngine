@@ -6,7 +6,7 @@
 provider path "as defense-in-depth even though the threat model differs".
 **Does not change:** ADR-011 (first-party egress proxy) claims C1–C10, which are about the WASM
 **guest** egress path (`HostEgressProxy::fetch`) and remain enforced there unchanged.
-**Relates to:** 004-Model-Provider-Plane.md §3, ADR-013 (HTTPS egress TLS client).
+**Relates to:** rfcs/004-Model-Provider-Plane.md §3, ADR-013 (HTTPS egress TLS client).
 
 ## 1. Context
 

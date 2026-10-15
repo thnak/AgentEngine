@@ -1,5 +1,5 @@
 #pragma once
-// Implements 012-A2A-Conformance.md §2.3 -- Task management (server role): `SendMessage`, `GetTask`,
+// Implements rfcs/012-A2A-Conformance.md §2.3 -- Task management (server role): `SendMessage`, `GetTask`,
 // `CancelTask` over a REAL `AgentSession` run. Milestone 7 Phase D3
 // (docs/planning/milestone-7-protocol-conformance-breakdown.md).
 //

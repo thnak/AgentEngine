@@ -1,5 +1,5 @@
 #pragma once
-// Implements 002-Agent-Model-and-Authoring.md — the CRTP authoring surface. Policies are template
+// Implements rfcs/002-Agent-Model-and-Authoring.md — the CRTP authoring surface. Policies are template
 // parameters resolved to metadata at startup (CONVENTIONS.md — no RTTI, no virtual for policy on
 // the hot path). This header fixes the policy *tags* as empty/near-empty types; `register_agent<A>`
 // (002 §6, the metadata compiler and its validation) is real logic and is not sketched here.

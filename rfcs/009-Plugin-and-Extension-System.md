@@ -1,6 +1,6 @@
 # 009 — Plugin and Extension System
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 006, 007, 008 · **Gate:** §10 · **Contract of record:** [`wit/`](wit/)
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 006, 007, 008 · **Gate:** §10 · **Contract of record:** [`wit/`](../wit)
 
 ## Goal
 
@@ -345,7 +345,7 @@ That is exactly why §3 requires signatures and §4 verifies them before parsing
 - **Semantic Kernel "skills"** were renamed to *plugins* years ago and mean a group of functions —
   i.e. our tools, not our skills.
 
-Details and sources: [`docs/research/2026-mcp-ecosystem.md`](docs/research/2026-mcp-ecosystem.md).
+Details and sources: [`docs/research/2026-mcp-ecosystem.md`](../docs/research/2026-mcp-ecosystem.md).
 
 ### 8f. Generic skills (the other half of OQ-17)
 

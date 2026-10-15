@@ -1,4 +1,4 @@
-// Milestone 7 Phase D3 (012-A2A-Conformance.md §1, docs/planning/milestone-7-protocol-conformance-
+// Milestone 7 Phase D3 (rfcs/012-A2A-Conformance.md §1, docs/planning/milestone-7-protocol-conformance-
 // breakdown.md). Proves the `ContentItem`/`Message` (003, internal) <-> `Part`/`Message` (012, wire)
 // projection (protocol/a2a/mapping.hpp) at the unit level, independent of any real `AgentSession` --
 // the narrow `Text`/`Data`/`Error` mapping, the `UnknownPart` fallback reuse for every other

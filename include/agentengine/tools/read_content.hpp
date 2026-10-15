@@ -1,5 +1,5 @@
 #pragma once
-// Implements 009-Plugin-and-Extension-System.md §7's "Content reading" catalog entry -- "engine-
+// Implements rfcs/009-Plugin-and-Extension-System.md §7's "Content reading" catalog entry -- "engine-
 // native, not a wrapped library... first on this list because every application needs it on day one
 // and it is the candidate most exposed to [the token-budget] hazard -- it ships built-in rather than
 // deferred to an operator plugin." First shipped candidate off OpenQuestions.md OQ-17's generic tool

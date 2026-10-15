@@ -1,5 +1,5 @@
 #pragma once
-// Implements 014-Workflow-and-Orchestration.md §1 (the model) and §2's termination requirement.
+// Implements rfcs/014-Workflow-and-Orchestration.md §1 (the model) and §2's termination requirement.
 // Milestone 6 Phase A (docs/planning/milestone-6-multi-agent-orchestration-breakdown.md).
 //
 // This header is THE GRAPH AS DATA, and nothing else -- no execution, no actors, no scheduling.

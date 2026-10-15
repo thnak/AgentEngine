@@ -13,7 +13,7 @@
   **No existing test file changed, and no existing call site needed editing.**
 - **Related specs:** GitHub issue #66 (the defect this closes), split from issue #63 ·
   `decisions/ADR-171-docker-execution-surface-isolation.md` (the Docker sibling this deliberately does
-  **not** copy) · `008-Sandbox-and-Isolation.md` §2 (the backend contract), §2a (amended by ADR-171),
+  **not** copy) · `rfcs/008-Sandbox-and-Isolation.md` §2 (the backend contract), §2a (amended by ADR-171),
   §4 (egress is always host-mediated), §9 (the gate this does **not** clear) ·
   `decisions/ADR-145-containerd-execution-surface-promotion.md` (the port this builds on) ·
   `src/backends/kata/kata_backend.cpp` (the real `SandboxBackend` on this same `ctr` lineage, via the

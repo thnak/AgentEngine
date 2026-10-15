@@ -1,4 +1,4 @@
-// Proves 004-Model-Provider-Plane.md §3's OpenAI-compatible backend (protocol/openai/chat_client.hpp)
+// Proves rfcs/004-Model-Provider-Plane.md §3's OpenAI-compatible backend (protocol/openai/chat_client.hpp)
 // end to end against a REAL, LOCAL Ollama server -- the other local-server target that section's own
 // table names by name ("vLLM/llama.cpp/Ollama-style local servers"), alongside
 // tests/protocol/openai/test_llamacpp_live_e2e.cpp, which already proves the llama.cpp half. This file mirrors that

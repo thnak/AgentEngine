@@ -3,8 +3,8 @@
 **Status:** **Proposed (2026-10-01).** Design (§3), one adversarial self red-team pass (§4, 13 findings,
 the first two changed the design), implemented and proven (§5). Awaiting the project owner's Judge.
 
-**Relates to:** GitHub issue #148. `006-Tool-and-Function-Plane.md` §3 (steps 4/7, authorize + bind).
-`007-Capability-and-Trust-Model.md` §3 (attenuation, never widen; I2). ADR-009 (`CapabilitySet::bind`,
+**Relates to:** GitHub issue #148. `rfcs/006-Tool-and-Function-Plane.md` §3 (steps 4/7, authorize + bind).
+`rfcs/007-Capability-and-Trust-Model.md` §3 (attenuation, never widen; I2). ADR-009 (`CapabilitySet::bind`,
 `BoundCapability`). Gap-audit #12 (`find_fs_read`/`find_fs_write`, the mediated shell's own fix of the
 same bug class). ADR-208 §7 (the `with_granted_ceiling` driver workaround this removes). ADR-212 §3.5
 (the wrapper rule this copies).

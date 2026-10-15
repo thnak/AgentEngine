@@ -1,5 +1,5 @@
 #pragma once
-// Implements 027-Vocabulary-and-Naming.md §4/§5: `ae::task<T>`.
+// Implements rfcs/027-Vocabulary-and-Naming.md §4/§5: `ae::task<T>`.
 //
 // ADR-037 (removing Quark as core runtime): `agentengine::task<T>` used to split into two concrete
 // types -- `task<void>` stayed `quark::task<void>` (Quark's ADR-007 dispatch-handler type) for as

@@ -1,5 +1,5 @@
 // Milestone 5 Phase J2 (docs/planning/milestone-5-providers-identity-secrets-breakdown.md, roadmap
-// exit criterion; 018-Identity-Authorization-and-Secrets.md §7 G2, "secret hygiene"): "a canary
+// exit criterion; rfcs/018-Identity-Authorization-and-Secrets.md §7 G2, "secret hygiene"): "a canary
 // secret is planted and every persisted artifact (logs, traces, audit, checkpoints, recordings,
 // crash dumps, plugin memory dumps) is scanned; zero occurrences."
 //

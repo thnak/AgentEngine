@@ -1,4 +1,4 @@
-// Milestone 7 Phase E4 (013-UI-and-Streaming-Surfaces.md §3, docs/research/2026-mcp-protocol-detail.md
+// Milestone 7 Phase E4 (rfcs/013-UI-and-Streaming-Surfaces.md §3, docs/research/2026-mcp-protocol-detail.md
 // §10, docs/planning/milestone-7-protocol-conformance-breakdown.md). Proves `McpProgressProjector`
 // (protocol/mcp/progress.hpp) projects `tool_call_delta` -- and ONLY `tool_call_delta` -- into a
 // `notifications/progress` JSON-RPC notification with a per-token monotonically-increasing `progress`

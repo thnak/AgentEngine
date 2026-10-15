@@ -4,7 +4,7 @@
 proven (real code + new test file, full suite green).
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #3 (the finding this
-ADR closes). `006-Tool-and-Function-Plane.md` §8 G2 and `015-Declarative-Agent-Format.md` §7 G2 (the
+ADR closes). `rfcs/006-Tool-and-Function-Plane.md` §8 G2 and `rfcs/015-Declarative-Agent-Format.md` §7 G2 (the
 two gates this validator exists to satisfy). `docs/planning/tool-capability-registry-design-draft.md`
 (this session's gap-4 design draft — the future non-native tool-invocation path that design names
 would be this validator's real consumer, once built; see §5).

@@ -10,7 +10,7 @@ decoder, matches 009 §7's own "Parsing hostile files in-process" framing for th
 real implementation pass are both explicitly deferred to a follow-up ADR, the same design-acceptance-
 then-implementation split this project already uses (ADR-099 → ADR-102).
 
-**Relates to:** `009-Plugin-and-Extension-System.md` §7 (the generic tool catalog table this ADR
+**Relates to:** `rfcs/009-Plugin-and-Extension-System.md` §7 (the generic tool catalog table this ADR
 narrows one row of), `OpenQuestions.md` OQ-17 (the catalog itself), `LICENSE` (MIT, locked per
 CLAUDE.md's "Locked decisions" section, resolved 2026-08-04), `docs/research/2026-08-24-dify-ai-
 feature-comparison.md` (names the built-in-tools gap this whole first-party-tools effort responds to),

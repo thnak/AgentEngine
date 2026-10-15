@@ -1,4 +1,4 @@
-// Milestone 7 Phase D1 (012-A2A-Conformance.md §0/§A.4, docs/research/2026-a2a-and-agui-detail.md
+// Milestone 7 Phase D1 (rfcs/012-A2A-Conformance.md §0/§A.4, docs/research/2026-a2a-and-agui-detail.md
 // Part A, docs/planning/milestone-7-protocol-conformance-breakdown.md). Proves the A2A v1.0 wire
 // object model (protocol/a2a/types.hpp) round-trips correctly and specifically that the two named
 // v1.0 breaking changes from 0.3.x are honoured: `Part` carries NO `kind` discriminator (the JSON

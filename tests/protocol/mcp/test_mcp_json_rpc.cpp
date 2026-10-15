@@ -1,4 +1,4 @@
-// Milestone 7 Phase C1 (011-MCP-Conformance.md's wire layer, docs/planning/milestone-7-protocol-
+// Milestone 7 Phase C1 (rfcs/011-MCP-Conformance.md's wire layer, docs/planning/milestone-7-protocol-
 // conformance-breakdown.md). Proves protocol/mcp/json_rpc.hpp's envelope is spec-correct: request vs
 // notification is decided by id PRESENCE (JSON-RPC 2.0 §4), a response carries exactly one of
 // result/error (§5), string and numeric ids both round-trip losslessly, and malformed envelopes

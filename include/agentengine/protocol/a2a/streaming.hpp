@@ -1,6 +1,6 @@
 #pragma once
-// Implements 012-A2A-Conformance.md §2.3's streaming projection ("Streaming projects the internal run
-// event stream (013 §1) -- the same source as AG-UI") and 013-UI-and-Streaming-Surfaces.md §3's own
+// Implements rfcs/012-A2A-Conformance.md §2.3's streaming projection ("Streaming projects the internal run
+// event stream (013 §1) -- the same source as AG-UI") and rfcs/013-UI-and-Streaming-Surfaces.md §3's own
 // table row ("A2A streaming | Task status + artifact updates from the same stream"). Milestone 7
 // Phase E4 (docs/planning/milestone-7-protocol-conformance-breakdown.md).
 //

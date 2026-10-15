@@ -1,5 +1,5 @@
 #pragma once
-// A second candidate in 009-Plugin-and-Extension-System.md §7's "Document extraction" catalog row --
+// A second candidate in rfcs/009-Plugin-and-Extension-System.md §7's "Document extraction" catalog row --
 // PDF table-of-contents/outline extraction, reusing the exact same sandboxed `agentengine_pdf_worker`
 // process `extract_pdf_text.hpp` already spawns (its own `toc` mode, `pdf_worker_main.cpp`), the same
 // url/path sourcing, and the same companion-skill pairing pattern -- this file `#include`s that one

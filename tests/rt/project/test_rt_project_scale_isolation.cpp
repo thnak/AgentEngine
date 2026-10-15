@@ -1,4 +1,4 @@
-// Proof for ADR-037: 030-Project-Workspace-and-Lifecycle.md §7's promotion gate G1 ("N >= 100
+// Proof for ADR-037: rfcs/030-Project-Workspace-and-Lifecycle.md §7's promotion gate G1 ("N >= 100
 // concurrently active Projects... pausing one measurably drops its member sessions' activation
 // count to zero... with zero observable effect on the other N-1"), reproven against
 // `agentengine::rt::ProjectSupervisor`/`rt::pause_project()` -- the Quark-actor-free replacement for

@@ -14,7 +14,7 @@ The developer model is **MAF-shaped** (Microsoft Agent Framework's agent/session
 vocabulary) expressed in AgentEngine's own **zero-cost CRTP policy idiom** (originally modeled on
 Quark's identical idiom).
 
-**The project is spec-driven.** 30 RFC documents (`NNN-*.md`) are the authoritative design;
+**The project is spec-driven.** 30 RFC documents (`rfcs/NNN-*.md`) are the authoritative design;
 `decisions/ADR-*.md` are executed proofs. **When code and a spec disagree, the spec wins**; if the
 spec is wrong, fix the spec first (with an ADR), then the code.
 

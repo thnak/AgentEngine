@@ -23,7 +23,7 @@ ADR-157/158 rows already document happening repeatedly. All in-file, in-code, an
 "ADR-159" references below were renumbered to "ADR-160" before this file was committed; nothing in
 the colliding ADR-159 file itself was touched.
 
-**Relates to:** `006-Tool-and-Function-Plane.md` §5 (Concurrency) and §8 G4 (the gate this ADR
+**Relates to:** `rfcs/006-Tool-and-Function-Plane.md` §5 (Concurrency) and §8 G4 (the gate this ADR
 exists to satisfy). `decisions/ADR-158-tool-concurrency-exclusivity-policy.md` (`ExclusivityGroup
 <Name>` — a real, tested, but currently-inert declaration this scheduler is the first thing to ever
 read at dispatch time). `decisions/ADR-060-tool-call-progress-reporting.md` (the by-value
@@ -31,7 +31,7 @@ read at dispatch time). `decisions/ADR-060-tool-call-progress-reporting.md` (the
 that produced `agentengine::rt::task<T>`, `rt::AsyncMutex`, `rt::ThreadPool`). `include/agentengine/
 core/tool_pipeline.hpp` (`invoke_tool()`). `include/agentengine/rt/agent_session.hpp` (the three
 sequential batch-dispatch loops this ADR must replace, per §3 MUST-FIX 4's corrected inventory).
-`007-Capability-and-Trust-Model.md` §3
+`rfcs/007-Capability-and-Trust-Model.md` §3
 (`Background<max_concurrent>` — a disjoint, already-shipped mechanism this ADR does not touch,
 confirmed disjoint by ADR-158 §4).
 

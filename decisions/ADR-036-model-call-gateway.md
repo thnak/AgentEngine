@@ -12,7 +12,7 @@ that one's superseded-and-replaced Phase 2; see that document's §4). `decisions
 model-call-chain.md` (Judged — `MiddlewareChatClient`'s `ModelCallContext`/`run_before`/`run_after`/
 `enforce_backend_tool_call_provenance` machinery, reused here verbatim). `include/agentengine/core/
 failover_chat_client.hpp`/`resilient_chat_client.hpp`/`middleware.hpp` (the three `chat()`-only
-wrapper templates this ADR does not modify — see §7). `004-Model-Provider-Plane.md` §4 (Reliability
+wrapper templates this ADR does not modify — see §7). `rfcs/004-Model-Provider-Plane.md` §4 (Reliability
 — failover/retry/circuit-breaking) and §5 (`TokenBudget<N>`).
 
 ## 1. The question

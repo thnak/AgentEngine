@@ -157,7 +157,7 @@ test_context_provenance --config Debug`, `ctest --test-dir build -C Debug --outp
 ## 7. The decision
 
 **Design B, as corrected during implementation (§5), is adopted and implemented.** It binds:
-- `027-Vocabulary-and-Naming.md` §3 — `ContextProviderDescriptor` gains a required `name`;
+- `rfcs/027-Vocabulary-and-Naming.md` §3 — `ContextProviderDescriptor` gains a required `name`;
   `ContributorProvenance` is a new normatively-named concept, not yet listed in 027's own table.
 - `OpenQuestions.md` — creates and closes OQ-22; remains the named prerequisite for OQ-18's own
   red-team reason #1 (does not reopen OQ-18 itself).

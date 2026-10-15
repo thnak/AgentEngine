@@ -1,6 +1,6 @@
 # Milestone 0 CI skeleton (docs/planning/milestone-0-bootstrap-breakdown.md task 2).
 #
-# Windows is the current Supported target (021-Platform-Support-and-Portability.md §2/§5): the
+# Windows is the current Supported target (rfcs/021-Platform-Support-and-Portability.md §2/§5): the
 # {MSVC, clang-cl} x {Release, sanitizer} matrix below is that RFC's CI-matrix intent. MSVC has no
 # UBSan, so its sanitizer leg is ASan-only; clang-cl's covers both, matching what 021 §5 actually
 # asks for. The conformance suites and the budget gate 021 §5 also names aren't wired in here —

@@ -1,4 +1,4 @@
-// Milestone 7 Phase D4 (012-A2A-Conformance.md §3/§4a, docs/planning/milestone-7-protocol-
+// Milestone 7 Phase D4 (rfcs/012-A2A-Conformance.md §3/§4a, docs/planning/milestone-7-protocol-
 // conformance-breakdown.md). Proves `A2aClient` (protocol/a2a/client.hpp) against a REAL `A2aServer`
 // (server.hpp, D3) wired over a real `agentengine::rt::AgentSession` for the happy-path
 // send/get/cancel passthrough, and a hand-rolled `CardFetcher` for the digest-pinned Agent Card

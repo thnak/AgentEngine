@@ -4,7 +4,7 @@
 // Also: ADR-191/192 -- records `ContentItem::approval` and `deliver_as_instructions`.
 // Also: ADR-202 (#120 S3) -- the Message/ContentItem codec itself is core/message_json.hpp's recording profile; the
 // functions below keep their names and signatures as thin wrappers over it.
-// Implements 004-Model-Provider-Plane.md §6 ("Recording and replay") — Milestone 5 Phase G1's shared
+// Implements rfcs/004-Model-Provider-Plane.md §6 ("Recording and replay") — Milestone 5 Phase G1's shared
 // codec: the JSON envelope both `RecordingChatClient<Inner>` (core/recording_chat_client.hpp, the
 // recorder) and `ReplayChatClient` (core/replay_chat_client.hpp, the player) read and write. Promotes
 // `tests/support/recorded_chat_client.hpp`'s hand-authored, test-scoped, 3-content-kind fixture

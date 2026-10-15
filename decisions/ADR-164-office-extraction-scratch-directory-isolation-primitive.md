@@ -5,7 +5,7 @@ This ADR covers the scratch-directory isolation primitive only, not the three of
 extraction tools it was designed to support — those remain unimplemented, per `docs/planning/office-
 document-extraction-design-draft.md`'s own scope (design draft, not an implementation ADR).
 
-**Relates to:** `009-Plugin-and-Extension-System.md` §7 (the "Document extraction" catalog row's
+**Relates to:** `rfcs/009-Plugin-and-Extension-System.md` §7 (the "Document extraction" catalog row's
 DOCX/PPTX/XLSX third, deferred by `ADR-106` and picked up as this candidate), `ADR-004` (AppContainer
 native-jail Windows backend — this ADR's `grant_ro_deduped()`/`shared_profile()` precedent),
 `ADR-014` (`open_within_mount_root` — the TOCTOU-safe containment primitive this design's I/O reuses

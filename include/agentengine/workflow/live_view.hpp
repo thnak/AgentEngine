@@ -1,5 +1,5 @@
 #pragma once
-// Implements 014-Workflow-and-Orchestration.md §7's last bullet: "a running workflow exposes a
+// Implements rfcs/014-Workflow-and-Orchestration.md §7's last bullet: "a running workflow exposes a
 // live view of executor states, in-flight messages, and round number" -- over `ae::stream<T>`
 // (004 §1's adapter over Quark's credit-controlled ring), per §7's own words. Milestone 6 Phase G
 // (docs/planning/milestone-6-multi-agent-orchestration-breakdown.md).

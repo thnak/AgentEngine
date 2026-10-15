@@ -1,5 +1,5 @@
 #pragma once
-// Implements 029-Memory-System.md — structured, provenanced memory records, and (Milestone 4
+// Implements rfcs/029-Memory-System.md — structured, provenanced memory records, and (Milestone 4
 // Phase G) the worktree-backed storage/retrieval that makes them real. Never a wrapped vector
 // database; default retrieval is a pure function of stored fields (029 §5).
 //

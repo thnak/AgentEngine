@@ -1,5 +1,5 @@
 #pragma once
-// Implements 009-Plugin-and-Extension-System.md §8c's Phase 3 addendum (decisions/ADR-024) --
+// Implements rfcs/009-Plugin-and-Extension-System.md §8c's Phase 3 addendum (decisions/ADR-024) --
 // on-demand, agent-triggered skill mounting. Distinguishes "resolved" (every configured skill's files
 // are materialized unconditionally at session start, core/skill_provider.hpp's own scope, §8b) from
 // "mounted" (a SUBSET of resolved skills the agent has explicitly activated this run, tracked here).

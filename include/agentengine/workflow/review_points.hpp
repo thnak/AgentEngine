@@ -1,5 +1,5 @@
 #pragma once
-// Implements 014-Workflow-and-Orchestration.md §4 "Review points" (issue #45): a builder-level way to put a
+// Implements rfcs/014-Workflow-and-Orchestration.md §4 "Review points" (issue #45): a builder-level way to put a
 // human review (a `request_port`) after a step, instead of hand-wiring one port and its edges per step.
 // The patterns are 014 §3's Sequential (chain) and Concurrent (fan-out + fan-in with an aggregator).
 //

@@ -157,8 +157,8 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       title: "The gates 019 sets, and where this tree actually stands against them",
       body:
         "019's promotion gate is six items long. One of them (G1's restart-identical resume) is met for workflows — killed at every one of 20 superstep boundaries, all 20 resumes byte-identical to the control — and not for sessions, because a session's record carries no history to resume from. The other five are either unbuilt, unmeasured, or contradicted by a mechanism ADR-037 removed. This is the honest scoreboard, including two places where 019's own prose is now out of date with the code.",
-      cite: "019-Durability-and-Long-Running-Agents.md:102",
-      href: gh("019-Durability-and-Long-Running-Agents.md"),
+      cite: "rfcs/019-Durability-and-Long-Running-Agents.md:102",
+      href: gh("rfcs/019-Durability-and-Long-Running-Agents.md"),
     },
   ],
   vi: [
@@ -269,8 +269,8 @@ export const durabilityEntries: Record<Lang, ApiEntry[]> = {
       title: "Những cổng 019 đặt ra, và cây mã này thực sự đứng ở đâu so với chúng",
       body:
         "Cổng thăng hạng của 019 dài sáu mục. Một mục (G1, tiếp tục giống hệt sau khởi động lại) đã đạt cho workflow — bị giết ở cả 20 mốc superstep, cả 20 lần tiếp tục đều giống hệt bản đối chứng từng byte — nhưng chưa đạt cho session, vì bản ghi của một session không mang lịch sử để mà tiếp tục. Năm mục còn lại thì hoặc chưa xây, hoặc chưa đo, hoặc bị mâu thuẫn bởi một cơ chế mà ADR-037 đã bỏ. Đây là bảng điểm trung thực, gồm cả hai chỗ mà văn bản của chính 019 giờ đã lệch so với mã.",
-      cite: "019-Durability-and-Long-Running-Agents.md:102",
-      href: gh("019-Durability-and-Long-Running-Agents.md"),
+      cite: "rfcs/019-Durability-and-Long-Running-Agents.md:102",
+      href: gh("rfcs/019-Durability-and-Long-Running-Agents.md"),
     },
   ],
 };
@@ -294,7 +294,7 @@ export const checkpointFields: Record<Lang, CheckpointField[]> = {
     { field: "state_ · metadata_", carried: "no", note: "Same named gap as history — the typed StateT is arbitrary user data with no codec.", cite: "include/agentengine/rt/agent_session.hpp:383" },
     { field: "standing_effects_", carried: "no", note: "In-memory only by design. A schedule_wakeup armed just before a restart is lost — named in the header, not discovered later.", cite: "include/agentengine/core/standing_effect.hpp:18" },
     { field: "pending_codeact_asks_", carried: "no", note: "The stored script source/language/answers a suspended agent.ask() replays against. No codec, no field — the same scope ADR-029 left open.", cite: "include/agentengine/rt/agent_session.hpp:369" },
-    { field: "capability handles", carried: "no", note: "019 §1 forbids it outright — a serialized capability handle would be a forgeable capability. capabilities_ is a bare host-owned pointer, so re-validation at resume is forced by construction.", cite: "019-Durability-and-Long-Running-Agents.md:15" },
+    { field: "capability handles", carried: "no", note: "019 §1 forbids it outright — a serialized capability handle would be a forgeable capability. capabilities_ is a bare host-owned pointer, so re-validation at resume is forced by construction.", cite: "rfcs/019-Durability-and-Long-Running-Agents.md:15" },
     { field: "created_at_ns · updated_at_ns", carried: "no", note: "Deliberate narrowing: the session never had wall-clock members to round-trip, and this record refuses to invent them. No Clock capability is wired anywhere in the project.", cite: "include/agentengine/rt/agent_session.hpp:84" },
   ],
   vi: [
@@ -307,7 +307,7 @@ export const checkpointFields: Record<Lang, CheckpointField[]> = {
     { field: "state_ · metadata_", carried: "no", note: "Cùng khoảng trống với lịch sử — StateT có kiểu là dữ liệu tùy ý của người dùng, không có codec.", cite: "include/agentengine/rt/agent_session.hpp:383" },
     { field: "standing_effects_", carried: "no", note: "Chỉ nằm trong bộ nhớ theo thiết kế. Một schedule_wakeup vừa trang bị ngay trước khi khởi động lại sẽ mất — điều này được nêu ngay trong header, không phải phát hiện về sau.", cite: "include/agentengine/core/standing_effect.hpp:18" },
     { field: "pending_codeact_asks_", carried: "no", note: "Mã nguồn/ngôn ngữ/câu trả lời đã lưu để một agent.ask() đang treo phát lại. Không codec, không trường — cùng phạm vi mà ADR-029 để ngỏ.", cite: "include/agentengine/rt/agent_session.hpp:369" },
-    { field: "capability handle", carried: "no", note: "019 §1 cấm thẳng — một capability handle được tuần tự hóa sẽ là một capability có thể giả mạo. capabilities_ chỉ là con trỏ trần do host sở hữu, nên việc thẩm định lại khi tiếp tục là bắt buộc theo cấu trúc.", cite: "019-Durability-and-Long-Running-Agents.md:15" },
+    { field: "capability handle", carried: "no", note: "019 §1 cấm thẳng — một capability handle được tuần tự hóa sẽ là một capability có thể giả mạo. capabilities_ chỉ là con trỏ trần do host sở hữu, nên việc thẩm định lại khi tiếp tục là bắt buộc theo cấu trúc.", cite: "rfcs/019-Durability-and-Long-Running-Agents.md:15" },
     { field: "created_at_ns · updated_at_ns", carried: "no", note: "Thu hẹp có chủ đích: session vốn chưa từng có trường đồng hồ tường để mà lưu lại, và bản ghi này từ chối bịa ra chúng. Toàn dự án chưa nối capability Clock ở đâu cả.", cite: "include/agentengine/rt/agent_session.hpp:84" },
   ],
 };
@@ -628,7 +628,7 @@ export const durabilityGaps: Record<Lang, GapRow[]> = {
     { item: "G5 — a poison run quarantined after its bound, state intact, operator-visible reason", state: "Half met. The bound-and-preserve behaviour is proven, but PoisonRunPolicy<N> exists only as a copy inside a test file — no shipping header defines it, and nothing surfaces an operator-visible reason.", cite: "tests/rt/agent_session/test_rt_agent_session_identity_and_admission.cpp:108" },
     { item: "G6 — an at-most-once effect interrupted at the ambiguous instant surfaces indeterminate, 10⁴ trials", state: "Deliberately not built. unconfirmed_effect_intents() answers which intents lack an outcome — a read, never a decision. The decision layer is named as separately-scoped work.", cite: "include/agentengine/rt/effect_journal.hpp:30" },
     { item: "The effect journal is not wired into the turn loop", state: "journal_effect_intent()/journal_effect_outcome()/authorize_reexecution() have no caller outside their own tests. run_rounds() derives and audits the idempotency key on every call, but journals nothing. A host wanting 019 §3's discipline must call the journal itself.", cite: "include/agentengine/rt/agent_session.hpp:1512" },
-    { item: "Node loss, fencing, leases, epochs", state: "None exist, by decision. 019 §4 now names this a real, permanent gap; there is no multi-node story and no compare-and-set primitive in either store.", cite: "019-Durability-and-Long-Running-Agents.md:73" },
+    { item: "Node loss, fencing, leases, epochs", state: "None exist, by decision. 019 §4 now names this a real, permanent gap; there is no multi-node story and no compare-and-set primitive in either store.", cite: "rfcs/019-Durability-and-Long-Running-Agents.md:73" },
     { item: "FileSessionStore has no atomic write", state: "save() truncates and rewrites in place — a crash mid-write can leave torn bytes. The append log does better by construction (only a torn tail is lost, and reads stop cleanly before it). Named in the header, not discovered in production.", cite: "include/agentengine/rt/session_store.hpp:149" },
     { item: "019 §4 deploy version-skew pin", state: "Not implemented. AgentMetadata::agent_version exists, but nothing consults it when a run resumes, so there is no pin-vs-migrate decision to make.", cite: "include/agentengine/core/agent_registry.hpp:63" },
     { item: "019 §5 retention and garbage collection", state: "No retention policy, no GC, no grace period anywhere — the project manifest header says so in as many words for the archive path.", cite: "include/agentengine/rt/project_manifest.hpp:242" },
@@ -641,7 +641,7 @@ export const durabilityGaps: Record<Lang, GapRow[]> = {
     { item: "G5 — một run độc bị cách ly sau ngưỡng, trạng thái còn nguyên, lý do người vận hành thấy được", state: "Đạt một nửa. Hành vi dừng-tại-ngưỡng và giữ nguyên trạng thái đã được chứng minh, nhưng PoisonRunPolicy<N> chỉ tồn tại như một bản sao trong một tệp kiểm thử — không header xuất bản nào định nghĩa nó, và không gì nêu ra lý do cho người vận hành thấy.", cite: "tests/rt/agent_session/test_rt_agent_session_identity_and_admission.cpp:108" },
     { item: "G6 — hiệu ứng at-most-once bị ngắt đúng khoảnh khắc bất định thì phải nêu là bất định, 10⁴ lần thử", state: "Cố ý chưa xây. unconfirmed_effect_intents() trả lời ý định nào thiếu kết cục — một phép đọc, không bao giờ là một quyết định. Tầng quyết định được nêu tên như phần việc có phạm vi riêng.", cite: "include/agentengine/rt/effect_journal.hpp:30" },
     { item: "Nhật ký hiệu ứng chưa được nối vào vòng lặp lượt", state: "journal_effect_intent()/journal_effect_outcome()/authorize_reexecution() không có caller nào ngoài chính bài kiểm thử của chúng. run_rounds() suy ra và kiểm toán khóa idempotency ở mọi lời gọi, nhưng không ghi nhật ký gì. Host nào muốn kỷ luật của 019 §3 thì phải tự gọi nhật ký.", cite: "include/agentengine/rt/agent_session.hpp:1512" },
-    { item: "Mất node, fencing, lease, epoch", state: "Không thứ nào tồn tại, theo quyết định. 019 §4 nay gọi đây là khoảng trống thật và vĩnh viễn; không có câu chuyện đa node và không có nguyên liệu so-sánh-rồi-đặt trong cả hai store.", cite: "019-Durability-and-Long-Running-Agents.md:73" },
+    { item: "Mất node, fencing, lease, epoch", state: "Không thứ nào tồn tại, theo quyết định. 019 §4 nay gọi đây là khoảng trống thật và vĩnh viễn; không có câu chuyện đa node và không có nguyên liệu so-sánh-rồi-đặt trong cả hai store.", cite: "rfcs/019-Durability-and-Long-Running-Agents.md:73" },
     { item: "FileSessionStore không ghi nguyên tử", state: "save() cắt cụt rồi ghi đè tại chỗ — sập giữa chừng có thể để lại byte đứt dở. Log ghi thêm làm tốt hơn theo cấu trúc (chỉ mất phần đuôi dở, và phép đọc dừng gọn trước nó). Điều này nêu trong header, không phải phát hiện khi chạy thật.", cite: "include/agentengine/rt/session_store.hpp:149" },
     { item: "Chính sách ghim phiên bản khi triển khai của 019 §4", state: "Chưa hiện thực. AgentMetadata::agent_version tồn tại thật, nhưng không gì tra tới nó khi một run tiếp tục, nên chẳng có quyết định ghim-hay-chuyển nào để mà đưa ra.", cite: "include/agentengine/core/agent_registry.hpp:63" },
     { item: "Lưu giữ và thu gom rác của 019 §5", state: "Không chính sách lưu giữ, không thu gom rác, không thời hạn ân hạn ở đâu cả — header của project manifest nói đúng như vậy cho đường lưu trữ.", cite: "include/agentengine/rt/project_manifest.hpp:242" },

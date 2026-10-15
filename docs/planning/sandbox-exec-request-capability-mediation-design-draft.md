@@ -6,9 +6,9 @@ generalized on inspection to all three `SandboxBackend` implementations — see 
 fix would repeat the exact per-backend-divergence mistake
 `decisions/ADR-087-sandbox-spec-capability-enforcement.md` already corrected once for `mounts`/`net`.
 
-**Relates to:** `008-Sandbox-and-Isolation.md` §1b (the "sandbox is the whole execution environment"
+**Relates to:** `rfcs/008-Sandbox-and-Isolation.md` §1b (the "sandbox is the whole execution environment"
 layering), §2 (`SandboxSpec`'s "empty-by-default authority" contract), §4 (the capability-enforcement
-table), `010-Python-Code-Interpreter.md` §1a (`Runner`), CLAUDE.md's locked decision ("the embedded
+table), `rfcs/010-Python-Code-Interpreter.md` §1a (`Runner`), CLAUDE.md's locked decision ("the embedded
 native CPython interpreter is the one mediated code-interpreter path, permanently... never a second
 interpreter for `execute_code`").
 
@@ -63,7 +63,7 @@ and if the answer is no, what — if anything — is still worth fixing?*
    earlier version of this finding claimed `cap::Exec` was scoped to *nested* exec only (008 §4's
    "`Exec` (nested)" table row) and therefore said nothing about top-level `SandboxBackend::create()`/
    `exec()` authorization. An independent red-team pass (`Agent` tool, this same design cycle) checked
-   the actual authoritative source and found that claim wrong: `007-Capability-and-Trust-Model.md:59`
+   the actual authoritative source and found that claim wrong: `rfcs/007-Capability-and-Trust-Model.md:59`
    —
    > `Exec<profile>` | Create a sandbox of a profile | profile, resource limits
    —
@@ -119,7 +119,7 @@ one invariant, silently.
 
 **C. (Recommended, fresh design rather than a patch onto either of the above) Promote the contract
 to the actual spec, once, and have all three backends point to it instead of re-describing it.**
-**Corrected placement, per red-team:** an earlier draft proposed a new `008-Sandbox-and-Isolation.md`
+**Corrected placement, per red-team:** an earlier draft proposed a new `rfcs/008-Sandbox-and-Isolation.md`
 §1b subsection; red-team correctly flagged that §1b (129-181) is scoped narrowly to native-jail's own
 composed mediation stack (Worktree/ShellRunner/PythonRunner/import-allowlist), not backend-agnostic
 contract language, while **§2** ("The contract," 182-230) already IS the backend-agnostic

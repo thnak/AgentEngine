@@ -5,7 +5,7 @@ namespace-diagram correction (making G1 actually see the whole public core). It 
 **not** attempt the bulk reconciliation of the corrected, now-larger violation/suppression set
 against 027 §2-4's canonical-name tables — that is real, separately-scoped follow-up work, named in
 §5 below, not silently folded in here.
-**Relates to:** 027-Vocabulary-and-Naming.md §6 (namespaces), §7 (terminology debt), §9 (G1/G3
+**Relates to:** rfcs/027-Vocabulary-and-Naming.md §6 (namespaces), §7 (terminology debt), §9 (G1/G3
 promotion gates); `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap 8 (the audit run
 that surfaced this); I2 (no ambient authority) and I4 (every effect is attributable) — the modules
 this gate could never actually check are exactly `trust/` and `sandbox/`, the ones those two

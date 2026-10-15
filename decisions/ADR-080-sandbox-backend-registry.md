@@ -7,7 +7,7 @@ sign-off, matching ADR-070/071/072's own flow).
 real, structurally-distinct type and named exactly this gap as deferred in its own §9, not decided
 against — this ADR closes it), `decisions/ADR-054-tool-registry-name-keyed-resolution.md` (the
 closest structural precedent — a host-curated, name-keyed registry answering "does this name resolve,
-and is it trustworthy" — reused, not reinvented), `008-Sandbox-and-Isolation.md` §3 (amended, see §6),
+and is it trustworthy" — reused, not reinvented), `rfcs/008-Sandbox-and-Isolation.md` §3 (amended, see §6),
 `docs/planning/2026-08-22-component-role-audit-tracker.md` Finding O (the real, deliberate
 architecture this registry's scope boundary respects — see §1), `docs/planning/sandbox-backend-
 registry-design-draft.md` (the full design record: Revision 1, a real 3-agent independent red-team
@@ -308,7 +308,7 @@ real and runtime-configurable; it deliberately does not, by itself, make backend
 for any execution path.
 
 **Binds:**
-- `008-Sandbox-and-Isolation.md` §3's "Resolving `Strict`" paragraph — amended (this ADR) to replace
+- `rfcs/008-Sandbox-and-Isolation.md` §3's "Resolving `Strict`" paragraph — amended (this ADR) to replace
   its prior "still needs an Engine-level backend registry M2 does not build (ADR-012 §9)" sentence
   with a description of the real mechanism now available, while preserving the honest disclosure that
   `Strict` still stays unevaluated when no registry is supplied, and that selection is not consumption.

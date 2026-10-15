@@ -4,7 +4,7 @@
 proven (real code + new test file, full suite green).
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #22 (the finding this
-ADR closes). `014-Workflow-and-Orchestration.md` §8 G3 (the gate itself: "shuffling intra-round
+ADR closes). `rfcs/014-Workflow-and-Orchestration.md` §8 G3 (the gate itself: "shuffling intra-round
 executor scheduling across 10³ seeds produces identical workflow output; an intentionally order-
 dependent executor is detected by the same test"). `docs/planning/milestone-6-multi-agent-
 orchestration-breakdown.md` decisions 5/8 (the already-designed architecture this ADR builds

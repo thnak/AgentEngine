@@ -17,8 +17,8 @@
   quota enforcement (Phase C3); read-vs-write capability policy (`cap::FsRead`/`cap::FsWrite`,
   already enforced one layer up by `mount_read`/`mount_write`); Linux (Phase C4); 8.3 short-filename
   aliasing (named as an untested residual, §8.3).
-- **Related specs:** `025-Worktree-and-Virtual-Filesystem.md` §5 ("path escape is a security bug,
-  not a bug"), §9 G2 · `021-Platform-Support-and-Portability.md` §6 G3 (the exact attack-class list
+- **Related specs:** `rfcs/025-Worktree-and-Virtual-Filesystem.md` §5 ("path escape is a security bug,
+  not a bug"), §9 G2 · `rfcs/021-Platform-Support-and-Portability.md` §6 G3 (the exact attack-class list
   this ADR's corpus is drawn from, verbatim) · `decisions/ADR-004-appcontainer-native-jail-windows-
   backend.md` §6 finding 1 (AppContainer's ACL model is not a sufficient filesystem boundary;
   interpreter-level path mediation must be primary — this ADR is the concrete mechanism that
@@ -285,8 +285,8 @@ sub-cases (§6 findings 3/4) — both reasoned, neither executed.
 
 ### 8.4 What this binds
 
-Evidence toward `025-Worktree-and-Virtual-Filesystem.md` §5/§9 G2 and
-`021-Platform-Support-and-Portability.md` §6 G3, Windows only, scoped as a primitive rather than a
+Evidence toward `rfcs/025-Worktree-and-Virtual-Filesystem.md` §5/§9 G2 and
+`rfcs/021-Platform-Support-and-Portability.md` §6 G3, Windows only, scoped as a primitive rather than a
 full gate closure (§8.2). Establishes the mechanism `decisions/ADR-004` §6 finding 1 named as
 required ("interpreter-level `open()` mediation... must be the primary filesystem boundary") without
 building it at the time.

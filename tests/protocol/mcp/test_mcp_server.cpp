@@ -1,4 +1,4 @@
-// Milestone 7 Phase C2 (011-MCP-Conformance.md §4, docs/planning/milestone-7-protocol-conformance-
+// Milestone 7 Phase C2 (rfcs/011-MCP-Conformance.md §4, docs/planning/milestone-7-protocol-conformance-
 // breakdown.md). Proves McpServer (protocol/mcp/server.hpp) dispatches server/discover, tools/list,
 // and tools/call correctly against a REAL ToolTable and the REAL 10-step tool pipeline
 // (tool_pipeline.hpp::invoke_tool) -- and specifically that 011 §3.1's "isError vs JSON-RPC error"

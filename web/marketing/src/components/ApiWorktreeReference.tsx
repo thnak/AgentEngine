@@ -575,8 +575,8 @@ export function ApiWorktreeReference() {
           </RevealItem>
           <RevealItem>
             <div style={{ marginTop: 16, display: "flex", gap: 16, flexWrap: "wrap" }}>
-              <a href={gh("025-Worktree-and-Virtual-Filesystem.md")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
-                025-Worktree-and-Virtual-Filesystem.md
+              <a href={gh("rfcs/025-Worktree-and-Virtual-Filesystem.md")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
+                rfcs/025-Worktree-and-Virtual-Filesystem.md
               </a>
               <a href={gh("include/agentengine/core/worktree.hpp")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
                 include/agentengine/core/worktree.hpp

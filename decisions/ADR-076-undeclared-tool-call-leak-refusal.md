@@ -14,7 +14,7 @@ time, before 074 appeared anywhere public under this ADR's content.
 sits beside and does not modify — reuses its `response_format_codec::decode_response_format()` as a
 pure detector), `decisions/ADR-035-chatclient-streaming-completeness.md` (the backend-agnostic
 `AgentSession::run_model_call()` centralization this ADR's insertion point reuses),
-`004-Model-Provider-Plane.md` §2 (`ChatClientCapabilities` — "declared, not probed" — this ADR adds
+`rfcs/004-Model-Provider-Plane.md` §2 (`ChatClientCapabilities` — "declared, not probed" — this ADR adds
 the one enforced check that a declared `tool_calling` bit isn't quietly contradicted by what a
 response actually contains). Design draft, kept as the full uncompressed record:
 `docs/planning/oq23-undeclared-tool-call-leak-design-draft.md`. Confirming fixture for the
@@ -165,7 +165,7 @@ what triggers the refusal.
   per-backend scan flag to annotate (ADR-035's "closing Anthropic's total gap" already meant scanning
   was `AgentSession`-only for that backend from the start).
 
-**Binds:** `004-Model-Provider-Plane.md` §2 — the degradation rule already states capabilities are
+**Binds:** `rfcs/004-Model-Provider-Plane.md` §2 — the degradation rule already states capabilities are
 "declared, not probed" for the outbound direction (what the engine sends); this ADR adds the
 symmetric inbound enforcement (what a response actually contains is checked against what
 `tool_calling` declared, when the one existing recovery path for a mismatch isn't armed). See the

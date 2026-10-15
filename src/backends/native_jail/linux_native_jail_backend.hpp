@@ -1,6 +1,6 @@
 #pragma once
 // Implements agentengine::SandboxBackend (sandbox/sandbox.hpp) for the `native-jail` profile,
-// Linux half (008-Sandbox-and-Isolation.md §1b, §2, §3) -- Milestone 2 Phase C task C2's own
+// Linux half (rfcs/008-Sandbox-and-Isolation.md §1b, §2, §3) -- Milestone 2 Phase C task C2's own
 // follow-up (021 §2 sequencing: Windows first, Linux once Windows reached a stable state, which
 // C2's Windows half now has). Namespaces (PID/net/mount/UTS/IPC via `clone()`, atomically -- not
 // `unshare()` from the host process, which would move the CALLING thread's own namespaces and
@@ -21,7 +21,7 @@
 // header's own scope note first, most of it applies here unchanged:
 //   - `ExecRequest::source` is, for M2 only, a shell command line (`/bin/sh -c <source>`) the
 //     CALLER is trusted to have already resolved and mediated -- the Linux analogue of the Windows
-//     side treating `source` as a Win32 command line. 008-Sandbox-and-Isolation.md §2's
+//     side treating `source` as a Win32 command line. rfcs/008-Sandbox-and-Isolation.md §2's
 //     "`ExecRequest` mediation is the caller's responsibility, not the backend's" clause is the
 //     canonical statement of this contract (docs/planning/sandbox-exec-request-capability-mediation-
 //     design-draft.md investigated and confirmed this is correct-by-design, not unfinished).

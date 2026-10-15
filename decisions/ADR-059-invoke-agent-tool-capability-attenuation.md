@@ -4,7 +4,7 @@
 (no correction needed). Awaiting the project owner's judge pass (`OpenQuestions.md` OQ-11 — only the
 owner marks an ADR Judged).
 
-**Relates to:** `026-Agent-Facing-Runtime-Surface.md` §5 (`agent.spawn` — "inherits an attenuated
+**Relates to:** `rfcs/026-Agent-Facing-Runtime-Surface.md` §5 (`agent.spawn` — "inherits an attenuated
 capability set... a spawned agent can never exceed its parent," the constraint this ADR closes a real
 violation of), `include/agentengine/core/agent_registry.hpp` (`invoke_agent_tool()`, the function this
 ADR fixes), `include/agentengine/trust/capability.hpp` (`CapabilitySet::attenuate()`, the already-

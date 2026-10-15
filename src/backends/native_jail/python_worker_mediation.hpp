@@ -3,8 +3,8 @@
 // file's own Stages A/B/D, ADR-002/003's carried-forward findings: the Layer-0 keep-set, the
 // isolated=1/site_import=0 embedding shape, "gate by module name before any loader runs") into the
 // process this design's ADR moves real CPython execution into. See mediated_python_runner.hpp's own
-// (now much shorter) file header for what changed and why; see 008-Sandbox-and-Isolation.md §1b/§3
-// and 010-Python-Code-Interpreter.md §2/§6 for the spec this whole worker-process split implements.
+// (now much shorter) file header for what changed and why; see rfcs/008-Sandbox-and-Isolation.md §1b/§3
+// and rfcs/010-Python-Code-Interpreter.md §2/§6 for the spec this whole worker-process split implements.
 //
 // The load-bearing difference from the code this was relocated from: `Internal_call_tool`/
 // `Internal_open`/`Internal_listdir`/`Internal_do_connect` no longer call host-side C++ directly

@@ -2,7 +2,7 @@
 // ADR-149: a Magentic-shaped workflow convenience API (GitHub issue #28, items 1/3). Design draft:
 // docs/planning/magentic-workflow-convenience-api-design-draft.md.
 //
-// PURE SUGAR, NOT A NEW ENGINE PRIMITIVE (014-Workflow-and-Orchestration.md §3/§9 Q5):
+// PURE SUGAR, NOT A NEW ENGINE PRIMITIVE (rfcs/014-Workflow-and-Orchestration.md §3/§9 Q5):
 // `MagenticWorkflowBuilder::build()` produces exactly the graph shape `examples/17_planner_live.cpp`
 // already hand-builds against a real model -- a cyclic manager/participant graph with `switch_case`
 // routing out of the manager and `direct` edges back in. Falls through to the SAME shared

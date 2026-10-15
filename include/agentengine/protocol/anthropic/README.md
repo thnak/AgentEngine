@@ -1,7 +1,7 @@
 # `agentengine::anthropic`
 
 The Anthropic Messages API surface (the "first-class" `ChatClient` backend — reasoning parts, prompt
-caching, tool use) from **004-Model-Provider-Plane.md §3**.
+caching, tool use) from **rfcs/004-Model-Provider-Plane.md §3**.
 
 `chat_client.hpp` — `AnthropicChatClient<Store>` (Milestone 5 Phase E, `AGENTENGINE_WITH_HTTPS`-gated):
 a real, product-code `ChatClient` conformer over Phase C's `perform_provider_https_exchange`, mirroring

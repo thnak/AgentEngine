@@ -270,7 +270,7 @@ message/content/response object still also carries `raw_representation: Any` +
 `additional_properties: dict[str, Any]`, so the escape hatch exists in both languages; Python
 additionally lets the type system communicate provider-specific shape.
 
-**Relevance to AgentEngine:** input for `004-Model-Provider-Plane.md`'s existing porting note (which
+**Relevance to AgentEngine:** input for `rfcs/004-Model-Provider-Plane.md`'s existing porting note (which
 already correctly identifies Anthropic's cumulative→incremental usage conversion, tool-schema
 shaping, and structured-output shaping as portable logic) — the two schema-extension *strategies*
 above are a further, previously-unrecorded data point for whichever escape-hatch mechanism

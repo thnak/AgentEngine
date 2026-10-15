@@ -1,4 +1,4 @@
-// Milestone 3 Phase E4 -- 010-Python-Code-Interpreter.md §9 G2's ShellRunner-specific classes
+// Milestone 3 Phase E4 -- rfcs/010-Python-Code-Interpreter.md §9 G2's ShellRunner-specific classes
 // against the REAL `MediatedShellRunner` (E3): "PATH hijacking, command substitution reaching an
 // unregistered binary, function/alias shadowing of builtins -- must not merely be contained, must
 // not exist as a reachable code path." The structural half (no process-creation symbol anywhere in

@@ -11,7 +11,7 @@
 - **Date:** 2026-08-30.
 - **Scope:** `include/agentengine/sandbox/mandatory_sandbox_provider.hpp` (new tools, new methods, new
   opt-in binding call, no change to `bind_sandbox()`'s existing signature), `tests/sandbox/test_task_branch_tools.cpp`
-  (new), `tests/CMakeLists.txt` (new target), `027-Vocabulary-and-Naming.md` (12 new rows). No other
+  (new), `tests/CMakeLists.txt` (new target), `rfcs/027-Vocabulary-and-Naming.md` (12 new rows). No other
   file touched — every existing caller of `bind_sandbox()`/`MandatorySandboxProvider` compiles and
   runs unchanged.
 - **Related specs:** `docs/planning/proofs/task_branch_tool/task_branch_sandbox.hpp` (ADR-099 §7's A10,

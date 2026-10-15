@@ -141,7 +141,7 @@ Per this file's rule, a per-RFC question stays in its RFC and is not promoted he
 
 **Part A, answered — `EmbeddedHost` is unbuilt, and that is tracked, not open.** No `EmbeddedHost`
 type exists anywhere in the tree (only prose references: `020` §3a/§7 G5, `027-Vocabulary-and-
-Naming.md:144`, `030-Project-Workspace-and-Lifecycle.md:151`, and one forward-looking comment at
+Naming.md:144`, `rfcs/030-Project-Workspace-and-Lifecycle.md:151`, and one forward-looking comment at
 `include/agentengine/rt/agent_session.hpp:196`). Four separate planning documents already say why and
 when: `docs/planning/v1-implementation-roadmap.md:207-227` (020 is a Milestone 9 RFC),
 `docs/planning/milestone-6-multi-agent-orchestration-breakdown.md:28,41,56` (*"Does not exist. It
@@ -227,7 +227,7 @@ document they will read. Five edits now is cheap; discovering mid-M9 that the RF
 the project decided in August 2026 never to build is not.
 
 References: `decisions/ADR-061-host-provided-inbound-transport.md` §0, §2a, §7c R21, §8.6, §13.7,
-§33.3, §45; `020-Configuration-and-Hosting.md` §3, §3a, §4, §7 G2/G5, §8 Q2; `027-Vocabulary-and-
+§33.3, §45; `rfcs/020-Configuration-and-Hosting.md` §3, §3a, §4, §7 G2/G5, §8 Q2; `027-Vocabulary-and-
 Naming.md:144`; `include/agentengine/protocol/mcp/server.hpp:178,201`;
 `include/agentengine/pal/net.hpp:140`; `include/agentengine/core/session_builder.hpp:524`;
 `docs/planning/v1-implementation-roadmap.md:207-227`;
@@ -374,7 +374,7 @@ precedents:
    swap in a trivial `FakeRunner` at construction. Build-time CRTP composition, not per-`.run()`, but
    the same substitution PydanticAI's DI achieves, just bound earlier in the object's lifetime.
 
-022's own testing story (`022-Testing-and-Evaluation.md` §2/§6) describes a `TestKit` with mock
+022's own testing story (`rfcs/022-Testing-and-Evaluation.md` §2/§6) describes a `TestKit` with mock
 providers that was Quark-scheduler-based and was never rebuilt after ADR-037 removed Quark — today's
 tests are ordinary unit/integration tests over `rt::` primitives directly, which is exactly where
 these two idioms already operate. No test anywhere in the tree needs a swap that isn't expressible as
@@ -436,7 +436,7 @@ red-team's required revision targeted; 13 real `AgentSession::run_model_call()` 
 `tests/rt/agent_session/test_rt_agent_session_streaming_and_events.cpp`). Full `ctest`: 227/229 real passes; the only 2
 failures (`test_openai_chat_client_live`, `test_anthropic_chat_client_live`) were confirmed
 pre-existing and unrelated to this change — reproduced identically against the untouched pre-change
-baseline via `git stash`, rebuild, and re-run. Amends `004-Model-Provider-Plane.md` §2 with the inbound
+baseline via `git stash`, rebuild, and re-run. Amends `rfcs/004-Model-Provider-Plane.md` §2 with the inbound
 half of "capabilities are declared, not probed."
 
 **Named residual, not closed:** a direct `OpenAIChatClient::chat()` call bypassing `AgentSession`
@@ -623,7 +623,7 @@ reliable, on-every-run hazard given a forced interleaving, not a rare timing acc
 `shared` stays available but is not the default for concurrent siblings** — 025 §3's existing
 default (`branch`) was already right, and this prove is the falsifiable reason why; using `shared`
 for concurrent siblings now requires an explicit opt-in that documents the read-skew hazard rather
-than a bare mode flag. See `025-Worktree-and-Virtual-Filesystem.md` §3 and §10 Q1/Q2 for the full
+than a bare mode flag. See `rfcs/025-Worktree-and-Virtual-Filesystem.md` §3 and §10 Q1/Q2 for the full
 resolution.
 
 ### OQ-6 — Plugin distribution
@@ -643,7 +643,7 @@ digest, SHA-256 verify) is a few hundred lines against an HTTP capability the en
 not a heavyweight OCI SDK — push, garbage collection, and resumable chunked upload are never needed
 because AgentEngine is never the publisher (009 §7/§8 already assume third-party or operator-side
 tooling publishes plugins and skills). **Decision: reuse OCI, no first-party registry** — see
-`009-Plugin-and-Extension-System.md` §11 Q2 for the full resolution, including the one concrete gap
+`rfcs/009-Plugin-and-Extension-System.md` §11 Q2 for the full resolution, including the one concrete gap
 this surfaced (blob storage lives on a host distinct from the registry API host, so the egress
 allowlist for a plugin pull must name both) and the one item explicitly left as follow-on design
 work (mapping `plugin.aepkg`, §3, onto an OCI artifact's layer/annotation/referrer shape).
@@ -937,13 +937,13 @@ Re-adding macOS later, if a macOS PAL backend is ever built for `agentengine::pa
 was originally framed as "contributed to Quark," back when Quark was still the vendored PAL; ADR-037
 removed that dependency), is a fresh decision starting at Best-effort — not a reinstatement.
 
-Updated to match: `021-Platform-Support-and-Portability.md` §2 (target matrix), §3 (per-subsystem
+Updated to match: `rfcs/021-Platform-Support-and-Portability.md` §2 (target matrix), §3 (per-subsystem
 table), §5 (CI matrix), §6 (G1), §7 (this question); `CONVENTIONS.md` Target & scope;
 `AgentEngineSpecification.md` (portability property, WASM-artifact claim); `008-Sandbox-and-
 Isolation.md` (goal statement, locked-decision bullet, `wasm`/`native-jail` profile table, G1 gate);
-`009-Plugin-and-Extension-System.md` (goal statement, G1 gate); `010-Python-Code-Interpreter.md`
-(shell-portability discussion, G1 and G6 gates); `024-Versioning-Compatibility-and-Governance.md`
-Q2; `025-Worktree-and-Virtual-Filesystem.md` G2; `README.md` (plugin-portability line);
+`rfcs/009-Plugin-and-Extension-System.md` (goal statement, G1 gate); `rfcs/010-Python-Code-Interpreter.md`
+(shell-portability discussion, G1 and G6 gates); `rfcs/024-Versioning-Compatibility-and-Governance.md`
+Q2; `rfcs/025-Worktree-and-Virtual-Filesystem.md` G2; `README.md` (plugin-portability line);
 `src/backends/native_jail/README.md` and `src/backends/wasm/README.md`. `decisions/ADR-001/002/004`
 and the dated `docs/research/*.md` notes are left as-is — they are historical records of what was
 actually run/researched, not live claims.

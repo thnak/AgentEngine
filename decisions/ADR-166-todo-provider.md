@@ -10,7 +10,7 @@ and without opening a new capability/DoS/forgery surface?
 - **Scope:** `include/agentengine/core/todo_provider.hpp` (new — `TodoProvider`, five tool
   descriptors, `TodoAddArgs`/`TodoAddReply`/`TodoIdArgs`/`TodoOkReply`/`TodoNoArgs`/
   `TodoListReply`), `tests/core/context/test_todo_provider.cpp` (new, 14 named claims), `tests/CMakeLists.txt`
-  (additive wiring, unguarded — no `WIN32`/worktree dependency), `005-Sessions-State-and-Memory.md`
+  (additive wiring, unguarded — no `WIN32`/worktree dependency), `rfcs/005-Sessions-State-and-Memory.md`
   §5 (modified — added `TodoProvider` to the provider-kinds list). **No other production file
   changed** — `ContextProvider`, `ContextContribution`, `ComposedContextProvider`,
   `assemble_context()`, and `ToolDescriptor` are all untouched; this is a pure addition.

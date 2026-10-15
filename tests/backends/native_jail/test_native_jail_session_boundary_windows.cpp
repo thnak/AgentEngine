@@ -1,4 +1,4 @@
-// 008-Sandbox-and-Isolation.md §9 G7 -- "a guest instance is never reused across sessions or
+// rfcs/008-Sandbox-and-Isolation.md §9 G7 -- "a guest instance is never reused across sessions or
 // principals; a canary written in session A is unreachable from session B on every profile,
 // including under pooling and snapshot-restore. Positive control: a deliberately shared pool is
 // caught." Traced as a real, previously-untracked gap in decisions/ADR-082-native-jail-promotion-

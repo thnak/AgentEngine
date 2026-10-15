@@ -18,7 +18,7 @@ Filesystem.md` has uncommitted working-tree edits from another concurrent sessio
 writing (2026-08-06) — confirmed via `git status`, content read directly from the working tree
 below. This breakdown is written against that current text; if it moves further before Phase A
 lands, the affected section gets a fast re-check, not a silent staleness. `009-Plugin-and-
-Extension-System.md` and `029-Memory-System.md` are also mid-edit elsewhere and are out of scope
+Extension-System.md` and `rfcs/029-Memory-System.md` are also mid-edit elsewhere and are out of scope
 for M3 regardless.
 
 ## Current state (verified 2026-08-06, after M2)

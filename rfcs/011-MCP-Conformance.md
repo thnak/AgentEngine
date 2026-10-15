@@ -254,7 +254,7 @@ An MCP server is **T2 third-party code** (007 §6). Concretely:
 ### 8a. Spec-mandated obligations we implement as conformance clauses
 
 Lifted from the specification's own security material, restated as checkable requirements
-([detail](docs/research/2026-mcp-protocol-detail.md) §13):
+([detail](../docs/research/2026-mcp-protocol-detail.md) §13):
 
 - **Token passthrough is forbidden.** We **MUST NOT** accept a token not issued for us, **MUST**
   validate audience per RFC 8707 (401 on failure), and **MUST NOT** forward a received token
@@ -324,7 +324,7 @@ The registry's own guidance is that host applications should **not** consume it 
 poll `GET /v0.1/servers` roughly hourly and persist locally, because the registry offers no uptime
 or durability guarantee. If we ever consume it, we do so as an aggregator, never in a request path.
 
-Details and sources: [`docs/research/2026-mcp-ecosystem.md`](docs/research/2026-mcp-ecosystem.md).
+Details and sources: [`docs/research/2026-mcp-ecosystem.md`](../docs/research/2026-mcp-ecosystem.md).
 
 ## 10. Conformance tooling — the gate is executable
 

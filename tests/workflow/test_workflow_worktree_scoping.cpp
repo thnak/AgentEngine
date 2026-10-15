@@ -1,5 +1,5 @@
 // Proof for ADR-032 (decisions/ADR-032-workflow-executor-worktree-scoping.md), closing
-// 014-Workflow-and-Orchestration.md §1's named gap ("nothing states whether a workflow executor...
+// rfcs/014-Workflow-and-Orchestration.md §1's named gap ("nothing states whether a workflow executor...
 // gets its own sub-worktree, inherits the caller's, or shares one") using 025-Worktree-and-Virtual-
 // Filesystem.md §3's `SubWorktree`/`sharing_mode` primitive.
 //

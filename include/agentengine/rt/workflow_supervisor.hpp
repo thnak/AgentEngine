@@ -82,7 +82,7 @@
 //
 // Merge-on-join hook (set_merge_on_join_hook()/merge_on_join_hook_) -- ADDED closing decisions/
 // ADR-055-conflict-evidence-materialization.md's own §6 residual ("does not build merge-on-join
-// wiring itself"). 025-Worktree-and-Virtual-Filesystem.md §4: "A `branch` sub-worktree merges back
+// wiring itself"). rfcs/025-Worktree-and-Virtual-Filesystem.md §4: "A `branch` sub-worktree merges back
 // when its agent completes" -- a per-EXECUTOR-completion event, not tied to `edge_kind::fan_in`
 // (that is a message-ROUTING join, a different, easily-confused concept this file already implements
 // via `route_from()`; 025 §4's own merge-on-join has never been about how a reply gets routed).

@@ -1,7 +1,7 @@
 // Proof for ADR-037 Phase 3, Slice 1: request-port behavior against agentengine::rt::WorkflowSupervisor
 // (include/agentengine/rt/workflow_supervisor.hpp) -- the Quark-actor-free replacement for
 // agentengine::workflow::WorkflowSupervisor. This file supersedes two OLD, Quark-actor-based files
-// that proved real behavioral claims about 014-Workflow-and-Orchestration.md §4 (human-in-the-loop /
+// that proved real behavioral claims about rfcs/014-Workflow-and-Orchestration.md §4 (human-in-the-loop /
 // the request port) with no equivalent against `rt::` yet:
 //   - test_workflow_request_port.cpp (E0-E5; E0 and the activation-passivation half of E1/E4 are OUT
 //     OF SCOPE here -- E0 is shared, unchanged workflow/graph.hpp validator code, and there are no

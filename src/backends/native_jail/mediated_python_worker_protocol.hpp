@@ -1,7 +1,7 @@
 #pragma once
-// The jailed-Python-worker wire message catalog (008-Sandbox-and-Isolation.md §1b/§3's native-jail
+// The jailed-Python-worker wire message catalog (rfcs/008-Sandbox-and-Isolation.md §1b/§3's native-jail
 // layer-3 backstop, wired for real per the ADR superseding native_jail_backend.hpp's former
-// "Correction (2026-08-23)" comment; 010-Python-Code-Interpreter.md §2/§6). Every message is a
+// "Correction (2026-08-23)" comment; rfcs/010-Python-Code-Interpreter.md §2/§6). Every message is a
 // `json::Value` object carrying a `"type"` string tag; this header is the single source of truth for
 // those tags and for the handful of fields both peers (native_jail_backend.cpp on the host side,
 // python_worker_main.cpp/python_worker_mediation.cpp on the worker side) need to agree on by NAME.

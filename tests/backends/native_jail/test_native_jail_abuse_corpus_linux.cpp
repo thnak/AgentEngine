@@ -1,5 +1,5 @@
 // Milestone 2 Phase C, task C3 (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md):
-// the systematic 008-Sandbox-and-Isolation.md SS7 abuse-case corpus, scoped to the subset that
+// the systematic rfcs/008-Sandbox-and-Isolation.md SS7 abuse-case corpus, scoped to the subset that
 // needs no interpreter (010) -- fork bomb, OOM, infinite loop, unbounded output -- against the
 // real Linux LinuxNativeJailBackend (C2). This is the SS9 G2 gate itself: "every SS7 abuse case is
 // contained, with a measured kill time, and a positive control (limits deliberately disabled)

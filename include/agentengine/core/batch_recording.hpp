@@ -1,6 +1,6 @@
 #pragma once
 // decisions/ADR-236-batch-recording-and-replay.md: the recorded seam for vendor batch results (I5), closing
-// ADR-235 §7's "no recorded seam for replaying batch results". 004-Model-Provider-Plane.md §6 records a
+// ADR-235 §7's "no recorded seam for replaying batch results". rfcs/004-Model-Provider-Plane.md §6 records a
 // synchronous model call (core/chat_recording.hpp); this file does the same for the `BatchBackend` seam
 // (core/batch_backend.hpp) and for the batch clock (`rt::BatchPolicy::now_ns`), because a batched round's
 // outcome depends on both: what the vendor answered on each poll, and how old each job was when it did

@@ -1,5 +1,5 @@
 #pragma once
-// Implements 006-Tool-and-Function-Plane.md §1 — "Schemas are derived from the argument/result
+// Implements rfcs/006-Tool-and-Function-Plane.md §1 — "Schemas are derived from the argument/result
 // types at compile time (Quark 016's one-describe discipline), emitted as JSON Schema 2020-12."
 //
 // C++23 has no compile-time reflection (P2996 lands in C++26), so field *names* cannot be pulled
