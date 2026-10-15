@@ -23,20 +23,24 @@ template <class T>
 concept SandboxBackend = requires(T backend, SandboxSpec spec, SandboxHandle& handle,
                                    ExecRequest request, EffectContext& ctx) {
     { T::traits } -> std::convertible_to<ProfileTraits const&>;
-    { backend.create(spec, ctx) } -> std::same_as<result<SandboxHandle>>;
-    { backend.exec(handle, request, ctx) } -> std::same_as<result<ExecOutcome>>;
-    { backend.destroy(handle) } -> std::same_as<void>;
+    { backend.create(spec, ctx) } -> std::same_as<task<result<SandboxHandle>>>;
+    { backend.exec(handle, request, ctx) } -> std::same_as<task<result<ExecOutcome>>>;
+    { backend.destroy(handle) } -> std::same_as<task<void>>;
 };
 ```
 
-Four things, no more:
+Four things, no more. Every method returns a `task` (decisions/ADR-237 §5.1, #173): a backend may be remote --
+a microVM host, a container daemon -- so each call is allowed to suspend. A backend whose work is local and
+synchronous simply writes the body as a coroutine that never suspends (`co_return` its result); the in-tree
+backends do exactly that, keeping the synchronous body in a `*_blocking` member. The handle and `ctx` are
+borrowed and must outlive the returned task -- callers `co_await` it in place:
 
 - `static constexpr ProfileTraits traits` — see §2 below. Required even though it's not a method;
   without it `Profile::Strict` (008 §3) has nothing to rank your backend against.
-- `create(SandboxSpec const&, EffectContext&) -> result<SandboxHandle>` — stand up one sandbox
+- `create(SandboxSpec, EffectContext&) -> task<result<SandboxHandle>>` — stand up one sandbox
   instance and return an opaque handle. `SandboxHandle::opaque_id` is yours to define; the core
   never interprets it.
-- `exec(SandboxHandle&, ExecRequest const&, EffectContext&) -> result<ExecOutcome>` — run one
+- `exec(SandboxHandle&, ExecRequest, EffectContext&) -> task<result<ExecOutcome>>` — run one
   request against an already-created instance. Called potentially many times against the same
   handle (`sandbox_lifetime::per_session` is the default in `SandboxSpec`) — **state must persist
   across calls on the same handle**. This was a real, fixed bug class in this codebase (both
@@ -46,9 +50,9 @@ Four things, no more:
   `JobObjectLimits`-style destructor can kill an in-flight process on the very call that spawned it.
   Keep your own `unordered_map<opaque_id, Instance>` (or equivalent) alive across calls, keyed by
   the handle you returned from `create()`.
-- `destroy(SandboxHandle&) -> void` — idempotent, never throws. Called on an already-destroyed or
+- `destroy(SandboxHandle&) -> task<void>` — idempotent, never throws. Called on an already-destroyed or
   unknown handle should be a silent no-op (`LinuxNativeJailBackend`/`KataBackend`'s own convention)
-  — `void` means you have no way to surface a cleanup failure through the return type; if you need
+  — `task<void>` means you have no way to surface a cleanup failure through the return type; if you need
   observability, log it (see `kata_backend.cpp`'s `destroy()` for the pattern: failed cleanup steps
   go to stderr so they're visible in host logs, not silently dropped).
 
@@ -134,7 +138,9 @@ Two things to get right, both because getting them wrong has a real, disclosed b
   instance — it hands the same `shared_ptr<B>` to every caller across every session. If your
   `create`/`exec`/`destroy` mutate shared state (an `instances_` map, a connection pool), you must
   synchronize it yourself. This is a named, open requirement in the design draft (§2a), not
-  something the registry silently handles.
+  something the registry silently handles. A backend that really suspends adds one rule: never hold
+  a `std::mutex` across a `co_await` -- release it before suspending, or use `rt::AsyncMutex`
+  (ADR-237 §14 step 49's `Ledger` split is the worked example).
 - **`strict_eligibility::eligible` vs `named_only`.** `eligible` means your backend competes to win
   `Profile::Strict` resolution for *every* `Strict`-configured agent in the process, the moment it's
   registered — a real, process-wide routing change, not scoped to whoever registered it. For a new,
@@ -214,12 +220,13 @@ public:
         agentengine::cold_start_class::network_dependent,
     };
 
-    agentengine::result<agentengine::SandboxHandle> create(
-            agentengine::SandboxSpec const& spec, agentengine::EffectContext& ctx);
-    agentengine::result<agentengine::ExecOutcome> exec(
-            agentengine::SandboxHandle& handle, agentengine::ExecRequest const& request,
+    // Coroutines (ADR-237 §5.1). Arguments you keep past a suspension are taken by value.
+    agentengine::task<agentengine::result<agentengine::SandboxHandle>> create(
+            agentengine::SandboxSpec spec, agentengine::EffectContext& ctx);
+    agentengine::task<agentengine::result<agentengine::ExecOutcome>> exec(
+            agentengine::SandboxHandle& handle, agentengine::ExecRequest request,
             agentengine::EffectContext& ctx);
-    void destroy(agentengine::SandboxHandle& handle);
+    agentengine::task<void> destroy(agentengine::SandboxHandle& handle);
 
 private:
     struct Instance { /* your per-sandbox state */ };
