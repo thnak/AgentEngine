@@ -38,16 +38,16 @@ struct ConformingBackend {
         7, agentengine::platform_id::windows_x86_64 | agentengine::platform_id::linux_x86_64,
         agentengine::cold_start_class::milliseconds};
 
-    agentengine::result<agentengine::SandboxHandle> create(agentengine::SandboxSpec const&,
+    agentengine::task<agentengine::result<agentengine::SandboxHandle>> create(agentengine::SandboxSpec,
                                                              agentengine::EffectContext&) {
-        return agentengine::SandboxHandle{};
+        co_return agentengine::SandboxHandle{};
     }
-    agentengine::result<agentengine::ExecOutcome> exec(agentengine::SandboxHandle&,
-                                                         agentengine::ExecRequest const&,
+    agentengine::task<agentengine::result<agentengine::ExecOutcome>> exec(agentengine::SandboxHandle&,
+                                                         agentengine::ExecRequest,
                                                          agentengine::EffectContext&) {
-        return agentengine::ExecOutcome{};
+        co_return agentengine::ExecOutcome{};
     }
-    void destroy(agentengine::SandboxHandle&) {}
+    agentengine::task<void> destroy(agentengine::SandboxHandle&) { co_return; }
 };
 static_assert(agentengine::SandboxBackend<ConformingBackend>);
 static_assert(agentengine::SandboxProfileArg<ConformingBackend>);

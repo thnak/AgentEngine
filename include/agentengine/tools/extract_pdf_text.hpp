@@ -295,9 +295,46 @@ inline constexpr std::uint64_t kWorkerMemoryBytes = 256ull * 1024 * 1024;
 inline constexpr std::uint32_t kWorkerPids = 4;
 inline constexpr std::uint64_t kWorkerOutputBytes = 1024 * 1024;
 
+// ADR-237 §5.1 (#173): the `SandboxBackend` seam is `task`-shaped, so `invoke_worker()` is a coroutine. These two
+// keep each call inside its own ADR-170 event bracket, exactly as the immediately-invoked lambdas they replace
+// did: the scope closes (and reports) before the next stage starts.
+template <class Backend>
+[[nodiscard]] task<result<SandboxHandle>> bracketed_create(Backend& backend, SandboxSpec const& spec,
+                                                           EffectContext& ctx, std::string const& exec_id,
+                                                           std::string backend_name) {
+    SandboxExecScope scope(ctx, exec_id, std::move(backend_name), "create");
+    auto h = co_await backend.create(spec, ctx);
+    if (!h) {
+        scope.failed(h.error().code);
+        co_return h;
+    }
+    scope.succeeded();
+    co_return h;
+}
+
+template <class Backend>
+[[nodiscard]] task<result<ExecOutcome>> bracketed_exec(Backend& backend, SandboxHandle& handle,
+                                                       ExecRequest const& req, EffectContext& ctx,
+                                                       std::string const& exec_id, std::string backend_name) {
+    SandboxExecScope scope(ctx, exec_id, std::move(backend_name), "exec");
+    auto o = co_await backend.exec(handle, req, ctx);
+    if (!o) {
+        scope.failed(o.error().code);
+    } else if (o->klass != exec_outcome_class::ok) {
+        // A worker that ran but did not exit cleanly is NOT a successful exec on this channel,
+        // even though `backend.exec()` returned a value -- the caller below turns exactly this
+        // into an error, and reporting it as `ok` here would make the event stream disagree with
+        // the tool result a UI shows next to it.
+        scope.failed("extract_pdf_text.worker_failed");
+    } else {
+        scope.succeeded();
+    }
+    co_return o;
+}
+
 #if defined(_WIN32)
 
-[[nodiscard]] inline result<std::string> invoke_worker(std::string_view mode,
+[[nodiscard]] inline task<result<std::string>> invoke_worker(std::string_view mode,
                                                          std::filesystem::path const& pdf_file,
                                                          EffectContext& ctx) {
     // Process-wide by construction: shared_profile()/the AppContainer SID underneath NativeJailBackend
@@ -309,7 +346,7 @@ inline constexpr std::uint64_t kWorkerOutputBytes = 1024 * 1024;
     static native_jail::NativeJailBackend backend;
 
     auto granted = backend.grant_ro_path_once(scratch_dir().wstring());
-    if (!granted) return std::unexpected(granted.error());
+    if (!granted) co_return std::unexpected(granted.error());
     // The worker binary's own directory (also holds pdfium.dll, copied there at build time) is NOT
     // covered by any Windows default AppContainer ACE the way a curated set of real OS paths is
     // (ADR-004 §6 finding 1) -- an ordinary build-output directory needs its own explicit grant, the
@@ -318,7 +355,7 @@ inline constexpr std::uint64_t kWorkerOutputBytes = 1024 * 1024;
     std::filesystem::path const worker_dir =
         std::filesystem::path(AE_PDF_WORKER_EXE_PATH).parent_path();
     auto worker_dir_granted = backend.grant_ro_path_once(worker_dir.wstring());
-    if (!worker_dir_granted) return std::unexpected(worker_dir_granted.error());
+    if (!worker_dir_granted) co_return std::unexpected(worker_dir_granted.error());
 
     SandboxSpec spec;
     spec.limits.wall_ms = kWorkerWallMs;
@@ -332,51 +369,27 @@ inline constexpr std::uint64_t kWorkerOutputBytes = 1024 * 1024;
     // about), `exec()` is the worker run itself. `exec_id` correlates all four events of one
     // extraction. See extract_pdf_text_detail::next_exec_id() for why the id is process-unique.
     std::string const exec_id = next_exec_id();
-    result<SandboxHandle> handle = [&] {
-        SandboxExecScope scope(ctx, exec_id, "native-jail", "create");
-        auto h = backend.create(spec, ctx);
-        if (!h) {
-            scope.failed(h.error().code);
-            return h;
-        }
-        scope.succeeded();
-        return h;
-    }();
-    if (!handle) return std::unexpected(handle.error());
+    result<SandboxHandle> handle = co_await bracketed_create(backend, spec, ctx, exec_id, "native-jail");
+    if (!handle) co_return std::unexpected(handle.error());
 
     std::string const cmdline = "\"" + std::string(AE_PDF_WORKER_EXE_PATH) + "\" " +
                                  std::string(mode) + " \"" + pdf_file.string() + "\"";
     ExecRequest const req{.language = "native", .source = cmdline};
-    result<ExecOutcome> outcome = [&] {
-        SandboxExecScope scope(ctx, exec_id, "native-jail", "exec");
-        auto o = backend.exec(*handle, req, ctx);
-        if (!o) {
-            scope.failed(o.error().code);
-        } else if (o->klass != exec_outcome_class::ok) {
-            // A worker that ran but did not exit cleanly is NOT a successful exec on this channel,
-            // even though `backend.exec()` returned a value -- the caller below turns exactly this
-            // into an error, and reporting it as `ok` here would make the event stream disagree with
-            // the tool result a UI shows next to it.
-            scope.failed("extract_pdf_text.worker_failed");
-        } else {
-            scope.succeeded();
-        }
-        return o;
-    }();
-    backend.destroy(*handle);
-    if (!outcome) return std::unexpected(outcome.error());
+    result<ExecOutcome> outcome = co_await bracketed_exec(backend, *handle, req, ctx, exec_id, "native-jail");
+    co_await backend.destroy(*handle);
+    if (!outcome) co_return std::unexpected(outcome.error());
     if (outcome->klass != exec_outcome_class::ok) {
-        return std::unexpected(error{failure_class::transient,
+        co_return std::unexpected(error{failure_class::transient,
                                       "the pdf worker did not complete normally (class=" +
                                           std::to_string(static_cast<int>(outcome->klass)) + ")",
                                       "extract_pdf_text.worker_failed"});
     }
-    return std::move(outcome->stdout_text);
+    co_return std::move(outcome->stdout_text);
 }
 
 #else  // Linux
 
-[[nodiscard]] inline result<std::string> invoke_worker(std::string_view mode,
+[[nodiscard]] inline task<result<std::string>> invoke_worker(std::string_view mode,
                                                          std::filesystem::path const& pdf_file,
                                                          EffectContext& ctx) {
     static native_jail::LinuxNativeJailBackend backend;
@@ -409,42 +422,22 @@ inline constexpr std::uint64_t kWorkerOutputBytes = 1024 * 1024;
     // parallel here so the two platform bodies stay diffable, which is this function's own
     // established convention.
     std::string const exec_id = next_exec_id();
-    result<SandboxHandle> handle = [&] {
-        SandboxExecScope scope(ctx, exec_id, "linux-native-jail", "create");
-        auto h = backend.create(spec, ctx);
-        if (!h) {
-            scope.failed(h.error().code);
-            return h;
-        }
-        scope.succeeded();
-        return h;
-    }();
-    if (!handle) return std::unexpected(handle.error());
+    result<SandboxHandle> handle = co_await bracketed_create(backend, spec, ctx, exec_id, "linux-native-jail");
+    if (!handle) co_return std::unexpected(handle.error());
 
     std::string const cmdline = "\"" + std::string(AE_PDF_WORKER_EXE_PATH) + "\" " +
                                  std::string(mode) + " \"" + pdf_file.string() + "\"";
     ExecRequest const req{.language = "native", .source = cmdline};
-    result<ExecOutcome> outcome = [&] {
-        SandboxExecScope scope(ctx, exec_id, "linux-native-jail", "exec");
-        auto o = backend.exec(*handle, req, ctx);
-        if (!o) {
-            scope.failed(o.error().code);
-        } else if (o->klass != exec_outcome_class::ok) {
-            scope.failed("extract_pdf_text.worker_failed");
-        } else {
-            scope.succeeded();
-        }
-        return o;
-    }();
-    backend.destroy(*handle);
-    if (!outcome) return std::unexpected(outcome.error());
+    result<ExecOutcome> outcome = co_await bracketed_exec(backend, *handle, req, ctx, exec_id, "linux-native-jail");
+    co_await backend.destroy(*handle);
+    if (!outcome) co_return std::unexpected(outcome.error());
     if (outcome->klass != exec_outcome_class::ok) {
-        return std::unexpected(error{failure_class::transient,
+        co_return std::unexpected(error{failure_class::transient,
                                       "the pdf worker did not complete normally (class=" +
                                           std::to_string(static_cast<int>(outcome->klass)) + ")",
                                       "extract_pdf_text.worker_failed"});
     }
-    return std::move(outcome->stdout_text);
+    co_return std::move(outcome->stdout_text);
 }
 
 #endif
@@ -516,7 +509,7 @@ struct ExtractPdfText : Tool<ExtractPdfText, Capabilities<>, Approval<approval_m
             }
         }
 
-        auto raw_output = extract_pdf_text_detail::invoke_worker("text", file, ctx);
+        auto raw_output = co_await extract_pdf_text_detail::invoke_worker("text", file, ctx);
         std::filesystem::remove(file, ec);  // best-effort cleanup regardless of outcome below
 
         if (!raw_output) co_return std::unexpected(raw_output.error());

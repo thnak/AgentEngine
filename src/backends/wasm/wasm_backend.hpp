@@ -83,7 +83,11 @@ public:
     // compile-and-verify step happens (a real gap ADR-010 §7.5 found while implementing this, not
     // anticipated during design). It only allocates this handle's private Instance and records
     // `spec`/`limits` for later use by `load_component`.
-    result<SandboxHandle> create(SandboxSpec const& spec, EffectContext& ctx);
+    // ADR-237 §5.1 (#173): the seam is a coroutine over `create_blocking()`, completing without suspending.
+    [[nodiscard]] task<result<SandboxHandle>> create(SandboxSpec spec, EffectContext& ctx) {
+        co_return create_blocking(spec, ctx);
+    }
+    result<SandboxHandle> create_blocking(SandboxSpec const& spec, EffectContext& ctx);
 
     // ADR-010 §3.3's real entry point: compiles `component_bytes`, enumerates its actual imports via
     // wasmtime_component_type_import_*, and fails closed (never reaching instantiate) if any imported
@@ -110,9 +114,19 @@ public:
     // it; `request.source` carries `{"tool_name":..., "args_json":...}` as JSON text, decoded and
     // forwarded to invoke_tool() -- exactly one real implementation of "invoke a tool in a wasm
     // component" (006 §2's uniformity rule), not two that could silently diverge.
-    result<ExecOutcome> exec(SandboxHandle& handle, ExecRequest const& request, EffectContext& ctx);
+    // ADR-237 §5.1 (#173): the seam is a coroutine over `exec_blocking()`, completing without suspending.
+    // `handle` and `ctx` must outlive the returned task.
+    [[nodiscard]] task<result<ExecOutcome>> exec(SandboxHandle& handle, ExecRequest request, EffectContext& ctx) {
+        co_return exec_blocking(handle, request, ctx);
+    }
+    result<ExecOutcome> exec_blocking(SandboxHandle& handle, ExecRequest const& request, EffectContext& ctx);
 
-    void destroy(SandboxHandle& handle);
+    // ADR-237 §5.1 (#173): the seam is a coroutine over `destroy_blocking()`, completing without suspending.
+    [[nodiscard]] task<void> destroy(SandboxHandle& handle) {
+        destroy_blocking(handle);
+        co_return;
+    }
+    void destroy_blocking(SandboxHandle& handle);
 
     // Defined in wasm_backend.cpp -- owns wasmtime_component_t*, granted kinds, the manifest, and
     // spec.capabilities/limits. Public (not private) so the .cpp's free-function helpers (the

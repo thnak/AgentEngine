@@ -38,6 +38,7 @@
 #include <memory>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/codeact_tool_union.hpp"
 #include "../support/run_task_sync.hpp"
 
@@ -163,7 +164,7 @@ int main() {
     spec.capabilities = CapabilitySet::grant_root(kAllRequiredCapabilities);
     spec.limits.memory_bytes = 64ull * 1024 * 1024;
     EffectContext load_ctx = make_ctx();
-    auto handle = backend->create(spec, load_ctx);
+    auto handle = agentengine::rt::block_on(backend->create(spec, load_ctx));
     AE_CHECK(handle.has_value(), "setup: create() succeeds");
     if (!handle) return 1;
 
@@ -177,7 +178,7 @@ int main() {
     auto loaded = backend->load_component(*handle, manifest, bytes, load_ctx);
     AE_CHECK(loaded.has_value(), "setup: load_component() succeeds");
     if (!loaded) {
-        backend->destroy(*handle);
+        agentengine::rt::block_on(backend->destroy(*handle));
         return 1;
     }
 
@@ -308,7 +309,7 @@ int main() {
                   "name is rejected, not silently resolved by precedence");
     }
 
-    backend->destroy(*handle);
+    agentengine::rt::block_on(backend->destroy(*handle));
 
     if (g_failures == 0) {
         std::cout << "ALL PASS\n";

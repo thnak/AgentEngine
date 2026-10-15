@@ -174,7 +174,7 @@ std::string drain_pipe_bounded(HANDLE read_handle, std::uint64_t cap_bytes) {
 
 }  // namespace
 
-result<SandboxHandle> NativeJailBackend::create(SandboxSpec const& spec, EffectContext&) {
+result<SandboxHandle> NativeJailBackend::create_blocking(SandboxSpec const& spec, EffectContext&) {
     // docs/planning/sandbox-spec-capability-enforcement-design-draft.md (Slice 3): capabilities are
     // the real authority behind mounts/net, checked FIRST -- a no-op for every caller that doesn't
     // hold a SandboxMount/SandboxNetOut grant (see authorize_spec()'s own comment, sandbox.hpp).
@@ -225,7 +225,7 @@ result<SandboxHandle> NativeJailBackend::create(SandboxSpec const& spec, EffectC
     return SandboxHandle{id};
 }
 
-result<ExecOutcome> NativeJailBackend::exec(SandboxHandle& handle, ExecRequest const& request,
+result<ExecOutcome> NativeJailBackend::exec_blocking(SandboxHandle& handle, ExecRequest const& request,
                                              EffectContext&) {
     Instance* inst_ptr = find_instance_locked(handle.opaque_id);
     if (inst_ptr == nullptr) {
@@ -401,7 +401,7 @@ result<ExecOutcome> NativeJailBackend::exec(SandboxHandle& handle, ExecRequest c
     return outcome;
 }
 
-void NativeJailBackend::destroy(SandboxHandle& handle) {
+void NativeJailBackend::destroy_blocking(SandboxHandle& handle) {
     // Jailed-Python-worker design: a per_session Python worker gets an orderly teardown FIRST (stop
     // the watchdog thread, best-effort `shutdown` handshake, bounded wait) -- the ordinary per_exec
     // path below (erase -> JobObjectLimits dtor -> KILL_ON_JOB_CLOSE) is still the unconditional

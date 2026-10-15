@@ -12,17 +12,23 @@
 //       after resuming is the caller's object, and a second runner sees it.
 //   R2  `run_shell` (SessionShellSandbox, the production Runner caller) runs through the real tool pipeline
 //       on a lane: its tool body awaits the runner instead of driving it synchronously.
+//   S1  a SandboxBackend that suspends in create/exec/destroy, registered in SandboxBackendRegistry and
+//       resolved by name, is driven through the registry's type-erased entry: create -> exec -> exec -> destroy.
+//   S2  per-instance state survives those suspensions (the registry's Revision 1 regression: the second exec
+//       sees the first's state), and a destroyed handle is gone.
 //
 // Every check also asserts the conformer really suspended (`parks` > 0), so a fake that silently completed
 // inline could not make these pass.
 //
 // Positive controls (planted by hand, recorded in ADR-237 §14): driving the fetch with `rt::block_on` inside
 // `invoke_via` fails E1 on the lane; driving `shell_.run()` with `rt::block_on` in `SessionShellSandbox::run`
-// fails R2.
+// fails R2; a registry `exec` entry that drives the backend with `rt::block_on` fails S1.
 
 #include <chrono>
 #include <cstddef>
 #include <iostream>
+#include <map>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -35,6 +41,8 @@
 #include "agentengine/rt/sleep.hpp"
 #include "agentengine/sandbox/net_egress_proxy.hpp"
 #include "agentengine/sandbox/runner.hpp"
+#include "agentengine/sandbox/sandbox.hpp"
+#include "agentengine/sandbox/sandbox_backend_registry.hpp"
 #include "agentengine/tools/read_content.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/session_shell_wiring.hpp"
@@ -188,6 +196,75 @@ void runner_section(Parker& parker) {
     fs::remove_all(scratch, ec);
 }
 
+// ---- S: SandboxBackend --------------------------------------------------------------------------------------
+
+// Stands in for a remote sandbox (a microVM host, a container daemon): every call parks first.
+struct SuspendingBackend {
+    static constexpr agentengine::ProfileTraits traits{1, agentengine::platform_id::windows_x86_64 |
+                                                              agentengine::platform_id::linux_x86_64,
+                                                       agentengine::cold_start_class::milliseconds};
+    Parker* parker = nullptr;
+    std::map<std::string, int> execs;  // per-instance state: exec count per live handle
+    int next = 0;
+
+    agentengine::task<agentengine::result<agentengine::SandboxHandle>> create(agentengine::SandboxSpec,
+                                                                              agentengine::EffectContext&) {
+        co_await parker->park();
+        std::string id = "h" + std::to_string(++next);
+        execs[id] = 0;
+        co_return agentengine::SandboxHandle{id};
+    }
+    agentengine::task<agentengine::result<agentengine::ExecOutcome>> exec(agentengine::SandboxHandle& handle,
+                                                                          agentengine::ExecRequest request,
+                                                                          agentengine::EffectContext&) {
+        co_await parker->park();
+        auto it = execs.find(handle.opaque_id);
+        if (it == execs.end()) {
+            co_return std::unexpected(agentengine::error{agentengine::failure_class::contract, "unknown handle",
+                                                         "test.unknown_handle"});
+        }
+        agentengine::ExecOutcome out;
+        out.stdout_text = request.source + "#" + std::to_string(++it->second);
+        co_return out;
+    }
+    agentengine::task<void> destroy(agentengine::SandboxHandle& handle) {
+        co_await parker->park();
+        execs.erase(handle.opaque_id);
+    }
+};
+static_assert(agentengine::SandboxBackend<SuspendingBackend>);
+
+agentengine::task<agentengine::result<std::string>> drive_registered(agentengine::RegisteredSandboxBackend const& entry,
+                                                                     agentengine::EffectContext& ctx) {
+    auto handle = co_await entry.create(agentengine::SandboxSpec{}, ctx);
+    if (!handle) co_return std::unexpected(handle.error());
+    auto first = co_await entry.exec(*handle, agentengine::ExecRequest{"native", "a"}, ctx);
+    if (!first) co_return std::unexpected(first.error());
+    auto second = co_await entry.exec(*handle, agentengine::ExecRequest{"native", "b"}, ctx);
+    if (!second) co_return std::unexpected(second.error());
+    co_await entry.destroy(*handle);
+    auto after = co_await entry.exec(*handle, agentengine::ExecRequest{"native", "c"}, ctx);
+    co_return first->stdout_text + "," + second->stdout_text + "," + (after ? "still-live" : after.error().code);
+}
+
+void backend_section(Parker& parker) {
+    auto instance = std::make_shared<SuspendingBackend>();
+    instance->parker = &parker;
+    agentengine::SandboxBackendRegistry registry;
+    AE_CHECK(registry.register_backend("suspending", instance).has_value(), "S1 setup: the backend registers");
+    auto entry = registry.resolve_named(agentengine::HostSandboxSelection{"suspending"});
+    AE_CHECK(entry.has_value(), "S1 setup: resolved by name");
+    if (!entry.has_value()) return;
+    agentengine::EffectContext ctx{};
+    std::size_t const parks_before = parker.parks;
+    auto out = run(drive_registered(**entry, ctx));
+    AE_CHECK(out.has_value(), "S1: create -> exec -> exec -> destroy through the registry entry, on a lane");
+    AE_CHECK(parker.parks >= parks_before + 5, "S1: every one of the five calls really suspended");
+    AE_CHECK(out.has_value() && *out == "a#1,b#2,test.unknown_handle",
+             "S2: the second exec saw the first's state, and the destroyed handle is gone");
+    AE_CHECK(instance->execs.empty(), "S2: destroy reached the one registered instance");
+}
+
 }  // namespace
 
 int main() {
@@ -197,6 +274,7 @@ int main() {
 
     egress_section(parker);
     runner_section(parker);
+    backend_section(parker);
 
     if (g_failures != 0) {
         std::cerr << g_failures << " check(s) failed\n";

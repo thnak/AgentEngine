@@ -12,6 +12,7 @@
 // Real child processes under real AppContainer + Job Object isolation -- bounded by this test's
 // own generous-but-finite timeouts (CLAUDE.md Machine Safety).
 
+#include "agentengine/rt/block_on.hpp"
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -161,11 +162,11 @@ int main() {
         spec.limits.pids = 4;
         spec.limits.output_bytes = 64 * 1024;
 
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         AE_CHECK(handle.has_value(), "C5 env: create() succeeds");
         if (handle.has_value()) {
             ExecRequest req{.language = "native", .source = hostile_child_cmd("probe_env")};
-            auto outcome = backend.exec(*handle, req, ctx);
+            auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
             AE_CHECK(outcome.has_value(), "C5 env: contained exec() returns a result");
             if (outcome.has_value()) {
                 bool leaked = outcome->stdout_text.find(kCanaryName) != std::string::npos;
@@ -175,7 +176,7 @@ int main() {
                           "C5 env: the guest's environment does not contain a secret only the "
                           "launching host process set (008 SS9 G3, no ambient authority)");
             }
-            backend.destroy(*handle);
+            agentengine::rt::block_on(backend.destroy(*handle));
         }
 
         // Positive control: the SAME canary, with the SAME probe run unsandboxed -- proves the
@@ -206,12 +207,12 @@ int main() {
         spec.limits.pids = 4;
         spec.limits.output_bytes = 4096;
 
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         AE_CHECK(handle.has_value(), "C5 net: create() succeeds");
         if (handle.has_value()) {
             ExecRequest req{.language = "native",
                              .source = hostile_child_cmd("probe_net " + std::to_string(port))};
-            auto outcome = backend.exec(*handle, req, ctx);
+            auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
             AE_CHECK(outcome.has_value(), "C5 net: contained exec() returns a result");
             if (outcome.has_value()) {
                 std::cout << "  measured: contained probe_net stdout=" << outcome->stdout_text;
@@ -219,7 +220,7 @@ int main() {
                           "C5 net: the guest (zero granted AppContainer capabilities -- no "
                           "internetClient) cannot reach even a host loopback listener (008 SS9 G3)");
             }
-            backend.destroy(*handle);
+            agentengine::rt::block_on(backend.destroy(*handle));
         }
 
         // Positive control: same probe, unsandboxed -- must actually connect, proving the listener
@@ -263,12 +264,12 @@ int main() {
         spec.limits.pids = 4;
         spec.limits.output_bytes = 4096;
 
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         AE_CHECK(handle.has_value(), "C5 proc: create() succeeds");
         if (handle.has_value()) {
             ExecRequest req{.language = "native",
                              .source = hostile_child_cmd("probe_proc " + std::to_string(canary_pid))};
-            auto outcome = backend.exec(*handle, req, ctx);
+            auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
             AE_CHECK(outcome.has_value(), "C5 proc: contained exec() returns a result");
             if (outcome.has_value()) {
                 std::cout << "  measured: contained probe_proc stdout=" << outcome->stdout_text;
@@ -283,7 +284,7 @@ int main() {
                           "it was never granted (008 SS9 G3 -- AppContainer restricts "
                           "CreateToolhelp32Snapshot, not just object access)");
             }
-            backend.destroy(*handle);
+            agentengine::rt::block_on(backend.destroy(*handle));
         }
 
         // Positive control: same probe, unsandboxed -- proves the PID-detection mechanism itself is

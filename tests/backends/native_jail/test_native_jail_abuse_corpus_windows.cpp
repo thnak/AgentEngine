@@ -15,6 +15,7 @@
 // Real child processes under real AppContainer + Job Object isolation -- bounded by this test's
 // own generous-but-finite wall_ms values (CLAUDE.md Machine Safety).
 
+#include "agentengine/rt/block_on.hpp"
 #include <windows.h>
 
 #include <cassert>
@@ -164,13 +165,13 @@ int main() {
         contained_spec.limits.pids = 3;
         contained_spec.limits.output_bytes = 1024 * 1024;
 
-        auto handle = backend.create(contained_spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(contained_spec, ctx));
         AE_CHECK_OK(handle, "C3 fork-bomb: create() succeeds");
         if (handle.has_value()) {
             auto t0 = std::chrono::steady_clock::now();
             ExecRequest req{.language = "native",
                              .source = hostile_child_cmd("spawn 40 " + quote(AE_HOSTILE_CHILD_EXE))};
-            auto outcome = backend.exec(*handle, req, ctx);
+            auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
             auto t1 = std::chrono::steady_clock::now();
             AE_CHECK(outcome.has_value(), "C3 fork-bomb: contained exec() returns a result");
             if (!outcome.has_value()) {
@@ -187,7 +188,7 @@ int main() {
                           "C3 fork-bomb: nested exec is fully denied -- zero children ever created "
                           "(PROCESS_CREATION_CHILD_PROCESS_RESTRICTED, 008 SS4)");
             }
-            backend.destroy(*handle);
+            agentengine::rt::block_on(backend.destroy(*handle));
         }
 
         // Positive control: the SAME probe, unsandboxed (no AppContainer, no Job Object, no
@@ -214,18 +215,18 @@ int main() {
         contained_spec.limits.pids = 4;
         contained_spec.limits.output_bytes = 1024 * 1024;
 
-        auto handle = backend.create(contained_spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(contained_spec, ctx));
         AE_CHECK_OK(handle, "C3 OOM: create() with memory_bytes=32MB succeeds");
         if (handle.has_value()) {
             auto t0 = std::chrono::steady_clock::now();
             ExecRequest req{.language = "native", .source = hostile_child_cmd("alloc 512")};  // 512 MB >> 32 MB
-            auto outcome = backend.exec(*handle, req, ctx);
+            auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
             auto t1 = std::chrono::steady_clock::now();
             AE_CHECK(outcome.has_value() && outcome->klass == exec_outcome_class::oom,
                       "C3 OOM: exceeding memory_bytes reports oom");
             std::cout << "  measured: OOM contained (32 MB cap, 512 MB request), exec took "
                       << elapsed_ms(t0, t1) << " ms\n";
-            backend.destroy(*handle);
+            agentengine::rt::block_on(backend.destroy(*handle));
         }
 
         // Positive control: memory_bytes DISABLED -- the identical shape of allocation (well under
@@ -233,15 +234,15 @@ int main() {
         SandboxSpec positive_spec = contained_spec;
         positive_spec.limits.memory_bytes = 0;
         NativeJailBackend positive_backend;
-        auto positive_handle = positive_backend.create(positive_spec, ctx);
+        auto positive_handle = agentengine::rt::block_on(positive_backend.create(positive_spec, ctx));
         AE_CHECK_OK(positive_handle, "C3 OOM positive control: create() with memory disabled succeeds");
         if (positive_handle.has_value()) {
             ExecRequest req{.language = "native", .source = hostile_child_cmd("alloc 64")};  // 64 MB, > the 32 MB cap above
-            auto outcome = positive_backend.exec(*positive_handle, req, ctx);
+            auto outcome = agentengine::rt::block_on(positive_backend.exec(*positive_handle, req, ctx));
             AE_CHECK(outcome.has_value() && outcome->klass == exec_outcome_class::ok,
                       "C3 OOM positive control: with memory disabled, the same-shape allocation "
                       "succeeds (the containment above is real, not vacuous)");
-            positive_backend.destroy(*positive_handle);
+            agentengine::rt::block_on(positive_backend.destroy(*positive_handle));
         }
     }
 
@@ -256,20 +257,20 @@ int main() {
         short_spec.limits.pids = 4;
         short_spec.limits.output_bytes = 1024 * 1024;
 
-        auto handle = backend.create(short_spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(short_spec, ctx));
         AE_CHECK_OK(handle, "C3 infinite-loop: create() with wall_ms=500 succeeds");
         long long short_elapsed = -1;
         if (handle.has_value()) {
             auto t0 = std::chrono::steady_clock::now();
             ExecRequest req{.language = "native", .source = hostile_child_cmd("spin")};
-            auto outcome = backend.exec(*handle, req, ctx);
+            auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
             auto t1 = std::chrono::steady_clock::now();
             short_elapsed = elapsed_ms(t0, t1);
             AE_CHECK(outcome.has_value() && outcome->klass == exec_outcome_class::timeout,
                       "C3 infinite-loop: a CPU-spinning exec is killed by wall_ms and reports timeout");
             std::cout << "  measured: infinite-loop killed at wall_ms=500, actual " << short_elapsed
                       << " ms\n";
-            backend.destroy(*handle);
+            agentengine::rt::block_on(backend.destroy(*handle));
         }
 
         // "Positive control, disabled" is unsafe here -- wall_ms==0 means wait_or_kill blocks
@@ -283,12 +284,12 @@ int main() {
         NativeJailBackend long_backend;
         SandboxSpec long_spec = short_spec;
         long_spec.limits.wall_ms = 1800;
-        auto long_handle = long_backend.create(long_spec, ctx);
+        auto long_handle = agentengine::rt::block_on(long_backend.create(long_spec, ctx));
         AE_CHECK_OK(long_handle, "C3 infinite-loop positive control: create() with wall_ms=1800 succeeds");
         if (long_handle.has_value()) {
             auto t0 = std::chrono::steady_clock::now();
             ExecRequest req{.language = "native", .source = hostile_child_cmd("spin")};
-            auto outcome = long_backend.exec(*long_handle, req, ctx);
+            auto outcome = agentengine::rt::block_on(long_backend.exec(*long_handle, req, ctx));
             auto t1 = std::chrono::steady_clock::now();
             long long long_elapsed = elapsed_ms(t0, t1);
             std::cout << "  measured: infinite-loop positive control, wall_ms=1800, actual "
@@ -299,7 +300,7 @@ int main() {
                       "C3 infinite-loop positive control: a longer wall_ms budget lets spin run "
                       "materially longer (proves it never exits on its own -- the short kill above "
                       "is real enforcement, not vacuous)");
-            long_backend.destroy(*long_handle);
+            agentengine::rt::block_on(long_backend.destroy(*long_handle));
         }
     }
 
@@ -314,13 +315,13 @@ int main() {
         contained_spec.limits.pids = 4;
         contained_spec.limits.output_bytes = 1024 * 1024;
 
-        auto handle = backend.create(contained_spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(contained_spec, ctx));
         AE_CHECK_OK(handle, "C3 fs-escape: create() with only work_dir mounted succeeds");
         if (handle.has_value()) {
             auto t0 = std::chrono::steady_clock::now();
             ExecRequest req{.language = "native",
                              .source = hostile_child_cmd("escape " + quote(secret_file.string()))};
-            auto outcome = backend.exec(*handle, req, ctx);
+            auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
             auto t1 = std::chrono::steady_clock::now();
             AE_CHECK(outcome.has_value(), "C3 fs-escape: contained exec() returns a result");
             if (outcome.has_value()) {
@@ -330,7 +331,7 @@ int main() {
                           "C3 fs-escape: a file outside the granted mount is not readable "
                           "(008 SS1b/ADR-004 SS3 -- AppContainer's default-deny ACL)");
             }
-            backend.destroy(*handle);
+            agentengine::rt::block_on(backend.destroy(*handle));
         }
 
         // Positive control: same backend mechanism, deliberately grant the secret directory too
@@ -341,12 +342,12 @@ int main() {
         SandboxSpec positive_spec = contained_spec;
         positive_spec.mounts.push_back(
             MountSpec{.source = secret_dir.string(), .guest_path = "/secret", .read_write = false});
-        auto positive_handle = positive_backend.create(positive_spec, ctx);
+        auto positive_handle = agentengine::rt::block_on(positive_backend.create(positive_spec, ctx));
         AE_CHECK_OK(positive_handle, "C3 fs-escape positive control: create() granting the secret dir succeeds");
         if (positive_handle.has_value()) {
             ExecRequest req{.language = "native",
                              .source = hostile_child_cmd("escape " + quote(secret_file.string()))};
-            auto outcome = positive_backend.exec(*positive_handle, req, ctx);
+            auto outcome = agentengine::rt::block_on(positive_backend.exec(*positive_handle, req, ctx));
             AE_CHECK(outcome.has_value(), "C3 fs-escape positive control: exec() returns a result");
             if (outcome.has_value()) {
                 std::cout << "  measured: fs-escape positive control, stdout=" << outcome->stdout_text;
@@ -354,7 +355,7 @@ int main() {
                           "C3 fs-escape positive control: once the directory is actually granted, "
                           "the read succeeds (the DENIED result above is real, not vacuous)");
             }
-            positive_backend.destroy(*positive_handle);
+            agentengine::rt::block_on(positive_backend.destroy(*positive_handle));
         }
 
         // Known, already-documented gap (ADR-004 SS6.1, 008 SS7): a curated set of host files carry
@@ -367,10 +368,10 @@ int main() {
         if (windir_len > 0 && windir_len < MAX_PATH) {
             std::string win_ini = std::string(windir) + "\\win.ini";
             NativeJailBackend gap_backend;
-            auto gap_handle = gap_backend.create(contained_spec, ctx);
+            auto gap_handle = agentengine::rt::block_on(gap_backend.create(contained_spec, ctx));
             if (gap_handle.has_value()) {
                 ExecRequest req{.language = "native", .source = hostile_child_cmd("escape " + quote(win_ini))};
-                auto outcome = gap_backend.exec(*gap_handle, req, ctx);
+                auto outcome = agentengine::rt::block_on(gap_backend.exec(*gap_handle, req, ctx));
                 if (outcome.has_value()) {
                     std::cout << "  measured: known-gap win.ini escape probe, stdout="
                               << outcome->stdout_text;
@@ -379,7 +380,7 @@ int main() {
                               "OS-default ACE regardless of any grant -- documented, not silently "
                               "dropped; a future fix should update this assertion, not delete it");
                 }
-                gap_backend.destroy(*gap_handle);
+                agentengine::rt::block_on(gap_backend.destroy(*gap_handle));
             }
         }
     }
@@ -395,12 +396,12 @@ int main() {
         contained_spec.limits.pids = 4;
         contained_spec.limits.output_bytes = 4096;  // tight cap
 
-        auto handle = backend.create(contained_spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(contained_spec, ctx));
         AE_CHECK_OK(handle, "C3 unbounded-output: create() with output_bytes=4096 succeeds");
         if (handle.has_value()) {
             auto t0 = std::chrono::steady_clock::now();
             ExecRequest req{.language = "native", .source = hostile_child_cmd("flood")};
-            auto outcome = backend.exec(*handle, req, ctx);
+            auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
             auto t1 = std::chrono::steady_clock::now();
             AE_CHECK(outcome.has_value(), "C3 unbounded-output: contained exec() returns a result");
             if (outcome.has_value()) {
@@ -411,7 +412,7 @@ int main() {
                 AE_CHECK(!outcome->stdout_text.empty(),
                           "C3 unbounded-output: something was actually captured (the flood ran)");
             }
-            backend.destroy(*handle);
+            agentengine::rt::block_on(backend.destroy(*handle));
         }
 
         // Positive control: the SAME probe with a materially LOOSER output_bytes cap (never
@@ -428,11 +429,11 @@ int main() {
         SandboxSpec positive_spec = contained_spec;
         positive_spec.limits.output_bytes = 2ull * 1024 * 1024;  // 2 MiB, still bounded by design
         positive_spec.limits.wall_ms = 30000;  // a backstop; the child exits once it has written
-        auto positive_handle = positive_backend.create(positive_spec, ctx);
+        auto positive_handle = agentengine::rt::block_on(positive_backend.create(positive_spec, ctx));
         AE_CHECK_OK(positive_handle, "C3 unbounded-output positive control: create() with a loose cap succeeds");
         if (positive_handle.has_value()) {
             ExecRequest req{.language = "native", .source = hostile_child_cmd("flood 262144")};
-            auto outcome = positive_backend.exec(*positive_handle, req, ctx);
+            auto outcome = agentengine::rt::block_on(positive_backend.exec(*positive_handle, req, ctx));
             AE_CHECK(outcome.has_value(), "C3 unbounded-output positive control: exec() returns a result");
             if (outcome.has_value()) {
                 std::cout << "  measured: unbounded-output positive control, captured "
@@ -442,7 +443,7 @@ int main() {
                           "than the tight 4096-byte cap gets through (the containment above is real, "
                           "not the flood incidentally producing little output)");
             }
-            positive_backend.destroy(*positive_handle);
+            agentengine::rt::block_on(positive_backend.destroy(*positive_handle));
         }
     }
 

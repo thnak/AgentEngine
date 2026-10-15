@@ -261,7 +261,7 @@ struct WasmBackend::Instance {
 WasmBackend::WasmBackend() = default;
 WasmBackend::~WasmBackend() = default;
 
-result<SandboxHandle> WasmBackend::create(SandboxSpec const& spec, EffectContext&) {
+result<SandboxHandle> WasmBackend::create_blocking(SandboxSpec const& spec, EffectContext&) {
     auto instance = std::make_unique<Instance>();
     instance->operator_grant = spec.capabilities;
     instance->limits = spec.limits;
@@ -973,7 +973,7 @@ result<ToolResult> WasmBackend::invoke_tool(SandboxHandle const& handle, ToolInv
     return out;
 }
 
-result<ExecOutcome> WasmBackend::exec(SandboxHandle& handle, ExecRequest const& request, EffectContext& ctx) {
+result<ExecOutcome> WasmBackend::exec_blocking(SandboxHandle& handle, ExecRequest const& request, EffectContext& ctx) {
     if (request.language != "ae:tool") {
         return std::unexpected(
             error{failure_class::contract, "WasmBackend::exec only accepts language \"ae:tool\"", "wasm.bad_language"});
@@ -1012,7 +1012,7 @@ result<ExecOutcome> WasmBackend::exec(SandboxHandle& handle, ExecRequest const& 
     return outcome;
 }
 
-void WasmBackend::destroy(SandboxHandle& handle) {
+void WasmBackend::destroy_blocking(SandboxHandle& handle) {
     instances_.erase(handle.opaque_id);
 }
 

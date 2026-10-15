@@ -95,9 +95,24 @@ public:
     LinuxNativeJailBackend(LinuxNativeJailBackend&&) = delete;
     LinuxNativeJailBackend& operator=(LinuxNativeJailBackend&&) = delete;
 
-    result<SandboxHandle> create(SandboxSpec const& spec, EffectContext& ctx);
-    result<ExecOutcome> exec(SandboxHandle& handle, ExecRequest const& request, EffectContext& ctx);
-    void destroy(SandboxHandle& handle);
+    // The `SandboxBackend` seam (ADR-237 §5.1, #173): coroutines over the `*_blocking` bodies below, completing
+    // without suspending -- the bodies still block (moving process spawn onto `rt::` is #180's). `handle` and
+    // `ctx` must outlive the returned task.
+    [[nodiscard]] task<result<SandboxHandle>> create(SandboxSpec spec, EffectContext& ctx) {
+        co_return create_blocking(spec, ctx);
+    }
+    [[nodiscard]] task<result<ExecOutcome>> exec(SandboxHandle& handle, ExecRequest request, EffectContext& ctx) {
+        co_return exec_blocking(handle, request, ctx);
+    }
+    [[nodiscard]] task<void> destroy(SandboxHandle& handle) {
+        destroy_blocking(handle);
+        co_return;
+    }
+
+    // The synchronous bodies. Called directly only where the caller cannot suspend (a destructor).
+    result<SandboxHandle> create_blocking(SandboxSpec const& spec, EffectContext& ctx);
+    result<ExecOutcome> exec_blocking(SandboxHandle& handle, ExecRequest const& request, EffectContext& ctx);
+    void destroy_blocking(SandboxHandle& handle);
 
 private:
     struct Instance {

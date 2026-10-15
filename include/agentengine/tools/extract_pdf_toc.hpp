@@ -188,7 +188,7 @@ struct ExtractPdfToc : Tool<ExtractPdfToc, Capabilities<>, Approval<approval_mod
             }
         }
 
-        auto raw_output = extract_pdf_text_detail::invoke_worker("toc", file, ctx);
+        auto raw_output = co_await extract_pdf_text_detail::invoke_worker("toc", file, ctx);
         std::filesystem::remove(file, ec);
 
         if (!raw_output) co_return std::unexpected(raw_output.error());

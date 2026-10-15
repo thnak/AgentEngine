@@ -7,6 +7,7 @@
 // Requires a delegated cgroup v2 root and CAP_SYS_ADMIN, same as C2/C3's Linux tests -- run via
 // tests/helpers/cgroup_v2_test_setup.sh.
 
+#include "agentengine/rt/block_on.hpp"
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
@@ -75,12 +76,12 @@ int main() {
         spec.limits.pids = c.pids;
         spec.limits.output_bytes = c.output_bytes;
 
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         AE_CHECK(handle.has_value(), std::string("G1 parity [") + c.name + "]: create() succeeds");
         if (!handle.has_value()) continue;
 
         ExecRequest req{.language = "native", .source = hostile_child_cmd(c.probe_args)};
-        auto outcome = backend.exec(*handle, req, ctx);
+        auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
         AE_CHECK(outcome.has_value(), std::string("G1 parity [") + c.name + "]: exec() returns a result");
         if (outcome.has_value()) {
             std::cout << "  measured: [" << c.name << "] got " << to_string(outcome->klass)
@@ -89,7 +90,7 @@ int main() {
                       std::string("G1 parity [") + c.name + "]: outcome classification is " +
                           to_string(c.expected));
         }
-        backend.destroy(*handle);
+        agentengine::rt::block_on(backend.destroy(*handle));
     }
 
     std::filesystem::remove_all(work_dir, ec);
