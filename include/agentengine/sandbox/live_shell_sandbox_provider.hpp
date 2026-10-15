@@ -161,10 +161,11 @@ public:
                 "bind_sandbox needs a positive per-command deadline, a surface factory and a clock",
                 "live_shell_provider.bad_binding"});
         }
-        // The one suspension point comes BEFORE any member is touched: a re-entrant bind (or a destroy) while the
-        // factory is suspended sees the old, whole binding rather than a half-bound object with a dangling closure.
+        // Both suspension points -- the factory, then closing the old environment (ADR-237 §5.1, #173) -- come
+        // BEFORE any binding member is replaced: a re-entrant bind (or a destroy) while either is suspended sees the
+        // old, whole binding rather than a half-bound object with a dangling closure.
         auto surface = std::make_unique<Surface>(co_await make_surface());
-        release_on_destroy();
+        co_await release_held();
         ledger_ = &ledger;
         owner_.emplace(owner);
         branch_quota_ = &branch_quota;
@@ -229,7 +230,7 @@ public:
         agentengine::SessionContext&, agentengine::EffectContext& ctx) {
         agentengine::ContextContribution contribution;
         if (!runtime_.has_value()) co_return contribution;
-        check_lifetime(lifetime_event::context, std::nullopt, &ctx);
+        co_await check_lifetime(lifetime_event::context, std::nullopt, &ctx);
         contribution.tools.push_back(
             agentengine::make_tool_descriptor(ShellExecTool<LiveShellSandboxProvider>{*this}));
         co_return contribution;
@@ -243,7 +244,7 @@ public:
     agentengine::task<std::monostate> on_run_end(agentengine::RunEndView view, agentengine::EffectContext& ctx) {
         if (runtime_.has_value()) {
             timers_.run_ended();
-            check_lifetime(lifetime_event::run_end, view.reason, &ctx);
+            co_await check_lifetime(lifetime_event::run_end, view.reason, &ctx);
         }
         co_return std::monostate{};
     }
@@ -282,16 +283,18 @@ private:
     // calls `shell_exec()` below.
     template <class> friend struct ShellExecTool;
 
-    [[nodiscard]] agentengine::result<ShellExecReply> shell_exec(ShellExecArgs args, agentengine::EffectContext& ctx) {
-        check_lifetime(lifetime_event::shell_exec, std::nullopt, &ctx);
+    // ADR-237 §5.1 (#173): a coroutine, because the surface seam is -- it awaits `run_live()` (which used to be
+    // driven here with `rt::block_on`, refused on a runtime lane) and the lifetime checks that close the surface.
+    [[nodiscard]] agentengine::task<agentengine::result<ShellExecReply>> shell_exec(ShellExecArgs args,
+                                                                                    agentengine::EffectContext& ctx) {
+        co_await check_lifetime(lifetime_event::shell_exec, std::nullopt, &ctx);
         agentengine::IdentityHandle const caller = agentengine::IdentityAuthority::bootstrap().adopt(ctx.principal);
         if (args.restart.value_or(false)) sync_.desynced = true;
         bool const discard_pending = unrecorded_pending_;
         auto hook = [this, caller](agentengine::Checkpoint const& head) { return open_hook(head, caller); };
         open_attempted_ = false;
-        auto outcome = agentengine::rt::block_on(runtime_->run_live(*surface_, std::move(args.command), caller,
-                                                                    *run_quota_, *storage_quota_, sync_, hook,
-                                                                    deadline_));
+        auto outcome = co_await runtime_->run_live(*surface_, std::move(args.command), caller, *run_quota_,
+                                                   *storage_quota_, sync_, hook, deadline_);
         auto const now = clock_();
         // ADR-209 §15.5 M1: an environment this call opened is bookkept even when the command was then refused
         // (`run_live` returns that refusal as an error after the open). Otherwise no ceiling, policy or
@@ -303,11 +306,11 @@ private:
             report(ctx, agentengine::run_event_kind::sandbox_exec_finished, "create", true, {});
         }
         open_attempted_ = false;
-        if (!outcome.has_value()) return std::unexpected(outcome.error());
+        if (!outcome.has_value()) co_return std::unexpected(outcome.error());
         timers_.used(now);
         // The surface tried to remove it. Going through release() (rather than just marking it closed) keeps a
         // handle whose removal FAILED held and retried at every check point (§15.5).
-        if (outcome->exec.container_lost) release(&ctx);
+        if (outcome->exec.container_lost) co_await release(&ctx);
 
         ShellExecReply reply;
         reply.exit_code = outcome->exec.exit_code;
@@ -346,7 +349,7 @@ private:
             reply.image_digest = std::string(surface_->image_digest());
             reply.image_digest_kind = std::string(agentengine::image_digest_kind_name(surface_->image_digest_kind()));
         }
-        return reply;
+        co_return reply;
     }
 
     // `run_live()`'s open hook: charge one open (owner-only), then name the snapshot to replay for `head`.
@@ -358,22 +361,24 @@ private:
         co_return find_snapshot(head.self_digest);
     }
 
-    void check_lifetime(lifetime_event event, std::optional<agentengine::run_end_reason> reason,
-                        agentengine::EffectContext* ctx) {
-        if (!surface_ || !timers_.is_open()) return;
+    // ADR-237 §5.1 (#173): `check_lifetime()` and `release()` are coroutines, because closing the surface is.
+    [[nodiscard]] agentengine::task<void> check_lifetime(lifetime_event event,
+                                                         std::optional<agentengine::run_end_reason> reason,
+                                                         agentengine::EffectContext* ctx) {
+        if (!surface_ || !timers_.is_open()) co_return;
         auto const view = timers_.view(event, reason, clock_());
-        if (release_pending_ || timers_.should_close(lifetime_, view, limits_)) release(ctx);
+        if (release_pending_ || timers_.should_close(lifetime_, view, limits_)) co_await release(ctx);
     }
 
-    void release(agentengine::EffectContext* ctx) {
-        auto closed = surface_->close();
+    [[nodiscard]] agentengine::task<void> release(agentengine::EffectContext* ctx) {
+        auto closed = co_await surface_->close();
         if (!closed.has_value()) {
             // §8.1: keep the handle, retry at the next check point and in the destructor, never silent.
             release_pending_ = true;
             ++release_failures_;
             if (ctx != nullptr) report(*ctx, agentengine::run_event_kind::sandbox_exec_finished, "release", false,
                                        closed.error().code);
-            return;
+            co_return;
         }
         release_pending_ = false;
         timers_.closed();
@@ -381,10 +386,28 @@ private:
         if (ctx != nullptr) report(*ctx, agentengine::run_event_kind::sandbox_exec_finished, "release", true, {});
     }
 
+    // Releases the held environment before a re-bind (`bind_sandbox`, a coroutine, so it awaits).
+    [[nodiscard]] agentengine::task<void> release_held() {
+        if (!surface_ || !timers_.is_open()) co_return;
+        auto closed = co_await surface_->close();
+        if (!closed.has_value()) ++release_failures_;  // the last net is ADR-139's orphan reaping
+        timers_.closed();
+    }
+
+    // The release the destructor and the assignment operators run. They cannot await, so the close is driven
+    // with `rt::block_on` -- which completes for every in-tree surface, whose `close()` does not suspend.
+    // ADR-237 §4.5 rule 3a (owners close asynchronously) is the real answer and is not built yet; until it is, a
+    // `block_on` refused on a runtime lane counts as a failed release -- the accounting a failed close already
+    // gets -- and is never thrown out of a destructor.
     void release_on_destroy() noexcept {
         if (!surface_ || !timers_.is_open()) return;
-        auto closed = surface_->close();
-        if (!closed.has_value()) ++release_failures_;  // the last net is ADR-139's orphan reaping
+        bool released = false;
+        try {
+            released = agentengine::rt::block_on(surface_->close()).has_value();
+        } catch (...) {
+            released = false;
+        }
+        if (!released) ++release_failures_;  // the last net is ADR-139's orphan reaping
         timers_.closed();
     }
 
@@ -490,7 +513,7 @@ private:
 template <class ProviderT>
 agentengine::task<agentengine::result<ShellExecReply>> ShellExecTool<ProviderT>::invoke(
     ShellExecArgs args, agentengine::EffectContext& ctx) const {
-    co_return provider_->shell_exec(std::move(args), ctx);
+    co_return co_await provider_->shell_exec(std::move(args), ctx);
 }
 
 }  // namespace agentengine

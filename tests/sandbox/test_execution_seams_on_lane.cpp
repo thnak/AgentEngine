@@ -20,6 +20,10 @@
 //       is committed as a real Ledger checkpoint, run on a lane.
 //   X2  a surface that refuses the command (an error from `run`, after suspending) still refunds RunCost --
 //       the refund ordering is unchanged by the await.
+//   L1  LiveShellSandboxProvider, with a PersistentShellSurface that suspends in open/exec/drain_to/close: bound,
+//       and `shell_exec` invoked through its real descriptor, all on a lane. Before #173 `shell_exec` drove
+//       `run_live()` with `rt::block_on`, which a lane refuses -- so this could not run on the runtime at all.
+//   L2  the run-end lifetime check (PerRun) closes the environment through the awaited `close()`.
 //
 // Every check also asserts the conformer really suspended (`parks` > 0), so a fake that silently completed
 // inline could not make these pass.
@@ -27,7 +31,8 @@
 // Positive controls (planted by hand, recorded in ADR-237 §14): driving the fetch with `rt::block_on` inside
 // `invoke_via` fails E1 on the lane; driving `shell_.run()` with `rt::block_on` in `SessionShellSandbox::run`
 // fails R2; a registry `exec` entry that drives the backend with `rt::block_on` fails S1; driving
-// `surface.run()` with `rt::block_on` in `SandboxRuntime::run` fails X1.
+// `surface.run()` with `rt::block_on` in `SandboxRuntime::run` fails X1; the pre-#173 `shell_exec` (driving
+// `run_live()` with `rt::block_on`) fails L1.
 
 #include <chrono>
 #include <cstddef>
@@ -51,6 +56,8 @@
 #include "agentengine/sandbox/sandbox_backend_registry.hpp"
 #include "agentengine/sandbox/execution_surface.hpp"
 #include "agentengine/sandbox/sandbox_runtime.hpp"
+#include "agentengine/sandbox/live_shell_sandbox_provider.hpp"
+#include "agentengine/sandbox/persistent_shell.hpp"
 #include "agentengine/tools/read_content.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/session_shell_wiring.hpp"
@@ -357,6 +364,143 @@ void surface_section(Parker& parker) {
     fs::remove_all(box, ec);
 }
 
+// ---- L: PersistentShellSurface ------------------------------------------------------------------------------
+
+struct LiveCounters {
+    int opens = 0;
+    int execs = 0;
+    int closes = 0;
+};
+
+// A held shell behind a daemon: every call parks first. `exec("write <name> <text>")` writes into the
+// environment's own workspace, which `drain_to` copies out.
+class SuspendingLiveSurface {
+public:
+    SuspendingLiveSurface(Parker* parker, std::shared_ptr<LiveCounters> c, std::filesystem::path box)
+        : parker_(parker), c_(std::move(c)), box_(std::move(box)) {}
+
+    agentengine::task<agentengine::result<void>> open(std::filesystem::path host_dir, agentengine::ShellSnapshot const*) {
+        co_await parker_->park();
+        ++c_->opens;
+        std::error_code ec;
+        std::filesystem::remove_all(box_, ec);
+        std::filesystem::create_directories(box_, ec);
+        std::filesystem::copy(host_dir, box_, std::filesystem::copy_options::recursive, ec);
+        live_ = true;
+        co_return agentengine::result<void>{};
+    }
+    agentengine::task<agentengine::result<agentengine::LiveExecOutcome>> exec(std::string command,
+                                                                              std::chrono::milliseconds) {
+        co_await parker_->park();
+        ++c_->execs;
+        auto const sp1 = command.find(' ');
+        auto const sp2 = command.find(' ', sp1 + 1);
+        std::ofstream(box_ / command.substr(sp1 + 1, sp2 - sp1 - 1)) << command.substr(sp2 + 1);
+        agentengine::LiveExecOutcome out;
+        out.exit_code = 0;
+        out.output = "ran";
+        out.output_bytes = out.output.size();
+        co_return out;
+    }
+    agentengine::task<agentengine::result<void>> drain_to(std::filesystem::path host_dir) {
+        co_await parker_->park();
+        auto cleared = agentengine::clear_directory_contents(host_dir, "test.drain_clear");
+        if (!cleared.has_value()) co_return cleared;
+        std::error_code ec;
+        std::filesystem::copy(box_, host_dir, std::filesystem::copy_options::recursive, ec);
+        co_return agentengine::result<void>{};
+    }
+    agentengine::task<agentengine::result<void>> close() {
+        co_await parker_->park();
+        if (live_) ++c_->closes;
+        live_ = false;
+        co_return agentengine::result<void>{};
+    }
+    [[nodiscard]] bool is_live() const { return live_; }
+
+private:
+    Parker* parker_;
+    std::shared_ptr<LiveCounters> c_;
+    std::filesystem::path box_;
+    bool live_ = false;
+};
+static_assert(agentengine::PersistentShellSurface<SuspendingLiveSurface>);
+
+using LaneLiveProvider = agentengine::LiveShellSandboxProvider<SuspendingLiveSurface>;
+
+struct LiveWorld {
+    agentengine::IdentityAuthority& authority = agentengine::IdentityAuthority::bootstrap();
+    agentengine::IdentityHandle owner = authority.adopt(agentengine::Principal{.id = "lane-owner", .tenant_id = ""});
+    agentengine::Ledger<> ledger;
+    agentengine::rt::AsyncQuota<agentengine::BranchCost> branch_q =
+        *agentengine::rt::AsyncQuota<agentengine::BranchCost>::mint_root(authority, owner, 10);
+    agentengine::rt::AsyncQuota<agentengine::RunCost> run_q =
+        *agentengine::rt::AsyncQuota<agentengine::RunCost>::mint_root(authority, owner, 10);
+    agentengine::rt::AsyncQuota<agentengine::StorageBytes> storage_q =
+        *agentengine::rt::AsyncQuota<agentengine::StorageBytes>::mint_root(authority, owner, 10'000'000);
+    agentengine::rt::AsyncQuota<agentengine::LiveShellOpen> open_q =
+        *agentengine::rt::AsyncQuota<agentengine::LiveShellOpen>::mint_root(authority, owner, 10);
+};
+
+// The whole flow as one root on the lane: bind, contribute the tool, call it, end the run.
+agentengine::task<agentengine::result<agentengine::ShellExecReply>> live_flow(LaneLiveProvider& provider, LiveWorld& w,
+                                                                              Parker& parker,
+                                                                              std::shared_ptr<LiveCounters> counters,
+                                                                              std::filesystem::path dir) {
+    using namespace std::chrono_literals;
+    auto root = co_await w.ledger.create_root_branch(w.owner, "lane-live");
+    if (!root.has_value()) co_return std::unexpected(root.error());
+    Parker* pk = &parker;
+    std::filesystem::path const box = dir / "box";
+    auto bound = co_await provider.bind_sandbox(
+        w.ledger, std::move(*root), w.owner, dir / "staging", w.branch_q, w.run_q, w.storage_q, w.open_q,
+        agentengine::LiveShellLimits{1h, 10h, 100},
+        [pk, counters, box]() -> agentengine::task<SuspendingLiveSurface> {
+            co_return SuspendingLiveSurface(pk, counters, box);
+        },
+        10s);
+    if (!bound.has_value()) co_return std::unexpected(bound.error());
+
+    agentengine::EffectContext ctx{};
+    ctx.principal = agentengine::Principal{.id = "lane-owner", .tenant_id = ""};
+    static std::vector<agentengine::Message> const no_history;
+    agentengine::SessionContext sc{"lane-live", ctx.principal, no_history};
+    auto contribution = co_await provider.on_context(sc, ctx);
+    if (!contribution.has_value() || contribution->tools.empty()) {
+        co_return std::unexpected(agentengine::error{agentengine::failure_class::contract, "no shell_exec tool",
+                                                     "test.no_tool"});
+    }
+    agentengine::json::Value const args = agentengine::json::Value::make_object(
+        {{"command", agentengine::json::Value::make_string("write lane.txt from-the-lane")}});
+    auto invoked = co_await contribution->tools.front().invoke(args, ctx);
+    if (!invoked.has_value()) co_return std::unexpected(invoked.error());
+    auto reply = agentengine::schema::from_json<agentengine::ShellExecReply>(*invoked);
+    (void)co_await provider.on_run_end(agentengine::RunEndView{agentengine::run_end_reason::final_answer}, ctx);
+    co_return reply;
+}
+
+void live_section(Parker& parker) {
+    namespace fs = std::filesystem;
+    fs::path const dir = fs::temp_directory_path() / "ae_execution_seams_on_lane_live";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+    auto counters = std::make_shared<LiveCounters>();
+    {
+        LiveWorld world;
+        LaneLiveProvider provider;
+        std::size_t const parks_before = parker.parks;
+        auto reply = run(live_flow(provider, world, parker, counters, dir));
+        AE_CHECK(reply.has_value() && reply->ok && reply->exit_code == 0,
+                 "L1: shell_exec, invoked through its descriptor on a lane, ran and committed");
+        AE_CHECK(counters->opens == 1 && counters->execs == 1, "L1: the environment was opened once and ran once");
+        AE_CHECK(parker.parks >= parks_before + 4, "L1: open, exec, drain_to and close each really suspended");
+        AE_CHECK(counters->closes == 1 && !provider.holds_environment(),
+                 "L2: the PerRun run-end check closed the environment through the awaited close()");
+    }
+    fs::remove_all(dir, ec);
+}
+
 }  // namespace
 
 int main() {
@@ -368,6 +512,7 @@ int main() {
     runner_section(parker);
     backend_section(parker);
     surface_section(parker);
+    live_section(parker);
 
     if (g_failures != 0) {
         std::cerr << g_failures << " check(s) failed\n";

@@ -276,7 +276,7 @@ public:
                 (void)co_await run_quota.refund(1);
                 co_return std::unexpected(materialized.error());
             }
-            auto opened = surface.open(io_fs_.host_root(), replay->has_value() ? &**replay : nullptr);
+            auto opened = co_await surface.open(io_fs_.host_root(), replay->has_value() ? &**replay : nullptr);
             if (!opened.has_value()) {
                 (void)co_await run_quota.refund(1);
                 co_return std::unexpected(opened.error());
@@ -286,7 +286,7 @@ public:
             out.reopened = true;
         }
 
-        auto exec_r = surface.exec(command, deadline);
+        auto exec_r = co_await surface.exec(command, deadline);
         if (!exec_r.has_value()) {
             (void)co_await run_quota.refund(1);
             co_return std::unexpected(exec_r.error());
@@ -305,7 +305,7 @@ public:
                                           "sandbox_runtime.live_container_lost"});
             co_return out;
         }
-        auto drain_r = surface.drain_to(io_fs_.host_root());
+        auto drain_r = co_await surface.drain_to(io_fs_.host_root());
         if (!drain_r.has_value()) {
             unrecorded(drain_r.error());
             co_return out;
