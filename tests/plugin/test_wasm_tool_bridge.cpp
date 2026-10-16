@@ -208,8 +208,8 @@ int main() {
     }
 
     // -- Build the real, unioned ToolTable (matches the real CodeAct integration point) -----------
-    auto const agent_tools = ToolTable::from_tools<>();
-    auto const skill_tools = ToolTable::from_tools<>();
+    auto const agent_tools = ToolTable::from();
+    auto const skill_tools = ToolTable::from();
     std::vector<agentengine::ToolDescriptor> const empty_mcp_tools;
     auto unioned = descriptors ? union_codeact_tools(agent_tools, skill_tools, empty_mcp_tools, *descriptors)
                                 : result<ToolTable>(std::unexpected(error{failure_class::fatal, "", ""}));

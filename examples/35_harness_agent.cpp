@@ -60,7 +60,7 @@ struct ReadBrief : Tool<ReadBrief, EffectClass<effect_class::pure>> {
     static constexpr std::string_view description = "Read the assignment brief.";
     using Args  = DraftArgs;
     using Reply = DraftReply;
-    static result<Reply> invoke(Args, EffectContext&) { return Reply{"Write 3 lines on why tests need positive controls."}; }
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const { co_return Reply{"Write 3 lines on why tests need positive controls."}; }
 };
 
 // Has an effect: held back by the plan gate until the plan exists.
@@ -70,9 +70,9 @@ struct Publish : Tool<Publish> {
     static constexpr std::string_view description = "Publish the final text.";
     using Args  = DraftArgs;
     using Reply = DraftReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         ++g_published;
-        return Reply{"published " + std::to_string(a.text.size()) + " chars"};
+        co_return Reply{"published " + std::to_string(a.text.size()) + " chars"};
     }
 };
 

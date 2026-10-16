@@ -79,7 +79,7 @@ struct GatedTool : Tool<GatedTool, Capabilities<>, EffectClass<effect_class::pur
     static constexpr std::string_view description = "Needs approval.";
     using Args = GateArgs;
     using Reply = GateReply;
-    static result<Reply> invoke(Args a, EffectContext&) { return Reply{a.value}; }
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const { co_return Reply{a.value}; }
 };
 
 // Cancels the session it is told about, from inside a tool body -- a cancel BETWEEN turns.
@@ -89,9 +89,9 @@ struct CancelTool : Tool<CancelTool, Capabilities<>, EffectClass<effect_class::p
     static constexpr std::string_view description = "Cancels the run.";
     using Args = GateArgs;
     using Reply = GateReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         if (g_cancel_target != nullptr) g_cancel_target->cancel();
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -108,7 +108,7 @@ public:
         }
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = ToolTable::from_tools<GatedTool, CancelTool>().descriptors();
+        c.tools = ToolTable::from(GatedTool{}, CancelTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }

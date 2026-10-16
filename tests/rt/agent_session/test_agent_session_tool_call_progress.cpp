@@ -114,9 +114,9 @@ struct ProgressTool : agentengine::Tool<ProgressTool> {
     static constexpr std::string_view description = "Reports progress once during invoke().";
     using Args  = ProgressArgs;
     using Reply = ProgressReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext& ctx) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext& ctx) const {
         ctx.report_progress(agentengine::ContentItem{agentengine::Text{"half done"}});
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -126,7 +126,7 @@ struct SilentTool : agentengine::Tool<SilentTool> {
     static constexpr std::string_view description = "Never calls report_progress().";
     using Args  = ProgressArgs;
     using Reply = ProgressReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const { co_return Reply{true}; }
 };
 
 // Backgroundable AND reports progress from inside invoke() -- the tool D's own regression check
@@ -136,10 +136,10 @@ struct BackgroundableProgressTool : agentengine::Tool<BackgroundableProgressTool
     static constexpr std::string_view description = "Backgroundable; also calls report_progress().";
     using Args  = ProgressArgs;
     using Reply = ProgressReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext& ctx) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext& ctx) const {
         ctx.report_progress(agentengine::ContentItem{
             agentengine::Text{"should never be observed by the caller's own closure"}});
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -178,8 +178,8 @@ struct BackgroundableSandboxFsTool
         "Backgroundable; reports whether ctx.sandbox_fs was null when invoke() ran.";
     using Args  = ProgressArgs;
     using Reply = ProgressReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext& ctx) {
-        return Reply{ctx.sandbox_fs == nullptr};
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext& ctx) const {
+        co_return Reply{ctx.sandbox_fs == nullptr};
     }
 };
 
@@ -191,7 +191,7 @@ public:
         agentengine::SessionContext& sc, EffectContext&) {
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = agentengine::ToolTable::from_tools<ProgressTool, SilentTool>().descriptors();
+        c.tools = agentengine::ToolTable::from(ProgressTool{}, SilentTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -413,7 +413,7 @@ int main() {
             CapabilitySet::grant_root({agentengine::cap::Background{1}});
         ctx.capabilities = agentengine::borrow_capabilities(held);
 
-        auto const table = agentengine::ToolTable::from_tools<BackgroundableProgressTool>();
+        auto const table = agentengine::ToolTable::from(BackgroundableProgressTool{});
         agentengine::ToolCallRequest const req{"call-bg", "bg_progress_tool",
                                                 *json::parse(R"({"noop":true})"), false};
 
@@ -453,7 +453,7 @@ int main() {
         CapabilitySet const held = CapabilitySet::grant_root({agentengine::cap::Background{1}});
         ctx.capabilities = agentengine::borrow_capabilities(held);
 
-        auto const table = agentengine::ToolTable::from_tools<BackgroundableSandboxFsTool>();
+        auto const table = agentengine::ToolTable::from(BackgroundableSandboxFsTool{});
         agentengine::ToolCallRequest const req{"call-bg-fs", "bg_sandbox_fs_tool",
                                                 *json::parse(R"({"noop":true})"), false};
 

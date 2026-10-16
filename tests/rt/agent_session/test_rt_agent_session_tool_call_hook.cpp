@@ -113,9 +113,9 @@ struct PlainTool : agentengine::Tool<PlainTool, agentengine::Capabilities<>,
     static constexpr std::string_view description = "A capability-free tool that never needs approval.";
     using Args = PlainArgs;
     using Reply = PlainReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
         plain_tool_invoked_log() = true;
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -146,10 +146,10 @@ struct DangerousNeverRequireTool
     static constexpr std::string_view description = "Sends an email (real egress capability).";
     using Args = DangerousArgs;
     using Reply = DangerousReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
         dangerous_tool_seen_account() = a.account;
         ++dangerous_tool_invoked_count();
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -174,9 +174,9 @@ struct GatedTool : agentengine::Tool<GatedTool, agentengine::Capabilities<>,
     static constexpr std::string_view description = "Needs approval before every call.";
     using Args = GateArgs;
     using Reply = GateReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
         gated_tool_invoked_log() = true;
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -204,9 +204,9 @@ struct PolicyGatedTool : agentengine::Tool<PolicyGatedTool, agentengine::Capabil
     static constexpr std::string_view description = "Needs policy_driven resolution before every call.";
     using Args = PolicyGateArgs;
     using Reply = PolicyGateReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
         policy_gated_tool_invoked_log() = true;
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -218,8 +218,7 @@ public:
         agentengine::SessionContext& sc, EffectContext&) {
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = agentengine::ToolTable::from_tools<PlainTool, DangerousNeverRequireTool, GatedTool,
-                                                        PolicyGatedTool>()
+        c.tools = agentengine::ToolTable::from(PlainTool{}, DangerousNeverRequireTool{}, GatedTool{}, PolicyGatedTool{})
                       .descriptors();
         co_return c;
     }

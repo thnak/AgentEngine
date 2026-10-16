@@ -92,9 +92,9 @@ struct AlwaysGated : ae::Tool<AlwaysGated, ae::Capabilities<>, ae::EffectClass<a
     static constexpr std::string_view description = "Needs approval before every call.";
     using Args = GateArgs;
     using Reply = GateReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++always_calls();
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -105,9 +105,9 @@ struct Effectful : ae::Tool<Effectful, ae::Capabilities<>, ae::EffectClass<ae::e
     static constexpr std::string_view description = "Has an effect; no approval for structured calls.";
     using Args = GateArgs;
     using Reply = GateReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++effectful_calls();
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -117,9 +117,9 @@ struct PolicyGated : ae::Tool<PolicyGated, ae::Capabilities<>, ae::EffectClass<a
     static constexpr std::string_view description = "Resolved by the host's policy.";
     using Args = GateArgs;
     using Reply = GateReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++policy_calls();
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -130,9 +130,9 @@ struct PolicyEffectful : ae::Tool<PolicyEffectful, ae::Capabilities<>, ae::Effec
     static constexpr std::string_view description = "Resolved by the host's policy; has an effect.";
     using Args = GateArgs;
     using Reply = GateReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++policy_effectful_calls();
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -141,7 +141,7 @@ public:
     [[nodiscard]] ae::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext& sc, ae::EffectContext&) {
         ae::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = ae::ToolTable::from_tools<AlwaysGated, Effectful, PolicyGated, PolicyEffectful>().descriptors();
+        c.tools = ae::ToolTable::from(AlwaysGated{}, Effectful{}, PolicyGated{}, PolicyEffectful{}).descriptors();
         co_return c;
     }
     ae::task<std::monostate> on_turn_end(ae::TurnView, ae::EffectContext&) { co_return std::monostate{}; }
@@ -244,10 +244,10 @@ struct ClearingTool : ae::Tool<ClearingTool, ae::Capabilities<>, ae::EffectClass
     static constexpr std::string_view description = "Switches unattended mode off.";
     using Args = GateArgs;
     using Reply = GateReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++clearing_calls();
         if (clear_hook()) clear_hook()();
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -256,7 +256,7 @@ public:
     [[nodiscard]] ae::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext& sc, ae::EffectContext&) {
         ae::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = ae::ToolTable::from_tools<ClearingTool, AlwaysGated>().descriptors();
+        c.tools = ae::ToolTable::from(ClearingTool{}, AlwaysGated{}).descriptors();
         co_return c;
     }
     ae::task<std::monostate> on_turn_end(ae::TurnView, ae::EffectContext&) { co_return std::monostate{}; }

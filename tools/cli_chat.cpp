@@ -494,7 +494,7 @@ struct WordCountTool : Tool<WordCountTool, EffectClass<effect_class::pure>> {
     using Args = WordCountArgs;
     using Reply = WordCountReply;
 
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         int count = 0;
         bool in_word = false;
         for (char c : a.text) {
@@ -506,7 +506,7 @@ struct WordCountTool : Tool<WordCountTool, EffectClass<effect_class::pure>> {
                 in_word = false;
             }
         }
-        return Reply{count};
+        co_return Reply{count};
     }
 };
 
@@ -913,10 +913,10 @@ private:
         // currently mounted skills, and MCP-sourced tools (none in this demo -- no MCP server is
         // connected here; see protocol/mcp/mcp_tool_bridge.hpp for that real, tested, separately
         // wired path).
-        auto const codeact_universe = ToolTable::from_tools<WordCountTool>();
+        auto const codeact_universe = ToolTable::from(WordCountTool{});
         auto const codeact_skill_tools = scope_tools_to_mounted_skills(
             codeact_universe, skills_.allowed_tool_names_for(mounted_skills_.all()));
-        auto bridged = union_codeact_tools(ToolTable::from_tools<>(), codeact_skill_tools);
+        auto bridged = union_codeact_tools(ToolTable::from(), codeact_skill_tools);
         if (!bridged) co_return std::unexpected(bridged.error());
         auto refreshed = runner.refresh_agent_tools(
             native_jail::ToolBridgeConfig{*bridged, /*capabilities=*/{}, /*approved=*/true});

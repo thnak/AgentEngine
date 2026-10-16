@@ -218,7 +218,7 @@ private:
     auto plugin = co_await state.plugin_tools_fetch(ctx);
     if (!plugin) co_return std::unexpected(plugin.error());
 
-    auto universe = union_codeact_tools(state.agent_tools, ToolTable::from_tools<>(), *mcp, *plugin);
+    auto universe = union_codeact_tools(state.agent_tools, ToolTable::from(), *mcp, *plugin);
     if (!universe) co_return std::unexpected(universe.error());
 
     for (ToolDescriptor const& d : universe->descriptors()) {

@@ -128,10 +128,10 @@ struct CountingTool : ae::Tool<Derived, ae::Capabilities<>, ae::EffectClass<ae::
                                ae::Approval<Mode>> {
     using Args  = ValArgs;
     using Reply = ValReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++runs()[std::string(Derived::name)];
         values()[std::string(Derived::name)].push_back(a.value);
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 struct HiddenTool : CountingTool<HiddenTool, ae::approval_mode::always_require> {
@@ -161,7 +161,7 @@ public:
                                                                             ae::EffectContext&) {
         ae::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = ae::ToolTable::from_tools<HiddenTool, OtherTool, GatedTool, PolicyTool, OldTool>().descriptors();
+        c.tools = ae::ToolTable::from(HiddenTool{}, OtherTool{}, GatedTool{}, PolicyTool{}, OldTool{}).descriptors();
         co_return c;
     }
     ae::task<std::monostate> on_turn_end(ae::TurnView, ae::EffectContext&) { co_return std::monostate{}; }

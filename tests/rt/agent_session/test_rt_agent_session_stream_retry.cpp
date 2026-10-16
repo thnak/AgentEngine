@@ -99,9 +99,9 @@ struct EchoTool : agentengine::Tool<EchoTool, agentengine::Capabilities<>,
     static constexpr std::string_view description = "Echoes its integer argument back.";
     using Args = EchoArgs;
     using Reply = EchoReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
         ++g_echo_invocations;
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -111,7 +111,7 @@ public:
         agentengine::SessionContext& sc, EffectContext&) {
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = agentengine::ToolTable::from_tools<EchoTool>().descriptors();
+        c.tools = agentengine::ToolTable::from(EchoTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -126,9 +126,9 @@ struct GatedTool : agentengine::Tool<GatedTool, agentengine::Capabilities<>,
     static constexpr std::string_view description = "Needs approval before every call.";
     using Args = EchoArgs;
     using Reply = EchoReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
         ++g_echo_invocations;
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -138,7 +138,7 @@ public:
         agentengine::SessionContext& sc, EffectContext&) {
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = agentengine::ToolTable::from_tools<GatedTool>().descriptors();
+        c.tools = agentengine::ToolTable::from(GatedTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) { co_return std::monostate{}; }

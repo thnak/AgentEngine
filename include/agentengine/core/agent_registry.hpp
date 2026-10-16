@@ -179,11 +179,11 @@ struct policy_sandbox_profile<SandboxProfile<P>> {
 // case.
 template <class... Policies>
 struct tools_of {
-    [[nodiscard]] static ToolTable table() { return ToolTable::from_tools<>(); }
+    [[nodiscard]] static ToolTable table() { return ToolTable::from(); }
 };
 template <class... Ts, class... Rest>
 struct tools_of<Tools<Ts...>, Rest...> {
-    [[nodiscard]] static ToolTable table() { return ToolTable::from_tools<Ts...>(); }
+    [[nodiscard]] static ToolTable table() { return ToolTable::from(Ts{}...); }
 };
 template <class P, class... Rest>
 struct tools_of<P, Rest...> {

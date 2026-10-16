@@ -70,7 +70,7 @@ struct EchoTool : Tool<EchoTool, Capabilities<cap::decl::Entropy>> {
     static constexpr std::string_view description = "Echoes its message argument back.";
     using Args = EchoArgs;
     using Reply = EchoReply;
-    static result<Reply> invoke(Args a, EffectContext&) { return Reply{a.message}; }
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const { co_return Reply{a.message}; }
 };
 
 }  // namespace
@@ -285,7 +285,7 @@ int main() {
         cfg.mount_roots["input"] = widen(input_dir);
         cfg.expose_agent_files_data = true;
         ToolBridgeConfig bridge;
-        bridge.bridged_tools = ToolTable::from_tools<EchoTool>();
+        bridge.bridged_tools = ToolTable::from(EchoTool{});
         bridge.capabilities = {};
         bridge.approved = true;
         cfg.tool_bridge = std::move(bridge);

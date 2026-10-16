@@ -59,7 +59,7 @@ struct WordCountTool : Tool<WordCountTool, EffectClass<effect_class::pure>> {
     static constexpr std::string_view description = "Counts whitespace-separated words.";
     using Args = CountArgs;
     using Reply = CountReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         int count = 0;
         bool in_word = false;
         for (char c : a.text) {
@@ -67,7 +67,7 @@ struct WordCountTool : Tool<WordCountTool, EffectClass<effect_class::pure>> {
             if (!is_space && !in_word) ++count;
             in_word = !is_space;
         }
-        return Reply{count};
+        co_return Reply{count};
     }
 };
 
@@ -87,7 +87,7 @@ int main() {
     check(rt::block_on(skills.ensure_loaded()).has_value(), "the word-counter skill source resolves");
 
     MountedSkillsState mount_state;
-    ToolTable const    universe = ToolTable::from_tools<WordCountTool>();
+    ToolTable const    universe = ToolTable::from(WordCountTool{});
     CapabilitySet const held = CapabilitySet::grant_root({});
     EffectContext ctx;
     ctx.capabilities = agentengine::borrow_capabilities(held);

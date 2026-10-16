@@ -5,7 +5,7 @@
 // Implements rfcs/006-Tool-and-Function-Plane.md §3 — the ten-step invocation pipeline every tool call
 // traverses, as real host machinery (not modeled on Tool itself, core/tool.hpp's own comment).
 //
-// The declaration half (`ToolDescriptor`, `make_tool_descriptor<ToolT>()`, `ToolTable`) lives in
+// The declaration half (`ToolDescriptor`, `make_tool_descriptor(ToolT{})`, `ToolTable`) lives in
 // core/tool_descriptor.hpp, included below; see that file's banner for why the two were split.
 //
 // M2 Phase B scope (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md): a single

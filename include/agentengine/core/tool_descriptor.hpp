@@ -1,8 +1,8 @@
 #pragma once
 // Implements rfcs/006-Tool-and-Function-Plane.md §6 -- the DECLARATION half of the tool plane: what a tool
 // is at runtime (`ToolDescriptor`), how a compile-time `Tool<Derived, Policies...>` conformer becomes
-// one (ADR-237 §5.2's instance form `make_tool_descriptor(ToolT{...})` / `ToolTable::from(...)`, plus
-// the transitional static `make_tool_descriptor<ToolT>()` and `make_tool_descriptor_with_invoke<ToolT>()`),
+// one (ADR-237 §5.2's instance form `make_tool_descriptor(ToolT{...})` / `ToolTable::from(...)`, the only
+// form since #175 deleted the static-invoke `make_tool_descriptor<ToolT>()` / `ToolTable::from_tools<Ts...>()`),
 // and the immutable per-run table they are resolved into (`ToolTable`). This is the I6 mechanism for
 // tools: the declarative surface and the native CRTP surface must agree on exactly these fields.
 //
@@ -59,8 +59,8 @@ struct ToolDescriptor {
     std::string reply_schema_json;
 
     // ADR-237 §5.2: `invoke` is asynchronous -- returns `task<result<json::Value>>` (006 §1's
-    // `ae::task<result<Reply>>`, type-erased). A synchronous caller drives it with
-    // `rt::drive_leaf_task` until the pipeline itself is converted (ADR-237 §5.2 step B).
+    // `ae::task<result<Reply>>`, type-erased). The pipeline awaits it; the two detached background workers
+    // drive it with `rt::block_on` (`rt::drive_leaf_task`, which did this before, is deleted, #175).
     using InvokeFn = std::function<task<result<json::Value>>(json::Value const&, EffectContext&)>;
     InvokeFn invoke;
 
@@ -70,7 +70,7 @@ struct ToolDescriptor {
     // previously copied onto the runtime descriptor because nothing needed it at this layer before
     // now. Appended last (this struct's own established convention) -- `at_most_once` is the same
     // conservative default `declared_effect_class()` itself uses, so a hand-built `ToolDescriptor`
-    // that predates this field (not going through `make_tool_descriptor<T>()` below) fails CLOSED
+    // that predates this field (not going through `make_tool_descriptor(T{})` below) fails CLOSED
     // against auto-declassification rather than silently qualifying.
     // The type name is written QUALIFIED, deliberately. A member named `effect_class` whose type is
     // also spelled `effect_class` makes the unqualified name mean the type before the declaration and
@@ -95,7 +95,7 @@ struct ToolDescriptor {
 
     // decisions/ADR-066-context-provider-attribution-provenance.md: same stamp as
     // `Message::attribution`, same seam (`assemble_context()`), same "nullopt means not
-    // contributor-sourced" convention (a tool from `make_tool_descriptor<ToolT>()`'s ordinary,
+    // contributor-sourced" convention (a tool from `make_tool_descriptor(ToolT{})`'s ordinary,
     // host-declared static tool table is never contributor-sourced, so stays nullopt). MAF has no
     // equivalent for this field (`AIContextProvider.cs`'s `mergedTools` is a bare, unstamped
     // `Concat`) -- this is a place this project's design goes further than its own surveyed prior
@@ -108,7 +108,7 @@ struct ToolDescriptor {
     // `ToolTable`/session, but the wire-format `translate_tool()` in the OpenAI/Anthropic backends
     // re-parsed it into a fresh `json::Value` on every single `chat()`/`chat_stream()` call that
     // included this tool -- redundant work repeated once per turn per tool, for the whole run.
-    // `make_tool_descriptor<ToolT>()`/`make_tool_descriptor(ToolT{...})` below parse it
+    // `make_tool_descriptor(ToolT{})`/`make_tool_descriptor(ToolT{...})` below parse it
     // ONCE, here, at registration time; `args_schema_value_cached` is `false` for any hand-built
     // descriptor that predates this field (memory_provider.hpp/vector_rag_context_provider.hpp/
     // mcp_tool_bridge.hpp/native_providers.hpp all assign `args_schema_json` directly, not through
@@ -131,7 +131,7 @@ struct ToolDescriptor {
     bool parallelizable = false;
 
     // decisions/ADR-212-deterministic-tool-output-declaration.md: `true` only when the tool declared
-    // `Deterministic` and `make_tool_descriptor<ToolT>()` built this descriptor around `ToolT::invoke`.
+    // `Deterministic` and `make_tool_descriptor(ToolT{})` built this descriptor around `ToolT::invoke`.
     // Hand-built descriptors (MCP bridge, WASM, providers) leave it `false`: no source they are built
     // from can express the claim (ADR-212 §3.4). Code that replaces `invoke` on an existing descriptor
     // must clear it unless the wrapper returns the inner success value unchanged (§3.5). The engine
@@ -184,36 +184,6 @@ struct ToolDescriptor {
                -> task<result<json::Value>> { co_return fn(args, ctx); };
 }
 
-template <class ToolT>
-[[nodiscard]] ToolDescriptor make_tool_descriptor() {
-    ToolDescriptor d;
-    d.name = std::string(ToolT::name);
-    d.description = std::string(ToolT::description);
-    d.capability_ceiling = ToolT::declared_capabilities();
-    d.approval = ToolT::declared_approval();
-    d.backgroundable = ToolT::declared_backgroundable();
-    d.effect_class = ToolT::declared_effect_class();
-    d.exclusivity_group = ToolT::declared_exclusivity_group();
-    d.parallelizable = ToolT::kHasParallelizable;
-    d.deterministic = ToolT::declared_deterministic();
-    d.enforces_granted_caps = ToolT::declared_enforces_granted_caps();
-    d.captures_session_state = ToolT::declared_captures_session_state();  // ADR-237 §5.2
-    d.args_schema_json = ToolT::args_schema();
-    d.reply_schema_json = ToolT::reply_schema();
-    if (auto parsed = json::parse(d.args_schema_json)) {
-        d.args_schema_value = std::move(*parsed);
-        d.args_schema_value_cached = true;
-    }
-    d.invoke = [](json::Value const& args_value, EffectContext& ctx) -> task<result<json::Value>> {
-        auto args = schema::from_json<typename ToolT::Args>(args_value);
-        if (!args) co_return std::unexpected(args.error());
-        auto reply = ToolT::invoke(*args, ctx);
-        if (!reply) co_return std::unexpected(reply.error());
-        co_return schema::to_json(*reply);
-    };
-    return d;
-}
-
 // ADR-237 §5.2: `make_tool_descriptor_with_invoke` lived here. It is DELETED -- every one of its call
 // sites (production and test) is now an instance-form `Tool<>` conformer registered through the
 // value-taking `make_tool_descriptor(ToolT)` below, so a descriptor's invoke IS the declared code and no
@@ -225,9 +195,8 @@ template <class ToolT>
 // `shared_ptr` and the seam calls it through that owner. A stateless tool is an empty object
 // (`make_tool_descriptor(ToolT{})`); a stateful one carries its injected state by value, which is how
 // the former `make_tool_descriptor_with_invoke` call sites become real `Tool<>` conformers.
-// Registration is `ToolTable::from(ToolT{...}, ...)`. This is the §5.2 target shape; the older
-// zero-argument `make_tool_descriptor<ToolT>()` above is the transitional static-invoke form and is
-// deleted once every conformer is converted.
+// Registration is `ToolTable::from(ToolT{...}, ...)`. This is the §5.2 shape and, since #175, the only one:
+// the zero-argument static-invoke `make_tool_descriptor<ToolT>()` that preceded it is deleted.
 template <class ToolT>
 [[nodiscard]] ToolDescriptor make_tool_descriptor(ToolT tool) {
     ToolDescriptor d;
@@ -263,7 +232,7 @@ template <class ToolT>
 
 // Forward-declared only -- the real type lives in core/tool_registry.hpp (gap-4 closure, ADR-054),
 // which itself depends on ToolDescriptor/ToolTable from THIS header, so the dependency can only run
-// one direction. `ToolTable::from_names()` below is declared here (next to `from_tools`/
+// one direction. `ToolTable::from_names()` below is declared here (next to `from`/
 // `from_descriptors`, where a caller would look for it) and DEFINED out-of-line in
 // core/tool_registry.hpp -- a caller of `from_names()` must include that header, not just this one.
 // ae-naming-lint: allow ToolRegistry — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
@@ -275,18 +244,11 @@ class ToolRegistry;
 // ae-naming-lint: allow ToolTable — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class ToolTable {
 public:
-    template <class... ToolTs>
-    [[nodiscard]] static ToolTable from_tools() {
-        ToolTable t;
-        (t.descriptors_.push_back(make_tool_descriptor<ToolTs>()), ...);
-        return t;
-    }
-
     // ADR-237 §5.2: the instance-form registration path. Each argument is a `Tool<>` instance -- a
     // stateless tool is `ToolT{}`, a stateful one carries its injected state by value -- moved into
     // its descriptor (see the value-taking `make_tool_descriptor` above). This is where the former
     // `make_tool_descriptor_with_invoke` call sites went. `from()` with no arguments is an empty
-    // table, matching `from_tools<>()`.
+    // table.
     template <class... ToolTs>
     [[nodiscard]] static ToolTable from(ToolTs&&... tools) {
         ToolTable t;
@@ -296,10 +258,10 @@ public:
         return t;
     }
 
-    // A second, runtime construction path alongside `from_tools<ToolTs...>()` -- needed when the
+    // A second, runtime construction path alongside `from(ToolTs{}...)` -- needed when the
     // actual offered set is a runtime-computed SUBSET of a compile-time-declared universe (e.g.
     // `core/skill_tool_scoping.hpp` filtering by which skills are currently mounted). The result is
-    // just as immutable once built as one from `from_tools<...>()` -- this does not weaken 006 §6's
+    // just as immutable once built as one from `from(...)` -- this does not weaken 006 §6's
     // "resolved once into an immutable table at run start" invariant, it only adds a second way to
     // reach that same shape.
     [[nodiscard]] static ToolTable from_descriptors(std::vector<ToolDescriptor> descriptors) {

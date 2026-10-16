@@ -80,7 +80,7 @@ struct GrantEnforcingProbe
     static constexpr std::string_view description = "Records its bound capabilities.";
     using Args  = ProbeArgs;
     using Reply = ProbeReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext& ctx) { return record_bound(ctx); }
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext& ctx) const { co_return record_bound(ctx); }
 };
 
 struct PlainProbe
@@ -89,7 +89,7 @@ struct PlainProbe
     static constexpr std::string_view description = "Records its bound capabilities.";
     using Args  = ProbeArgs;
     using Reply = ProbeReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext& ctx) { return record_bound(ctx); }
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext& ctx) const { co_return record_bound(ctx); }
 };
 
 ae::EffectContext make_ctx(CapabilitySet const& held) {
@@ -195,7 +195,7 @@ int main() {
 
     // ---- P: through invoke_tool ----------------------------------------------------------------
     {
-        auto const table = ae::ToolTable::from_tools<GrantEnforcingProbe, PlainProbe>();
+        auto const table = ae::ToolTable::from(GrantEnforcingProbe{}, PlainProbe{});
         CapabilitySet const held = capped_grant();
 
         g_invocations = 0;
@@ -296,7 +296,7 @@ int main() {
                                               Capability{ae::cap::FsWrite{"work", "", kQuota, kFileCap}}};
         ae::trust::ReachabilityAgent const agent{
             "agent", ceiling,
-            {ae::make_tool_descriptor<GrantEnforcingProbe>(), ae::make_tool_descriptor<PlainProbe>()}};
+            {ae::make_tool_descriptor(GrantEnforcingProbe{}), ae::make_tool_descriptor(PlainProbe{})}};
         auto const report = ae::trust::enumerate_policy_reachability({agent}, {});
         bool tagged_granted = true, tagged_seen = false, plain_denied = true, plain_seen = false;
         for (auto const& cell : report.cells) {
@@ -316,13 +316,13 @@ int main() {
     // ---- A: the agent registry's ceiling check uses the same rule ---------------------------------
     {
         CapabilitySet const ceiling = capped_grant();
-        auto const tagged = ae::agent_detail::check_capability_ceiling(ceiling, {ae::make_tool_descriptor<GrantEnforcingProbe>()});
+        auto const tagged = ae::agent_detail::check_capability_ceiling(ceiling, {ae::make_tool_descriptor(GrantEnforcingProbe{})});
         check(tagged.has_value(), "A1: an agent with a capped ceiling may list a grant-enforcing tool");
-        auto const plain = ae::agent_detail::check_capability_ceiling(ceiling, {ae::make_tool_descriptor<PlainProbe>()});
+        auto const plain = ae::agent_detail::check_capability_ceiling(ceiling, {ae::make_tool_descriptor(PlainProbe{})});
         check(!plain.has_value() && plain.error().code == "agent.capability_ceiling_exceeded",
               "A2: and is still refused a plain tool declaring the uncapped ceiling");
         auto const other = ae::agent_detail::check_capability_ceiling(capped_grant("other"),
-                                                        {ae::make_tool_descriptor<GrantEnforcingProbe>()});
+                                                        {ae::make_tool_descriptor(GrantEnforcingProbe{})});
         check(!other.has_value(), "A3: a ceiling on a different mount still refuses the grant-enforcing tool");
     }
 

@@ -247,9 +247,9 @@ struct PolicyGatedChildTool
     static constexpr std::string_view description = "A policy_driven tool the CHILD itself calls.";
     using Args = PolicyGatedChildArgs;
     using Reply = PolicyGatedChildReply;
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const {
         policy_gated_child_invoked() = true;
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -259,7 +259,7 @@ public:
                                                                               EffectContext&) {
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = agentengine::ToolTable::from_tools<PolicyGatedChildTool>().descriptors();
+        c.tools = agentengine::ToolTable::from(PolicyGatedChildTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) { co_return std::monostate{}; }

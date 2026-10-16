@@ -51,7 +51,7 @@ struct EchoTool : ae::Tool<EchoTool> {
     static constexpr std::string_view description = "Echoes its input text back.";
     using Args  = EchoArgs;
     using Reply = EchoReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) { return Reply{a.text}; }
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const { co_return Reply{a.text}; }
 };
 
 struct FailArgs {
@@ -67,8 +67,8 @@ struct AlwaysFailsTool : ae::Tool<AlwaysFailsTool> {
     static constexpr std::string_view description = "Always returns an execution error.";
     using Args  = FailArgs;
     using Reply = FailReply;
-    static ae::result<Reply> invoke(FailArgs, ae::EffectContext&) {
-        return std::unexpected(
+    ae::task<ae::result<Reply>> invoke(FailArgs, ae::EffectContext&) const {
+        co_return std::unexpected(
             ae::error{ae::failure_class::contract, "deliberate failure", "test.deliberate_failure"});
     }
 };
@@ -99,7 +99,7 @@ struct MockListServer {
 }  // namespace
 
 int main() {
-    auto const table = ae::ToolTable::from_tools<EchoTool, AlwaysFailsTool>();
+    auto const table = ae::ToolTable::from(EchoTool{}, AlwaysFailsTool{});
     ae::CapabilitySet const held;
     mcp::McpServer server(table, held, ae::ApprovalDecider{}, "agentengine-test-server");
     // ADR-061 §7 R3: the transport supplies the principal the request established. Here the

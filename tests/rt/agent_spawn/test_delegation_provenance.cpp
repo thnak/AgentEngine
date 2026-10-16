@@ -105,9 +105,9 @@ struct DangerTool : Tool<DangerTool, Capabilities<>, EffectClass<effect_class::p
     static constexpr std::string_view description = "dangerous action";
     using Args = DangerArgs;
     using Reply = DangerReply;
-    static result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const {
         ++g_danger_runs;
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -226,7 +226,7 @@ public:
         // Named, not a temporary: `descriptors()` returns a reference into the table, and a range-for over a
         // temporary's member only keeps it alive under C++23's P2718, which clang-cl did not apply (PR #103 CI:
         // C saw "unknown tool: danger", and the run crashed in the next scenario).
-        ToolTable const danger_table = ToolTable::from_tools<DangerTool>();
+        ToolTable const danger_table = ToolTable::from(DangerTool{});
         for (auto const& t : danger_table.descriptors()) c.tools.push_back(t);
         co_return c;
     }
@@ -489,7 +489,7 @@ public:
         if (sp) {
             for (auto& t : sp->tools) c.tools.push_back(std::move(t));
         }
-        ToolTable const danger_table = ToolTable::from_tools<DangerTool>();
+        ToolTable const danger_table = ToolTable::from(DangerTool{});
         for (auto const& t : danger_table.descriptors()) c.tools.push_back(t);
         co_return c;
     }
@@ -580,10 +580,10 @@ struct ParProbeTool : Tool<ParProbeTool, Capabilities<>, EffectClass<effect_clas
     static constexpr std::string_view description = "records its remaining budget";
     using Args = NoArgs2;
     using Reply = DangerReply;
-    static result<Reply> invoke(Args, EffectContext& ctx) {
+    agentengine::task<result<Reply>> invoke(Args, EffectContext& ctx) const {
         std::lock_guard<std::mutex> lock(g_par_mutex);
         g_par_seen.push_back(ctx.remaining_token_budget);
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 class ParClient {
@@ -609,7 +609,7 @@ public:
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        ToolTable const table = ToolTable::from_tools<ParProbeTool>();
+        ToolTable const table = ToolTable::from(ParProbeTool{});
         for (auto const& t : table.descriptors()) c.tools.push_back(t);
         co_return c;
     }
@@ -662,7 +662,7 @@ public:
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        ToolTable const table = ToolTable::from_tools<DangerTool>();
+        ToolTable const table = ToolTable::from(DangerTool{});
         for (auto const& t : table.descriptors()) c.tools.push_back(t);
         co_return c;
     }

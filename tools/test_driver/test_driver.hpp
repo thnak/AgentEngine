@@ -146,7 +146,7 @@ struct EchoTool : Tool<EchoTool, Capabilities<>, EffectClass<effect_class::pure>
     static constexpr std::string_view description = "Returns its text argument unchanged.";
     using Args = TextArgs;
     using Reply = TextReply;
-    static result<Reply> invoke(Args a, EffectContext&) { return Reply{std::move(a.text)}; }
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const { co_return Reply{std::move(a.text)}; }
 };
 
 // Returns its input, but always needs approval first -- the tool a test uses to exercise the gate.
@@ -157,7 +157,7 @@ struct GatedEchoTool : Tool<GatedEchoTool, Capabilities<>, EffectClass<effect_cl
         "Returns its text argument unchanged. Needs human approval before every call.";
     using Args = TextArgs;
     using Reply = TextReply;
-    static result<Reply> invoke(Args a, EffectContext&) { return Reply{std::move(a.text)}; }
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const { co_return Reply{std::move(a.text)}; }
 };
 
 // Always fails, so a test can exercise the tool-error path.
@@ -166,13 +166,13 @@ struct FailTool : Tool<FailTool, Capabilities<>, EffectClass<effect_class::pure>
     static constexpr std::string_view description = "Always fails with the given text as the error message.";
     using Args = TextArgs;
     using Reply = TextReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
-        return std::unexpected(error{failure_class::fatal, std::move(a.text), "test_driver.fail_tool"});
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
+        co_return std::unexpected(error{failure_class::fatal, std::move(a.text), "test_driver.fail_tool"});
     }
 };
 
 [[nodiscard]] inline std::vector<ToolDescriptor> all_test_tool_descriptors() {
-    return ToolTable::from_tools<EchoTool, GatedEchoTool, FailTool>().descriptors();
+    return ToolTable::from(EchoTool{}, GatedEchoTool{}, FailTool{}).descriptors();
 }
 
 // ---- Fixtures (compiled in; ADR-182 §12 C-3) --------------------------------------------------------

@@ -22,7 +22,7 @@
 //         other's state -- proving per-session isolation, not asserting it.
 //   S3 -- the must-fix #1 regression: a descriptor with both `captures_session_state` and
 //         `backgroundable` set is refused by `background_task()`, structurally, before step 8.
-//   S4 -- `make_tool_descriptor<ToolT>()` (the existing, unmodified path) is completely unaffected --
+//   S4 -- `make_tool_descriptor(ToolT{})` (the existing, unmodified path) is completely unaffected --
 //         `captures_session_state` defaults false, ordinary stateless tools are still backgroundable
 //         exactly as before.
 //   S5 -- fork_from() copies provider-owned state (not just history text); clear_in_process_state()
@@ -206,7 +206,7 @@ struct StatelessBackgroundableTool
     static constexpr std::string_view description = "Declared Backgroundable with a static invoke, for S4.";
     using Args  = BgArgs;
     using Reply = BgReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) { return BgReply{}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const { co_return BgReply{}; }
 };
 
 // The state-owning ContextProvider: counter_ is an ORDINARY MEMBER (no core-seam change, no StateT
@@ -613,12 +613,12 @@ int main() {
     }
 
     // ============================================================================================
-    // S4 -- make_tool_descriptor<ToolT>() (unmodified path) is unaffected
+    // S4 -- make_tool_descriptor(ToolT{}) (unmodified path) is unaffected
     // ============================================================================================
     {
-        auto stateless_desc = agentengine::make_tool_descriptor<StatelessBackgroundableTool>();
+        auto stateless_desc = agentengine::make_tool_descriptor(StatelessBackgroundableTool{});
         check(!stateless_desc.captures_session_state,
-              "S4: the ordinary make_tool_descriptor<ToolT>() path defaults captures_session_state to "
+              "S4: the ordinary make_tool_descriptor(ToolT{}) path defaults captures_session_state to "
               "false, exactly as before this change");
         check(stateless_desc.backgroundable,
               "S4: the tool's own Backgroundable declaration is still correctly extracted");

@@ -165,9 +165,9 @@ struct NoopTool : agentengine::Tool<NoopTool, agentengine::Capabilities<>,
     static constexpr std::string_view description = "Does nothing; a second tool for B6's multi-call round.";
     using Args = NoopArgs;
     using Reply = NoopReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
         noop_tool_invoked_log() = true;
-        return Reply{a.label};
+        co_return Reply{a.label};
     }
 };
 
@@ -188,7 +188,7 @@ public:
         std::vector<agentengine::ToolDescriptor> descriptors = {
             agentengine::make_tool_descriptor(ExecuteCodeTool{*this}),
         };
-        if (include_noop_tool_) descriptors.push_back(agentengine::make_tool_descriptor<NoopTool>());
+        if (include_noop_tool_) descriptors.push_back(agentengine::make_tool_descriptor(NoopTool{}));
         c.tools = std::move(descriptors);
         co_return c;
     }

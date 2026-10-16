@@ -221,9 +221,8 @@ struct policy_exclusivity_group<ExclusivityGroup<Name>> {
 // object, a stateful one holds its injected state (registered by value through `ToolTable::from(...)`
 // or `make_tool_descriptor(ToolT{...})`). `const` because a `Parallelizable` tool called twice in one
 // batch runs two `invoke`s on the same object concurrently (red-team G2), so mutable per-call state
-// lives in the frame. The older `static result<Reply> invoke(Args, EffectContext&)` form is still
-// accepted transitionally (registered through `make_tool_descriptor<ToolT>()`/`from_tools<Ts...>()`)
-// and is deleted once every conformer is converted (ADR-237 §5.2, "one way to declare a tool").
+// lives in the frame. It is the only form: the older `static result<Reply> invoke(Args, EffectContext&)`
+// and its static registration path were deleted (#175; ADR-237 §5.2, "one way to declare a tool").
 template <class Derived, class... Policies>
 struct Tool {
     // decisions/ADR-158-tool-concurrency-exclusivity-policy.md §4/§5: `Parallelizable` and

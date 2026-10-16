@@ -6,7 +6,7 @@
 
 #include "agentengine/core/tool_pipeline.hpp"
 
-#include "agentengine/rt/drive_leaf_task.hpp"  // ADR-237 §5.2: drive the async invoke from sync steps
+#include "agentengine/rt/block_on.hpp"  // ADR-237 §5.2: drive the async invoke from the detached worker
 
 namespace agentengine {
 
@@ -489,11 +489,16 @@ task<result<void>> background_task(ToolTable const& table, CapabilitySet const& 
                          on_complete = std::move(on_complete)]() mutable {
         auto const started = std::chrono::steady_clock::now();
         ctx.bound_capabilities = &bound;
-        // ADR-237 §5.2: drive the async invoke from this detached worker (see the sync site above).
+        // ADR-237 §5.2: drive the async invoke from this detached worker. This thread has no outer catch, so a
+        // coroutine fault that `block_on` rethrows is translated here, never left to escape the thread
+        // (std::terminate). The class, message and code are the ones `rt::drive_leaf_task` produced before #175
+        // deleted it, kept so the change moves no behaviour; the code's name is historical.
         auto drive_invoke = [&]() -> result<json::Value> {
-            auto driven = rt::drive_leaf_task(tool->invoke(request.arguments, ctx));
-            if (!driven) return std::unexpected(driven.error());
-            return std::move(*driven);
+            try {
+                return rt::block_on(tool->invoke(request.arguments, ctx));
+            } catch (...) {
+                return std::unexpected(error{failure_class::transient, "leaf task faulted", "rt.leaf_task_faulted"});
+            }
         };
         result<json::Value> invoke_result = drive_invoke();
         ctx.bound_capabilities = nullptr;

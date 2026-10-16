@@ -41,8 +41,8 @@ struct EchoTool : agentengine::Tool<EchoTool> {
     using Args = EchoArgs;
     using Reply = EchoReply;
 
-    static agentengine::result<Reply> invoke(Args args, agentengine::EffectContext&) {
-        return Reply{"echo: " + args.message};
+    agentengine::task<agentengine::result<Reply>> invoke(Args args, agentengine::EffectContext&) const {
+        co_return Reply{"echo: " + args.message};
     }
 };
 
@@ -101,7 +101,7 @@ int main() {
 
     // --- F1-R6: invoke_tool() (M2's real pipeline) actually computes and surfaces the key --------
     {
-        auto const table = agentengine::ToolTable::from_tools<EchoTool>();
+        auto const table = agentengine::ToolTable::from(EchoTool{});
         agentengine::CapabilitySet held;
         agentengine::ToolCallRequest req{"call-1", "echo", args1, false, /*call_index=*/7};
         agentengine::ToolInvocationAudit audit;

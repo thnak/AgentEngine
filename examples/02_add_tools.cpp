@@ -73,9 +73,9 @@ struct GetWeatherTool : Tool<GetWeatherTool, Capabilities<>, EffectClass<effect_
     static constexpr std::string_view description = "Gets the current weather for a location.";
     using Args = WeatherArgs;
     using Reply = WeatherReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         weather_tool_invoked() = true;
-        return Reply{"The weather in " + a.location + " is cloudy with a high of 15C."};
+        co_return Reply{"The weather in " + a.location + " is cloudy with a high of 15C."};
     }
 };
 
@@ -86,7 +86,7 @@ public:
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = ToolTable::from_tools<GetWeatherTool>().descriptors();
+        c.tools = ToolTable::from(GetWeatherTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }

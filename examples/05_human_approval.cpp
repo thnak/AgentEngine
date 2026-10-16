@@ -68,9 +68,9 @@ struct SendMessageTool
     static constexpr std::string_view description = "Sends a message to a recipient.";
     using Args = SendArgs;
     using Reply = SendReply;
-    static result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const {
         send_tool_invoked() = true;
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -79,7 +79,7 @@ public:
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = ToolTable::from_tools<SendMessageTool>().descriptors();
+        c.tools = ToolTable::from(SendMessageTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }

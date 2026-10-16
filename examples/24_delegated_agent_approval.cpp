@@ -93,9 +93,9 @@ struct ReviewedActionTool
     static constexpr std::string_view description = "An action gated by PolicyDecider.";
     using Args = ReviewedActionArgs;
     using Reply = ReviewedActionReply;
-    static result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const {
         action_invoked() = true;
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -104,7 +104,7 @@ public:
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = ToolTable::from_tools<ReviewedActionTool>().descriptors();
+        c.tools = ToolTable::from(ReviewedActionTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }

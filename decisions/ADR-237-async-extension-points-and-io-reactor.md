@@ -2696,6 +2696,41 @@ a conformer that blocks a lane is the named residual, as for the file stores.
   has no daemon) and `test_json_dump_escape`'s RLIMIT_DATA self-check, all expected there. naming-lint,
   layering-lint and milestone lint OK.
 
+### Step 51 (2026-10-16): Phase E slice 1 -- one way to declare a tool; `drive_leaf_task` deleted (#175)
+
+- **The static-invoke form is gone.** All **167** `Tool<>` conformers that still declared
+  `static result<Reply> invoke(Args, EffectContext&)` (148 in tests, 11 in `tools/`, 8 in `examples/`; none left
+  in `include/` or `src/`) now declare §5.2's `task<result<Reply>> invoke(Args, EffectContext&) const`. The
+  rewrite was mechanical (signature, `const`, `return` -> `co_return` in the brace-matched body) and compiler-checked:
+  a nested lambda's `return` turned into `co_return` would have failed to compile, and none did. No conformer took
+  `Args` by reference, so no coroutine holds a reference into its caller's frame.
+- **Deleted:** the zero-argument `make_tool_descriptor<ToolT>()` and `ToolTable::from_tools<Ts...>()`. Their 160
+  call sites became `make_tool_descriptor(ToolT{})` / `ToolTable::from(Ts{}...)`, including the declarative
+  `Tools<Ts...>` policy (`core/agent_registry.hpp`), which now default-constructs each tool. That was already the
+  only way a static-invoke tool could be stateless.
+- **Deleted:** `rt/drive_leaf_task.hpp` and `test_rt_drive_leaf_task` (`synchronous_leaf` went in step 44). Its two
+  callers were the two detached background workers, and both now drive `invoke` with `rt::block_on`.
+  - `src/core/tool_pipeline.cpp` (`background_task`'s worker) has no outer `catch`, so it keeps
+    `drive_leaf_task`'s fault translation inline: the same class, message and code (`rt.leaf_task_faulted`,
+    transient). Behaviour unchanged.
+  - `rt/background_job_runner.hpp` already wraps the drive in a `catch`. A coroutine that throws now reaches it
+    and reports `background_job.tool_threw` (fatal), with the tool's own message. Before, it was
+    `rt.leaf_task_faulted` (transient). **This moves behaviour, and is recorded as a finding:** it restores what a
+    throwing tool reported before §5.2 made `invoke` async, and the transient class was wrong for a tool that
+    throws (a retry would throw again). R14 in `test_rt_background_job_runner` now pins the message. Against the
+    old code it fails, because the message was "leaf task faulted".
+- **Not done, and why:** `make_sync_invoke` stays, with its **three** production sites (the RAG pair went in
+  step 44). The two native-process providers wait on **D3** (#176, open). The WASM bridge needs a WASM-enabled
+  build to verify, which `build-dev` does not produce.
+- **Stale user-facing docs, carried to Phase F:** `web/marketing/src` (`data/apiContent.ts`,
+  `data/content.ts`, `components/Api*Reference.tsx`) still shows the static form, which no longer compiles.
+  `docs/architecture/tool-and-skill-context-and-invocation.md` is updated.
+- **Gate.** `build-dev` (MSVC) builds clean. `ctest -LE live-network`: **403/417**. The 14 failures are
+  environmental: 13 fail with "docker API ... daemon is not running", and `test_external_skill_discovery` D6
+  needs real symlinked skills installed on the machine. That matches §14.1's count of 14. (Run without the MSVC
+  developer environment, the 15 `compile_fail` tests also fail, because the compiler cannot find its headers;
+  with `vcvars64` they pass.) naming-lint, layering-lint and milestone-status-lint are OK.
+
 ### §14.1 What is left, and the phases to follow
 
 **Exact count (2026-10-16, #174 triage, §14.2):** §5.1 names **31** seams. **25 are `task`-shaped**, **5 are
@@ -2801,6 +2836,9 @@ providers whose destructors still `block_on` a surface close, and Phase E (§5.2
 `make_tool_descriptor`/`from_tools` form can only be deleted once nothing synchronous remains downstream of
 them. The WASM site additionally needs a WASM-enabled build to verify, which the current local build does
 not produce.
+**Slice 1 DONE (§14 step 51, 2026-10-16, #175):** the static-invoke form (167 conformers, `make_tool_descriptor<T>()`,
+`from_tools`) and `drive_leaf_task` are deleted. Left: `make_sync_invoke` and its three production sites
+(native-process x2 after D3/#176; WASM with a WASM-enabled build).
 
 **Phase F -- the carried threads.** D3/D4/D7, the §10 + 027 + `web/marketing` pass, the §8 gates.
 

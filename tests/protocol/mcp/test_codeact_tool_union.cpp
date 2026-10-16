@@ -41,7 +41,7 @@ struct AgentOwnTool : ae::Tool<AgentOwnTool> {
     static constexpr std::string_view description = "One of the agent's own declared tools.";
     using Args = AgentOwnArgs;
     using Reply = AgentOwnReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) { return Reply{a.text}; }
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const { co_return Reply{a.text}; }
 };
 
 struct SkillUnlockedArgs { std::string text; };
@@ -53,7 +53,7 @@ struct SkillUnlockedTool : ae::Tool<SkillUnlockedTool> {
     static constexpr std::string_view description = "A tool a mounted skill's allowed-tools names.";
     using Args = SkillUnlockedArgs;
     using Reply = SkillUnlockedReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) { return Reply{a.text}; }
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const { co_return Reply{a.text}; }
 };
 
 // Reused for both "distinct name" fixtures AND the collision fixtures below -- a second tool
@@ -68,7 +68,7 @@ struct CollidingWithAgentOwnTool : ae::Tool<CollidingWithAgentOwnTool> {
     static constexpr std::string_view description = "Collides with AgentOwnTool's own name.";
     using Args = CollidingArgs;
     using Reply = CollidingReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) { return Reply{a.text}; }
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const { co_return Reply{a.text}; }
 };
 
 struct McpEchoArgs { std::string text; };
@@ -80,7 +80,7 @@ struct McpEchoTool : ae::Tool<McpEchoTool> {
     static constexpr std::string_view description = "An MCP-server-side tool, reached via a real round trip.";
     using Args = McpEchoArgs;
     using Reply = McpEchoReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) { return Reply{"mcp said: " + a.text}; }
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const { co_return Reply{"mcp said: " + a.text}; }
 };
 
 struct McpAlwaysFailsArgs { bool noop; };
@@ -92,8 +92,8 @@ struct McpAlwaysFailsTool : ae::Tool<McpAlwaysFailsTool> {
     static constexpr std::string_view description = "Always returns an MCP execution error.";
     using Args = McpAlwaysFailsArgs;
     using Reply = McpAlwaysFailsReply;
-    static ae::result<Reply> invoke(McpAlwaysFailsArgs, ae::EffectContext&) {
-        return std::unexpected(ae::error{ae::failure_class::contract, "deliberate MCP-side failure",
+    ae::task<ae::result<Reply>> invoke(McpAlwaysFailsArgs, ae::EffectContext&) const {
+        co_return std::unexpected(ae::error{ae::failure_class::contract, "deliberate MCP-side failure",
                                           "test.deliberate_failure"});
     }
 };
@@ -103,8 +103,8 @@ struct McpAlwaysFailsTool : ae::Tool<McpAlwaysFailsTool> {
 int main() {
     // ---- U1: agent tools alone (empty skill/mcp sources) pass through unchanged -------------------
     {
-        auto const agent_tools = ae::ToolTable::from_tools<AgentOwnTool>();
-        auto const skill_tools = ae::ToolTable::from_tools<>();
+        auto const agent_tools = ae::ToolTable::from(AgentOwnTool{});
+        auto const skill_tools = ae::ToolTable::from();
         auto unioned = ae::union_codeact_tools(agent_tools, skill_tools);
         check(unioned.has_value() && unioned->descriptors().size() == 1,
               "U1: agent tools alone, with no skill/mcp tools, pass through as the whole union");
@@ -115,8 +115,8 @@ int main() {
 
     // ---- U2: three distinct-named sources merge into one table, all three present -----------------
     {
-        auto const agent_tools = ae::ToolTable::from_tools<AgentOwnTool>();
-        auto const skill_tools = ae::ToolTable::from_tools<SkillUnlockedTool>();
+        auto const agent_tools = ae::ToolTable::from(AgentOwnTool{});
+        auto const skill_tools = ae::ToolTable::from(SkillUnlockedTool{});
         std::vector<ae::ToolDescriptor> mcp_tools;
         {
             ae::ToolDescriptor d;
@@ -138,8 +138,8 @@ int main() {
     // ---- U3: a name collision between the agent's own tools and skill-unlocked tools is a hard ----
     // ---- error, never a silent precedence order --------------------------------------------------
     {
-        auto const agent_tools = ae::ToolTable::from_tools<AgentOwnTool>();
-        auto const skill_tools = ae::ToolTable::from_tools<CollidingWithAgentOwnTool>();
+        auto const agent_tools = ae::ToolTable::from(AgentOwnTool{});
+        auto const skill_tools = ae::ToolTable::from(CollidingWithAgentOwnTool{});
         auto unioned = ae::union_codeact_tools(agent_tools, skill_tools);
         check(!unioned.has_value(),
               "U3: a tool name declared by both the agent's own tools and a mounted skill is "
@@ -153,8 +153,8 @@ int main() {
     // ---- U4: the same collision check applies to the skill/MCP pair, not only the agent/skill -----
     // ---- pair ---------------------------------------------------------------------------------------
     {
-        auto const agent_tools = ae::ToolTable::from_tools<>();
-        auto const skill_tools = ae::ToolTable::from_tools<SkillUnlockedTool>();
+        auto const agent_tools = ae::ToolTable::from();
+        auto const skill_tools = ae::ToolTable::from(SkillUnlockedTool{});
         std::vector<ae::ToolDescriptor> mcp_tools;
         {
             ae::ToolDescriptor d;
@@ -173,7 +173,7 @@ int main() {
     // ---- ToolDescriptor.invoke actually round-trips through the real MCP pipeline, both success ---
     // ---- and isError:true -----------------------------------------------------------------------
     {
-        auto const server_table = ae::ToolTable::from_tools<McpEchoTool, McpAlwaysFailsTool>();
+        auto const server_table = ae::ToolTable::from(McpEchoTool{}, McpAlwaysFailsTool{});
         ae::CapabilitySet const held;
         mcp::McpServer server(server_table, held, ae::ApprovalDecider{}, "codeact-union-test-server");
         // ADR-061 §7 R3: `dispatch()` now requires the principal the request established, so the

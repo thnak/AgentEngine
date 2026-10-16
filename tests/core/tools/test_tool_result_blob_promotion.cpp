@@ -47,8 +47,8 @@ struct EchoPayloadTool
     using Args = EchoPayloadArgs;
     using Reply = EchoPayloadReply;
 
-    static agentengine::result<Reply> invoke(Args args, agentengine::EffectContext&) {
-        return Reply{std::move(args.payload)};
+    agentengine::task<agentengine::result<Reply>> invoke(Args args, agentengine::EffectContext&) const {
+        co_return Reply{std::move(args.payload)};
     }
 };
 
@@ -61,8 +61,8 @@ struct EchoPayloadBackgroundableTool
     using Args = EchoPayloadArgs;
     using Reply = EchoPayloadReply;
 
-    static agentengine::result<Reply> invoke(Args args, agentengine::EffectContext&) {
-        return Reply{std::move(args.payload)};
+    agentengine::task<agentengine::result<Reply>> invoke(Args args, agentengine::EffectContext&) const {
+        co_return Reply{std::move(args.payload)};
     }
 };
 
@@ -81,7 +81,7 @@ agentengine::ToolCallRequest make_request(std::string call_id, std::string tool_
 }
 
 void test_no_threshold_set_is_unaffected() {
-    auto const table = agentengine::ToolTable::from_tools<EchoPayloadTool>();
+    auto const table = agentengine::ToolTable::from(EchoPayloadTool{});
     agentengine::CapabilitySet const held;
     auto ctx = make_ctx();  // tool_result_byte_threshold left unset, blob_sink left unset
     std::string const big(5000, 'a');
@@ -93,7 +93,7 @@ void test_no_threshold_set_is_unaffected() {
 }
 
 void test_under_threshold_is_data_item() {
-    auto const table = agentengine::ToolTable::from_tools<EchoPayloadTool>();
+    auto const table = agentengine::ToolTable::from(EchoPayloadTool{});
     agentengine::CapabilitySet const held;
     auto ctx = make_ctx();
     ctx.tool_result_byte_threshold = 1000;
@@ -105,7 +105,7 @@ void test_under_threshold_is_data_item() {
 }
 
 void test_over_threshold_with_sink_promotes_to_blob() {
-    auto const table = agentengine::ToolTable::from_tools<EchoPayloadTool>();
+    auto const table = agentengine::ToolTable::from(EchoPayloadTool{});
     agentengine::CapabilitySet const held;
     auto ctx = make_ctx();
     ctx.tool_result_byte_threshold = 20;  // the JSON envelope alone makes any real payload exceed this
@@ -136,7 +136,7 @@ void test_over_threshold_with_sink_promotes_to_blob() {
 }
 
 void test_over_threshold_with_no_sink_fails_closed() {
-    auto const table = agentengine::ToolTable::from_tools<EchoPayloadTool>();
+    auto const table = agentengine::ToolTable::from(EchoPayloadTool{});
     agentengine::CapabilitySet const held;
     auto ctx = make_ctx();
     ctx.tool_result_byte_threshold = 20;  // blob_sink left unset
@@ -149,7 +149,7 @@ void test_over_threshold_with_no_sink_fails_closed() {
 }
 
 void test_blob_sink_failure_propagates() {
-    auto const table = agentengine::ToolTable::from_tools<EchoPayloadTool>();
+    auto const table = agentengine::ToolTable::from(EchoPayloadTool{});
     agentengine::CapabilitySet const held;
     auto ctx = make_ctx();
     ctx.tool_result_byte_threshold = 20;
@@ -168,7 +168,7 @@ void test_blob_sink_failure_propagates() {
 // shared-helper refactor (`normalize_success`) is proven to keep both paths in lockstep, not merely
 // argued to by code inspection.
 void test_background_task_applies_the_same_rule() {
-    auto const table = agentengine::ToolTable::from_tools<EchoPayloadBackgroundableTool>();
+    auto const table = agentengine::ToolTable::from(EchoPayloadBackgroundableTool{});
     agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root({agentengine::cap::Background{1}});
     auto ctx = make_ctx();
     ctx.tool_result_byte_threshold = 20;

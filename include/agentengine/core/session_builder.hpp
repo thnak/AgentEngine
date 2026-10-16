@@ -92,7 +92,7 @@
 //    DIFFERENT thread's `unlock()` to resume directly (rt/async_mutex.hpp) -- a second, blind
 //    `resume()` on that same handle is a genuine cross-thread double-resume race, undefined behavior
 //    per the C++20 coroutine spec (this exact bug class, previously found and fixed in
-//    `rt/thread_pool.hpp`/`rt/drive_leaf_task.hpp` -- see their own file-top comments). Fixed with two
+//    `rt/thread_pool.hpp`/`rt/drive_leaf_task.hpp`, the latter deleted by #175). Fixed with two
 //    layers: `ask_mutex_` serializes every `.ask()` call this Bundle ever makes (so `session_mutex_`
 //    should never actually be contended from here), and the drive loop itself is now bounded to one
 //    `resume()` with a fail-closed error if that alone did not finish -- matching `rt/drive_leaf_task.

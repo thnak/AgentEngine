@@ -303,10 +303,10 @@ struct CheckFieldWeatherTool
         "spray it.";
     using Args = FieldQueryArgs;
     using Reply = FieldWeatherReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         tool_entry_log().push_back("check_field_weather");
         check_weather_called_log() = true;
-        return Reply{"Clear skies, no rain expected for 3 days, around 34C.",
+        co_return Reply{"Clear skies, no rain expected for 3 days, around 34C.",
                      "No rain in the forecast for " + a.field_name +
                          " -- irrigation may proceed if the field needs it. Check pest pressure "
                          "before deciding on spraying."};
@@ -327,7 +327,7 @@ struct CheckPestPressureTool
         "warranted.";
     using Args = FieldQueryArgs;
     using Reply = PestPressureReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         tool_entry_log().push_back("check_pest_pressure");
         check_pest_called_log() = true;
         // Deliberately says NOTHING about weather/forecast -- an earlier version mentioned "the dry
@@ -335,7 +335,7 @@ struct CheckPestPressureTool
         // already learned the forecast, never calling check_field_weather at all, then looping on
         // repeated redundant check_pest_pressure calls instead. This tool answers ONE question
         // (pest pressure) and nothing else, so there is no shortcut around calling the other tool.
-        return Reply{"high", "Aphid pressure on " + a.field_name +
+        co_return Reply{"high", "Aphid pressure on " + a.field_name +
                                   " is high, which alone warrants pesticide treatment. This says "
                                   "nothing about the weather -- check that separately."};
     }
@@ -359,10 +359,10 @@ struct CheckAnimalHealthTool
         "Gets today's health status for a named herd or flock, for deciding on its feeding plan.";
     using Args = HerdQueryArgs;
     using Reply = AnimalHealthReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         tool_entry_log().push_back("check_animal_health");
         check_animal_health_called_log() = true;
-        return Reply{"healthy",
+        co_return Reply{"healthy",
                      "No signs of illness in " + a.herd_name + " -- proceed with standard feeding."};
     }
 };
@@ -472,10 +472,10 @@ struct ScheduleTaskTool : Tool<ScheduleTaskTool, Capabilities<>, EffectClass<eff
         "a given number of days from today.";
     using Args = ScheduleTaskArgs;
     using Reply = ScheduleTaskReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         scheduled_tasks_log().push_back(a.description + " (in " + std::to_string(a.due_in_days) +
                                          " day(s))");
-        return Reply{true, "scheduled: " + a.description};
+        co_return Reply{true, "scheduled: " + a.description};
     }
 };
 
@@ -496,16 +496,16 @@ struct CancelTaskTool : Tool<CancelTaskTool, Capabilities<>, EffectClass<effect_
         "Cancels a previously scheduled farm task by its description text.";
     using Args = CancelTaskArgs;
     using Reply = CancelTaskReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         auto& tasks = scheduled_tasks_log();
         auto it = std::find_if(tasks.begin(), tasks.end(), [&](std::string const& t) {
-            return t.find(a.description) != std::string::npos;
+            co_return t.find(a.description) != std::string::npos;
         });
         if (it == tasks.end()) {
-            return Reply{false, "no scheduled task matched: " + a.description};
+            co_return Reply{false, "no scheduled task matched: " + a.description};
         }
         tasks.erase(it);
-        return Reply{true, "cancelled: " + a.description};
+        co_return Reply{true, "cancelled: " + a.description};
     }
 };
 
@@ -535,10 +535,10 @@ struct GetMarketPriceTool
         "pork), for planning a sale.";
     using Args = MarketPriceArgs;
     using Reply = MarketPriceReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         get_market_price_called_log() = true;
         observed_commodity_log() = a.commodity;
-        return Reply{a.commodity, price_per_kg_for(a.commodity)};
+        co_return Reply{a.commodity, price_per_kg_for(a.commodity)};
     }
 };
 
@@ -562,9 +562,9 @@ struct PlaceSellOrderTool
         "Places a sell order for a quantity (kg) of a named commodity at today's market price.";
     using Args = SellOrderArgs;
     using Reply = SellOrderReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         double const total = a.quantity_kg * price_per_kg_for(a.commodity);
-        return Reply{true, "sell order placed: " + std::to_string(a.quantity_kg) + "kg of " + a.commodity,
+        co_return Reply{true, "sell order placed: " + std::to_string(a.quantity_kg) + "kg of " + a.commodity,
                      total};
     }
 };
@@ -697,9 +697,9 @@ public:
         // can change mid-conversation -- see skill_tool_scoping.hpp's own top comment for why this must
         // stay recomputed at the same cadence AgentSession::run_rounds() rebuilds its ToolTable at.
         std::vector<ToolDescriptor> skill_universe_descriptors = {
-            make_tool_descriptor<CheckFieldWeatherTool>(),
-            make_tool_descriptor<CheckPestPressureTool>(),
-            make_tool_descriptor<CheckAnimalHealthTool>(),
+            make_tool_descriptor(CheckFieldWeatherTool{}),
+            make_tool_descriptor(CheckPestPressureTool{}),
+            make_tool_descriptor(CheckAnimalHealthTool{}),
             make_tool_descriptor(CalculateFeedRationTool{}),
             make_tool_descriptor(MountSkillTool{*this}),
         };
@@ -722,10 +722,10 @@ private:
 
     [[nodiscard]] ToolTable build_optimizer_agent_tools() {
         std::vector<ToolDescriptor> descriptors = {
-            make_tool_descriptor<ScheduleTaskTool>(),
-            make_tool_descriptor<CancelTaskTool>(),
-            make_tool_descriptor<GetMarketPriceTool>(),
-            make_tool_descriptor<PlaceSellOrderTool>(),
+            make_tool_descriptor(ScheduleTaskTool{}),
+            make_tool_descriptor(CancelTaskTool{}),
+            make_tool_descriptor(GetMarketPriceTool{}),
+            make_tool_descriptor(PlaceSellOrderTool{}),
             make_tool_descriptor(ExecuteCodeTool{*this}),
         };
         return ToolTable::from_descriptors(std::move(descriptors));

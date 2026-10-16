@@ -93,11 +93,11 @@ struct ProbeTool : agentengine::Tool<ProbeTool, agentengine::Capabilities<>,
     static constexpr std::string_view description = "Optionally cancels the run, then reports.";
     using Args = ProbeArgs;
     using Reply = ProbeReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext& ctx) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext& ctx) const {
         ++g_tool_runs;
         if (g_cancel_from_tool) g_cancel_from_tool();
         g_tool_saw_cancel = ctx.cancellation.stop_requested();
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -107,7 +107,7 @@ public:
         agentengine::SessionContext& sc, EffectContext&) {
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = agentengine::ToolTable::from_tools<ProbeTool>().descriptors();
+        c.tools = agentengine::ToolTable::from(ProbeTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) { co_return std::monostate{}; }
