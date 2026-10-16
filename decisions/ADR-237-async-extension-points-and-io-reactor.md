@@ -2905,6 +2905,6 @@ Not re-triaged here: `sandbox/provider_http_client.hpp`'s and `net_egress_proxy.
 **What this changes.** Nothing in code. This is triage, and the gate is that every row cites the line it was read
 from. §14.1's count is now exact (its header paragraph), and the "~15 untriaged" item there is closed. The two
 **narrowings** (#40 and #41/#42) are triage decisions under this ADR's own §5.3 test ("pure computations over
-in-memory values that no conformer can make remote"). They are recorded here so §10's spec pass carries them,
-and a reviewer who disagrees reopens the row, not the ADR.
+in-memory values that no conformer can make remote"). They are proposed for the owner's sign-off as **ADR-239**,
+which amends §5.1's list and ADR-235 §3.1, and adds the contract terms the narrowings need.
 
