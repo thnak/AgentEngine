@@ -201,19 +201,19 @@ private:
     // Byte-for-byte the same mapping ADR-057 §9 specifies for `real_execute_code()`
     // (tools/cli_chat.cpp) -- copied here rather than shared, matching this test file's own
     // "no cross-file coupling" precedent for the fixture code around it.
-    [[nodiscard]] result<ExecuteCodeReply> real_execute_code(ExecuteCodeArgs a, EffectContext& ctx) {
+    [[nodiscard]] task<result<ExecuteCodeReply>> real_execute_code(ExecuteCodeArgs a, EffectContext& ctx) {
         ExecRequest req{a.language.empty() ? "python" : a.language, a.code, ctx.codeact_preseeded_answers};
-        auto outcome = runner_->run(req, exec_state_, ctx);
-        if (!outcome) return std::unexpected(outcome.error());
+        auto outcome = co_await runner_->run(req, exec_state_, ctx);
+        if (!outcome) co_return std::unexpected(outcome.error());
         if (outcome->klass == exec_outcome_class::ask_pending) {
-            return std::unexpected(error{failure_class::contract, outcome->ask_prompt, "codeact.ask_pending"});
+            co_return std::unexpected(error{failure_class::contract, outcome->ask_prompt, "codeact.ask_pending"});
         }
         ExecuteCodeReply reply;
         reply.ok = (outcome->klass == exec_outcome_class::ok);
         reply.stdout_text = outcome->stdout_text;
         reply.stderr_text = outcome->stderr_text;
         reply.result_repr = outcome->result_repr;
-        return reply;
+        co_return reply;
     }
 
     MediatedPythonRunner* runner_ = nullptr;
@@ -345,7 +345,7 @@ using Session = AgentSession<ScriptedChatClient, NoSessionState, CodeActHistoryP
 // ADR-237 §5.2: out-of-line -- needs `CodeActHistoryProvider` complete.
 task<agentengine::result<ExecuteCodeReply>> ExecuteCodeTool::invoke(ExecuteCodeArgs a,
                                                                    EffectContext& ctx) const {
-    co_return provider_->real_execute_code(std::move(a), ctx);
+    co_return co_await provider_->real_execute_code(std::move(a), ctx);
 }
 
 }  // namespace

@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <string>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/trust/agent_library_manifest.hpp"
@@ -110,7 +111,7 @@ int main() {
                              "from agent import tools\n"
                              "r = tools.echo_tool(message='hello from agent.tools')\n"
                              "print('GOT:', r.message)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value(), "G1-I1: setup -- the script runs");
             AE_CHECK(out.has_value() && out->stdout_text.find("GOT: hello from agent.tools") != std::string::npos,
                      "G1-I1: tools.echo_tool(message=...) is an ordinary keyword call returning an "
@@ -124,7 +125,7 @@ int main() {
                              "import agent\n"
                              "print('HAS_ECHO:', 'echo_tool' in dir(agent.tools))\n"
                              "print('DOC:', agent.tools.echo_tool.__doc__)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("HAS_ECHO: True") != std::string::npos,
                      "G1-I2: agent.tools.echo_tool is discoverable via dir(), matching 026 §4's claim");
             AE_CHECK(out.has_value() &&
@@ -142,7 +143,7 @@ int main() {
                              "import agent\n"
                              "print('TOOLS_DOC:', agent.tools.__doc__)\n"
                              "print('AGENT_DOC:', repr(agent.__doc__))"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             std::string expected_one_line(agentengine::trust::module_one_line("tools"));
             AE_CHECK(out.has_value() && out->stdout_text.find("TOOLS_DOC: " + expected_one_line) !=
                                              std::string::npos,
@@ -162,7 +163,7 @@ int main() {
                              "from agent import tools\n"
                              "r = tools.echo_tool(message='quote\" and backslash\\\\ and newline\\n')\n"
                              "print('ROUNDTRIP:', repr(r.message))"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() &&
                          out->stdout_text.find(R"(ROUNDTRIP: 'quote" and backslash\\ and newline\n')") !=
                              std::string::npos,
@@ -198,7 +199,7 @@ int main() {
                          "    tools.echo_tool(message='should be denied')\n"
                          "except PermissionError as e:\n"
                          "    print('DENIED:', e)"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos,
                  "G1-N1: agent.tools.echo_tool() without the bridge's required capability raises "
                  "PermissionError -- the real pipeline denial, not a bypass");
@@ -224,7 +225,7 @@ int main() {
                          "    import agent\n"
                          "except ModuleNotFoundError as e:\n"
                          "    print('NO_AGENT:', e)"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         AE_CHECK(out.has_value() && out->stdout_text.find("NO_AGENT") != std::string::npos,
                  "G1-N2: with no tool bridge configured, 'import agent' fails ModuleNotFoundError -- "
                  "an ungranted module is simply absent (026 §5a), not present-but-empty");
@@ -255,7 +256,7 @@ int main() {
                              "    import agent\n"
                              "except ModuleNotFoundError as e:\n"
                              "    print('NO_AGENT_YET:', e)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("NO_AGENT_YET") != std::string::npos,
                      "G2-R1: before any refresh, agent.tools is absent, exactly like Scenario 3's "
                      "construction-time nullopt case");
@@ -273,7 +274,7 @@ int main() {
                              "from agent import tools\n"
                              "r = tools.echo_tool(message='after first refresh')\n"
                              "print('A_WORKS:', r.message)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("A_WORKS: after first refresh") != std::string::npos,
                      "G2-R2: a FRESH import agent (never previously bound in this session) sees the "
                      "just-refreshed tool set on the very next run() call, real round trip");
@@ -292,7 +293,7 @@ int main() {
                              "r = agent.tools.refreshed_tool(label='after second refresh')\n"
                              "print('B_WORKS:', r.label)\n"
                              "print('A_GONE:', hasattr(agent.tools, 'echo_tool'))"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("B_WORKS: after second refresh") != std::string::npos,
                      "G2-R3: the new tool B is callable via a fresh 'import agent; agent.tools....' "
                      "reference on the very next run() call");

@@ -42,6 +42,7 @@
 // kMaxPrivateBytesGrowth slack of 50 MiB (6x over) -- either real leak is caught with a wide margin
 // at this count, which is what actually justifies calling 300 "enough," not just "cheap."
 
+#include "agentengine/rt/block_on.hpp"
 #include <windows.h>
 
 #include <aclapi.h>
@@ -221,7 +222,7 @@ int main() {
     EffectContext ctx;
 
     auto run_cycle = [&](int cycle_index) {
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         if (!handle.has_value()) {
             std::cerr << "cycle " << cycle_index << ": create() failed: "
                       << ::agentengine::test_support::describe(handle.error()) << "\n";
@@ -229,12 +230,12 @@ int main() {
             return;
         }
         ExecRequest req{.language = "native", .source = hostile_child_cmd("sleep 1")};
-        auto outcome = backend.exec(*handle, req, ctx);
+        auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
         if (!outcome.has_value() || outcome->klass != exec_outcome_class::ok) {
             std::cerr << "cycle " << cycle_index << ": exec() did not report ok\n";
             ++g_failures;
         }
-        backend.destroy(*handle);
+        agentengine::rt::block_on(backend.destroy(*handle));
     };
 
     // Warm-up cycles: absorb one-time costs (AppContainer profile creation, first DACL grant, first

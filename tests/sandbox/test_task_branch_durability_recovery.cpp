@@ -104,14 +104,14 @@ template <class T>
 // reset()/run()/drain_to()'d here (this file never calls run_in_task_branch()), so it never touches a
 // real process or Docker.
 struct FakeSurface {
-    [[nodiscard]] agentengine::result<void> reset(std::filesystem::path const&) {
-        return agentengine::result<void>{};
+    [[nodiscard]] agentengine::task<agentengine::result<void>> reset(std::filesystem::path) {
+        co_return agentengine::result<void>{};
     }
-    [[nodiscard]] agentengine::result<SurfaceRunOutcome> run(std::string const&) {
-        return SurfaceRunOutcome{0, ""};
+    [[nodiscard]] agentengine::task<agentengine::result<SurfaceRunOutcome>> run(std::string) {
+        co_return SurfaceRunOutcome{0, ""};
     }
-    [[nodiscard]] agentengine::result<void> drain_to(std::filesystem::path const&) {
-        return agentengine::result<void>{};
+    [[nodiscard]] agentengine::task<agentengine::result<void>> drain_to(std::filesystem::path) {
+        co_return agentengine::result<void>{};
     }
 };
 static_assert(ExecutionSurface<FakeSurface>);

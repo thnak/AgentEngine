@@ -60,18 +60,18 @@ constexpr char const* kMarker = "MARKER-145: the command really ran";
 // the "never attempted" shape `ExecutionSurface::run()` documents. `drain_to()` always leaves a 4 KiB file,
 // so the commit has something to charge `StorageBytes` for.
 struct PrintingSurface {
-    [[nodiscard]] result<void> reset(fs::path const&) { return {}; }
-    [[nodiscard]] result<SurfaceRunOutcome> run(std::string const& command) {
+    [[nodiscard]] task<result<void>> reset(fs::path) { co_return result<void>{}; }
+    [[nodiscard]] task<result<SurfaceRunOutcome>> run(std::string command) {
         if (command == "refuse") {
-            return std::unexpected(error{failure_class::policy, "the surface refused the command", "test.refused"});
+            co_return std::unexpected(error{failure_class::policy, "the surface refused the command", "test.refused"});
         }
-        return SurfaceRunOutcome{3, kMarker};
+        co_return SurfaceRunOutcome{3, kMarker};
     }
-    [[nodiscard]] result<void> drain_to(fs::path const& host_dir) {
+    [[nodiscard]] task<result<void>> drain_to(fs::path host_dir) {
         std::error_code ec;
         fs::create_directories(host_dir, ec);
         std::ofstream(host_dir / "out.bin", std::ios::binary) << std::string(4096, 'x');
-        return {};
+        co_return result<void>{};
     }
 };
 static_assert(ExecutionSurface<PrintingSurface>);

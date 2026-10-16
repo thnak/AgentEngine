@@ -93,13 +93,13 @@ public:
     explicit FakeLiveSurface(std::shared_ptr<Counters> c)
         : c_(std::move(c)), box_(c_->root / ("box" + std::to_string(++c_->boxes))) {}
 
-    [[nodiscard]] result<void> open(fs::path const& host_dir, ShellSnapshot const* snap) {
+    [[nodiscard]] task<result<void>> open(fs::path host_dir, ShellSnapshot const* snap) {
         ++c_->opens;
         std::error_code ec;
         fs::remove_all(box_, ec);
         fs::create_directories(box_, ec);
         fs::copy(host_dir, box_, fs::copy_options::recursive, ec);
-        if (ec) return std::unexpected(error{failure_class::fatal, "seed failed: " + ec.message(), "test.seed"});
+        if (ec) co_return std::unexpected(error{failure_class::fatal, "seed failed: " + ec.message(), "test.seed"});
         cwd_ = "/workspace";
         env_.clear();
         if (snap != nullptr) {
@@ -109,20 +109,20 @@ public:
         }
         live_ = true;
         held_ = true;
-        return {};
+        co_return result<void>{};
     }
 
-    [[nodiscard]] result<LiveExecOutcome> exec(std::string const& command, std::chrono::milliseconds) {
-        if (!live_) return std::unexpected(error{failure_class::contract, "no live shell", "test.not_live"});
+    [[nodiscard]] task<result<LiveExecOutcome>> exec(std::string command, std::chrono::milliseconds) {
+        if (!live_) co_return std::unexpected(error{failure_class::contract, "no live shell", "test.not_live"});
         // What a real surface does with a NUL / oversized command: refused up front, nothing ran (§15.5 M1).
-        if (command == "refuse") return std::unexpected(error{failure_class::policy, "refused", "test.refused"});
+        if (command == "refuse") co_return std::unexpected(error{failure_class::policy, "refused", "test.refused"});
         if (command == "lose_container") {  // a timeout whose in-container kill did not take (§15.5 M2)
             live_ = false;
             LiveExecOutcome lost;
             lost.timed_out = true;
             lost.shell_lost = true;
             lost.container_lost = true;
-            return lost;
+            co_return lost;
         }
         ++c_->execs;
         LiveExecOutcome out;
@@ -144,7 +144,7 @@ public:
             out.shell_lost = true;
             out.exit_code = -1;
             out.output = "partial";
-            return out;
+            co_return out;
         }
         out.output = "ran: " + command + " in " + cwd_;
         out.output_bytes = out.output.size();
@@ -152,30 +152,30 @@ public:
         snap.cwd = cwd_;
         for (auto const& [k, v] : env_) snap.env_set.emplace_back(k, v);
         out.snapshot = snap;
-        return out;
+        co_return out;
     }
 
-    [[nodiscard]] result<void> drain_to(fs::path const& host_dir) {
+    [[nodiscard]] task<result<void>> drain_to(fs::path host_dir) {
         auto cleared = clear_directory_contents(host_dir, "test.drain_clear");
-        if (!cleared.has_value()) return std::unexpected(cleared.error());
+        if (!cleared.has_value()) co_return std::unexpected(cleared.error());
         std::error_code ec;
         fs::create_directories(host_dir, ec);
         fs::copy(box_, host_dir, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
-        if (ec) return std::unexpected(error{failure_class::fatal, "drain failed: " + ec.message(), "test.drain"});
-        return {};
+        if (ec) co_return std::unexpected(error{failure_class::fatal, "drain failed: " + ec.message(), "test.drain"});
+        co_return result<void>{};
     }
 
-    [[nodiscard]] result<void> close() {
-        if (!held_) return {};
+    [[nodiscard]] task<result<void>> close() {
+        if (!held_) co_return result<void>{};
         if (c_->close_failures_left > 0) {
             --c_->close_failures_left;
             live_ = false;
-            return std::unexpected(error{failure_class::fatal, "docker rm failed", "test.close_failed"});
+            co_return std::unexpected(error{failure_class::fatal, "docker rm failed", "test.close_failed"});
         }
         ++c_->closes;
         live_ = false;
         held_ = false;
-        return {};
+        co_return result<void>{};
     }
     [[nodiscard]] bool is_live() const { return live_; }
 

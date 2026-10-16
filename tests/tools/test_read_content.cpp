@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/tools/read_content.hpp"
 #include "../support/run_task_sync.hpp"  // ADR-237 §5.2: drive the async tool invoke
 
@@ -44,12 +45,13 @@ struct FakeEgressBackend {
     mutable std::optional<sandbox::NetEgressRequest> last_request;
     mutable std::optional<agentengine::cap::NetOut> last_granted;
 
-    [[nodiscard]] result<sandbox::NetEgressResponse> fetch(sandbox::NetEgressRequest const& req,
-                                                              agentengine::cap::NetOut const& granted) const {
+    // ADR-237 §5.1 (#173): the seam is `task`-shaped; this fake completes without suspending.
+    [[nodiscard]] agentengine::task<result<sandbox::NetEgressResponse>> fetch(sandbox::NetEgressRequest req,
+                                                                             agentengine::cap::NetOut granted) const {
         ++fetch_calls;
-        last_request = req;
-        last_granted = granted;
-        return response;
+        last_request = std::move(req);
+        last_granted = std::move(granted);
+        co_return response;
     }
 };
 static_assert(sandbox::NetEgressBackend<FakeEgressBackend>);
@@ -160,7 +162,7 @@ void test_happy_path_under_threshold() {
     FakeEgressBackend backend;
     backend.response = sandbox::NetEgressResponse{200, {{"Content-Type", "text/plain"}}, "hello world"};
 
-    auto reply = ReadContent::invoke_via(ReadContent::Args{.url = "http://example.com/data", .path = std::nullopt}, ctx, backend);
+    auto reply = agentengine::rt::block_on(ReadContent::invoke_via(ReadContent::Args{.url = "http://example.com/data", .path = std::nullopt}, ctx, backend));
     check(reply.has_value(), "happy path succeeds");
     if (reply) {
         check(reply->preview == "hello world", "preview is the whole body under threshold");
@@ -200,7 +202,7 @@ void test_over_threshold_with_blob_sink() {
         return agentengine::BlobRef{"deadbeef", media_type, bytes.size(), "test-store"};
     };
 
-    auto reply = ReadContent::invoke_via(ReadContent::Args{.url = "http://example.com/big", .path = std::nullopt}, ctx, backend);
+    auto reply = agentengine::rt::block_on(ReadContent::invoke_via(ReadContent::Args{.url = "http://example.com/big", .path = std::nullopt}, ctx, backend));
     check(reply.has_value(), "over-threshold call still succeeds when a sink is wired");
     if (reply) {
         check(reply->truncated, "flagged truncated over threshold");
@@ -226,7 +228,7 @@ void test_over_threshold_without_blob_sink() {
     FakeEgressBackend backend;
     backend.response = sandbox::NetEgressResponse{200, {}, std::string(50, 'y')};
 
-    auto reply = ReadContent::invoke_via(ReadContent::Args{.url = "http://example.com/big", .path = std::nullopt}, ctx, backend);
+    auto reply = agentengine::rt::block_on(ReadContent::invoke_via(ReadContent::Args{.url = "http://example.com/big", .path = std::nullopt}, ctx, backend));
     check(reply.has_value(), "over-threshold with no sink still succeeds -- a bounded preview, not a hard failure");
     if (reply) {
         check(reply->truncated, "still flagged truncated");
@@ -241,7 +243,7 @@ void test_capability_not_held_never_calls_backend() {
     auto ctx = make_ctx(held);
 
     FakeEgressBackend backend;
-    auto reply = ReadContent::invoke_via(ReadContent::Args{.url = "http://example.com/data", .path = std::nullopt}, ctx, backend);
+    auto reply = agentengine::rt::block_on(ReadContent::invoke_via(ReadContent::Args{.url = "http://example.com/data", .path = std::nullopt}, ctx, backend));
     check(!reply.has_value(), "no NetOut grant -> denied");
     if (!reply) check(reply.error().code == "tool.capability_not_held", "denial uses the standard capability error code");
     check(backend.fetch_calls == 0, "the backend is never touched when the capability check fails (I2)");
@@ -254,7 +256,7 @@ void test_grant_for_different_host_is_not_used() {
     auto ctx = make_ctx(held);
 
     FakeEgressBackend backend;
-    auto reply = ReadContent::invoke_via(ReadContent::Args{.url = "http://example.com/data", .path = std::nullopt}, ctx, backend);
+    auto reply = agentengine::rt::block_on(ReadContent::invoke_via(ReadContent::Args{.url = "http://example.com/data", .path = std::nullopt}, ctx, backend));
     check(!reply.has_value(), "a NetOut grant for a DIFFERENT host does not cover this request");
     check(backend.fetch_calls == 0, "backend never touched -- no capability laundering across hosts");
 }
@@ -268,7 +270,7 @@ void test_http_error_status_is_mapped() {
     FakeEgressBackend backend;
     backend.response = sandbox::NetEgressResponse{404, {}, "not found"};
 
-    auto reply = ReadContent::invoke_via(ReadContent::Args{.url = "http://example.com/missing", .path = std::nullopt}, ctx, backend);
+    auto reply = agentengine::rt::block_on(ReadContent::invoke_via(ReadContent::Args{.url = "http://example.com/missing", .path = std::nullopt}, ctx, backend));
     check(!reply.has_value(), "a non-2xx status is a tool error, not a success with a body");
     if (!reply) check(reply.error().code == "read_content.http_error", "http error uses its own error code");
 }
@@ -280,7 +282,7 @@ void test_malformed_url_never_calls_backend() {
     auto ctx = make_ctx(held);
 
     FakeEgressBackend backend;
-    auto reply = ReadContent::invoke_via(ReadContent::Args{.url = "not-a-url", .path = std::nullopt}, ctx, backend);
+    auto reply = agentengine::rt::block_on(ReadContent::invoke_via(ReadContent::Args{.url = "not-a-url", .path = std::nullopt}, ctx, backend));
     check(!reply.has_value(), "a malformed url is rejected before any capability check or fetch");
     check(backend.fetch_calls == 0, "backend never touched for a malformed url");
 }

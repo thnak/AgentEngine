@@ -21,6 +21,7 @@
 // revert); after the fix, it passes cleanly, repeatably. That empirical before/after difference is
 // this test's real evidence, not a formal guarantee.
 
+#include "agentengine/rt/block_on.hpp"
 #include <windows.h>
 
 #include <atomic>
@@ -93,7 +94,7 @@ int main() {
     auto worker = [&](int thread_index) {
         for (int i = 0; i < kIterationsPerThread; ++i) {
             EffectContext ctx;
-            auto handle = shared_backend.create(spec, ctx);
+            auto handle = agentengine::rt::block_on(shared_backend.create(spec, ctx));
             if (!handle.has_value()) {
                 ++unexpected_error_count;
                 continue;
@@ -105,8 +106,8 @@ int main() {
             // shape the fix addresses.
             int const sleep_ms = 5 + (thread_index % 4) * 3 + (i % 5);
             ExecRequest req{.language = "native", .source = hostile_child_cmd("sleep " + std::to_string(sleep_ms))};
-            auto outcome = shared_backend.exec(*handle, req, ctx);
-            shared_backend.destroy(*handle);
+            auto outcome = agentengine::rt::block_on(shared_backend.exec(*handle, req, ctx));
+            agentengine::rt::block_on(shared_backend.destroy(*handle));
 
             if (outcome.has_value() && outcome->klass == exec_outcome_class::ok) {
                 ++ok_count;

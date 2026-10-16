@@ -880,9 +880,10 @@ private:
     // `shared_mounted_skills_state()`/`shared_exec_state()`), and `runner_binding_->runner()` (the
     // still-process-wide-shared interpreter, reached only if THIS session holds the claim --
     // `configure()` is what established that, at session start, not per-call).
-    [[nodiscard]] result<ExecuteCodeReply> real_execute_code(ExecuteCodeArgs a, EffectContext& ctx) {
+    // ADR-237 §5.1 (#173): a coroutine, because the `Runner` seam is. `ExecuteCodeTool::invoke` awaits it.
+    [[nodiscard]] task<result<ExecuteCodeReply>> real_execute_code(ExecuteCodeArgs a, EffectContext& ctx) {
         if (session_id_.empty()) {
-            return std::unexpected(error{failure_class::fatal,
+            co_return std::unexpected(error{failure_class::fatal,
                                           "execute_code was called before configure() ran",
                                           "cli_chat.codeact_not_configured"});
         }
@@ -893,12 +894,12 @@ private:
         if (runner_binding_ == nullptr) {
             auto& binding = shared_python_runner_binding(mount_roots_);
             auto  bound   = binding.bind(session_id_);
-            if (!bound) return std::unexpected(bound.error());
+            if (!bound) co_return std::unexpected(bound.error());
             runner_binding_ = &binding;
         }
         auto& runner = runner_binding_->runner();
         if (!runner.ok()) {
-            return std::unexpected(error{failure_class::fatal,
+            co_return std::unexpected(error{failure_class::fatal,
                                           "the embedded Python interpreter failed to initialize",
                                           "cli_chat.python_runner_not_initialized"});
         }
@@ -916,10 +917,10 @@ private:
         auto const codeact_skill_tools = scope_tools_to_mounted_skills(
             codeact_universe, skills_.allowed_tool_names_for(mounted_skills_.all()));
         auto bridged = union_codeact_tools(ToolTable::from_tools<>(), codeact_skill_tools);
-        if (!bridged) return std::unexpected(bridged.error());
+        if (!bridged) co_return std::unexpected(bridged.error());
         auto refreshed = runner.refresh_agent_tools(
             native_jail::ToolBridgeConfig{*bridged, /*capabilities=*/{}, /*approved=*/true});
-        if (!refreshed) return std::unexpected(refreshed.error());
+        if (!refreshed) co_return std::unexpected(refreshed.error());
 
         // ADR-057 §9: `ctx.codeact_preseeded_answers` is host-driven replay state, set (only) by
         // `rt::AgentSession::resolve_interaction()`'s `codeact_ask` branch immediately before
@@ -928,8 +929,8 @@ private:
         // field. Empty for every ordinary, model-issued call (the common case), so this line changes
         // nothing about this tool's existing behavior for a script that never calls `agent.ask()`.
         ExecRequest req{a.language.empty() ? "python" : a.language, a.code, ctx.codeact_preseeded_answers};
-        auto outcome = runner.run(req, exec_state_, ctx);
-        if (!outcome) return std::unexpected(outcome.error());
+        auto outcome = co_await runner.run(req, exec_state_, ctx);
+        if (!outcome) co_return std::unexpected(outcome.error());
 
         // ADR-057 §9: an ask-pending outcome is mapped to a ToolResult carrying the sentinel error
         // code `codeact.ask_pending`, with the prompt as the error's own message -- NEVER folded as
@@ -938,7 +939,7 @@ private:
         // suspend/resume cycle; this CLI's own driver (main(), above) has no such wiring, so a script
         // calling `agent.ask()` here simply surfaces as an ordinary tool failure with this code.
         if (outcome->klass == exec_outcome_class::ask_pending) {
-            return std::unexpected(error{failure_class::contract, outcome->ask_prompt, "codeact.ask_pending"});
+            co_return std::unexpected(error{failure_class::contract, outcome->ask_prompt, "codeact.ask_pending"});
         }
 
         ExecuteCodeReply reply;
@@ -946,7 +947,7 @@ private:
         reply.stdout_text = outcome->stdout_text;
         reply.stderr_text = outcome->stderr_text;
         reply.result_repr = outcome->result_repr;
-        return reply;
+        co_return reply;
     }
 
     // Real `mount_skill` implementation (ADR-030) -- was `MountSkillTool::invoke()`'s body; now
@@ -999,7 +1000,7 @@ private:
 template <class ProviderT>
 task<result<ExecuteCodeReply>> ExecuteCodeTool<ProviderT>::invoke(ExecuteCodeArgs a,
                                                                   EffectContext& ctx) const {
-    co_return provider_->real_execute_code(std::move(a), ctx);
+    co_return co_await provider_->real_execute_code(std::move(a), ctx);
 }
 
 template <class ProviderT>
@@ -1806,7 +1807,7 @@ int main(int argc, char** argv) {
     std::filesystem::path const skills_scratch =
         std::filesystem::temp_directory_path() / "agentengine_cli_chat_skills";
     auto materialized =
-        native_jail::materialize_skill_mounts(startup_skills, skills_scratch, {kWorkMount});
+        agentengine::rt::block_on(native_jail::materialize_skill_mounts(startup_skills, skills_scratch, {kWorkMount}));
     if (!materialized) {
         std::cerr << "FATAL: failed to materialize skill mounts: " << materialized.error().message << "\n";
         return 1;

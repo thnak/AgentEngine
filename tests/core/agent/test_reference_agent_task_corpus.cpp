@@ -40,6 +40,7 @@
 #include <string>
 #include <unordered_set>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/effect_context.hpp"
@@ -192,7 +193,7 @@ int main() {
         EffectContext ctx{};
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         ExecRequest req{"python", code};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         AE_CHECK(out.has_value() && out->klass == exec_outcome_class::ok,
                  "H1-T1: the extracted code executes successfully first-attempt, under the real sandbox");
         AE_CHECK(out.has_value() && out->stdout_text.find("TOTAL: 49.75") != std::string::npos,
@@ -218,7 +219,7 @@ int main() {
         EffectContext ctx{};
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         ExecRequest req{"python", code};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         AE_CHECK(out.has_value() && out->klass == exec_outcome_class::ok,
                  "H1-T2: the extracted code executes successfully first-attempt, under the real sandbox");
         AE_CHECK(out.has_value() &&
@@ -245,7 +246,7 @@ int main() {
         EffectContext ctx{};
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         ExecRequest req{"python", code};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         AE_CHECK(out.has_value() && out->klass == exec_outcome_class::ok,
                  "H1-T3: the extracted code executes successfully first-attempt, under the real sandbox");
         AE_CHECK(out.has_value() && out->stdout_text.find("WROTE: 2 rows") != std::string::npos,

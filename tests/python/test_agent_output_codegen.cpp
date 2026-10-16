@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <string>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/sandbox/runner.hpp"
@@ -51,7 +52,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};
         ExecRequest req{"python", "import agent\nagent.output.set({'x': 1})\n"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
 
         AE_CHECK(out.has_value(), "R1: exec_session() returns a real outcome, not a hang/crash");
         if (out.has_value()) {
@@ -82,7 +83,7 @@ int main() {
         EffectContext ctx{};
         ExecRequest req{"python", "import agent\n"
                           "agent.output.set({'answer': 42, 'note': 'done'})\nprint('script ran')\n"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
 
         AE_CHECK(out.has_value(), "R2: exec_session() returns a real outcome");
         if (out.has_value()) {
@@ -98,7 +99,7 @@ int main() {
         // ---- R3: last-call-wins -- calling it twice keeps only the SECOND value. -------------------
         ExecRequest req2{"python",
                           "import agent\nagent.output.set('first')\nagent.output.set('second')\n"};
-        auto out2 = runner.run(req2, state, ctx);
+        auto out2 = agentengine::rt::block_on(runner.run(req2, state, ctx));
         AE_CHECK(out2.has_value(), "R3 setup: exec_session() returns a real outcome");
         if (out2.has_value()) {
             AE_CHECK(out2->structured_output_json == "\"second\"",
@@ -108,7 +109,7 @@ int main() {
         // ---- R4: a script that never calls agent.output.set() leaves it empty -- legitimately
         // absent, the SAME convention result_repr/ask_prompt already use, not "unpopulated." --------
         ExecRequest req3{"python", "x = 1 + 1\n"};
-        auto out3 = runner.run(req3, state, ctx);
+        auto out3 = agentengine::rt::block_on(runner.run(req3, state, ctx));
         AE_CHECK(out3.has_value(), "R4 setup: exec_session() returns a real outcome");
         if (out3.has_value()) {
             AE_CHECK(out3->structured_output_json.empty(),

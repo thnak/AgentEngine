@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/sandbox/runner.hpp"
@@ -56,7 +57,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};
         ExecRequest req{"python", "import agent\nagent.progress.report('x')\n"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
 
         AE_CHECK(out.has_value(), "R1: exec_session() returns a real outcome, not a hang/crash");
         if (out.has_value()) {
@@ -92,7 +93,7 @@ int main() {
                           "agent.progress.report('50% done')\n"
                           "print('script finished normally')\n"
                           "agent.progress.report('75% done')\n"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
 
         AE_CHECK(out.has_value(), "R2: exec_session() returns a real outcome");
         if (out.has_value()) {
@@ -114,7 +115,7 @@ int main() {
         // ---- R4: the worker is still alive after all this -- a SECOND, independent call on the SAME
         // handle also succeeds, proving no latent damage from the progress calls. -------------------
         ExecRequest req2{"python", "x = 1 + 1\n"};
-        auto out2 = runner.run(req2, state, ctx);
+        auto out2 = agentengine::rt::block_on(runner.run(req2, state, ctx));
         AE_CHECK(out2.has_value() && out2->klass == exec_outcome_class::ok,
                   "R4: the SAME worker handles a later, unrelated call normally afterward");
     }

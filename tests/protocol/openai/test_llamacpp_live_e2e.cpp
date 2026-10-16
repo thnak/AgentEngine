@@ -61,6 +61,7 @@
 // long chain of thought will exceed it. The default prefix is Qwen's own thinking-off directive;
 // point this at a non-Qwen model and set the variable to that model's equivalent, or to empty.
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/pal/net.hpp"
 
@@ -455,7 +456,7 @@ int main() {
         sandbox::NetEgressRequest req;
         req.method = "GET";
         req.path = "/v1/models";
-        auto resp = proxy.fetch(req, granted);
+        auto resp = agentengine::rt::block_on(proxy.fetch(req, granted));
 
         auto const guest_view = sandbox::resolve_and_validate(host, static_cast<std::uint16_t>(port_value));
         if (!guest_view) {

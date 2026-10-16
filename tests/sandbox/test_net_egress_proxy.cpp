@@ -18,6 +18,7 @@
 #include <string>
 #include <thread>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/sandbox/net_egress_proxy.hpp"
 #include "agentengine/pal/net.hpp"
 
@@ -198,8 +199,9 @@ struct CountingResolver {
 // cannot carry the `static constexpr traits` member the concept requires.
 struct FakeBackend {
     static constexpr agentengine::sandbox::NetEgressTraits traits{"fake", false};
-    agentengine::result<agentengine::sandbox::NetEgressResponse> fetch(NetEgressRequest const&, NetOut const&) const {
-        return agentengine::sandbox::NetEgressResponse{};
+    agentengine::task<agentengine::result<agentengine::sandbox::NetEgressResponse>> fetch(NetEgressRequest,
+                                                                                            NetOut) const {
+        co_return agentengine::sandbox::NetEgressResponse{};
     }
 };
 static_assert(agentengine::sandbox::NetEgressBackend<FakeBackend>,
@@ -255,14 +257,14 @@ int main() {
         HostEgressProxy proxy;
         proxy.resolver = std::ref(cr);
         NetOut zero_entries;  // host_allowlist starts empty
-        auto r0 = proxy.fetch(NetEgressRequest{"GET", "/", {}, ""}, zero_entries);
+        auto r0 = agentengine::rt::block_on(proxy.fetch(NetEgressRequest{"GET", "/", {}, ""}, zero_entries));
         check(!r0.has_value(), "a NetOut grant with zero allowlist entries is rejected");
         if (!r0) check(r0.error().code == "net.ambiguous_grant", "specific diagnostic code (zero entries)");
         check(cr.calls.load() == 0, "resolver was never called for a zero-entry grant");
 
         NetOut two_entries;
         two_entries.host_allowlist = {"a.example:80:http", "b.example:80:http"};
-        auto r2 = proxy.fetch(NetEgressRequest{"GET", "/", {}, ""}, two_entries);
+        auto r2 = agentengine::rt::block_on(proxy.fetch(NetEgressRequest{"GET", "/", {}, ""}, two_entries));
         check(!r2.has_value(), "a NetOut grant with two allowlist entries is rejected");
         if (!r2) check(r2.error().code == "net.ambiguous_grant", "specific diagnostic code (two entries)");
         check(cr.calls.load() == 0, "resolver was never called for a two-entry grant either");
@@ -276,7 +278,7 @@ int main() {
         HostEgressProxy proxy;
         proxy.resolver = std::ref(cr);
         auto grant = make_grant("api.example:443:https");
-        auto r = proxy.fetch(NetEgressRequest{"GET", "/", {}, ""}, grant);
+        auto r = agentengine::rt::block_on(proxy.fetch(NetEgressRequest{"GET", "/", {}, ""}, grant));
         check(!r.has_value(), "an https allowlist entry is rejected when no TLS client is vendored");
         if (!r) check(r.error().code == "net.scheme_unsupported", "specific diagnostic code");
         check(cr.calls.load() == 0, "resolver was never called for an https grant");
@@ -291,7 +293,7 @@ int main() {
         HostEgressProxy proxy;
         proxy.resolver = std::ref(cr);
         auto grant = make_grant("api.example:443:https");
-        auto const r = proxy.fetch(NetEgressRequest{"GET", "/", {}, ""}, grant);
+        auto const r = agentengine::rt::block_on(proxy.fetch(NetEgressRequest{"GET", "/", {}, ""}, grant));
         (void)r;  // outcome depends on live connect() behavior for port 0 -- only the gate matters here
         check(cr.calls.load() == 1, "the resolver IS called for an https grant once a TLS client is vendored");
     }
@@ -305,7 +307,7 @@ int main() {
         for (auto const& entry : {std::string("nohost-no-colons"), std::string("host:notaport:http"),
                                    std::string("host:80:")}) {
             auto grant = make_grant(entry);
-            auto r = proxy.fetch(NetEgressRequest{"GET", "/", {}, ""}, grant);
+            auto r = agentengine::rt::block_on(proxy.fetch(NetEgressRequest{"GET", "/", {}, ""}, grant));
             check(!r.has_value(), ("malformed allowlist entry '" + entry + "' is rejected").c_str());
             if (!r) check(r.error().code == "net.malformed_allowlist_entry", "specific diagnostic code");
         }
@@ -318,12 +320,12 @@ int main() {
         HostEgressProxy proxy;
         proxy.resolver = std::ref(cr);
         auto grant = make_grant("api.example:80:http", std::nullopt, {"GET", "HEAD"});
-        auto disallowed = proxy.fetch(NetEgressRequest{"DELETE", "/", {}, ""}, grant);
+        auto disallowed = agentengine::rt::block_on(proxy.fetch(NetEgressRequest{"DELETE", "/", {}, ""}, grant));
         check(!disallowed.has_value(), "a method outside method_restrictions is rejected");
         if (!disallowed) check(disallowed.error().code == "net.method_not_allowed", "specific diagnostic code");
         check(cr.calls.load() == 0, "resolver was never called for a disallowed method");
 
-        [[maybe_unused]] auto allowed = proxy.fetch(NetEgressRequest{"get", "/", {}, ""}, grant);  // case-insensitive
+        [[maybe_unused]] auto allowed = agentengine::rt::block_on(proxy.fetch(NetEgressRequest{"get", "/", {}, ""}, grant));  // case-insensitive
         check(cr.calls.load() == 1, "resolver WAS called once the method passed the restriction (case-insensitive match)");
     }
     {
@@ -332,7 +334,7 @@ int main() {
         HostEgressProxy proxy;
         proxy.resolver = std::ref(cr);
         auto grant = make_grant("api.example:80:http");  // no method_restrictions
-        [[maybe_unused]] auto r = proxy.fetch(NetEgressRequest{"PATCH", "/", {}, ""}, grant);
+        [[maybe_unused]] auto r = agentengine::rt::block_on(proxy.fetch(NetEgressRequest{"PATCH", "/", {}, ""}, grant));
         check(cr.calls.load() == 1, "an unrestricted grant lets an arbitrary method reach the resolver");
     }
 
@@ -343,17 +345,17 @@ int main() {
         proxy.resolver = std::ref(cr);
         auto grant = make_grant("api.example:80:http");
 
-        auto bad_path = proxy.fetch(NetEgressRequest{"GET", "/x HTTP/1.1\r\nX-Injected: evil\r\n\r\nGET /y", {}, ""}, grant);
+        auto bad_path = agentengine::rt::block_on(proxy.fetch(NetEgressRequest{"GET", "/x HTTP/1.1\r\nX-Injected: evil\r\n\r\nGET /y", {}, ""}, grant));
         check(!bad_path.has_value(), "CRLF in path is rejected");
         if (!bad_path) check(bad_path.error().code == "net.header_injection_rejected", "specific diagnostic code (path)");
 
-        auto bad_method = proxy.fetch(NetEgressRequest{"GET\r\nX-Evil: 1", "/", {}, ""}, grant);
+        auto bad_method = agentengine::rt::block_on(proxy.fetch(NetEgressRequest{"GET\r\nX-Evil: 1", "/", {}, ""}, grant));
         check(!bad_method.has_value(), "CRLF in method is rejected");
 
-        auto bad_header_value = proxy.fetch(NetEgressRequest{"GET", "/", {{"X-Test", "ok\r\nX-Injected: evil"}}, ""}, grant);
+        auto bad_header_value = agentengine::rt::block_on(proxy.fetch(NetEgressRequest{"GET", "/", {{"X-Test", "ok\r\nX-Injected: evil"}}, ""}, grant));
         check(!bad_header_value.has_value(), "CRLF in a header value is rejected");
 
-        auto bad_header_name = proxy.fetch(NetEgressRequest{"GET", "/", {{"X-Test\r\nX-Injected", "evil"}}, ""}, grant);
+        auto bad_header_name = agentengine::rt::block_on(proxy.fetch(NetEgressRequest{"GET", "/", {{"X-Test\r\nX-Injected", "evil"}}, ""}, grant));
         check(!bad_header_name.has_value(), "CRLF in a header name is rejected");
 
         check(cr.calls.load() == 0, "resolver was never called for any CRLF-bearing request");
@@ -377,7 +379,7 @@ int main() {
                 return ep;
             };
             auto grant = make_grant("test.invalid:1:http");  // host/port irrelevant -- resolver is faked
-            auto r = proxy.fetch(NetEgressRequest{"GET", "/", {}, ""}, grant);
+            auto r = agentengine::rt::block_on(proxy.fetch(NetEgressRequest{"GET", "/", {}, ""}, grant));
             check(r.has_value(), "fetch() succeeds end-to-end against a real (faked-resolution) target");
             if (r) {
                 check(r->status == 200, "status round-trips correctly");
@@ -401,7 +403,7 @@ int main() {
             HostEgressProxy real_proxy;  // default resolver == resolve_and_validate
             std::string const loop_entry = "127.0.0.1:" + std::to_string(server.port()) + ":http";
             auto loop_grant = make_grant(loop_entry);
-            auto blocked = real_proxy.fetch(NetEgressRequest{"GET", "/", {}, ""}, loop_grant);
+            auto blocked = agentengine::rt::block_on(real_proxy.fetch(NetEgressRequest{"GET", "/", {}, ""}, loop_grant));
             check(!blocked.has_value(), "fetch() with the real resolver refuses a loopback target");
             if (!blocked) check(blocked.error().code == "net.address_blocked", "specific diagnostic code");
         }
@@ -446,7 +448,7 @@ int main() {
                 return ep;
             };
             auto grant = make_grant("test.invalid:1:http");
-            auto r = proxy.fetch(NetEgressRequest{"GET", "/", {}, ""}, grant);
+            auto r = agentengine::rt::block_on(proxy.fetch(NetEgressRequest{"GET", "/", {}, ""}, grant));
             check(r.has_value(), "a 3xx response is returned successfully, not treated as an error");
             if (r) {
                 check(r->status == 302, "the 302 status is returned as-is");

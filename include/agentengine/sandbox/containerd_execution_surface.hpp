@@ -815,7 +815,19 @@ public:
     // `instance_` is only cleared once `destroy()` has actually succeeded -- a transient failure
     // leaves it in place, so a caller retrying `reset()` gets another real attempt at destroying the
     // SAME container, matching `DockerExecutionSurface::reset()`'s own identical posture.
-    [[nodiscard]] agentengine::result<void> reset(std::filesystem::path const& host_dir) {
+    // The `ExecutionSurface` seam (ADR-237 §5.1, #173): coroutines over the `*_blocking` bodies, completing
+    // without suspending -- the bodies still block on the CLI (moving them onto `rt::process` is #180's).
+    [[nodiscard]] agentengine::task<agentengine::result<void>> reset(std::filesystem::path host_dir) {
+        co_return reset_blocking(host_dir);
+    }
+    [[nodiscard]] agentengine::task<agentengine::result<SurfaceRunOutcome>> run(std::string command) {
+        co_return run_blocking(command);
+    }
+    [[nodiscard]] agentengine::task<agentengine::result<void>> drain_to(std::filesystem::path host_dir) {
+        co_return drain_to_blocking(host_dir);
+    }
+
+    [[nodiscard]] agentengine::result<void> reset_blocking(std::filesystem::path const& host_dir) {
         if (instance_) {
             auto destroyed = ctr_.destroy(*instance_);
             if (!destroyed.has_value()) return std::unexpected(destroyed.error());
@@ -867,7 +879,7 @@ public:
         return agentengine::result<void>{};
     }
 
-    [[nodiscard]] agentengine::result<SurfaceRunOutcome> run(std::string const& command) {
+    [[nodiscard]] agentengine::result<SurfaceRunOutcome> run_blocking(std::string const& command) {
         if (!instance_) {
             return std::unexpected(agentengine::error{agentengine::failure_class::contract,
                                                         "reset() must be called before run()",
@@ -895,7 +907,7 @@ public:
     // (draining to a DIFFERENT directory than the one mounted -- not exercised by
     // `SandboxRuntime::run()` itself, disclosed rather than silently assumed identical), falls back to
     // a real recursive host-side copy -- into an emptied host_dir, since a copy only adds (issue #143).
-    [[nodiscard]] agentengine::result<void> drain_to(std::filesystem::path const& host_dir) {
+    [[nodiscard]] agentengine::result<void> drain_to_blocking(std::filesystem::path const& host_dir) {
         if (!instance_) {
             return std::unexpected(agentengine::error{agentengine::failure_class::contract,
                                                         "reset() must be called before drain_to()",

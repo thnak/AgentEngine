@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <string>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/sandbox/runner.hpp"
 #include "agentengine/trust/capability.hpp"
@@ -50,7 +51,7 @@ int main() {
     EffectContext ctx{};
     ctx.capabilities = agentengine::borrow_capabilities(caps);
     ExecState state{};
-    auto run = [&](std::string const& src) { return shell.run(ExecRequest{"shell", src}, state, ctx); };
+    auto run = [&](std::string const& src) { return agentengine::rt::block_on(shell.run(ExecRequest{"shell", src}, state, ctx)); };
 
     // ---- #141 ----
     {

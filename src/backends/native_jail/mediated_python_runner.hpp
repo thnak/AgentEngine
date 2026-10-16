@@ -134,7 +134,15 @@ public:
     // Satisfies `Runner` (sandbox/runner.hpp) -- byte-identical signature to before this redesign.
     // Delegates to `NativeJailBackend::exec_session()`, which owns exec_seq/single-flight/watchdog
     // concerns entirely; this method is now just the Runner-shaped forwarding call.
-    [[nodiscard]] result<ExecOutcome> run(ExecRequest request, ExecState& state, EffectContext& ctx);
+    //
+    // ADR-237 §5.1 (#173): the seam is now a coroutine over `run_blocking()` (the forwarding call itself),
+    // completing without suspending; `state` and `ctx` must outlive the returned task.
+    [[nodiscard]] task<result<ExecOutcome>> run(ExecRequest request, ExecState& state, EffectContext& ctx) {
+        co_return run_blocking(std::move(request), state, ctx);
+    }
+
+    // The synchronous body. Public for synchronous composition (a `RegisteredRunner` closure).
+    [[nodiscard]] result<ExecOutcome> run_blocking(ExecRequest request, ExecState& state, EffectContext& ctx);
 
     // Reconfigures `agent.tools` on the ALREADY-running worker (NativeJailBackend::refresh_python_tools()).
     [[nodiscard]] result<void> refresh_agent_tools(ToolBridgeConfig config);

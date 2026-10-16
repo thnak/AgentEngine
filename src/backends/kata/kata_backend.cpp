@@ -86,7 +86,7 @@ constexpr std::string_view kKataWorkdirRoot = "/run/agentengine-kata";
 
 }  // namespace
 
-result<SandboxHandle> KataBackend::create(SandboxSpec const& spec, EffectContext& /*ctx*/) {
+result<SandboxHandle> KataBackend::create_blocking(SandboxSpec const& spec, EffectContext& /*ctx*/) {
     // Slice 3 (docs/planning/sandbox-spec-capability-enforcement-design-draft.md): capabilities are
     // the real authority behind mounts/net, checked FIRST, before any of this backend's own
     // mount/net logic below runs. A no-op for every caller that doesn't hold a SandboxMount/
@@ -809,7 +809,7 @@ result<SandboxHandle> KataBackend::create(SandboxSpec const& spec, EffectContext
     return SandboxHandle{id};
 }
 
-result<ExecOutcome> KataBackend::exec(SandboxHandle& handle, ExecRequest const& request,
+result<ExecOutcome> KataBackend::exec_blocking(SandboxHandle& handle, ExecRequest const& request,
                                        EffectContext& /*ctx*/) {
     auto it = instances_.find(handle.opaque_id);
     if (it == instances_.end()) {
@@ -880,7 +880,7 @@ result<ExecOutcome> KataBackend::exec(SandboxHandle& handle, ExecRequest const& 
     return result_out;
 }
 
-void KataBackend::destroy(SandboxHandle& handle) {
+void KataBackend::destroy_blocking(SandboxHandle& handle) {
     auto it = instances_.find(handle.opaque_id);
     if (it == instances_.end()) return;  // destroy() on an unknown/already-destroyed handle is a
                                           // silent no-op, matching LinuxNativeJailBackend's own

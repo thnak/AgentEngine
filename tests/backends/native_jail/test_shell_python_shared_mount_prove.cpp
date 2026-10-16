@@ -23,6 +23,7 @@
 #include <crtdbg.h>
 #endif
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/trust/capability.hpp"
@@ -93,7 +94,7 @@ int main() {
                  .register_runner(RegisteredRunner{
                      "python",
                      [&](ExecRequest const& req, ExecState& state, EffectContext& ctx) -> result<ExecOutcome> {
-                         return python.run(req, state, ctx);
+                         return agentengine::rt::block_on(python.run(req, state, ctx));
                      }})
                  .has_value(),
              "setup: python registers as a composed Runner under the shell");
@@ -118,7 +119,7 @@ int main() {
         // share the same real DIRECTORY, but each keeps its own real path syntax for referring to it
         // -- a real, disclosed detail this test's first run surfaced, not assumed in advance.
         auto write_via_shell =
-            shell.run(ExecRequest{"shell", "echo shared-mount-hello > from_shell.txt"}, state, ctx);
+            agentengine::rt::block_on(shell.run(ExecRequest{"shell", "echo shared-mount-hello > from_shell.txt"}, state, ctx));
         if (!write_via_shell.has_value()) {
             std::fprintf(stderr, "DEBUG 1a error: code=%s message=%s\n",
                          write_via_shell.error().code.c_str(), write_via_shell.error().message.c_str());
@@ -135,9 +136,9 @@ int main() {
         // this test's own first real run confirmed the BARE, unwrapped form (with single quotes but
         // no wrapper) hits a real SyntaxError from the shell's own word-splitting mangling the
         // Python source before PythonRunner ever sees it, not a Python-side bug.
-        auto read_via_python = shell.run(
+        auto read_via_python = agentengine::rt::block_on(shell.run(
             ExecRequest{"shell", "python \"print(open('/work/from_shell.txt').read().strip())\""},
-            state, ctx);
+            state, ctx));
         if (!read_via_python.has_value()) {
             std::fprintf(stderr, "DEBUG 1b error: code=%s message=%s\n",
                          read_via_python.error().code.c_str(), read_via_python.error().message.c_str());
@@ -158,11 +159,11 @@ int main() {
         EffectContext ctx{};
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
-        auto write_via_python = shell.run(
+        auto write_via_python = agentengine::rt::block_on(shell.run(
             ExecRequest{"shell",
                         "python \"with open('/work/from_python.txt', 'w') as f:\n    "
                         "f.write('shared-mount-goodbye')\""},
-            state, ctx);
+            state, ctx));
         AE_CHECK(write_via_python.has_value() && write_via_python->klass == exec_outcome_class::ok,
                  "2a: Python writes a real file into the shared \"work\" mount");
 
@@ -189,7 +190,7 @@ int main() {
                  "not a mount-relative logical cwd -- native_jail_backend.cpp's unconditional "
                  "`state.cwd = wp::get_string(*frame, \"cwd\")` after every exec_response");
         state.cwd.clear();  // workaround for THIS test only -- the real defect above is not fixed here
-        auto read_via_shell = shell.run(ExecRequest{"shell", "cat from_python.txt"}, state, ctx);
+        auto read_via_shell = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "cat from_python.txt"}, state, ctx));
         if (!read_via_shell.has_value()) {
             std::fprintf(stderr, "DEBUG 2b error: code=%s message=%s\n",
                          read_via_shell.error().code.c_str(), read_via_shell.error().message.c_str());
@@ -227,11 +228,11 @@ int main() {
             CapabilitySet::grant_root({Capability{cap::RunnerCall{"python"}},
                                         Capability{cap::FsRead{"work", "", std::nullopt}}});
         ctx.capabilities = agentengine::borrow_capabilities(read_only_caps);
-        auto denied = shell.run(
+        auto denied = agentengine::rt::block_on(shell.run(
             ExecRequest{"shell",
                         "python \"try:\n    open('/work/should_be_denied.txt', 'w')\nexcept "
                         "PermissionError as e:\n    print('DENIED:', e)\""},
-            state, ctx);
+            state, ctx));
         AE_CHECK(denied.has_value() && denied->stdout_text.find("DENIED") != std::string::npos,
                  "4: sharing the mount DIRECTORY does not smuggle in FsWrite authority -- Python "
                  "still enforces its own real capability check against the same ctx");

@@ -19,6 +19,7 @@
 #include <fstream>
 #include <string>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/pal/env.hpp"
@@ -129,7 +130,7 @@ int main() {
                              "from agent import files\n"
                              "b = files.input('greeting.txt')\n"
                              "print('GOT:', b)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("GOT: b'hello from /input'") != std::string::npos,
                      "G2-I1: agent.files.input reads /input/<name> as real bytes");
         }
@@ -140,7 +141,7 @@ int main() {
                              "from agent import files\n"
                              "files.artifact('result.txt', 'ok from artifact')\n"
                              "print('WROTE')"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("WROTE") != std::string::npos,
                      "G2-I2: agent.files.artifact(str) runs without error");
             std::ifstream check(out_dir / "result.txt", std::ios::binary);
@@ -157,7 +158,7 @@ int main() {
                              "names = sorted(e['name'] for e in entries)\n"
                              "print('NAMES:', names)\n"
                              "print('IS_DIR:', all(e['is_dir'] == False for e in entries))"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() &&
                          out->stdout_text.find("NAMES: ['data.ndjson', 'greeting.txt', 'table.csv']") !=
                              std::string::npos,
@@ -178,7 +179,7 @@ int main() {
                              "print('DATA_DOC:', data.__doc__)\n"
                              "import agent\n"
                              "print('AGENT_DOC:', repr(agent.__doc__))"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             std::string files_one_line(agentengine::trust::module_one_line("files"));
             std::string data_one_line(agentengine::trust::module_one_line("data"));
             AE_CHECK(out.has_value() && out->stdout_text.find("FILES_DOC: " + files_one_line) != std::string::npos,
@@ -205,7 +206,7 @@ int main() {
                              "values = list(gen)\n"
                              "print('IS_GEN:', is_gen)\n"
                              "print('VALUES:', values)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("IS_GEN: True") != std::string::npos,
                      "G2-I4a: agent.data.read_json_lines returns a real generator, streamed per line");
             AE_CHECK(out.has_value() &&
@@ -220,7 +221,7 @@ int main() {
                              "from agent import data\n"
                              "rows = list(data.read_csv_rows('/input/table.csv'))\n"
                              "print('ROWS:', rows)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() &&
                          out->stdout_text.find(
                              "ROWS: [['a', 'b', 'c'], ['1', '2', '3'], ['4', '5', '6']]") != std::string::npos,
@@ -234,7 +235,7 @@ int main() {
                              "from agent import data\n"
                              "v = data.read_json('/work/small.json')\n"
                              "print('VALUE:', v)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("VALUE: {'ok': True}") != std::string::npos,
                      "G2-I6: agent.data.read_json reads and parses a whole small file");
         }
@@ -247,7 +248,7 @@ int main() {
                              "    from agent import tools\n"
                              "except ImportError as e:\n"
                              "    print('NO_TOOLS:', e)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("NO_TOOLS") != std::string::npos,
                      "G2-N1: with no tool_bridge configured, agent.tools is absent even though "
                      "agent.files/agent.data are present");
@@ -266,7 +267,7 @@ int main() {
                              "    files.list('/input')\n"
                              "except PermissionError as e:\n"
                              "    print('DENIED:', e)"};
-            auto out = runner.run(req, state, narrow_ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, narrow_ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos,
                      "G2-N2: agent.files.list without a granted FsRead capability raises "
                      "PermissionError -- the real per-call pipeline, never a shortcut");
@@ -307,7 +308,7 @@ int main() {
                          "b = agent.files.input('greeting.txt')\n"
                          "print('FILES_OK:', b == b'hello from /input')\n"
                          "print('AGENT_DOC:', repr(agent.__doc__))"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         AE_CHECK(out.has_value() && out->stdout_text.find("HAS_TOOLS: True") != std::string::npos,
                  "G2-coexist: agent.tools is present when a tool_bridge is configured");
         AE_CHECK(out.has_value() && out->stdout_text.find("HAS_FILES: True") != std::string::npos,
@@ -365,7 +366,7 @@ int main() {
                          "    import json\n"
                          "except ImportError as e:\n"
                          "    print('NO_JSON:', e)"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         AE_CHECK(out.has_value() && out->stdout_text.find("NO_AGENT") != std::string::npos,
                  "G2-N3a: with mount_roots configured but expose_agent_files_data unset, agent is "
                  "absent -- mount_roots alone never implies the library is exposed");

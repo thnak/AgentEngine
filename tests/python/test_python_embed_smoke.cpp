@@ -17,6 +17,7 @@
 #include <crtdbg.h>
 #endif
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/sandbox/runner.hpp"
 #include "backends/native_jail/python_runner.hpp"
@@ -50,7 +51,7 @@ int main() {
     agentengine::ExecState state{};
     agentengine::EffectContext ctx{};
 
-    agentengine::result<agentengine::ExecOutcome> outcome = runner.run(request, state, ctx);
+    agentengine::result<agentengine::ExecOutcome> outcome = agentengine::rt::block_on(runner.run(request, state, ctx));
     assert(outcome.has_value() && "run() must succeed for trivial allowed code");
     printf("stdout: %s", outcome->stdout_text.c_str());
     printf("stderr: %s", outcome->stderr_text.c_str());

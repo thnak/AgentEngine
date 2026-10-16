@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <string>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/sandbox/runner.hpp"
@@ -76,7 +77,7 @@ int main() {
 
         auto const t0 = std::chrono::steady_clock::now();
         ExecRequest req{"python", "while True:\n    pass\n"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         auto const elapsed =
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0);
 
@@ -100,7 +101,7 @@ int main() {
         // handle returns session_terminated immediately (bounded), not a second hang.
         auto const t1 = std::chrono::steady_clock::now();
         ExecRequest req2{"python", "1 + 1"};
-        auto out2 = runner.run(req2, state, ctx);
+        auto out2 = agentengine::rt::block_on(runner.run(req2, state, ctx));
         auto const elapsed2 =
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t1);
         AE_CHECK(!out2.has_value(),
@@ -146,7 +147,7 @@ int main() {
         ExecRequest req{"python",
                           "buf = bytearray(512 * 1024 * 1024)\n"
                           "print('ALLOCATED_OK', len(buf))\n"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
 
         bool const contained =
             !out.has_value() ||

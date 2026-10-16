@@ -142,17 +142,34 @@ public:
     explicit DockerPersistentShellSurface(std::string image = "alpine:latest", ContainerIsolation isolation = {},
                                           std::size_t output_cap_bytes = kDefaultOutputCapBytes)
         : image_(std::move(image)), isolation_(isolation), output_cap_(output_cap_bytes) {}
-    ~DockerPersistentShellSurface() { (void)close(); }
+    ~DockerPersistentShellSurface() { (void)close_blocking(); }
     DockerPersistentShellSurface(DockerPersistentShellSurface const&) = delete;
     DockerPersistentShellSurface& operator=(DockerPersistentShellSurface const&) = delete;
     DockerPersistentShellSurface(DockerPersistentShellSurface&& other) noexcept;
     DockerPersistentShellSurface& operator=(DockerPersistentShellSurface&& other) noexcept;
 
-    [[nodiscard]] agentengine::result<void> open(std::filesystem::path const& host_dir, ShellSnapshot const* snapshot);
-    [[nodiscard]] agentengine::result<LiveExecOutcome> exec(std::string const& command,
-                                                            std::chrono::milliseconds deadline);
-    [[nodiscard]] agentengine::result<void> drain_to(std::filesystem::path const& host_dir);
-    [[nodiscard]] agentengine::result<void> close();
+    // The `PersistentShellSurface` seam (ADR-237 §5.1, #173): coroutines over the `*_blocking` bodies, completing
+    // without suspending -- the bodies still block on the Docker CLI (moving them onto `rt::process` is #180's).
+    [[nodiscard]] agentengine::task<agentengine::result<void>> open(std::filesystem::path host_dir,
+                                                                    ShellSnapshot const* snapshot) {
+        co_return open_blocking(host_dir, snapshot);
+    }
+    [[nodiscard]] agentengine::task<agentengine::result<LiveExecOutcome>> exec(std::string command,
+                                                                               std::chrono::milliseconds deadline) {
+        co_return exec_blocking(command, deadline);
+    }
+    [[nodiscard]] agentengine::task<agentengine::result<void>> drain_to(std::filesystem::path host_dir) {
+        co_return drain_to_blocking(host_dir);
+    }
+    [[nodiscard]] agentengine::task<agentengine::result<void>> close() { co_return close_blocking(); }
+
+    // The synchronous bodies. `close_blocking()` is also what the destructor runs.
+    [[nodiscard]] agentengine::result<void> open_blocking(std::filesystem::path const& host_dir,
+                                                          ShellSnapshot const* snapshot);
+    [[nodiscard]] agentengine::result<LiveExecOutcome> exec_blocking(std::string const& command,
+                                                                     std::chrono::milliseconds deadline);
+    [[nodiscard]] agentengine::result<void> drain_to_blocking(std::filesystem::path const& host_dir);
+    [[nodiscard]] agentengine::result<void> close_blocking();
     [[nodiscard]] bool is_live() const noexcept { return live_ && instance_.has_value(); }
     [[nodiscard]] bool has_container() const noexcept { return instance_.has_value(); }
 

@@ -956,7 +956,7 @@ agentengine::result<DockerCliBackend::OrphanReapReport> DockerCliBackend::reap_o
 
 namespace agentengine {
 
-agentengine::result<void> DockerExecutionSurface::reset(std::filesystem::path const& host_dir) {
+agentengine::result<void> DockerExecutionSurface::reset_blocking(std::filesystem::path const& host_dir) {
     if (instance_) {
         auto destroyed = docker_.destroy(*instance_);
         if (!destroyed.has_value()) return std::unexpected(destroyed.error());
@@ -1048,7 +1048,7 @@ agentengine::result<void> DockerExecutionSurface::reset(std::filesystem::path co
     return agentengine::result<void>{};
 }
 
-agentengine::result<SurfaceRunOutcome> DockerExecutionSurface::run(std::string const& command) {
+agentengine::result<SurfaceRunOutcome> DockerExecutionSurface::run_blocking(std::string const& command) {
     if (!instance_) {
         return std::unexpected(agentengine::error{agentengine::failure_class::contract,
                                                       "reset() must be called before run()",
@@ -1057,7 +1057,7 @@ agentengine::result<SurfaceRunOutcome> DockerExecutionSurface::run(std::string c
     return docker_.exec(*instance_, "cd /workspace && " + command);
 }
 
-agentengine::result<void> DockerExecutionSurface::drain_to(std::filesystem::path const& host_dir) {
+agentengine::result<void> DockerExecutionSurface::drain_to_blocking(std::filesystem::path const& host_dir) {
     if (!instance_) {
         return std::unexpected(agentengine::error{agentengine::failure_class::contract,
                                                       "reset() must be called before drain_to()",

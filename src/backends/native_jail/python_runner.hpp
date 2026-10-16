@@ -45,7 +45,14 @@ public:
     native_jail::PythonLockdownInterpreter& interpreter() { return interpreter_; }
     native_jail::PythonLockdownInterpreter const& interpreter() const { return interpreter_; }
 
-    result<ExecOutcome> run(ExecRequest request, ExecState& state, EffectContext& ctx) {
+    // The `Runner` seam (ADR-237 §5.1, #173): a coroutine over `run_blocking()` that completes without
+    // suspending -- the interpreter itself is synchronous. `state` and `ctx` must outlive the returned task.
+    [[nodiscard]] task<result<ExecOutcome>> run(ExecRequest request, ExecState& state, EffectContext& ctx) {
+        co_return run_blocking(std::move(request), state, ctx);
+    }
+
+    // The synchronous body. Public for synchronous composition (a `RegisteredRunner` closure).
+    result<ExecOutcome> run_blocking(ExecRequest request, ExecState& state, EffectContext& ctx) {
         (void)state; // ExecState.cwd/env mediation (os.chdir/os.getcwd/os.environ) is NOT yet
                      // wired to this interpreter -- NOT ATTEMPTED this pass, see the ADR's §9.
         (void)ctx;   // CapabilitySet-derived per-call allowlist freshness -- NOT ATTEMPTED this

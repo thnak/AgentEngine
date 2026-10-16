@@ -42,6 +42,7 @@
 // MACHINE SAFETY (CLAUDE.md): every container is `--rm`, deny-all-network, capped at the ADR-171
 // defaults, and destroyed explicitly. Nothing here spawns unbounded work.
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 
 #include <cstdio>
@@ -229,14 +230,14 @@ int main() {
     // ---- S6: the real production entry point ----------------------------------------------------
     {
         agentengine::DockerExecutionSurface surface;
-        auto reset = surface.reset(host_dir);
+        auto reset = agentengine::rt::block_on(surface.reset(host_dir));
         check(reset.has_value(), reset.has_value()
                                      ? "setup: DockerExecutionSurface::reset() succeeds"
                                      : ("reset() FAILED: " + reset.error().message));
         if (reset.has_value()) {
-            auto run = surface.run("stat -c %u /workspace/note.txt && "
+            auto run = agentengine::rt::block_on(surface.run("stat -c %u /workspace/note.txt && "
                                     "echo -n ' + via surface' >> /workspace/note.txt && "
-                                    "cat /workspace/note.txt");
+                                    "cat /workspace/note.txt"));
             check(run.has_value() && run->exit_code == 0,
                   "S6: the surface SandboxRuntime actually drives seeds a WRITABLE, root-owned tree");
             check(run.has_value() && contains(run->stdout_text, "turn-1 content + via surface"),

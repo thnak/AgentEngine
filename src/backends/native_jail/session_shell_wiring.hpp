@@ -164,7 +164,9 @@ private:
           shell_(fs_, registry_, kShellWorkMount, native_jail::kDefaultOutputCapBytes,
                  wall_clock_budget) {}
 
-    [[nodiscard]] result<RunShellReply> run(RunShellArgs const& args, EffectContext& ctx) {
+    // ADR-237 §5.1 (#173): a coroutine, because the `Runner` seam is. `args` and `ctx` must outlive the task;
+    // `RunShellTool::invoke` awaits it in place.
+    [[nodiscard]] task<result<RunShellReply>> run(RunShellArgs const& args, EffectContext& ctx) {
         // ADR-170 (GitHub issue #64): the second real producer of `sandbox_exec_started`/`finished`.
         // ONE stage ("exec"), not the create/exec pair the PDF worker emits: this sandbox is
         // provisioned once per SESSION at `SessionShellSandbox::create()` time (008 §6's
@@ -178,10 +180,10 @@ private:
         // output (I3).
         std::string const exec_id = "shell_" + std::to_string(++exec_counter_);
         SandboxExecScope scope(ctx, exec_id, "mediated-shell", "exec");
-        auto outcome = shell_.run(ExecRequest{"shell", args.source}, state_, ctx);
+        auto outcome = co_await shell_.run(ExecRequest{"shell", args.source}, state_, ctx);
         if (!outcome) {
             scope.failed(outcome.error().code);
-            return std::unexpected(outcome.error());
+            co_return std::unexpected(outcome.error());
         }
         // A non-`ok` exec_outcome_class is a command that RAN and failed -- a real, completed exec,
         // reported as such here, unlike the PDF worker's own case where the tool itself turns that
@@ -192,7 +194,7 @@ private:
         reply.ok = (outcome->klass == exec_outcome_class::ok);
         reply.stdout_text = std::move(outcome->stdout_text);
         reply.stderr_text = std::move(outcome->stderr_text);
-        return reply;
+        co_return reply;
     }
 
     // Declaration order matters: members construct/destroy in declared order, and
@@ -221,7 +223,7 @@ task<result<RunShellReply>> RunShellTool::invoke(RunShellArgs args, EffectContex
             "one comes from SessionShellSandbox::tool_descriptor(), which holds a real sandbox.",
             "session_shell_wiring.invoke_unreachable"});
     }
-    co_return owner_->run(args, ctx);
+    co_return co_await owner_->run(args, ctx);
 }
 
 }  // namespace agentengine

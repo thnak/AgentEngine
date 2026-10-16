@@ -261,7 +261,7 @@ struct WasmBackend::Instance {
 WasmBackend::WasmBackend() = default;
 WasmBackend::~WasmBackend() = default;
 
-result<SandboxHandle> WasmBackend::create(SandboxSpec const& spec, EffectContext&) {
+result<SandboxHandle> WasmBackend::create_blocking(SandboxSpec const& spec, EffectContext&) {
     auto instance = std::make_unique<Instance>();
     instance->operator_grant = spec.capabilities;
     instance->limits = spec.limits;
@@ -561,8 +561,10 @@ wasmtime_error_t* cb_http_request(void* env, wasmtime_context_t* ctx,
             : std::nullopt;
     cap::NetOut const effective_grant = sandbox::narrow_by_resource_limit(*cap, resource_net_bytes);
 
+    // Synchronous on purpose (ADR-237 §5.1, #173): the guest is blocked inside this host import, so there is
+    // nothing to suspend to. `fetch_blocking` is the same gates and exchange the async `fetch` seam runs.
     sandbox::HostEgressProxy const proxy;
-    auto response = proxy.fetch(req, effective_grant);
+    auto response = proxy.fetch_blocking(req, effective_grant);
     if (!response) {
         // The WIT `http-error` enum has exactly four cases -- a deliberately small, guest-facing
         // vocabulary (wit/ae-tool.wit's own comment: the guest only needs to know "not allowlisted",
@@ -971,7 +973,7 @@ result<ToolResult> WasmBackend::invoke_tool(SandboxHandle const& handle, ToolInv
     return out;
 }
 
-result<ExecOutcome> WasmBackend::exec(SandboxHandle& handle, ExecRequest const& request, EffectContext& ctx) {
+result<ExecOutcome> WasmBackend::exec_blocking(SandboxHandle& handle, ExecRequest const& request, EffectContext& ctx) {
     if (request.language != "ae:tool") {
         return std::unexpected(
             error{failure_class::contract, "WasmBackend::exec only accepts language \"ae:tool\"", "wasm.bad_language"});
@@ -1010,7 +1012,7 @@ result<ExecOutcome> WasmBackend::exec(SandboxHandle& handle, ExecRequest const& 
     return outcome;
 }
 
-void WasmBackend::destroy(SandboxHandle& handle) {
+void WasmBackend::destroy_blocking(SandboxHandle& handle) {
     instances_.erase(handle.opaque_id);
 }
 

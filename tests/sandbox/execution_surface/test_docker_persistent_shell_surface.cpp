@@ -38,6 +38,7 @@
 // server's `-w` fails V10. A fork-bomb tail of `sleep 60` made V7 flaky (`sleep` itself can fail to fork); it is a
 // builtin busy loop now.
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/sandbox/docker_persistent_shell_surface.hpp"
 
 #include "../../support/crt_fail_fast.hpp"
@@ -119,10 +120,10 @@ int main() {
     std::ofstream(host / "seed.txt", std::ios::binary) << "seeded\n";
 
     DockerPersistentShellSurface surface("alpine:latest", tight());
-    auto x = [&](std::string const& cmd, std::chrono::milliseconds d = 20s) { return surface.exec(cmd, d); };
+    auto x = [&](std::string const& cmd, std::chrono::milliseconds d = 20s) { return agentengine::rt::block_on(surface.exec(cmd, d)); };
 
     // ---- V1
-    auto opened = surface.open(host, nullptr);
+    auto opened = agentengine::rt::block_on(surface.open(host, nullptr));
     check(opened.has_value(), "V1: open() brings up a container with a live shell" +
                                   (opened.has_value() ? std::string() : ": " + opened.error().message));
     if (!opened.has_value()) return EXIT_FAILURE;
@@ -170,7 +171,7 @@ int main() {
         check(big.has_value() && big->output.size() == DockerPersistentShellSurface::kDefaultOutputCapBytes &&
                   big->output_bytes == 10485760 && big->output_truncated,
               "V3: 10 MiB of output is capped, its full size reported");
-        auto nul = surface.exec(std::string("echo a\0b", 8), 20s);
+        auto nul = agentengine::rt::block_on(surface.exec(std::string("echo a\0b", 8), 20s));
         check(!nul.has_value() && nul.error().code == "persistent_shell.nul_in_command",
               "V3: a NUL byte is refused before anything runs");
         std::string big_cmd = "# " + std::string(64 * 1024, 'a') + "\necho big-command-ran";
@@ -184,7 +185,7 @@ int main() {
         auto r = x("echo bye; exit 5");
         check(r.has_value() && r->shell_lost && !surface.is_live(), "V4: `exit` loses the shell");
         check(container_running(id), "V4: ... and the container is still running");
-        auto re = surface.open(host, nullptr);
+        auto re = agentengine::rt::block_on(surface.open(host, nullptr));
         auto again = x("echo back");
         check(re.has_value() && again.has_value() && again->output == "back\n", "V4: a re-open works");
     }
@@ -209,7 +210,7 @@ int main() {
               "V5: no process the command started survives the timeout (C7; got " + show(ps.stdout_text) + ")");
         fs::path const drained = fs::temp_directory_path() / "ae_test_dps_drain";
         fs::remove_all(drained, ec);
-        auto d = surface.drain_to(drained);
+        auto d = agentengine::rt::block_on(surface.drain_to(drained));
         check(d.has_value() && fs::exists(drained / "made-before-kill.txt"),
               "V5: files written before the kill are still there to drain");
         fs::remove_all(drained, ec);
@@ -217,14 +218,14 @@ int main() {
 
     // ---- V6
     {
-        auto re = surface.open(host, nullptr);
+        auto re = agentengine::rt::block_on(surface.open(host, nullptr));
         std::string const id = surface.container_id();
         auto r = x("sleep 300 & kill -KILL -1; echo unreachable");
         check(re.has_value() && r.has_value() && r->shell_lost, "V6: the command's own `kill -KILL -1` loses the shell");
         check(container_running(id), "V6: ... never the container (PID 1 survives a SIGKILL from inside)");
         // V6b: orphans re-parent to PID 1, which must reap them -- a non-reaping PID 1 (`sleep infinity`) piles
         // up zombies until the pids limit refuses every later command. The keeper reaps within its 5 s tick.
-        auto re2 = surface.open(host, nullptr);
+        auto re2 = agentengine::rt::block_on(surface.open(host, nullptr));
         (void)x("i=0; while [ $i -lt 20 ]; do sh -c 'sleep 0 &'; i=$((i+1)); done");
         auto z = x("sleep 7; n=0; for s in /proc/[0-9]*/stat; do case \"$(cat $s 2>/dev/null)\" in *') Z '*) "
                    "n=$((n+1));; esac; done; echo zombies=$n");
@@ -234,7 +235,7 @@ int main() {
 
     // ---- V7
     {
-        auto re = surface.open(host, nullptr);
+        auto re = agentengine::rt::block_on(surface.open(host, nullptr));
         std::string const id = surface.container_id();
         // The tail is a builtin busy loop, not `sleep 60`: under pid exhaustion `sleep` itself can fail to fork and
         // end the command early, which made this check flaky (measured during ADR-209 step 8).
@@ -244,16 +245,16 @@ int main() {
                                                   (r->shell_lost && !r->container_lost && container_running(id)));
         check(outcome_ok, std::string("V7: ... and ends contained: ") +
                               (r && r->container_lost ? "container_lost, container removed" : "shell_lost, PID 1 alive"));
-        (void)surface.close();
+        (void)agentengine::rt::block_on(surface.close());
         check(!container_exists(id), "V7: no container is left behind");
     }
 
     // ---- V8
     {
-        auto o1 = surface.open(host, nullptr);
+        auto o1 = agentengine::rt::block_on(surface.open(host, nullptr));
         std::string const id1 = surface.container_id();
         (void)x("echo ghost > only-in-container-1.txt");
-        auto o2 = surface.open(host, nullptr);
+        auto o2 = agentengine::rt::block_on(surface.open(host, nullptr));
         std::string const id2 = surface.container_id();
         auto r = x("ls only-in-container-1.txt 2>/dev/null || echo absent");
         check(o1.has_value() && o2.has_value() && id1 != id2 && !container_exists(id1),
@@ -270,7 +271,7 @@ int main() {
                         {"V3", "a\nb\n\n"},
                         {"V4", "\xE2\x80\x99`touch /tmp/pwned2`\xE2\x80\x99"},
                         {"V5", "x'; touch /tmp/pwned3; '"}};
-        auto o = surface.open(host, &snap);
+        auto o = agentengine::rt::block_on(surface.open(host, &snap));
         auto r = x("printf '[%s]' \"$V1\" \"$V2\" \"$V3\" \"$V4\" \"$V5\"; ls /tmp/pwned* 2>/dev/null && echo PWNED");
         std::string const expected = std::string("[it's][$(touch /tmp/pwned1)][a\nb\n\n][") +
                                      "\xE2\x80\x99`touch /tmp/pwned2`\xE2\x80\x99" + "][x'; touch /tmp/pwned3; ']";
@@ -284,7 +285,7 @@ int main() {
         auto r = x("pwd");
         bool const reported = r.has_value() && r->snapshot.has_value() && r->snapshot->cwd == "/etc";
         ShellSnapshot snap = reported ? *r->snapshot : ShellSnapshot{};
-        auto o = surface.open(host, &snap);
+        auto o = agentengine::rt::block_on(surface.open(host, &snap));
         auto p = x("pwd");
         check(reported && o.has_value() && p.has_value() && p->output == "/etc\n",
               "V10 setup: the model's cwd (/etc) is restored INSIDE the re-opened shell");
@@ -303,7 +304,7 @@ int main() {
     // ---- V11 (ADR-209 §15.5 M2): the command replaces the `sh` the timeout kill runs in the container. The kill
     // "succeeds" (exit 0) and kills nothing; the host-side `docker top` check must catch it and remove the container.
     {
-        auto o = surface.open(host, nullptr);
+        auto o = agentengine::rt::block_on(surface.open(host, nullptr));
         std::string const id = surface.container_id();
         auto r = x("printf '#!/bin/busybox true\\n' > /usr/local/bin/sh && chmod +x /usr/local/bin/sh && "
                    "(while :; do :; done) & sleep 60",
@@ -314,7 +315,7 @@ int main() {
     }
 
     std::string const last = surface.container_id();
-    auto closed = surface.close();
+    auto closed = agentengine::rt::block_on(surface.close());
     check(closed.has_value() && !container_exists(last), "close() removes the container");
     fs::remove_all(host, ec);
     std::printf("\n%d checks, %d failed\n", g_checks, g_failed);

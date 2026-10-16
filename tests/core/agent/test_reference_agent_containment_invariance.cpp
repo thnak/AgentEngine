@@ -30,6 +30,7 @@
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/reference_agent_prompt.hpp"
 #include "agentengine/pal/env.hpp"
@@ -73,7 +74,7 @@ RunResult run_hostile_snippet(MediatedPythonRunner& runner, CapabilitySet& caps,
     EffectContext ctx{};
     ctx.capabilities = agentengine::borrow_capabilities(caps);
     ExecRequest req{"python", source};  // <-- exactly language + source; no prompt field exists to fill
-    auto out = runner.run(req, state, ctx);
+    auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
     RunResult result;
     result.has_value = out.has_value();
     if (out.has_value()) {

@@ -52,14 +52,14 @@ template <class T>
 // real process or Docker. Exists only to satisfy MandatorySandboxProvider<Surface>'s own template
 // constraint with something real, matching the ExecutionSurface concept exactly.
 struct FakeSurface {
-    [[nodiscard]] agentengine::result<void> reset(std::filesystem::path const&) {
-        return agentengine::result<void>{};
+    [[nodiscard]] agentengine::task<agentengine::result<void>> reset(std::filesystem::path) {
+        co_return agentengine::result<void>{};
     }
-    [[nodiscard]] agentengine::result<SurfaceRunOutcome> run(std::string const&) {
-        return SurfaceRunOutcome{0, ""};
+    [[nodiscard]] agentengine::task<agentengine::result<SurfaceRunOutcome>> run(std::string) {
+        co_return SurfaceRunOutcome{0, ""};
     }
-    [[nodiscard]] agentengine::result<void> drain_to(std::filesystem::path const&) {
-        return agentengine::result<void>{};
+    [[nodiscard]] agentengine::task<agentengine::result<void>> drain_to(std::filesystem::path) {
+        co_return agentengine::result<void>{};
     }
 };
 static_assert(ExecutionSurface<FakeSurface>);

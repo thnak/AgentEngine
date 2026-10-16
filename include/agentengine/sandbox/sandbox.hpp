@@ -19,6 +19,7 @@
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/task.hpp"
 #include "agentengine/trust/capability.hpp"
 
 namespace agentengine {
@@ -363,19 +364,19 @@ struct ExecOutcome {  // ae-naming-lint: allow ExecOutcome — pre-existing M0 s
     std::string structured_output_json;
 };
 
-// concept, not a base class (008 §2). Return types are constrained to their synchronous
-// equivalents (`result<T>`, `void`) for the same reason `Runner`/`ChatClient` are — `ae::task<T>`
-// is not yet wired into this header; each becomes `ae::task<result<T>>` (or `ae::task<>` for
-// `destroy`) once it is. `T::traits` is 008 §2's "static constexpr ProfileTraits traits" line,
+// concept, not a base class (008 §2). decisions/ADR-237 §5.1 (Phase D, #173): `create`/`exec` return
+// `ae::task<result<T>>` and `destroy` returns `ae::task<void>` -- a backend may be remote (a microVM host,
+// a container daemon), so every call can suspend. The handle and the context are borrowed and must
+// outlive the returned task; callers await it in place. `T::traits` is 008 §2's "static constexpr ProfileTraits traits" line,
 // completed by Phase C (C1) — every conforming backend must declare one, not just the three
 // methods, or `Profile::Strict` (§3) has nothing to resolve against.
 template <class T>
 concept SandboxBackend = requires(T backend, SandboxSpec spec, SandboxHandle& handle,  // ae-naming-lint: allow SandboxBackend — pre-existing M0 scaffolding, reconcile at owning milestone
                                    ExecRequest request, EffectContext& ctx) {
     { T::traits } -> std::convertible_to<ProfileTraits const&>;
-    { backend.create(spec, ctx) } -> std::same_as<result<SandboxHandle>>;
-    { backend.exec(handle, request, ctx) } -> std::same_as<result<ExecOutcome>>;
-    { backend.destroy(handle) } -> std::same_as<void>;
+    { backend.create(spec, ctx) } -> std::same_as<task<result<SandboxHandle>>>;
+    { backend.exec(handle, request, ctx) } -> std::same_as<task<result<ExecOutcome>>>;
+    { backend.destroy(handle) } -> std::same_as<task<void>>;
 };
 
 // 008 §3's "Strict" (RFC prose previously spelled it `Profile::Strict`; decisions/ADR-012-sandbox-

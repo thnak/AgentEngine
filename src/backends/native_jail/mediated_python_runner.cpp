@@ -22,7 +22,9 @@ MediatedPythonRunner::MediatedPythonRunner(MediatedPythonConfig config, NativeJa
 
 MediatedPythonRunner::~MediatedPythonRunner() {
     if (initialized_) {
-        backend_.destroy(handle_);
+        // A destructor cannot await the `SandboxBackend::destroy` seam (ADR-237 §5.1, #173); the concrete
+        // backend's synchronous body is the same teardown.
+        backend_.destroy_blocking(handle_);
         initialized_ = false;
     }
 }
@@ -79,7 +81,7 @@ result<void> MediatedPythonRunner::initialize() {
     return {};
 }
 
-result<ExecOutcome> MediatedPythonRunner::run(ExecRequest request, ExecState& state, EffectContext& ctx) {
+result<ExecOutcome> MediatedPythonRunner::run_blocking(ExecRequest request, ExecState& state, EffectContext& ctx) {
     if (!request.language.empty() && request.language != "python") {
         return std::unexpected(error{failure_class::contract,
                                       "MediatedPythonRunner cannot run language: " + request.language,

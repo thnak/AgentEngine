@@ -179,7 +179,7 @@ public:
         }
 
         // 3. Push the real, materialized directory into the execution surface's own isolated view.
-        auto reset_r = surface.reset(io_fs_.host_root());
+        auto reset_r = co_await surface.reset(io_fs_.host_root());
         if (!reset_r.has_value()) {
             (void)co_await run_quota.refund(1);
             co_return std::unexpected(reset_r.error());
@@ -198,7 +198,7 @@ public:
         //    breakout()` before ever shelling out) -- exactly the "nothing happened" case the RunCost
         //    charge should never survive. Fixed here by refunding this path too, not only the earlier
         //    ones.
-        auto exec_r = surface.run(command);
+        auto exec_r = co_await surface.run(command);
         if (!exec_r.has_value()) {
             (void)co_await run_quota.refund(1);
             co_return std::unexpected(exec_r.error());
@@ -210,7 +210,7 @@ public:
         //    `drain_to()`'s contract requires it (GitHub issue #143, execution_surface.hpp). Not wiped
         //    here: for a bind-mounting surface staging IS the command's output, and wiping it destroyed
         //    that output.
-        auto drain_r = surface.drain_to(io_fs_.host_root());
+        auto drain_r = co_await surface.drain_to(io_fs_.host_root());
         if (!drain_r.has_value()) co_return std::unexpected(drain_r.error());
 
         // 6. A REAL, full recursive scan (not a write()-tracked drain -- the surface's own writes were
@@ -276,7 +276,7 @@ public:
                 (void)co_await run_quota.refund(1);
                 co_return std::unexpected(materialized.error());
             }
-            auto opened = surface.open(io_fs_.host_root(), replay->has_value() ? &**replay : nullptr);
+            auto opened = co_await surface.open(io_fs_.host_root(), replay->has_value() ? &**replay : nullptr);
             if (!opened.has_value()) {
                 (void)co_await run_quota.refund(1);
                 co_return std::unexpected(opened.error());
@@ -286,7 +286,7 @@ public:
             out.reopened = true;
         }
 
-        auto exec_r = surface.exec(command, deadline);
+        auto exec_r = co_await surface.exec(command, deadline);
         if (!exec_r.has_value()) {
             (void)co_await run_quota.refund(1);
             co_return std::unexpected(exec_r.error());
@@ -305,7 +305,7 @@ public:
                                           "sandbox_runtime.live_container_lost"});
             co_return out;
         }
-        auto drain_r = surface.drain_to(io_fs_.host_root());
+        auto drain_r = co_await surface.drain_to(io_fs_.host_root());
         if (!drain_r.has_value()) {
             unrecorded(drain_r.error());
             co_return out;

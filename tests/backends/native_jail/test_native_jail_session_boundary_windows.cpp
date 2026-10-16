@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <string>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/sandbox/runner.hpp"
 #include "backends/native_jail/mediated_python_runner.hpp"
@@ -76,14 +77,14 @@ int main() {
     // ---- 1: plant the canary in session A. ------------------------------------------------------
     {
         std::string src = std::string("session_a_canary = '") + kCanaryValue + "'";
-        auto out = runner_a.run(ExecRequest{"python", src}, state_a, ctx);
+        auto out = agentengine::rt::block_on(runner_a.run(ExecRequest{"python", src}, state_a, ctx));
         AE_CHECK(out.has_value() && out->klass == exec_outcome_class::ok,
                   "1: session A plants its own canary");
     }
 
     // ---- 2: positive control -- A reads its own canary back, BEFORE B ever runs. -----------------
     {
-        auto out = runner_a.run(ExecRequest{"python", "print(session_a_canary)"}, state_a, ctx);
+        auto out = agentengine::rt::block_on(runner_a.run(ExecRequest{"python", "print(session_a_canary)"}, state_a, ctx));
         AE_CHECK(out.has_value() && out->klass == exec_outcome_class::ok &&
                       out->stdout_text.find(kCanaryValue) != std::string::npos,
                   "2 (non-vacuousness): session A sees its own canary -- the persistence mechanism "
@@ -92,7 +93,7 @@ int main() {
 
     // ---- 3: G7 itself -- session B must NOT see session A's canary. ------------------------------
     {
-        auto out = runner_b.run(ExecRequest{"python", "print(session_a_canary)"}, state_b, ctx);
+        auto out = agentengine::rt::block_on(runner_b.run(ExecRequest{"python", "print(session_a_canary)"}, state_b, ctx));
         // A NameError inside the worker is a normal, well-formed exec_response (klass=ok, a Python
         // traceback on stderr), not an exec_session()-level failure -- the same shape G-Q2's own
         // memory-bomb case (test_native_jail_python_worker_slice1.cpp) already established for an
@@ -111,7 +112,7 @@ int main() {
 
     // ---- 4: positive control -- A STILL sees its own canary, AFTER B's probe. --------------------
     {
-        auto out = runner_a.run(ExecRequest{"python", "print(session_a_canary)"}, state_a, ctx);
+        auto out = agentengine::rt::block_on(runner_a.run(ExecRequest{"python", "print(session_a_canary)"}, state_a, ctx));
         AE_CHECK(out.has_value() && out->klass == exec_outcome_class::ok &&
                       out->stdout_text.find(kCanaryValue) != std::string::npos,
                   "4 (non-vacuousness): session A STILL sees its own canary after B's own probe -- "

@@ -4188,9 +4188,9 @@ template <class T>
 concept SandboxBackend = requires(T backend, SandboxSpec spec, SandboxHandle& handle,
                                    ExecRequest request, EffectContext& ctx) {
     { T::traits } -> std::convertible_to<ProfileTraits const&>;
-    { backend.create(spec, ctx) } -> std::same_as<result<SandboxHandle>>;
-    { backend.exec(handle, request, ctx) } -> std::same_as<result<ExecOutcome>>;
-    { backend.destroy(handle) } -> std::same_as<void>;
+    { backend.create(spec, ctx) } -> std::same_as<task<result<SandboxHandle>>>;
+    { backend.exec(handle, request, ctx) } -> std::same_as<task<result<ExecOutcome>>>;
+    { backend.destroy(handle) } -> std::same_as<task<void>>;
 };
 
 // Both real backends assert conformance at file scope -- the exact mechanism a deployer's own

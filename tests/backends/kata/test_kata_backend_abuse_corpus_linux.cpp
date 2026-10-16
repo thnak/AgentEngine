@@ -33,6 +33,7 @@
 #include <string>
 #include <thread>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "backends/kata/kata_backend.hpp"
 
@@ -85,7 +86,7 @@ int main() {
             MountSpec{.source = std::string(host_dir), .guest_path = "/work", .read_write = true});
         short_spec.limits.wall_ms = 800;
 
-        auto handle = backend.create(short_spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(short_spec, ctx));
         check(handle.has_value(), "Kata-abuse infinite-loop: create() with wall_ms=800 succeeds");
         long long short_elapsed = -1;
         if (handle.has_value()) {
@@ -103,7 +104,7 @@ int main() {
             // Reasoned from the active config and documented FUSE writeback semantics, NOT re-verified
             // against a live deployment this pass (ADR-110 SS4 has the environment blocker that stopped it).
             req.source = "i=0; while true; do i=$((i+1)); echo $i > /work/heartbeat; sync; done";
-            auto outcome = backend.exec(*handle, req, ctx);
+            auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
             auto t1 = std::chrono::steady_clock::now();
             short_elapsed = elapsed_ms(t0, t1);
             check(outcome.has_value() && outcome->klass == exec_outcome_class::timeout,
@@ -125,7 +126,7 @@ int main() {
                   "file stops changing after the wall_ms timeout fires (proves the guest-side "
                   "`ctr tasks kill --exec-id` actually stopped the workload, not merely that the "
                   "host-side `ctr` CLI call returned -- the exact gap SLICE 4 fixed)");
-            backend.destroy(*handle);
+            agentengine::rt::block_on(backend.destroy(*handle));
         }
 
         // Positive control: a materially longer wall_ms budget on the identical spin -- still
@@ -134,7 +135,7 @@ int main() {
         KataBackend long_backend;
         SandboxSpec long_spec = short_spec;
         long_spec.limits.wall_ms = 3000;
-        auto long_handle = long_backend.create(long_spec, ctx);
+        auto long_handle = agentengine::rt::block_on(long_backend.create(long_spec, ctx));
         check(long_handle.has_value(),
               "Kata-abuse infinite-loop positive control: create() with wall_ms=3000 succeeds");
         if (long_handle.has_value()) {
@@ -142,7 +143,7 @@ int main() {
             ExecRequest req;
             req.language = "native";
             req.source = "while true; do :; done";
-            auto outcome = long_backend.exec(*long_handle, req, ctx);
+            auto outcome = agentengine::rt::block_on(long_backend.exec(*long_handle, req, ctx));
             auto t1 = std::chrono::steady_clock::now();
             long long const long_elapsed = elapsed_ms(t0, t1);
             std::fprintf(stderr,
@@ -154,7 +155,7 @@ int main() {
                   "Kata-abuse infinite-loop positive control: a longer wall_ms budget lets the spin "
                   "run materially longer (it never exits on its own -- the short kill above is real "
                   "enforcement, not vacuous)");
-            long_backend.destroy(*long_handle);
+            agentengine::rt::block_on(long_backend.destroy(*long_handle));
         }
     }
 
@@ -184,7 +185,7 @@ int main() {
         contained_spec.limits.wall_ms = 2500;
         contained_spec.limits.output_bytes = 4096;
 
-        auto handle = backend.create(contained_spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(contained_spec, ctx));
         check(handle.has_value(),
               "Kata-abuse unbounded-output: create() with output_bytes=4096 succeeds");
         if (handle.has_value()) {
@@ -201,7 +202,7 @@ int main() {
             // depend on cache timing here either.
             req.source = "i=0; while true; do i=$((i+1)); echo $i > /work/heartbeat_case2; sync; "
                          "echo AAAAAAAAAA; done";
-            auto outcome = backend.exec(*handle, req, ctx);
+            auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
             auto t1 = std::chrono::steady_clock::now();
             check(outcome.has_value(), "Kata-abuse unbounded-output: contained exec() returns a result");
             if (outcome.has_value()) {
@@ -235,7 +236,7 @@ int main() {
                       "merely that the host-side `ctr` CLI call returned -- the exact gap SLICE 5 "
                       "fixed)");
             }
-            backend.destroy(*handle);
+            agentengine::rt::block_on(backend.destroy(*handle));
         }
 
         // Positive control: same probe, a materially looser cap -- materially more gets through,
@@ -244,14 +245,14 @@ int main() {
         KataBackend positive_backend;
         SandboxSpec positive_spec = contained_spec;
         positive_spec.limits.output_bytes = 2ull * 1024 * 1024;
-        auto positive_handle = positive_backend.create(positive_spec, ctx);
+        auto positive_handle = agentengine::rt::block_on(positive_backend.create(positive_spec, ctx));
         check(positive_handle.has_value(),
               "Kata-abuse unbounded-output positive control: create() with a loose cap succeeds");
         if (positive_handle.has_value()) {
             ExecRequest req;
             req.language = "native";
             req.source = "while true; do echo AAAAAAAAAA; done";
-            auto outcome = positive_backend.exec(*positive_handle, req, ctx);
+            auto outcome = agentengine::rt::block_on(positive_backend.exec(*positive_handle, req, ctx));
             check(outcome.has_value(),
                   "Kata-abuse unbounded-output positive control: exec() returns a result");
             if (outcome.has_value()) {
@@ -262,7 +263,7 @@ int main() {
                       "more than the tight 4096-byte cap gets through (the containment above is "
                       "real, not the flood incidentally producing little output)");
             }
-            positive_backend.destroy(*positive_handle);
+            agentengine::rt::block_on(positive_backend.destroy(*positive_handle));
         }
     }
 
@@ -279,13 +280,13 @@ int main() {
         SandboxSpec spec;
         spec.limits.wall_ms = 1500;
 
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(handle.has_value(), "Kata-abuse fork-bomb-documentation: create() succeeds");
         if (handle.has_value()) {
             ExecRequest req;
             req.language = "native";
             req.source = "for i in $(seq 1 50); do sleep 300 & done; wait";
-            auto outcome = backend.exec(*handle, req, ctx);
+            auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
             // No containment assertion: with no `pids` mechanism wired, all 50 are expected to
             // spawn successfully. The only thing checked is that this backend does not hang/crash
             // handling it -- exec() must still return SOMETHING within the wall_ms-bounded call.
@@ -293,7 +294,7 @@ int main() {
                   "Kata-abuse fork-bomb-documentation: exec() returns a result (no pids containment "
                   "is claimed or tested here -- this only documents the gap is real, per "
                   "kata_backend.hpp's own Slice-2/Slice-4 residual notes)");
-            backend.destroy(*handle);
+            agentengine::rt::block_on(backend.destroy(*handle));
         }
     }
 

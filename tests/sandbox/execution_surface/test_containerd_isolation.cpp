@@ -50,6 +50,7 @@
 // and destroyed explicitly. Containment is proven by READING the kernel's own limit records rather
 // than by trying to breach them.
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/sandbox/containerd_execution_surface.hpp"
 
 #include <cstdio>
@@ -357,16 +358,16 @@ int main() {
         // Default surface: contained, and its real job still works.
         {
             ContainerdExecutionSurface surface;
-            auto reset = surface.reset(work);
+            auto reset = agentengine::rt::block_on(surface.reset(work));
             check(reset.has_value(), "L5 setup: the default surface bind-mounts the directory");
             if (reset.has_value()) {
-                auto net = surface.run("ls /sys/class/net");
+                auto net = agentengine::rt::block_on(surface.run("ls /sys/class/net"));
                 check(net.has_value() && !contains(net->stdout_text, "eth0"),
                       "L5: the surface's own container is network-isolated too");
-                auto caps = surface.run("grep CapBnd /proc/self/status");
+                auto caps = agentengine::rt::block_on(surface.run("grep CapBnd /proc/self/status"));
                 check(caps.has_value() && contains(caps->stdout_text, "0000000000000000"),
                       "L5: and runs with a zeroed capability bounding set");
-                auto seeded = surface.run("cat hello.txt");
+                auto seeded = agentengine::rt::block_on(surface.run("cat hello.txt"));
                 check(seeded.has_value() && contains(seeded->stdout_text, "seed"),
                       "L5: while the surface's real job -- the bind mount -- still works under "
                       "containment; this is not a test that passes by breaking the feature");
@@ -380,10 +381,10 @@ int main() {
             ContainerdIsolation host_net{};
             host_net.host_network = true;
             ContainerdExecutionSurface surface("docker.io/library/alpine:latest", host_net);
-            auto reset = surface.reset(work);
+            auto reset = agentengine::rt::block_on(surface.reset(work));
             check(reset.has_value(), "L5 setup: a host-networked surface resets");
             if (reset.has_value()) {
-                auto net = surface.run("ls /sys/class/net");
+                auto net = agentengine::rt::block_on(surface.run("ls /sys/class/net"));
                 check(net.has_value() && contains(net->stdout_text, "eth0"),
                       "L5: the CALLER's isolation genuinely reaches reset()'s own create() -- a "
                       "surface that dropped it on the floor would show only loopback here and every "

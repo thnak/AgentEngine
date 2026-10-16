@@ -54,8 +54,8 @@ static_assert(ae::ChatClient<DummyChatClient>,
 // ---- Runner concept (sandbox/runner.hpp) — trivial conforming type ------------------------------
 
 struct DummyRunner {
-    ae::result<ae::ExecOutcome> run(ae::ExecRequest const&, ae::ExecState&, ae::EffectContext&) {
-        return ae::ExecOutcome{};
+    ae::task<ae::result<ae::ExecOutcome>> run(ae::ExecRequest, ae::ExecState&, ae::EffectContext&) {
+        co_return ae::ExecOutcome{};
     }
 };
 static_assert(ae::Runner<DummyRunner>, "DummyRunner must satisfy the Runner concept (010 §1a)");
@@ -67,13 +67,13 @@ struct DummySandboxBackend {
         1, ae::platform_id::windows_x86_64 | ae::platform_id::linux_x86_64,
         ae::cold_start_class::milliseconds};
 
-    ae::result<ae::SandboxHandle> create(ae::SandboxSpec const&, ae::EffectContext&) {
-        return ae::SandboxHandle{};
+    ae::task<ae::result<ae::SandboxHandle>> create(ae::SandboxSpec, ae::EffectContext&) {
+        co_return ae::SandboxHandle{};
     }
-    ae::result<ae::ExecOutcome> exec(ae::SandboxHandle&, ae::ExecRequest const&, ae::EffectContext&) {
-        return ae::ExecOutcome{};
+    ae::task<ae::result<ae::ExecOutcome>> exec(ae::SandboxHandle&, ae::ExecRequest, ae::EffectContext&) {
+        co_return ae::ExecOutcome{};
     }
-    void destroy(ae::SandboxHandle&) {}
+    ae::task<void> destroy(ae::SandboxHandle&) { co_return; }
 };
 static_assert(ae::SandboxBackend<DummySandboxBackend>,
               "DummySandboxBackend must satisfy the SandboxBackend concept (008 §2)");

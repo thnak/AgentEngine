@@ -263,7 +263,7 @@ std::string drain_pipe_bounded(int read_fd, std::uint64_t cap_bytes) {
 
 }  // namespace
 
-result<SandboxHandle> LinuxNativeJailBackend::create(SandboxSpec const& spec, EffectContext&) {
+result<SandboxHandle> LinuxNativeJailBackend::create_blocking(SandboxSpec const& spec, EffectContext&) {
     // docs/planning/sandbox-spec-capability-enforcement-design-draft.md (Slice 3): capabilities are
     // the real authority behind mounts/net, checked FIRST -- a no-op for every caller that doesn't
     // hold a SandboxMount/SandboxNetOut grant (see authorize_spec()'s own comment, sandbox.hpp).
@@ -324,7 +324,7 @@ result<SandboxHandle> LinuxNativeJailBackend::create(SandboxSpec const& spec, Ef
     return SandboxHandle{id};
 }
 
-result<ExecOutcome> LinuxNativeJailBackend::exec(SandboxHandle& handle, ExecRequest const& request,
+result<ExecOutcome> LinuxNativeJailBackend::exec_blocking(SandboxHandle& handle, ExecRequest const& request,
                                                   EffectContext&) {
     Instance* inst_ptr = find_instance_locked(handle.opaque_id);
     if (inst_ptr == nullptr) {
@@ -523,7 +523,7 @@ result<ExecOutcome> LinuxNativeJailBackend::exec(SandboxHandle& handle, ExecRequ
     return outcome;
 }
 
-void LinuxNativeJailBackend::destroy(SandboxHandle& handle) {
+void LinuxNativeJailBackend::destroy_blocking(SandboxHandle& handle) {
     // exec() always fully reaps the child (via the wait loop above) before returning, so the
     // cgroup is already empty of live processes by the time destroy() runs -- CgroupLimits'
     // destructor (via erase below) removes the directory, 008 §2 clause 4's teardown for whatever

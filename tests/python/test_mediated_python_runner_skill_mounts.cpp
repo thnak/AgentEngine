@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <string>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/skill_provider.hpp"
 #include "agentengine/pal/env.hpp"
 #include "backends/native_jail/mediated_python_runner.hpp"
@@ -72,7 +73,7 @@ int main() {
     SkillsProvider<> provider(std::move(sources));
 
     auto materialized =
-        native_jail::materialize_skill_mounts(provider, std::filesystem::path(base) / "skills", {"work"});
+        agentengine::rt::block_on(native_jail::materialize_skill_mounts(provider, std::filesystem::path(base) / "skills", {"work"}));
     check(materialized.has_value(), "setup: materialize_skill_mounts succeeds for one real skill");
     if (!materialized || materialized->empty()) {
         std::fprintf(stderr, "test_mediated_python_runner_skill_mounts: 1 FAILURE(S) (setup)\n");
@@ -99,7 +100,7 @@ int main() {
         ExecRequest req{"python",
                          "content = open('/real-mounted-skill/SKILL.md').read()\n"
                          "print('SKILL_CONTENT:', content)"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         check(out.has_value(), "R1: execute_code-shaped run() succeeds reading a mounted skill via open()");
         if (out) {
             check(out->stdout_text.find("real-mounted-skill") != std::string::npos &&
@@ -116,7 +117,7 @@ int main() {
                          "from agent import files\n"
                          "entries = files.list('/real-mounted-skill')\n"
                          "print('LISTING:', entries)"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         check(out.has_value() && out->stdout_text.find("SKILL.md") != std::string::npos,
               "R2: agent.files.list also sees the real materialized skill directory -- the "
               "currently-production-disabled agent.files/agent.data surface, now enabled and reachable");
@@ -125,7 +126,7 @@ int main() {
     // ---- negative control: a mount the caller never granted a capability for is still denied -------
     {
         ExecRequest req{"python", "open('/real-mounted-skill/../work/nope.txt', 'r')"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         // This still targets the granted mount id (path traversal is rejected independently by
         // split_mount_path); the real cross-mount denial is proven by test_mediated_python_runner_*'s
         // own existing hostile-corpus/capability suites -- this file's own scope is proving the

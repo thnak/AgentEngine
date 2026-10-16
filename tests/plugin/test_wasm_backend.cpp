@@ -35,6 +35,7 @@
 // SKIPs (CTest SKIP_RETURN_CODE 77, tests/CMakeLists.txt) if the fixture wasn't built -- the
 // cargo-component toolchain is not assumed present on every machine running this suite.
 
+#include "agentengine/rt/block_on.hpp"
 #include "backends/wasm/wasm_backend.hpp"
 
 #include <chrono>
@@ -97,7 +98,7 @@ void probe_gated_callback(std::vector<std::uint8_t> const& bytes, std::string co
     SandboxSpec spec;
     spec.capabilities = CapabilitySet::grant_root(order);
     EffectContext ctx = make_ctx();
-    auto handle = backend.create(spec, ctx);
+    auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
     if (!handle) {
         AE_CHECK(false, label + ": create() succeeds");
         return;
@@ -113,7 +114,7 @@ void probe_gated_callback(std::vector<std::uint8_t> const& bytes, std::string co
     if (!loaded) std::cerr << "  (" << label << " load error: " << loaded.error().code << ": " << loaded.error().message << ")\n";
     AE_CHECK(loaded.has_value(), label + ": load_component() succeeds");
     if (!loaded) {
-        backend.destroy(*handle);
+        agentengine::rt::block_on(backend.destroy(*handle));
         return;
     }
 
@@ -127,7 +128,7 @@ void probe_gated_callback(std::vector<std::uint8_t> const& bytes, std::string co
         AE_CHECK(matches, label + ": failure reason contains \"" + expect_substring + "\"");
     }
 
-    backend.destroy(*handle);
+    agentengine::rt::block_on(backend.destroy(*handle));
 }
 
 }  // namespace
@@ -153,7 +154,7 @@ int main() {
         spec.limits.memory_bytes = 64ull * 1024 * 1024;
 
         EffectContext ctx = make_ctx();
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         AE_CHECK(handle.has_value(), "positive: create() succeeds");
         if (!handle) return 1;
 
@@ -217,7 +218,7 @@ int main() {
             }
         }
 
-        backend.destroy(*handle);
+        agentengine::rt::block_on(backend.destroy(*handle));
     }
 
     // -- 2. Negative, branch 1: manifest omits Clock, component still imports ae:tool/clock ------
@@ -228,7 +229,7 @@ int main() {
         spec.capabilities = CapabilitySet::grant_root(
             {cap::Clock{}, cap::FsRead{}, cap::FsWrite{}, cap::NetOut{}, cap::Secret{}});
         EffectContext ctx = make_ctx();
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         AE_CHECK(handle.has_value(), "negative: create() succeeds");
         if (!handle) return 1;
 
@@ -253,7 +254,7 @@ int main() {
         auto tools = backend.list_tools(*handle, ctx);
         AE_CHECK(!tools.has_value(), "negative: list_tools() on a rejected handle also fails (no partial load)");
 
-        backend.destroy(*handle);
+        agentengine::rt::block_on(backend.destroy(*handle));
     }
 
     // -- 3. Negative, branch 2 (D5, ADR-010 claim 2's other half, untested by D3): manifest ------
@@ -272,7 +273,7 @@ int main() {
         spec.capabilities =
             CapabilitySet::grant_root({cap::FsRead{}, cap::FsWrite{}, cap::NetOut{}, cap::Secret{}});
         EffectContext ctx = make_ctx();
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         AE_CHECK(handle.has_value(), "operator-grant-missing: create() succeeds");
         if (!handle) return 1;
 
@@ -293,7 +294,7 @@ int main() {
                       "operator-grant-missing: specific diagnosis, distinct from the manifest-side code");
         }
 
-        backend.destroy(*handle);
+        agentengine::rt::block_on(backend.destroy(*handle));
     }
 
     // -- 4. Capability-kind confusion: Entropy bound where Clock is expected ---------------------
@@ -303,7 +304,7 @@ int main() {
         spec.capabilities = CapabilitySet::grant_root(
             {cap::Entropy{}, cap::Clock{}, cap::FsRead{}, cap::FsWrite{}, cap::NetOut{}, cap::Secret{}});
         EffectContext ctx = make_ctx();
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         if (!handle) return 1;
 
         PluginManifest manifest;
@@ -322,7 +323,7 @@ int main() {
         AE_CHECK(!now_result.has_value(),
                   "kind-confusion: now-unix-millis rejects an Entropy handle passed where Clock is required");
 
-        backend.destroy(*handle);
+        agentengine::rt::block_on(backend.destroy(*handle));
     }
 
     // -- 5. Capability-kind confusion, the other four gated callbacks (D5 closes ADR-010 claim 4's
@@ -360,7 +361,7 @@ int main() {
             std::vector<Capability> const order = {cap::NetOut{}, cap::FsRead{}, cap::FsWrite{}, cap::Secret{}, cap::Clock{}};
             spec.capabilities = CapabilitySet::grant_root(order);
             EffectContext ctx = make_ctx();
-            auto handle = backend.create(spec, ctx);
+            auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
             AE_CHECK(handle.has_value(), "http-request/right-kind: create() succeeds");
             if (handle) {
                 PluginManifest manifest;
@@ -381,7 +382,7 @@ int main() {
                                   "http-request/right-kind: the real gate rejected the ambiguous (allowlist-empty) NetOut grant");
                     }
                 }
-                backend.destroy(*handle);
+                agentengine::rt::block_on(backend.destroy(*handle));
             }
         }
         probe_gated_callback(bytes, "http-request/wrong-kind", "fetch",
@@ -407,7 +408,7 @@ int main() {
         spec.capabilities = CapabilitySet::grant_root(kAllRequiredCapabilities);
         spec.limits.wall_ms = 200;
         EffectContext ctx = make_ctx();
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         if (!handle) return 1;
 
         PluginManifest manifest;
@@ -431,7 +432,7 @@ int main() {
                   "wall_ms: interrupted within a bounded, measured time (well under a runaway 5s ceiling)");
         std::cout << "  (spin interrupted after " << elapsed_ms << "ms, limit was 200ms)\n";
 
-        backend.destroy(*handle);
+        agentengine::rt::block_on(backend.destroy(*handle));
     }
 
     if (g_failures == 0) {

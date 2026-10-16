@@ -233,7 +233,7 @@ struct ReadContent : Tool<ReadContent, Capabilities<>, Approval<approval_mode::n
                                           "read_content.ambiguous_source"});
         }
         if (has_path) co_return invoke_from_sandbox(args, ctx);
-        co_return invoke_via(args, ctx, sandbox::HostEgressProxy{});
+        co_return co_await invoke_via(args, ctx, sandbox::HostEgressProxy{});
     }
 
     // The `path` source: reads one file from the session's own mediated sandbox mount
@@ -275,28 +275,31 @@ struct ReadContent : Tool<ReadContent, Capabilities<>, Approval<approval_mode::n
     // one level up so this function's fetch/error-mapping logic is provable without a live network
     // call or tripping the (correct, intentional) loopback/RFC1918 block a real local test server
     // would hit.
+    //
+    // ADR-237 §5.1 (#173): a coroutine, because the egress seam is. `args`, `ctx` and `proxy` must outlive
+    // the returned task -- `invoke()` above awaits it in the same full-expression.
     template <sandbox::NetEgressBackend Proxy>
-    [[nodiscard]] static result<Reply> invoke_via(Args const& args, EffectContext& ctx, Proxy const& proxy) {
+    [[nodiscard]] static task<result<Reply>> invoke_via(Args const& args, EffectContext& ctx, Proxy const& proxy) {
         auto parsed = parse_read_content_url(*args.url);
-        if (!parsed) return std::unexpected(parsed.error());
+        if (!parsed) co_return std::unexpected(parsed.error());
 
         if (!ctx.capabilities) {
-            return std::unexpected(error{failure_class::policy, "no capability set bound to this call",
+            co_return std::unexpected(error{failure_class::policy, "no capability set bound to this call",
                                           "tool.capability_not_held"});
         }
         std::string const target = net_out_target_string(*parsed);
         auto granted = ctx.capabilities->find_net_out(target);
         if (!granted) {
-            return std::unexpected(error{failure_class::policy,
+            co_return std::unexpected(error{failure_class::policy,
                                           "no granted NetOut capability covers '" + target + "'",
                                           "tool.capability_not_held"});
         }
 
         sandbox::NetEgressRequest const req{"GET", parsed->path, {}, {}};
-        auto response = proxy.fetch(req, *granted);
-        if (!response) return std::unexpected(response.error());
+        auto response = co_await proxy.fetch(req, *granted);
+        if (!response) co_return std::unexpected(response.error());
         if (response->status < 200 || response->status >= 300) {
-            return std::unexpected(error{failure_class::transient,
+            co_return std::unexpected(error{failure_class::transient,
                                           "read_content received HTTP status " +
                                               std::to_string(response->status),
                                           "read_content.http_error"});
@@ -310,7 +313,7 @@ struct ReadContent : Tool<ReadContent, Capabilities<>, Approval<approval_mode::n
             }
         }
 
-        return read_content_detail::build_reply(std::move(response->body), std::move(media_type), ctx);
+        co_return read_content_detail::build_reply(std::move(response->body), std::move(media_type), ctx);
     }
 };
 

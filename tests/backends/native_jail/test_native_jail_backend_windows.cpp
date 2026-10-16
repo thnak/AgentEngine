@@ -10,6 +10,7 @@
 // this test's own generous-but-finite wall_ms values (CLAUDE.md Machine Safety), same discipline
 // as test_job_object_limits.cpp.
 
+#include "agentengine/rt/block_on.hpp"
 #include <windows.h>
 
 #include <cassert>
@@ -76,7 +77,7 @@ int main() {
     NativeJailBackend backend;
     EffectContext ctx;
 
-    auto handle = backend.create(spec, ctx);
+    auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
     AE_CHECK(handle.has_value(), "C2: create() succeeds given a real mount and ResourceLimits");
     if (!handle.has_value()) {
         // create() has five distinct failure returns; print which one, not just "it failed".
@@ -88,7 +89,7 @@ int main() {
     // A well-behaved exec reports `ok`, with stdout actually captured.
     {
         ExecRequest req{.language = "native", .source = hostile_child_cmd("sleep 50")};
-        auto outcome = backend.exec(*handle, req, ctx);
+        auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
         AE_CHECK_OK(outcome, "C2: exec() of a well-behaved child returns a result");
         if (outcome.has_value()) {
             AE_CHECK(outcome->klass == exec_outcome_class::ok, "C2: a well-behaved exec reports ok");
@@ -101,7 +102,7 @@ int main() {
     // `timeout` (ADR-004 §10.5: this is the trusted enforcement point, not cpu_ms).
     {
         ExecRequest req{.language = "native", .source = hostile_child_cmd("spin")};
-        auto outcome = backend.exec(*handle, req, ctx);
+        auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
         AE_CHECK(outcome.has_value() && outcome->klass == exec_outcome_class::timeout,
                   "C2: a CPU-spinning exec is killed by wall_ms and reports timeout");
     }
@@ -111,7 +112,7 @@ int main() {
     // memory_bytes.
     {
         ExecRequest req{.language = "native", .source = hostile_child_cmd("fail 7")};
-        auto outcome = backend.exec(*handle, req, ctx);
+        auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
         AE_CHECK_OK(outcome, "C2: exec() of a failing child returns a result");
         if (outcome.has_value()) {
             AE_CHECK(outcome->klass == exec_outcome_class::crash,
@@ -124,17 +125,17 @@ int main() {
     // Exceeding memory_bytes reports `oom`.
     {
         ExecRequest req{.language = "native", .source = hostile_child_cmd("alloc 512")};  // 512 MB >> 32 MB cap
-        auto outcome = backend.exec(*handle, req, ctx);
+        auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
         AE_CHECK(outcome.has_value() && outcome->klass == exec_outcome_class::oom,
                   "C2: exceeding memory_bytes reports oom");
     }
 
-    backend.destroy(*handle);
+    agentengine::rt::block_on(backend.destroy(*handle));
 
     // exec() on a destroyed handle fails closed rather than silently launching unbounded.
     {
         ExecRequest req{.language = "native", .source = hostile_child_cmd("sleep 10")};
-        auto outcome = backend.exec(*handle, req, ctx);
+        auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
         AE_CHECK(!outcome.has_value(), "C2: exec() on a destroyed SandboxHandle fails closed");
     }
 
