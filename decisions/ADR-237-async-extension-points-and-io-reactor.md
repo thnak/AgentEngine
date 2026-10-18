@@ -2726,9 +2726,12 @@ closes the small end of Phase B), then Phase C with the qdrant `Resolver` folded
 C, steps 46-49); plus ~15 further `std::function` typedefs that have not been triaged individually yet (#174 --
 among them the shell's `RegisteredRunner` composition typedef, which step 50 left synchronous).
 
-**Remaining §5.2 cleanup:** delete `make_sync_invoke`'s **five** production call sites -- counted by grep,
-not recollection: the two RAG tools (`core/hybrid_rag_context_provider.hpp:211`,
-`core/vector_rag_context_provider.hpp:367`), the two native-process providers
+**Remaining §5.2 cleanup:** delete `make_sync_invoke`'s production call sites. **Re-verified against the
+tree 2026-10-18: THREE remain, not the five first counted.** The two RAG tools were converted off it in
+Phase C (§14 step 44): `core/hybrid_rag_context_provider.hpp` and `core/vector_rag_context_provider.hpp`
+now assign a direct instance lambda -- `d.invoke = [this](json::Value const& args, EffectContext& ctx) {
+return recall_call(args, ctx); };` -- so the `counted by grep: five` this line first recorded was a
+pre-Phase-C state. The three left: the two native-process providers
 (`native_process/native_providers.hpp:230`, `native_process/native_shell_session_provider.hpp:324`, which
 wait on **D3**), and the WASM bridge (`wasm/wasm_tool_bridge.hpp:135`, which needs a WASM-enabled build to
 verify). Then remove the zero-arg `make_tool_descriptor<ToolT>()` / `ToolTable::from_tools<Ts...>()`
@@ -2787,9 +2790,9 @@ production caller awaits them except the stated synchronous edges (the WASM host
 claimed: the blocking conformer bodies moving onto `rt::` (#180), §4.5 rule 3a's asynchronous close for the
 providers whose destructors still `block_on` a surface close, and Phase E (§5.2 cleanup).
 
-**Phase E -- §5.2 cleanup, only after C and D.** The five `make_sync_invoke` sites and the static
-`make_tool_descriptor`/`from_tools` form can only be deleted once nothing synchronous remains downstream of
-them. The WASM site additionally needs a WASM-enabled build to verify, which the current local build does
+**Phase E -- §5.2 cleanup, only after C and D.** The remaining `make_sync_invoke` sites (three, re-verified
+2026-10-18 -- see the §5.2 cleanup item above) and the static `make_tool_descriptor`/`from_tools` form can
+only be deleted once nothing synchronous remains downstream of them. The WASM site additionally needs a WASM-enabled build to verify, which the current local build does
 not produce.
 
 **Phase F -- the carried threads.** D3/D4/D7, the §10 + 027 + `web/marketing` pass, the §8 gates.
