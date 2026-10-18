@@ -89,8 +89,8 @@ T drive(agentengine::rt::task<T> t) {
 }
 
 [[nodiscard]] ExecutorBody appender(std::string name) {
-    return [name = std::move(name)](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
+    return [name = std::move(name)](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
     };
 }
 

@@ -141,9 +141,9 @@ using agentengine::workflow::validate_workflow;
 // how many times it ran rather than inferring invocation count from the final status alone.
 [[nodiscard]] ExecutorBody appender(std::string name, std::shared_ptr<int> calls = nullptr) {
     return [name = std::move(name), calls](
-               Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+               Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         if (calls) ++*calls;
-        return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
+        co_return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
     };
 }
 
@@ -154,12 +154,12 @@ using agentengine::workflow::validate_workflow;
                                     std::shared_ptr<int> calls) {
     auto seen = std::make_shared<std::uint32_t>(0);
     return [name = std::move(name), klass, fail_first_n, seen, calls](
-               Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+               Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         if (calls) ++*calls;
         if ((*seen)++ < fail_first_n) {
-            return std::unexpected(error{klass, "injected failure in '" + name + "'", "test.injected"});
+            co_return std::unexpected(error{klass, "injected failure in '" + name + "'", "test.injected"});
         }
-        return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
+        co_return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
     };
 }
 
@@ -225,8 +225,8 @@ int main() {
 
         std::vector<ExecutorBody> bodies = {
             appender("ok"),
-            [](Message const&, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return std::unexpected(
+            [](Message const&, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return std::unexpected(
                     error{failure_class::contract, "deliberate executor failure", "test.executor_failed"});
             },
         };
@@ -430,8 +430,8 @@ int main() {
 
         auto handler_calls = std::make_shared<int>(0);
         std::vector<ExecutorBody> bodies = {
-            [](Message const&, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return std::unexpected(
+            [](Message const&, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return std::unexpected(
                     error{failure_class::fatal, "injected failure in 'risky'", "test.injected"});
             },
             appender("handler", handler_calls),

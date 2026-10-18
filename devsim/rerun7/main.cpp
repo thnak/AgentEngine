@@ -72,9 +72,10 @@ namespace {
 // A workflow body is a copy that can outlive the scope that built it, so the counter is shared by
 // value, not captured by reference (apiContent.ts:3119-3121).
 [[nodiscard]] ExecutorBody counted(ExecutorBody inner, std::shared_ptr<std::atomic<std::uint32_t>> n) {
-    return [inner = std::move(inner), n](Message const& in, EffectContext& ctx) -> result<ExecutorOutcome> {
+    return [inner = std::move(inner), n](Message const& in, EffectContext& ctx)
+        -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         n->fetch_add(1, std::memory_order_relaxed);
-        return inner(in, ctx);
+        co_return co_await inner(in, ctx);
     };
 }
 
@@ -123,12 +124,14 @@ constexpr std::string_view kDoc =
 // ------------------------------------------------------------------------------------------------
 
 // ingest -> the fan-out source. Normalizes the document into the pipeline's own record format.
-[[nodiscard]] result<Message> ingest(Message const& in, EffectContext&) {
-    return user_text("doc=" + text_of(in));
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> ingest(
+    Message const& in, EffectContext&) {
+    co_return ExecutorOutcome{user_text("doc=" + text_of(in))};
 }
 
 // Worker 1: the capitalized words, as a stand-in for named-entity extraction.
-[[nodiscard]] result<Message> entities(Message const& in, EffectContext&) {
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> entities(
+    Message const& in, EffectContext&) {
     std::string const doc  = field(text_of(in), "doc");
     std::string       hits;
     bool              in_word = false;
@@ -151,11 +154,12 @@ constexpr std::string_view kDoc =
         }
     }
     if (in_word) flush();
-    return user_text(text_of(in) + ";entities=" + hits);
+    co_return ExecutorOutcome{user_text(text_of(in) + ";entities=" + hits)};
 }
 
 // Worker 2: the dates.
-[[nodiscard]] result<Message> dates(Message const& in, EffectContext&) {
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> dates(
+    Message const& in, EffectContext&) {
     std::string const doc = field(text_of(in), "doc");
     std::string       hits;
     for (std::size_t i = 0; i + 10 <= doc.size(); ++i) {
@@ -171,11 +175,12 @@ constexpr std::string_view kDoc =
         if (!hits.empty()) hits += ',';
         hits += doc.substr(i, 10);
     }
-    return user_text(text_of(in) + ";dates=" + hits);
+    co_return ExecutorOutcome{user_text(text_of(in) + ";dates=" + hits)};
 }
 
 // Worker 3: the tokens that carry the dispute, as a stand-in for a keyword pass.
-[[nodiscard]] result<Message> keywords(Message const& in, EffectContext&) {
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> keywords(
+    Message const& in, EffectContext&) {
     std::string const doc = field(text_of(in), "doc");
     std::string       hits;
     for (std::string_view const k : {"disputed", "charge", "contract", "invoice"}) {
@@ -184,14 +189,15 @@ constexpr std::string_view kDoc =
             hits += k;
         }
     }
-    return user_text(text_of(in) + ";keywords=" + hits);
+    co_return ExecutorOutcome{user_text(text_of(in) + ";keywords=" + hits)};
 }
 
 // The fan-in aggregator. It runs ONCE per round and receives ONE ContentItem per contributing
 // branch, in graph-declared order (apiContent.ts:2862). It prints exactly what it was handed, so
 // the merge is visible in the program's own output -- and it reads the delivery per ITEM, because
 // the engine's own text_of() concatenates every text part with no separator.
-[[nodiscard]] result<Message> aggregate(Message const& in, EffectContext&) {
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> aggregate(
+    Message const& in, EffectContext&) {
     std::vector<std::string> branches;  // one entry per contributing branch, in delivery order
     for (auto const& item : in.content) {
         if (auto const* t = std::get_if<Text>(&item.value)) branches.push_back(t->text);
@@ -227,16 +233,18 @@ constexpr std::string_view kDoc =
             }
         }
     }
-    return user_text("doc=" + doc + ";entities=" + entity_hits + ";merged=" + merged);
+    co_return ExecutorOutcome{user_text("doc=" + doc + ";entities=" + entity_hits + ";merged=" + merged)};
 }
 
 // ------------------------------------------------------------------------------------------------
 // Variant A: ingest -(fan_out)-> {entities, dates, keywords} -(fan_in)-> aggregate -> summarize.
 // A second direct edge out of the aggregator, so both output selections exist in one run.
 // ------------------------------------------------------------------------------------------------
-[[nodiscard]] result<Message> summarize(Message const& in, EffectContext&) {
-    return user_text(text_of(in) + ";summary=3 branches merged, " +
-                     std::to_string(tokens_of(field(text_of(in), "merged")).size()) + " distinct tokens");
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> summarize(
+    Message const& in, EffectContext&) {
+    co_return ExecutorOutcome{user_text(
+        text_of(in) + ";summary=3 branches merged, " +
+        std::to_string(tokens_of(field(text_of(in), "merged")).size()) + " distinct tokens")};
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -247,18 +255,21 @@ constexpr std::string_view kDoc =
 // A body that ROUTES must name its result type as ExecutorOutcome, not Message: the Message ->
 // ExecutorOutcome conversion the docs describe (apiContent.ts:3172-3175) does not carry through
 // std::expected, so `result<Message>` will not convert to `result<ExecutorOutcome>`.
-[[nodiscard]] result<ExecutorOutcome> classify(Message const& in, EffectContext&) {
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> classify(
+    Message const& in, EffectContext&) {
     std::string const text = text_of(in);
     bool const        has_entities = !field(text, "entities").empty();
     std::string const label        = has_entities ? "structured" : "plain";
-    return ExecutorOutcome{user_text(text + ";route=" + label), {label}};
+    co_return ExecutorOutcome{user_text(text + ";route=" + label), {label}};
 }
-[[nodiscard]] result<Message> structured_sink(Message const& in, EffectContext&) {
-    return user_text(text_of(in) + ";structured=entities present, table form");
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> structured_sink(
+    Message const& in, EffectContext&) {
+    co_return ExecutorOutcome{user_text(text_of(in) + ";structured=entities present, table form")};
 }
 
-[[nodiscard]] result<Message> plain_sink(Message const& in, EffectContext&) {
-    return user_text(text_of(in) + ";plain=no entities, prose form");
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> plain_sink(
+    Message const& in, EffectContext&) {
+    co_return ExecutorOutcome{user_text(text_of(in) + ";plain=no entities, prose form")};
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -420,15 +431,17 @@ int run_variant(char const* which, std::string doc = std::string{kDoc}) {
     std::vector<ExecutorBody> bodies;
     if (variant_b) {
         bodies = {ingest, entities, dates, keywords, counted(aggregate, agg_calls), classify,
-                  [&](Message const& in, EffectContext& ctx) -> result<Message> {
+                  [&](Message const& in, EffectContext& ctx)
+                      -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                       *sink_hits += 1;
                       ran_sink += "structured";
-                      return structured_sink(in, ctx);
+                      co_return co_await structured_sink(in, ctx);
                   },
-                  [&](Message const& in, EffectContext& ctx) -> result<Message> {
+                  [&](Message const& in, EffectContext& ctx)
+                      -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                       *sink_hits += 1;
                       ran_sink += "plain";
-                      return plain_sink(in, ctx);
+                      co_return co_await plain_sink(in, ctx);
                   }};
     } else {
         bodies = {ingest, entities, dates, keywords, counted(aggregate, agg_calls), summarize};
@@ -470,8 +483,9 @@ int run_routing_fault() {
 
     std::vector<ExecutorBody> bodies = {
         ingest, entities, dates, keywords, counted(aggregate, counter()),
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{user_text(text_of(in)), {"html"}};  // neither label is declared
+        [](Message const& in, EffectContext&)
+            -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{user_text(text_of(in)), {"html"}};  // neither label is declared
         },
         structured_sink, plain_sink};
     WorkflowSupervisor sup;

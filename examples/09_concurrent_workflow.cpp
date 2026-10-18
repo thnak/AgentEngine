@@ -74,20 +74,20 @@ void check(bool cond, char const* what) {
 
 // A worker: uppercases whatever text it's handed and tags it with its own name.
 [[nodiscard]] ExecutorBody worker(std::string name) {
-    return [name](Message const& in, EffectContext&) -> agentengine::result<Message> {
+    return [name](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         std::string text = text_of(in);
         std::transform(text.begin(), text.end(), text.begin(),
                         [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-        return text_message(name + ":" + text);
+        co_return ExecutorOutcome{text_message(name + ":" + text)};
     };
 }
 
-[[nodiscard]] agentengine::result<Message> source(Message const& in, EffectContext&) {
-    return text_message(text_of(in));
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> source(Message const& in, EffectContext&) {
+    co_return ExecutorOutcome{text_message(text_of(in))};
 }
 
-[[nodiscard]] agentengine::result<Message> aggregate(Message const& in, EffectContext&) {
-    return text_message(all_text_of(in));
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> aggregate(Message const& in, EffectContext&) {
+    co_return ExecutorOutcome{text_message(all_text_of(in))};
 }
 
 // Wraps `body` with an invocation counter -- the wiring-level replacement for the old
@@ -98,10 +98,11 @@ void check(bool cond, char const* what) {
     // nothing here references the parameters' stack slots -- clang-analyzer's core.StackAddressEscape
     // is a known false positive on this std::function-returning-lambda shape (misreads MSVC STL's
     // <functional> internals during the implicit result<Message> -> result<ExecutorOutcome> wrap).
-    return [body = std::move(body), count](Message const& in,  // NOLINT(clang-analyzer-core.StackAddressEscape)
-                                           EffectContext& ctx) -> agentengine::result<ExecutorOutcome> {
+    return [body = std::move(body),
+            count](Message const& in,  // NOLINT(clang-analyzer-core.StackAddressEscape)
+                   EffectContext& ctx) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         count->fetch_add(1, std::memory_order_relaxed);
-        return body(in, ctx);
+        co_return co_await body(in, ctx);
     };
 }
 

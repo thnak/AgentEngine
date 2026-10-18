@@ -2738,8 +2738,67 @@ The orchestration/decider seams §5.1 named from the start and the #174 triage c
 - **Numbering.** Recorded as step 52 because §14 step 51 (Phase E slice 1, #175) lives on the
   `phase-e-tool-contract-cleanup` branch; if that branch is dropped rather than merged, renumber this to 51.
 
-Remaining in Phase G (not this slice): `ExecutorBody` + `AgentExecutorBodyTag::Impl`, `ChildRunner`,
-`BatchableModelCall::Call`, `EffectContext::blob_sink`.
+Remaining in Phase G (not this slice): `ChildRunner`, `BatchableModelCall::Call`/`Complete`,
+`EffectContext::blob_sink`.
+
+### Step 53 (2026-10-18): Phase G, slice 2 -- the executor body is `task`-shaped (#174 triage)
+
+`ExecutorBody` -- `rt/workflow_supervisor.hpp`'s node-body seam, the largest single seam §5.1 named --
+is now `std::function<task<result<ExecutorOutcome>>(Message const&, EffectContext&)>`, with
+`AgentExecutorBodyTag::Impl` moved in lockstep (the ADR's own "one signature" pairing).
+
+- **Structural detection is unchanged, deliberately.** `agentize`-side detection
+  (`bodies_[i].target<AgentExecutorBodyTag>()`, `src/rt/workflow_supervisor.cpp:1691`) and the batch
+  path's (`bodies_[i].target<BatchableModelCall>()`, `workflow_supervisor_batch.cpp:151`) still work:
+  both functors remain the concrete types stored in `bodies_`, so only their `operator()`'s return
+  type changed. No variant, no marker enum. `test_rt_agent_workflow_executor`'s T1 positive control
+  (a real agent-backed body detected, a plain function not) passes unchanged.
+- **The runtime's one invocation site now awaits.** `run_executor_job`
+  (`src/rt/workflow_supervisor.cpp`) `co_await`s the body -- this is what finally lets a suspending
+  body suspend THAT job coroutine rather than block the pool worker it was dispatched on. The job was
+  already a `task<void>` that never suspended; it now genuinely can.
+- **The two nested `drive()` trampolines are gone.** `WorkflowSupervisor::drive<T>` (a
+  `rt::block_on` wrapper, `workflow_supervisor.hpp:1158`) and `agent_executor_detail::drive<T>`
+  (`agent_workflow_executor.hpp:86`) are deleted; both call sites were already coroutines, so
+  `resume_workflow_locked` (`:293`, nested `resume_workflow`), `run_sub_workflow_job` (`:649`, nested
+  `run_workflow`) and the agent adapter's `session.start_run()` (`:169`) simply `co_await` in place.
+  That is Phase G's stated goal for this seam -- the nested `block_on` drive loops are removed.
+- **LOCK AUDIT -- one real finding, fixed.** `workflow_as_executor.hpp`'s two bodies serialised calls
+  to one inner supervisor with `std::lock_guard<std::mutex guard(*call_mutex)` held across the inner
+  run. Once that run is awaitable this is a mutex held across a `co_await`, which ADR-237 forbids
+  outright (undefined once the coroutine resumes on another thread). It becomes
+  `rt::AsyncMutex` + `co_await call_mutex->lock()`, the sanctioned replacement. The other lock on this
+  path (`charge_mutex` in `run_executor_job`) is taken only around synchronous work (`add_usage`, a
+  read) and stays `std::mutex`. `run_once` also becomes a coroutine over the inner run.
+- **Conformer sweep: ~311 bodies** across `tests/`, `examples/`, `devsim/` and `tools/test_driver/` --
+  each body's existing statements, `co_return`-terminated; **no body suspends yet** (they are all
+  still synchronous work inside a coroutine frame), so behaviour is unchanged.
+- **The `result<Message>` trap, handled.** 29 bodies were declared `-> result<Message>` and relied on
+  `ExecutorOutcome`'s implicit constructor. `expected<Message,E>` ->
+  `task<expected<ExecutorOutcome,E>>` is two user-defined conversions and does not apply, so those
+  bodies were retyped to `task<result<ExecutorOutcome>>` and the Message wrapped *inside* the
+  `co_return` (`co_return ExecutorOutcome{...};`). The 236 `ExecutorOutcome{...}` construction sites
+  were untouched.
+- **Direct invocations adapted (not behaviour changes).** Where a test or `devsim` program invokes a
+  body variable directly rather than through the supervisor
+  (`test_rt_workflow_as_executor.cpp`'s W1/W2/W4/W6, `test_rt_workflow_batch_coalescing.cpp`'s C18,
+  `test_delegation_provenance.cpp`'s W1-W5/R3-C1b) it now drives the returned task
+  (`rt::block_on(...)` / the file's own `drive(...)`). A bare `(void)body(...)` would have destroyed
+  a lazily-suspended frame and silently never run the body -- found by review, not by the compiler.
+- **DELIBERATE SCOPE CUT, recorded.** `BatchableModelCall::Build`/`Call`/`Complete` are §5.1 seams too
+  (they are `WorkflowSupervisor`'s batch callables), but they are only reached *through*
+  `BatchableModelCall`, not by the body seam -- so `operator()` is a coroutine that still completes
+  without suspending and `Build`/`Call`/`Complete` stay synchronous here. They are their own slice,
+  not smuggled into this one. Named so the next session does not think they were missed.
+- **Verification.** `build-dev` clean (`/W4 /WX`) and the extras tree
+  (HTTPS + Python + PDF + WASM + native-process) builds 548/548 clean; the six `devsim` programs
+  compile under `/W4 /WX` (they are separate consumer projects, built by neither tree). All 41
+  workflow tests pass, `test_rt_agent_workflow_executor`'s `.target<>()` control included.
+  `ctest -LE live-network`: build-dev 402/418 and extras 477/492, both the *identical* baseline
+  failures each tree had before this change (build-dev: 13 Docker-daemon + `test_external_skill_discovery`;
+  extras additionally `test_reference_agent_task_corpus`, step 50's recorded worker-environment fault).
+  naming-lint, layering-lint and milestone-status-lint OK. **No pre-existing assertion moved** -- the
+  only test edits are the "now a coroutine" retypes and the direct-invocation drives above.
 
 ### §14.1 What is left, and the phases to follow
 
@@ -2768,7 +2827,8 @@ closes the small end of Phase B), then Phase C with the qdrant `Resolver` folded
 
 **Remaining §5.1 seams (sync -> `task`):** ~~`Runner`; `SandboxBackend`; `ExecutionSurface`;
 `PersistentShellSurface`; `NetEgressBackend`~~ (Phase D, §14 step 50); ~~`SecretStore`; the three stores~~ (Phase
-C, steps 46-49); ~~`ApprovalDecider`; `PolicyDecider`~~ (Phase G slice 1, §14 step 52); plus ~15 further
+C, steps 46-49); ~~`ApprovalDecider`; `PolicyDecider`~~ (Phase G slice 1, §14 step 52); ~~`ExecutorBody`;
+`AgentExecutorBodyTag::Impl`~~ (Phase G slice 2, §14 step 53); plus ~15 further
 `std::function` typedefs that have not been triaged individually yet (#174 -- among them the shell's
 `RegisteredRunner` composition typedef, which step 50 left synchronous).
 
@@ -2844,12 +2904,15 @@ not produce.
 **Phase F -- the carried threads.** D3/D4/D7, the §10 + 027 + `web/marketing` pass, the §8 gates.
 
 **Phase G -- the orchestration and decider seams (surfaced by the #174 triage).** `ApprovalDecider`,
-`PolicyDecider`, `ExecutorBody` + `AgentExecutorBodyTag::Impl`, `ChildRunner`, `BatchableModelCall::Call`,
-`EffectContext::blob_sink`. §5.1 named the deciders from the start; the rest the triage added. **Slice 1 (the
-two deciders) DONE** (§14 step 52, 2026-10-18). The remaining seams' bodies are where engine code drives a
-nested task from inside a task today via `rt::block_on` (`agent_spawn_child_run.hpp:139`,
-`agent_workflow_executor.hpp:87`, `workflow_supervisor.hpp:1160` -- all verified present on 2026-10-18), so the
-rest of this phase removes those nested drive loops.
+`PolicyDecider`, `ExecutorBody` + `AgentExecutorBodyTag::Impl`, `ChildRunner`,
+`BatchableModelCall::Call`/`Complete`, `EffectContext::blob_sink`. §5.1 named the deciders and
+`ExecutorBody` from the start; the rest the triage added. **Slice 1 (the two deciders) DONE** (§14 step 52,
+2026-10-18). **Slice 2 (`ExecutorBody` + `Impl`, the largest single seam) DONE** (§14 step 53, 2026-10-18):
+the nested drive loops it targeted are gone -- `WorkflowSupervisor::drive<T>` and
+`agent_executor_detail::drive<T>` no longer exist, their call sites `co_await` in place. Remaining:
+`ChildRunner`; `BatchableModelCall::Call`/`Complete` (reached only *through* `BatchableModelCall`, so their
+own slice); `EffectContext::blob_sink`; and the nested drive loop at `agent_spawn_child_run.hpp:139`, which
+belongs with the agent.spawn seam rather than with the executor body.
 
 **Gate for every phase, unchanged:** build-dev clean; the named tests for the touched area pass; naming-lint
 OK; layering-lint OK; `ctest -LE live-network` -> the identical 14 baseline failures (re-measured 402/418 non-live

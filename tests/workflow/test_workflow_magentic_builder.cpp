@@ -209,21 +209,21 @@ int main() {
         std::atomic<int> step{0};
         std::vector<ExecutorBody> bodies = {
             // mgr: p1, then p2, then done -- a deterministic ledger, matching examples/17's own shape.
-            [&step](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+            [&step](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                 int const n = step.fetch_add(1);
                 std::vector<std::string> route = n == 0 ? std::vector<std::string>{"p1"}
                                                  : n == 1 ? std::vector<std::string>{"p2"}
                                                           : std::vector<std::string>{"done"};
-                return ExecutorOutcome{text_message(text_of(in)), route};
+                co_return ExecutorOutcome{text_message(text_of(in)), route};
             },
-            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return ExecutorOutcome{text_message(text_of(in) + ">p1")};
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{text_message(text_of(in) + ">p1")};
             },
-            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return ExecutorOutcome{text_message(text_of(in) + ">p2")};
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{text_message(text_of(in) + ">p2")};
             },
-            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return ExecutorOutcome{in};
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{in};
             },
         };
         WorkflowSupervisor sup;
@@ -250,16 +250,16 @@ int main() {
                   "B6: max_stalls() forwards to TerminationBound");
 
             std::vector<ExecutorBody> bodies = {
-                [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+                [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                     ExecutorOutcome out{text_message(text_of(in)), {"p1"}};
                     out.stalled = true;  // never makes progress
-                    return out;
+                    co_return out;
                 },
-                [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                    return ExecutorOutcome{text_message(text_of(in))};
+                [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                    co_return ExecutorOutcome{text_message(text_of(in))};
                 },
-                [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                    return ExecutorOutcome{in};  // the synthetic done sink
+                [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                    co_return ExecutorOutcome{in};  // the synthetic done sink
                 },
             };
             WorkflowSupervisor sup;

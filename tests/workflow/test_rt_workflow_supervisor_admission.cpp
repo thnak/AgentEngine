@@ -127,8 +127,8 @@ template <class T>
 }
 
 [[nodiscard]] ExecutorBody appender(std::string name) {
-    return [name = std::move(name)](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message(text_of(in) + ">" + name)};
+    return [name = std::move(name)](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(text_of(in) + ">" + name)};
     };
 }
 

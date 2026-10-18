@@ -81,8 +81,8 @@ template <class T>
 
 [[nodiscard]] std::vector<ExecutorBody> approval_pipeline_bodies() {
     return {
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message("DRAFT: " + text_of(in))};
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message("DRAFT: " + text_of(in))};
         },
         {},  // review is a request_port -- no body
     };
@@ -105,12 +105,12 @@ template <class T>
 
 [[nodiscard]] std::vector<ExecutorBody> outer_bodies() {
     return {
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message("Intake: " + text_of(in))};
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message("Intake: " + text_of(in))};
         },
         {},  // pipeline is sub_workflow-kind -- bound via bind_sub_workflow(), not a body
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message("PUBLISHED -- " + text_of(in))};
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message("PUBLISHED -- " + text_of(in))};
         },
     };
 }

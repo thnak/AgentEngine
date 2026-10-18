@@ -82,11 +82,12 @@ void check(bool cond, char const* what) {
 // examples/17/19's own live moderator would use with a real chat_stream() call, simplified here to
 // avoid a live model dependency (matches this file's own "fully offline" scope).
 [[nodiscard]] ExecutorBody streaming_participant(std::string name) {
-    return [name](Message const& in, EffectContext& ctx) -> result<ExecutorOutcome> {
+    return [name](Message const& in, EffectContext& ctx)
+               -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         for (int step = 1; step <= 3; ++step) {
             ctx.moderator_delta_sink(name + " step " + std::to_string(step) + "/3");
         }
-        return ExecutorOutcome{text_message(text_of(in) + ">" + name)};
+        co_return ExecutorOutcome{text_message(text_of(in) + ">" + name)};
     };
 }
 
@@ -135,11 +136,13 @@ int main() {
     check(validate_workflow(wf).has_value(), "the fan-out/fan-in graph validates");
 
     std::vector<ExecutorBody> bodies = {
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
+        [](Message const& in, EffectContext&)
+            -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
         streaming_participant("researcher"),
         streaming_participant("critic"),
         streaming_participant("summarizer"),
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
+        [](Message const& in, EffectContext&)
+            -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
     };
 
     WorkflowSupervisor sup;

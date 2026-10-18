@@ -107,8 +107,8 @@ using agentengine::workflow::validate_workflow;
 
 [[nodiscard]] ExecutorBody appender(std::string name) {
     return [name = std::move(name)](Message const& in,
-                                    agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message(text_of(in) + ">" + name)};
+                                    agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(text_of(in) + ">" + name)};
     };
 }
 

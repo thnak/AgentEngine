@@ -76,26 +76,26 @@ void check(bool cond, char const* what) {
 //      the task to the writer; if rejected, finish immediately with the reviewer's own feedback.
 //   3. The writer's report came back -> finish, carrying the report.
 [[nodiscard]] ExecutorBody manager_body() {
-    return [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
+    return [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         if (result<MagenticPlanSignoffResponse> resp = parse_plan_signoff_response(in); resp.has_value()) {
             if (!resp->approved) {
-                return ExecutorOutcome{text_message("Plan rejected: " + resp->feedback), {"done"}};
+                co_return ExecutorOutcome{text_message("Plan rejected: " + resp->feedback), {"done"}};
             }
-            return ExecutorOutcome{text_message("draft the Q3 roadmap"), {"writer"}};
+            co_return ExecutorOutcome{text_message("draft the Q3 roadmap"), {"writer"}};
         }
         std::string const text = text_of(in);
         if (text.rfind("REPORT:", 0) == 0) {
-            return ExecutorOutcome{text_message("Final: " + text), {"done"}};
+            co_return ExecutorOutcome{text_message("Final: " + text), {"done"}};
         }
         Message req = make_plan_signoff_request(
             MagenticPlanSignoffRequest{"Step 1: outline the roadmap. Step 2: write it up."});
-        return ExecutorOutcome{req, {"plan_review"}};
+        co_return ExecutorOutcome{req, {"plan_review"}};
     };
 }
 
 [[nodiscard]] ExecutorBody writer_body() {
-    return [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message("REPORT: " + text_of(in))};
+    return [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message("REPORT: " + text_of(in))};
     };
 }
 
@@ -163,8 +163,8 @@ int main() {
     std::vector<ExecutorBody> bodies = {
         manager_body(),
         writer_body(),
-        [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-            return ExecutorOutcome{in};  // the builder's synthetic "done" sink
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{in};  // the builder's synthetic "done" sink
         },
         {},  // plan_review is a request_port -- never dispatched to a body
     };
@@ -198,8 +198,8 @@ int main() {
         FileSessionStore reopened(root);
         std::vector<ExecutorBody> bodies2 = {
             manager_body(), writer_body(),
-            [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return ExecutorOutcome{in};
+            [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{in};
             },
             {},
         };

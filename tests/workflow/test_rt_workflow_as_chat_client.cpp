@@ -209,44 +209,44 @@ struct DrainResult {
 [[nodiscard]] ExecutorBody envelope_decoding_start(std::shared_ptr<int> decoded_count,
                                                     std::shared_ptr<std::vector<std::string>> decoded_texts) {
     return [decoded_count, decoded_texts](
-               Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
+               Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         if (in.content.size() != 1) {
-            return std::unexpected(
+            co_return std::unexpected(
                 error{failure_class::contract, "expected exactly one envelope item", "test.bad_envelope"});
         }
         auto const* custom = std::get_if<Custom>(&in.content[0].value);
         if (custom == nullptr ||
             custom->type_id != "agentengine.workflow_chat_client_history") {
-            return std::unexpected(
+            co_return std::unexpected(
                 error{failure_class::contract, "expected the history envelope Custom item",
                       "test.bad_envelope_type"});
         }
         auto parsed = agentengine::json::parse(custom->payload_json);
         if (!parsed || !parsed->is_array()) {
-            return std::unexpected(error{failure_class::contract, "envelope payload is not a JSON array",
+            co_return std::unexpected(error{failure_class::contract, "envelope payload is not a JSON array",
                                           "test.bad_envelope_payload"});
         }
         int count = 0;
         for (auto const& item_json : parsed->as_array()) {
             auto m = agentengine::rt::message_from_json(item_json);
-            if (!m) return std::unexpected(m.error());
+            if (!m) co_return std::unexpected(m.error());
             ++count;
             for (auto const& item : m->content) decoded_texts->push_back(text_of(item));
         }
         *decoded_count = count;
-        return ExecutorOutcome{text_message("decoded:" + std::to_string(count))};
+        co_return ExecutorOutcome{text_message("decoded:" + std::to_string(count))};
     };
 }
 
 [[nodiscard]] ExecutorBody echo_body() {
-    return [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return ExecutorOutcome{in};
+    return [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{in};
     };
 }
 
 [[nodiscard]] ExecutorBody never_invoked_body() {
-    return [](Message const&, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return std::unexpected(
+    return [](Message const&, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return std::unexpected(
             error{failure_class::fatal, "a request_port node's own body must never be invoked",
                   "test.port_body_invoked"});
     };

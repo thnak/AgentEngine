@@ -98,7 +98,7 @@ using RealClient = openai::OpenAIChatClient<InMemorySecretStore>;
 // `stalled=true` whenever the live reply didn't parse AND the fallback ledger also can't tell what
 // to do next (a genuine "no progress possible this round" signal, not merely "used the fallback").
 [[nodiscard]] ExecutorBody planner_moderator(RealClient& client, EffectContext& ctx) {
-    return [&client, &ctx](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
+    return [&client, &ctx](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         std::string const transcript = text_of(in);
 
         auto resp = live_call(
@@ -130,20 +130,20 @@ using RealClient = openai::OpenAIChatClient<InMemorySecretStore>;
         // and only when the live call genuinely failed (not merely "used the fallback ledger",
         // which still makes real forward-progress decisions).
         out.stalled = !resp.has_value();
-        return out;
+        co_return out;
     };
 }
 
 [[nodiscard]] ExecutorBody specialist(std::string label, std::string system_prompt, RealClient& client,
                                        EffectContext& ctx) {
-    return [label, system_prompt, &client, &ctx](Message const& in,
-                                                  EffectContext&) -> agentengine::result<ExecutorOutcome> {
+    return [label, system_prompt, &client,
+            &ctx](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         std::string const transcript = text_of(in);
         auto resp = live_call(client, ctx, system_prompt, "Transcript so far:\n" + transcript);
-        if (!resp.has_value()) return std::unexpected(resp.error());
+        if (!resp.has_value()) co_return std::unexpected(resp.error());
         std::string const reply = text_of(resp->message);
         std::printf("[%s] %s\n", label.c_str(), reply.c_str());
-        return ExecutorOutcome{text_message(transcript + "\n\n" + label + ": " + reply)};
+        co_return ExecutorOutcome{text_message(transcript + "\n\n" + label + ": " + reply)};
     };
 }
 
@@ -222,8 +222,8 @@ int main() {
                    "transcript above, write a 2-sentence summary suitable for a general "
                    "audience. Synthesize, do not restate the facts verbatim.",
                    client, ctx),
-        [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-            return ExecutorOutcome{in};  // the builder's synthetic "done" sink -- caller-supplied,
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{in};  // the builder's synthetic "done" sink -- caller-supplied,
                                           // per magentic.hpp's own "bodies always caller-supplied"
                                           // layering rule.
         },
