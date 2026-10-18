@@ -2747,7 +2747,7 @@ Remaining in Phase G (not this slice): `ChildRunner`, `BatchableModelCall::Call`
 is now `std::function<task<result<ExecutorOutcome>>(Message const&, EffectContext&)>`, with
 `AgentExecutorBodyTag::Impl` moved in lockstep (the ADR's own "one signature" pairing).
 
-- **Structural detection is unchanged, deliberately.** `agentize`-side detection
+- **Structural detection is unchanged, deliberately.** The agent-kind path's detection
   (`bodies_[i].target<AgentExecutorBodyTag>()`, `src/rt/workflow_supervisor.cpp:1691`) and the batch
   path's (`bodies_[i].target<BatchableModelCall>()`, `workflow_supervisor_batch.cpp:151`) still work:
   both functors remain the concrete types stored in `bodies_`, so only their `operator()`'s return
@@ -2790,6 +2790,23 @@ is now `std::function<task<result<ExecutorOutcome>>(Message const&, EffectContex
   `BatchableModelCall`, not by the body seam -- so `operator()` is a coroutine that still completes
   without suspending and `Build`/`Call`/`Complete` stay synchronous here. They are their own slice,
   not smuggled into this one. Named so the next session does not think they were missed.
+- **Two consequences that outlive this slice, both recorded rather than absorbed.**
+  (a) A job dispatched through `ThreadPool` can now genuinely park. That is *supported* --
+  `ThreadPool`'s ADR-175 rev-3 contract drives each job with `block_on()` on the worker that picked it
+  up and hands it back to that same worker when woken -- but the cost is real: a suspended job holds
+  its worker for the suspension's duration. The supervisor's own file-banner comment claimed the
+  opposite ("each job's coroutine body never suspends on anything") and has been corrected. Getting
+  the pool off this path is #179/#182.
+  (b) The tree still has **~190 hand-rolled `while (!t.done()) t.resume();` drive helpers** (tests,
+  examples, devsim). Those are #183's tracked work and were deliberately not swept here. They matter
+  more now: a hand-rolled loop cannot correctly drive a task that genuinely parks (it resumes a parked
+  handle a second time -- ADR-064 §7), so it can no longer drive a *contended* `workflow_as_executor`
+  body. Nothing in the suite contends today, and the three places that drive a wrapped body directly
+  (`test_rt_workflow_as_executor` W1/W2/W4/W6, `test_rt_workflow_batch_coalescing` C18,
+  `test_delegation_provenance` W1-W5/R3-C1b) were switched to `rt::block_on`/`drive`-over-`block_on`
+  for exactly that reason. Relatedly, `examples/16,17,19`'s live bodies call `client.chat()` through
+  such a loop *inside* a body -- already stale since step 35 made `chat()` awaitable; they are live
+  samples (not run in CI, not built by either tree), so they are left to #183 rather than edited blind.
 - **Verification.** `build-dev` clean (`/W4 /WX`) and the extras tree
   (HTTPS + Python + PDF + WASM + native-process) builds 548/548 clean; the six `devsim` programs
   compile under `/W4 /WX` (they are separate consumer projects, built by neither tree). All 41

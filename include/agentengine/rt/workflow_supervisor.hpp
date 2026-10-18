@@ -127,10 +127,14 @@
 // submitted `task<void>` jobs (issued via `ThreadPool::submit()` for every item BEFORE collecting any,
 // preserving decision 5's ordering exactly), collected via `std::future<JobOutcome>::get()` in FIXED
 // INDEX ORDER, matching the original's own "completion order is whatever the scheduler produces;
-// assembly order is this loop's" guarantee bit-for-bit. Each job's own coroutine body never suspends
-// on anything (it wraps one synchronous `ExecutorBody` call, unlike `AsyncMutex`/`channel<T>`-using
-// coroutines) -- the textbook safe case for `ThreadPool`'s own documented "only safe for a coroutine
-// that suspends purely via nested task<T> -- here, not at all" constraint.
+// assembly order is this loop's" guarantee bit-for-bit. Each job's own coroutine body may now SUSPEND:
+// since ADR-237 §5.1 (Phase G, §14 step 53) `run_executor_job` awaits an `ExecutorBody`, which is
+// `task`-shaped, so a body that parks (an agent node's real `start_run()`, a nested run) parks THIS
+// job. That is supported rather than tolerated: `ThreadPool`'s own ADR-175 contract (thread_pool.hpp)
+// drives each job with `block_on()` on the worker that picked it up and hands it back to that same
+// worker when woken, so a parked job is resumed rather than dropped. The residual is cost, not
+// correctness -- a suspended job holds its worker for the duration. Getting the pool off this path is
+// the "callers onto rt::Runtime" work (#179/#182), not this slice's.
 //
 // FAULT ISOLATION, changed on purpose, not a narrowing silently accepted: the original relied on
 // Quark's `OnFailure<Restart, MaxRestarts<3, Within<1000>>>` actor supervision (a throwing executor
@@ -1121,9 +1125,10 @@ private:
 
     enum class route_result { ok, routing_failed, workflow_failed };
 
-    // One round's worth of concurrent fan-out. Wraps ONE synchronous ExecutorBody call -- never
-    // suspends on anything else -- the safe case for ThreadPool::submit()'s own documented
-    // constraint (see file banner). Takes everything BY VALUE so the coroutine frame owns independent
+    // One round's worth of concurrent fan-out. Wraps ONE `ExecutorBody` call -- the body is
+    // `task`-shaped since ADR-237 §5.1 (Phase G, §14 step 53), so this job genuinely suspends when the
+    // body does; see the file banner for why that is safe on `ThreadPool::submit()` and what it costs.
+    // Takes everything BY VALUE so the coroutine frame owns independent
     // copies, not references into the caller's stack -- the same "coroutine frame owns its inputs"
     // discipline this project's own AsyncMutex test debugging (async_mutex.hpp's own history) already
     // established as load-bearing, not just tidy.

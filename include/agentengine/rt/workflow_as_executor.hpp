@@ -15,22 +15,26 @@
 // one final output out" semantics, not `AgentSession`'s "accumulates history across rounds" contract.
 //
 // REQUEST_PORT REFUSED AT CONSTRUCTION -- both overloads below refuse (a real error, nothing built)
-// any inner graph containing an `executor_kind::request_port` node. `ExecutorBody`'s contract is one
-// synchronous call with no "still pending" concept, so a suspended inner run would otherwise have its
+// any inner graph containing an `executor_kind::request_port` node. `ExecutorBody` is `task`-shaped
+// (ADR-237 §5.1, Phase G) but has no "still pending" concept: a body that a caller awaits has nowhere
+// to surface an interrupted inner state, so a suspended inner run would otherwise have its
 // open interaction silently and permanently discarded the next time `run_workflow()` resets `ports_`
 // -- refusing the graph shape outright is what closes that hole, not documentation.
 //
-// CONCURRENCY -- the returned body owns its OWN `std::mutex`, independent of `WorkflowSupervisor`'s
-// own `run_mutex_`. This is load-bearing, not decorative: `run_mutex_` is an `AsyncMutex` whose
-// contended path parks the awaiting coroutine's own handle, to be resumed ONLY by the matching
-// `unlock()`'s own trampoline -- a plain "resume until done" `drive()` loop (the only way to call a
-// coroutine-returning `task<T>` from a synchronous `ExecutorBody`) has no way to honor that if a
-// second delivery lands on this same wrapped node in the same outer round (an entirely ordinary
-// topology for a `function`-kind node, which gets none of `execute()`'s agent-kind-only dedup).
-// Without its own mutex, two concurrent calls would race on the SAME inner `WorkflowSupervisor`'s
-// state and risk a double-resume of an already-destroyed coroutine frame. The mutex serializes
-// concurrent deliveries safely instead -- each still gets its own fully independent fresh run, just
-// one after another.
+// CONCURRENCY -- the returned body owns its OWN serialisation lock, independent of
+// `WorkflowSupervisor`'s own `run_mutex_`. This is load-bearing, not decorative: `run_mutex_` is an
+// `AsyncMutex` whose contended path parks the awaiting coroutine's own handle, to be resumed ONLY by
+// the matching `unlock()`'s own trampoline, so two concurrent deliveries must never reach the same
+// inner supervisor at once -- an entirely ordinary topology for a `function`-kind node, which gets
+// none of `execute()`'s agent-kind-only dedup. Without its own lock, two concurrent calls would race
+// on the SAME inner `WorkflowSupervisor`'s state and risk a double-resume of an already-destroyed
+// coroutine frame. The lock serializes concurrent deliveries safely instead -- each still gets its own
+// fully independent fresh run, just one after another.
+// ADR-237 §5.1 (Phase G, §14 step 53): the body is a coroutine now, and the inner run it awaits can
+// genuinely park, so this lock is an `rt::AsyncMutex` held across that await -- a `std::mutex` here
+// would be held across a `co_await`, which ADR-237 forbids outright. Uncontended acquisition does not
+// suspend (`AsyncMutex::await_ready` takes the free path), so a caller driving this body with a plain
+// `drive()`/`block_on()` loop still works; only a genuinely contended call needs a real home.
 //
 // CAPABILITY SOURCING (I2) -- the outer `EffectContext` this body receives is UNUSED, deliberately.
 // The inner workflow's own executors run under whatever `EffectContext`s the caller already passed to

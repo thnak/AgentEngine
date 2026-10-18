@@ -50,11 +50,12 @@
 // AgentSession. Do not call this adapter's returned callable directly, concurrently, against the
 // same AgentSession from more than one thread outside WorkflowSupervisor's own guarantee.
 //
-// decisions/ADR-175 changed what the paragraph above depends on: the drive loop is now `rt::block_on()`, and
-// a contended waiter is posted back to its own `block_on()` thread rather than resumed from the releasing
-// thread, so a round that parks -- on `session_mutex_` or anything else -- is waited for correctly. The
-// contract still matters for I1's own sake (two deliveries to one session in one round would queue behind
-// each other on that session's mutex, holding two workers), not for memory safety.
+// decisions/ADR-175 changed what the paragraph above depends on, and ADR-237 §5.1 (Phase G) finished
+// the job: there is no drive loop here any more -- this body is a coroutine and `co_await`s
+// `session.start_run()`, so a round that parks (on `session_mutex_` or anything else) suspends rather
+// than needing a driver. The caller contract still matters for I1's own sake (two deliveries to one
+// session in one round would queue behind each other on that session's mutex, holding two workers),
+// not for memory safety.
 
 #include <atomic>
 #include <functional>
@@ -75,13 +76,10 @@
 
 namespace agentengine::rt {
 
-namespace agent_executor_detail {
-
-// The `drive<T>` trampoline that used to live here is gone: decisions/ADR-237 §5.1 (Phase G) made the
-// executor body `task`-shaped, so `agent_session_as_executor_body`'s lambda below is a coroutine and
-// awaits `session.start_run()` directly -- there is no non-awaiting call site left to drive from.
-
-}  // namespace agent_executor_detail
+// The `drive<T>` trampoline that used to live in an `agent_executor_detail` namespace at this spot is
+// gone: decisions/ADR-237 §5.1 (Phase G) made the executor body `task`-shaped, so
+// `agent_session_as_executor_body`'s lambda below is a coroutine and awaits `session.start_run()`
+// directly -- there is no non-awaiting call site left to drive from.
 
 // The adapter. Capability sourcing (design draft §5): the actual granted CapabilitySet this call
 // runs `session` under comes from `ctx` -- whatever EffectContext
