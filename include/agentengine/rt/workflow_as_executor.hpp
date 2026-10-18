@@ -81,6 +81,7 @@
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
+#include "agentengine/rt/async_mutex.hpp"
 #include "agentengine/rt/task.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 #include "agentengine/workflow/graph.hpp"
@@ -89,14 +90,8 @@ namespace agentengine::rt {
 
 namespace workflow_as_executor_detail {
 
-// Drives an agentengine::rt::task<T> to completion from a plain, non-coroutine call site. Formerly a
-// hand-rolled resume-until-done loop, argued safe because the file banner's `call_mutex` keeps two callers
-// off the same `inner`; an inner node can still park on something shared, which the loop resumed twice.
-// `block_on()` since decisions/ADR-175.
-template <class T>
-[[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    return agentengine::rt::block_on(std::move(t));  // ADR-175: was `while (!t.done()) t.resume();`
-}
+// The `drive<T>` trampoline that used to live here is gone: decisions/ADR-237 §5.1 (Phase G) made the
+// executor body `task`-shaped, so `run_once` below is a coroutine and awaits the inner run directly.
 
 [[nodiscard]] inline char const* status_tag(workflow_status s) {
     switch (s) {
@@ -156,13 +151,14 @@ template <class T>
 // once -- in the outcome on success, through `ctx.charge_delegated_usage` (which the outer supervisor binds to this
 // node's reply) on failure. This adapter used to report neither, so a nested workflow's model calls were invisible
 // to the outer `usage()`.
-[[nodiscard]] inline agentengine::result<ExecutorOutcome> run_once(WorkflowSupervisor& inner,
+[[nodiscard]] inline agentengine::task<agentengine::result<ExecutorOutcome>> run_once(
+                                                                     WorkflowSupervisor& inner,
                                                                      agentengine::Message const& in,
                                                                      agentengine::EffectContext& ctx) {
     // ADR-235 (section 3.1, red-team finding 13): a wrapped run that suspends on a vendor batch would be reported as
     // a failure here and its paid jobs dropped by the next call's fresh run -- refused instead, on every call.
     if (inner.batch_coalescing_enabled()) {
-        return std::unexpected(agentengine::error{
+        co_return std::unexpected(agentengine::error{
             agentengine::failure_class::contract,
             "workflow_as_executor_body: the wrapped workflow has batch coalescing enabled, which a nested "
             "workflow cannot be polled for",
@@ -170,14 +166,15 @@ template <class T>
     }
     // Issue #156 (ADR-214): the outer workflow's cancel (`ctx.cancellation`) is linked into the inner run, so a
     // wrapped workflow stops at its own next check instead of running to completion first.
-    WorkflowResult r = drive(inner.run_workflow(RunWorkflow{in, std::nullopt, ctx.cancellation}));
+    // ADR-237 §5.1 (Phase G): the inner run is awaited here -- this is a coroutine now, so no `drive()`.
+    WorkflowResult r = co_await inner.run_workflow(RunWorkflow{in, std::nullopt, ctx.cancellation});
     if (r.status == workflow_status::completed) {
         ExecutorOutcome outcome{r.output};
         outcome.usage = r.usage;
-        return outcome;
+        co_return outcome;
     }
     ctx.charge_delegated_usage(r.usage, 0);
-    return std::unexpected(agentengine::error{
+    co_return std::unexpected(agentengine::error{
         inner_run_failure_class(r.status),  // ADR-237 D6: cancelled -> canceled, bound_deadline -> resource
         std::string("workflow_as_executor_body: the wrapped workflow did not complete (status=") +
             status_tag(r.status) + ")",
@@ -198,12 +195,16 @@ template <class T>
     if (auto ok = workflow_as_executor_detail::reject_request_ports(inner->graph()); !ok) {
         return std::unexpected(ok.error());
     }
-    auto call_mutex = std::make_shared<std::mutex>();
+    // ADR-237 §5.1 (Phase G): the body is `task`-shaped, so this is a coroutine. The mutual exclusion
+    // the file banner documents must now survive a suspension, so it is an `rt::AsyncMutex` held across
+    // the (possibly parking) inner run -- a `std::mutex` here would be held across a `co_await`, which
+    // ADR-237 forbids outright.
+    auto call_mutex = std::make_shared<AsyncMutex>();
     return [inner = std::move(inner), call_mutex](
                agentengine::Message const& in,
-               agentengine::EffectContext& ctx) -> agentengine::result<ExecutorOutcome> {
-        std::lock_guard<std::mutex> guard(*call_mutex);
-        return workflow_as_executor_detail::run_once(*inner, in, ctx);
+               agentengine::EffectContext& ctx) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        AsyncMutex::Guard guard = co_await call_mutex->lock();
+        co_return co_await workflow_as_executor_detail::run_once(*inner, in, ctx);
     };
 }
 
@@ -214,11 +215,12 @@ template <class T>
     if (auto ok = workflow_as_executor_detail::reject_request_ports(inner.graph()); !ok) {
         return std::unexpected(ok.error());
     }
-    auto call_mutex = std::make_shared<std::mutex>();
+    // Same `AsyncMutex` reasoning as the shared_ptr overload above.
+    auto call_mutex = std::make_shared<AsyncMutex>();
     return [&inner, call_mutex](agentengine::Message const& in,
-                                 agentengine::EffectContext& ctx) -> agentengine::result<ExecutorOutcome> {
-        std::lock_guard<std::mutex> guard(*call_mutex);
-        return workflow_as_executor_detail::run_once(inner, in, ctx);
+                                 agentengine::EffectContext& ctx) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        AsyncMutex::Guard guard = co_await call_mutex->lock();
+        co_return co_await workflow_as_executor_detail::run_once(inner, in, ctx);
     };
 }
 

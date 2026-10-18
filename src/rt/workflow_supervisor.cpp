@@ -290,9 +290,11 @@ task<WorkflowResult> WorkflowSupervisor::resume_workflow_locked(ResumeWorkflow r
                 // attributed to the real caller (I4) rather than to "the outer supervisor".
                 // `propagate_admission_to_children()` is what keeps that from denying every
                 // forwarded caller on an inner the host never separately configured.
-                drive(inner->resume_workflow(ResumeWorkflow{pending.inner_interaction_id,
-                                                              request.response, request.routes,
-                                                              request.caller}));
+                // ADR-237 §5.1 (Phase G): awaited in place -- this is already a coroutine, so the
+                // nested run no longer needs the `drive()`/`block_on` trampoline.
+                co_await inner->resume_workflow(ResumeWorkflow{pending.inner_interaction_id,
+                                                               request.response, request.routes,
+                                                               request.caller});
         }
         // ADR-169 (issue #65), found by A11c during implementation, NOT designed up front: an
         // inner `admission_denied` must NOT fall through to the terminal-failure branch below.
@@ -604,7 +606,10 @@ task<void> WorkflowSupervisor::run_executor_job(
         std::lock_guard<std::mutex> lock(*charge_mutex);
         add_usage(out->usage, u);
     };
-    agentengine::result<ExecutorOutcome> outcome = body(payload, ctx);
+    // ADR-237 §5.1 (Phase G): the body seam is `task`-shaped; await it here. This is what finally
+    // makes `run_executor_job` a coroutine that can genuinely suspend -- a body that parks parks
+    // THIS job rather than blocking the pool worker it was dispatched on.
+    agentengine::result<ExecutorOutcome> outcome = co_await body(payload, ctx);
     agentengine::Usage charged;
     {
         std::lock_guard<std::mutex> lock(*charge_mutex);
@@ -646,7 +651,9 @@ task<void> WorkflowSupervisor::run_sub_workflow_job(
     {
         ScopedForwardedEventSink const guard(*inner, std::move(sink), std::move(path_prefix));
         // Issue #156 (ADR-214): the outer run's cancel is linked into the nested run it dispatches.
-        r = drive(inner->run_workflow(RunWorkflow{payload, std::nullopt, std::move(cancellation)}));
+        // ADR-237 §5.1 (Phase G): awaited in place -- this job is already a coroutine, so the nested
+        // run no longer needs the `drive()`/`block_on` trampoline.
+        r = co_await inner->run_workflow(RunWorkflow{payload, std::nullopt, std::move(cancellation)});
     }
     if (r.status == workflow_status::completed) {
         // GitHub issue #35 follow-up (ADR-163): a sub_workflow that completes SYNCHRONOUSLY within

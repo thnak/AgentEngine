@@ -217,9 +217,12 @@ void WorkflowSupervisor::gather_batch_candidates(std::vector<Delivery>& exec_del
             return;
         }
         BatchableModelCall const call = *body;
+        // ADR-237 §5.1 (Phase G): the body seam is `task`-shaped, so this one-off override is a
+        // coroutine. `call_request` stays synchronous (converting `Call`/`Complete` is a separate slice).
         keep_override.emplace_back(ExecutorBody{
-            [call, request = std::move(request)](agentengine::Message const& in, agentengine::EffectContext& ctx) {
-                return call.call_request(in, request, ctx);
+            [call, request = std::move(request)](agentengine::Message const& in, agentengine::EffectContext& ctx)
+                -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return call.call_request(in, request, ctx);
             }});
         keep_preset.emplace_back();
     };

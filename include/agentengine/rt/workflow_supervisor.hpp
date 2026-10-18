@@ -244,9 +244,15 @@ struct ExecutorOutcome {
         : payload(std::move(m)), routes(std::move(r)) {}
 };
 
+// decisions/ADR-237 §5.1 (Phase G, slice 2): `task`-shaped. A node's body is arbitrary C++ -- it may
+// hold a real ChatClient, a nested supervisor, or anything else that parks -- so the seam lets it
+// suspend. `run_executor_job` (src/rt/workflow_supervisor.cpp) awaits it, so a suspending body
+// suspends THAT job coroutine instead of blocking a pool thread. The `.target<T>()` structural
+// detection below is unchanged: `AgentExecutorBodyTag`/`BatchableModelCall` stay the concrete types
+// stored in `bodies_`; only their `operator()`'s return type moves.
 // ae-naming-lint: allow ExecutorBody — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using ExecutorBody =
-    std::function<agentengine::result<ExecutorOutcome>(agentengine::Message const&, agentengine::EffectContext&)>;
+    std::function<task<agentengine::result<ExecutorOutcome>>(agentengine::Message const&, agentengine::EffectContext&)>;
 
 // OQ-19 (OpenQuestions.md; docs/planning/agent-as-workflow-executor-design-draft.md §5 item 4): a
 // FIXED, non-templated functor type -- independent of rt::agent_workflow_executor.hpp's own adapter
@@ -261,14 +267,17 @@ using ExecutorBody =
 // ae-naming-lint: allow AgentExecutorBodyTag — the structural marker OQ-19's design draft names verbatim
 class AgentExecutorBodyTag {
 public:
-    using Impl = std::function<agentengine::result<ExecutorOutcome>(agentengine::Message const&,
-                                                                      agentengine::EffectContext&)>;
+    using Impl = std::function<task<agentengine::result<ExecutorOutcome>>(agentengine::Message const&,
+                                                                         agentengine::EffectContext&)>;
 
     explicit AgentExecutorBodyTag(Impl impl) : impl_(std::move(impl)) {}
 
-    agentengine::result<ExecutorOutcome> operator()(agentengine::Message const& in,
-                                                      agentengine::EffectContext& ctx) const {
-        return impl_(in, ctx);
+    // decisions/ADR-237 §5.1 (Phase G): the tag's own call is a coroutine over `impl_`, awaited
+    // (`co_await`, not a bare `co_return impl_(...)`) so a throwing `impl_` surfaces at the caller's
+    // own await rather than one frame later.
+    agentengine::task<agentengine::result<ExecutorOutcome>> operator()(agentengine::Message const& in,
+                                                                      agentengine::EffectContext& ctx) const {
+        co_return co_await impl_(in, ctx);
     }
 
 private:
@@ -299,10 +308,14 @@ public:
         : build_(std::move(build)), call_(std::move(call)), complete_(std::move(complete)), backend_(std::move(backend)) {}
 
     // The synchronous path: what this node does whenever it is not batched.
-    agentengine::result<ExecutorOutcome> operator()(agentengine::Message const& in, agentengine::EffectContext& ctx) const {
+    // ADR-237 §5.1 (Phase G): the body seam is `task`-shaped, so this is a coroutine -- it still
+    // completes without suspending (`build`/`call_request` stay synchronous; converting the
+    // `Build`/`Call`/`Complete` callables themselves is a separate slice).
+    agentengine::task<agentengine::result<ExecutorOutcome>> operator()(agentengine::Message const& in,
+                                                                      agentengine::EffectContext& ctx) const {
         auto request = build(in, ctx);
-        if (!request) return std::unexpected(request.error());
-        return call_request(in, *request, ctx);
+        if (!request) co_return std::unexpected(request.error());
+        co_return call_request(in, *request, ctx);
     }
 
     [[nodiscard]] agentengine::result<agentengine::ChatRequest> build(agentengine::Message const& in,
@@ -1134,31 +1147,10 @@ private:
         std::string executor_id, std::uint32_t round, std::uint32_t attempt,
         std::vector<std::string> path_prefix);
 
-    // ADR-157 (issues #33/#38), driven by `block_on()` since decisions/ADR-175: this was a hand-rolled
-    // `while (!t.done()) t.resume();` loop, and the argument below guarantees only that `inner`'s own
-    // `run_mutex_` is uncontended -- a node inside `inner` can still park on something shared, which
-    // the loop resumed a second time. The original argument, for `run_mutex_`: the identical reason
-    // ADR-150 established for rt/workflow_as_executor.hpp's adapter, PLUS one
-    // additional guarantee specific to nesting: `inner->run_workflow()`/`inner->resume_workflow()`
-    // are only ever called from (a) inside THIS supervisor's own execute() round loop (via
-    // run_sub_workflow_job, below) or (b) THIS supervisor's own resume_workflow()'s pending-sub-
-    // workflow branch -- and BOTH (a) and (b) only ever run while THIS (the OUTER) supervisor's own
-    // `run_mutex_` is held (I1) by run_workflow()/resume_workflow()/continue_workflow(), which
-    // serializes them against each other. So at most ONE thread can ever be driving a GIVEN `inner`
-    // at a time, structurally, regardless of how many worker threads this round's fan-out uses --
-    // `inner`'s own `run_mutex_` is therefore never genuinely contended by two callers from this
-    // supervisor. The OQ-19-style quarantine extension (below, in execute()) additionally prevents
-    // two DIFFERENT deliveries in the SAME round from targeting the SAME `inner` via the same
-    // executor_index. CALLER CONTRACT this does NOT enforce, matching this codebase's existing
-    // trust-based lifetime contracts (e.g. workflow_as_executor_body()'s own reference-overload
-    // documentation): a single `inner` instance must be bound via bind_sub_workflow() to AT MOST
-    // ONE executor_index across the whole outer graph -- binding the same `inner` to two different
-    // sub_workflow nodes is unsupported and not guarded against, and would defeat the quarantine's
-    // own per-index dedup.
-    template <class T>
-    [[nodiscard]] static T drive(agentengine::rt::task<T> t) {
-        return agentengine::rt::block_on(std::move(t));  // ADR-175: was `while (!t.done()) t.resume();`
-    }
+    // ADR-157 (issues #33/#38) required a hand-rolled `while (!t.done()) t.resume();` loop here, later
+    // a `block_on` wrapper (`drive<T>`): a nested run had to be driven from a non-awaiting call site.
+    // ADR-237 §5.1 (Phase G) removed the need -- `resume_workflow_locked`/`run_sub_workflow_job` are
+    // already coroutines, so both nested-run call sites simply `co_await` now and `drive<T>` is gone.
 
     // docs/planning/nested-workflow-event-forwarding-design-draft.md (issue #42 item 3, red-teamed):
     // wires `inner`'s multiplexed event sink + path prefix for EXACTLY the scope of one nested
