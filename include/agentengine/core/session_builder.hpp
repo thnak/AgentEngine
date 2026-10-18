@@ -414,8 +414,9 @@ void install_deciders(SessionT& session, std::optional<std::vector<std::string>>
     if (approved_tool_names.has_value()) {
         std::vector<std::string> const allow = *approved_tool_names;
         session.set_approval_decider(
-            [allow](agentengine::Principal const&, std::string_view tool_name, std::string const&) {
-                return std::find(allow.begin(), allow.end(), tool_name) != allow.end();
+            [allow](agentengine::Principal const&, std::string_view tool_name,
+                    std::string const&) -> task<bool> {
+                co_return std::find(allow.begin(), allow.end(), tool_name) != allow.end();
             });
     }
     if (policy_decider) {

@@ -72,7 +72,7 @@ struct ToolBridgeConfig {
     CapabilitySet const sandbox_capabilities = CapabilitySet::grant_root(config.capabilities);
     ApprovalDecider const bundled_approval = [approved = config.approved](
                                                       Principal const&, std::string_view,
-                                                      std::string const&) { return approved; };
+                                                      std::string const&) -> task<bool> { co_return approved; };
     // ADR-237 §5.2: the pipeline is async; this sandbox-side bridge is a genuinely-sync edge.
     return agentengine::rt::block_on(
         invoke_tool(config.bridged_tools, sandbox_capabilities, request, ctx, bundled_approval, audit_out));

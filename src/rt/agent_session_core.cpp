@@ -568,11 +568,13 @@ task<result<AgentResponse>> AgentSessionCore::resolve_interaction_locked(
     ApprovalDecider const fallback = effective_approval_decider(*tool_table);
     ApprovalDecider const approve_exact = [approved_exact, fallback](Principal const& caller,
                                                                     std::string_view tool_name,
-                                                                    std::string const& canonical_args) {
+                                                                    std::string const& canonical_args)
+        -> task<bool> {
         for (auto const& [name, args] : approved_exact) {
-            if (name == tool_name && args == canonical_args) return true;
+            if (name == tool_name && args == canonical_args) co_return true;
         }
-        return fallback ? fallback(caller, tool_name, canonical_args) : false;
+        if (!fallback) co_return false;
+        co_return co_await fallback(caller, tool_name, canonical_args);
     };
     co_return co_await finish_hook_processed_round(std::move(round), *tool_table, approve_exact, policy_decider_);
 }
@@ -1079,7 +1081,7 @@ task<std::vector<AgentSessionCore::DispatchedCall>> AgentSessionCore::dispatch_t
         for (std::size_t i : cls.call_indices) {
             ToolCallRequest const& req = reqs[i];
             EffectContext ctx = make_call_ctx(req.call_id);
-            auto admission = admit_call(tool_table, held, req, ctx.principal, approve, policy);
+            auto admission = co_await admit_call(tool_table, held, req, ctx.principal, approve, policy);
             if (!admission) {
                 error const& e = admission.error();
                 ToolResult result = tool_pipeline_detail::make_error_result(req.call_id, e);
@@ -1226,8 +1228,9 @@ task<result<AgentResponse>> AgentSessionCore::resolve_codeact_ask(ResolveInterac
     // written by apply_dispatch_authority() at the top of every real entry point (start_run(),
     // resolve_interaction()) before this is ever reached.
     CapabilitySet const& held      = effect_context_.capabilities ? *effect_context_.capabilities : empty_caps;
-    ApprovalDecider const one_shot_approve = [](Principal const&, std::string_view, std::string const&) {
-        return true;
+    ApprovalDecider const one_shot_approve = [](Principal const&, std::string_view,
+                                                std::string const&) -> task<bool> {
+        co_return true;
     };
 
     // Rebuilt directly from the STORED record, never from `pending_calls`' own
@@ -1274,15 +1277,19 @@ task<result<AgentResponse>> AgentSessionCore::resolve_codeact_ask(ResolveInterac
     bool replay_allowed = true;
     if (rec_it->second.approved_unattended_by) {
         ToolDescriptor const* td = tool_table.find(req.tool_name);
-        approval_outcome const outcome =
-            td == nullptr ? approval_outcome::deny
-                          : resolve_approval_outcome(*td, call_provenance::text_derived, effect_context_.principal,
-                                                     /*arguments_tainted=*/true, policy_decider_);
+        approval_outcome outcome = approval_outcome::deny;
+        if (td != nullptr) {
+            outcome = co_await resolve_approval_outcome(*td, call_provenance::text_derived,
+                                                        effect_context_.principal,
+                                                        /*arguments_tainted=*/true, policy_decider_);
+        }
         if (outcome == approval_outcome::deny) {
             replay_allowed = false;
         } else if (outcome == approval_outcome::needs_decider) {
             ApprovalDecider const now = effective_approval_decider(tool_table);
-            replay_allowed = now && now(effect_context_.principal, req.tool_name, json::dump(req.arguments));
+            replay_allowed = false;
+            if (now) replay_allowed = co_await now(effect_context_.principal, req.tool_name,
+                                                   json::dump(req.arguments));
         }
     }
     ToolResult tool_result;
@@ -1488,10 +1495,11 @@ task<result<AgentResponse>> AgentSessionCore::resolve_hook_decision(ResolveInter
             if (hc.outcome != hook_call_outcome::pass_through) continue;
             if (!hc.request.arguments_parse_error.empty()) continue;  // ADR-197: refused at dispatch anyway
             ToolDescriptor const* td = tool_table.find(hc.request.tool_name);
-            if (td != nullptr &&
-                resolve_approval_outcome(*td, hc.request.provenance, effect_context_.principal,
-                                          /*arguments_tainted=*/true, policy_decider_) ==
-                    approval_outcome::needs_decider) {
+            if (td == nullptr) continue;
+            approval_outcome const outcome =
+                co_await resolve_approval_outcome(*td, hc.request.provenance, effect_context_.principal,
+                                                  /*arguments_tainted=*/true, policy_decider_);
+            if (outcome == approval_outcome::needs_decider) {
                 any_still_needs_approval = true;
                 break;
             }
@@ -1513,11 +1521,14 @@ task<result<AgentResponse>> AgentSessionCore::resolve_hook_decision(ResolveInter
                 // ADR-182 P1: same payload fields as run_rounds()'s own emit site. ADR-196 (issue #104
                 // BUG-1): only a call that actually needs a decider is named.
                 ToolDescriptor const* td = tool_table.find(hc.request.tool_name);
-                bool const needs = td != nullptr && hc.request.arguments_parse_error.empty() &&
-                                   resolve_approval_outcome(*td, hc.request.provenance,
-                                                            effect_context_.principal,
-                                                            /*arguments_tainted=*/true, policy_decider_) ==
-                                       approval_outcome::needs_decider;
+                bool needs = false;
+                if (td != nullptr && hc.request.arguments_parse_error.empty()) {
+                    approval_outcome const outcome =
+                        co_await resolve_approval_outcome(*td, hc.request.provenance,
+                                                          effect_context_.principal,
+                                                          /*arguments_tainted=*/true, policy_decider_);
+                    needs = (outcome == approval_outcome::needs_decider);
+                }
                 if (!needs) continue;
                 emit_run_event(run_event_kind::approval_requested,
                                 run_event_payload::ApprovalRequested{
@@ -2148,12 +2159,14 @@ task<result<AgentResponse>> AgentSessionCore::run_rounds_body() {
                 // same "every ToolCall this loop sees originates from a model response" reasoning
                 // `tool_call_request_of`'s own comment already establishes (a hook rewrite never
                 // makes a model-originated call more trusted).
-                if (td != nullptr &&
-                    resolve_approval_outcome(*td, req_i.provenance, effect_context_.principal,
-                                              /*arguments_tainted=*/true, policy_decider_) ==
-                        approval_outcome::needs_decider) {
-                    any_needs_approval = true;
-                    call_needs_approval[i] = true;
+                if (td != nullptr) {
+                    approval_outcome const outcome =
+                        co_await resolve_approval_outcome(*td, req_i.provenance, effect_context_.principal,
+                                                          /*arguments_tainted=*/true, policy_decider_);
+                    if (outcome == approval_outcome::needs_decider) {
+                        any_needs_approval = true;
+                        call_needs_approval[i] = true;
+                    }
                 }
             }
         }
@@ -2344,11 +2357,13 @@ task<result<AgentResponse>> AgentSessionCore::run_rounds_body() {
                 // re-checks it (resolve_codeact_ask()).
                 if (unattended_by_) {
                     ToolDescriptor const* td = tool_table.find(req.tool_name);
-                    if (td != nullptr &&
-                        resolve_approval_outcome(*td, req.provenance, effect_context_.principal,
-                                                 req.arguments_tainted, policy_decider_) ==
-                            approval_outcome::needs_decider) {
-                        record.approved_unattended_by = *unattended_by_;
+                    if (td != nullptr) {
+                        approval_outcome const outcome =
+                            co_await resolve_approval_outcome(*td, req.provenance, effect_context_.principal,
+                                                              req.arguments_tainted, policy_decider_);
+                        if (outcome == approval_outcome::needs_decider) {
+                            record.approved_unattended_by = *unattended_by_;
+                        }
                     }
                 }
                 pending_codeact_asks_[interaction.interaction_id] = std::move(record);
@@ -2517,8 +2532,11 @@ agentengine::ApprovalDecider AgentSessionCore::effective_approval_decider(ToolTa
                                  : agentengine::ApprovalDecider{};
     }
     return [this, op = *unattended_by_, tools = &tool_table](Principal const& caller, std::string_view tool_name,
-                                                             std::string const& canonical_args) {
-        if (!unattended_by_) return approval_decider_ ? approval_decider_(caller, tool_name, canonical_args) : false;
+                                                             std::string const& canonical_args) -> task<bool> {
+        if (!unattended_by_) {
+            if (!approval_decider_) co_return false;
+            co_return co_await approval_decider_(caller, tool_name, canonical_args);
+        }
         // The call id is not known here; a short hash of the exact arguments tells two calls to one tool apart
         // (correlation only, not a digest).
         char args_id[17];
@@ -2526,31 +2544,38 @@ agentengine::ApprovalDecider AgentSessionCore::effective_approval_decider(ToolTa
                       static_cast<unsigned long long>(std::hash<std::string>{}(canonical_args)));
         if (policy_decider_) {
             ToolDescriptor const* td = tools->find(std::string(tool_name));
-            if (td != nullptr &&
-                policy_decider_(caller, *td, /*arguments_tainted=*/true) == policy_decision::auto_deny) {
+            if (td != nullptr) {
+                policy_decision const verdict = co_await policy_decider_(caller, *td, /*arguments_tainted=*/true);
+                if (verdict == policy_decision::auto_deny) {
+                    emit_run_event(run_event_kind::policy_decision,
+                                   run_event_payload::PolicyDecision{
+                                       "unattended mode (operator " + op + "): tool " + std::string(tool_name) +
+                                       " denied by the host's policy, caller " + caller.id + ", arguments #" + args_id});
+                    co_return false;
+                }
+            }
+        }
+        if (std::shared_ptr<agentengine::ApprovalDecider const> const veto = unattended_veto_) {
+            bool const veto_ok = co_await (*veto)(caller, tool_name, canonical_args);
+            if (!veto_ok) {
                 emit_run_event(run_event_kind::policy_decision,
                                run_event_payload::PolicyDecision{
                                    "unattended mode (operator " + op + "): tool " + std::string(tool_name) +
-                                   " denied by the host's policy, caller " + caller.id + ", arguments #" + args_id});
-                return false;
+                                   " vetoed by the host, caller " + caller.id + ", arguments #" + args_id});
+                co_return false;
             }
         }
-        if (std::shared_ptr<agentengine::ApprovalDecider const> const veto = unattended_veto_;
-            veto && !(*veto)(caller, tool_name, canonical_args)) {
-            emit_run_event(run_event_kind::policy_decision,
-                           run_event_payload::PolicyDecision{
-                               "unattended mode (operator " + op + "): tool " + std::string(tool_name) +
-                               " vetoed by the host, caller " + caller.id + ", arguments #" + args_id});
-            return false;
-        }
         // The veto switched unattended mode off while it ran: the default is back for this call too.
-        if (!unattended_by_) return approval_decider_ ? approval_decider_(caller, tool_name, canonical_args) : false;
+        if (!unattended_by_) {
+            if (!approval_decider_) co_return false;
+            co_return co_await approval_decider_(caller, tool_name, canonical_args);
+        }
         emit_run_event(run_event_kind::policy_decision,
                        run_event_payload::PolicyDecision{
                            "unattended approval (host setting, operator " + op + "): tool " +
                            std::string(tool_name) + " approved with no human, caller " + caller.id +
                            ", arguments #" + args_id});
-        return true;
+        co_return true;
     };
 }
 

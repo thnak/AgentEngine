@@ -1407,13 +1407,15 @@ template <class Inner>
     // `cli_chat::plan_tools()`, where it is tested.
     actor.history_provider().require_approval_for(plan.approval_required);
 
-    // The blocking-decider shape (006 §4): `invoke_tool()`'s step 5 calls this synchronously, with the
-    // canonical JSON of the EXACT arguments about to execute -- so what the human sees is what runs,
-    // not a paraphrase the model supplied. Returning false denies the call; the round continues and
+    // The blocking-decider shape (006 §4): `invoke_tool()`'s step 5 `co_await`s this decider's task
+    // (ADR-237 §5.1, Phase G), with the canonical JSON of the EXACT arguments about to execute -- so
+    // what the human sees is what runs, not a paraphrase the model supplied. The body itself blocks
+    // on stdin, the one host edge this program cannot suspend on; the returned task completes without
+    // suspending. Returning false denies the call; the round continues and
     // the model is told. The alternative shape -- `set_suspend_for_approval(true)` plus
     // `resolve_interaction()` -- is for a UI that cannot block a thread on a question; a terminal can.
     actor.set_approval_decider([&](Principal const& caller, std::string_view tool_name,
-                                    std::string const& args_json) -> bool {
+                                    std::string const& args_json) -> task<bool> {
         log.write("approval REQUESTED tool=" + std::string(tool_name) + " caller=" + caller.id +
                   " args=" + args_json);
         ui_paused.store(true, std::memory_order_release);
@@ -1461,7 +1463,7 @@ template <class Inner>
         ui_paused.store(false, std::memory_order_release);
         log.write(std::string("approval ") + (approved ? "GRANTED" : "DENIED") + " tool=" +
                   std::string(tool_name) + (got ? "" : " (stdin closed -- denied unattended)"));
-        return approved;
+        co_return approved;
     });
 
     // ADR-030: hands the provider its real per-session mount-root/session-id knowledge -- must

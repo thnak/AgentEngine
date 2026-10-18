@@ -529,10 +529,10 @@ template <class HistoryT, class ChatClientT>
         };
         PolicyDecider host_policy = std::move(opts.policy);
         PolicyDecider after_gate  = [gated, host_policy](Principal const& caller, ToolDescriptor const& tool,
-                                                        bool arguments_tainted) -> policy_decision {
-            if (gated->contains(tool.name)) return policy_decision::auto_approve;  // its declared never_require
-            if (host_policy) return host_policy(caller, tool, arguments_tainted);
-            return policy_decision::require_approval;  // == no decider wired (ADR-070)
+                                                        bool arguments_tainted) -> task<policy_decision> {
+            if (gated->contains(tool.name)) co_return policy_decision::auto_approve;  // its declared never_require
+            if (host_policy) co_return co_await host_policy(caller, tool, arguments_tainted);
+            co_return policy_decision::require_approval;  // == no decider wired (ADR-070)
         };
         opts.policy = make_plan_execute_policy_decider(gate, std::move(after_gate), planning_safe);
     }

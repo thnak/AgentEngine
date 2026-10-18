@@ -238,9 +238,9 @@ int main() {
 
         bool approval_decider_called = false;
         agentengine::ApprovalDecider const tripwire = [&approval_decider_called](
-            agentengine::Principal const&, std::string_view, std::string const&) {
+            agentengine::Principal const&, std::string_view, std::string const&) -> agentengine::task<bool> {
             approval_decider_called = true;
-            return false;  // would deny if ever reached -- proves auto_approve short-circuits it
+            co_return false;  // would deny if ever reached -- proves auto_approve short-circuits it
         };
 
         // 6a. non-delegated (top-level) caller -- require_approval, no ApprovalDecider configured ->

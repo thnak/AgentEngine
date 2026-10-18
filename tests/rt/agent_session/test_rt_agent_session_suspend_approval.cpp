@@ -486,8 +486,8 @@ int main() {
         // Deliberately no set_approval_decider() -- proving the PolicyDecider alone resolves this
         // policy_driven call without ever needing a human.
         session.set_policy_decider(
-            [](Principal const&, agentengine::ToolDescriptor const&, bool) {
-                return agentengine::policy_decision::auto_approve;
+            [](Principal const&, agentengine::ToolDescriptor const&, bool) -> agentengine::task<agentengine::policy_decision> {
+                co_return agentengine::policy_decision::auto_approve;
             });
 
         auto r1 = drive(session.start_run(StartRun{user_message("go")}));
@@ -521,8 +521,8 @@ int main() {
         session.set_capabilities(&held);
         session.set_suspend_for_approval(true);
         session.set_policy_decider(
-            [](Principal const&, agentengine::ToolDescriptor const&, bool) {
-                return agentengine::policy_decision::auto_deny;
+            [](Principal const&, agentengine::ToolDescriptor const&, bool) -> agentengine::task<agentengine::policy_decision> {
+                co_return agentengine::policy_decision::auto_deny;
             });
 
         auto r1 = drive(session.start_run(StartRun{user_message("go")}));

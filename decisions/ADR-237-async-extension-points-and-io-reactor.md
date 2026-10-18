@@ -2696,6 +2696,51 @@ a conformer that blocks a lane is the named residual, as for the file stores.
   has no daemon) and `test_json_dump_escape`'s RLIMIT_DATA self-check, all expected there. naming-lint,
   layering-lint and milestone lint OK.
 
+### Step 52 (2026-10-18): Phase G, slice 1 -- the two deciders are `task`-shaped (#174 triage)
+
+The orchestration/decider seams §5.1 named from the start and the #174 triage confirmed were never converted:
+`ApprovalDecider` and `PolicyDecider` (`core/tool_pipeline.hpp`). This slice converts exactly those two.
+
+- **Signatures.** `ApprovalDecider` becomes `std::function<task<bool>(...)>`, `PolicyDecider`
+  `std::function<task<policy_decision>(...)>` -- **no `result`**: a decider cannot fail, and a throwing body
+  is caught by `task`'s own `unhandled_exception` and rethrown at the caller's `co_await`, exactly how it
+  propagated before. `resolve_approval_outcome` -> `task<approval_outcome>`; `admit_call` ->
+  `task<result<AdmittedCall>>`.
+- **ADR-070's contract held.** "unset = today's behaviour" is preserved: an unset decider is the same
+  fail-closed default, now returned by an immediately-ready task. The ADR-070 regression checks in
+  `test_tool_pipeline` pass unchanged.
+- **The one structural change: `co_await` cannot sit inside `==`.** Both of `resolve_approval_outcome`'s
+  decider consults (`src/core/tool_pipeline.cpp`) and all five of its call sites in
+  `rt/agent_session_core.cpp` (`:1279`, `:1492`, `:1517`, `:2152`, `:2348`) were in expression position; each
+  was hoisted to a statement. All five call sites are already inside coroutines (`resolve_codeact_ask`,
+  `resolve_hook_decision`, `run_rounds`, `dispatch_tool_calls`, `resolve_interaction_locked`), so `co_await`
+  is legal in place. Short-circuit order is unchanged: `policy` is still only consulted when the tool is
+  `policy_driven` AND `policy` is set.
+- **`background_task` keeps its asymmetry.** It takes only `approve`, never a `PolicyDecider` -- ADR-070 §7's
+  named residual, untouched; only its `approve` call became `co_await`.
+- **Conformers.** Production: `quickstart::detail::install_deciders`, `trust::approve_delegated_calls`,
+  `make_plan_execute_policy_decider`, `harness.hpp`'s `after_gate`, `native_jail::bridge_tool_call`'s bundled
+  decider, `rt/agent_session_core.cpp`'s `effective_approval_decider` returned lambda / `one_shot_approve` /
+  `approve_exact`, and `tools/cli_chat.cpp`'s interactive prompt. Each body is the same statements,
+  `co_return`-terminated; none suspends. `cli_chat`'s stdin read stays a blocking read -- the one genuine host
+  edge on this seam, stated in a comment.
+- **Tests.** Every test/devsim conformer became a coroutine. Where a test invokes a decider directly and
+  compares its result (`test_plan_execute_mode.cpp`), it now drives the task through
+  `test_support::run_task_sync` -- a mechanical adaptation, not a behaviour change; no assertion moved.
+- **Lock audit** (the phase's standing instruction). No `std::mutex` is held across a `co_await`: the decider
+  paths take no locks, and the hoists added none.
+- **Verification.** `build-dev` clean (`/W4 /WX`). Named tests pass: `test_tool_pipeline` (the ADR-070 proof),
+  `test_approval_decider_principal`, `test_unattended_approvals`, `test_approval_resume`,
+  `test_agent_tool_invocation`, `test_rt_agent_session_suspend_approval`,
+  `test_rt_agent_session_tool_call_hook`, `test_plan_execute_mode`. `ctest -LE live-network` -> 402/418 with
+  the identical 14 baseline failures (13 need the Docker daemon, `test_external_skill_discovery` needs
+  machine-installed skills). naming-lint, layering-lint and milestone-status-lint OK.
+- **Numbering.** Recorded as step 52 because §14 step 51 (Phase E slice 1, #175) lives on the
+  `phase-e-tool-contract-cleanup` branch; if that branch is dropped rather than merged, renumber this to 51.
+
+Remaining in Phase G (not this slice): `ExecutorBody` + `AgentExecutorBodyTag::Impl`, `ChildRunner`,
+`BatchableModelCall::Call`, `EffectContext::blob_sink`.
+
 ### §14.1 What is left, and the phases to follow
 
 Recorded at session end so the work resumes cold. **Status: §5.1 is 14 of ~27 seams converted**
@@ -2723,8 +2768,9 @@ closes the small end of Phase B), then Phase C with the qdrant `Resolver` folded
 
 **Remaining §5.1 seams (sync -> `task`):** ~~`Runner`; `SandboxBackend`; `ExecutionSurface`;
 `PersistentShellSurface`; `NetEgressBackend`~~ (Phase D, §14 step 50); ~~`SecretStore`; the three stores~~ (Phase
-C, steps 46-49); plus ~15 further `std::function` typedefs that have not been triaged individually yet (#174 --
-among them the shell's `RegisteredRunner` composition typedef, which step 50 left synchronous).
+C, steps 46-49); ~~`ApprovalDecider`; `PolicyDecider`~~ (Phase G slice 1, §14 step 52); plus ~15 further
+`std::function` typedefs that have not been triaged individually yet (#174 -- among them the shell's
+`RegisteredRunner` composition typedef, which step 50 left synchronous).
 
 **Remaining §5.2 cleanup:** delete `make_sync_invoke`'s production call sites. **Re-verified against the
 tree 2026-10-18: THREE remain, not the five first counted.** The two RAG tools were converted off it in
@@ -2797,8 +2843,17 @@ not produce.
 
 **Phase F -- the carried threads.** D3/D4/D7, the §10 + 027 + `web/marketing` pass, the §8 gates.
 
+**Phase G -- the orchestration and decider seams (surfaced by the #174 triage).** `ApprovalDecider`,
+`PolicyDecider`, `ExecutorBody` + `AgentExecutorBodyTag::Impl`, `ChildRunner`, `BatchableModelCall::Call`,
+`EffectContext::blob_sink`. §5.1 named the deciders from the start; the rest the triage added. **Slice 1 (the
+two deciders) DONE** (§14 step 52, 2026-10-18). The remaining seams' bodies are where engine code drives a
+nested task from inside a task today via `rt::block_on` (`agent_spawn_child_run.hpp:139`,
+`agent_workflow_executor.hpp:87`, `workflow_supervisor.hpp:1160` -- all verified present on 2026-10-18), so the
+rest of this phase removes those nested drive loops.
+
 **Gate for every phase, unchanged:** build-dev clean; the named tests for the touched area pass; naming-lint
-OK; layering-lint OK; `ctest -LE live-network` -> 401/415 with the identical 14. Never mark §5.1 or §5.2 done
+OK; layering-lint OK; `ctest -LE live-network` -> the identical 14 baseline failures (re-measured 402/418 non-live
+on 2026-10-18; the older "401/415" predates several landed slices). Never mark §5.1 or §5.2 done
 on anything less. And the standing behavioural rule: **a seam going async must not move behaviour** -- the
 A2A D4 assertions are the exemplar. If a test has to change, that change is the finding, and it gets
 recorded rather than absorbed.
