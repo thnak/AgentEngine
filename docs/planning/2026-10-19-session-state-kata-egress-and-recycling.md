@@ -128,6 +128,36 @@ address not detectable as host-local; net_bytes is a silent stall; 0-byte first 
 Five stale sockets remain in /run/containerd/s/ (not all known to be ours).
 Judge stage: branch `kata-egress-judge`, report `docs/planning/2026-10-19-kata-egress-policy-judgement.md`.
 
+## 6c. Judge result (branch `kata-egress-judge`, commit 75fd5f1b, report `docs/planning/2026-10-19-kata-egress-policy-judgement.md`)
+
+Recommendation: **judge-ready-after-listed-changes**; no blocker (no hostile guest got past the exact
+(ip,port) set; every failure path failed closed). Independent re-run: 11/11 ctest with scoped FORWARD
+accepts; egress_linux 73/0, lifecycle 119/0, scale 27/0; gcc+clang clean. Without the host FORWARD accept the
+suites fail loudly (egress 19 fail, lifecycle 9, slice9_10 2; scale returned before `lab.down()` and hung
+ctest 908 s) except slice9_10 case 9 and the "1.1.1.1 blocked" check, which pass vacuously with no egress.
+Mutation table: M1-M9 each turned a test red (M1 default `in_` accept: only the T2 sniffer batch caught it;
+M2 exec verify; M3 sweep; M4 quota; M5 ct state; M6 tc; M7 SYN limit; M8 static FDB; M9 ethertype). **M10-M16
+stayed green in behaviour tests**: removing the port flags (individually or all) and the default-drop /
+c_forward port drops (M13, M14) leaves egress_linux 73/73 -- those claims are FAILED-AS-TESTED (true by the
+judge's own probe, but no test pins them). Claim false by code reading: design 6.3 "older nft fails create
+closed" (only the removal script uses `destroy`; on old nft create succeeds and teardown/sweep fail
+forever). Must-fix: dedicated-bridge precondition unenforced (any bridge the CNI result names has foreign
+ports and host-originated traffic dropped); ADR residuals incomplete (what is lost between a table flush
+and the next exec: quota, conntrack statefulness, SYN limit, early fragment drop; unrated ARP; 2-6% wire
+byte undercount; create-time-only host-local check); ADR-239 claims I4 upheld with no mechanism/test;
+`kata_backend.hpp` cites "ADR-239 §8" (residuals are §6), stale SLICE 10 header text, invalid UTF-8 where
+"§" was written; three suites leak the lab on early return, lifecycle leaks one CNI ipMasq rule into the
+host nat table per run, tests need `python:3.12-alpine` pre-pulled (now pulled on the server).
+Judge probes: literal `nft flush ruleset` in a private netns (tc + port flags still contained the guest;
+verify() detected it); two backend processes x3 rounds pass; crashed backend's orphan stayed contained and
+survived another process's sweep; non-SYN TCP to the allowed tuple: 20000/20000 frames forwarded (stateless,
+bounded only by net_bytes). tc layer: keep (only layer that contains the guest once nft is gone).
+Exec-time-only detection acceptable if the ADR lists degraded-mode losses and a public `verify_egress` hook
+is added; a watchdog only if net_bytes is treated as a security budget. Not verified: literal flush against
+a running microVM, nft<1.0.9 / kernel<6.3 / other kernels / br_netfilter, 200 real microVMs, E6 fragment
+mutation and A-record cap constants, real multi-A DNS, NAT-hairpin WAN address, the 0-byte first download.
+Open: owner decides which listed changes to make before marking ADR-239 Judged.
+
 ## 7. Measurements (idle busybox guests, shipped default 1 vCPU / 2 GiB)
 
 | What | Result |
