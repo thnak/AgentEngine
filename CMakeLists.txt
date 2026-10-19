@@ -445,7 +445,9 @@ option(AGENTENGINE_BUILD_KATA_BACKEND
 
 if(NOT WIN32 AND AGENTENGINE_BUILD_KATA_BACKEND)
   add_library(agentengine_kata_backend STATIC
-    src/backends/kata/kata_backend.cpp)
+    src/backends/kata/kata_backend.cpp
+    src/backends/kata/egress_policy_render.cpp
+    src/backends/kata/egress_policy_host.cpp)
   target_include_directories(agentengine_kata_backend PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(agentengine_kata_backend PUBLIC agentengine::core)
