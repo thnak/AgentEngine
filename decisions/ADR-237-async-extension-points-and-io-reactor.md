@@ -2698,7 +2698,7 @@ a conformer that blocks a lane is the named residual, as for the file stores.
 
 ### §14.1 What is left, and the phases to follow
 
-Recorded at session end so the work resumes cold. **Status: §5.1 is 14 of ~27 seams converted**
+Recorded at session end so the work resumes cold. **Status: §5.1's concept seams are converted through Phase D; the `std::function` inventory is now exact -- 49 aliases (the earlier "~27" was an estimate), triaged in the table below**
 (`SkillSource`/`ChunkingPolicy`, `ToolSourceFetch`, the A2A client, the A2A server, `GraderFn`, MCP --
 §14 step 31, `OutputValidator` -- §14 step 32, `ChatClient` -- §14 steps 33-36, `SurfaceFactory` --
 §14 step 37, `Resolver` -- §14 steps 38-41, `BatchBackend` -- §14 step 43, `VectorIndex`/`SparseIndex` -- §14 step 44, qdrant's `Resolver` -- §14 step 45, and `SecretStore` -- §14 step 46). **PHASE B IS COMPLETE** on the conversion side: every one
@@ -2723,8 +2723,91 @@ closes the small end of Phase B), then Phase C with the qdrant `Resolver` folded
 
 **Remaining §5.1 seams (sync -> `task`):** ~~`Runner`; `SandboxBackend`; `ExecutionSurface`;
 `PersistentShellSurface`; `NetEgressBackend`~~ (Phase D, §14 step 50); ~~`SecretStore`; the three stores~~ (Phase
-C, steps 46-49); plus ~15 further `std::function` typedefs that have not been triaged individually yet (#174 --
-among them the shell's `RegisteredRunner` composition typedef, which step 50 left synchronous).
+C, steps 46-49); the further `std::function` typedefs are now **triaged individually (#174, 2026-10-19) in the §14.1 triage
+table below** -- among them the shell's `RegisteredRunner` composition typedef, which step 50 left synchronous.
+
+**§14.1 triage table (#174, 2026-10-19, `main` at `16efaa38`; doc-only -- nothing below was converted).**
+Method: `grep` over `include/` and `src/` for every `using X = std::function<...>` (45 single-line + 4
+multi-line) and for function-valued public data members; each verdict was taken from the definition and its
+call site, not the name. **Exact count: 49 alias typedefs -- 22 already `task`-shaped or handled by Phases A-D
+(rows 1-22), 27 triaged here (rows 23-49): 6 convert, 2 needs ADR, 19 stay.** Beyond the aliases, 5 non-alias
+function-valued slots need a verdict (rows 50-54, all convert) and 18 void/clock data-member hooks stay
+(rows 55-72). "Phase G" is the proposed home for converts with no existing phase (the name is new in this
+table); no tracking issue has been opened for it yet.
+
+| # | Seam | file:line | Verdict | Phase / reason |
+|---|---|---|---|---|
+| 1 | `OutputValidator` | core/agent_session_bridge.hpp:250 | done | step 32 |
+| 2 | `ToolSourceFetch` | core/tool_optimizer_provider.hpp:113 | done | step 27 |
+| 3 | `GraderFn` | eval/eval_grader.hpp:42 | done | step 30 |
+| 4 | `CardFetcher` | protocol/a2a/client.hpp:59 | done | step 28 |
+| 5 | `RunStarter` | protocol/a2a/server.hpp:89 | done | step 29 |
+| 6 | `RequestSender` | protocol/mcp/client.hpp:61 | done | step 31 |
+| 7 | `RequestSenderWithHeaders` | protocol/mcp/client.hpp:332 | done | step 31 |
+| 8 | `InputRequestHandler` | protocol/mcp/client.hpp:92 | done | step 31 |
+| 9 | `SurfaceFactory` | sandbox/live_shell_sandbox_provider.hpp:137 | done | step 37 |
+| 10 | `WorkflowSupervisor::MergeOnJoinHook` | rt/workflow_supervisor.hpp:898 | done (task) | `make_merge_on_join_hook`, workflow/worktree_scoping.hpp:245 |
+| 11 | `WorkflowSupervisor::CheckpointHook` | rt/workflow_supervisor.hpp:891 | done | #172 |
+| 12 | `CheckpointHook` (project) | rt/project_supervisor.hpp:69 | done (born `task`) | -- |
+| 13 | `ToolDescriptor::InvokeFn` | core/tool_descriptor.hpp:64 | done | step 9 |
+| 14 | `ToolCallHook` | core/tool_call_hook.hpp:79 | done (born `task`) | -- |
+| 15 | `TurnMiddlewareHook` | core/turn_middleware.hpp:271 | done (born `task`) | -- |
+| 16 | `OnContextFn` | core/context_assembly.hpp:128 | done (born `task`) | -- |
+| 17 | `OnTurnEndFn` | core/context_assembly.hpp:135 | done (born `task`) | -- |
+| 18 | `OnRunEndFn` | core/context_assembly.hpp:145 | done (born `task`) | -- |
+| 19 | `ReflectionEvaluator` | core/harness.hpp:223 | done (born `task`) | -- |
+| 20 | TLS handshake alias | rt/http.hpp:238 | done (reactor-native `task`) | -- |
+| 21 | `Resolver` (provider) | protocol/provider_chat_wire.hpp:28 | stays | blocking by design: the input to `rt::HostResolver`, run on the DNS pool (`host_resolver_from`, :35; steps 40-41) |
+| 22 | `Resolver` (qdrant) | protocol/qdrant/vector_index.hpp:93 | stays | same shape, same reason (step 45) |
+| 23 | `ApprovalDecider` | core/tool_pipeline.hpp:149 | **needs ADR** | §5.1 names it for `task`; an approval may wait on a human (I/O), but it is the I2/I3 gate on the hot path -- conversion must preserve ADR-070's fail-closed unset default and `resolve_approval_outcome`'s structure (:165-169) |
+| 24 | `PolicyDecider` | core/tool_pipeline.hpp:170 | **needs ADR** | contested: §5.1 names it, but it is a pure host decision that only narrows (:152-167); stay-sync vs `task` is an I2/I3 + hot-path call, not decided here |
+| 25 | `BackgroundTaskCompletion` | core/tool_pipeline.hpp:431 | stays | `void` enqueue, a host self-`tell()` (:428-429); §5.3 sink rule |
+| 26 | `DescriptorFilter` | core/agent_session_bridge.hpp:256 | stays | pure mutation of an in-memory descriptor vector, in `agent_bind_detail`; §5.3 pure rule |
+| 27 | `BatchRecorder::Sink` | core/batch_recording.hpp:123 | stays | `void` event sink; §5.3 |
+| 28 | `DivergenceHook` | core/batch_recording.hpp:145 | stays | `void` hook; §5.3 |
+| 29 | `ContentReplayTrigger` | core/content_replay_gateway.hpp:77 | stays | pure over a `ChatResponse const&`; §5.3 |
+| 30 | `ContentReplayTraceHook` | core/content_replay_gateway.hpp:90 | stays | `*TraceHook`; §5.3 |
+| 31 | `MiddlewareTraceHook` | core/middleware.hpp:99 | stays | `*TraceHook`; §5.3 |
+| 32 | `JitterSource` | core/model_call_gateway.hpp:166 | stays | `double()` draw, no wait; §5.3 |
+| 33 | `RecordingSink` | core/recording_chat_client.hpp:129 | stays | `void` sink; §5.3 |
+| 34 | `SleepFn` | core/replay_chat_client.hpp:144 | **convert** | default `real_sleep` is `std::this_thread::sleep_for` (:68) -- it blocks; becomes `rt::sleep_until`-shaped. Phase G |
+| 35 | `LiveShellClock` | sandbox/live_shell_lifetime.hpp:80 | stays | clock read, not a wait; §5.3 |
+| 36 | `SandboxBackendResolutionAuditHook` | sandbox/sandbox_backend_registry.hpp:63 | stays | `*AuditHook`; §5.3 |
+| 37 | `QuarantineAuditHook` | trust/secret_quarantine.hpp:111 | stays | `*AuditHook`; §5.3 |
+| 38 | `EmitFn` | rt/agent_session_trust.hpp:31 | stays | `void` event emit; §5.3 |
+| 39 | `BackgroundJobSink` | rt/background_job_runner.hpp:148 | stays | `void` sink; §5.3 |
+| 40 | `HostResolver` | rt/dns.hpp:84 | stays | already the reactor's input, run on the DNS pool (comment at :82) |
+| 41 | `AddressPolicy` | rt/dns.hpp:99 | stays | pure predicate over an address (:97) |
+| 42 | `SessionFactory` | rt/multi_agent.hpp:90 | **convert** | §5.1-named; `factory(child_principal)` (:211) builds a session synchronously, and `SurfaceFactory` (row 9) went async for the same reason. Phase G |
+| 43 | `ChildRunner` | rt/agent_spawn.hpp:160 | **convert** | §5.1-named; `target->run_child(...)` (:552) drives a whole child run (model + tool I/O) inline. Phase G |
+| 44 | `ExecutorBody` | rt/workflow_supervisor.hpp:248 | **convert** | §5.1-named; runs arbitrary node bodies inline (agent/workflow children block on it). Largest of the six; Phase G |
+| 45 | `AgentExecutorBodyTag::Impl` | rt/workflow_supervisor.hpp:264 | **convert** | same shape, called at :271; goes with row 44 |
+| 46 | `BatchableModelCall::Build` | rt/workflow_supervisor.hpp:291 | stays | pure and required deterministic (:285; called at :311) -- §5.1's blanket "`Build`/`Call`/`Complete`" over-claims |
+| 47 | `BatchableModelCall::Call` | rt/workflow_supervisor.hpp:293 | **convert** | performs the synchronous model call (:320). Phase G, with row 44 |
+| 48 | `BatchableModelCall::Complete` | rt/workflow_supervisor.hpp:295 | stays | pure fold of a response into an outcome (:330) |
+| 49 | `QueryFn` | src/backends/native_jail/python_worker_mediation.hpp:96 | stays | runs inside the jailed Python worker process as a blocking framed-pipe round trip (python_worker_main.cpp:50); the worker has no reactor |
+| 50 | `RegisteredRunner::invoke` | src/backends/native_jail/command_registry.hpp:46 | **convert** | called from shell_dispatch.cpp:270; step 50 left it sync -- joins #180 (blocking conformer bodies onto `rt::`) |
+| 51 | `RegisteredTool::invoke` | src/backends/native_jail/command_registry.hpp:59 | **convert** | shell_dispatch.cpp:288; #180 |
+| 52 | `RegisteredRunner::invoke` (mediated) | src/backends/native_jail/mediated_command_registry.hpp:36 | **convert** | mediated_shell_dispatch.cpp:292; #180 |
+| 53 | `RegisteredTool::invoke` (mediated) | src/backends/native_jail/mediated_command_registry.hpp:46 | **convert** | mediated_shell_dispatch.cpp:295; #180 |
+| 54 | `EffectContext::blob_sink` | core/effect_context.hpp:237 | **convert** | writes content-addressed bytes (`result<BlobRef>`) and `WorktreeObjectStore::put_blob` is `task`-shaped since step 49; callers sit inside tool coroutines (tools/read_content.hpp:186, tools/extract_pdf_text.hpp:189, rt/workflow_as_chat_client.hpp:226). Phase G |
+| 55-60 | `EffectContext` `report_progress`, `sandbox_exec_sink`, `agent_turn_sink`, `moderator_delta_sink`, `delegated_event_sink`, `charge_delegated_usage` | core/effect_context.hpp:115,146,172,177,182,188 | stays | `void` sinks / counters; §5.3 |
+| 61-62 | `HarnessOptions` `is_planning_safe`, `telemetry_sink` | core/harness.hpp:238,245 | stays | pure predicate over a descriptor / `void` sink; §5.3 |
+| 63-64 | `event_sink`, `charge_usage` (child run) | rt/agent_spawn_child_run.hpp:113,124 | stays | `void` sinks; §5.3 |
+| 65-66 | `on_lane_stall`, `on_stuck_run` (lanes) | rt/lanes.hpp:91,93 | stays | watchdog-thread callbacks, "must not throw" (:91); §5.3 |
+| 67-69 | `on_shutdown_overrun`, `on_lane_stall`, `on_stuck_run` (runtime) | rt/runtime.hpp:103,106,108 | stays | same watchdog `void` callbacks |
+| 70 | `on_overrun` (offload) | rt/offload.hpp:308 | stays | `void` notification |
+| 71 | `on_engine_call` (TLS) | rt/tls.hpp:121 | stays | `void()` test hook |
+| 72 | `now_ns` | rt/workflow_supervisor.hpp:386 | stays | clock read; §5.3 |
+
+Not counted as seams: `std::function` function parameters (e.g. `sandbox/provider_http_client.hpp:97,113`,
+`sandbox/net_egress_proxy.hpp:165,171,210`, `src/backends/native_jail/native_jail_backend.hpp:255`) --
+they belong to the blocking HTTP/egress helpers and follow those helpers' fate (#180, plus step 41's
+dead-code subtraction note); `tool_descriptor.hpp:182` (`make_sync_invoke`'s argument), deleted by Phase E;
+and the `stop_callback<std::function<void()>>` internals in `rt/background_job_runner.hpp`. **Contested --
+needs an ADR before anyone converts or freezes them: rows 23 and 24 (`ApprovalDecider`, `PolicyDecider`).**
+Tally: 6 alias converts (rows 34, 42, 43, 44, 45, 47) + 5 non-alias converts (rows 50-54) = 11 conversions
+outstanding; 2 needs-ADR; everything else stays.
 
 **Remaining §5.2 cleanup:** delete `make_sync_invoke`'s **five** production call sites -- counted by grep,
 not recollection: the two RAG tools (`core/hybrid_rag_context_provider.hpp:211`,
