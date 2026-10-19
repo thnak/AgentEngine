@@ -195,3 +195,10 @@ if(AGENTENGINE_WITH_HTTPS)
       MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto
     TIMEOUT 300)
 endif()
+
+# ---- ADR-237 §9 D6 / §14.1 (#181) -- the failure_class each rt I/O result maps onto (core/rt_io_error.hpp).
+agentengine_add_test(test_rt_io_error_class LIBS agentengine::core agentengine_warnings)
+if(AGENTENGINE_WITH_HTTPS)
+  # The TLS mapping is header-only (rt/tls.hpp enums/TlsResult); the macro is not propagated by agentengine::core.
+  target_compile_definitions(test_rt_io_error_class PRIVATE AGENTENGINE_WITH_HTTPS)
+endif()

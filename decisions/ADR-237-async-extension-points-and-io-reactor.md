@@ -2696,6 +2696,18 @@ a conformer that blocks a lane is the named residual, as for the file stores.
   has no daemon) and `test_json_dump_escape`'s RLIMIT_DATA self-check, all expected there. naming-lint,
   layering-lint and milestone lint OK.
 
+### Step 51 (2026-10-19): `failure_class` mapping for the rt I/O results (#181)
+
+`core/rt_io_error.hpp` holds the mapping functions (sleep, offload, tcp, dns, connect, tls, process), playing the
+role `http_error_to_error` plays for http; #180's seam conversions call them, and no caller is rewired here.
+Rules: stop -> `canceled`; an engine deadline (process wall deadline, connect attempt deadline) -> `resource` +
+`*.deadline_exceeded`; descriptor exhaustion -> `resource`; refused/reset/unreachable/OS timeout/DNS outage/TLS
+failure/truncation -> `transient` (http's precedent); address-policy refusal -> `policy`; busy/closed/invalid input
+-> `contract`; unclassifiable -> `fatal`. Non-failures (sleep expired, offload completed, any child exit) map to no
+error. Recorded divergence: `http_error_to_error` maps `deadline_exceeded`/`idle_timeout` to `transient` where D6
+says `resource`; left for #180. Proof: `tests/rt/test_rt_io_error_class.cpp` (mutating the stop and deadline rows
+fails it).
+
 ### §14.1 What is left, and the phases to follow
 
 Recorded at session end so the work resumes cold. **Status: §5.1 is 14 of ~27 seams converted**
