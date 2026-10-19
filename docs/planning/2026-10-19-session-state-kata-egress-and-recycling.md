@@ -81,6 +81,29 @@ teardown races; one unexplained 0-byte first download; the "N plus one GSO packe
 scaling to 100+. Next stages: prove (build B in kata_backend.cpp, run slice9_10 live), judge, ADR that
 also corrects ADR-093/095's claims.
 
+## 6a. Red-team result (branch `kata-egress-redteam`, commit 353b84cc, report `docs/planning/2026-10-19-kata-egress-policy-redteam.md`)
+
+Verdict: **ship-with-changes**. Candidate B's enforcement point held: no packet-level bypass of the exact
+(ip, tcp port) allow set in about 45 hostile frame shapes, each with a positive control. Blockers (all
+MEASURED): **B1** deleting the table or any `flush ruleset` (Debian/Ubuntu /etc/nftables.conf starts with
+one) opened a real Kata guest to host sshd and the allowlisted path (fail-open); **B2** bridge hooks are
+global so per-sandbox tables scale badly (19 Gbit/s with 0 tables, 4.4 at 100, 1.8 at 300, 0.94 at 600;
+one shared table with `iifname` vmap stayed flat and added a sandbox in 24 ms vs 225 ms); **B3** a guest
+using another sandbox's source MAC black-holes it (bridge learns before netfilter; fixed by port flags
+`learning off`, `locked on`, `isolated on` plus a static FDB entry per port); **B4** dropping ICMP
+frag-needed gives a PMTUD black hole after 64 KB (fixed by `icmp ... ct state related accept`).
+Must-fix: stateless return path allowed unsolicited inbound (add `ct state established,related`); one
+guest made 40,016 host conntrack entries in 1.2 s (SYN rate limit); fragment reassembly memory
+saturation (needs a prerouting chain at -450); `ip netns del` removes the netns path while the guest and
+port live on, so a sweep keyed on the path would delete a live guest's table; reloading a table file
+appends duplicates. REASONED must-fix: delete policy only after the veth is gone; cap the A-record set.
+Cheaper alternatives found (MEASURED): one shared table `ae_k` with verdict-map dispatch and default drop
+for ports without a map entry; native bridge port flags (survive any nft flush); a tc allowlist on the
+veth host end that Kata never touches. Not tested: br_netfilter loaded, two real microVMs (one real +
+lab guests), real internet path, full conntrack exhaustion, other kernels, multi-A DNS; one unexplained
+0-byte first download did not recur in 70 runs. Next: prove stage on the revised design (shared table +
+port flags + tc option decided), then judge and ADR (correcting ADR-093/095).
+
 ## 7. Measurements (idle busybox guests, shipped default 1 vCPU / 2 GiB)
 
 | What | Result |
