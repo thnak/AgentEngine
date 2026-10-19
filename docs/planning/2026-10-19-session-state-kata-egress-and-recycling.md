@@ -104,6 +104,30 @@ lab guests), real internet path, full conntrack exhaustion, other kernels, multi
 0-byte first download did not recur in 70 runs. Next: prove stage on the revised design (shared table +
 port flags + tc option decided), then judge and ADR (correcting ADR-093/095).
 
+## 6b. Prove stage result (branch `kata-egress-prove`, SELF-REPORTED by the implementing agent; judge stage is verifying)
+
+Owner decision 2026-10-19: shared nft table + native port flags. Implemented in
+`src/backends/kata/egress_policy*.{hpp,cpp}` + `kata_backend.cpp` wiring + `resolve_and_validate_all` in
+`net_egress_proxy`: one shared bridge table `ae_k` dispatching on the veth with default drop for unmapped
+ports; port flags `learning off`, `locked on`, `isolated on` + static FDB entry; **plus a tc flower
+allowlist on the veth host end (agent's addition, beyond the owner's stated direction)**; fail-closed
+ordering (sweep, flags, FDB, tc, nft, read-back); destroy removes the port first and keeps the policy if the
+port persists; `exec` re-verifies the policy and kills the guest on mismatch
+(`kata_backend.egress_policy_missing`). `decisions/ADR-239-kata-egress-policy-enforcement-point.md`
+(Proposed; ADR-093/095 carry partial-supersession banners; README row added). Reported: all 19 claims held
+with positive controls; egress_linux 73/73, lifecycle_linux 119/119, scale_linux pass, existing four Kata
+suites pass; scaling flat at ~22-23 Gbit/s for N=1..200 netns guests (per-sandbox-table control: 7.99 at
+N=100); control plane at N=200: install ~405 ms, remove 220 ms. slice9_10 cases 6/9 pass only with a
+temporary scoped FORWARD accept (host FORWARD policy is DROP); gcc+clang Kata targets build clean; full
+ctest shows only the known failures (json_dump_escape, 3 containerd tests as non-root). Open questions the
+agent handed the judge: tc layer worth its surface; detection only at exec (no watchdog); `delete table`
+tested rather than literal `nft flush ruleset`; tc passes ICMP type 3; floor nft>=1.0.9 / kernel>=6.3;
+bridge conntrack global side effect, br_netfilter untested; bridge must be dedicated to Kata; stale
+entries after backend crash until next sweep; hostname grant = A-records at create time; NAT-hairpin WAN
+address not detectable as host-local; net_bytes is a silent stall; 0-byte first download unexplained.
+Five stale sockets remain in /run/containerd/s/ (not all known to be ours).
+Judge stage: branch `kata-egress-judge`, report `docs/planning/2026-10-19-kata-egress-policy-judgement.md`.
+
 ## 7. Measurements (idle busybox guests, shipped default 1 vCPU / 2 GiB)
 
 | What | Result |
