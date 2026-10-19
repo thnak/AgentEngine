@@ -3,6 +3,20 @@
 A working record so none of this is lost to context compaction. Facts below were measured or read in
 this session unless marked REASONED. Nothing here is pushed; `origin` is untouched.
 
+## 0. Resume here (pushed 2026-10-20)
+
+All branches are on `origin` (no PRs opened): `adr237-phase-g-deciders` (06de4218, Phase G + merged #174/#181),
+`kata-live-verification` (this doc lives here), `kata-egress-design`, `kata-egress-redteam`,
+`kata-egress-prove`, `kata-egress-judge` (each stacked on the previous; judge tip 75fd5f1b has the code,
+ADR-239 Proposed, and all four stage reports). The state doc itself is only on `kata-live-verification`.
+**Next steps, in order:** (1) one fix agent for the judge's list (tests that fail when port flags /
+default-drop are removed, enforce or document the dedicated-bridge precondition, correct the false
+"older nft fails closed" claim, complete ADR-239 residuals incl. I4, fix `kata_backend.hpp` header cites and
+UTF-8, fix lab leaks in the three suites, add a public `verify_egress` hook); ADR stays Proposed until the
+owner marks it Judged. (2) Draft the recycling design (section 9), same loop. (3) Capacity: 200 real
+microVMs and guests under load were not tested. (4) Open PRs when the owner wants them. The server
+(`ssh thnak-server`) is clean; `python:3.12-alpine` and `alpine:latest` are pulled there.
+
 ## 1. Standing instructions from the project owner (this session)
 
 - **No WSL on the dev machine; no docker for builds** (slow). Linux builds go over SSH to `thnak-server`
