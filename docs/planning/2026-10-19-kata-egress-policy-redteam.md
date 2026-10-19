@@ -490,3 +490,72 @@ Server hygiene at the end: 0 `ae-rt-temp` rules in iptables, 0 `ae_rt_*`/`ae-rt`
 netns, processes or files, `ctr c ls` empty, my image pulled (`python:3.12-alpine`) removed, my stray
 `cnitest-*` namespace file removed. No apt installs, no pip installs (python3 stdlib only). Host sysctl, Docker,
 ufw and persistent firewall untouched; the transient FRAG and conntrack load drained by expiry (0 and 15 after).
+
+## 6. Revised design after red-team (PROVE stage, 2026-10-19)
+
+Owner decision: implement sections 3 and 4 of this report. ONE shared nftables `bridge` table with verdict-map
+dispatch and default drop for every port of the CNI bridge, PLUS native bridge-port hardening (`learning off`,
+`locked on`, `isolated on`, static FDB entry). The prove stage added one thing the owner's direction left open
+and the red-team marked "decide in prove/judge": a **host-end `tc clsact` allowlist** (R21.3). Without it the
+table-loss test (B1) cannot be made true: port flags alone do not stop a guest reaching the gateway, the host
+sshd or the allowlisted route once the table is gone. This is recorded here as a prove-stage decision and is
+challengeable by the judge.
+
+### 6.1 Final design
+
+Per backend, one table, created on first use and removed with the last sandbox (all under an advisory `flock` on
+`/run/agentengine-kata/egress.lock`, so concurrent creates and destroys in one or many processes serialise):
+
+```
+table bridge ae_k  (comment "agentengine-kata-egress-v1")
+  set ports, set bridges (ifname), map in_d / out_d (ifname : verdict), counter frag_drops
+  chain c_pre     hook prerouting priority -450: iifname @ports ip frag-off & 0x3fff != 0 drop
+  chain c_input   hook input      priority -300: iifname vmap @in_d ; meta ibrname @bridges drop
+  chain c_forward hook forward    priority -300: iifname @ports drop ; oifname @ports drop ; meta ibrname @bridges drop
+  chain c_output  hook output     priority -300: oifname vmap @out_d ; meta obrname @bridges drop
+```
+
+Per sandbox (tag = backend id, charset-checked), ONE `nft -f` transaction, elements added last: chains
+`in_<tag>` and `out_<tag>`, counter `d_<tag>`, quota `q_<tag>` when `net_bytes > 0`, elements in `ports`,
+`bridges`, `in_d`, `out_d`. Rule text is Appendix B plus: a SYN rate limit before the quota, and the quota drop
+sits after the ARP accepts (ARP is never counted).
+
+Per sandbox, on the host end of the veth, before the guest boots: port flags and static FDB, then the tc layer
+(default-deny matchall FIRST, then flower allows: exact ARP to the gateway, exact `(guest mac, bridge mac, guest
+ip, d, tcp p)` ingress, exact reverse egress, `icmp type 3` to the guest, no IP fragments). Every tc and nft
+installation is order-safe: a partial installation is only more restrictive.
+
+Order of create: validate caps and allowlist, resolve (backend code, once) -> mount -> netns -> `cnitool add`
+(parse the result JSON: host veth, guest MAC and IP, gateway; require the veth to be a bridge port via
+`/sys/class/net/<v>/master`, else `kata_backend.egress_topology_unsupported`) -> [lock] port flags and static
+FDB -> tc -> shared table ensure plus the sandbox transaction -> read back and snapshot -> [unlock] -> OCI spec
+-> `ctr run`. Any failure runs the common reverse cleanup (CNI del, netns del, then policy removal) and returns
+an error: a guest is never booted with a half policy.
+
+### 6.2 Red-team items and how each is addressed
+
+| Item | Resolution |
+|---|---|
+| B1 fail-open on table loss | Default drop lives in the shared table: any bridge port without a vmap entry is dropped, also while a sandbox is mid-create or after a bad destroy. A flush or delete of the whole table is survived by layers nft cannot touch: port flags (spoof, FDB, guest-to-guest at L2) and the tc allowlist (gateway, host sshd, unlisted IPs and ports, IPv6 stay blocked). What a flush DOES remove: the quota, conntrack statefulness (unsolicited inbound becomes possible again), the SYN limit and the -450 fragment drop (tc still drops fragments). Exec time: `exec()` re-verifies the table, the base chains (key lines), this sandbox's two chains (identical to the install-time snapshot), its map elements, the tc ingress/egress listings (identical to snapshot), the port flags and the static FDB entry. On any mismatch the backend kills the guest task, marks the instance, returns `kata_backend.egress_policy_missing` and refuses later execs. There is NO background timer: a guest idle between execs stays under the tc layer, without quota, until the next backend call. Documented residual; the judge may require a timer. |
+| B2 scaling | Single shared table with vmap dispatch: one hash lookup per bridged frame independent of N (red-team measured flat to N=600). Re-measured in the prove stage. |
+| B3 FDB poisoning | `learning off locked on isolated on` plus `bridge fdb replace <mac> dev <veth> master static` before boot; the tc layer also drops frames whose source MAC differs. |
+| B4 PMTUD | `out_<tag>`: `ip protocol icmp ct state related accept`, after the quota. tc egress passes `icmp type 3`. |
+| Inbound stateless | `out_<tag>` tcp accept requires `ct state established,related`. Under table loss the tc layer is stateless again (documented residual). |
+| conntrack flood | `in_<tag>`: `tcp flags & (syn|ack) == syn limit rate over 100/second burst 50 packets drop` before the quota and the accepts. Host sizing and the 5 day established timeout are operator facts. |
+| fragment memory | `c_pre` at priority -450 (before bridge conntrack defrag at -400) drops every IPv4 fragment from a registered port; tc repeats it flush-proof. |
+| teardown and sweep ownership | The policy outlives the port. Destroy: kill/rm task and container, `cnitool del`, `ip netns del`, confirm the veth is gone (else `ip link del`), only then remove the sandbox's elements, chains and objects (and the whole table when `ports` is empty). If the veth cannot be removed the policy is kept. The sweep keys on bridge-port existence (`/sys/class/net/<veth>`), taking the veth from the vmap element (the chain name carries the tag), never on `/var/run/netns/<id>`; a live or paused sandbox keeps its port, so its entry is never swept. No `flags owner`. |
+| idempotent reload | Install never appends to existing state: the sandbox objects come from one transaction that fails on any existing name; the base table is created only when absent (under the lock); a mismatching existing base table is refused (replaced only when `ports` is empty). Removal is generated from the observed state (only objects that exist), so repeating it is a no-op. |
+| A-record cap | `resolve_and_validate_all` returns every unblocked IPv4 candidate, de-duplicated; the backend keeps the first 8 in resolver order per entry (the first is the `/etc/hosts` pin); an entry with no valid record fails create. |
+| I2 and I3 | Every rule tuple traces to a `spec.net.allowlist` entry that `authorize_spec()` or `net_capability_required` already required to be covered by a `cap::SandboxNetOut` grant. Hostnames are resolved once at create, in backend code, from the host-authored entry. The nft and tc generators accept only typed values (uint32 address, uint16 port, validated MAC, ifname and tag, uint64 bytes); no string from a guest, a DNS answer or model output is interpolated. Entries resolving to a host-local address (any `getifaddrs` address) are rejected. |
+| deny_all and empty allowlist | `deny_all=true` and no allowlist: no netns, no port, no policy (unchanged; the guest has only `lo`). `deny_all=true` WITH a non-empty allowlist enables networking exactly as before (the allowlist is authoritative; documented, not changed). Empty allowlist with `deny_all=false` stays rejected by the existing gates. |
+| net_bytes | One named quota per sandbox, referenced by `in_` and `out_` chains (both directions). Contract: delivered L3 bytes as nft counts them (GSO super-packets whole, Ethernet headers and ARP excluded) never exceed N; the packet that would cross is dropped whole, so the guest may receive less than N by up to one GSO packet (up to 64 KiB); wire bytes can exceed N by header replication on segmentation (about 2-6%); the failure mode is a silent stall. The quota dies with the table: the backend kills the sandbox on the next check rather than reinstalling with a fresh budget. |
+
+### 6.3 Operator preconditions (not modified by the backend)
+
+* Guest internet egress on a host whose `FORWARD` policy is DROP (Docker, ufw) needs an operator `FORWARD` accept
+  for the Kata bridge. The backend never edits iptables, ufw, Docker chains, sysctls or `ip_forward`; it only adds
+  drops, so it cannot reopen a closed path.
+* The Kata CNI bridge must be dedicated to this backend: after the first sandbox, every frame on it that does not
+  belong to a registered sandbox port is dropped.
+* Tools: `nft` 1.0.9 or newer (`destroy`), kernel 6.3 or newer (`destroy`; `locked` ports need 5.18), `tc` with
+  `cls_flower`, iproute2 `bridge`. Older versions fail create closed.
