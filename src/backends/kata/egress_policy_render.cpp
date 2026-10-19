@@ -172,6 +172,10 @@ result<std::string> render_install_script(SandboxPlan const& p) {
 
     // frames from the guest toward the bridge/host
     rule(in) << "ether saddr != " << mac << " counter name " << ctr << " drop\n";
+    // Only IPv4 and ARP may follow. Found in the prove stage: nft's bridge-family `ip` matches see THROUGH an
+    // 802.1Q tag, so without this rule a VLAN-tagged frame carrying an allowed tuple is accepted by the tuple
+    // rule below (VLAN, QinQ, IPv6 and every other ethertype are dropped here).
+    rule(in) << "ether type != { ip, arp } counter name " << ctr << " drop\n";
     rule(in) << "ether type arp arp operation request arp saddr ether " << mac << " arp saddr ip " << ip << " arp daddr ip " << gw << " accept\n";
     rule(in) << "ether type arp arp operation reply arp saddr ether " << mac << " arp saddr ip " << ip << " arp daddr ip " << gw << " accept\n";
     rule(in) << "ether type ip ip protocol tcp tcp flags & (syn | ack) == syn limit rate over " << kSynRatePerSecond << "/second burst "

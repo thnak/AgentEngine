@@ -149,6 +149,11 @@ result<std::monostate> HostEgress::ensure_base_locked() {
         }
     } else if (!listing) {
         return std::unexpected(install_error("nft is not runnable: " + listing.error().message));
+    } else if (!contains(listing->stderr_text, "No such file or directory")) {
+        // not "the table does not exist": a transient or foreign failure. Creating the base table over a table
+        // that DOES exist would append duplicate rules to its chains, so refuse instead of guessing.
+        return std::unexpected(install_error("nft list table bridge ae_k failed for a reason other than absence (exit " +
+                                             std::to_string(listing->exit_code) + "): " + listing->stderr_text));
     }
     return load_nft(render_base_table(), "base");
 }
@@ -263,12 +268,11 @@ result<InstalledPolicy> HostEgress::install(SandboxPlan const& plan) {
         if (!r) return std::unexpected(r.error());
     }
     // 3. shared table + this sandbox's transaction
+    // `undo` only runs after OUR transaction committed: a transaction that failed created nothing, and undoing it
+    // would delete another install's identically named objects (a duplicate install must change nothing).
     auto const undo = [&]() { (void)remove_locked(plan.tag, plan.veth); };
     if (auto r = ensure_base_locked(); !r) return std::unexpected(r.error());
-    if (auto r = load_nft(*nft_script, "sb-" + plan.tag); !r) {
-        undo();
-        return std::unexpected(r.error());
-    }
+    if (auto r = load_nft(*nft_script, "sb-" + plan.tag); !r) return std::unexpected(r.error());
     // 4. read back and snapshot
     InstalledPolicy snapshot;
     snapshot.plan = plan;
