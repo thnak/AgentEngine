@@ -28,6 +28,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <filesystem>
 #include <cstdlib>
 #include <fstream>
 #include <string>
@@ -75,7 +76,7 @@ std::string read_file(std::string const& path) {
 int main() {
     EffectContext ctx = make_ctx();
     char const* host_dir = "/tmp/ae_kata_abuse_corpus_test";
-    std::system(("rm -rf " + std::string(host_dir) + " && mkdir -p " + host_dir).c_str());
+    { std::error_code ec; std::filesystem::remove_all(host_dir, ec); std::filesystem::create_directories(host_dir, ec); }
 
     // ---- Case 1: infinite loop / wall_ms timeout -- contained AND proven actually stopped, not
     //         just that the host-side `ctr` CLI call returned (SLICE 4's own fix). --------------------
@@ -298,7 +299,7 @@ int main() {
         }
     }
 
-    std::system(("rm -rf " + std::string(host_dir)).c_str());
+    { std::error_code ec; std::filesystem::remove_all(host_dir, ec); }
 
     if (g_failures == 0) {
         std::fprintf(stderr, "test_kata_backend_abuse_corpus_linux: ALL PASS\n");
