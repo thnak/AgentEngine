@@ -25,6 +25,7 @@
 #include <random>
 #include <sstream>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <variant>
 #include <vector>
@@ -890,6 +891,11 @@ result<ExecOutcome> KataBackend::exec_blocking(SandboxHandle& handle, ExecReques
         }
         egress::HostEgress host = make_host_egress();
         auto verified = host.verify(*inst.egress);
+        if (!verified.has_value()) {
+            // one retry: a transient netlink hiccup must not kill a healthy guest, a real loss fails twice
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            verified = host.verify(*inst.egress);
+        }
         if (!verified.has_value()) {
             inst.egress_failed = true;
             (void)run_ctr({"ctr", "task", "kill", "--signal", "SIGKILL", inst.container_id});

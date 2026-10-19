@@ -144,6 +144,7 @@ public:
 private:
     struct Lock;
     [[nodiscard]] result<Lock> acquire_lock();
+    [[nodiscard]] result<std::monostate> verify_impl(InstalledPolicy const& policy, std::string const* preloaded_listing);
     [[nodiscard]] result<std::monostate> run_ok(std::vector<std::string> const& argv, char const* what);
     [[nodiscard]] result<std::string> run_text(std::vector<std::string> const& argv, char const* what);
     [[nodiscard]] result<std::monostate> load_nft(std::string const& script, std::string_view file_stem);

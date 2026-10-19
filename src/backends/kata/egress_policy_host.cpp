@@ -291,14 +291,18 @@ result<InstalledPolicy> HostEgress::install(SandboxPlan const& plan) {
         undo();
         return std::unexpected(install_error("read-back did not find this sandbox's chains"));
     }
-    if (auto v = verify(snapshot); !v) {
+    if (auto v = verify_impl(snapshot, &*listing); !v) {
         undo();
         return std::unexpected(install_error("read-back verification failed: " + v.error().message));
     }
     return snapshot;
 }
 
-result<std::monostate> HostEgress::verify(InstalledPolicy const& pol) {
+result<std::monostate> HostEgress::verify(InstalledPolicy const& pol) { return verify_impl(pol, nullptr); }
+
+// `preloaded_listing`: install() already holds a fresh `nft list table` for its read-back, so it passes it in
+// instead of paying a second whole-table listing (the one cost that grows with the number of sandboxes).
+result<std::monostate> HostEgress::verify_impl(InstalledPolicy const& pol, std::string const* preloaded_listing) {
     SandboxPlan const& p = pol.plan;
     if (!port_exists(p.veth)) return std::unexpected(missing_error("the sandbox's bridge port no longer exists"));
 
@@ -323,9 +327,15 @@ result<std::monostate> HostEgress::verify(InstalledPolicy const& pol) {
         if (!found) return std::unexpected(missing_error("the static FDB entry for the guest MAC is missing"));
     }
 
-    auto listing = runner_({"nft", "list", "table", "bridge", std::string(kTableName)});
-    if (!listing || listing->timed_out || listing->exit_code != 0) return std::unexpected(missing_error("the shared nftables table bridge ae_k is gone"));
-    std::string const& l = listing->stdout_text;
+    std::string fetched;
+    std::string const* listing_ptr = preloaded_listing;
+    if (listing_ptr == nullptr) {
+        auto listing = runner_({"nft", "list", "table", "bridge", std::string(kTableName)});
+        if (!listing || listing->timed_out || listing->exit_code != 0) return std::unexpected(missing_error("the shared nftables table bridge ae_k is gone"));
+        fetched = std::move(listing->stdout_text);
+        listing_ptr = &fetched;
+    }
+    std::string const& l = *listing_ptr;
     if (!base_table_matches(l)) return std::unexpected(missing_error("the shared table's base chains are not what this backend installed"));
     if (extract_block(l, "chain in_" + p.tag) != pol.nft_in_chain) return std::unexpected(missing_error("this sandbox's input chain changed or is gone"));
     if (extract_block(l, "chain out_" + p.tag) != pol.nft_out_chain) return std::unexpected(missing_error("this sandbox's output chain changed or is gone"));

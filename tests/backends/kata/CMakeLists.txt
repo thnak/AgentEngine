@@ -61,5 +61,12 @@ if(NOT WIN32 AND AGENTENGINE_BUILD_KATA_BACKEND)
       LIBS agentengine::core agentengine::kata_backend agentengine_warnings)
     target_include_directories(test_kata_backend_egress_lifecycle_linux PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     set_tests_properties(test_kata_backend_egress_lifecycle_linux PROPERTIES TIMEOUT 1800 RUN_SERIAL TRUE)
+
+    # Scaling of the shared table with N bridge ports (netns+veth lab guests, not microVMs) plus the per-sandbox-table
+    # layout as the positive control. Needs FORWARD accepts for aepvbr0 <-> aepvw0 (comment ae-prove-temp).
+    agentengine_add_test(test_kata_egress_scale_linux
+      LIBS agentengine::core agentengine::kata_backend agentengine_warnings)
+    target_include_directories(test_kata_egress_scale_linux PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(test_kata_egress_scale_linux PROPERTIES TIMEOUT 1500 RUN_SERIAL TRUE)
   endif()
 endif()

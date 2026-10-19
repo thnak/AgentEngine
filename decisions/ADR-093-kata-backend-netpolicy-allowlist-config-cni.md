@@ -3,6 +3,13 @@
 Status: Proposed (2026-08-24; implemented, red-teamed -- one BLOCKING finding, fixed and re-verified
 in the same pass -- WSL compile-verified, awaiting project-owner Judged sign-off)
 
+**Partially superseded by [ADR-239](ADR-239-kata-egress-policy-enforcement-point.md) (2026-10-19, Proposed).** The
+enforcement point this ADR chose (§3-§4: an nftables table INSIDE the sandbox netns, `ip netns exec <id> nft ...`)
+never saw a microVM guest's traffic, so `NetPolicy::allowlist` enforced nothing for a Kata guest (live finding 2,
+`docs/planning/2026-10-19-kata-live-verification-findings.md`). What stays: the `--config`/manual-CNI pipeline, the
+capability gate (§5), `resolve_and_validate` and the `/etc/hosts` pin. The text of §3-§4 on where rules live is kept as
+the record of what was wrong, not edited.
+
 ## 1. The question
 
 `KataBackend` has failed closed on any `NetPolicy` beyond `deny_all` since Slice 2/3 (ADR-086/087) --

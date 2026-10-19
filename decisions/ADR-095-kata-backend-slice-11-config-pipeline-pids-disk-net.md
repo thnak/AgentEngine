@@ -4,6 +4,12 @@ Status: Proposed (design → independent red-team (8 findings, 5 BLOCKING) → f
 WSL compile-verified + one real, live-run-verified fix (the workdir-mount exclusion) → awaiting
 project-owner Judged sign-off)
 
+**`net_bytes` part superseded by [ADR-239](ADR-239-kata-egress-policy-enforcement-point.md) (2026-10-19, Proposed).** The
+quota object this ADR put in the sandbox netns table (§3, "`net_bytes`") sat on hooks a microVM guest's frames never
+cross, so it counted about zero bytes. The quota now lives on the host-namespace bridge port policy (one named quota per
+sandbox, both directions, delivered-L3-bytes contract). `pids` and `disk_bytes` are unaffected. The superseded text is
+kept as the record, not edited.
+
 ## 1. The question
 
 Can `KataBackend` close its last three unenforced `ResourceLimits` axes — `pids` (ADR-090,
