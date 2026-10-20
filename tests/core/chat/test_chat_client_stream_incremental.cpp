@@ -64,8 +64,8 @@ constexpr int kChunkCount = 6;
 // before the release, so the hold times out and the test fails loudly instead of hanging.
 constexpr auto kHoldBound = std::chrono::seconds(5);
 
-// A plain-HTTP server that sends chunked SSE events one at a time, pausing between them. Whether the
-// client is incremental is directly observable as when its first item appears relative to this pacing.
+// A plain-HTTP server that sends chunked SSE events one at a time and holds after `hold_after` until the
+// consumer releases it (#198). Whether the client is incremental is observable as whether the release came.
 class DripSseServer {
 public:
     DripSseServer(std::vector<std::string> events, std::size_t hold_after)
