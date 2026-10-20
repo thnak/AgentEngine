@@ -90,11 +90,34 @@ struct GateObserver {
 [[nodiscard]] std::uint64_t egress_context_constructions() noexcept;
 void                        egress_inject_context_failures(int count) noexcept;
 
+// A snapshot of the process-wide admission counters (G13 rows: key structure, erase-when-zero, no leaked count).
+// ae-naming-lint: allow AdmissionSnapshot — ADR-241 §5: egress implementation vocabulary, not exported to users
+struct AdmissionSnapshot {
+    std::uint32_t global                 = 0;
+    std::size_t   runs                   = 0;  // entries in the per-run map
+    std::size_t   principals             = 0;  // entries in the per-principal map
+    std::uint32_t unattributed_run       = 0;
+    std::uint32_t unattributed_principal = 0;
+};
+[[nodiscard]] AdmissionSnapshot egress_admission_snapshot();
+// I/O-free admission for the key-structure and atomicity rows: a holder that releases the slot when its last copy dies,
+// or null when admission is refused (no wait).
+[[nodiscard]] std::shared_ptr<void> egress_admission_try(AdmissionKey const& key);
+
 // The shared async implementation both entry points run. By value everywhere: nothing here references the caller.
 [[nodiscard]] task<result<NetEgressResponse>> egress_fetch(NetEgressRequest req, cap::NetOut granted,
                                                            EgressCallControl control, EgressSeams seams,
                                                            std::chrono::milliseconds total_timeout,
                                                            GateObserver* observer);
+
+// Everything after the gate: deadline, stop, I/O context, admission, the request. `egress_fetch` runs the gate and then this;
+// `egress_fetch_blocking` runs the gate on the CALLING thread (so a rejected call never touches the I/O context) and
+// then spawns this as the root. The gate runs exactly once per call either way.
+[[nodiscard]] task<result<NetEgressResponse>> egress_fetch_gated(NetEgressRequest req, GatedEgressTarget target,
+                                                                cap::NetOut granted, EgressCallControl control,
+                                                                EgressSeams seams,
+                                                                std::chrono::milliseconds total_timeout,
+                                                                GateObserver* observer);
 
 // The synchronous entry: `egress_fetch` as a root on the egress I/O context, waited on with a latch (ADR-241 8.3).
 [[nodiscard]] result<NetEgressResponse> egress_fetch_blocking(NetEgressRequest req, cap::NetOut granted,
