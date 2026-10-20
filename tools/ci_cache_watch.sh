@@ -10,10 +10,11 @@
 # Checks (thresholds are env-overridable):
 #   1. total size > WARN_TOTAL_GB (default 8, i.e. 80% of the 10 GB limit)
 #   2. entries under refs/pull/* of a CLOSED PR (a leak): deleted here, then reported
-#   3. entries not read for STALE_DAYS (default 7) totalling more than STALE_GB (default 1)
+#   3. entries not read for STALE_DAYS (default 3) totalling more than STALE_GB (default 1). Not 7: GitHub
+#      itself deletes entries unread for 7 days, so a 7-day check always counted 0 (measured 2026-10-20).
 set -euo pipefail
 repo="${GITHUB_REPOSITORY:?}"
-warn_total_gb="${WARN_TOTAL_GB:-8}"; stale_days="${STALE_DAYS:-7}"; stale_gb="${STALE_GB:-1}"
+warn_total_gb="${WARN_TOTAL_GB:-8}"; stale_days="${STALE_DAYS:-3}"; stale_gb="${STALE_GB:-1}"
 fail=0
 say() { echo "::warning::$*"; fail=1; }
 
