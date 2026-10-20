@@ -254,6 +254,10 @@ public:
     static void set_test_connect_resolver_override(
         std::function<result<sandbox::VerifiedEndpoint>(std::string_view, std::uint16_t)> fn);
 
+    // TEST-ONLY seam: called by the session watchdog right after TerminateJobObject, to widen the
+    // kill-vs-classify window deterministically. nullptr (default) = no-op. Process-wide; reset it.
+    static void set_test_post_terminate_hook(void (*fn)());
+
 private:
     // ae-naming-lint: allow watchdog_phase — this design's own new vocabulary, not yet in 027's registry
     enum class watchdog_phase { awaiting_init, idle, call_active, stopping };
