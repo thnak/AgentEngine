@@ -11,6 +11,7 @@
 #include <cstring>
 #include <latch>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -144,24 +145,37 @@ int main(int argc, char** argv) {
         check(egress::egress_context_constructions() == 0, "G13b 40 gate-rejected calls constructed NO I/O context");
 
         // G13d: 64 concurrent FIRST calls create exactly one context.
-        std::latch start(65);
+        // 16 threads, not 64: the test caps the data segment (memory_cap, 512 MiB) and on Linux every thread's default
+        // 8 MiB mmap'd stack is charged against RLIMIT_DATA, so 64 test threads plus the egress context's own threads
+        // exhaust the cap (std::system_error, EAGAIN). Windows does not charge stacks that way. A failed thread
+        // creation fails the row cleanly instead of terminating.
+        constexpr int kThreads = 16;
+        std::latch start(kThreads + 1);
         std::atomic<int> ok{0};
+        int created = 0;
         {
             std::vector<std::jthread> threads;
-            for (int i = 0; i < 64; ++i) {
-                threads.emplace_back([&] {
-                    TestEgressProxy q;
-                    configure(q);
-                    start.arrive_and_wait();
-                    auto r = q.fetch_blocking(NetEgressRequest{"GET", "/", {}, ""}, grant_to(server.port()), EgressCallControl{});
-                    if (r.has_value() && r->status == 200) ok.fetch_add(1);
-                });
+            for (int i = 0; i < kThreads; ++i) {
+                try {
+                    threads.emplace_back([&] {
+                        TestEgressProxy q;
+                        configure(q);
+                        start.arrive_and_wait();
+                        auto r = q.fetch_blocking(NetEgressRequest{"GET", "/", {}, ""}, grant_to(server.port()), EgressCallControl{});
+                        if (r.has_value() && r->status == 200) ok.fetch_add(1);
+                    });
+                    ++created;
+                } catch (std::system_error const& e) {
+                    check(false, std::string("G13d could not create thread ") + std::to_string(i) + ": " + e.what());
+                    start.count_down(kThreads + 1 - created);  // release the slots of threads that will never arrive
+                    break;
+                }
             }
-            start.arrive_and_wait();
+            if (created == kThreads) start.arrive_and_wait();
         }
-        check(egress::egress_context_constructions() == 1, "G13d 64 concurrent first calls created exactly ONE context (" +
+        check(egress::egress_context_constructions() == 1, "G13d " + std::to_string(kThreads) + " concurrent first calls created exactly ONE context (" +
                                                                std::to_string(egress::egress_context_constructions()) + ")");
-        check(ok.load() > 0, "G13d the concurrent first calls succeeded (" + std::to_string(ok.load()) + "/64; the rest may be egress_busy)");
+        check(ok.load() > 0, "G13d the concurrent first calls succeeded (" + std::to_string(ok.load()) + "/" + std::to_string(kThreads) + "; the rest may be egress_busy)");
     } else {
         // G13f: a construction failure is reported, and the NEXT call retries.
         egress::egress_inject_context_failures(1);
