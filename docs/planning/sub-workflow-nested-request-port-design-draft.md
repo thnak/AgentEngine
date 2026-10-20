@@ -1,7 +1,7 @@
 # Design draft: `executor_kind::sub_workflow`'s real runtime bridge, with nested `request_port`
 # proxying (issues #33 and #38)
 
-Status: **superseded — implemented as `decisions/ADR-157-sub-workflow-nested-request-port.md`.**
+Status: **superseded — implemented as `decisions/archive/ADR-157-sub-workflow-nested-request-port.md`.**
 This document is kept as the historical design-and-red-team record; the ADR is the current source
 of truth for what actually shipped, including a second red-team-style finding caught during
 implementation itself (a test using `fan_in` edges silently prevented the intended concurrency
@@ -291,7 +291,7 @@ job to size for its own workload" contract, unchanged, not newly invented here).
   (§4); the round-abort-orphan disclosure proof (§3e); the bounded-nesting test (§5).
 - `examples/27_*.cpp` (new) — mirroring MAF's `sub_workflow_request_interception.py`/
   `sub_workflow_parallel_requests.py` in spirit.
-- `decisions/ADR-157-sub-workflow-nested-request-port.md` (new, once implemented and proven)
+- `decisions/archive/ADR-157-sub-workflow-nested-request-port.md` (new, once implemented and proven)
 
 ## 8. Recommended next step
 

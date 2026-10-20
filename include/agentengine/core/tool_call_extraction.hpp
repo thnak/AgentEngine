@@ -18,7 +18,7 @@
 // correctly; every caller building a `ToolCallRequest` from a live `ToolCall` should go through it
 // rather than hand-building the aggregate.
 //
-// decisions/ADR-196-per-call-approval-decisions.md §7 (issue #111 A2/A3): `make_call_ids_unique()` -- the engine,
+// decisions/archive/ADR-196-per-call-approval-decisions.md §7 (issue #111 A2/A3): `make_call_ids_unique()` -- the engine,
 // not the model, owns the identity of the calls in one response.
 
 #include <cstdint>

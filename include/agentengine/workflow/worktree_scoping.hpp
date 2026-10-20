@@ -3,7 +3,7 @@
 // executor or a handoff target gets its own sub-worktree, inherits the caller's, or shares one, and
 // no code wires an executor to `create_sub_worktree` today") using 025-Worktree-and-Virtual-
 // Filesystem.md §3's already-real, already-tested `SubWorktree`/`sharing_mode` primitive.
-// ADR-032 (decisions/ADR-032-workflow-executor-worktree-scoping.md).
+// ADR-032 (decisions/archive/ADR-032-workflow-executor-worktree-scoping.md).
 //
 // SCOPE OF THIS FILE, stated up front because it is narrower than "wire workflows to worktrees"
 // sounds: this is the POLICY + MINTING layer only -- deciding each executor's `sharing_mode`
@@ -16,7 +16,7 @@
 // `agent`- or `sub_workflow`-kind executors (`check_workflow_executable`, graph.hpp, still rejects
 // both -- they are not built).
 //
-// Merge-on-join (025 §4) -- CLOSED for the mechanical wiring half (decisions/ADR-055-conflict-
+// Merge-on-join (025 §4) -- CLOSED for the mechanical wiring half (decisions/archive/ADR-055-conflict-
 // evidence-materialization.md's own §6 residual, "merge-on-join wiring itself"): `make_merge_on_join_
 // hook()` below builds a real callable matching `rt::WorkflowSupervisor::MergeOnJoinHook`'s own
 // signature (a plain `std::function<result<void>(std::string const&)>` -- this file names no

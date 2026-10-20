@@ -112,7 +112,7 @@ spec:
                       "Workflow, produced by the declarative loader, checked by the SAME shared "
                       "validator the C++ WorkflowBuilder form uses (I6)");
 
-                // Gap-2 fix (2026-08-14, decisions/ADR-044-*.md): metadata.description/version now
+                // Gap-2 fix (2026-08-14, decisions/archive/ADR-044-*.md): metadata.description/version now
                 // have real slots.
                 check(compiled->description == "Research a topic and write it up.",
                       "W-2: description <- metadata.description");

@@ -1,4 +1,4 @@
-// ADR-096 (decisions/ADR-096-session-sandbox-lifecycle-context-provider-wiring.md), Design B:
+// ADR-096 (decisions/archive/ADR-096-session-sandbox-lifecycle-context-provider-wiring.md), Design B:
 // proves `SandboxToolProvider` (backends/native_jail/sandbox_tool_provider.hpp) end to end --
 // composition (C1), lazy sandbox construction + `ctx.sandbox_fs` population + `run_shell` tool
 // contribution on `on_context()`, idempotent reuse across a second round (matching C3's premise

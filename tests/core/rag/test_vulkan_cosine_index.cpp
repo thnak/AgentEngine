@@ -1,4 +1,4 @@
-// Implements decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.6/§3 claim 7 --
+// Implements decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.6/§3 claim 7 --
 // `VulkanCosineIndex` (src/backends/vulkan_vector_index/vulkan_cosine_index.hpp): basic correctness
 // against small, hand-checkable inputs, `VectorIndex` conformance, and claim 7's own falsifiable
 // shape -- an epsilon-bounded comparison against `BruteForceCosineIndex` at dim=1536, n in {1000,

@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-217-capped-grant-admits-grant-enforcing-tools.md (GitHub #148): a quota- or
+// Proof for decisions/archive/ADR-217-capped-grant-admits-grant-enforcing-tools.md (GitHub #148): a quota- or
 // size-capped FsRead/FsWrite grant admits a tool that declares an uncapped ceiling AND
 // `EnforcesGrantedCaps`, the per-call handle carries the GRANT's cap, and the cap still holds at use.
 //   U1-U9  -- CapabilitySet::clamped_binding()/bind_clamped(): clamps quantity axes only, never scope

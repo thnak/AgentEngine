@@ -179,7 +179,7 @@ result<SafeFileHandle> open_within_mount_root(std::wstring const& mount_root, st
     // performs the create as part of resolving `joined`) -- if that object turns out to be outside
     // `mount_root`, this function must be able to unwind it through the SAME handle, never a re-parsed
     // path string (see the post-containment-check block below; a sibling design's own external-
-    // validation pass caught the missing-cleanup gap this closes -- see decisions/ADR-014's addendum).
+    // validation pass caught the missing-cleanup gap this closes -- see decisions/archive/ADR-014's addendum).
     SafeFileHandle target(CreateFileW(joined.c_str(), desired_access | DELETE,
                                        FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, creation_disposition,
                                        flags_and_attributes | FILE_FLAG_BACKUP_SEMANTICS, nullptr));

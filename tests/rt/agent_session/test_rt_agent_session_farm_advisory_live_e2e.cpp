@@ -1,4 +1,4 @@
-// Implements rfcs/009-Plugin-and-Extension-System.md §8 + decisions/ADR-024-skill-scoped-tool-and-mount-
+// Implements rfcs/009-Plugin-and-Extension-System.md §8 + decisions/archive/ADR-024-skill-scoped-tool-and-mount-
 // wiring.md's Phase 3 addendum, live: a real, self-contained `ContextProvider` (`FarmAdvisoryProvider`
 // below -- its own `SkillsProvider<>` plus its own `MountedSkillsState`, the same shape
 // tools/cli_chat.cpp's `ToolDeclaringHistoryProvider` uses, minus that file's Python/native_jail
@@ -261,7 +261,7 @@ private:
 // same reason: this provider already owns the whole skill-related system prompt). -------------------
 class FarmAdvisoryProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3.
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3.
     static constexpr std::string_view name = "farm-advisory-live-test";
 
     FarmAdvisoryProvider() : skills_({make_farm_skill_source()}) {}

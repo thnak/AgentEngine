@@ -1,4 +1,4 @@
-// decisions/ADR-237 §5.1 (#172): ONE `task`-shaped index seam. `VectorIndex` and `SparseIndex` take an
+// decisions/archive/ADR-237 §5.1 (#172): ONE `task`-shaped index seam. `VectorIndex` and `SparseIndex` take an
 // `EffectContext&` and return `task<result<...>>`, absorbing the former `RemoteVectorIndex` (ADR-180 §2.1),
 // and both RAG providers' `recall` tools await the embedder and the indexes like `on_context()` does.
 //

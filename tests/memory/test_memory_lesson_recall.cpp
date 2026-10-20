@@ -1,4 +1,4 @@
-// Implements decisions/ADR-195-evaluation-harness.md §3.2 / E21's PRECONDITION: is a seeded lesson still
+// Implements decisions/archive/ADR-195-evaluation-harness.md §3.2 / E21's PRECONDITION: is a seeded lesson still
 // among the items MemoryProvider injects after `on_turn_end` has written more episodic items?
 //
 // Recall is a top-`max_injected` ranking (default 3) by salience x recency x keyword (memory_provider.hpp

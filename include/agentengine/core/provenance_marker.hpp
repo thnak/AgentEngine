@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-063-retrieval-augmented-context-provider-shape.md §2.6b — generalizes
+// Implements decisions/archive/ADR-063-retrieval-augmented-context-provider-shape.md §2.6b — generalizes
 // the marker-neutralization technique memory_provider.hpp proved for gap-audit finding 17 ("a
 // ModelInferred/tool-derived item's own CONTENT can contain marker bytes that impersonate a
 // higher-trust provenance label once rendered into context") into a shared utility parameterized

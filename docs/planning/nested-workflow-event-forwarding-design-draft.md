@@ -248,7 +248,7 @@ caught by adversarially verifying a claim rather than trusting a clean first pas
   pending-sub-workflow branch's guard-wrapped `drive()` call.
 - `tests/workflow/test_rt_workflow_event_stream.cpp` — W10-W13, plus `<atomic>`/`<condition_variable>`/
   `<mutex>`/`<thread>` includes.
-- `decisions/ADR-157-sub-workflow-nested-request-port.md` — addendum closing the last of its four
+- `decisions/archive/ADR-157-sub-workflow-nested-request-port.md` — addendum closing the last of its four
   named residuals, matching the pattern already used twice this session for the other three.
 
 ## Status

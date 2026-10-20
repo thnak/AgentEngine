@@ -1,5 +1,5 @@
 #pragma once
-// Implements ADR-182 §12 C-3's file-fixture rule (decisions/ADR-182-agent-test-driver-mcp.md §21, §22): a
+// Implements ADR-182 §12 C-3's file-fixture rule (decisions/archive/ADR-182-agent-test-driver-mcp.md §21, §22): a
 // fixture file is used only as git has it committed. A fixture decides a session's tools and
 // instructions, so it is host authority; a tester that could write one could hand itself a different agent.
 //

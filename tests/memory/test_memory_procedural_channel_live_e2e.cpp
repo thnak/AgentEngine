@@ -1,4 +1,4 @@
-// Live companion to test_memory_procedural_channel.cpp (decisions/ADR-194-procedural-memory-channel.md).
+// Live companion to test_memory_procedural_channel.cpp (decisions/archive/ADR-194-procedural-memory-channel.md).
 //
 // The offline test proves WHICH CHANNEL each route lands in (tainted+fenced vs untainted+unfenced).
 // This one measures what a REAL model does with the same hostile "learned instruction" delivered by

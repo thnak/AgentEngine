@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-209-persistent-shell-sessions.md §4-§5, §7 -- the shared core of a LIVE shell:
+// Implements decisions/archive/ADR-209-persistent-shell-sessions.md §4-§5, §7 -- the shared core of a LIVE shell:
 // the `PersistentShellSurface` concept a held-container surface conforms to (`SandboxRuntime::run_live()`
 // drives it), the per-command outcome, and the cwd/env SNAPSHOT that survives a re-open as data (§5).
 // Both the sandboxed tier (`DockerPersistentShellSurface`) and the native tier (`NativeShellSessionProvider`,
@@ -81,7 +81,7 @@ struct LiveExecOutcome {
 //   close()              -- destroy the environment. Idempotent; a failure keeps the handle for a retry.
 //   is_live()            -- an environment exists AND its shell is usable.
 //
-// decisions/ADR-237 §5.1 (Phase D, #173): open/exec/drain_to/close are `task`-shaped -- each is a round trip to a
+// decisions/archive/ADR-237 §5.1 (Phase D, #173): open/exec/drain_to/close are `task`-shaped -- each is a round trip to a
 // container daemon and may suspend. `is_live()` stays synchronous (§5.3: a trivial accessor). The surface, and
 // the snapshot `open` is handed, must outlive the returned task.
 template <class T>

@@ -45,7 +45,7 @@ constexpr int kSkipReturnCode = 77;
 // §9 G2 requires to not exist at all, not merely to be checked correctly every time.
 //
 // PLATFORM-SPECIFIC, NOT a mechanical port (2026-08-29,
-// decisions/ADR-104-real-io-filesystem-linux-parity.md's own named follow-on, ADR-103 §7's
+// decisions/archive/ADR-104-real-io-filesystem-linux-parity.md's own named follow-on, ADR-103 §7's
 // original residual): Windows and POSIX name genuinely different APIs for the identical
 // underlying property this check exists to prove. `system` is the one symbol name shared
 // verbatim by both lists — ISO C's `system()` is spelled identically in MSVCRT and glibc, so it

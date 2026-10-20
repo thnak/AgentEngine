@@ -93,14 +93,14 @@ struct ToolDescriptor {
     // as a documented-only rule a future caller could violate by accident.
     bool captures_session_state = false;
 
-    // decisions/ADR-066-context-provider-attribution-provenance.md: same stamp as
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md: same stamp as
     // `Message::attribution`, same seam (`assemble_context()`), same "nullopt means not
     // contributor-sourced" convention (a tool from `make_tool_descriptor(ToolT{})`'s ordinary,
     // host-declared static tool table is never contributor-sourced, so stays nullopt). MAF has no
     // equivalent for this field (`AIContextProvider.cs`'s `mergedTools` is a bare, unstamped
     // `Concat`) -- this is a place this project's design goes further than its own surveyed prior
     // art, needed for the not-yet-implemented turn-middleware tool-arbitration use case
-    // (decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md). Appended last, this
+    // (decisions/archive/ADR-067-middleware-turn-point-pre-model-enforcement.md). Appended last, this
     // struct's own established convention.
     std::optional<ContributorProvenance> attribution;
 
@@ -117,12 +117,12 @@ struct ToolDescriptor {
     json::Value args_schema_value;
     bool args_schema_value_cached = false;
 
-    // decisions/ADR-158-tool-concurrency-exclusivity-policy.md §4: `nullopt` unless the tool
+    // decisions/archive/ADR-158-tool-concurrency-exclusivity-policy.md §4: `nullopt` unless the tool
     // declared `ExclusivityGroup<Name>` (`core/tool.hpp`). Appended last, this struct's own
     // established convention.
     std::optional<std::string> exclusivity_group;
 
-    // decisions/ADR-160-parallel-tool-batch-scheduler.md §5: `true` only when the tool declared bare
+    // decisions/archive/ADR-160-parallel-tool-batch-scheduler.md §5: `true` only when the tool declared bare
     // `Parallelizable` (`Tool<Derived,...>::kHasParallelizable`) -- distinct from `exclusivity_group`
     // above (mutually exclusive by `Tool<>`'s own static_assert, ADR-158). Read by
     // `AgentSession::partition_batch()` (rt/agent_session.hpp) to decide batch eligibility and
@@ -130,7 +130,7 @@ struct ToolDescriptor {
     // ways a `ToolDescriptor` opts into anything other than the default fully-sequential class.
     bool parallelizable = false;
 
-    // decisions/ADR-212-deterministic-tool-output-declaration.md: `true` only when the tool declared
+    // decisions/archive/ADR-212-deterministic-tool-output-declaration.md: `true` only when the tool declared
     // `Deterministic` and `make_tool_descriptor(ToolT{})` built this descriptor around `ToolT::invoke`.
     // Hand-built descriptors (MCP bridge, WASM, providers) leave it `false`: no source they are built
     // from can express the claim (ADR-212 §3.4). Code that replaces `invoke` on an existing descriptor
@@ -139,7 +139,7 @@ struct ToolDescriptor {
     // established convention.
     bool deterministic = false;
 
-    // decisions/ADR-217-capped-grant-admits-grant-enforcing-tools.md: `true` only when the tool
+    // decisions/archive/ADR-217-capped-grant-admits-grant-enforcing-tools.md: `true` only when the tool
     // declared `EnforcesGrantedCaps` (core/tool.hpp) -- its invoke enforces the quantity caps of the
     // grant it is bound under, not numbers from its own declaration. Admission then binds each ceiling
     // entry with `CapabilitySet::bind_clamped()` (see `bind_ceiling_entry()` below). `false` (every

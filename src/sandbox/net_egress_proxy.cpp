@@ -1,4 +1,4 @@
-// Implements net_egress_proxy.hpp. See decisions/ADR-011-first-party-egress-proxy.md and
+// Implements net_egress_proxy.hpp. See decisions/archive/ADR-011-first-party-egress-proxy.md and
 // docs/research/2026-08-05-ssrf-dns-rebinding-defense.md for the design/citations this satisfies.
 
 #include "agentengine/sandbox/net_egress_proxy.hpp"
@@ -489,7 +489,7 @@ result<NetEgressResponse> perform_http_exchange(VerifiedEndpoint endpoint, std::
 }
 
 #ifdef AGENTENGINE_WITH_HTTPS
-// decisions/ADR-013-https-egress-tls-client.md. Identical structure to perform_http_exchange above
+// decisions/archive/ADR-013-https-egress-tls-client.md. Identical structure to perform_http_exchange above
 // (connect -> build the same raw request -> byte-cap-enforced read loop -> parse) except the
 // transport: a TlsClientSession wraps the socket immediately after connect, and the read loop calls
 // its `recv()` instead of raw `wait_ready`+`recv_some` -- the session already blocks/retries
@@ -749,7 +749,7 @@ result<NetEgressResponse> perform_https_exchange_streaming(
 
 
 // ---------------------------------------------------------------------------------------------------------------
-// ADR-241 S2: the egress gate and the pure functions around it (decisions/ADR-241, D2 / D3 / D5 / section 9).
+// ADR-241 S2: the egress gate and the pure functions around it (decisions/archive/ADR-241, D2 / D3 / D5 / section 9).
 //
 // The blocking `HostEgressProxy::fetch_blocking` that lived here ran the gates and then the blocking exchange
 // (`resolve_and_validate` + `perform_http_exchange`); both entry points are now one implementation on `rt::http`

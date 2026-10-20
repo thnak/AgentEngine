@@ -65,7 +65,7 @@
 // of the task already running, and keeps its holder id; `AsyncMutex::is_held_by_current_thread()` depends on
 // that (`AgentSession::fork_from()`'s reentrant case, ADR-123).
 //
-// decisions/ADR-237 §4.3 -- REFUSED ON THREADS THAT MUST NOT BLOCK. A thread that serves a pool of async work
+// decisions/archive/ADR-237 §4.3 -- REFUSED ON THREADS THAT MUST NOT BLOCK. A thread that serves a pool of async work
 // (an `rt::offload` worker today, a lane worker later) must not park itself in `block_on()` waiting for work
 // that may need that same thread -- ADR-175 §6's "parked pool job holds its worker" deadlock. Such a thread
 // marks itself with a `ScopedBlockOnRefusal`, and `block_on()` called on it throws `block_on_refused`

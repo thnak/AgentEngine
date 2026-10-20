@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-156-agent-notes-write-back.md -- GitHub issue #40's "agent.notes has ZERO
+// Proof for decisions/archive/ADR-156-agent-notes-write-back.md -- GitHub issue #40's "agent.notes has ZERO
 // implementation at all" gap, closed for the write-back half (the "ordinary writes" half needs no new
 // code, see that ADR's own §2/file-top comment on memory_notes_materializer.hpp: agent.files' existing
 // generic open()/file_write already works against any mounted path).

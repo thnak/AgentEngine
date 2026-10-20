@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-167-plan-execute-mode.md, closing issue #54 ("No single-agent
+// Implements decisions/archive/ADR-167-plan-execute-mode.md, closing issue #54 ("No single-agent
 // Plan/Execute mode -- only exists baked into the full Planner/Magentic workflow pattern, 014
 // §3"). 014 §9 Q1 already rejected routing the dominant single-agent turn loop through
 // supervising-actor/typed-edge machinery it cannot exercise -- the identical cost this issue's own

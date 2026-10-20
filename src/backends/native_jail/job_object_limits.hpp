@@ -1,7 +1,7 @@
 #pragma once
 // Implements rfcs/008-Sandbox-and-Isolation.md §2 (ResourceLimits enforcement) and the wall-clock-kill
 // clause of §2 item 2, as the Windows Job Object half of
-// decisions/ADR-004-appcontainer-native-jail-windows-backend.md §3 steps 2-3 (design-only there;
+// decisions/archive/ADR-004-appcontainer-native-jail-windows-backend.md §3 steps 2-3 (design-only there;
 // this header is the build-and-measure follow-up named in that ADR's §9 next steps, and first
 // evidence toward rfcs/021-Platform-Support-and-Portability.md Q2). Backend: native_jail (008 §1b, §3),
 // Windows only.
@@ -33,7 +33,7 @@
 // `wall_ms` is confirmed reliable (fired within a few ms of the requested deadline in every
 // measured run) and is the mechanism this class's contract actually rests on, not a redundant
 // backstop on top of a trustworthy native limit. This finding feeds
-// decisions/ADR-004-appcontainer-native-jail-windows-backend.md §10 and
+// decisions/archive/ADR-004-appcontainer-native-jail-windows-backend.md §10 and
 // rfcs/021-Platform-Support-and-Portability.md Q2.
 //
 // MEMORY LIMIT SIGNAL (closes the gap this file's earlier revision left as ADR-004 SS9.3/SS10.4

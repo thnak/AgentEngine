@@ -1,5 +1,5 @@
 #pragma once
-// Test-only synchronous drivers for the `task`-shaped index seams (decisions/ADR-237 §5.1, #172):
+// Test-only synchronous drivers for the `task`-shaped index seams (decisions/archive/ADR-237 §5.1, #172):
 // `VectorIndex` and `SparseIndex` take an `EffectContext&` and return `task<result<...>>`. Tests that
 // exercise an index's own behaviour (dimension checks, tie-break, BM25 scoring, ...) from a plain `main()`
 // call these instead, so each assertion reads as it did against the old synchronous seam.

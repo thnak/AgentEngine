@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-181-durable-cancellable-background-jobs.md, phase 1: the in-memory
+// Proof for decisions/archive/ADR-181-durable-cancellable-background-jobs.md, phase 1: the in-memory
 // rt::BackgroundJobRunner (include/agentengine/rt/background_job_runner.hpp).
 //
 //   R1  -- submit() refuses what background_task() refuses (not Backgroundable, state-capturing, no

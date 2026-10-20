@@ -111,7 +111,7 @@ struct SurfaceRunOutcome {
     return {};
 }
 
-// decisions/ADR-237 §5.1 (Phase D, #173): every member is `task`-shaped -- a surface is a container or a
+// decisions/archive/ADR-237 §5.1 (Phase D, #173): every member is `task`-shaped -- a surface is a container or a
 // remote environment, so each call can suspend. The surface object must outlive the returned task.
 template <class T>
 concept ExecutionSurface = requires(T& t, std::filesystem::path const& host_dir,

@@ -1745,7 +1745,7 @@ task<result<AgentResponse>> AgentSessionCore::run_rounds_body() {
         // a session-level re-check here would otherwise reopen.
         if (held.find_schedule().has_value()) contribution->tools.push_back(schedule_wakeup_tool());
 
-        // decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md, wired in for real:
+        // decisions/archive/ADR-067-middleware-turn-point-pre-model-enforcement.md, wired in for real:
         // the ONE genuine `pre_model`/`turn` seam in this file -- unlike the `on_context()` call
         // sites in `resolve_interaction()`/`resolve_codeact_ask()` (above), which only ever
         // build a `ToolTable` to dispatch an ALREADY-DECIDED tool call and never reach the model

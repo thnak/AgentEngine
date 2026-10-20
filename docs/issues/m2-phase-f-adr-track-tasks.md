@@ -4,7 +4,7 @@ M2 Phase F — cross-cutting ADR-track tasks (egress proxy, policy-reachability 
 
 The roadmap explicitly flags two items for M2 that are ADR-track (design → red-team → prove →
 judge per CLAUDE.md), not ordinary implementation tasks — the same discipline Phase A's
-[ADR-009](../../decisions/ADR-009-capability-set-enforcement-mechanism.md) already went through for
+[ADR-009](../../decisions/archive/ADR-009-capability-set-enforcement-mechanism.md) already went through for
 capability enforcement. Both are security-critical: `decisions/README.md`'s own rule is that any
 "security-critical choice: capability representation, isolation boundary, taint mechanism, approval
 binding, secret handling" requires a full ADR, not an ad-hoc change.

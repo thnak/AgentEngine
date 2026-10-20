@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-191-approved-lesson-delivery.md §3.8 as amended by its round-4 red team (2026-09-25),
+// Implements decisions/archive/ADR-191-approved-lesson-delivery.md §3.8 as amended by its round-4 red team (2026-09-25),
 // ADR-192 §3 (the delivery forms its knobs ship) and ADR-195 E32 (the attempt record an approval rests on).
 //
 // Two findings, both about the gap between what the Tier-1 screen measured and what an approval ships:

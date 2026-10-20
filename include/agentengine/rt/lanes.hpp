@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §4.1 ("Lane worker"), §4.3 (lanes, I1
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §4.1 ("Lane worker"), §4.3 (lanes, I1
 // and the session strand; scheduling) and §4.2 (a strand is the home of engine work) -- step 3 of the ADR's
 // implementation order (§14).
 //

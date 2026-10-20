@@ -278,7 +278,7 @@ template <class SummarizerT, class OS, class RS>
     requires ChatClient<SummarizerT> && WorktreeObjectStore<OS> && rt::AppendLogStore<RS>
 class MemoryProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3.
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3.
     static constexpr std::string_view name = "memory";  // ae-naming-lint: allow name — ADR-033's HasMiddlewareName precedent, reused verbatim per ADR-066 §3
 
     MemoryProvider(OS& object_store, RS& ref_store, Mount mount, cap::FsRead read_cap,
@@ -315,7 +315,7 @@ public:
         co_return contribution;
     }
 
-    // decisions/ADR-153-agent-memory-codeact-bridging.md: made PUBLIC (was private, reachable only
+    // decisions/archive/ADR-153-agent-memory-codeact-bridging.md: made PUBLIC (was private, reachable only
     // from `on_context()`'s own push into `ContextContribution.tools` above) so a host embedding both
     // this provider and a CodeAct sandbox (`src/backends/native_jail/`) can explicitly fold the SAME
     // `ToolDescriptor` into their own, separately-assembled `ToolBridgeConfig::bridged_tools`
@@ -338,7 +338,7 @@ private:
     [[nodiscard]] ToolDescriptor build_recall_tool() const {
         ToolDescriptor d = make_tool_descriptor<RecallTool<OS, RS>>(
             RecallTool<OS, RS>{object_store_, ref_store_, mount_, read_cap_});
-        // decisions/ADR-153-agent-memory-codeact-bridging.md red-team, must-fix: without this, the
+        // decisions/archive/ADR-153-agent-memory-codeact-bridging.md red-team, must-fix: without this, the
         // tool's authority comes ENTIRELY from `read_cap_` -- a value baked in at THIS provider's own
         // construction, never re-derived from whatever `held` CapabilitySet the CALLER of
         // `invoke_tool()` actually passes (`tool_pipeline.hpp`'s step 4/7 only binds against

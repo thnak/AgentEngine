@@ -14,7 +14,7 @@
 // now refer to this phase's own real, ported `agentengine::Ledger<>`/`agentengine::IdentityHandle`
 // (core/ledger.hpp, ADR-102 Phase 2) rather than the prove-phase standalone types.
 //
-// PLATFORM-PORTABLE (2026-08-29, decisions/ADR-104-real-io-filesystem-linux-parity.md): this class's
+// PLATFORM-PORTABLE (2026-08-29, decisions/archive/ADR-104-real-io-filesystem-linux-parity.md): this class's
 // two methods that need a real, verified OS handle -- `write_verified()`/`read_verified()` -- are
 // declared here but defined out-of-line, once per platform (src/sandbox/real_io_filesystem.cpp for
 // Windows' `open_within_mount_root`+`WriteFile`/`ReadFile`/`GetFileSizeEx`,

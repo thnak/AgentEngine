@@ -1,4 +1,4 @@
-// Live measurement for decisions/ADR-191-approved-lesson-delivery.md: does a real model act on a lesson a human
+// Live measurement for decisions/archive/ADR-191-approved-lesson-delivery.md: does a real model act on a lesson a human
 // approved -- when acting means choosing a tool argument -- through the route ADR-191 ships, and does that route
 // leak to text nobody approved?
 //

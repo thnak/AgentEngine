@@ -163,7 +163,7 @@ endif()
 # (2026-08-30): that statement no longer aliases live provider state across sessions -- `operator=`
 # refuses it as a silent no-op, proven by tests/core/context/test_session_builder.cpp's own B20.
 #
-# Portable across Windows and Linux (2026-08-29, decisions/ADR-105-sandbox-tool-provider-composed-
+# Portable across Windows and Linux (2026-08-29, decisions/archive/ADR-105-sandbox-tool-provider-composed-
 # linux-parity.md) -- previously WIN32-gated on the same stale "SandboxToolProvider's own current
 # platform scope" claim already corrected above; `agentengine_mediated_shell_runner`/
 # `agentengine_worktree_store` have both had real Linux twins since ADR-103/ADR-014 Phase C4. Both

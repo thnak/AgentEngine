@@ -1,5 +1,5 @@
 #pragma once
-// #120 S3 (decisions/ADR-202-one-message-json-codec.md): the ONE Message/ContentItem <-> JSON codec
+// #120 S3 (decisions/archive/ADR-202-one-message-json-codec.md): the ONE Message/ContentItem <-> JSON codec
 // (rfcs/003-Message-and-Content-Model.md's content model). It replaces two drifted copies that each carried a
 // full implementation: core/chat_recording.hpp's (chat-call recordings, 004 §6, and the eval screen's prompt
 // hash, ADR-195 §8) and rt/message_codec.hpp's (workflow checkpoints and the AgentSession snapshot, ADR-037,

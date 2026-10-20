@@ -1,4 +1,4 @@
-// ADR-061 prove phase, §39/§40 (decisions/ADR-061-host-provided-inbound-transport.md). Proves
+// ADR-061 prove phase, §39/§40 (decisions/archive/ADR-061-host-provided-inbound-transport.md). Proves
 // McpServer::dispatch()'s per-request CapabilityGrant -- the falsifiable claims table at §39.4 --
 // against a REAL ToolTable, a REAL 10-step tool pipeline (both synchronous and backgrounded), and a
 // gated tool whose capability_ceiling actually requires cap::Entropy, not a trivially-empty one.

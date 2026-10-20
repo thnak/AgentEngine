@@ -78,7 +78,7 @@
 // trampoline below, outside `m_`: a host resumer that runs the continuation inline (or drops it, which
 // resumes it) re-enters `unlock()` as a pending release, not as a nested drain.
 //
-// decisions/ADR-237 §4.3 (step 5) -- AWAIT CHAINS: LENDING AND REFUSAL. A task forked by a task scope or
+// decisions/archive/ADR-237 §4.3 (step 5) -- AWAIT CHAINS: LENDING AND REFUSAL. A task forked by a task scope or
 // `rt::on_strand` has its own holder id, linked to the task it was forked from (rt/await_chain.hpp). Before
 // step 5, such a child asking for a lock its suspended ancestor holds queued behind that ancestor forever (the
 // ancestor waits for the child; the session -> workflow -> agent node -> tool -> parent-session cycle). Now a

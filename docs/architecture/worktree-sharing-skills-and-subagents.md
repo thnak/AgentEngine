@@ -100,16 +100,16 @@ Tracing what actually exists:
 - `include/agentengine/core/agent_registry.hpp` (`register_agent<A>()`, the compile-time
   agent-metadata compiler) has **zero** worktree references. `check_handoff_cycle()` is a stub,
   explicitly commented *"needs 014's handoff/workflow graph, explicitly out of scope for M2."*
-- `decisions/ADR-006-agent-spawn-depth-budget-bound.md` proves only the recursion-depth counter
+- `decisions/archive/ADR-006-agent-spawn-depth-budget-bound.md` proves only the recursion-depth counter
   (`SpawnBudget::mint_root`/`attenuate_for_spawn`) in complete isolation from any real spawn path.
   Its own §9: *"No test exercises this against a real `agent.spawn` call path, because none exists
   yet (026 is Draft)."*
-- `decisions/ADR-024-skill-scoped-tool-and-mount-wiring.md` §7 independently confirms:
+- `decisions/archive/ADR-024-skill-scoped-tool-and-mount-wiring.md` §7 independently confirms:
   *"`AgentSession` still owns no sandbox and no tool-call loop in production... Building that
   ownership is a separate, larger architectural question this ADR does not attempt."*
 - **Updated 2026-08-11 — no longer true as stated.** `rfcs/014-Workflow-and-Orchestration.md` §1 now
   states the resolved half of this gap directly, and `workflow/worktree_scoping.hpp`
-  (`decisions/ADR-032-workflow-executor-worktree-scoping.md`) is real code: `Executor::worktree_mode`
+  (`decisions/archive/ADR-032-workflow-executor-worktree-scoping.md`) is real code: `Executor::worktree_mode`
   declares a per-node `sharing_mode`, and `mint_executor_worktrees`/`resume_executor_worktrees` turn
   it into a real `SubWorktree` + capability-gated `Mount`, reusing `create_sub_worktree` unmodified.
   **What is still true, narrower than before**: this closes the POLICY+MINTING half only — no code

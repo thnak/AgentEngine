@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §4.4 ("per-operation stop sources", red-team
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §4.4 ("per-operation stop sources", red-team
 // M5: a deadline's stop "is posted to the owning strand, never run on the reactor thread") and §4.2 ("timer-driven
 // stops are posted to the owning strand ... every existing stop_callback body is reduced to signal / enqueue") --
 // step 5 of the ADR's implementation order (§14).

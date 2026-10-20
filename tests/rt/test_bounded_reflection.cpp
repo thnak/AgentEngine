@@ -1,4 +1,4 @@
-// Implements decisions/ADR-168-bounded-reflection-loop.md's proof obligations for
+// Implements decisions/archive/ADR-168-bounded-reflection-loop.md's proof obligations for
 // `run_with_bounded_reflection()` (rt/bounded_reflection.hpp), issue #55. Mirrors
 // examples/03_multi_turn.cpp's fake-ChatClient/drive() pattern -- this loop's whole point is
 // repeated `start_run()` calls on one session, so the test needs a ChatClient that answers

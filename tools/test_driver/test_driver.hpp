@@ -1,5 +1,5 @@
 #pragma once
-// Implements ADR-182 (decisions/ADR-182-agent-test-driver-mcp.md), driver phase 1 (§12's revised
+// Implements ADR-182 (decisions/archive/ADR-182-agent-test-driver-mcp.md), driver phase 1 (§12's revised
 // phase 2): the core of `agentengine_test_driver`, an MCP server over stdio that lets a test agent
 // (a Claude Code sub-agent) drive in-process `rt::AgentSession`s with a scripted model.
 //

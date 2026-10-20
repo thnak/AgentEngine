@@ -848,7 +848,7 @@ int main() {
         }
     }
 
-    // ---- ADR-023 Phase 1: apply_response_format_scan (decisions/ADR-023-response-format-codec-
+    // ---- ADR-023 Phase 1: apply_response_format_scan (decisions/archive/ADR-023-response-format-codec-
     // seam.md §6 point 3) -- `chat()` only calls this when `scan_response_format_leaks_` is armed
     // (default false); the function itself is tested directly here, the same level
     // `parse_chat_completion_response` itself is tested at above, rather than standing up

@@ -181,7 +181,7 @@ result<SandboxHandle> NativeJailBackend::create_blocking(SandboxSpec const& spec
     if (auto authorized = authorize_spec(spec); !authorized.has_value()) {
         return std::unexpected(authorized.error());
     }
-    // decisions/ADR-087-sandbox-spec-capability-enforcement.md: closes a real per-backend divergence
+    // decisions/archive/ADR-087-sandbox-spec-capability-enforcement.md: closes a real per-backend divergence
     // this design's own red-team pass found (finding B3) -- KataBackend::create() already fails
     // closed on any NetPolicy beyond deny_all=true (ADR-086); this backend previously ignored
     // NetPolicy entirely. Independent of capabilities/authorize_spec() above: this backend has no
@@ -455,7 +455,7 @@ result<void> NativeJailBackend::grant_ro_path_once(std::wstring const& path) {
 }
 
 // ================================================================================================
-// Jailed-Python-worker surface (008 §1b/§3, 010 §2/§6 -- decisions/ADR-081-jailed-python-worker-
+// Jailed-Python-worker surface (008 §1b/§3, 010 §2/§6 -- decisions/archive/ADR-081-jailed-python-worker-
 // process-slice-1.md is the ADR superseding this file's former "Correction (2026-08-23)" comment on
 // the header). See native_jail_backend.hpp's own comments for the per-field rationale; this section
 // is the design's §4-§8a made concrete.
@@ -901,7 +901,7 @@ void NativeJailBackend::dispatch_worker_query(Instance& inst, json::Value const&
     } else if (kind == wp::kQueryFileClose && payload != nullptr) {
         fields = dispatch_file_close(ws, *payload);
     } else if (kind == wp::kQueryProgress && payload != nullptr) {
-        // decisions/ADR-155-agent-progress-codeact-module.md. `ctx` here is the SAME EffectContext
+        // decisions/archive/ADR-155-agent-progress-codeact-module.md. `ctx` here is the SAME EffectContext
         // `exec_session()` was called with -- which, because `execute_code` itself is invoked as an
         // ordinary tool through one of `rt/agent_session.hpp`'s three real `invoke_tool()` call sites
         // (ADR-060 §2), already has `report_progress` bound to that call's own live

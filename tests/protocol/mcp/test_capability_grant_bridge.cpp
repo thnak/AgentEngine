@@ -1,4 +1,4 @@
-// ADR-061 prove phase, §42/§43 (decisions/ADR-061-host-provided-inbound-transport.md). Proves the
+// ADR-061 prove phase, §42/§43 (decisions/archive/ADR-061-host-provided-inbound-transport.md). Proves the
 // shared trust::steady_deadline_from() primitive's use by mcp::capability_grant_from_bearer_claims()
 // -- the falsifiable claims table at §42.3 -- and, end to end, that the resulting CapabilityGrant is
 // accepted by a REAL McpServer::dispatch() call. trust::steady_deadline_from()'s extraction itself

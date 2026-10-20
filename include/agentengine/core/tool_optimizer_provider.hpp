@@ -1,6 +1,6 @@
 #pragma once
 // Implements docs/planning/tool-optimizer-provider-design-draft.md (issue #15) and
-// decisions/ADR-065-tool-optimizer-provider.md -- an ordinary composite ContextProvider that gates
+// decisions/archive/ADR-065-tool-optimizer-provider.md -- an ordinary composite ContextProvider that gates
 // MCP/WASM-plugin/agent tool exposure the same way core/skill_tool_scoping.hpp already gates skill
 // tools: a small always-on surface plus three always-on, zero-capability management tools
 // (search_tools/mount_tool/unmount_tool) to grow it on demand, agent-driven, mid-run.
@@ -309,7 +309,7 @@ private:
 
 class ToolOptimizerProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3: required for this conformer
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3: required for this conformer
     // to be composed via ComposedContextProvider<Ms...> (HasContextProviderName)
     // -- missed when this class first landed (ADR-065), caught by a full-tree rebuild against
     // ADR-066's own requirement.

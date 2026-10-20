@@ -1,5 +1,5 @@
 #pragma once
-// Implements rfcs/008-Sandbox-and-Isolation.md §10 Q3 and decisions/ADR-011-first-party-egress-proxy.md:
+// Implements rfcs/008-Sandbox-and-Isolation.md §10 Q3 and decisions/archive/ADR-011-first-party-egress-proxy.md:
 // the host-mediated egress mechanism `NetOut` (007 §3) is enforced through. See that ADR for the
 // design rationale (why resolve-once-connect-to-verified-literal, why no redirect-following, why
 // plain HTTP only this milestone) and docs/research/2026-08-05-ssrf-dns-rebinding-defense.md for the
@@ -102,7 +102,7 @@ inline constexpr std::uint64_t kHardResponseCeilingBytes = 16u * 1024u * 1024u;
 // `resolve_and_validate` (they share one implementation so they cannot drift), but with NO
 // blocked-range filtering: the first IPv4 candidate is returned whatever it is.
 //
-// decisions/ADR-016-provider-egress-address-policy.md: this is the HOST-INITIATED provider resolver
+// decisions/archive/ADR-016-provider-egress-address-policy.md: this is the HOST-INITIATED provider resolver
 // (`perform_provider_https_exchange`, 004 §3). The threat models are genuinely different. On the
 // guest path the destination is attacker-influenced, so private addresses are an attack. On the
 // provider path the destination is a deployment's own configured inference endpoint -- never derived
@@ -137,7 +137,7 @@ inline constexpr std::uint64_t kHardResponseCeilingBytes = 16u * 1024u * 1024u;
     std::optional<std::uint64_t> byte_cap, std::stop_token stop = {});
 
 #ifdef AGENTENGINE_WITH_HTTPS
-// decisions/ADR-013-https-egress-tls-client.md: identical to `perform_http_exchange` in every
+// decisions/archive/ADR-013-https-egress-tls-client.md: identical to `perform_http_exchange` in every
 // respect (same request-building, same byte-cap-enforced read loop, same no-redirect-following
 // posture, same additive `stop` cancellation) except the transport -- a `TlsClientSession`
 // (tls_client.hpp) wraps the connected socket, verifying the peer certificate against the vendored
@@ -266,7 +266,7 @@ inline constexpr std::chrono::hours kMaxEgressWallBound{24};
 // SSRF appliance, an mTLS-terminating gateway) is usable with no engine change, per 008 §10 Q3's
 // resolution ("stays a seam underneath... for a deployer who wants to substitute").
 //
-// decisions/ADR-237 §5.1 (Phase D, #173): `fetch` returns `task<result<NetEgressResponse>>` -- a deployer's
+// decisions/archive/ADR-237 §5.1 (Phase D, #173): `fetch` returns `task<result<NetEgressResponse>>` -- a deployer's
 // conformer is a proxy client, i.e. network I/O, and may suspend. The backend object must outlive the
 // returned task; a conformer that keeps the request or grant past its first suspension takes them by value.
 // ADR-241 D1: the third argument is the control value above (no default; the 2-argument form is gone).

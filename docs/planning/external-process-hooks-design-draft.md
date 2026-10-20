@@ -339,7 +339,7 @@ assumed either way:
 - `ApprovalDecider`'s signature and call site (`tool_pipeline.hpp:317`, consulted at `invoke_tool()`
   step 5) are unchanged.
 
-**The one finding that changes the DESIGN, not just a citation — `decisions/ADR-067-middleware-turn-
+**The one finding that changes the DESIGN, not just a citation — `decisions/archive/ADR-067-middleware-turn-
 point-pre-model-enforcement.md`'s `TurnMiddlewareHook` was Judged and wired (2026-08-20/21), four to
 seven days after this draft, closing 017 §4's `pre_model` filter gap for an unrelated reason. It is,
 structurally, exactly the run/turn-level gating hook Q1 concluded needed real restructuring to build:**
@@ -377,7 +377,7 @@ structurally, exactly the run/turn-level gating hook Q1 concluded needed real re
   reaches it, never from the other ten. `TurnBoundaryGuard`/`RunBoundaryGuard` (Q7, punch-list item 5)
   remains real, unbuilt, necessary work — re-scoped against the current eleven-exit reality, not the
   stale seven.
-- **`decisions/ADR-070-host-configurable-responsibility-boundary.md`'s `PolicyDecider`** (also new
+- **`decisions/archive/ADR-070-host-configurable-responsibility-boundary.md`'s `PolicyDecider`** (also new
   since this draft, `tool_pipeline.hpp:318-335`) is a related-but-orthogonal seam — narrower than Q3's
   proposed hook stage (only graduates `policy_driven` approval outcomes among `auto_approve`/
   `auto_deny`/`require_approval`, never rewrites arguments, never runs for `never_require`/

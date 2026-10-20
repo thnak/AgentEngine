@@ -764,7 +764,7 @@ above) both clean except the same pre-existing `native_jail_backend_windows` OOM
 dropped):**
 
 - ~~**`AgentSession<ChatClientT>` cannot host a non-default-constructible `ChatClient` conformer.**~~
-  **CLOSED 2026-08-07 by `decisions/ADR-018-agent-session-real-chat-client-wiring.md`**, and sharper
+  **CLOSED 2026-08-07 by `decisions/archive/ADR-018-agent-session-real-chat-client-wiring.md`**, and sharper
   than J1 recorded it in two ways. (a) It did not fail to CONFIGURE, it failed to COMPILE:
   `quark::TestKit<A>` declares `A actor_;`, `AgentSession` held `ChatClientT` as a value, and a real
   backend holds a `Store const&` (004 §1's resolve-at-point-of-use rule) — so
@@ -783,7 +783,7 @@ dropped):**
   real grant, real socket, real parse, real history append, across two runs, plus a fail-closed case
   for a never-emplaced client. Deterministic, so it is a default-suite test.
 - ~~**`chat_stream()`'s underlying fetch has no cancellation wiring from the consumer.**~~ **CLOSED
-  2026-08-07 by `decisions/ADR-017-stream-consumer-cancellation-signal.md`.** Root cause was a real
+  2026-08-07 by `decisions/archive/ADR-017-stream-consumer-cancellation-signal.md`.** Root cause was a real
   gap in the ring's shape, not an oversight at the call site: a `stream_producer<T>` learns the
   consumer is gone ONLY by attempting a `push()`, which is useless for a producer blocked in I/O with
   nothing to push yet. `make_stream<T>` now shares one `std::stop_source` between the two halves
@@ -803,7 +803,7 @@ dropped):**
 - **The full 018 §7 G4 admission surface** (audit query) — no audit log/query API exists yet.
 - **Full A2A/MCP delegation chains** (018 §7 G5's complete text) — need 012/011, M7 (decision 10).
 - ~~**`Local/embedded via OpenAI-compatible server`**~~ — **REAL 2026-08-07** via
-  `decisions/ADR-016-provider-egress-address-policy.md`: the provider path resolves through
+  `decisions/archive/ADR-016-provider-egress-address-policy.md`: the provider path resolves through
   `resolve_host` (no blocked-range filter — that table is an SSRF defence and the provider
   destination is deployment config, never guest-supplied, never model-derived per I3) and gained an
   opt-in `ProviderTransport::plaintext_http`. `tests/protocol/openai/test_llamacpp_live_e2e.cpp` drives the real
@@ -827,7 +827,7 @@ dropped):**
   ~~`ae::stream<T>`~~ — built, Phase B4b (`core/stream.hpp`). ~~Still owed: threading `task<T>`/a live
   producer into `sandbox/provider_http_client.hpp`'s SSE read loop and a real Phase D/E backend's
   own `chat()`/`chat_stream()` bodies~~ — **CLOSED 2026-08-07 by
-  `decisions/ADR-019-incremental-streaming-response.md`.** `chat_stream()` was streaming in shape
+  `decisions/archive/ADR-019-incremental-streaming-response.md`.** `chat_stream()` was streaming in shape
   only: one COMPLETE blocking fetch, then a replay of already-received events, so the vendor's
   chunk boundaries survived in delivery ORDER (004 §7 G3) but not in TIME. Now three layers —
   `sandbox/incremental_http_body.hpp`'s stateful `ChunkedBodyDecoder`/`SseEventFramer` (pure, no
@@ -845,7 +845,7 @@ dropped):**
   status quo every earlier milestone established.
 - ~~**A portable `reasoning_effort` design and `prompt_cache_key`** for Phase D/E's two backends —
   surveyed, still not built~~ — **`reasoning_effort` CLOSED 2026-08-07 by
-  `decisions/ADR-020-portable-reasoning-effort.md`** (004 §2 amended: `enum class reasoning_effort
+  `decisions/archive/ADR-020-portable-reasoning-effort.md`** (004 §2 amended: `enum class reasoning_effort
   {off, low, medium, high}` + `ChatRequest::reasoning_effort`, appended last; OpenAI maps to its flat
   string, Anthropic to `thinking:{type, budget_tokens}` computed as 25/50/75% of the same request's
   `max_tokens`; `low`/`medium`/`high` gated on the declared `reasoning` bit, `off` exempt).

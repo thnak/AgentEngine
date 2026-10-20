@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-237-async-extension-points-and-io-reactor.md §4.5 rule 2 (step 33):
+// Proof for decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §4.5 rule 2 (step 33):
 // `rt::Runtime::spawn` -- an OWNED root the caller does not await, on a fresh strand of a group, tracked
 // exactly like a `run`/`enter` root (shutdown requests stop on it and joins it), plus `rt::RootHandle`.
 // rt/runtime.hpp.

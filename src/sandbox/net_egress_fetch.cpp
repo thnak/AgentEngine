@@ -1,4 +1,4 @@
-// Implements decisions/ADR-241-egress-proxy-async-path-on-rt-http.md: the egress proxy's async path on `rt::http` -- the
+// Implements decisions/archive/ADR-241-egress-proxy-async-path-on-rt-http.md: the egress proxy's async path on `rt::http` -- the
 // one `fetch` both entry points run (D1 control value, D2 gate, D5 deadline, D6 TLS, D8 the one process-wide I/O context,
 // 8.3 the synchronous entry as spawn + latch). The gate, the address policy, the deadline arithmetic and the error table
 // are net_egress_proxy.cpp's; this file is the I/O.

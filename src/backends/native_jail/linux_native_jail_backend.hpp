@@ -7,7 +7,7 @@
 // leak across this backend's other calls) + cgroups v2 (`cgroup_limits.hpp`, already built) +
 // seccomp-BPF (`seccomp_filter.hpp`, already built) + `no_new_privs`.
 //
-// docs/planning/sandbox-spec-capability-enforcement-design-draft.md (2026-08-24, decisions/ADR-087-
+// docs/planning/sandbox-spec-capability-enforcement-design-draft.md (2026-08-24, decisions/archive/ADR-087-
 // sandbox-spec-capability-enforcement.md): `create()` now calls `agentengine::authorize_spec()`
 // (sandbox/sandbox.hpp) first -- a real, opt-in check that `spec.mounts`/`spec.net` are covered by
 // `spec.capabilities`' `cap::SandboxMount`/`cap::SandboxNetOut` grants, a no-op for every caller that
@@ -41,7 +41,7 @@
 //     command needing a toolchain beyond its explicit grants needs its own explicit `MountSpec`,
 //     same as the Windows side's vendored-interpreter-tree precedent (ADR-004 §3 step 1). Proven
 //     against real Linux namespaces + cgroups v2 in `test_native_jail_fs_containment_linux.cpp` --
-//     `decisions/ADR-083-linux-native-jail-pivot-root-containment.md` is the closing ADR; design
+//     `decisions/archive/ADR-083-linux-native-jail-pivot-root-containment.md` is the closing ADR; design
 //     and self-red-team record in
 //     `docs/planning/linux-native-jail-pivot-root-containment-design-draft.md`.
 //

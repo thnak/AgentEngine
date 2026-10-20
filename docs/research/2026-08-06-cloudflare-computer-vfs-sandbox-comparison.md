@@ -5,7 +5,7 @@ virtual filesystem with pluggable sandboxed execution backends; local checkout, 
 docs marked "forward-looking, code wins over docs on conflict"). Read in full: `docs/01`–`docs/19`,
 package READMEs for `dofs`/`rpc`/`computerd`/`computer`, `AGENTS.md`, `COLLABORATORS.md`. Scope: what,
 if anything, transfers to `rfcs/025-Worktree-and-Virtual-Filesystem.md`, `rfcs/008-Sandbox-and-Isolation.md`,
-`rfcs/009-Plugin-and-Extension-System.md`, and `decisions/ADR-011-first-party-egress-proxy.md`.
+`rfcs/009-Plugin-and-Extension-System.md`, and `decisions/archive/ADR-011-first-party-egress-proxy.md`.
 
 Overall read: Computer and this project solve an overlapping problem (durable virtual disk + sandboxed
 execution surface for agent workloads) from different starting constraints — Computer is a shipping
@@ -58,7 +58,7 @@ documented-elsewhere failure class, not a hypothetical one.
 
 Computer's `remote`-shaped boundary (Durable Object ↔ `computerd`, over capnweb) faces the same
 structural risk this project's `remote` sandbox profile and cross-process capability bearer tokens
-(`decisions/ADR-005-capability-bearer-tokens-cross-process.md`) face: a capability/stub held across a
+(`decisions/archive/ADR-005-capability-bearer-tokens-cross-process.md`) face: a capability/stub held across a
 process or network boundary that isn't explicitly disposed pins resources on the other side
 indefinitely, and that kind of leak is invisible in ordinary testing (`docs/08_capnweb_interface.md`).
 Computer's answer is a concrete, working instrumentation pattern, not aspirational:

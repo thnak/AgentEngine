@@ -1289,7 +1289,7 @@ export function ApiTrustSandboxReference() {
           <RevealItem>
             <div style={{ marginTop: 14, display: "flex", gap: 16, flexWrap: "wrap" }}>
               <RawCite href={gh("include/agentengine/trust/secret_quarantine.hpp")} label="include/agentengine/trust/secret_quarantine.hpp" />
-              <RawCite href={gh("decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md")} label="decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md" />
+              <RawCite href={gh("decisions/archive/ADR-068-runtime-secret-quarantine-host-delegated-detection.md")} label="decisions/archive/ADR-068-runtime-secret-quarantine-host-delegated-detection.md" />
               <RawCite href={gh("tests/rt/agent_session/test_rt_agent_session_quarantine_tool.cpp")} label="tests/rt/agent_session/test_rt_agent_session_quarantine_tool.cpp" />
             </div>
           </RevealItem>
@@ -1574,7 +1574,7 @@ export function ApiTrustSandboxReference() {
                 href={gh("docs/research/2026-wasm-runtime-and-state-persistence.md")}
                 label="docs/research/2026-wasm-runtime-and-state-persistence.md §2"
               />
-              <RawCite href={gh("decisions/ADR-037-remove-quark-as-core-runtime.md")} label="decisions/ADR-037-remove-quark-as-core-runtime.md" />
+              <RawCite href={gh("decisions/archive/ADR-037-remove-quark-as-core-runtime.md")} label="decisions/archive/ADR-037-remove-quark-as-core-runtime.md" />
             </div>
           </RevealItem>
         </RevealGroup>
@@ -1632,8 +1632,8 @@ export function ApiTrustSandboxReference() {
           <RevealItem>
             <div style={{ marginTop: 14, display: "flex", gap: 16, flexWrap: "wrap" }}>
               <RawCite
-                href={gh("decisions/ADR-004-appcontainer-native-jail-windows-backend.md")}
-                label="decisions/ADR-004-appcontainer-native-jail-windows-backend.md §10"
+                href={gh("decisions/archive/ADR-004-appcontainer-native-jail-windows-backend.md")}
+                label="decisions/archive/ADR-004-appcontainer-native-jail-windows-backend.md §10"
               />
               <RawCite href={gh("tests/backends/native_jail/test_native_jail_abuse_corpus_windows.cpp")} label="tests/backends/native_jail/test_native_jail_abuse_corpus_windows.cpp" />
               <RawCite href={gh("tests/backends/native_jail/test_native_jail_abuse_corpus_linux.cpp")} label="tests/backends/native_jail/test_native_jail_abuse_corpus_linux.cpp" />

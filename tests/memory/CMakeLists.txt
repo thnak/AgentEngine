@@ -97,7 +97,7 @@ if(AGENTENGINE_WITH_HTTPS)
   set_tests_properties(test_memory_procedural_channel_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
 endif()
 
-# ---- decisions/ADR-153-agent-memory-codeact-bridging.md -- src/backends/native_jail/
+# ---- decisions/archive/ADR-153-agent-memory-codeact-bridging.md -- src/backends/native_jail/
 # memory_mount_materializer.hpp (the same materialize_mount shape as skill_mount_materializer, narrowed
 # to one principal's own memory mount) plus MemoryProvider::make_recall_tool_descriptor() now public and
 # proven through the real bridge_tool_call() path (tool_bridge.hpp), not merely through
@@ -111,7 +111,7 @@ if(WIN32)
   set_tests_properties(test_memory_codeact_bridging PROPERTIES TIMEOUT 60)
 endif()
 
-# ---- decisions/ADR-156-agent-notes-write-back.md -- src/backends/native_jail/
+# ---- decisions/archive/ADR-156-agent-notes-write-back.md -- src/backends/native_jail/
 # memory_notes_materializer.hpp: a dedicated notes-inbox subtree (isolated from write_memory_item()'s
 # own structural <kind>/<id> storage) plus harvest_memory_notes(), converting a script's real file
 # writes into durable AgentAuthored MemoryItems, discoverable through the SAME rank_memory_items()/

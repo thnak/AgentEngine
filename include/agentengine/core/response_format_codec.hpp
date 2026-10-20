@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-023-response-format-codec-seam.md, Phase 1 AND Phase 2 (ADR §6 points 3
+// Implements decisions/archive/ADR-023-response-format-codec-seam.md, Phase 1 AND Phase 2 (ADR §6 points 3
 // and 4). Extracts clean `Reasoning`/`Text` content items when a raw, non-JSON-field model response
 // format (OpenAI Harmony, DeepSeek's compound delimiter tokens, Hermes/Qwen's `<tool_call>` tags,
 // DeepSeek-R1/Qwen3's `<think>` reasoning tags) leaks into an assistant `content` string instead of

@@ -139,7 +139,7 @@ of exposure, not the whole process's lifetime) at once, rather than trading one 
 Revision 5's fix and the pre-Revision-5 design each did. The real, disclosed residual — this still shares
 one AppContainer SID, so the backstop layer still cannot distinguish between the N slots' own concurrent
 occupants — is stated explicitly, not swept under the rug, alongside the real, checked precedent
-(`decisions/ADR-041-appcontainer-ace-leak-accepted-residual.md`) for why this codebase's own already-Judged
+(`decisions/archive/ADR-041-appcontainer-ace-leak-accepted-residual.md`) for why this codebase's own already-Judged
 threat model does not require this backstop layer to be leak-free, only bounded and disclosed, provided the
 SOFTWARE layer (`dispatch_open`, finding 6) remains the actual, independently-sound primary boundary —
 which round 5's own investigation confirmed it still is ("the software layer... remain[s] genuinely sound
@@ -369,7 +369,7 @@ the same way prior revisions cross-referenced their own round's findings.
 
 Continues `rfcs/009-Plugin-and-Extension-System.md` §7's "Document extraction (text layer)" catalog row,
 specifically the third this row names ("...and a DOCX/PPTX/XLSX structural parser") that
-`decisions/ADR-106-document-extraction-catalog-candidate-license-substitution.md` §3 explicitly scoped
+`decisions/archive/ADR-106-document-extraction-catalog-candidate-license-substitution.md` §3 explicitly scoped
 itself away from: "this pass did not do the research needed to find a permissively-licensed C++
 equivalent... defers DOCX/PPTX/XLSX to a separate follow-up." This draft is that follow-up's design
 half — a license/architecture ruling plus a tool shape, not an implementation.
@@ -1590,7 +1590,7 @@ already-shipped, call-scoped reverse channel: `ctx.report_progress(ContentItem{.
 emitting `RunEvent` envelope already stamps on every event (`run_id`, `seq`) plus the `ContentItem` payload
 itself. This is not a hypothetical reuse: `native_jail_backend.cpp:901` already calls exactly this —
 `ctx.report_progress(ContentItem{.value = Text{text}})` — for the CodeAct `agent.progress` module's own
-per-call output (`decisions/ADR-155-agent-progress-codeact-module.md`), inside the SAME backend file this
+per-call output (`decisions/archive/ADR-155-agent-progress-codeact-module.md`), inside the SAME backend file this
 draft's scratch-directory lifecycle code lives beside. The fix here is the same call, a structured `Data`
 payload (`core/content.hpp`'s `ContentItem::value` alternative for exactly "a structured fact," per
 `EffectContext::report_progress`'s own file comment — "a plain text, a structured `Data` fact, or a
@@ -2020,7 +2020,7 @@ discipline and wiped both before handout and after release — bounding BOTH fin
 (exactly `N` grants, ever) AND finding 18's backstop-scope axis (bounded to `N` concurrently-live calls'
 worth of exposure, not the whole process's lifetime) at once, with the residual bounded-not-eliminated
 exposure disclosed explicitly and argued from this codebase's own already-Judged
-`decisions/ADR-041-appcontainer-ace-leak-accepted-residual.md` precedent for why a bounded, disclosed
+`decisions/archive/ADR-041-appcontainer-ace-leak-accepted-residual.md` precedent for why a bounded, disclosed
 backstop residual is an acceptable v1 posture given the software layer (`dispatch_open`, finding 6) remains
 the real, independently-sound primary boundary (§4b, finding 18's fix); whether finding 14's own fix ever
 named the real bootstrap-ordering sequence its two-level directory structure needs — real, checked
@@ -2110,7 +2110,7 @@ kept unchanged, now constructed against the call's own scratch directory instead
 
 **Finding 24 (the ADR-041-analogy weighing) and finding 29 (finding 24's own untracked-in-§8 gap) are both
 re-assessed, not carried forward unexamined**: finding 24 challenged the pool's own citation of
-`decisions/ADR-041-appcontainer-ace-leak-accepted-residual.md` as justifying a bounded-not-eliminated
+`decisions/archive/ADR-041-appcontainer-ace-leak-accepted-residual.md` as justifying a bounded-not-eliminated
 backstop residual, on the grounds that the pool's residual (self-inflicted, live per-tenant document data,
 argued-by-analogy) was a materially different kind from ADR-041's own (OS-inherited, two static non-secret
 files, proven-by-an-executed-test). That weighing was real and correct AT THE TIME, but it was a weighing
@@ -3591,7 +3591,7 @@ new persistent-logging mechanism required) — real, low-cost bookkeeping distin
 
 ### Finding 24 (High, new — the ADR-041 analogy, re-verified directly against ADR-041's own text, is textually accurate but rests on a residual of a materially different kind, and the fix leans on it more heavily than the difference supports)
 
-**Investigation #6's own question, answered directly**: `decisions/ADR-041-appcontainer-ace-leak-accepted-
+**Investigation #6's own question, answered directly**: `decisions/archive/ADR-041-appcontainer-ace-leak-accepted-
 residual.md` was read in full this round, not trusted from the draft's own quotes. The quotes the fix text
 uses ("the model does not claim the backstop is leak-free, only that mediation (layer 1) is what actually
 has to hold, with the backstop catching what mediation itself doesn't reach") are verbatim and accurate —

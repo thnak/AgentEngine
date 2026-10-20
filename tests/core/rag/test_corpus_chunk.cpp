@@ -1,4 +1,4 @@
-// Implements decisions/ADR-063-retrieval-augmented-context-provider-shape.md §2.4, §4 findings 1/2
+// Implements decisions/archive/ADR-063-retrieval-augmented-context-provider-shape.md §2.4, §4 findings 1/2
 // -- CorpusChunkRecord's storage round-trip (core/corpus_chunk.hpp), the shared contract between
 // CorpusSource (writer, not yet implemented) and VectorRagContextProvider (reader, not yet
 // implemented). Mirrors test_memory_worktree.cpp's own write/read-through-a-real-store shape.

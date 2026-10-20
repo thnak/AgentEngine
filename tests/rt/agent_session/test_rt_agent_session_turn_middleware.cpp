@@ -1,4 +1,4 @@
-// Proves decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md's mechanism actually wired
+// Proves decisions/archive/ADR-067-middleware-turn-point-pre-model-enforcement.md's mechanism actually wired
 // into a real rt::AgentSession round, not just proven standalone (tests/core/context/test_turn_middleware.cpp).
 // AgentSession::set_turn_middleware_hook() (agent_session.hpp) is the real seam this file exercises:
 // a TurnMiddlewareHook runs once per round, after context assembly (including the dynamically-

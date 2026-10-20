@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §6.3 ("DNS") and §4.6 -- the
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §6.3 ("DNS") and §4.6 -- the
 // BLOCKING name-resolution primitive the async resolver (rt/dns.hpp) runs on its dedicated DNS offload pool.
 // It is the one place a host name becomes addresses; everything above it handles numeric `pal::IpAddress`
 // values only (ADR-011: resolve once, verify, connect to the verified address).

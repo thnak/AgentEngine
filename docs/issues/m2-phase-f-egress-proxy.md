@@ -9,7 +9,7 @@ the sequential A–E phases because both are cross-cutting rather than owned by 
 
 ## Tasks
 
-- **F1.** (done) First-party egress proxy. `decisions/ADR-011-first-party-egress-proxy.md` — see that
+- **F1.** (done) First-party egress proxy. `decisions/archive/ADR-011-first-party-egress-proxy.md` — see that
   ADR and the breakdown doc's own F1 entry for the full design/red-team/evidence writeup. Summary:
   `NetEgressBackend` concept + `HostEgressProxy` default
   (`include/agentengine/sandbox/net_egress_proxy.hpp`, `src/sandbox/net_egress_proxy.cpp`), wired into

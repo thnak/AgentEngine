@@ -1,4 +1,4 @@
-// Prove phase for decisions/ADR-057-agent-ask-suspend-without-deadlock.md's Design B
+// Prove phase for decisions/archive/ADR-057-agent-ask-suspend-without-deadlock.md's Design B
 // (abort-and-replay): `agent.ask()` (rfcs/026-Agent-Facing-Runtime-Surface.md §5) suspends the round it
 // runs inside, and a host-driven resolve/replay cycle
 // (`rt::AgentSession::resolve_interaction()`'s new `codeact_ask` branch) resumes it against a real

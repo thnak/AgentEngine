@@ -1,4 +1,4 @@
-# Fixture for decisions/ADR-003-caller-aware-import-gating.md's B14 regression test (added during
+# Fixture for decisions/archive/ADR-003-caller-aware-import-gating.md's B14 regression test (added during
 # this prove pass's own independent verification, not part of the ADR's original §4 claims table --
 # see python_lockdown.cpp's g_importlib_dict comment for the finding this exercises).
 #

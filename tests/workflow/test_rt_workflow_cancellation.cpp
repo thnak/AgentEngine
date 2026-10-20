@@ -23,7 +23,7 @@
 // C6 -- cancellation_token() handed to independent code observes the SAME request cancel() made --
 //       a caller can hold the token separately from ctx.cancellation.
 //
-// Issue #156 (decisions/ADR-214):
+// Issue #156 (decisions/archive/ADR-214):
 // C7  -- a cancel while a REAL AgentSession step waits on its model ends the run `cancelled` (the step's
 //        own `run.canceled` used to make it `executor_failed` under the default `fail` policy).
 // C8  -- a cancel while SUSPENDED closes the open interaction at once and reports the run ending

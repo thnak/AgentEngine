@@ -1,4 +1,4 @@
-// ADR-145 (decisions/ADR-145-containerd-execution-surface-promotion.md) -- drives the real, production
+// ADR-145 (decisions/archive/ADR-145-containerd-execution-surface-promotion.md) -- drives the real, production
 // `agentengine::ContainerdExecutionSurface` (include/agentengine/sandbox/containerd_execution_surface.hpp)
 // directly. Ported from docs/planning/proofs/execution_surface/probe_containerd_execution_surface.cpp
 // (the design-and-prove-phase original, 16/16 checks against a live containerd/runc deployment) --
@@ -8,8 +8,8 @@
 // real installs, including this project's own WSL2 development environment) either root or an
 // unprivileged-containerd-socket ACL -- containerd's default socket permissions (`/run/containerd/
 // containerd.sock`) require it. Matches DockerExecutionSurface's own "test just fails cleanly if the
-// daemon isn't reachable" posture (decisions/ADR-104-real-io-filesystem-linux-parity.md,
-// decisions/ADR-105-sandbox-tool-provider-composed-linux-parity.md) rather than a special opt-in
+// daemon isn't reachable" posture (decisions/archive/ADR-104-real-io-filesystem-linux-parity.md,
+// decisions/archive/ADR-105-sandbox-tool-provider-composed-linux-parity.md) rather than a special opt-in
 // CMake flag -- `ctr`/containerd is a comparably light dependency to `docker`, not the much heavier
 // KVM/Kata-Containers deployment `test_kata_backend_linux` is gated behind.
 //

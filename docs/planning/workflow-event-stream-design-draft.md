@@ -1,6 +1,6 @@
 # Design draft: `WorkflowSupervisor` per-executor event streaming (issue #29)
 
-Status: **superseded — implemented as `decisions/ADR-152-workflow-event-streaming.md`.** This
+Status: **superseded — implemented as `decisions/archive/ADR-152-workflow-event-streaming.md`.** This
 document is kept as the historical design-and-red-team record (§2–§4 below); the ADR is the
 current source of truth for what actually shipped, including two further findings from the
 implementation pass itself (ADR-152 §3, "Pass 2") that this draft's own §4 did not anticipate.
@@ -215,7 +215,7 @@ recommendation, adopted here:
   red team's scratchpad version into a real, repo-tracked test)
 - `examples/24_*.cpp` (new — a fan-out round with 2+ concurrently-streaming agent-kind nodes,
   proving live interleaving under a deliberately slow consumer, not just presence of events)
-- `decisions/ADR-152-workflow-event-streaming.md` (shipped)
+- `decisions/archive/ADR-152-workflow-event-streaming.md` (shipped)
 
 ## 7. Recommended next step
 

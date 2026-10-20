@@ -1,4 +1,4 @@
-// Implements decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.2/§3 claim 3 --
+// Implements decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.2/§3 claim 3 --
 // `BM25Index` (core/sparse_index.hpp): standard Okapi BM25 formula correctness against a
 // hand-computed, fixed corpus (not an approximation asserted equivalent), contract rejection on
 // malformed batches, and the same deterministic score-desc/id-asc tie-break every other index in

@@ -1,6 +1,6 @@
-// Implements wasm_backend.hpp. See that header and decisions/ADR-010-wasm-component-host-manifest-
+// Implements wasm_backend.hpp. See that header and decisions/archive/ADR-010-wasm-component-host-manifest-
 // capability-binding.md for the spec/ADR citations this satisfies. `cb_http_request` additionally
-// implements decisions/ADR-011-first-party-egress-proxy.md (M2 Phase F task F1): the first of this
+// implements decisions/archive/ADR-011-first-party-egress-proxy.md (M2 Phase F task F1): the first of this
 // file's gated I/O callbacks to go from stub to a real backing effect -- and, in `invoke_tool()` and
 // `cb_http_request` together, that ADR's own §9 residual (SandboxSpec's ResourceLimits::net_bytes
 // reconciled with the grant's own cap::NetOut::byte_cap, the tighter of the two winning).
@@ -519,7 +519,7 @@ wasmtime_error_t* cb_fs_write(void* env, wasmtime_context_t* ctx, wasmtime_compo
     return trap_error("fs-write: not implemented in M2's minimal host");
 }
 
-// decisions/ADR-011-first-party-egress-proxy.md: the first of this file's gated I/O callbacks to go
+// decisions/archive/ADR-011-first-party-egress-proxy.md: the first of this file's gated I/O callbacks to go
 // from stub to a real backing effect. Host/port/scheme come entirely from the recovered `cap::NetOut`
 // (never from the guest -- see net_egress_proxy.hpp's own file-top comment and the WIT `http`
 // interface's banner); the guest's `http-request-data` record supplies only method/path/headers/body.

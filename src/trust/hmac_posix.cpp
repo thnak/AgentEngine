@@ -1,11 +1,11 @@
-// Implements trust/hmac.hpp for Linux/POSIX -- decisions/ADR-107-hmac-sha256-linux-parity.md. The
+// Implements trust/hmac.hpp for Linux/POSIX -- decisions/archive/ADR-107-hmac-sha256-linux-parity.md. The
 // Windows sibling (hmac.cpp) uses CNG/BCrypt, a system API deliberately scoped Windows-only by
 // ADR-005 §2/§3.3 for the cross-process capability-bearer-token design. This file exists NOT to widen
 // that scope, but because a SEPARATE, unrelated consumer -- `trust/secret_quarantine.hpp`'s
 // `QuarantineSecretStore::quarantine()`, a core turn-boundary secret-quarantine feature with no
 // connection to ADR-005's own cross-process tokens -- also calls `hmac_sha256()`, and having zero
 // Linux implementation broke every `AGENTENGINE_WITH_HTTPS`-gated Linux target that touches
-// `QuarantineSecretStore` (found and disclosed, not fixed, by decisions/ADR-105-sandbox-tool-
+// `QuarantineSecretStore` (found and disclosed, not fixed, by decisions/archive/ADR-105-sandbox-tool-
 // provider-composed-linux-parity.md §4 point 3 / §7).
 //
 // A from-scratch RFC 2104 HMAC construction, built on the same SHA-256 primitive

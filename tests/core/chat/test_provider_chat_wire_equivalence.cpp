@@ -1,4 +1,4 @@
-// #120 S6 (decisions/ADR-206-provider-chat-clients-out-of-line.md): the OpenAI and Anthropic ChatClient backends
+// #120 S6 (decisions/archive/ADR-206-provider-chat-clients-out-of-line.md): the OpenAI and Anthropic ChatClient backends
 // each had their own copy of the HTTP status -> error mapping. ADR-206 made both one function,
 // provider_wire::http_status_error, parameterized by the vendor name; each backend's
 // detail::map_http_status_error is now a one-line wrapper over it.

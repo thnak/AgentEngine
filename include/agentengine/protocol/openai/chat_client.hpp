@@ -207,7 +207,7 @@ namespace detail {
 [[nodiscard]] result<ChatResponse> parse_chat_completion_response(
     json::Value const& body, std::string const& producer_chat_client_id = {});
 
-// ADR-023 Phase 1+2 (decisions/ADR-023-response-format-codec-seam.md §6 points 3-4). Opt-in only --
+// ADR-023 Phase 1+2 (decisions/archive/ADR-023-response-format-codec-seam.md §6 points 3-4). Opt-in only --
 // `OpenAIChatClient`'s `scan_response_format_leaks` constructor flag gates whether this is ever
 // called at all (default off, per the ADR's Finding 6: scanning is operator-armed, never
 // content-triggered).

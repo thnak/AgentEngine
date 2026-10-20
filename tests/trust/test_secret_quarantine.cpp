@@ -1,4 +1,4 @@
-// Implements decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md's own prove
+// Implements decisions/archive/ADR-068-runtime-secret-quarantine-host-delegated-detection.md's own prove
 // phase -- the first executed evidence against that ADR's §3 falsifiable claims (all previously
 // INCONCLUSIVE, no code existed). See trust/secret_quarantine.hpp's own top comment for the
 // mid-implementation correction this test file also proves: `quarantine()` never mutates any

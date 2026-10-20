@@ -2,7 +2,7 @@
 // 4) -- proof for `agentengine::native_jail::mediated_shell::MediatedShellRunner` and its supporting
 // parser/dispatch/registry/adapter, all genuinely new translation units built on top of
 // `core/worktree_mount_fs.hpp`'s `open_within_mount_root` (ADR-014) rather than reusing
-// decisions/ADR-001's cited spike code, which stays completely untouched (its own tests --
+// decisions/archive/ADR-001's cited spike code, which stays completely untouched (its own tests --
 // test_shell_runner_proof, test_shell_parser_adversarial, test_shell_runner_no_process_creation --
 // still pass unmodified, proven by regression, not asserted here).
 //

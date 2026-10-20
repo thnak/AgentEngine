@@ -24,10 +24,10 @@
 // "taint level": 007 §9 G6's own wording assumes a graded taint axis (007 §5's worked example:
 // `taint: high`); no such vocabulary exists in code today -- core/content.hpp's
 // `ContentItem::tainted` and core/tool_pipeline.hpp's `ToolCallRequest::arguments_tainted` are both
-// a single bool (decisions/ADR-007-span-level-taint-vs-per-item.md settled per-item, not graded,
+// a single bool (decisions/archive/ADR-007-span-level-taint-vs-per-item.md settled per-item, not graded,
 // granularity). This header therefore enumerates taint as the boolean {false, true} the mechanism
 // actually has, not 007 §5's aspirational graded levels -- named here, not silently assumed, per
-// this project's own scope-cut discipline (decisions/ADR-011-first-party-egress-proxy.md §9's own
+// this project's own scope-cut discipline (decisions/archive/ADR-011-first-party-egress-proxy.md §9's own
 // precedent). A further, structural finding this walk itself proves: CapabilitySet::contains() /
 // subsumes() never inspects a taint bit at all (trust/capability.hpp's 16 subsumes_payload
 // overloads take no taint parameter) -- so today's mechanical enforcement's reached decision is

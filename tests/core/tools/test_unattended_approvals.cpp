@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-192-unattended-mode.md, the approval half (no HTTPS needed, so it runs in every build):
+// Proof for decisions/archive/ADR-192-unattended-mode.md, the approval half (no HTTPS needed, so it runs in every build):
 //   A1-A7    Unattended approvals: off by default (an `always_require` call and a `text_derived` call are denied, a
 //            suspend-for-approval session suspends); on, both run with no human, each approval audited exactly once;
 //            a `PolicyDecider`'s auto_deny still denies -- for a `text_derived` call too (A5b, red team MAJOR);

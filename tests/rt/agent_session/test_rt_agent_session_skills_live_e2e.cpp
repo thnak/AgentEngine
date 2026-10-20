@@ -192,7 +192,7 @@ struct ExecuteCodeTool : Tool<ExecuteCodeTool, Capabilities<>, EffectClass<effec
 // test_agent_session_live_multitool_e2e.cpp's FourToolHistoryProvider shape, one tool instead of four.
 class ToolDeclaringHistoryProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3: required to satisfy
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3: required to satisfy
     // HasContextProviderName, needed to compose via ComposedContextProvider below.
     static constexpr std::string_view name = "skills-live-e2e-history";
 
@@ -211,7 +211,7 @@ static_assert(ContextProvider<ToolDeclaringHistoryProvider>);
 // duplicated here per this suite's per-file independence convention (that file's own top comment).
 class BuiltinSkillsProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3.
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3.
     static constexpr std::string_view name = "skills-live-e2e-skills";
 
     BuiltinSkillsProvider() : inner_({make_builtin_skills_source()}) {}

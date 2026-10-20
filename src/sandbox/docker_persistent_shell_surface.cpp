@@ -1,4 +1,4 @@
-// Implements decisions/ADR-209-persistent-shell-sessions.md §4.2, §4.3, §7 (revision 5 §15): the bodies of
+// Implements decisions/archive/ADR-209-persistent-shell-sessions.md §4.2, §4.3, §7 (revision 5 §15): the bodies of
 // include/agentengine/sandbox/docker_persistent_shell_surface.hpp. The design and the rules each body
 // implements are documented at the declarations there.
 

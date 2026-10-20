@@ -1,5 +1,5 @@
 // Red-team corpus + executed evidence for Milestone 3 Phase C2 / ADR-014
-// (decisions/ADR-014-worktree-mount-path-canonicalization.md), proving core/worktree_mount_fs.hpp's
+// (decisions/archive/ADR-014-worktree-mount-path-canonicalization.md), proving core/worktree_mount_fs.hpp's
 // `open_within_mount_root` against rfcs/025-Worktree-and-Virtual-Filesystem.md §5's own named attack
 // list, reused verbatim from 021 §6 G3: "`..`, absolute redirects, symlinks/junctions/reparse
 // points crossing the boundary, ADS, `\\?\` prefixes, unicode-normalization tricks, and TOCTOU

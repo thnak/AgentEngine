@@ -61,7 +61,7 @@ void check(bool cond, char const* what) {
 // contribute what it finds; the SHAPE below is unchanged either way.
 class PirateStyleProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3 -- required to be composed
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3 -- required to be composed
     // through ComposedContextProvider (below); not required for a provider used bare in
     // AgentSession's single provider slot, but declaring it costs nothing and every real,
     // shipped provider in this codebase does.

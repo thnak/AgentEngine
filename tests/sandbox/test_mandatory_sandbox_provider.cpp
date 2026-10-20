@@ -1,4 +1,4 @@
-// Proves ADR-102 Phase 4 (decisions/ADR-102-identity-native-sandbox-implementation-phase-1.md's own
+// Proves ADR-102 Phase 4 (decisions/archive/ADR-102-identity-native-sandbox-implementation-phase-1.md's own
 // roadmap) -- MandatorySandboxProvider<Surface>/RunCommandTool (sandbox/mandatory_sandbox_provider.hpp)
 // composed as a REAL, production agentengine::rt::AgentSession<ChatClientT, StateT, HistoryProviderT>'s
 // actual HistoryProviderT, ported from docs/planning/proofs/mandatory_sandbox/

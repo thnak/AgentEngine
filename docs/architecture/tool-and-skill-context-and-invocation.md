@@ -3,7 +3,7 @@
 **Compiled:** 2026-08-10 · **Status:** as-built trace, not a spec — cites the RFC/file each box comes
 from; when this disagrees with the code, the code (and the RFC it cites) wins, fix this doc.
 
-**Correction (2026-08-11):** `decisions/ADR-027-agent-session-tool-call-loop.md` (Judged) put a real
+**Correction (2026-08-11):** `decisions/archive/ADR-027-agent-session-tool-call-loop.md` (Judged) put a real
 tool-call loop inside `AgentSession::handle()` itself, the day after this doc was compiled. Path 1
 below described that loop as not existing ("`*** NO tool-call loop exists yet ***`") — that framing
 is now wrong; see the correction inline at Path 1 and the updated §4 verdict. Everything else in this
@@ -99,7 +99,7 @@ flowchart TB
 
 ### Path 1 — `AgentSession`'s real production turn loop
 **(Corrected 2026-08-11 — was accurate on 2026-08-10, no longer is.)** As of
-`decisions/ADR-027-agent-session-tool-call-loop.md` (Judged), one `StartRun` ask resolves a whole
+`decisions/archive/ADR-027-agent-session-tool-call-loop.md` (Judged), one `StartRun` ask resolves a whole
 multi-round tool conversation inside `AgentSession::handle()` itself: it declares `contribution.tools`
 into the `ChatRequest` exactly as before, but a returned `ToolCall` is now extracted, capability/
 approval-checked, and invoked for real via `invoke_tool(ToolTable::from_descriptors(contribution

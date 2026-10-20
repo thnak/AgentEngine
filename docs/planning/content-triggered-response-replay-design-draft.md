@@ -6,7 +6,7 @@ quarantine-design-draft.md` specifically. **Relationship to `context-turn-middle
 design-draft.md` is a real open question this draft itself raises (§6's last bullet), not settled
 independence** — corrected from an earlier version of this header that claimed flat independence
 from all three. This mechanism hooks into `Middleware`'s already-shipped MODEL-CALL `after_model`
-point (`decisions/ADR-033-middleware-model-call-chain.md`, real code today), which runs AFTER the
+point (`decisions/archive/ADR-033-middleware-model-call-chain.md`, real code today), which runs AFTER the
 model call, distinct from the turn-middleware draft's `TurnContext`, which runs BEFORE it — the two
 are believed non-overlapping but this has not been formally confirmed against both drafts together.
 `runtime-secret-quarantine-design-draft.md` is one possible TRIGGER source for this mechanism (§1),

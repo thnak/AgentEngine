@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-241-egress-proxy-async-path-on-rt-http.md §5 ("No `resolver` field; one seam pair,
+// Implements decisions/archive/ADR-241-egress-proxy-async-path-on-rt-http.md §5 ("No `resolver` field; one seam pair,
 // test-only"): `TestEgressProxy`, the ONLY way to run the egress proxy's shared gate and fetch with a non-default host
 // resolver, address policy or CA override.
 //

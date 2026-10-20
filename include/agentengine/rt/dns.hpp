@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §6.3 ("DNS: ... `rt::offload(getaddrinfo)`
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §6.3 ("DNS: ... `rt::offload(getaddrinfo)`
 // ... ADR-011's resolve-once/connect-to-verified-address rule is unchanged") and §4.6 ("DNS gets its own bounded
 // pool"), with §4.4's cancellation rules -- asynchronous name resolution and a connect that resolves once,
 // filters through a caller-supplied address policy, and connects only to an address that policy accepted:

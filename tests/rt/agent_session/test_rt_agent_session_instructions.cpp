@@ -1,4 +1,4 @@
-// Gap-16/21 fix (2026-08-14, decisions/ADR-042-*.md): proves `ContextContribution::instructions`
+// Gap-16/21 fix (2026-08-14, decisions/archive/ADR-042-*.md): proves `ContextContribution::instructions`
 // (now `std::optional<TaintedText>`, context_provider.hpp) actually reaches the model as a real
 // `role::system` `Message` -- before this fix it was read by `assemble_context()` and then never
 // referenced again, silently dropped (2026-08-10 gap audit #16). Also proves the taint discipline:

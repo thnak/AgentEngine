@@ -375,7 +375,7 @@ armed, are **descoped** for the request_port case until a real answer-routing me
 intermediate `AgentSession` is designed — this adapter is proven safe only for a caller that talks to it
 directly, or an outer `AgentSession` with no output-schema contract of its own.
 
-> **Update (2026-10-01, issue #44, `decisions/ADR-230-workflow-chat-client-answer-routing.md`, Proposed):
+> **Update (2026-10-01, issue #44, `decisions/archive/ADR-230-workflow-chat-client-answer-routing.md`, Proposed):
 > both descoped compositions above now have a designed, implemented and tested answer-routing mechanism.**
 > The outer `AgentSession` never reads the `Custom` ask out of response content; it asks the bound client's
 > own host-side state (`InteractiveChatClient::pending_client_interactions()`, `core/chat_client.hpp`) after
@@ -882,7 +882,7 @@ boundary, or plain implementation/testing follow-through:
    its honest, non-fabricated cost and the outer `AgentSession` completes the call. The residual is
    narrower, not gone — a graph with ONLY `function`-kind nodes still fails closed (genuinely zero
    tracked cost is indistinguishable, by design, from "nothing reports usage at all"), and this bullet's
-   compositions (a) and (b) are entirely untouched by ADR-163. Full detail: `decisions/ADR-163-
+   compositions (a) and (b) are entirely untouched by ADR-163. Full detail: `decisions/archive/ADR-163-
    workflow-supervisor-usage-tracking.md`.
 2. **Open question A (message-flattening strategy) — RESOLVED in §4a, TWICE.** The first resolution
    (physically concatenate `request.messages`' content items, relying on per-item `origin` for turn

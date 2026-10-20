@@ -1,4 +1,4 @@
-// decisions/ADR-235-batch-inference-coalescing.md §3.2 -- the OpenRouter `BatchBackend`'s non-template
+// decisions/archive/ADR-235-batch-inference-coalescing.md §3.2 -- the OpenRouter `BatchBackend`'s non-template
 // wire code. Wire facts and the deliberately narrow admission rule are documented at the declarations in
 // include/agentengine/protocol/openai/openrouter_batch_backend.hpp.
 

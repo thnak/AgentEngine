@@ -419,7 +419,7 @@ public:
     // `target_turn_index`'s own tree -- possession of the real `BranchHandle` (a caller cannot call
     // this at all without one) is the entire authorization boundary here, the same discipline
     // `abandon()`/`discard()`-shaped methods already rely on elsewhere in this design. Already named
-    // explicitly at the design level (`decisions/ADR-099-identity-native-sandbox-worktree-capability-
+    // explicitly at the design level (`decisions/archive/ADR-099-identity-native-sandbox-worktree-capability-
     // model.md` §7/§8, the `SandboxRuntime::reset_to_turn()` composition's own comment) -- brought
     // inline here, matching this class's own `mark_digest_shared()` disclosure-in-code convention,
     // after an independent red-team pass on this port asked why the two residuals weren't disclosed

@@ -1,5 +1,5 @@
 // AgentEngine "get started" examples, 19 -- a reference PolicyDecider for delegated/spawned-agent
-// calls (GitHub issue #30, decisions/ADR-151-delegated-agent-approval-policy.md).
+// calls (GitHub issue #30, decisions/archive/ADR-151-delegated-agent-approval-policy.md).
 //
 // Not part of MAF's own sample progression -- closes a real, previously-named gap: `Principal`
 // already carries `on_behalf_of`/`delegation_depth` (007 §2/018 §2), so a PolicyDecider auto-

@@ -1,4 +1,4 @@
-// Implements decisions/ADR-063-retrieval-augmented-context-provider-shape.md §2.6b / §3 claim 6 --
+// Implements decisions/archive/ADR-063-retrieval-augmented-context-provider-shape.md §2.6b / §3 claim 6 --
 // `neutralize_forged_provenance_markers()` (core/provenance_marker.hpp), the generalized form of
 // `memory_provider.hpp`'s gap-audit-finding-17 fix. Two things are proven here: (1) the mechanism
 // itself works for an arbitrary marker family, not just "memory:" -- exercised directly with the

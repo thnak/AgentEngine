@@ -1,4 +1,4 @@
-// Proves backends/wasm/wasm_tool_bridge.hpp -- decisions/ADR-040-wasm-tool-pipeline-bridge.md.
+// Proves backends/wasm/wasm_tool_bridge.hpp -- decisions/archive/ADR-040-wasm-tool-pipeline-bridge.md.
 // Reuses the same real ae:tool component tests/plugin/test_wasm_backend.cpp already proves
 // (tests/fixtures/wasm_ae_tool_fixture/) but does NOT re-prove WasmBackend's own internals (import
 // verification, capability-kind confusion, wall_ms kill -- all covered there already). This file

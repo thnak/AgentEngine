@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-155-agent-progress-codeact-module.md -- GitHub issue #31's own three-piece
+// Proof for decisions/archive/ADR-155-agent-progress-codeact-module.md -- GitHub issue #31's own three-piece
 // gap ("agent.progress is spec'd and manifest-registered but has no implementation"), closed. Runs a
 // REAL script against the REAL built `agentengine_python_worker.exe`
 // (native_jail_backend.cpp's create_python_worker()/exec_session()/dispatch_worker_query()), the same

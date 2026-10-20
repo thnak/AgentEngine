@@ -67,7 +67,7 @@ struct ChatClientCapabilities {  // ae-naming-lint: allow ChatClientCapabilities
 // surveyed backend can express both.
 enum class reasoning_effort { off, low, medium, high };  // ae-naming-lint: allow reasoning_effort — 004 §2's amendment names this concept normatively; 027 has not been updated to list it
 
-// decisions/ADR-230 (GitHub issue #44): a chat client whose own HOST-SIDE state can hold an interaction open
+// decisions/archive/ADR-230 (GitHub issue #44): a chat client whose own HOST-SIDE state can hold an interaction open
 // across calls -- `rt::WorkflowChatClient`, whose wrapped workflow suspends on a `request_port`. The ask is
 // reported by the client object itself (`pending_client_interactions()`, below), never read out of response
 // content, and the answer travels out of band on `ChatRequest::client_interaction_answers`, never in
@@ -255,7 +255,7 @@ struct ChatResponseUpdate {  // ae-naming-lint: allow ChatResponseUpdate — pre
 // are UNAFFECTED — they still declare and use `chat()`/`chat_stream()` internally as their own
 // concrete methods, unrelated to whether this concept requires either one.
 //
-// Lifetime contract (decisions/ADR-237 §5.1, #172): the `EffectContext` passed to `chat_stream()` --
+// Lifetime contract (decisions/archive/ADR-237 §5.1, #172): the `EffectContext` passed to `chat_stream()` --
 // and the `CapabilitySet` it borrows -- must outlive the returned stream, as must the client itself
 // and anything it references (its `SecretStore`). A conformer may read them from its producer after
 // `chat_stream()` returns: the real backends resolve their API key (`SecretStore::resolve`, now

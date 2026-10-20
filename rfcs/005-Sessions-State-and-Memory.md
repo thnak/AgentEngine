@@ -130,7 +130,7 @@ struct ContextContribution {
 ```
 
 A provider MAY also declare `ae::task<std::monostate> on_run_end(RunEndView, EffectContext&)`
-(decisions/ADR-209 §8.1): optional and **release-only**. The session calls it once when a run that
+(decisions/archive/ADR-209 §8.1): optional and **release-only**. The session calls it once when a run that
 emitted `run_started` completes (`final_answer`, `max_turns`, `failed`, `canceled`, `exception`) —
 never on suspension, never on a refusal — still under the session lock, and `ComposedContextProvider`
 forwards it to every wrapped provider that has it. It must never be where work becomes durable: a
@@ -158,7 +158,7 @@ parameter can't substitute for. The judged answer: fan-out stays generic; a conc
 reactive need (e.g. a future memory provider deduping against `SkillsProvider`) is solved with a
 purpose-built composite `ContextProvider` that owns its sub-providers directly and decides their
 composition itself, not by extending this generic seam. That pattern was originally proven by a
-hand-written, fixed two-provider type, `HistoryAndSkillsProvider<H,S>`; `decisions/ADR-074-composed-context-provider-consolidation.md`
+hand-written, fixed two-provider type, `HistoryAndSkillsProvider<H,S>`; `decisions/archive/ADR-074-composed-context-provider-consolidation.md`
 (2026-08-23) deleted that type and absorbed its fixes into the general
 `ComposedContextProvider<Ms...>` (`include/agentengine/core/composed_context_provider.hpp`) —
 declaring `Ms...` in the desired wire order now gets the same ordering guarantee the hand-written
@@ -167,7 +167,7 @@ output, the case this paragraph is actually about) still has no built-in type an
 consumer-authored, same as before. Full reasoning: `OpenQuestions.md` OQ-18.
 
 Kinds: `HistoryProvider` (conversation history) · `SkillsProvider` (009 §8) · `TodoProvider`
-(session-scoped plan/execute task-list state; `decisions/ADR-166-todo-provider.md`) · **working**
+(session-scoped plan/execute task-list state; `decisions/archive/ADR-166-todo-provider.md`) · **working**
 memory (in-session scratch, this RFC's `state`) · **episodic** / **semantic** / **procedural**
 memory, whose storage model, writing, retrieval ranking, and consolidation are their own RFC (029)
 — this section owns the seam they attach through, not the memory architecture itself.

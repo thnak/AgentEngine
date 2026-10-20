@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-181-durable-cancellable-background-jobs.md, phase 1 (§10 "Revised build
+// Implements decisions/archive/ADR-181-durable-cancellable-background-jobs.md, phase 1 (§10 "Revised build
 // phases"): the in-memory core of `rt::BackgroundJobRunner`, the host-owned runner that replaces
 // `tool_pipeline.hpp::background_task()`'s one-detached-thread-per-task shape (006 §6b).
 //

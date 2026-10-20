@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-071-native-unsandboxed-process-execution-providers.md: the four
+// Implements decisions/archive/ADR-071-native-unsandboxed-process-execution-providers.md: the four
 // ContextProvider conformers -- NativeShellProvider, NativeBashProvider, NativePythonProvider,
 // NativeNodeProvider -- that seed an LLM with what native, unsandboxed host executables it may
 // call, and dispatch those calls through native_process_spawn.hpp. Windows-only for now (matches

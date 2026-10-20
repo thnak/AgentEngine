@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-237-async-extension-points-and-io-reactor.md §6.3 ("DNS") and §4.6 ("DNS gets its own
+// Proof for decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §6.3 ("DNS") and §4.6 ("DNS gets its own
 // bounded pool", the offload residual), with ADR-011's resolve-once / connect-to-the-verified-address rule --
 // rt::resolve and rt::connect_resolved (rt/dns.hpp) over pal::resolve_host_blocking (pal/resolver.hpp). Each
 // claim names the rule it proves and the mutant that kills it. No claim depends on the network: slow, failing

@@ -33,7 +33,7 @@ struct ResearcherAgent
                 ae::TokenBudget<200000>, ae::Approval<ae::approval_mode::policy_driven>> {
     static constexpr std::string_view name         = "researcher";
     static constexpr std::string_view instructions = "Research the question. Cite sources.\n";
-    // Gap-2 fix (2026-08-14, decisions/ADR-044-*.md): optional statics, detected via
+    // Gap-2 fix (2026-08-14, decisions/archive/ADR-044-*.md): optional statics, detected via
     // agent_registry.hpp's has_agent_description/has_agent_version concepts.
     static constexpr std::string_view description = "Researches a question and cites sources.";
     static constexpr std::string_view version      = "1.4.0";

@@ -1,4 +1,4 @@
-// Proves decisions/ADR-019-incremental-streaming-response.md's gates G1-G4, closing Milestone 5's
+// Proves decisions/archive/ADR-019-incremental-streaming-response.md's gates G1-G4, closing Milestone 5's
 // last self-contained residual: "threading `task<T>`/a live producer into
 // `sandbox/provider_http_client.hpp`'s SSE read loop and a real Phase D/E backend's own
 // `chat()`/`chat_stream()` bodies."

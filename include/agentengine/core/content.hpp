@@ -17,7 +17,7 @@ namespace agentengine {
 
 enum class content_origin { user, assistant, tool, system, external };  // ae-naming-lint: allow content_origin — pre-existing M0 scaffolding, reconcile at owning milestone
 
-// decisions/ADR-066-context-provider-attribution-provenance.md: which ContextProvider contributor
+// decisions/archive/ADR-066-context-provider-attribution-provenance.md: which ContextProvider contributor
 // (if any) produced a Message/ToolDescriptor this turn. Stamped ONLY by `assemble_context()`
 // (context_assembly.hpp) at its one seam every contribution already flows through unconditionally
 // -- never self-stamped by a contributor (MAF's shape, `ChatMessage.WithAgentRequestMessageSource`;
@@ -93,7 +93,7 @@ struct Data {  // ae-naming-lint: allow Data — pre-existing M0 scaffolding, re
     friend bool operator==(Data const&, Data const&) = default;
 };
 
-// decisions/ADR-023-response-format-codec-seam.md §6 point 4 / 007 §4 amendment: WHERE a call came
+// decisions/archive/ADR-023-response-format-codec-seam.md §6 point 4 / 007 §4 amendment: WHERE a call came
 // from is load-bearing, not decorative. `vendor_structured` is today's only path -- a backend's own
 // wire-format `tool_calls`/`tool_use` field, unchanged trust posture. `text_derived` means
 // `apply_response_format_scan()` (core/response_format_leak_scan.hpp; ADR-035 Phase 1 made this
@@ -174,7 +174,7 @@ struct ContentItem {  // ae-naming-lint: allow ContentItem — pre-existing M0 s
 
 enum class role { system, user, assistant, tool };  // ae-naming-lint: allow role — pre-existing M0 scaffolding, reconcile at owning milestone
 
-struct Usage {  // gap-audit finding 9 (2026-08-14, decisions/ADR-050-*.md): 027's own table now lists
+struct Usage {  // gap-audit finding 9 (2026-08-14, decisions/archive/ADR-050-*.md): 027's own table now lists
                 // `Usage`, not `UsageDetails` — this name was always right, the vocabulary table was
                 // the stale one; no suppression comment needed here anymore.
     std::uint64_t input_tokens = 0;

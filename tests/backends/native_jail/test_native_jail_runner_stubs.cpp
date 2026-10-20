@@ -2,10 +2,10 @@
 // both types satisfy the `Runner` concept (010 §1a) against the real, merged headers.
 //
 // Neither ShellRunner nor PythonRunner is a stub anymore:
-//  - ShellRunner (decisions/ADR-001-shellrunner-grammar-and-dispatch.md, prove phase) has a real
+//  - ShellRunner (decisions/archive/ADR-001-shellrunner-grammar-and-dispatch.md, prove phase) has a real
 //    grammar/dispatch implementation, is constructor-injected with a FileSystemAdapter&/
 //    CommandRegistry const&, and is exercised by tests/backends/native_jail/test_shell_runner_proof.cpp.
-//  - PythonRunner (decisions/ADR-002-pythonrunner-embedding-and-mediation.md, prove phase) now
+//  - PythonRunner (decisions/archive/ADR-002-pythonrunner-embedding-and-mediation.md, prove phase) now
 //    embeds a real CPython interpreter behind `native_jail::PythonLockdownInterpreter` and is
 //    constructor-injected with a `PythonLockdownConfig`, so it is no longer default-constructible
 //    either. It is exercised by its own dedicated tests (test_python_embed_smoke,

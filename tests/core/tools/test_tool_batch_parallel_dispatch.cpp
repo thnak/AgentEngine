@@ -1,4 +1,4 @@
-// Implements decisions/ADR-160-parallel-tool-batch-scheduler.md §5. `test_tool_batch_partition.cpp`
+// Implements decisions/archive/ADR-160-parallel-tool-batch-scheduler.md §5. `test_tool_batch_partition.cpp`
 // already proves `partition_batch()`'s pure logic in isolation; THIS file is the real, executed proof
 // that `AgentSession::dispatch_tool_calls()` actually runs an eligible batch CONCURRENTLY, end to end,
 // through a real `AgentSession` round -- not merely that it compiles or that the sequential fallback

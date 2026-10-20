@@ -1,4 +1,4 @@
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §6.3 ("DNS") -- the backend of
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §6.3 ("DNS") -- the backend of
 // `pal::resolve_host_blocking` (pal/resolver.hpp): one blocking getaddrinfo, mapped to numeric
 // `pal::IpAddress` values. Lives with the reactor backend because it is the always-built pal backend that
 // already links the platform socket library; it uses no Asio type. Called only from an offload worker

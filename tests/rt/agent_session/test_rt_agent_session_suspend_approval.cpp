@@ -122,7 +122,7 @@ struct GatedTool : agentengine::Tool<GatedTool, agentengine::Capabilities<>,
     }
 };
 
-// decisions/ADR-070-host-configurable-responsibility-boundary.md: a second gated tool, this one
+// decisions/archive/ADR-070-host-configurable-responsibility-boundary.md: a second gated tool, this one
 // `policy_driven` -- the mode the new PolicyDecider seam exists to resolve, distinct from
 // GatedTool's `always_require` above.
 struct PolicyGateArgs { int value = 0; };

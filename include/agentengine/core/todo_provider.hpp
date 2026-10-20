@@ -1,6 +1,6 @@
 #pragma once
 // Implements rfcs/005-Sessions-State-and-Memory.md §5's `TodoProvider` provider kind and
-// decisions/ADR-166-todo-provider.md. Closes issue #53 (MAF's Harness bundles a todo/task-list
+// decisions/archive/ADR-166-todo-provider.md. Closes issue #53 (MAF's Harness bundles a todo/task-list
 // tracking ContextProvider by default; 002/005/006/014 had no equivalent). Builds on the
 // design draft docs/planning/todo-provider-design-draft.md (PR #25) -- red-teamed and implemented
 // here; ADR-166 records what changed from the draft and why.
@@ -264,7 +264,7 @@ private:
 // ae-naming-lint: allow TodoProvider — matches MemoryProvider/HistoryProvider's own established naming
 class TodoProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3.
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3.
     static constexpr std::string_view name = "todo";  // ae-naming-lint: allow name — ADR-033's HasMiddlewareName precedent, reused verbatim per ADR-066 §3
 
     // ADR-166 red-team finding 1: `items_` is otherwise unbounded -- a malicious or malfunctioning

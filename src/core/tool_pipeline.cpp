@@ -204,7 +204,7 @@ task<result<AdmittedCall>> admit_call(ToolTable const& table, CapabilitySet cons
     // setting, never substituted for it, so `always_require`/`policy_driven` still apply. A
     // `vendor_structured` call (every caller before this amendment, and every caller that never sets
     // `provenance`) takes the ORIGINAL branch, byte-for-byte unchanged.
-    // ADR-070 (decisions/ADR-070-host-configurable-responsibility-boundary.md): `policy` only ever
+    // ADR-070 (decisions/archive/ADR-070-host-configurable-responsibility-boundary.md): `policy` only ever
     // narrows this decision further -- an auto_approve/auto_deny verdict short-circuits
     // `policy_driven`'s existing fail-closed degrade; an unset `policy` reproduces
     // `tool_call_requires_approval()`'s own boolean exactly (see `resolve_approval_outcome`'s own

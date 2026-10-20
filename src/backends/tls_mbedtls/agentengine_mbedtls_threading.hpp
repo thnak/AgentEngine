@@ -1,5 +1,5 @@
 #pragma once
-// decisions/ADR-237-async-extension-points-and-io-reactor.md §6.3: the implementation behind
+// decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §6.3: the implementation behind
 // threading_alt.h, compiled into every translation unit that includes an mbedTLS header -- this file is
 // pulled in by the mbedTLS user-config header (agentengine_mbedtls_config.h, set as
 // MBEDTLS_USER_CONFIG_FILE in the root CMakeLists.txt), so a TU cannot use mbedTLS and miss it. It is

@@ -6,7 +6,7 @@
 //
 // Of §6's 8 named validation checks, six now run for real: tool name collision, capability-ceiling
 // coverage, Stateless<N>-vs-session-state via std::is_empty_v, SandboxProfile's compile-time shape
-// (decisions/ADR-012-sandbox-profile-template-parameter-kind.md), a basic shape check (ChatClientId
+// (decisions/archive/ADR-012-sandbox-profile-template-parameter-kind.md), a basic shape check (ChatClientId
 // presence), and — Milestone 5 Phase B6 (docs/planning/milestone-5-providers-identity-secrets-
 // breakdown.md) — ChatClientId credentials/OutputSchema enforceability, ADDITIVELY: an optional
 // `ChatClientRegistry const*` parameter on `register_agent<A>()` (default `nullptr`, so every
@@ -55,7 +55,7 @@ namespace agentengine {
 struct AgentMetadata {  // ae-naming-lint: allow AgentMetadata — pre-existing M0 scaffolding pattern for this milestone's new types, reconcile at owning milestone (matches ToolDescriptor/ToolTable's own deferred status, core/tool_pipeline.hpp)
     std::string agent_name;
     std::string agent_instructions;
-    // Gap-2 fix (2026-08-14, decisions/ADR-044-*.md): 002 §1/§7's own identity list
+    // Gap-2 fix (2026-08-14, decisions/archive/ADR-044-*.md): 002 §1/§7's own identity list
     // ("stable agent_id, name, description, version") named these two from the start; this struct
     // simply never grew them. `agent_description` defaults empty (matching `agent_name`'s own "not
     // declared" convention); `agent_version` is `optional`, not a defaulted empty string, because
@@ -512,7 +512,7 @@ struct compiler<A, Agent<A, Policies...>> {
     }
 };
 
-// decisions/ADR-226: the C++ TYPE an agent declared through `OutputSchema<T>`, or `void` -- the bridge
+// decisions/archive/ADR-226: the C++ TYPE an agent declared through `OutputSchema<T>`, or `void` -- the bridge
 // (core/agent_session_bridge.hpp) needs `T` itself, not only `output_schema_of`'s schema text, to build
 // the response validator `AgentSession::set_output_schema()` takes. LAST tag wins, matching
 // `output_schema_of` above exactly: an agent that (oddly) declares two `OutputSchema<...>` tags must get
@@ -539,12 +539,12 @@ struct agent_output_schema<Agent<A, Policies...>> {
 
 }  // namespace agent_detail
 
-// decisions/ADR-226: `OutputSchema<T>`'s `T` for agent `A`, or `void` when `A` declares none.
+// decisions/archive/ADR-226: `OutputSchema<T>`'s `T` for agent `A`, or `void` when `A` declares none.
 template <class A>
 // ae-naming-lint: allow agent_output_schema_t — ADR-226; 027 not yet updated
 using agent_output_schema_t = typename agent_detail::agent_output_schema<agent_detail::agent_base_t<A>>::type;
 
-// decisions/ADR-226 (002 §6: "Validation is the same code path for declarative agents"): every 002 §6
+// decisions/archive/ADR-226 (002 §6: "Validation is the same code path for declarative agents"): every 002 §6
 // check that can be evaluated from an already-compiled `AgentMetadata` VALUE, in the order
 // `agent_detail::compiler::run()` runs them. `register_agent<A>()` has always run these; a 015
 // document compiled by `compile_agent_document()` never did (that function's own comment leaves
@@ -605,7 +605,7 @@ template <class A>
 // the actual mechanism -- this is the one glue function connecting an agent's compiled metadata to
 // it.
 //
-// decisions/ADR-059-invoke-agent-tool-capability-attenuation.md (design -> red-team -> prove ->
+// decisions/archive/ADR-059-invoke-agent-tool-capability-attenuation.md (design -> red-team -> prove ->
 // judge, required per CLAUDE.md/I2): the target agent's own compiled `meta.capability_ceiling` is
 // NEVER granted directly (that was the bug this ADR fixes -- `grant_root(meta.capability_ceiling)`
 // minted the TARGET's own full ceiling unconditionally, ignoring what the CALLER invoking this

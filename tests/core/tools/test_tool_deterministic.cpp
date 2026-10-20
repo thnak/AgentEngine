@@ -1,4 +1,4 @@
-// Implements decisions/ADR-212-deterministic-tool-output-declaration.md (GitHub issue #81): the
+// Implements decisions/archive/ADR-212-deterministic-tool-output-declaration.md (GitHub issue #81): the
 // `Deterministic` tag, `Tool<>::declared_deterministic()`, `ToolDescriptor::deterministic` from both
 // factories, `rerun_comparable()`, and the declarative path inheriting the flag by name (§3.4). The
 // §3.3 static_assert is proven separately by the compile-fail gates in tests/compile_fail/; this

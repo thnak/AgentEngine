@@ -171,7 +171,7 @@ result<NativeExecOutcome> spawn_native_process(NativeExecRequest const& request)
             failure_class::contract,
             "NativeExecRequest.cwd must be a real, already-materialized directory -- "
             "worktree confinement is mandatory even though sandbox isolation is not "
-            "(decisions/ADR-071-native-unsandboxed-process-execution-providers.md)",
+            "(decisions/archive/ADR-071-native-unsandboxed-process-execution-providers.md)",
             "native_process.empty_cwd"});
     }
 

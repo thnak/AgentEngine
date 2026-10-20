@@ -1,6 +1,6 @@
 # 030 — Project: Workspace Grouping and Directed Lifecycle
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 001, 005, 007, 014, 020, 025 (historical: originally also Quark 012/ADR-034 — ADR-037 removed Quark as a dependency; `decisions/ADR-038-rt-project-passivation-semantics.md` re-derives this RFC's own passivation mechanism against `agentengine::rt::`) · **Gate:** §7
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 001, 005, 007, 014, 020, 025 (historical: originally also Quark 012/ADR-034 — ADR-037 removed Quark as a dependency; `decisions/archive/ADR-038-rt-project-passivation-semantics.md` re-derives this RFC's own passivation mechanism against `agentengine::rt::`) · **Gate:** §7
 
 ## Goal
 
@@ -8,7 +8,7 @@ Give a host application a durable, addressable unit *above* a single session —
 groups a root session and every session it transitively owns, with directed pause/resume distinct
 from idle-triggered passivation (historical: originally Quark's idle-triggered passivation; ADR-037
 removed Quark, and `agentengine::rt::` has no host-managed idle eviction at all — see
-`decisions/ADR-038-rt-project-passivation-semantics.md`), so a host can present "the user's open
+`decisions/archive/ADR-038-rt-project-passivation-semantics.md`), so a host can present "the user's open
 workspaces" as a
 first-class, unboundedly-many, independently resumable list. 020 §3a's embedded case (WinUI tabs) is
 the motivating one, but the concept is host-shape-agnostic.
@@ -87,7 +87,7 @@ engine.
 
 **Historical note (ADR-037/ADR-038):** this section originally described directed pause as built
 directly on Quark's own actor-layer passivation primitive. ADR-037 removed Quark as a dependency
-entirely, and `decisions/ADR-038-rt-project-passivation-semantics.md` re-derived what survives: a
+entirely, and `decisions/archive/ADR-038-rt-project-passivation-semantics.md` re-derived what survives: a
 plain `rt::AgentSession` has no runtime managing its residency, so eviction-from-memory (the idle
 wheel, `ActorRef<A>::passivate()`'s reuse of that path) is gone completely — there is no host-managed
 passivation/reactivation across process restarts or node loss in `rt::` land at all. What survives is

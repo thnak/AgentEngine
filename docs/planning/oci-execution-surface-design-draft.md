@@ -26,7 +26,7 @@ generalizes past Docker to a `native_jail`-shaped mediated-syscall backend... un
 conformer exists."*
 
 This codebase already has a second, more mature, OCI-native container-tooling lineage that A3's own
-work never drew on: `KataBackend` (`src/backends/kata/kata_backend.{hpp,cpp}`, `decisions/ADR-084`
+work never drew on: `KataBackend` (`src/backends/kata/kata_backend.{hpp,cpp}`, `decisions/archive/ADR-084`
 through `ADR-093`, Judged/Proposed real production code) shells out to `ctr` (containerd's own CLI) via
 `posix_spawn` with a real argv vector — never a shell string, so there is no shell-metacharacter
 injection surface to defend against in the first place, a stronger posture than `docker_backend.hpp`'s

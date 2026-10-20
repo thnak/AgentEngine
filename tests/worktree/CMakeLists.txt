@@ -81,7 +81,7 @@ if(WIN32)
 endif()
 
 # ---- Worktree mount OS-level path-escape corpus (025 §5, 021 §6 G3, Milestone 3 Phase C2,
-# decisions/ADR-014-worktree-mount-path-canonicalization.md) --------------------------------------
+# decisions/archive/ADR-014-worktree-mount-path-canonicalization.md) --------------------------------------
 # Real Win32 filesystem I/O against a scratch directory under the system temp path: junctions,
 # real reparse-point crossing, a real TOCTOU interleaving proven deterministically. Shells out to
 # `cmd.exe /c mklink /J` for junction setup (test-only infrastructure), so this needs cmd.exe on

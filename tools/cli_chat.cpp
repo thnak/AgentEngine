@@ -75,7 +75,7 @@
 // container per call, approval-gated as described above, and `cap::RunCommand` is minted ONLY in this
 // tier. `--shell=both` offers both; `--shell=none` neither. `--help` prints the same.
 //
-// HOST PRE-MOUNTED SKILLS (decisions/ADR-224, core/skill_premount.hpp): before the first model call,
+// HOST PRE-MOUNTED SKILLS (decisions/archive/ADR-224, core/skill_premount.hpp): before the first model call,
 // this CLI mounts the built-in skill paired with each tool it offers -- `shell-pipelines` for
 // `run_shell`/`run_command`, `using-the-code-interpreter` for `execute_code` (which also makes
 // `execute_code` callable from the first turn, since that skill is what unlocks it here). That is a
@@ -589,7 +589,7 @@ private:
 };
 
 // ---- The on-demand mount trigger: real state, no new authority ------------------------------------
-// Skills Phase 3 (decisions/ADR-024's addendum): the agent must call this to activate a skill's
+// Skills Phase 3 (decisions/archive/ADR-024's addendum): the agent must call this to activate a skill's
 // tools/full body before they're usable -- researched from MAF's AgentSkillsProvider (three fixed
 // meta-tools, load_skill/read_skill_resource/run_skill_script) but deliberately NOT that shape: this
 // tool touches no content and no filesystem at all, it only records intent into
@@ -666,7 +666,7 @@ private:
 // closed (not silently racing) if a second session ever tried to reach the same one.
 class ToolDeclaringHistoryProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3.
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3.
     static constexpr std::string_view name = "cli-tool-declaring-history";
 
     ToolDeclaringHistoryProvider() : skills_(demo_skill_sources()) {}

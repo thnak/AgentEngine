@@ -350,7 +350,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "ctest failed with exit code $LASTEXITCODE" }
 
   windows-shell-fuzz:
-    # 010 SS9 G8 / decisions/ADR-015-shellrunner-grammar-parser-fuzzing.md: continuous, corpus-driven
+    # 010 SS9 G8 / decisions/archive/ADR-015-shellrunner-grammar-parser-fuzzing.md: continuous, corpus-driven
     # libFuzzer run against MediatedShellRunner's grammar parser under ASan+UBSan, gated in CI. A
     # separate job (not folded into windows-clang-cl above) because it needs a different CRT
     # (static, to match libFuzzer's own runtime lib -- see the ADR SS6) and builds only the one fuzz

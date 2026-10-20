@@ -1,6 +1,6 @@
 #ifndef AGENTENGINE_MBEDTLS_CONFIG_H
 #define AGENTENGINE_MBEDTLS_CONFIG_H
-// decisions/ADR-237-async-extension-points-and-io-reactor.md §6.3. The root CMakeLists.txt sets this file
+// decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §6.3. The root CMakeLists.txt sets this file
 // as MBEDTLS_USER_CONFIG_FILE on the vendored mbedTLS targets (PUBLIC, so every consumer compiles against
 // the same configuration -- a mismatched TLS context would be an ABI bug). mbedTLS includes it right after
 // its own mbedtls_config.h (include/mbedtls/build_info.h).

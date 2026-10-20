@@ -11,7 +11,7 @@
 // `TaintedText` (content.hpp) is `Tainted<std::string>` specialized for the text/bytes case (003
 // §2: "not a separate mechanism") — declared here once, aliased there, not reimplemented twice.
 //
-// Kept per-item, not span-level (007 §10 Q2, decisions/ADR-007-span-level-taint-vs-per-item.md):
+// Kept per-item, not span-level (007 §10 Q2, decisions/archive/ADR-007-span-level-taint-vs-per-item.md):
 // this wrapper taints a whole value, never a sub-range.
 
 #include <type_traits>

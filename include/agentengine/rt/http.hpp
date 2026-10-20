@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §6.3 ("HTTP/1.1 + SSE: keep the in-house
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §6.3 ("HTTP/1.1 + SSE: keep the in-house
 // client ... rewritten as coroutines. select() disappears"), with §4.4 (deadlines are timers; per-operation stop
 // sources; two-phase cancel), §4.5 rule 5 (the consumer-stall deadline fails the STREAM with `resource`) and
 // §6.3's round-3 gaps 6/7 (op-owned buffers; one streamed read outstanding) -- the asynchronous HTTP/1.1 client

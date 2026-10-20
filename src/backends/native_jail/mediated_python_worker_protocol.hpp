@@ -8,7 +8,7 @@
 //
 // SCOPE, stated plainly: Slice 1 built the envelope and the `call_tool` kind only. Slice 2
 // (docs/planning/jailed-python-worker-slice-2-handle-relay-design-draft.md,
-// decisions/ADR-085-jailed-python-worker-slice-2-handle-relay.md) adds real host-side HANDLING for
+// decisions/archive/ADR-085-jailed-python-worker-slice-2-handle-relay.md) adds real host-side HANDLING for
 // "open"/"listdir"/"connect_authorize"/"connect_send"/"connect_recv"/"connect_close" --
 // native_jail_backend.cpp's dispatch_worker_query -- not a wire SHAPE change here: the envelope
 // (call_id/exec_seq/kind/payload) already covered them from Slice 1 onward. This header still does
@@ -58,7 +58,7 @@ inline constexpr char const* kQueryConnectClose = "connect_close";
 inline constexpr char const* kQueryFileRead = "file_read";
 inline constexpr char const* kQueryFileWrite = "file_write";
 inline constexpr char const* kQueryFileClose = "file_close";
-// decisions/ADR-155-agent-progress-codeact-module.md, 026 §5's `agent.progress`. Deliberately reuses
+// decisions/archive/ADR-155-agent-progress-codeact-module.md, 026 §5's `agent.progress`. Deliberately reuses
 // the EXISTING worker_query/worker_query_response request-response envelope (kWorkerQuery/
 // kWorkerQueryResponse above) rather than a genuinely new frame TYPE the way GitHub issue #31's own
 // first sketch proposed: RT1 Finding 1's exec_seq-mismatch fail-closed check (native_jail_backend.cpp's

@@ -1,4 +1,4 @@
-// decisions/ADR-235-batch-inference-coalescing.md (OQ-20): rt::WorkflowSupervisor's vendor batch coalescing --
+// decisions/archive/ADR-235-batch-inference-coalescing.md (OQ-20): rt::WorkflowSupervisor's vendor batch coalescing --
 // gathering a round's `batch: true` deliveries into vendor jobs, polling them, and folding the results back into
 // the run. The declarations, and the design rule each function implements, are in
 // include/agentengine/rt/workflow_supervisor.hpp; the ADR has the red-team findings that shaped them (§5).

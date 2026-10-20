@@ -1,4 +1,4 @@
-// Proves ADR-102 Phase 3 (decisions/ADR-102-identity-native-sandbox-implementation-phase-1.md's own
+// Proves ADR-102 Phase 3 (decisions/archive/ADR-102-identity-native-sandbox-implementation-phase-1.md's own
 // roadmap) -- SandboxRuntime (sandbox/sandbox_runtime.hpp), driven against a REAL Docker daemon via
 // DockerExecutionSurface (sandbox/docker_execution_surface.hpp), not a mock. Ported from
 // docs/planning/proofs/execution_surface/{probe_execution_surface.cpp,probe_sandbox_rollback.cpp}

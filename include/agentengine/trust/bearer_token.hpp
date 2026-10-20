@@ -1,5 +1,5 @@
 #pragma once
-// ADR-021's prove phase (decisions/ADR-021-inbound-protocol-trust-boundary.md): the inbound-identity
+// ADR-021's prove phase (decisions/archive/ADR-021-inbound-protocol-trust-boundary.md): the inbound-identity
 // bearer token mechanism Design A (first-party TLS+auth termination) depends on -- 018 §1's "OAuth
 // 2.1 bearer" row, scoped down (ADR-021 §3) to a self-contained HMAC-SHA256 scheme with `exp`/`aud`/
 // `iss`/`jti` claims, explicitly NOT a full OAuth 2.1 authorization-code/PKCE flow against a live

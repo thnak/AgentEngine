@@ -1,4 +1,4 @@
-// #120 S3 (decisions/ADR-202-one-message-json-codec.md): proves the merged Message/ContentItem <-> JSON codec
+// #120 S3 (decisions/archive/ADR-202-one-message-json-codec.md): proves the merged Message/ContentItem <-> JSON codec
 // (core/message_json.hpp) behaves exactly like the two copies it replaced, per profile, and that the state profile
 // keeps I3.
 //

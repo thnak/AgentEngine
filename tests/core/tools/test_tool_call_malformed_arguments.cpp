@@ -1,4 +1,4 @@
-// Proves decisions/ADR-197-reject-malformed-tool-arguments.md (GitHub issue #105, 006 §3 step 2:
+// Proves decisions/archive/ADR-197-reject-malformed-tool-arguments.md (GitHub issue #105, 006 §3 step 2:
 // "reject; do not coerce"). A model tool call whose argument text is not valid JSON never reaches
 // the tool: `tool_call_request_of()` (core/tool_call_extraction.hpp) records the parse error, and
 // the pipeline (core/tool_pipeline.hpp: `admit_call()`, so `invoke_tool()` and the parallel-batch

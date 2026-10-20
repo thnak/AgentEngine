@@ -1,4 +1,4 @@
-// Implements decisions/ADR-167-plan-execute-mode.md's proof obligations for `PlanExecuteMode`
+// Implements decisions/archive/ADR-167-plan-execute-mode.md's proof obligations for `PlanExecuteMode`
 // (core/plan_execute_mode.hpp), 002/014 gap #54. Mirrors test_todo_provider.cpp's structure: each
 // block proves one claim from the ADR's per-claim verdict table.
 

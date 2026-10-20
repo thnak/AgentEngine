@@ -7,7 +7,7 @@
 //     in here would add a brand-new mandatory third-party dependency to every Linux build (this
 //     target, agentengine_worktree_store, is built unconditionally -- no CMake option gates it, on
 //     either WIN32 or NOT WIN32).
-//   - mbedTLS IS already vendored (decisions/ADR-013-https-egress-tls-client.md), but strictly behind
+//   - mbedTLS IS already vendored (decisions/archive/ADR-013-https-egress-tls-client.md), but strictly behind
 //     `AGENTENGINE_WITH_HTTPS`, which defaults OFF (CMakeLists.txt) and is scoped to the egress
 //     proxy's tier-2 "one heavy dependency per backend, behind a CMake option" posture
 //     (CONVENTIONS.md "Dependency posture -- the three tiers"). compute_digest is called
@@ -29,7 +29,7 @@
 // real standard, not just with each other.
 //
 // The actual compression-function/padding logic (`sha256_raw`) has been factored out into
-// `include/agentengine/detail/sha256_posix.hpp` (decisions/ADR-107-hmac-sha256-linux-parity.md) so
+// `include/agentengine/detail/sha256_posix.hpp` (decisions/archive/ADR-107-hmac-sha256-linux-parity.md) so
 // `src/trust/hmac_posix.cpp`'s HMAC-SHA256 construction can reuse the identical, already-verified
 // primitive rather than a second copy of SHA-256. This file now owns only the hex-encoding this
 // digest store's own `Digest` type needs -- verified NOT to have changed `compute_digest`'s output by

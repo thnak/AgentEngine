@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §9 D7 ("an explicit, short host API"),
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §9 D7 ("an explicit, short host API"),
 // §9 D5 (lane count), §4.1 (thread roles), §4.2 (foreign continuations run where the host said) and §4.5 rule 4
 // (shutdown order) -- `rt::Runtime`, `rt::RuntimeConfig`, `rt::CompletionThread`. Step 3 of the ADR (§14).
 //

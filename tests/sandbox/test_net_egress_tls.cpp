@@ -1,4 +1,4 @@
-// Proves decisions/ADR-241-egress-proxy-async-path-on-rt-http.md SS11 G11 (TLS on the egress boundary), through BOTH entry
+// Proves decisions/archive/ADR-241-egress-proxy-async-path-on-rt-http.md SS11 G11 (TLS on the egress boundary), through BOTH entry
 // points (`fetch` and `fetch_blocking`), against a real loopback mbedTLS peer with an in-memory CA
 // (tests/support/https_test_peer.hpp, shared with tests/rt/test_rt_https.cpp). Only built with AGENTENGINE_WITH_HTTPS.
 //

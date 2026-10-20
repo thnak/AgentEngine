@@ -87,7 +87,7 @@ durable evidence, is both more flexible and lower-risk to the already-proven fun
 a named consequence.** Every failed merge attempt against the SAME parent accumulates into the SAME
 conflicts Ref (new commits, tree grows). This is honest and matches "both versions retained" — nothing
 is silently overwritten — but means the conflicts Ref has no built-in retention/pruning, the same
-class of residual `decisions/README.md`'s own ADR-038 entry already names for passivation/archival
+class of residual `decisions/archive/README.md`'s own ADR-038 entry already names for passivation/archival
 generally. Named here rather than silently assumed away.
 
 ## 4. What this draft does not claim

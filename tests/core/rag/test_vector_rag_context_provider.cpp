@@ -1,4 +1,4 @@
-// Implements decisions/ADR-063-retrieval-augmented-context-provider-shape.md — proves
+// Implements decisions/archive/ADR-063-retrieval-augmented-context-provider-shape.md — proves
 // `VectorRagContextProvider` (core/vector_rag_context_provider.hpp), the ADR's own highest-value,
 // most load-bearing piece: the real `ContextProvider` conformer that ties together `Embedder`
 // (core/embedder.hpp), `VectorIndex`/`BruteForceCosineIndex` (core/vector_index.hpp), `corpus_scope`/

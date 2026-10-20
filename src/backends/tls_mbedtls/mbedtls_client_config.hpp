@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-013-https-egress-tls-client.md's client configuration, shared by its two users:
+// Implements decisions/archive/ADR-013-https-egress-tls-client.md's client configuration, shared by its two users:
 // the blocking `sandbox::TlsClientSession` (src/sandbox/tls_client.cpp) and ADR-237 §6.3's asynchronous
 // `rt::TlsStream` (tls_stream_mbedtls.cpp). Extracted verbatim from tls_client.cpp (2026-10-03) so the two
 // cannot drift: the same vendored CA bundle, VERIFY_REQUIRED, the TLS 1.2 floor, real hostname verification,

@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §6.1/§6.3 (with §4.4's cancellation
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §6.1/§6.3 (with §4.4's cancellation
 // rules) -- the reactor's TCP stream: connect, read, write and a zero-byte readiness wait, as operations on
 // `pal::Reactor` (pal/reactor.hpp), the same shape as `start_timer`. It is the foundation the HTTP/SSE client
 // moves onto (§6.3); TLS and DNS are not here.

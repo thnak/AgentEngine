@@ -174,7 +174,7 @@
 // check, before any lookup, before any structural event a denied caller could otherwise push -- and a
 // denial returns a BARE `WorkflowResult{workflow_status::admission_denied}` that deliberately carries
 // no `open_interactions`, so a probing caller learns nothing it did not already know. See
-// decisions/ADR-169-workflow-supervisor-admission.md for the full design, including why this is
+// decisions/archive/ADR-169-workflow-supervisor-admission.md for the full design, including why this is
 // identity-only (no `RequestAuthority` capability half) and how a bound sub-workflow inherits.
 
 #include <algorithm>
@@ -248,7 +248,7 @@ struct ExecutorOutcome {
         : payload(std::move(m)), routes(std::move(r)) {}
 };
 
-// decisions/ADR-237 §5.1 (Phase G, slice 2): `task`-shaped. A node's body is arbitrary C++ -- it may
+// decisions/archive/ADR-237 §5.1 (Phase G, slice 2): `task`-shaped. A node's body is arbitrary C++ -- it may
 // hold a real ChatClient, a nested supervisor, or anything else that parks -- so the seam lets it
 // suspend. `run_executor_job` (src/rt/workflow_supervisor.cpp) awaits it, so a suspending body
 // suspends THAT job coroutine instead of blocking a pool thread. The `.target<T>()` structural
@@ -276,7 +276,7 @@ public:
 
     explicit AgentExecutorBodyTag(Impl impl) : impl_(std::move(impl)) {}
 
-    // decisions/ADR-237 §5.1 (Phase G): the tag's own call is a coroutine over `impl_`, awaited
+    // decisions/archive/ADR-237 §5.1 (Phase G): the tag's own call is a coroutine over `impl_`, awaited
     // (`co_await`, not a bare `co_return impl_(...)`) so a throwing `impl_` surfaces at the caller's
     // own await rather than one frame later.
     agentengine::task<agentengine::result<ExecutorOutcome>> operator()(agentengine::Message const& in,
@@ -804,7 +804,7 @@ public:
     // to that entry point. Settling pushes events, so like every entry point it blocks if the host has
     // enabled the event stream and stopped draining a full one -- ADR-214 §5 R2.)
     //
-    // Issue #156 (decisions/ADR-214) -- what a cancel does, wherever it lands:
+    // Issue #156 (decisions/archive/ADR-214) -- what a cancel does, wherever it lands:
     //   - In a round: the round's in-flight steps finish (cooperatively -- an agent step's session sees
     //     `ctx.cancellation` and ends `run.canceled`), no failed step is retried, and the run ends
     //     `cancelled`. A step that failed in that round is NOT reported as `executor_failed`: the
@@ -845,7 +845,7 @@ public:
     [[nodiscard]] std::uint32_t rounds_executed() const noexcept { return rounds_; }
     [[nodiscard]] std::string const& run_id() const noexcept { return run_id_; }
 
-    // decisions/ADR-070-host-configurable-responsibility-boundary.md: `true` whenever
+    // decisions/archive/ADR-070-host-configurable-responsibility-boundary.md: `true` whenever
     // `graph().bound.token_budget` is set -- see that field's own doc comment
     // (workflow/graph.hpp) for why. Unconditional and deterministic (a pure read of already-
     // validated `graph_` state, nothing timing-dependent), so a host can check this right after
@@ -906,7 +906,7 @@ public:
     // Reproduced verbatim from the original: a caller-injected callback (I2), never an ambient Store,
     // fired with the round just completed and a full `to_record()` snapshot taken at exactly that
     // boundary.
-    // `task`-shaped since decisions/ADR-237 §5.1 (#172): the usual hook persists through a SessionStore, which
+    // `task`-shaped since decisions/archive/ADR-237 §5.1 (#172): the usual hook persists through a SessionStore, which
     // is. The record is by value so the hook frame owns it across a suspension.
     using CheckpointHook = std::function<task<void>(std::uint32_t round, RunStateRecord)>;
     void set_checkpoint_hook(CheckpointHook hook) { checkpoint_hook_ = std::move(hook); }

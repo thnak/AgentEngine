@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-063-retrieval-augmented-context-provider-shape.md §2.3 — the
+// Implements decisions/archive/ADR-063-retrieval-augmented-context-provider-shape.md §2.3 — the
 // VectorIndex seam and its core-resident default, `BruteForceCosineIndex` (std-only, zero
 // third-party dependency, CONVENTIONS.md tier 1). ANN (hnswlib) and GPU-accelerated (Vulkan)
 // conformers are opt-in seam backends (`src/backends/*`, tier 2), gated on a real bench against
@@ -41,7 +41,7 @@ struct ScoredId {
     friend bool operator==(ScoredId const&, ScoredId const&) = default;
 };
 
-// decisions/ADR-237 §5.1: ONE dense-index seam for local and remote conformers. It used to be split in two --
+// decisions/archive/ADR-237 §5.1: ONE dense-index seam for local and remote conformers. It used to be split in two --
 // a synchronous `VectorIndex` for local compute and an async `RemoteVectorIndex` (ADR-180 §2.1) for a network
 // service -- and the split existed only because one side was synchronous. Every method is now `task`-shaped and
 // takes the caller's `EffectContext`: a remote conformer resolves its credential inside each call (never at
@@ -63,7 +63,7 @@ concept VectorIndex =
         { idx.contains(id, ctx) } -> std::same_as<task<result<bool>>>;
     };
 
-// Implements decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.4 — a REFINEMENT
+// Implements decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.4 — a REFINEMENT
 // of `VectorIndex`, not a requirement on it: closes ADR-063 §7's long-named "vector-index persistence
 // is undesigned" residual (`BruteForceCosineIndex` is in-memory-only; a process restart re-embeds the
 // entire corpus regardless of what a caller's `previous_file_hashes` map claims). A conformer that
@@ -345,7 +345,7 @@ public:
         std::vector<std::byte> buf;
         {
             // The lock covers building the bytes only -- never the store call (a `std::shared_mutex` must not
-            // span a suspension, decisions/ADR-237 §5.1).
+            // span a suspension, decisions/archive/ADR-237 §5.1).
             std::shared_lock lock(mutex_);
             vector_index_detail::append_bytes(buf, "AEV1");
             vector_index_detail::append_u64(buf, static_cast<std::uint64_t>(dimension_));

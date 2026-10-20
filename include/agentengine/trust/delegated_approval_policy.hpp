@@ -1,5 +1,5 @@
 #pragma once
-// GitHub issue #30 / ADR-151: a reference `PolicyDecider` (decisions/ADR-070-host-configurable-
+// GitHub issue #30 / ADR-151: a reference `PolicyDecider` (decisions/archive/ADR-070-host-configurable-
 // responsibility-boundary.md's Delegated Decision Seam, core/tool_pipeline.hpp) implementing "a
 // delegated/spawned agent's own policy_driven tool calls auto-approve by default" -- the pattern
 // issue #30 found fully EXPRESSIBLE today (`Principal` already carries `on_behalf_of`/
@@ -25,7 +25,7 @@
 // decide whether a call it's already authorized for also needs a human to look at it first.
 //
 // `arguments_tainted` -- NOT consulted here, deliberately, and this is the single most important
-// correction this design went through (decisions/ADR-151.md §2 has the full record of an
+// correction this design went through (decisions/archive/ADR-151.md §2 has the full record of an
 // independent red-team pass finding the original draft dead-on-arrival otherwise). Traced every
 // real call site that ever threads a LIVE `PolicyDecider` (`rt/agent_session.hpp`'s suspend-for-
 // approval pre-check, and its one `invoke_tool()` call site -- both build their `ToolCallRequest`

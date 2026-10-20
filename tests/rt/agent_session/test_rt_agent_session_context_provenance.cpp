@@ -1,4 +1,4 @@
-// Proves decisions/ADR-066-context-provider-attribution-provenance.md's stamping mechanism actually
+// Proves decisions/archive/ADR-066-context-provider-attribution-provenance.md's stamping mechanism actually
 // reaches a real rt::AgentSession round's outbound ChatRequest -- not just the standalone
 // assemble_context() unit tests (tests/core/context/test_context_provenance.cpp). AgentSession itself calls
 // history_provider_.on_context() directly, never assemble_context() -- so attribution is only real

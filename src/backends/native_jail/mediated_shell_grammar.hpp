@@ -1,7 +1,7 @@
 #pragma once
 // Implements rfcs/010-Python-Code-Interpreter.md §1a/§2/§9 G2/G3/G4/G6 -- Milestone 3 Phase E3
 // (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md, decision 4). A genuinely
-// new AST/grammar, carrying forward decisions/ADR-001-shellrunner-grammar-and-dispatch.md's Judged
+// new AST/grammar, carrying forward decisions/archive/ADR-001-shellrunner-grammar-and-dispatch.md's Judged
 // Design A finding (the exact EBNF below, §3) as a DESIGN, not as copied code -- `shell_grammar.hpp`
 // and its siblings stay in place, completely untouched, as that ADR's cited prove-phase evidence.
 //

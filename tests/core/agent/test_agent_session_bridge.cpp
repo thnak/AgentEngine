@@ -1,4 +1,4 @@
-// Proves decisions/ADR-226-agent-run-bridge.md (002 §2.1 as amended; issue #46, issue #32 Layer A):
+// Proves decisions/archive/ADR-226-agent-run-bridge.md (002 §2.1 as amended; issue #46, issue #32 Layer A):
 // core/agent_session_bridge.hpp's make_agent_session<A>() / bind_agent_session() turn a DECLARED agent
 // into a running rt::AgentSession whose behaviour is the declared policy set -- every check below drives
 // a real start_run() through the bridge against the strict ScriptedChatClient (testing/), no network.

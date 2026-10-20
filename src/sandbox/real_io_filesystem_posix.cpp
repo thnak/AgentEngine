@@ -1,5 +1,5 @@
 // Linux half of `agentengine::RealIoFileSystem::write_verified()`/`read_verified()`
-// (sandbox/real_io_filesystem.hpp) -- decisions/ADR-104-real-io-filesystem-linux-parity.md, parity
+// (sandbox/real_io_filesystem.hpp) -- decisions/archive/ADR-104-real-io-filesystem-linux-parity.md, parity
 // pass over the Windows-only original (ADR-102 Phase 3). Same containment guarantee, POSIX shape:
 // `open_within_mount_root` (core/worktree_mount_fs_posix.hpp, already-Judged ADR-014 Design B)
 // returns an already-verified file descriptor; `::write`/`::fstat`+`::read` act on that SAME

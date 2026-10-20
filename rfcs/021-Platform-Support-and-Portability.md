@@ -59,7 +59,7 @@ hand. A tier is a statement about what CI proves.
 
 - CMake ≥ 3.28, C++23. Compilers: MSVC 19.4x, g++ 14+, clang 20+ (clang-cl on Windows).
 - No submodules — AgentEngine is a self-contained repository (historical: Quark used to be pinned
-  as a submodule here; `decisions/ADR-037-remove-quark-as-core-runtime.md`, executed 2026-08-13,
+  as a submodule here; `decisions/archive/ADR-037-remove-quark-as-core-runtime.md`, executed 2026-08-13,
   removed that dependency entirely). wasmtime and other backend dependencies stay behind CMake
   options, each independently disable-able (a minimal build is core + `wasm` profile).
 - CI matrix (current target set): {Windows} × {Release, ASan+UBSan} × {MSVC, clang-cl}, plus the
@@ -88,7 +88,7 @@ hand. A tier is a statement about what CI proves.
   Windows (current) → Linux (next, once Windows is stable), with no macOS row.
 - **Q2** — Windows `native-jail`: AppContainer + Job Objects is the plan, but proving it enforces
   the same limits as cgroups v2 is unvalidated — **partially answered for the Windows half**
-  (`decisions/ADR-004-appcontainer-native-jail-windows-backend.md` §10, 2026-08-02): memory and
+  (`decisions/archive/ADR-004-appcontainer-native-jail-windows-backend.md` §10, 2026-08-02): memory and
   pid caps are measured precise and reliable (matches expectation); CPU-time caps
   (`JOB_OBJECT_LIMIT_JOB_TIME`) are measured *unreliable* — fired in only 3/11 runs, 1.38x-8.22x
   overrun when it did — so `wall_ms`, not `cpu_ms`, is the dependable enforcement point on this

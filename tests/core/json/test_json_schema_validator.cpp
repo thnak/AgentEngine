@@ -1,4 +1,4 @@
-// Gap-3 fix (2026-08-14, decisions/ADR-045-*.md): proves core/json_schema_validator.hpp against its
+// Gap-3 fix (2026-08-14, decisions/archive/ADR-045-*.md): proves core/json_schema_validator.hpp against its
 // two governing gates -- 006 SS8 G2 ("a negative suite including a schema violation produces a
 // structured [error]") and 015 SS7 G2 ("a negative corpus including cyclic $ref is rejected with
 // precise diagnostics") -- plus the resource-budget positive controls a validator that walks

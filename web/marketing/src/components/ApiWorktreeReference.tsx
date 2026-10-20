@@ -581,11 +581,11 @@ export function ApiWorktreeReference() {
               <a href={gh("include/agentengine/core/worktree.hpp")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
                 include/agentengine/core/worktree.hpp
               </a>
-              <a href={gh("decisions/ADR-014-worktree-mount-path-canonicalization.md")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
-                decisions/ADR-014
+              <a href={gh("decisions/archive/ADR-014-worktree-mount-path-canonicalization.md")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
+                decisions/archive/ADR-014
               </a>
-              <a href={gh("decisions/ADR-032-workflow-executor-worktree-scoping.md")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
-                decisions/ADR-032
+              <a href={gh("decisions/archive/ADR-032-workflow-executor-worktree-scoping.md")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
+                decisions/archive/ADR-032
               </a>
             </div>
           </RevealItem>

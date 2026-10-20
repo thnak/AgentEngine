@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-063-retrieval-augmented-context-provider-shape.md §2.2 — the Embedder
+// Implements decisions/archive/ADR-063-retrieval-augmented-context-provider-shape.md §2.2 — the Embedder
 // seam: a declared backend shaped like ChatClient (004 §1) — `capabilities()` +
 // `embed_batch(texts, EffectContext&)` — batch-only (no single-item `embed()`, §2.2B: extraction
 // and bulk corpus ingestion both need batching from day one to be affordable at all), and

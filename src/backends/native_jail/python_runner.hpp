@@ -3,7 +3,7 @@
 // embedded native CPython under native_jail, mediated per 008 §1b — never WASM, never a second
 // runtime). Backend: native_jail (008 §1b, §3).
 //
-// Mediation is per decisions/ADR-002-pythonrunner-embedding-and-mediation.md's prove phase: Layer
+// Mediation is per decisions/archive/ADR-002-pythonrunner-embedding-and-mediation.md's prove phase: Layer
 // 0's `sys.modules` sweep + the `sys.meta_path` allowlist finder (§3.0/§3.1) are real and load-
 // bearing (backed by `native_jail::PythonLockdownInterpreter`, python_lockdown.{hpp,cpp}). What is
 // NOT yet implemented here, stated plainly rather than silently: the `builtins.__import__`/

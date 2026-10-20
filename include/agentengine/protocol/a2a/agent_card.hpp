@@ -12,7 +12,7 @@
 // straight from `ToolDescriptor`, the same "one schema source" discipline `protocol/mcp/server.hpp`'s
 // own `to_mcp_tool_list_entry()` already uses for `tools/list`) -- and nothing it does not. `002 §7`
 // itself says an agent's interop identity is `{agent_id, version}` and that Agent Cards are "generated
-// from this same metadata." Gap-2 fix (2026-08-14, decisions/ADR-044-*.md): `AgentMetadata` now
+// from this same metadata." Gap-2 fix (2026-08-14, decisions/archive/ADR-044-*.md): `AgentMetadata` now
 // carries real `agent_description`/`agent_version` fields, closing that gap for real -- `identity`'s
 // own `description`/`version` remain explicit, caller-supplied OVERRIDES (see `to_agent_card()`'s own
 // comment), not the only source, for a card that legitimately wants different framing than the raw
@@ -98,7 +98,7 @@ struct AgentCardIdentity {
 [[nodiscard]] inline AgentCard to_agent_card(AgentMetadata const& meta, AgentCardIdentity const& identity) {
     AgentCard card;
     card.name        = meta.agent_name;
-    // Gap-2 fix (2026-08-14, decisions/ADR-044-*.md): AgentMetadata now carries real
+    // Gap-2 fix (2026-08-14, decisions/archive/ADR-044-*.md): AgentMetadata now carries real
     // agent_description/agent_version fields. `identity`'s own fields still win when the caller
     // explicitly supplies them (an Agent Card MAY legitimately want different framing than the raw
     // agent metadata) -- this only fills in from `meta` when the caller left `identity` at its

@@ -28,7 +28,7 @@
 // via `faulted()`/`fault_ptr()` for whatever drives it directly (mode b) — the same ADR-009-style
 // handler-boundary guard `quark::task<>` already established, reproduced here rather than assumed.
 //
-// decisions/ADR-237 §4.2 (step 3) -- FINAL_SUSPEND ACROSS STRANDS. Symmetric transfer to the awaiter is
+// decisions/archive/ADR-237 §4.2 (step 3) -- FINAL_SUSPEND ACROSS STRANDS. Symmetric transfer to the awaiter is
 // correct only when the child and the awaiter run on the SAME strand: transferring across strands would run
 // the awaiter on the child's lane slice while the awaiter's own strand may be running another continuation
 // (I1). The promise therefore carries the awaiter's home (`detail::TaskLink`): the strand it was running on
@@ -160,7 +160,7 @@ public:
     // it. Safe to call repeatedly until done() -- each resume() runs the body until its next
     // suspension point or completion. `start()` is `resume()` under a name that reads correctly at
     // the FIRST call site; both do the same thing.
-    // decisions/ADR-175: a raw resume() drives this task outside any block_on(), so it runs with NO home
+    // decisions/archive/ADR-175: a raw resume() drives this task outside any block_on(), so it runs with NO home
     // (a lock grant resumes it inline, as before ADR-175) and under ITS OWN holder id, minted on first
     // resume -- not the calling thread's context. Otherwise a task raw-resumed inside a pool job or tool
     // closure would park homed to a block_on() that may have returned by the time the lock is granted, and
@@ -274,7 +274,7 @@ public:
     // moves the result out (or rethrows a fault) -- named distinctly from await_resume() since a
     // mode-(b) driver calls resume() in a loop until done(), THEN takes the value once, whereas
     // await_resume() is only ever called by the compiler-generated co_await machinery.
-    // decisions/ADR-175: a raw resume() drives this task outside any block_on(), so it runs with NO home
+    // decisions/archive/ADR-175: a raw resume() drives this task outside any block_on(), so it runs with NO home
     // (a lock grant resumes it inline, as before ADR-175) and under ITS OWN holder id, minted on first
     // resume -- not the calling thread's context. Otherwise a task raw-resumed inside a pool job or tool
     // closure would park homed to a block_on() that may have returned by the time the lock is granted, and

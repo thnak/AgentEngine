@@ -4,7 +4,7 @@
 // it one message, print what comes back. In AgentEngine an agent is a TYPE (002 §1): `Joker` below
 // declares its model binding, its tools, its capability ceiling and its turn bound as CRTP policy tags
 // on `Agent<Joker, ...>`, and `make_agent_session<Joker>()` (core/agent_session_bridge.hpp,
-// decisions/ADR-226, 002 §2.1) compiles and validates that declaration with `register_agent<Joker>()`
+// decisions/archive/ADR-226, 002 §2.1) compiles and validates that declaration with `register_agent<Joker>()`
 // and turns it into a running `rt::AgentSession` -- so the policy set the type declares is the policy set
 // the session enforces. Nothing below re-states a policy by hand.
 //

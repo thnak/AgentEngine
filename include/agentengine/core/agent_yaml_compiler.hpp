@@ -26,13 +26,13 @@
 // on, distinct from the tools/capabilities registry gap). `output_schema_strategy_chosen` is therefore
 // also never set (it depends on `output_schema_json` existing, `agent_registry.hpp`'s own rule).
 //
-// `metadata.version`/`metadata.description` -- CLOSED (2026-08-14, decisions/ADR-044-*.md):
+// `metadata.version`/`metadata.description` -- CLOSED (2026-08-14, decisions/archive/ADR-044-*.md):
 // `AgentMetadata` gained real `agent_description`/`agent_version` fields, closing the identical gap
 // Phase D2 (Agent Card generation) and Phase F2 (the Workflow-document compiler) independently
 // recorded for their own compiled targets. Three independent compilers hitting the same gap was the
 // signal that `AgentMetadata` (002-owned) genuinely needed these fields -- it now does.
 //
-// `spec.tools` -- CLOSED for the name-keyed half (2026-08-14, decisions/ADR-054-*.md,
+// `spec.tools` -- CLOSED for the name-keyed half (2026-08-14, decisions/archive/ADR-054-*.md,
 // docs/planning/tool-capability-registry-design-draft.md): an OPTIONAL `ToolRegistry const*` param,
 // defaulting `nullptr` (the identical additive shape `register_agent<A>()`'s own `ChatClientRegistry
 // const*` parameter established, Milestone 5 Phase B6) -- every existing single-argument call site
@@ -110,7 +110,7 @@ namespace agent_yaml_compiler_detail {
 
     if (metadata) {
         if (json::Value const* id = metadata->find("id"); id && id->is_string()) meta.agent_name = id->as_string();
-        // Gap-2 fix (2026-08-14, decisions/ADR-044-*.md): AgentMetadata now has real slots for both --
+        // Gap-2 fix (2026-08-14, decisions/archive/ADR-044-*.md): AgentMetadata now has real slots for both --
         // see that struct's own comment.
         if (json::Value const* description = metadata->find("description");
             description && description->is_string()) {

@@ -257,7 +257,7 @@ namespace json = agentengine::json;
     Workflow wf;
     if (metadata) {
         if (json::Value const* id = metadata->find("id"); id && id->is_string()) wf.id = id->as_string();
-        // Gap-2 fix (2026-08-14, decisions/ADR-044-*.md): Workflow now has real description/version
+        // Gap-2 fix (2026-08-14, decisions/archive/ADR-044-*.md): Workflow now has real description/version
         // slots -- see that struct's own comment.
         if (json::Value const* description = metadata->find("description");
             description && description->is_string()) {

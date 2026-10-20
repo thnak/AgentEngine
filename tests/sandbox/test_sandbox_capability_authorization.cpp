@@ -1,4 +1,4 @@
-// docs/planning/sandbox-spec-capability-enforcement-design-draft.md / decisions/ADR-087-sandbox-
+// docs/planning/sandbox-spec-capability-enforcement-design-draft.md / decisions/archive/ADR-087-sandbox-
 // spec-capability-enforcement.md — pure-logic unit tests for `agentengine::authorize_spec()`
 // (sandbox/sandbox.hpp), the free function every mount/net-shaped SandboxBackend (KataBackend,
 // LinuxNativeJailBackend, NativeJailBackend) now calls first in every real mount-granting entry

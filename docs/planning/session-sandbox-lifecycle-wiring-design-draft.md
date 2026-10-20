@@ -667,7 +667,7 @@ real code and confirmed X" should still be re-checked, especially empirical/"gre
 which is exactly where all three real mistakes lived and exactly what the fourth pass had to
 re-verify from scratch rather than take on faith.
 
-## Promoted to `decisions/ADR-096-session-sandbox-lifecycle-context-provider-wiring.md` (2026-08-25)
+## Promoted to `decisions/archive/ADR-096-session-sandbox-lifecycle-context-provider-wiring.md` (2026-08-25)
 
 A fifth red-team round (on the two remaining open items: per-session subdirectory sanitization,
 Python composition) found real corrections to both (a double-hex-encoding error and an overclaimed

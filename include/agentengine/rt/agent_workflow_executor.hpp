@@ -50,7 +50,7 @@
 // AgentSession. Do not call this adapter's returned callable directly, concurrently, against the
 // same AgentSession from more than one thread outside WorkflowSupervisor's own guarantee.
 //
-// decisions/ADR-175 changed what the paragraph above depends on, and ADR-237 §5.1 (Phase G) finished
+// decisions/archive/ADR-175 changed what the paragraph above depends on, and ADR-237 §5.1 (Phase G) finished
 // the job: there is no drive loop here any more -- this body is a coroutine and `co_await`s
 // `session.start_run()`, so a round that parks (on `session_mutex_` or anything else) suspends rather
 // than needing a driver. The caller contract still matters for I1's own sake (two deliveries to one
@@ -78,7 +78,7 @@
 namespace agentengine::rt {
 
 // The `drive<T>` trampoline that used to live in an `agent_executor_detail` namespace at this spot is
-// gone: decisions/ADR-237 §5.1 (Phase G) made the executor body `task`-shaped, so
+// gone: decisions/archive/ADR-237 §5.1 (Phase G) made the executor body `task`-shaped, so
 // `agent_session_as_executor_body`'s lambda below is a coroutine and awaits `session.start_run()`
 // directly -- there is no non-awaiting call site left to drive from.
 

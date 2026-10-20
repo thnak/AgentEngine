@@ -42,7 +42,7 @@
 
 namespace agentengine::sandbox {
 
-// decisions/ADR-016-provider-egress-address-policy.md §3.
+// decisions/archive/ADR-016-provider-egress-address-policy.md §3.
 //
 // `tls` is the default everywhere and the only value production code should normally use.
 //

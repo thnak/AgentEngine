@@ -1,4 +1,4 @@
-// Proves decisions/ADR-061-host-provided-inbound-transport.md §7's R1/R2/R3 fixes: server-minted
+// Proves decisions/archive/ADR-061-host-provided-inbound-transport.md §7's R1/R2/R3 fixes: server-minted
 // task handles are bound to the principal that created them (011 §8a), a non-owner cannot
 // distinguish someone else's task from one that never existed (012 §4), and an inbound A2A message
 // is subject to a real 018 §2 admission check rather than the `StartRun::caller == nullopt`

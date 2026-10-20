@@ -1,4 +1,4 @@
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §6.3 (TLS on the reactor; "TLS context
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §6.3 (TLS on the reactor; "TLS context
 // ownership"; "TLS details") with §4.2/§4.4 -- `rt::TlsStream` (rt/tls.hpp) on mbedTLS, whose trust
 // configuration is ADR-013's (mbedtls_client_config.cpp, shared with the blocking client). The rules -- the
 // BIO, one op per direction, the per-stream lock never held across a co_await, close on cancel -- are

@@ -220,7 +220,7 @@ struct Edge {
 struct TerminationBound {
     std::optional<std::uint32_t> max_rounds;
     std::optional<std::uint64_t> deadline_ms;
-    // decisions/ADR-070-host-configurable-responsibility-boundary.md: HOST-MONITORED ONLY. Unlike
+    // decisions/archive/ADR-070-host-configurable-responsibility-boundary.md: HOST-MONITORED ONLY. Unlike
     // `max_rounds`/`deadline_ms` above (both checked every round by `WorkflowSupervisor::execute()`,
     // rt/workflow_supervisor.hpp), nothing in this engine reads this field to stop a run -- wiring
     // real enforcement would mean correlating usage-tracking per-executor at the exact point
@@ -263,7 +263,7 @@ struct TerminationBound {
 
 struct Workflow {
     std::string           id;
-    // Gap-2 fix (2026-08-14, decisions/ADR-044-*.md): 015 §3's own document shape already carries
+    // Gap-2 fix (2026-08-14, decisions/archive/ADR-044-*.md): 015 §3's own document shape already carries
     // `metadata.version`/`metadata.description` (agent_yaml_compiler.hpp's sibling compiler for
     // Agent documents found the identical gap first) -- this struct simply had no slot for either.
     // `description` defaults empty (matching `id`'s own "not declared" convention); `version` is

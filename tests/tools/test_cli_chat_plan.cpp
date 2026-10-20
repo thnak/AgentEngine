@@ -1,4 +1,4 @@
-// GitHub issue #47; decisions/ADR-224. tools/cli_chat_plan.hpp is the decision part of
+// GitHub issue #47; decisions/archive/ADR-224. tools/cli_chat_plan.hpp is the decision part of
 // tools/cli_chat.cpp's wiring -- command line -> which shell tools are offered, which capability that
 // mints, which tools need a human, which built-in skills the host pre-mounts. cli_chat.cpp itself needs a
 // model, a network and an embedded interpreter; this does not, so the decision is tested here.

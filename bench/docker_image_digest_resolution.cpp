@@ -1,4 +1,4 @@
-// GitHub issue #80 / decisions/ADR-176 §10 -- what it costs a sandboxed command to report which image it
+// GitHub issue #80 / decisions/archive/ADR-176 §10 -- what it costs a sandboxed command to report which image it
 // ran in: `docker inspect` (the digest), `docker image inspect` (the digest's KIND, ADR-176 §9), and the
 // `docker run`/`docker exec` they are measured against.
 //

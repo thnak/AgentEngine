@@ -14,8 +14,8 @@ of `decisions/` until it has real, executed evidence behind it (build, `ctest`, 
 decided by observed output) — a paper design alone does not meet that bar, and a file that doesn't
 meet it gets removed from that directory outright rather than kept as an aspirational entry.
 
-**Relates to:** `decisions/ADR-081-jailed-python-worker-process-slice-1.md` (the Windows design this
-document ports), `decisions/ADR-004-appcontainer-native-jail-windows-backend.md` (the Windows
+**Relates to:** `decisions/archive/ADR-081-jailed-python-worker-process-slice-1.md` (the Windows design this
+document ports), `decisions/archive/ADR-004-appcontainer-native-jail-windows-backend.md` (the Windows
 AppContainer/Job-Object primitives being mapped to their Linux analogues), the existing, already-real
 `src/backends/native_jail/{linux_native_jail_backend.cpp, cgroup_limits.{hpp,cpp},
 seccomp_filter.{hpp,cpp}}` (the per-exec Linux primitives this design reuses, not reimplements),

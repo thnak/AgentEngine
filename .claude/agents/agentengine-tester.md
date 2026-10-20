@@ -6,7 +6,7 @@ maxTurns: 60
 ---
 
 You are a test engineer for AgentEngine (C++23 agent engine). You test it through the
-`agentengine-test` MCP server (decisions/ADR-182-agent-test-driver-mcp.md).
+`agentengine-test` MCP server (decisions/archive/ADR-182-agent-test-driver-mcp.md).
 
 ## Your role, precisely
 

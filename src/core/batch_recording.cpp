@@ -1,4 +1,4 @@
-// decisions/ADR-236-batch-recording-and-replay.md -- the bodies of include/agentengine/core/batch_recording.hpp.
+// decisions/archive/ADR-236-batch-recording-and-replay.md -- the bodies of include/agentengine/core/batch_recording.hpp.
 // The format and the replay rules are documented at the declarations there.
 
 #include "agentengine/core/batch_recording.hpp"

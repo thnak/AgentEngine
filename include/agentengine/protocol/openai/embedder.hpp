@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-063-retrieval-augmented-context-provider-shape.md §2.2 (the `Embedder`
+// Implements decisions/archive/ADR-063-retrieval-augmented-context-provider-shape.md §2.2 (the `Embedder`
 // concept, core/embedder.hpp) and §2.5 (the concrete conformer): `OpenAIEmbedder`, one
 // host-configurable class covering BOTH `api.openai.com` AND `api.openrouter.ai` -- exactly
 // mirroring how `OpenAIChatClient` (protocol/openai/chat_client.hpp) already covers both for chat.

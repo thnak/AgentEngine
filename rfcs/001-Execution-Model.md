@@ -13,7 +13,7 @@ specification assumes this model.
 AgentEngine implements its own runtime substrate, `agentengine::rt::` — plain, host-held C++23
 objects and coroutines, no actor engine underneath. (Historical: this section originally mapped
 every concept below onto Quark, a distributed actor engine AgentEngine was built directly on top
-of; `decisions/ADR-037-remove-quark-as-core-runtime.md`, executed 2026-08-13, removed that
+of; `decisions/archive/ADR-037-remove-quark-as-core-runtime.md`, executed 2026-08-13, removed that
 dependency entirely and `third_party/quark` is no longer part of this repository. See
 `AgentEngineSpecification.md` §7 for the full current mapping table.)
 

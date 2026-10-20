@@ -1,4 +1,4 @@
-// Implements decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md's own prove phase --
+// Implements decisions/archive/ADR-067-middleware-turn-point-pre-model-enforcement.md's own prove phase --
 // the first executed evidence against that ADR's §3 falsifiable claims (all previously
 // INCONCLUSIVE, no code existed). See turn_middleware.hpp's own top comment for two real,
 // mid-implementation refinements this test file also covers: the chain is a single forward pass

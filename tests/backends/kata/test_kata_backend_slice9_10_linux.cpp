@@ -1,4 +1,4 @@
-// Proves KataBackend Slice 9/10 (kata_backend.hpp's own header comment, decisions/ADR-093-kata-
+// Proves KataBackend Slice 9/10 (kata_backend.hpp's own header comment, decisions/archive/ADR-093-kata-
 // backend-netpolicy-allowlist-config-cni.md) against a REAL Kata sandbox: the `--config`-mode OCI
 // spec pipeline (Slice 9) and the real `NetPolicy` allowlist via manual netns + `cnitool` + create-
 // time-pinned nftables (Slice 10). Same "REQUIRES a real Kata/containerd deployment" precondition as
@@ -135,7 +135,7 @@ int main() {
     }
 
     // ---- 5. Red-team finding (BLOCKING, fixed same pass -- kata_backend.cpp's own comment at the
-    //         fix site, decisions/ADR-093-...md §5): a nonempty allowlist with NO cap::SandboxNetOut
+    //         fix site, decisions/archive/ADR-093-...md §5): a nonempty allowlist with NO cap::SandboxNetOut
     //         grant at all fails closed with kata_backend.net_capability_required, rather than
     //         silently sailing through authorize_spec()'s own "opt-out when zero grants" shape --
     //         proves this backend no longer grants real network egress via SandboxSpec::net alone,

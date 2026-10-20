@@ -1,11 +1,11 @@
 #pragma once
-// Implements decisions/ADR-002-pythonrunner-embedding-and-mediation.md (prove phase) --
+// Implements decisions/archive/ADR-002-pythonrunner-embedding-and-mediation.md (prove phase) --
 // specifically §3.0 (Layer 0's `sys.modules` sweep), §3.1 (Design A meta-path finder as the
 // primary import-allowlist mechanism), §3.4 items 1 and 3 (setup-time install + per-call identity
 // reassertion), and §5.5.2's fix (every enforcement object is a pure C type with no Python-visible
 // mutable state). Backend: native_jail (008 §1b, §3).
 //
-// ALSO implements decisions/ADR-003-caller-aware-import-gating.md (prove phase) §3.2/§3.3 --
+// ALSO implements decisions/archive/ADR-003-caller-aware-import-gating.md (prove phase) §3.2/§3.3 --
 // Design B, revised: the caller-gated import tier (`PythonLockdownConfig::caller_gated_modules`),
 // the host-side `g_trusted_globals`/`g_trusted_code` registries, `TrustedLoaderProxy`, the C-level
 // frame-stack walk, and the `builtins.__import__`/`importlib.import_module` wrappers that close
@@ -39,7 +39,7 @@ namespace agentengine::native_jail {
 // experiment's finding that `site.py` pulls in far more than a lockdown interpreter should trust
 // unreviewed -- see the ADR's §8 evidence).
 //
-// `caller_gated_modules` implements decisions/ADR-003-caller-aware-import-gating.md §3.2/§3.3
+// `caller_gated_modules` implements decisions/archive/ADR-003-caller-aware-import-gating.md §3.2/§3.3
 // (Design B, revised): a second, smaller tier, DISJOINT from `allowed_top_level_modules`, for
 // names that a granted package's own internal code may legitimately import but guest code must
 // not be able to reach directly (e.g. "ctypes", "_ctypes", "winreg", "_wmi", "_winapi",

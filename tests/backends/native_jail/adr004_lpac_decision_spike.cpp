@@ -1,4 +1,4 @@
-// decisions/ADR-004-appcontainer-native-jail-windows-backend.md SS11 item 4 -- "Decide LPAC vs.
+// decisions/archive/ADR-004-appcontainer-native-jail-windows-backend.md SS11 item 4 -- "Decide LPAC vs.
 // regular AppContainer by running SS5's tier-3 corpus under both, not by reasoning from static ACL
 // inspection alone." SS6 finding 4 (LPAC not tested) and SS3's own rejection of LPAC ("expected to
 // not close the headline finding... stated as an expectation from ACL inspection, not as tested

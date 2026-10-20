@@ -2,7 +2,7 @@
 
 **Date**: 2026-08-27. **Scope**: functional/use-case validation, not security — the companion,
 adversarial half of this exercise (CVE replay, TOCTOU races, attack simulation) lives in
-`docs/planning/identity-native-sandbox-worktree-design.md` §38 and `decisions/ADR-014`. This
+`docs/planning/identity-native-sandbox-worktree-design.md` §38 and `decisions/archive/ADR-014`. This
 document asks a different question: **for the real problems shipped AI agent products actually
 solve, does AgentEngine's real, current implementation solve them too — and where, concretely,
 does it not?**

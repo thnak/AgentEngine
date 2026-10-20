@@ -7,7 +7,7 @@
 // store, and reports whether the lesson was delivered and what the trial's stub tools captured.
 //
 // Explicitly OUT OF SCOPE for this slice (named, not silently dropped -- see
-// decisions/ADR-195-evaluation-harness.md §8): the SlotTable/steering-manifest arm S (§3.7); the
+// decisions/archive/ADR-195-evaluation-harness.md §8): the SlotTable/steering-manifest arm S (§3.7); the
 // look ledger, EvalSuite/EvalRun/PromotionEvidence (§3.3); the kill switch and promotion-write
 // digest re-check (§3.0 item 5's remaining half); the `eval.tool_not_stub` refusal gate (not
 // needed yet -- this slice's ToolTable is built exclusively from `EvalStubToolProvider` plus
@@ -219,7 +219,7 @@ namespace detail {
 // non-const `inner_.chat(...)` on a const member) -- fixed anyway since the cost is one call to
 // `remove_cvref_t` and a defense-in-depth check should not rely on a caller never trying.
 //
-// Round-2 red-team RESIDUAL, disclosed rather than silently left (decisions/ADR-195-evaluation-
+// Round-2 red-team RESIDUAL, disclosed rather than silently left (decisions/archive/ADR-195-evaluation-
 // harness.md §8): this trait is a NOMINAL check on the exact template-id `RecordingChatClient<T>`.
 // `LegacyChatClient` is pure structural/duck typing (chat_client.hpp), so a hand-written class that
 // privately holds an already-wrapped `RecordingChatClient<X>` and forwards `capabilities()`/

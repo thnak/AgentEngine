@@ -274,7 +274,7 @@ satisfies G7's attributed/waived path exactly as chunking and graph extraction a
   provenance markers like any other retrieved content (017).
 - **`ModelInferred` items are rendered with visibly lower confidence than `UserStated` ones** when
   both are injected in the same turn — the prompt-level counterpart to not letting a guess pose as a
-  fact. *Exception (2026-09-24, `decisions/ADR-191-approved-lesson-delivery.md`):* when a host opts in, an
+  fact. *Exception (2026-09-24, `decisions/archive/ADR-191-approved-lesson-delivery.md`):* when a host opts in, an
   item whose exact text a human approved (a promoted lesson) is delivered as an approved-lesson block — still
   tainted and fenced, still `external` — without its confidence label; the fence says instead that a human
   approved it, and the model may follow it as guidance. Nothing else changes rank or label.
@@ -360,7 +360,7 @@ Items decayed below a threshold are consolidation candidates, never silently gon
   designed per-turn, attributed, tainted injection path) is the only route: a learned instruction is
   injected alongside the static instructions each turn, visibly sourced (§6), never silently becoming
   part of the agent's reviewed baseline.
-  **Superseded 2026-09-21 (`decisions/ADR-194-procedural-memory-channel.md`) — the ROUTE above is
+  **Superseded 2026-09-21 (`decisions/archive/ADR-194-procedural-memory-channel.md`) — the ROUTE above is
   withdrawn; the principle (memory never rewrites the reviewed baseline) stands.** `ContextContribution.
   instructions` is materialized `origin=system, tainted=false`, outside ADR-173's fence and its
   reading-rule preamble, so routing model-derived text through it launders it past §6's own "tainted

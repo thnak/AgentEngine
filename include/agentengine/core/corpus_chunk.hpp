@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-063-retrieval-augmented-context-provider-shape.md §2.4, §4 findings 1/2
+// Implements decisions/archive/ADR-063-retrieval-augmented-context-provider-shape.md §2.4, §4 findings 1/2
 // — the citation-metadata record shared between a `CorpusSource` conformer (writes it at mount
 // time) and `VectorRagContextProvider` (reads it at query time to render citations). Deliberately a
 // THIRD storage artifact, distinct from `VectorIndex` (stores only `{id, vector}`) and

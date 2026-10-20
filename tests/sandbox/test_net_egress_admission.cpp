@@ -1,4 +1,4 @@
-// Proves decisions/ADR-241-egress-proxy-async-path-on-rt-http.md section 8.2 / 8.3 and the gates G7 (host-Runtime and
+// Proves decisions/archive/ADR-241-egress-proxy-async-path-on-rt-http.md section 8.2 / 8.3 and the gates G7 (host-Runtime and
 // when_all cancellation), G13 (the egress I/O context and admission, rows e, g, h, h3, i, j, k) of section 11.
 //
 // Loopback fake servers and injected resolvers only; every call is bounded by a stop token or a short deadline, and the

@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-175 -- who resumes a parked coroutine, and who owns a lock while its holder is
+// Proof for decisions/archive/ADR-175 -- who resumes a parked coroutine, and who owns a lock while its holder is
 // parked (include/agentengine/rt/resume_home.hpp, async_mutex.hpp, channel.hpp, block_on.hpp,
 // thread_pool.hpp). Each check below failed, crashed or hung against the code before ADR-175, unless it is
 // marked as a guard against a regression a red-team round found in an intermediate design (those are

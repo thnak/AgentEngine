@@ -1,6 +1,6 @@
-// Implements the proofs for decisions/ADR-196-per-call-approval-decisions.md (issues #104, #107, #108), ADR-198
-// (issue #106), and the round-3 red-team fixes to ADR-191/192 (decisions/ADR-191-approved-lesson-delivery.md §8,
-// decisions/ADR-192-unattended-mode.md §9) that live in the session's resume paths and the lesson registry.
+// Implements the proofs for decisions/archive/ADR-196-per-call-approval-decisions.md (issues #104, #107, #108), ADR-198
+// (issue #106), and the round-3 red-team fixes to ADR-191/192 (decisions/archive/ADR-191-approved-lesson-delivery.md §8,
+// decisions/archive/ADR-192-unattended-mode.md §9) that live in the session's resume paths and the lesson registry.
 //
 //   U1   A tool the host's turn middleware hid from a round is never dispatched when that round resumes after a
 //        tool-call hook decision -- with unattended approvals on (round 3 MAJOR 1). Control: the same hidden tool,

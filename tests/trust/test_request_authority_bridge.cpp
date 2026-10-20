@@ -1,4 +1,4 @@
-// ADR-061 prove phase, §31/§33/§34/§35 (decisions/ADR-061-host-provided-inbound-transport.md).
+// ADR-061 prove phase, §31/§33/§34/§35 (decisions/archive/ADR-061-host-provided-inbound-transport.md).
 // Proves the falsifiable claims tables at §31.3 and §33.8 for the two pieces that section's design
 // round built: `trust::EndpointId`/`EndpointRegistry`/`mint_endpoint_id()` (endpoint_id.hpp) and
 // `rt::request_authority_from_bearer_claims()` (request_authority_bridge.hpp) -- the bridge from a

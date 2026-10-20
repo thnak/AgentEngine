@@ -1,4 +1,4 @@
-// Independent red-team round (2026-08-30) on ADR-134 (decisions/ADR-134-durable-sandboxed-shell-chat.md):
+// Independent red-team round (2026-08-30) on ADR-134 (decisions/archive/ADR-134-durable-sandboxed-shell-chat.md):
 // `tools/durable_sandboxed_shell_chat.cpp` had ZERO automated coverage of its own -- ADR-134's own §3
 // evidence was a human manually running the compiled binary twice and eyeballing the filesystem. This is
 // that claim turned into a permanent regression guard: invokes the REAL, already-built
@@ -137,7 +137,7 @@ void set_fake_home(std::filesystem::path const& dir) {
 // OPENAI_API_KEY were somehow still present, the child's own std::getline() sees immediate EOF rather
 // than blocking this test on whatever stdin this test process itself inherited from ctest.
 //
-// REAL FINDING made by this repo's own real Linux verification pass (decisions/ADR-135-linux-
+// REAL FINDING made by this repo's own real Linux verification pass (decisions/archive/ADR-135-linux-
 // verification-adr134.md), not assumed from `test_content_durability_cross_process.cpp`'s own pattern:
 // that sibling file only ever compares std::system()'s return value against 0, which is safe on BOTH
 // platforms' own encodings (a raw wait() status is 0 iff the child both exited normally AND returned 0,

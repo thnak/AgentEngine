@@ -29,7 +29,7 @@ concept SandboxBackend = requires(T backend, SandboxSpec spec, SandboxHandle& ha
 };
 ```
 
-Four things, no more. Every method returns a `task` (decisions/ADR-237 §5.1, #173): a backend may be remote --
+Four things, no more. Every method returns a `task` (decisions/archive/ADR-237 §5.1, #173): a backend may be remote --
 a microVM host, a container daemon -- so each call is allowed to suspend. A backend whose work is local and
 synchronous simply writes the body as a coroutine that never suspends (`co_return` its result); the in-tree
 backends do exactly that, keeping the synchronous body in a `*_blocking` member. The handle and `ctx` are
@@ -100,7 +100,7 @@ struct ProfileTraits {
   §2's full contract. **Nothing in the `SandboxBackend` concept forces you to enforce every field.**
   `KataBackend` shipped in two disclosed slices specifically because of this: Slice 1 explicitly
   documented that `capabilities`/`mounts`/`limits`/`net` were no-ops (containment came entirely from
-  Kata's own defaults), and Slice 2 (`decisions/ADR-086`) closed that gap as real, separate,
+  Kata's own defaults), and Slice 2 (`decisions/archive/ADR-086`) closed that gap as real, separate,
   reviewed work — not silently assumed done by Slice 1's mere existence. Do the same: if you don't
   enforce a field yet, say so in your header comment, the same way, rather than letting a caller
   assume `SandboxSpec::limits.memory_bytes` is respected because your `exec()` compiles against it.

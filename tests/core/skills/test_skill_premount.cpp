@@ -1,4 +1,4 @@
-// decisions/ADR-224-host-premounted-builtin-skills.md (GitHub issue #47): a host pre-mounts the
+// decisions/archive/ADR-224-host-premounted-builtin-skills.md (GitHub issue #47): a host pre-mounts the
 // built-in skill paired with a tool it declares, BEFORE the first model call, and the mount is
 // attributed to the host -- in `MountedSkillsState`, and in the system text the model is shown.
 //

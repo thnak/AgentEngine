@@ -1,6 +1,6 @@
 #pragma once
 
-// decisions/ADR-235-batch-inference-coalescing.md §3.2: the OpenRouter conformer of the `BatchBackend`
+// decisions/archive/ADR-235-batch-inference-coalescing.md §3.2: the OpenRouter conformer of the `BatchBackend`
 // seam (core/batch_backend.hpp). OpenRouter's Batch API went GA on 2026-09-22
 // (docs/research/2026-10-02-batch-inference-provider-limits.md); this speaks its `/api/v1/batches`
 // surface with the OpenAI chat-completions item shape, reusing `openai::detail::build_request_body` /

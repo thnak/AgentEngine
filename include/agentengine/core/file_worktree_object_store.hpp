@@ -92,7 +92,7 @@ public:
         std::filesystem::create_directories(root_ / "trees");
     }
 
-    // The seam (core/worktree_types.hpp `WorktreeObjectStore`) is `task`-shaped since decisions/ADR-237 §5.1 (#172).
+    // The seam (core/worktree_types.hpp `WorktreeObjectStore`) is `task`-shaped since decisions/archive/ADR-237 §5.1 (#172).
     // The bodies below are the `*_blocking` members, unchanged: they hold `mutex_` across file I/O and a retry
     // backoff, so they are deliberately NOT coroutines (a `std::mutex` must not span a suspension). They complete
     // without suspending; moving them onto `rt::offload` (ADR-237 §6) is a named residual, as for the other file

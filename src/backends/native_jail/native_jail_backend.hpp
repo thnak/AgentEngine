@@ -3,7 +3,7 @@
 // Windows half (rfcs/008-Sandbox-and-Isolation.md §1b, §2, §3) -- Milestone 2 Phase C task C2
 // (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md). Written fresh against 008
 // as currently Reviewed (per project-owner direction, 2026-08-05), carrying forward
-// decisions/ADR-004-appcontainer-native-jail-windows-backend.md's *findings*, not its unbuilt spike
+// decisions/archive/ADR-004-appcontainer-native-jail-windows-backend.md's *findings*, not its unbuilt spike
 // code:
 //   - AppContainer (`app_container_profile.hpp`) for process identity/authority: zero granted
 //     Windows capabilities (denies NetOut/socket by construction, ADR-004 AC-S1) and
@@ -40,7 +40,7 @@
 //     `FramedChannel`/message-catalog split (`jailed_worker_rpc.hpp`,
 //     `mediated_python_worker_protocol.hpp`) is shaped to compose with, not solved.
 //
-// docs/planning/sandbox-spec-capability-enforcement-design-draft.md (2026-08-24, decisions/ADR-087-
+// docs/planning/sandbox-spec-capability-enforcement-design-draft.md (2026-08-24, decisions/archive/ADR-087-
 // sandbox-spec-capability-enforcement.md): both `create()` and `create_python_worker()` below now
 // call `agentengine::authorize_spec()` (sandbox/sandbox.hpp) first -- a real, opt-in check that
 // `spec.mounts`/`spec.net` are covered by `spec.capabilities`' `cap::SandboxMount`/`cap::SandboxNetOut`
@@ -117,7 +117,7 @@
 namespace agentengine::native_jail {
 
 // Jailed-Python-worker design (rfcs/008-Sandbox-and-Isolation.md §1b/§3, rfcs/010-Python-Code-Interpreter.md
-// §2/§6 -- decisions/ADR-081-jailed-python-worker-process-slice-1.md is the ADR superseding this
+// §2/§6 -- decisions/archive/ADR-081-jailed-python-worker-process-slice-1.md is the ADR superseding this
 // header's former "Correction (2026-08-23)" comment, which claimed the CPython-interpreter/host-
 // filesystem-boundary gap was closed "by an entirely different, now-permanent mechanism" without any
 // ADR amending 008/010's "locked to native-jail permanently" requirement; it was not closed, and this
@@ -148,8 +148,8 @@ struct PythonWorkerSessionConfig {
     std::unordered_map<std::string, std::wstring> mount_roots;
     bool   expose_agent_files_data = false;
     bool   expose_agent_ask = false;
-    bool   expose_agent_output = false;  // decisions/ADR-154-agent-output-codeact-module.md, 026 §5
-    bool   expose_agent_progress = false;  // decisions/ADR-155-agent-progress-codeact-module.md, 026 §5
+    bool   expose_agent_output = false;  // decisions/archive/ADR-154-agent-output-codeact-module.md, 026 §5
+    bool   expose_agent_progress = false;  // decisions/archive/ADR-155-agent-progress-codeact-module.md, 026 §5
     std::size_t output_cap_bytes = 0;  // 0 -> the worker's own default (output_discipline.hpp)
     std::wstring worker_exe_path;      // fixed, host-controlled path to agentengine_python_worker.exe
                                         // -- NEVER derived from anything guest/model-influenced (I2).

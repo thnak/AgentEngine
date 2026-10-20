@@ -1,6 +1,6 @@
 #pragma once
 
-// decisions/ADR-235-batch-inference-coalescing.md §3.2 (OQ-20): the vendor batch-inference seam.
+// decisions/archive/ADR-235-batch-inference-coalescing.md §3.2 (OQ-20): the vendor batch-inference seam.
 //
 // A `BatchBackend` submits N independent, single-shot `ChatRequest`s as ONE vendor batch job and later
 // reports each item's result. It is a declared provider seam (CONVENTIONS.md: type erasure is allowed at
@@ -24,7 +24,7 @@
 // same endpoint and SecretRef the synchronous client uses, and every call takes the node's own
 // EffectContext for secret resolution (018 §4) -- no ambient credential (I2).
 //
-// decisions/ADR-237 §5.1: the four calls that reach the vendor (`submit`, `poll`, `cancel`, `release`)
+// decisions/archive/ADR-237 §5.1: the four calls that reach the vendor (`submit`, `poll`, `cancel`, `release`)
 // are `task`-shaped, so a conformer speaks `rt::http` on the reactor instead of blocking a lane thread.
 // `group_key`, `limits` and `admit` stay synchronous: they are pure and never do I/O.
 

@@ -5,7 +5,7 @@
 // real native tool through core/tool_pipeline.hpp's real ten-step pipeline (Phase B) via
 // invoke_agent_tool() (E3's own glue, core/agent_registry.hpp) -- not a stub, not a mock pipeline.
 //
-// decisions/ADR-059-invoke-agent-tool-capability-attenuation.md: invoke_agent_tool() attenuates the
+// decisions/archive/ADR-059-invoke-agent-tool-capability-attenuation.md: invoke_agent_tool() attenuates the
 // CALLER's own held `ctx.capabilities` down to the target's declared ceiling (CapabilitySet::
 // attenuate(), ADR-009) instead of minting the target's own ceiling unconditionally (the I2 hole
 // ADR-059 fixes) -- every case below therefore needs a real, covering `ctx.capabilities` to prove

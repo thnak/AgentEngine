@@ -1,4 +1,4 @@
-// Proves decisions/ADR-234-harness-composition.md (issue #60; 002 §2.2): core/harness.hpp's
+// Proves decisions/archive/ADR-234-harness-composition.md (issue #60; 002 §2.2): core/harness.hpp's
 // make_harness_session<A>() / bind_harness_session() turn a declared agent into an ADR-226 bridge session
 // carrying the harness's default stack -- and each piece is shown ACTIVE in a real start_run() against the
 // strict ScriptedChatClient (no network), with a positive control that disables it and shows it gone.

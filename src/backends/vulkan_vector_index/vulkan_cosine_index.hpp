@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.6 --
+// Implements decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.6 --
 // `VulkanCosineIndex`: a GPU-accelerated, exact-brute-force `VectorIndex` conformer
 // (core/vector_index.hpp), CONVENTIONS.md Tier 2 seam backend (`src/backends/*`, one dependency --
 // the Vulkan LOADER, dynamically loaded, gated behind `AGENTENGINE_WITH_VULKAN`, never linked unless

@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-237-async-extension-points-and-io-reactor.md, implementation step 2: TCP streams on
+// Proof for decisions/archive/ADR-237-async-extension-points-and-io-reactor.md, implementation step 2: TCP streams on
 // the I/O reactor -- the seam (pal/reactor_tcp.hpp), its Asio backend (src/backends/reactor_asio/
 // reactor_tcp_asio.cpp) and the awaitables (rt/tcp.hpp). Each claim names the ADR rule it proves and the
 // mutant that kills it. Every mutant named below was run (2026-10-03, Windows/clang; the ASan ones on Linux/gcc

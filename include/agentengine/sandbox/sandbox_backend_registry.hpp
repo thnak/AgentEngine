@@ -46,7 +46,7 @@ enum class strict_eligibility { eligible, named_only };  // ae-naming-lint: allo
 // (trust/secret_quarantine.hpp) and `MiddlewareTraceHook`: a deployment that wires nothing gets no
 // durable record at all, a real named limitation, not a silent one.
 //
-// `downgraded` (008 §9 G6, decisions/ADR-082-native-jail-promotion-gate-008-9.md §4's own finding
+// `downgraded` (008 §9 G6, decisions/archive/ADR-082-native-jail-promotion-gate-008-9.md §4's own finding
 // that G6 was real, disclosed, open work, not silently claimed covered by this registry's mere
 // existence): true when some OTHER strict-eligible backend registered in this same registry has a
 // HIGHER `strength` than the one that actually won, i.e. a stronger candidate exists but does not

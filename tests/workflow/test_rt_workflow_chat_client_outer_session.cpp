@@ -1,4 +1,4 @@
-// Proof for GitHub issue #44 / decisions/ADR-230: a `WorkflowChatClient` (rt/workflow_as_chat_client.hpp, ADR-162)
+// Proof for GitHub issue #44 / decisions/archive/ADR-230: a `WorkflowChatClient` (rt/workflow_as_chat_client.hpp, ADR-162)
 // bound as an OUTER `AgentSession`'s chat client surfaces its wrapped workflow's paused request_port to the
 // session's own caller as a `client_input` interaction, which that caller answers through the ordinary
 // `resolve_interaction()` -- out of band, never through anything a model can write.

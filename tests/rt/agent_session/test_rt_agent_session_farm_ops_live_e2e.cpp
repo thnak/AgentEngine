@@ -1,4 +1,4 @@
-// Implements rfcs/009-Plugin-and-Extension-System.md §8 (multi-skill), decisions/ADR-065-tool-optimizer-
+// Implements rfcs/009-Plugin-and-Extension-System.md §8 (multi-skill), decisions/archive/ADR-065-tool-optimizer-
 // provider.md (a REAL ToolOptimizerProvider, not a stand-in), and rfcs/010-Python-Code-Interpreter.md §1a/
 // §2 (a REAL embedded CPython interpreter, native_jail::PythonRunner -- not a canned stand-in), all
 // driven through a real remote model over OpenRouter.
@@ -632,7 +632,7 @@ private:
 // tool-and-skill-related system prompt). ============================================================
 class FarmOpsProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3.
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3.
     static constexpr std::string_view name = "farm-ops-live-test";
 
     FarmOpsProvider()

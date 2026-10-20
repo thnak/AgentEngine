@@ -201,7 +201,7 @@ result<SandboxHandle> KataBackend::create_blocking(SandboxSpec const& spec, Effe
     // reject the request afterward.
     bool const wants_network = !spec.net.deny_all || !spec.net.allowlist.empty();
     if (wants_network && spec.capabilities.sandbox_net_out_grants().empty()) {
-        // Red-team finding (BLOCKING, found against this exact Slice -- see decisions/ADR-093-
+        // Red-team finding (BLOCKING, found against this exact Slice -- see decisions/archive/ADR-093-
         // kata-backend-netpolicy-allowlist-config-cni.md §5): `authorize_spec()` (sandbox.hpp)
         // deliberately SKIPS its own `cap::SandboxNetOut` coverage check when a caller holds ZERO
         // `SandboxNetOut` grants at all -- a documented "opt-out preserved" backward-compatibility
@@ -380,7 +380,7 @@ result<SandboxHandle> KataBackend::create_blocking(SandboxSpec const& spec, Effe
     // loop filesystem fills, not a heuristic.
     //
     // SLICE 12 fix (this pass, found via the FIRST real deployment this whole subsystem has ever run
-    // against -- see this file's own top comment / decisions/ADR-096-... for the full account):
+    // against -- see this file's own top comment / decisions/archive/ADR-096-... for the full account):
     // `disk_bytes == 0` (unset) used to be a PLAIN, READ-ONLY bind mount of `lower_dir` straight onto
     // `rootfs_dir` -- `ctr images mount` (above) mounts a snapshot's content read-only, and a bind
     // mount of a read-only source is itself read-only, so `rootfs_dir` was read-only in the default,
@@ -917,7 +917,7 @@ result<ExecOutcome> KataBackend::exec_blocking(SandboxHandle& handle, ExecReques
     result_out.stderr_text = outcome->stderr_text;
 
     // SLICE 4 (2026-08-24) fix, extended by SLICE 5 (2026-08-24) -- real gap found by this pass's own
-    // red-team review (decisions/ADR-088-...md §3 finding #7, BLOCKING): the `kill(pid, SIGKILL)`
+    // red-team review (decisions/archive/ADR-088-...md §3 finding #7, BLOCKING): the `kill(pid, SIGKILL)`
     // inside run_ctr()'s own force-terminate path only terminates the HOST-side `ctr` CLI wrapper
     // process this backend posix_spawn'd -- it has no host-visible pid for the GUEST-side process
     // that CLI was attached to. Before the SLICE 4 fix, a `wall_ms` timeout left that guest process

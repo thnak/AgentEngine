@@ -1,4 +1,4 @@
-// Proof for ADR-182 driver phase 1 (decisions/ADR-182-agent-test-driver-mcp.md §12): drives
+// Proof for ADR-182 driver phase 1 (decisions/archive/ADR-182-agent-test-driver-mcp.md §12): drives
 // tools/test_driver/test_driver.hpp's `Driver` in-process through `handle_line()`, exactly the JSON-RPC
 // lines the stdio binary would receive.
 //

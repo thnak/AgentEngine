@@ -1,4 +1,4 @@
-// Design -> red-team -> prove -> judge for decisions/ADR-009-capability-set-enforcement-mechanism.md
+// Design -> red-team -> prove -> judge for decisions/archive/ADR-009-capability-set-enforcement-mechanism.md
 // (trust/capability.hpp): the in-process `Capability`/`CapabilitySet` enforcement mechanism that
 // upholds rfcs/007-Capability-and-Trust-Model.md §3's five properties. Miniature versions of 007 §9's
 // G1 (no ambient authority), G3 (attenuation only), and G4 (revocation) — this milestone's surface,

@@ -19,7 +19,7 @@ target_include_directories(test_agent_files_data_codegen PRIVATE "${AE_TESTS_SOU
 target_link_libraries(test_agent_files_data_codegen PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_agent_files_data_codegen COMMAND test_agent_files_data_codegen)
 
-# ---- PythonRunner prove-phase gates (decisions/ADR-002-pythonrunner-embedding-and-mediation.md)
+# ---- PythonRunner prove-phase gates (decisions/archive/ADR-002-pythonrunner-embedding-and-mediation.md)
 # Only built when AGENTENGINE_BUILD_PYTHON_RUNNER is ON (CMakeLists.txt) -- these link a real
 # CPython import lib and need python3<minor>.dll reachable via PATH at run time (Windows has no
 # rpath), wired below via each test's ENVIRONMENT property.
@@ -46,7 +46,7 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
   set_tests_properties(test_mediated_python_runner_smoke PROPERTIES
     ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
 
-  # ---- decisions/ADR-154-agent-output-codeact-module.md -- GitHub issue #39, 026 §5's `agent.output`.
+  # ---- decisions/archive/ADR-154-agent-output-codeact-module.md -- GitHub issue #39, 026 §5's `agent.output`.
   # A real script calling agent.output.set(value) against the real agentengine_python_worker.exe,
   # round-tripping into ExecOutcome::structured_output_json; proves the opt-in gate, last-call-wins,
   # and no cross-execution leak on the same worker.
@@ -57,7 +57,7 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
   set_tests_properties(test_agent_output_codegen PROPERTIES
     ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
 
-  # ---- decisions/ADR-155-agent-progress-codeact-module.md -- GitHub issue #31's own three-piece gap.
+  # ---- decisions/archive/ADR-155-agent-progress-codeact-module.md -- GitHub issue #31's own three-piece gap.
   # A real script calling agent.progress.report(text) against the real agentengine_python_worker.exe,
   # proving ctx.report_progress() fires for real, the worker survives (never hits exec_session()'s
   # fail-closed terminate_worker() fallback), and multiple calls stream as multiple events.
@@ -180,7 +180,7 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
   set_tests_properties(test_python_audit_hook PROPERTIES
     ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
 
-  # ---- decisions/ADR-003-caller-aware-import-gating.md prove-phase gates (Design B, revised) ----
+  # ---- decisions/archive/ADR-003-caller-aware-import-gating.md prove-phase gates (Design B, revised) ----
 
   # Claims B1-B8, B10, B11, B13 (primary half): the caller-gated import tier end to end, against
   # the same real numpy/pandas target ADR-002 already measured, with ctypes/_ctypes/winreg/_wmi/

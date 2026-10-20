@@ -176,7 +176,7 @@ target_link_libraries(agentengine_example_23_handoff_mesh PRIVATE
   agentengine::core agentengine_warnings)
 add_test(NAME example_23_handoff_mesh COMMAND agentengine_example_23_handoff_mesh)
 
-# 24: GitHub issue #30 / decisions/ADR-151-delegated-agent-approval-policy.md -- a reference
+# 24: GitHub issue #30 / decisions/archive/ADR-151-delegated-agent-approval-policy.md -- a reference
 # PolicyDecider for delegated/spawned-agent calls (trust::approve_delegated_calls()), showing its two
 # distinct wiring points (AgentSession::set_policy_decider() vs. SpawnTargetDescriptor::policy_decider)
 # side by side. rt/agent_spawn.hpp's real perform_agent_spawn() call path needs agent_spawn_worktree.hpp's
@@ -291,7 +291,7 @@ target_link_libraries(agentengine_example_34_request_info_review PRIVATE
   agentengine::core agentengine_warnings)
 add_test(NAME example_34_request_info_review COMMAND agentengine_example_34_request_info_review)
 
-# decisions/ADR-234 (issue #60): the Harness composition point, offline (testing::ScriptedChatClient).
+# decisions/archive/ADR-234 (issue #60): the Harness composition point, offline (testing::ScriptedChatClient).
 add_executable(agentengine_example_35_harness_agent 35_harness_agent.cpp)
 target_link_libraries(agentengine_example_35_harness_agent PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME example_35_harness_agent COMMAND agentengine_example_35_harness_agent)

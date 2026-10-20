@@ -2,7 +2,7 @@
 # Added by tests/CMakeLists.txt, which also sets the flags, output directory, working directory and
 # the "rt/agent_spawn" ctest label for every test here (cmake/AgentEngineTests.cmake).
 
-# ---- agent.spawn depth/budget bound (decisions/ADR-006-agent-spawn-depth-budget-bound.md) -------
+# ---- agent.spawn depth/budget bound (decisions/archive/ADR-006-agent-spawn-depth-budget-bound.md) -------
 # Header-only (trust/spawn_budget.hpp), core-tier (std only, no crypto -- in-process, never crosses
 # a process boundary the way trust/capability_token.hpp's ADR-005 token does) -- links only
 # agentengine::core.

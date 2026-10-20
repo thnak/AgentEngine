@@ -9,7 +9,7 @@ links against the pinned Quark commit and builds clean on both platforms under t
 ## Current state (verified 2026-08-05)
 
 Before breaking down what's left, a real audit of what already exists — this repo is not a blank
-slate. `decisions/ADR-001` through `ADR-004` each produced real prove-phase code under
+slate. `decisions/archive/ADR-001` through `ADR-004` each produced real prove-phase code under
 `src/backends/native_jail/` to test a specific design question (ShellRunner grammar/dispatch,
 embedded-CPython mediation, caller-aware import gating, the AppContainer+Job-Object Windows
 backend). **Per project-owner direction (2026-08-05): that code stays exactly where it is — it's

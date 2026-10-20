@@ -37,7 +37,7 @@ repeated per milestone below.
 Not an RFC. Repo scaffolding: CMake ≥ 3.28 / C++23 per 021 §5, a CI skeleton on Windows + Linux (021
 §5's matrix, even if most jobs are placeholders initially), and the 027 naming-lint stub wired in
 from the start. (Historical: at the time, this also pinned Quark as a submodule, never forked —
-CLAUDE.md's then-locked decision. `decisions/ADR-037-remove-quark-as-core-runtime.md`, executed
+CLAUDE.md's then-locked decision. `decisions/archive/ADR-037-remove-quark-as-core-runtime.md`, executed
 2026-08-13, removed that dependency entirely; `third_party/quark` is no longer part of this repo.)
 
 **Exit:** an empty engine target builds clean on both platforms under the CI matrix (historical:
@@ -85,8 +85,8 @@ with a trivial native tool → `native-jail` sandbox (008) → the WASM plugin h
 exists to run it in.
 
 `src/backends/native_jail/` already holds prove-phase spike code for exactly this backend
-(AppContainer + Job Object, `decisions/ADR-004` — **Status: Spiked, not Judged**; caller-aware import
-gating, `decisions/ADR-003` — **Judged**). Per project-owner direction (2026-08-05): that code proved
+(AppContainer + Job Object, `decisions/archive/ADR-004` — **Status: Spiked, not Judged**; caller-aware import
+gating, `decisions/archive/ADR-003` — **Judged**). Per project-owner direction (2026-08-05): that code proved
 what it needed to prove and stays in place as the historical evidence those ADRs cite, but M2's real
 implementation is written fresh against 008 as currently Reviewed, not layered on top of the spike.
 The ADRs' *conclusions* carry forward into M2; the spike *code* does not.

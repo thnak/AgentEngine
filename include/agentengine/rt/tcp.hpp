@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §4.2/§4.4/§6.3 -- coroutine TCP on
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §4.2/§4.4/§6.3 -- coroutine TCP on
 // the I/O reactor: `co_await rt::tcp_connect / tcp_read_some / tcp_wait_readable`, and `rt::tcp_write_all`
 // (a task looping over write_some). Built on pal/reactor_tcp.hpp; the foundation the HTTP/SSE client is
 // rewritten on (§6.3). TLS and DNS are not here: connect takes an already-resolved, verified address (ADR-011).

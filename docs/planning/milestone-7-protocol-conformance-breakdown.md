@@ -16,7 +16,7 @@ enforcement), and 006 §6b's G6-G9 ... all hold — closing 019 §2's wake-condi
 `quark::Engine`, `quark::TestKit`, Quark's `EventLog<T,S>`/`Store`) is a dated, point-in-time record
 of what this milestone's phases were actually built and proven against as of 2026-08-08, matching
 this doc's own append-only "Outcome" log convention — it is not a claim about what exists today.
-`decisions/ADR-037-remove-quark-as-core-runtime.md` (executed 2026-08-13, after this doc's most
+`decisions/archive/ADR-037-remove-quark-as-core-runtime.md` (executed 2026-08-13, after this doc's most
 recent dated entry) later removed Quark as a dependency entirely; every test file this doc names as
 proven "under `quark::TestKit`" or "against a REAL `quark::Engine`" has since been ported onto
 `agentengine::rt::` equivalents (see `tests/CMakeLists.txt`'s own per-test ADR-037 migration notes).
@@ -374,7 +374,7 @@ current test files directly for what they actually run against today.
   `AgentCardIdentity` fields rather than fabricated from `agent_instructions`: `AgentMetadata` (002-
   owned, M2/M5 vintage) has no description/version/modality-declaration fields yet, a real gap named
   here rather than papered over. **Update (2026-08-14):** the description/version half of this gap is
-  closed — `decisions/ADR-044-agent-workflow-description-version.md` gave `AgentMetadata` real
+  closed — `decisions/archive/ADR-044-agent-workflow-description-version.md` gave `AgentMetadata` real
   `agent_description`/`agent_version` fields and wired `to_agent_card()` to fall back to them when
   `AgentCardIdentity`'s own fields are left default-empty; the modality-declaration
   (`defaultInputModes`/`defaultOutputModes`) half named here stays open, per that ADR's own §5 scope
@@ -733,7 +733,7 @@ current test files directly for what they actually run against today.
   and Phase F2's Workflow-document compiler each hit the identical gap on their own compiled targets).
   Three independent compilers landing on the same missing fields is a real signal `AgentMetadata`
   (002-owned) genuinely needs them at some point — outside this file's own authority to add.
-  **Update (2026-08-14):** exactly this signal is what `decisions/ADR-044-agent-workflow-description-
+  **Update (2026-08-14):** exactly this signal is what `decisions/archive/ADR-044-agent-workflow-description-
   version.md` acted on — `AgentMetadata`/`Workflow` both gained real `description`/`version` fields,
   and `compile_agent_document()`/`compile_workflow_document()` now read them for real instead of
   honestly dropping them. The A2A modality-declaration fields (`defaultInputModes`/
@@ -836,7 +836,7 @@ current test files directly for what they actually run against today.
   direction (2026-08-15) removed the premise: **AgentEngine will not implement HTTP networking**;
   consumer code owns the socket and hands the engine parsed requests, MAF-style. That is a trust-
   boundary change, so it went to an ADR rather than straight to code —
-  `decisions/ADR-061-host-provided-inbound-transport.md`.
+  `decisions/archive/ADR-061-host-provided-inbound-transport.md`.
 
   **Outcome (2026-08-15): four live security defects fixed, 33 red-team findings against the design,
   three design iterations, and 011 §10 G2 producing a real conformance number.** Ordered by what a

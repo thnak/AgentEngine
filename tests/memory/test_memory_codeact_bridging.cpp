@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-153-agent-memory-codeact-bridging.md -- the two pieces GitHub issue #31's
+// Proof for decisions/archive/ADR-153-agent-memory-codeact-bridging.md -- the two pieces GitHub issue #31's
 // own comment (and rfcs/026-Agent-Facing-Runtime-Surface.md §5's `agent.memory` row) named as unreachable
 // from inside a CodeAct `execute_code` script even though the underlying capability is real:
 //

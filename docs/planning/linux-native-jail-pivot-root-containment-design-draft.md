@@ -1,6 +1,6 @@
 # Design draft: Linux `native-jail` filesystem and process containment (`pivot_root` + bind mounts)
 
-**Status: PROMOTED to `decisions/ADR-083-linux-native-jail-pivot-root-containment.md` (2026-08-23,
+**Status: PROMOTED to `decisions/archive/ADR-083-linux-native-jail-pivot-root-containment.md` (2026-08-23,
 same day this draft was written)** — a Linux build/test environment (WSL2/Ubuntu) was obtained
 specifically to prove this design; §2's design and §3's self-red-team below are unchanged and are
 what ADR-083 §2 cites as its own design phase. This document is kept as the detailed design/red-team

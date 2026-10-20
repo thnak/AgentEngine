@@ -1,4 +1,4 @@
-// Proves the A10 promotion (decisions/ADR-114-task-branch-tools-promotion.md) --
+// Proves the A10 promotion (decisions/archive/ADR-114-task-branch-tools-promotion.md) --
 // MandatorySandboxProvider<Surface>'s four new task-branch verbs (start_task_branch/
 // run_in_task_branch/commit_task_branch/discard_task_branch, sandbox/mandatory_sandbox_provider.hpp),
 // ported from docs/planning/proofs/task_branch_tool/task_branch_sandbox.hpp -- the FIRST real

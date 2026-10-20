@@ -1,4 +1,4 @@
-// Proves decisions/ADR-011-first-party-egress-proxy.md's falsifiable claims (M2 Phase F task F1,
+// Proves decisions/archive/ADR-011-first-party-egress-proxy.md's falsifiable claims (M2 Phase F task F1,
 // rfcs/008-Sandbox-and-Isolation.md §9 G2 "containment... with a positive control"). Structure follows
 // ADR-009's own precedent: pure-function claims (C4/C5) need no live socket at all; pre-network-gate
 // claims (C1/C3/C7/C9, "rejected before any network activity") are proven by an injected resolver
@@ -244,7 +244,7 @@ static_assert(agentengine::sandbox::NetEgressBackend<FakeBackend>,
 
 
 // ===============================================================================================================
-// ADR-241 S2 gate rows (decisions/ADR-241-egress-proxy-async-path-on-rt-http.md section 11). Every row here is run
+// ADR-241 S2 gate rows (decisions/archive/ADR-241-egress-proxy-async-path-on-rt-http.md section 11). Every row here is run
 // through BOTH entry points (`fetch` and `fetch_blocking`) unless it says otherwise, against loopback fake servers and
 // injected resolvers only -- nothing here resolves a real name or leaves the machine.
 // ===============================================================================================================

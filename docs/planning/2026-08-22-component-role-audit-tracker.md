@@ -43,7 +43,7 @@ because a code comment says so; nothing in the type signature communicates it. `
 **Disposition: CLOSED (2026-08-23).** Folded into Finding B's redesign, exactly as the "Recommended
 follow-up" below anticipated — `HistoryAndSkillsProvider` deleted, its two call sites migrated to
 `ComposedContextProvider`. See the "Findings A and B closed" section near the end of this file and
-`decisions/ADR-074-composed-context-provider-consolidation.md`.
+`decisions/archive/ADR-074-composed-context-provider-consolidation.md`.
 
 ### Finding B — `ComposedContextProvider` still has the fork-aliasing bug `LazyComposedContextProvider` was fixed for
 
@@ -76,7 +76,7 @@ reasoning (ADR-070's ship-first/harden-later posture) held at the time, but the 
 directed this be fixed for real once the blast radius was verified safe (zero real `fork_from()` caller
 touches this type) — `ComposedContextProvider` is now move-only, closing the aliasing gap at the
 source, not left for a host to work around. See the "Findings A and B closed" section near the end of
-this file and `decisions/ADR-074-composed-context-provider-consolidation.md`. Original reasoning kept
+this file and `decisions/archive/ADR-074-composed-context-provider-consolidation.md`. Original reasoning kept
 below as a point-in-time record, not deleted:
 
 *This is exactly the kind of
@@ -97,7 +97,7 @@ had to exist as a separate type) and move-only by construction (closing Finding 
 of per-conformer) — than for patching each layer separately.
 
 *Originally recorded as "not scheduled; no ADR opened yet" — done, exactly as described above, in
-`decisions/ADR-074-composed-context-provider-consolidation.md`. See the "Findings A and B closed"
+`decisions/archive/ADR-074-composed-context-provider-consolidation.md`. See the "Findings A and B closed"
 section near the end of this file.*
 
 ### Disposition policy applied to Finding B (per project-owner direction, 2026-08-22) — SUPERSEDED 2026-08-23
@@ -297,7 +297,7 @@ the model actually sees, and today it is not attributable through any production
 **Disposition: CLOSED (2026-08-23).** Not in tension with Finding D's "no chain-length limit, by
 design" — this isn't about constraining what a consumer-dev can compose, it's about them being unable to
 find out afterward that their own chosen budget silently ate something. See the "Finding E closed"
-section near the end of this file and `decisions/ADR-075-context-budget-fail-closed.md`.
+section near the end of this file and `decisions/archive/ADR-075-context-budget-fail-closed.md`.
 
 **Project-owner direction on the fix shape (2026-08-22, not implemented this session): a budget-exceeded
 trim should be an ERROR, not a silently-succeeding trim — and the condition needs to be something a test
@@ -324,7 +324,7 @@ mode too (from "silently arrives empty" to "the whole turn fails") — resolved 
 real, shipped caller actually depended on the graceful-degradation reading before choosing between them:
 grepped every non-test `ContextBudget{...}` construction in the tree and found **zero** that set a
 nonzero `max_tokens`. There was no real case to preserve dual behavior for — see
-`decisions/ADR-075-context-budget-fail-closed.md` §3 for the full reasoning and why no "trim vs. error"
+`decisions/archive/ADR-075-context-budget-fail-closed.md` §3 for the full reasoning and why no "trim vs. error"
 config knob was added alongside the fix.
 
 ### Finding F — a large file read (via a file-read tool or native `bash`'s `cat`) has no size cap anywhere by default, and can end up dropping the newest message when it finally hits a budget
@@ -675,7 +675,7 @@ layout table (reads as unbuilt; isn't entirely).
 
 ### Finding M — both of ADR-005's Judged cross-process capability-delegation designs have zero production consumers, and this isn't named as a residual anywhere
 
-`decisions/ADR-005-capability-bearer-tokens-cross-process.md` is Judged: Design A
+`decisions/archive/ADR-005-capability-bearer-tokens-cross-process.md` is Judged: Design A
 (`trust/capability_token.hpp`, HMAC bearer token, accepted as default) and Design B
 (`trust/capability_registry.hpp`, host-side opaque-ref registry, kept for immediate-revocation cases) are
 both real, tested code. Grepped every real (non-test) `#include` of either header across `include/`/`src/`:
@@ -837,7 +837,7 @@ describes seven findings. Corrected in place below (search "Nine tracked finding
 
 ### Noted, not corrected — Finding H doesn't cite the closest adjacent artifact
 
-`decisions/ADR-059-invoke-agent-tool-capability-attenuation.md` (2026-08-14) is directly about
+`decisions/archive/ADR-059-invoke-agent-tool-capability-attenuation.md` (2026-08-14) is directly about
 `agent_registry.hpp::invoke_agent_tool()`, which its own text calls the mechanism a real
 `agent.spawn`/agent-to-agent call path would eventually build on, and it fixes a real I2
 ambient-authority bug there (ADR-059 §3 explicitly disclaims building `agent.spawn` itself, so this
@@ -901,7 +901,7 @@ purpose. `native_jail_backend.hpp`'s stale M3-unification comment corrected too,
 Finding O's own text. Nothing about WHY these files still build changed — only the comments a reader
 would actually see now say so.
 
-**Finding M — residual note added.** `decisions/README.md`'s ADR-005 row now states plainly that both
+**Finding M — residual note added.** `decisions/archive/README.md`'s ADR-005 row now states plainly that both
 Design A (`capability_token.hpp`) and Design B (`capability_registry.hpp`) have zero production
 consumers today. The designs themselves are unchanged and still unwired — this is a documentation fix,
 not a wiring fix, so Finding M's own disposition (tracked, not closed) is otherwise unchanged.
@@ -914,7 +914,7 @@ The tracker's own "Recommended follow-up" (end of the 2026-08-22 `ContextProvide
 section, above) — one coherent type instead of `HistoryAndSkillsProvider`/`ComposedContextProvider`/
 `LazyComposedContextProvider` as three separate ones — was implemented this session, following a plan
 reviewed and approved before any code was written, plus a new ADR
-(`decisions/ADR-074-composed-context-provider-consolidation.md`, Judged, project-owner sign-off).
+(`decisions/archive/ADR-074-composed-context-provider-consolidation.md`, Judged, project-owner sign-off).
 
 **Finding A (`HistoryAndSkillsProvider` redundant) — closed.** Deleted
 (`include/agentengine/core/history_and_skills_provider.hpp`). Its two real call sites
@@ -938,7 +938,7 @@ one instance, move it, confirm the moved-from instance is genuinely `not_engaged
 instance carries the real content).
 
 **A real bug found and fixed DURING implementation, not anticipated by the plan**: see
-`decisions/ADR-074-composed-context-provider-consolidation.md` §4 for the full account — an early
+`decisions/archive/ADR-074-composed-context-provider-consolidation.md` §4 for the full account — an early
 "auto-engage the default constructor when every `Ms` is default-constructible" design silently broke
 `ComposedQuickstartSessionBuilder::build()` for any real caller whose chosen providers happened to all
 be default-constructible (`.engage()` would fail with `already_engaged`), caught by
@@ -963,7 +963,7 @@ The project owner directed a real redesign of `assemble_context()`'s budget-exce
 authorizing a from-scratch rewrite of the mechanism, not a reuse-preserving patch, if it produced a
 cleaner result), matching the fix shape already recorded here on 2026-08-22 but left unimplemented, plus
 resolving the "named tension" that section left open. New ADR:
-`decisions/ADR-075-context-budget-fail-closed.md` (Judged, project-owner sign-off).
+`decisions/archive/ADR-075-context-budget-fail-closed.md` (Judged, project-owner sign-off).
 
 **`assemble_context()`'s return type widened** from `task<ContextAssemblyResult>` to
 `task<result<ContextAssemblyResult>>` (`context_assembly.hpp`). A contributor whose own contribution
@@ -984,7 +984,7 @@ redesign over a patch that preserves an existing compromise" guidance (`ADR-074`
 application). See the ADR's own §3 for the full reasoning.
 
 **`ContextAssemblyResult.drops`/`ContextDrop` are kept, not deleted** — confirmed (independently, via
-`decisions/ADR-049-cross-provider-reasoning-exclusion.md` §2's own prior finding) that nothing else in
+`decisions/archive/ADR-049-cross-provider-reasoning-exclusion.md` §2's own prior finding) that nothing else in
 the tree ever produced a real one either, but the type remains real, load-bearing vocabulary
 `TurnMiddleware::TurnContext` (`turn_middleware.hpp`) is built around independent of `assemble_context()`'s
 own mechanism. Widening or repurposing that broader type was out of this fix's scope — flagged, not
@@ -1194,14 +1194,14 @@ narrowed, not yet fully closed** — Slice 1 gives `execute_code` a genuine kern
 answering this finding's own live question in favor of "the requirement still holds, build the real thing"
 rather than a spec-downgrade ADR. Still open: Slice 2 (real file/socket relay, closing the six disclosed
 regressions above) and the Linux port (`LinuxNativeJailBackend` parity) — both named, scoped follow-on work,
-not silently dropped. **[2026-08-23: `decisions/ADR-081-jailed-python-worker-process-slice-1.md` Judged]** —
+not silently dropped. **[2026-08-23: `decisions/archive/ADR-081-jailed-python-worker-process-slice-1.md` Judged]** —
 formalizes this entry's design as a numbered ADR, independently re-builds and re-runs the evidence above
 rather than taking this entry's own account on self-report, and names on the record that the original
 design-phase candidate comparison was never preserved outside this tracker entry (a process gap for future
 passes, not a defect in the shipped design). Slice 2 and Linux parity remain open, tracked there now, not
 just here.
 
-**[2026-08-23: `decisions/ADR-085-jailed-python-worker-slice-2-handle-relay.md` Judged]** — closes
+**[2026-08-23: `decisions/archive/ADR-085-jailed-python-worker-slice-2-handle-relay.md` Judged]** — closes
 Slice 2 (real file/listdir/socket relay) for real. Two implementation-time findings falsified the
 original design plan (DuplicateHandle-based file relay fails inside the AppContainer'd worker with
 `ERROR_INVALID_HANDLE`; `socket.socket` carries no `__dict__` in this vendored CPython) — both found by

@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-237-async-extension-points-and-io-reactor.md §9 D7 (rt::Runtime: run / enter /
+// Proof for decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §9 D7 (rt::Runtime: run / enter /
 // CompletionThread), §9 D5 (usable_cpus, default lane count), §4.2 (engine work resumes on its strand; foreign
 // continuations run where the host said) and §4.5 rule 4 (shutdown order; no thread outlives the Runtime) --
 // rt/runtime.hpp and pal/cpu.hpp. Each claim names how it would fail.

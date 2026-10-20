@@ -1,4 +1,4 @@
-// Implements ADR-061 §10 Tier 1 (decisions/ADR-061-host-provided-inbound-transport.md): the MCP
+// Implements ADR-061 §10 Tier 1 (decisions/archive/ADR-061-host-provided-inbound-transport.md): the MCP
 // CLIENT role driven by the official `@modelcontextprotocol/conformance` harness, which is 011 §10
 // G2's gate.
 //

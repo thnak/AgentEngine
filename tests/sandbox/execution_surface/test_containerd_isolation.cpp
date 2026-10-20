@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-172-containerd-execution-surface-isolation.md (GitHub issue #66) -- the
+// Proof for decisions/archive/ADR-172-containerd-execution-surface-isolation.md (GitHub issue #66) -- the
 // containerd sibling of ADR-171, which closed the identical gap for Docker.
 //
 // Before ADR-172, `ContainerdCliBackend::create()` emitted

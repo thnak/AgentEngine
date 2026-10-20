@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-173-system-channel-taint-fence.md (GitHub issue #61), as amended by ADR-191 (approved
+// Implements decisions/archive/ADR-173-system-channel-taint-fence.md (GitHub issue #61), as amended by ADR-191 (approved
 // lessons, reserved glyphs) and ADR-192 (`deliver_as_instructions`: host-opted-in unfenced delivery).
 //
 // `ContentItem::tainted`/`origin` are stamped correctly by every provider that re-presents

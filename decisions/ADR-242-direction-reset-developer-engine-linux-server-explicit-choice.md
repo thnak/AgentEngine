@@ -19,10 +19,10 @@ amendments in §8 are applied in one change, and the follow-on ADRs in §6 carry
 - `rfcs/021-Platform-Support-and-Portability.md` §2 (tier table); `rfcs/026-Agent-Facing-Runtime-Surface.md`
   (the shell row and §3's error mapping, per profile); `rfcs/002` (interpreter locked to `native-jail`).
 - `rfcs/008` §2/§2a's `SandboxBackend` concept shape (gains the required worktree, R8);
-  `decisions/ADR-101-sandbox-backend-tree-refinement-reconciliation.md` (Proposed; "refine via an
+  `decisions/archive/ADR-101-sandbox-backend-tree-refinement-reconciliation.md` (Proposed; "refine via an
   additive concept, never widen the locked one", superseded by R8's required worktree).
-- `decisions/ADR-039-inbound-transport-host-pluggable.md` ("no first-party listener, ever");
-  `decisions/ADR-084-kata-backend-slice-1.md` (Design A: hardware backends `named_only` permanently).
+- `decisions/archive/ADR-039-inbound-transport-host-pluggable.md` ("no first-party listener, ever");
+  `decisions/archive/ADR-084-kata-backend-slice-1.md` (Design A: hardware backends `named_only` permanently).
 - The matching locked decisions in `CLAUDE.md`.
 
 ADR-080 is **not** superseded: it already lets a microVM backend become `Strict`-eligible through an
@@ -617,14 +617,14 @@ Steps 2–4 touch the same headers; they should be sequenced, not run in paralle
 | `CONVENTIONS.md` | The hot-path virtual rule per R5 |
 | `README.md` | The RFC-index lines describing "no microvm" / one runtime (`README.md:131-132`) |
 | `OpenQuestions.md` | Close or re-point the entries resting on the superseded locks (`OpenQuestions.md:932-943`) |
-| `decisions/ADR-039`, `ADR-084` | Status line: "Superseded in part by ADR-242" with a pointer |
-| `decisions/ADR-080` | Narrow amendment: no backend is registered implicitly by platform or linkage; the registry holds only the backends the developer chose, directly or through a preset (R2); answers the registry design's Revision-2 finding #4 |
-| `decisions/ADR-209`, `ADR-211` | Cross-reference only: ADR-209's lifetime vocabulary is reused for `microvm`; ADR-211's `host-contained` real-shell profile is reconciled with R2/R3 in the step-3 ADR |
+| `decisions/archive/ADR-039`, `ADR-084` | Status line: "Superseded in part by ADR-242" with a pointer |
+| `decisions/archive/ADR-080` | Narrow amendment: no backend is registered implicitly by platform or linkage; the registry holds only the backends the developer chose, directly or through a preset (R2); answers the registry design's Revision-2 finding #4 |
+| `decisions/archive/ADR-209`, `ADR-211` | Cross-reference only: ADR-209's lifetime vocabulary is reused for `microvm`; ADR-211's `host-contained` real-shell profile is reconciled with R2/R3 in the step-3 ADR |
 | `AgentEngineSpecification.md` D5, `rfcs/026` §5 | CodeAct moves from "primary" to opt-in via a `ContextProvider` (R3) |
 | `rfcs/008` §2/§2a | The `SandboxBackend` concept gains the required worktree verbs; `none` is `NoSandboxBackend` (R8) |
 | `rfcs/025` | Every backend hosts the session worktree (R8), D4 unchanged |
-| `decisions/ADR-101` | Status line: "Superseded in part by ADR-242 R8" (the additive-only refinement) |
-| `decisions/ADR-096`, `ADR-071` | Cross-reference: the scratch directory becomes a worktree; ADR-071's providers move onto `NoSandboxBackend` with unchanged scope |
+| `decisions/archive/ADR-101` | Status line: "Superseded in part by ADR-242 R8" (the additive-only refinement) |
+| `decisions/archive/ADR-096`, `ADR-071` | Cross-reference: the scratch directory becomes a worktree; ADR-071's providers move onto `NoSandboxBackend` with unchanged scope |
 | `decisions/README.md` | ADR-242 row status |
 
 ## 9. What the Judge should challenge

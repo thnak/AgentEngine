@@ -1,5 +1,5 @@
 #pragma once
-// decisions/ADR-235-batch-inference-coalescing.md §3.2: a deterministic, in-memory `BatchBackend` for
+// decisions/archive/ADR-235-batch-inference-coalescing.md §3.2: a deterministic, in-memory `BatchBackend` for
 // tests. It records every call (submit/poll/cancel/release, with the items and context each carried),
 // and lets the test decide what each later poll reports -- a vendor that finishes, expires, fails a job,
 // returns results in any order, or returns results for ids it was never sent.

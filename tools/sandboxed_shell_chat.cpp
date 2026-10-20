@@ -1,5 +1,5 @@
 // ADR-102, Phase 5 slice ("ComposedContextProvider<Ms...> real production consumer",
-// decisions/ADR-102-identity-native-sandbox-implementation-phase-1.md §7's own residual): the first
+// decisions/archive/ADR-102-identity-native-sandbox-implementation-phase-1.md §7's own residual): the first
 // real, user-reachable CLI wiring of agentengine::ComposedContextProvider<Ms...> anywhere in this
 // codebase, composing TWO real, independently-shipped ContextProvider conformers into ONE session:
 //
@@ -56,7 +56,7 @@
 //
 // REQUIRES: Windows, a running Docker daemon reachable via the `docker` CLI on PATH, and
 // OPENAI_API_KEY set in the environment. NOT for the reason this comment previously gave
-// (SandboxToolProvider's own platform scope -- stale as of ADR-103): decisions/ADR-105-sandbox-tool-
+// (SandboxToolProvider's own platform scope -- stale as of ADR-103): decisions/archive/ADR-105-sandbox-tool-
 // provider-composed-linux-parity.md traced the real Linux blocker to this file's use of
 // QuarantineSecretStore (trust/secret_quarantine.hpp), which needs agentengine::trust::hmac_sha256 --
 // a symbol with no Linux implementation at all (ADR-005's own deliberately Windows-only BCrypt/CNG

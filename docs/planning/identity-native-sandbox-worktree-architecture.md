@@ -1,7 +1,7 @@
 # Identity-native sandbox/worktree architecture — diagrams
 
 Companion to `docs/planning/identity-native-sandbox-worktree-design.md` (§0–§43.5) and
-`decisions/ADR-099-identity-native-sandbox-worktree-capability-model.md`. This file only
+`decisions/archive/ADR-099-identity-native-sandbox-worktree-capability-model.md`. This file only
 visualizes the CURRENT, converged design — it carries no new decisions. Nodes/steps marked
 **(gap)** are real, named, still-open items (from §11/§34.10/§36.5/§37.5/§39.5/§40.3/§41's own
 "what this does NOT close"/§42.5, or ADR-099's own residuals) — shown here so the diagrams don't
@@ -364,11 +364,11 @@ graph LR
 - **Nothing on this page is implemented in `include/agentengine/`/`src/` today.** Every type
   shown lives only under `docs/planning/proofs/`, deliberately never linked into the live
   engine — this design has completed design → red-team → prove (multiple rounds each for the
-  core primitives, A3, and A9) but has **not** been Judged (`decisions/ADR-099` is Proposed,
+  core primitives, A3, and A9) but has **not** been Judged (`decisions/archive/ADR-099` is Proposed,
   not Judged) and has not begun implementation.
 - Reconciliation with the three real, already-shipped mechanisms occupying overlapping territory
-  (`SandboxToolProvider`/`decisions/ADR-096`, `CodeActRunnerBinding`/`decisions/ADR-030`, the
-  zero-consumer `SandboxBackendRegistry`/`decisions/ADR-080`/`ADR-098`) is deliberately not
+  (`SandboxToolProvider`/`decisions/archive/ADR-096`, `CodeActRunnerBinding`/`decisions/archive/ADR-030`, the
+  zero-consumer `SandboxBackendRegistry`/`decisions/archive/ADR-080`/`ADR-098`) is deliberately not
   shown here — per explicit project-owner direction, this design was built fresh rather than
   designed around reuse; reuse-vs-replace against those is an implementation-time decision, not
   a design-time one.
