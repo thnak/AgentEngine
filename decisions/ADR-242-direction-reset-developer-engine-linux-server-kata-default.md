@@ -1,4 +1,4 @@
-# ADR-242 — Direction reset: does AgentEngine stay a Windows-first SDK with one in-process Python and no networking, or become a Linux-server-first engine that developers build multi-user agent applications on, with a microVM as the default execution environment and every managed piece replaceable?
+# ADR-242 — Direction reset: does AgentEngine stay a Windows-first SDK with one in-process Python and no networking, or become a Linux-server-first engine that developers build multi-user agent applications on, with a microVM as a first-class execution option, nothing chosen implicitly, and every managed piece replaceable?
 
 **Status:** Proposed (2026-10-20) — project-owner direction, drafted from a whole-system design review
 (§1.2). Red-team round 1 (2026-10-20): **rejected** (2 FATAL, 6 MAJOR, 9 MINOR); round 2: **not ready**
@@ -38,7 +38,9 @@ The project owner set the target in this session: *"Kata is stronger and it can 
 python inside so native jail can be an optional, we let developer use any they want"*, and *"developer
 is target, we help them have a strong C++ API set to implement their application with less code so
 we can be called an engine. Manage but allow custom."* The concrete product is an agent server with
-a code interpreter that serves many users.
+a code interpreter that serves many users. Later the same day: *"there is nothing default, developer
+choose their own with their own risk"*, and *"we better have a table to show them all and note what
+developer have to manage until engine have new solution"* (§2, §3a).
 
 ### 1.2 What the review found (2026-10-20, main @ 6c62e611)
 
@@ -53,7 +55,7 @@ already outgrown several of them, and that the remaining locks now block the pro
   on one platform.
 - **The microVM backend exists but is fenced out.** ADR-084 built `KataBackend` under a "narrowed
   exception" to the no-microvm lock, registered through `register_hardware_isolation_backend` as
-  `named_only` (ADR-084 Design A), so it can never be a default.
+  `named_only` (ADR-084 Design A), so it can never win `Strict` resolution.
   It was live-verified on 2026-10-19/20 (`docs/guides/thnak-server-runbook.md`).
 - **"No HTTP networking" is no longer what the code does.** `rt::http`, an mbedTLS client and
   `pal::tcp_listen`/accept ship today; the one thing missing is the useful part (A2A wire dispatch,
@@ -71,25 +73,35 @@ already outgrown several of them, and that the remaining locks now block the pro
 
 So the question, stated with a wrong answer: **should the engine keep its 2026-08 posture (portable
 SDK, one in-process mediated Python, `native-jail` first, host owns all networking, CRTP authoring),
-or re-aim at developers building multi-user Linux agent servers, with managed defaults for every
-resource and a seam to replace each?** Keeping the 2026-08 posture is the wrong answer if the target
+or re-aim at developers building multi-user Linux agent servers, with engine-managed options for every
+resource, chosen explicitly by the developer, and a seam to replace each?** Keeping the 2026-08 posture is the wrong answer if the target
 product cannot be built on it without the developer re-implementing the interpreter host, the server,
 and the tenancy layer, which §1.2 shows is the case today.
 
-## 2. The governing principle: managed by default, replaceable by seam
+## 2. The governing principle: engine-managed options, chosen by the developer, nothing implicit
 
 AgentEngine is an **engine**: the developer writes their application, not the plumbing. For every
-resource the engine manages, it ships:
+resource the engine manages:
 
-1. **A working default that needs no developer code beyond choosing a preset** (R2), safe for a
-   multi-user server, and
-2. **exactly one documented seam** to replace or narrow it, following ADR-070's discipline (explicit
-   opt-in, fails closed when unset, never mints authority, host code never model output, audited).
+1. **The engine ships managed options.** Each is a complete implementation the developer can pick
+   with little code.
+2. **Nothing is implicit.** No option is selected by linkage, by platform, or because a probe passed.
+   If the developer chooses nothing for a resource the application needs, startup fails closed with a
+   named error that lists the options.
+3. **Choosing is accepting the risk.** This is ADR-070's Delegated Decision Seam applied to every
+   resource: explicit, audited, fails closed when unset, never mints authority, host code never model
+   output. The engine's duty is to say honestly what each option enforces and what it leaves to the
+   developer, in §3a's table. The developer's duty is to cover the "you manage" column or accept it.
+4. **Each resource has one documented seam** for a custom option the engine does not ship.
 
-The managed resources are: runtime and threads; execution environment (interpreter and shell);
+**Presets** are optional named bundles of choices (for example "server with Kata"). Picking a preset is
+an explicit choice of every row it bundles; a preset never activates itself.
+
+The managed resources are: runtime and threads; execution environment (shell and code interpreter);
 sandbox lifetime and recycling; inbound transport and server; identity-to-authority policy; secrets;
-budgets and quotas; persistence. A resource with no default is a gap; a resource with a default but
-no seam is a cage. Both are defects under this ADR.
+budgets and quotas; persistence. A resource with no option is a gap; a resource with no seam is a cage.
+Both are defects under this ADR. §3a's table is also the honest roadmap: a cell moves from "you manage"
+to "engine enforces" only when a test proves it (G-R12).
 
 **Measure:** developer code. A reference application (a multi-user agent server with a code
 interpreter, `examples/` or `samples/`) is the yardstick. The follow-on API ADR (§6, step 2) fixes its
@@ -104,7 +116,7 @@ line budget; this ADR requires that the budget exists and CI measures it (G-R6).
 (unchanged). 021's honesty requirement holds: a tier is what CI proves, so Linux gains a clang leg
 (today only gcc-14 runs on Linux) before the table says "Supported".
 
-### R2 — A microVM is the default execution environment where the host can run one; `native-jail` becomes optional
+### R2 — A microVM is a first-class execution option; `native-jail` is one option among several; none is the default
 
 - A **`microvm` profile** is added to 008 §3, backed first by `KataBackend` (Kata 4.x, Cloud
   Hypervisor, KVM). It carries the code interpreter **and** the shell: the guest has its own `bash`
@@ -119,32 +131,32 @@ line budget; this ADR requires that the budget exists and CI measures it (G-R6).
   value computed in one turn is still there in a later one (010 §3 item 1, §9 G3/G6, scoped to `microvm`
   as G-R2, under unchanged authority; R3 rule 1 says what an authority change costs). Today's Kata
   `exec()` runs a fresh `/bin/sh -c` per call and does not meet this.
-- **Default resolution is a declared preset, never linkage plus a probe (closes round-2 N4).** The
-  managed default lives in an engine **preset** the developer selects with the one line they already
-  write to set up the engine (for example a "server" preset). The server preset *declares*
-  `profile: microvm` with **no fallback**. Choosing the preset is the explicit deployment decision
-  ADR-080 requires (`ADR-080:82`); nothing becomes eligible because it was linked or because a probe
-  passed. Under that preset only the declared profile's backend is `Strict`-eligible: `native-jail` is
-  not silently registered beside it (today's builder always registers it, `default_sandbox_registry.cpp:39-50`,
-  which is exactly how a failed Kata probe would otherwise fall through to interpreter-less native-jail
-  with no downgrade recorded). This answers the registry design's Revision-2 finding #4 ("a stronger
-  backend silently winning Strict process-wide"): the winner is declared, audited at resolution, and
-  never silent. A "desktop" preset declares `native-jail` on Windows. This is a narrow amendment to
-  ADR-080's default-registry builder, recorded in §8.
-- `native-jail`, `remote` and `wasm` stay, and the developer may choose any of them, or declare a
-  fallback chain.
-- **No silent downgrade** (008 §3, unchanged): if the declared profile is unavailable (for example Kata
+- **No default backend (closes round-2 N4).** The engine registers no execution backend on its own.
+  The developer registers the backend or backends they choose, directly or by choosing a preset, through
+  ADR-080's explicit `register_backend()`; nothing becomes eligible by linkage, platform or probe.
+  Today's `build_default_sandbox_registry` registers `native-jail` (and `wasm`) automatically by platform
+  (`default_sandbox_registry.cpp:39-50`), which is how a failed Kata probe could otherwise fall through to
+  interpreter-less Linux native-jail with no downgrade recorded; that builder becomes an explicit
+  choice. This answers the registry design's Revision-2 finding #4 ("a stronger backend silently
+  winning Strict process-wide"): the winner is the one the developer named, audited at resolution. A
+  narrow amendment to ADR-080, recorded in §8.
+- `microvm`, `native-jail`, `remote`, `wasm`, the Docker/containerd shell surfaces and ADR-071's native
+  providers are all options (§3a lists what each enforces). The developer may also declare a fallback
+  chain.
+- **No silent downgrade** (008 §3, unchanged): if the chosen backend is unavailable (for example Kata
   linked but its runtime missing), startup fails with a named error that says what to install or what
   fallback to declare. A declared fallback that is taken is recorded as a downgrade in startup
   diagnostics, traces and metrics.
 - **Privilege separation (closes round-2 N2).** `KataBackend` needs host root today (`losetup`, `mount`,
   `nft`, `ip netns`, `ctr`; e.g. the loop-device disk quota at `kata_backend.cpp:440-569`), and R4 would put an internet-facing parser in the
-  same process. Under the server preset the engine process is **unprivileged**: privileged sandbox
-  operations run in a narrow helper reached over IPC, which accepts only typed sandbox operations. One
-  parser bug in the server must not be host root across every tenant.
-- ADR-084 Design A's `named_only` stays the mechanism for **unvetted** hardware backends; a backend
-  becomes `Strict`-eligible by passing G-R3, G-R4 and G-R8, not by being hardware-backed. `KataBackend`
-  is the first.
+  same process. The engine's **supported** deployment for an internet-facing server with Kata is an
+  **unprivileged** engine process plus a narrow privileged helper reached over IPC, which accepts only
+  typed sandbox operations (G-R11). One parser bug in the server must not be host root across every
+  tenant. Running the engine itself as root stays possible, as an explicit choice listed in §3a.
+- **Vetted vs unvetted.** A backend is marked *vetted* in §3a once it passes G-R3, G-R4 and G-R8, not
+  because it is hardware-backed. The developer may still choose an unvetted one, at their own risk:
+  ADR-084 Design A's `named_only` registration stays the way to do that. `KataBackend` is the first
+  candidate for vetted.
 - **Linux without KVM.** The Linux native-jail backend has no interpreter today, so on such a host the
   only `execute_code` is `remote` until a Linux native-jail Python worker exists (§6 step 3b, G-R2).
   This is disclosed, not hidden behind "native-jail is the fallback".
@@ -164,12 +176,13 @@ line budget; this ADR requires that the budget exists and CI measures it (G-R6).
 coming from a context provider, not by default. Kata can already have code interpreter (python in
 shell). Code interpreter will go with CodeAct, will have stronger feature set.")**
 
-- **Default: the shell.** A `microvm` session gets the shell tool. `python3` is an ordinary program
-  inside the guest (`python3 script.py`, `python3 -c ...`), which is already a basic code interpreter,
-  with no extra engine surface: no `agent.*` module, no shim, no persistent interpreter.
-- **Opt-in: the CodeAct code interpreter, `execute_code`.** It is contributed **only** by a
+- **Tier 1, the shell, chosen by attaching a shell `ContextProvider`.** Under `microvm`, `python3` is an
+  ordinary program inside the guest (`python3 script.py`, `python3 -c ...`), which is already a basic code interpreter,
+  with no extra engine surface: no `agent.*` module, no shim, no persistent interpreter. No session
+  gets a shell it was not given.
+- **Tier 2, the CodeAct code interpreter, `execute_code`.** It is contributed **only** by a
   `ContextProvider` the developer attaches (the engine's existing context-provider seam), never
-  registered by default on any profile. It is the stronger feature set: a persistent interpreter whose
+  registered implicitly on any profile. It is the stronger feature set: a persistent interpreter whose
   state survives turns, and the host-backed `agent.*` library (tools, files, ask, output). Everything
   below about the persistent interpreter and the shim (rules 2 and 5) applies only when this provider is
   attached.
@@ -270,8 +283,8 @@ answers it rather than ignoring it:
    read anything injected into any exec. Secrets resolve host-side and are used host-side, through the
    shim (e.g. a tool call).
 7. **Packages (010 §5).** A root guest can `pip install` from any destination egress allows. A package
-   index is therefore an explicit egress grant, never a default; the pinned image (R3 above) is the
-   default package set.
+   index is therefore an explicit egress grant, never implicit; the pinned image (R3 above) is the
+   package set unless the developer grants more.
 
 ADR-071's `NativePythonProvider` is unaffected and remains distinct from `execute_code`.
 
@@ -297,12 +310,12 @@ internet-facing and therefore carries a fuzzing gate (G-R5).
 - Python/.NET bindings stay deferred (D3, unchanged).
 - The concrete layer and API redesign is the follow-on ADR (§6, step 2), not this one.
 
-### R6 — One host-owned Runtime per process is the managed default
+### R6 — One host-owned Runtime per process, passed explicitly
 
 Engine library code creates no threads and no private Runtimes; `block_on` lives only at the host edge.
 This is ADR-237's direction, finished: spec §7's `ThreadPool` and "writes no scheduler" rows are
-replaced by the Runtime that exists. Provider clients that build an owned Runtime by default stop
-doing so (an owned Runtime becomes an explicit test convenience).
+replaced by the Runtime that exists. Provider clients that build an owned Runtime when none is passed stop
+doing so: the developer passes the Runtime (an owned Runtime becomes an explicit test convenience).
 
 ### R7 — Multi-tenant is a first-class target
 
@@ -311,6 +324,37 @@ Tenant-scoped identity, authority, secrets and budgets are managed resources und
 mapping tenant and role to a `CapabilitySet`, tenant-scoped secret refs, a tenant-keyed budget layer)
 are follow-on ADRs. This ADR only removes the assumption of one trusted tenant per process that
 `native-jail`'s 008 §3 wording ("trusted-tenant deployments — the default") encodes.
+
+### 3a. Options and responsibilities (as of 2026-10-20)
+
+What each option enforces **today**, and what the developer must manage until the engine has a
+solution. "Engine enforces" lists only what a test in this repository shows. Rows move from "you
+manage" to "engine enforces" as §6's work lands, each with its proving test (G-R12).
+
+**Execution environment**
+
+| Option | Status today | Engine enforces | You manage until the engine solves it | Engine solution (planned) |
+|---|---|---|---|---|
+| `microvm`: Kata (Linux + KVM) | `SandboxBackend` works; live-verified 2026-10-20. Not yet wired to the shell or CodeAct tools | Hardware VM boundary; only granted mounts; egress allowlist and `net_bytes` at the host bridge (ADR-240, Proposed); `pids`, `disk_bytes` (rootfs), `wall_ms`, output cap | Installing Kata, containerd, CNI and KVM; the host firewall (`FORWARD` policy on the bridge, see `docs/guides/thnak-server-runbook.md`); the engine runs as root; a guest image with `bash` and `python3` (the default is `busybox`); CPU time (no `cpu_ms`); workspace size (`quota_bytes` not enforced); VM count and memory (no admission cap; ~170 MB idle to 2 GiB busy per VM); destroying idle VMs and cleaning up after a crash (no reaper; stale netns were found on 2026-10-20); ~6 s cold start; shell state is not kept between calls | §6 step 3 (persistent shell, staging volume, pause between runs, guest image), privileged helper (G-R11), recycling ADR |
+| `native-jail`, Windows | Works. The CodeAct interpreter exists but is wired only in the dev CLI | AppContainer, Job Object (memory, pids), restricted token; mediated CPython with per-`open()` capability checks and import gating (ADR-003, ADR-004) | Wiring `execute_code` yourself until the library provider exists; CPU time (the Job Object CPU cap fired in 3 of 11 runs, 021; rely on `wall_ms`) | §6 step 3 (library CodeAct provider) |
+| `native-jail`, Linux | Backend works | Namespaces, `pivot_root`, seccomp-BPF, cgroups v2, `no_new_privs` (ADR-083) | No Python interpreter (commands only); a same-kernel boundary, not hardware | §6 step 3b |
+| `remote` | Stub, no logic (`src/backends/remote/README.md`) | Nothing | Everything: bring your own cluster integration through the `SandboxBackend` seam | Not scheduled |
+| `wasm` | Works for WASI components | Capability-based WASI | No shell or Python | — |
+| Docker/containerd shell surfaces (ADR-209) | Works | ADR-209 lifetime limits (idle, age, runs) | Container hardening, resource limits and network: these surfaces "inherit none of RFC 008's guarantees" (`execution_surface.hpp:29`) | §6 step 3 (one execution surface) |
+| ADR-071 native providers (`NativeBashProvider`, `NativePythonProvider`, ...) | Works, explicit opt-in | The opt-in and its audit only | Everything: code runs on the host as the engine's user | — (by design) |
+| `none` | Works | Refuses T2/T3 code (007 §6) | No boundary at all; first-party code only | — (by design) |
+
+**Other resources**
+
+| Resource | Engine provides today | You manage until the engine solves it | Engine solution (planned) |
+|---|---|---|---|
+| Runtime and threads | `rt::Runtime` | Pass one shared Runtime; a provider client builds a private one if you do not (~20 threads per client on a large host). Streaming calls and MCP background tasks each use a detached thread, so bound concurrency yourself | R6, finish ADR-237 |
+| Inbound transport and server | Typed MCP/A2A/AG-UI dispatchers that take already-parsed requests | The socket, HTTP, TLS, authentication, and the wire binding (A2A has no wire dispatch at all) | R4 server module |
+| Identity to authority | Capability checks against the authority it is given | **Always pass per-request authority**: session admission is skipped when no caller or authority is set (`agent_session_core.cpp:144`), and `McpServer` falls back to its construction-time capability set when no per-request grant is passed. Mapping users and tenants to capabilities is yours (there is no policy engine, 007 §5) | R4 server mode, R7 |
+| Secrets | Env and file sources | Per-tenant scoping (the namespace is flat) and vault integration (through the `SecretSource` seam); note the env prefix defaults to `QUARK_SECRET_` | R7 |
+| Budgets and quotas | Egress admission per run, per principal and global (8 / 32 / 64) | Tenant-level quotas and model spend | R7 |
+| Task stores | MCP and A2A task stores | The A2A store never evicts; bound it or recycle the process | R4 server module |
+| Sandbox lifetime | ADR-209 limits for Docker/containerd and native shells | Kata VMs are never reaped or recycled; destroy them yourself | Recycling ADR (the 2026-10-19 proposal) |
 
 ## 4. Alternatives considered
 
@@ -335,7 +379,7 @@ Each gate needs a positive control (022 §5): a test that would fail if the prop
 |---|---|---|
 | **G-R1** | Linux is a CI-proven tier | Linux gcc **and** clang legs are required checks; a Linux-only `-Werror` break fails the PR |
 | **G-R2** | One `execute_code` contract on every backend, with D4's shared `ExecState` | With the CodeAct provider attached, one conformance suite (incl. `agent.*`) passes on native-jail (Windows), native-jail (Linux, once step 3b lands) and microvm; a capability not granted is refused on each, and a deliberately granted one succeeds; a `cd`/`export` in the shell is visible to the next Python call and the next turn, under unchanged authority; without the provider, no `execute_code` tool and no shim channel exist (a test that finds either must fail) |
-| **G-R3** | The default is a declared preset, with no silent downgrade, never linkage or a probe | Under the server preset with Kata working, a session gets a Kata sandbox and resolution is audited; with Kata linked but its runtime missing and no fallback declared, startup fails with a named error and does **not** fall through to `native-jail`; with a fallback declared, the downgrade is recorded; with Kata linked and no preset chosen, Kata is not `Strict`-eligible; positive control: a test that lets resolution silently fall through must fail |
+| **G-R3** | Nothing is chosen implicitly, and nothing downgrades silently | With no execution backend chosen, a session that needs one fails at startup with a named error listing the options; with Kata linked but not chosen, it is never selected; with Kata chosen but its runtime missing and no fallback declared, startup fails with a named error and does **not** fall through to `native-jail`; with a fallback declared, the downgrade is recorded; positive control: a test that lets resolution pick a backend nobody chose must fail |
 | **G-R4** | The VM boundary holds | First assert the guest really is uid 0 with `CAP_SYS_ADMIN` (else the cases below prove nothing). Then the guest cannot read an unmounted file, reach an unlisted destination, reach a host service on the bridge gateway (2026-10-19 finding: host sshd at 10.88.77.1:22), exceed the workspace quota, or get a link, device or FIFO through harvest; each with a granted counterpart that succeeds |
 | **G-R5** | The server module is conformant and optional | 011 §10 G1 and 012 §8 G1 pass against the reference listener; the core links and passes without the server module; the HTTP parser has a fuzz gate (ADR-015 is the precedent); a server-module dispatch without per-request authority fails to **compile**, or, if that proves impossible, fails at runtime with a test that would pass if the check were removed |
 | **G-R6** | Least developer code | The reference multi-user code-interpreter server stays within the line budget set by the API ADR, measured in CI |
@@ -343,7 +387,8 @@ Each gate needs a positive control (022 §5): a test that would fail if the prop
 | **G-R8** | The `agent.*` shim is not a confused deputy | Frames with a stale or foreign per-exec nonce, frames sent over another VM's channel, frames claiming wider authority, and calls with no exec in flight are refused; a call outside the bridged-tool allowlist is refused; a shim call shows in approvals, budgets and audit like a model tool call; the host-side parser is fuzzed to ADR-015's criteria (fixed duration, zero crashes); positive control: a well-formed in-exec call under a live grant succeeds |
 | **G-R9** | Authority-bound VM; nothing runs between runs | First assert the guest is uid 0. Run 1 under grant A (mount M, destination D) starts a `setsid` background process and a ptrace injection into the persistent shell, both trying to connect to D after run 1 ends: no packet reaches D between runs (observed host-side), and the VM's vCPUs are paused (observed at the VMM). Run 2 under a narrowed grant without M and D: the VM was rebuilt, M and D are unreachable, and cwd/env carried over. Positive controls: run 2 under the same grant with only a new expiry reuses the VM (no rebuild) and still reaches M and D; an opted-in keep-running VM does deliver the between-runs connect |
 | **G-R10** | Guest image, guest CPython and host Kata stack are pinned | The image is referenced by digest, and a tag-only reference fails CI; the guest CPython and the embedded CPython (where built) each match one pinned version constant, and a mismatch fails CI; the host-side Kata shim, VMM and virtiofsd versions match a pinned set (they parse guest bytes and are part of the TCB) |
-| **G-R11** | The server process is unprivileged | Under the server preset, the engine process holds no `CAP_SYS_ADMIN`/`CAP_NET_ADMIN` and cannot open the containerd socket; sandbox creation still works through the privileged helper; the helper rejects any request that is not a typed sandbox operation; positive control: the same check run against today's root-running process fails |
+| **G-R11** | The server process is unprivileged | In the supported internet-facing Kata deployment, the engine process holds no `CAP_SYS_ADMIN`/`CAP_NET_ADMIN` and cannot open the containerd socket; sandbox creation still works through the privileged helper; the helper rejects any request that is not a typed sandbox operation; positive control: the same check run against today's root-running process fails |
+| **G-R12** | §3a's table is true | Every "engine enforces" cell cites a passing test; a CI check fails when a cell has none, and such a cell is moved to "you manage"; positive control: removing a cited test fails the check |
 
 G-R4 depends on ADR-240 reaching Judged. A Kata CI runner needs KVM; the self-hosted path is
 `docs/planning/kata-backend-ci-runner-setup.md` (the server in `docs/guides/thnak-server-runbook.md`
@@ -407,7 +452,7 @@ Steps 2–4 touch the same headers; they should be sequenced, not run in paralle
 | File | Change |
 |---|---|
 | `CLAUDE.md` | Replace the "no `microvm`", "one interpreter" and "no HTTP networking" locked decisions with R2/R3/R4; add §2's principle; adjust "v1 authoring surfaces" to R5 |
-| `rfcs/008` §1, §3 | Remove the "No `microvm` profile" bullet and "Priority: `native-jail` first"; add the `microvm` profile row and R2's default resolution; drop "trusted-tenant ... the default" |
+| `rfcs/008` §1, §3 | Remove the "No `microvm` profile" bullet and "Priority: `native-jail` first"; add the `microvm` profile row and R2's no-default resolution; drop "trusted-tenant ... the default" |
 | `rfcs/008` §4 | Add a `microvm` column: real guest network stack, egress only via ADR-240; secrets never in the guest (R3 rule 6) |
 | `rfcs/008` §9 G1 | "Same outcome classification" scoped per profile, with the `microvm` mapping listed |
 | `rfcs/010` §1–§2, §5 | Keep the ecosystem argument; replace the architectural argument with R3; scope the "no real shell process" model to `native-jail`/`wasm`; package index as an explicit egress grant (R3 rule 7) |
@@ -422,7 +467,7 @@ Steps 2–4 touch the same headers; they should be sequenced, not run in paralle
 | `README.md` | The RFC-index lines describing "no microvm" / one runtime (`README.md:131-132`) |
 | `OpenQuestions.md` | Close or re-point the entries resting on the superseded locks (`OpenQuestions.md:932-943`) |
 | `decisions/ADR-039`, `ADR-084` | Status line: "Superseded in part by ADR-242" with a pointer |
-| `decisions/ADR-080` | Narrow amendment: the default-registry builder takes a declared preset and registers only the declared profile's backend as `Strict`-eligible (R2); answers the registry design's Revision-2 finding #4 |
+| `decisions/ADR-080` | Narrow amendment: no backend is registered implicitly by platform or linkage; the registry holds only the backends the developer chose, directly or through a preset (R2); answers the registry design's Revision-2 finding #4 |
 | `decisions/ADR-209`, `ADR-211` | Cross-reference only: ADR-209's lifetime vocabulary is reused for `microvm`; ADR-211's `host-contained` real-shell profile is reconciled with R2/R3 in the step-3 ADR |
 | `AgentEngineSpecification.md` D5, `rfcs/026` §5 | CodeAct moves from "primary" to opt-in via a `ContextProvider` (R3) |
 | `decisions/README.md` | ADR-242 row status |
@@ -433,8 +478,9 @@ Steps 2–4 touch the same headers; they should be sequenced, not run in paralle
   reading of I2 or a quiet weakening of it, and whether rules 1–7 really close every path out.
 - Whether R3 rule 1's "rebuild on any authority change" is affordable for a multi-user server, or
   forces a hot-grant design sooner than §7 admits.
-- Whether R2's default makes a Linux developer's first run fail (no Kata installed) in a way that
-  pushes them to disable isolation entirely.
+- Whether "nothing implicit" (§2) makes a developer's first run fail in a way that pushes them to
+  pick the weakest option (`none`, ADR-071 providers) just to get started, and whether §3a's table is
+  enough to stop that.
 - Whether §2's "exactly one seam per resource" is achievable without re-creating the four overlapping
   execution abstractions under new names.
 
@@ -452,7 +498,7 @@ F1, F2 and M6 were re-checked against the code and spec by the author before fol
 | M3: shim unspecified and ungated | Accepted (red-team evidence) | R3 rule 5; G-R8 |
 | M4: 008 §4 sockets and secrets unamended | Accepted (red-team evidence) | R3 rule 6; §8 |
 | M5: inherited gates (010 §9, 008 §9 G1, 026 §3, 010 §5) unscoped | Accepted (red-team evidence) | §8; R3 rule 7; G-R2 |
-| M6: ADR-080 misdescribed; default by auto-detection conflicts with it | CORRECT (`ADR-080:64`, `:82`) | Header; R2 default resolution via the registry builder; G-R3 |
+| M6: ADR-080 misdescribed; default by auto-detection conflicts with it | CORRECT (`ADR-080:64`, `:82`) | Header; R2 "no default backend" (after the owner's later direction); G-R3 |
 | MINOR: missing §8 files, ungated pinning, G-R4 root assertion, G-R7 helpers, I8 limit list, I4/I5 background processes, §1.2 cites | Accepted (red-team evidence) | §8; G-R10; G-R4; G-R7; R2 limit list; R3 rule 2; §1.2 |
 
 Round 2 (2026-10-20, a fresh independent agent, read-only): **not ready for the Judge** (1 FATAL,
@@ -463,9 +509,9 @@ re-checked by the author against the code (`kata_backend.hpp:537-541`, `kata_bac
 | Finding | Disposition |
 |---|---|
 | N1 (FATAL): "no process outlives its run" was enforced inside a root guest | R3 rule 2 rewritten: host pauses the VM at the VMM and blackholes its port between runs; G-R9 hostile controls; §7 (pause unproven) |
-| N2: default deployment runs the engine as host root beside an internet-facing parser | R2 privilege separation; G-R11; §7 |
+| N2: the engine runs as host root beside an internet-facing parser | R2 privilege separation as the supported deployment; G-R11; §3a; §7 |
 | N3: rules 1–2 broke 010 §3 state persistence; token expiry forced rebuilds | Rule 2 no longer kills; rule 1 rebinds on expiry-only change and carries cwd/env; §8 010 §3; G-R2/G-R9 scoped to unchanged authority |
-| N4: probe-based default contradicted ADR-080 and fell through silently to native-jail | R2 default is a declared preset; only the declared backend is eligible; narrow ADR-080 amendment; G-R3 rewritten |
+| N4: probe-based default contradicted ADR-080 and fell through silently to native-jail | First fixed with a declared preset; then superseded by the owner's "nothing default" direction: R2 registers no backend implicitly; narrow ADR-080 amendment; G-R3 rewritten |
 | N5: copy-in/copy-out unspecified | R3 rule 4: host-formatted staging volume, harvest per exec, name/link checks, conflict rule, ledger effects |
 | N6: shim dispatch path and replay protection unspecified | R3 rule 5: per-exec nonce, normal tool pipeline, bridged-tool allowlist; G-R8 |
 | N7–N9 (MINOR): host TCB, `cpu_ms` vs 010 §3, pin comparison, fuzz criteria | G-R10; R2 CPU bound and §8; G-R8 |
@@ -473,4 +519,6 @@ re-checked by the author against the code (`kata_backend.hpp:537-541`, `kata_bac
 
 Owner direction folded in during round 2 (2026-10-20): `execute_code` comes only from an attached
 CodeAct `ContextProvider`; the default is the shell with `python3` as an ordinary program (R3).
+Owner direction folded in after round 2 (2026-10-20): nothing is default, the developer chooses and
+owns the risk (§2, R2), with a table of every option and what the developer must manage (§3a, G-R12).
 A third round on this revision is recommended before the Judge.
