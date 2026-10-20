@@ -50,6 +50,7 @@
 #include <string_view>
 #include <thread>
 #include <vector>
+#include <utility>
 
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/chat_recording.hpp"
@@ -83,8 +84,7 @@ void check(bool cond, char const* what) {
 // this suite uses.
 template <class T>
 T drive(rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // The planted canary -- distinctive enough that an accidental substring collision is not a realistic

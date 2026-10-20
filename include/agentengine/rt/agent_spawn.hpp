@@ -410,6 +410,15 @@ private:
 // takes an explicit mount id rather than guessing one from a Ref.
 // ---------------------------------------------------------------------------------------------
 
+// A DROPPED parent (#196, ADR-193 §9, ADR-237 §4.5): a task destroyed while suspended inside the child run is charged
+// the child's spend exactly once (run_child_agent_session's ChargeOnUnwind). What this function consumed BEFORE the child
+// ran is deliberately NOT released: the per-principal quota slot (SpawnQuotaTracker has no release; lifetime-of-process,
+// ADR-193 §4), the SpawnCostBudget token (non-refundable by design, ADR-031) and the minted worktree (the branch may hold
+// the child's committed work, which the caller is entitled to merge or discard -- deleting it on a drop would destroy
+// work, and nothing here knows it is empty). A child that FAILS leaves exactly the same three behind, so a drop is a
+// failed child and a refund on this one path only would make the quota a function of how the caller was cancelled.
+// Accepted residual, pinned by tests/rt/agent_spawn/test_delegation_provenance.cpp R5-S1..S3.
+//
 // A coroutine taking REFERENCE parameters: every argument must outlive the awaited task (all current callers
 // co_await/block_on it within the same full expression).
 template <agentengine::rt::AppendLogStore StoreT>

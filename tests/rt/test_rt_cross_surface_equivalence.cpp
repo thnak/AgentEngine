@@ -19,12 +19,14 @@
 #include <iostream>
 #include <memory_resource>
 #include <string>
+#include <utility>
 
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/protocol/a2a/streaming.hpp"
 #include "agentengine/protocol/agui/projection.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 namespace {
 
@@ -48,8 +50,7 @@ namespace a2a  = agentengine::a2a;
 // immediately from both chat() and chat_stream().
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 ae::Message make_turn(std::string message_id) {

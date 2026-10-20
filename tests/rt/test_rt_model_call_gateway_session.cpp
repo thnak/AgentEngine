@@ -38,6 +38,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <utility>
 
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/content.hpp"
@@ -46,6 +47,7 @@
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/trust/principal.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::NoSessionState;
@@ -68,8 +70,7 @@ void check(bool cond, char const* what) {
 // synchronously, never genuinely parks.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // ---- Copied verbatim from test_model_call_gateway.cpp's own fixtures (this suite's own "no shared

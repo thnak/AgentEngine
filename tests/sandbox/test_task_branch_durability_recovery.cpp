@@ -76,11 +76,13 @@
 
 #include "agentengine/core/tool.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <string>
+#include <utility>
 
 using namespace agentengine;
 
@@ -96,8 +98,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // Mirrors tests/sandbox/test_mandatory_sandbox_provider_composed.cpp's own fixture exactly -- never actually

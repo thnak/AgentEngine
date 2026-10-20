@@ -567,7 +567,9 @@ public:
     [[nodiscard]] std::uint32_t stream_retries_used() const noexcept { return stream_retries_used_; }
     // The ESTIMATED tokens this run's token budget was charged for discarded attempts (already inside
     // `run_tokens_consumed()`, and NOT inside `run_usage()`, which reports only what a provider said).
-    [[nodiscard]] std::uint64_t discarded_tokens_estimate() const noexcept { return discarded_tokens_estimate_; }
+    // #196 (ADR-193 §9): includes what delegated agents charged that this run has not folded yet, like `run_usage()`
+    // -- a run dropped while suspended on a delegate never folds, and its caller is charged from this accessor.
+    [[nodiscard]] std::uint64_t discarded_tokens_estimate() const;
 
     // ADR-178: ask the run this session is executing (or is suspended in) to stop. Callable from ANY thread,
     // and never blocks on the run -- it only requests stop on the current run's `std::stop_source`.

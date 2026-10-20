@@ -35,12 +35,14 @@
 
 #include "agentengine/core/tool.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <string>
+#include <utility>
 
 using namespace agentengine;
 
@@ -56,8 +58,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // Mirrors tests/sandbox/test_task_branch_durability_recovery.cpp's own fixture exactly -- this file never

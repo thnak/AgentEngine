@@ -61,6 +61,7 @@
 #include <functional>
 #include <memory>
 #include <stop_token>
+#include <type_traits>
 #include <utility>
 
 #include "agentengine/rt/block_on.hpp"
@@ -179,8 +180,11 @@ template <class ChatClientT, class StateT, class HistoryProviderT>
             // exactly this call's own total with no delta needed.
             ExecutorOutcome outcome{driven->message};
             outcome.usage = session.run_usage();
-            // The outcome now carries the run's usage to the supervisor. Residual (red-team R3): moving it into the
-            // promise below happens after the guard is disarmed, so a throw from that move would go uncharged.
+            // The outcome now carries the run's usage to the supervisor. Everything that can throw (the copy of
+            // `driven->message` above) is behind us, and the one step after the guard is disarmed -- moving the outcome
+            // into the promise -- cannot: it is a nothrow move (asserted below, #196), so no throw here goes uncharged.
+            static_assert(std::is_nothrow_constructible_v<agentengine::result<ExecutorOutcome>, ExecutorOutcome&&>,
+                          "#196: the outcome is handed to the promise after completed(); that must not throw");
             charge_if_unfinished.completed();
             co_return outcome;
         });
