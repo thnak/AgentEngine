@@ -2,8 +2,9 @@
 
 **Status:** Proposed (2026-10-20) — project-owner direction, drafted from a whole-system design review
 (§1.2). Red-team round 1 (2026-10-20): **rejected** (2 FATAL, 6 MAJOR, 9 MINOR); round 2: **not ready**
-(1 FATAL, 5 MAJOR, 4 MINOR); round 3: **not ready** (table errors, 6 MAJOR); round 4 (§2/§3a only): **not ready** (7 errors); this
-revision folds all four in (§10). **Binds nothing until the project owner marks it Judged**; on Judged, the
+(1 FATAL, 5 MAJOR, 4 MINOR); round 3: **not ready** (table errors, 6 MAJOR); round 4 (§2/§3a only): **not ready** (7 errors);
+round 5 (R8 only): **not ready** (1 FATAL, 5 MAJOR); this revision folds all five in, plus the owner's three
+decisions of 2026-10-20 (§10). No owner decision is open. **Binds nothing until the project owner marks it Judged**; on Judged, the
 amendments in §8 are applied in one change, and the follow-on ADRs in §6 carry the mechanisms.
 
 **Supersedes in part:**
@@ -105,8 +106,10 @@ resource the engine manages:
    from; never the *absence* of a boundary check or an authority. "Own risk" covers the residuals each
    option discloses in §3a; it never relaxes I1–I8 themselves, which ADR-070 §3 rejected and this ADR
    does not reopen. **Budgets and resource limits** are a separate, policy rule (not I8, which is about
-   benchmark-gated performance budgets): a value is required, chosen by the developer; whether
-   "explicitly unbounded" is an allowed value is an open owner decision (§9). The weakest options
+   benchmark-gated performance budgets): a value is required, chosen by the developer, and
+   **"explicitly unbounded" is an allowed value** (owner decision, 2026-10-20). It must be stated in
+   code (a named `unbounded` value, never a `0` or a missing field), and it is recorded in startup
+   diagnostics and the run's audit trail, like any other choice. The weakest options
    (ADR-071 native providers, the Docker/containerd surfaces, and `none` once it exists) are honest
    options because their row says so, not exceptions to I2: each must be an explicit, audited choice;
    today only the ADR-071 providers are.
@@ -128,11 +131,12 @@ resource the engine manages:
 | `EnvSecretSource` defaults its prefix to `QUARK_SECRET_` | `trust/secret.hpp:140` | Source and prefix required |
 | The Docker/containerd surfaces take no `EffectContext` or `CapabilitySet`: the contained command runs with whatever authority the caller holds | `sandbox/execution_surface.hpp:29-33` | Choosing one is an explicit, audited choice, like ADR-071's providers; §6 step 3 replaces them with the one execution surface |
 
-**Restrictive implicit defaults (open owner decision, §9).** These only narrow, never widen, so they are
-not I2 defects, but they are still implicit choices under rule 2: `max_turns = 16`,
-`approval_mode::policy_driven`, `concurrency_mode::sequential`, `telemetry_capture::metadata_only`,
-`SandboxProfileDescriptor` `is_strict = true` (`core/agent_registry.hpp:69-76`). Either they become
-required choices too, or §2 is amended to allow defaults that can only narrow.
+**Restrictive implicit defaults become required choices too** (owner decision, 2026-10-20). They only
+narrow, never widen, so they are not I2 defects, but rule 2 allows no implicit choice of either kind:
+`max_turns = 16`, `approval_mode::policy_driven`, `concurrency_mode::sequential`,
+`telemetry_capture::metadata_only`, and `SandboxProfileDescriptor`'s `is_strict = true`
+(`core/agent_registry.hpp:69-76`) all become values the developer states. A preset (§2) may bundle
+them, as an explicit choice of every value it carries.
 
 **Presets** are optional named bundles of choices (for example "server with Kata"). Picking a preset is
 an explicit choice of every row it bundles; a preset never activates itself.
@@ -432,12 +436,11 @@ SandboxBackend)"*. Three rules:
    - A type without the verbs is not a `SandboxBackend`. `RegisteredSandboxBackend`'s type erasure (today
      three closures) and every test fake grow to carry them.
 
-**How this reads with D4 (stated so the owner can correct it).** D4 says files belong to the worktree,
-not to the sandbox. R8 keeps that: the worktree stays engine-owned, content-addressed and durable, and
-outlives any sandbox; what R8 adds is that every backend **must host** it as its working filesystem. So
-"a worktree inside every backend" means the worktree is always *present in* the backend, not that it
-*lives in* it or dies with it. If the owner means the latter, D4 is superseded too and this paragraph
-changes.
+**How this reads with D4 (confirmed by the owner, 2026-10-20: "always present in BE").** D4 says files
+belong to the worktree, not to the sandbox. R8 keeps that: the worktree stays engine-owned,
+content-addressed and durable, and outlives any sandbox; what R8 adds is that every backend **must host**
+it as its working filesystem. "A worktree inside every backend" means the worktree is always *present in*
+the backend, not that it *lives in* it or dies with it. D4 is unchanged.
 
 **Consequences:**
 - Three of the four overlapping execution abstractions collapse into one: `ExecutionSurface` and
@@ -528,7 +531,7 @@ Each gate needs a positive control (022 §5): a test that would fail if the prop
 | **G-R10** | Guest image, guest CPython and host Kata stack are pinned | The image is referenced by digest, and a tag-only reference fails CI; the guest CPython and the embedded CPython (where built) each match one pinned version constant, and a mismatch fails CI; the host-side Kata shim, VMM and virtiofsd versions match a pinned set (they parse guest bytes and are part of the TCB) |
 | **G-R11** | The server process is unprivileged | In the supported internet-facing Kata deployment, the engine process holds no `CAP_SYS_ADMIN`/`CAP_NET_ADMIN` and cannot open the containerd socket; sandbox creation still works through the privileged helper; the helper rejects any request that is not a typed sandbox operation; positive control: the same check run against today's root-running process fails |
 | **G-R12** | §3a's table is true | Every "engine enforces" cell cites a tagged enforcement assertion that has both a containment check and a positive control; a CI check fails if a cited test is missing, is only a smoke test, or did not run on its leg within 14 days (self-hosted Kata runners included); such a cell is moved to "you manage". Positive control: a planted cell citing a smoke test is rejected. Today no cell cites a tagged test, so this gate fails until §6 adds them; that is intended |
-| **G-R13** | Nothing implicit, for every resource | With no choice made for execution backend, authority source, token budget, resource-limit values, Runtime, secret source or transport, the engine refuses to start (or to build a session) with a named error listing the options; positive control: a test that starts with any one of them unset must fail |
+| **G-R13** | Nothing implicit, for every resource | With no choice made for execution backend, authority source, token budget, resource-limit values, turn cap, approval mode, concurrency mode, telemetry capture, strictness, Runtime, secret source or transport, the engine refuses to start (or to build a session) with a named error listing the options; positive control: a test that starts with any one of them unset must fail; an explicit `unbounded` budget starts and is recorded in startup diagnostics, while a `0` or missing budget is refused |
 | **G-R14** | Every agent has a sandbox, every backend hosts the worktree, and `NoSandboxBackend` is never implicit | (a) A `try_compile` negative test: a type without the worktree verbs fails the concept, beside a conformer that compiles (ADR-071 §5g's pattern). (b) Building an agent with no backend kind fails with a named error; positive control: the same build with one succeeds. (c) One shared conformance suite on every conformer, `NoSandboxBackend` included: a file written inside appears in the worktree after harvest, a worktree change appears inside after materialise, an ungranted ref or subtree is refused both ways; positive control: a conformer that skips harvest fails the suite. (d) A registry holding only `NoSandboxBackend` fails `resolve_strict`. (e) A forked session and a restored session each get a different handle; a `branch` child gets its own sandbox, a `shared` child its parent's |
 
 G-R4 depends on ADR-240 reaching Judged. A Kata CI runner needs KVM; the self-hosted path is
@@ -540,7 +543,8 @@ qualifies).
 1. **This ADR** → Judged → apply §8.
    1b. **Close §2's implicit permissive choices**: unconditional mount authorization; an explicit
    authority source (per-request or a named single-trusted-caller mode) for sessions and `McpServer`;
-   a required token budget and required resource-limit values; no backend registered by platform; no
+   a required token budget and required resource-limit values (an explicit `unbounded` is allowed);
+   required `max_turns`, approval mode, concurrency mode, telemetry capture and strictness; no backend registered by platform; no
    `KataBackend` image, runtime or network default; a required secret source and prefix; a required
    Runtime; the Docker/containerd surfaces and `none` as explicit, audited choices. Each is a behaviour change with its own regression test.
 2. **Layer and API redesign ADR**: the public C++ surface, the layer map (session and workflow out of
@@ -629,12 +633,9 @@ Steps 2–4 touch the same headers; they should be sequenced, not run in paralle
   reading of I2 or a quiet weakening of it, and whether rules 1–7 really close every path out.
 - Whether R3 rule 1's "rebuild on any authority change" is affordable for a multi-user server, or
   forces a hot-grant design sooner than §7 admits.
-- **Owner check on R8:** whether "a worktree inside every backend" means *always present in* it (this
-  ADR's reading, D4 unchanged) or *lives in and dies with* it (D4 superseded).
-- **Owner decisions left open by §2:** (a) whether "explicitly unbounded" is an allowed budget or limit
-  value; (b) whether restrictive defaults that can only narrow (`max_turns = 16`, policy-driven approval,
-  sequential concurrency, metadata-only telemetry, `is_strict`) stay as defaults or become required
-  choices.
+- Whether requiring every value (budgets, limits, turn cap, approval mode, concurrency, telemetry,
+  strictness) makes the minimum program long enough to defeat §2's "least developer code" measure, and
+  whether presets are enough to keep it short.
 - Whether "nothing implicit" (§2) makes a developer's first run fail in a way that pushes them to
   pick the weakest option (`none`, ADR-071 providers) just to get started, and whether §3a's table is
   enough to stop that.
@@ -716,7 +717,7 @@ All held.
 | Restrictive implicit defaults | §2 listed as an open owner decision; §9 |
 | Citations: `require_authority` member default, token-budget origin | Corrected |
 
-The two open owner decisions in §9 remain; nothing else from rounds 1–4 is open.
+The two open owner decisions from round 4 were settled by the owner on 2026-10-20 (below).
 
 Round 5 (2026-10-20, R8 only, a fresh independent agent): **not ready** (1 FATAL, 5 MAJOR, 3 MINOR).
 The author re-checked F1 (`sandbox.hpp:94-111`, `sandbox_backend_registry.hpp:122-124`) and M1
@@ -731,3 +732,8 @@ The author re-checked F1 (`sandbox.hpp:94-111`, `sandbox_backend_registry.hpp:12
 | M4: folding `Runner` contradicted D5 | `Runner` stays inside the sandbox; §6 step 3 |
 | M5: ADR-071 would become the code tier | R8 rule 2: providers keep names, checks and scope; `execute_code` over it is a step-3 decision |
 | MINOR: file tools via the backend; lazy creation and fork; concept cite; G-R14 controls | R8 rule 1; rule 3 cite; G-R14 (a)–(e) |
+
+**Owner decisions, 2026-10-20.** (1) "Explicitly unbounded" is an allowed budget and limit value, stated
+in code and recorded (§2 rule 5, G-R13). (2) The restrictive defaults become required choices (§2, §6
+step 1b, G-R13). (3) R8's reading is confirmed: the worktree is always present in every backend; D4
+unchanged. No open owner decision remains; the ADR awaits the owner's Judged.
