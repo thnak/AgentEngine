@@ -20,6 +20,7 @@
 //   J3 -- disjoint changes across two independent branch executors in the same round both merge
 //         cleanly -- proving the hook handles more than one branch-mode completion per round.
 
+#include <utility>
 #include <cstdio>
 #include <string>
 
@@ -52,8 +53,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 Message text_message(std::string text) {

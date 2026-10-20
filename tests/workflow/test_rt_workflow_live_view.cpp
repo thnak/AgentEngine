@@ -21,11 +21,13 @@
 //          (the same `broke` branch the checkpoint hook already skips -- live_view.hpp's own header
 //          comment names this explicitly).
 
+#include <utility>
 #include <cstdio>
 #include <memory_resource>
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 
 using agentengine::rt::ExecutorBody;
@@ -53,8 +55,7 @@ void check(bool cond, char const* what) {
 // Same rationale as test_rt_workflow_supervisor_request_port.cpp's own drive<T>().
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ContentItem;

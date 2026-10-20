@@ -26,11 +26,13 @@
 // still fans out through rt::ThreadPool internally, but this graph is a pure chain (width 1 per
 // round), so no real parallel fan-out ever occurs here.
 
+#include <utility>
 #include <cstdio>
 #include <cstdint>
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 
 using agentengine::rt::ContinueWorkflow;
@@ -60,8 +62,7 @@ void check(bool cond, char const* what) {
 // suspension point).
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ContentItem;

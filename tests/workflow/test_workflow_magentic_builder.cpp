@@ -17,11 +17,13 @@
 //         WorkflowSupervisor's designated_stall_reporter enforcement (ADR-149 item 2), proven on
 //         the SAME builder-produced graph, not a separately hand-built one.
 
+#include <utility>
 #include <atomic>
 #include <cstdio>
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 #include "agentengine/workflow/magentic.hpp"
 
@@ -57,8 +59,7 @@ void check(bool cond, char const* what) {
 // genuinely suspending co_await in its executor bodies.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ContentItem;

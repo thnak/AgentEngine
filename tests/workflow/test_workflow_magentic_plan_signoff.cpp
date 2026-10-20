@@ -14,10 +14,12 @@
 //         the "rides the already-proven request_port/resume_workflow path, no new engine mechanism"
 //         claim (ADR-149 §3 finding 3) end to end, not just as marshal-helper unit tests.
 
+#include <utility>
 #include <cstdio>
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 #include "agentengine/workflow/magentic.hpp"
 
@@ -53,8 +55,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ContentItem;

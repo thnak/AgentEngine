@@ -42,6 +42,7 @@
 //
 // Run: ./test_rt_workflow_cancellation
 
+#include <utility>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -55,6 +56,7 @@
 #include <memory_resource>
 #include <optional>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/rt/agent_workflow_executor.hpp"
@@ -88,8 +90,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 [[nodiscard]] Message text_message(std::string text) {

@@ -22,6 +22,7 @@
 //         WorkflowSupervisor::run_workflow() call on the OUTER graph -- the actual headline use case,
 //         proven composable, not just unit-tested in isolation.
 
+#include <utility>
 #include <atomic>
 #include <chrono>
 #include <coroutine>
@@ -32,6 +33,7 @@
 #include <thread>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/workflow_as_executor.hpp"
 #include "agentengine/workflow/graph.hpp"
 
@@ -65,8 +67,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ContentItem;

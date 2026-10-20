@@ -21,6 +21,7 @@
 //         DIFFERENT answer produces a genuinely DIFFERENT final output than the original run --
 //         proof this actually changes the run's course, not just a record round-trip.
 
+#include <utility>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -62,8 +63,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ContentItem;

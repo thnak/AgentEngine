@@ -37,10 +37,12 @@
 // a single-source (non-fan_in-shared) edge, so this combination was never gate-proven despite 014 §8
 // G1's "each pattern... under injected executor failures" language until F1-F4 below.
 
+#include <utility>
 #include <cstdio>
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 
@@ -101,8 +103,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 [[nodiscard]] ExecutorBody ok_body(std::string tag) {

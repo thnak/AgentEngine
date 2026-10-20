@@ -6,6 +6,7 @@
 // testing::ScriptedBatchBackend stands in for the vendor while recording; the replay runs have no vendor at
 // all. Each negative claim was also run against a mutated replayer (ADR-236 §5).
 
+#include <utility>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -56,8 +57,7 @@ void check(bool cond, std::string const& what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 [[nodiscard]] Message text_message(std::string text, role r = role::user) {

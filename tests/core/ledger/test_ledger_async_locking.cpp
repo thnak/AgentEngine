@@ -1,5 +1,6 @@
 // Proof for ADR-238 (Ledger over an async WorktreeObjectStore): `mutex_` is never held across a store suspension, and
 // the head-moving operations are serialised by `op_mutex_` instead. Implements ADR-238 §6 T1-T9.
+// #178: deliberate step-driving (observes a suspended state) -- every resume()/done() site in this file is class (b).
 //
 // The store is gated: a call can be told to PARK until the test releases it, so every interleaving below is forced,
 // not hoped for. Everything runs on this one thread, driven by hand (`resume()` once to start, `Gate::release()` to

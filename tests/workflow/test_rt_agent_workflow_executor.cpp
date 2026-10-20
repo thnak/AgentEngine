@@ -34,11 +34,13 @@
 //         agent-kind node gets a fresh, history-less AgentSession -- the caller-resupplied one bound
 //         at the NEW WorkflowSupervisor's own initialize() call, never the pre-checkpoint session.
 
+#include <utility>
 #include <cstdio>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/agent_workflow_executor.hpp"
 #include "agentengine/trust/principal.hpp"
 
@@ -76,8 +78,7 @@ void check(bool cond, char const* what) {
 // concurrent deliveries into the same AgentSession, so session_mutex_ is never contended.
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // -- The scripted backend (same shape as test_rt_agent_session.cpp's own fixture) -------------------

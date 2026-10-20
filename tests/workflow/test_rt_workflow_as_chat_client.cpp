@@ -50,6 +50,7 @@
 // own max_rounds bound; the polling sleep is 2ms, same tens-of-ms scale as this codebase's other
 // stream-drain tests.
 
+#include <utility>
 #include <chrono>
 #include <cstdio>
 #include <memory>
@@ -57,6 +58,7 @@
 #include <thread>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/agent_workflow_executor.hpp"
 #include "agentengine/rt/workflow_as_chat_client.hpp"
 #include "agentengine/trust/principal.hpp"
@@ -268,8 +270,7 @@ struct DrainResult {
 // own agent_executor_detail::drive(), test_rt_agent_workflow_executor.cpp's own identical local copy).
 template <class T>
 [[nodiscard]] T drive_task(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // Extracts {interaction_id, ask} from an ask-signal ContentItem the adapter pushed.

@@ -5,6 +5,7 @@
 // Every negative claim here was also run against a mutated guard (ADR-235 §6) -- a check that cannot fail
 // proves nothing.
 
+#include <utility>
 #include <chrono>
 #include <cstdio>
 #include <functional>
@@ -13,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/yaml_value.hpp"
 #include "agentengine/rt/workflow_as_executor.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
@@ -57,8 +59,7 @@ void check(bool cond, std::string const& what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 [[nodiscard]] Message text_message(std::string text, role r = role::user) {
