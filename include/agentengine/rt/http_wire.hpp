@@ -234,10 +234,10 @@ struct RequestLine {
     std::string_view   body;
 };
 
-// Builds the raw request (or reports why it may not be sent). Always `Connection: close` -- one exchange per
-// connection, as the blocking client (keep-alive pooling is a later performance step, §6.3). A body is framed by
-// Content-Length (never chunked); POST/PUT/PATCH with no body send `Content-Length: 0`.
-[[nodiscard]] inline WireError build_request(RequestLine const& r, std::string* out) {
+// ADR-241 S2 step 3: the validation half of `build_request`, with no copy of the body -- one rule set for every caller.
+// The egress gate (sandbox/detail/net_egress_impl.hpp) calls it directly so a request is rejected, with the same codes,
+// BEFORE anything is resolved; `build_request` calls it first, so the two cannot drift.
+[[nodiscard]] inline WireError validate_request(RequestLine const& r) {
     if (auto e = reject_injection("method", r.method); !e.ok()) return e;
     if (auto e = reject_injection("target", r.target); !e.ok()) return e;
     if (auto e = reject_injection("host", r.host); !e.ok()) return e;
@@ -283,6 +283,14 @@ struct RequestLine {
             }
         }
     }
+    return {};
+}
+
+// Builds the raw request (or reports why it may not be sent). Always `Connection: close` -- one exchange per
+// connection, as the blocking client (keep-alive pooling is a later performance step, §6.3). A body is framed by
+// Content-Length (never chunked); POST/PUT/PATCH with no body send `Content-Length: 0`.
+[[nodiscard]] inline WireError build_request(RequestLine const& r, std::string* out) {
+    if (auto e = validate_request(r); !e.ok()) return e;
 
     std::string req;
     req.reserve(128 + r.body.size());

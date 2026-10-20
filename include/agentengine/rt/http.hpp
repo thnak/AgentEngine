@@ -294,6 +294,9 @@ struct HttpResponse {
     std::string    message;  // human-readable detail
     http_failure   failure = http_failure::unspecified;  // ADR-241 S2: the TLS client's class, set only for tls_failed
     std::uint16_t  status = 0;  // set once a head was parsed (also when the body then failed)
+    // ADR-241 S2: every byte the transport's read_some returned for this exchange (the S1 request-level counter, read
+    // back): lets a caller or a test count the response bound on the CLIENT, never at the peer. Also on failure.
+    std::uint64_t  wire_bytes = 0;
     std::string    reason;
     HttpHeaders    headers;
     std::string    body;
@@ -641,6 +644,7 @@ struct HttpStreamResponse {
     std::string    message;
     http_failure   failure = http_failure::unspecified;  // ADR-241 S2: the TLS client's class, set only for tls_failed
     std::uint16_t  status = 0;
+    std::uint64_t  wire_bytes = 0;  // ADR-241 S2: the head phase's wire bytes; see HttpResponse::wire_bytes
     std::string    reason;
     HttpHeaders    headers;
     pal::IpAddress address{};
@@ -786,6 +790,7 @@ inline task<HttpStreamResponse> open_stream(HttpContext ctx, HttpRequest req, st
             }
             if (!e.ok()) {
                 transport->close();
+                out.wire_bytes = budget.used;
                 set_error(out, e);
                 co_return out;
             }
@@ -794,6 +799,7 @@ inline task<HttpStreamResponse> open_stream(HttpContext ctx, HttpRequest req, st
         if (status >= 100 && status < 200 && status != 101) {
             if (auto e = parser.next_after_interim(); !e.ok()) {
                 transport->close();
+                out.wire_bytes = budget.used;
                 set_error(out, e);
                 co_return out;
             }
@@ -801,6 +807,7 @@ inline task<HttpStreamResponse> open_stream(HttpContext ctx, HttpRequest req, st
         }
         if (status == 101) {
             transport->close();
+            out.wire_bytes = budget.used;
             set_error(out, http_wire::fail(http_error::malformed_response, "net.protocol_error",
                                            "101 Switching Protocols to a request that asked for no upgrade"));
             co_return out;
@@ -816,10 +823,12 @@ inline task<HttpStreamResponse> open_stream(HttpContext ctx, HttpRequest req, st
     out.headers                   = std::move(head.headers);
     if (!fe.ok()) {
         transport->close();
+        out.wire_bytes = budget.used;
         set_error(out, fe);
         co_return out;
     }
 
+    out.wire_bytes = budget.used;  // the head phase; the body phase adds to `st->budget`
     auto st       = std::make_shared<BodyState>();
     st->reactor   = ctx.reactor;
     st->exchange  = std::move(ex);
@@ -843,12 +852,14 @@ inline task<HttpResponse> request_buffered(HttpContext ctx, HttpRequest req, std
     out.status  = s.status;
     out.reason  = std::move(s.reason);
     out.headers = std::move(s.headers);
-    out.address = s.address;
+    out.address    = s.address;
+    out.wire_bytes = s.wire_bytes;
     if (!s.ok()) co_return out;
     std::shared_ptr<BodyState> st = s.body.state();
     s.body                        = HttpBodyReader{};
     for (;;) {
         HttpBodyChunk c = co_await body_next(st, stop, /*arm=*/false);
+        out.wire_bytes  = st->budget.used;  // the S1 counter: head + interim heads + body + framing + trailers
         if (c.status == body_status::data) {
             out.body += c.data;
             continue;

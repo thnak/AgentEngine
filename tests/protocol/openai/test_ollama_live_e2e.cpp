@@ -406,7 +406,7 @@ int main() {
         sandbox::NetEgressRequest req;
         req.method = "GET";
         req.path = "/v1/models";
-        auto resp = agentengine::rt::block_on(proxy.fetch(req, granted));
+        auto resp = agentengine::rt::block_on(proxy.fetch(req, granted, agentengine::sandbox::EgressCallControl{}));
         check(!resp.has_value() && resp.error().code == "net.address_blocked",
               "OL-8 (ADR-016 G1): a WASM guest holding a cap::NetOut grant that explicitly allowlists "
               "this exact live local server is STILL refused on address policy");

@@ -44,11 +44,14 @@ struct FakeEgressBackend {
     mutable int fetch_calls = 0;
     mutable std::optional<sandbox::NetEgressRequest> last_request;
     mutable std::optional<agentengine::cap::NetOut> last_granted;
+    mutable std::optional<sandbox::EgressCallControl> last_control;  // ADR-241 D1: what the tool handed the seam
 
     // ADR-237 §5.1 (#173): the seam is `task`-shaped; this fake completes without suspending.
     [[nodiscard]] agentengine::task<result<sandbox::NetEgressResponse>> fetch(sandbox::NetEgressRequest req,
-                                                                             agentengine::cap::NetOut granted) const {
+                                                                             agentengine::cap::NetOut granted,
+                                                                             sandbox::EgressCallControl control) const {
         ++fetch_calls;
+        last_control = std::move(control);
         last_request = std::move(req);
         last_granted = std::move(granted);
         co_return response;
@@ -412,9 +415,43 @@ void test_path_source_over_threshold_with_blob_sink() {
 
 }  // namespace
 
+// ADR-241 D1 / G7 (tool-level row): the tool hands the egress seam the call's OWN cancellation token, deadline hint and
+// host-derived admission labels -- not a default-constructed control value (a tool that passes `{}` is the mutant).
+void test_control_value_reaches_the_seam() {
+    using agentengine::tools::ReadContent;
+    agentengine::CapabilitySet const held =
+        agentengine::CapabilitySet::grant_root({agentengine::cap::NetOut{{"example.com:80:http"}, std::nullopt, {}}});
+    auto ctx = make_ctx(held);
+    std::stop_source stop;
+    ctx.cancellation                = stop.get_token();
+    ctx.deadline                    = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    ctx.principal                   = agentengine::make_embedded_principal("p-ctl", "tenant-ctl");
+    ctx.run_id                      = "sess:run:3";
+    ctx.root_run_id                 = "ROOT:run:1";
+
+    FakeEgressBackend backend;
+    auto reply = agentengine::rt::block_on(ReadContent::invoke_via(
+        ReadContent::Args{.url = "http://example.com/data", .path = std::nullopt}, ctx, backend));
+    check(reply.has_value(), "G7 tool row: the call succeeds against the recording fake");
+    check(backend.last_control.has_value(), "G7 tool row: the seam received a control value");
+    if (backend.last_control) {
+        check(backend.last_control->stop.stop_possible() && !backend.last_control->stop.stop_requested(),
+              "G7 tool row: the seam sees the call's own cancellation token (stoppable, not yet requested)");
+        stop.request_stop();
+        check(backend.last_control->stop.stop_requested(),
+              "G7 tool row: ... and it is the SAME token: a stop on ctx.cancellation reaches the seam");
+        check(backend.last_control->deadline == ctx.deadline, "G7 tool row: the seam sees ctx.deadline");
+        check(backend.last_control->admission.tenant == "tenant-ctl" &&
+                  backend.last_control->admission.principal == "p-ctl" &&
+                  backend.last_control->admission.root_run == "ROOT:run:1",
+              "G7 tool row: the admission labels are {tenant, principal.root_id(), root_run_id}, host-derived");
+    }
+}
+
 int main() {
     test_url_parsing();
     test_happy_path_under_threshold();
+    test_control_value_reaches_the_seam();
     test_over_threshold_with_blob_sink();
     test_over_threshold_without_blob_sink();
     test_capability_not_held_never_calls_backend();

@@ -296,7 +296,7 @@ struct ReadContent : Tool<ReadContent, Capabilities<>, Approval<approval_mode::n
         }
 
         sandbox::NetEgressRequest const req{"GET", parsed->path, {}, {}};
-        auto response = co_await proxy.fetch(req, *granted);
+        auto response = co_await proxy.fetch(req, *granted, sandbox::egress_call_control(ctx));
         if (!response) co_return std::unexpected(response.error());
         if (response->status < 200 || response->status >= 300) {
             co_return std::unexpected(error{failure_class::transient,

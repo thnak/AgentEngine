@@ -384,6 +384,12 @@ namespace {
 struct CallCapabilities {
     std::vector<BoundCapability> const* bound;
     ResourceLimits const* limits;
+    // ADR-241 8.3 / R3-1: what the egress proxy is told about THIS call, VALUES ONLY (never `EffectContext`, which carries
+    // `capabilities`, I2): the call's cancellation token, the deadline `min(call start + wall_ms, ctx.deadline)`, and the
+    // host-derived admission labels. The guest's own `wall_ms` is wasmtime epoch interruption -- checked only while guest
+    // code runs, never inside a host import -- so without this a guest parked in `http-request` against a trickling peer
+    // would hold the host lane for the whole `total_timeout`. Filled in `invoke_tool`; default (empty) while listing tools.
+    sandbox::EgressCallControl egress{};
 };
 
 // Every capability-gated function's callback recovers its bound capability the same way: pull the
@@ -541,6 +547,14 @@ wasmtime_error_t* cb_http_request(void* env, wasmtime_context_t* ctx,
         body != nullptr && body->kind == WASMTIME_COMPONENT_OPTION && body->of.option != nullptr) {
         wasmtime_component_val_t const& byte_list = *body->of.option;
         if (byte_list.kind == WASMTIME_COMPONENT_LIST) {
+            // ADR-241 D11 / G17: refuse an oversized request body BEFORE the copy -- no grant field caps the request
+            // body, the memory limiter bounds the guest's linear memory but not this host-heap copy, and an 8-64 call
+            // fan-out of 1 GiB bodies is a host OOM driven by a guest. The same constant the gate enforces
+            // (`egress_limits().max_request_bytes`), checked here so an oversized guest list is never copied at all.
+            if (byte_list.of.list.size > sandbox::egress_limits().max_request_bytes.load(std::memory_order_relaxed)) {
+                results[0] = make_result_val(false, make_enum_val("byte-cap-exceeded"));
+                return nullptr;
+            }
             req.body.reserve(byte_list.of.list.size);
             for (std::size_t i = 0; i < byte_list.of.list.size; ++i) {
                 auto const& b = byte_list.of.list.data[i];
@@ -562,24 +576,27 @@ wasmtime_error_t* cb_http_request(void* env, wasmtime_context_t* ctx,
     cap::NetOut const effective_grant = sandbox::narrow_by_resource_limit(*cap, resource_net_bytes);
 
     // Synchronous on purpose (ADR-237 §5.1, #173): the guest is blocked inside this host import, so there is
-    // nothing to suspend to. `fetch_blocking` is the same gates and exchange the async `fetch` seam runs.
+    // nothing to suspend to. `fetch_blocking` (ADR-241 8.3) runs the SAME `fetch` the async seam runs, as a root on the
+    // egress I/O context, and parks this thread on a latch -- bounded by `min(total_timeout, call->egress.deadline)` and
+    // by `call->egress.stop`, which `invoke_tool` filled from the call's EffectContext (a `{}` here is the G7 mutant).
     sandbox::HostEgressProxy const proxy;
-    auto response = proxy.fetch_blocking(req, effective_grant);
+    auto response = proxy.fetch_blocking(std::move(req), effective_grant, call->egress);
     if (!response) {
-        // The WIT `http-error` enum has exactly four cases -- a deliberately small, guest-facing
-        // vocabulary (wit/ae-tool.wit's own comment: the guest only needs to know "not allowlisted",
-        // "too big", "network trouble", or "timed out"). This collapses net_egress_proxy's finer
-        // `error.code` (net.ambiguous_grant, net.malformed_allowlist_entry, net.scheme_unsupported,
-        // net.method_not_allowed, net.header_injection_rejected, net.address_blocked,
-        // net.host_unresolvable -- all "this request/target was never within what was granted") onto
-        // `host-not-allowlisted`; `net.byte_cap_exceeded` maps exactly; everything else (genuine
-        // socket-level failure) maps to `network-error`. Nothing currently distinguishes a real
-        // connect timeout from any other socket failure (both share `net.connect_failed`), so
-        // `timeout` is never emitted here rather than guessed at.
+        // The WIT `http-error` enum has exactly four cases -- a deliberately small, guest-facing vocabulary
+        // (wit/ae-tool.wit's own comment: the guest only needs to know "not allowlisted", "too big", "network
+        // trouble", or "timed out"). ADR-241 9: this collapses the proxy's finer `error.code` onto them.
+        //   host-not-allowlisted: "this request/target was never within what was granted" (no topology leaks).
+        //   byte-cap-exceeded: the response bytes (body, head or total) or the REQUEST body went over a bound.
+        //   timeout: the call's deadline (`net.deadline_exceeded`) or an idle wait (`net.idle_timeout`) ran out.
+        //   network-error: everything else, including `net.invalid_request` (a malformed request: telling a guest
+        //   author "host-not-allowlisted" for a bad method or header name would mislead them).
         std::string_view wit_case = "network-error";
         std::string const& code = response.error().code;
-        if (code == "net.byte_cap_exceeded") {
+        if (code == "net.byte_cap_exceeded" || code == "net.header_too_large" || code == "net.response_too_large" ||
+            code == "net.request_too_large") {
             wit_case = "byte-cap-exceeded";
+        } else if (code == "net.deadline_exceeded" || code == "net.idle_timeout") {
+            wit_case = "timeout";
         } else if (code == "net.ambiguous_grant" || code == "net.malformed_allowlist_entry" ||
                    code == "net.scheme_unsupported" || code == "net.method_not_allowed" ||
                    code == "net.header_injection_rejected" || code == "net.address_blocked" ||
@@ -823,6 +840,9 @@ result<std::vector<ToolDescriptor>> WasmBackend::list_tools(SandboxHandle const&
 
 result<ToolResult> WasmBackend::invoke_tool(SandboxHandle const& handle, ToolInvokeRequest const& request,
                                              EffectContext& ctx) {
+    // ADR-241 R3-1: the deadline an egress call gets is measured from the start of the CALL, not of the import --
+    // guest work before the import has already used up `wall_ms`.
+    auto const call_start = std::chrono::steady_clock::now();
     auto it = instances_.find(handle.opaque_id);
     if (it == instances_.end() || !it->second->loaded) {
         return std::unexpected(error{failure_class::contract, "component not loaded", "wasm.not_loaded"});
@@ -844,6 +864,16 @@ result<ToolResult> WasmBackend::invoke_tool(SandboxHandle const& handle, ToolInv
     CallCapabilities call{};
     call.bound = &bound;
     call.limits = &inst.limits;
+    // ADR-241 8.3 (R3-1): the egress control for every `http-request` of this call -- VALUES ONLY (I2: never `ctx`).
+    // stop = the call's cancellation; deadline = min(call start + wall_ms [when > 0], ctx.deadline [when set]);
+    // admission = {tenant, principal.root_id(), root_run_id else run_id}, all host-derived.
+    call.egress = sandbox::egress_call_control(ctx);
+    if (inst.limits.wall_ms > 0) {
+        auto const wall_deadline = call_start + std::chrono::milliseconds(inst.limits.wall_ms);
+        if (call.egress.deadline == std::chrono::steady_clock::time_point{} || wall_deadline < call.egress.deadline) {
+            call.egress.deadline = wall_deadline;
+        }
+    }
 
     wasmtime_store_t* store = wasmtime_store_new(shared_engine(), &call, nullptr);
     wasmtime_context_t* wctx = wasmtime_store_context(store);

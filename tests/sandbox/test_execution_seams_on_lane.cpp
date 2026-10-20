@@ -105,7 +105,7 @@ struct SuspendingEgress {
     agentengine::sandbox::NetEgressResponse response{200, {{"Content-Type", "text/plain"}}, "hello"};
 
     agentengine::task<agentengine::result<agentengine::sandbox::NetEgressResponse>> fetch(
-        agentengine::sandbox::NetEgressRequest, agentengine::cap::NetOut) const {
+        agentengine::sandbox::NetEgressRequest, agentengine::cap::NetOut, agentengine::sandbox::EgressCallControl) const {
         co_await parker->park();
         co_return response;
     }
