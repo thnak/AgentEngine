@@ -61,6 +61,7 @@
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
 #include "agentengine/rt/block_on.hpp"
+#include <utility>
 
 using namespace agentengine;
 namespace ev = agentengine::eval;
@@ -87,8 +88,7 @@ void check(bool cond, std::string const& what) {
 
 template <class T>
 T drive(task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 json::Value str(std::string s) { return json::Value::make_string(std::move(s)); }

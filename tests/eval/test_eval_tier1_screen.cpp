@@ -25,6 +25,7 @@
 #include "agentengine/eval/eval_tier1_screen.hpp"
 #include "agentengine/eval/promotion_ack.hpp"
 #include "agentengine/rt/block_on.hpp"
+#include <utility>
 
 namespace {
 
@@ -42,8 +43,7 @@ int g_failures = 0;
 
 template <class T>
 T drive(ae::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // ---- Scripted clients, the same shape test_eval_follow_rate_screen.cpp uses (each file self-contained).

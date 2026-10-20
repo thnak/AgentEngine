@@ -46,6 +46,7 @@
 #include <memory_resource>
 #include <optional>
 #include <string>
+#include <stop_token>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -57,6 +58,9 @@
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/stream.hpp"
 #include "agentengine/core/task.hpp"
+#include "agentengine/rt/offload.hpp"
+#include "agentengine/rt/runtime.hpp"
+#include "agentengine/rt/sleep.hpp"
 
 namespace agentengine {
 
@@ -129,6 +133,63 @@ inline void run_replay_worker(std::vector<RecordedChunk> chunks, std::string str
     }
 }
 
+// ADR-237 §4.4/§4.5 (#180, step 56 option 1): the runtime form of the worker above -- a COROUTINE spawned on a
+// `rt::Runtime` (the client owns the root, rule 2), pacing with `co_await rt::sleep_for` (a suspension, never a
+// parked lane thread, and cancellable) and pushing with the SSE pump's discipline (rule 5): a non-blocking
+// `try_push`, and when the channel is full the blocking `push` runs on the OFFLOAD pool while this coroutine
+// suspends. Everything is owned by value (the chunks are copies of the recording's), so nothing here reads the
+// originating client after `chat_stream()` returns. The runtime itself must outlive the stream, exactly as the
+// provider clients' borrowed `ProviderReactorOptions::runtime` must.
+// Stop: the consumer's token (ADR-017) merged with the root's (`rt::scope_stop_token()`, which Runtime shutdown
+// requests): on either, the producer is failed `canceled` (which also wakes a push parked on a full channel) and
+// the sleep resumes at once.
+inline task<void> run_replay_worker_async(std::vector<RecordedChunk> chunks, std::string stream_terminal,
+                                           std::string error_detail, std::optional<error> recorded_error,
+                                           stream_producer<ChatResponseUpdate> producer_in,
+                                           rt::Runtime* runtime, std::stop_token consumer_stop) {
+    auto prod = std::make_shared<stream_producer<ChatResponseUpdate>>(std::move(producer_in));
+    std::stop_source merged;
+    std::stop_callback on_consumer(consumer_stop, [&merged] { merged.request_stop(); });
+    std::stop_callback on_runtime(rt::scope_stop_token(), [&merged] { merged.request_stop(); });
+    std::stop_callback on_stop(merged.get_token(), [prod] {
+        prod->fail(error{failure_class::canceled, "the replayed stream was stopped",
+                         "replay_chat_client.stream_stopped"});
+    });
+    std::stop_token const stop = merged.get_token();
+    try {
+        std::chrono::milliseconds previous{0};
+        for (auto& chunk : chunks) {
+            std::chrono::milliseconds delta = chunk.elapsed_since_start - previous;
+            if (delta < std::chrono::milliseconds{0}) delta = std::chrono::milliseconds{0};
+            previous = chunk.elapsed_since_start;
+            if (delta.count() > 0) {
+                if (co_await rt::sleep_for(runtime->reactor(), delta, stop) == rt::sleep_status::canceled) co_return;
+            }
+            ChatResponseUpdate update = std::move(chunk.update);
+            if (auto const r = prod->try_push(update)) {
+                if (*r != stream_push::ok) co_return;
+                continue;
+            }
+            // Channel full: the one place a parked thread is allowed is the offload pool.
+            auto res = co_await rt::offload(runtime->offload_pool(), stop,
+                                            [prod, u = std::move(update)]() mutable {
+                                                return prod->push(std::move(u)) == stream_push::ok;
+                                            });
+            if (!(res.completed() && res.value.value_or(false))) co_return;
+        }
+        if (stream_terminal == "closed") {
+            prod->close();
+        } else if (stream_terminal == "failed" && recorded_error.has_value()) {
+            prod->fail(std::move(*recorded_error));
+        } else {
+            prod->fail(terminal_to_error(stream_terminal, std::move(error_detail)));
+        }
+    } catch (...) {
+        prod->fail(error{failure_class::fatal, "the replay worker failed with an unexpected exception",
+                         "replay_chat_client.worker_faulted"});
+    }
+}
+
 }  // namespace replay_chat_client_detail
 
 // The real, product-code `ChatClient` conformer that plays back ONE `ChatCallRecording` (see file
@@ -144,12 +205,19 @@ public:
     // function, a test does, so it can assert exact chunk-timing deltas without real wall-clock sleeps.
     using SleepFn = std::function<void(std::chrono::milliseconds)>;
 
+    // ADR-237 §4.4/§4.5 (#180): an OPTIONAL `rt::Runtime` (borrowed; must outlive every stream this client
+    // returns). Null (the default) = today's detached-thread replay, unchanged. Non-null AND no injected
+    // `SleepFn` = the stream replays as a coroutine owned by that runtime, pacing with a suspending, stop-aware
+    // `rt::sleep_for`. An injected `SleepFn` (a test's deterministic clock) FORCES the thread path even when a
+    // runtime is supplied: a blocking callback cannot honestly run on a lane, and rewriting it would defeat the
+    // determinism it exists for. The default `SleepFn` is empty, meaning "the real sleep".
     explicit ReplayChatClient(ChatCallRecording recording, ChatClientCapabilities caps = {},
-                               SleepFn sleep_fn = &replay_chat_client_detail::real_sleep)
+                               SleepFn sleep_fn = {}, rt::Runtime* runtime = nullptr)
         : recordings_(std::make_shared<std::vector<ChatCallRecording>>(1, std::move(recording))),
           sequence_(false),
           capabilities_(caps),
-          sleep_fn_(std::move(sleep_fn)) {}
+          sleep_fn_(std::move(sleep_fn)),
+          runtime_(runtime) {}
 
     // ADR-177: replay a run that made SEVERAL calls -- the nth `chat()`/`chat_stream()` plays the nth
     // recording. Exists because a session that retries a dead stream makes a second call, and the
@@ -158,11 +226,12 @@ public:
     // (`replay_chat_client.sequence_exhausted`) rather than repeating the last one -- a replay that
     // made MORE calls than the original is a divergence, and a divergence must be loud.
     explicit ReplayChatClient(std::vector<ChatCallRecording> recordings, ChatClientCapabilities caps = {},
-                               SleepFn sleep_fn = &replay_chat_client_detail::real_sleep)
+                               SleepFn sleep_fn = {}, rt::Runtime* runtime = nullptr)
         : recordings_(std::make_shared<std::vector<ChatCallRecording>>(std::move(recordings))),
           sequence_(true),
           capabilities_(caps),
-          sleep_fn_(std::move(sleep_fn)) {}
+          sleep_fn_(std::move(sleep_fn)),
+          runtime_(runtime) {}
 
     // Declared, not inferred from the recording (matches `RecordedChatClient`'s own precedent).
     [[nodiscard]] ChatClientCapabilities capabilities() const { return capabilities_; }
@@ -227,10 +296,19 @@ public:
         // See file banner: `recording_.stream_error_detail` is copied BY VALUE here, before the thread
         // is spawned -- the worker thread owns its own independent copy, so `*this` no longer needs to
         // outlive it.
+        if (runtime_ != nullptr && !sleep_fn_) {
+            // Runtime path (ADR-237 §4.5 rule 2): the client owns the root via `Runtime::spawn`; the coroutine
+            // owns copies of everything, so it never touches `*this` or `recording_` again.
+            std::stop_token stop = pair.producer.stop_token();  // before the move (evaluation order)
+            (void)runtime_->spawn(replay_chat_client_detail::run_replay_worker_async(
+                recording_.chunks, recording_.stream_terminal, recording_.stream_error_detail,
+                recording_.stream_error, std::move(pair.producer), runtime_, std::move(stop)));
+            return std::move(pair.consumer);
+        }
         std::thread(&replay_chat_client_detail::run_replay_worker, recording_.chunks,
                     recording_.stream_terminal, recording_.stream_error_detail, recording_.stream_error,
                     std::move(pair.producer),
-                    sleep_fn_)
+                    sleep_fn_ ? sleep_fn_ : SleepFn{&replay_chat_client_detail::real_sleep})
             .detach();
         return std::move(pair.consumer);
     }
@@ -256,6 +334,7 @@ private:
     std::shared_ptr<std::atomic<std::size_t>> cursor_ = std::make_shared<std::atomic<std::size_t>>(0);
     ChatClientCapabilities capabilities_;
     SleepFn sleep_fn_;
+    rt::Runtime* runtime_ = nullptr;
 };
 
 static_assert(ChatClient<ReplayChatClient>,

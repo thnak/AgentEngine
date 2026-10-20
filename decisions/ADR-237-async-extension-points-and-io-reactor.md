@@ -2993,6 +2993,25 @@ fails it).
 - Remaining hand-driven sites after these batches: ~417 by raw grep in ~127 files (some are not tasks); the largest
   groups are `tests/rt/` (top level), `tests/sandbox/`, `tests/protocol/openai/`, `tests/core/chat/`, `tests/eval/`.
 
+### Step 61 (2026-10-20): `ReplayChatClient` replays on an optional runtime (#180, step 56 option 1)
+
+- Both constructors take a trailing borrowed `rt::Runtime* runtime = nullptr` (it must outlive every stream, the
+  provider clients' `ProviderReactorOptions::runtime` rule). With a runtime and no injected `SleepFn`, `chat_stream()`
+  spawns `run_replay_worker_async` as a runtime root (rule 2; the `RootHandle` is discarded exactly as the provider
+  clients do). It paces each recorded gap with `co_await rt::sleep_for(reactor, delta, stop)` and pushes with the SSE
+  pump's discipline: `try_push`, and a full channel's blocking `push` on the offload pool. The stop is the consumer's
+  token merged with `rt::scope_stop_token()`; either fails the producer `canceled`. The coroutine owns copies of the
+  chunks, terminal, error and producer, so it never reads the client again.
+- Null runtime keeps the detached-thread path exactly. The default `SleepFn` is now empty ("the real sleep"; the thread
+  path substitutes `real_sleep`). An injected `SleepFn` FORCES the thread path even with a runtime: a blocking
+  callback has no honest lane form, and tests inject it for determinism.
+- Proof (`test_replay_chat_client` block 11): order and terminals including a recorded failure (11a); a 200 ms gap
+  really waits and a cancel during a 10 s gap ends the stream in under 1 s (11b); an injected `SleepFn` with a runtime
+  still takes the thread path (11c); destroying the `Runtime` mid-gap joins the root in under 2 s (11d). Mutant: a
+  blocking `std::this_thread::sleep_for` in the coroutine fails 11b/11d.
+- **Residual:** the null-runtime default is still a detached thread with a blocking sleep. Making the runtime required
+  changes every call site; left to #180.
+
 ### §14.1 What is left, and the phases to follow
 
 **Exact count (2026-10-16, #174 triage, §14.2):** §5.1 names **31** seams. **25 are `task`-shaped**, **5 are
@@ -3003,8 +3022,9 @@ narrowed out of the same row). The triage adds **3 seams §5.1 never named** tha
 The "~27" figure and the step-46-era paragraph below are kept as history; §14.2 supersedes their count.
 
 **Since then (2026-10-18/20):** Phase G slices 1-4 (steps 52-53, 55-56) converted `ApprovalDecider`, `PolicyDecider`,
-`ExecutorBody`, `ChildRunner`, `EffectContext::blob_sink` and (step 58) the batch `Call`, so **2 conversions are
-left**: `ReplayChatClient::SleepFn` and `RegisteredRunner::invoke`, both with #180. The #174 inventory was triaged twice, independently, on
+`ExecutorBody`, `ChildRunner`, `EffectContext::blob_sink` and (step 58) the batch `Call`; step 61 gave
+`ReplayChatClient` a runtime path (the thread path stays for a null runtime). So **1 conversion is left**:
+`RegisteredRunner::invoke`, with #180. The #174 inventory was triaged twice, independently, on
 two branches merged together: §14.2 (2026-10-16, the Phase E branch) and the "§14.1 triage table" below (2026-10-19,
 the Phase G branch, reconciled with steps 52-53). Both count 49 aliases; where their status differs, the 2026-10-19
 table is current.
@@ -3038,7 +3058,8 @@ C, steps 46-49); ~~plus ~15 further `std::function` typedefs that have not been 
 (triaged, #174: §14.2 and the §14.1 triage table below). What is left after the triage and Phase G slices 1-2:
 ~~`ChildRunner`~~ (step 55), ~~`BatchableModelCall::Call`~~ (step 58) and ~~`EffectContext::blob_sink`~~ (step 56)
 (**Phase G, complete**), plus
-`ReplayChatClient::SleepFn` and the shell's `RegisteredRunner::invoke` (with #180, the blocking conformer bodies).
+~~`ReplayChatClient::SleepFn`~~ (step 61, runtime path) and the shell's `RegisteredRunner::invoke` (with #180, the
+blocking conformer bodies).
 
 **§14.1 triage table (#174, 2026-10-19, `main` at `16efaa38`; doc-only -- nothing below was converted).**
 Method: `grep` over `include/` and `src/` for every `using X = std::function<...>` (45 single-line + 4
